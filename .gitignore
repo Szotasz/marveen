@@ -1,0 +1,34 @@
+# Dependencies & build
+node_modules/
+dist/
+
+# Secrets & personal data
+.env
+store/
+workspace/
+agents/
+reports/
+.claude/
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+*.log
+*.pid
+
+# macOS
+.DS_Store
+
+# Generated from template (personal config)
+CLAUDE.md
+
+# Personal/project-specific docs (not part of the product)
+REBUILD_PROMPT*.md
+SKOOL_*.md
+alkuszokatas_dashboard.md
+napindito-prompt.md
+scheduled-tasks.json
+claudeclaw.log

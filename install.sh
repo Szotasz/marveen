@@ -1,0 +1,268 @@
+#!/bin/bash
+# Marveen - AI Team Setup
+# Interactive installer for macOS
+
+set -e
+
+BOLD='\033[1m'
+DIM='\033[2m'
+GREEN='\033[0;32m'
+ORANGE='\033[0;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+clear
+echo ""
+echo -e "${BOLD}  ▐▛███▜▌   Marveen${NC}"
+echo -e "${BOLD} ▝▜█████▛▘  AI csapatod, ami fut amig te alszol.${NC}"
+echo -e "${DIM}   ▘▘ ▝▝${NC}"
+echo ""
+echo -e "${DIM}  Telepito wizard - macOS${NC}"
+echo ""
+
+# Step 1: Check prerequisites
+echo -e "${BOLD}[1/7] Elofeltetelek ellenorzese...${NC}"
+
+check_cmd() {
+  if command -v "$1" &>/dev/null; then
+    echo -e "  ${GREEN}✓${NC} $2"
+    return 0
+  else
+    echo -e "  ${RED}✗${NC} $2 - hianyzik"
+    return 1
+  fi
+}
+
+MISSING=0
+check_cmd "node" "Node.js (v20+)" || MISSING=1
+check_cmd "npm" "npm" || MISSING=1
+check_cmd "tmux" "tmux" || MISSING=1
+check_cmd "git" "git" || MISSING=1
+
+# Check Node version
+if command -v node &>/dev/null; then
+  NODE_VER=$(node -v | sed 's/v//' | cut -d. -f1)
+  if [ "$NODE_VER" -lt 20 ]; then
+    echo -e "  ${RED}✗${NC} Node.js verzio: $(node -v) (minimum: v20)"
+    MISSING=1
+  fi
+fi
+
+if [ "$MISSING" -eq 1 ]; then
+  echo ""
+  echo -e "${ORANGE}Hianyzo fuggosegek telepitese Homebrew-val...${NC}"
+  if ! command -v brew &>/dev/null; then
+    echo -e "${RED}Homebrew nem talalhato. Telepitsd: https://brew.sh${NC}"
+    exit 1
+  fi
+  command -v node &>/dev/null || brew install node@22
+  command -v tmux &>/dev/null || brew install tmux
+  echo -e "${GREEN}✓ Fuggosegek telepitve${NC}"
+fi
+
+# Check Claude Code CLI
+echo ""
+if ! command -v claude &>/dev/null; then
+  echo -e "  ${RED}✗${NC} Claude Code CLI - hianyzik"
+  echo -e "${ORANGE}Telepites: npm install -g @anthropic-ai/claude-code${NC}"
+  read -p "Telepitsem most? (i/n) " INSTALL_CLAUDE
+  if [ "$INSTALL_CLAUDE" = "i" ]; then
+    npm install -g @anthropic-ai/claude-code
+  else
+    echo -e "${RED}Claude Code CLI szukseges a futtatáshoz.${NC}"
+    exit 1
+  fi
+fi
+echo -e "  ${GREEN}✓${NC} Claude Code CLI"
+
+# Step 2: Claude authentication
+echo ""
+echo -e "${BOLD}[2/7] Claude bejelentkezes${NC}"
+echo -e "${DIM}  Ha meg nem jelentkeztel be, most megteheted.${NC}"
+read -p "  Szeretned most futtatni a 'claude auth'-ot? (i/n) " DO_AUTH
+if [ "$DO_AUTH" = "i" ]; then
+  claude auth
+fi
+
+# Step 3: Personal info
+echo ""
+echo -e "${BOLD}[3/7] Szemelyes beallitasok${NC}"
+read -p "  Mi a neved? " OWNER_NAME
+read -p "  Telegram chat ID-d (ha tudod, egyebkent hagyd uresen): " CHAT_ID
+CHAT_ID=${CHAT_ID:-"0"}
+
+# Step 4: Telegram bot setup
+echo ""
+echo -e "${BOLD}[4/7] Telegram bot beallitas${NC}"
+echo -e "${DIM}  A Marveen Telegramon kommunikal veled.${NC}"
+echo -e "${DIM}  1. Nyisd meg a @BotFather-t a Telegramban${NC}"
+echo -e "${DIM}  2. Ird be: /newbot${NC}"
+echo -e "${DIM}  3. Adj nevet a botodnak${NC}"
+echo -e "${DIM}  4. Masold ide a kapott tokent:${NC}"
+echo ""
+read -p "  Telegram bot token (vagy hagyd uresen, kesobb is beallithatod): " BOT_TOKEN
+
+# Step 5: Install dependencies
+echo ""
+echo -e "${BOLD}[5/7] Fuggosegek telepitese...${NC}"
+cd "$INSTALL_DIR"
+npm install --silent
+echo -e "  ${GREEN}✓${NC} npm csomagok telepitve"
+
+# Build TypeScript
+echo -e "  Forditas..."
+npm run build --silent
+echo -e "  ${GREEN}✓${NC} TypeScript leforditva"
+
+# Step 6: Configuration
+echo ""
+echo -e "${BOLD}[6/7] Konfiguracio letrehozasa...${NC}"
+
+# Create .env
+cat > "$INSTALL_DIR/.env" << ENVEOF
+# Marveen konfiguracio
+TELEGRAM_BOT_TOKEN=${BOT_TOKEN}
+ALLOWED_CHAT_ID=${CHAT_ID}
+OWNER_NAME=${OWNER_NAME}
+ENVEOF
+echo -e "  ${GREEN}✓${NC} .env letrehozva"
+
+# Create store directory
+mkdir -p "$INSTALL_DIR/store"
+mkdir -p "$INSTALL_DIR/agents"
+echo -e "  ${GREEN}✓${NC} Konyvtarak letrehozva"
+
+# Generate CLAUDE.md from template
+if [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
+  sed -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
+      -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+      -e "s/{{CHAT_ID}}/$CHAT_ID/g" \
+      "$INSTALL_DIR/templates/CLAUDE.md.template" > "$INSTALL_DIR/CLAUDE.md"
+  echo -e "  ${GREEN}✓${NC} CLAUDE.md generalva"
+fi
+
+# Setup Telegram channel
+if [ -n "$BOT_TOKEN" ] && [ "$BOT_TOKEN" != "" ]; then
+  TELEGRAM_DIR="$HOME/.claude/channels/telegram"
+  mkdir -p "$TELEGRAM_DIR"
+  echo "TELEGRAM_BOT_TOKEN=$BOT_TOKEN" > "$TELEGRAM_DIR/.env"
+  cat > "$TELEGRAM_DIR/access.json" << ACCESSEOF
+{
+  "dmPolicy": "allowlist",
+  "allowFrom": ["${CHAT_ID}"],
+  "groups": {},
+  "pending": {}
+}
+ACCESSEOF
+  echo -e "  ${GREEN}✓${NC} Telegram csatorna konfigurálva"
+fi
+
+# Install Telegram plugin
+echo -e "  Telegram plugin telepites..."
+claude plugin install telegram@claude-plugins-official 2>/dev/null || true
+echo -e "  ${GREEN}✓${NC} Telegram plugin"
+
+# Step 7: LaunchAgent setup
+echo ""
+echo -e "${BOLD}[7/7] Automatikus inditas beallitasa...${NC}"
+
+PLIST_DIR="$HOME/Library/LaunchAgents"
+mkdir -p "$PLIST_DIR"
+
+NODE_PATH="$(which node)"
+
+# Dashboard service
+cat > "$PLIST_DIR/com.marveen.dashboard.plist" << PLISTEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.marveen.dashboard</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${NODE_PATH}</string>
+    <string>${INSTALL_DIR}/dist/index.js</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${INSTALL_DIR}</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${INSTALL_DIR}/store/dashboard.log</string>
+  <key>StandardErrorPath</key>
+  <string>${INSTALL_DIR}/store/dashboard.error.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>HOME</key>
+    <string>${HOME}</string>
+  </dict>
+</dict>
+</plist>
+PLISTEOF
+
+# Channels service (Telegram bridge)
+cat > "$PLIST_DIR/com.marveen.channels.plist" << PLISTEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.marveen.channels</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${INSTALL_DIR}/scripts/channels.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${INSTALL_DIR}</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${INSTALL_DIR}/store/channels.log</string>
+  <key>StandardErrorPath</key>
+  <string>${INSTALL_DIR}/store/channels.error.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:${HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>HOME</key>
+    <string>${HOME}</string>
+  </dict>
+</dict>
+</plist>
+PLISTEOF
+
+echo -e "  ${GREEN}✓${NC} LaunchAgent-ek letrehozva"
+
+# Load LaunchAgents
+launchctl load "$PLIST_DIR/com.marveen.dashboard.plist" 2>/dev/null || true
+launchctl load "$PLIST_DIR/com.marveen.channels.plist" 2>/dev/null || true
+echo -e "  ${GREEN}✓${NC} Szolgaltatasok elinditva"
+
+# Done!
+echo ""
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+echo -e "${BOLD}${GREEN}  ✓ Marveen sikeresen telepitve!${NC}"
+echo ""
+echo -e "  ${BOLD}Dashboard:${NC} http://localhost:3420"
+echo -e "  ${BOLD}Telegram:${NC} Irj a botodnak!"
+echo ""
+echo -e "  ${DIM}Kovetkezo lepesek:${NC}"
+echo -e "  ${DIM}1. Nyisd meg a dashboardot${NC}"
+echo -e "  ${DIM}2. Menj a Csapat oldalra${NC}"
+echo -e "  ${DIM}3. Hozz letre agenseket a csapatodba${NC}"
+echo ""
+echo -e "  ${DIM}Frissites: ./update.sh${NC}"
+echo -e "  ${DIM}Leallitas: ./scripts/stop.sh${NC}"
+echo ""
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

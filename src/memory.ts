@@ -1,0 +1,141 @@
+import {
+  searchMemories,
+  recentMemories,
+  touchMemory,
+  saveMemory,
+  decayMemories as dbDecay,
+  getMemoriesForChat,
+  listKanbanCardsSummary,
+  type Memory,
+} from './db.js'
+import { runAgent } from './agent.js'
+import { logger } from './logger.js'
+
+// Semantic: user preferences, facts about themselves, persistent info
+const SEMANTIC_PATTERN =
+  /\b(my|i am|i'm|i prefer|remember|always|never|az en|nekem|szeretem|nem szeretem|mindig|soha|emlekezzel|en|kedvenc|utokalok|fontos|ne felejtsd|jegyezd meg)\b/i
+
+// Skip: trivial messages not worth remembering
+const SKIP_PATTERN = /^(ok|igen|nem|koszi|kosz|hello|szia|hi|hey|thx|thanks|jo|oke|persze|rendben|ja|aha|\.+|!+|\?+)$/i
+
+export async function buildMemoryContext(
+  chatId: string,
+  userMessage: string
+): Promise<string> {
+  const ftsResults = searchMemories(userMessage, chatId, 3)
+  const recent = recentMemories(chatId, 5)
+
+  const seen = new Set<number>()
+  const combined: Memory[] = []
+
+  for (const m of [...ftsResults, ...recent]) {
+    if (!seen.has(m.id)) {
+      seen.add(m.id)
+      combined.push(m)
+    }
+  }
+
+  if (combined.length === 0) return ''
+
+  for (const m of combined) {
+    touchMemory(m.id)
+  }
+
+  const lines = combined.map((m) => `- ${m.content} (${m.sector})`)
+  return `[Memoria kontextus]\n${lines.join('\n')}`
+}
+
+const STATUS_HU: Record<string, string> = {
+  planned: 'Tervezett',
+  in_progress: 'Folyamatban',
+  waiting: 'Várakozik',
+  done: 'Kész',
+}
+
+const PRIORITY_HU: Record<string, string> = {
+  urgent: '🔴',
+  high: '🟠',
+  normal: '⚪',
+  low: '🔵',
+}
+
+export function buildKanbanContext(): string {
+  const cards = listKanbanCardsSummary()
+  if (cards.length === 0) return ''
+
+  const grouped: Record<string, string[]> = {}
+  for (const c of cards) {
+    const key = STATUS_HU[c.status] ?? c.status
+    if (!grouped[key]) grouped[key] = []
+    const assignee = c.assignee ? ` (${c.assignee})` : ''
+    grouped[key].push(`  ${PRIORITY_HU[c.priority] ?? '⚪'} ${c.title}${assignee} [${c.id}]`)
+  }
+
+  const lines = Object.entries(grouped).map(([status, items]) => `${status}:\n${items.join('\n')}`)
+  return `[Kanban tabla]\n${lines.join('\n')}`
+}
+
+export async function saveConversationTurn(
+  chatId: string,
+  userMsg: string,
+  assistantMsg: string
+): Promise<void> {
+  // Skip trivial, short, or command messages
+  if (userMsg.length <= 20 || userMsg.startsWith('/')) return
+  if (SKIP_PATTERN.test(userMsg.trim())) return
+
+  // Only save semantic memories (user preferences, facts) automatically
+  // Episodic memories come from daily digest and session checkpoints
+  if (SEMANTIC_PATTERN.test(userMsg)) {
+    const content = `Felhasznalo: ${userMsg.slice(0, 500)}\nAsszisztens: ${assistantMsg.slice(0, 500)}`
+    saveMemory(chatId, content, 'semantic')
+    logger.debug({ chatId }, 'Szemantikus emlek mentve')
+  }
+  // Non-semantic turns are NOT saved individually -- they go into daily digest
+}
+
+export function runDecaySweep(): void {
+  dbDecay()
+  logger.info('Memoria leepulesi sopres vegrehajtva')
+}
+
+// --- Daily digest ---
+
+export async function runDailyDigest(chatId: string): Promise<string | null> {
+  // Collect today's episodic memories (last 24h)
+  const oneDayAgo = Math.floor(Date.now() / 1000) - 86400
+  const allRecent = getMemoriesForChat(chatId, 50)
+  const todayMemories = allRecent.filter((m) => m.created_at >= oneDayAgo)
+
+  if (todayMemories.length < 2) {
+    logger.info({ chatId, count: todayMemories.length }, 'Napi naplo: tul keves emlek, kihagyjuk')
+    return null
+  }
+
+  const memoryLines = todayMemories.map((m) => `- ${m.content.slice(0, 200)}`).join('\n')
+
+  const prompt = `Az alabbi egy AI asszisztens mai emlekei egy felhasznaloval folytatott beszelgetesekbol.
+Irj egy tomor napi osszefoglalot (max 5-8 mondat), ami megragadja:
+1. Milyen feladatokon dolgoztak
+2. Milyen fontos dontesek szulettek
+3. Mi maradt nyitva / mi a kovetkezo lepes
+
+Csak az osszefoglalot add vissza, semmi mast. Magyarul irj.
+
+Mai emlekek:
+${memoryLines}`
+
+  try {
+    const { text } = await runAgent(prompt)
+    if (!text) return null
+
+    const digest = text.trim()
+    const today = new Date().toLocaleDateString('hu-HU')
+    saveMemory(chatId, `[Napi naplo ${today}] ${digest}`, 'episodic')
+    logger.info({ chatId }, `Napi naplo mentve: ${today}`)
+    return digest
+  } catch (err) {
+    logger.error({ err }, 'Napi naplo generalas hiba')
+    return null
+  }
+}

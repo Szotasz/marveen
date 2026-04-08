@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="hu" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ClaudeClaw</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <div class="logo">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+        </svg>
+        <span>ClaudeClaw</span>
+      </div>
+      <nav>
+        <a href="#" class="nav-link active" data-page="kanban">Kanban</a>
+        <a href="#" class="nav-link" data-page="agents">Csapat</a>
+        <a href="#" class="nav-link" data-page="tasks">Ütemezések</a>
+        <a href="#" class="nav-link" data-page="memories">Memória</a>
+        <a href="#" class="nav-link" data-page="connectors">Connectorok</a>
+      </nav>
+    </div>
+    <button class="theme-toggle" id="themeToggle" title="Témaváltás">
+      <svg class="icon-sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+      </svg>
+      <svg class="icon-moon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+      </svg>
+    </button>
+  </header>
+
+  <main>
+    <!-- === Kanban Page === -->
+    <div class="page" id="kanbanPage">
+      <div class="kanban-board" id="kanbanBoard">
+        <div class="kanban-col" data-status="planned">
+          <div class="kanban-col-header">
+            <span class="kanban-col-title">Tervezett</span>
+            <span class="kanban-col-count" id="countPlanned">0</span>
+            <button class="kanban-add-btn" data-status="planned" title="Új kártya">+</button>
+          </div>
+          <div class="kanban-col-body" data-status="planned"></div>
+        </div>
+        <div class="kanban-col" data-status="in_progress">
+          <div class="kanban-col-header">
+            <span class="kanban-col-title">Folyamatban</span>
+            <span class="kanban-col-count" id="countInProgress">0</span>
+            <button class="kanban-add-btn" data-status="in_progress" title="Új kártya">+</button>
+          </div>
+          <div class="kanban-col-body" data-status="in_progress"></div>
+        </div>
+        <div class="kanban-col" data-status="waiting">
+          <div class="kanban-col-header">
+            <span class="kanban-col-title">Várakozik</span>
+            <span class="kanban-col-count" id="countWaiting">0</span>
+            <button class="kanban-add-btn" data-status="waiting" title="Új kártya">+</button>
+          </div>
+          <div class="kanban-col-body" data-status="waiting"></div>
+        </div>
+        <div class="kanban-col" data-status="done">
+          <div class="kanban-col-header">
+            <span class="kanban-col-title">Kész</span>
+            <span class="kanban-col-count" id="countDone">0</span>
+          </div>
+          <div class="kanban-col-body" data-status="done"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- === Agents Page === -->
+    <div class="page" id="agentsPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1>Csapat</h1>
+            <p class="subtitle">AI csapattagok kezelése</p>
+          </div>
+        </div>
+      </div>
+      <div class="agents-grid" id="agentsGrid">
+        <button class="agent-card add-card" id="addAgentBtn">
+          <div class="add-icon">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+          </div>
+          <span>Új ágens</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- === Tasks (Schedules) Page === -->
+    <div class="page" id="tasksPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1>Ütemezések</h1>
+            <p class="subtitle">Időzített feladatok kezelése</p>
+          </div>
+          <div class="schedule-view-toggle">
+            <button class="view-btn active" data-view="list" title="Lista nézet">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
+                <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+              </svg>
+            </button>
+            <button class="view-btn" data-view="timeline" title="Napi idővonal">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+              </svg>
+            </button>
+            <button class="view-btn" data-view="week" title="Heti nézet">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+              </svg>
+            </button>
+            <button class="btn-primary btn-compact" id="addScheduleBtn">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+              Új feladat
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- List view -->
+      <div class="schedule-view" id="scheduleListView">
+        <div class="schedule-list" id="scheduleList"></div>
+        <div class="schedule-empty" id="scheduleEmpty" hidden>
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+          </svg>
+          <p>Nincsenek ütemezett feladatok</p>
+        </div>
+      </div>
+
+      <!-- Timeline view (daily) -->
+      <div class="schedule-view" id="scheduleTimelineView" hidden>
+        <div class="timeline-header">
+          <div class="timeline-hours" id="timelineHours"></div>
+        </div>
+        <div class="timeline-body" id="timelineBody"></div>
+      </div>
+
+      <!-- Week view -->
+      <div class="schedule-view" id="scheduleWeekView" hidden>
+        <div class="week-grid" id="weekGrid"></div>
+      </div>
+    </div>
+
+    <!-- === Memories Page === -->
+    <div class="page" id="memoriesPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1>Memoria</h1>
+            <p class="subtitle">AI csapat tudasbazisa</p>
+          </div>
+          <button class="btn-primary btn-compact" id="memAddBtn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+            Uj emlek
+          </button>
+        </div>
+      </div>
+
+      <div class="mem-stats" id="memStats"></div>
+
+      <div class="mem-toolbar">
+        <div class="mem-search-wrap">
+          <svg class="mem-search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input type="text" id="memSearchInput" class="mem-search" placeholder="Kereses az emlekekben...">
+        </div>
+        <select class="mem-agent-filter" id="memAgentFilter">
+          <option value="">Minden agens</option>
+        </select>
+      </div>
+
+      <div class="mem-tabs" id="memTabs">
+        <button class="mem-tab active" data-tier="hot">&#128293; Hot</button>
+        <button class="mem-tab" data-tier="warm">&#127777;&#65039; Warm</button>
+        <button class="mem-tab" data-tier="cold">&#10052;&#65039; Cold</button>
+        <button class="mem-tab" data-tier="shared">&#128279; Shared</button>
+        <button class="mem-tab" data-tier="graph">&#128376;&#65039; Graf</button>
+        <button class="mem-tab" data-tier="log">&#128203; Naplo</button>
+      </div>
+
+      <!-- Memory list (for hot/warm/cold/shared) -->
+      <div class="mem-tier-view" id="memTierView">
+        <div class="mem-list" id="memList"></div>
+        <div class="mem-empty" id="memEmpty" hidden>
+          <p>Nincs emlek ebben a kategoriaban</p>
+        </div>
+      </div>
+
+      <!-- Graph view -->
+      <div class="mem-graph-view" id="memGraphView" hidden>
+        <canvas id="memGraphCanvas"></canvas>
+        <div class="graph-empty" id="graphEmpty" hidden>
+          <p>Nincs eleg emlek a graf megjeleniteshez</p>
+        </div>
+      </div>
+
+      <!-- Daily log view -->
+      <div class="mem-log-view" id="memLogView" hidden>
+        <div class="log-date-nav">
+          <button class="btn-icon" id="logPrevDate" title="Elozo nap">&lt;</button>
+          <span class="log-current-date" id="logCurrentDate"></span>
+          <button class="btn-icon" id="logNextDate" title="Kovetkezo nap">&gt;</button>
+        </div>
+        <div class="log-entries" id="logEntries"></div>
+        <div class="log-empty" id="logEmpty" hidden>
+          <p>Nincs naplobejegyzes ezen a napon</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- === Connectors Page === -->
+    <div class="page" id="connectorsPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1>Connectorok</h1>
+            <p class="subtitle">MCP szerverek kezelése</p>
+          </div>
+          <button class="btn-primary btn-compact" id="addConnectorBtn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+            Új connector
+          </button>
+        </div>
+      </div>
+
+      <div class="connector-stats" id="connectorStats"></div>
+      <div class="connector-grid" id="connectorGrid"></div>
+    </div>
+  </main>
+
+  <!-- Modal: Kanban kártya szerkesztés -->
+  <div class="modal-overlay" id="cardModalOverlay">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <h2 id="cardModalTitle">Új kártya</h2>
+        <button class="modal-close" id="cardModalClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="cardTitle">Cím</label>
+          <input type="text" id="cardTitle" placeholder="Feladat megnevezése">
+        </div>
+        <div class="form-group">
+          <label for="cardDesc">Leírás <span class="hint">(opcionális)</span></label>
+          <textarea id="cardDesc" rows="3" placeholder="Részletek, kontextus..."></textarea>
+        </div>
+        <div class="form-row">
+          <div class="form-group form-half">
+            <label for="cardAssignee">Felelős</label>
+            <select id="cardAssignee"></select>
+          </div>
+          <div class="form-group form-half">
+            <label for="cardPriority">Prioritás</label>
+            <select id="cardPriority">
+              <option value="low">Alacsony</option>
+              <option value="normal" selected>Normál</option>
+              <option value="high">Magas</option>
+              <option value="urgent">Sürgős</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="cardDue">Határidő <span class="hint">(opcionális)</span></label>
+          <input type="date" id="cardDue">
+        </div>
+        <input type="hidden" id="cardEditId">
+        <input type="hidden" id="cardEditStatus">
+        <button class="btn-primary" id="saveCardBtn">
+          <span class="btn-text">Mentés</span>
+          <span class="btn-loading" hidden><span class="spinner"></span> Mentés...</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Kanban kártya részletek -->
+  <div class="modal-overlay" id="cardDetailOverlay">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <h2 id="cardDetailTitle">Kártya</h2>
+        <button class="modal-close" id="cardDetailClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="card-detail-meta" id="cardDetailMeta"></div>
+        <div class="card-detail-desc" id="cardDetailDesc"></div>
+        <div class="card-detail-comments">
+          <h4>Megjegyzések</h4>
+          <div class="comments-list" id="commentsList"></div>
+          <div class="comment-form">
+            <div class="form-row">
+              <div class="form-group" style="flex:1">
+                <textarea id="commentContent" rows="2" placeholder="Megjegyzés írása..."></textarea>
+              </div>
+            </div>
+            <div class="form-row" style="gap:8px; align-items:center">
+              <select id="commentAuthor" class="comment-author-select"></select>
+              <button class="btn-primary btn-compact" id="addCommentBtn">Küldés</button>
+            </div>
+          </div>
+        </div>
+        <div class="detail-actions" style="gap:8px">
+          <button class="btn-secondary" id="cardEditBtn">Szerkesztés</button>
+          <button class="btn-secondary" id="cardArchiveBtn">Archiválás</button>
+          <button class="btn-danger" id="cardDeleteBtn">Törlés</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Ágens wizard (multi-step creation) -->
+  <div class="modal-overlay" id="agentWizardOverlay">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <h2 id="wizardTitle">Új ágens létrehozása</h2>
+        <button class="modal-close" id="wizardClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="wizard-steps" id="wizardSteps">
+          <div class="wizard-step active" data-step="1"></div>
+          <div class="wizard-step" data-step="2"></div>
+          <div class="wizard-step" data-step="3"></div>
+        </div>
+
+        <!-- Step 1: Description -->
+        <div class="wizard-panel" id="wizardStep1">
+          <div class="avatar-gallery" id="avatarGallery">
+            <label class="form-label-sm">Válassz avatart</label>
+            <div class="avatar-grid" id="avatarGrid"></div>
+          </div>
+          <div class="form-group">
+            <label for="agentName">Név</label>
+            <input type="text" id="agentName" placeholder="pl. kutató, copywriter, fejlesztő">
+          </div>
+          <div class="form-group">
+            <label for="agentDesc">Írd le szabadon, mit szeretnél hogy csináljon ez az ágens</label>
+            <textarea id="agentDesc" rows="4" placeholder="pl. Piackutatást végez, versenytársakat elemez, táblázatos összefoglalókat készít magyarul."></textarea>
+          </div>
+          <div class="form-group">
+            <label for="agentModel">Modell</label>
+            <select id="agentModel">
+              <option value="inherit">Öröklött (alapértelmezett)</option>
+              <option value="opus">Opus (legjobb minőség)</option>
+              <option value="sonnet">Sonnet (gyors és okos)</option>
+              <option value="haiku">Haiku (leggyorsabb)</option>
+            </select>
+          </div>
+          <button class="btn-primary" id="wizardNextBtn">
+            <span class="btn-text">Tovább</span>
+          </button>
+        </div>
+
+        <!-- Step 2: Generation (loading) -->
+        <div class="wizard-panel" id="wizardStep2" hidden>
+          <div class="wizard-generating">
+            <div class="wizard-spinner-wrap">
+              <span class="spinner wizard-spin"></span>
+            </div>
+            <p class="wizard-gen-status" id="wizardGenStatus">CLAUDE.md generálás...</p>
+            <p class="wizard-gen-sub">Ez néhány másodpercig tarthat</p>
+          </div>
+        </div>
+
+        <!-- Step 3: Review -->
+        <div class="wizard-panel" id="wizardStep3" hidden>
+          <div class="form-group">
+            <label for="wizardClaudeMd">CLAUDE.md</label>
+            <textarea id="wizardClaudeMd" class="code-textarea" rows="10"></textarea>
+          </div>
+          <div class="form-group">
+            <label for="wizardSoulMd">SOUL.md</label>
+            <textarea id="wizardSoulMd" class="code-textarea" rows="8"></textarea>
+          </div>
+          <div class="wizard-actions">
+            <button class="btn-secondary" id="wizardBackBtn">Vissza</button>
+            <button class="btn-primary btn-compact" id="wizardCreateBtn">
+              <span class="btn-text">Létrehozás</span>
+              <span class="btn-loading" hidden><span class="spinner"></span> Létrehozás...</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Ágens detail (tabbed) -->
+  <div class="modal-overlay" id="agentDetailOverlay">
+    <div class="modal modal-agent-detail">
+      <div class="modal-header">
+        <h2 id="agentDetailTitle">Ágens részletek</h2>
+        <button class="modal-close" id="agentDetailClose">&times;</button>
+      </div>
+      <div class="modal-body" style="padding-top: 0;">
+        <div class="tab-nav" id="agentTabNav">
+          <button class="tab-btn active" data-tab="overview">Áttekintés</button>
+          <button class="tab-btn" data-tab="settings">Beállítások</button>
+          <button class="tab-btn" data-tab="telegram">Telegram</button>
+          <button class="tab-btn" data-tab="skills">Skillek</button>
+        </div>
+
+        <!-- Tab: Overview -->
+        <div class="tab-panel" id="tabOverview">
+          <div class="detail-top">
+            <div class="detail-avatar-wrap">
+              <div class="detail-avatar" id="agentDetailAvatar"></div>
+              <button class="avatar-change-btn" id="avatarChangeBtn" title="Avatar változtatás">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                </svg>
+              </button>
+            </div>
+            <div class="detail-info">
+              <h3 id="agentDetailName"></h3>
+              <p id="agentDetailDesc"></p>
+            </div>
+          </div>
+          <div class="detail-avatar-gallery" id="detailAvatarGallery" hidden>
+            <label class="form-label-sm">Válassz új avatart</label>
+            <div class="avatar-grid" id="detailAvatarGrid"></div>
+          </div>
+          <div class="agent-overview-grid">
+            <div class="agent-overview-item">
+              <span class="meta-label">Modell</span>
+              <span class="meta-value" id="agentDetailModel"></span>
+            </div>
+            <div class="agent-overview-item">
+              <span class="meta-label">Telegram</span>
+              <span class="meta-value" id="agentDetailTgStatus"></span>
+            </div>
+            <div class="agent-overview-item">
+              <span class="meta-label">Skillek</span>
+              <span class="meta-value" id="agentDetailSkillCount">0</span>
+            </div>
+          </div>
+          <div class="agent-process-control" id="agentProcessControl">
+            <div class="process-status" id="processStatus">
+              <span class="process-dot" id="processDot"></span>
+              <span id="processLabel">Leállva</span>
+              <span class="process-uptime" id="processUptime"></span>
+            </div>
+            <div class="process-actions">
+              <button class="btn-primary btn-compact" id="agentStartBtn">
+                <span class="btn-text">Indítás</span>
+                <span class="btn-loading" hidden><span class="spinner"></span></span>
+              </button>
+              <button class="btn-danger btn-compact" id="agentStopBtn" hidden>Leállítás</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab: Settings -->
+        <div class="tab-panel" id="tabSettings" hidden>
+          <div class="form-group">
+            <label for="editAgentModel">Modell</label>
+            <select id="editAgentModel">
+              <option value="claude-sonnet-4-6">Sonnet 4.6 (alapértelmezett)</option>
+              <option value="claude-opus-4-6">Opus 4.6 (legjobb minőség)</option>
+              <option value="claude-haiku-4-5-20251001">Haiku 4.5 (leggyorsabb)</option>
+            </select>
+            <button class="btn-secondary btn-compact agent-save-section" id="saveModelBtn">Mentés</button>
+          </div>
+          <div class="form-group">
+            <label for="editClaudeMd">CLAUDE.md</label>
+            <textarea id="editClaudeMd" class="code-textarea" rows="12"></textarea>
+            <button class="btn-secondary btn-compact agent-save-section" id="saveClaudeMdBtn">Mentés</button>
+          </div>
+          <div class="form-group">
+            <label for="editSoulMd">SOUL.md</label>
+            <textarea id="editSoulMd" class="code-textarea" rows="10"></textarea>
+            <button class="btn-secondary btn-compact agent-save-section" id="saveSoulMdBtn">Mentés</button>
+          </div>
+          <div class="form-group">
+            <label for="editMcpJson">.mcp.json</label>
+            <textarea id="editMcpJson" class="code-textarea" rows="8"></textarea>
+            <button class="btn-secondary btn-compact agent-save-section" id="saveMcpJsonBtn">Mentés</button>
+          </div>
+        </div>
+
+        <!-- Tab: Telegram -->
+        <div class="tab-panel" id="tabTelegram" hidden>
+          <div id="tgNotConnected">
+            <div class="tg-instructions">
+              <h4>Telegram bot bekötése</h4>
+              <ol>
+                <li>Nyisd meg a <strong>@BotFather</strong>-t a Telegramban</li>
+                <li>Hozz létre egy új botot a <code>/newbot</code> paranccsal</li>
+                <li>Másold be az API tokent ide</li>
+              </ol>
+            </div>
+            <div class="form-group">
+              <label for="tgTokenInput">Bot API Token</label>
+              <input type="text" id="tgTokenInput" placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11">
+            </div>
+            <button class="btn-primary" id="tgConnectBtn">
+              <span class="btn-text">Összekapcsolás</span>
+              <span class="btn-loading" hidden><span class="spinner"></span> Csatlakozás...</span>
+            </button>
+          </div>
+          <div id="tgConnected" hidden>
+            <div class="tg-connected-info">
+              <div class="tg-bot-badge">
+                <span class="tg-dot connected"></span>
+                <span id="tgBotUsername">@bot</span>
+                <span class="badge badge-active">Token beállítva</span>
+              </div>
+              <div class="tg-notice" id="tgRunNotice">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+                <span>A bot csak akkor fogad üzeneteket, ha az ágens fut. Indítsd el az Áttekintés tab-on az "Indítás" gombbal.</span>
+              </div>
+              <div class="tg-notice tg-notice-ok" id="tgRunningNotice" hidden>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
+                </svg>
+                <span>Az ágens fut, a bot aktívan figyel. A chat ID-d előre engedélyezve van, nem kell pairing kód.</span>
+              </div>
+            </div>
+            <div class="tg-pairing-section" id="tgPairingSection">
+              <h4>Párosítás</h4>
+              <p class="tg-pairing-info">Ha valaki ír a botnak, a plugin egy kódot küld neki. Ide írd be a kódot a jóváhagyáshoz.</p>
+              <div class="tg-pending-list" id="tgPendingList"></div>
+              <div class="form-row" style="gap:8px; align-items:flex-end; margin-top: 12px;">
+                <div class="form-group" style="flex:1; margin-bottom:0">
+                  <label for="tgPairCode">Párosítási kód</label>
+                  <input type="text" id="tgPairCode" placeholder="pl. a1b2c3">
+                </div>
+                <button class="btn-primary btn-compact" id="tgApproveBtn" style="margin-top:0">Jóváhagyás</button>
+              </div>
+              <button class="btn-secondary btn-compact" id="tgRefreshPendingBtn" style="margin-top:10px; font-size:12px;">Várakozók frissítése</button>
+            </div>
+            <div class="tg-connected-actions">
+              <button class="btn-secondary" id="tgTestBtn">Kapcsolat tesztelése</button>
+              <button class="btn-danger" id="tgDisconnectBtn">Leválasztás</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab: Skills -->
+        <div class="tab-panel" id="tabSkills" hidden>
+          <div class="skill-header">
+            <h4>Ágens skilljei</h4>
+            <button class="btn-secondary btn-compact" id="addSkillBtn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+              Új skill
+            </button>
+          </div>
+          <div class="skill-list" id="skillList"></div>
+          <div class="skill-empty" id="skillEmpty">
+            <p>Nincsenek skillek hozzáadva</p>
+          </div>
+        </div>
+
+        <!-- Bottom actions -->
+        <div class="detail-actions agent-detail-bottom" id="agentDetailActions">
+          <button class="btn-danger" id="deleteAgentBtn">Törlés</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: New Skill -->
+  <div class="modal-overlay" id="skillModalOverlay">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <h2>Új skill</h2>
+        <button class="modal-close" id="skillModalClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="skill-create-tabs">
+          <button class="skill-tab-btn active" data-skill-tab="create">Létrehozás</button>
+          <button class="skill-tab-btn" data-skill-tab="import">Importálás</button>
+        </div>
+
+        <div class="skill-tab-panel" id="skillTabCreate">
+          <div class="form-group">
+            <label for="skillName">Skill neve</label>
+            <input type="text" id="skillName" placeholder="pl. piackutato, riport-keszito">
+          </div>
+          <div class="form-group">
+            <label for="skillDescription">Írd le szabadon, mit csináljon ez a skill</label>
+            <textarea id="skillDescription" rows="5" placeholder="pl. Piackutatási riportokat készít: versenytárs elemzés, piaci trendek, SWOT analízis. A riportot strukturáltan, táblázatokkal adja vissza magyarul."></textarea>
+          </div>
+          <button class="btn-primary" id="saveSkillBtn">
+            <span class="btn-text">Skill generálás</span>
+            <span class="btn-loading" hidden><span class="spinner"></span> Generálás...</span>
+          </button>
+        </div>
+
+        <div class="skill-tab-panel" id="skillTabImport" hidden>
+          <div class="form-group">
+            <label>Skill fájl (.skill)</label>
+            <div class="file-upload-area" id="skillFileArea">
+              <input type="file" id="skillFileInput" accept=".skill,.zip" hidden>
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+              <p>Kattints vagy húzd ide a .skill fájlt</p>
+              <p class="hint" id="skillFileName"></p>
+            </div>
+          </div>
+          <button class="btn-primary" id="importSkillBtn">
+            <span class="btn-text">Importálás</span>
+            <span class="btn-loading" hidden><span class="spinner"></span> Importálás...</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: New/Edit Schedule -->
+  <div class="modal-overlay" id="scheduleModalOverlay">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <h2 id="scheduleModalTitle">Új ütemezett feladat</h2>
+        <button class="modal-close" id="scheduleModalClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <div class="form-group form-half">
+            <label for="scheduleName">Név</label>
+            <input type="text" id="scheduleName" placeholder="pl. reggeli-napindito">
+          </div>
+          <div class="form-group form-half">
+            <label for="scheduleAgent">Ágens</label>
+            <select id="scheduleAgent"></select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="scheduleDesc">Leírás <span class="hint">(rövid)</span></label>
+          <input type="text" id="scheduleDesc" placeholder="Mit csinál ez a feladat">
+        </div>
+        <div class="form-group">
+          <label for="schedulePrompt">Prompt</label>
+          <textarea id="schedulePrompt" rows="6" placeholder="Röviden írd le mit csináljon (pl. 'nézd meg az emailjeimet és foglald össze')"></textarea>
+          <div class="prompt-expand-row">
+            <button class="btn-secondary btn-compact" id="expandPromptBtn" type="button">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2a7 7 0 017 7c0 2.38-1.19 4.47-3 5.74V17a2 2 0 01-2 2h-4a2 2 0 01-2-2v-2.26C6.19 13.47 5 11.38 5 9a7 7 0 017-7z"/>
+              </svg>
+              Intelligens kibővítés
+            </button>
+            <span class="hint" id="expandStatus"></span>
+          </div>
+          <div class="expand-questions" id="expandQuestions" hidden></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group" style="flex:1">
+            <label for="scheduleFrequency">Gyakoriság</label>
+            <select id="scheduleFrequency">
+              <option value="daily">Naponta</option>
+              <option value="weekdays">Hétköznap</option>
+              <option value="weekly-mon">Hetente (hétfő)</option>
+              <option value="weekly-fri">Hetente (péntek)</option>
+              <option value="hourly">Óránként</option>
+              <option value="every2h">2 óránként</option>
+              <option value="every4h">4 óránként</option>
+              <option value="every30m">30 percenként</option>
+              <option value="custom">Egyéni cron...</option>
+            </select>
+          </div>
+          <div class="form-group" style="flex:1" id="scheduleTimeGroup">
+            <label for="scheduleTime">Időpont</label>
+            <input type="time" id="scheduleTime" value="09:00">
+          </div>
+        </div>
+        <div class="form-group" id="customScheduleGroup" hidden>
+          <label for="scheduleCustomCron">Cron kifejezés <span class="hint">(perc óra nap hónap hétnap)</span></label>
+          <input type="text" id="scheduleCustomCron" placeholder="0 12 * * *">
+        </div>
+        <input type="hidden" id="scheduleEditName">
+        <button class="btn-primary" id="saveScheduleBtn">
+          <span class="btn-text">Mentés</span>
+          <span class="btn-loading" hidden><span class="spinner"></span> Mentés...</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Add/Edit Memory -->
+  <div class="modal-overlay" id="memModalOverlay">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <h2 id="memModalTitle">Uj emlek</h2>
+        <button class="modal-close" id="memModalClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <div class="form-group form-half">
+            <label for="memAgent">Agens</label>
+            <select id="memAgent"></select>
+          </div>
+          <div class="form-group form-half">
+            <label for="memTier">Tier</label>
+            <select id="memTier">
+              <option value="hot">&#128293; Hot (aktiv)</option>
+              <option value="warm" selected>&#127777;&#65039; Warm (stabil)</option>
+              <option value="cold">&#10052;&#65039; Cold (archiv)</option>
+              <option value="shared">&#128279; Shared (megosztott)</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="memContent">Tartalom</label>
+          <textarea id="memContent" rows="5" placeholder="Mit kell megjegyezni..."></textarea>
+        </div>
+        <div class="form-group">
+          <label for="memKeywords">Kulcsszavak <span class="hint">(vesszoval elvalasztva, keresest segiti)</span></label>
+          <input type="text" id="memKeywords" placeholder="pl. marketing, kampany, ROI">
+        </div>
+        <input type="hidden" id="memEditId">
+        <button class="btn-primary" id="saveMemBtn">Mentes</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Add Connector -->
+  <div class="modal-overlay" id="connectorModalOverlay">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <h2 id="connectorModalTitle">Új connector</h2>
+        <button class="modal-close" id="connectorModalClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="connectorName">Név</label>
+          <input type="text" id="connectorName" placeholder="pl. my-api-server">
+        </div>
+        <div class="form-row">
+          <div class="form-group form-half">
+            <label for="connectorType">Típus</label>
+            <select id="connectorType">
+              <option value="remote">Távoli (HTTP URL)</option>
+              <option value="local">Lokális (parancs)</option>
+            </select>
+          </div>
+          <div class="form-group form-half">
+            <label for="connectorScope">Hatókör</label>
+            <select id="connectorScope">
+              <option value="user">Globális (minden projekt)</option>
+              <option value="project">Projekt szintű</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group" id="connectorUrlGroup">
+          <label for="connectorUrl">URL</label>
+          <input type="text" id="connectorUrl" placeholder="https://mcp.example.com/mcp">
+        </div>
+        <div class="form-group" id="connectorCmdGroup" hidden>
+          <label for="connectorCmd">Parancs</label>
+          <input type="text" id="connectorCmd" placeholder="npx -y @my/mcp-server">
+        </div>
+        <div class="form-group" id="connectorArgsGroup" hidden>
+          <label for="connectorArgs">Argumentumok <span class="hint">(opcionális)</span></label>
+          <input type="text" id="connectorArgs" placeholder="--port 3000">
+        </div>
+        <button class="btn-primary" id="saveConnectorBtn">
+          <span class="btn-text">Hozzáadás</span>
+          <span class="btn-loading" hidden><span class="spinner"></span> Hozzáadás...</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Connector Detail -->
+  <div class="modal-overlay" id="connectorDetailOverlay">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <h2 id="connectorDetailTitle">Connector részletek</h2>
+        <button class="modal-close" id="connectorDetailClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="connector-detail-info" id="connectorDetailInfo"></div>
+        <div class="form-group" style="margin-top:20px">
+          <label>Hozzárendelés ágensekhez</label>
+          <div class="connector-agent-list" id="connectorAgentList"></div>
+          <button class="btn-secondary btn-compact" id="connectorAssignBtn" style="margin-top:8px">Mentés</button>
+        </div>
+        <div class="detail-actions" style="margin-top:20px">
+          <button class="btn-danger" id="connectorDeleteBtn">Törlés</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
