@@ -24,6 +24,9 @@ $TMUX kill-session -t "$SESSION" 2>/dev/null
 $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
   "$CLAUDE --dangerously-skip-permissions --channels plugin:telegram@claude-plugins-official"
 
+# Bot menü beállítás (15 sec késleltetéssel, a plugin után)
+"$INSTALL_DIR/scripts/set-bot-menu.sh" &
+
 # Várakozás amíg a session él
 while $TMUX has-session -t "$SESSION" 2>/dev/null; do
   sleep 5

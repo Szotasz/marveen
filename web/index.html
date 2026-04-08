@@ -21,6 +21,7 @@
         <a href="#" class="nav-link" data-page="tasks">Ütemezések</a>
         <a href="#" class="nav-link" data-page="memories">Memória</a>
         <a href="#" class="nav-link" data-page="connectors">Connectorok</a>
+        <a href="#" class="nav-link" data-page="status">Státusz</a>
       </nav>
     </div>
     <button class="theme-toggle" id="themeToggle" title="Témaváltás">
@@ -243,6 +244,36 @@
       <div class="connector-stats" id="connectorStats"></div>
       <div class="connector-grid" id="connectorGrid"></div>
     </div>
+    <!-- === Status Page === -->
+    <div class="page" id="statusPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1>Státusz</h1>
+            <p class="subtitle">Claude szolgáltatások állapota</p>
+          </div>
+          <button class="btn-secondary btn-compact" id="refreshStatusBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+            </svg>
+            Frissítés
+          </button>
+        </div>
+      </div>
+
+      <div class="status-overall" id="statusOverall"></div>
+
+      <div class="status-services" id="statusServices">
+        <h3>Szolgáltatások</h3>
+        <div class="status-service-grid" id="statusServiceGrid"></div>
+      </div>
+
+      <div class="status-incidents">
+        <h3>Incidensek</h3>
+        <div class="status-incident-list" id="statusIncidentList"></div>
+      </div>
+    </div>
+
   </main>
 
   <!-- Modal: Kanban kártya szerkesztés -->

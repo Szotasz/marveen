@@ -25,6 +25,7 @@ function switchPage(pageId) {
   if (pageId === 'agents') loadAgents()
   if (pageId === 'memories') { loadMemAgents(); loadMemStats(); loadMemories() }
   if (pageId === 'connectors') loadConnectors()
+  if (pageId === 'status') loadStatus()
 }
 
 navLinks.forEach((link) => {
@@ -2885,6 +2886,91 @@ function escapeHtml(str) {
   const d = document.createElement('div')
   d.textContent = str
   return d.innerHTML
+}
+
+// ============================================================
+// === Status ===
+// ============================================================
+
+const CLAUDE_SERVICES = [
+  { name: 'claude.ai', label: 'Claude.ai' },
+  { name: 'api', label: 'Claude API' },
+  { name: 'code', label: 'Claude Code' },
+  { name: 'platform', label: 'Platform' },
+  { name: 'cowork', label: 'Claude Cowork' },
+  { name: 'gov', label: 'Claude for Gov' },
+]
+
+document.getElementById('refreshStatusBtn').addEventListener('click', loadStatus)
+
+async function loadStatus() {
+  const overallEl = document.getElementById('statusOverall')
+  const gridEl = document.getElementById('statusServiceGrid')
+  const listEl = document.getElementById('statusIncidentList')
+
+  overallEl.className = 'status-overall unknown'
+  overallEl.textContent = 'Betoltes...'
+  gridEl.innerHTML = ''
+  listEl.innerHTML = ''
+
+  try {
+    const res = await fetch('/api/status')
+    const data = await res.json()
+
+    // Overall status
+    const overallLabels = {
+      operational: 'Minden szolgaltatas mukodik',
+      degraded: 'Aktiv incidens',
+      unknown: 'Statusz nem elerheto',
+    }
+    overallEl.className = `status-overall ${data.overall}`
+    overallEl.textContent = overallLabels[data.overall] || data.overall
+
+    // Services grid (static list with status derived from incidents)
+    const activeIssues = data.incidents.filter(i => i.status !== 'resolved')
+    for (const svc of CLAUDE_SERVICES) {
+      const affected = activeIssues.some(i =>
+        i.title.toLowerCase().includes(svc.name) ||
+        i.description.toLowerCase().includes(svc.name)
+      )
+      const div = document.createElement('div')
+      div.className = 'status-service'
+      div.innerHTML = `
+        <div class="status-service-dot ${affected ? 'degraded' : 'operational'}"></div>
+        <span class="status-service-name">${escapeHtml(svc.label)}</span>
+      `
+      gridEl.appendChild(div)
+    }
+
+    // Incidents
+    if (data.incidents.length === 0) {
+      listEl.innerHTML = '<div class="status-loading">Nincs korabbi incidens</div>'
+    } else {
+      for (const inc of data.incidents) {
+        const statusLabels = {
+          resolved: 'Megoldva',
+          monitoring: 'Figyeles',
+          identified: 'Azonositva',
+          investigating: 'Vizsgalat',
+        }
+        const div = document.createElement('div')
+        div.className = `status-incident ${inc.status}`
+        const date = new Date(inc.pubDate).toLocaleString('hu-HU', { timeZone: 'Europe/Budapest' })
+        div.innerHTML = `
+          <div class="status-incident-header">
+            <span class="status-incident-title">${escapeHtml(inc.title)}</span>
+            <span class="status-incident-badge ${inc.status}">${statusLabels[inc.status] || inc.status}</span>
+          </div>
+          <div class="status-incident-desc">${escapeHtml(inc.description.slice(0, 300))}</div>
+          <div class="status-incident-date">${date}</div>
+        `
+        listEl.appendChild(div)
+      }
+    }
+  } catch (err) {
+    overallEl.className = 'status-overall unknown'
+    overallEl.textContent = 'Nem sikerult betolteni a statuszt'
+  }
 }
 
 // === Init ===

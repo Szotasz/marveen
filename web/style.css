@@ -2346,6 +2346,144 @@ main {
   gap: 10px;
 }
 
+/* === Status Page === */
+.status-overall {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  border-radius: var(--radius);
+  margin-bottom: 24px;
+  font-size: 18px;
+  font-weight: 600;
+}
+.status-overall.operational {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.status-overall.degraded {
+  background: rgba(217, 119, 87, 0.12);
+  color: var(--accent);
+}
+.status-overall.unknown {
+  background: var(--bg-input);
+  color: var(--text-muted);
+}
+
+.status-services {
+  margin-bottom: 28px;
+}
+.status-services h3 {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+.status-service-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+}
+.status-service {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.status-service-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.status-service-dot.operational { background: var(--success); }
+.status-service-dot.degraded { background: var(--accent); }
+.status-service-dot.down { background: var(--danger); }
+
+.status-service-name {
+  font-size: 13px;
+  font-weight: 500;
+}
+.status-service-uptime {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.status-incidents h3 {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+.status-incident-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.status-incident {
+  padding: 16px 20px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  border-left: 3px solid var(--border);
+}
+.status-incident.resolved { border-left-color: var(--success); }
+.status-incident.monitoring { border-left-color: var(--info); }
+.status-incident.identified { border-left-color: var(--accent); }
+.status-incident.investigating { border-left-color: var(--danger); }
+
+.status-incident-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.status-incident-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+.status-incident-badge {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+.status-incident-badge.resolved { background: var(--success-soft); color: var(--success); }
+.status-incident-badge.monitoring { background: var(--info-soft); color: var(--info); }
+.status-incident-badge.identified { background: rgba(217,119,87,0.12); color: var(--accent); }
+.status-incident-badge.investigating { background: rgba(191,77,67,0.12); color: var(--danger); }
+
+.status-incident-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.status-incident-date {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 8px;
+}
+
+.status-loading {
+  text-align: center;
+  padding: 48px;
+  color: var(--text-muted);
+}
+
 /* === Responsive === */
 @media (max-width: 900px) {
   .kanban-board {
