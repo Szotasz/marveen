@@ -754,9 +754,18 @@ function startScheduleRunner(): NodeJS.Timeout {
       const lastRun = scheduleLastRun.get(task.name) || 0
       if (now - lastRun < catchUp) continue
 
-      const agentName = task.agent || 'marveen'
+      let targetAgents: string[]
 
-      // For marveen, use the main session; for others, use agent-{name}
+      if (task.agent === 'all') {
+        // Broadcast to all running agents + marveen
+        const running = listAgentNames().filter(a => isAgentRunning(a))
+        targetAgents = ['marveen', ...running]
+      } else {
+        targetAgents = [task.agent || 'marveen']
+      }
+
+      for (const agentName of targetAgents) {
+
       const isMarveen = agentName === 'marveen'
       const session = isMarveen ? 'claudeclaw-channels' : agentSessionName(agentName)
 
@@ -790,6 +799,8 @@ function startScheduleRunner(): NodeJS.Timeout {
       } catch (err) {
         logger.warn({ err, task: task.name }, 'Failed to fire scheduled task')
       }
+
+      } // end for targetAgents
     }
   }
 
