@@ -230,7 +230,9 @@ function startAgentProcess(name: string): { ok: boolean; pid?: number; error?: s
     // Start tmux session -- env vars must be exported INSIDE the command string
     // because tmux new-session does not inherit the caller's environment
     const model = readAgentModel(name)
-    const cmd = `export TELEGRAM_STATE_DIR="${tgStateDir}" && cd "${dir}" && ${CLAUDE} --dangerously-skip-permissions --model ${model} --channels plugin:telegram@claude-plugins-official`
+    const isOllama = !model.startsWith('claude-')
+    const ollamaEnv = isOllama ? `export ANTHROPIC_AUTH_TOKEN=ollama && export ANTHROPIC_BASE_URL=http://localhost:11434 && ` : ''
+    const cmd = `export TELEGRAM_STATE_DIR="${tgStateDir}" && ${ollamaEnv}cd "${dir}" && ${CLAUDE} --dangerously-skip-permissions --model ${model} --channels plugin:telegram@claude-plugins-official`
     execSync(
       `${TMUX} new-session -d -s ${session} "${cmd}"`,
       { timeout: 10000 }
@@ -1863,6 +1865,22 @@ Rovid leiras: "${finalPrompt}"`
         }
 
         return json(res, { ok: true })
+      }
+
+      // === Ollama API ===
+      if (path === '/api/ollama/models' && method === 'GET') {
+        try {
+          const resp = await fetch('http://localhost:11434/api/tags', { signal: AbortSignal.timeout(5000) })
+          const data = await resp.json() as { models?: { name: string; size: number; details?: { parameter_size?: string } }[] }
+          const models = (data.models || []).filter(m => !m.name.includes('embed')).map(m => ({
+            name: m.name,
+            size: Math.round(m.size / 1024 / 1024 / 1024 * 10) / 10 + ' GB',
+            params: m.details?.parameter_size || '',
+          }))
+          return json(res, models)
+        } catch {
+          return json(res, [])
+        }
       }
 
       // === Status API ===

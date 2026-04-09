@@ -754,8 +754,10 @@ async function openAgentDetail(agentName) {
   const tgConnected = currentAgent.telegramConnected || currentAgent.telegram_connected || false
   document.getElementById('agentDetailTgStatus').innerHTML = `<span class="tg-status"><span class="tg-dot ${tgConnected ? 'connected' : 'disconnected'}"></span>${tgConnected ? 'Csatlakozva' : 'Nincs bekötve'}</span>`
 
-  // Settings tab
-  document.getElementById('editAgentModel').value = currentAgent.model || 'claude-sonnet-4-6'
+  // Settings tab - load Ollama models then set value
+  loadOllamaModels().then(() => {
+    document.getElementById('editAgentModel').value = currentAgent.model || 'claude-sonnet-4-6'
+  })
   document.getElementById('editClaudeMd').value = currentAgent.claudeMd || currentAgent.content || ''
   document.getElementById('editSoulMd').value = currentAgent.soulMd || ''
   document.getElementById('editMcpJson').value = currentAgent.mcpJson || ''
@@ -946,6 +948,22 @@ function switchAgentTab(tab) {
 }
 
 // === Settings save buttons ===
+async function loadOllamaModels() {
+  const group = document.getElementById('ollamaModelGroup')
+  if (!group) return
+  group.innerHTML = ''
+  try {
+    const res = await fetch('/api/ollama/models')
+    const models = await res.json()
+    for (const m of models) {
+      const opt = document.createElement('option')
+      opt.value = m.name
+      opt.textContent = `${m.name} (${m.size})`
+      group.appendChild(opt)
+    }
+  } catch { /* Ollama not available */ }
+}
+
 document.getElementById('saveModelBtn').addEventListener('click', async () => {
   if (!currentAgent || currentAgent.role === 'main') return
   try {
