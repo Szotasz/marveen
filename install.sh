@@ -161,9 +161,33 @@ ACCESSEOF
 fi
 
 # Install Telegram plugin
-echo -e "  Telegram plugin telepites..."
+echo -e "  Telegram plugin telepítés..."
 claude plugin install telegram@claude-plugins-official 2>/dev/null || true
 echo -e "  ${GREEN}✓${NC} Telegram plugin"
+
+# Ollama + nomic-embed-text (szemantikus kereséshez)
+echo ""
+echo -e "  Ollama ellenőrzés (szemantikus memória kereséshez)..."
+if command -v ollama &>/dev/null; then
+  echo -e "  ${GREEN}✓${NC} Ollama telepítve"
+else
+  echo -e "  ${ORANGE}Ollama telepítése...${NC}"
+  brew install ollama 2>/dev/null || curl -fsSL https://ollama.com/install.sh | sh
+fi
+
+# Start Ollama if not running
+if ! curl -s http://localhost:11434/api/version &>/dev/null; then
+  echo -e "  Ollama indítás..."
+  ollama serve &>/dev/null &
+  sleep 3
+fi
+
+# Pull nomic-embed-text model
+if ! ollama list 2>/dev/null | grep -q "nomic-embed-text"; then
+  echo -e "  nomic-embed-text modell letöltése (~274 MB)..."
+  ollama pull nomic-embed-text
+fi
+echo -e "  ${GREEN}✓${NC} Ollama + nomic-embed-text kész"
 
 # Step 7: LaunchAgent setup
 echo ""
