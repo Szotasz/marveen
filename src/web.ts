@@ -72,7 +72,15 @@ interface AgentDetail extends AgentSummary {
 }
 
 function sanitizeAgentName(raw: string): string {
-  return raw.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/-+/g, '-').replace(/^-|-$/g, '')
+  return raw.trim().toLowerCase()
+    .replace(/[^a-z0-9-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 50)  // Limit length
+}
+
+function shellEscape(s: string): string {
+  return "'" + s.replace(/'/g, "'\\''") + "'"
 }
 
 function agentDir(name: string): string {
@@ -813,6 +821,9 @@ function startScheduleRunner(): NodeJS.Timeout {
 }
 
 export function startWebServer(port = 3420): http.Server {
+  // SECURITY: This server binds to all interfaces. It is designed for
+  // localhost-only usage on a personal machine. Do NOT expose to the network
+  // without adding authentication.
   ensureDirs()
 
   const server = http.createServer(async (req, res) => {
@@ -896,6 +907,9 @@ export function startWebServer(port = 3420): http.Server {
           // Gallery avatar selection
           const { galleryAvatar } = JSON.parse(body.toString()) as { galleryAvatar: string }
           if (!galleryAvatar) return json(res, { error: 'No avatar specified' }, 400)
+          if (galleryAvatar.includes('..') || galleryAvatar.includes('/') || galleryAvatar.includes('\\')) {
+            return json(res, { error: 'Invalid avatar name' }, 400)
+          }
           const srcPath = join(WEB_DIR, 'avatars', galleryAvatar)
           if (!existsSync(srcPath)) return json(res, { error: 'Avatar not found' }, 404)
           const ext = extname(galleryAvatar) || '.png'
@@ -1090,6 +1104,12 @@ export function startWebServer(port = 3420): http.Server {
         const tmpPath = join(skillsDir, '_import_temp.zip')
         try {
           writeFileSync(tmpPath, file.data)
+          // Validate zip contents don't escape the target directory
+          const listOutput = execSync(`unzip -l "${tmpPath}" 2>&1`, { timeout: 5000, encoding: 'utf-8' })
+          if (listOutput.includes('..')) {
+            unlinkSync(tmpPath)
+            return json(res, { error: 'Invalid skill file: path traversal detected' }, 400)
+          }
           execSync(`unzip -o "${tmpPath}" -d "${skillsDir}"`, { timeout: 10000 })
           unlinkSync(tmpPath)
 
@@ -1702,6 +1722,9 @@ Rovid leiras: "${finalPrompt}"`
         if (contentType.includes('application/json')) {
           const { galleryAvatar } = JSON.parse(body.toString()) as { galleryAvatar: string }
           if (!galleryAvatar) return json(res, { error: 'No avatar specified' }, 400)
+          if (galleryAvatar.includes('..') || galleryAvatar.includes('/') || galleryAvatar.includes('\\')) {
+            return json(res, { error: 'Invalid avatar name' }, 400)
+          }
           const srcPath = join(WEB_DIR, 'avatars', galleryAvatar)
           if (!existsSync(srcPath)) return json(res, { error: 'Avatar not found' }, 404)
           const destPath = join(PROJECT_ROOT, 'store', `marveen-avatar${extname(galleryAvatar) || '.png'}`)
@@ -1755,7 +1778,7 @@ Rovid leiras: "${finalPrompt}"`
       if (connectorDetailMatch && method === 'GET' && !path.includes('/assign')) {
         const name = decodeURIComponent(connectorDetailMatch[1])
         try {
-          const output = execSync(`claude mcp get "${name}" 2>&1`, { timeout: 15000, encoding: 'utf-8' })
+          const output = execSync(`claude mcp get ${shellEscape(name)} 2>&1`, { timeout: 15000, encoding: 'utf-8' })
           const scope = output.match(/Scope:\s+(.+)/)?.[1]?.trim() || ''
           const status = output.includes('\u2713 Connected') ? 'connected' : output.includes('! Needs') ? 'needs_auth' : 'failed'
           const type = output.match(/Type:\s+(.+)/)?.[1]?.trim() || ''
@@ -1765,7 +1788,7 @@ Rovid leiras: "${finalPrompt}"`
           const env: Record<string, string> = {}
           for (const el of envLines) {
             const [k, ...v] = el.trim().split('=')
-            env[k] = v.join('=')
+            env[k] = '***'  // Don't expose actual values
           }
           return json(res, { name, scope, status, type, command, args, env })
         } catch {
@@ -1792,11 +1815,11 @@ Rovid leiras: "${finalPrompt}"`
           const scopeFlag = data.scope === 'project' ? '-s project' : '-s user'
 
           if (data.type === 'remote' && data.url) {
-            execSync(`claude mcp add --transport http ${scopeFlag} "${data.name}" "${data.url}" 2>&1`, { timeout: 15000, encoding: 'utf-8' })
+            execSync(`claude mcp add --transport http ${scopeFlag} ${shellEscape(data.name)} ${shellEscape(data.url)} 2>&1`, { timeout: 15000, encoding: 'utf-8' })
           } else if (data.type === 'local' && data.command) {
-            const envFlags = data.env ? Object.entries(data.env).map(([k, v]) => `-e ${k}="${v}"`).join(' ') : ''
-            const argsStr = data.args || ''
-            execSync(`claude mcp add ${scopeFlag} ${envFlags} "${data.name}" -- ${data.command} ${argsStr} 2>&1`, { timeout: 15000, encoding: 'utf-8' })
+            const envFlags = data.env ? Object.entries(data.env).map(([k, v]) => `-e ${shellEscape(k)}=${shellEscape(v)}`).join(' ') : ''
+            const argsStr = data.args ? shellEscape(data.args) : ''
+            execSync(`claude mcp add ${scopeFlag} ${envFlags} ${shellEscape(data.name)} -- ${shellEscape(data.command)} ${argsStr} 2>&1`, { timeout: 15000, encoding: 'utf-8' })
           } else {
             return json(res, { error: 'URL (remote) or command (local) required' }, 400)
           }
@@ -1812,9 +1835,9 @@ Rovid leiras: "${finalPrompt}"`
         const name = decodeURIComponent(connectorDetailMatch[1])
         try {
           try {
-            execSync(`claude mcp remove "${name}" -s project 2>&1`, { timeout: 10000 })
+            execSync(`claude mcp remove ${shellEscape(name)} -s project 2>&1`, { timeout: 10000 })
           } catch {
-            execSync(`claude mcp remove "${name}" -s user 2>&1`, { timeout: 10000 })
+            execSync(`claude mcp remove ${shellEscape(name)} -s user 2>&1`, { timeout: 10000 })
           }
           return json(res, { ok: true })
         } catch {
@@ -1831,7 +1854,7 @@ Rovid leiras: "${finalPrompt}"`
 
         let connectorConfig: any = null
         try {
-          const output = execSync(`claude mcp get "${connectorName}" 2>&1`, { timeout: 15000, encoding: 'utf-8' })
+          const output = execSync(`claude mcp get ${shellEscape(connectorName)} 2>&1`, { timeout: 15000, encoding: 'utf-8' })
           const command = output.match(/Command:\s+(.+)/)?.[1]?.trim()
           const args = output.match(/Args:\s+(.+)/)?.[1]?.trim()
           const url = output.match(/https?:\/\/[^\s]+/)?.[0]
@@ -1962,7 +1985,7 @@ Rovid leiras: "${finalPrompt}"`
     }
   })
 
-  server.listen(port, () => {
+  server.listen(port, '127.0.0.1', () => {
     logger.info({ port }, `Web dashboard: http://localhost:${port}`)
   })
 
