@@ -1575,7 +1575,7 @@ main {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
-  height: 500px;
+  height: 600px;
 }
 #memGraphCanvas {
   width: 100%;
@@ -1593,6 +1593,119 @@ main {
   font-size: 14px;
 }
 .graph-empty[hidden] { display: none; }
+
+/* === Graph Detail Panel === */
+.graph-panel {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 300px;
+  max-height: 420px;
+  overflow-y: auto;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  z-index: 10;
+  padding: 16px;
+  animation: graphPanelIn 0.18s ease;
+}
+.graph-panel[hidden] { display: none; }
+@keyframes graphPanelIn {
+  from { opacity: 0; transform: translateX(12px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.graph-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.graph-panel-close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 20px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: all var(--transition);
+}
+.graph-panel-close:hover {
+  color: var(--text);
+  background: var(--bg-input);
+}
+.graph-panel-content {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin-bottom: 12px;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 10px 12px;
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+}
+.graph-panel-agent {
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 600;
+}
+.graph-panel-date {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+.graph-panel-keywords {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.graph-panel-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Graph zoom indicator */
+.graph-zoom-indicator {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', 'SF Mono', monospace;
+  z-index: 5;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.graph-zoom-indicator.visible { opacity: 1; }
+
+/* Graph controls hint */
+.graph-controls-hint {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 10px;
+  color: var(--text-muted);
+  z-index: 5;
+  line-height: 1.6;
+  opacity: 0.7;
+  pointer-events: none;
+}
 
 /* === Tier Badges === */
 .badge-hot { background: rgba(220, 60, 60, 0.12); color: #dc3c3c; }

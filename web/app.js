@@ -2292,7 +2292,7 @@ function renderMemories(memories) {
   }
 }
 
-// === Memory Graph (Force-directed) ===
+// === Memory Graph (Force-directed, Obsidian-style) ===
 
 let graphNodes = []
 let graphEdges = []
@@ -2301,12 +2301,41 @@ let graphCanvas = null
 let graphCtx = null
 let graphDragging = null
 let graphHover = null
+let graphSelectedNode = null
+let graphSearchQuery = ''
+
+// Zoom & pan state
+let graphZoom = 1
+let graphPanX = 0
+let graphPanY = 0
+let graphPanning = false
+let graphPanStartX = 0
+let graphPanStartY = 0
+let graphZoomIndicatorTimer = null
+
+// Edge animation
+let graphAnimFrame = 0
 
 const GRAPH_TIER_COLORS = {
   hot: '#dc3c3c',
   warm: '#d97757',
   cold: '#6a9bcc',
   shared: '#b0a040',
+}
+
+const GRAPH_TIER_BG = {
+  hot: 'rgba(220, 60, 60, 0.06)',
+  warm: 'rgba(217, 119, 87, 0.06)',
+  cold: 'rgba(106, 155, 204, 0.06)',
+  shared: 'rgba(176, 160, 64, 0.06)',
+}
+
+function screenToWorld(sx, sy) {
+  return { x: (sx - graphPanX) / graphZoom, y: (sy - graphPanY) / graphZoom }
+}
+
+function worldToScreen(wx, wy) {
+  return { x: wx * graphZoom + graphPanX, y: wy * graphZoom + graphPanY }
 }
 
 async function loadMemoryGraph() {
@@ -2327,6 +2356,13 @@ async function loadMemoryGraph() {
     }
     emptyEl.hidden = true
     document.getElementById('memGraphCanvas').hidden = false
+
+    // Reset zoom/pan on new data load
+    graphZoom = 1
+    graphPanX = 0
+    graphPanY = 0
+    graphSelectedNode = null
+    hideGraphPanel()
 
     buildGraph(memories)
     startGraphSimulation()
@@ -2356,19 +2392,21 @@ function buildGraph(memories) {
   // Create nodes from memories
   for (const mem of memories) {
     const keywords = (mem.keywords || '').split(',').map(k => k.trim()).filter(Boolean)
-    const label = mem.content.slice(0, 40).replace(/\n/g, ' ')
+    const label = mem.content.slice(0, 25).replace(/\n/g, ' ') + (mem.content.length > 25 ? '...' : '')
     graphNodes.push({
       id: mem.id,
       x: w / 2 + (Math.random() - 0.5) * w * 0.6,
       y: h / 2 + (Math.random() - 0.5) * h * 0.6,
       vx: (Math.random() - 0.5) * 2,
       vy: (Math.random() - 0.5) * 2,
-      radius: 6 + Math.min(keywords.length * 2, 10),
+      radius: 6,
+      connectionCount: 0,
       label: label,
       tier: mem.tier || mem.category || 'warm',
       agent: mem.agent_id || 'marveen',
       keywords: keywords,
       mem: mem,
+      searchMatch: true,
     })
   }
 
@@ -2380,12 +2418,36 @@ function buildGraph(memories) {
       const shared = a.keywords.filter(k => b.keywords.includes(k))
       if (shared.length > 0) {
         graphEdges.push({ source: i, target: j, strength: shared.length })
+        a.connectionCount += shared.length
+        b.connectionCount += shared.length
       }
       // Also connect same-agent same-tier with low probability
       if (a.agent === b.agent && a.tier === b.tier && Math.random() < 0.3) {
         graphEdges.push({ source: i, target: j, strength: 0.5 })
+        a.connectionCount += 0.5
+        b.connectionCount += 0.5
       }
     }
+  }
+
+  // Set node radius based on connection count
+  for (const node of graphNodes) {
+    node.radius = 5 + Math.min(Math.sqrt(node.connectionCount) * 2.5, 14)
+  }
+
+  // Ensure controls hint and zoom indicator exist
+  const graphView = document.getElementById('memGraphView')
+  if (!graphView.querySelector('.graph-controls-hint')) {
+    const hint = document.createElement('div')
+    hint.className = 'graph-controls-hint'
+    hint.innerHTML = 'Scroll: zoom | Drag: move nodes<br>Click: details | Dbl-click: edit'
+    graphView.appendChild(hint)
+  }
+  if (!graphView.querySelector('.graph-zoom-indicator')) {
+    const zi = document.createElement('div')
+    zi.className = 'graph-zoom-indicator'
+    zi.id = 'graphZoomIndicator'
+    graphView.appendChild(zi)
   }
 }
 
@@ -2401,11 +2463,32 @@ function startGraphSimulation() {
       return
     }
     frame++
+    graphAnimFrame = frame
     const damping = 0.95 + (frame / maxFrames) * 0.04
 
     const w = graphCanvas.width / (window.devicePixelRatio || 1)
     const h = graphCanvas.height / (window.devicePixelRatio || 1)
     const nodes = graphNodes
+
+    // Tier clustering force: gently push same-tier nodes toward each other
+    const tierCenters = {}
+    for (const node of nodes) {
+      if (!tierCenters[node.tier]) tierCenters[node.tier] = { x: 0, y: 0, count: 0 }
+      tierCenters[node.tier].x += node.x
+      tierCenters[node.tier].y += node.y
+      tierCenters[node.tier].count++
+    }
+    for (const tier of Object.keys(tierCenters)) {
+      tierCenters[tier].x /= tierCenters[tier].count
+      tierCenters[tier].y /= tierCenters[tier].count
+    }
+    for (const node of nodes) {
+      const tc = tierCenters[node.tier]
+      if (tc) {
+        node.vx += (tc.x - node.x) * 0.0005
+        node.vy += (tc.y - node.y) * 0.0005
+      }
+    }
 
     // Repulsion (all nodes push each other away)
     for (let i = 0; i < nodes.length; i++) {
@@ -2452,9 +2535,9 @@ function startGraphSimulation() {
       node.vy *= damping
       node.x += node.vx
       node.y += node.vy
-      // Bounds
-      node.x = Math.max(20, Math.min(w - 20, node.x))
-      node.y = Math.max(20, Math.min(h - 20, node.y))
+      // Bounds (allow overflow for panning)
+      node.x = Math.max(-200, Math.min(w + 200, node.x))
+      node.y = Math.max(-200, Math.min(h + 200, node.y))
     }
 
     renderGraph()
@@ -2477,84 +2560,234 @@ function renderGraph() {
   const textColor = cs.getPropertyValue('--text').trim() || '#141413'
   const textMuted = cs.getPropertyValue('--text-muted').trim() || '#87867f'
   const bgCard = cs.getPropertyValue('--bg-card').trim() || '#fff'
+  const bgColor = cs.getPropertyValue('--bg').trim() || '#faf9f5'
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark'
 
-  // Draw edges
-  ctx.lineWidth = 0.5
+  // === Dot grid background (drawn in screen space) ===
+  const gridSize = 20
+  const dotColor = borderColor
+  ctx.fillStyle = dotColor
+  ctx.globalAlpha = isDark ? 0.2 : 0.3
+  const offsetX = ((graphPanX % (gridSize * graphZoom)) + gridSize * graphZoom) % (gridSize * graphZoom)
+  const offsetY = ((graphPanY % (gridSize * graphZoom)) + gridSize * graphZoom) % (gridSize * graphZoom)
+  const scaledGrid = gridSize * graphZoom
+  if (scaledGrid > 4) {
+    for (let x = offsetX; x < w; x += scaledGrid) {
+      for (let y = offsetY; y < h; y += scaledGrid) {
+        ctx.beginPath()
+        ctx.arc(x, y, Math.max(0.5, graphZoom * 0.6), 0, Math.PI * 2)
+        ctx.fill()
+      }
+    }
+  }
+  ctx.globalAlpha = 1
+
+  // === Apply zoom/pan transform ===
+  ctx.save()
+  ctx.translate(graphPanX, graphPanY)
+  ctx.scale(graphZoom, graphZoom)
+
+  const hasSearch = graphSearchQuery.length > 0
+
+  // === Tier cluster backgrounds ===
+  const tierGroups = {}
+  for (const node of graphNodes) {
+    if (!tierGroups[node.tier]) tierGroups[node.tier] = []
+    tierGroups[node.tier].push(node)
+  }
+  for (const [tier, nodes] of Object.entries(tierGroups)) {
+    if (nodes.length < 2) continue
+    let cx = 0, cy = 0
+    for (const n of nodes) { cx += n.x; cy += n.y }
+    cx /= nodes.length
+    cy /= nodes.length
+    let maxDist = 0
+    for (const n of nodes) {
+      const d = Math.sqrt((n.x - cx) ** 2 + (n.y - cy) ** 2)
+      if (d > maxDist) maxDist = d
+    }
+    const radius = maxDist + 60
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius)
+    const bgTier = GRAPH_TIER_BG[tier] || 'rgba(128,128,128,0.04)'
+    grad.addColorStop(0, bgTier)
+    grad.addColorStop(1, 'rgba(0,0,0,0)')
+    ctx.fillStyle = grad
+    ctx.globalAlpha = hasSearch ? 0.3 : 0.8
+    ctx.beginPath()
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.globalAlpha = 1
+  }
+
+  // Build set of connected node indices for hovered/selected node
+  const connectedToActive = new Set()
+  const activeNode = graphHover || graphSelectedNode
+  if (activeNode) {
+    const activeIdx = graphNodes.indexOf(activeNode)
+    for (const edge of graphEdges) {
+      if (edge.source === activeIdx) connectedToActive.add(edge.target)
+      if (edge.target === activeIdx) connectedToActive.add(edge.source)
+    }
+  }
+
+  // === Draw edges (bezier curves with pulsing) ===
+  const time = Date.now() * 0.001
   for (const edge of graphEdges) {
     const a = graphNodes[edge.source]
     const b = graphNodes[edge.target]
-    ctx.strokeStyle = borderColor
-    ctx.globalAlpha = 0.3 + Math.min(edge.strength * 0.2, 0.5)
+
+    const isActiveEdge = activeNode && (a === activeNode || b === activeNode)
+    const searchFaded = hasSearch && (!a.searchMatch || !b.searchMatch)
+
+    // Edge thickness based on connection strength
+    const baseWidth = 0.5 + Math.min(edge.strength * 0.6, 2.5)
+
+    // Subtle pulse/breathe animation
+    const pulse = 0.85 + 0.15 * Math.sin(time * 1.5 + edge.source * 0.3 + edge.target * 0.7)
+
+    ctx.lineWidth = isActiveEdge ? baseWidth * 1.8 : baseWidth * pulse
+    ctx.strokeStyle = isActiveEdge ? GRAPH_TIER_COLORS[a === activeNode ? a.tier : b.tier] || borderColor : borderColor
+    ctx.globalAlpha = searchFaded ? 0.05 : (isActiveEdge ? 0.7 : (0.15 + Math.min(edge.strength * 0.1, 0.3)) * pulse)
+
+    // Bezier curve: midpoint offset perpendicular to the line
+    const mx = (a.x + b.x) / 2
+    const my = (a.y + b.y) / 2
+    const dx = b.x - a.x
+    const dy = b.y - a.y
+    const dist = Math.sqrt(dx * dx + dy * dy) || 1
+    const curvature = Math.min(dist * 0.15, 30)
+    // Perpendicular offset
+    const cpx = mx + (-dy / dist) * curvature
+    const cpy = my + (dx / dist) * curvature
+
     ctx.beginPath()
     ctx.moveTo(a.x, a.y)
-    ctx.lineTo(b.x, b.y)
+    ctx.quadraticCurveTo(cpx, cpy, b.x, b.y)
     ctx.stroke()
   }
   ctx.globalAlpha = 1
 
-  // Draw nodes
-  for (const node of graphNodes) {
+  // === Draw nodes ===
+  const fontSize = Math.max(8, Math.min(12, 10 / graphZoom))
+
+  for (let ni = 0; ni < graphNodes.length; ni++) {
+    const node = graphNodes[ni]
     const color = GRAPH_TIER_COLORS[node.tier] || '#d97757'
     const isHover = node === graphHover
+    const isSelected = node === graphSelectedNode
+    const isConnected = connectedToActive.has(ni)
+    const searchFaded = hasSearch && !node.searchMatch
+    const searchGlow = hasSearch && node.searchMatch
 
-    if (isHover) {
+    // Opacity
+    let nodeAlpha = 0.85
+    if (searchFaded) nodeAlpha = 0.12
+    else if (searchGlow) nodeAlpha = 1
+    else if (isHover || isSelected) nodeAlpha = 1
+    else if (activeNode && !isConnected) nodeAlpha = 0.35
+
+    // Glow effect for hover, selected, search match
+    if ((isHover || isSelected || searchGlow) && !searchFaded) {
       ctx.shadowColor = color
-      ctx.shadowBlur = 15
+      ctx.shadowBlur = isHover ? 20 : (searchGlow ? 15 : 10)
     }
 
+    // Connected nodes get subtle highlight
+    if (isConnected && !searchFaded) {
+      ctx.shadowColor = color
+      ctx.shadowBlur = 6
+    }
+
+    const r = isHover ? node.radius + 3 : (isSelected ? node.radius + 2 : node.radius)
+
+    // Node fill
     ctx.fillStyle = color
-    ctx.globalAlpha = isHover ? 1 : 0.8
+    ctx.globalAlpha = nodeAlpha
     ctx.beginPath()
-    ctx.arc(node.x, node.y, isHover ? node.radius + 2 : node.radius, 0, Math.PI * 2)
+    ctx.arc(node.x, node.y, r, 0, Math.PI * 2)
     ctx.fill()
 
-    ctx.shadowBlur = 0
-    ctx.globalAlpha = 1
-
-    // Label for larger nodes or hover
-    if (isHover || node.radius > 10) {
-      ctx.fillStyle = textColor
-      ctx.font = isHover ? 'bold 12px -apple-system, sans-serif' : '10px -apple-system, sans-serif'
-      ctx.textAlign = 'center'
-      ctx.fillText(node.label, node.x, node.y + node.radius + 14)
+    // Subtle border ring for selected
+    if (isSelected) {
+      ctx.strokeStyle = color
+      ctx.lineWidth = 2
+      ctx.globalAlpha = 0.6
+      ctx.beginPath()
+      ctx.arc(node.x, node.y, r + 4, 0, Math.PI * 2)
+      ctx.stroke()
     }
+
+    ctx.shadowBlur = 0
+    ctx.shadowColor = 'transparent'
+
+    // === Always show label (pill/badge style) ===
+    if (!searchFaded || (searchFaded && nodeAlpha > 0.15)) {
+      const labelText = node.label
+      const labelFontSize = Math.max(7, Math.min(11, 9 / Math.max(graphZoom * 0.7, 0.5)))
+      ctx.font = (isHover || isSelected) ? `600 ${labelFontSize + 1}px -apple-system, sans-serif` : `500 ${labelFontSize}px -apple-system, sans-serif`
+      const textWidth = ctx.measureText(labelText).width
+      const pillW = textWidth + 10
+      const pillH = labelFontSize + 6
+      const pillX = node.x - pillW / 2
+      const pillY = node.y + r + 5
+
+      // Dark pill background
+      ctx.globalAlpha = searchFaded ? 0.08 : ((isHover || isSelected) ? 0.9 : 0.65)
+      ctx.fillStyle = isDark ? 'rgba(20,20,19,0.85)' : 'rgba(30,30,28,0.8)'
+      graphRoundRect(ctx, pillX, pillY, pillW, pillH, 3)
+      ctx.fill()
+
+      // White text
+      ctx.fillStyle = isDark ? '#e8e7e0' : '#faf9f5'
+      ctx.globalAlpha = searchFaded ? 0.1 : ((isHover || isSelected) ? 1 : 0.85)
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(labelText, node.x, pillY + pillH / 2)
+    }
+
+    ctx.globalAlpha = 1
+    ctx.textBaseline = 'alphabetic'
   }
 
-  // Hover tooltip
-  if (graphHover) {
+  // Hover tooltip (richer than before)
+  if (graphHover && !graphSelectedNode) {
     const node = graphHover
     const tLabels = { hot: 'Hot', warm: 'Warm', cold: 'Cold', shared: 'Shared' }
     const text = `${tLabels[node.tier] || node.tier} | ${node.agent}`
     const kw = node.keywords.length > 0 ? node.keywords.join(', ') : ''
+    const conns = `${Math.round(node.connectionCount)} connections`
 
     ctx.font = 'bold 11px -apple-system, sans-serif'
-    const tw = Math.max(ctx.measureText(text).width, kw ? ctx.measureText(kw).width : 0) + 20
-    const th = kw ? 50 : 32
+    const tw = Math.max(ctx.measureText(text).width, kw ? ctx.measureText(kw).width : 0, ctx.measureText(conns).width) + 24
+    const th = kw ? 64 : 48
     let tx = node.x - tw / 2
-    let ty = node.y - node.radius - th - 10
-
-    // Keep tooltip in bounds
-    tx = Math.max(5, Math.min(w - tw - 5, tx))
-    ty = Math.max(5, ty)
+    let ty = node.y - node.radius - th - 12
 
     // Tooltip background
-    ctx.fillStyle = bgCard
+    ctx.fillStyle = isDark ? 'rgba(31,30,29,0.95)' : 'rgba(255,255,255,0.96)'
     ctx.strokeStyle = borderColor
     ctx.lineWidth = 1
-    graphRoundRect(ctx, tx, ty, tw, th, 6)
+    ctx.shadowColor = 'rgba(0,0,0,0.15)'
+    ctx.shadowBlur = 12
+    graphRoundRect(ctx, tx, ty, tw, th, 8)
     ctx.fill()
     ctx.stroke()
+    ctx.shadowBlur = 0
+    ctx.shadowColor = 'transparent'
 
     ctx.fillStyle = textColor
     ctx.font = 'bold 11px -apple-system, sans-serif'
     ctx.textAlign = 'left'
-    ctx.fillText(text, tx + 10, ty + 18)
+    ctx.fillText(text, tx + 12, ty + 18)
+    ctx.font = '10px -apple-system, sans-serif'
+    ctx.fillStyle = textMuted
+    ctx.fillText(conns, tx + 12, ty + 34)
     if (kw) {
-      ctx.font = '10px -apple-system, sans-serif'
-      ctx.fillStyle = textMuted
-      ctx.fillText(kw, tx + 10, ty + 36)
+      ctx.fillText(kw.length > 40 ? kw.slice(0, 40) + '...' : kw, tx + 12, ty + 50)
     }
   }
+
+  ctx.restore()
 }
 
 function graphRoundRect(ctx, x, y, w, h, r) {
@@ -2571,6 +2804,42 @@ function graphRoundRect(ctx, x, y, w, h, r) {
   ctx.closePath()
 }
 
+// === Graph detail panel ===
+function showGraphPanel(node) {
+  let panel = document.getElementById('graphPanel')
+  if (!panel) {
+    panel = document.createElement('div')
+    panel.id = 'graphPanel'
+    panel.className = 'graph-panel'
+    document.getElementById('memGraphView').appendChild(panel)
+  }
+  const tierLabelsMap = { hot: 'Hot', warm: 'Warm', cold: 'Cold', shared: 'Shared' }
+  const created = node.mem.created_label || ''
+  panel.innerHTML = `
+    <div class="graph-panel-header">
+      <span class="badge badge-${node.tier}">${tierLabelsMap[node.tier] || node.tier}</span>
+      <span class="graph-panel-agent">${escapeHtml(node.agent)}</span>
+      <button class="graph-panel-close" id="graphPanelCloseBtn">&times;</button>
+    </div>
+    ${created ? `<div class="graph-panel-date">${escapeHtml(created)}</div>` : ''}
+    <div class="graph-panel-content">${escapeHtml(node.mem.content)}</div>
+    <div class="graph-panel-meta">
+      ${node.keywords.length ? '<div class="graph-panel-keywords">' + node.keywords.map(k => '<span class="mem-keyword-tag">' + escapeHtml(k) + '</span>').join('') + '</div>' : ''}
+    </div>
+  `
+  panel.hidden = false
+  document.getElementById('graphPanelCloseBtn').addEventListener('click', () => {
+    graphSelectedNode = null
+    panel.hidden = true
+    renderGraph()
+  })
+}
+
+function hideGraphPanel() {
+  const panel = document.getElementById('graphPanel')
+  if (panel) panel.hidden = true
+}
+
 function openEditMemory(mem) {
   document.getElementById('memModalTitle').textContent = 'Emlek szerkesztese'
   document.getElementById('memAgent').value = mem.agent_id || 'marveen'
@@ -2581,54 +2850,191 @@ function openEditMemory(mem) {
   openModal(memModalOverlay)
 }
 
-// Graph mouse interaction
+// === Graph search integration ===
+function updateGraphSearch() {
+  const q = memSearchInput.value.trim().toLowerCase()
+  graphSearchQuery = q
+  for (const node of graphNodes) {
+    if (!q) {
+      node.searchMatch = true
+    } else {
+      const content = (node.mem.content || '').toLowerCase()
+      const kws = node.keywords.join(' ').toLowerCase()
+      const agent = (node.agent || '').toLowerCase()
+      node.searchMatch = content.includes(q) || kws.includes(q) || agent.includes(q)
+    }
+  }
+  if (graphNodes.length > 0) renderGraph()
+}
+
+// === Zoom indicator ===
+function showZoomIndicator() {
+  const el = document.getElementById('graphZoomIndicator')
+  if (!el) return
+  el.textContent = `${Math.round(graphZoom * 100)}%`
+  el.classList.add('visible')
+  clearTimeout(graphZoomIndicatorTimer)
+  graphZoomIndicatorTimer = setTimeout(() => el.classList.remove('visible'), 1200)
+}
+
+// === Graph mouse interaction (with zoom/pan) ===
 ;(function initGraphInteraction() {
   const canvas = document.getElementById('memGraphCanvas')
+  let wasDragging = false
+  let wasPanning = false
+  let mouseDownPos = { x: 0, y: 0 }
 
-  canvas.addEventListener('mousemove', (e) => {
-    const rect = e.target.getBoundingClientRect()
+  // Mouse wheel zoom
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault()
+    const zoomFactor = e.deltaY > 0 ? 0.92 : 1.08
+    const rect = canvas.getBoundingClientRect()
     const mx = e.clientX - rect.left
     const my = e.clientY - rect.top
 
-    if (graphDragging) {
-      graphDragging.x = mx
-      graphDragging.y = my
-      graphDragging.vx = 0
-      graphDragging.vy = 0
-      renderGraph()
+    // Zoom toward cursor
+    const worldX = (mx - graphPanX) / graphZoom
+    const worldY = (my - graphPanY) / graphZoom
+
+    graphZoom = Math.max(0.3, Math.min(3.0, graphZoom * zoomFactor))
+
+    graphPanX = mx - worldX * graphZoom
+    graphPanY = my - worldY * graphZoom
+
+    showZoomIndicator()
+    if (graphNodes.length > 0) renderGraph()
+  }, { passive: false })
+
+  // Mouse move: hover detection + panning + dragging
+  canvas.addEventListener('mousemove', (e) => {
+    const rect = e.target.getBoundingClientRect()
+    const sx = e.clientX - rect.left
+    const sy = e.clientY - rect.top
+
+    // Panning
+    if (graphPanning) {
+      const dx = sx - graphPanStartX
+      const dy = sy - graphPanStartY
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) wasPanning = true
+      graphPanX += dx
+      graphPanY += dy
+      graphPanStartX = sx
+      graphPanStartY = sy
+      if (graphNodes.length > 0) renderGraph()
       return
     }
 
+    // Dragging a node
+    const world = screenToWorld(sx, sy)
+    if (graphDragging) {
+      const dx = sx - mouseDownPos.x
+      const dy = sy - mouseDownPos.y
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) wasDragging = true
+      graphDragging.x = world.x
+      graphDragging.y = world.y
+      graphDragging.vx = 0
+      graphDragging.vy = 0
+      if (graphNodes.length > 0) renderGraph()
+      return
+    }
+
+    // Hover detection in world space
     graphHover = null
     for (const node of graphNodes) {
-      const dx = mx - node.x
-      const dy = my - node.y
-      if (dx * dx + dy * dy < (node.radius + 4) * (node.radius + 4)) {
+      const ndx = world.x - node.x
+      const ndy = world.y - node.y
+      const hitRadius = (node.radius + 6) / Math.max(graphZoom, 0.5)
+      if (ndx * ndx + ndy * ndy < hitRadius * hitRadius) {
         graphHover = node
         break
       }
     }
+    canvas.style.cursor = graphHover ? 'pointer' : 'grab'
     if (graphNodes.length > 0) renderGraph()
   })
 
+  // Mouse down: start drag on node, or start pan on empty space
   canvas.addEventListener('mousedown', (e) => {
+    const rect = e.target.getBoundingClientRect()
+    const sx = e.clientX - rect.left
+    const sy = e.clientY - rect.top
+    mouseDownPos = { x: sx, y: sy }
+    wasDragging = false
+    wasPanning = false
+
     if (graphHover) {
+      // Drag node
       graphDragging = graphHover
-      e.target.style.cursor = 'grabbing'
+      canvas.style.cursor = 'grabbing'
+    } else {
+      // Pan
+      graphPanning = true
+      graphPanStartX = sx
+      graphPanStartY = sy
+      canvas.style.cursor = 'grabbing'
     }
   })
 
-  canvas.addEventListener('dblclick', () => {
+  // Click: select node and show panel (only if not dragged/panned)
+  canvas.addEventListener('click', (e) => {
+    if (wasDragging || wasPanning) return
+
+    const rect = e.target.getBoundingClientRect()
+    const sx = e.clientX - rect.left
+    const sy = e.clientY - rect.top
+    const world = screenToWorld(sx, sy)
+
+    let clicked = null
+    for (const node of graphNodes) {
+      const dx = world.x - node.x
+      const dy = world.y - node.y
+      const hitRadius = (node.radius + 6) / Math.max(graphZoom, 0.5)
+      if (dx * dx + dy * dy < hitRadius * hitRadius) {
+        clicked = node
+        break
+      }
+    }
+
+    if (clicked) {
+      graphSelectedNode = clicked
+      showGraphPanel(clicked)
+    } else {
+      graphSelectedNode = null
+      hideGraphPanel()
+    }
+    if (graphNodes.length > 0) renderGraph()
+  })
+
+  // Double click: open edit modal
+  canvas.addEventListener('dblclick', (e) => {
     if (graphHover && graphHover.mem) {
       openEditMemory(graphHover.mem)
     }
   })
 
+  // Mouse up: stop drag/pan
   document.addEventListener('mouseup', () => {
     if (graphDragging) {
       graphDragging = null
       const c = document.getElementById('memGraphCanvas')
+      if (c) c.style.cursor = graphHover ? 'pointer' : 'grab'
+    }
+    if (graphPanning) {
+      graphPanning = false
+      const c = document.getElementById('memGraphCanvas')
       if (c) c.style.cursor = 'grab'
+    }
+  })
+
+  // Search integration: listen to existing search input
+  memSearchInput.addEventListener('input', () => {
+    if (currentMemTier === 'graph') {
+      updateGraphSearch()
+    }
+  })
+  memSearchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && currentMemTier === 'graph') {
+      updateGraphSearch()
     }
   })
 })()
