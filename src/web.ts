@@ -1631,8 +1631,34 @@ Rovid leiras: "${finalPrompt}"`
         const stats = { hot: 0, warm: 0, cold: 0, shared: 0 }
         let imported = 0
 
+        // Try to find a suitable Ollama model for categorization
+        let categorizeModel: string | null = null
+        try {
+          const ollamaModels = await fetch('http://localhost:11434/api/tags', { signal: AbortSignal.timeout(3000) })
+            .then(r => r.json())
+            .then((d: any) => (d.models || []).filter((m: any) => !m.name.includes('embed')).map((m: any) => m.name))
+            .catch(() => [] as string[])
+          categorizeModel = ollamaModels.find((m: string) => m.includes('gemma4')) || ollamaModels[0] || null
+        } catch {
+          categorizeModel = null
+        }
+
+        if (categorizeModel) {
+          logger.info({ model: categorizeModel }, 'Migráció: AI kategorizálás modell kiválasztva')
+        } else {
+          logger.info('Migráció: nincs elérhető Ollama modell, alapértelmezett warm besorolás')
+        }
+
         for (let i = 0; i < chunks.length; i++) {
           const chunk = chunks[i]
+
+          if (!categorizeModel) {
+            // No AI model available, default all to warm
+            saveAgentMemory(agentId, chunk, 'warm', '', true)
+            stats.warm++
+            imported++
+            continue
+          }
 
           try {
             // Ask Ollama to categorize (90s timeout for large models)
@@ -1643,7 +1669,7 @@ Rovid leiras: "${finalPrompt}"`
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                model: 'gemma4:31b',
+                model: categorizeModel,
                 prompt: `Categorize this memory into exactly one tier and generate keywords.
 
 Memory: "${chunk.slice(0, 500)}"
@@ -1693,7 +1719,7 @@ Respond ONLY with JSON, nothing else:
           }
         }
 
-        logger.info({ agentId, imported, stats }, 'Memory import completed')
+        logger.info({ agentId, imported, stats }, 'Migráció befejezve')
         return json(res, { ok: true, imported, stats })
       }
 

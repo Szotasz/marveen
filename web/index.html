@@ -159,21 +159,21 @@
       <div class="page-header">
         <div class="page-header-row">
           <div>
-            <h1>Memoria</h1>
-            <p class="subtitle">AI csapat tudasbazisa</p>
+            <h1>Memória</h1>
+            <p class="subtitle">AI csapat tudásbázisa</p>
           </div>
           <div style="display:flex;gap:8px">
             <button class="btn-primary btn-compact" id="memAddBtn">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                 <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
               </svg>
-              Uj emlek
+              Új emlék
             </button>
             <button class="btn-secondary btn-compact" id="memImportOpenBtn">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
               </svg>
-              Import
+              Költöztetés
             </button>
           </div>
         </div>
@@ -186,7 +186,7 @@
           <svg class="mem-search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
           </svg>
-          <input type="text" id="memSearchInput" class="mem-search" placeholder="Kereses az emlekekben...">
+          <input type="text" id="memSearchInput" class="mem-search" placeholder="Keresés az emlékekben...">
         </div>
         <select class="mem-search-mode" id="memSearchMode">
           <option value="hybrid">Hibrid kereses</option>
@@ -210,7 +210,7 @@
       <div class="mem-tier-view" id="memTierView">
         <div class="mem-list" id="memList"></div>
         <div class="mem-empty" id="memEmpty" hidden>
-          <p>Nincs emlek ebben a kategoriaban</p>
+          <p>Nincs emlék ebben a kategóriában</p>
         </div>
       </div>
 
@@ -218,7 +218,7 @@
       <div class="mem-graph-view" id="memGraphView" hidden>
         <canvas id="memGraphCanvas"></canvas>
         <div class="graph-empty" id="graphEmpty" hidden>
-          <p>Nincs eleg emlek a graf megjeleniteshez</p>
+          <p>Nincs elég emlék a gráf megjelenítéshez</p>
         </div>
       </div>
 
@@ -807,38 +807,38 @@
   <div class="modal-overlay" id="memImportOverlay">
     <div class="modal modal-wide">
       <div class="modal-header">
-        <h2>Memoria importalas</h2>
+        <h2>Rendszer költöztetés</h2>
         <button class="modal-close" id="memImportClose">&times;</button>
       </div>
       <div class="modal-body">
         <p style="color:var(--text-secondary);font-size:13px;margin-bottom:16px">
-          Tolts fel fajlokat korabbi rendszerbol. Az AI automatikusan besorolja az emlekeket hot/warm/cold kategoriakba.
+          Korábbi AI asszisztens rendszer átmigrálása. Töltsd fel a workspace fájljait (.md, .txt, .json) -- az AI automatikusan felismeri és besorolja a memóriákat, személyiséget és beállításokat.
         </p>
         <div class="form-group">
-          <label>Fajl (.md, .txt, .json)</label>
+          <label>Fájl (.md, .txt, .json)</label>
           <div class="file-upload-area" id="memImportFileArea">
             <input type="file" id="memImportFile" accept=".md,.txt,.json" multiple hidden>
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
             </svg>
-            <p>Kattints vagy huzd ide a fajlokat</p>
+            <p>Kattints vagy húzd ide a fájlokat</p>
             <p class="hint" id="memImportFileNames"></p>
           </div>
         </div>
         <div class="form-group">
-          <label for="memImportAgent">Agens</label>
+          <label for="memImportAgent">Ágens</label>
           <select id="memImportAgent"></select>
         </div>
         <div id="memImportProgress" hidden>
           <div style="display:flex;align-items:center;gap:10px;padding:12px;background:var(--bg-input);border-radius:var(--radius-sm)">
             <span class="spinner"></span>
-            <span id="memImportStatus">Feldolgozas...</span>
+            <span id="memImportStatus">Feldolgozás...</span>
           </div>
         </div>
         <div id="memImportResult" hidden style="padding:12px;background:var(--bg-input);border-radius:var(--radius-sm);margin-bottom:12px"></div>
         <button class="btn-primary" id="memImportSaveBtn">
-          <span class="btn-text">Importalas</span>
-          <span class="btn-loading" hidden><span class="spinner"></span> Importalas...</span>
+          <span class="btn-text">Költöztetés</span>
+          <span class="btn-loading" hidden><span class="spinner"></span> Költöztetés...</span>
         </button>
       </div>
     </div>

@@ -2146,14 +2146,14 @@ document.getElementById('saveMemBtn').addEventListener('click', async () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content, tier, agent_id: agentId, keywords }),
       })
-      showToast('Emlek frissitve')
+      showToast('Emlék frissítve')
     } else {
       await fetch('/api/memories', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agent_id: agentId, content, tier, keywords }),
       })
-      showToast('Emlek letrehozva')
+      showToast('Emlék létrehozva')
     }
     closeModal(memModalOverlay)
     loadMemories()
@@ -2179,13 +2179,13 @@ async function loadMemStats() {
     `
     document.getElementById('memBackfillBtn')?.addEventListener('click', async () => {
       const btn = document.getElementById('memBackfillBtn')
-      if (btn) { btn.textContent = 'Generalas...'; btn.disabled = true }
+      if (btn) { btn.textContent = 'Generálás...'; btn.disabled = true }
       try {
         const r = await fetch('/api/memories/backfill', { method: 'POST' })
         const data = await r.json()
         showToast(`${data.count} emlekhez vektor generalva`)
         loadMemStats()
-      } catch { showToast('Hiba a vektor generalas soran') }
+      } catch { showToast('Hiba a vektor generálás során') }
     })
   } catch (err) {
     console.error('Stats hiba:', err)
@@ -2211,7 +2211,7 @@ async function loadMemories() {
     const memories = await res.json()
     renderMemories(memories)
   } catch (err) {
-    console.error('Memoria betoltes hiba:', err)
+    console.error('Memória betöltés hiba:', err)
   }
 }
 
@@ -2249,8 +2249,8 @@ function renderMemories(memories) {
       <div class="mem-content-full">${escapeHtml(mem.content)}</div>
       ${keywordsHtml}
       <div class="mem-item-footer">
-        <button class="btn-secondary" data-edit-memid="${mem.id}" style="padding:6px 14px; font-size:12px;">Szerkesztes</button>
-        <button class="btn-danger" data-memid="${mem.id}" style="padding:6px 14px; font-size:12px;">Torles</button>
+        <button class="btn-secondary" data-edit-memid="${mem.id}" style="padding:6px 14px; font-size:12px;">Szerkesztés</button>
+        <button class="btn-danger" data-memid="${mem.id}" style="padding:6px 14px; font-size:12px;">Törlés</button>
       </div>
     `
 
@@ -2264,7 +2264,7 @@ function renderMemories(memories) {
     const editBtn = item.querySelector('[data-edit-memid]')
     editBtn.addEventListener('click', (e) => {
       e.stopPropagation()
-      document.getElementById('memModalTitle').textContent = 'Emlek szerkesztese'
+      document.getElementById('memModalTitle').textContent = 'Emlék szerkesztése'
       document.getElementById('memContent').value = mem.content
       document.getElementById('memTier').value = tier
       document.getElementById('memKeywords').value = mem.keywords || ''
@@ -2280,11 +2280,11 @@ function renderMemories(memories) {
       if (!confirm('Biztosan torlod ezt az emleket?')) return
       try {
         await fetch(`/api/memories/${mem.id}`, { method: 'DELETE' })
-        showToast('Emlek torolve')
+        showToast('Emlék törölve')
         loadMemories()
         loadMemStats()
       } catch {
-        showToast('Hiba a torles soran')
+        showToast('Hiba a törlés során')
       }
     })
 
@@ -2367,7 +2367,7 @@ async function loadMemoryGraph() {
     buildGraph(memories)
     startGraphSimulation()
   } catch (err) {
-    console.error('Graph betoltes hiba:', err)
+    console.error('Gráf betöltés hiba:', err)
   }
 }
 
@@ -2841,7 +2841,7 @@ function hideGraphPanel() {
 }
 
 function openEditMemory(mem) {
-  document.getElementById('memModalTitle').textContent = 'Emlek szerkesztese'
+  document.getElementById('memModalTitle').textContent = 'Emlék szerkesztése'
   document.getElementById('memAgent').value = mem.agent_id || 'marveen'
   document.getElementById('memTier').value = mem.tier || mem.category || 'warm'
   document.getElementById('memContent').value = mem.content || ''
@@ -3154,8 +3154,8 @@ async function loadConnectors() {
     connectors = await res.json()
     renderConnectors()
   } catch (err) {
-    console.error('Connector betoltes hiba:', err)
-    connectorGrid.innerHTML = '<div class="connector-loading">Hiba a betoltes soran</div>'
+    console.error('Connector betöltés hiba:', err)
+    connectorGrid.innerHTML = '<div class="connector-loading">Hiba a betöltés során</div>'
   }
 }
 
@@ -3275,7 +3275,7 @@ async function openConnectorDetail(connector) {
       showToast('Connector törölve')
       loadConnectors()
     } catch {
-      showToast('Hiba a torles soran')
+      showToast('Hiba a törlés során')
     }
   }
 
@@ -3371,7 +3371,7 @@ async function loadStatus() {
   const listEl = document.getElementById('statusIncidentList')
 
   overallEl.className = 'status-overall unknown'
-  overallEl.textContent = 'Betoltes...'
+  overallEl.textContent = 'Betöltés...'
   gridEl.innerHTML = ''
   listEl.innerHTML = ''
 
@@ -3381,9 +3381,9 @@ async function loadStatus() {
 
     // Overall status
     const overallLabels = {
-      operational: 'Minden szolgaltatas mukodik',
+      operational: 'Minden szolgáltatás működik',
       degraded: 'Aktiv incidens',
-      unknown: 'Statusz nem elerheto',
+      unknown: 'Státusz nem elérhető',
     }
     overallEl.className = `status-overall ${data.overall}`
     overallEl.textContent = overallLabels[data.overall] || data.overall
@@ -3529,7 +3529,7 @@ async function parseFileToChunks(file) {
 // Import button click
 memImportSaveBtn.addEventListener('click', async () => {
   if (!memImportFiles.length) {
-    showToast('Valassz legalabb egy fajlt')
+    showToast('Válassz legalább egy fájlt')
     return
   }
 
@@ -3538,7 +3538,7 @@ memImportSaveBtn.addEventListener('click', async () => {
   memImportSaveBtn.disabled = true
   memImportProgress.hidden = false
   memImportResult.hidden = true
-  memImportStatus.textContent = 'Fajlok feldolgozasa...'
+  memImportStatus.textContent = 'Fájlok feldolgozása...'
 
   try {
     // Parse all files into chunks
@@ -3553,11 +3553,11 @@ memImportSaveBtn.addEventListener('click', async () => {
       memImportSaveBtn.querySelector('.btn-text').hidden = false
       memImportSaveBtn.querySelector('.btn-loading').hidden = true
       memImportSaveBtn.disabled = false
-      showToast('Nincs importalhato tartalom a fajlokban')
+      showToast('Nincs importálható tartalom a fájlokban')
       return
     }
 
-    memImportStatus.textContent = `${allChunks.length} chunk kategorizalasa es importalasa...`
+    memImportStatus.textContent = `${allChunks.length} chunk kategorizálása és importálása...`
 
     const agentId = document.getElementById('memImportAgent').value || 'marveen'
     const resp = await fetch('/api/memories/import', {
@@ -3573,13 +3573,13 @@ memImportSaveBtn.addEventListener('click', async () => {
       const s = data.stats || {}
       memImportResult.hidden = false
       memImportResult.innerHTML = `
-        <div style="color:var(--text-primary);font-weight:600;margin-bottom:8px">Import kesz!</div>
+        <div style="color:var(--text-primary);font-weight:600;margin-bottom:8px">Költöztetés kész!</div>
         <div style="font-size:13px;color:var(--text-secondary)">
-          Osszesen: <strong>${data.imported}</strong> emlek importalva<br>
+          Összesen: <strong>${data.imported}</strong> emlék importálva<br>
           Hot: ${s.hot || 0} | Warm: ${s.warm || 0} | Cold: ${s.cold || 0} | Shared: ${s.shared || 0}
         </div>
       `
-      showToast(`${data.imported} emlek importalva`)
+      showToast(`${data.imported} emlék importálva`)
       loadMemories()
       loadMemStats()
     } else {
@@ -3587,7 +3587,7 @@ memImportSaveBtn.addEventListener('click', async () => {
     }
   } catch (err) {
     memImportProgress.hidden = true
-    showToast('Hiba az importalas soran')
+    showToast('Hiba a költöztetés során')
   }
 
   memImportSaveBtn.querySelector('.btn-text').hidden = false
