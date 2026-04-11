@@ -2646,6 +2646,91 @@ main {
   color: var(--text-muted);
 }
 
+/* === Migration Page === */
+.migrate-steps {
+  max-width: 700px;
+}
+.migrate-step h3 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+.migrate-step[hidden] { display: none; }
+
+.migrate-findings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+.migrate-finding {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.migrate-finding-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.migrate-finding-info {
+  flex: 1;
+  min-width: 0;
+}
+.migrate-finding-name {
+  font-size: 13px;
+  font-weight: 500;
+}
+.migrate-finding-type {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.migrate-finding-size {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.migrate-summary {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.migrate-result {
+  padding: 20px;
+  background: var(--success-soft);
+  border-radius: var(--radius);
+}
+.migrate-result h4 {
+  color: var(--success);
+  margin-bottom: 10px;
+}
+.migrate-result-stats {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.migrate-result-stat {
+  text-align: center;
+}
+.migrate-result-stat-value {
+  font-size: 20px;
+  font-weight: 600;
+}
+.migrate-result-stat-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.migrate-result-details {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
 /* === Responsive === */
 @media (max-width: 900px) {
   .kanban-board {

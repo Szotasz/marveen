@@ -21,6 +21,7 @@
         <a href="#" class="nav-link" data-page="tasks">Ütemezések</a>
         <a href="#" class="nav-link" data-page="memories">Memória</a>
         <a href="#" class="nav-link" data-page="connectors">Connectorok</a>
+        <a href="#" class="nav-link" data-page="migrate">Költöztetés</a>
         <a href="#" class="nav-link" data-page="status">Státusz</a>
       </nav>
     </div>
@@ -261,6 +262,64 @@
       <div class="connector-section-header">Telepített</div>
       <div class="connector-grid" id="connectorGrid"></div>
     </div>
+    <!-- === Migration Page === -->
+    <div class="page" id="migratePage" hidden>
+      <div class="page-header">
+        <h1>Költöztetés</h1>
+        <p class="subtitle">Korábbi AI asszisztens rendszer átmigrálása</p>
+      </div>
+
+      <div class="migrate-steps">
+        <!-- Step 1: Source -->
+        <div class="migrate-step" id="migrateStep1">
+          <h3>1. Forrás megadása</h3>
+          <div class="form-row">
+            <div class="form-group" style="flex:2">
+              <label for="migratePath">Workspace / mappa útvonala</label>
+              <input type="text" id="migratePath" placeholder="/Users/username/.openclaw/workspace">
+            </div>
+            <div class="form-group" style="flex:1">
+              <label for="migrateType">Típus</label>
+              <select id="migrateType">
+                <option value="openclaw">OpenClaw</option>
+                <option value="custom">Egyéni Claude bot</option>
+                <option value="general">Általános mappa</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="migrateAgent">Cél ágens</label>
+            <select id="migrateAgent"></select>
+          </div>
+          <button class="btn-primary btn-compact" id="migrateScanBtn">
+            <span class="btn-text">Feltérképezés</span>
+            <span class="btn-loading" hidden><span class="spinner"></span> Keresés...</span>
+          </button>
+        </div>
+
+        <!-- Step 2: Results -->
+        <div class="migrate-step" id="migrateStep2" hidden>
+          <h3>2. Találatok</h3>
+          <div class="migrate-findings" id="migrateFindings"></div>
+          <div class="migrate-summary" id="migrateSummary"></div>
+          <div style="display:flex;gap:10px;margin-top:16px">
+            <button class="btn-secondary btn-compact" id="migrateBackBtn">Vissza</button>
+            <button class="btn-primary btn-compact" id="migrateRunBtn">
+              <span class="btn-text">Költöztetés indítása</span>
+              <span class="btn-loading" hidden><span class="spinner"></span> Költöztetés...</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Step 3: Done -->
+        <div class="migrate-step" id="migrateStep3" hidden>
+          <h3>3. Eredmény</h3>
+          <div class="migrate-result" id="migrateResult"></div>
+          <button class="btn-secondary btn-compact" id="migrateNewBtn" style="margin-top:16px">Új költöztetés</button>
+        </div>
+      </div>
+    </div>
+
     <!-- === Status Page === -->
     <div class="page" id="statusPage" hidden>
       <div class="page-header">

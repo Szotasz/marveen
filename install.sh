@@ -322,6 +322,20 @@ launchctl load "$PLIST_DIR/com.marveen.dashboard.plist" 2>/dev/null || true
 launchctl load "$PLIST_DIR/com.marveen.channels.plist" 2>/dev/null || true
 echo -e "  ${GREEN}✓${NC} Szolgaltatasok elinditva"
 
+# Migration from previous system
+echo ""
+echo -e "${BOLD}Korábbi rendszer költöztetése${NC}"
+echo -e "${DIM}  Ha volt korábbi AI asszisztensed (OpenClaw, egyéni bot), átmigrálhatod a memóriáját.${NC}"
+read -p "  Szeretnéd most futtatni a költöztetést? (i/n) [n]: " DO_MIGRATE
+DO_MIGRATE=${DO_MIGRATE:-n}
+if [ "$DO_MIGRATE" = "i" ]; then
+  if [ -f "$INSTALL_DIR/scripts/migrate.sh" ]; then
+    "$INSTALL_DIR/scripts/migrate.sh"
+  else
+    echo -e "  ${ORANGE}A migrate.sh nem található. Használd a dashboardot: http://localhost:3420 -> Költöztetés${NC}"
+  fi
+fi
+
 # Done!
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
