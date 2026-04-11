@@ -232,8 +232,11 @@ function startAgentProcess(name: string): { ok: boolean; pid?: number; error?: s
   const session = agentSessionName(name)
 
   try {
-    // Kill stale session if exists
-    try { execSync(`${TMUX} kill-session -t ${session} 2>/dev/null`, { timeout: 3000 }) } catch { /* ok */ }
+    // Kill stale session if exists, wait for cleanup
+    try {
+      execSync(`${TMUX} kill-session -t ${session} 2>/dev/null`, { timeout: 3000 })
+      execSync('sleep 3', { timeout: 5000 })
+    } catch { /* ok */ }
 
     // Start tmux session -- env vars must be exported INSIDE the command string
     // because tmux new-session does not inherit the caller's environment
@@ -260,9 +263,12 @@ function stopAgentProcess(name: string): { ok: boolean; error?: string } {
 
   try {
     execSync(`${TMUX} kill-session -t ${session}`, { timeout: 5000 })
+    // Wait for session to fully terminate
+    execSync('sleep 2', { timeout: 4000 })
     logger.info({ name, session }, 'Agent tmux session stopped')
     return { ok: true }
-  } catch {
+  } catch (err) {
+    logger.error({ err, name, session }, 'Failed to stop agent tmux session')
     return { ok: false, error: 'Failed to stop tmux session' }
   }
 }
