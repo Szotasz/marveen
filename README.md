@@ -17,11 +17,28 @@ Marveen egy AI asszisztens keretrendszer, ami Claude Code-ra épül. Saját AI c
 
 ## Telepítés
 
+### macOS / Linux
+
 ```bash
 git clone https://github.com/Szotasz/marveen.git
 cd marveen
 ./install.sh
 ```
+
+### Windows (WSL)
+
+```powershell
+irm https://raw.githubusercontent.com/Szotasz/marveen/main/install-windows.ps1 | iex
+```
+
+Vagy manuálisan:
+```powershell
+git clone https://github.com/Szotasz/marveen.git
+cd marveen
+.\install-windows.ps1
+```
+
+A Windows telepítő automatikusan beállítja a WSL-t (Windows Subsystem for Linux) és azon belül telepíti a Marveen-t.
 
 A telepítő végigvezet a beállításokon:
 1. Függőségek ellenőrzése és telepítése
@@ -64,7 +81,7 @@ Időzített feladatok és heartbeat monitorok beállítása:
 
 ## Követelmények
 
-- macOS
+- macOS, Linux, vagy Windows 10/11 (WSL-lel)
 - Node.js 20+
 - Claude Code CLI (Claude Max/Pro előfizetés szükséges)
 - Telegram fiók
