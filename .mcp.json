@@ -1,8 +1,3 @@
 {
-  "mcpServers": {
-    "aiam-blog": {
-      "command": "node",
-      "args": ["/Users/marvin/ClaudeClaw/mcp-servers/aiam-blog/server.mjs"]
-    }
-  }
+  "mcpServers": {}
 }

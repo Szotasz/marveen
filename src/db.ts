@@ -280,13 +280,32 @@ export function saveMemory(
   ).run(chatId, topicKey ?? null, content, sector, now, now)
 }
 
-export function searchMemories(query: string, chatId: string, limit = 3): Memory[] {
-  const sanitized = query.replace(/[^\p{L}\p{N}\s]/gu, '').trim()
-  if (!sanitized) return []
-  const terms = sanitized
+// Build a safe FTS5 MATCH expression from a free-form user query.
+//
+// FTS5 treats AND / OR / NOT / NEAR as reserved operators only when uppercase
+// and unquoted -- so we lowercase everything, which turns them into ordinary
+// search terms. We also cap the number and length of tokens to bound query
+// cost (the sanitizer previously allowed an arbitrary-length prefix expansion
+// that could make a single request scan the entire index).
+export function buildFtsMatchExpression(query: string): string {
+  const MAX_TOKENS = 20
+  const MAX_TOKEN_LEN = 64
+  const sanitized = query
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, '')
+    .trim()
+  if (!sanitized) return ''
+  const tokens = sanitized
     .split(/\s+/)
-    .map((t) => t + '*')
-    .join(' ')
+    .filter((t) => t.length > 0)
+    .slice(0, MAX_TOKENS)
+    .map((t) => t.slice(0, MAX_TOKEN_LEN) + '*')
+  return tokens.join(' ')
+}
+
+export function searchMemories(query: string, chatId: string, limit = 3): Memory[] {
+  const terms = buildFtsMatchExpression(query)
+  if (!terms) return []
   try {
     return db
       .prepare(
@@ -358,9 +377,8 @@ export function getAgentMemories(agentId: string, limit: number = 20): Memory[] 
 }
 
 export function searchAgentMemories(agentId: string, query: string, limit: number = 10): Memory[] {
-  const sanitized = query.replace(/[^\p{L}\p{N}\s]/gu, '').trim()
-  if (!sanitized) return []
-  const terms = sanitized.split(/\s+/).map(t => t + '*').join(' ')
+  const terms = buildFtsMatchExpression(query)
+  if (!terms) return []
   try {
     return db.prepare(
       `SELECT m.* FROM memories m
