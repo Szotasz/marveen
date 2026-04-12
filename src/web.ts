@@ -1,6 +1,6 @@
 import http from 'node:http'
-import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, mkdirSync, rmSync, statSync, copyFileSync } from 'node:fs'
-import { join, extname } from 'node:path'
+import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, mkdirSync, rmSync, statSync, lstatSync, copyFileSync } from 'node:fs'
+import { join, extname, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { spawn, execSync, type ChildProcess } from 'node:child_process'
@@ -71,12 +71,28 @@ interface AgentDetail extends AgentSummary {
   hasAvatar: boolean
 }
 
+
 function sanitizeAgentName(raw: string): string {
   return raw.trim().toLowerCase()
     .replace(/[^a-z0-9-]/g, '')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
     .slice(0, 50)  // Limit length
+}
+
+// Same rules as sanitizeAgentName -- used for skill names to prevent path traversal
+function sanitizeSkillName(raw: string): string {
+  return sanitizeAgentName(raw)
+}
+
+// Joins segments and verifies the resolved path stays inside `base`. Throws on escape.
+function safeJoin(base: string, ...parts: string[]): string {
+  const resolvedBase = resolve(base)
+  const target = resolve(base, ...parts)
+  if (target !== resolvedBase && !target.startsWith(resolvedBase + sep)) {
+    throw new Error(`Path traversal rejected: ${parts.join('/')}`)
+  }
+  return target
 }
 
 function shellEscape(s: string): string {
@@ -827,21 +843,41 @@ function startScheduleRunner(): NodeJS.Timeout {
 }
 
 export function startWebServer(port = 3420): http.Server {
-  // SECURITY: This server binds to all interfaces. It is designed for
-  // localhost-only usage on a personal machine. Do NOT expose to the network
-  // without adding authentication.
+  // SECURITY: Server binds to 127.0.0.1 (see server.listen below). The allowed
+  // browser origins mirror that -- anything else is rejected to prevent CSRF
+  // from malicious websites the user may visit while the dashboard is running.
   ensureDirs()
+
+  const allowedOrigins = new Set([
+    `http://localhost:${port}`,
+    `http://127.0.0.1:${port}`,
+  ])
+  const isSafeMethod = (m: string) => m === 'GET' || m === 'HEAD' || m === 'OPTIONS'
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', `http://localhost:${port}`)
     const path = url.pathname
     const method = req.method || 'GET'
 
-    // CORS
-    res.setHeader('Access-Control-Allow-Origin', '*')
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    // CSRF / CORS: only echo the Origin back if it's explicitly allowed. Never use `*`.
+    const origin = req.headers.origin
+    if (origin && allowedOrigins.has(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin)
+      res.setHeader('Vary', 'Origin')
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    }
     if (method === 'OPTIONS') { res.writeHead(204); res.end(); return }
+
+    // Block state-changing requests from browsers running on foreign origins.
+    // Same-origin fetches from the dashboard don't set Origin on some browsers, so we
+    // accept requests where Origin is absent OR whitelisted. Requests carrying a foreign
+    // Origin are rejected outright (this is the primary CSRF defence).
+    if (!isSafeMethod(method) && origin && !allowedOrigins.has(origin)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Origin not allowed' }))
+      return
+    }
 
     try {
       // === Agent API ===
@@ -1095,7 +1131,8 @@ export function startWebServer(port = 3420): http.Server {
       // POST /api/agents/:name/skills/import - Import .skill file
       const skillImportMatch = path.match(/^\/api\/agents\/([^/]+)\/skills\/import$/)
       if (skillImportMatch && method === 'POST') {
-        const name = decodeURIComponent(skillImportMatch[1])
+        const name = sanitizeAgentName(decodeURIComponent(skillImportMatch[1]))
+        if (!name) return json(res, { error: 'Invalid agent name' }, 400)
         if (!existsSync(agentDir(name))) return json(res, { error: 'Agent not found' }, 404)
 
         const body = await readBody(req)
@@ -1106,18 +1143,43 @@ export function startWebServer(port = 3420): http.Server {
         const skillsDir = join(agentDir(name), '.claude', 'skills')
         mkdirSync(skillsDir, { recursive: true })
 
-        // Save temp file and unzip
-        const tmpPath = join(skillsDir, '_import_temp.zip')
+        // Save temp file (unique name to avoid concurrent-import races) and unzip
+        const tmpPath = join(skillsDir, `_import_${randomUUID()}.zip`)
         try {
           writeFileSync(tmpPath, file.data)
-          // Validate zip contents don't escape the target directory
-          const listOutput = execSync(`unzip -l "${tmpPath}" 2>&1`, { timeout: 5000, encoding: 'utf-8' })
-          if (listOutput.includes('..')) {
-            unlinkSync(tmpPath)
-            return json(res, { error: 'Invalid skill file: path traversal detected' }, 400)
+          // Reject entries with absolute paths or parent-dir escapes before extraction.
+          const listOutput = execSync(`unzip -Z1 "${tmpPath}" 2>&1`, { timeout: 5000, encoding: 'utf-8' })
+          const entries = listOutput.split('\n').map((l) => l.trim()).filter(Boolean)
+          const before = new Set(readdirSync(skillsDir))
+          for (const entry of entries) {
+            if (entry.includes('..') || entry.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(entry)) {
+              unlinkSync(tmpPath)
+              return json(res, { error: 'Invalid skill file: path traversal detected' }, 400)
+            }
           }
           execSync(`unzip -o "${tmpPath}" -d "${skillsDir}"`, { timeout: 10000 })
           unlinkSync(tmpPath)
+
+          // Defence-in-depth: walk what was just extracted and delete any symlink entries.
+          const after = readdirSync(skillsDir).filter((f) => !before.has(f))
+          const rejectSymlinks = (dir: string): boolean => {
+            for (const entry of readdirSync(dir)) {
+              const p = join(dir, entry)
+              const st = lstatSync(p)
+              if (st.isSymbolicLink()) return true
+              if (st.isDirectory() && rejectSymlinks(p)) return true
+            }
+            return false
+          }
+          for (const f of after) {
+            const p = join(skillsDir, f)
+            try {
+              if (lstatSync(p).isSymbolicLink() || (statSync(p).isDirectory() && rejectSymlinks(p))) {
+                rmSync(p, { recursive: true, force: true })
+                return json(res, { error: 'Invalid skill file: symlink entries rejected' }, 400)
+              }
+            } catch { /* ignored */ }
+          }
 
           // Find the extracted skill name (directory containing SKILL.md)
           const extracted = readdirSync(skillsDir).filter(f => {
@@ -1138,10 +1200,16 @@ export function startWebServer(port = 3420): http.Server {
       // DELETE /api/agents/:name/skills/:skillName - Delete skill
       const skillActionMatch = path.match(/^\/api\/agents\/([^/]+)\/skills\/([^/]+)$/)
       if (skillActionMatch && method === 'DELETE') {
-        const name = decodeURIComponent(skillActionMatch[1])
-        const skillName = decodeURIComponent(skillActionMatch[2])
+        const name = sanitizeAgentName(decodeURIComponent(skillActionMatch[1]))
+        const skillName = sanitizeSkillName(decodeURIComponent(skillActionMatch[2]))
+        if (!name || !skillName) return json(res, { error: 'Invalid agent or skill name' }, 400)
         if (!existsSync(agentDir(name))) return json(res, { error: 'Agent not found' }, 404)
-        const skillDir = join(agentDir(name), '.claude', 'skills', skillName)
+        let skillDir: string
+        try {
+          skillDir = safeJoin(agentDir(name), '.claude', 'skills', skillName)
+        } catch {
+          return json(res, { error: 'Invalid skill path' }, 400)
+        }
         if (!existsSync(skillDir)) return json(res, { error: 'Skill not found' }, 404)
         rmSync(skillDir, { recursive: true, force: true })
         return json(res, { ok: true })
