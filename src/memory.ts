@@ -10,6 +10,7 @@ import {
 } from './db.js'
 import { runAgent } from './agent.js'
 import { logger } from './logger.js'
+import { wrapUntrusted, UNTRUSTED_PREAMBLE } from './prompt-safety.js'
 
 // Semantic: user preferences, facts about themselves, persistent info
 const SEMANTIC_PATTERN =
@@ -112,9 +113,15 @@ export async function runDailyDigest(chatId: string): Promise<string | null> {
     return null
   }
 
-  const memoryLines = todayMemories.map((m) => `- ${m.content.slice(0, 200)}`).join('\n')
+  // Each memory is wrapped individually: the stored content originated in
+  // Telegram messages that could have come through the assistant from a third
+  // party (a forwarded message, a quoted email). Treat every record as data.
+  const memoryLines = todayMemories
+    .map((m) => `- ${wrapUntrusted('memory-record', m.content.slice(0, 200))}`)
+    .join('\n')
 
-  const prompt = `Az alabbi egy AI asszisztens mai emlekei egy felhasznaloval folytatott beszelgetesekbol.
+  const prompt = `${UNTRUSTED_PREAMBLE}
+Az alabbi egy AI asszisztens mai emlekei egy felhasznaloval folytatott beszelgetesekbol.
 Irj egy tomor napi osszefoglalot (max 5-8 mondat), ami megragadja:
 1. Milyen feladatokon dolgoztak
 2. Milyen fontos dontesek szulettek

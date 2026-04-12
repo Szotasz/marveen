@@ -11,6 +11,7 @@ import { getCalendarEvents, type CalendarEvent } from './google-api.js'
 import { runAgent } from './agent.js'
 import { notifyTelegram } from './notify.js'
 import { logger } from './logger.js'
+import { wrapUntrusted, UNTRUSTED_PREAMBLE } from './prompt-safety.js'
 
 // --- Data types ---
 
@@ -105,12 +106,16 @@ function shouldNotify(data: HeartbeatData): boolean {
 function buildAgentPrompt(data: HeartbeatData): string {
   const timeStr = data.timestamp.toLocaleString('hu-HU', { timeZone: 'Europe/Budapest' })
 
-  let prompt = `Heartbeat ellenorzes -- ${timeStr}\n\n`
+  // Preamble first so the <untrusted> tag convention is established before any
+  // attacker-controlled strings (calendar/kanban/email titles) appear.
+  let prompt = UNTRUSTED_PREAMBLE + '\n'
+  prompt += `Heartbeat ellenorzes -- ${timeStr}\n\n`
   prompt += `Az alabbi adatokat gyujtottem nativ modon (API/DB). Fogalmazz tomor, emberi osszefoglalot Szabolcsnak.\n`
   prompt += `FONTOS: Nezd meg az emaileket is MCP-n keresztul (search_emails, utolso 2 ora, olvasatlanok).\n`
   prompt += `Hasznald a HEARTBEAT.md formatumot.\n\n`
 
-  // Calendar
+  // Calendar -- event summaries and attendee names come from whoever sent the
+  // invite, so every one is wrapped individually as untrusted data.
   prompt += `## Naptar (kovetkezo 2 ora)\n`
   if (data.calendar.length === 0) {
     prompt += `Nincs kozelgo esemeny.\n\n`
@@ -119,27 +124,30 @@ function buildAgentPrompt(data: HeartbeatData): string {
       const start = ev.start?.dateTime
         ? new Date(ev.start.dateTime).toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Budapest' })
         : 'egesz napos'
-      const attendees = ev.attendees?.map((a) => a.displayName || a.email).join(', ') || '-'
-      prompt += `- ${ev.summary ?? '(cim nelkul)'} @ ${start} [resztvevok: ${attendees}]\n`
+      const attendeesRaw = ev.attendees?.map((a) => a.displayName || a.email).join(', ') || '-'
+      const summaryWrapped = wrapUntrusted('gcal-event-summary', ev.summary ?? '(cim nelkul)')
+      const attendeesWrapped = wrapUntrusted('gcal-event-attendees', attendeesRaw)
+      prompt += `- @ ${start}\n  summary: ${summaryWrapped}\n  attendees: ${attendeesWrapped}\n`
     }
     prompt += '\n'
   }
 
-  // Kanban
+  // Kanban -- card titles are operator-authored today, but a future Kanban-sync
+  // integration could bring them from third parties. Wrap defensively.
   prompt += `## Kanban\n`
   prompt += `- In Progress: ${data.kanban.in_progress}\n`
   prompt += `- Urgent: ${data.kanban.urgent}`
   if (data.kanban.urgentTitles.length > 0) {
-    prompt += ` (${data.kanban.urgentTitles.join(', ')})`
+    prompt += ` ${wrapUntrusted('kanban-urgent-titles', data.kanban.urgentTitles.join(', '))}`
   }
   prompt += '\n'
   prompt += `- Waiting: ${data.kanban.waiting}`
   if (data.kanban.waitingTitles.length > 0) {
-    prompt += ` (${data.kanban.waitingTitles.join(', ')})`
+    prompt += ` ${wrapUntrusted('kanban-waiting-titles', data.kanban.waitingTitles.join(', '))}`
   }
   prompt += '\n\n'
 
-  // System
+  // System -- trusted (our own metrics, no external input).
   prompt += `## Rendszer\n`
   prompt += `- DB meret: ${data.system.dbSizeMB} MB${data.system.dbWarning ? ' WARNING >100MB!' : ''}\n`
   prompt += `- Aktiv utemezett feladatok: ${data.tasks.count}\n`
