@@ -1,3 +1,52 @@
+// === Dashboard auth bootstrap ===
+// The server prints an URL like http://127.0.0.1:3420/?token=XXX on startup.
+// On first visit we pluck the token out of the URL, store it in localStorage,
+// strip it from the visible URL, and then inject it into every /api/* fetch
+// as a Bearer header so the server lets us through.
+(() => {
+  const TOKEN_KEY = 'marveen-dashboard-token'
+  const urlParams = new URLSearchParams(window.location.search)
+  const urlToken = urlParams.get('token')
+  if (urlToken) {
+    localStorage.setItem(TOKEN_KEY, urlToken)
+    urlParams.delete('token')
+    const clean = window.location.pathname + (urlParams.toString() ? '?' + urlParams : '') + window.location.hash
+    window.history.replaceState({}, '', clean)
+  }
+
+  const originalFetch = window.fetch.bind(window)
+  window.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input))
+    // Only attach the token to same-origin API calls. Relative paths always
+    // resolve to same-origin; absolute URLs must match the current origin.
+    const isSameOriginApi =
+      url.startsWith('/api/') ||
+      (url.startsWith(window.location.origin + '/api/'))
+    if (isSameOriginApi) {
+      const token = localStorage.getItem(TOKEN_KEY)
+      if (token) {
+        init = init || {}
+        const headers = new Headers(init.headers || (input instanceof Request ? input.headers : undefined))
+        headers.set('Authorization', 'Bearer ' + token)
+        init.headers = headers
+      }
+    }
+    const res = await originalFetch(input, init)
+    if (res.status === 401 && isSameOriginApi) {
+      // Token missing, wrong, or revoked. Wipe and prompt once per page load.
+      localStorage.removeItem(TOKEN_KEY)
+      if (!window.__marveenAuthPrompted) {
+        window.__marveenAuthPrompted = true
+        alert(
+          'Dashboard authentication failed. Check the server log for the access URL ' +
+          '(look for "Dashboard access URL" with ?token=...), then reopen it in your browser.'
+        )
+      }
+    }
+    return res
+  }
+})()
+
 // === Theme ===
 const html = document.documentElement
 const themeToggle = document.getElementById('themeToggle')
