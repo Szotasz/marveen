@@ -2,7 +2,7 @@ import http from 'node:http'
 import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, mkdirSync, rmSync, statSync, lstatSync, copyFileSync } from 'node:fs'
 import { join, extname, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto'
 import { spawn, execSync, type ChildProcess } from 'node:child_process'
 import { CronExpressionParser } from 'cron-parser'
 import { PROJECT_ROOT } from './config.js'
@@ -47,6 +47,39 @@ const MIME: Record<string, string> = {
 
 function ensureDirs() {
   mkdirSync(AGENTS_BASE_DIR, { recursive: true })
+}
+
+// --- Dashboard auth ---
+// A single bearer token gates every /api/* route. It is loaded from
+// DASHBOARD_TOKEN if set, otherwise persisted at store/.dashboard-token
+// (mode 0600) and auto-generated on first run. Static assets (/, /index.html,
+// /style.css, /app.js, /avatars/*) and the auth-status endpoint stay public
+// so the UI can bootstrap itself.
+const DASHBOARD_TOKEN_PATH = join(PROJECT_ROOT, 'store', '.dashboard-token')
+
+function loadOrCreateDashboardToken(): string {
+  const fromEnv = process.env.DASHBOARD_TOKEN?.trim()
+  if (fromEnv) return fromEnv
+  try {
+    if (existsSync(DASHBOARD_TOKEN_PATH)) {
+      const cached = readFileSync(DASHBOARD_TOKEN_PATH, 'utf-8').trim()
+      if (cached) return cached
+    }
+  } catch { /* fall through and regenerate */ }
+  const fresh = randomBytes(32).toString('hex')
+  mkdirSync(join(PROJECT_ROOT, 'store'), { recursive: true })
+  writeFileSync(DASHBOARD_TOKEN_PATH, fresh, { mode: 0o600 })
+  return fresh
+}
+
+function checkBearerToken(header: string | undefined, expected: string): boolean {
+  if (!header) return false
+  const m = /^Bearer\s+(.+)$/.exec(header)
+  if (!m) return false
+  const provided = Buffer.from(m[1].trim())
+  const wanted = Buffer.from(expected)
+  if (provided.length !== wanted.length) return false
+  return timingSafeEqual(provided, wanted)
 }
 
 // --- Agent management ---
@@ -848,6 +881,7 @@ export function startWebServer(port = 3420): http.Server {
   // from malicious websites the user may visit while the dashboard is running.
   ensureDirs()
 
+  const DASHBOARD_TOKEN = loadOrCreateDashboardToken()
   const allowedOrigins = new Set([
     `http://localhost:${port}`,
     `http://127.0.0.1:${port}`,
@@ -877,6 +911,28 @@ export function startWebServer(port = 3420): http.Server {
       res.writeHead(403, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'Origin not allowed' }))
       return
+    }
+
+    // Auth gate: every /api/* route requires a bearer token in the Authorization
+    // header. Exceptions: the auth-status probe (so the client can tell whether
+    // it needs to prompt the user), and GET requests for avatar images (loaded
+    // via <img src> which can't carry headers -- these are non-sensitive assets).
+    const isPublicApi =
+      (path === '/api/auth/status' && method === 'GET') ||
+      (method === 'GET' && (
+        path === '/api/marveen/avatar' ||
+        /^\/api\/agents\/[^/]+\/avatar$/.test(path)
+      ))
+    if (path === '/api/auth/status' && method === 'GET') {
+      const ok = checkBearerToken(req.headers.authorization, DASHBOARD_TOKEN)
+      return json(res, { authenticated: ok })
+    }
+    if (path.startsWith('/api/') && !isPublicApi) {
+      if (!checkBearerToken(req.headers.authorization, DASHBOARD_TOKEN)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Unauthorized' }))
+        return
+      }
     }
 
     try {
@@ -2389,6 +2445,11 @@ Respond ONLY with JSON, nothing else:
 
   server.listen(port, '127.0.0.1', () => {
     logger.info({ port }, `Web dashboard: http://localhost:${port}`)
+    // Access URL embeds the token so the browser can bootstrap auth on first
+    // visit. The client strips the token from the URL after storing it.
+    logger.info(
+      `Dashboard access URL (paste into browser, token is stored afterward):\n  http://127.0.0.1:${port}/?token=${DASHBOARD_TOKEN}`
+    )
   })
 
   // Start message router
