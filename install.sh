@@ -341,6 +341,63 @@ launchctl load "$PLIST_DIR/com.marveen.dashboard.plist" 2>/dev/null || true
 launchctl load "$PLIST_DIR/com.marveen.channels.plist" 2>/dev/null || true
 echo -e "  ${GREEN}✓${NC} Szolgaltatasok elinditva"
 
+# Telegram pairing flow
+if [ -n "$BOT_TOKEN" ] && [ "$BOT_TOKEN" != "" ]; then
+  echo ""
+  echo -e "${BOLD}Telegram parositas${NC}"
+  echo -e "${DIM}  A bot fut, most ossze kell parosítanod vele.${NC}"
+  echo ""
+  echo -e "  ${BOLD}1.${NC} Nyisd meg a Telegram appot es irj a botodnak (barmit, pl. \"Szia\")"
+  echo -e "  ${BOLD}2.${NC} A bot kuld neked egy parosito kodot"
+  echo -e "  ${BOLD}3.${NC} Masold ide a kapott kodot:"
+  echo ""
+  read -p "  Parosito kod (vagy hagyd uresen ha kesobb csinalod): " PAIR_CODE
+  if [ -n "$PAIR_CODE" ]; then
+    # Attach to the channels tmux session and run the pairing
+    TELEGRAM_DIR="$HOME/.claude/channels/telegram"
+    ACCESS_FILE="$TELEGRAM_DIR/access.json"
+    if [ -f "$ACCESS_FILE" ]; then
+      # Get the chat ID from the pending pairing in access.json
+      PENDING_CHAT_ID=$(python3 -c "
+import json
+with open('$ACCESS_FILE') as f:
+    data = json.load(f)
+pending = data.get('pending', {})
+for code, info in pending.items():
+    if code == '$PAIR_CODE':
+        print(info.get('chatId', info.get('from', '')))
+        break
+" 2>/dev/null)
+
+      if [ -n "$PENDING_CHAT_ID" ]; then
+        # Approve the pairing and switch to allowlist
+        python3 -c "
+import json
+with open('$ACCESS_FILE') as f:
+    data = json.load(f)
+# Move from pending to allowFrom
+chat_id = str('$PENDING_CHAT_ID')
+if chat_id not in data.get('allowFrom', []):
+    data.setdefault('allowFrom', []).append(chat_id)
+data['pending'] = {}
+data['dmPolicy'] = 'allowlist'
+with open('$ACCESS_FILE', 'w') as f:
+    json.dump(data, f, indent=2)
+" 2>/dev/null
+        echo -e "  ${GREEN}✓${NC} Parositas sikeres! (chat ID: $PENDING_CHAT_ID)"
+        echo -e "  ${GREEN}✓${NC} Policy: allowlist (csak te erheted el a botot)"
+      else
+        # Fallback: try tmux send-keys approach
+        echo -e "  ${ORANGE}A kod nem talalhato az access.json-ban.${NC}"
+        echo -e "  ${DIM}Probald kesobb a terminalban: claude, majd /telegram:access pair $PAIR_CODE${NC}"
+      fi
+    fi
+  else
+    echo -e "  ${DIM}Rendben, kesobb is parosithatsz.${NC}"
+    echo -e "  ${DIM}Futtasd: claude, majd /telegram:access pair AKOD${NC}"
+  fi
+fi
+
 # Migration from previous system
 echo ""
 echo -e "${BOLD}Korábbi rendszer költöztetése${NC}"
@@ -374,15 +431,12 @@ else
   echo -e "  ${BOLD}Dashboard:${NC} http://localhost:3420"
   echo -e "  ${DIM}(A tokenes URL-t a szerver logban talalod)${NC}"
 fi
-echo -e "  ${BOLD}Telegram:${NC} Irj a botodnak es parosits!"
+echo -e "  ${BOLD}Telegram:${NC} Irj a botodnak!"
 echo ""
 echo -e "  ${DIM}Kovetkezo lepesek:${NC}"
 echo -e "  ${DIM}1. Nyisd meg a dashboardot a fenti URL-lel${NC}"
-echo -e "  ${DIM}2. Irj a Telegram botodnak -- kapsz egy parosito kodot${NC}"
-echo -e "  ${DIM}3. A terminalban futtasd: claude${NC}"
-echo -e "  ${DIM}4. Ird be: /telegram:access pair AKOD${NC}"
-echo -e "  ${DIM}5. Zard le: /telegram:access policy allowlist${NC}"
-echo -e "  ${DIM}6. A Csapat oldalon hozhatsz letre agenseket${NC}"
+echo -e "  ${DIM}2. Irj a botodnak Telegramon -- mar valaszolnia kell${NC}"
+echo -e "  ${DIM}3. A Csapat oldalon hozhatsz letre tobb agenst${NC}"
 echo ""
 echo -e "  ${DIM}Frissites: ./update.sh${NC}"
 echo -e "  ${DIM}Leallitas: ./scripts/stop.sh${NC}"
