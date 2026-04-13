@@ -147,6 +147,20 @@
     "infoUrl": "https://smithery.ai/servers/aiamindennapokban/wise-mcp"
   },
   {
+    "id": "elevenlabs",
+    "name": "ElevenLabs",
+    "description": "Szövegből beszéd (TTS), hang klónozás, hangeffektek, beszéd izolálás, hang generálás AI-val",
+    "type": "local",
+    "category": "ai",
+    "icon": "🔊",
+    "command": "npx",
+    "args": ["-y", "elevenlabs-mcp"],
+    "env": {"ELEVENLABS_API_KEY": ""},
+    "authType": "apikey",
+    "authNote": "API kulcs: https://elevenlabs.io - Settings -> API Keys",
+    "infoUrl": "https://github.com/elevenlabs/elevenlabs-mcp"
+  },
+  {
     "id": "fireflies",
     "name": "Fireflies.ai",
     "description": "Meeting leiratok, összefoglalók, keresés, soundbite-ok, analitika",
