@@ -118,7 +118,7 @@
     "env": {},
     "authType": "oauth",
     "authNote": "A Smithery felületén kell bejelentkezni és engedélyezni (smithery.ai)",
-    "infoUrl": "https://smithery.ai/server/fal-ai-mcp"
+    "infoUrl": "https://smithery.ai/servers/aiamindennapokban/fal-ai-mcp"
   },
   {
     "id": "billingo",
@@ -131,7 +131,7 @@
     "env": {},
     "authType": "oauth",
     "authNote": "A Smithery felületén kell bejelentkezni és engedélyezni (smithery.ai)",
-    "infoUrl": "https://smithery.ai/server/billingo-mcp"
+    "infoUrl": "https://smithery.ai/servers/aiamindennapokban/billingo-mcp"
   },
   {
     "id": "wise",
@@ -144,7 +144,7 @@
     "env": {},
     "authType": "oauth",
     "authNote": "A Smithery felületén kell bejelentkezni és engedélyezni (smithery.ai)",
-    "infoUrl": "https://smithery.ai/server/wise-mcp"
+    "infoUrl": "https://smithery.ai/servers/aiamindennapokban/wise-mcp"
   },
   {
     "id": "fireflies",
