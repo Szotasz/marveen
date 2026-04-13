@@ -106,13 +106,15 @@ CHAT_ID="0"
 # Step 4: Telegram bot setup
 echo ""
 echo -e "${BOLD}[4/7] Telegram bot beallitas${NC}"
-echo -e "${DIM}  A Marveen Telegramon kommunikal veled.${NC}"
+echo -e "${DIM}  Az AI asszisztensed Telegramon kommunikal veled.${NC}"
 echo -e "${DIM}  1. Nyisd meg a @BotFather-t a Telegramban${NC}"
 echo -e "${DIM}  2. Ird be: /newbot${NC}"
 echo -e "${DIM}  3. Adj nevet a botodnak${NC}"
 echo -e "${DIM}  4. Masold ide a kapott tokent:${NC}"
 echo ""
 read -p "  Telegram bot token (vagy hagyd uresen, kesobb is beallithatod): " BOT_TOKEN
+read -p "  Mi legyen a botod neve? [Marveen]: " BOT_NAME
+BOT_NAME=${BOT_NAME:-"Marveen"}
 
 # Step 5: Install dependencies
 echo ""
@@ -151,6 +153,7 @@ if [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
   sed -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
       -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
       -e "s/{{CHAT_ID}}/$CHAT_ID/g" \
+      -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
       "$INSTALL_DIR/templates/CLAUDE.md.template" > "$INSTALL_DIR/CLAUDE.md"
   echo -e "  ${GREEN}✓${NC} CLAUDE.md generalva"
 fi
