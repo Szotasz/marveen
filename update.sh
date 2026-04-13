@@ -40,10 +40,8 @@ npm run build --silent
 
 # Restart services
 echo -e "  Szolgaltatasok ujrainditasa..."
-launchctl unload "$HOME/Library/LaunchAgents/com.marveen.dashboard.plist" 2>/dev/null || true
-launchctl load "$HOME/Library/LaunchAgents/com.marveen.dashboard.plist" 2>/dev/null || true
-launchctl unload "$HOME/Library/LaunchAgents/com.marveen.channels.plist" 2>/dev/null || true
-launchctl load "$HOME/Library/LaunchAgents/com.marveen.channels.plist" 2>/dev/null || true
+"$INSTALL_DIR/scripts/stop.sh"
+"$INSTALL_DIR/scripts/start.sh"
 
 echo ""
 echo -e "${GREEN}✓ Frissitve: ${OLD_VERSION} -> ${NEW_VERSION}${NC}"

@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { mkdirSync } from 'node:fs'
-import { STORE_DIR, ALLOWED_CHAT_ID } from './config.js'
+import { STORE_DIR, ALLOWED_CHAT_ID, OLLAMA_URL } from './config.js'
 
 let db: Database.Database
 
@@ -705,7 +705,6 @@ export function getActiveScheduledTaskCount(): { count: number; nextRun: number 
 
 // --- Vector Search (Ollama + nomic-embed-text) ---
 
-const OLLAMA_URL = 'http://localhost:11434'
 const EMBED_MODEL = 'nomic-embed-text'
 
 export async function generateEmbedding(text: string): Promise<number[] | null> {

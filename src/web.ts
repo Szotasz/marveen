@@ -5,7 +5,8 @@ import { homedir } from 'node:os'
 import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto'
 import { spawn, execSync, type ChildProcess } from 'node:child_process'
 import { CronExpressionParser } from 'cron-parser'
-import { PROJECT_ROOT } from './config.js'
+import { PROJECT_ROOT, OLLAMA_URL, WEB_HOST } from './config.js'
+import { resolveFromPath } from './platform.js'
 import { runAgent } from './agent.js'
 import { logger } from './logger.js'
 import {
@@ -253,8 +254,8 @@ function listAgentSummaries(): AgentSummary[] {
 
 // --- Agent process management (tmux-based) ---
 
-const TMUX = '/opt/homebrew/bin/tmux'
-const CLAUDE = '/opt/homebrew/bin/claude'
+const TMUX = resolveFromPath('tmux')
+const CLAUDE = resolveFromPath('claude')
 
 function agentSessionName(name: string): string {
   return `agent-${name}`
@@ -292,7 +293,7 @@ function startAgentProcess(name: string): { ok: boolean; pid?: number; error?: s
     // because tmux new-session does not inherit the caller's environment
     const model = readAgentModel(name)
     const isOllama = !model.startsWith('claude-')
-    const ollamaEnv = isOllama ? `export ANTHROPIC_AUTH_TOKEN=ollama && export ANTHROPIC_BASE_URL=http://localhost:11434 && ` : ''
+    const ollamaEnv = isOllama ? `export ANTHROPIC_AUTH_TOKEN=ollama && export ANTHROPIC_BASE_URL=${OLLAMA_URL} && ` : ''
     const cmd = `export TELEGRAM_STATE_DIR="${tgStateDir}" && ${ollamaEnv}cd "${dir}" && ${CLAUDE} --dangerously-skip-permissions --model ${model} --channels plugin:telegram@claude-plugins-official`
     execSync(
       `${TMUX} new-session -d -s ${session} "${cmd}"`,
@@ -1771,7 +1772,7 @@ Rovid leiras: "${finalPrompt}"`
         // Try to find a suitable Ollama model for categorization
         let categorizeModel: string | null = null
         try {
-          const ollamaModels = await fetch('http://localhost:11434/api/tags', { signal: AbortSignal.timeout(3000) })
+          const ollamaModels = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(3000) })
             .then(r => r.json())
             .then((d: any) => (d.models || []).filter((m: any) => !m.name.includes('embed')).map((m: any) => m.name))
             .catch(() => [] as string[])
@@ -1802,7 +1803,7 @@ Rovid leiras: "${finalPrompt}"`
             const controller = new AbortController()
             const timeout = setTimeout(() => controller.abort(), 90000)
 
-            const catResponse = await fetch('http://localhost:11434/api/generate', {
+            const catResponse = await fetch(`${OLLAMA_URL}/api/generate`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -2135,7 +2136,7 @@ Respond ONLY with JSON, nothing else:
       // === Ollama API ===
       if (path === '/api/ollama/models' && method === 'GET') {
         try {
-          const resp = await fetch('http://localhost:11434/api/tags', { signal: AbortSignal.timeout(5000) })
+          const resp = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(5000) })
           const data = await resp.json() as { models?: { name: string; size: number; details?: { parameter_size?: string } }[] }
           const models = (data.models || []).filter(m => !m.name.includes('embed')).map(m => ({
             name: m.name,
@@ -2319,7 +2320,7 @@ Respond ONLY with JSON, nothing else:
           // Determine Ollama model
           let categorizeModel: string | null = null
           try {
-            const modelsResp = await fetch('http://localhost:11434/api/tags', { signal: AbortSignal.timeout(3000) })
+            const modelsResp = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(3000) })
             const modelsData = await modelsResp.json() as { models?: { name: string }[] }
             const available = (modelsData.models || []).filter(m => !m.name.includes('embed')).map(m => m.name)
             categorizeModel = available.find(m => m.includes('gemma4')) || available[0] || null
@@ -2331,7 +2332,7 @@ Respond ONLY with JSON, nothing else:
               let keywords = ''
 
               if (categorizeModel) {
-                const catResp = await fetch('http://localhost:11434/api/generate', {
+                const catResp = await fetch(`${OLLAMA_URL}/api/generate`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({
@@ -2441,7 +2442,7 @@ Respond ONLY with JSON, nothing else:
       logger.warn({ port }, 'Web port foglalt, probalok felszabaditani...')
       import('node:child_process').then(({ execSync }) => {
         try {
-          execSync(`lsof -ti :${port} | xargs kill -9`, { timeout: 5000 })
+          execSync(`lsof -ti :${port} 2>/dev/null | xargs kill -9 2>/dev/null || true`, { timeout: 5000 })
         } catch { /* ignored */ }
         setTimeout(() => server.listen(port), 1500)
       })
@@ -2450,7 +2451,7 @@ Respond ONLY with JSON, nothing else:
     }
   })
 
-  server.listen(port, '127.0.0.1', () => {
+  server.listen(port, WEB_HOST, () => {
     logger.info({ port }, `Web dashboard: http://localhost:${port}`)
     // Access URL embeds the token so the browser can bootstrap auth on first
     // visit. The client strips the token from the URL after storing it.

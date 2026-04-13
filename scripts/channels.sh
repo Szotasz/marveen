@@ -10,10 +10,13 @@
 # Kézzel rácsatlakozás: tmux attach -t marveen-channels
 
 SESSION="marveen-channels"
-CLAUDE="/opt/homebrew/bin/claude"
-TMUX="/opt/homebrew/bin/tmux"
 
-export PATH="$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+export PATH="$HOME/.local/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+
+CLAUDE="$(command -v claude)"
+TMUX="$(command -v tmux)"
+[ -z "$CLAUDE" ] && echo "ERROR: claude not found on PATH" >&2 && exit 1
+[ -z "$TMUX" ]   && echo "ERROR: tmux not found on PATH" >&2 && exit 1
 
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 

@@ -2,10 +2,11 @@
 # Marveen - Reggeli napindító
 # LaunchAgent hívja minden nap 7:27-kor
 
-export PATH="$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+export PATH="$HOME/.local/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLAUDE="/opt/homebrew/bin/claude"
+CLAUDE="$(command -v claude)"
+[ -z "$CLAUDE" ] && echo "ERROR: claude not found on PATH" >&2 && exit 1
 LOG="$INSTALL_DIR/store/morning.log"
 
 # Load config

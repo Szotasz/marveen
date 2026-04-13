@@ -16,6 +16,9 @@ export const OWNER_NAME = env['OWNER_NAME'] ?? 'Szabolcs'
 
 export const WEB_PORT = parseInt(env['WEB_PORT'] ?? '3420', 10)
 
+export const WEB_HOST = env['WEB_HOST'] ?? '127.0.0.1'
+export const OLLAMA_URL = env['OLLAMA_URL'] ?? 'http://localhost:11434'
+
 // Heartbeat
 export const HEARTBEAT_INTERVAL_MS = 60 * 60 * 1000 // 1 hour
 export const HEARTBEAT_START_HOUR = 9
