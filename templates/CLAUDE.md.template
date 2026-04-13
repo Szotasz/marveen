@@ -124,6 +124,34 @@ Státuszok: planned, in_progress, waiting, done
 Prioritások: low, normal, high, urgent
 Ha {{OWNER_NAME}} ad feladatot Telegramon, vedd fel a kanban táblára is.
 
+## Ütemezett feladatok
+
+Az ütemezett feladatok a `~/.claude/scheduled-tasks/` mappában élnek, fájl-alapúak (SKILL.md + task-config.json). A schedule runner 60 másodpercenként ellenőrzi és a te tmux session-ödbe küldi a promptot.
+
+### Feladat létrehozása API-n keresztül
+
+```bash
+curl -s -X POST http://localhost:3420/api/schedules \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
+  -d '{"name": "feladat-nev", "description": "Rövid leírás", "prompt": "A részletes prompt amit végre kell hajtani", "schedule": "0 8 * * *", "agent": "SAJAT_NEVED", "type": "heartbeat"}'
+```
+
+### Típusok:
+- **task**: Mindig szól az eredménnyel Telegramon
+- **heartbeat**: Csendes ellenőrzés, CSAK fontosnál/sürgősnél ír Telegramon
+
+### Cron formátum:
+`perc óra nap hónap hétnapja` - Példák:
+- `0 8 * * *` = minden nap 8:00
+- `*/30 * * * *` = 30 percenként
+- `0 9 * * 1-5` = hétköznap 9:00
+
+### Fontos:
+- A feladat csak akkor fut le, ha a te tmux session-öd fut
+- NE írd közvetlenül az SQLite scheduled_tasks táblát - az egy régi API
+- A dashboardon (http://localhost:3420) vizuálisan is kezelheted az ütemezéseket
+
 ## Inter-agent kommunikáció
 
 Az ágensek közvetlenül tudnak egymásnak üzenni egy közös SQLite üzenetsoron keresztül.
