@@ -2450,16 +2450,18 @@ Respond ONLY with JSON, nothing else:
         const skills: { name: string; description: string; agents: string[]; path: string }[] = []
 
         if (existsSync(GLOBAL_SKILLS_DIR)) {
+          // Filter out non-skill directories (Claude Code internal structure)
+          const SKIP_DIRS = new Set(['skills', 'temp_skills', 'tmp_skills', '.skill-index.md'])
           const dirs = readdirSync(GLOBAL_SKILLS_DIR).filter(f => {
+            if (SKIP_DIRS.has(f)) return false
+            if (f.startsWith('.')) return false
             try { return statSync(join(GLOBAL_SKILLS_DIR, f)).isDirectory() } catch { return false }
           })
 
           for (const dir of dirs) {
             const skillMdPath = join(GLOBAL_SKILLS_DIR, dir, 'SKILL.md')
-            let description = ''
-            if (existsSync(skillMdPath)) {
-              description = parseSkillDescription(readFileOr(skillMdPath, ''))
-            }
+            if (!existsSync(skillMdPath)) continue // Skip dirs without SKILL.md
+            const description = parseSkillDescription(readFileOr(skillMdPath, ''))
 
             skills.push({
               name: dir,
