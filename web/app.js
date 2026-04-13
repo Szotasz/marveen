@@ -3169,7 +3169,196 @@ const connectorGrid = document.getElementById('connectorGrid')
 const connectorStats = document.getElementById('connectorStats')
 const connectorModalOverlay = document.getElementById('connectorModalOverlay')
 const connectorDetailOverlay = document.getElementById('connectorDetailOverlay')
+const catalogInstallOverlay = document.getElementById('catalogInstallOverlay')
 let connectors = []
+let catalogItems = []
+let catalogFilter = 'all'
+let catalogInstallTarget = null
+
+// Connector tab switching
+document.querySelectorAll('.connector-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.connector-tab').forEach(t => t.classList.remove('active'))
+    tab.classList.add('active')
+    const tabId = tab.dataset.ctab
+    document.getElementById('connectorInstalledTab').hidden = tabId !== 'installed'
+    document.getElementById('connectorGalleryTab').hidden = tabId !== 'gallery'
+    if (tabId === 'gallery') loadCatalog()
+  })
+})
+
+// Catalog filter buttons
+document.querySelectorAll('.catalog-filter-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.catalog-filter-btn').forEach(b => b.classList.remove('active'))
+    btn.classList.add('active')
+    catalogFilter = btn.dataset.cat
+    renderCatalog()
+  })
+})
+
+// Catalog install modal
+document.getElementById('catalogInstallClose').addEventListener('click', () => closeModal(catalogInstallOverlay))
+catalogInstallOverlay.addEventListener('click', (e) => { if (e.target === catalogInstallOverlay) closeModal(catalogInstallOverlay) })
+
+async function loadCatalog() {
+  const grid = document.getElementById('catalogGrid')
+  grid.innerHTML = '<div class="connector-loading"><span class="spinner"></span> Katalógus betöltése...</div>'
+  try {
+    const res = await fetch('/api/mcp-catalog')
+    catalogItems = await res.json()
+    renderCatalog()
+  } catch (err) {
+    console.error('Catalog load error:', err)
+    grid.innerHTML = '<div class="connector-loading">Hiba a katalógus betöltésekor</div>'
+  }
+}
+
+function renderCatalog() {
+  const grid = document.getElementById('catalogGrid')
+  grid.innerHTML = ''
+  const filtered = catalogFilter === 'all' ? catalogItems : catalogItems.filter(i => i.category === catalogFilter)
+  if (filtered.length === 0) {
+    grid.innerHTML = '<div class="connector-loading">Nincs találat ebben a kategóriában</div>'
+    return
+  }
+  for (const item of filtered) {
+    const card = document.createElement('div')
+    card.className = 'catalog-card'
+    const authHint = item.authType === 'oauth' && item.authNote ? `<span class="catalog-auth-hint">${escapeHtml(item.authNote)}</span>` : ''
+    card.innerHTML = `
+      <div class="catalog-card-header">
+        <div class="catalog-card-icon">${item.icon || '?'}</div>
+        <div class="catalog-card-info">
+          <div class="catalog-card-name">
+            ${escapeHtml(item.name)}
+            <span class="catalog-card-type ${item.type}">${item.type}</span>
+          </div>
+          <div class="catalog-card-desc">${escapeHtml(item.description)}</div>
+        </div>
+      </div>
+      <div class="catalog-card-footer">
+        ${item.installed
+          ? `<span class="catalog-install-btn installed">Telepítve &#10003;</span><a class="catalog-uninstall-link" data-id="${item.id}">Eltávolítás</a>`
+          : `<button class="catalog-install-btn install" data-id="${item.id}">Telepítés</button>${authHint}`
+        }
+      </div>
+    `
+    // Install button
+    const installBtn = card.querySelector('.catalog-install-btn.install')
+    if (installBtn) {
+      installBtn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        openCatalogInstall(item)
+      })
+    }
+    // Uninstall link
+    const uninstallLink = card.querySelector('.catalog-uninstall-link')
+    if (uninstallLink) {
+      uninstallLink.addEventListener('click', (e) => {
+        e.stopPropagation()
+        catalogUninstall(item)
+      })
+    }
+    grid.appendChild(card)
+  }
+}
+
+function openCatalogInstall(item) {
+  catalogInstallTarget = item
+  document.getElementById('catalogInstallTitle').textContent = `${item.icon} ${item.name} telepítése`
+  document.getElementById('catalogInstallDesc').textContent = item.description
+
+  const envContainer = document.getElementById('catalogInstallEnvFields')
+  envContainer.innerHTML = ''
+  const noteEl = document.getElementById('catalogInstallNote')
+  noteEl.hidden = true
+
+  if (item.authType === 'apikey') {
+    // Show env key input fields
+    const envKeys = Object.keys(item.env || {})
+    for (const key of envKeys) {
+      const div = document.createElement('div')
+      div.className = 'catalog-env-group'
+      div.innerHTML = `
+        <label>${escapeHtml(key)}</label>
+        <input type="text" data-env-key="${escapeHtml(key)}" placeholder="Illeszd be a ${escapeHtml(key)} értéket">
+      `
+      envContainer.appendChild(div)
+    }
+    if (item.authNote) {
+      noteEl.textContent = item.authNote
+      noteEl.hidden = false
+    }
+  } else if (item.authType === 'oauth') {
+    if (item.authNote) {
+      noteEl.textContent = item.authNote
+      noteEl.hidden = false
+    }
+  }
+  // authType === 'none' -> no extra fields
+
+  openModal(catalogInstallOverlay)
+}
+
+document.getElementById('catalogInstallBtn').addEventListener('click', async () => {
+  if (!catalogInstallTarget) return
+  const item = catalogInstallTarget
+  const btn = document.getElementById('catalogInstallBtn')
+
+  // Collect env values
+  const envData = {}
+  const envInputs = document.querySelectorAll('#catalogInstallEnvFields input[data-env-key]')
+  for (const input of envInputs) {
+    const key = input.dataset.envKey
+    const val = input.value.trim()
+    if (!val) {
+      input.focus()
+      showToast(`${key} megadása kötelező`)
+      return
+    }
+    envData[key] = val
+  }
+
+  btn.disabled = true
+  btn.querySelector('.btn-text').hidden = true
+  btn.querySelector('.btn-loading').hidden = false
+
+  try {
+    const res = await fetch(`/api/mcp-catalog/${encodeURIComponent(item.id)}/install`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ env: envData }),
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || 'Hiba')
+    closeModal(catalogInstallOverlay)
+    showToast(data.message || 'Telepítve!')
+    // Reload both views
+    loadCatalog()
+    loadConnectors()
+  } catch (err) {
+    showToast(`Hiba: ${err.message}`)
+  } finally {
+    btn.disabled = false
+    btn.querySelector('.btn-text').hidden = false
+    btn.querySelector('.btn-loading').hidden = true
+  }
+})
+
+async function catalogUninstall(item) {
+  if (!confirm(`Biztosan eltávolítod: ${item.name}?`)) return
+  try {
+    const res = await fetch(`/api/mcp-catalog/${encodeURIComponent(item.id)}/uninstall`, { method: 'DELETE' })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || 'Hiba')
+    showToast(data.message || 'Eltávolítva')
+    loadCatalog()
+    loadConnectors()
+  } catch (err) {
+    showToast(`Hiba: ${err.message}`)
+  }
+}
 
 // Modal wiring
 document.getElementById('addConnectorBtn').addEventListener('click', () => {

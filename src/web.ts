@@ -2168,6 +2168,108 @@ Respond ONLY with JSON, nothing else:
         return json(res, { ok: true })
       }
 
+      // === MCP Catalog API ===
+
+      // GET /api/mcp-catalog - Return catalog with installed status
+      if (path === '/api/mcp-catalog' && method === 'GET') {
+        try {
+          const catalogPath = join(PROJECT_ROOT, 'mcp-catalog.json')
+          const catalog = JSON.parse(readFileSync(catalogPath, 'utf-8')) as any[]
+
+          // Get installed MCP list
+          let installedNames: string[] = []
+          try {
+            const output = execSync('claude mcp list 2>&1', { timeout: 30000, encoding: 'utf-8' })
+            const lines = output.split('\n').filter(l => l.trim() && !l.startsWith('Checking'))
+            for (const line of lines) {
+              const match = line.match(/^(.+?):\s+/)
+              if (match) installedNames.push(match[1].trim().toLowerCase())
+            }
+          } catch { /* empty list if claude mcp list fails */ }
+
+          const result = catalog.map(item => ({
+            ...item,
+            installed: installedNames.some(n => n === item.name.toLowerCase() || n === item.id.toLowerCase()),
+          }))
+
+          return json(res, result)
+        } catch (err) {
+          logger.error({ err }, 'Failed to load MCP catalog')
+          return json(res, { error: 'Failed to load catalog' }, 500)
+        }
+      }
+
+      // POST /api/mcp-catalog/:id/install - Install an MCP from catalog
+      const catalogInstallMatch = path.match(/^\/api\/mcp-catalog\/([^/]+)\/install$/)
+      if (catalogInstallMatch && method === 'POST') {
+        const id = decodeURIComponent(catalogInstallMatch[1])
+        try {
+          const catalogPath = join(PROJECT_ROOT, 'mcp-catalog.json')
+          const catalog = JSON.parse(readFileSync(catalogPath, 'utf-8')) as any[]
+          const item = catalog.find(c => c.id === id)
+          if (!item) return json(res, { error: 'Item not found in catalog' }, 404)
+
+          const body = await readBody(req)
+          let envData: Record<string, string> = {}
+          try {
+            const parsed = JSON.parse(body.toString())
+            if (parsed.env) envData = parsed.env
+          } catch { /* no body or invalid json - that's ok */ }
+
+          if (item.type === 'local') {
+            // Build env flags
+            const allEnv = { ...item.env, ...envData }
+            const envFlags = Object.entries(allEnv)
+              .filter(([, v]) => v !== '')
+              .map(([k, v]) => `-e ${shellEscape(k)}=${shellEscape(v as string)}`)
+              .join(' ')
+
+            const argsStr = (item.args || []).map((a: string) => shellEscape(a)).join(' ')
+            const cmd = `claude mcp add --scope user ${envFlags} ${shellEscape(item.name)} -- ${shellEscape(item.command)} ${argsStr} 2>&1`
+            execSync(cmd, { timeout: 30000, encoding: 'utf-8' })
+          } else if (item.type === 'remote') {
+            const url = item.url
+            if (!url) return json(res, { error: 'Remote item has no URL' }, 400)
+            execSync(`claude mcp add --transport sse --scope user ${shellEscape(item.name)} ${shellEscape(url)} 2>&1`, { timeout: 30000, encoding: 'utf-8' })
+          }
+
+          let message = 'Telepítve'
+          if (item.authType === 'oauth' && item.authNote) {
+            message = `Telepítve. ${item.authNote}`
+          }
+
+          return json(res, { ok: true, message })
+        } catch (err: any) {
+          logger.error({ err }, 'Failed to install MCP from catalog')
+          return json(res, { error: err.message || 'Failed to install' }, 500)
+        }
+      }
+
+      // DELETE /api/mcp-catalog/:id/uninstall - Uninstall an MCP from catalog
+      const catalogUninstallMatch = path.match(/^\/api\/mcp-catalog\/([^/]+)\/uninstall$/)
+      if (catalogUninstallMatch && method === 'DELETE') {
+        const id = decodeURIComponent(catalogUninstallMatch[1])
+        try {
+          const catalogPath = join(PROJECT_ROOT, 'mcp-catalog.json')
+          const catalog = JSON.parse(readFileSync(catalogPath, 'utf-8')) as any[]
+          const item = catalog.find(c => c.id === id)
+          if (!item) return json(res, { error: 'Item not found in catalog' }, 404)
+
+          try {
+            execSync(`claude mcp remove ${shellEscape(item.name)} -s user 2>&1`, { timeout: 15000 })
+          } catch {
+            try {
+              execSync(`claude mcp remove ${shellEscape(item.name)} -s project 2>&1`, { timeout: 15000 })
+            } catch { /* ignore if not found anywhere */ }
+          }
+
+          return json(res, { ok: true, message: 'Eltávolítva' })
+        } catch (err: any) {
+          logger.error({ err }, 'Failed to uninstall MCP from catalog')
+          return json(res, { error: err.message || 'Failed to uninstall' }, 500)
+        }
+      }
+
       // === Ollama API ===
       if (path === '/api/ollama/models' && method === 'GET') {
         try {

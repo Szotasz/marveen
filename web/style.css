@@ -2508,6 +2508,216 @@ main {
   gap: 10px;
 }
 
+/* === Connector Tabs === */
+.connector-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 24px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0;
+}
+.connector-tab {
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: all var(--transition);
+  margin-bottom: -1px;
+}
+.connector-tab:hover {
+  color: var(--text);
+}
+.connector-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* === Catalog Filters === */
+.catalog-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 20px;
+}
+.catalog-filter-btn {
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--bg-card);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.catalog-filter-btn:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.catalog-filter-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* === Catalog Grid === */
+.catalog-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+.catalog-card {
+  display: flex;
+  flex-direction: column;
+  padding: 20px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: all var(--transition);
+  gap: 12px;
+}
+.catalog-card:hover {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+.catalog-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.catalog-card-icon {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  font-size: 22px;
+}
+.catalog-card-info {
+  flex: 1;
+  min-width: 0;
+}
+.catalog-card-name {
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--text);
+  margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.catalog-card-type {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.catalog-card-type.local {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.catalog-card-type.remote {
+  background: var(--info-soft);
+  color: var(--info);
+}
+.catalog-card-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.catalog-card-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.catalog-install-btn {
+  padding: 6px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.catalog-install-btn.install {
+  background: var(--success);
+  color: #fff;
+}
+.catalog-install-btn.install:hover {
+  filter: brightness(1.1);
+}
+.catalog-install-btn.installed {
+  background: var(--success-soft);
+  color: var(--success);
+  cursor: default;
+  font-weight: 600;
+}
+.catalog-uninstall-link {
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-decoration: none;
+  margin-left: auto;
+  transition: color var(--transition);
+}
+.catalog-uninstall-link:hover {
+  color: var(--danger);
+  text-decoration: underline;
+}
+.catalog-auth-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-left: 4px;
+}
+
+/* Catalog install modal env fields */
+.catalog-env-group {
+  margin-bottom: 14px;
+}
+.catalog-env-group label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+  font-family: monospace;
+}
+.catalog-env-group input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text);
+  font-size: 14px;
+}
+.catalog-env-group input:focus {
+  border-color: var(--border-focus);
+  outline: none;
+}
+
 /* === Status Page === */
 .status-overall {
   display: flex;
@@ -2956,6 +3166,9 @@ main {
   .timeline-marker-tooltip { font-size: 10px; }
   .connector-grid { grid-template-columns: 1fr; }
   .connector-stats { gap: 8px; }
+  .catalog-grid { grid-template-columns: 1fr; }
+  .catalog-filters { gap: 4px; }
+  .catalog-filter-btn { padding: 5px 10px; font-size: 12px; }
   .skills-grid { grid-template-columns: 1fr; }
   .skills-stats { gap: 8px; }
 }

@@ -277,13 +277,37 @@
         </div>
       </div>
 
-      <div class="connector-stats" id="connectorStats"></div>
+      <!-- Connector tabs -->
+      <div class="connector-tabs">
+        <button class="connector-tab active" data-ctab="installed">Telepített</button>
+        <button class="connector-tab" data-ctab="gallery">Galéria</button>
+      </div>
 
-      <div class="connector-section-header">Beépített</div>
-      <div class="connector-builtin-grid" id="connectorBuiltinGrid"></div>
+      <!-- Installed tab -->
+      <div class="connector-tab-content" id="connectorInstalledTab">
+        <div class="connector-stats" id="connectorStats"></div>
 
-      <div class="connector-section-header">Telepített</div>
-      <div class="connector-grid" id="connectorGrid"></div>
+        <div class="connector-section-header">Beépített</div>
+        <div class="connector-builtin-grid" id="connectorBuiltinGrid"></div>
+
+        <div class="connector-section-header">Telepített</div>
+        <div class="connector-grid" id="connectorGrid"></div>
+      </div>
+
+      <!-- Gallery tab -->
+      <div class="connector-tab-content" id="connectorGalleryTab" hidden>
+        <div class="catalog-filters" id="catalogFilters">
+          <button class="catalog-filter-btn active" data-cat="all">Összes</button>
+          <button class="catalog-filter-btn" data-cat="productivity">Produktivitás</button>
+          <button class="catalog-filter-btn" data-cat="communication">Kommunikáció</button>
+          <button class="catalog-filter-btn" data-cat="search">Keresés</button>
+          <button class="catalog-filter-btn" data-cat="development">Fejlesztés</button>
+          <button class="catalog-filter-btn" data-cat="ai">AI</button>
+          <button class="catalog-filter-btn" data-cat="finance">Pénzügy</button>
+          <button class="catalog-filter-btn" data-cat="system">Rendszer</button>
+        </div>
+        <div class="catalog-grid" id="catalogGrid"></div>
+      </div>
     </div>
     <!-- === Migration Page === -->
     <div class="page" id="migratePage" hidden>
@@ -991,6 +1015,25 @@
         <div class="detail-actions" style="margin-top:20px">
           <button class="btn-danger" id="connectorDeleteBtn">Törlés</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Catalog Install -->
+  <div class="modal-overlay" id="catalogInstallOverlay">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 id="catalogInstallTitle">MCP telepítés</h2>
+        <button class="modal-close" id="catalogInstallClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p id="catalogInstallDesc" style="color:var(--text-secondary);font-size:14px;margin-bottom:16px"></p>
+        <div id="catalogInstallEnvFields"></div>
+        <p id="catalogInstallNote" style="color:var(--text-muted);font-size:13px;margin-bottom:16px" hidden></p>
+        <button class="btn-primary" id="catalogInstallBtn" style="width:100%">
+          <span class="btn-text">Telepítés</span>
+          <span class="btn-loading" hidden><span class="spinner"></span> Telepítés...</span>
+        </button>
       </div>
     </div>
   </div>
