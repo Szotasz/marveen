@@ -16,6 +16,7 @@ function detect(): PlatformType {
 export const PLATFORM: PlatformType = detect()
 
 export function resolveFromPath(name: string): string {
+  if (!/^[a-zA-Z0-9._-]+$/.test(name)) throw new Error('Invalid binary name: ' + name)
   try {
     return execSync(`which ${name}`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
   } catch {

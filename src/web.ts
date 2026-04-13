@@ -893,6 +893,7 @@ export function startWebServer(port = 3420): http.Server {
   const allowedOrigins = new Set([
     `http://localhost:${port}`,
     `http://127.0.0.1:${port}`,
+    ...( WEB_HOST !== 'localhost' && WEB_HOST !== '127.0.0.1' ? [`http://${WEB_HOST}:${port}`] : []),
   ])
   const isSafeMethod = (m: string) => m === 'GET' || m === 'HEAD' || m === 'OPTIONS'
 
