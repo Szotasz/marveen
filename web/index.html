@@ -19,6 +19,7 @@
         <a href="#" class="nav-link active" data-page="kanban">Kanban</a>
         <a href="#" class="nav-link" data-page="agents">Csapat</a>
         <a href="#" class="nav-link" data-page="tasks">Ütemezések</a>
+        <a href="#" class="nav-link" data-page="skills">Skillek</a>
         <a href="#" class="nav-link" data-page="memories">Memória</a>
         <a href="#" class="nav-link" data-page="connectors">Connectorok</a>
         <a href="#" class="nav-link" data-page="migrate">Költöztetés</a>
@@ -154,6 +155,28 @@
         <div class="week-grid" id="weekGrid"></div>
       </div>
     </div>
+
+    <!-- === Skills Page === -->
+    <div class="page" id="skillsPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1>Skillek</h1>
+            <p class="subtitle">Globalis skillek kezelese es hozzarendelese</p>
+          </div>
+        </div>
+      </div>
+      <div class="skills-stats" id="skillsStats"></div>
+      <div class="skills-grid" id="skillsGrid"></div>
+      <div class="skills-empty" id="skillsEmpty" hidden>
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/>
+        </svg>
+        <p>Nincsenek globalis skillek</p>
+      </div>
+    </div>
+
+    <!-- === Skills Detail Modal === -->
 
     <!-- === Memories Page === -->
     <div class="page" id="memoriesPage" hidden>
@@ -967,6 +990,31 @@
         </div>
         <div class="detail-actions" style="margin-top:20px">
           <button class="btn-danger" id="connectorDeleteBtn">Törlés</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Skill detail -->
+  <div class="modal-overlay" id="skillDetailOverlay">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <h2 id="skillDetailTitle">Skill reszletek</h2>
+        <button class="modal-close" id="skillDetailClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="skill-detail-desc" id="skillDetailDesc"></div>
+        <div class="skill-detail-agents">
+          <label class="form-label-sm">Hozzarendeles agensekhez</label>
+          <div class="skill-agent-checkboxes" id="skillAgentCheckboxes"></div>
+          <button class="btn-primary btn-compact" id="skillAssignBtn" style="margin-top:12px">
+            <span class="btn-text">Mentes</span>
+            <span class="btn-loading" hidden><span class="spinner"></span> Mentes...</span>
+          </button>
+        </div>
+        <div class="skill-detail-content-wrap">
+          <label class="form-label-sm">SKILL.md tartalom</label>
+          <div class="skill-detail-content" id="skillDetailContent"></div>
         </div>
       </div>
     </div>

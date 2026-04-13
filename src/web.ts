@@ -2407,6 +2407,139 @@ Respond ONLY with JSON, nothing else:
         return json(res, { ok: true, imported, stats, details })
       }
 
+      // === Global Skills API ===
+
+      // Parse description from SKILL.md frontmatter
+      function parseSkillDescription(content: string): string {
+        const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---/)
+        if (!fmMatch) return ''
+        const fm = fmMatch[1]
+        // Find the description line
+        const descLine = fm.match(/^description:\s*(.+)/im)
+        if (!descLine) return ''
+        let val = descLine[1].trim()
+        // Handle quoted values (may span until closing quote)
+        if (val.startsWith('"')) {
+          // Find everything between first and last double-quote on this line
+          const quoted = val.match(/^"(.*)"/)
+          if (quoted) return quoted[1].trim()
+          // Multiline quoted - unlikely in practice but handle gracefully
+          return val.replace(/^"/, '').replace(/"$/, '').trim()
+        }
+        if (val.startsWith("'")) {
+          const quoted = val.match(/^'(.*)'/)
+          if (quoted) return quoted[1].trim()
+          return val.replace(/^'/, '').replace(/'$/, '').trim()
+        }
+        return val
+      }
+
+      // Get agents assigned to a specific global skill
+      function getSkillAgents(skillDirName: string): string[] {
+        const agents: string[] = []
+        for (const agentName of listAgentNames()) {
+          const agentSkillDir = join(AGENTS_BASE_DIR, agentName, '.claude', 'skills', skillDirName)
+          if (existsSync(agentSkillDir)) agents.push(agentName)
+        }
+        return agents
+      }
+
+      // GET /api/skills - List all global skills with agent assignments
+      if (path === '/api/skills' && method === 'GET') {
+        const GLOBAL_SKILLS_DIR = join(homedir(), '.claude', 'skills')
+        const skills: { name: string; description: string; agents: string[]; path: string }[] = []
+
+        if (existsSync(GLOBAL_SKILLS_DIR)) {
+          const dirs = readdirSync(GLOBAL_SKILLS_DIR).filter(f => {
+            try { return statSync(join(GLOBAL_SKILLS_DIR, f)).isDirectory() } catch { return false }
+          })
+
+          for (const dir of dirs) {
+            const skillMdPath = join(GLOBAL_SKILLS_DIR, dir, 'SKILL.md')
+            let description = ''
+            if (existsSync(skillMdPath)) {
+              description = parseSkillDescription(readFileOr(skillMdPath, ''))
+            }
+
+            skills.push({
+              name: dir,
+              description,
+              agents: getSkillAgents(dir),
+              path: join(GLOBAL_SKILLS_DIR, dir),
+            })
+          }
+        }
+
+        return json(res, skills)
+      }
+
+      // GET /api/skills/:name - Get detailed skill info
+      const globalSkillDetailMatch = path.match(/^\/api\/skills\/([^/]+)$/)
+      if (globalSkillDetailMatch && method === 'GET') {
+        const skillName = decodeURIComponent(globalSkillDetailMatch[1])
+        const GLOBAL_SKILLS_DIR = join(homedir(), '.claude', 'skills')
+        const skillDir = join(GLOBAL_SKILLS_DIR, skillName)
+
+        if (!existsSync(skillDir)) return json(res, { error: 'Skill not found' }, 404)
+
+        const skillMdPath = join(skillDir, 'SKILL.md')
+        const content = readFileOr(skillMdPath, '')
+        const description = parseSkillDescription(content)
+
+        // List files in the skill directory
+        const files: string[] = []
+        try {
+          for (const entry of readdirSync(skillDir)) files.push(entry)
+        } catch { /* empty */ }
+
+        return json(res, {
+          name: skillName,
+          description,
+          content,
+          agents: getSkillAgents(skillName),
+          path: skillDir,
+          files,
+        })
+      }
+
+      // POST /api/skills/:name/assign - Assign skill to agents
+      const globalSkillAssignMatch = path.match(/^\/api\/skills\/([^/]+)\/assign$/)
+      if (globalSkillAssignMatch && method === 'POST') {
+        const skillName = decodeURIComponent(globalSkillAssignMatch[1])
+        const GLOBAL_SKILLS_DIR = join(homedir(), '.claude', 'skills')
+        const globalSkillDir = join(GLOBAL_SKILLS_DIR, skillName)
+
+        if (!existsSync(globalSkillDir)) return json(res, { error: 'Skill not found' }, 404)
+
+        const body = await readBody(req)
+        const { agents: targetAgents } = JSON.parse(body.toString()) as { agents: string[] }
+
+        const allAgentNames = listAgentNames()
+
+        // Copy skill to agents that should have it
+        for (const agentName of targetAgents) {
+          if (!allAgentNames.includes(agentName)) continue
+          const agentSkillsDir = join(AGENTS_BASE_DIR, agentName, '.claude', 'skills')
+          mkdirSync(agentSkillsDir, { recursive: true })
+          const destDir = join(agentSkillsDir, skillName)
+          // Remove existing and copy fresh
+          if (existsSync(destDir)) rmSync(destDir, { recursive: true, force: true })
+          execSync(`cp -r ${shellEscape(globalSkillDir)} ${shellEscape(destDir)}`, { timeout: 10000 })
+        }
+
+        // Remove skill from agents not in the target list
+        for (const agentName of allAgentNames) {
+          if (targetAgents.includes(agentName)) continue
+          const agentSkillDir = join(AGENTS_BASE_DIR, agentName, '.claude', 'skills', skillName)
+          if (existsSync(agentSkillDir)) {
+            rmSync(agentSkillDir, { recursive: true, force: true })
+          }
+        }
+
+        logger.info({ skillName, agents: targetAgents }, 'Skill assignment updated')
+        return json(res, { ok: true })
+      }
+
       // === Status API ===
       if (path === '/api/status' && method === 'GET') {
         try {

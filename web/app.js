@@ -73,6 +73,7 @@ function switchPage(pageId) {
   if (pageId === 'tasks') loadSchedules()
   if (pageId === 'agents') loadAgents()
   if (pageId === 'memories') { loadMemAgents(); loadMemStats(); loadMemories() }
+  if (pageId === 'skills') loadGlobalSkills()
   if (pageId === 'connectors') loadConnectors()
   if (pageId === 'migrate') loadMigrateAgents()
   if (pageId === 'status') loadStatus()
@@ -3812,6 +3813,171 @@ document.getElementById('migrateNewBtn').addEventListener('click', () => {
   document.getElementById('migrateStep2').hidden = true
   document.getElementById('migrateStep3').hidden = true
 })
+
+// ============================================================
+// === Skills Page ===
+// ============================================================
+
+const skillsGrid = document.getElementById('skillsGrid')
+const skillsStats = document.getElementById('skillsStats')
+const skillsEmpty = document.getElementById('skillsEmpty')
+const skillDetailOverlay = document.getElementById('skillDetailOverlay')
+
+let globalSkills = []
+
+document.getElementById('skillDetailClose').addEventListener('click', () => closeModal(skillDetailOverlay))
+skillDetailOverlay.addEventListener('click', (e) => { if (e.target === skillDetailOverlay) closeModal(skillDetailOverlay) })
+
+async function loadGlobalSkills() {
+  skillsGrid.innerHTML = '<div class="connector-loading"><span class="spinner"></span> Skillek betoltese...</div>'
+  skillsStats.innerHTML = ''
+  try {
+    const res = await fetch('/api/skills')
+    globalSkills = await res.json()
+    renderGlobalSkills()
+  } catch (err) {
+    console.error('Skills betoltes hiba:', err)
+    skillsGrid.innerHTML = '<div class="connector-loading">Hiba a betoltes soran</div>'
+  }
+}
+
+function getSkillIcon(name) {
+  if (name.includes('factory') || name.includes('creator')) return '\u{1F3ED}'
+  if (name.includes('blog') || name.includes('post')) return '\u{1F4DD}'
+  if (name.includes('image') || name.includes('thumbnail') || name.includes('fal')) return '\u{1F3A8}'
+  if (name.includes('frontend') || name.includes('design')) return '\u{1F58C}\uFE0F'
+  if (name.includes('youtube') || name.includes('video') || name.includes('seo')) return '\u{1F3AC}'
+  if (name.includes('docx') || name.includes('doc')) return '\u{1F4C4}'
+  if (name.includes('skool')) return '\u{1F393}'
+  if (name.includes('skill')) return '\u{1F9E9}'
+  return '\u2699\uFE0F'
+}
+
+function renderGlobalSkills() {
+  skillsGrid.innerHTML = ''
+
+  const withSkillMd = globalSkills.filter(s => s.description)
+  const totalAssigned = globalSkills.reduce((sum, s) => sum + s.agents.length, 0)
+  const unassigned = globalSkills.filter(s => s.agents.length === 0).length
+
+  skillsStats.innerHTML = `
+    <div class="stat-card"><div class="stat-value">${globalSkills.length}</div><div class="stat-label">Osszes skill</div></div>
+    <div class="stat-card"><div class="stat-value" style="color:var(--success)">${withSkillMd.length}</div><div class="stat-label">Dokumentalt</div></div>
+    <div class="stat-card"><div class="stat-value" style="color:var(--info)">${totalAssigned}</div><div class="stat-label">Hozzarendelesek</div></div>
+    ${unassigned ? `<div class="stat-card"><div class="stat-value" style="color:var(--text-muted)">${unassigned}</div><div class="stat-label">Nincs agensnel</div></div>` : ''}
+  `
+
+  if (globalSkills.length === 0) {
+    skillsEmpty.hidden = false
+    return
+  }
+  skillsEmpty.hidden = true
+
+  for (const skill of globalSkills) {
+    const card = document.createElement('div')
+    card.className = 'skills-card'
+    const icon = getSkillIcon(skill.name)
+    const agentBadges = skill.agents.length > 0
+      ? skill.agents.map(a => `<span class="skills-agent-badge">${escapeHtml(a)}</span>`).join('')
+      : '<span class="skills-agent-badge none">nincs hozzarendelve</span>'
+
+    card.innerHTML = `
+      <div class="skills-card-header">
+        <div class="skills-card-icon">${icon}</div>
+        <div class="skills-card-info">
+          <div class="skills-card-name">${escapeHtml(skill.name)}</div>
+          <div class="skills-card-desc">${escapeHtml(skill.description || 'Nincs leiras')}</div>
+        </div>
+      </div>
+      <div class="skills-card-footer">
+        ${agentBadges}
+      </div>
+    `
+    card.addEventListener('click', () => openSkillDetail(skill.name))
+    skillsGrid.appendChild(card)
+  }
+}
+
+async function openSkillDetail(skillName) {
+  document.getElementById('skillDetailTitle').textContent = skillName
+
+  try {
+    const res = await fetch(`/api/skills/${encodeURIComponent(skillName)}`)
+    if (!res.ok) throw new Error('Failed to fetch skill detail')
+    const detail = await res.json()
+
+    // Description
+    const descEl = document.getElementById('skillDetailDesc')
+    descEl.textContent = detail.description || 'Nincs leiras'
+
+    // Content
+    const contentEl = document.getElementById('skillDetailContent')
+    contentEl.textContent = detail.content || '(SKILL.md nem talalhato)'
+
+    // Agent checkboxes
+    const checkboxesEl = document.getElementById('skillAgentCheckboxes')
+    checkboxesEl.innerHTML = ''
+
+    try {
+      const agentsRes = await fetch('/api/schedules/agents')
+      const allAgents = await agentsRes.json()
+      const assignableAgents = allAgents.filter(a => a.name !== 'marveen')
+
+      if (assignableAgents.length === 0) {
+        checkboxesEl.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Nincsenek hozzarendelheto agensek</p>'
+      } else {
+        for (const agent of assignableAgents) {
+          const isChecked = detail.agents.includes(agent.name)
+          const item = document.createElement('div')
+          item.className = 'skill-agent-checkbox'
+          item.innerHTML = `
+            <input type="checkbox" id="skill-assign-${agent.name}" value="${agent.name}" ${isChecked ? 'checked' : ''}>
+            <label for="skill-assign-${agent.name}">${escapeHtml(agent.label || agent.name)}</label>
+          `
+          checkboxesEl.appendChild(item)
+        }
+      }
+    } catch {
+      checkboxesEl.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Agensek betoltese sikertelen</p>'
+    }
+
+    // Assign button
+    const assignBtn = document.getElementById('skillAssignBtn')
+    assignBtn.onclick = async () => {
+      const checked = checkboxesEl.querySelectorAll('input[type="checkbox"]:checked')
+      const agents = Array.from(checked).map(cb => cb.value)
+
+      assignBtn.disabled = true
+      assignBtn.querySelector('.btn-text').hidden = true
+      assignBtn.querySelector('.btn-loading').hidden = false
+
+      try {
+        const assignRes = await fetch(`/api/skills/${encodeURIComponent(skillName)}/assign`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agents }),
+        })
+        if (!assignRes.ok) throw new Error('Assign failed')
+        showToast('Hozzarendeles mentve')
+        loadGlobalSkills()
+      } catch {
+        showToast('Hiba a mentes soran')
+      } finally {
+        assignBtn.disabled = false
+        assignBtn.querySelector('.btn-text').hidden = false
+        assignBtn.querySelector('.btn-loading').hidden = true
+      }
+    }
+
+  } catch (err) {
+    console.error('Skill detail hiba:', err)
+    document.getElementById('skillDetailDesc').textContent = 'Hiba a betoltes soran'
+    document.getElementById('skillDetailContent').textContent = ''
+    document.getElementById('skillAgentCheckboxes').innerHTML = ''
+  }
+
+  openModal(skillDetailOverlay)
+}
 
 // === Init ===
 populateAvatarGrid()
