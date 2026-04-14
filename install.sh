@@ -355,6 +355,12 @@ cat > "$PLIST_DIR/com.marveen.channels.plist" << PLISTEOF
     <string>/opt/homebrew/bin:${HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>HOME</key>
     <string>${HOME}</string>
+    <key>USER</key>
+    <string>${USER}</string>
+    <key>TERM</key>
+    <string>xterm-256color</string>
+    <key>LANG</key>
+    <string>${LANG:-en_US.UTF-8}</string>
   </dict>
 </dict>
 </plist>
