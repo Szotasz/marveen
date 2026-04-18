@@ -822,14 +822,12 @@ function startMessageRouter(): NodeJS.Timeout {
 }
 
 // --- Telegram Plugin Health Monitor ---
-// The Claude Code <-> telegram MCP channel can drop silently:
-//   * the bun server.ts grandchild can die (process loss), or
-//   * the MCP transport on the Claude side can stall while bun is alive.
-// In either case the Telegram bot stops responding. For non-Marveen agents
-// we can recover by killing+respawning the tmux session through the
-// existing dashboard helpers. For Marveen we must alert the operator
-// instead, because the marveen-channels session hosts the running Marveen
-// process itself (suicide-by-restart would lose the live conversation).
+// Detect when the bun server.ts grandchild dies under a Claude session
+// by walking the process tree. (We deliberately don't pane-scan for
+// "Failed to reconnect" strings -- those persist in scrollback and fire
+// false positives, e.g. if the source containing the regex is shown.)
+// Agents recover via stop+start; for marveen-channels we can only alert,
+// because killing it would terminate the live Marveen session.
 
 function getClaudePidForSession(session: string): number | null {
   try {
@@ -871,19 +869,13 @@ function hasTelegramPluginAlive(claudePid: number): boolean {
       if (seen.has(p)) continue
       seen.add(p)
       const cmd = cmdOf.get(p) || ''
-      if (cmd.includes('bun') && cmd.includes('server.ts') && cmd.includes('telegram')) return true
+      // The plugin runs as `bun run --cwd .../telegram/...` with a `bun server.ts`
+      // grandchild. Either hit is proof the plugin is up.
+      if (cmd.includes('/telegram/') && cmd.includes('bun')) return true
+      if (/\bbun\b/.test(cmd) && cmd.includes('server.ts')) return true
       for (const k of (childrenOf.get(p) || [])) stack.push(k)
     }
     return false
-  } catch {
-    return false
-  }
-}
-
-function paneShowsTelegramFailure(session: string): boolean {
-  try {
-    const pane = execFileSync(TMUX, ['capture-pane', '-t', session, '-p', '-S', '-100'], { timeout: 3000, encoding: 'utf-8' })
-    return /plugin:telegram:telegram\s*·\s*✘\s*failed|Failed to reconnect to plugin:telegram:telegram/.test(pane)
   } catch {
     return false
   }
@@ -920,9 +912,7 @@ function startTelegramPluginMonitor(): NodeJS.Timeout {
       const claudePid = getClaudePidForSession(t.session)
       if (!claudePid) continue
       const alive = hasTelegramPluginAlive(claudePid)
-      const failedMsg = paneShowsTelegramFailure(t.session)
-      const down = !alive || failedMsg
-      if (!down) {
+      if (alive) {
         if (pluginDownSince.has(t.session)) {
           logger.info({ session: t.session }, 'Telegram plugin recovered')
           pluginDownSince.delete(t.session)
@@ -932,15 +922,15 @@ function startTelegramPluginMonitor(): NodeJS.Timeout {
       const since = pluginDownSince.get(t.session)
       const isFirst = since === undefined
       if (isFirst) pluginDownSince.set(t.session, Date.now())
-      const reason = !alive ? 'bun server.ts process eltunt' : 'pane: Failed to reconnect'
+      const reason = 'bun server.ts process eltunt'
       if (t.isMarveen) {
         if (isFirst || (since !== undefined && Date.now() - since > PLUGIN_ALERT_DEDUP_MS)) {
-          logger.warn({ session: t.session, alive, failedMsg }, 'Marveen Telegram plugin down -- alerting')
+          logger.warn({ session: t.session }, 'Marveen Telegram plugin down -- alerting')
           alertMarveenPluginDown(reason).catch(() => {})
           pluginDownSince.set(t.session, Date.now())
         }
       } else {
-        logger.warn({ agent: t.agentName, alive, failedMsg }, 'Agent Telegram plugin down -- auto-restarting')
+        logger.warn({ agent: t.agentName }, 'Agent Telegram plugin down -- auto-restarting')
         try {
           stopAgentProcess(t.agentName!)
           execSync('sleep 2', { timeout: 4000 })
