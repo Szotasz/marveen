@@ -908,23 +908,107 @@ function hasTelegramPluginAlive(claudePid: number): boolean {
   }
 }
 
-const pluginDownSince: Map<string, number> = new Map()
+const agentDownSince: Map<string, number> = new Map()
 const PLUGIN_ALERT_DEDUP_MS = 30 * 60 * 1000
+const MARVEEN_CHANNELS_PLIST = join(homedir(), 'Library', 'LaunchAgents', 'com.marveen.channels.plist')
 
-async function alertMarveenPluginDown(reason: string): Promise<void> {
+// Marveen recovery is a 3-stage escalator because killing the session
+// terminates the live Marveen conversation, so we try cheap fixes first.
+type MarveenRecoveryStage = 'soft' | 'hard' | 'gave_up'
+interface MarveenDownState {
+  downSince: number
+  stage: MarveenRecoveryStage
+  lastAlertAt: number
+}
+let marveenDownState: MarveenDownState | null = null
+
+async function sendMarveenAlert(text: string): Promise<void> {
   try {
     const envPath = join(PROJECT_ROOT, '.env')
     const envContent = readFileOr(envPath, '')
     const tokenMatch = envContent.match(/TELEGRAM_BOT_TOKEN=(.+)/)
     const token = tokenMatch?.[1]?.trim()
     if (!token) return
-    await sendTelegramMessage(
-      token,
-      ALLOWED_CHAT_ID,
-      `⚠️ Marveen Telegram plugin lecsatlakozott (${reason}). Magamat nem tudom restartolni -- nyomj /mcp-t a marveen-channels session-ben hogy reconnect-eljen.`,
-    )
+    await sendTelegramMessage(token, ALLOWED_CHAT_ID, text)
   } catch (err) {
-    logger.warn({ err }, 'Failed to send marveen plugin-down alert')
+    logger.warn({ err }, 'Failed to send marveen plugin alert')
+  }
+}
+
+function softReconnectMarveen(): void {
+  // /mcp opens Claude Code's MCP status dialog; a follow-up Enter picks
+  // the first action (Reconnect if the plugin is disconnected). We send
+  // Escape first in case a different dialog is already open.
+  try {
+    execFileSync(TMUX, ['send-keys', '-t', 'marveen-channels', 'Escape'], { timeout: 3000 })
+    execFileSync('/bin/sleep', ['0.2'], { timeout: 1000 })
+    execFileSync(TMUX, ['send-keys', '-t', 'marveen-channels', '/mcp', 'Enter'], { timeout: 3000 })
+    execFileSync('/bin/sleep', ['0.3'], { timeout: 1000 })
+    execFileSync(TMUX, ['send-keys', '-t', 'marveen-channels', 'Enter'], { timeout: 3000 })
+    logger.info('Marveen soft reconnect: sent /mcp + Enter')
+  } catch (err) {
+    logger.warn({ err }, 'Marveen soft reconnect failed')
+  }
+}
+
+export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
+  try {
+    execFileSync('/bin/launchctl', ['unload', MARVEEN_CHANNELS_PLIST], { timeout: 5000 })
+    execFileSync('/bin/sleep', ['2'], { timeout: 4000 })
+    execFileSync('/bin/launchctl', ['load', MARVEEN_CHANNELS_PLIST], { timeout: 5000 })
+    logger.warn('Marveen hard restart: launchctl reload of com.marveen.channels')
+    return { ok: true }
+  } catch (err) {
+    logger.error({ err }, 'Marveen hard restart failed')
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+function handleMarveenDown(): void {
+  const now = Date.now()
+  if (!marveenDownState) {
+    // First tick of this outage: log, alert, try the soft fix.
+    marveenDownState = { downSince: now, stage: 'soft', lastAlertAt: now }
+    logger.warn('Marveen Telegram plugin down -- stage 1 (soft /mcp reconnect)')
+    sendMarveenAlert('⚠️ Marveen Telegram plugin lecsatlakozott. Próbálok /mcp-vel reconnectálni...').catch(() => {})
+    softReconnectMarveen()
+    return
+  }
+  if (marveenDownState.stage === 'soft') {
+    // Soft didn't help; escalate to hard restart.
+    marveenDownState.stage = 'hard'
+    marveenDownState.lastAlertAt = now
+    logger.warn('Marveen Telegram plugin still down -- stage 2 (hard restart)')
+    sendMarveenAlert('⚠️ /mcp reconnect nem segített. Hard restart a marveen-channels session-ön (a live conversation elveszik, memória megmarad).').catch(() => {})
+    hardRestartMarveenChannels()
+    return
+  }
+  if (marveenDownState.stage === 'hard') {
+    // Hard didn't help either; give up, keep alerting.
+    marveenDownState.stage = 'gave_up'
+    marveenDownState.lastAlertAt = now
+    logger.error('Marveen Telegram plugin still down after hard restart -- giving up auto-recovery')
+    sendMarveenAlert('🚨 Hard restart SEM segített. Kézzel kell megnézni: `tmux attach -t marveen-channels` és `launchctl list | grep marveen`.').catch(() => {})
+    return
+  }
+  // gave_up -- re-alert at most every PLUGIN_ALERT_DEDUP_MS.
+  if (now - marveenDownState.lastAlertAt > PLUGIN_ALERT_DEDUP_MS) {
+    marveenDownState.lastAlertAt = now
+    sendMarveenAlert('🚨 Marveen Telegram plugin még mindig halott. Nézd meg kézzel.').catch(() => {})
+  }
+}
+
+function handleMarveenUp(): void {
+  if (marveenDownState) {
+    const downedFor = Math.round((Date.now() - marveenDownState.downSince) / 1000)
+    const stage = marveenDownState.stage
+    logger.info({ stage, downedFor }, 'Marveen Telegram plugin recovered')
+    if (stage !== 'soft') {
+      // Only alert on recovery if we actually escalated -- otherwise it's
+      // just a transient blip and a "recovered" message would be noise.
+      sendMarveenAlert(`✅ Marveen Telegram plugin helyreállt (${stage} után, ${downedFor}s kiesés).`).catch(() => {})
+    }
+    marveenDownState = null
   }
 }
 
@@ -937,32 +1021,30 @@ function startTelegramPluginMonitor(): NodeJS.Timeout {
     }
     for (const t of targets) {
       const claudePid = getClaudePidForSession(t.session)
-      if (!claudePid) continue
+      if (!claudePid) {
+        if (t.isMarveen) handleMarveenDown()
+        continue
+      }
       const alive = hasTelegramPluginAlive(claudePid)
       if (alive) {
-        if (pluginDownSince.has(t.session)) {
-          logger.info({ session: t.session }, 'Telegram plugin recovered')
-          pluginDownSince.delete(t.session)
+        if (t.isMarveen) {
+          handleMarveenUp()
+        } else if (agentDownSince.has(t.session)) {
+          logger.info({ session: t.session }, 'Agent Telegram plugin recovered')
+          agentDownSince.delete(t.session)
         }
         continue
       }
-      const since = pluginDownSince.get(t.session)
-      const isFirst = since === undefined
-      if (isFirst) pluginDownSince.set(t.session, Date.now())
-      const reason = 'bun server.ts process eltunt'
       if (t.isMarveen) {
-        if (isFirst || (since !== undefined && Date.now() - since > PLUGIN_ALERT_DEDUP_MS)) {
-          logger.warn({ session: t.session }, 'Marveen Telegram plugin down -- alerting')
-          alertMarveenPluginDown(reason).catch(() => {})
-          pluginDownSince.set(t.session, Date.now())
-        }
+        handleMarveenDown()
       } else {
+        if (!agentDownSince.has(t.session)) agentDownSince.set(t.session, Date.now())
         logger.warn({ agent: t.agentName }, 'Agent Telegram plugin down -- auto-restarting')
         try {
           stopAgentProcess(t.agentName!)
           execSync('sleep 2', { timeout: 4000 })
           startAgentProcess(t.agentName!)
-          pluginDownSince.delete(t.session)
+          agentDownSince.delete(t.session)
         } catch (err) {
           logger.error({ err, agent: t.agentName }, 'Failed to auto-restart agent after telegram plugin down')
         }
@@ -2166,6 +2248,16 @@ Respond ONLY with JSON, nothing else:
         const data = JSON.parse(body.toString()) as { description?: string }
         // Marveen's description is in CLAUDE.md personality section - for now just return ok
         // Full CLAUDE.md editing is complex, so we acknowledge the update
+        return json(res, { ok: true })
+      }
+
+      // POST /api/marveen/restart - Hard-restart the marveen-channels session.
+      // Destructive: the live Marveen conversation terminates; memory persists
+      // in SQLite so the next session resumes with full context. Use when the
+      // Telegram plugin is stuck and you're away from a terminal.
+      if (path === '/api/marveen/restart' && method === 'POST') {
+        const result = hardRestartMarveenChannels()
+        if (!result.ok) return json(res, { error: result.error || 'Restart failed' }, 500)
         return json(res, { ok: true })
       }
 

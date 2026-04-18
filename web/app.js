@@ -693,9 +693,12 @@ async function openMarveenDetail() {
   // Process control for Marveen - always running, no start/stop
   document.getElementById('processDot').className = 'process-dot running'
   document.getElementById('processLabel').textContent = 'Fut'
-  document.getElementById('processUptime').textContent = 'tmux: claudeclaw-channels'
+  document.getElementById('processUptime').textContent = 'tmux: marveen-channels'
   document.getElementById('agentStartBtn').hidden = true
   document.getElementById('agentStopBtn').hidden = true
+  // Surface the "channels restart" button -- destructive, but mobile-safe
+  // when the Telegram plugin wedges and you're away from a terminal.
+  document.getElementById('marveenRestartBtn').hidden = false
 
   // Settings tab - load CLAUDE.md
   try {
@@ -838,6 +841,9 @@ async function openAgentDetail(agentName) {
   // Process control
   updateProcessControl(currentAgent)
 
+  // Channels restart button is Marveen-only -- hide on normal agents.
+  document.getElementById('marveenRestartBtn').hidden = true
+
   // Delete button (restore visibility for normal agents)
   document.getElementById('deleteAgentBtn').style.display = ''
   document.getElementById('deleteAgentBtn').onclick = async () => {
@@ -946,6 +952,24 @@ function updateProcessControl(agent) {
     uptime.textContent = ''
   }
 }
+
+document.getElementById('marveenRestartBtn').addEventListener('click', async () => {
+  if (!confirm('Hard restart a marveen-channels session-ön. A folyamatban lévő Marveen beszélgetés elveszik (memória megmarad). Folytatod?')) return
+  const btn = document.getElementById('marveenRestartBtn')
+  btn.disabled = true
+  try {
+    const res = await fetch('/api/marveen/restart', { method: 'POST' })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      throw new Error(err.error || 'Restart sikertelen')
+    }
+    showToast('Marveen channels újraindítva')
+  } catch (err) {
+    showToast(`Hiba: ${err.message}`)
+  } finally {
+    btn.disabled = false
+  }
+})
 
 document.getElementById('agentStartBtn').addEventListener('click', async () => {
   if (!currentAgent) return
