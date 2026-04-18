@@ -185,8 +185,8 @@ fi
 
 # Install Telegram plugin
 echo -e "  Telegram plugin telepites..."
-# Ensure plugin registry is configured
-claude plugin add-registry claude-plugins-official https://github.com/anthropics/claude-plugins-official 2>/dev/null
+# Ensure plugin marketplace is configured (idempotent: ignore "already added")
+claude plugin marketplace add anthropics/claude-plugins-official 2>/dev/null || true
 # Install the plugin (retry once if fails)
 if claude plugin install telegram@claude-plugins-official 2>/dev/null; then
   echo -e "  ${GREEN}✓${NC} Telegram plugin telepitve"
