@@ -55,11 +55,23 @@ if [ "$MISSING" -eq 1 ]; then
   echo ""
   echo -e "${ORANGE}Hianyzo fuggosegek telepitese Homebrew-val...${NC}"
   if ! command -v brew &>/dev/null; then
-    echo -e "${RED}Homebrew nem talalhato. Telepitsd: https://brew.sh${NC}"
-    exit 1
+    echo -e "${ORANGE}Homebrew nincs telepitve. Megprobalom most (sudo jelszo kellhet)...${NC}"
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    # Homebrew on Apple Silicon installs to /opt/homebrew; add it to PATH now
+    # so subsequent `brew` calls in this script succeed without a shell restart.
+    if [ -x /opt/homebrew/bin/brew ]; then
+      eval "$(/opt/homebrew/bin/brew shellenv)"
+    elif [ -x /usr/local/bin/brew ]; then
+      eval "$(/usr/local/bin/brew shellenv)"
+    fi
+    if ! command -v brew &>/dev/null; then
+      echo -e "${RED}Homebrew telepitese sikertelen. Telepitsd manualisan (https://brew.sh) es futtasd ujra az installert.${NC}"
+      exit 1
+    fi
   fi
   command -v node &>/dev/null || brew install node@22
   command -v tmux &>/dev/null || brew install tmux
+  command -v git &>/dev/null || brew install git
   echo -e "${GREEN}✓ Fuggosegek telepitve${NC}"
 fi
 
@@ -101,6 +113,30 @@ read -p "  Szeretned most bejelentkezni? (i/n) " DO_AUTH
 if [ "$DO_AUTH" = "i" ]; then
   claude auth login
 fi
+
+# Mark the Claude Code first-run wizard as completed so the tmux-spawned
+# `claude --channels ...` process doesn't stop on the theme picker and
+# block the Telegram plugin from ever initializing.
+mkdir -p "$HOME/.claude"
+python3 - <<'PYEOF'
+import json, os, pathlib
+p = pathlib.Path(os.path.expanduser("~/.claude.json"))
+data = {}
+if p.exists():
+    try:
+        data = json.loads(p.read_text())
+    except Exception:
+        data = {}
+data["hasCompletedOnboarding"] = True
+if not data.get("theme"):
+    data["theme"] = "dark"
+p.write_text(json.dumps(data, indent=2))
+try:
+    os.chmod(p, 0o600)
+except Exception:
+    pass
+PYEOF
+echo -e "  ${GREEN}✓${NC} Claude Code first-run beallitas kesz"
 
 # Step 3: Personal info
 echo ""
@@ -164,6 +200,16 @@ if [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
       -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
       "$INSTALL_DIR/templates/CLAUDE.md.template" > "$INSTALL_DIR/CLAUDE.md"
   echo -e "  ${GREEN}✓${NC} CLAUDE.md generalva"
+fi
+
+# Generate SOUL.md from template (personality definition for the main agent).
+# Sub-agents get theirs from the LLM generator, but the main agent didn't
+# have one before, so the dashboard showed "Nincs SOUL.md".
+if [ -f "$INSTALL_DIR/templates/SOUL.md.template" ] && [ ! -f "$INSTALL_DIR/SOUL.md" ]; then
+  sed -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
+      -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
+      "$INSTALL_DIR/templates/SOUL.md.template" > "$INSTALL_DIR/SOUL.md"
+  echo -e "  ${GREEN}✓${NC} SOUL.md generalva"
 fi
 
 # Setup Telegram channel

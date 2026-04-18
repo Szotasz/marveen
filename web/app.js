@@ -452,6 +452,7 @@ let currentAgent = null
 let wizardStep = 1
 let generatedClaudeMd = ''
 let generatedSoulMd = ''
+let wizardCreatedName = ''
 
 // === Modal helpers ===
 function openModal(overlay) {
@@ -515,6 +516,7 @@ function resetWizard() {
   document.querySelectorAll('#avatarGrid .avatar-grid-item').forEach(i => i.classList.remove('selected'))
   generatedClaudeMd = ''
   generatedSoulMd = ''
+  wizardCreatedName = ''
   document.getElementById('wizardClaudeMd').value = ''
   document.getElementById('wizardSoulMd').value = ''
   updateWizardUI()
@@ -564,10 +566,15 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
     }
 
     const result = await res.json()
+    // Backend sanitizes the name (lowercase ASCII, NFD-stripped accents).
+    // Use the sanitized form for every follow-up request so accented input
+    // like "étrendíró" still resolves to the real agent dir "etrendiro".
+    const createdName = result.name || name
+    wizardCreatedName = createdName
     statusEl.textContent = 'SOUL.md generálás...'
 
     // Fetch full agent details to get generated content
-    const detailRes = await fetch(`/api/agents/${encodeURIComponent(name)}`)
+    const detailRes = await fetch(`/api/agents/${encodeURIComponent(createdName)}`)
     if (detailRes.ok) {
       const detail = await detailRes.json()
       generatedClaudeMd = detail.claudeMd || detail.content || ''
@@ -578,7 +585,7 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
 
     // Set gallery avatar if selected
     if (selectedAvatar) {
-      await fetch(`/api/agents/${encodeURIComponent(name)}/avatar`, {
+      await fetch(`/api/agents/${encodeURIComponent(createdName)}/avatar`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ galleryAvatar: selectedAvatar }),
@@ -607,7 +614,9 @@ document.getElementById('wizardBackBtn').addEventListener('click', () => {
 
 // Step 3 -> Create (finalize with edits)
 document.getElementById('wizardCreateBtn').addEventListener('click', async () => {
-  const name = agentName.value.trim()
+  // Use the backend-sanitized name stored in wizardCreatedName, not the raw
+  // input field -- accents in the input would miss the real agent dir.
+  const name = wizardCreatedName || agentName.value.trim()
   const claudeMd = document.getElementById('wizardClaudeMd').value
   const soulMd = document.getElementById('wizardSoulMd').value
   const createBtn = document.getElementById('wizardCreateBtn')
@@ -741,13 +750,16 @@ function renderAgents() {
   }
 
   for (const agent of agents) {
+    // agent.name is the sanitized id (API/filesystem); displayName keeps the
+    // original accented/cased input the user typed.
+    const label = agent.displayName || agent.name
     const card = document.createElement('div')
     card.className = 'agent-card'
     card.dataset.name = agent.name
-    const initial = agent.name.charAt(0).toUpperCase()
+    const initial = label.charAt(0).toUpperCase()
     const gradientClass = getAvatarGradient(agent.name)
     const avatarHtml = (agent.hasImage || agent.hasAvatar)
-      ? `<img src="/api/agents/${encodeURIComponent(agent.name)}/avatar?t=${Date.now()}" alt="${escapeHtml(agent.name)}">`
+      ? `<img src="/api/agents/${encodeURIComponent(agent.name)}/avatar?t=${Date.now()}" alt="${escapeHtml(label)}">`
       : initial
 
     const modelClass = agent.model && agent.model !== 'inherit' ? agent.model : ''
@@ -763,7 +775,7 @@ function renderAgents() {
       <div class="agent-card-top">
         <div class="agent-avatar ${gradientClass}">${avatarHtml}</div>
         <div class="agent-card-info">
-          <div class="agent-name">${escapeHtml(agent.name)}</div>
+          <div class="agent-name">${escapeHtml(label)}</div>
           <div class="agent-desc">${escapeHtml(agent.description || '')}</div>
         </div>
       </div>
@@ -789,18 +801,20 @@ async function openAgentDetail(agentName) {
     return
   }
 
+  const detailLabel = currentAgent.displayName || currentAgent.name
+
   // Title
-  document.getElementById('agentDetailTitle').textContent = currentAgent.name
+  document.getElementById('agentDetailTitle').textContent = detailLabel
 
   // Overview tab
-  const initial = currentAgent.name.charAt(0).toUpperCase()
+  const initial = detailLabel.charAt(0).toUpperCase()
   const gradientClass = getAvatarGradient(currentAgent.name)
   const avatar = document.getElementById('agentDetailAvatar')
   avatar.className = 'detail-avatar ' + gradientClass
   avatar.innerHTML = (currentAgent.hasImage || currentAgent.hasAvatar)
-    ? `<img src="/api/agents/${encodeURIComponent(currentAgent.name)}/avatar" alt="${escapeHtml(currentAgent.name)}">`
+    ? `<img src="/api/agents/${encodeURIComponent(currentAgent.name)}/avatar" alt="${escapeHtml(detailLabel)}">`
     : initial
-  document.getElementById('agentDetailName').textContent = currentAgent.name
+  document.getElementById('agentDetailName').textContent = detailLabel
   document.getElementById('agentDetailDesc').textContent = currentAgent.description || ''
   document.getElementById('agentDetailModel').textContent = currentAgent.model || 'inherit'
 

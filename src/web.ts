@@ -88,6 +88,7 @@ function checkBearerToken(header: string | undefined, expected: string): boolean
 
 interface AgentSummary {
   name: string
+  displayName: string
   description: string
   model: string
   hasTelegram: boolean
@@ -108,7 +109,12 @@ interface AgentDetail extends AgentSummary {
 
 
 function sanitizeAgentName(raw: string): string {
+  // NFD + combining-mark strip so Hungarian input like "étrendíró" decays
+  // to "etrendiro" instead of silently losing every accented character
+  // and producing "trendr".
   return raw.trim().toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9-]/g, '')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
@@ -189,6 +195,25 @@ function writeAgentModel(name: string, model: string): void {
   writeFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
+function readAgentDisplayName(name: string): string {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}'))
+    const raw = typeof config.displayName === 'string' ? config.displayName.trim() : ''
+    if (raw) return raw
+  } catch { /* fall through */ }
+  // Fall back to a title-cased version of the sanitized name.
+  return name.charAt(0).toUpperCase() + name.slice(1)
+}
+
+function writeAgentDisplayName(name: string, displayName: string): void {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  let config: Record<string, unknown> = {}
+  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  config.displayName = displayName
+  writeFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
 function readAgentTelegramConfig(name: string): { hasTelegram: boolean; botUsername?: string } {
   const envPath = join(agentDir(name), '.claude', 'channels', 'telegram', '.env')
   if (!existsSync(envPath)) return { hasTelegram: false }
@@ -211,6 +236,7 @@ function getAgentSummary(name: string): AgentSummary {
 
   return {
     name,
+    displayName: readAgentDisplayName(name),
     description: extractDescriptionFromClaudeMd(claudeMd),
     model: readAgentModel(name),
     hasTelegram: tg.hasTelegram,
@@ -379,11 +405,12 @@ Generate a comprehensive CLAUDE.md that includes:
 - Clear role and responsibilities based on the description above
 - Behavioral guidelines
 - Communication style
-- Language rules (Hungarian with Szabolcs, English for code/technical)
+- Language rules (Hungarian with ${OWNER_NAME}, English for code/technical)
 - Tool usage guidelines relevant to the agent's role
 - Any domain-specific instructions
 
-The owner is Szabolcs (Szota Szabolcs), an AI consultant from Budapest.
+The owner's name is ${OWNER_NAME}. Use this exact name everywhere the CLAUDE.md
+refers to the owner/user. Do not substitute or invent any other name.
 
 IMPORTANT FORMATTING RULES:
 - Write ALL Hungarian text with proper accents (á, é, í, ó, ö, ő, ú, ü, ű). NEVER write Hungarian without accents.
@@ -443,7 +470,7 @@ Description: ${description}
 Generate a personality definition that includes:
 - Core personality traits
 - Communication tone and style
-- How it addresses the user (Szabolcs)
+- How it addresses the user (whose name is ${OWNER_NAME} -- use this name, not any other)
 - Unique quirks or characteristics
 - What it should avoid
 
@@ -478,10 +505,10 @@ Generate a SKILL.md with this structure:
    - ## Instructions - step-by-step guide for Claude
    - ## Output format - what the output should look like
    - ## Examples - 1-2 concrete examples with Input/Output
-   - ## Language rules - Hungarian with Szabolcs (the user), English for code/technical
+   - ## Language rules - Hungarian with ${OWNER_NAME} (the user), English for code/technical
    - ## What to avoid - common pitfalls
 
-Keep the body under 200 lines. Be specific and actionable. The owner is Szabolcs (Szota Szabolcs), an AI consultant from Budapest.
+Keep the body under 200 lines. Be specific and actionable. The owner's name is ${OWNER_NAME}; use only this name when referring to the user.
 Output ONLY the markdown content, no code fences.`
 
   const { text } = await runAgent(prompt)
@@ -1146,7 +1173,8 @@ export function startWebServer(port = 3420): http.Server {
         const body = await readBody(req)
         const data = JSON.parse(body.toString())
         const { description, model: rawModel } = data as { name: string; description: string; model?: string }
-        const name = sanitizeAgentName(data.name || '')
+        const rawName = typeof data.name === 'string' ? data.name.trim() : ''
+        const name = sanitizeAgentName(rawName)
         const model = resolveModelId(rawModel || DEFAULT_MODEL)
 
         if (!name) return json(res, { error: 'Name is required' }, 400)
@@ -1155,6 +1183,9 @@ export function startWebServer(port = 3420): http.Server {
 
         scaffoldAgentDir(name)
         writeAgentModel(name, model)
+        // Preserve the original (accented, cased) name for UI display; the
+        // sanitized form stays the filesystem/API identifier.
+        if (rawName && rawName !== name) writeAgentDisplayName(name, rawName)
 
         logger.info({ name, description }, 'Generating agent CLAUDE.md and SOUL.md...')
         try {
@@ -1261,9 +1292,12 @@ export function startWebServer(port = 3420): http.Server {
         const tgDir = join(agentDir(name), '.claude', 'channels', 'telegram')
         mkdirSync(tgDir, { recursive: true })
         writeFileSync(join(tgDir, '.env'), `TELEGRAM_BOT_TOKEN=${botToken.trim()}\n`, { mode: 0o600 })
+        // pairing mode lets the first unknown sender trigger a 6-digit code
+        // exchange. allowlist mode silently drops anything outside allowFrom,
+        // which left new sub-agents impossible to pair with over Telegram.
         writeFileSync(join(tgDir, 'access.json'), JSON.stringify({
-          dmPolicy: 'allowlist',
-          allowFrom: [ALLOWED_CHAT_ID],
+          dmPolicy: 'pairing',
+          allowFrom: [],
           groups: {},
           pending: {},
         }, null, 2))
