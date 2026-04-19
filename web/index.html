@@ -622,6 +622,16 @@
 
         <!-- Tab: Settings -->
         <div class="tab-panel" id="tabSettings" hidden>
+          <div class="form-group" id="marveenReadonlyNote" hidden>
+            <div style="padding:12px 14px;background:var(--bg-input);border-radius:var(--radius);border-left:3px solid var(--accent);font-size:13px;line-height:1.5;color:var(--text-muted)">
+              <strong style="color:var(--text)">Főagent konfiguráció -- csak olvasható</strong><br>
+              A főagent identitás-fájljai biztonsági okból dashboardról nem szerkeszthetők
+              (token szivárgás esetén távoli identitás-átírás kockázata).
+              Szerkesztéshez nyisd meg fájlrendszerből a projekt gyökerében:
+              <code>CLAUDE.md</code>, <code>SOUL.md</code>, <code>.mcp.json</code> --
+              vagy szólj az agent-nek Telegramon, hogy módosítsa.
+            </div>
+          </div>
           <div class="form-group">
             <label for="editAgentModel">Modell</label>
             <select id="editAgentModel">

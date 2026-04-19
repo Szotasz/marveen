@@ -224,6 +224,37 @@ function readAgentTelegramConfig(name: string): { hasTelegram: boolean; botUsern
   return { hasTelegram: true }
 }
 
+// Marveen's Telegram channel lives under the global ~/.claude path, not
+// under agents/marveen, because the main agent reuses the system Claude
+// Code channel install. Read it the same way the plugin does.
+function readMarveenTelegramConfig(): { hasTelegram: boolean; botUsername?: string } {
+  const envPath = join(homedir(), '.claude', 'channels', 'telegram', '.env')
+  if (!existsSync(envPath)) return { hasTelegram: false }
+  const content = readFileOr(envPath, '')
+  const tokenMatch = content.match(/TELEGRAM_BOT_TOKEN=(.+)/)
+  const token = tokenMatch?.[1]?.trim()
+  if (!token) return { hasTelegram: false }
+  return { hasTelegram: true, botUsername: marveenBotUsernameCache.value }
+}
+
+// Bot username changes require a restart anyway, so a long cache is fine.
+const marveenBotUsernameCache: { value?: string; fetchedAt: number } = { fetchedAt: 0 }
+async function refreshMarveenBotUsername(): Promise<void> {
+  const envPath = join(homedir(), '.claude', 'channels', 'telegram', '.env')
+  if (!existsSync(envPath)) return
+  const tokenMatch = readFileOr(envPath, '').match(/TELEGRAM_BOT_TOKEN=(.+)/)
+  const token = tokenMatch?.[1]?.trim()
+  if (!token) return
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${token}/getMe`)
+    const data = await r.json() as { ok?: boolean; result?: { username?: string } }
+    if (data.ok && data.result?.username) {
+      marveenBotUsernameCache.value = `@${data.result.username}`
+      marveenBotUsernameCache.fetchedAt = Date.now()
+    }
+  } catch { /* offline; cache stays stale */ }
+}
+
 function getAgentSummary(name: string): AgentSummary {
   const dir = agentDir(name)
   const claudeMd = readFileOr(join(dir, 'CLAUDE.md'), '')
@@ -1436,12 +1467,18 @@ export function startWebServer(port = 3420): http.Server {
         return json(res, { ok: true })
       }
 
-      // GET /api/agents/:name/telegram/pending - List pending pairing codes
+      // GET /api/agents/:name/telegram/pending - List pending pairing codes.
+      // Marveen is special-cased to read from the global ~/.claude/channels
+      // path, which is where her plugin actually stores access state.
       const tgPendingMatch = path.match(/^\/api\/agents\/([^/]+)\/telegram\/pending$/)
       if (tgPendingMatch && method === 'GET') {
         const name = decodeURIComponent(tgPendingMatch[1])
-        if (!existsSync(agentDir(name))) return json(res, { error: 'Agent not found' }, 404)
-        const accessPath = join(agentDir(name), '.claude', 'channels', 'telegram', 'access.json')
+        const accessPath = name === 'marveen'
+          ? join(homedir(), '.claude', 'channels', 'telegram', 'access.json')
+          : join(agentDir(name), '.claude', 'channels', 'telegram', 'access.json')
+        if (name !== 'marveen' && !existsSync(agentDir(name))) {
+          return json(res, { error: 'Agent not found' }, 404)
+        }
         const accessContent = readFileOr(accessPath, '{}')
         try {
           const access = JSON.parse(accessContent)
@@ -1463,13 +1500,17 @@ export function startWebServer(port = 3420): http.Server {
       const tgApproveMatch = path.match(/^\/api\/agents\/([^/]+)\/telegram\/approve$/)
       if (tgApproveMatch && method === 'POST') {
         const name = decodeURIComponent(tgApproveMatch[1])
-        if (!existsSync(agentDir(name))) return json(res, { error: 'Agent not found' }, 404)
+        if (name !== 'marveen' && !existsSync(agentDir(name))) {
+          return json(res, { error: 'Agent not found' }, 404)
+        }
 
         const body = await readBody(req)
         const { code } = JSON.parse(body.toString()) as { code: string }
         if (!code?.trim()) return json(res, { error: 'Code is required' }, 400)
 
-        const tgDir = join(agentDir(name), '.claude', 'channels', 'telegram')
+        const tgDir = name === 'marveen'
+          ? join(homedir(), '.claude', 'channels', 'telegram')
+          : join(agentDir(name), '.claude', 'channels', 'telegram')
         const accessPath = join(tgDir, 'access.json')
         const accessContent = readFileOr(accessPath, '{}')
 
@@ -2259,6 +2300,8 @@ Respond ONLY with JSON, nothing else:
       // === Marveen (self) API ===
       if (path === '/api/marveen' && method === 'GET') {
         const claudeMd = readFileOr(join(PROJECT_ROOT, 'CLAUDE.md'), '')
+        const soulMd = readFileOr(join(PROJECT_ROOT, 'SOUL.md'), '')
+        const mcpJson = readFileOr(join(PROJECT_ROOT, '.mcp.json'), '')
         const soulSection = claudeMd.match(/## Személyiség\n\n([\s\S]*?)(?=\n## )/)?.[1]?.trim()
           || claudeMd.match(/## Szemelyiseg\n\n([\s\S]*?)(?=\n## )/)?.[1]?.trim()
           || ''
@@ -2266,23 +2309,31 @@ Respond ONLY with JSON, nothing else:
         const firstLine = claudeMd.match(/^Te .+$/m)?.[0]?.trim() || ''
         const descFromPersonality = soulSection.split('\n').filter(l => l.trim()).slice(0, 2).join(' ').slice(0, 200)
         const description = firstLine || descFromPersonality || `${OWNER_NAME} AI asszisztense`
+        const tg = readMarveenTelegramConfig()
         return json(res, {
           name: BOT_NAME,
           description,
           model: 'claude-opus-4-6',
           running: true,
-          hasTelegram: true,
+          hasTelegram: tg.hasTelegram,
+          telegramBotUsername: tg.botUsername,
           role: 'main',
           personality: soulSection,
+          claudeMd,
+          soulMd,
+          mcpJson,
+          readonly: true,
         })
       }
 
       if (path === '/api/marveen' && method === 'PUT') {
-        const body = await readBody(req)
-        const data = JSON.parse(body.toString()) as { description?: string }
-        // Marveen's description is in CLAUDE.md personality section - for now just return ok
-        // Full CLAUDE.md editing is complex, so we acknowledge the update
-        return json(res, { ok: true })
+        // Intentionally read-only: Marveen's CLAUDE.md / SOUL.md / .mcp.json
+        // must be edited from the filesystem or via a Telegram request to
+        // Marveen herself, not through the dashboard. A leaked dashboard
+        // token would otherwise allow remote identity rewrite of the live
+        // agent. The frontend hides save buttons for marveen; this stub is
+        // defense-in-depth.
+        return json(res, { ok: true, readonly: true })
       }
 
       // POST /api/marveen/restart - Hard-restart the marveen-channels session.
@@ -3064,6 +3115,10 @@ Respond ONLY with JSON, nothing else:
   // Start Telegram plugin health monitor
   const pluginMonitorInterval = startTelegramPluginMonitor()
   logger.info('Telegram plugin health monitor started (60s poll)')
+
+  // Warm the Marveen bot username cache so /api/marveen returns @username
+  // on the first dashboard load. Re-fetched lazily otherwise.
+  refreshMarveenBotUsername().catch(() => {})
 
   // Cleanup router on server close
   const origClose = server.close.bind(server)

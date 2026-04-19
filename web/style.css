@@ -553,6 +553,8 @@ main {
   background: var(--bg-input);
   border-radius: var(--radius);
   margin-top: 20px;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 .process-status {
   display: flex;
@@ -569,6 +571,7 @@ main {
 .process-actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 /* === Add Card === */
@@ -3111,6 +3114,25 @@ main {
   color: var(--text);
   cursor: pointer;
   flex: 1;
+}
+
+.skill-agent-auto,
+.connector-agent-auto {
+  opacity: 0.85;
+  background: var(--bg-input);
+}
+
+.tag-auto {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
 }
 
 .skill-detail-content-wrap {

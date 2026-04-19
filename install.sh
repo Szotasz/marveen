@@ -136,6 +136,29 @@ try:
 except Exception:
     pass
 PYEOF
+
+# Pre-accept the --dangerously-skip-permissions confirmation dialog so the
+# headless `claude --channels ...` session in scripts/channels.sh doesn't
+# park on it forever (the dialog needs interactive Enter and there's no TTY
+# attached). Claude Code maintains this flag itself once accepted manually,
+# but we have to seed it before the first launchd-spawned session.
+python3 - <<'PYEOF'
+import json, os, pathlib
+p = pathlib.Path(os.path.expanduser("~/.claude/settings.json"))
+data = {}
+if p.exists():
+    try:
+        data = json.loads(p.read_text())
+    except Exception:
+        data = {}
+data["skipDangerousModePermissionPrompt"] = True
+p.parent.mkdir(parents=True, exist_ok=True)
+p.write_text(json.dumps(data, indent=2))
+try:
+    os.chmod(p, 0o600)
+except Exception:
+    pass
+PYEOF
 echo -e "  ${GREEN}✓${NC} Claude Code first-run beallitas kesz"
 
 # Step 3: Personal info

@@ -700,16 +700,31 @@ async function openMarveenDetail() {
   // when the Telegram plugin wedges and you're away from a terminal.
   document.getElementById('marveenRestartBtn').hidden = false
 
-  // Settings tab - load CLAUDE.md
+  // Settings tab - load real CLAUDE.md / SOUL.md / .mcp.json (read-only).
+  // Editing the main agent's identity files via the dashboard is intentionally
+  // not allowed: a leaked dashboard token would otherwise let a remote user
+  // rewrite the live agent's instructions. Edit via filesystem or by asking
+  // Marveen on Telegram instead.
+  let mFull = m
   try {
     const claudeRes = await fetch('/api/marveen')
     if (claudeRes.ok) {
-      const data = await claudeRes.json()
-      document.getElementById('editClaudeMd').value = `(${displayName} CLAUDE.md szerkesztése a projekt CLAUDE.md fájlban)`
-      document.getElementById('editSoulMd').value = data.personality || ''
-      document.getElementById('editMcpJson').value = ''
+      mFull = await claudeRes.json()
+      document.getElementById('editClaudeMd').value = mFull.claudeMd || ''
+      document.getElementById('editSoulMd').value = mFull.soulMd || ''
+      document.getElementById('editMcpJson').value = mFull.mcpJson || ''
     }
   } catch {}
+  applyMarveenReadonlyMode(true)
+
+  // Telegram tab -- without this the tab stays in the default "not connected"
+  // view even though the bot is running and receiving messages.
+  updateTelegramTab({
+    name: 'marveen',
+    hasTelegram: mFull.hasTelegram !== undefined ? mFull.hasTelegram : true,
+    telegramBotUsername: mFull.telegramBotUsername,
+    running: true,
+  })
 
   // Delete button - hide for Marveen
   document.getElementById('deleteAgentBtn').style.display = 'none'
@@ -717,6 +732,25 @@ async function openMarveenDetail() {
   document.getElementById('detailAvatarGallery').hidden = true
   switchAgentTab('overview')
   openModal(agentDetailOverlay)
+}
+
+function applyMarveenReadonlyMode(readOnly) {
+  const textareaIds = ['editClaudeMd', 'editSoulMd', 'editMcpJson']
+  const saveButtonIds = ['saveClaudeMdBtn', 'saveSoulMdBtn', 'saveMcpJsonBtn', 'saveModelBtn']
+  for (const id of textareaIds) {
+    const el = document.getElementById(id)
+    if (!el) continue
+    if (readOnly) el.setAttribute('readonly', 'readonly')
+    else el.removeAttribute('readonly')
+  }
+  const modelSelect = document.getElementById('editAgentModel')
+  if (modelSelect) modelSelect.disabled = readOnly
+  for (const id of saveButtonIds) {
+    const btn = document.getElementById(id)
+    if (btn) btn.hidden = readOnly
+  }
+  const note = document.getElementById('marveenReadonlyNote')
+  if (note) note.hidden = !readOnly
 }
 
 
@@ -843,6 +877,9 @@ async function openAgentDetail(agentName) {
 
   // Channels restart button is Marveen-only -- hide on normal agents.
   document.getElementById('marveenRestartBtn').hidden = true
+
+  // Restore editable Settings (Marveen detail flips this to read-only).
+  applyMarveenReadonlyMode(false)
 
   // Delete button (restore visibility for normal agents)
   document.getElementById('deleteAgentBtn').style.display = ''
@@ -3530,26 +3567,42 @@ async function openConnectorDetail(connector) {
     document.getElementById('connectorDetailInfo').innerHTML = '<p>Részletek betöltése sikertelen</p>'
   }
 
-  // Agent assignment
+  // Agent assignment. Marveen auto-loads global connectors via the project
+  // .mcp.json, so she shows up as a fixed disabled-checked entry; sub-agents
+  // need explicit assignment because the file gets copied into their dir.
   try {
     const agentsRes = await fetch('/api/schedules/agents')
     const allAgents = await agentsRes.json()
-    const assignableAgents = allAgents.filter(a => a.name !== 'marveen')
+    const mainAgent = allAgents.find(a => a.name === 'marveen')
+    const subAgents = allAgents.filter(a => a.name !== 'marveen')
 
     const listEl = document.getElementById('connectorAgentList')
     listEl.innerHTML = ''
-    if (assignableAgents.length === 0) {
+    if (mainAgent) {
+      const item = document.createElement('div')
+      item.className = 'connector-agent-item connector-agent-auto'
+      item.innerHTML = `
+        <input type="checkbox" checked disabled title="Globálisan elérhető a fő agentnek -- nem kell külön hozzárendelni">
+        <label>${escapeHtml(mainAgent.label || mainAgent.name)} <span class="tag-auto">automatikus</span></label>
+      `
+      listEl.appendChild(item)
+    }
+    for (const agent of subAgents) {
+      const item = document.createElement('div')
+      item.className = 'connector-agent-item'
+      item.innerHTML = `
+        <input type="checkbox" id="assign-${agent.name}" value="${agent.name}">
+        <label for="assign-${agent.name}">${escapeHtml(agent.label || agent.name)}</label>
+      `
+      listEl.appendChild(item)
+    }
+    if (subAgents.length === 0 && !mainAgent) {
       listEl.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Nincsenek hozzarendelheto agensek</p>'
-    } else {
-      for (const agent of assignableAgents) {
-        const item = document.createElement('div')
-        item.className = 'connector-agent-item'
-        item.innerHTML = `
-          <input type="checkbox" id="assign-${agent.name}" value="${agent.name}">
-          <label for="assign-${agent.name}">${escapeHtml(agent.label || agent.name)}</label>
-        `
-        listEl.appendChild(item)
-      }
+    } else if (subAgents.length === 0) {
+      const note = document.createElement('p')
+      note.style.cssText = 'color:var(--text-muted);font-size:12px;margin-top:8px'
+      note.textContent = 'Sub-agentekhez hozzárendelés a Csapat oldalon létrehozott új ágens után érhető el.'
+      listEl.appendChild(note)
     }
   } catch {
     document.getElementById('connectorAgentList').innerHTML = ''
@@ -4159,21 +4212,38 @@ async function openSkillDetail(skillName) {
     try {
       const agentsRes = await fetch('/api/schedules/agents')
       const allAgents = await agentsRes.json()
-      const assignableAgents = allAgents.filter(a => a.name !== 'marveen')
+      const mainAgent = allAgents.find(a => a.name === 'marveen')
+      const subAgents = allAgents.filter(a => a.name !== 'marveen')
 
-      if (assignableAgents.length === 0) {
+      // Marveen auto-loads everything from ~/.claude/skills/, so she's
+      // shown as a fixed checked-disabled entry. Sub-agents need explicit
+      // assignment because the skill dir is copied into agents/<n>/.claude/skills/.
+      if (mainAgent) {
+        const item = document.createElement('div')
+        item.className = 'skill-agent-checkbox skill-agent-auto'
+        item.innerHTML = `
+          <input type="checkbox" checked disabled title="Globálisan elérhető a fő agentnek -- nem kell külön hozzárendelni">
+          <label>${escapeHtml(mainAgent.label || mainAgent.name)} <span class="tag-auto">automatikus</span></label>
+        `
+        checkboxesEl.appendChild(item)
+      }
+      for (const agent of subAgents) {
+        const isChecked = detail.agents.includes(agent.name)
+        const item = document.createElement('div')
+        item.className = 'skill-agent-checkbox'
+        item.innerHTML = `
+          <input type="checkbox" id="skill-assign-${agent.name}" value="${agent.name}" ${isChecked ? 'checked' : ''}>
+          <label for="skill-assign-${agent.name}">${escapeHtml(agent.label || agent.name)}</label>
+        `
+        checkboxesEl.appendChild(item)
+      }
+      if (subAgents.length === 0 && !mainAgent) {
         checkboxesEl.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Nincsenek hozzarendelheto agensek</p>'
-      } else {
-        for (const agent of assignableAgents) {
-          const isChecked = detail.agents.includes(agent.name)
-          const item = document.createElement('div')
-          item.className = 'skill-agent-checkbox'
-          item.innerHTML = `
-            <input type="checkbox" id="skill-assign-${agent.name}" value="${agent.name}" ${isChecked ? 'checked' : ''}>
-            <label for="skill-assign-${agent.name}">${escapeHtml(agent.label || agent.name)}</label>
-          `
-          checkboxesEl.appendChild(item)
-        }
+      } else if (subAgents.length === 0) {
+        const note = document.createElement('p')
+        note.style.cssText = 'color:var(--text-muted);font-size:12px;margin-top:8px'
+        note.textContent = 'Sub-agenteknek hozzárendelés a Csapat oldalon létrehozott új ágens után érhető el.'
+        checkboxesEl.appendChild(note)
       }
     } catch {
       checkboxesEl.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Agensek betoltese sikertelen</p>'

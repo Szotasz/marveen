@@ -27,6 +27,22 @@ $TMUX kill-session -t "$SESSION" 2>/dev/null
 $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
   "$CLAUDE --dangerously-skip-permissions --channels plugin:telegram@claude-plugins-official"
 
+# Session startup guard: if the --dangerously-skip-permissions confirmation
+# dialog appears (despite the settings.json flag, e.g. on a Claude Code
+# version that renamed the key), auto-accept it. Without this the headless
+# session would park forever and the Telegram plugin would never load.
+for i in 1 2 3 4 5 6; do
+  sleep 1
+  pane=$($TMUX capture-pane -t "$SESSION" -p 2>/dev/null || true)
+  if echo "$pane" | grep -q "Bypass Permissions mode"; then
+    $TMUX send-keys -t "$SESSION" "2" Enter
+    break
+  fi
+  if echo "$pane" | grep -q "Listening for channel messages"; then
+    break
+  fi
+done
+
 # Bot menü beállítás (15 sec késleltetéssel, a plugin után)
 "$INSTALL_DIR/scripts/set-bot-menu.sh" &
 
