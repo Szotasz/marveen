@@ -792,10 +792,18 @@ main {
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
-/* === Agent Detail Modal === */
-.modal-agent-detail {
+/* === Agent Detail Modal ===
+   Needs a compound selector (`.modal.modal-agent-detail`) to outrank
+   the later `.modal { max-width: 480px; }` rule below -- otherwise
+   source order wins and the detail modal stays at 480px. */
+.modal.modal-agent-detail {
   max-width: 900px;
 }
+/* At narrower widths, the five-tab nav still wouldn't fit -- tighten
+   the tab paddings so everything stays on one row. The outer modal
+   padding also drops a bit so the tab row actually has room. */
+.modal.modal-agent-detail .tab-nav { padding: 0 16px; }
+.modal.modal-agent-detail .tab-btn { padding: 12px 10px; }
 
 /* === Tab Navigation === */
 .tab-nav {
