@@ -106,6 +106,45 @@ else
 fi
 echo "✓ .env updated (MAIN_AGENT_ID=$NEW_SLUG)"
 
+# Rewrite any "agent": "marveen" examples in the generated CLAUDE.md so the
+# agent copying the curl snippet targets the right session. Keeps a backup.
+if [ -f "$INSTALL_DIR/CLAUDE.md" ]; then
+  CLAUDE_MATCHES=$(grep -c '"agent": "marveen"' "$INSTALL_DIR/CLAUDE.md" 2>/dev/null || echo 0)
+  CLAUDE_MATCHES=$(echo "$CLAUDE_MATCHES" | tr -d '[:space:]')
+  if [ -n "$CLAUDE_MATCHES" ] && [ "$CLAUDE_MATCHES" -gt 0 ]; then
+    cp "$INSTALL_DIR/CLAUDE.md" "$INSTALL_DIR/CLAUDE.md.pre-migrate-$(date +%Y%m%d-%H%M%S)"
+    python3 - "$INSTALL_DIR/CLAUDE.md" "$NEW_SLUG" <<'PYEOF'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1]); slug = sys.argv[2]
+p.write_text(p.read_text().replace('"agent": "marveen"', f'"agent": "{slug}"'))
+PYEOF
+    echo "✓ CLAUDE.md agent example updated ($CLAUDE_MATCHES occurrence(s))"
+  fi
+fi
+
+# Rewrite ~/.claude/scheduled-tasks/*/task-config.json agent fields: the
+# scheduler routes by this name, and "marveen" now targets a non-existent
+# session on non-default installs.
+SCHED_DIR="$HOME/.claude/scheduled-tasks"
+if [ -d "$SCHED_DIR" ]; then
+  python3 - "$SCHED_DIR" "$NEW_SLUG" <<'PYEOF'
+import sys, json, pathlib
+root = pathlib.Path(sys.argv[1]); slug = sys.argv[2]
+fixed = 0
+for cfg in root.glob('*/task-config.json'):
+    try:
+        data = json.loads(cfg.read_text())
+    except Exception:
+        continue
+    if data.get('agent') == 'marveen':
+        data['agent'] = slug
+        cfg.write_text(json.dumps(data, indent=2))
+        fixed += 1
+if fixed:
+    print(f'✓ Scheduled task configs updated ({fixed} file(s))')
+PYEOF
+fi
+
 if [ "$OS" = "Darwin" ]; then
   launchctl load "$PLIST_DIR/com.${NEW_SLUG}.dashboard.plist" 2>/dev/null || true
   launchctl load "$PLIST_DIR/com.${NEW_SLUG}.channels.plist" 2>/dev/null || true
