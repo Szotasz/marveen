@@ -2846,58 +2846,86 @@ Respond ONLY with JSON, nothing else:
 
       // === MCP Connectors API ===
 
-      // GET /api/connectors - List all MCP servers with status
+      // GET /api/connectors - List all MCP servers with status.
+      // We deliberately DON'T shell out to `claude mcp list` here: that
+      // command spawns every stdio MCP (including plugin:telegram) for a
+      // health check, which collides with the Telegram bot's single-poller
+      // requirement and drops the live marveen-channels plugin. Instead we
+      // read the config files directly -- no process spawn, no interference.
       if (path === '/api/connectors' && method === 'GET') {
+        const connectors: Array<{ name: string; status: string; endpoint: string; type: string }> = []
+        const seen = new Set<string>()
+
+        // 1) ~/.claude/settings.json -> enabledPlugins (plugin:<name>@<marketplace>)
         try {
-          const output = execSync('claude mcp list 2>&1', { timeout: 30000, encoding: 'utf-8' })
-          const connectors: any[] = []
-          const lines = output.split('\n').filter(l => l.trim() && !l.startsWith('Checking'))
-          for (const line of lines) {
-            // Format: "name: endpoint - ✓ Connected" or "name: endpoint - ! Needs authentication"
-            const match = line.match(/^(.+?):\s+(.+)\s+-\s+(.+)$/)
-            if (!match) continue
-            const name = match[1].trim()
-            const endpoint = match[2].trim()
-            const statusText = match[3].trim()
-            let status = 'unknown'
-            if (statusText.includes('Connected')) status = 'connected'
-            else if (statusText.includes('Needs auth') || statusText.includes('authentication')) status = 'needs_auth'
-            else if (statusText.includes('Failed')) status = 'failed'
-
-            const isRemote = endpoint.startsWith('http')
-            const isPlugin = name.startsWith('plugin:')
-            const type = isPlugin ? 'plugin' : (isRemote ? 'remote' : 'local')
-
-            connectors.push({ name, status, endpoint, type })
+          const settings = JSON.parse(readFileOr(join(homedir(), '.claude', 'settings.json'), '{}'))
+          for (const pluginKey of Object.keys(settings.enabledPlugins || {})) {
+            if (!settings.enabledPlugins[pluginKey]) continue
+            const name = `plugin:${pluginKey.split('@')[0]}`
+            if (seen.has(name)) continue
+            seen.add(name)
+            connectors.push({ name, status: 'configured', endpoint: pluginKey, type: 'plugin' })
           }
-          return json(res, connectors)
-        } catch (err) {
-          logger.error({ err }, 'Failed to list MCP connectors')
-          return json(res, [])
+        } catch { /* ignore */ }
+
+        // 2) project .mcp.json and user-global ~/.claude.json -> mcpServers
+        for (const src of [join(PROJECT_ROOT, '.mcp.json'), join(homedir(), '.claude.json')]) {
+          try {
+            const parsed = JSON.parse(readFileOr(src, '{}'))
+            const servers = parsed.mcpServers || {}
+            for (const [name, cfg] of Object.entries(servers) as Array<[string, any]>) {
+              if (seen.has(name)) continue
+              seen.add(name)
+              const endpoint = cfg?.url || cfg?.command || ''
+              const type = cfg?.url ? 'remote' : 'local'
+              connectors.push({ name, status: 'configured', endpoint: String(endpoint), type })
+            }
+          } catch { /* ignore */ }
         }
+
+        return json(res, connectors)
       }
 
-      // GET /api/connectors/:name - Get detailed info about an MCP server
+      // GET /api/connectors/:name - Get detailed info about an MCP server.
+      // Same reasoning as the list endpoint: read the config directly
+      // instead of invoking `claude mcp get`, which would re-spawn the
+      // server for a health check.
       const connectorDetailMatch = path.match(/^\/api\/connectors\/(.+)$/)
       if (connectorDetailMatch && method === 'GET' && !path.includes('/assign')) {
         const name = decodeURIComponent(connectorDetailMatch[1])
-        try {
-          const output = execSync(`claude mcp get ${shellEscape(name)} 2>&1`, { timeout: 15000, encoding: 'utf-8' })
-          const scope = output.match(/Scope:\s+(.+)/)?.[1]?.trim() || ''
-          const status = output.includes('\u2713 Connected') ? 'connected' : output.includes('! Needs') ? 'needs_auth' : 'failed'
-          const type = output.match(/Type:\s+(.+)/)?.[1]?.trim() || ''
-          const command = output.match(/Command:\s+(.+)/)?.[1]?.trim() || ''
-          const args = output.match(/Args:\s+(.+)/)?.[1]?.trim() || ''
-          const envLines = output.split('\n').filter(l => l.match(/^\s{4}\w+=/))
-          const env: Record<string, string> = {}
-          for (const el of envLines) {
-            const [k, ...v] = el.trim().split('=')
-            env[k] = '***'  // Don't expose actual values
+        // Plugin entry -> just confirm it's in enabledPlugins
+        if (name.startsWith('plugin:')) {
+          try {
+            const settings = JSON.parse(readFileOr(join(homedir(), '.claude', 'settings.json'), '{}'))
+            const plain = name.slice('plugin:'.length)
+            const match = Object.keys(settings.enabledPlugins || {}).find(k => k.split('@')[0] === plain)
+            if (!match) return json(res, { error: 'Connector not found' }, 404)
+            return json(res, { name, scope: 'user', status: 'configured', type: 'plugin', command: match, args: '', env: {} })
+          } catch {
+            return json(res, { error: 'Connector not found' }, 404)
           }
-          return json(res, { name, scope, status, type, command, args, env })
-        } catch {
-          return json(res, { error: 'Connector not found' }, 404)
         }
+        // mcpServers entry from project or user config
+        for (const [src, scope] of [[join(PROJECT_ROOT, '.mcp.json'), 'project' as const], [join(homedir(), '.claude.json'), 'user' as const]]) {
+          try {
+            const parsed = JSON.parse(readFileOr(src, '{}'))
+            const cfg = (parsed.mcpServers || {})[name]
+            if (!cfg) continue
+            const type = cfg.url ? 'remote' : 'local'
+            const env: Record<string, string> = {}
+            for (const k of Object.keys(cfg.env || {})) env[k] = '***'
+            return json(res, {
+              name,
+              scope,
+              status: 'configured',
+              type,
+              command: cfg.command || cfg.url || '',
+              args: Array.isArray(cfg.args) ? cfg.args.join(' ') : '',
+              env,
+            })
+          } catch { /* fall through */ }
+        }
+        return json(res, { error: 'Connector not found' }, 404)
       }
 
       // POST /api/connectors - Add a new MCP server
