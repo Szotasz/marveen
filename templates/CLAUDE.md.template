@@ -105,7 +105,7 @@ Memória mentés:
 curl -s -X POST http://localhost:3420/api/memories \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"agent_id":"marveen","content":"MIT","category":"CATEGORY","keywords":"kulcsszó1, kulcsszó2"}'
+  -d '{"agent_id":"{{MAIN_AGENT_ID}}","content":"MIT","category":"CATEGORY","keywords":"kulcsszó1, kulcsszó2"}'
 ```
 
 Napi napló (append-only):
@@ -113,13 +113,13 @@ Napi napló (append-only):
 curl -s -X POST http://localhost:3420/api/daily-log \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"agent_id":"marveen","content":"## HH:MM -- Téma\nMi történt, mi lett az eredmény"}'
+  -d '{"agent_id":"{{MAIN_AGENT_ID}}","content":"## HH:MM -- Téma\nMi történt, mi lett az eredmény"}'
 ```
 
 Keresés (mielőtt válaszolsz, nézd meg van-e releváns emlék):
 ```bash
 curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  "http://localhost:3420/api/memories?agent=marveen&q=KULCSSZÓ&category=warm"
+  "http://localhost:3420/api/memories?agent={{MAIN_AGENT_ID}}&q=KULCSSZÓ&category=warm"
 ```
 
 ## Kanban tábla
@@ -140,7 +140,7 @@ Az ütemezett feladatok a `~/.claude/scheduled-tasks/` mappában élnek, fájl-a
 curl -s -X POST http://localhost:3420/api/schedules \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"name": "feladat-nev", "description": "Rövid leírás", "prompt": "A részletes prompt amit végre kell hajtani", "schedule": "0 8 * * *", "agent": "SAJAT_NEVED", "type": "heartbeat"}'
+  -d '{"name": "feladat-nev", "description": "Rövid leírás", "prompt": "A részletes prompt amit végre kell hajtani", "schedule": "0 8 * * *", "agent": "{{MAIN_AGENT_ID}}", "type": "heartbeat"}'
 ```
 
 ### Típusok:
@@ -170,12 +170,12 @@ Ha delegálni akarsz egy feladatot másik ágensnek, használd az API-t:
 curl -s -X POST http://localhost:3420/api/messages \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"from": "marveen", "to": "TARGET_AGENT", "content": "Feladat leírása."}'
+  -d '{"from": "{{MAIN_AGENT_ID}}", "to": "TARGET_AGENT", "content": "Feladat leírása."}'
 ```
 
 A rendszer automatikusan:
 1. Beírja az üzenetet a célpont ágens tmux session-jébe
-2. A célpont ágens megkapja mint "[Üzenet @marveen-tól]: ..." formátumban
+2. A célpont ágens megkapja mint "[Üzenet @{{MAIN_AGENT_ID}}-tól]: ..." formátumban
 3. A célpont ágens feldolgozza és a saját Telegram csatornáján válaszol
 
 ### Fontos szabályok

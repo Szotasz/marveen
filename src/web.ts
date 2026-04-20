@@ -23,7 +23,7 @@ import {
   markMessageDone, markMessageFailed, listAgentMessages, getAgentMessage,
   type Memory, type AgentMessage,
 } from './db.js'
-import { OWNER_NAME, BOT_NAME, ALLOWED_CHAT_ID, HEARTBEAT_CALENDAR_ID } from './config.js'
+import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, ALLOWED_CHAT_ID, HEARTBEAT_CALENDAR_ID } from './config.js'
 import { wrapUntrusted } from './prompt-safety.js'
 
 function computeNextRun(cronExpression: string): number {
@@ -760,7 +760,7 @@ function readScheduledTask(taskName: string): ScheduledTask | null {
     description: description || '',
     prompt: body,
     schedule: config.schedule || '0 9 * * *',
-    agent: config.agent || 'marveen',
+    agent: config.agent || MAIN_AGENT_ID,
     enabled: config.enabled !== false,
     createdAt: config.createdAt || 0,
     type: (config.type as 'task' | 'heartbeat') || 'task',
@@ -890,8 +890,8 @@ function startMessageRouter(): NodeJS.Timeout {
 // by walking the process tree. (We deliberately don't pane-scan for
 // "Failed to reconnect" strings -- those persist in scrollback and fire
 // false positives, e.g. if the source containing the regex is shown.)
-// Agents recover via stop+start; for marveen-channels we can only alert,
-// because killing it would terminate the live Marveen session.
+// Agents recover via stop+start; for the main agent's channels session
+// we can only alert, because killing it would terminate the live agent.
 
 function getClaudePidForSession(session: string): number | null {
   try {
@@ -947,7 +947,8 @@ function hasTelegramPluginAlive(claudePid: number): boolean {
 
 const agentDownSince: Map<string, number> = new Map()
 const PLUGIN_ALERT_DEDUP_MS = 30 * 60 * 1000
-const MARVEEN_CHANNELS_PLIST = join(homedir(), 'Library', 'LaunchAgents', 'com.marveen.channels.plist')
+const MAIN_CHANNELS_SESSION = `${MAIN_AGENT_ID}-channels`
+const MAIN_CHANNELS_PLIST = join(homedir(), 'Library', 'LaunchAgents', `com.${MAIN_AGENT_ID}.channels.plist`)
 
 // Marveen recovery is a 4-stage escalator because killing the session
 // terminates the live Marveen conversation, so we try cheap fixes first.
@@ -980,11 +981,11 @@ function softReconnectMarveen(): void {
   // the first action (Reconnect if the plugin is disconnected). We send
   // Escape first in case a different dialog is already open.
   try {
-    execFileSync(TMUX, ['send-keys', '-t', 'marveen-channels', 'Escape'], { timeout: 3000 })
+    execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Escape'], { timeout: 3000 })
     execFileSync('/bin/sleep', ['0.2'], { timeout: 1000 })
-    execFileSync(TMUX, ['send-keys', '-t', 'marveen-channels', '/mcp', 'Enter'], { timeout: 3000 })
+    execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, '/mcp', 'Enter'], { timeout: 3000 })
     execFileSync('/bin/sleep', ['0.3'], { timeout: 1000 })
-    execFileSync(TMUX, ['send-keys', '-t', 'marveen-channels', 'Enter'], { timeout: 3000 })
+    execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Enter'], { timeout: 3000 })
     logger.info('Marveen soft reconnect: sent /mcp + Enter')
   } catch (err) {
     logger.warn({ err }, 'Marveen soft reconnect failed')
@@ -998,29 +999,29 @@ function triggerMarveenMemorySave(): void {
   // reaches the agent as an input turn.
   const prompt = [
     '[SYSTEM: channels recovery] A Telegram plugin nem reagál, kb 60 másodperc',
-    'múlva hard restart lesz a marveen-channels session-ön (a beszélgetés elvész).',
+    `múlva hard restart lesz a ${MAIN_CHANNELS_SESSION} session-ön (a beszélgetés elvész).`,
     'MOST mentsd el a ClaudeClaw memóriába amit a következő sessionnek tudnia kell:',
-    'aktív feladatok (tier hot), friss döntések/preferenciák (warm), tanulságok (cold).',
+    'aktív feladatok (category hot), friss döntések/preferenciák (warm), tanulságok (cold).',
     'Használd: curl -s -X POST http://localhost:3420/api/memories ... (lásd CLAUDE.md).',
     'Ha kész vagy, írj egy rövid napi napló bejegyzést is a /api/daily-log-ra. Utána elég.',
   ].join(' ')
   try {
-    sendPromptToSession('marveen-channels', prompt)
-    logger.info('Marveen memory-save prompt dispatched before hard restart')
+    sendPromptToSession(MAIN_CHANNELS_SESSION, prompt)
+    logger.info(`${BOT_NAME} memory-save prompt dispatched before hard restart`)
   } catch (err) {
-    logger.warn({ err }, 'Failed to dispatch marveen memory-save prompt')
+    logger.warn({ err }, `Failed to dispatch ${BOT_NAME} memory-save prompt`)
   }
 }
 
 export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
   try {
-    execFileSync('/bin/launchctl', ['unload', MARVEEN_CHANNELS_PLIST], { timeout: 5000 })
+    execFileSync('/bin/launchctl', ['unload', MAIN_CHANNELS_PLIST], { timeout: 5000 })
     execFileSync('/bin/sleep', ['2'], { timeout: 4000 })
-    execFileSync('/bin/launchctl', ['load', MARVEEN_CHANNELS_PLIST], { timeout: 5000 })
-    logger.warn('Marveen hard restart: launchctl reload of com.marveen.channels')
+    execFileSync('/bin/launchctl', ['load', MAIN_CHANNELS_PLIST], { timeout: 5000 })
+    logger.warn(`Hard restart: launchctl reload of com.${MAIN_AGENT_ID}.channels`)
     return { ok: true }
   } catch (err) {
-    logger.error({ err }, 'Marveen hard restart failed')
+    logger.error({ err }, 'Hard restart failed')
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
 }
@@ -1049,7 +1050,7 @@ function handleMarveenDown(): void {
     marveenDownState.stage = 'hard'
     marveenDownState.lastAlertAt = now
     logger.warn('Marveen Telegram plugin still down -- stage 3 (hard restart)')
-    sendMarveenAlert('⚠️ Memória mentés türelmi idő lejárt. Hard restart most a marveen-channels session-ön (új session a SQLite memóriával indul).').catch(() => {})
+    sendMarveenAlert(`⚠️ Memória mentés türelmi idő lejárt. Hard restart most a ${MAIN_CHANNELS_SESSION} session-ön (új session a SQLite memóriával indul).`).catch(() => {})
     hardRestartMarveenChannels()
     return
   }
@@ -1058,7 +1059,7 @@ function handleMarveenDown(): void {
     marveenDownState.stage = 'gave_up'
     marveenDownState.lastAlertAt = now
     logger.error('Marveen Telegram plugin still down after hard restart -- giving up auto-recovery')
-    sendMarveenAlert('🚨 Hard restart SEM segített. Kézzel kell megnézni: `tmux attach -t marveen-channels` és `launchctl list | grep marveen`.').catch(() => {})
+    sendMarveenAlert(`🚨 Hard restart SEM segített. Kézzel kell megnézni: \`tmux attach -t ${MAIN_CHANNELS_SESSION}\` és \`launchctl list | grep ${MAIN_AGENT_ID}\`.`).catch(() => {})
     return
   }
   // gave_up -- re-alert at most every PLUGIN_ALERT_DEDUP_MS.
@@ -1086,7 +1087,7 @@ function handleMarveenUp(): void {
 function startTelegramPluginMonitor(): NodeJS.Timeout {
   function check() {
     type Target = { session: string; isMarveen: boolean; agentName?: string }
-    const targets: Target[] = [{ session: 'marveen-channels', isMarveen: true }]
+    const targets: Target[] = [{ session: MAIN_CHANNELS_SESSION, isMarveen: true }]
     for (const a of listAgentNames()) {
       if (isAgentRunning(a)) targets.push({ session: agentSessionName(a), isMarveen: false, agentName: a })
     }
@@ -1202,15 +1203,15 @@ function startScheduleRunner(): NodeJS.Timeout {
       if (task.agent === 'all') {
         // Broadcast to all running agents + marveen
         const running = listAgentNames().filter(a => isAgentRunning(a))
-        targetAgents = ['marveen', ...running]
+        targetAgents = [MAIN_AGENT_ID, ...running]
       } else {
-        targetAgents = [task.agent || 'marveen']
+        targetAgents = [task.agent || MAIN_AGENT_ID]
       }
 
       for (const agentName of targetAgents) {
 
-      const isMarveen = agentName === 'marveen'
-      const session = isMarveen ? 'marveen-channels' : agentSessionName(agentName)
+      const isMainAgent = agentName === MAIN_AGENT_ID
+      const session = isMainAgent ? MAIN_CHANNELS_SESSION : agentSessionName(agentName)
 
       // Check if the target session exists
       let sessionExists = false
@@ -1354,7 +1355,7 @@ export function startWebServer(port = 3420): http.Server {
           const allAgents = listAgentNames()
           const runningAgents = allAgents.filter(a => a !== name && isAgentRunning(a))
           // Also notify Marveen (main session)
-          const notifyTargets = ['marveen', ...runningAgents]
+          const notifyTargets = [MAIN_AGENT_ID, ...runningAgents]
           for (const target of notifyTargets) {
             createAgentMessage('system', target, `Uj csapattag erkezett: ${name}. Leirasa: ${description}. Udv neki ha legkozelebb beszeltek!`)
           }
@@ -1479,10 +1480,10 @@ export function startWebServer(port = 3420): http.Server {
       const tgPendingMatch = path.match(/^\/api\/agents\/([^/]+)\/telegram\/pending$/)
       if (tgPendingMatch && method === 'GET') {
         const name = decodeURIComponent(tgPendingMatch[1])
-        const accessPath = name === 'marveen'
+        const accessPath = name === MAIN_AGENT_ID
           ? join(homedir(), '.claude', 'channels', 'telegram', 'access.json')
           : join(agentDir(name), '.claude', 'channels', 'telegram', 'access.json')
-        if (name !== 'marveen' && !existsSync(agentDir(name))) {
+        if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
           return json(res, { error: 'Agent not found' }, 404)
         }
         const accessContent = readFileOr(accessPath, '{}')
@@ -1506,7 +1507,7 @@ export function startWebServer(port = 3420): http.Server {
       const tgApproveMatch = path.match(/^\/api\/agents\/([^/]+)\/telegram\/approve$/)
       if (tgApproveMatch && method === 'POST') {
         const name = decodeURIComponent(tgApproveMatch[1])
-        if (name !== 'marveen' && !existsSync(agentDir(name))) {
+        if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
           return json(res, { error: 'Agent not found' }, 404)
         }
 
@@ -1514,7 +1515,7 @@ export function startWebServer(port = 3420): http.Server {
         const { code } = JSON.parse(body.toString()) as { code: string }
         if (!code?.trim()) return json(res, { error: 'Code is required' }, 400)
 
-        const tgDir = name === 'marveen'
+        const tgDir = name === MAIN_AGENT_ID
           ? join(homedir(), '.claude', 'channels', 'telegram')
           : join(agentDir(name), '.claude', 'channels', 'telegram')
         const accessPath = join(tgDir, 'access.json')
@@ -1740,7 +1741,7 @@ export function startWebServer(port = 3420): http.Server {
       if (path === '/api/schedules/agents' && method === 'GET') {
         const agentNames = listAgentNames()
         const agents = [
-          { name: 'marveen', label: BOT_NAME, avatar: '/api/marveen/avatar' },
+          { name: MAIN_AGENT_ID, label: BOT_NAME, avatar: '/api/marveen/avatar' },
           ...agentNames.map(n => ({ name: n, label: n, avatar: `/api/agents/${encodeURIComponent(n)}/avatar` }))
         ]
         return json(res, agents)
@@ -1830,7 +1831,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
           description: data.description || '',
           prompt: data.prompt.trim(),
           schedule: data.schedule.trim(),
-          agent: data.agent || 'marveen',
+          agent: data.agent || MAIN_AGENT_ID,
           enabled: true,
           type: data.type || 'task',
         })
@@ -2102,7 +2103,7 @@ Rovid leiras: "${finalPrompt}"`
           return json(res, { error: `Invalid category "${category}". Allowed: ${[...MEMORY_CATEGORIES].join(', ')}` }, 400)
         }
         const result = saveAgentMemory(
-          data.agent_id || 'marveen',
+          data.agent_id || MAIN_AGENT_ID,
           data.content.trim(),
           category,
           data.keywords || undefined,
@@ -2120,7 +2121,7 @@ Rovid leiras: "${finalPrompt}"`
 
         let results: Memory[]
         if (q && mode === 'hybrid') {
-          results = await hybridSearch(agentId || 'marveen', q, limit)
+          results = await hybridSearch(agentId || MAIN_AGENT_ID, q, limit)
         } else if (q && agentId) {
           results = searchAgentMemories(agentId, q, limit)
           if (results.length === 0) {
@@ -2160,7 +2161,7 @@ Rovid leiras: "${finalPrompt}"`
           return json(res, { error: 'No chunks to import' }, 400)
         }
 
-        const agentId = agent_id || 'marveen'
+        const agentId = agent_id || MAIN_AGENT_ID
         const stats = { hot: 0, warm: 0, cold: 0, shared: 0 }
         let imported = 0
 
@@ -2294,19 +2295,19 @@ Respond ONLY with JSON, nothing else:
         const body = await readBody(req)
         const data = JSON.parse(body.toString()) as { agent_id?: string; content: string }
         if (!data.content?.trim()) return json(res, { error: 'Content required' }, 400)
-        appendDailyLog(data.agent_id || 'marveen', data.content.trim())
+        appendDailyLog(data.agent_id || MAIN_AGENT_ID, data.content.trim())
         return json(res, { ok: true })
       }
 
       if (path === '/api/daily-log' && method === 'GET') {
-        const agent = url.searchParams.get('agent') || 'marveen'
+        const agent = url.searchParams.get('agent') || MAIN_AGENT_ID
         const date = url.searchParams.get('date') || new Date().toISOString().split('T')[0]
         const entries = getDailyLog(agent, date)
         return json(res, entries)
       }
 
       if (path === '/api/daily-log/dates' && method === 'GET') {
-        const agent = url.searchParams.get('agent') || 'marveen'
+        const agent = url.searchParams.get('agent') || MAIN_AGENT_ID
         const dates = getDailyLogDates(agent)
         return json(res, dates)
       }
@@ -2766,7 +2767,7 @@ Respond ONLY with JSON, nothing else:
           agentId: string
         }
 
-        const agentId = targetAgent || 'marveen'
+        const agentId = targetAgent || MAIN_AGENT_ID
         let imported = 0
         const stats = { hot: 0, warm: 0, cold: 0, shared: 0 }
         const details: string[] = []

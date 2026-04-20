@@ -15,6 +15,12 @@ export const ALLOWED_CHAT_ID = env['ALLOWED_CHAT_ID'] ?? ''
 export const OWNER_NAME = env['OWNER_NAME'] ?? 'Szabolcs'
 export const BOT_NAME = env['BOT_NAME'] ?? 'Marveen'
 
+// Canonical identifier for the main agent in the DB, tmux sessions, plist
+// labels, API routing, etc. The installer derives this from BOT_NAME
+// (NFKD + ASCII + lowercase dashes). Older installs without this env var
+// fall back to "marveen" so nothing breaks when upgrading in place.
+export const MAIN_AGENT_ID = env['MAIN_AGENT_ID'] ?? 'marveen'
+
 export const WEB_PORT = parseInt(env['WEB_PORT'] ?? '3420', 10)
 
 export const WEB_HOST = env['WEB_HOST'] ?? '127.0.0.1'

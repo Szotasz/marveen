@@ -182,6 +182,21 @@ read -p "  Telegram bot token (vagy hagyd uresen, kesobb is beallithatod): " BOT
 read -p "  Mi legyen a botod neve? [Marveen]: " BOT_NAME
 BOT_NAME=${BOT_NAME:-"Marveen"}
 
+# Derive the ASCII slug the backend uses everywhere (tmux sessions, plist
+# labels, DB agent_id, API routing). NFKD + ASCII + lowercase dashes, empty
+# fallback to "marveen" so we never end up with a blank identifier.
+MAIN_AGENT_ID=$(python3 - "$BOT_NAME" <<'PYEOF'
+import sys, unicodedata, re
+s = sys.argv[1].strip()
+s = unicodedata.normalize('NFKD', s).encode('ASCII', 'ignore').decode()
+s = re.sub(r'[^a-zA-Z0-9]+', '-', s).strip('-').lower()
+print(s or 'marveen')
+PYEOF
+)
+if [ "$MAIN_AGENT_ID" != "marveen" ]; then
+  echo -e "  ${DIM}Ügynök belső azonosító: ${MAIN_AGENT_ID}${NC}"
+fi
+
 # Step 5: Install dependencies
 echo ""
 echo -e "${BOLD}[5/7] Fuggosegek telepitese...${NC}"
@@ -200,11 +215,12 @@ echo -e "${BOLD}[6/7] Konfiguracio letrehozasa...${NC}"
 
 # Create .env
 (umask 077 && cat > "$INSTALL_DIR/.env" << ENVEOF
-# Marveen konfiguracio
+# Main agent konfiguracio
 TELEGRAM_BOT_TOKEN=${BOT_TOKEN}
 ALLOWED_CHAT_ID=${CHAT_ID}
 OWNER_NAME=${OWNER_NAME}
 BOT_NAME=${BOT_NAME}
+MAIN_AGENT_ID=${MAIN_AGENT_ID}
 ENVEOF
 )
 chmod 600 "$INSTALL_DIR/.env"
@@ -221,6 +237,7 @@ if [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
       -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
       -e "s/{{CHAT_ID}}/$CHAT_ID/g" \
       -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
+      -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
       "$INSTALL_DIR/templates/CLAUDE.md.template" > "$INSTALL_DIR/CLAUDE.md"
   echo -e "  ${GREEN}✓${NC} CLAUDE.md generalva"
 fi
@@ -362,15 +379,17 @@ PLIST_DIR="$HOME/Library/LaunchAgents"
 mkdir -p "$PLIST_DIR"
 
 NODE_PATH="$(which node)"
+DASHBOARD_PLIST="com.${MAIN_AGENT_ID}.dashboard"
+CHANNELS_PLIST="com.${MAIN_AGENT_ID}.channels"
 
 # Dashboard service
-cat > "$PLIST_DIR/com.marveen.dashboard.plist" << PLISTEOF
+cat > "$PLIST_DIR/${DASHBOARD_PLIST}.plist" << PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.marveen.dashboard</string>
+  <string>${DASHBOARD_PLIST}</string>
   <key>ProgramArguments</key>
   <array>
     <string>${NODE_PATH}</string>
@@ -398,13 +417,13 @@ cat > "$PLIST_DIR/com.marveen.dashboard.plist" << PLISTEOF
 PLISTEOF
 
 # Channels service (Telegram bridge)
-cat > "$PLIST_DIR/com.marveen.channels.plist" << PLISTEOF
+cat > "$PLIST_DIR/${CHANNELS_PLIST}.plist" << PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.marveen.channels</string>
+  <string>${CHANNELS_PLIST}</string>
   <key>ProgramArguments</key>
   <array>
     <string>${INSTALL_DIR}/scripts/channels.sh</string>
@@ -439,8 +458,8 @@ PLISTEOF
 echo -e "  ${GREEN}✓${NC} LaunchAgent-ek letrehozva"
 
 # Load LaunchAgents
-launchctl load "$PLIST_DIR/com.marveen.dashboard.plist" 2>/dev/null || true
-launchctl load "$PLIST_DIR/com.marveen.channels.plist" 2>/dev/null || true
+launchctl load "$PLIST_DIR/${DASHBOARD_PLIST}.plist" 2>/dev/null || true
+launchctl load "$PLIST_DIR/${CHANNELS_PLIST}.plist" 2>/dev/null || true
 echo -e "  ${GREEN}✓${NC} Szolgaltatasok elinditva"
 
 # Verify Telegram plugin is working

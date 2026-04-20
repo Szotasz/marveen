@@ -1,5 +1,5 @@
 #!/bin/bash
-# Marveen Channels -- Claude Code + Telegram bridge tmux session-ben
+# Main agent Channels -- Claude Code + Telegram bridge tmux session-ben
 #
 # A LaunchAgent hívja. Működés:
 # 1. Tmux session indul a claude processzel
@@ -7,9 +7,19 @@
 # 3. Ha a claude kilép, a tmux session záródik, a script is kilép
 # 4. A launchd KeepAlive újraindítja
 #
-# Kézzel rácsatlakozás: tmux attach -t marveen-channels
+# Kézzel rácsatlakozás: tmux attach -t <MAIN_AGENT_ID>-channels (pl. marveen-channels)
 
-SESSION="marveen-channels"
+INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Source .env so we know the installer's MAIN_AGENT_ID. Older installs may not
+# have this key, so fall back to "marveen" to keep them working.
+if [ -f "$INSTALL_DIR/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$INSTALL_DIR/.env"
+  set +a
+fi
+SESSION="${MAIN_AGENT_ID:-marveen}-channels"
 
 export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
@@ -17,8 +27,6 @@ CLAUDE="$(command -v claude)"
 TMUX="$(command -v tmux)"
 [ -z "$CLAUDE" ] && echo "ERROR: claude not found on PATH" >&2 && exit 1
 [ -z "$TMUX" ]   && echo "ERROR: tmux not found on PATH" >&2 && exit 1
-
-INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Régi session takarítás
 $TMUX kill-session -t "$SESSION" 2>/dev/null
