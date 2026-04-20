@@ -78,6 +78,7 @@ function switchPage(pageId) {
   if (pageId === 'migrate') loadMigrateAgents()
   if (pageId === 'status') loadStatus()
   if (pageId === 'updates') loadUpdates()
+  if (pageId === 'team') loadTeamGraph()
 }
 
 navLinks.forEach((link) => {
@@ -904,6 +905,7 @@ async function openAgentDetail(agentName) {
     document.getElementById('editAgentProfileDesc'),
     currentAgent.securityProfile || 'default',
   )
+  renderTeamEditor(currentAgent, agents)
   document.getElementById('editClaudeMd').value = currentAgent.claudeMd || currentAgent.content || ''
   document.getElementById('editSoulMd').value = currentAgent.soulMd || ''
   document.getElementById('editMcpJson').value = currentAgent.mcpJson || ''
@@ -4344,6 +4346,157 @@ async function openSkillDetail(skillName) {
 
   openModal(skillDetailOverlay)
 }
+
+// === Team page ===
+async function loadTeamGraph() {
+  const container = document.getElementById('teamGraph')
+  if (!container) return
+  container.innerHTML = '<div class="team-empty">Betöltés...</div>'
+  try {
+    const res = await fetch('/api/team/graph')
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const data = await res.json()
+    renderTeamGraph(container, data)
+  } catch (err) {
+    container.innerHTML = `<div class="team-empty">Hiba: ${err.message || err}</div>`
+  }
+}
+
+function renderTeamGraph(container, data) {
+  const { nodes, edges, mainAgentId } = data
+  container.innerHTML = ''
+  const byId = new Map(nodes.map(n => [n.id, n]))
+  const childrenOf = new Map()
+  for (const n of nodes) childrenOf.set(n.id, [])
+  for (const e of edges) {
+    if (childrenOf.has(e.from)) childrenOf.get(e.from).push(e.to)
+  }
+  const renderNode = (node) => {
+    const div = document.createElement('div')
+    div.className = 'team-node'
+    if (node.role === 'main') div.classList.add('main')
+    else if (node.role === 'leader') div.classList.add('leader')
+    const roleLabel = node.role === 'main' ? 'főügynök' : (node.role === 'leader' ? 'csapatvezető' : 'beosztott')
+    const running = node.running ? '● Fut' : '○ Leállva'
+    div.innerHTML = `
+      <div class="team-node-name">${escapeHtml(node.label || node.id)}</div>
+      <div class="team-node-meta">${escapeHtml(roleLabel)}</div>
+      <div class="team-node-meta">${running}</div>
+    `
+    if (node.id !== mainAgentId) {
+      div.addEventListener('click', () => openAgentDetail(node.id))
+    }
+    return div
+  }
+  // BFS levels starting from main
+  const levels = [[mainAgentId]]
+  const seen = new Set([mainAgentId])
+  while (levels[levels.length - 1].length) {
+    const nextIds = []
+    for (const id of levels[levels.length - 1]) {
+      for (const child of childrenOf.get(id) || []) {
+        if (!seen.has(child)) { seen.add(child); nextIds.push(child) }
+      }
+    }
+    if (nextIds.length === 0) break
+    levels.push(nextIds)
+  }
+  // Orphans (nodes not reachable from main, shouldn't happen with the auto
+  // fallback on the backend but guard just in case) go to a trailing level.
+  const orphans = nodes.filter(n => !seen.has(n.id))
+  if (orphans.length) levels.push(orphans.map(n => n.id))
+  for (let i = 0; i < levels.length; i++) {
+    const level = document.createElement('div')
+    level.className = 'team-level'
+    for (const id of levels[i]) {
+      const node = byId.get(id)
+      if (!node) continue
+      level.appendChild(renderNode(node))
+    }
+    container.appendChild(level)
+    if (i < levels.length - 1) {
+      const conn = document.createElement('div')
+      conn.className = 'team-connector'
+      container.appendChild(conn)
+    }
+  }
+  if (nodes.length === 1) {
+    const empty = document.createElement('div')
+    empty.className = 'team-empty'
+    empty.textContent = 'Nincs sub-agent létrehozva.'
+    container.appendChild(empty)
+  }
+}
+
+const refreshTeamBtn = document.getElementById('refreshTeamBtn')
+if (refreshTeamBtn) refreshTeamBtn.addEventListener('click', loadTeamGraph)
+
+function renderTeamEditor(agent, allAgents) {
+  const team = agent.team || { role: 'member', reportsTo: null, delegatesTo: [], autoDelegation: false }
+  document.getElementById('editTeamRole').value = team.role || 'member'
+  const reportsSel = document.getElementById('editTeamReportsTo')
+  reportsSel.innerHTML = ''
+  const emptyOpt = document.createElement('option')
+  emptyOpt.value = ''
+  emptyOpt.textContent = '(főügynök)'
+  reportsSel.appendChild(emptyOpt)
+  for (const other of allAgents) {
+    if (other.name === agent.name) continue
+    const opt = document.createElement('option')
+    opt.value = other.name
+    opt.textContent = other.displayName || other.name
+    if (team.reportsTo === other.name) opt.selected = true
+    reportsSel.appendChild(opt)
+  }
+  const delegatesBox = document.getElementById('editTeamDelegatesList')
+  delegatesBox.innerHTML = ''
+  for (const other of allAgents) {
+    if (other.name === agent.name) continue
+    const label = document.createElement('label')
+    label.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px'
+    const cb = document.createElement('input')
+    cb.type = 'checkbox'
+    cb.value = other.name
+    cb.checked = team.delegatesTo && team.delegatesTo.includes(other.name)
+    label.appendChild(cb)
+    const span = document.createElement('span')
+    span.textContent = other.displayName || other.name
+    label.appendChild(span)
+    delegatesBox.appendChild(label)
+  }
+  document.getElementById('editTeamAutoDelegation').checked = !!team.autoDelegation
+  // Only leaders make sense to delegate from -- hide the lists for members.
+  const updateLeaderVisibility = () => {
+    const isLeader = document.getElementById('editTeamRole').value === 'leader'
+    document.getElementById('editTeamDelegatesGroup').style.display = isLeader ? '' : 'none'
+    document.getElementById('editTeamAutoGroup').style.display = isLeader ? '' : 'none'
+  }
+  document.getElementById('editTeamRole').onchange = updateLeaderVisibility
+  updateLeaderVisibility()
+}
+
+document.getElementById('saveTeamBtn').addEventListener('click', async () => {
+  if (!currentAgent || currentAgent.role === 'main') return
+  const role = document.getElementById('editTeamRole').value
+  const reportsToRaw = document.getElementById('editTeamReportsTo').value
+  const delegates = Array.from(document.querySelectorAll('#editTeamDelegatesList input[type=checkbox]:checked')).map(cb => cb.value)
+  const autoDelegation = document.getElementById('editTeamAutoDelegation').checked
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/team`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        role,
+        reportsTo: reportsToRaw || null,
+        delegatesTo: role === 'leader' ? delegates : [],
+        autoDelegation: role === 'leader' ? autoDelegation : false,
+      }),
+    })
+    if (!res.ok) throw new Error()
+    showToast('Csapat mentve')
+    loadAgents()
+  } catch { showToast('Hiba a csapat mentésekor') }
+})
 
 // === Updates page ===
 function escapeHtmlUpdates(s) {

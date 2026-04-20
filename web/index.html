@@ -17,7 +17,8 @@
       </div>
       <nav>
         <a href="#" class="nav-link active" data-page="kanban">Kanban</a>
-        <a href="#" class="nav-link" data-page="agents">Csapat</a>
+        <a href="#" class="nav-link" data-page="agents">Ágensek</a>
+        <a href="#" class="nav-link" data-page="team">Csapat</a>
         <a href="#" class="nav-link" data-page="tasks">Ütemezések</a>
         <a href="#" class="nav-link" data-page="skills">Skillek</a>
         <a href="#" class="nav-link" data-page="memories">Memória</a>
@@ -401,6 +402,29 @@
       </div>
     </div>
 
+    <!-- === Team Page === -->
+    <div class="page" id="teamPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1>Csapat</h1>
+            <p class="subtitle">Ki kinek jelent és ki kinek delegál</p>
+          </div>
+          <button class="btn-secondary btn-compact" id="refreshTeamBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+            </svg>
+            Frissítés
+          </button>
+        </div>
+      </div>
+
+      <div id="teamGraph" class="team-graph"></div>
+      <p style="color:var(--text-muted);font-size:12px;margin-top:16px">
+        A szerep és a beosztott/vezető kapcsolatok az ügynök részletek &gt; Csapat fülén szerkeszthetők.
+      </p>
+    </div>
+
     <!-- === Updates Page === -->
     <div class="page" id="updatesPage" hidden>
       <div class="page-header">
@@ -607,6 +631,7 @@
           <button class="tab-btn" data-tab="settings">Beállítások</button>
           <button class="tab-btn" data-tab="telegram">Telegram</button>
           <button class="tab-btn" data-tab="skills">Skillek</button>
+          <button class="tab-btn" data-tab="team">Csapat</button>
         </div>
 
         <!-- Tab: Overview -->
@@ -784,6 +809,34 @@
           <div class="skill-empty" id="skillEmpty">
             <p>Nincsenek skillek hozzáadva</p>
           </div>
+        </div>
+
+        <!-- Tab: Team -->
+        <div class="tab-panel" id="tabTeam" hidden>
+          <div class="form-group">
+            <label for="editTeamRole">Szerep</label>
+            <select id="editTeamRole">
+              <option value="member">Beosztott (member)</option>
+              <option value="leader">Csapatvezető (leader)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="editTeamReportsTo">Kinek jelent</label>
+            <select id="editTeamReportsTo"></select>
+            <small style="display:block;margin-top:6px;color:var(--text-muted);font-size:12px">Üresen hagyva automatikusan a főügynöknek.</small>
+          </div>
+          <div class="form-group" id="editTeamDelegatesGroup">
+            <label>Kiknek delegálhat (csak leaderhez)</label>
+            <div id="editTeamDelegatesList" style="display:flex;flex-direction:column;gap:6px"></div>
+          </div>
+          <div class="form-group" id="editTeamAutoGroup">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+              <input type="checkbox" id="editTeamAutoDelegation">
+              Autodelegálás: a vezető maga szétbontja és kiosztja a feladatot
+            </label>
+            <small style="display:block;margin-top:6px;color:var(--text-muted);font-size:12px">Ha nincs bepipálva, a vezető csak javaslatot ad, te hagyod jóvá Telegramon.</small>
+          </div>
+          <button class="btn-secondary btn-compact agent-save-section" id="saveTeamBtn">Mentés</button>
         </div>
 
         <!-- Bottom actions -->

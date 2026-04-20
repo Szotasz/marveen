@@ -164,6 +164,49 @@ nav { display: flex; gap: 4px; }
 }
 .updates-commit-msg { font-size: 14px; color: var(--text); }
 
+.team-graph {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  align-items: center;
+  padding: 24px 0;
+}
+.team-level {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.team-node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 160px;
+  max-width: 220px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: border-color var(--transition), transform var(--transition);
+}
+.team-node:hover { border-color: var(--accent); transform: translateY(-1px); }
+.team-node.main { background: var(--accent-soft); border-color: var(--accent); }
+.team-node.leader { border-color: var(--accent); }
+.team-node-name { font-weight: 600; font-size: 14px; color: var(--text); margin-bottom: 2px; }
+.team-node-meta { font-size: 12px; color: var(--text-muted); }
+.team-connector {
+  width: 2px;
+  height: 16px;
+  background: var(--border);
+}
+.team-empty {
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 24px;
+}
+
 .theme-toggle {
   display: flex;
   align-items: center;

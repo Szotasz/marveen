@@ -92,6 +92,7 @@ interface AgentSummary {
   description: string
   model: string
   securityProfile: string
+  team: TeamConfig
   hasTelegram: boolean
   telegramBotUsername?: string
   status: 'configured' | 'draft'
@@ -293,6 +294,71 @@ function resolveProfilePlaceholders(value: string, ctx: { HOME: string; AGENT_DI
     .replace(/\$\{WORKDIR\}/g, ctx.AGENT_DIR)
 }
 
+// --- Team / hierarchy ---
+//
+// Pure convenience feature: each agent can declare its role (leader | member),
+// who it reports to, who it delegates to, and whether it's allowed to split a
+// task by itself. No security implications, just routing + visualization for
+// multi-tier agent setups.
+
+interface TeamConfig {
+  role: 'leader' | 'member'
+  reportsTo: string | null
+  delegatesTo: string[]
+  autoDelegation: boolean
+}
+
+const DEFAULT_TEAM: TeamConfig = {
+  role: 'member',
+  reportsTo: null,
+  delegatesTo: [],
+  autoDelegation: false,
+}
+
+function readAgentTeam(name: string): TeamConfig {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}'))
+    const raw = config.team
+    if (raw && typeof raw === 'object') {
+      const role = raw.role === 'leader' ? 'leader' : 'member'
+      const reportsTo = typeof raw.reportsTo === 'string' && raw.reportsTo.trim() ? raw.reportsTo.trim() : null
+      const delegatesTo = Array.isArray(raw.delegatesTo) ? raw.delegatesTo.filter((x: unknown) => typeof x === 'string') : []
+      const autoDelegation = !!raw.autoDelegation
+      return { role, reportsTo, delegatesTo, autoDelegation }
+    }
+  } catch { /* fall through */ }
+  return { ...DEFAULT_TEAM }
+}
+
+function writeAgentTeam(name: string, team: TeamConfig): void {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  let config: Record<string, unknown> = {}
+  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  config.team = team
+  writeFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
+// Removing an agent leaves dangling references in other agents' team configs.
+// Call this from the DELETE handler: members who reported to the removed leader
+// fall back to the main agent, and anyone who delegated to them drops the id.
+function cleanupTeamReferences(removedName: string): void {
+  for (const other of listAgentNames()) {
+    const team = readAgentTeam(other)
+    let dirty = false
+    if (team.reportsTo === removedName) {
+      team.reportsTo = removedName === MAIN_AGENT_ID ? null : MAIN_AGENT_ID
+      dirty = true
+    }
+    const filtered = team.delegatesTo.filter(n => n !== removedName)
+    if (filtered.length !== team.delegatesTo.length) {
+      team.delegatesTo = filtered
+      dirty = true
+    }
+    if (dirty) writeAgentTeam(other, team)
+  }
+}
+
 // Merges the profile's allow/deny entries into agents/<name>/.claude/settings.json,
 // preserving any other keys (hooks, custom flags) the user added by hand.
 function writeAgentSettingsFromProfile(name: string, profile: ProfileTemplate): void {
@@ -369,6 +435,7 @@ function getAgentSummary(name: string): AgentSummary {
     description: extractDescriptionFromClaudeMd(claudeMd),
     model: readAgentModel(name),
     securityProfile: readAgentSecurityProfile(name),
+    team: readAgentTeam(name),
     hasTelegram: tg.hasTelegram,
     telegramBotUsername: tg.botUsername,
     status: hasClaudeMd && hasSoulMd ? 'configured' : 'draft',
@@ -1768,6 +1835,81 @@ export function startWebServer(port = 3420): http.Server {
         return json(res, { ok: true, requiresRestart: isAgentRunning(name) })
       }
 
+      // GET /api/team/graph - simple hierarchy graph for the dashboard's
+      // Csapat view. Nodes include main + every sub-agent with label, role,
+      // reportsTo, delegatesTo. Edges are derived from reportsTo.
+      if (path === '/api/team/graph' && method === 'GET') {
+        const nodes: Array<{
+          id: string
+          label: string
+          role: 'main' | 'leader' | 'member'
+          reportsTo: string | null
+          delegatesTo: string[]
+          running?: boolean
+          securityProfile?: string
+        }> = []
+        nodes.push({
+          id: MAIN_AGENT_ID,
+          label: BOT_NAME,
+          role: 'main',
+          reportsTo: null,
+          delegatesTo: [],
+          running: true,
+        })
+        for (const agentName of listAgentNames()) {
+          const team = readAgentTeam(agentName)
+          nodes.push({
+            id: agentName,
+            label: readAgentDisplayName(agentName),
+            role: team.role,
+            reportsTo: team.reportsTo,
+            delegatesTo: team.delegatesTo,
+            running: isAgentRunning(agentName),
+            securityProfile: readAgentSecurityProfile(agentName),
+          })
+        }
+        const knownIds = new Set(nodes.map(n => n.id))
+        const edges: Array<{ from: string; to: string }> = []
+        for (const n of nodes) {
+          // Members who don't explicitly report anywhere fall under the main
+          // agent in the UI so the graph has a single root.
+          const reports = n.reportsTo && knownIds.has(n.reportsTo)
+            ? n.reportsTo
+            : (n.id === MAIN_AGENT_ID ? null : MAIN_AGENT_ID)
+          if (reports) edges.push({ from: reports, to: n.id })
+        }
+        return json(res, { nodes, edges, mainAgentId: MAIN_AGENT_ID })
+      }
+
+      // GET /api/agents/:name/team - read team config
+      const teamMatch = path.match(/^\/api\/agents\/([^/]+)\/team$/)
+      if (teamMatch && method === 'GET') {
+        const name = decodeURIComponent(teamMatch[1])
+        if (!existsSync(agentDir(name))) return json(res, { error: 'Agent not found' }, 404)
+        return json(res, readAgentTeam(name))
+      }
+
+      // PUT /api/agents/:name/team - update team config
+      if (teamMatch && method === 'PUT') {
+        const name = decodeURIComponent(teamMatch[1])
+        if (!existsSync(agentDir(name))) return json(res, { error: 'Agent not found' }, 404)
+        const body = await readBody(req)
+        const data = JSON.parse(body.toString())
+        const current = readAgentTeam(name)
+        const next: TeamConfig = {
+          role: data.role === 'leader' ? 'leader' : (data.role === 'member' ? 'member' : current.role),
+          reportsTo: typeof data.reportsTo === 'string'
+            ? (data.reportsTo.trim() || null)
+            : (data.reportsTo === null ? null : current.reportsTo),
+          delegatesTo: Array.isArray(data.delegatesTo)
+            ? data.delegatesTo.filter((x: unknown) => typeof x === 'string')
+            : current.delegatesTo,
+          autoDelegation: typeof data.autoDelegation === 'boolean' ? data.autoDelegation : current.autoDelegation,
+        }
+        writeAgentTeam(name, next)
+        return json(res, { ok: true, team: next })
+      }
+
       // GET /api/agents/:name/telegram/pending - List pending pairing codes.
       // Marveen is special-cased to read from the global ~/.claude/channels
       // path, which is where her plugin actually stores access state.
@@ -2026,6 +2168,9 @@ export function startWebServer(port = 3420): http.Server {
         const dir = agentDir(name)
         if (!existsSync(dir)) return json(res, { error: 'Agent not found' }, 404)
         rmSync(dir, { recursive: true, force: true })
+        // Fix up other agents' team refs so we don't leave dangling reportsTo /
+        // delegatesTo entries pointing at a now-deleted agent.
+        cleanupTeamReferences(name)
         return json(res, { ok: true })
       }
 
