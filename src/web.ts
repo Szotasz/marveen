@@ -361,6 +361,32 @@ function cleanupTeamReferences(removedName: string): void {
 
 // Merges the profile's allow/deny entries into agents/<name>/.claude/settings.json,
 // preserving any other keys (hooks, custom flags) the user added by hand.
+// Idempotent migration: every agent's settings.json should carry the
+// PreCompact hook (memory save + skill reflection). Pre-refactor agents
+// were scaffolded before scaffoldAgentDir seeded the template, so their
+// file is permissions-only. Merge the template's hooks block in place.
+function ensureAgentHooks(name: string): boolean {
+  const settingsPath = join(agentDir(name), '.claude', 'settings.json')
+  const tplPath = join(PROJECT_ROOT, 'templates', 'settings.json.template')
+  if (!existsSync(tplPath)) return false
+  let tpl: Record<string, unknown>
+  try {
+    tpl = JSON.parse(readFileSync(tplPath, 'utf-8'))
+  } catch {
+    return false
+  }
+  if (!tpl.hooks) return false
+  let existing: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { /* overwrite */ }
+  }
+  if (existing.hooks) return false  // user already has hooks, leave alone
+  existing.hooks = tpl.hooks
+  mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  writeFileSync(settingsPath, JSON.stringify(existing, null, 2))
+  return true
+}
+
 function writeAgentSettingsFromProfile(name: string, profile: ProfileTemplate): void {
   const agentRoot = agentDir(name)
   const settingsDir = join(agentRoot, '.claude')
@@ -595,6 +621,14 @@ function scaffoldAgentDir(name: string) {
     } else {
       writeFileSync(mcpJson, '{}')
     }
+  }
+  // Seed settings.json from template so the agent gets the PreCompact
+  // hook (memory save + skill reflection) out of the box. Only if the
+  // file doesn't exist yet -- user edits and later profile writes stay.
+  const settingsJson = join(dir, '.claude', 'settings.json')
+  if (!existsSync(settingsJson)) {
+    const tpl = join(PROJECT_ROOT, 'templates', 'settings.json.template')
+    if (existsSync(tpl)) copyFileSync(tpl, settingsJson)
   }
 }
 
@@ -3605,6 +3639,19 @@ Respond ONLY with JSON, nothing else:
   // Warm the Marveen bot username cache so /api/marveen returns @username
   // on the first dashboard load. Re-fetched lazily otherwise.
   refreshMarveenBotUsername().catch(() => {})
+
+  // Backfill the PreCompact hook into existing agents' settings.json so the
+  // auto-skill / auto-memory flow runs on context compaction. No-op if the
+  // agent already has its own hooks block.
+  try {
+    const patched: string[] = []
+    for (const agentName of listAgentNames()) {
+      if (ensureAgentHooks(agentName)) patched.push(agentName)
+    }
+    if (patched.length) logger.info({ patched }, 'PreCompact hook backfilled into agent settings.json')
+  } catch (err) {
+    logger.warn({ err }, 'Agent hook backfill skipped')
+  }
 
   // Cleanup router on server close
   const origClose = server.close.bind(server)
