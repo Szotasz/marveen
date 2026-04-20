@@ -119,6 +119,7 @@ nav { display: flex; gap: 4px; }
   text-align: center;
   vertical-align: middle;
 }
+.updates-badge[hidden] { display: none; }
 
 .updates-summary {
   padding: 16px 18px;
