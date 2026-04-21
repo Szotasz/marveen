@@ -678,8 +678,14 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
     }
 
     closeModal(agentWizardOverlay)
-    showToast('Ágens sikeresen létrehozva!')
-    loadAgents()
+    showToast('Ágens létrehozva. Kösd be a Telegramot a párosításhoz.')
+    await loadAgents()
+    // Drop the operator straight into the Telegram tab of the new agent so
+    // the pairing step is in front of them -- easy to miss otherwise.
+    try {
+      await openAgentDetail(name)
+      switchAgentTab('telegram')
+    } catch { /* detail open failed, list refresh already happened */ }
   } catch (err) {
     showToast(`Hiba: ${err.message}`)
   } finally {
