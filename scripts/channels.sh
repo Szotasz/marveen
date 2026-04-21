@@ -11,15 +11,23 @@
 
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-# Source .env so we know the installer's MAIN_AGENT_ID. Older installs may not
-# have this key, so fall back to "marveen" to keep them working.
+# Read MAIN_AGENT_ID from .env WITHOUT exporting every variable into the
+# shell environment. `set -a && source .env` would also export
+# TELEGRAM_BOT_TOKEN, which then leaks into the tmux server's global
+# environment and gets inherited by every sub-agent tmux session the
+# dashboard starts later -- they'd all use the main agent's token and
+# fight over the same getUpdates slot, 409 Conflict in a tight loop.
 if [ -f "$INSTALL_DIR/.env" ]; then
-  set -a
-  # shellcheck disable=SC1091
-  source "$INSTALL_DIR/.env"
-  set +a
+  MAIN_AGENT_ID="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
 fi
 SESSION="${MAIN_AGENT_ID:-marveen}-channels"
+
+# Extra safety net for existing installs whose tmux server already has a
+# polluted global env -- scrub the key so new child sessions don't inherit it.
+# The main agent's plugin will still load its token from
+# ~/.claude/channels/telegram/.env via the plugin's own bootstrap.
+command -v tmux >/dev/null 2>&1 && tmux set-environment -g -u TELEGRAM_BOT_TOKEN 2>/dev/null || true
+unset TELEGRAM_BOT_TOKEN
 
 export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 

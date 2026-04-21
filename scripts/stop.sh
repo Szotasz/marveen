@@ -2,13 +2,12 @@
 # Stop main agent services
 
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# See channels.sh for why we grep instead of `set -a && source`.
 if [ -f "$INSTALL_DIR/.env" ]; then
-  set -a
-  # shellcheck disable=SC1091
-  source "$INSTALL_DIR/.env"
-  set +a
+  SLUG="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
+  BOT_NAME="$(grep -E '^BOT_NAME=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
 fi
-SLUG="${MAIN_AGENT_ID:-marveen}"
+SLUG="${SLUG:-marveen}"
 
 echo "${BOT_NAME:-Marveen} leallitas..."
 OS="$(uname -s)"
@@ -19,10 +18,10 @@ elif [ "$OS" = "Linux" ]; then
   systemctl --user stop "${SLUG}-dashboard" "${SLUG}-channels" 2>/dev/null || true
 fi
 
-# Kill tmux sessions (mindkét platformon)
+# Stop the main channels tmux session. Do NOT kill sub-agent sessions --
+# the dashboard restart (update flow) doesn't need them down, and this
+# script doesn't bring them back up. Leaving them running keeps the
+# update seamless for the operator.
 tmux kill-session -t "${SLUG}-channels" 2>/dev/null || true
-for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^agent-'); do
-  tmux kill-session -t "$session" 2>/dev/null || true
-done
 
 echo "✓ ${BOT_NAME:-Marveen} leallitva"

@@ -563,7 +563,12 @@ function startAgentProcess(name: string): { ok: boolean; pid?: number; error?: s
     const skipFlag = profile.permissionMode === 'strict' ? '' : '--dangerously-skip-permissions '
     // bun lives under ~/.bun/bin, which isn't in the dashboard's launchd PATH.
     // The Claude plugin launcher spawns `bun`, so we must prepend it here.
-    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && export TELEGRAM_STATE_DIR="${tgStateDir}" && ${ollamaEnv}cd "${dir}" && ${CLAUDE} ${skipFlag}--model ${model} --channels plugin:telegram@claude-plugins-official`
+    // Defensive unset of TELEGRAM_BOT_TOKEN: if anything ever pollutes the
+    // tmux server's global env again (fresh upgrades, operator manually
+    // sourcing .env), the sub-agent would otherwise inherit the main
+    // agent's token and trigger a 409 Conflict loop. The per-agent .env
+    // in TELEGRAM_STATE_DIR is still the intended source of truth.
+    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && unset TELEGRAM_BOT_TOKEN && export TELEGRAM_STATE_DIR="${tgStateDir}" && ${ollamaEnv}cd "${dir}" && ${CLAUDE} ${skipFlag}--model ${model} --channels plugin:telegram@claude-plugins-official`
     execSync(
       `${TMUX} new-session -d -s ${session} "${cmd}"`,
       { timeout: 10000 }

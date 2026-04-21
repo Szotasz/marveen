@@ -3,13 +3,14 @@
 
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
+# Read only what this script actually needs; avoid `set -a && source .env`,
+# which would leak TELEGRAM_BOT_TOKEN into the environment and then into
+# every tmux session the dashboard launches (see channels.sh for details).
 if [ -f "$INSTALL_DIR/.env" ]; then
-  set -a
-  # shellcheck disable=SC1091
-  source "$INSTALL_DIR/.env"
-  set +a
+  SLUG="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
+  BOT_NAME="$(grep -E '^BOT_NAME=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
 fi
-SLUG="${MAIN_AGENT_ID:-marveen}"
+SLUG="${SLUG:-marveen}"
 
 echo "${BOT_NAME:-Marveen} inditas..."
 OS="$(uname -s)"
