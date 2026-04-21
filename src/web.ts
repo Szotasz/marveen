@@ -1837,6 +1837,102 @@ export function startWebServer(port = 3420): http.Server {
         return json(res, { ok: true })
       }
 
+      // GET /api/overview - numbers + activity for the dashboard home.
+      if (path === '/api/overview' && method === 'GET') {
+        // Agents count (main + sub) + running
+        const subAgents = listAgentNames()
+        const running = subAgents.filter(n => isAgentRunning(n)).length + 1  // +main
+        const total = subAgents.length + 1
+        // Memory count + category breakdown
+        const db0 = getDb()
+        const memStats = db0.prepare("SELECT COUNT(*) as c FROM memories").get() as { c: number }
+        const memCats = db0.prepare("SELECT COUNT(DISTINCT category) as c FROM memories").get() as { c: number }
+        // Daily log today (scheduler runs aren't tracked per-day; approximate
+        // with the scheduleLastRun map entries whose epoch is today)
+        const startOfDay = new Date()
+        startOfDay.setHours(0, 0, 0, 0)
+        const startTs = startOfDay.getTime()
+        let tasksToday = 0
+        for (const t of scheduleLastRun.values()) if (t >= startTs) tasksToday++
+        // Also add the previous day for comparison
+        const yesterday = startTs - 24 * 60 * 60 * 1000
+        let tasksYesterday = 0
+        for (const t of scheduleLastRun.values()) if (t >= yesterday && t < startTs) tasksYesterday++
+        // Skills count: global ~/.claude/skills/ directories with SKILL.md
+        let skillCount = 0
+        let skillsToday = 0
+        const skillsDir = join(homedir(), '.claude', 'skills')
+        if (existsSync(skillsDir)) {
+          for (const entry of readdirSync(skillsDir)) {
+            const skillFile = join(skillsDir, entry, 'SKILL.md')
+            if (existsSync(skillFile)) {
+              skillCount++
+              try {
+                const mtime = statSync(skillFile).mtimeMs
+                if (mtime >= startTs) skillsToday++
+              } catch { /* ignore */ }
+            }
+          }
+        }
+        // Activity: last 8 memory/daily-log/agent_messages events
+        const activity: Array<{ icon: string; text: string; at: number }> = []
+        try {
+          const memRows = db0.prepare("SELECT content, created_at, agent_id FROM memories ORDER BY created_at DESC LIMIT 6").all() as { content: string; created_at: number; agent_id: string }[]
+          for (const r of memRows) {
+            activity.push({
+              icon: 'memory',
+              text: `${r.agent_id}: ${r.content.slice(0, 80)}${r.content.length > 80 ? '…' : ''}`,
+              at: r.created_at * 1000,
+            })
+          }
+        } catch { /* ignore */ }
+        try {
+          const msgRows = db0.prepare("SELECT from_agent, to_agent, content, created_at FROM agent_messages ORDER BY created_at DESC LIMIT 4").all() as { from_agent: string; to_agent: string; content: string; created_at: number }[]
+          for (const r of msgRows) {
+            activity.push({
+              icon: 'delegate',
+              text: `${r.from_agent} → ${r.to_agent}: ${r.content.slice(0, 60)}${r.content.length > 60 ? '…' : ''}`,
+              at: r.created_at * 1000,
+            })
+          }
+        } catch { /* ignore */ }
+        activity.sort((a, b) => b.at - a.at)
+        // Agents for the team card: main + sub-agents with avatar path, role, running
+        const agentsForTeam: Array<{ id: string; label: string; role: string; running: boolean; hasAvatar: boolean; avatarUrl: string }> = []
+        const mainHasAvatar = [
+          join(PROJECT_ROOT, 'store', 'marveen-avatar.png'),
+          join(PROJECT_ROOT, 'store', 'marveen-avatar.jpg'),
+        ].some(existsSync)
+        agentsForTeam.push({
+          id: MAIN_AGENT_ID,
+          label: BOT_NAME,
+          role: 'main',
+          running: true,
+          hasAvatar: mainHasAvatar,
+          avatarUrl: `/api/marveen/avatar`,
+        })
+        for (const a of subAgents) {
+          const team = readAgentTeam(a)
+          agentsForTeam.push({
+            id: a,
+            label: readAgentDisplayName(a),
+            role: team.role,
+            running: isAgentRunning(a),
+            hasAvatar: existsSync(join(agentDir(a), 'avatar.png')),
+            avatarUrl: `/api/agents/${encodeURIComponent(a)}/avatar`,
+          })
+        }
+        return json(res, {
+          agents: { total, running },
+          tasksToday,
+          tasksYesterday,
+          memories: { count: memStats.c, categories: memCats.c },
+          skills: { count: skillCount, today: skillsToday },
+          team: agentsForTeam,
+          activity: activity.slice(0, 8),
+        })
+      }
+
       // GET /api/updates - current vs GitHub main, with commit list between
       if (path === '/api/updates' && method === 'GET') {
         return json(res, updateStatusCache)

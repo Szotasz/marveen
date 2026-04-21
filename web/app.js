@@ -63,12 +63,13 @@ themeToggle.addEventListener('click', () => {
 })
 
 // === Page switching ===
-const navLinks = document.querySelectorAll('.nav-link[data-page]')
+const navLinks = document.querySelectorAll('.sb-link[data-page], .nav-link[data-page]')
 const pages = document.querySelectorAll('.page')
 
 function switchPage(pageId) {
   pages.forEach((p) => (p.hidden = p.id !== pageId + 'Page'))
   navLinks.forEach((l) => l.classList.toggle('active', l.dataset.page === pageId))
+  if (pageId === 'overview') loadOverview()
   if (pageId === 'kanban') loadKanban()
   if (pageId === 'tasks') loadSchedules()
   if (pageId === 'agents') loadAgents()
@@ -4513,6 +4514,97 @@ document.getElementById('saveTeamBtn').addEventListener('click', async () => {
   }
 })
 
+// === Overview page ===
+function formatRelative(ts) {
+  const diff = Math.max(0, Date.now() - ts)
+  const min = Math.floor(diff / 60000)
+  if (min < 1) return 'most'
+  if (min < 60) return `${min}p`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr}ó`
+  const day = Math.floor(hr / 24)
+  return `${day}n`
+}
+
+async function loadOverview() {
+  try {
+    const res = await fetch('/api/overview')
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const d = await res.json()
+    // Stats
+    document.getElementById('statAgents').textContent = d.agents.running
+    document.getElementById('statAgentsSub').textContent = `${d.agents.total} összesen`
+    document.getElementById('statTasks').textContent = d.tasksToday
+    const taskDiff = d.tasksToday - d.tasksYesterday
+    document.getElementById('statTasksSub').textContent = taskDiff === 0 ? 'ugyanaz mint tegnap' : (taskDiff > 0 ? `+${taskDiff} a tegnapihoz` : `${taskDiff} a tegnapihoz`)
+    document.getElementById('statMemories').textContent = d.memories.count.toLocaleString('hu-HU').replace(/,/g, ' ')
+    document.getElementById('statMemoriesSub').textContent = `bejegyzés · ${d.memories.categories} category`
+    document.getElementById('statSkills').textContent = d.skills.count
+    document.getElementById('statSkillsSub').textContent = d.skills.today > 0 ? `ebből ${d.skills.today} ma` : ''
+    // Team
+    const teamGrid = document.getElementById('overviewTeamGrid')
+    teamGrid.innerHTML = ''
+    for (const a of d.team) {
+      const card = document.createElement('div')
+      card.className = 'overview-agent' + (a.role === 'main' ? ' main' : '')
+      const statusClass = a.running ? '' : 'stopped'
+      const statusText = a.running ? 'aktív' : 'leállva'
+      card.innerHTML = `
+        <div class="overview-agent-avatar"><img src="${escapeHtml(a.avatarUrl)}?t=${Date.now()}" onerror="this.style.display='none'" alt=""></div>
+        <div>
+          <div class="overview-agent-name">${escapeHtml(a.label)}</div>
+          <div class="overview-agent-status ${statusClass}"><span class="dot"></span>${statusText}</div>
+        </div>
+      `
+      if (a.role !== 'main') card.addEventListener('click', () => openAgentDetail(a.id))
+      teamGrid.appendChild(card)
+    }
+    // Activity
+    const act = document.getElementById('overviewActivity')
+    act.innerHTML = ''
+    if (!d.activity || d.activity.length === 0) {
+      act.innerHTML = '<div style="color:var(--text-muted);font-size:13px">Nincs friss esemény.</div>'
+    } else {
+      for (const a of d.activity) {
+        const icon = a.icon === 'delegate'
+          ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>'
+          : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3C7.5 3 4 6.5 4 11v4l-2 3h4v2a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3v-2h4l-2-3v-4c0-4.5-3.5-8-8-8z"/></svg>'
+        const item = document.createElement('div')
+        item.className = 'overview-activity-item'
+        item.innerHTML = `
+          <div class="overview-activity-icon">${icon}</div>
+          <div class="overview-activity-body">
+            <div class="overview-activity-title">${escapeHtml(a.text)}</div>
+            <div class="overview-activity-time">${formatRelative(a.at)}</div>
+          </div>
+        `
+        act.appendChild(item)
+      }
+    }
+  } catch (err) {
+    document.getElementById('overviewActivity').innerHTML = `<div style="color:var(--text-muted);font-size:13px">Hiba: ${err.message || err}</div>`
+  }
+}
+
+// Brand mark: use main agent's avatar if available
+async function initSidebarBrand() {
+  try {
+    const img = document.createElement('img')
+    img.src = '/api/marveen/avatar?t=' + Date.now()
+    img.onload = () => {
+      const mark = document.getElementById('sidebarBrandMark')
+      if (mark) { mark.textContent = ''; mark.appendChild(img) }
+    }
+    const res = await fetch('/api/marveen')
+    if (res.ok) {
+      const m = await res.json()
+      const name = document.getElementById('sidebarBrandName')
+      if (name && m.name) name.textContent = m.name
+    }
+  } catch {}
+}
+initSidebarBrand()
+
 // === Updates page ===
 function escapeHtmlUpdates(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
@@ -4619,4 +4711,4 @@ setInterval(pollUpdatesBadge, 5 * 60_000)
 // === Init ===
 populateAvatarGrid()
 loadMemAgents()
-loadKanban()
+loadOverview()

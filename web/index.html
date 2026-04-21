@@ -7,43 +7,117 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header>
-    <div class="header-left">
-      <div class="logo">
-        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
-        </svg>
-        <span>ClaudeClaw</span>
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <div class="sidebar-brand-mark" id="sidebarBrandMark">M</div>
+      <div class="sidebar-brand-text">
+        <div class="sidebar-brand-name" id="sidebarBrandName">Marveen</div>
+        <div class="sidebar-brand-sub" id="sidebarBrandSub">online</div>
       </div>
-      <nav>
-        <a href="#" class="nav-link active" data-page="kanban">Kanban</a>
-        <a href="#" class="nav-link" data-page="agents">Ágensek</a>
-        <a href="#" class="nav-link" data-page="team">Csapat</a>
-        <a href="#" class="nav-link" data-page="tasks">Ütemezések</a>
-        <a href="#" class="nav-link" data-page="skills">Skillek</a>
-        <a href="#" class="nav-link" data-page="memories">Memória</a>
-        <a href="#" class="nav-link" data-page="connectors">Connectorok</a>
-        <a href="#" class="nav-link" data-page="migrate">Költöztetés</a>
-        <a href="#" class="nav-link" data-page="status">Státusz</a>
-        <a href="#" class="nav-link" data-page="updates" id="updatesNavLink">
-          Frissítések
-          <span class="updates-badge" id="updatesBadge" hidden></span>
-        </a>
-      </nav>
     </div>
-    <button class="theme-toggle" id="themeToggle" title="Témaváltás">
-      <svg class="icon-sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
-      </svg>
-      <svg class="icon-moon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-      </svg>
-    </button>
-  </header>
+    <nav class="sidebar-nav">
+      <a href="#" class="sb-link active" data-page="overview">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        <span class="sb-label">Áttekintés</span>
+      </a>
+      <a href="#" class="sb-link" data-page="kanban">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="10" rx="1"/><rect x="17" y="4" width="4" height="13" rx="1"/></svg>
+        <span class="sb-label">Kanban</span>
+      </a>
+      <a href="#" class="sb-link" data-page="agents">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        <span class="sb-label">Ágensek</span>
+      </a>
+      <a href="#" class="sb-link" data-page="team">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"/><path d="M12 8v4"/><circle cx="5" cy="18" r="3"/><circle cx="19" cy="18" r="3"/><path d="M12 12l-7 6M12 12l7 6"/></svg>
+        <span class="sb-label">Csapat</span>
+      </a>
+      <a href="#" class="sb-link" data-page="tasks">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
+        <span class="sb-label">Ütemezések</span>
+      </a>
+      <a href="#" class="sb-link" data-page="memories">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3C7.5 3 4 6.5 4 11v4l-2 3h4v2a3 3 0 0 0 3 3h1a3 3 0 0 0 3-3v0a3 3 0 0 0 3 3h1a3 3 0 0 0 3-3v-2h4l-2-3v-4c0-4.5-3.5-8-8-8z"/></svg>
+        <span class="sb-label">Memória</span>
+      </a>
+      <a href="#" class="sb-link" data-page="skills">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15 8.5 22 9.3 17 14.2 18.2 21 12 17.8 5.8 21 7 14.2 2 9.3 9 8.5"/></svg>
+        <span class="sb-label">Skillek</span>
+      </a>
+      <a href="#" class="sb-link" data-page="connectors">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.5-1.5"/></svg>
+        <span class="sb-label">MCP</span>
+      </a>
+      <a href="#" class="sb-link" data-page="migrate">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/><polyline points="7 10 12 5 17 10"/><line x1="12" y1="5" x2="12" y2="17"/></svg>
+        <span class="sb-label">Költöztetés</span>
+      </a>
+      <a href="#" class="sb-link" data-page="status">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        <span class="sb-label">Státusz</span>
+      </a>
+      <a href="#" class="sb-link" data-page="updates" id="updatesNavLink">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        <span class="sb-label">Frissítések</span>
+        <span class="updates-badge sb-badge" id="updatesBadge" hidden></span>
+      </a>
+    </nav>
+    <div class="sidebar-footer">
+      <button class="theme-toggle" id="themeToggle" title="Témaváltás">
+        <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+        </svg>
+        <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        </svg>
+      </button>
+    </div>
+  </aside>
 
   <main>
+    <!-- === Overview Page (default) === -->
+    <div class="page" id="overviewPage">
+      <div class="overview-stats">
+        <div class="overview-stat">
+          <div class="overview-stat-label">Aktív ügynökök</div>
+          <div class="overview-stat-value" id="statAgents">—</div>
+          <div class="overview-stat-sub" id="statAgentsSub"></div>
+        </div>
+        <div class="overview-stat">
+          <div class="overview-stat-label">Ma futott feladat</div>
+          <div class="overview-stat-value" id="statTasks">—</div>
+          <div class="overview-stat-sub" id="statTasksSub"></div>
+        </div>
+        <div class="overview-stat">
+          <div class="overview-stat-label">Memória</div>
+          <div class="overview-stat-value" id="statMemories">—</div>
+          <div class="overview-stat-sub" id="statMemoriesSub"></div>
+        </div>
+        <div class="overview-stat">
+          <div class="overview-stat-label">Generált skillek</div>
+          <div class="overview-stat-value" id="statSkills">—</div>
+          <div class="overview-stat-sub" id="statSkillsSub"></div>
+        </div>
+      </div>
+      <div class="overview-grid">
+        <div class="overview-card">
+          <div class="overview-card-head">
+            <h3>Csapat</h3>
+            <span class="overview-card-meta" id="overviewTeamMeta">élő állapot</span>
+          </div>
+          <div class="overview-team-grid" id="overviewTeamGrid"></div>
+        </div>
+        <div class="overview-card">
+          <div class="overview-card-head">
+            <h3>Aktivitás</h3>
+          </div>
+          <div class="overview-activity" id="overviewActivity"></div>
+        </div>
+      </div>
+    </div>
+
     <!-- === Kanban Page === -->
-    <div class="page" id="kanbanPage">
+    <div class="page" id="kanbanPage" hidden>
       <div class="kanban-board" id="kanbanBoard">
         <div class="kanban-col" data-status="planned">
           <div class="kanban-col-header">
