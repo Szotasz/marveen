@@ -9,6 +9,7 @@ workspace/
 agents/
 reports/
 .claude/
+.config/
 
 # Database
 *.db
