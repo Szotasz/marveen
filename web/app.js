@@ -894,7 +894,7 @@ async function openAgentDetail(agentName) {
   document.getElementById('agentDetailDesc').textContent = currentAgent.description || ''
   document.getElementById('agentDetailModel').textContent = currentAgent.model || 'inherit'
 
-  const tgConnected = currentAgent.telegramConnected || currentAgent.telegram_connected || false
+  const tgConnected = currentAgent.hasTelegram || false
   document.getElementById('agentDetailTgStatus').innerHTML = `<span class="tg-status"><span class="tg-dot ${tgConnected ? 'connected' : 'disconnected'}"></span>${tgConnected ? 'Csatlakozva' : 'Nincs bekötve'}</span>`
 
   // Settings tab - load Ollama models then set value
@@ -3240,7 +3240,15 @@ function showZoomIndicator() {
 // === Daily Log ===
 
 async function loadDailyLog() {
-  const agent = document.getElementById('memAgentFilter').value || 'marveen'
+  // "Minden agens" (empty value) falls back to the first agent in the
+  // filter dropdown, which is the main agent on any BOT_NAME -- avoids a
+  // hardcoded "marveen" slug that would 404 on zino/haver/etc installs.
+  const sel = document.getElementById('memAgentFilter')
+  const agent = sel.value || (sel.options[1] ? sel.options[1].value : '')
+  if (!agent) {
+    renderLogEntries([])
+    return
+  }
 
   try {
     const datesRes = await fetch(`/api/daily-log/dates?agent=${agent}`)

@@ -585,6 +585,23 @@ function stopAgentProcess(name: string): { ok: boolean; error?: string } {
     execSync(`${TMUX} kill-session -t ${session}`, { timeout: 5000 })
     // Wait for session to fully terminate
     execSync('sleep 2', { timeout: 4000 })
+    // Reap any orphaned bun server.ts (Telegram plugin) grandchildren that
+    // tmux didn't get. The plugin writes its pid to the agent's telegram
+    // state dir; prefer that, fall back to a token-scoped pkill.
+    try {
+      const pidPath = join(agentDir(name), '.claude', 'channels', 'telegram', 'bot.pid')
+      if (existsSync(pidPath)) {
+        const pid = parseInt(readFileSync(pidPath, 'utf-8').trim(), 10)
+        if (pid > 1) {
+          try { process.kill(pid, 'SIGTERM') } catch { /* already gone */ }
+        }
+      }
+      // Belt-and-braces: nuke any bun server.ts whose cwd points at this
+      // agent's telegram state dir. Narrow match so other agents' pollers
+      // aren't hit.
+      const tgStateDir = join(agentDir(name), '.claude', 'channels', 'telegram')
+      execFileSync('/usr/bin/pkill', ['-f', `TELEGRAM_STATE_DIR=${tgStateDir}`], { timeout: 3000 })
+    } catch { /* pkill returns non-zero if no match -- fine */ }
     logger.info({ name, session }, 'Agent tmux session stopped')
     return { ok: true }
   } catch (err) {
@@ -619,7 +636,8 @@ function scaffoldAgentDir(name: string) {
     if (existsSync(sharedMcp)) {
       copyFileSync(sharedMcp, mcpJson)
     } else {
-      writeFileSync(mcpJson, '{}')
+      // Valid empty shape -- `claude /doctor` rejects plain "{}"
+      writeFileSync(mcpJson, JSON.stringify({ mcpServers: {} }, null, 2))
     }
   }
   // Seed settings.json from template so the agent gets the PreCompact
@@ -1896,7 +1914,22 @@ export function startWebServer(port = 3420): http.Server {
         // Send welcome message via the new bot
         sendWelcomeMessage(name, botToken.trim()).catch(() => {})
 
-        return json(res, { ok: true, botUsername: validation.botUsername, botId: validation.botId })
+        // If the agent is running, the already-started bun poller is still
+        // using the OLD token. Restart it so the new token actually goes
+        // live; otherwise the user sees "Kapcsolat rendben!" but the agent
+        // never receives messages.
+        const wasRunning = isAgentRunning(name)
+        let restarted = false
+        if (wasRunning) {
+          const stopRes = stopAgentProcess(name)
+          if (stopRes.ok) {
+            try { execSync('sleep 2', { timeout: 4000 }) } catch {}
+            const startRes = startAgentProcess(name)
+            restarted = startRes.ok
+          }
+        }
+
+        return json(res, { ok: true, botUsername: validation.botUsername, botId: validation.botId, restarted, wasRunning })
       }
 
       // DELETE /api/agents/:name/telegram - Remove Telegram config
@@ -3227,48 +3260,44 @@ Respond ONLY with JSON, nothing else:
         }
       }
 
-      // POST /api/connectors/:name/assign - Assign MCP to specific agent(s)
+      // POST /api/connectors/:name/assign - Assign MCP to specific agent(s).
+      // Read the connector config from the same files /api/connectors uses
+      // (no `claude mcp get` spawn = no Telegram plugin collision). Plugin
+      // entries (plugin:*) are always available to every agent via Claude
+      // Code itself, so we no-op those -- writing them into .mcp.json
+      // wouldn't make them work anyway and confuses the /doctor output.
       const connectorAssignMatch = path.match(/^\/api\/connectors\/(.+)\/assign$/)
       if (connectorAssignMatch && method === 'POST') {
         const connectorName = decodeURIComponent(connectorAssignMatch[1])
         const body = await readBody(req)
         const { agents: targetAgents } = JSON.parse(body.toString()) as { agents: string[] }
 
-        let connectorConfig: any = null
-        try {
-          const output = execSync(`claude mcp get ${shellEscape(connectorName)} 2>&1`, { timeout: 15000, encoding: 'utf-8' })
-          const command = output.match(/Command:\s+(.+)/)?.[1]?.trim()
-          const args = output.match(/Args:\s+(.+)/)?.[1]?.trim()
-          const url = output.match(/https?:\/\/[^\s]+/)?.[0]
-          connectorConfig = { command, args, url }
-        } catch {
-          return json(res, { error: 'Connector not found' }, 404)
+        if (connectorName.startsWith('plugin:')) {
+          return json(res, { ok: true, note: 'plugin:* connectors are global to every agent -- nothing to assign.' })
         }
+
+        let connectorConfig: any = null
+        for (const src of [join(PROJECT_ROOT, '.mcp.json'), join(homedir(), '.claude.json')]) {
+          try {
+            const parsed = JSON.parse(readFileOr(src, '{}'))
+            if (parsed.mcpServers && parsed.mcpServers[connectorName]) {
+              connectorConfig = parsed.mcpServers[connectorName]
+              break
+            }
+          } catch { /* fall through */ }
+        }
+        if (!connectorConfig) return json(res, { error: 'Connector not found' }, 404)
 
         const AGENTS_BASE = join(PROJECT_ROOT, 'agents')
         for (const agentName of targetAgents) {
           const mcpPath = join(AGENTS_BASE, agentName, '.mcp.json')
           if (!existsSync(mcpPath)) continue
-
           let mcpConfig: any = {}
           try { mcpConfig = JSON.parse(readFileSync(mcpPath, 'utf-8')) } catch {}
           if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {}
-
-          if (connectorConfig.url) {
-            mcpConfig.mcpServers[connectorName] = {
-              type: 'http',
-              url: connectorConfig.url
-            }
-          } else if (connectorConfig.command) {
-            mcpConfig.mcpServers[connectorName] = {
-              command: connectorConfig.command,
-              args: connectorConfig.args ? connectorConfig.args.split(/\s+/) : []
-            }
-          }
-
+          mcpConfig.mcpServers[connectorName] = connectorConfig
           writeFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2))
         }
-
         return json(res, { ok: true })
       }
 
