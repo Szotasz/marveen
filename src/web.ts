@@ -1078,9 +1078,20 @@ function startMessageRouter(): NodeJS.Timeout {
   return setInterval(() => {
     const pending = getPendingMessages()
     for (const msg of pending) {
-      const session = agentSessionName(msg.to_agent)
-      if (!isAgentRunning(msg.to_agent)) {
-        // Agent not running, skip for now (will retry next cycle)
+      // The main agent runs in `${MAIN_AGENT_ID}-channels`, not `agent-${name}`,
+      // so agentSessionName() would miss it and strand every sub-agent → main
+      // message as pending forever. Mirror the scheduler's session resolution.
+      const isMainAgent = msg.to_agent === MAIN_AGENT_ID
+      const session = isMainAgent ? MAIN_CHANNELS_SESSION : agentSessionName(msg.to_agent)
+
+      let sessionExists = false
+      try {
+        const sessions = execSync(`${TMUX} list-sessions -F "#{session_name}"`, { timeout: 3000, encoding: 'utf-8' })
+        sessionExists = sessions.split('\n').some(s => s.trim() === session)
+      } catch { /* no tmux */ }
+
+      if (!sessionExists) {
+        // Target session not running, skip for now (will retry next cycle).
         continue
       }
 
