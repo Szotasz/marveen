@@ -2256,6 +2256,11 @@ export function startWebServer(port = 3420): http.Server {
           // Remove from pending
           delete access.pending[code.trim()]
 
+          // Pairing is one-shot; lock the channel down to allowlist mode
+          // now that we have the sender's id. Matches what install.sh does
+          // for the main agent after the first pairing completes.
+          access.dmPolicy = 'allowlist'
+
           // Save updated access.json
           writeFileSync(accessPath, JSON.stringify(access, null, 2))
 
