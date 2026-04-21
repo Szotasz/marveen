@@ -3282,20 +3282,32 @@ Respond ONLY with JSON, nothing else:
 
         if (!data.name?.trim()) return json(res, { error: 'Name is required' }, 400)
 
+        // `claude mcp add` rejects any name with chars outside [A-Za-z0-9_-].
+        // Auto-sanitize so UI entries like "Google Drive" become "Google-Drive"
+        // instead of failing with a raw CLI error.
+        const rawName = data.name.trim()
+        const sanitizedName = rawName.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
+        if (!sanitizedName) {
+          return json(res, { error: 'Name must contain at least one letter, number, hyphen, or underscore' }, 400)
+        }
+        const nameChanged = sanitizedName !== rawName
+
         try {
           const scopeFlag = data.scope === 'project' ? '-s project' : '-s user'
 
           if (data.type === 'remote' && data.url) {
-            execSync(`claude mcp add --transport http ${scopeFlag} ${shellEscape(data.name)} ${shellEscape(data.url)} 2>&1`, { timeout: 15000, encoding: 'utf-8' })
+            execSync(`claude mcp add --transport http ${scopeFlag} ${shellEscape(sanitizedName)} ${shellEscape(data.url)} 2>&1`, { timeout: 15000, encoding: 'utf-8' })
           } else if (data.type === 'local' && data.command) {
+            // `-e` flags MUST come AFTER the name — commander's variadic
+            // `<env...>` greedily consumes the name token if -e appears before it.
             const envFlags = data.env ? Object.entries(data.env).map(([k, v]) => `-e ${shellEscape(k)}=${shellEscape(v)}`).join(' ') : ''
             const argsStr = data.args ? shellEscape(data.args) : ''
-            execSync(`claude mcp add ${scopeFlag} ${envFlags} ${shellEscape(data.name)} -- ${shellEscape(data.command)} ${argsStr} 2>&1`, { timeout: 15000, encoding: 'utf-8' })
+            execSync(`claude mcp add ${scopeFlag} ${shellEscape(sanitizedName)} ${envFlags} -- ${shellEscape(data.command)} ${argsStr} 2>&1`, { timeout: 15000, encoding: 'utf-8' })
           } else {
             return json(res, { error: 'URL (remote) or command (local) required' }, 400)
           }
 
-          return json(res, { ok: true })
+          return json(res, { ok: true, name: sanitizedName, nameChanged })
         } catch (err: any) {
           return json(res, { error: err.message || 'Failed to add connector' }, 500)
         }
@@ -3405,8 +3417,14 @@ Respond ONLY with JSON, nothing else:
             if (parsed.env) envData = parsed.env
           } catch { /* no body or invalid json - that's ok */ }
 
+          // Use the catalog `id` (already slug-form) as the CLI name.
+          // `item.name` is the human display label and may contain spaces or
+          // dots that `claude mcp add` rejects.
+          const cliName = item.id
+
           if (item.type === 'local') {
-            // Build env flags
+            // Build env flags. `-e` MUST come AFTER the name — commander's
+            // variadic `<env...>` eats the name token otherwise.
             const allEnv = { ...item.env, ...envData }
             const envFlags = Object.entries(allEnv)
               .filter(([, v]) => v !== '')
@@ -3414,12 +3432,12 @@ Respond ONLY with JSON, nothing else:
               .join(' ')
 
             const argsStr = (item.args || []).map((a: string) => shellEscape(a)).join(' ')
-            const cmd = `claude mcp add --scope user ${envFlags} ${shellEscape(item.name)} -- ${shellEscape(item.command)} ${argsStr} 2>&1`
+            const cmd = `claude mcp add --scope user ${shellEscape(cliName)} ${envFlags} -- ${shellEscape(item.command)} ${argsStr} 2>&1`
             execSync(cmd, { timeout: 30000, encoding: 'utf-8' })
           } else if (item.type === 'remote') {
             const url = item.url
             if (!url) return json(res, { error: 'Remote item has no URL' }, 400)
-            execSync(`claude mcp add --transport sse --scope user ${shellEscape(item.name)} ${shellEscape(url)} 2>&1`, { timeout: 30000, encoding: 'utf-8' })
+            execSync(`claude mcp add --transport sse --scope user ${shellEscape(cliName)} ${shellEscape(url)} 2>&1`, { timeout: 30000, encoding: 'utf-8' })
           }
 
           let message = 'Telepítve'
@@ -3444,11 +3462,13 @@ Respond ONLY with JSON, nothing else:
           const item = catalog.find(c => c.id === id)
           if (!item) return json(res, { error: 'Item not found in catalog' }, 404)
 
+          // Match the install path: the CLI entry is registered under `item.id`.
+          const cliName = item.id
           try {
-            execSync(`claude mcp remove ${shellEscape(item.name)} -s user 2>&1`, { timeout: 15000 })
+            execSync(`claude mcp remove ${shellEscape(cliName)} -s user 2>&1`, { timeout: 15000 })
           } catch {
             try {
-              execSync(`claude mcp remove ${shellEscape(item.name)} -s project 2>&1`, { timeout: 15000 })
+              execSync(`claude mcp remove ${shellEscape(cliName)} -s project 2>&1`, { timeout: 15000 })
             } catch { /* ignore if not found anywhere */ }
           }
 

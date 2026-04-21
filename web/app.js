@@ -3749,8 +3749,13 @@ document.getElementById('saveConnectorBtn').addEventListener('click', async () =
       const err = await res.json()
       throw new Error(err.error || 'Hiba')
     }
+    const result = await res.json()
     closeModal(connectorModalOverlay)
-    showToast('Connector hozzáadva!')
+    if (result.nameChanged) {
+      showToast(`Connector hozzáadva "${result.name}" néven (szóköz/speciális karakter nem engedélyezett)`)
+    } else {
+      showToast('Connector hozzáadva!')
+    }
     loadConnectors()
   } catch (err) {
     showToast(`Hiba: ${err.message}`)
