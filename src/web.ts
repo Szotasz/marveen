@@ -1574,25 +1574,32 @@ function startScheduleRunner(): NodeJS.Timeout {
         scheduleLastRun.set(task.name, now)
         logger.info({ task: task.name, agent: agentName, session }, 'Scheduled task fired')
 
-        // Post-send verify: if the agent was idle at send-time but then
-        // started a new turn during our chunk stream, the Enter never
-        // submits and the prompt sits stuck in the input line. Give the
-        // agent 2 seconds to pick it up; if it's still there, wipe the
-        // line with Ctrl-U so nothing piles up on the next tick.
-        setTimeout(() => {
+        // Post-send verify: if the agent started a new turn during our
+        // chunk stream, the Enter from sendPromptToSession might have
+        // landed while the agent was thinking and Claude Code parked
+        // the bytes on the input line. We want the prompt to run, not
+        // disappear -- so if the pane still shows our marker below ❯
+        // after a short wait, re-send Enter so the submit sticks. We
+        // retry a couple of times before giving up.
+        const marker = task.type === 'heartbeat'
+          ? `[Heartbeat: ${task.name}]`
+          : `[Utemezett feladat: ${task.name}]`
+        const resubmit = (attempt: number) => {
           try {
-            if (!isSessionReadyForPrompt(session)) return  // agent is working on it -- good
             const pane = execFileSync(TMUX, ['capture-pane', '-t', session, '-p'], { timeout: 3000, encoding: 'utf-8' })
-            const marker = task.type === 'heartbeat' ? `[Heartbeat: ${task.name}]` : `[Utemezett feladat: ${task.name}]`
-            if (pane.includes(marker)) {
-              execFileSync(TMUX, ['send-keys', '-t', session, 'C-u'], { timeout: 3000 })
-              logger.warn({ task: task.name, session }, 'Scheduled prompt did not submit (turn-race) -- cleared input, will retry next tick')
-              scheduleLastRun.delete(task.name)  // allow retry on next tick
+            const stuck = /❯\s+\S/.test(pane) && pane.includes(marker)
+            if (!stuck) return  // either submitted or cleared
+            if (attempt >= 5) {
+              logger.warn({ task: task.name, session }, 'Scheduled prompt still stuck after 5 Enter retries -- giving up, will retry on next cron tick')
+              return
             }
+            execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 3000 })
+            setTimeout(() => resubmit(attempt + 1), 3000)
           } catch (err) {
-            logger.warn({ err, task: task.name }, 'Post-send verify failed')
+            logger.warn({ err, task: task.name }, 'Post-send resubmit failed')
           }
-        }, 2000)
+        }
+        setTimeout(() => resubmit(0), 2000)
       } catch (err) {
         logger.warn({ err, task: task.name }, 'Failed to fire scheduled task')
       }
