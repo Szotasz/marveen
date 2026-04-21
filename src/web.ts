@@ -1334,6 +1334,33 @@ function startTelegramPluginMonitor(): NodeJS.Timeout {
 
 const scheduleLastRun: Map<string, number> = new Map()
 
+// Persistent task run history so the overview's "tasksToday" number survives
+// dashboard restarts. Keep the last 30 days.
+const TASK_HISTORY_PATH = join(PROJECT_ROOT, 'store', 'task-run-history.json')
+const TASK_HISTORY_TTL = 30 * 24 * 60 * 60 * 1000
+interface TaskRunEntry { name: string; agent: string; ts: number }
+function readTaskHistory(): TaskRunEntry[] {
+  try {
+    const raw = readFileSync(TASK_HISTORY_PATH, 'utf-8')
+    const arr = JSON.parse(raw)
+    if (!Array.isArray(arr)) return []
+    return arr
+  } catch {
+    return []
+  }
+}
+function appendTaskRun(name: string, agent: string): void {
+  const now = Date.now()
+  const history = readTaskHistory().filter(e => now - e.ts < TASK_HISTORY_TTL)
+  history.push({ name, agent, ts: now })
+  try {
+    mkdirSync(join(PROJECT_ROOT, 'store'), { recursive: true })
+    writeFileSync(TASK_HISTORY_PATH, JSON.stringify(history))
+  } catch (err) {
+    logger.warn({ err }, 'Failed to persist task run history')
+  }
+}
+
 function cronMatchesNow(cron: string, catchUpMs: number = 60000): boolean {
   try {
     const expr = CronExpressionParser.parse(cron)
@@ -1572,6 +1599,7 @@ function startScheduleRunner(): NodeJS.Timeout {
         }
         sendPromptToSession(session, prefix + task.prompt)
         scheduleLastRun.set(task.name, now)
+        appendTaskRun(task.name, agentName)
         logger.info({ task: task.name, agent: agentName, session }, 'Scheduled task fired')
 
         // Post-send verify: if the agent started a new turn during our
@@ -1847,17 +1875,17 @@ export function startWebServer(port = 3420): http.Server {
         const db0 = getDb()
         const memStats = db0.prepare("SELECT COUNT(*) as c FROM memories").get() as { c: number }
         const memCats = db0.prepare("SELECT COUNT(DISTINCT category) as c FROM memories").get() as { c: number }
-        // Daily log today (scheduler runs aren't tracked per-day; approximate
-        // with the scheduleLastRun map entries whose epoch is today)
+        // Task runs: read the persisted history so the number survives
+        // dashboard restarts (the in-memory scheduleLastRun map empties on
+        // every reload, which is how this counter showed 0 after the sidebar
+        // rebuild even though the scheduler had fired plenty of tasks).
         const startOfDay = new Date()
         startOfDay.setHours(0, 0, 0, 0)
         const startTs = startOfDay.getTime()
-        let tasksToday = 0
-        for (const t of scheduleLastRun.values()) if (t >= startTs) tasksToday++
-        // Also add the previous day for comparison
+        const taskHistory = readTaskHistory()
+        const tasksToday = taskHistory.filter(e => e.ts >= startTs).length
         const yesterday = startTs - 24 * 60 * 60 * 1000
-        let tasksYesterday = 0
-        for (const t of scheduleLastRun.values()) if (t >= yesterday && t < startTs) tasksYesterday++
+        const tasksYesterday = taskHistory.filter(e => e.ts >= yesterday && e.ts < startTs).length
         // Skills count: global ~/.claude/skills/ directories with SKILL.md
         let skillCount = 0
         let skillsToday = 0
