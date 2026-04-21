@@ -20,6 +20,9 @@ reports/
 *.log
 *.pid
 
+# Test artifacts
+test-results/
+
 # macOS
 .DS_Store
 
