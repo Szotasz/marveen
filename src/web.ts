@@ -1357,6 +1357,16 @@ function startTelegramPluginMonitor(): NodeJS.Timeout {
 
 const scheduleLastRun: Map<string, number> = new Map()
 
+// Tasks that matched their cron but found the target session busy. The
+// cron-matcher only fires on an exact minute boundary, so without a retry
+// queue the task would be skipped for the whole day. Keep it here and
+// retry on subsequent 60s ticks until the session frees up or the window
+// expires (15 min -- plenty for a finishing turn, but not so long we end
+// up running the noon check at 14:00).
+interface PendingRetry { firstAttempt: number; task: ScheduledTask; agent: string }
+const pendingTaskRetries: Map<string, PendingRetry> = new Map()
+const PENDING_RETRY_WINDOW_MS = 15 * 60 * 1000
+
 // Persistent task run history so the overview's "tasksToday" number survives
 // dashboard restarts. Keep the last 30 days.
 const TASK_HISTORY_PATH = join(PROJECT_ROOT, 'store', 'task-run-history.json')
@@ -1608,6 +1618,73 @@ function startUpdateChecker(): NodeJS.Timeout {
   return setInterval(() => { refreshUpdateStatus().catch(() => {}) }, 15 * 60_000)
 }
 
+// Try to fire a task at a single target agent. Returns the outcome so the
+// caller can decide whether to queue a retry. Splitting this out means the
+// pendingTaskRetries loop and the normal cron loop share one code path.
+function attemptFireTask(task: ScheduledTask, agentName: string, now: number): 'fired' | 'busy' | 'missing' | 'error' {
+  const isMainAgent = agentName === MAIN_AGENT_ID
+  const session = isMainAgent ? MAIN_CHANNELS_SESSION : agentSessionName(agentName)
+
+  let sessionExists = false
+  try {
+    const sessions = execSync(`${TMUX} list-sessions -F "#{session_name}"`, { timeout: 3000, encoding: 'utf-8' })
+    sessionExists = sessions.split('\n').some(s => s.trim() === session)
+  } catch { /* no tmux */ }
+
+  if (!sessionExists) {
+    logger.warn({ task: task.name, agent: agentName, session }, 'Schedule target session not running, skipping')
+    return 'missing'
+  }
+
+  if (!isSessionReadyForPrompt(session)) {
+    logger.warn({ task: task.name, agent: agentName, session }, 'Schedule target session busy or has pending input, will retry')
+    return 'busy'
+  }
+
+  try {
+    let prefix: string
+    if (task.type === 'heartbeat') {
+      prefix = `[Heartbeat: ${task.name}] FONTOS: Ez egy csendes ellenorzes. CSAK AKKOR irj Telegramon (chat_id: ${ALLOWED_CHAT_ID}), ha tenyleg fontos/surgos dolgot talalsz. Ha minden rendben, NE irj semmit -- maradj csendben. `
+    } else {
+      prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el Telegramon (chat_id: ${ALLOWED_CHAT_ID}, reply tool). `
+    }
+    sendPromptToSession(session, prefix + task.prompt)
+    scheduleLastRun.set(task.name, now)
+    appendTaskRun(task.name, agentName)
+    logger.info({ task: task.name, agent: agentName, session }, 'Scheduled task fired')
+
+    // Post-send verify: if the agent started a new turn during our chunk
+    // stream, the Enter from sendPromptToSession might have landed while
+    // the agent was thinking and Claude Code parked the bytes on the input
+    // line. We want the prompt to run, not disappear -- so if the pane
+    // still shows our marker below ❯ after a short wait, re-send Enter so
+    // the submit sticks. We retry a couple of times before giving up.
+    const marker = task.type === 'heartbeat'
+      ? `[Heartbeat: ${task.name}]`
+      : `[Utemezett feladat: ${task.name}]`
+    const resubmit = (attempt: number) => {
+      try {
+        const pane = execFileSync(TMUX, ['capture-pane', '-t', session, '-p'], { timeout: 3000, encoding: 'utf-8' })
+        const stuck = /❯\s+\S/.test(pane) && pane.includes(marker)
+        if (!stuck) return
+        if (attempt >= 5) {
+          logger.warn({ task: task.name, session }, 'Scheduled prompt still stuck after 5 Enter retries -- giving up')
+          return
+        }
+        execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 3000 })
+        setTimeout(() => resubmit(attempt + 1), 3000)
+      } catch (err) {
+        logger.warn({ err, task: task.name }, 'Post-send resubmit failed')
+      }
+    }
+    setTimeout(() => resubmit(0), 2000)
+    return 'fired'
+  } catch (err) {
+    logger.warn({ err, task: task.name }, 'Failed to fire scheduled task')
+    return 'error'
+  }
+}
+
 function startScheduleRunner(): NodeJS.Timeout {
   let firstRun = true
 
@@ -1618,11 +1695,24 @@ function startScheduleRunner(): NodeJS.Timeout {
     const catchUp = firstRun ? 30 * 60000 : 60000
     firstRun = false
 
+    // Retry tasks that were busy-skipped on earlier ticks. cronMatchesNow
+    // only matches on the exact minute boundary, so without this the noon
+    // check skipped because the session was busy at 12:00:50 would never
+    // run that day.
+    for (const [key, pending] of Array.from(pendingTaskRetries.entries())) {
+      if (now - pending.firstAttempt > PENDING_RETRY_WINDOW_MS) {
+        logger.warn({ task: pending.task.name, agent: pending.agent, windowMs: PENDING_RETRY_WINDOW_MS }, 'Pending scheduled task retry window expired, abandoning')
+        pendingTaskRetries.delete(key)
+        continue
+      }
+      const result = attemptFireTask(pending.task, pending.agent, now)
+      if (result !== 'busy') pendingTaskRetries.delete(key)
+    }
+
     for (const task of tasks) {
       if (!task.enabled) continue
       if (!cronMatchesNow(task.schedule, catchUp)) continue
 
-      // Prevent double-firing within the same minute
       // Prevent double-firing: skip if already ran within the catch-up window
       const lastRun = scheduleLastRun.get(task.name) || 0
       if (now - lastRun < catchUp) continue
@@ -1630,7 +1720,7 @@ function startScheduleRunner(): NodeJS.Timeout {
       let targetAgents: string[]
 
       if (task.agent === 'all') {
-        // Broadcast to all running agents + marveen
+        // Broadcast to all running agents + main
         const running = listAgentNames().filter(a => isAgentRunning(a))
         targetAgents = [MAIN_AGENT_ID, ...running]
       } else {
@@ -1638,70 +1728,15 @@ function startScheduleRunner(): NodeJS.Timeout {
       }
 
       for (const agentName of targetAgents) {
-
-      const isMainAgent = agentName === MAIN_AGENT_ID
-      const session = isMainAgent ? MAIN_CHANNELS_SESSION : agentSessionName(agentName)
-
-      // Check if the target session exists
-      let sessionExists = false
-      try {
-        const sessions = execSync(`${TMUX} list-sessions -F "#{session_name}"`, { timeout: 3000, encoding: 'utf-8' })
-        sessionExists = sessions.split('\n').some(s => s.trim() === session)
-      } catch { /* no tmux */ }
-
-      if (!sessionExists) {
-        logger.warn({ task: task.name, agent: agentName, session }, 'Schedule target session not running, skipping')
-        continue
-      }
-
-      if (!isSessionReadyForPrompt(session)) {
-        logger.warn({ task: task.name, agent: agentName, session }, 'Schedule target session busy or has pending input, skipping to avoid prompt pileup')
-        continue
-      }
-
-      try {
-        let prefix: string
-        if (task.type === 'heartbeat') {
-          prefix = `[Heartbeat: ${task.name}] FONTOS: Ez egy csendes ellenorzes. CSAK AKKOR irj Telegramon (chat_id: ${ALLOWED_CHAT_ID}), ha tenyleg fontos/surgos dolgot talalsz. Ha minden rendben, NE irj semmit -- maradj csendben. `
-        } else {
-          prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el Telegramon (chat_id: ${ALLOWED_CHAT_ID}, reply tool). `
+        const key = `${task.name}@${agentName}`
+        // If already queued for retry from an earlier tick, leave it to the
+        // retry handler -- don't re-queue or double-fire.
+        if (pendingTaskRetries.has(key)) continue
+        const result = attemptFireTask(task, agentName, now)
+        if (result === 'busy') {
+          pendingTaskRetries.set(key, { firstAttempt: now, task, agent: agentName })
         }
-        sendPromptToSession(session, prefix + task.prompt)
-        scheduleLastRun.set(task.name, now)
-        appendTaskRun(task.name, agentName)
-        logger.info({ task: task.name, agent: agentName, session }, 'Scheduled task fired')
-
-        // Post-send verify: if the agent started a new turn during our
-        // chunk stream, the Enter from sendPromptToSession might have
-        // landed while the agent was thinking and Claude Code parked
-        // the bytes on the input line. We want the prompt to run, not
-        // disappear -- so if the pane still shows our marker below ❯
-        // after a short wait, re-send Enter so the submit sticks. We
-        // retry a couple of times before giving up.
-        const marker = task.type === 'heartbeat'
-          ? `[Heartbeat: ${task.name}]`
-          : `[Utemezett feladat: ${task.name}]`
-        const resubmit = (attempt: number) => {
-          try {
-            const pane = execFileSync(TMUX, ['capture-pane', '-t', session, '-p'], { timeout: 3000, encoding: 'utf-8' })
-            const stuck = /❯\s+\S/.test(pane) && pane.includes(marker)
-            if (!stuck) return  // either submitted or cleared
-            if (attempt >= 5) {
-              logger.warn({ task: task.name, session }, 'Scheduled prompt still stuck after 5 Enter retries -- giving up, will retry on next cron tick')
-              return
-            }
-            execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 3000 })
-            setTimeout(() => resubmit(attempt + 1), 3000)
-          } catch (err) {
-            logger.warn({ err, task: task.name }, 'Post-send resubmit failed')
-          }
-        }
-        setTimeout(() => resubmit(0), 2000)
-      } catch (err) {
-        logger.warn({ err, task: task.name }, 'Failed to fire scheduled task')
       }
-
-      } // end for targetAgents
     }
   }
 
