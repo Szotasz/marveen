@@ -1135,7 +1135,7 @@ function getClaudePidForSession(session: string): number | null {
   }
 }
 
-function hasTelegramPluginAlive(claudePid: number): boolean {
+function hasTelegramPluginAlive(claudePid: number, agentName?: string): boolean {
   try {
     const ps = execFileSync('/bin/ps', ['-axo', 'pid,ppid,command'], { timeout: 3000, encoding: 'utf-8' })
     const lines = ps.split('\n').slice(1)
@@ -1158,11 +1158,30 @@ function hasTelegramPluginAlive(claudePid: number): boolean {
       if (seen.has(p)) continue
       seen.add(p)
       const cmd = cmdOf.get(p) || ''
-      // The plugin runs as `bun run --cwd .../telegram/...` with a `bun server.ts`
-      // grandchild. Either hit is proof the plugin is up.
       if (cmd.includes('/telegram/') && cmd.includes('bun')) return true
       if (/\bbun\b/.test(cmd) && cmd.includes('server.ts')) return true
       for (const k of (childrenOf.get(p) || [])) stack.push(k)
+    }
+    // Fallback: bun may have been reparented to init (ppid=1) after its
+    // intermediate parent crashed. The subtree walk from claudePid then
+    // misses it and we declare the plugin down even though it's fine.
+    // Check bot.pid directly as a last-resort liveness signal.
+    const pidDir = agentName
+      ? join(agentDir(agentName), '.claude', 'channels', 'telegram')
+      : join(homedir(), '.claude', 'channels', 'telegram')
+    const pidPath = join(pidDir, 'bot.pid')
+    if (existsSync(pidPath)) {
+      const pid = parseInt(readFileSync(pidPath, 'utf-8').trim(), 10)
+      if (pid > 1) {
+        try {
+          process.kill(pid, 0)
+          const cmd = cmdOf.get(pid) || ''
+          if (cmd.includes('bun') || cmd.includes('server.ts') || cmd.includes('telegram')) {
+            logger.debug({ claudePid, orphanPid: pid, agentName }, 'Telegram plugin alive via bot.pid (reparented)')
+            return true
+          }
+        } catch { /* process gone */ }
+      }
     }
     return false
   } catch {
@@ -1171,6 +1190,8 @@ function hasTelegramPluginAlive(claudePid: number): boolean {
 }
 
 const agentDownSince: Map<string, number> = new Map()
+const agentLastRestart: Map<string, number> = new Map()
+const AGENT_RESTART_GRACE_MS = 90_000
 const PLUGIN_ALERT_DEDUP_MS = 30 * 60 * 1000
 const MAIN_CHANNELS_SESSION = `${MAIN_AGENT_ID}-channels`
 const MAIN_CHANNELS_PLIST = join(homedir(), 'Library', 'LaunchAgents', `com.${MAIN_AGENT_ID}.channels.plist`)
@@ -1238,11 +1259,15 @@ function triggerMarveenMemorySave(): void {
   }
 }
 
+let marveenLastHardRestart = 0
+const MARVEEN_HARD_RESTART_GRACE_MS = 120_000
+
 export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
   try {
     execFileSync('/bin/launchctl', ['unload', MAIN_CHANNELS_PLIST], { timeout: 5000 })
     execFileSync('/bin/sleep', ['2'], { timeout: 4000 })
     execFileSync('/bin/launchctl', ['load', MAIN_CHANNELS_PLIST], { timeout: 5000 })
+    marveenLastHardRestart = Date.now()
     logger.warn(`Hard restart: launchctl reload of com.${MAIN_AGENT_ID}.channels`)
     return { ok: true }
   } catch (err) {
@@ -1253,6 +1278,10 @@ export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
 
 function handleMarveenDown(): void {
   const now = Date.now()
+  if (marveenLastHardRestart && now - marveenLastHardRestart < MARVEEN_HARD_RESTART_GRACE_MS) {
+    // Just hard-restarted; give the plugin time to boot before checking again.
+    return
+  }
   if (!marveenDownState) {
     // First tick of this outage: log, alert, try the soft fix.
     marveenDownState = { downSince: now, stage: 'soft', lastAlertAt: now }
@@ -1319,10 +1348,17 @@ function startTelegramPluginMonitor(): NodeJS.Timeout {
     for (const t of targets) {
       const claudePid = getClaudePidForSession(t.session)
       if (!claudePid) {
+        // Grace period: we may have just restarted this agent and the
+        // claude process hasn't appeared yet. Don't escalate until boot
+        // has had a realistic chance to complete.
+        if (!t.isMarveen && t.agentName) {
+          const lastRestart = agentLastRestart.get(t.agentName)
+          if (lastRestart && Date.now() - lastRestart < AGENT_RESTART_GRACE_MS) continue
+        }
         if (t.isMarveen) handleMarveenDown()
         continue
       }
-      const alive = hasTelegramPluginAlive(claudePid)
+      const alive = hasTelegramPluginAlive(claudePid, t.agentName)
       if (alive) {
         if (t.isMarveen) {
           handleMarveenUp()
@@ -1331,6 +1367,12 @@ function startTelegramPluginMonitor(): NodeJS.Timeout {
           agentDownSince.delete(t.session)
         }
         continue
+      }
+      // Same grace period on the plugin-not-yet-connected path: the MCP
+      // handshake can take tens of seconds after a fresh claude start.
+      if (!t.isMarveen && t.agentName) {
+        const lastRestart = agentLastRestart.get(t.agentName)
+        if (lastRestart && Date.now() - lastRestart < AGENT_RESTART_GRACE_MS) continue
       }
       if (t.isMarveen) {
         handleMarveenDown()
@@ -1341,6 +1383,7 @@ function startTelegramPluginMonitor(): NodeJS.Timeout {
           stopAgentProcess(t.agentName!)
           execSync('sleep 2', { timeout: 4000 })
           startAgentProcess(t.agentName!)
+          agentLastRestart.set(t.agentName!, Date.now())
           agentDownSince.delete(t.session)
         } catch (err) {
           logger.error({ err, agent: t.agentName }, 'Failed to auto-restart agent after telegram plugin down')
