@@ -678,7 +678,7 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
     }
 
     closeModal(agentWizardOverlay)
-    showToast('Ágens létrehozva. Kösd be a Telegramot a párosításhoz.')
+    showToast('Ügynök létrehozva. Kösd be a Telegramot a párosításhoz.')
     await loadAgents()
     // Drop the operator straight into the Telegram tab of the new agent so
     // the pairing step is in front of them -- easy to miss otherwise.
@@ -879,7 +879,7 @@ async function openAgentDetail(agentName) {
     if (!res.ok) throw new Error('Nem található')
     currentAgent = await res.json()
   } catch (err) {
-    showToast('Ágens betöltése sikertelen')
+    showToast('Ügynök betöltése sikertelen')
     return
   }
 
@@ -939,7 +939,7 @@ async function openAgentDetail(agentName) {
     try {
       await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`, { method: 'DELETE' })
       closeModal(agentDetailOverlay)
-      showToast('Ágens törölve')
+      showToast('Ügynök törölve')
       loadAgents()
     } catch (err) {
       showToast('Hiba a törlés során')
@@ -1072,7 +1072,7 @@ document.getElementById('agentStartBtn').addEventListener('click', async () => {
       const err = await res.json()
       throw new Error(err.error || 'Indítási hiba')
     }
-    showToast('Ágens elindítva!')
+    showToast('Ügynök elindítva!')
     // Refresh
     const detailRes = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`)
     if (detailRes.ok) {
@@ -1091,7 +1091,7 @@ document.getElementById('agentStartBtn').addEventListener('click', async () => {
 
 document.getElementById('agentStopBtn').addEventListener('click', async () => {
   if (!currentAgent) return
-  if (!confirm('Biztosan leállítod az ágenst?')) return
+  if (!confirm('Biztosan leállítod az ügynököt?')) return
 
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/stop`, { method: 'POST' })
@@ -1099,7 +1099,7 @@ document.getElementById('agentStopBtn').addEventListener('click', async () => {
       const err = await res.json()
       throw new Error(err.error || 'Leállítási hiba')
     }
-    showToast('Ágens leállítva')
+    showToast('Ügynök leállítva')
     const detailRes = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`)
     if (detailRes.ok) {
       currentAgent = await detailRes.json()
@@ -1746,7 +1746,7 @@ async function loadScheduleAgents() {
       sel.appendChild(opt)
     }
   } catch (err) {
-    console.error('Ágens lista hiba:', err)
+    console.error('Ügynök lista hiba:', err)
   }
 }
 
@@ -2253,7 +2253,7 @@ async function loadMemAgents() {
     const agents = await res.json()
     const sel = document.getElementById('memAgentFilter')
     const memSel = document.getElementById('memAgent')
-    sel.innerHTML = '<option value="">Minden agens</option>'
+    sel.innerHTML = '<option value="">Minden ügynök</option>'
     memSel.innerHTML = ''
     for (const a of agents) {
       sel.innerHTML += `<option value="${a.name}">${a.label}</option>`
@@ -3246,7 +3246,7 @@ function showZoomIndicator() {
 // === Daily Log ===
 
 async function loadDailyLog() {
-  // "Minden agens" (empty value) falls back to the first agent in the
+  // "Minden ügynök" (empty value) falls back to the first agent in the
   // filter dropdown, which is the main agent on any BOT_NAME -- avoids a
   // hardcoded "marveen" slug that would 404 on zino/haver/etc installs.
   const sel = document.getElementById('memAgentFilter')
@@ -3673,11 +3673,11 @@ async function openConnectorDetail(connector) {
       listEl.appendChild(item)
     }
     if (subAgents.length === 0 && !mainAgent) {
-      listEl.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Nincsenek hozzarendelheto agensek</p>'
+      listEl.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Nincsenek hozzarendelheto ügynökök</p>'
     } else if (subAgents.length === 0) {
       const note = document.createElement('p')
       note.style.cssText = 'color:var(--text-muted);font-size:12px;margin-top:8px'
-      note.textContent = 'Sub-agentekhez hozzárendelés a Csapat oldalon létrehozott új ágens után érhető el.'
+      note.textContent = 'Sub-agentekhez hozzárendelés a Csapat oldalon létrehozott új ügynök után érhető el.'
       listEl.appendChild(note)
     }
   } catch {
@@ -3700,7 +3700,7 @@ async function openConnectorDetail(connector) {
   // Assign button
   document.getElementById('connectorAssignBtn').onclick = async () => {
     const checked = [...document.querySelectorAll('#connectorAgentList input:checked')].map(i => i.value)
-    if (checked.length === 0) { showToast('Válassz legalább egy ágenst'); return }
+    if (checked.length === 0) { showToast('Válassz legalább egy ügynököt'); return }
     try {
       await fetch(`/api/connectors/${encodeURIComponent(connector.name)}/assign`, {
         method: 'POST',
@@ -4231,7 +4231,7 @@ function renderGlobalSkills() {
     <div class="stat-card"><div class="stat-value">${globalSkills.length}</div><div class="stat-label">Osszes skill</div></div>
     <div class="stat-card"><div class="stat-value" style="color:var(--success)">${withSkillMd.length}</div><div class="stat-label">Dokumentalt</div></div>
     <div class="stat-card"><div class="stat-value" style="color:var(--info)">${totalAssigned}</div><div class="stat-label">Hozzarendelesek</div></div>
-    ${unassigned ? `<div class="stat-card"><div class="stat-value" style="color:var(--text-muted)">${unassigned}</div><div class="stat-label">Nincs agensnel</div></div>` : ''}
+    ${unassigned ? `<div class="stat-card"><div class="stat-value" style="color:var(--text-muted)">${unassigned}</div><div class="stat-label">Nincs ügynöknél</div></div>` : ''}
   `
 
   if (globalSkills.length === 0) {
@@ -4314,15 +4314,15 @@ async function openSkillDetail(skillName) {
         checkboxesEl.appendChild(item)
       }
       if (subAgents.length === 0 && !mainAgent) {
-        checkboxesEl.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Nincsenek hozzarendelheto agensek</p>'
+        checkboxesEl.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Nincsenek hozzarendelheto ügynökök</p>'
       } else if (subAgents.length === 0) {
         const note = document.createElement('p')
         note.style.cssText = 'color:var(--text-muted);font-size:12px;margin-top:8px'
-        note.textContent = 'Sub-agenteknek hozzárendelés a Csapat oldalon létrehozott új ágens után érhető el.'
+        note.textContent = 'Sub-agenteknek hozzárendelés a Csapat oldalon létrehozott új ügynök után érhető el.'
         checkboxesEl.appendChild(note)
       }
     } catch {
-      checkboxesEl.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Agensek betoltese sikertelen</p>'
+      checkboxesEl.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Ügynökök betoltese sikertelen</p>'
     }
 
     // Assign button

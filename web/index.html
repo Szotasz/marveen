@@ -170,7 +170,7 @@
               <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
             </svg>
           </div>
-          <span>Új ágens</span>
+          <span>Új ügynök</span>
         </button>
       </div>
     </div>
@@ -296,7 +296,7 @@
           <option value="fts">Kulcsszavas</option>
         </select>
         <select class="mem-agent-filter" id="memAgentFilter">
-          <option value="">Minden agens</option>
+          <option value="">Minden ügynök</option>
         </select>
       </div>
 
@@ -414,7 +414,7 @@
             </div>
           </div>
           <div class="form-group">
-            <label for="migrateAgent">Cél ágens</label>
+            <label for="migrateAgent">Cél ügynök</label>
             <select id="migrateAgent"></select>
           </div>
           <button class="btn-primary btn-compact" id="migrateScanBtn">
@@ -611,11 +611,11 @@
     </div>
   </div>
 
-  <!-- Modal: Ágens wizard (multi-step creation) -->
+  <!-- Modal: Ügynök wizard (multi-step creation) -->
   <div class="modal-overlay" id="agentWizardOverlay">
     <div class="modal modal-wide">
       <div class="modal-header">
-        <h2 id="wizardTitle">Új ágens létrehozása</h2>
+        <h2 id="wizardTitle">Új ügynök létrehozása</h2>
         <button class="modal-close" id="wizardClose">&times;</button>
       </div>
       <div class="modal-body">
@@ -636,7 +636,7 @@
             <input type="text" id="agentName" placeholder="pl. kutató, copywriter, fejlesztő">
           </div>
           <div class="form-group">
-            <label for="agentDesc">Írd le szabadon, mit szeretnél hogy csináljon ez az ágens</label>
+            <label for="agentDesc">Írd le szabadon, mit szeretnél hogy csináljon ez az ügynök</label>
             <textarea id="agentDesc" rows="4" placeholder="pl. Piackutatást végez, versenytársakat elemez, táblázatos összefoglalókat készít magyarul."></textarea>
           </div>
           <div class="form-group">
@@ -692,11 +692,11 @@
     </div>
   </div>
 
-  <!-- Modal: Ágens detail (tabbed) -->
+  <!-- Modal: Ügynök detail (tabbed) -->
   <div class="modal-overlay" id="agentDetailOverlay">
     <div class="modal modal-agent-detail">
       <div class="modal-header">
-        <h2 id="agentDetailTitle">Ágens részletek</h2>
+        <h2 id="agentDetailTitle">Ügynök részletek</h2>
         <button class="modal-close" id="agentDetailClose">&times;</button>
       </div>
       <div class="modal-body" style="padding-top: 0;">
@@ -839,13 +839,13 @@
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
                 </svg>
-                <span>A bot csak akkor fogad üzeneteket, ha az ágens fut. Indítsd el az Áttekintés tab-on az "Indítás" gombbal.</span>
+                <span>A bot csak akkor fogad üzeneteket, ha az ügynök fut. Indítsd el az Áttekintés tab-on az "Indítás" gombbal.</span>
               </div>
               <div class="tg-notice tg-notice-ok" id="tgRunningNotice" hidden>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
                 </svg>
-                <span>Az ágens fut, a bot aktívan figyel. A chat ID-d előre engedélyezve van, nem kell pairing kód.</span>
+                <span>Az ügynök fut, a bot aktívan figyel. A chat ID-d előre engedélyezve van, nem kell pairing kód.</span>
               </div>
             </div>
             <div class="tg-pairing-section" id="tgPairingSection">
@@ -871,7 +871,7 @@
         <!-- Tab: Skills -->
         <div class="tab-panel" id="tabSkills" hidden>
           <div class="skill-header">
-            <h4>Ágens skilljei</h4>
+            <h4>Ügynök skilljei</h4>
             <button class="btn-secondary btn-compact" id="addSkillBtn">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                 <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
@@ -984,7 +984,7 @@
             <input type="text" id="scheduleName" placeholder="pl. reggeli-napindito">
           </div>
           <div class="form-group form-half">
-            <label for="scheduleAgent">Ágens</label>
+            <label for="scheduleAgent">Ügynök</label>
             <select id="scheduleAgent"></select>
           </div>
         </div>
@@ -1068,7 +1068,7 @@
       <div class="modal-body">
         <div class="form-row">
           <div class="form-group form-half">
-            <label for="memAgent">Agens</label>
+            <label for="memAgent">Ügynök</label>
             <select id="memAgent"></select>
           </div>
           <div class="form-group form-half">
@@ -1118,7 +1118,7 @@
           </div>
         </div>
         <div class="form-group">
-          <label for="memImportAgent">Ágens</label>
+          <label for="memImportAgent">Ügynök</label>
           <select id="memImportAgent"></select>
         </div>
         <div id="memImportProgress" hidden>
@@ -1194,7 +1194,7 @@
       <div class="modal-body">
         <div class="connector-detail-info" id="connectorDetailInfo"></div>
         <div class="form-group" style="margin-top:20px">
-          <label>Hozzárendelés ágensekhez</label>
+          <label>Hozzárendelés ügynökökhöz</label>
           <div class="connector-agent-list" id="connectorAgentList"></div>
           <button class="btn-secondary btn-compact" id="connectorAssignBtn" style="margin-top:8px">Mentés</button>
         </div>
@@ -1234,7 +1234,7 @@
       <div class="modal-body">
         <div class="skill-detail-desc" id="skillDetailDesc"></div>
         <div class="skill-detail-agents">
-          <label class="form-label-sm">Hozzarendeles agensekhez</label>
+          <label class="form-label-sm">Hozzarendeles ügynökökhöz</label>
           <div class="skill-agent-checkboxes" id="skillAgentCheckboxes"></div>
           <button class="btn-primary btn-compact" id="skillAssignBtn" style="margin-top:12px">
             <span class="btn-text">Mentes</span>
