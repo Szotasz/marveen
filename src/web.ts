@@ -1375,7 +1375,21 @@ function isSessionReadyForPrompt(session: string): boolean {
     const pane = execSync(`${TMUX} capture-pane -t ${session} -p`, { timeout: 3000, encoding: 'utf-8' })
     const hasIdleFooter = /bypass permissions on \(shift\+tab to cycle\)/.test(pane)
     const hasPendingPaste = /\[Pasted text #\d+/.test(pane)
-    return hasIdleFooter && !hasPendingPaste
+    if (!hasIdleFooter || hasPendingPaste) return false
+    // Also guard against text already parked in the input buffer: when our
+    // chunk+delay send-keys lands while the agent is mid-turn, the bytes
+    // just sit in the ❯ input line (no "Pasted text" marker because we
+    // didn't paste -- we typed). If we don't notice that, the next
+    // scheduled prompt gets appended to the first one and both silent-fail.
+    // Heuristic: look at the 20 lines just above the footer, find the
+    // input-prompt line (starts with "❯ "), and consider the session busy
+    // if anything non-whitespace follows the ❯.
+    const lines = pane.split('\n')
+    const footerIdx = lines.findIndex(l => /bypass permissions on \(shift\+tab to cycle\)/.test(l))
+    const start = Math.max(0, footerIdx - 20)
+    const slice = lines.slice(start, footerIdx === -1 ? undefined : footerIdx).join('\n')
+    if (/❯\s+\S/.test(slice)) return false
+    return true
   } catch {
     return false
   }
