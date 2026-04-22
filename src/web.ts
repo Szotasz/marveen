@@ -32,6 +32,26 @@ function computeNextRun(cronExpression: string): number {
   return Math.floor(expr.next().getTime() / 1000)
 }
 
+// Accept 5-field (standard) and 6-field (with seconds) cron expressions;
+// cron-parser supports both. Anything else -- oversized strings, random
+// punctuation, empty fields -- gets rejected at the API boundary instead
+// of reaching the parser deep inside the scheduler loop.
+const CRON_SHAPE_RX = /^(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)(?:\s+(\S+))?$/
+
+function isValidCronShape(cron: unknown): cron is string {
+  if (typeof cron !== 'string') return false
+  const trimmed = cron.trim()
+  if (!trimmed || trimmed.length > 100) return false
+  if (!CRON_SHAPE_RX.test(trimmed)) return false
+  try {
+    const expr = CronExpressionParser.parse(trimmed)
+    expr.next()
+    return true
+  } catch {
+    return false
+  }
+}
+
 const WEB_DIR = join(PROJECT_ROOT, 'web')
 const AGENTS_BASE_DIR = join(PROJECT_ROOT, 'agents')
 const SCHEDULED_TASKS_DIR = join(homedir(), '.claude', 'scheduled-tasks')
@@ -2715,6 +2735,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
         if (!name) return json(res, { error: 'Name is required' }, 400)
         if (!data.prompt?.trim()) return json(res, { error: 'Prompt is required' }, 400)
         if (!data.schedule?.trim()) return json(res, { error: 'Schedule is required' }, 400)
+        if (!isValidCronShape(data.schedule)) return json(res, { error: 'Invalid cron expression' }, 400)
 
         const dir = join(SCHEDULED_TASKS_DIR, name)
         if (existsSync(dir)) return json(res, { error: 'Schedule already exists' }, 409)
@@ -2741,6 +2762,9 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
         const body = await readBody(req)
         const data = JSON.parse(body.toString()) as {
           description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean
+        }
+        if (data.schedule !== undefined && !isValidCronShape(data.schedule)) {
+          return json(res, { error: 'Invalid cron expression' }, 400)
         }
         writeScheduledTask(name, data)
         logger.info({ name }, 'Scheduled task updated')
