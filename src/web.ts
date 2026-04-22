@@ -1,5 +1,5 @@
 import http from 'node:http'
-import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, mkdirSync, rmSync, statSync, lstatSync, copyFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, mkdirSync, rmSync, statSync, lstatSync, copyFileSync, renameSync, chmodSync } from 'node:fs'
 import { join, extname, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto'
@@ -51,6 +51,19 @@ function ensureDirs() {
   mkdirSync(AGENTS_BASE_DIR, { recursive: true })
 }
 
+// Atomic write: write to a sibling tmp file and rename over the target, so a
+// crash/kill mid-write can never leave a zero-byte or half-written state file.
+// Use this for anything the dashboard depends on surviving a restart
+// (dashboard-token, agent CLAUDE.md / SOUL.md, telegram env + access.json).
+function atomicWriteFileSync(path: string, data: string | Buffer, opts: { mode?: number } = {}): void {
+  const tmp = `${path}.${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}.tmp`
+  writeFileSync(tmp, data)
+  if (opts.mode !== undefined) {
+    try { chmodSync(tmp, opts.mode) } catch { /* best-effort */ }
+  }
+  renameSync(tmp, path)
+}
+
 // --- Dashboard auth ---
 // A single bearer token gates every /api/* route. It is loaded from
 // DASHBOARD_TOKEN if set, otherwise persisted at store/.dashboard-token
@@ -70,7 +83,7 @@ function loadOrCreateDashboardToken(): string {
   } catch { /* fall through and regenerate */ }
   const fresh = randomBytes(32).toString('hex')
   mkdirSync(join(PROJECT_ROOT, 'store'), { recursive: true })
-  writeFileSync(DASHBOARD_TOKEN_PATH, fresh, { mode: 0o600 })
+  atomicWriteFileSync(DASHBOARD_TOKEN_PATH, fresh, { mode: 0o600 })
   return fresh
 }
 
@@ -1957,8 +1970,8 @@ export function startWebServer(port = 3420): http.Server {
             generateClaudeMd(name, description, model),
             generateSoulMd(name, description),
           ])
-          writeFileSync(join(agentDir(name), 'CLAUDE.md'), claudeMd)
-          writeFileSync(join(agentDir(name), 'SOUL.md'), soulMd)
+          atomicWriteFileSync(join(agentDir(name), 'CLAUDE.md'), claudeMd)
+          atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), soulMd)
           logger.info({ name }, 'Agent created successfully')
 
           // Notify all running agents about the new team member
@@ -2055,11 +2068,11 @@ export function startWebServer(port = 3420): http.Server {
 
         const tgDir = join(agentDir(name), '.claude', 'channels', 'telegram')
         mkdirSync(tgDir, { recursive: true })
-        writeFileSync(join(tgDir, '.env'), `TELEGRAM_BOT_TOKEN=${botToken.trim()}\n`, { mode: 0o600 })
+        atomicWriteFileSync(join(tgDir, '.env'), `TELEGRAM_BOT_TOKEN=${botToken.trim()}\n`, { mode: 0o600 })
         // pairing mode lets the first unknown sender trigger a 6-digit code
         // exchange. allowlist mode silently drops anything outside allowFrom,
         // which left new sub-agents impossible to pair with over Telegram.
-        writeFileSync(join(tgDir, 'access.json'), JSON.stringify({
+        atomicWriteFileSync(join(tgDir, 'access.json'), JSON.stringify({
           dmPolicy: 'pairing',
           allowFrom: [],
           groups: {},
@@ -2417,7 +2430,7 @@ export function startWebServer(port = 3420): http.Server {
           access.dmPolicy = 'allowlist'
 
           // Save updated access.json
-          writeFileSync(accessPath, JSON.stringify(access, null, 2))
+          atomicWriteFileSync(accessPath, JSON.stringify(access, null, 2))
 
           // Create approved file for the plugin to pick up
           const approvedDir = join(tgDir, 'approved')
@@ -2599,9 +2612,9 @@ export function startWebServer(port = 3420): http.Server {
         if (!existsSync(agentDir(name))) return json(res, { error: 'Agent not found' }, 404)
         const body = await readBody(req)
         const data = JSON.parse(body.toString()) as { claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string }
-        if (data.claudeMd !== undefined) writeFileSync(join(agentDir(name), 'CLAUDE.md'), data.claudeMd)
-        if (data.soulMd !== undefined) writeFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)
-        if (data.mcpJson !== undefined) writeFileSync(join(agentDir(name), '.mcp.json'), data.mcpJson)
+        if (data.claudeMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'CLAUDE.md'), data.claudeMd)
+        if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)
+        if (data.mcpJson !== undefined) atomicWriteFileSync(join(agentDir(name), '.mcp.json'), data.mcpJson)
         if (data.model !== undefined) writeAgentModel(name, data.model)
         return json(res, { ok: true })
       }
