@@ -1255,7 +1255,12 @@ interface MarveenDownState {
   stage: MarveenRecoveryStage
   lastAlertAt: number
   softAttempts: number
+  // When we last transitioned to the current stage. Used by 'save' to
+  // honour the announced ~60s memory-save grace before jumping to 'hard'.
+  stageStartedAt?: number
 }
+
+const SAVE_WINDOW_MS = 60_000
 let marveenDownState: MarveenDownState | null = null
 
 async function sendMarveenAlert(text: string): Promise<void> {
@@ -1363,6 +1368,7 @@ function handleMarveenDown(): void {
     }
     // Soft didn't help; ask Marveen to persist memory before we pull the plug.
     marveenDownState.stage = 'save'
+    marveenDownState.stageStartedAt = now
     marveenDownState.lastAlertAt = now
     logger.warn('Marveen Telegram plugin still down -- stage 2 (memory save)')
     sendMarveenAlert('⚠️ /mcp nem segített. Szólok Marveennek hogy mentsen memóriát hard restart előtt (~60s türelmi idő).').catch(() => {})
@@ -1370,8 +1376,14 @@ function handleMarveenDown(): void {
     return
   }
   if (marveenDownState.stage === 'save') {
-    // Save window elapsed; hard restart now.
+    // Give the memory-save prompt a real ~60s window to land a turn before
+    // we hard-restart. Without this check, the next monitor tick (also 60s
+    // cadence, so effectively immediate) jumps straight to 'hard' and the
+    // save prompt either hasn't started or is mid-turn when we pull the plug.
+    const saveStartedAt = marveenDownState.stageStartedAt ?? marveenDownState.downSince
+    if (now - saveStartedAt < SAVE_WINDOW_MS) return
     marveenDownState.stage = 'hard'
+    marveenDownState.stageStartedAt = now
     marveenDownState.lastAlertAt = now
     logger.warn('Marveen Telegram plugin still down -- stage 3 (hard restart)')
     sendMarveenAlert(`⚠️ Memória mentés türelmi idő lejárt. Hard restart most a ${MAIN_CHANNELS_SESSION} session-ön (új session a SQLite memóriával indul).`).catch(() => {})
