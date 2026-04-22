@@ -1483,8 +1483,13 @@ function isSessionReadyForPrompt(session: string): boolean {
     const lines = pane.split('\n')
     const footerIdx = lines.findIndex(l => /bypass permissions on \(shift\+tab to cycle\)/.test(l))
     const start = Math.max(0, footerIdx - 20)
-    const slice = lines.slice(start, footerIdx === -1 ? undefined : footerIdx).join('\n')
-    if (/❯\s+\S/.test(slice)) return false
+    const sliceLines = lines.slice(start, footerIdx === -1 ? undefined : footerIdx)
+    // Match ❯ followed by non-whitespace ON THE SAME LINE. The previous
+    // version joined the lines with \n and used /❯\s+\S/, where \s matches
+    // newlines and so the regex happily spanned from an idle "❯ " into
+    // the horizontal-rule "─" character on the line below -- classifying
+    // every idle session as "busy".
+    if (sliceLines.some(line => /❯[^\n]*\S/.test(line))) return false
     return true
   } catch {
     return false
