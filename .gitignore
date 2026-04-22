@@ -39,3 +39,6 @@ alkuszokatas_dashboard.md
 napindito-prompt.md
 scheduled-tasks.json
 claudeclaw.log
+
+# Local backup archives from scripts/backup.sh
+backups/
