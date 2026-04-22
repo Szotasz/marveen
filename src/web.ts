@@ -33,6 +33,7 @@ import {
   sanitizeAgentIdent,
 } from './prompt-safety.js'
 import { isTrustedPeer } from './team-trust.js'
+import { checkUpdatePreflight, type GitRunner } from './update-preflight.js'
 
 function computeNextRun(cronExpression: string): number {
   const expr = CronExpressionParser.parse(cronExpression)
@@ -2389,7 +2390,43 @@ export function startWebServer(port = 3420): http.Server {
       // POST /api/updates/apply - spawn update.sh in the background.
       // The script restarts the dashboard itself, so we reply immediately
       // and the browser reloads after a short delay.
+      //
+      // Before spawning, run checkUpdatePreflight against the live repo.
+      // update.sh itself would still exit on a non-main branch / dirty
+      // tree, but because it is launched detached with stdio: 'ignore'
+      // the frontend has no way to see that exit code. Replying 409 here
+      // turns a silent "Frissítés elindult / same commits after reload"
+      // loop into an actionable toast.
       if (path === '/api/updates/apply' && method === 'POST') {
+        const git: GitRunner = {
+          currentBranch: () => execFileSync(
+            '/usr/bin/git',
+            ['rev-parse', '--abbrev-ref', 'HEAD'],
+            { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' },
+          ),
+          porcelainStatus: () => execFileSync(
+            '/usr/bin/git',
+            ['status', '--porcelain', '--untracked-files=no'],
+            { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' },
+          ),
+        }
+        let preflight
+        try {
+          preflight = checkUpdatePreflight(git)
+        } catch (err) {
+          return json(res, {
+            error: 'Pre-check failed: ' + (err instanceof Error ? err.message : String(err)),
+            reason: 'precheck-crashed',
+          }, 500)
+        }
+        if (!preflight.ok) {
+          const body: Record<string, unknown> = {
+            error: preflight.message,
+            reason: preflight.reason,
+          }
+          if (preflight.reason === 'not-on-main') body.branch = preflight.branch
+          return json(res, body, 409)
+        }
         try {
           spawn('/bin/bash', [join(PROJECT_ROOT, 'update.sh')], {
             cwd: PROJECT_ROOT,
