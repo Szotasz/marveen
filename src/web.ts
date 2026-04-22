@@ -1254,6 +1254,7 @@ interface MarveenDownState {
   downSince: number
   stage: MarveenRecoveryStage
   lastAlertAt: number
+  softAttempts: number
 }
 let marveenDownState: MarveenDownState | null = null
 
@@ -1270,10 +1271,20 @@ async function sendMarveenAlert(text: string): Promise<void> {
   }
 }
 
-function softReconnectMarveen(): void {
+function softReconnectMarveen(): boolean {
   // /mcp opens Claude Code's MCP status dialog; a follow-up Enter picks
   // the first action (Reconnect if the plugin is disconnected). We send
   // Escape first in case a different dialog is already open.
+  //
+  // Guard: if the session is mid-turn (esc to interrupt on screen) or the
+  // operator has text parked in the input box, our Escape would interrupt
+  // their turn or wipe what they typed. In that case bail out -- the caller
+  // will retry on the next outage tick, by which point the pane is likely
+  // idle again.
+  if (!isSessionReadyForPrompt(MAIN_CHANNELS_SESSION)) {
+    logger.warn('Marveen soft reconnect skipped: main session busy or has pending input')
+    return false
+  }
   try {
     execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Escape'], { timeout: 3000 })
     execFileSync('/bin/sleep', ['0.2'], { timeout: 1000 })
@@ -1281,8 +1292,10 @@ function softReconnectMarveen(): void {
     execFileSync('/bin/sleep', ['0.3'], { timeout: 1000 })
     execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Enter'], { timeout: 3000 })
     logger.info('Marveen soft reconnect: sent /mcp + Enter')
+    return true
   } catch (err) {
     logger.warn({ err }, 'Marveen soft reconnect failed')
+    return false
   }
 }
 
@@ -1332,13 +1345,22 @@ function handleMarveenDown(): void {
   }
   if (!marveenDownState) {
     // First tick of this outage: log, alert, try the soft fix.
-    marveenDownState = { downSince: now, stage: 'soft', lastAlertAt: now }
+    marveenDownState = { downSince: now, stage: 'soft', lastAlertAt: now, softAttempts: 0 }
     logger.warn('Marveen Telegram plugin down -- stage 1 (soft /mcp reconnect)')
     sendMarveenAlert('⚠️ Marveen Telegram plugin lecsatlakozott. Próbálok /mcp-vel reconnectálni...').catch(() => {})
-    softReconnectMarveen()
+    if (softReconnectMarveen()) marveenDownState.softAttempts += 1
     return
   }
   if (marveenDownState.stage === 'soft') {
+    // If the main session was busy on the first tick, retry soft a few times
+    // before escalating so we don't wipe the operator's input / interrupt a
+    // long turn. Cap at 3 attempts so a permanently busy session still gets
+    // the memory-save + hard-restart path eventually.
+    if (marveenDownState.softAttempts < 3 && softReconnectMarveen()) {
+      marveenDownState.softAttempts += 1
+      marveenDownState.lastAlertAt = now
+      return
+    }
     // Soft didn't help; ask Marveen to persist memory before we pull the plug.
     marveenDownState.stage = 'save'
     marveenDownState.lastAlertAt = now
