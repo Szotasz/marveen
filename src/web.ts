@@ -345,6 +345,11 @@ interface TeamConfig {
   reportsTo: string | null
   delegatesTo: string[]
   autoDelegation: boolean
+  // Optional override so an operator can grant "trusted peer" status to an
+  // agent outside the usual reportsTo / delegatesTo derivation -- e.g. a
+  // cross-team collaborator. Unknown names and self-references are stripped
+  // at write time (see writeAgentTeam + sanitizeTeamConfig).
+  trustFrom?: string[]
 }
 
 const DEFAULT_TEAM: TeamConfig = {
@@ -352,6 +357,7 @@ const DEFAULT_TEAM: TeamConfig = {
   reportsTo: null,
   delegatesTo: [],
   autoDelegation: false,
+  trustFrom: [],
 }
 
 function readAgentTeam(name: string): TeamConfig {
@@ -364,10 +370,11 @@ function readAgentTeam(name: string): TeamConfig {
       const reportsTo = typeof raw.reportsTo === 'string' && raw.reportsTo.trim() ? raw.reportsTo.trim() : null
       const delegatesTo = Array.isArray(raw.delegatesTo) ? raw.delegatesTo.filter((x: unknown) => typeof x === 'string') : []
       const autoDelegation = !!raw.autoDelegation
-      return { role, reportsTo, delegatesTo, autoDelegation }
+      const trustFrom = Array.isArray(raw.trustFrom) ? raw.trustFrom.filter((x: unknown) => typeof x === 'string') : []
+      return { role, reportsTo, delegatesTo, autoDelegation, trustFrom }
     }
   } catch { /* fall through */ }
-  return { ...DEFAULT_TEAM }
+  return { ...DEFAULT_TEAM, trustFrom: [] }
 }
 
 function writeAgentTeam(name: string, team: TeamConfig): void {
@@ -376,6 +383,60 @@ function writeAgentTeam(name: string, team: TeamConfig): void {
   try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
   config.team = team
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
+// Scrub self-references and unknown agent names from a TeamConfig's name
+// fields. Returns the cleaned config plus a warnings object the caller
+// (the PUT handler) can surface to the UI so an operator isn't silently
+// missing the name they just typed.
+interface TeamSanitizeWarnings {
+  droppedSelf: string[]   // field names that referenced the agent itself
+  droppedUnknown: string[]  // agent ids not present on disk + not MAIN
+}
+
+function sanitizeTeamConfig(
+  agentName: string,
+  team: TeamConfig,
+): { team: TeamConfig; warnings: TeamSanitizeWarnings } {
+  const known = new Set<string>(listAgentNames())
+  known.add(MAIN_AGENT_ID)
+  const warnings: TeamSanitizeWarnings = { droppedSelf: [], droppedUnknown: [] }
+
+  const cleanList = (ids: string[], fieldName: string): string[] => {
+    const out: string[] = []
+    for (const id of ids) {
+      if (id === agentName) {
+        if (!warnings.droppedSelf.includes(fieldName)) warnings.droppedSelf.push(fieldName)
+        continue
+      }
+      if (!known.has(id)) {
+        warnings.droppedUnknown.push(id)
+        continue
+      }
+      if (!out.includes(id)) out.push(id)  // de-dupe too
+    }
+    return out
+  }
+
+  let reportsTo = team.reportsTo
+  if (reportsTo === agentName) {
+    warnings.droppedSelf.push('reportsTo')
+    reportsTo = null
+  } else if (reportsTo && !known.has(reportsTo)) {
+    warnings.droppedUnknown.push(reportsTo)
+    reportsTo = null
+  }
+
+  return {
+    team: {
+      role: team.role,
+      reportsTo,
+      delegatesTo: cleanList(team.delegatesTo, 'delegatesTo'),
+      autoDelegation: team.autoDelegation,
+      trustFrom: cleanList(team.trustFrom ?? [], 'trustFrom'),
+    },
+    warnings,
+  }
 }
 
 // Removing an agent leaves dangling references in other agents' team configs.
@@ -389,9 +450,14 @@ function cleanupTeamReferences(removedName: string): void {
       team.reportsTo = removedName === MAIN_AGENT_ID ? null : MAIN_AGENT_ID
       dirty = true
     }
-    const filtered = team.delegatesTo.filter(n => n !== removedName)
-    if (filtered.length !== team.delegatesTo.length) {
-      team.delegatesTo = filtered
+    const filteredDelegates = team.delegatesTo.filter(n => n !== removedName)
+    if (filteredDelegates.length !== team.delegatesTo.length) {
+      team.delegatesTo = filteredDelegates
+      dirty = true
+    }
+    const filteredTrust = (team.trustFrom ?? []).filter(n => n !== removedName)
+    if (filteredTrust.length !== (team.trustFrom ?? []).length) {
+      team.trustFrom = filteredTrust
       dirty = true
     }
     if (dirty) writeAgentTeam(other, team)
@@ -2399,7 +2465,7 @@ export function startWebServer(port = 3420): http.Server {
         const body = await readBody(req)
         const data = JSON.parse(body.toString())
         const current = readAgentTeam(name)
-        const next: TeamConfig = {
+        const proposed: TeamConfig = {
           role: data.role === 'leader' ? 'leader' : (data.role === 'member' ? 'member' : current.role),
           reportsTo: typeof data.reportsTo === 'string'
             ? (data.reportsTo.trim() || null)
@@ -2408,9 +2474,15 @@ export function startWebServer(port = 3420): http.Server {
             ? data.delegatesTo.filter((x: unknown) => typeof x === 'string')
             : current.delegatesTo,
           autoDelegation: typeof data.autoDelegation === 'boolean' ? data.autoDelegation : current.autoDelegation,
+          trustFrom: Array.isArray(data.trustFrom)
+            ? data.trustFrom.filter((x: unknown) => typeof x === 'string')
+            : (current.trustFrom ?? []),
         }
+        // Silently-dropped names would confuse an operator who just typed
+        // them; include them in the response so the UI can toast.
+        const { team: next, warnings } = sanitizeTeamConfig(name, proposed)
         writeAgentTeam(name, next)
-        return json(res, { ok: true, team: next })
+        return json(res, { ok: true, team: next, warnings })
       }
 
       // GET /api/agents/:name/telegram/pending - List pending pairing codes.
