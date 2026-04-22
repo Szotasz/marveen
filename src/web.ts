@@ -2409,15 +2409,30 @@ export function startWebServer(port = 3420): http.Server {
       // turns a silent "Frissítés elindult / same commits after reload"
       // loop into an actionable toast.
       if (path === '/api/updates/apply' && method === 'POST') {
-        // Concurrency gate: update.sh writes its PID to UPDATE_PIDFILE
-        // on entry and clears it on EXIT. If the file still points at
-        // a live process, another run is in flight -- refuse with 409.
-        // A dead pid (stale lock from a killed run) or a missing /
-        // unreadable file is treated as "ok to proceed" so the button
-        // recovers automatically after an abnormal termination.
+        // Concurrency gate. The update flow is:
+        //   1. Dashboard atomically creates UPDATE_PIDFILE with O_EXCL.
+        //      Content: "<dashboard-pid>\n<start-epoch-ms>\n" -- enough
+        //      for the next reader to probe liveness AND reject any
+        //      pidfile older than MAX_PIDFILE_AGE_MS so a recycled PID
+        //      after SIGKILL cannot keep the button permanently locked.
+        //   2. Dashboard spawns update.sh.
+        //   3. update.sh overwrites the pidfile early with its own "$$"
+        //      plus start epoch, and removes the file on EXIT via trap.
+        //
+        // If step 1 hits EEXIST, a second caller is already in the
+        // window. The helper probes liveness + age: if fresh+live we
+        // 409; if stale we unlink and retry the create once.
         const pf: PidfileRunner = {
           readPidfile: () => {
             try {
+              // Size cap: a legitimate pidfile is under ~64 bytes
+              // ("<pid>\n<epoch>\n"). Anything wildly bigger is either
+              // corrupt or a symlink to something large; treat as
+              // absent so the caller falls through to the create-retry
+              // path, and the stat call itself avoids reading an
+              // accidentally huge file into memory.
+              const st = statSync(UPDATE_PIDFILE)
+              if (!st.isFile() || st.size > 256) return null
               return readFileSync(UPDATE_PIDFILE, 'utf-8')
             } catch {
               return null
@@ -2434,14 +2449,47 @@ export function startWebServer(port = 3420): http.Server {
               return (err as NodeJS.ErrnoException)?.code === 'EPERM'
             }
           },
+          now: () => Date.now(),
         }
-        const concurrency = checkNoConcurrentUpdate(pf)
-        if (!concurrency.ok) {
-          return json(res, {
-            error: concurrency.message,
-            reason: concurrency.reason,
-            pid: concurrency.pid,
-          }, 409)
+        const pidfileContent = `${process.pid}\n${Date.now()}\n`
+        let lockHeld = false
+        try {
+          writeFileSync(UPDATE_PIDFILE, pidfileContent, { flag: 'wx' })
+          lockHeld = true
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') {
+            return json(res, {
+              error: 'Pidfile write failed: ' + (err instanceof Error ? err.message : String(err)),
+              reason: 'lock-write-failed',
+            }, 500)
+          }
+          const concurrency = checkNoConcurrentUpdate(pf)
+          if (!concurrency.ok) {
+            return json(res, {
+              error: concurrency.message,
+              reason: concurrency.reason,
+              pid: concurrency.pid,
+            }, 409)
+          }
+          // Stale pidfile: remove and retry the exclusive create once.
+          try { unlinkSync(UPDATE_PIDFILE) } catch { /* already gone */ }
+          try {
+            writeFileSync(UPDATE_PIDFILE, pidfileContent, { flag: 'wx' })
+            lockHeld = true
+          } catch {
+            // A parallel caller raced us and took the lock between our
+            // unlink and retry. Treat conservatively as already-running.
+            return json(res, {
+              error: 'Another update is starting concurrently. Retry in a few seconds.',
+              reason: 'already-running',
+              pid: 0,
+            }, 409)
+          }
+        }
+        const releaseLock = () => {
+          if (!lockHeld) return
+          try { unlinkSync(UPDATE_PIDFILE) } catch { /* already gone */ }
+          lockHeld = false
         }
         const git: GitRunner = {
           currentBranch: () => execFileSync(
@@ -2459,12 +2507,14 @@ export function startWebServer(port = 3420): http.Server {
         try {
           preflight = checkUpdatePreflight(git)
         } catch (err) {
+          releaseLock()
           return json(res, {
             error: 'Pre-check failed: ' + (err instanceof Error ? err.message : String(err)),
             reason: 'precheck-crashed',
           }, 500)
         }
         if (!preflight.ok) {
+          releaseLock()
           const body: Record<string, unknown> = {
             error: preflight.message,
             reason: preflight.reason,
@@ -2481,14 +2531,16 @@ export function startWebServer(port = 3420): http.Server {
           // .unref() + detached means Node does not keep the event loop
           // alive for the child, but it also means an 'error' event on
           // the ChildProcess (post-fork failure) with no listener would
-          // crash the dashboard. Attach a no-op listener so the event
-          // is handled; log it so the failure is still visible.
+          // crash the dashboard. Attach a listener so the event is
+          // handled; log it and release the lock so a retry is possible.
           child.on('error', (err) => {
             logger.error({ err }, 'update.sh spawn reported an async error')
+            try { unlinkSync(UPDATE_PIDFILE) } catch { /* already gone */ }
           })
           child.unref()
           return json(res, { ok: true })
         } catch (err) {
+          releaseLock()
           return json(res, { error: err instanceof Error ? err.message : String(err) }, 500)
         }
       }

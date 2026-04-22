@@ -40,7 +40,9 @@ export type PreflightResult =
 // Concurrency gate: refuse a second /api/updates/apply while the first
 // update.sh is still running. An in-memory timestamp would reset on the
 // dashboard restart that happens mid-run, so the gate lives in a disk
-// pidfile that update.sh owns for its lifetime (trap EXIT removes it).
+// pidfile. The dashboard creates it atomically with O_EXCL before
+// spawning; update.sh overwrites with its own PID early in its run and
+// removes the file on EXIT via trap. Pidfile content: "<pid>\n<start-epoch-ms>\n".
 export interface PidfileRunner {
   // The raw contents of store/update.pid, or null if the file does not
   // exist / cannot be read. Implementations must not throw.
@@ -49,26 +51,51 @@ export interface PidfileRunner {
   // kill(pid, 0) probe: ESRCH means dead, EPERM means alive but owned
   // by a different uid, anything else treated as alive for safety.
   isProcessAlive(pid: number): boolean
+  // Current wall-clock epoch in milliseconds. Injected for
+  // deterministic age-comparison tests.
+  now(): number
 }
 
 export type ConcurrencyResult =
   | { ok: true }
   | { ok: false; reason: 'already-running'; pid: number; message: string }
 
+// Max age before a live-looking pidfile is treated as stale anyway.
+// This guards against PID recycling after SIGKILL / power loss: if a
+// pidfile survives a kernel kill and the OS later recycles its PID to
+// an unrelated process, kill(pid, 0) would report "alive" forever. A
+// typical update is well under five minutes; one hour is twelve times
+// the upper end of the normal distribution and still short enough
+// that an operator waiting on a genuinely runaway update will notice
+// and intervene.
+export const MAX_PIDFILE_AGE_MS = 60 * 60 * 1000
+
 export function checkNoConcurrentUpdate(pf: PidfileRunner): ConcurrencyResult {
   const raw = pf.readPidfile()
   if (raw === null) return { ok: true }
   const trimmed = raw.trim()
   if (!trimmed) return { ok: true }
-  // Parse only a leading integer. A pidfile with trailing junk (a stray
-  // newline, a commented-out note) still yields a clean pid; garbage
-  // with no digits yields NaN and is treated as stale.
-  const match = trimmed.match(/^(\d+)/)
+  // Accept pidfile formats:
+  //   "<pid>"                       (legacy, echo $$ only)
+  //   "<pid>\n<start-epoch-ms>\n"   (dashboard-written, preferred)
+  //   "<pid> garbage..."            (pid parsed from leading digits)
+  const match = trimmed.match(/^(\d+)(?:[\s\r\n]+(\d+))?/)
   if (!match) return { ok: true }
   const pid = Number.parseInt(match[1], 10)
-  // PID 0 and 1 are reserved / init; treating them as "alive" would
+  // PID 0 and 1 are reserved / init; treating them as alive would
   // permanently lock the button if a stale pidfile ever contained one.
   if (!Number.isFinite(pid) || pid <= 1) return { ok: true }
+  // If the optional second line is present and older than the max
+  // age, treat as stale regardless of kill(pid, 0). Missing second
+  // line means a legacy pidfile with no age info: fall through to
+  // the alive probe alone.
+  if (match[2]) {
+    const startEpoch = Number.parseInt(match[2], 10)
+    if (Number.isFinite(startEpoch) && startEpoch > 0) {
+      const age = pf.now() - startEpoch
+      if (age > MAX_PIDFILE_AGE_MS) return { ok: true }
+    }
+  }
   if (!pf.isProcessAlive(pid)) return { ok: true }
   return {
     ok: false,

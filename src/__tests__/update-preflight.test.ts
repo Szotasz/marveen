@@ -138,10 +138,15 @@ describe('checkUpdatePreflight -- result shape', () => {
   })
 })
 
-function makePidfile(raw: string | null, alivePids: number[] = []): PidfileRunner {
+function makePidfile(
+  raw: string | null,
+  alivePids: number[] = [],
+  nowMs = 1_000_000_000_000,
+): PidfileRunner {
   return {
     readPidfile: () => raw,
     isProcessAlive: (pid) => alivePids.includes(pid),
+    now: () => nowMs,
   }
 }
 
@@ -213,6 +218,66 @@ describe('checkNoConcurrentUpdate -- live pidfile', () => {
 
   it('trims leading whitespace before parsing', () => {
     const result = checkNoConcurrentUpdate(makePidfile('\n  7777\n', [7777]))
+    expect(result.ok).toBe(false)
+  })
+})
+
+describe('checkNoConcurrentUpdate -- age-based staleness', () => {
+  const HOUR_MS = 60 * 60 * 1000
+
+  it('accepts a fresh dashboard-written pidfile (pid + recent epoch)', () => {
+    const now = 2_000_000_000_000
+    const start = now - 1000 // 1 second old
+    const result = checkNoConcurrentUpdate(
+      makePidfile(`7777\n${start}\n`, [7777], now),
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.pid).toBe(7777)
+  })
+
+  it('treats a >1-hour-old pidfile as stale even if the pid is alive', () => {
+    // Defends against SIGKILL + PID recycling: if we ever believed a
+    // live-looking pid in a pidfile that was written an hour ago, the
+    // button would stay locked by an unrelated process that happens to
+    // have the same PID now.
+    const now = 2_000_000_000_000
+    const start = now - (HOUR_MS + 1) // 1 ms past the cutoff
+    const result = checkNoConcurrentUpdate(
+      makePidfile(`7777\n${start}\n`, [7777], now),
+    )
+    expect(result.ok).toBe(true)
+  })
+
+  it('accepts the boundary: exactly 1 hour old is still alive', () => {
+    const now = 2_000_000_000_000
+    const start = now - HOUR_MS // exactly the cutoff
+    const result = checkNoConcurrentUpdate(
+      makePidfile(`7777\n${start}\n`, [7777], now),
+    )
+    expect(result.ok).toBe(false)
+  })
+
+  it('falls back to alive-only check when epoch line is missing (legacy format)', () => {
+    const result = checkNoConcurrentUpdate(
+      makePidfile('7777', [7777], 2_000_000_000_000),
+    )
+    expect(result.ok).toBe(false)
+  })
+
+  it('ignores a non-numeric epoch line and falls back to alive-only', () => {
+    const result = checkNoConcurrentUpdate(
+      makePidfile('7777\nnot-an-epoch', [7777], 2_000_000_000_000),
+    )
+    expect(result.ok).toBe(false)
+  })
+
+  it('ignores a zero or negative epoch and falls back to alive-only', () => {
+    // Parsed but rejected by the `> 0` guard, so the caller does not
+    // time-travel the pidfile with a zero-epoch placeholder.
+    const result = checkNoConcurrentUpdate(
+      makePidfile('7777\n0\n', [7777], 2_000_000_000_000),
+    )
     expect(result.ok).toBe(false)
   })
 })

@@ -12,15 +12,34 @@ NC='\033[0m'
 INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$INSTALL_DIR"
 
-# Pidfile gate: the dashboard's /api/updates/apply refuses to spawn a
-# second update.sh while this PID is alive. Written before the tee
-# setup so that a stale log write from a runaway process cannot be
-# mistaken for "an update is running". Trap EXIT removes the pidfile
-# on any exit path (success, preflight reject, or error).
+# Pidfile gate. The dashboard's /api/updates/apply creates
+# store/update.pid atomically with O_EXCL before spawning this script,
+# so a concurrent second click cannot race past the gate. Here we just
+# overwrite the dashboard's placeholder with our own PID plus a start
+# epoch (ms), and arrange to clean up on exit. Format:
+#   <pid>\n<start-epoch-ms>\n
+# The epoch lets checkNoConcurrentUpdate treat a pidfile older than
+# one hour as stale, which guards against PID recycling after a
+# SIGKILL / power loss left the file behind.
 UPDATE_PIDFILE="$INSTALL_DIR/store/update.pid"
 mkdir -p "$(dirname "$UPDATE_PIDFILE")"
-echo "$$" > "$UPDATE_PIDFILE"
-trap 'rm -f "$UPDATE_PIDFILE"' EXIT
+# Atomic rename so a concurrent reader never sees a half-written file:
+# write to .tmp in the same directory, then mv (rename is atomic on
+# the same filesystem on macOS / Linux).
+UPDATE_PIDFILE_TMP="$UPDATE_PIDFILE.$$.tmp"
+{
+  echo "$$"
+  # Portable wall-clock epoch in ms. date +%s%3N is GNU-only; on BSD
+  # (macOS) we fall back to seconds * 1000. One-second granularity is
+  # plenty for an hour-level age cutoff.
+  if date +%s%3N 2>/dev/null | grep -q '^[0-9]*$'; then
+    date +%s%3N
+  else
+    echo $(( $(date +%s) * 1000 ))
+  fi
+} > "$UPDATE_PIDFILE_TMP"
+mv "$UPDATE_PIDFILE_TMP" "$UPDATE_PIDFILE"
+trap 'rm -f "$UPDATE_PIDFILE" "$UPDATE_PIDFILE_TMP"' EXIT
 
 # Tee the full run into store/update.log so failures are inspectable
 # after the fact. The dashboard launches this script detached with
