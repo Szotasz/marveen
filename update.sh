@@ -32,7 +32,10 @@ UPDATE_PIDFILE_TMP="$UPDATE_PIDFILE.$$.tmp"
   # Portable wall-clock epoch in ms. date +%s%3N is GNU-only; on BSD
   # (macOS) we fall back to seconds * 1000. One-second granularity is
   # plenty for an hour-level age cutoff.
-  if date +%s%3N 2>/dev/null | grep -q '^[0-9]*$'; then
+  # Require one-or-more digits; `*` would accept an empty line and
+  # write "<pid>\n\n", which the helper would read as a legacy pidfile
+  # without age info (alive-probe only, no age cutoff).
+  if date +%s%3N 2>/dev/null | grep -q '^[0-9][0-9]*$'; then
     date +%s%3N
   else
     echo $(( $(date +%s) * 1000 ))

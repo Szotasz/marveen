@@ -2476,14 +2476,24 @@ export function startWebServer(port = 3420): http.Server {
           try {
             writeFileSync(UPDATE_PIDFILE, pidfileContent, { flag: 'wx' })
             lockHeld = true
-          } catch {
-            // A parallel caller raced us and took the lock between our
-            // unlink and retry. Treat conservatively as already-running.
+          } catch (retryErr) {
+            // Only EEXIST means another caller genuinely raced us to the
+            // lock. Any other errno (EACCES, EROFS, ENOSPC) is a real
+            // failure to write, not a concurrency event, and should
+            // surface as 500 so the user sees why rather than a
+            // misleading "already running".
+            const code = (retryErr as NodeJS.ErrnoException)?.code
+            if (code === 'EEXIST') {
+              return json(res, {
+                error: 'Another update is starting concurrently. Retry in a few seconds.',
+                reason: 'already-running',
+                pid: 0,
+              }, 409)
+            }
             return json(res, {
-              error: 'Another update is starting concurrently. Retry in a few seconds.',
-              reason: 'already-running',
-              pid: 0,
-            }, 409)
+              error: 'Pidfile retry-write failed: ' + (retryErr instanceof Error ? retryErr.message : String(retryErr)),
+              reason: 'lock-write-failed',
+            }, 500)
           }
         }
         const releaseLock = () => {
@@ -2535,7 +2545,10 @@ export function startWebServer(port = 3420): http.Server {
           // handled; log it and release the lock so a retry is possible.
           child.on('error', (err) => {
             logger.error({ err }, 'update.sh spawn reported an async error')
-            try { unlinkSync(UPDATE_PIDFILE) } catch { /* already gone */ }
+            // Reuse releaseLock so the unlink + lockHeld reset stay in
+            // one place; if future code extends the path, it will not
+            // double-unlink a file now owned by a subsequent run.
+            releaseLock()
           })
           child.unref()
           return json(res, { ok: true })
