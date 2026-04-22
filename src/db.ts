@@ -2,6 +2,7 @@ import Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs'
 import { STORE_DIR, ALLOWED_CHAT_ID, OLLAMA_URL } from './config.js'
+import { logger } from './logger.js'
 
 let db: Database.Database
 
@@ -803,7 +804,11 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
     })
     const data = await resp.json() as { embedding?: number[] }
     return data.embedding || null
-  } catch {
+  } catch (err) {
+    // Debug-level so it doesn't spam default INFO logs when Ollama isn't
+    // running (the common case on most user machines). Enables "why does
+    // hybrid search only return FTS results?" diagnostics without noise.
+    logger.debug({ err, ollamaUrl: OLLAMA_URL }, 'Embedding generation failed (Ollama not running?)')
     return null
   }
 }
