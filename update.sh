@@ -28,14 +28,19 @@ if [ -f "$UPDATE_LOG" ]; then
     mv "$UPDATE_LOG" "$UPDATE_LOG.1" 2>/dev/null || true
   fi
 fi
-# Redirect stdout+stderr through tee. Record the tee PID and wait on
-# it in an EXIT trap so the last lines of a failing run are flushed
-# to disk before this shell returns; without the wait, `set -e` can
-# exit while tee still has unflushed bytes buffered.
-exec > >(tee -a "$UPDATE_LOG")
-TEE_PID=$!
-exec 2>&1
-trap 'wait $TEE_PID 2>/dev/null || true' EXIT
+# Pre-touch the log before the tee redirect. If the filesystem is
+# read-only or out of inodes, fail here with a clear message on the
+# caller's stderr instead of blowing up later via SIGPIPE when tee
+# cannot open its target and the next echo writes to a closed pipe.
+if ! : >> "$UPDATE_LOG" 2>/dev/null; then
+  echo "HIBA: nem lehet irni a naplofajlba: $UPDATE_LOG" >&2
+  echo "       ellenorizd a store/ jogosultsagait es szabad helyet." >&2
+  exit 4
+fi
+# Redirect stdout+stderr through tee. When this shell exits, the
+# write-end of the pipe closes, tee reads EOF, flushes its buffer,
+# and exits -- so no explicit wait is needed.
+exec > >(tee -a "$UPDATE_LOG") 2>&1
 
 echo ""
 echo -e "${BOLD}Marveen frissites...${NC} [$(date -u +%Y-%m-%dT%H:%M:%SZ)]"
