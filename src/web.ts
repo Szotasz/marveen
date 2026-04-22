@@ -237,7 +237,7 @@ function writeAgentModel(name: string, model: string): void {
   let config: Record<string, unknown> = {}
   try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
   config.model = model
-  writeFileSync(configPath, JSON.stringify(config, null, 2))
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
 function readAgentDisplayName(name: string): string {
@@ -256,7 +256,7 @@ function writeAgentDisplayName(name: string, displayName: string): void {
   let config: Record<string, unknown> = {}
   try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
   config.displayName = displayName
-  writeFileSync(configPath, JSON.stringify(config, null, 2))
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
 // --- Security profiles ---
@@ -323,7 +323,7 @@ function writeAgentSecurityProfile(name: string, profileId: string): void {
   let config: Record<string, unknown> = {}
   try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
   config.securityProfile = profileId
-  writeFileSync(configPath, JSON.stringify(config, null, 2))
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
 function resolveProfilePlaceholders(value: string, ctx: { HOME: string; AGENT_DIR: string }): string {
@@ -375,7 +375,7 @@ function writeAgentTeam(name: string, team: TeamConfig): void {
   let config: Record<string, unknown> = {}
   try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
   config.team = team
-  writeFileSync(configPath, JSON.stringify(config, null, 2))
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
 // Removing an agent leaves dangling references in other agents' team configs.
@@ -422,7 +422,7 @@ function ensureAgentHooks(name: string): boolean {
   if (existing.hooks) return false  // user already has hooks, leave alone
   existing.hooks = tpl.hooks
   mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
-  writeFileSync(settingsPath, JSON.stringify(existing, null, 2))
+  atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
   return true
 }
 
@@ -440,7 +440,7 @@ function writeAgentSettingsFromProfile(name: string, profile: ProfileTemplate): 
     allow: profile.filesystem.allow.map(p => resolveProfilePlaceholders(p, ctx)),
     deny: profile.filesystem.deny.map(p => resolveProfilePlaceholders(p, ctx)),
   }
-  writeFileSync(settingsPath, JSON.stringify(existing, null, 2))
+  atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
 
 function readAgentTelegramConfig(name: string): { hasTelegram: boolean; botUsername?: string } {
@@ -681,7 +681,7 @@ function scaffoldAgentDir(name: string) {
       copyFileSync(sharedMcp, mcpJson)
     } else {
       // Valid empty shape -- `claude /doctor` rejects plain "{}"
-      writeFileSync(mcpJson, JSON.stringify({ mcpServers: {} }, null, 2))
+      atomicWriteFileSync(mcpJson, JSON.stringify({ mcpServers: {} }, null, 2))
     }
   }
   // Seed settings.json from template so the agent gets the PreCompact
@@ -2640,7 +2640,7 @@ export function startWebServer(port = 3420): http.Server {
 
         try {
           const skillMd = await generateSkillMd(skillName, description)
-          writeFileSync(join(skillDir, 'SKILL.md'), skillMd)
+          atomicWriteFileSync(join(skillDir, 'SKILL.md'), skillMd)
         } catch (err) {
           rmSync(skillDir, { recursive: true, force: true })
           return json(res, { error: 'Failed to generate skill' }, 500)
@@ -2828,7 +2828,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
         try { config = JSON.parse(readFileOr(configPath, '{}')) } catch { /* use empty */ }
         const newEnabled = !(config.enabled !== false)
         config.enabled = newEnabled
-        writeFileSync(configPath, JSON.stringify(config, null, 2))
+        atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
         logger.info({ name, enabled: newEnabled }, 'Scheduled task toggled')
         return json(res, { ok: true, enabled: newEnabled })
       }
@@ -3537,7 +3537,7 @@ Respond ONLY with JSON, nothing else:
           try { mcpConfig = JSON.parse(readFileSync(mcpPath, 'utf-8')) } catch {}
           if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {}
           mcpConfig.mcpServers[connectorName] = connectorConfig
-          writeFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2))
+          atomicWriteFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2))
         }
         return json(res, { ok: true })
       }
