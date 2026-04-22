@@ -464,6 +464,22 @@ function cleanupTeamReferences(removedName: string): void {
   }
 }
 
+// Does this identifier refer to a registered agent? MAIN_AGENT_ID always
+// counts (it lives outside agents/ but is a first-class peer). Sub-agents
+// need a directory on disk. One fs stat per call -- the router calls this
+// twice per pending message on its 5s tick, roughly 10-20 stats per tick
+// in practice, no memoisation needed.
+function isKnownAgent(name: string): boolean {
+  if (!name) return false
+  if (name === MAIN_AGENT_ID) return true
+  try {
+    const dir = agentDir(name)
+    return existsSync(dir) && statSync(dir).isDirectory()
+  } catch {
+    return false
+  }
+}
+
 // Merges the profile's allow/deny entries into agents/<name>/.claude/settings.json,
 // preserving any other keys (hooks, custom flags) the user added by hand.
 // Idempotent migration: every agent's settings.json should carry the
