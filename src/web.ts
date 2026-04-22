@@ -36,6 +36,7 @@ import { isTrustedPeer } from './team-trust.js'
 import {
   checkUpdatePreflight,
   checkNoConcurrentUpdate,
+  classifyLockWriteError,
   type GitRunner,
   type PidfileRunner,
 } from './update-preflight.js'
@@ -2477,13 +2478,11 @@ export function startWebServer(port = 3420): http.Server {
             writeFileSync(UPDATE_PIDFILE, pidfileContent, { flag: 'wx' })
             lockHeld = true
           } catch (retryErr) {
-            // Only EEXIST means another caller genuinely raced us to the
-            // lock. Any other errno (EACCES, EROFS, ENOSPC) is a real
-            // failure to write, not a concurrency event, and should
-            // surface as 500 so the user sees why rather than a
-            // misleading "already running".
+            // Delegate the errno discrimination to the pure helper so
+            // the invert-regression (=== vs !==) is caught by the
+            // unit tests on classifyLockWriteError.
             const code = (retryErr as NodeJS.ErrnoException)?.code
-            if (code === 'EEXIST') {
+            if (classifyLockWriteError(code) === 'race') {
               return json(res, {
                 error: 'Another update is starting concurrently. Retry in a few seconds.',
                 reason: 'already-running',
@@ -2545,10 +2544,15 @@ export function startWebServer(port = 3420): http.Server {
           // handled; log it and release the lock so a retry is possible.
           child.on('error', (err) => {
             logger.error({ err }, 'update.sh spawn reported an async error')
-            // Reuse releaseLock so the unlink + lockHeld reset stay in
-            // one place; if future code extends the path, it will not
-            // double-unlink a file now owned by a subsequent run.
-            releaseLock()
+            // Only release the lock if the pidfile still contains the
+            // dashboard-written claim. If update.sh has already started
+            // and overwritten it with its own PID, that run now owns
+            // the lock and will remove it via trap on its own EXIT.
+            let stillOurs = false
+            try {
+              stillOurs = readFileSync(UPDATE_PIDFILE, 'utf-8') === pidfileContent
+            } catch { /* file already gone -- nothing to release */ }
+            if (stillOurs) releaseLock()
           })
           child.unref()
           return json(res, { ok: true })

@@ -70,6 +70,16 @@ export type ConcurrencyResult =
 // and intervene.
 export const MAX_PIDFILE_AGE_MS = 60 * 60 * 1000
 
+// Classify the errno from the retry writeFileSync that follows a
+// stale-pidfile unlink. Only EEXIST means a parallel caller genuinely
+// raced us to the lock; any other code is a real write failure
+// (EACCES, EROFS, ENOSPC) and should surface as 500 instead of 409.
+export type LockWriteErrorKind = 'race' | 'other'
+
+export function classifyLockWriteError(code: string | undefined): LockWriteErrorKind {
+  return code === 'EEXIST' ? 'race' : 'other'
+}
+
 export function checkNoConcurrentUpdate(pf: PidfileRunner): ConcurrencyResult {
   const raw = pf.readPidfile()
   if (raw === null) return { ok: true }

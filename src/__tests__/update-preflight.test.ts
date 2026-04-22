@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   checkUpdatePreflight,
   checkNoConcurrentUpdate,
+  classifyLockWriteError,
   type GitRunner,
   type PidfileRunner,
 } from '../update-preflight.js'
@@ -279,5 +280,34 @@ describe('checkNoConcurrentUpdate -- age-based staleness', () => {
       makePidfile('7777\n0\n', [7777], 2_000_000_000_000),
     )
     expect(result.ok).toBe(false)
+  })
+})
+
+describe('classifyLockWriteError', () => {
+  it('classifies EEXIST as a concurrency race', () => {
+    expect(classifyLockWriteError('EEXIST')).toBe('race')
+  })
+
+  it('classifies EACCES as a non-race write failure', () => {
+    expect(classifyLockWriteError('EACCES')).toBe('other')
+  })
+
+  it('classifies EROFS as a non-race write failure', () => {
+    expect(classifyLockWriteError('EROFS')).toBe('other')
+  })
+
+  it('classifies ENOSPC as a non-race write failure', () => {
+    expect(classifyLockWriteError('ENOSPC')).toBe('other')
+  })
+
+  it('classifies undefined code as non-race (plain Error / string throw)', () => {
+    // retryErr may not be an ErrnoException -- a plain Error, a string,
+    // or null reaches the site. The helper should fall through to the
+    // 500 branch instead of misreading no-code as EEXIST.
+    expect(classifyLockWriteError(undefined)).toBe('other')
+  })
+
+  it('classifies empty string code as non-race', () => {
+    expect(classifyLockWriteError('')).toBe('other')
   })
 })

@@ -27,6 +27,11 @@ mkdir -p "$(dirname "$UPDATE_PIDFILE")"
 # write to .tmp in the same directory, then mv (rename is atomic on
 # the same filesystem on macOS / Linux).
 UPDATE_PIDFILE_TMP="$UPDATE_PIDFILE.$$.tmp"
+# If the tmp-write itself fails before we own the pidfile, the dashboard
+# still holds its placeholder lock. Clean up only the tmp file if it
+# leaked; leave the dashboard's pidfile alone so the lock does not
+# disappear on a write error.
+trap 'rm -f "$UPDATE_PIDFILE_TMP"' EXIT
 {
   echo "$$"
   # Portable wall-clock epoch in ms. date +%s%3N is GNU-only; on BSD
@@ -42,6 +47,9 @@ UPDATE_PIDFILE_TMP="$UPDATE_PIDFILE.$$.tmp"
   fi
 } > "$UPDATE_PIDFILE_TMP"
 mv "$UPDATE_PIDFILE_TMP" "$UPDATE_PIDFILE"
+# Only after mv succeeds do we own the lock; extend the trap to remove
+# the final pidfile too. Until this point a mv failure left the
+# dashboard's placeholder intact for its normal age-based recovery.
 trap 'rm -f "$UPDATE_PIDFILE" "$UPDATE_PIDFILE_TMP"' EXIT
 
 # Tee the full run into store/update.log so failures are inspectable
