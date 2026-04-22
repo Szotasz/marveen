@@ -56,7 +56,7 @@ export async function runAgent(
       resultText = `A feldolgozas tullepte a ${mins} perces idokorlatot. Probald rovidebben megfogalmazni, vagy bontsd tobb lepesre.`
     } else {
       logger.error({ err }, 'Agent hiba')
-      resultText = 'Hiba tortent a feldolgozas soran.'
+      throw err instanceof Error ? err : new Error(String(err))
     }
   } finally {
     clearTimeout(timeout)
