@@ -12,6 +12,16 @@ NC='\033[0m'
 INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$INSTALL_DIR"
 
+# Pidfile gate: the dashboard's /api/updates/apply refuses to spawn a
+# second update.sh while this PID is alive. Written before the tee
+# setup so that a stale log write from a runaway process cannot be
+# mistaken for "an update is running". Trap EXIT removes the pidfile
+# on any exit path (success, preflight reject, or error).
+UPDATE_PIDFILE="$INSTALL_DIR/store/update.pid"
+mkdir -p "$(dirname "$UPDATE_PIDFILE")"
+echo "$$" > "$UPDATE_PIDFILE"
+trap 'rm -f "$UPDATE_PIDFILE"' EXIT
+
 # Tee the full run into store/update.log so failures are inspectable
 # after the fact. The dashboard launches this script detached with
 # stdio: 'ignore', so without the log there is no record of why a

@@ -33,7 +33,12 @@ import {
   sanitizeAgentIdent,
 } from './prompt-safety.js'
 import { isTrustedPeer } from './team-trust.js'
-import { checkUpdatePreflight, type GitRunner } from './update-preflight.js'
+import {
+  checkUpdatePreflight,
+  checkNoConcurrentUpdate,
+  type GitRunner,
+  type PidfileRunner,
+} from './update-preflight.js'
 
 function computeNextRun(cronExpression: string): number {
   const expr = CronExpressionParser.parse(cronExpression)
@@ -1814,15 +1819,11 @@ let updateStatusCache: UpdateStatus = {
   lastChecked: 0,
 }
 
-// Timestamp of the most recent /api/updates/apply that passed preflight
-// and spawned update.sh. Used to refuse follow-up clicks within the same
-// run window so three consecutive button mashes do not race three
-// update.sh instances on git / stop.sh / start.sh. A successful run
-// restarts the dashboard process and wipes this variable with it; an
-// unsuccessful run leaves the window to expire naturally so a retry is
-// possible after the timeout.
-let lastUpdateApplyStartedAt = 0
-const UPDATE_APPLY_COOLDOWN_MS = 120_000
+// Pidfile path owned by update.sh for the lifetime of an update run.
+// The dashboard never writes it -- update.sh does on entry, removes on
+// exit via a trap -- so the gate survives the stop.sh / start.sh
+// dashboard restart that happens inside a successful update.
+const UPDATE_PIDFILE = join(PROJECT_ROOT, 'store', 'update.pid')
 
 function currentGitHead(): string {
   try {
@@ -2408,20 +2409,38 @@ export function startWebServer(port = 3420): http.Server {
       // turns a silent "Frissítés elindult / same commits after reload"
       // loop into an actionable toast.
       if (path === '/api/updates/apply' && method === 'POST') {
-        // Concurrency guard: refuse if another apply started within the
-        // last UPDATE_APPLY_COOLDOWN_MS. Without this, three quick clicks
-        // spawn three update.sh instances that race on git pull /
-        // stop.sh / start.sh. A successful run restarts the dashboard
-        // and clears this variable; a failed run simply lets the window
-        // expire so the operator can retry.
-        const now = Date.now()
-        const sinceLast = now - lastUpdateApplyStartedAt
-        if (lastUpdateApplyStartedAt && sinceLast < UPDATE_APPLY_COOLDOWN_MS) {
+        // Concurrency gate: update.sh writes its PID to UPDATE_PIDFILE
+        // on entry and clears it on EXIT. If the file still points at
+        // a live process, another run is in flight -- refuse with 409.
+        // A dead pid (stale lock from a killed run) or a missing /
+        // unreadable file is treated as "ok to proceed" so the button
+        // recovers automatically after an abnormal termination.
+        const pf: PidfileRunner = {
+          readPidfile: () => {
+            try {
+              return readFileSync(UPDATE_PIDFILE, 'utf-8')
+            } catch {
+              return null
+            }
+          },
+          isProcessAlive: (pid) => {
+            try {
+              process.kill(pid, 0)
+              return true
+            } catch (err) {
+              // EPERM means the process exists but is owned by a
+              // different uid; safer to treat as alive than to race
+              // a real runner. ESRCH means truly dead.
+              return (err as NodeJS.ErrnoException)?.code === 'EPERM'
+            }
+          },
+        }
+        const concurrency = checkNoConcurrentUpdate(pf)
+        if (!concurrency.ok) {
           return json(res, {
-            error: 'Update already in progress. Wait until the current run finishes.',
-            reason: 'already-running',
-            startedAt: lastUpdateApplyStartedAt,
-            retryAfterMs: UPDATE_APPLY_COOLDOWN_MS - sinceLast,
+            error: concurrency.message,
+            reason: concurrency.reason,
+            pid: concurrency.pid,
           }, 409)
         }
         const git: GitRunner = {
@@ -2454,15 +2473,20 @@ export function startWebServer(port = 3420): http.Server {
           return json(res, body, 409)
         }
         try {
-          spawn('/bin/bash', [join(PROJECT_ROOT, 'update.sh')], {
+          const child = spawn('/bin/bash', [join(PROJECT_ROOT, 'update.sh')], {
             cwd: PROJECT_ROOT,
             detached: true,
             stdio: 'ignore',
-          }).unref()
-          // Record spawn time only after a successful spawn. On the
-          // rare spawn failure below, the concurrency window is never
-          // opened, so the next click can retry immediately.
-          lastUpdateApplyStartedAt = now
+          })
+          // .unref() + detached means Node does not keep the event loop
+          // alive for the child, but it also means an 'error' event on
+          // the ChildProcess (post-fork failure) with no listener would
+          // crash the dashboard. Attach a no-op listener so the event
+          // is handled; log it so the failure is still visible.
+          child.on('error', (err) => {
+            logger.error({ err }, 'update.sh spawn reported an async error')
+          })
+          child.unref()
           return json(res, { ok: true })
         } catch (err) {
           return json(res, { error: err instanceof Error ? err.message : String(err) }, 500)

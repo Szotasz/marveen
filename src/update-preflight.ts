@@ -37,6 +37,47 @@ export type PreflightResult =
   | { ok: false; reason: 'dirty-tree'; message: string }
   | { ok: false; reason: 'detached-head'; message: string }
 
+// Concurrency gate: refuse a second /api/updates/apply while the first
+// update.sh is still running. An in-memory timestamp would reset on the
+// dashboard restart that happens mid-run, so the gate lives in a disk
+// pidfile that update.sh owns for its lifetime (trap EXIT removes it).
+export interface PidfileRunner {
+  // The raw contents of store/update.pid, or null if the file does not
+  // exist / cannot be read. Implementations must not throw.
+  readPidfile(): string | null
+  // True if a process with the given PID is alive. On Unix this is the
+  // kill(pid, 0) probe: ESRCH means dead, EPERM means alive but owned
+  // by a different uid, anything else treated as alive for safety.
+  isProcessAlive(pid: number): boolean
+}
+
+export type ConcurrencyResult =
+  | { ok: true }
+  | { ok: false; reason: 'already-running'; pid: number; message: string }
+
+export function checkNoConcurrentUpdate(pf: PidfileRunner): ConcurrencyResult {
+  const raw = pf.readPidfile()
+  if (raw === null) return { ok: true }
+  const trimmed = raw.trim()
+  if (!trimmed) return { ok: true }
+  // Parse only a leading integer. A pidfile with trailing junk (a stray
+  // newline, a commented-out note) still yields a clean pid; garbage
+  // with no digits yields NaN and is treated as stale.
+  const match = trimmed.match(/^(\d+)/)
+  if (!match) return { ok: true }
+  const pid = Number.parseInt(match[1], 10)
+  // PID 0 and 1 are reserved / init; treating them as "alive" would
+  // permanently lock the button if a stale pidfile ever contained one.
+  if (!Number.isFinite(pid) || pid <= 1) return { ok: true }
+  if (!pf.isProcessAlive(pid)) return { ok: true }
+  return {
+    ok: false,
+    reason: 'already-running',
+    pid,
+    message: `Update already running (pid ${pid}). Wait for it to finish, then retry.`,
+  }
+}
+
 const EXPECTED_BRANCH = 'main'
 
 export function checkUpdatePreflight(git: GitRunner): PreflightResult {
