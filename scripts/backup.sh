@@ -64,6 +64,12 @@ fi
 tar -czf "${ARCHIVE}" -T "${TMPLIST}"
 echo "backup: wrote ${ARCHIVE} ($(wc -c < "${ARCHIVE}" | awk '{print $1}') bytes)"
 
+# The archive contains sensitive tokens (dashboard bearer, Telegram bot
+# tokens, project .env secrets). Do not auto-sync ${BACKUP_DIR} to iCloud,
+# Dropbox, Google Drive, or any other cloud-backup folder. Keep it local
+# (Time Machine is fine because it stays on your encrypted-volume backup).
+echo "backup: WARNING -- archive contains sensitive tokens; keep ${BACKUP_DIR} out of cloud-sync folders (iCloud / Dropbox / Google Drive)." >&2
+
 # Keep the newest ${KEEP} archives, drop the rest.
 # Use a while-read loop instead of mapfile so this works on macOS's default
 # bash 3.2 (mapfile is a bash-4 builtin).
