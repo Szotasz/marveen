@@ -1049,7 +1049,7 @@ function writeScheduledTask(
   const desc = data.description ?? existing?.description ?? ''
   const prompt = data.prompt ?? existing?.prompt ?? ''
   const skillContent = `---\nname: ${taskName}\ndescription: ${desc}\n---\n\n${prompt}\n`
-  writeFileSync(skillPath, skillContent)
+  atomicWriteFileSync(skillPath, skillContent)
 
   // Write/update config
   let config: Record<string, unknown> = {}
@@ -1059,7 +1059,7 @@ function writeScheduledTask(
   if (data.enabled !== undefined) config.enabled = data.enabled
   if (data.type !== undefined) config.type = data.type
   if (!config.createdAt) config.createdAt = Math.floor(Date.now() / 1000)
-  writeFileSync(configPath, JSON.stringify(config, null, 2))
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
 // --- HTTP szerver ---
