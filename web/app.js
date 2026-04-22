@@ -4457,7 +4457,7 @@ const refreshTeamBtn = document.getElementById('refreshTeamBtn')
 if (refreshTeamBtn) refreshTeamBtn.addEventListener('click', loadTeamGraph)
 
 function renderTeamEditor(agent, allAgents) {
-  const team = agent.team || { role: 'member', reportsTo: null, delegatesTo: [], autoDelegation: false }
+  const team = agent.team || { role: 'member', reportsTo: null, delegatesTo: [], autoDelegation: false, trustFrom: [] }
   document.getElementById('editTeamRole').value = team.role || 'member'
   const reportsSel = document.getElementById('editTeamReportsTo')
   reportsSel.innerHTML = ''
@@ -4473,22 +4473,26 @@ function renderTeamEditor(agent, allAgents) {
     if (team.reportsTo === other.name) opt.selected = true
     reportsSel.appendChild(opt)
   }
-  const delegatesBox = document.getElementById('editTeamDelegatesList')
-  delegatesBox.innerHTML = ''
-  for (const other of allAgents) {
-    if (other.name === agent.name) continue
-    const label = document.createElement('label')
-    label.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px'
-    const cb = document.createElement('input')
-    cb.type = 'checkbox'
-    cb.value = other.name
-    cb.checked = team.delegatesTo && team.delegatesTo.includes(other.name)
-    label.appendChild(cb)
-    const span = document.createElement('span')
-    span.textContent = other.displayName || other.name
-    label.appendChild(span)
-    delegatesBox.appendChild(label)
+  const buildCheckboxList = (boxId, selected) => {
+    const box = document.getElementById(boxId)
+    box.innerHTML = ''
+    for (const other of allAgents) {
+      if (other.name === agent.name) continue
+      const label = document.createElement('label')
+      label.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px'
+      const cb = document.createElement('input')
+      cb.type = 'checkbox'
+      cb.value = other.name
+      cb.checked = !!(selected && selected.includes(other.name))
+      label.appendChild(cb)
+      const span = document.createElement('span')
+      span.textContent = other.displayName || other.name
+      label.appendChild(span)
+      box.appendChild(label)
+    }
   }
+  buildCheckboxList('editTeamDelegatesList', team.delegatesTo)
+  buildCheckboxList('editTeamTrustFromList', team.trustFrom)
   document.getElementById('editTeamAutoDelegation').checked = !!team.autoDelegation
   // Only leaders make sense to delegate from -- hide the lists for members.
   const updateLeaderVisibility = () => {
@@ -4506,6 +4510,7 @@ document.getElementById('saveTeamBtn').addEventListener('click', async () => {
   const role = document.getElementById('editTeamRole').value
   const reportsToRaw = document.getElementById('editTeamReportsTo').value
   const delegates = Array.from(document.querySelectorAll('#editTeamDelegatesList input[type=checkbox]:checked')).map(cb => cb.value)
+  const trustFrom = Array.from(document.querySelectorAll('#editTeamTrustFromList input[type=checkbox]:checked')).map(cb => cb.value)
   const autoDelegation = document.getElementById('editTeamAutoDelegation').checked
   const originalText = btn.textContent
   btn.disabled = true
@@ -4518,11 +4523,30 @@ document.getElementById('saveTeamBtn').addEventListener('click', async () => {
         role,
         reportsTo: reportsToRaw || null,
         delegatesTo: role === 'leader' ? delegates : [],
+        trustFrom,
         autoDelegation: role === 'leader' ? autoDelegation : false,
       }),
     })
     if (!res.ok) throw new Error()
-    showToast('Csapat mentve')
+    // The server sanitizes the team config (strips self-references and
+    // unknown agent ids) and reports what it dropped in `warnings`. Surface
+    // that to the operator so a mistyped name isn't silently lost.
+    let warningMsg = ''
+    try {
+      const body = await res.json()
+      const w = body && body.warnings
+      if (w) {
+        const parts = []
+        if (Array.isArray(w.droppedSelf) && w.droppedSelf.length) {
+          parts.push(`önreferenciák: ${w.droppedSelf.join(', ')}`)
+        }
+        if (Array.isArray(w.droppedUnknown) && w.droppedUnknown.length) {
+          parts.push(`ismeretlen nevek: ${w.droppedUnknown.join(', ')}`)
+        }
+        if (parts.length) warningMsg = parts.join(' · ')
+      }
+    } catch { /* body already consumed or not JSON -- OK, no warnings to show */ }
+    showToast(warningMsg ? `Csapat mentve (kivett: ${warningMsg})` : 'Csapat mentve')
     btn.textContent = '✓ Mentve'
     setTimeout(() => { btn.textContent = originalText; btn.disabled = false }, 1800)
     loadAgents()

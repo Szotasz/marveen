@@ -910,6 +910,11 @@
             </label>
             <small style="display:block;margin-top:6px;color:var(--text-muted);font-size:12px">Ha nincs bepipálva, a vezető csak javaslatot ad, te hagyod jóvá Telegramon.</small>
           </div>
+          <div class="form-group" id="editTeamTrustFromGroup">
+            <label>Explicit megbízható kapcsolatok (opcionális)</label>
+            <div id="editTeamTrustFromList" style="display:flex;flex-direction:column;gap:6px"></div>
+            <small style="display:block;margin-top:6px;color:var(--text-muted);font-size:12px">A router alapból a jelent-kapcsolat és a delegálási lista alapján dönti el, hogy egy üzenet megbízható csapattárstól jön-e. Itt további ügynököket jelölhetsz kézzel &mdash; pl. egy cross-team együttműködő partner, akivel nincs hierarchikus kapcsolat, de a levelezése mégis csapattársi.</small>
+          </div>
           <button class="btn-secondary btn-compact agent-save-section" id="saveTeamBtn">Mentés</button>
         </div>
 
