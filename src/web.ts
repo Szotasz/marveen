@@ -2971,14 +2971,18 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
         let finalPrompt = prompt.trim()
         if (expand) {
           logger.info({ prompt: finalPrompt }, 'Prompt kibovites...')
-          const { text } = await runAgent(
-            `Bovitsd ki ezt a rovid feladat-leirast egy reszletes, egyertelmu promptta amit egy AI asszisztens vegre tud hajtani.
+          try {
+            const { text } = await runAgent(
+              `Bovitsd ki ezt a rovid feladat-leirast egy reszletes, egyertelmu promptta amit egy AI asszisztens vegre tud hajtani.
 A prompt legyen magyar nyelvu, konkret utasitasokkal.
 Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas.
 
 Rovid leiras: "${finalPrompt}"`
-          )
-          if (text) finalPrompt = text.trim()
+            )
+            if (text) finalPrompt = text.trim()
+          } catch (err) {
+            logger.warn({ err }, 'Prompt expand failed, using original')
+          }
         }
         try {
           const nextRun = computeNextRun(schedule)
