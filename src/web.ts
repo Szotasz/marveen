@@ -1525,30 +1525,50 @@ function sendPromptToSession(session: string, text: string): void {
   execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
 }
 
+// Idle footer pattern. Two variants exist: the permissive (bypass) mode agent
+// shows "bypass permissions on (shift+tab to cycle)"; a strict-profile agent
+// shows "? for shortcuts". Both must match, otherwise strict-profile agents
+// are invisible to the router and the scheduler.
+const IDLE_FOOTER_RX = /bypass permissions on \(shift\+tab to cycle\)|\? for shortcuts/
+
 // Check if a Claude Code tmux session is ready to accept a new prompt.
 // During Anthropic API outages or long-running tasks, scheduled prompts can pile up
 // in the input buffer because send-keys appends but Enter never submits.
-// This returns true only when the session shows the idle "bypass permissions" footer
-// and has no pending [Pasted text] blocks in the visible input area.
 function isSessionReadyForPrompt(session: string): boolean {
   try {
     const pane = execSync(`${TMUX} capture-pane -t ${session} -p`, { timeout: 3000, encoding: 'utf-8' })
-    const hasIdleFooter = /bypass permissions on \(shift\+tab to cycle\)/.test(pane)
+    const hasIdleFooter = IDLE_FOOTER_RX.test(pane)
     const hasPendingPaste = /\[Pasted text #\d+/.test(pane)
-    if (!hasIdleFooter || hasPendingPaste) return false
-    // Also guard against text already parked in the input buffer: when our
-    // chunk+delay send-keys lands while the agent is mid-turn, the bytes
-    // just sit in the ❯ input line (no "Pasted text" marker because we
-    // didn't paste -- we typed). If we don't notice that, the next
-    // scheduled prompt gets appended to the first one and both silent-fail.
-    // Heuristic: look at the 20 lines just above the footer, find the
-    // input-prompt line (starts with "❯ "), and consider the session busy
-    // if anything non-whitespace follows the ❯.
+    // "esc to interrupt" is Claude Code's mid-turn marker in both bypass and
+    // strict permission modes. If it's on-screen, the agent is busy even if
+    // the footer is also visible (some intermediate renders show both).
+    const isBusy = /esc to interrupt/.test(pane)
+    if (!hasIdleFooter || hasPendingPaste || isBusy) return false
+
+    // Guard against text already parked in the input buffer. Only scan INSIDE
+    // the current input box, which is framed by two ──── separator lines
+    // (U+2500 BOX DRAWINGS LIGHT HORIZONTAL, 10+ in a run). The previous
+    // implementation scanned the 20 lines above the footer, which also
+    // matched historical ❯ lines left in scrollback (e.g. from wrapUntrusted
+    // output) -- making every session look busy after the first inter-agent
+    // message. Also: `\s+\S` with the scrollback slice joined by \n would
+    // straddle newlines and match `❯ \n───`, marking every idle session busy.
     const lines = pane.split('\n')
-    const footerIdx = lines.findIndex(l => /bypass permissions on \(shift\+tab to cycle\)/.test(l))
-    const start = Math.max(0, footerIdx - 20)
-    const slice = lines.slice(start, footerIdx === -1 ? undefined : footerIdx).join('\n')
-    if (/❯\s+\S/.test(slice)) return false
+    const footerIdx = lines.findIndex(l => IDLE_FOOTER_RX.test(l))
+    const SEP_RX = /^─{10,}/
+    let bottomSep = -1
+    for (let i = footerIdx - 1; i >= 0; i--) {
+      if (SEP_RX.test(lines[i])) { bottomSep = i; break }
+    }
+    let topSep = -1
+    for (let i = bottomSep - 1; i >= 0; i--) {
+      if (SEP_RX.test(lines[i])) { topSep = i; break }
+    }
+    if (topSep >= 0 && bottomSep > topSep) {
+      const inputLines = lines.slice(topSep + 1, bottomSep)
+      // [ \t] not \s so the check stays on one line.
+      if (inputLines.some(l => /❯[ \t]+\S/.test(l))) return false
+    }
     return true
   } catch {
     return false
