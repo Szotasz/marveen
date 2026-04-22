@@ -157,7 +157,12 @@ function shellEscape(s: string): string {
 }
 
 function agentDir(name: string): string {
-  return join(AGENTS_BASE_DIR, name)
+  // safeJoin rejects path-traversal components. The first line of defense is
+  // still sanitizeAgentName() at the create-endpoint, but going through
+  // safeJoin turns every non-whitelisted `name` (e.g. a buggy internal caller
+  // that forgot to sanitize) into an explicit throw instead of silently
+  // writing outside AGENTS_BASE_DIR.
+  return safeJoin(AGENTS_BASE_DIR, name)
 }
 
 function readFileOr(path: string, fallback: string): string {
