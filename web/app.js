@@ -1759,9 +1759,89 @@ async function loadSchedules() {
     schedules = await schedulesRes.json()
     renderScheduleList(schedules)
     if (currentScheduleView === 'timeline') renderTimeline(schedules)
+    loadPendingRetries()
   } catch (err) {
     console.error('Ütemezés betöltés hiba:', err)
   }
+}
+
+async function loadPendingRetries() {
+  const container = document.getElementById('pendingRetriesSection')
+  if (!container) return
+  try {
+    const res = await fetch('/api/schedules/pending')
+    if (!res.ok) { container.hidden = true; return }
+    const rows = await res.json()
+    renderPendingRetries(container, Array.isArray(rows) ? rows : [])
+  } catch (err) {
+    console.error('Pending retry betöltés hiba:', err)
+    container.hidden = true
+  }
+}
+
+function formatPendingAge(ms) {
+  const mins = Math.floor(ms / 60000)
+  if (mins < 1) return 'kevesebb, mint 1 perce'
+  if (mins < 60) return `${mins} perce`
+  const hours = Math.floor(mins / 60)
+  const remMins = mins % 60
+  return remMins ? `${hours} ó ${remMins} p-e` : `${hours} órája`
+}
+
+function renderPendingRetries(container, rows) {
+  if (!rows.length) {
+    container.hidden = true
+    container.innerHTML = ''
+    return
+  }
+  container.hidden = false
+  const items = rows.map(r => `
+    <div class="pending-retry-row" data-id="${r.id}">
+      <div class="pending-retry-info">
+        <div class="pending-retry-title">
+          ${escapeHtml(r.taskName)}
+          <span class="badge badge-paused">${escapeHtml(r.agentName)}</span>
+          ${r.alertSentAt
+            ? '<span class="badge badge-heartbeat" title="Telegram riasztás elküldve">⚠️ riasztás elküldve</span>'
+            : r.alertDue
+              ? '<span class="badge badge-heartbeat" title="Riasztás esedékes, a következő tick küldi">⏳ riasztás esedékes</span>'
+              : ''}
+        </div>
+        <div class="pending-retry-meta">
+          <span>${formatPendingAge(r.ageMs)} vár (${r.attemptCount} próbálkozás)</span>
+          ${r.lastReason ? `<span>ok: ${escapeHtml(r.lastReason)}</span>` : ''}
+        </div>
+      </div>
+      <button class="btn-icon btn-icon-danger" data-action="cancel-pending" title="Visszavonás">
+        ${trashIcon()}
+      </button>
+    </div>
+  `).join('')
+  container.innerHTML = `
+    <div class="pending-retries-banner">
+      <div class="pending-retries-header">
+        <span class="pending-retries-title">Függőben lévő ütemezett feladatok (${rows.length})</span>
+        <span class="pending-retries-hint">Busy cél-session, a rendszer tovább próbálkozik. Nyilvánvaló hibánál visszavonhatod.</span>
+      </div>
+      <div class="pending-retries-list">${items}</div>
+    </div>
+  `
+  container.querySelectorAll('[data-action="cancel-pending"]').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation()
+      const row = e.currentTarget.closest('.pending-retry-row')
+      const id = row?.dataset.id
+      if (!id) return
+      if (!confirm('Biztosan visszavonod ezt a várakozó ütemezett feladatot?')) return
+      try {
+        const res = await fetch(`/api/schedules/pending/${encodeURIComponent(id)}`, { method: 'DELETE' })
+        if (!res.ok) throw new Error('cancel failed')
+        loadPendingRetries()
+      } catch (err) {
+        console.error('Pending retry cancel hiba:', err)
+      }
+    })
+  })
 }
 
 function renderScheduleList(tasks) {

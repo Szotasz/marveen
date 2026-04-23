@@ -252,6 +252,32 @@ export function initDatabase(): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_task_runs_ts ON task_runs(ts)`)
 
+  // --- Pending Scheduled Task Retries ---
+  // Busy-skipped scheduled tasks used to live in an in-memory Map. On a
+  // dashboard restart (or crash), the queue was lost -- even though the
+  // operator had asked for the task to run, it silently disappeared.
+  // This table persists each busy-retry across restarts so nothing is
+  // dropped. When a row crosses the alert threshold, the alerting layer
+  // stamps alert_sent_at before each Telegram send and clears it on
+  // delivery failure, yielding at-least-once delivery with no double-
+  // alerting on concurrent ticks. The scheduler itself never abandons:
+  // it keeps retrying until the session frees up or the operator
+  // cancels from the UI.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pending_task_retries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_name TEXT NOT NULL,
+      agent_name TEXT NOT NULL,
+      first_attempt INTEGER NOT NULL,
+      last_attempt INTEGER NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 1,
+      last_reason TEXT,
+      alert_sent_at INTEGER,
+      UNIQUE(task_name, agent_name)
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_pending_retries_first_attempt ON pending_task_retries(first_attempt)`)
+
   // One-shot migration from the old JSON file (which had a read-modify-write
   // race). Import rows if they exist, then rename the file so we don't keep
   // re-importing. Wrapped in a transaction so a crash mid-import is safe.
@@ -789,6 +815,111 @@ export function getActiveScheduledTaskCount(): { count: number; nextRun: number 
     .prepare("SELECT COUNT(*) as count, MIN(next_run) as next_run FROM scheduled_tasks WHERE status = 'active'")
     .get() as { count: number; next_run: number | null }
   return { count: row.count, nextRun: row.next_run }
+}
+
+// --- Pending scheduled-task retries ------------------------------------
+
+export interface PendingTaskRetryRow {
+  id: number
+  task_name: string
+  agent_name: string
+  first_attempt: number
+  last_attempt: number
+  attempt_count: number
+  last_reason: string | null
+  alert_sent_at: number | null
+}
+
+/**
+ * Insert a busy-skipped scheduled task into the retry queue if and only if
+ * no row exists for the (task_name, agent_name) pair. Returns true on
+ * insert, false if a row already existed. Used for the first "busy" hit
+ * from the cron loop.
+ */
+export function insertPendingTaskRetryIfNew(
+  taskName: string,
+  agentName: string,
+  now: number,
+  reason: string,
+): boolean {
+  return db.prepare(`
+    INSERT OR IGNORE INTO pending_task_retries
+      (task_name, agent_name, first_attempt, last_attempt, attempt_count, last_reason)
+    VALUES (?, ?, ?, ?, 1, ?)
+  `).run(taskName, agentName, now, now, reason).changes > 0
+}
+
+/**
+ * Update an existing retry row's last_attempt / attempt_count / last_reason.
+ * Returns true if a row was updated, false if none existed (e.g. the
+ * operator cancelled the row between a tick loading it and this call).
+ * Used from the retry loop so a cancelled row isn't silently re-created.
+ */
+export function updatePendingTaskRetry(
+  taskName: string,
+  agentName: string,
+  now: number,
+  reason: string,
+): boolean {
+  return db.prepare(`
+    UPDATE pending_task_retries
+       SET last_attempt = ?,
+           attempt_count = attempt_count + 1,
+           last_reason = ?
+     WHERE task_name = ? AND agent_name = ?
+  `).run(now, reason, taskName, agentName).changes > 0
+}
+
+/** Back-compat shim used by tests written against the original upsert
+ * semantics. Internal code should use the explicit insert-if-new /
+ * update-if-exists pair above. */
+export function upsertPendingTaskRetry(
+  taskName: string,
+  agentName: string,
+  now: number,
+  reason: string,
+): void {
+  if (!updatePendingTaskRetry(taskName, agentName, now, reason)) {
+    insertPendingTaskRetryIfNew(taskName, agentName, now, reason)
+  }
+}
+
+/** Clear the alert timestamp so the next tick is free to re-alert. Used
+ * when a Telegram send failed after we stamped the row optimistically. */
+export function clearPendingTaskRetryAlert(taskName: string, agentName: string): boolean {
+  return db
+    .prepare('UPDATE pending_task_retries SET alert_sent_at = NULL WHERE task_name = ? AND agent_name = ?')
+    .run(taskName, agentName).changes > 0
+}
+
+export function listPendingTaskRetries(): PendingTaskRetryRow[] {
+  return db
+    .prepare('SELECT * FROM pending_task_retries ORDER BY first_attempt ASC')
+    .all() as PendingTaskRetryRow[]
+}
+
+export function getPendingTaskRetry(taskName: string, agentName: string): PendingTaskRetryRow | undefined {
+  return db
+    .prepare('SELECT * FROM pending_task_retries WHERE task_name = ? AND agent_name = ?')
+    .get(taskName, agentName) as PendingTaskRetryRow | undefined
+}
+
+export function deletePendingTaskRetry(taskName: string, agentName: string): boolean {
+  return db
+    .prepare('DELETE FROM pending_task_retries WHERE task_name = ? AND agent_name = ?')
+    .run(taskName, agentName).changes > 0
+}
+
+export function deletePendingTaskRetryById(id: number): boolean {
+  return db
+    .prepare('DELETE FROM pending_task_retries WHERE id = ?')
+    .run(id).changes > 0
+}
+
+export function markPendingTaskRetryAlert(taskName: string, agentName: string, ts: number): boolean {
+  return db
+    .prepare('UPDATE pending_task_retries SET alert_sent_at = ? WHERE task_name = ? AND agent_name = ? AND alert_sent_at IS NULL')
+    .run(ts, taskName, agentName).changes > 0
 }
 
 // --- Vector Search (Ollama + nomic-embed-text) ---
