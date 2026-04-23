@@ -1,0 +1,295 @@
+import { describe, it, expect } from 'vitest'
+import { detectPaneState, isReadyForPrompt } from '../pane-state.js'
+
+// Realistic pane fixtures modelled on actual `tmux capture-pane -p`
+// output from shipping Claude Code builds. Whitespace and box-drawing
+// characters (U+2500 ─, U+2771 ❯, U+23F5 ⏵) preserved exactly so the
+// regex matches exercise the same byte sequences they would in prod.
+
+const SEP = '─'.repeat(80)
+
+const IDLE_BYPASS = [
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+].join('\n')
+
+const IDLE_STRICT = [
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ? for shortcuts',
+].join('\n')
+
+const BUSY_FULL_FOOTER = [
+  '✢ Combobulating… (52s · ↓ 2.6k tokens · thinking some more)',
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt',
+].join('\n')
+
+// The smoke-test bug scenario: spinner rendered, but the footer is still
+// in its one-frame idle state before `· esc to interrupt` is appended.
+const BUSY_FOOTER_FRAME_GAP = [
+  '✢ Combobulating… (52s · ↓ 2.6k tokens · thinking some more)',
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+].join('\n')
+
+// Spinner label missing (older/newer Claude Code build). Only the
+// token-count pattern is present. Must still classify as busy.
+const BUSY_TOKENS_ONLY = [
+  '✶ (4s · ↓ 120 tokens)',
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+].join('\n')
+
+// Tool-use summary lines persist in the scrollback AFTER a turn ends --
+// Claude Code does not overwrite them. Including them as busy signals
+// would classify an otherwise idle agent as busy forever, starving
+// the scheduler. This fixture models the post-turn idle state: the tool
+// summary is on screen but no spinner, no tokens, no esc-to-interrupt.
+const IDLE_AFTER_TOOL_USE = [
+  '  Searched for 3 patterns, listed 4 directories (ctrl+o to expand)',
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+].join('\n')
+
+// Real busy-with-tool-use: spinner line present alongside the tool summary.
+const BUSY_TOOL_USE_ACTIVE = [
+  '  Searched for 3 patterns, listed 4 directories (ctrl+o to expand)',
+  '✢ Combobulating… (12s · ↓ 480 tokens)',
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt',
+].join('\n')
+
+const TYPING_PARKED = [
+  '',
+  SEP,
+  '❯ Valami amit a felhasznalo elkezdett geppelni, meg nem kuldte el',
+  SEP,
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+].join('\n')
+
+const PENDING_PASTE = [
+  '',
+  SEP,
+  '❯ [Pasted text #1 +234 chars]',
+  SEP,
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+].join('\n')
+
+// Historical ❯ above the separators (scrollback). Must NOT count as
+// parked input -- the input box is strictly the region between the two
+// most recent separators.
+const IDLE_WITH_SCROLLBACK_CARET = [
+  '  ❯ some old echoed command from scrollback',
+  '  output of that command',
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+].join('\n')
+
+// A pane that is not Claude Code at all (regular shell).
+const NON_CLAUDE = [
+  'zino@marveen ~ $ ls',
+  'README.md  src/  test/',
+].join('\n')
+
+describe('detectPaneState', () => {
+  it('returns unknown for empty input', () => {
+    expect(detectPaneState('')).toBe('unknown')
+    expect(detectPaneState('   \n\n  ')).toBe('unknown')
+  })
+
+  it('detects idle on bypass-mode footer with empty input box', () => {
+    expect(detectPaneState(IDLE_BYPASS)).toBe('idle')
+  })
+
+  it('detects idle on strict-mode footer ("? for shortcuts")', () => {
+    expect(detectPaneState(IDLE_STRICT)).toBe('idle')
+  })
+
+  it('detects busy when "esc to interrupt" footer marker is present', () => {
+    expect(detectPaneState(BUSY_FULL_FOOTER)).toBe('busy')
+  })
+
+  it('detects busy even when the footer frame-gap hides "esc to interrupt"', () => {
+    // Regression for the smoke-test-11-10 bug: spinner + tokens visible,
+    // footer still shows plain idle. Old single-regex detector said idle
+    // (false positive). New detector catches via BUSY_INDICATORS.
+    expect(detectPaneState(BUSY_FOOTER_FRAME_GAP)).toBe('busy')
+  })
+
+  it('detects busy from the token-count pattern alone (unknown spinner label)', () => {
+    // A Claude Code release could rename "Combobulating" to anything. The
+    // (Ns · ↓N tokens) pattern is the load-bearing fallback.
+    expect(detectPaneState(BUSY_TOKENS_ONLY)).toBe('busy')
+  })
+
+  it('detects busy when a tool-use summary is paired with a live spinner', () => {
+    expect(detectPaneState(BUSY_TOOL_USE_ACTIVE)).toBe('busy')
+  })
+
+  it('does NOT classify idle-with-stale-tool-use-scrollback as busy', () => {
+    // Tool-use summary lines survive into the scrollback after the turn
+    // ends. Classifying them as busy would starve the scheduler after
+    // any agent's tool call. Only active-turn signals (spinner, tokens,
+    // esc-to-interrupt, footer-scoped) count.
+    expect(detectPaneState(IDLE_AFTER_TOOL_USE)).toBe('idle')
+  })
+
+  it('detects typing when text is parked in the input box', () => {
+    expect(detectPaneState(TYPING_PARKED)).toBe('typing')
+  })
+
+  it('merges typing into busy when mergeTypingAsBusy is set', () => {
+    expect(detectPaneState(TYPING_PARKED, { mergeTypingAsBusy: true })).toBe('busy')
+  })
+
+  it('treats a pending-paste placeholder as busy', () => {
+    expect(detectPaneState(PENDING_PASTE)).toBe('busy')
+  })
+
+  it('does NOT confuse a historical ❯ in scrollback for a parked input', () => {
+    expect(detectPaneState(IDLE_WITH_SCROLLBACK_CARET)).toBe('idle')
+  })
+
+  it('returns unknown for a pane that is not a Claude Code surface', () => {
+    expect(detectPaneState(NON_CLAUDE)).toBe('unknown')
+  })
+
+  it.each([
+    'Pondering…',
+    'Beaming…',
+    'Thinking…',
+    'Reticulating…',
+    'Configuring…',
+    'Noodling…',
+    'Ruminating…',
+    'Percolating…',
+    'Cogitating…',
+    'Deliberating…',
+    'Contemplating…',
+    'Musing…',
+    'Brewing…',
+    'Synthesizing…',
+    'Distilling…',
+    'Refining…',
+    'Simmering…',
+    'Crafting…',
+    'Formulating…',
+    'Consulting…',
+    'Unfurling…',
+    'Unspooling…',
+    'Unraveling…',
+  ])('matches a busy spinner label paired with the runtime tail: %s', (label) => {
+    // The label regex requires the `(Ns · ↓` tail on the same line so
+    // prose like a Markdown heading `# Thinking…` does not false-positive.
+    const snap = [
+      `✢ ${label} (3s · ↓ 42 tokens)`,
+      '',
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(detectPaneState(snap)).toBe('busy')
+  })
+
+  it('does NOT classify a bare spinner-label word as busy (Markdown heading in reply text)', () => {
+    // Regression: spinner labels followed by U+2026 ellipsis must not
+    // false-positive on prose that happens to contain the word.
+    // Without the `(Ns · ↓` tail requirement, any of these would stall
+    // the scheduler forever once they landed in scrollback.
+    const snaps = [
+      '# Thinking…',
+      'Step 1: Crafting… the plan',
+      'Beaming… a message through the router',
+    ]
+    for (const prose of snaps) {
+      const snap = [
+        prose,
+        SEP,
+        '❯ ',
+        SEP,
+        '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+      ].join('\n')
+      expect(detectPaneState(snap)).toBe('idle')
+    }
+  })
+
+  it('busy indicator wins over a visible idle footer', () => {
+    // Both signals present: spinner says busy, footer says idle. Caller
+    // must trust busy (it's a superset constraint).
+    const snap = [
+      '✢ Combobulating… (7s · ↓ 80 tokens)',
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(detectPaneState(snap)).toBe('busy')
+  })
+
+  it('does not match the token-count pattern in unrelated numeric text', () => {
+    const snap = [
+      'Some unrelated log line: latency 5s, count 42',
+      '',
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(detectPaneState(snap)).toBe('idle')
+  })
+
+  it('handles pane without any separators gracefully', () => {
+    const snap = '  ⏵⏵ bypass permissions on (shift+tab to cycle)'
+    // Footer alone (no box) -> treat as idle. No parked input to detect.
+    expect(detectPaneState(snap)).toBe('idle')
+  })
+
+  it('handles footer with missing bottom separator', () => {
+    // Defensive: only one separator visible -- no input box detection,
+    // but footer + no busy indicators still means idle.
+    const snap = [
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(detectPaneState(snap)).toBe('idle')
+  })
+})
+
+describe('isReadyForPrompt', () => {
+  it('is true only when state === idle', () => {
+    expect(isReadyForPrompt(IDLE_BYPASS)).toBe(true)
+    expect(isReadyForPrompt(IDLE_STRICT)).toBe(true)
+    expect(isReadyForPrompt(BUSY_FULL_FOOTER)).toBe(false)
+    expect(isReadyForPrompt(BUSY_FOOTER_FRAME_GAP)).toBe(false)
+    expect(isReadyForPrompt(TYPING_PARKED)).toBe(false)
+    expect(isReadyForPrompt(PENDING_PASTE)).toBe(false)
+    expect(isReadyForPrompt(NON_CLAUDE)).toBe(false)
+    expect(isReadyForPrompt('')).toBe(false)
+  })
+})
