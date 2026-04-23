@@ -1254,6 +1254,22 @@
     </div>
   </div>
 
+  <!-- Built-in connector detail modal: enable instructions for
+       features that live inside the Claude Code CLI / app rather than
+       as a registered MCP server (Computer Use, Claude in Chrome). -->
+  <div class="modal-overlay" id="builtinDetailOverlay">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 id="builtinDetailTitle">Beépített képesség</h2>
+        <button class="modal-close" id="builtinDetailClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p id="builtinDetailDesc" style="color:var(--text-muted);font-size:13px;margin-bottom:12px"></p>
+        <div id="builtinDetailBody"></div>
+      </div>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
 
   <script src="/app.js"></script>
