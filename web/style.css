@@ -15,6 +15,7 @@
   --accent-hover: #c46849;
   --accent-soft: rgba(217, 119, 87, 0.1);
   --danger: #bf4d43;
+  --danger-soft: rgba(191, 77, 67, 0.12);
   --danger-hover: #a8413a;
   --success: #788c5d;
   --success-soft: rgba(120, 140, 93, 0.12);
@@ -2771,6 +2772,10 @@ main {
   font-size: 14px;
   font-weight: 600;
   margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 .connector-endpoint {
   font-size: 11px;
@@ -2791,6 +2796,64 @@ main {
 .connector-type-badge.remote { background: var(--info-soft); color: var(--info); }
 .connector-type-badge.local { background: var(--success-soft); color: var(--success); }
 .connector-type-badge.plugin { background: var(--accent-soft); color: var(--accent); }
+
+.connector-source-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  border-radius: 10px;
+  background: var(--bg-input);
+  color: var(--text-muted);
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.info-box {
+  padding: 12px 16px;
+  margin: 0 0 16px;
+  border-radius: 8px;
+  background: var(--info-soft);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  border-left: 3px solid var(--info);
+}
+.info-box strong { color: var(--info); }
+
+.connector-stale-banner {
+  /* Span the entire grid row -- .connector-grid is auto-fill columns,
+     so without this the banner shrinks into a single track and the
+     first connector card squeezes up beside it. */
+  grid-column: 1 / -1;
+  padding: 10px 14px;
+  margin: 0 0 12px;
+  border-radius: 6px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 13px;
+  border-left: 3px solid var(--danger);
+}
+
+.connector-card-readonly {
+  cursor: default;
+  opacity: 0.9;
+}
+.connector-card-readonly:hover {
+  /* The base .connector-card:hover rule applies border-color +
+     box-shadow to hint at a click target. Read-only cards have no
+     click handler, so mute those cues explicitly. */
+  border-color: var(--border);
+  box-shadow: none;
+}
+.connector-readonly-hint {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 11px;
+  margin-top: 2px;
+}
 
 .connector-detail-info {
   display: flex;

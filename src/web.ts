@@ -1,9 +1,9 @@
 import http from 'node:http'
-import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, mkdirSync, rmSync, statSync, lstatSync, copyFileSync, renameSync, chmodSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, mkdirSync, mkdtempSync, rmSync, statSync, lstatSync, copyFileSync, renameSync, chmodSync } from 'node:fs'
 import { join, extname, resolve, sep } from 'node:path'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto'
-import { spawn, execSync, execFileSync, type ChildProcess } from 'node:child_process'
+import { spawn, execSync, execFileSync, execFile, type ChildProcess } from 'node:child_process'
 import { CronExpressionParser } from 'cron-parser'
 import { PROJECT_ROOT, OLLAMA_URL, WEB_HOST } from './config.js'
 import { resolveFromPath } from './platform.js'
@@ -33,6 +33,17 @@ import {
   sanitizeAgentIdent,
 } from './prompt-safety.js'
 import { isTrustedPeer } from './team-trust.js'
+import {
+  applyRefreshOutcome,
+  scrubPaths as scrubPathsBase,
+  slugify as slugifyMcp,
+  type McpListEntry,
+} from './mcp-list-parser.js'
+
+// Pre-bound homedir so callers do not have to pass it every time.
+function scrubPaths(msg: string): string {
+  return scrubPathsBase(msg, homedir())
+}
 
 function computeNextRun(cronExpression: string): number {
   const expr = CronExpressionParser.parse(cronExpression)
@@ -1898,6 +1909,166 @@ function startUpdateChecker(): NodeJS.Timeout {
   return setInterval(() => { refreshUpdateStatus().catch(() => {}) }, 15 * 60_000)
 }
 
+// === MCP list cache ===========================================================
+//
+// The dashboard needs to know what `claude mcp list` reports so the Connected
+// tab can show claude.ai OAuth connectors (which have no file-based config
+// locally) and the Gallery can mark already-enabled items as installed instead
+// of letting the user duplicate them. Shelling out to `claude mcp list` spawns
+// every stdio / plugin MCP for a health check, which collides with the live
+// Telegram bot's single-poller requirement and can produce 409 Conflict
+// errors. Running it on every request is therefore off the table.
+//
+// Compromise: refresh the cache once at startup (30s delayed so the main
+// channels session settles first), and otherwise only on explicit
+// POST /api/mcp/refresh calls. No periodic auto-refresh.
+//
+// On refresh failure, keep the previous (stale) entries so a transient CLI
+// error does not blank out the UI. Callers can distinguish fresh / stale via
+// lastRefreshed and error fields.
+
+interface McpListCache {
+  entries: McpListEntry[]
+  lastRefreshed: number
+  refreshing: boolean
+  error?: string
+}
+
+let mcpListCache: McpListCache = {
+  entries: [],
+  lastRefreshed: 0,
+  refreshing: false,
+}
+
+// Declared ahead of refreshMcpListCache so the function body's reference
+// is past the TDZ even if a future caller reaches it earlier in module
+// initialisation (e.g. during import-time side effects).
+let inflightRefresh: Promise<McpListCache> | null = null
+
+// Private working directory for `claude mcp list`. Running from /tmp
+// directly was tempting (no project-local .mcp.json to spawn), but on
+// multi-user hosts any user with write access to /tmp can plant a
+// .mcp.json there and poison the list the dashboard builds. A dashboard-
+// owned temp dir has 0700 permissions and is immune to that. Created
+// lazily so a failure here does not crash boot.
+let mcpListWorkingDir: string | null = null
+function getMcpListWorkingDir(): string {
+  if (mcpListWorkingDir && existsSync(mcpListWorkingDir)) return mcpListWorkingDir
+  mcpListWorkingDir = mkdtempSync(join(tmpdir(), 'marveen-mcp-list-'))
+  return mcpListWorkingDir
+}
+
+// Cleanup on process shutdown so long-running hosts don't accumulate
+// empty 0700 dirs across restarts. Only hook 'exit' (always fires, no
+// matter how the process terminates except SIGKILL). Handling SIGTERM
+// / SIGINT separately would race the index.ts shutdown listener, which
+// calls process.exit(0) and may prevent our cleanup from running.
+const cleanupMcpListWorkingDir = () => {
+  if (!mcpListWorkingDir) return
+  try { rmSync(mcpListWorkingDir, { recursive: true, force: true }) } catch { /* best effort */ }
+  mcpListWorkingDir = null
+}
+process.once('exit', cleanupMcpListWorkingDir)
+
+
+function refreshMcpListCache(): Promise<McpListCache> {
+  // If a refresh is already in flight, return the same promise so every
+  // concurrent caller ends up with identical (fresh) cache state without
+  // spawning `claude mcp list` more than once per burst.
+  if (inflightRefresh) return inflightRefresh
+  inflightRefresh = (async () => {
+    mcpListCache.refreshing = true
+    const previousCount = mcpListCache.entries.length
+    try {
+      // Async exec so the event loop keeps serving other HTTP requests
+      // while `claude mcp list` runs (up to 30s if a plugin's health
+      // check is slow). Run from /tmp so no project-local .mcp.json
+      // gets picked up; the global enabledPlugins list is scanned
+      // regardless of cwd. maxBuffer is bumped to 10 MiB so a verbose
+      // status output with auth warnings cannot blow up with ENOBUFS.
+      const { stdout, stderr, execError } = await new Promise<{
+        stdout: string
+        stderr: string
+        execError: Error | null
+      }>((resolve, reject) => {
+        execFile(CLAUDE, ['mcp', 'list'], {
+          cwd: getMcpListWorkingDir(),
+          timeout: 30_000,
+          encoding: 'utf-8',
+          maxBuffer: 10 * 1024 * 1024,
+        }, (err, stdoutStr, stderrStr) => {
+          // A non-zero exit is not fatal on its own: `claude mcp list`
+          // can exit with code 1 when any one of the configured servers
+          // fails its health check (a realistic steady state when e.g.
+          // an OAuth token has lapsed). The stdout still carries the
+          // full list in that case, so try to parse it before giving
+          // up. We only reject when there is nothing usable at all
+          // (launch failure, timeout without output, SIGKILL).
+          if (err && !stdoutStr) {
+            reject(err)
+            return
+          }
+          resolve({ stdout: stdoutStr ?? '', stderr: stderrStr ?? '', execError: err ?? null })
+        })
+      })
+      const stderrTrimmed = stderr ? stderr.trim() : ''
+      if (stderrTrimmed) {
+        logger.debug({ stderr: scrubPaths(stderrTrimmed.slice(0, 500)) }, 'claude mcp list stderr')
+      }
+      const outcome = applyRefreshOutcome({
+        stdout,
+        execError,
+        previousEntries: mcpListCache.entries,
+      })
+      // Defensive: if a previously populated cache collapses to zero
+      // entries via a clean exit (parser / format regression), log it
+      // loudly. The retainedStale case is a legitimate transient
+      // failure and is already surfaced via cache.error, not a warn.
+      if (previousCount > 0 && outcome.entries.length === 0 && !outcome.retainedStale) {
+        logger.warn({
+          previousCount,
+          stderr: scrubPaths(stderrTrimmed.slice(0, 500)),
+          execError: execError ? scrubPaths(execError.message) : null,
+        }, 'MCP list cache refresh returned 0 entries after non-empty cache')
+      }
+      mcpListCache = {
+        entries: outcome.entries,
+        lastRefreshed: Date.now(),
+        refreshing: false,
+        error: outcome.error ? scrubPaths(outcome.error) : undefined,
+      }
+      logger.info({
+        count: outcome.entries.length,
+        retainedStale: outcome.retainedStale,
+        softError: execError && !outcome.error ? scrubPaths(execError.message) : null,
+      }, 'MCP list cache refreshed')
+    } catch (err) {
+      // Keep the previous entries on failure so a transient CLI error
+      // does not wipe the UI. The error field lets callers surface it.
+      const rawMsg = err instanceof Error ? err.message : String(err)
+      mcpListCache = {
+        entries: mcpListCache.entries,
+        lastRefreshed: mcpListCache.lastRefreshed,
+        refreshing: false,
+        error: scrubPaths(rawMsg),
+      }
+      logger.warn({ err: scrubPaths(rawMsg) }, 'MCP list cache refresh failed; keeping stale entries')
+    } finally {
+      inflightRefresh = null
+    }
+    return mcpListCache
+  })()
+  return inflightRefresh
+}
+
+function startMcpListChecker(): void {
+  // Delayed first run so the main main-channels tmux session has time to
+  // claim the telegram poller token before `claude mcp list` tries to
+  // health-check the plugin. No periodic auto-refresh: every run spawns
+  // the telegram plugin for a health check, which can race the live bot.
+  setTimeout(() => { refreshMcpListCache().catch(() => {}) }, 30_000)
+}
+
 // Try to fire a task at a single target agent. Returns the outcome so the
 // caller can decide whether to queue a retry. Splitting this out means the
 // pendingTaskRetries loop and the normal cron loop share one code path.
@@ -3479,13 +3650,30 @@ Respond ONLY with JSON, nothing else:
       // === MCP Connectors API ===
 
       // GET /api/connectors - List all MCP servers with status.
-      // We deliberately DON'T shell out to `claude mcp list` here: that
-      // command spawns every stdio MCP (including plugin:telegram) for a
-      // health check, which collides with the Telegram bot's single-poller
-      // requirement and drops the live marveen-channels plugin. Instead we
-      // read the config files directly -- no process spawn, no interference.
+      // Merges three signals so the Connected tab actually reflects what
+      // Claude Code sees:
+      //   1. ~/.claude/settings.json `enabledPlugins` (marketplace plugins)
+      //   2. project `.mcp.json` + ~/.claude.json `mcpServers` (file-based)
+      //   3. the `mcpListCache` refreshed by claude mcp list (the only
+      //      source for claude.ai OAuth connectors)
+      //
+      // Each `claude mcp list` call spawns every stdio / plugin MCP for a
+      // health check, which can collide with the live Telegram bot. We
+      // therefore do NOT run the CLI on every request -- we serve the
+      // last-cached entries and expose an explicit refresh endpoint.
       if (path === '/api/connectors' && method === 'GET') {
-        const connectors: Array<{ name: string; status: string; endpoint: string; type: string }> = []
+        const connectors: Array<{
+          name: string
+          status: string
+          endpoint: string
+          type: string
+          // `local` is used for entries that only surfaced via the CLI
+          // cache (not the explicit file reads in step 2), where we
+          // cannot tell whether they came from the project or user
+          // scope. `local-project` / `local-user` are reserved for
+          // entries we read from a specific file ourselves.
+          source: 'plugin' | 'local-user' | 'local-project' | 'local' | 'claude.ai'
+        }> = []
         const seen = new Set<string>()
 
         // 1) ~/.claude/settings.json -> enabledPlugins (plugin:<name>@<marketplace>)
@@ -3493,15 +3681,23 @@ Respond ONLY with JSON, nothing else:
           const settings = JSON.parse(readFileOr(join(homedir(), '.claude', 'settings.json'), '{}'))
           for (const pluginKey of Object.keys(settings.enabledPlugins || {})) {
             if (!settings.enabledPlugins[pluginKey]) continue
-            const name = `plugin:${pluginKey.split('@')[0]}`
+            // Lowercase the slug so the dedupe key lines up with
+            // parseMcpListLine's output (`plugin:<slug>`), which also
+            // lowercases. Any future `Telegram@...` vs `telegram:telegram:`
+            // mismatch would otherwise emit both entries.
+            const name = `plugin:${pluginKey.split('@')[0].toLowerCase()}`
             if (seen.has(name)) continue
             seen.add(name)
-            connectors.push({ name, status: 'configured', endpoint: pluginKey, type: 'plugin' })
+            connectors.push({ name, status: 'configured', endpoint: pluginKey, type: 'plugin', source: 'plugin' })
           }
         } catch { /* ignore */ }
 
         // 2) project .mcp.json and user-global ~/.claude.json -> mcpServers
-        for (const src of [join(PROJECT_ROOT, '.mcp.json'), join(homedir(), '.claude.json')]) {
+        const fileSources: Array<[string, 'local-project' | 'local-user']> = [
+          [join(PROJECT_ROOT, '.mcp.json'), 'local-project'],
+          [join(homedir(), '.claude.json'), 'local-user'],
+        ]
+        for (const [src, source] of fileSources) {
           try {
             const parsed = JSON.parse(readFileOr(src, '{}'))
             const servers = parsed.mcpServers || {}
@@ -3510,12 +3706,68 @@ Respond ONLY with JSON, nothing else:
               seen.add(name)
               const endpoint = cfg?.url || cfg?.command || ''
               const type = cfg?.url ? 'remote' : 'local'
-              connectors.push({ name, status: 'configured', endpoint: String(endpoint), type })
+              connectors.push({ name, status: 'configured', endpoint: String(endpoint), type, source })
             }
           } catch { /* ignore */ }
         }
 
+        // 3) mcpListCache -- the only place claude.ai connectors come from.
+        // Add entries that were not already contributed by the file-based
+        // sources (so we don't double-list a plugin).
+        for (const entry of mcpListCache.entries) {
+          // Plugin entries are already seen as "plugin:<slug>" above.
+          // claude.ai connectors carry the "claude.ai " prefix in name,
+          // so they never collide with the plugin: or mcpServers keys.
+          const key = entry.source === 'plugin' ? `plugin:${entry.normalizedId}` : entry.name
+          if (seen.has(key)) continue
+          seen.add(key)
+          connectors.push({
+            name: entry.name,
+            status: entry.status === 'unknown' ? 'configured' : entry.status,
+            endpoint: entry.endpoint,
+            type: entry.source === 'claude.ai' ? 'remote' : 'local',
+            // Parser only distinguishes claude.ai / plugin / local; it
+            // does not carry a user-vs-project distinction. Use the
+            // neutral 'local' source here so the UI does not confidently
+            // mislabel a project-scope entry as user-scope when it
+            // only came up through the CLI cache.
+            source: entry.source === 'plugin' ? 'plugin'
+                   : entry.source === 'claude.ai' ? 'claude.ai'
+                   : 'local',
+          })
+        }
+
         return json(res, connectors)
+      }
+
+      // GET /api/connectors/status -- lightweight readout of the cache
+      // freshness for the UI to distinguish "empty" from "not yet
+      // loaded". Explicit endpoint so older clients that only read
+      // /api/connectors keep working on the unchanged response shape.
+      if (path === '/api/connectors/status' && method === 'GET') {
+        return json(res, {
+          cacheLastRefreshed: mcpListCache.lastRefreshed,
+          cacheError: mcpListCache.error,
+          refreshing: mcpListCache.refreshing,
+        })
+      }
+
+      // POST /api/connectors/refresh -- on-demand refresh of the MCP list
+      // cache. Runs `claude mcp list`, which spawns stdio / plugin MCPs
+      // for a health check; the user is expected to accept that cost by
+      // clicking the button explicitly. Returns the new cache summary.
+      if (path === '/api/connectors/refresh' && method === 'POST') {
+        const cache = await refreshMcpListCache()
+        // 502 on upstream refresh error so external health probes /
+        // CI scripts that only inspect HTTP status see the failure.
+        // The body's `ok` / `error` fields stay for the dashboard UI.
+        const httpStatus = cache.error ? 502 : 200
+        return json(res, {
+          ok: !cache.error,
+          count: cache.entries.length,
+          lastRefreshed: cache.lastRefreshed,
+          error: cache.error,
+        }, httpStatus)
       }
 
       // GET /api/connectors/:name - Get detailed info about an MCP server.
@@ -3529,8 +3781,26 @@ Respond ONLY with JSON, nothing else:
         if (name.startsWith('plugin:')) {
           try {
             const settings = JSON.parse(readFileOr(join(homedir(), '.claude', 'settings.json'), '{}'))
-            const plain = name.slice('plugin:'.length)
-            const match = Object.keys(settings.enabledPlugins || {}).find(k => k.split('@')[0] === plain)
+            // Case-insensitive comparison: the list endpoint lowercases
+            // the dedupe key (so plugin:Foo and plugin:foo collapse into
+            // one card), so the detail lookup must do the same or a
+            // mixed-case settings.json key will 404 on click. Also skip
+            // disabled plugins (falsy values in enabledPlugins) -- the
+            // list endpoint filters them, so a stale URL should 404
+            // rather than return "configured" for something that was
+            // toggled off.
+            //
+            // Cards sourced from mcpListCache carry raw CLI names like
+            // "plugin:telegram:telegram" (package:slug). Split on ':'
+            // and take the LAST segment so the lookup mirrors
+            // parseMcpListLine and does not 404 on CLI-sourced cards.
+            const rawSuffix = name.slice('plugin:'.length)
+            const segments = rawSuffix.split(':')
+            const plain = (segments[segments.length - 1] || rawSuffix).toLowerCase()
+            const enabled = settings.enabledPlugins || {}
+            const match = Object.keys(enabled).find(
+              k => enabled[k] && k.split('@')[0].toLowerCase() === plain,
+            )
             if (!match) return json(res, { error: 'Connector not found' }, 404)
             return json(res, { name, scope: 'user', status: 'configured', type: 'plugin', command: match, args: '', env: {} })
           } catch {
@@ -3664,28 +3934,53 @@ Respond ONLY with JSON, nothing else:
 
       // === MCP Catalog API ===
 
-      // GET /api/mcp-catalog - Return catalog with installed status
+      // GET /api/mcp-catalog - Return catalog with installed status.
+      //
+      // Installed status is derived from the mcpListCache so we don't shell
+      // out to `claude mcp list` on every page load (each call spawns
+      // stdio / plugin MCPs for a health check, which can race the live
+      // Telegram bot). The cache is refreshed at startup and on explicit
+      // POST /api/connectors/refresh calls.
+      //
+      // Matching uses slug-normalised ids: parseMcpListLine already strips
+      // the "claude.ai " and "plugin:*:" prefixes and turns names like
+      // "Google Calendar" into "google-calendar", so a catalog item with
+      // id "google-calendar" or name "Google Calendar" lines up with the
+      // claude.ai OAuth connector that `claude mcp list` reports.
       if (path === '/api/mcp-catalog' && method === 'GET') {
         try {
           const catalogPath = join(PROJECT_ROOT, 'mcp-catalog.json')
           const catalog = JSON.parse(readFileSync(catalogPath, 'utf-8')) as any[]
 
-          // Get installed MCP list
-          let installedNames: string[] = []
-          try {
-            const output = execSync('claude mcp list 2>&1', { timeout: 30000, encoding: 'utf-8' })
-            const lines = output.split('\n').filter(l => l.trim() && !l.startsWith('Checking'))
-            for (const line of lines) {
-              const match = line.match(/^(.+?):\s+/)
-              if (match) installedNames.push(match[1].trim().toLowerCase())
+          // Build an id -> source map from the cache so the UI can render
+          // "Bekapcsolva (claude.ai)" and similar badges instead of just a
+          // generic installed flag.
+          const installedSource = new Map<string, McpListEntry['source']>()
+          for (const entry of mcpListCache.entries) {
+            if (!installedSource.has(entry.normalizedId)) {
+              installedSource.set(entry.normalizedId, entry.source)
             }
-          } catch { /* empty list if claude mcp list fails */ }
+          }
 
-          const result = catalog.map(item => ({
-            ...item,
-            installed: installedNames.some(n => n === item.name.toLowerCase() || n === item.id.toLowerCase()),
-          }))
+          const result = catalog.map(item => {
+            // Use the same slugify as parseMcpListLine so the two
+            // normalisation paths cannot drift (a CLI name with dots
+            // or parens would have been matched one way and the
+            // catalog name the other otherwise).
+            const itemId = slugifyMcp(String(item.id ?? ''))
+            const itemNameSlug = slugifyMcp(String(item.name ?? ''))
+            const source = installedSource.get(itemId) || installedSource.get(itemNameSlug)
+            return {
+              ...item,
+              installed: source !== undefined,
+              installedSource: source,
+            }
+          })
 
+          // Keep the response shape as a bare array so any external
+          // tooling that calls `curl /api/mcp-catalog` without parsing
+          // a wrapper object keeps working. Cache freshness is available
+          // via /api/connectors/refresh (which returns lastRefreshed).
           return json(res, result)
         } catch (err) {
           logger.error({ err }, 'Failed to load MCP catalog')
@@ -4294,6 +4589,13 @@ Respond ONLY with JSON, nothing else:
   // Start update checker -- polls GitHub every 15 min for new commits.
   const updateCheckerInterval = startUpdateChecker()
   logger.info('Update checker started (15min poll)')
+
+  // Warm the MCP list cache so the Connectors page reflects claude.ai
+  // OAuth connectors on first load. 30s delay lets the main-channels
+  // session settle first so the telegram plugin's single-poller token
+  // is claimed before `claude mcp list` spawns it for a health check.
+  startMcpListChecker()
+  logger.info('MCP list cache warmup scheduled (30s delay, manual refresh only)')
 
   // Warm the Marveen bot username cache so /api/marveen returns @username
   // on the first dashboard load. Re-fetched lazily otherwise.
