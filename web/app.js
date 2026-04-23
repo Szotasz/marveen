@@ -465,6 +465,11 @@ function openModal(overlay) {
 function closeModal(overlay) {
   overlay.classList.remove('active')
   document.body.style.overflow = ''
+  // Skill modal is used by two distinct callers (Agent detail + Skills
+  // page). Reset the scope on every close path -- explicit button,
+  // click-outside, Esc, programmatic -- so the next opener cannot
+  // inherit a stale 'global' flag from an earlier Skills-page open.
+  if (overlay && overlay.id === 'skillModalOverlay') skillModalScope = null
 }
 
 // Wizard open
@@ -1395,6 +1400,7 @@ async function loadSkills(agentName) {
 
 // Add skill button
 document.getElementById('addSkillBtn').addEventListener('click', () => {
+  skillModalScope = null  // per-agent flow keyed off currentAgent
   document.getElementById('skillName').value = ''
   document.getElementById('skillDescription').value = ''
   skillFile = null
@@ -1437,7 +1443,8 @@ skillFileInput.addEventListener('change', () => {
 
 // Create skill
 document.getElementById('saveSkillBtn').addEventListener('click', async () => {
-  if (!currentAgent) return
+  const isGlobal = skillModalScope === 'global'
+  if (!isGlobal && !currentAgent) return
   const name = document.getElementById('skillName').value.trim()
   if (!name) { document.getElementById('skillName').focus(); return }
 
@@ -1447,7 +1454,10 @@ document.getElementById('saveSkillBtn').addEventListener('click', async () => {
   btn.querySelector('.btn-loading').hidden = false
 
   try {
-    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/skills`, {
+    const url = isGlobal
+      ? '/api/skills'
+      : `/api/agents/${encodeURIComponent(currentAgent.name)}/skills`
+    const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1461,7 +1471,11 @@ document.getElementById('saveSkillBtn').addEventListener('click', async () => {
     }
     closeModal(skillModalOverlay)
     showToast('Skill hozzáadva')
-    loadSkills(currentAgent.name)
+    if (isGlobal) {
+      loadGlobalSkills()
+    } else {
+      loadSkills(currentAgent.name)
+    }
   } catch (err) {
     showToast(`Hiba: ${err.message}`)
   } finally {
@@ -1473,7 +1487,9 @@ document.getElementById('saveSkillBtn').addEventListener('click', async () => {
 
 // Import skill
 document.getElementById('importSkillBtn').addEventListener('click', async () => {
-  if (!currentAgent || !skillFile) { showToast('Válassz egy .skill fájlt'); return }
+  const isGlobal = skillModalScope === 'global'
+  if (!skillFile) { showToast('Válassz egy .skill fájlt'); return }
+  if (!isGlobal && !currentAgent) { showToast('Válassz egy .skill fájlt'); return }
 
   const btn = document.getElementById('importSkillBtn')
   btn.disabled = true
@@ -1483,7 +1499,10 @@ document.getElementById('importSkillBtn').addEventListener('click', async () => 
   try {
     const formData = new FormData()
     formData.append('file', skillFile)
-    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/skills/import`, {
+    const url = isGlobal
+      ? '/api/skills/import'
+      : `/api/agents/${encodeURIComponent(currentAgent.name)}/skills/import`
+    const res = await fetch(url, {
       method: 'POST',
       body: formData,
     })
@@ -1493,10 +1512,15 @@ document.getElementById('importSkillBtn').addEventListener('click', async () => 
     }
     const result = await res.json()
     closeModal(skillModalOverlay)
-    showToast(`Skill importálva: ${result.imported.join(', ')}`)
+    const importedList = Array.isArray(result.imported) ? result.imported : []
+    showToast(`Skill importálva: ${importedList.join(', ')}`)
     skillFile = null
     document.getElementById('skillFileName').textContent = ''
-    loadSkills(currentAgent.name)
+    if (isGlobal) {
+      loadGlobalSkills()
+    } else {
+      loadSkills(currentAgent.name)
+    }
   } catch (err) {
     showToast(`Hiba: ${err.message}`)
   } finally {
@@ -4200,6 +4224,32 @@ let globalSkills = []
 document.getElementById('skillDetailClose').addEventListener('click', () => closeModal(skillDetailOverlay))
 skillDetailOverlay.addEventListener('click', (e) => { if (e.target === skillDetailOverlay) closeModal(skillDetailOverlay) })
 
+// Scope for the next skill create/import action. 'global' means the
+// Skills page opened the modal (write to ~/.claude/skills/); any other
+// value (or null) falls back to the legacy per-agent flow keyed off
+// `currentAgent`. Reset on modal close so a subsequent per-agent open
+// cannot inherit the global scope.
+let skillModalScope = null
+
+// Wire the Skills-page "Új skill" button to reuse the same skillModalOverlay
+// the per-agent Skill list uses. The save/import handlers branch on
+// skillModalScope so we don't have to duplicate the modal markup.
+const skillsPageNewBtn = document.getElementById('skillsPageNewBtn')
+if (skillsPageNewBtn) {
+  skillsPageNewBtn.addEventListener('click', () => {
+    skillModalScope = 'global'
+    document.getElementById('skillName').value = ''
+    document.getElementById('skillDescription').value = ''
+    skillFile = null
+    document.getElementById('skillFileName').textContent = ''
+    document.querySelectorAll('.skill-tab-btn').forEach(b => b.classList.toggle('active', b.dataset.skillTab === 'create'))
+    document.getElementById('skillTabCreate').hidden = false
+    document.getElementById('skillTabImport').hidden = true
+    openModal(skillModalOverlay)
+    setTimeout(() => document.getElementById('skillName').focus(), 200)
+  })
+}
+
 async function loadGlobalSkills() {
   skillsGrid.innerHTML = '<div class="connector-loading"><span class="spinner"></span> Skillek betoltese...</div>'
   skillsStats.innerHTML = ''
@@ -4229,14 +4279,14 @@ function renderGlobalSkills() {
   skillsGrid.innerHTML = ''
 
   const withSkillMd = globalSkills.filter(s => s.description)
-  const totalAssigned = globalSkills.reduce((sum, s) => sum + s.agents.length, 0)
-  const unassigned = globalSkills.filter(s => s.agents.length === 0).length
+  const userCount = globalSkills.filter(s => s.source === 'user').length
+  const pluginCount = globalSkills.filter(s => s.source === 'plugin').length
 
   skillsStats.innerHTML = `
-    <div class="stat-card"><div class="stat-value">${globalSkills.length}</div><div class="stat-label">Osszes skill</div></div>
-    <div class="stat-card"><div class="stat-value" style="color:var(--success)">${withSkillMd.length}</div><div class="stat-label">Dokumentalt</div></div>
-    <div class="stat-card"><div class="stat-value" style="color:var(--info)">${totalAssigned}</div><div class="stat-label">Hozzarendelesek</div></div>
-    ${unassigned ? `<div class="stat-card"><div class="stat-value" style="color:var(--text-muted)">${unassigned}</div><div class="stat-label">Nincs ügynöknél</div></div>` : ''}
+    <div class="stat-card"><div class="stat-value">${globalSkills.length}</div><div class="stat-label">Összes</div></div>
+    <div class="stat-card"><div class="stat-value" style="color:var(--info)">${userCount}</div><div class="stat-label">User (saját)</div></div>
+    ${pluginCount ? `<div class="stat-card"><div class="stat-value" style="color:var(--accent)">${pluginCount}</div><div class="stat-label">Plugin</div></div>` : ''}
+    <div class="stat-card"><div class="stat-value" style="color:var(--success)">${withSkillMd.length}</div><div class="stat-label">Dokumentált</div></div>
   `
 
   if (globalSkills.length === 0) {
@@ -4245,33 +4295,33 @@ function renderGlobalSkills() {
   }
   skillsEmpty.hidden = true
 
+  const sourceLabels = { user: 'user', plugin: 'plugin' }
+
   for (const skill of globalSkills) {
     const card = document.createElement('div')
     card.className = 'skills-card'
     const icon = getSkillIcon(skill.name)
-    const agentBadges = skill.agents.length > 0
-      ? skill.agents.map(a => `<span class="skills-agent-badge">${escapeHtml(a)}</span>`).join('')
-      : '<span class="skills-agent-badge none">nincs hozzarendelve</span>'
+    const sourceBadge = skill.source
+      ? `<span class="connector-source-badge">${escapeHtml(sourceLabels[skill.source] || skill.source)}</span>`
+      : ''
 
+    const displayName = skill.label || skill.name
     card.innerHTML = `
       <div class="skills-card-header">
         <div class="skills-card-icon">${icon}</div>
         <div class="skills-card-info">
-          <div class="skills-card-name">${escapeHtml(skill.name)}</div>
-          <div class="skills-card-desc">${escapeHtml(skill.description || 'Nincs leiras')}</div>
+          <div class="skills-card-name">${escapeHtml(displayName)} ${sourceBadge}</div>
+          <div class="skills-card-desc">${escapeHtml(skill.description || 'Nincs leírás')}</div>
         </div>
       </div>
-      <div class="skills-card-footer">
-        ${agentBadges}
-      </div>
     `
-    card.addEventListener('click', () => openSkillDetail(skill.name))
+    card.addEventListener('click', () => openSkillDetail(skill.name, skill.label))
     skillsGrid.appendChild(card)
   }
 }
 
-async function openSkillDetail(skillName) {
-  document.getElementById('skillDetailTitle').textContent = skillName
+async function openSkillDetail(skillName, displayLabel) {
+  document.getElementById('skillDetailTitle').textContent = displayLabel || skillName
 
   try {
     const res = await fetch(`/api/skills/${encodeURIComponent(skillName)}`)
@@ -4280,89 +4330,34 @@ async function openSkillDetail(skillName) {
 
     // Description
     const descEl = document.getElementById('skillDetailDesc')
-    descEl.textContent = detail.description || 'Nincs leiras'
+    descEl.textContent = detail.description || 'Nincs leírás'
+
+    // Meta line: source + path. Replaces the old per-agent assignment
+    // UI -- sub-agents share the caller's HOME, so the skill is already
+    // available to every agent without any copy-to-agent action.
+    const metaEl = document.getElementById('skillDetailMeta')
+    if (metaEl) {
+      const sourceLabel = detail.source === 'plugin'
+        ? `plugin${detail.pluginPackage ? ' (' + escapeHtml(detail.pluginPackage) + ')' : ''}`
+        : detail.source === 'user'
+        ? 'user (saját fájl)'
+        : 'ismeretlen'
+      metaEl.innerHTML = `
+        <div class="skill-detail-source">Forrás: <strong>${sourceLabel}</strong></div>
+        <div class="skill-detail-note">Automatikusan elérhető minden sub-agent számára (közös HOME).</div>
+      `
+    }
 
     // Content
     const contentEl = document.getElementById('skillDetailContent')
-    contentEl.textContent = detail.content || '(SKILL.md nem talalhato)'
-
-    // Agent checkboxes
-    const checkboxesEl = document.getElementById('skillAgentCheckboxes')
-    checkboxesEl.innerHTML = ''
-
-    try {
-      const agentsRes = await fetch('/api/schedules/agents')
-      const allAgents = await agentsRes.json()
-      const mainAgent = allAgents.find(a => a.name === 'marveen')
-      const subAgents = allAgents.filter(a => a.name !== 'marveen')
-
-      // Marveen auto-loads everything from ~/.claude/skills/, so she's
-      // shown as a fixed checked-disabled entry. Sub-agents need explicit
-      // assignment because the skill dir is copied into agents/<n>/.claude/skills/.
-      if (mainAgent) {
-        const item = document.createElement('div')
-        item.className = 'skill-agent-checkbox skill-agent-auto'
-        item.innerHTML = `
-          <input type="checkbox" checked disabled title="Globálisan elérhető a fő agentnek -- nem kell külön hozzárendelni">
-          <label>${escapeHtml(mainAgent.label || mainAgent.name)} <span class="tag-auto">automatikus</span></label>
-        `
-        checkboxesEl.appendChild(item)
-      }
-      for (const agent of subAgents) {
-        const isChecked = detail.agents.includes(agent.name)
-        const item = document.createElement('div')
-        item.className = 'skill-agent-checkbox'
-        item.innerHTML = `
-          <input type="checkbox" id="skill-assign-${agent.name}" value="${agent.name}" ${isChecked ? 'checked' : ''}>
-          <label for="skill-assign-${agent.name}">${escapeHtml(agent.label || agent.name)}</label>
-        `
-        checkboxesEl.appendChild(item)
-      }
-      if (subAgents.length === 0 && !mainAgent) {
-        checkboxesEl.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Nincsenek hozzarendelheto ügynökök</p>'
-      } else if (subAgents.length === 0) {
-        const note = document.createElement('p')
-        note.style.cssText = 'color:var(--text-muted);font-size:12px;margin-top:8px'
-        note.textContent = 'Sub-agenteknek hozzárendelés a Csapat oldalon létrehozott új ügynök után érhető el.'
-        checkboxesEl.appendChild(note)
-      }
-    } catch {
-      checkboxesEl.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Ügynökök betoltese sikertelen</p>'
-    }
-
-    // Assign button
-    const assignBtn = document.getElementById('skillAssignBtn')
-    assignBtn.onclick = async () => {
-      const checked = checkboxesEl.querySelectorAll('input[type="checkbox"]:checked')
-      const agents = Array.from(checked).map(cb => cb.value)
-
-      assignBtn.disabled = true
-      assignBtn.querySelector('.btn-text').hidden = true
-      assignBtn.querySelector('.btn-loading').hidden = false
-
-      try {
-        const assignRes = await fetch(`/api/skills/${encodeURIComponent(skillName)}/assign`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ agents }),
-        })
-        if (!assignRes.ok) throw new Error('Assign failed')
-        showToast('Hozzarendeles mentve')
-        loadGlobalSkills()
-      } catch {
-        showToast('Hiba a mentes soran')
-      } finally {
-        assignBtn.disabled = false
-        assignBtn.querySelector('.btn-text').hidden = false
-        assignBtn.querySelector('.btn-loading').hidden = true
-      }
-    }
+    contentEl.textContent = detail.content || '(SKILL.md nem található)'
 
   } catch (err) {
     console.error('Skill detail hiba:', err)
-    document.getElementById('skillDetailDesc').textContent = 'Hiba a betoltes soran'
+    document.getElementById('skillDetailDesc').textContent = 'Hiba a betöltés során'
     document.getElementById('skillDetailContent').textContent = ''
-    document.getElementById('skillAgentCheckboxes').innerHTML = ''
+    const metaEl = document.getElementById('skillDetailMeta')
+    if (metaEl) metaEl.innerHTML = ''
   }
 
   openModal(skillDetailOverlay)

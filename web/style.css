@@ -3402,6 +3402,20 @@ main {
   border-radius: var(--radius-sm);
 }
 
+.skill-detail-meta {
+  margin: 0 0 20px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.skill-detail-meta .skill-detail-source strong {
+  color: var(--text);
+}
+.skill-detail-meta .skill-detail-note {
+  margin-top: 2px;
+  font-style: italic;
+}
+
 .skill-detail-agents {
   margin-bottom: 24px;
 }

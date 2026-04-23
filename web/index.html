@@ -241,8 +241,20 @@
         <div class="page-header-row">
           <div>
             <h1>Skillek</h1>
-            <p class="subtitle">Globalis skillek kezelese es hozzarendelese</p>
+            <p class="subtitle">A Claude Code által látott skillek (user mappa + plugin cache)</p>
           </div>
+          <button class="btn-primary btn-compact" id="skillsPageNewBtn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+            Új skill
+          </button>
+        </div>
+        <div class="info-box" id="skillsInfoBox">
+          Minden itt listázott skill automatikusan elérhető minden sub-agent számára, mert ugyanabban a HOME-ban futnak, mint a fő session.
+          A Claude CLI beépített slash-parancsai (init, review, security-review, loop, schedule, stb.) mindig elérhetők,
+          de itt nem szerepelnek, mert a `claude` binárisban élnek és nem fájlrendszeri források.
+          Új skillt a jobb felső "Új skill" gombbal tudsz létrehozni vagy importálni.
         </div>
       </div>
       <div class="skills-stats" id="skillsStats"></div>
@@ -251,7 +263,7 @@
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/>
         </svg>
-        <p>Nincsenek globalis skillek</p>
+        <p>Nincsenek skillek</p>
       </div>
     </div>
 
@@ -1238,14 +1250,7 @@
       </div>
       <div class="modal-body">
         <div class="skill-detail-desc" id="skillDetailDesc"></div>
-        <div class="skill-detail-agents">
-          <label class="form-label-sm">Hozzarendeles ügynökökhöz</label>
-          <div class="skill-agent-checkboxes" id="skillAgentCheckboxes"></div>
-          <button class="btn-primary btn-compact" id="skillAssignBtn" style="margin-top:12px">
-            <span class="btn-text">Mentes</span>
-            <span class="btn-loading" hidden><span class="spinner"></span> Mentes...</span>
-          </button>
-        </div>
+        <div class="skill-detail-meta" id="skillDetailMeta"></div>
         <div class="skill-detail-content-wrap">
           <label class="form-label-sm">SKILL.md tartalom</label>
           <div class="skill-detail-content" id="skillDetailContent"></div>
