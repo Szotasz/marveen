@@ -51,6 +51,7 @@ import {
   slugify as slugifyMcp,
   type McpListEntry,
 } from './mcp-list-parser.js'
+import { detectPaneState } from './pane-state.js'
 
 // Pre-bound homedir so callers do not have to pass it every time.
 function scrubPaths(msg: string): string {
@@ -1763,54 +1764,50 @@ function sendPromptToSession(session: string, text: string): void {
   execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
 }
 
-// Idle footer pattern. Two variants exist: the permissive (bypass) mode agent
-// shows "bypass permissions on (shift+tab to cycle)"; a strict-profile agent
-// shows "? for shortcuts". Both must match, otherwise strict-profile agents
-// are invisible to the router and the scheduler.
-const IDLE_FOOTER_RX = /bypass permissions on \(shift\+tab to cycle\)|\? for shortcuts/
+// How long to wait between the two capture samples when the first one
+// looks idle. The Claude Code UI renders the "idle footer without `esc
+// to interrupt`" line for ~1 frame after a turn submits before the
+// spinner lands; a quarter-second settle window is well past that.
+const PANE_READY_CONFIRM_DELAY_S = '0.25'
+
+// Capture a pane snapshot with an execSync timeout. Null on any error so
+// the caller can treat "capture failed" as "not ready".
+function capturePane(session: string): string | null {
+  try {
+    return execSync(`${TMUX} capture-pane -t ${session} -p`, { timeout: 3000, encoding: 'utf-8' })
+  } catch {
+    return null
+  }
+}
 
 // Check if a Claude Code tmux session is ready to accept a new prompt.
-// During Anthropic API outages or long-running tasks, scheduled prompts can pile up
-// in the input buffer because send-keys appends but Enter never submits.
+//
+// The detection has two layers, both needed to close the frame-level
+// false-positive that let PR1+PR2's smoke test fire a prompt into a pane
+// that was actually mid-thinking:
+//
+//   1. detectPaneState() looks for a set of turn-scoped busy signals
+//      (spinner glyph labels paired with the runtime tail, token-count
+//      pattern, and the footer's `esc to interrupt` marker) so even the
+//      single frame where the footer lacks `· esc to interrupt` is
+//      classified busy by the spinner that is already rendered above
+//      the input box.
+//
+//   2. Double-sample confirmation: if the first capture looks idle, we
+//      sleep 250ms and re-capture. Only agreement from both samples
+//      returns true. Cost on the ready path: ~250ms sleep plus a second
+//      tmux capture-pane round-trip (typically tens of ms). Busy pass
+//      through layer 1 and return immediately without the delay.
 function isSessionReadyForPrompt(session: string): boolean {
-  try {
-    const pane = execSync(`${TMUX} capture-pane -t ${session} -p`, { timeout: 3000, encoding: 'utf-8' })
-    const hasIdleFooter = IDLE_FOOTER_RX.test(pane)
-    const hasPendingPaste = /\[Pasted text #\d+/.test(pane)
-    // "esc to interrupt" is Claude Code's mid-turn marker in both bypass and
-    // strict permission modes. If it's on-screen, the agent is busy even if
-    // the footer is also visible (some intermediate renders show both).
-    const isBusy = /esc to interrupt/.test(pane)
-    if (!hasIdleFooter || hasPendingPaste || isBusy) return false
+  const first = capturePane(session)
+  if (first == null) return false
+  if (detectPaneState(first) !== 'idle') return false
 
-    // Guard against text already parked in the input buffer. Only scan INSIDE
-    // the current input box, which is framed by two ──── separator lines
-    // (U+2500 BOX DRAWINGS LIGHT HORIZONTAL, 10+ in a run). The previous
-    // implementation scanned the 20 lines above the footer, which also
-    // matched historical ❯ lines left in scrollback (e.g. from wrapUntrusted
-    // output) -- making every session look busy after the first inter-agent
-    // message. Also: `\s+\S` with the scrollback slice joined by \n would
-    // straddle newlines and match `❯ \n───`, marking every idle session busy.
-    const lines = pane.split('\n')
-    const footerIdx = lines.findIndex(l => IDLE_FOOTER_RX.test(l))
-    const SEP_RX = /^─{10,}/
-    let bottomSep = -1
-    for (let i = footerIdx - 1; i >= 0; i--) {
-      if (SEP_RX.test(lines[i])) { bottomSep = i; break }
-    }
-    let topSep = -1
-    for (let i = bottomSep - 1; i >= 0; i--) {
-      if (SEP_RX.test(lines[i])) { topSep = i; break }
-    }
-    if (topSep >= 0 && bottomSep > topSep) {
-      const inputLines = lines.slice(topSep + 1, bottomSep)
-      // [ \t] not \s so the check stays on one line.
-      if (inputLines.some(l => /❯[ \t]+\S/.test(l))) return false
-    }
-    return true
-  } catch {
-    return false
-  }
+  try { execFileSync('/bin/sleep', [PANE_READY_CONFIRM_DELAY_S], { timeout: 2000 }) } catch { /* best effort */ }
+
+  const second = capturePane(session)
+  if (second == null) return false
+  return detectPaneState(second) === 'idle'
 }
 
 // --- Update checker ---
