@@ -2988,12 +2988,15 @@ export function startWebServer(port = 3420): http.Server {
 
         // Save temp file (unique name to avoid concurrent-import races) and unzip
         const tmpPath = join(skillsDir, `_import_${randomUUID()}.zip`)
+        // Snapshot the pre-import state OUTSIDE the try block so the
+        // catch at the end can diff `after` vs `before` and roll back
+        // any partially-extracted files if unzip itself threw.
+        const before = new Set(readdirSync(skillsDir))
         try {
           writeFileSync(tmpPath, file.data)
           // Reject entries with absolute paths or parent-dir escapes before extraction.
           const listOutput = execSync(`unzip -Z1 "${tmpPath}" 2>&1`, { timeout: 5000, encoding: 'utf-8' })
           const entries = listOutput.split('\n').map((l) => l.trim()).filter(Boolean)
-          const before = new Set(readdirSync(skillsDir))
           for (const entry of entries) {
             if (entry.includes('..') || entry.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(entry)) {
               unlinkSync(tmpPath)
@@ -3003,7 +3006,10 @@ export function startWebServer(port = 3420): http.Server {
           execSync(`unzip -o "${tmpPath}" -d "${skillsDir}"`, { timeout: 10000 })
           unlinkSync(tmpPath)
 
-          // Defence-in-depth: walk what was just extracted and delete any symlink entries.
+          // Defence-in-depth: walk what was just extracted and reject
+          // if any subdir is a symlink. Use the collect-then-decide
+          // pattern so a zip with a clean entry + a tainted entry
+          // does not leave the clean one partially installed.
           const after = readdirSync(skillsDir).filter((f) => !before.has(f))
           const rejectSymlinks = (dir: string): boolean => {
             for (const entry of readdirSync(dir)) {
@@ -3014,26 +3020,50 @@ export function startWebServer(port = 3420): http.Server {
             }
             return false
           }
+          const tainted: string[] = []
           for (const f of after) {
             const p = join(skillsDir, f)
             try {
               if (lstatSync(p).isSymbolicLink() || (statSync(p).isDirectory() && rejectSymlinks(p))) {
-                rmSync(p, { recursive: true, force: true })
-                return json(res, { error: 'Invalid skill file: symlink entries rejected' }, 400)
+                tainted.push(f)
               }
             } catch { /* ignored */ }
           }
+          if (tainted.length > 0) {
+            for (const f of after) {
+              try { rmSync(join(skillsDir, f), { recursive: true, force: true }) } catch { /* best effort */ }
+            }
+            return json(res, { error: 'Invalid skill file: symlink entries rejected' }, 400)
+          }
 
           // Find the extracted skill name (directory containing SKILL.md)
-          const extracted = readdirSync(skillsDir).filter(f => {
+          const extracted = after.filter(f => {
             const p = join(skillsDir, f)
             try { return statSync(p).isDirectory() && existsSync(join(p, 'SKILL.md')) } catch { return false }
           })
+          // Refuse a zip that yields nothing useful so the UI does
+          // not show a "Skill importálva: " toast with an empty list.
+          if (extracted.length === 0) {
+            for (const f of after) {
+              try { rmSync(join(skillsDir, f), { recursive: true, force: true }) } catch { /* best effort */ }
+            }
+            return json(res, { error: 'No valid skill (SKILL.md) found in archive' }, 400)
+          }
 
           logger.info({ name, skills: extracted }, 'Skill(s) imported')
           return json(res, { ok: true, imported: extracted })
         } catch (err) {
           try { unlinkSync(tmpPath) } catch { /* ignored */ }
+          // Roll back anything that was half-extracted before the
+          // exception. Without this, a crashed unzip / SIGTERM leaves
+          // orphans that the next import collides with or silently
+          // merges into.
+          try {
+            const leftover = readdirSync(skillsDir).filter(f => !before.has(f))
+            for (const f of leftover) {
+              try { rmSync(join(skillsDir, f), { recursive: true, force: true }) } catch { /* best effort */ }
+            }
+          } catch { /* dir gone or unreadable; nothing to do */ }
           logger.error({ err }, 'Failed to import skill')
           return json(res, { error: 'Failed to extract .skill file' }, 500)
         }
@@ -3077,7 +3107,10 @@ export function startWebServer(port = 3420): http.Server {
         if (!existsSync(agentDir(agentName))) return json(res, { error: 'Agent not found' }, 404)
         const body = await readBody(req)
         const { name: rawSkillName, description } = JSON.parse(body.toString()) as { name: string; description: string }
-        const skillName = sanitizeAgentName(rawSkillName || '')
+        // Use sanitizeSkillName (mirrored by the DELETE path at 2716
+        // and the global /api/skills POST) so the two skill-name
+        // namespaces never drift out of sync with the agent-name rules.
+        const skillName = sanitizeSkillName(rawSkillName || '')
         if (!skillName) return json(res, { error: 'Skill name is required' }, 400)
         if (!description) return json(res, { error: 'Skill description is required' }, 400)
 
@@ -4503,51 +4536,210 @@ Respond ONLY with JSON, nothing else:
         return agents
       }
 
-      // GET /api/skills - List all global skills with agent assignments
+      // GET /api/skills - List all skills visible to the Claude Code
+      // CLI for the current user, from two file-based sources:
+      //
+      //   1. ~/.claude/skills/<name>/SKILL.md           -> source='user'
+      //   2. ~/.claude/plugins/cache/*/skills/<name>/SKILL.md -> source='plugin'
+      //
+      // Sub-agents inherit the same HOME as the main session, so every
+      // skill listed here is already available to every sub-agent
+      // without any "Hozzarendeles" step. The per-agent `agents` field
+      // is still reported for the user-scope entries so the existing
+      // dashboard logic that showed assignments still has data; it is
+      // informational only in today's single-HOME setup.
+      //
+      // Claude Code also ships built-in slash commands (init, review,
+      // security-review, loop, schedule, simplify, etc.) that live
+      // inside the `claude` binary and are never listed on disk. Those
+      // are always available; the UI surfaces that fact via an info-box
+      // rather than trying to hard-code a list that would drift with
+      // every CLI release.
       if (path === '/api/skills' && method === 'GET') {
-        const GLOBAL_SKILLS_DIR = join(homedir(), '.claude', 'skills')
-        const skills: { name: string; description: string; agents: string[]; path: string }[] = []
+        type SkillEntry = {
+          name: string
+          label: string
+          description: string
+          agents: string[]
+          path: string
+          source: 'user' | 'plugin'
+          pluginPackage?: string
+        }
+        const skills: SkillEntry[] = []
 
-        if (existsSync(GLOBAL_SKILLS_DIR)) {
-          // Filter out non-skill directories (Claude Code internal structure)
+        // Source 1: user-global ~/.claude/skills
+        const USER_SKILLS_DIR = join(homedir(), '.claude', 'skills')
+        if (existsSync(USER_SKILLS_DIR)) {
           const SKIP_DIRS = new Set(['skills', 'temp_skills', 'tmp_skills', '.skill-index.md'])
-          const dirs = readdirSync(GLOBAL_SKILLS_DIR).filter(f => {
+          const dirs = readdirSync(USER_SKILLS_DIR).filter(f => {
             if (SKIP_DIRS.has(f)) return false
             if (f.startsWith('.')) return false
-            try { return statSync(join(GLOBAL_SKILLS_DIR, f)).isDirectory() } catch { return false }
+            try { return statSync(join(USER_SKILLS_DIR, f)).isDirectory() } catch { return false }
           })
-
           for (const dir of dirs) {
-            const skillMdPath = join(GLOBAL_SKILLS_DIR, dir, 'SKILL.md')
-            if (!existsSync(skillMdPath)) continue // Skip dirs without SKILL.md
-            const description = parseSkillDescription(readFileOr(skillMdPath, ''))
-
+            const skillMdPath = join(USER_SKILLS_DIR, dir, 'SKILL.md')
+            if (!existsSync(skillMdPath)) continue
             skills.push({
               name: dir,
-              description,
-              agents: getSkillAgents(dir),
-              path: join(GLOBAL_SKILLS_DIR, dir),
+              label: dir,
+              description: parseSkillDescription(readFileOr(skillMdPath, '')),
+              // getSkillAgents is no longer consumed by the UI (the
+              // per-agent assignment view was removed when sub-agents
+              // became shared-HOME); skip the fs scan on the hot list
+              // endpoint. Detail endpoint still reports it for the
+              // backend assign flow.
+              agents: [],
+              path: join(USER_SKILLS_DIR, dir),
+              source: 'user',
             })
           }
         }
 
+        // Source 2: plugin skills under ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/skills/<name>/SKILL.md
+        // Depth varies by marketplace layout; rather than hard-code a
+        // fixed depth, walk up to three levels looking for a `skills/`
+        // child that itself contains skill directories with SKILL.md.
+        const PLUGINS_CACHE_DIR = join(homedir(), '.claude', 'plugins', 'cache')
+        if (existsSync(PLUGINS_CACHE_DIR)) {
+          const walkForSkills = (dir: string, depth: number, packagePath: string[]): void => {
+            if (depth > 4) return
+            let entries: string[] = []
+            try { entries = readdirSync(dir) } catch { return }
+            // If this dir has a `skills` subdir, harvest skills from it
+            // and DO NOT recurse further. A plugin's skills live under
+            // its own `skills/` subdir; descending past that point only
+            // walks node_modules / assets / other noise and wastes fs
+            // I/O on a hot list endpoint.
+            if (entries.includes('skills')) {
+              const skillsDir = join(dir, 'skills')
+              let skillDirs: string[] = []
+              try { skillDirs = readdirSync(skillsDir) } catch { /* no-op */ }
+              for (const sd of skillDirs) {
+                if (sd.startsWith('.')) continue
+                const skillDirPath = join(skillsDir, sd)
+                try { if (!statSync(skillDirPath).isDirectory()) continue } catch { continue }
+                const skillMdPath = join(skillDirPath, 'SKILL.md')
+                if (!existsSync(skillMdPath)) continue
+                const pluginPackage = packagePath.join('/')
+                // Short plugin name: prefer the segment that looks
+                // most like a plugin id. For the common
+                // `<marketplace>/<plugin>/<version>` layout that means
+                // the segment BEFORE the version, i.e. length-2. If
+                // there is no version segment the last segment is the
+                // plugin itself. A segment is treated as a version if
+                // it matches the typical semver / date-versioned
+                // pattern (starts with a digit). This heuristic keeps
+                // `telegram` for `claude-plugins-official/telegram/0.0.6`
+                // and falls back gracefully for unversioned or single-
+                // segment packages.
+                // Broadened to cover `v0.0.6`, `V2.3`, `rc1`, `beta-3`,
+                // and the other typical version-segment shapes. The
+                // previous strict `^\d` missed every plugin using a
+                // `v`-prefix or pre-release tag and labelled the
+                // version itself as the plugin id.
+                //
+                // The pre-release alternatives require a version-like
+                // delimiter after the word (digit, dot, hyphen, underscore,
+                // or end-of-string) so a legitimate plugin name like
+                // `preview-plugin`, `alpha-vantage`, `betareader` does
+                // NOT match and get mislabelled as a version segment.
+                const VERSION_LIKE = /^(?:\d|v\d|(?:rc|beta|alpha|pre|snapshot)(?:[.\-_]|\d|$))/i
+                const lastIdx = packagePath.length - 1
+                let shortPluginIdx = lastIdx
+                if (lastIdx >= 1 && VERSION_LIKE.test(packagePath[lastIdx] || '')) {
+                  shortPluginIdx = lastIdx - 1
+                }
+                const shortPlugin = packagePath[shortPluginIdx] || 'plugin'
+                skills.push({
+                  name: pluginPackage ? `${pluginPackage}:${sd}` : sd,
+                  label: `${shortPlugin}:${sd}`,
+                  description: parseSkillDescription(readFileOr(skillMdPath, '')),
+                  agents: [],
+                  path: skillDirPath,
+                  source: 'plugin',
+                  pluginPackage,
+                })
+              }
+              return
+            }
+            // Otherwise recurse into each subdirectory once.
+            for (const entry of entries) {
+              if (entry.startsWith('.') || entry === 'skills') continue
+              const next = join(dir, entry)
+              try {
+                if (!statSync(next).isDirectory()) continue
+              } catch { continue }
+              walkForSkills(next, depth + 1, packagePath.concat(entry))
+            }
+          }
+          walkForSkills(PLUGINS_CACHE_DIR, 0, [])
+        }
+
+        // Deterministic order: user skills first, then plugin skills,
+        // each alphabetically by LABEL. Using the visible label rather
+        // than the raw name keeps plugin entries sorted the way the
+        // UI renders them (users see "telegram:access" before
+        // "telegram:configure", not the marketplace-prefixed form).
+        skills.sort((a, b) => {
+          if (a.source !== b.source) return a.source === 'user' ? -1 : 1
+          return (a.label || a.name).localeCompare(b.label || b.name)
+        })
         return json(res, skills)
       }
 
-      // GET /api/skills/:name - Get detailed skill info
+      // GET /api/skills/:name - Get detailed skill info. Accepts both
+      // user skills (`skill-factory`) and plugin skills prefixed with
+      // the package path (`<package>:<skill>`, e.g. `telegram:access`).
       const globalSkillDetailMatch = path.match(/^\/api\/skills\/([^/]+)$/)
       if (globalSkillDetailMatch && method === 'GET') {
         const skillName = decodeURIComponent(globalSkillDetailMatch[1])
+
+        // Plugin-shaped name: everything before the last colon is the
+        // package path, after it is the skill directory inside
+        // <plugin-root>/skills/<skill>. We mirror the list endpoint's
+        // walk to locate the directory rather than trusting the
+        // client-supplied path blindly.
+        if (skillName.includes(':')) {
+          const lastColon = skillName.lastIndexOf(':')
+          const pluginPath = skillName.slice(0, lastColon)
+          const skillBasename = skillName.slice(lastColon + 1)
+          const PLUGINS_CACHE_DIR = join(homedir(), '.claude', 'plugins', 'cache')
+          const skillDir = join(PLUGINS_CACHE_DIR, ...pluginPath.split('/'), 'skills', skillBasename)
+          // Defence against path-traversal via malicious ':' usage.
+          if (!skillDir.startsWith(PLUGINS_CACHE_DIR + sep)) {
+            return json(res, { error: 'Skill not found' }, 404)
+          }
+          const skillMdPath = join(skillDir, 'SKILL.md')
+          if (!existsSync(skillMdPath)) return json(res, { error: 'Skill not found' }, 404)
+          const content = readFileOr(skillMdPath, '')
+          const files: string[] = []
+          try { for (const entry of readdirSync(skillDir)) files.push(entry) } catch { /* no-op */ }
+          return json(res, {
+            name: skillName,
+            description: parseSkillDescription(content),
+            content,
+            agents: [],
+            path: skillDir,
+            files,
+            source: 'plugin',
+            pluginPackage: pluginPath,
+          })
+        }
+
         const GLOBAL_SKILLS_DIR = join(homedir(), '.claude', 'skills')
         const skillDir = join(GLOBAL_SKILLS_DIR, skillName)
-
+        // Path-traversal guard: a URL-encoded `..%2F..%2F.ssh` in the
+        // skillName would otherwise let the handler readdirSync an
+        // arbitrary user path and leak filenames through files[].
+        if (!skillDir.startsWith(GLOBAL_SKILLS_DIR + sep)) {
+          return json(res, { error: 'Skill not found' }, 404)
+        }
         if (!existsSync(skillDir)) return json(res, { error: 'Skill not found' }, 404)
 
         const skillMdPath = join(skillDir, 'SKILL.md')
         const content = readFileOr(skillMdPath, '')
         const description = parseSkillDescription(content)
 
-        // List files in the skill directory
         const files: string[] = []
         try {
           for (const entry of readdirSync(skillDir)) files.push(entry)
@@ -4560,7 +4752,161 @@ Respond ONLY with JSON, nothing else:
           agents: getSkillAgents(skillName),
           path: skillDir,
           files,
+          source: 'user',
         })
+      }
+
+      // POST /api/skills - Create a new skill under ~/.claude/skills/<name>
+      // Parallel to /api/agents/:name/skills (per-agent create) but
+      // writes to the user-global skills directory so the new Skills
+      // page "Új skill" button has somewhere to POST. The per-agent
+      // endpoint stays as-is for the Agent detail modal's skill list.
+      if (path === '/api/skills' && method === 'POST') {
+        const body = await readBody(req)
+        const { name: rawSkillName, description } = JSON.parse(body.toString()) as { name: string; description: string }
+        // Use the same sanitizer as the DELETE path on /api/agents/:name/skills/:skillName
+        // so skill-name rules stay in one place; agent names have stricter
+        // length / charset rules that would reject valid skill names.
+        const skillName = sanitizeSkillName(rawSkillName || '')
+        if (!skillName) return json(res, { error: 'Skill name is required' }, 400)
+        if (!description) return json(res, { error: 'Skill description is required' }, 400)
+
+        const GLOBAL_SKILLS_DIR = join(homedir(), '.claude', 'skills')
+        const skillDir = join(GLOBAL_SKILLS_DIR, skillName)
+        // Path-traversal guard for the same reason as the detail
+        // endpoint: sanitizeAgentName normally scrubs `/` and `..`,
+        // but this is defence-in-depth against a future regression
+        // in the sanitiser.
+        if (!skillDir.startsWith(GLOBAL_SKILLS_DIR + sep)) {
+          return json(res, { error: 'Invalid skill name' }, 400)
+        }
+        if (existsSync(skillDir)) return json(res, { error: 'Skill already exists' }, 409)
+        mkdirSync(skillDir, { recursive: true })
+
+        try {
+          const skillMd = await generateSkillMd(skillName, description)
+          atomicWriteFileSync(join(skillDir, 'SKILL.md'), skillMd)
+        } catch (err) {
+          rmSync(skillDir, { recursive: true, force: true })
+          return json(res, { error: 'Failed to generate skill' }, 500)
+        }
+        return json(res, { ok: true, name: skillName })
+      }
+
+      // POST /api/skills/import - Import a .skill zip into the
+      // user-global skills directory. Mirrors
+      // /api/agents/:name/skills/import with the target path swapped;
+      // the zip-extraction hardening (path-traversal + symlink
+      // rejection) is duplicated on purpose so a future refactor of
+      // one endpoint cannot silently weaken the other.
+      if (path === '/api/skills/import' && method === 'POST') {
+        const body = await readBody(req)
+        const contentType = req.headers['content-type'] || ''
+        const { file } = parseMultipart(body, contentType)
+        if (!file) return json(res, { error: 'No file uploaded' }, 400)
+
+        const skillsDir = join(homedir(), '.claude', 'skills')
+        mkdirSync(skillsDir, { recursive: true })
+
+        const tmpPath = join(skillsDir, `_import_${randomUUID()}.zip`)
+        // Snapshot pre-import state outside the try so the catch can
+        // roll back partially-extracted files after a crashed unzip.
+        const before = new Set(readdirSync(skillsDir))
+        try {
+          writeFileSync(tmpPath, file.data)
+          const listOutput = execSync(`unzip -Z1 "${tmpPath}" 2>&1`, { timeout: 5000, encoding: 'utf-8' })
+          const entries = listOutput.split('\n').map(l => l.trim()).filter(Boolean)
+          for (const entry of entries) {
+            if (entry.includes('..') || entry.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(entry)) {
+              unlinkSync(tmpPath)
+              return json(res, { error: 'Invalid skill file: path traversal detected' }, 400)
+            }
+          }
+          // Refuse to silently overwrite an existing global skill. The
+          // zip's top-level directory names are what would collide, so
+          // check those before extraction. Global skills are shared
+          // across every agent HOME, so an accidental merge has a
+          // wider blast radius than in the per-agent case.
+          const topLevel = new Set<string>()
+          for (const entry of entries) {
+            const seg = entry.split('/')[0]
+            if (seg) topLevel.add(seg)
+          }
+          for (const td of topLevel) {
+            if (before.has(td)) {
+              unlinkSync(tmpPath)
+              return json(res, {
+                error: `Skill already exists: ${td}. Delete it first if you want to overwrite.`,
+              }, 409)
+            }
+          }
+          execSync(`unzip -o "${tmpPath}" -d "${skillsDir}"`, { timeout: 10000 })
+          unlinkSync(tmpPath)
+
+          const after = readdirSync(skillsDir).filter(f => !before.has(f))
+          const rejectSymlinks = (dir: string): boolean => {
+            for (const entry of readdirSync(dir)) {
+              const p = join(dir, entry)
+              const st = lstatSync(p)
+              if (st.isSymbolicLink()) return true
+              if (st.isDirectory() && rejectSymlinks(p)) return true
+            }
+            return false
+          }
+          // Check ALL newly-extracted entries for symlinks before
+          // deciding what to keep. Without the collect-then-decide
+          // pattern, a zip with a clean entry + a tainted entry would
+          // leave the clean one installed while the handler returns
+          // 400 for the tainted one.
+          const tainted: string[] = []
+          for (const f of after) {
+            const p = join(skillsDir, f)
+            try {
+              if (lstatSync(p).isSymbolicLink() || (statSync(p).isDirectory() && rejectSymlinks(p))) {
+                tainted.push(f)
+              }
+            } catch { /* ignored */ }
+          }
+          if (tainted.length > 0) {
+            for (const f of after) {
+              try { rmSync(join(skillsDir, f), { recursive: true, force: true }) } catch { /* best effort */ }
+            }
+            return json(res, { error: 'Invalid skill file: symlink entries rejected' }, 400)
+          }
+
+          // Only report the entries that did NOT exist before the
+          // import, so the UI toast does not lie by listing every
+          // skill in the global directory as "just imported".
+          const extracted = after.filter(f => {
+            const p = join(skillsDir, f)
+            try { return statSync(p).isDirectory() && existsSync(join(p, 'SKILL.md')) } catch { return false }
+          })
+          // If the zip contained no top-level directory with a
+          // SKILL.md, there is nothing to keep. Clean up any extracted
+          // files and surface a 400 so the UI does not show a
+          // "Skill importálva: " toast with an empty list.
+          if (extracted.length === 0) {
+            for (const f of after) {
+              try { rmSync(join(skillsDir, f), { recursive: true, force: true }) } catch { /* best effort */ }
+            }
+            return json(res, { error: 'No valid skill (SKILL.md) found in archive' }, 400)
+          }
+
+          logger.info({ skills: extracted }, 'Global skill(s) imported')
+          return json(res, { ok: true, imported: extracted })
+        } catch (err) {
+          try { unlinkSync(tmpPath) } catch { /* ignored */ }
+          // Roll back partially-extracted files so a crashed unzip
+          // does not leave a half-installed global skill behind.
+          try {
+            const leftover = readdirSync(skillsDir).filter(f => !before.has(f))
+            for (const f of leftover) {
+              try { rmSync(join(skillsDir, f), { recursive: true, force: true }) } catch { /* best effort */ }
+            }
+          } catch { /* dir gone or unreadable; nothing to do */ }
+          logger.error({ err }, 'Failed to import global skill')
+          return json(res, { error: 'Failed to extract .skill file' }, 500)
+        }
       }
 
       // POST /api/skills/:name/assign - Assign skill to agents
@@ -4569,6 +4915,15 @@ Respond ONLY with JSON, nothing else:
         const skillName = decodeURIComponent(globalSkillAssignMatch[1])
         const GLOBAL_SKILLS_DIR = join(homedir(), '.claude', 'skills')
         const globalSkillDir = join(GLOBAL_SKILLS_DIR, skillName)
+
+        // Path-traversal guard: mirror the detail endpoint's startsWith
+        // check. A URL-encoded `..%2F..%2F.ssh` decodes past the
+        // `[^/]+` route regex and would otherwise let the handler
+        // `cp -r` arbitrary user directories into agent dirs and
+        // rmSync the same name out of non-targeted agents.
+        if (!globalSkillDir.startsWith(GLOBAL_SKILLS_DIR + sep)) {
+          return json(res, { error: 'Skill not found' }, 404)
+        }
 
         if (!existsSync(globalSkillDir)) return json(res, { error: 'Skill not found' }, 404)
 
