@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { statSync, existsSync, chmodSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   initDatabase,
   getSession,
@@ -20,6 +22,7 @@ import {
   markPendingTaskRetryAlert,
   clearPendingTaskRetryAlert,
 } from '../db.js'
+import { STORE_DIR } from '../config.js'
 
 beforeAll(() => {
   // Teszt adatbázis inicializálás
@@ -232,5 +235,51 @@ describe('pending task retries', () => {
 
     // After clear, markAlert succeeds again
     expect(markPendingTaskRetryAlert('task-clear-alert', 'main', 11_000_200)).toBe(true)
+  })
+})
+
+describe('database file permissions', () => {
+  // Enforcement (not just observation): loosen every sidecar to 0o644
+  // first, then re-run initDatabase() to prove tightenDbPermissions
+  // actually narrows them. Without this, the tests would pass even if
+  // tightenDbPermissions were removed entirely -- the files would
+  // simply retain whatever mode a previous test run left them at.
+  beforeAll(async () => {
+    const { chmodSync } = await import('node:fs')
+    const dbPath = join(STORE_DIR, 'claudeclaw.db')
+    for (const p of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`]) {
+      if (existsSync(p)) {
+        try { chmodSync(p, 0o644) } catch { /* best effort */ }
+      }
+    }
+    initDatabase()
+  })
+
+  it('claudeclaw.db is tightened to owner-only (0o600) by initDatabase', () => {
+    const dbPath = join(STORE_DIR, 'claudeclaw.db')
+    expect(existsSync(dbPath)).toBe(true)
+    const mode = statSync(dbPath).mode & 0o777
+    expect(mode).toBe(0o600)
+  })
+
+  it('WAL sidecar (when present) is tightened to 0o600', () => {
+    const walPath = join(STORE_DIR, 'claudeclaw.db-wal')
+    if (!existsSync(walPath)) return // WAL may not exist on a freshly-initialised empty DB
+    const mode = statSync(walPath).mode & 0o777
+    expect(mode).toBe(0o600)
+  })
+
+  it('SHM sidecar (when present) is tightened to 0o600', () => {
+    const shmPath = join(STORE_DIR, 'claudeclaw.db-shm')
+    if (!existsSync(shmPath)) return
+    const mode = statSync(shmPath).mode & 0o777
+    expect(mode).toBe(0o600)
+  })
+
+  it('rollback-journal sidecar (when present) is tightened to 0o600', () => {
+    const journalPath = join(STORE_DIR, 'claudeclaw.db-journal')
+    if (!existsSync(journalPath)) return
+    const mode = statSync(journalPath).mode & 0o777
+    expect(mode).toBe(0o600)
   })
 })

@@ -1,11 +1,11 @@
 import http from 'node:http'
-import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, mkdirSync, mkdtempSync, rmSync, statSync, lstatSync, copyFileSync, renameSync, chmodSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, mkdirSync, mkdtempSync, rmSync, statSync, lstatSync, copyFileSync, renameSync, chmodSync, openSync, closeSync } from 'node:fs'
 import { join, extname, resolve, sep } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto'
 import { spawn, execSync, execFileSync, execFile, type ChildProcess } from 'node:child_process'
 import { CronExpressionParser } from 'cron-parser'
-import { PROJECT_ROOT, OLLAMA_URL, WEB_HOST } from './config.js'
+import { PROJECT_ROOT, OLLAMA_URL, WEB_HOST, STORE_DIR } from './config.js'
 import { resolveFromPath } from './platform.js'
 import { runAgent } from './agent.js'
 import { logger } from './logger.js'
@@ -86,6 +86,13 @@ function isValidCronShape(cron: unknown): cron is string {
 const WEB_DIR = join(PROJECT_ROOT, 'web')
 const AGENTS_BASE_DIR = join(PROJECT_ROOT, 'agents')
 const SCHEDULED_TASKS_DIR = join(homedir(), '.claude', 'scheduled-tasks')
+
+// Hard cap on the prompt length for a scheduled task, to stop a malicious
+// or accidentally-huge POST body from exhausting the target agent's
+// token budget (and wedging the tmux send-keys paste detector). 50,000
+// characters is ~12k tokens of English, which is already far beyond any
+// legitimate schedule prompt -- real ones are usually <1k chars.
+const MAX_SCHEDULED_TASK_PROMPT_LEN = 50_000
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -1205,10 +1212,39 @@ function writeScheduledTask(
 
 // --- HTTP szerver ---
 
-function readBody(req: http.IncomingMessage): Promise<Buffer> {
+// Default upper bound on a request body the dashboard will buffer in RAM.
+// Picked well above any legitimate JSON payload (the biggest legit writes
+// are agent-bundle imports, which read files separately) but low enough
+// that a rogue 10GB POST can't OOM the process. Callers with a tighter
+// real cap (e.g. schedule endpoints cap at 256KB) pass `maxBytes`.
+const DEFAULT_READ_BODY_MAX_BYTES = 20 * 1024 * 1024
+
+class RequestBodyTooLargeError extends Error {
+  readonly limit: number
+  constructor(limit: number) {
+    super(`Request body exceeded ${limit} bytes`)
+    this.name = 'RequestBodyTooLargeError'
+    this.limit = limit
+  }
+}
+
+function readBody(
+  req: http.IncomingMessage,
+  opts: { maxBytes?: number } = {},
+): Promise<Buffer> {
+  const maxBytes = opts.maxBytes ?? DEFAULT_READ_BODY_MAX_BYTES
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
-    req.on('data', (c: Buffer) => chunks.push(c))
+    let total = 0
+    req.on('data', (c: Buffer) => {
+      total += c.length
+      if (total > maxBytes) {
+        req.destroy()
+        reject(new RequestBodyTooLargeError(maxBytes))
+        return
+      }
+      chunks.push(c)
+    })
     req.on('end', () => resolve(Buffer.concat(chunks)))
     req.on('error', reject)
   })
@@ -2662,10 +2698,14 @@ export function startWebServer(port = 3420): http.Server {
       //
       // Before spawning, run checkUpdatePreflight against the live repo.
       // update.sh itself would still exit on a non-main branch / dirty
-      // tree, but because it is launched detached with stdio: 'ignore'
-      // the frontend has no way to see that exit code. Replying 409 here
-      // turns a silent "Frissítés elindult / same commits after reload"
-      // loop into an actionable toast.
+      // tree, but because it is launched detached the frontend has no
+      // way to see that exit code without a log redirect. Replying 409
+      // here turns a silent "Frissítés elindult / same commits after
+      // reload" loop into an actionable toast.
+      //
+      // stdout/stderr go to store/update.log so the `npm audit` warn-
+      // and-continue message -- and any other update-time output -- is
+      // auditable by the operator.
       if (path === '/api/updates/apply' && method === 'POST') {
         // Concurrency gate. The update flow is:
         //   1. Dashboard atomically creates UPDATE_PIDFILE with O_EXCL.
@@ -2789,10 +2829,17 @@ export function startWebServer(port = 3420): http.Server {
           return json(res, body, 409)
         }
         try {
+          let outFd: number | 'ignore' = 'ignore'
+          try {
+            mkdirSync(STORE_DIR, { recursive: true })
+            outFd = openSync(join(STORE_DIR, 'update.log'), 'a', 0o600)
+          } catch (err) {
+            logger.warn({ err }, 'Could not open update.log for update.sh stdio; falling back to ignore')
+          }
           const child = spawn('/bin/bash', [join(PROJECT_ROOT, 'update.sh')], {
             cwd: PROJECT_ROOT,
             detached: true,
-            stdio: 'ignore',
+            stdio: ['ignore', outFd, outFd],
           })
           // .unref() + detached means Node does not keep the event loop
           // alive for the child, but it also means an 'error' event on
@@ -2812,6 +2859,12 @@ export function startWebServer(port = 3420): http.Server {
             if (stillOurs) releaseLock()
           })
           child.unref()
+          if (typeof outFd === 'number') {
+            // The child inherits the fd; close our parent-side reference
+            // so the dashboard doesn't hold an extra handle. The child's
+            // dup survives.
+            try { closeSync(outFd) } catch { /* already closed */ }
+          }
           return json(res, { ok: true })
         } catch (err) {
           releaseLock()
@@ -3328,13 +3381,26 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
 
       // POST /api/schedules - Create a new scheduled task
       if (path === '/api/schedules' && method === 'POST') {
-        const body = await readBody(req)
+        let body: Buffer
+        try {
+          body = await readBody(req, { maxBytes: 256 * 1024 })
+        } catch (err) {
+          if (err instanceof RequestBodyTooLargeError) {
+            return json(res, { error: `Request body too large (max ${err.limit} bytes)` }, 413)
+          }
+          throw err
+        }
         const data = JSON.parse(body.toString()) as {
           name: string; description: string; prompt: string; schedule: string; agent?: string; type?: string
         }
         const name = sanitizeScheduleName(data.name || '')
         if (!name) return json(res, { error: 'Name is required' }, 400)
         if (!data.prompt?.trim()) return json(res, { error: 'Prompt is required' }, 400)
+        if (data.prompt.length > MAX_SCHEDULED_TASK_PROMPT_LEN) {
+          return json(res, {
+            error: `Prompt too large (${data.prompt.length} chars, max ${MAX_SCHEDULED_TASK_PROMPT_LEN})`,
+          }, 413)
+        }
         if (!data.schedule?.trim()) return json(res, { error: 'Schedule is required' }, 400)
         if (!isValidCronShape(data.schedule)) return json(res, { error: 'Invalid cron expression' }, 400)
 
@@ -3360,9 +3426,22 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
         const dir = join(SCHEDULED_TASKS_DIR, name)
         if (!existsSync(dir)) return json(res, { error: 'Schedule not found' }, 404)
 
-        const body = await readBody(req)
+        let body: Buffer
+        try {
+          body = await readBody(req, { maxBytes: 256 * 1024 })
+        } catch (err) {
+          if (err instanceof RequestBodyTooLargeError) {
+            return json(res, { error: `Request body too large (max ${err.limit} bytes)` }, 413)
+          }
+          throw err
+        }
         const data = JSON.parse(body.toString()) as {
           description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean
+        }
+        if (data.prompt !== undefined && data.prompt.length > MAX_SCHEDULED_TASK_PROMPT_LEN) {
+          return json(res, {
+            error: `Prompt too large (${data.prompt.length} chars, max ${MAX_SCHEDULED_TASK_PROMPT_LEN})`,
+          }, 413)
         }
         if (data.schedule !== undefined && !isValidCronShape(data.schedule)) {
           return json(res, { error: 'Invalid cron expression' }, 400)

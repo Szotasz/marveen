@@ -1,15 +1,62 @@
 import Database from 'better-sqlite3'
 import { join } from 'node:path'
-import { existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync } from 'node:fs'
 import { STORE_DIR, ALLOWED_CHAT_ID, OLLAMA_URL } from './config.js'
 import { logger } from './logger.js'
 
 let db: Database.Database
 
+// Lock the DB file and its sidecars (WAL, SHM, rollback journal) down to
+// owner-only. better-sqlite3 opens the main file with the process umask
+// (typically 0o644), which leaves a TOCTOU window where any other local
+// process -- malicious npm postinstall, rogue shell script, unrelated
+// tool running under the operator's UID -- can open() it for read BEFORE
+// we narrow the mode. The narrowed chmod would not revoke an already-
+// opened fd. Defense in depth:
+//   (1) Pre-create the main DB file via openSync('wx', 0o600) so better-
+//       sqlite3 inherits the tight mode on fresh installs and the race
+//       window is closed entirely.
+//   (2) After Database() + PRAGMA wal, chmod the sidecars (WAL/SHM/
+//       journal) -- they were created during the pragma call at umask.
+//       This path also fixes older installs whose files sit at 0o644.
+function tightenDbPermissions(dbPath: string): void {
+  const sidecars = [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`]
+  for (const path of sidecars) {
+    if (!existsSync(path)) continue
+    try { chmodSync(path, 0o600) } catch (err) {
+      logger.warn({ err, path }, 'Failed to tighten DB file permissions')
+    }
+  }
+}
+
 export function initDatabase(): void {
   mkdirSync(STORE_DIR, { recursive: true })
-  db = new Database(join(STORE_DIR, 'claudeclaw.db'))
+  // Idempotent re-init: close a previous handle before opening a new one
+  // so repeated calls (tests, hot-reload, recovery paths) do not leak
+  // the old better-sqlite3 fd.
+  if (db) {
+    try { db.close() } catch { /* already closed */ }
+  }
+  const dbPath = join(STORE_DIR, 'claudeclaw.db')
+  // Step 1: close the TOCTOU window on fresh installs. openSync with 'wx'
+  // + 0o600 creates the file ONLY if it doesn't exist and sets the strict
+  // mode atomically. better-sqlite3 then opens the existing file rather
+  // than creating one at the default umask.
+  if (!existsSync(dbPath)) {
+    try {
+      closeSync(openSync(dbPath, 'wx', 0o600))
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code
+      // EEXIST: a concurrent startup won the race and created it. The
+      // tightenDbPermissions call below will correct its mode.
+      if (code !== 'EEXIST') {
+        logger.warn({ err, dbPath }, 'Pre-create of DB file failed, continuing; mode will be tightened post-open')
+      }
+    }
+  }
+  db = new Database(dbPath)
   db.pragma('journal_mode = WAL')
+  tightenDbPermissions(dbPath)
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
