@@ -2240,6 +2240,63 @@ main {
   gap: 8px;
 }
 
+.pending-retries-banner {
+  margin-bottom: 16px;
+  padding: 14px 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-left: 3px solid #e5a43a;
+  border-radius: var(--radius);
+}
+.pending-retries-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.pending-retries-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.pending-retries-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.pending-retries-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pending-retry-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+}
+.pending-retry-info { flex: 1; min-width: 0; }
+.pending-retry-title {
+  font-size: 13px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.pending-retry-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  gap: 12px;
+  margin-top: 3px;
+  flex-wrap: wrap;
+}
+
 .schedule-row {
   display: flex;
   align-items: center;

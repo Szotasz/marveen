@@ -210,6 +210,11 @@
         </div>
       </div>
 
+      <!-- Pending retries banner (rendered only when the persistent retry
+           queue has entries; the scheduler adds a row for any busy-skipped
+           task so the operator can see and cancel stuck items). -->
+      <div id="pendingRetriesSection" hidden></div>
+
       <!-- List view -->
       <div class="schedule-view" id="scheduleListView">
         <div class="schedule-list" id="scheduleList"></div>

@@ -22,8 +22,13 @@ import {
   createAgentMessage, getPendingMessages, markMessageDelivered,
   markMessageDone, markMessageFailed, listAgentMessages, getAgentMessage,
   appendTaskRun, countTaskRunsBetween,
+  insertPendingTaskRetryIfNew, updatePendingTaskRetry,
+  listPendingTaskRetries, deletePendingTaskRetry,
+  deletePendingTaskRetryById, markPendingTaskRetryAlert,
+  clearPendingTaskRetryAlert,
   type Memory, type AgentMessage,
 } from './db.js'
+import { toPendingRetryView, type PendingRetryView } from './pending-retries.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, ALLOWED_CHAT_ID, HEARTBEAT_CALENDAR_ID } from './config.js'
 import {
   wrapUntrusted,
@@ -929,11 +934,19 @@ Output ONLY the markdown content, no code fences.`
 }
 
 async function sendTelegramMessage(token: string, chatId: string, text: string): Promise<void> {
-  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+  const resp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ chat_id: chatId, text }),
   })
+  // fetch does not throw on 4xx -- a wrong chat_id or revoked token resolves
+  // silently, which historically made "alert sent" log lines lies. Throw so
+  // the existing try/catch blocks at every call site log the real failure
+  // and the alerting path can clear its per-attempt stamp to retry.
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => '')
+    throw new Error(`Telegram API ${resp.status}: ${body.slice(0, 200)}`)
+  }
 }
 
 async function sendTelegramPhoto(token: string, chatId: string, photoPath: string, caption: string): Promise<void> {
@@ -1645,15 +1658,16 @@ function startTelegramPluginMonitor(): NodeJS.Timeout {
 
 const scheduleLastRun: Map<string, number> = new Map()
 
-// Tasks that matched their cron but found the target session busy. The
-// cron-matcher only fires on an exact minute boundary, so without a retry
-// queue the task would be skipped for the whole day. Keep it here and
-// retry on subsequent 60s ticks until the session frees up or the window
-// expires. 60 min accommodates long-running audits and multi-agent turns
-// that can span 40-70 minutes without letting a missed noon run land at 14:00.
-interface PendingRetry { firstAttempt: number; task: ScheduledTask; agent: string }
-const pendingTaskRetries: Map<string, PendingRetry> = new Map()
-const PENDING_RETRY_WINDOW_MS = 60 * 60 * 1000
+// Tasks that matched their cron but found the target session busy are
+// persisted in the `pending_task_retries` DB table and retried on every
+// subsequent 60s tick until the session frees up or the operator cancels
+// them from the UI. The previous design kept them in an in-memory Map
+// and abandoned them after an hour -- which silently dropped business-
+// critical schedules. The new policy never abandons; once the age
+// crosses ALERT_THRESHOLD_MS the alerting layer stamps alert_sent_at
+// before each Telegram send and clears the stamp on delivery failure,
+// giving exactly-one stamp per attempt and at-least-once delivery until
+// success. See sendPendingRetryAlert below.
 
 // Persistent task run history so the overview's "tasksToday" number survives
 // dashboard restarts. Keep the last 30 days.
@@ -2157,6 +2171,51 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number): '
   }
 }
 
+// Fire a Telegram alert when a pending retry has been stuck past the
+// threshold. Stamps `alert_sent_at` BEFORE the network call so concurrent
+// ticks and crash-restarts cannot race into double-alerting on the same
+// attempt. If the send fails, the stamp is cleared so the next tick can
+// retry -- that way a transient Telegram outage or a bad token doesn't
+// silently suppress every future alert on this row. Net semantics:
+// exactly-one stamp per delivery attempt, at-least-once delivery with a
+// 60s retry cadence until success.
+function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
+  // Stamp first. If another tick raced us, markPendingTaskRetryAlert
+  // returns false (the WHERE alert_sent_at IS NULL guards it) and we
+  // skip the send entirely.
+  const claimed = markPendingTaskRetryAlert(view.taskName, view.agentName, nowMs)
+  if (!claimed) return
+
+  const ageMinutes = Math.floor(view.ageMs / 60000)
+  const firstAttempt = new Date(view.firstAttempt).toLocaleString('hu-HU')
+  const text = [
+    `[Marveen scheduler] A(z) "${view.taskName}" (${view.agentName}) utemezett feladat ${ageMinutes} perce varakozik.`,
+    `Elso probalkozas: ${firstAttempt}.`,
+    'A rendszer tovabb probalkozik; a dashboard /Utemezesek oldalan visszavonhato.',
+  ].join('\n')
+  ;(async () => {
+    try {
+      const envPath = join(PROJECT_ROOT, '.env')
+      const envContent = readFileOr(envPath, '')
+      const tokenMatch = envContent.match(/TELEGRAM_BOT_TOKEN=(.+)/)
+      const token = tokenMatch?.[1]?.trim()
+      if (!token) {
+        logger.warn({ task: view.taskName, agent: view.agentName }, 'Pending-retry alert skipped: no TELEGRAM_BOT_TOKEN, clearing stamp for retry')
+        clearPendingTaskRetryAlert(view.taskName, view.agentName)
+        return
+      }
+      await sendTelegramMessage(token, ALLOWED_CHAT_ID, text)
+      logger.info({ task: view.taskName, agent: view.agentName, ageMinutes }, 'Pending-retry Telegram alert sent')
+    } catch (err) {
+      // Real send failure (network error, 4xx from Telegram). Clear the
+      // per-attempt stamp so the next tick can legitimately retry --
+      // otherwise a bad token silently wedges the alerting forever.
+      logger.warn({ err, task: view.taskName, agent: view.agentName }, 'Pending-retry alert delivery failed, clearing stamp for retry')
+      clearPendingTaskRetryAlert(view.taskName, view.agentName)
+    }
+  })()
+}
+
 function startScheduleRunner(): NodeJS.Timeout {
   let firstRun = true
 
@@ -2167,21 +2226,48 @@ function startScheduleRunner(): NodeJS.Timeout {
     const catchUp = firstRun ? 30 * 60000 : 60000
     firstRun = false
 
-    // Retry tasks that were busy-skipped on earlier ticks. cronMatchesNow
-    // only matches on the exact minute boundary, so without this the noon
+    // Retry tasks that were busy-skipped on earlier ticks (persisted in
+    // pending_task_retries so they survive dashboard restart). cronMatchesNow
+    // only fires on an exact minute boundary, so without this the noon
     // check skipped because the session was busy at 12:00:50 would never
-    // run that day.
-    for (const [key, pending] of Array.from(pendingTaskRetries.entries())) {
-      if (now - pending.firstAttempt > PENDING_RETRY_WINDOW_MS) {
-        logger.warn({ task: pending.task.name, agent: pending.agent, windowMs: PENDING_RETRY_WINDOW_MS }, 'Pending scheduled task retry window expired, abandoning')
-        pendingTaskRetries.delete(key)
-        // Clear lastRun so the next cron match for this task is free to fire
-        // even if the abandoned window overlaps the next scheduled boundary.
-        scheduleLastRun.delete(pending.task.name)
+    // run that day. We NEVER abandon -- the operator can cancel from the
+    // UI if a retry has become obsolete.
+    const pendingRows = listPendingTaskRetries()
+    const pendingKeys = new Set<string>()
+    for (const row of pendingRows) {
+      // Locate the task definition. If it was deleted meanwhile, drop the
+      // retry silently -- nothing to fire.
+      const taskDef = tasks.find(t => t.name === row.task_name)
+      if (!taskDef) {
+        deletePendingTaskRetry(row.task_name, row.agent_name)
         continue
       }
-      const result = attemptFireTask(pending.task, pending.agent, now)
-      if (result !== 'busy') pendingTaskRetries.delete(key)
+      // Honor the operator's disable action: if the task was toggled off
+      // while the retry sat in the queue, drop the retry so a long-stuck
+      // task doesn't surprise-fire the moment the session frees up.
+      if (!taskDef.enabled) {
+        deletePendingTaskRetry(row.task_name, row.agent_name)
+        continue
+      }
+
+      // Register the key only once we know the retry is live, so the cron
+      // loop below doesn't treat a dead row as a reason to skip.
+      const key = `${row.task_name}@${row.agent_name}`
+      pendingKeys.add(key)
+
+      const view = toPendingRetryView(row, now)
+      const result = attemptFireTask(taskDef, row.agent_name, now)
+      if (result === 'fired' || result === 'missing') {
+        deletePendingTaskRetry(row.task_name, row.agent_name)
+        continue
+      }
+      // Still busy or errored: refresh the retry row and alert ONCE if
+      // the age crossed the threshold. `updatePendingTaskRetry` returns
+      // false when the row has been cancelled between load and now --
+      // in that case, do not re-insert (the operator's cancel wins) and
+      // do not alert.
+      const stillPresent = updatePendingTaskRetry(row.task_name, row.agent_name, now, result)
+      if (stillPresent && view.alertDue) sendPendingRetryAlert(view, now)
     }
 
     for (const task of tasks) {
@@ -2204,12 +2290,15 @@ function startScheduleRunner(): NodeJS.Timeout {
 
       for (const agentName of targetAgents) {
         const key = `${task.name}@${agentName}`
-        // If already queued for retry from an earlier tick, leave it to the
-        // retry handler -- don't re-queue or double-fire.
-        if (pendingTaskRetries.has(key)) continue
+        // If already queued for retry from an earlier tick, leave it to
+        // the retry handler -- don't re-queue or double-fire.
+        if (pendingKeys.has(key)) continue
         const result = attemptFireTask(task, agentName, now)
         if (result === 'busy') {
-          pendingTaskRetries.set(key, { firstAttempt: now, task, agent: agentName })
+          // First encounter -- insert a new pending row. If somehow a
+          // row already exists (race with a just-cancelled retry), do
+          // nothing so the cancel wins the tiebreak.
+          insertPendingTaskRetryIfNew(task.name, agentName, now, 'busy')
         }
       }
     }
@@ -3311,6 +3400,24 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
         atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
         logger.info({ name, enabled: newEnabled }, 'Scheduled task toggled')
         return json(res, { ok: true, enabled: newEnabled })
+      }
+
+      // GET /api/schedules/pending - List pending (busy-skipped) retries
+      if (path === '/api/schedules/pending' && method === 'GET') {
+        const now = Date.now()
+        const rows = listPendingTaskRetries().map(r => toPendingRetryView(r, now))
+        return json(res, rows)
+      }
+
+      // DELETE /api/schedules/pending/:id - Cancel a single pending retry
+      const pendingCancelMatch = path.match(/^\/api\/schedules\/pending\/(\d+)$/)
+      if (pendingCancelMatch && method === 'DELETE') {
+        const id = parseInt(pendingCancelMatch[1], 10)
+        if (!Number.isFinite(id)) return json(res, { error: 'Invalid id' }, 400)
+        const removed = deletePendingTaskRetryById(id)
+        if (!removed) return json(res, { error: 'Pending retry not found' }, 404)
+        logger.info({ id }, 'Pending scheduled-task retry cancelled via API')
+        return json(res, { ok: true })
       }
 
       // === Tasks API (legacy, kept for backward compat) ===
