@@ -3640,24 +3640,94 @@ async function loadConnectors() {
   }
 }
 
+// Built-in MCPs: features that live inside the Claude Code binary or
+// app rather than as a registered MCP server. They cannot be detected
+// via `claude mcp list`, so the "Aktív / Kikapcsolva" label used to
+// always read "Kikapcsolva" regardless of the real state. Replace the
+// misleading state badge with a "Részletek" button that opens a modal
+// carrying the real enable instructions (which previously hid inside
+// a `title` tooltip the user had to hover to discover).
 const BUILTIN_MCPS = [
-  { name: 'computer-use', label: 'Computer Use', desc: 'Képernyő vezérlés, kattintás, gépelés', enableHint: 'Engedélyezés: tmux attach -> /mcp -> computer-use -> Enable' },
-  { name: 'chrome', label: 'Claude in Chrome', desc: 'Böngésző automatizálás', enableHint: '--chrome flag-gel indítva' },
+  {
+    name: 'computer-use',
+    label: 'Computer Use',
+    desc: 'Képernyő vezérlés, kattintás, gépelés',
+    detailHtml: `
+      <p>A Computer Use egy natív Claude képesség, amit nem a Marveen kezel, hanem maga a Claude Code CLI / Claude alkalmazás.
+      Nem jelenik meg a <code>claude mcp list</code> kimenetében, ezért a dashboard sem tudja automatikusan detektálni.</p>
+      <p><strong>Bekapcsolás:</strong> a pontos folyamat a Claude verziójától függ és változhat verziók között.
+      Kövesd az Anthropic hivatalos dokumentációját és a Claude Code changelogot.
+      A fő session tmux-nevét az "Ügynökök" oldalon találod -- oda <code>tmux attach</code>-al tudsz belépni manuálisan.</p>
+      <p style="color:var(--text-muted)">Ez a képesség engedélyt ad az ügynöknek a képernyő vezérlésére és kattintásra, ezért csak megbízható környezetben használd.</p>
+    `,
+  },
+  {
+    name: 'chrome',
+    label: 'Claude in Chrome',
+    desc: 'Böngésző automatizálás',
+    detailHtml: `
+      <p>A Claude in Chrome egy indítás-idejű flag a Claude Code CLI-n, nem egy bekapcsolható MCP szerver.
+      Ezért nem jelenik meg a <code>claude mcp list</code> kimenetében, és a dashboard sem tudja automatikusan detektálni.</p>
+      <p><strong>Bekapcsolás:</strong> indítsd a Claude-ot a <code>--chrome</code> flaggel:</p>
+      <pre style="background:var(--bg-input);padding:8px 12px;border-radius:4px;font-size:12px;overflow-x:auto">claude --chrome</pre>
+      <p style="color:var(--text-muted)">A Chrome integráció lehetővé teszi a böngészőautomatizálást. A Marveen sub-agentek indítása jelenleg nem adja át ezt a flaget, így csak a manuálisan indított fő session használhatja.</p>
+    `,
+  },
 ]
+
+function openBuiltinDetail(item) {
+  const overlay = document.getElementById('builtinDetailOverlay')
+  if (!overlay) return
+  document.getElementById('builtinDetailTitle').textContent = item.label
+  document.getElementById('builtinDetailDesc').textContent = item.desc
+  // Static strings only. Never interpolate user or server input here
+  // without passing it through escapeHtml first -- detailHtml is a
+  // raw HTML sink.
+  document.getElementById('builtinDetailBody').innerHTML = item.detailHtml
+  openModal(overlay)
+  // Move focus into the dialog so keyboard users land inside the new
+  // surface instead of keeping the Részletek button focused behind
+  // the overlay. Same pattern the other modals in this file skip, but
+  // cheap to add for accessibility.
+  const closeBtn = document.getElementById('builtinDetailClose')
+  if (closeBtn) setTimeout(() => closeBtn.focus(), 50)
+}
+
+// Wire close paths for the built-in detail modal once per load. Guarded
+// so a future refactor that moves the script tag above the modal HTML
+// (e.g. deferred <head> load) does not fire a silent null-ref here.
+function wireBuiltinDetailModal() {
+  const overlay = document.getElementById('builtinDetailOverlay')
+  const closeBtn = document.getElementById('builtinDetailClose')
+  if (!overlay || !closeBtn) return
+  closeBtn.addEventListener('click', () => closeModal(overlay))
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeModal(overlay)
+  })
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', wireBuiltinDetailModal, { once: true })
+} else {
+  wireBuiltinDetailModal()
+}
 
 function renderConnectors() {
   // Builtin grid
   const builtinGrid = document.getElementById('connectorBuiltinGrid')
   builtinGrid.innerHTML = ''
   for (const b of BUILTIN_MCPS) {
-    const isActive = connectors.some(c => c.name.toLowerCase().includes(b.name))
     const div = document.createElement('div')
     div.className = 'connector-builtin'
+    // No state dot: we cannot reliably detect whether the feature is
+    // currently enabled. Show a dash placeholder so the row still
+    // aligns with other connector cards.
     div.innerHTML = `
-      <div class="connector-status-dot ${isActive ? 'connected' : 'unknown'}"></div>
+      <div class="connector-status-dot unknown" title="A dashboard nem tudja automatikusan detektálni ezt a képességet"></div>
       <div class="connector-builtin-name">${escapeHtml(b.label)}<br><span style="font-size:11px;color:var(--text-muted);font-weight:400">${escapeHtml(b.desc)}</span></div>
-      <span class="connector-builtin-action" title="${escapeHtml(b.enableHint)}">${isActive ? 'Aktív' : 'Kikapcsolva'}</span>
+      <button type="button" class="connector-builtin-action btn-link" data-builtin="${escapeHtml(b.name)}">Részletek</button>
     `
+    const btn = div.querySelector('button[data-builtin]')
+    if (btn) btn.addEventListener('click', () => openBuiltinDetail(b))
     builtinGrid.appendChild(div)
   }
 
