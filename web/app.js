@@ -3348,6 +3348,34 @@ document.querySelectorAll('.connector-tab').forEach(tab => {
   })
 })
 
+// Refresh button: triggers the server-side `claude mcp list` refresh.
+// Deliberately manual because every refresh spawns stdio / plugin MCPs
+// for a health check and can race the live Telegram bot. Button is
+// shared by both the Installed and Gallery tabs.
+document.getElementById('connectorRefreshBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('connectorRefreshBtn')
+  btn.disabled = true
+  try {
+    const res = await fetch('/api/connectors/refresh', { method: 'POST' })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || !data.ok) {
+      showToast('Frissítés sikertelen: ' + (data.error || 'HTTP ' + res.status))
+    } else {
+      showToast('Frissítve (' + (data.count || 0) + ' MCP)')
+    }
+    await loadConnectors()
+    // Reload catalog only if the Gallery tab is currently active so we
+    // do not fight for the catalog grid while the user is on Installed.
+    if (!document.getElementById('connectorGalleryTab').hidden) {
+      await loadCatalog()
+    }
+  } catch (err) {
+    showToast('Hiba: ' + (err.message || err))
+  } finally {
+    btn.disabled = false
+  }
+})
+
 // Catalog filter buttons
 document.querySelectorAll('.catalog-filter-btn').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -3401,7 +3429,7 @@ function renderCatalog() {
       </div>
       <div class="catalog-card-footer">
         ${item.installed
-          ? `<span class="catalog-install-btn installed">Telepítve &#10003;</span><a class="catalog-uninstall-link" data-id="${item.id}">Eltávolítás</a>`
+          ? `<span class="catalog-install-btn installed" title="Forrás: ${escapeHtml(item.installedSource || 'ismeretlen')}">Telepítve &#10003;${item.installedSource === 'claude.ai' ? ' (claude.ai)' : item.installedSource === 'plugin' ? ' (plugin)' : ''}</span>${item.installedSource === 'claude.ai' ? '' : `<a class="catalog-uninstall-link" data-id="${item.id}">Eltávolítás</a>`}`
           : `<button class="catalog-install-btn install" data-id="${item.id}">Telepítés</button>${authHint}`
         }
       </div>
@@ -3548,12 +3576,39 @@ document.getElementById('connectorType').addEventListener('change', () => {
   document.getElementById('connectorArgsGroup').hidden = !isLocal
 })
 
+// Default TRUE: if we never successfully read /api/connectors/status
+// (endpoint missing on older backends, network error, non-2xx response)
+// the safe assumption is that the cache has not populated yet. That
+// way an empty list renders as "warming" rather than the misleading
+// "no connectors" the F2 round-3 fix was meant to eliminate.
+let connectorCacheWarming = true
+let connectorCacheError = ''
+
 async function loadConnectors() {
   connectorGrid.innerHTML = '<div class="connector-loading"><span class="spinner"></span> Connectorok betoltese...</div>'
   connectorStats.innerHTML = ''
+  // Reset pessimistic state at the top of every load. Only an authoritative
+  // positive signal (status endpoint reports cacheLastRefreshed > 0) flips
+  // it to false, so a later status-fetch failure cannot leave a stale
+  // `false` that regresses into "no connectors" again.
+  connectorCacheWarming = true
+  connectorCacheError = ''
   try {
-    const res = await fetch('/api/connectors')
-    connectors = await res.json()
+    // Fetch both in parallel: the list itself and a lightweight status
+    // readout that tells us whether the server-side cache has ever run.
+    // Without the status, a cold-start hit on the page would render
+    // "Nincsenek MCP connectorok" -- contradicting the info-box that
+    // says "A lista a dashboard indulasakor toltodik be".
+    const [listRes, statusRes] = await Promise.all([
+      fetch('/api/connectors'),
+      fetch('/api/connectors/status').catch(() => null),
+    ])
+    connectors = await listRes.json()
+    if (statusRes && statusRes.ok) {
+      const s = await statusRes.json().catch(() => ({}))
+      if (s && s.cacheLastRefreshed > 0) connectorCacheWarming = false
+      if (s && s.cacheError) connectorCacheError = String(s.cacheError)
+    }
     renderConnectors()
   } catch (err) {
     console.error('Connector betöltés hiba:', err)
@@ -3582,35 +3637,93 @@ function renderConnectors() {
     builtinGrid.appendChild(div)
   }
 
-  // Stats
-  const connected = connectors.filter(c => c.status === 'connected').length
-  const needsAuth = connectors.filter(c => c.status === 'needs_auth').length
-  const failed = connectors.filter(c => c.status === 'failed').length
-  connectorStats.innerHTML = `
-    <div class="stat-card"><div class="stat-value">${connectors.length}</div><div class="stat-label">Összes</div></div>
-    <div class="stat-card"><div class="stat-value" style="color:var(--success)">${connected}</div><div class="stat-label">Aktív</div></div>
-    ${needsAuth ? `<div class="stat-card"><div class="stat-value" style="color:var(--accent)">${needsAuth}</div><div class="stat-label">Auth szükséges</div></div>` : ''}
-    ${failed ? `<div class="stat-card"><div class="stat-value" style="color:var(--danger)">${failed}</div><div class="stat-label">Hibás</div></div>` : ''}
-  `
+  // Stats: only render when there is real data OR a confirmed empty
+  // cache. Rendering "0 / 0" stat cards above a "still loading" message
+  // contradicts itself and confuses the user.
+  if (connectors.length === 0 && connectorCacheWarming) {
+    connectorStats.innerHTML = ''
+  } else {
+    const connected = connectors.filter(c => c.status === 'connected').length
+    const needsAuth = connectors.filter(c => c.status === 'needs_auth').length
+    const failed = connectors.filter(c => c.status === 'failed').length
+    connectorStats.innerHTML = `
+      <div class="stat-card"><div class="stat-value">${connectors.length}</div><div class="stat-label">Összes</div></div>
+      <div class="stat-card"><div class="stat-value" style="color:var(--success)">${connected}</div><div class="stat-label">Aktív</div></div>
+      ${needsAuth ? `<div class="stat-card"><div class="stat-value" style="color:var(--accent)">${needsAuth}</div><div class="stat-label">Auth szükséges</div></div>` : ''}
+      ${failed ? `<div class="stat-card"><div class="stat-value" style="color:var(--danger)">${failed}</div><div class="stat-label">Hibás</div></div>` : ''}
+    `
+  }
 
   // Grid
   connectorGrid.innerHTML = ''
+  // Stale-data warning banner. Only warns when the failed refresh
+  // would actually matter: file-based entries (enabledPlugins,
+  // project/.mcp.json, ~/.claude.json) were re-read fresh on this
+  // request, so they are always authoritative. The only subset that
+  // can go stale is the claude.ai OAuth connectors, which only land
+  // in the list via mcpListCache. If none of those are present,
+  // nothing about the displayed data is actually stale.
+  const hasClaudeAiEntries = connectors.some(c => c.source === 'claude.ai')
+  if (connectors.length > 0 && !connectorCacheWarming && connectorCacheError && hasClaudeAiEntries) {
+    const banner = document.createElement('div')
+    banner.className = 'connector-stale-banner'
+    banner.innerHTML = `Frissítés sikertelen: ${escapeHtml(connectorCacheError)} -- a claude.ai connectorok elavultak lehetnek.`
+    connectorGrid.appendChild(banner)
+  }
   if (connectors.length === 0) {
-    connectorGrid.innerHTML = '<div class="connector-loading">Nincsenek MCP connectorok</div>'
+    // Cold-start: cache has never run, so the empty list is not the
+    // ground truth, just the transient state before the 30s warmup or
+    // a manual refresh. Telling the user "there are none" would
+    // contradict the info-box above.
+    //
+    // If we have a cached error AND warming is still true (refresh has
+    // failed; cache never populated), show the error instead of
+    // instructing the user to click the button that just failed.
+    if (connectorCacheWarming && connectorCacheError) {
+      connectorGrid.innerHTML = `<div class="connector-loading">MCP lista nem tölthető be: ${escapeHtml(connectorCacheError)}</div>`
+    } else if (connectorCacheWarming) {
+      connectorGrid.innerHTML = '<div class="connector-loading">MCP lista még nem töltődött be. Kattints a Frissítés gombra, vagy várj egy percet a dashboard indulása után.</div>'
+    } else {
+      connectorGrid.innerHTML = '<div class="connector-loading">Nincsenek MCP connectorok</div>'
+    }
     return
   }
   for (const c of connectors) {
     const card = document.createElement('div')
     card.className = 'connector-card'
+    // Source labels: map the terse backend values to short visible tags.
+    // This is the single biggest information the user needs right now
+    // -- where did this entry come from, file or OAuth?
+    const sourceLabels = {
+      'claude.ai': 'claude.ai',
+      'plugin': 'plugin',
+      'local-user': 'local (user)',
+      'local-project': 'local (project)',
+      'local': 'local',
+    }
+    const sourceTag = c.source ? `<span class="connector-source-badge">${escapeHtml(sourceLabels[c.source] || c.source)}</span>` : ''
+    // claude.ai entries are managed by the Claude.ai subscription, not
+    // the dashboard: the detail endpoint cannot resolve them and the
+    // per-agent assign endpoint would 404. Mark them read-only so a
+    // click does not 404 a confusing "Reszletek betoltese sikertelen"
+    // modal, and add a small hint instead.
+    const readOnly = c.source === 'claude.ai'
+    if (readOnly) card.classList.add('connector-card-readonly')
+    // Readonly hint lives OUTSIDE .connector-endpoint so the endpoint's
+    // nowrap+ellipsis truncation cannot eat it on long URLs.
+    const readonlyHint = readOnly ? '<div class="connector-readonly-hint">Kezelhető: claude.ai</div>' : ''
     card.innerHTML = `
       <div class="connector-status-dot ${c.status}"></div>
       <div class="connector-info">
-        <div class="connector-name">${escapeHtml(c.name)}</div>
+        <div class="connector-name">${escapeHtml(c.name)} ${sourceTag}</div>
         <div class="connector-endpoint">${escapeHtml(c.endpoint || '')}</div>
+        ${readonlyHint}
       </div>
       <span class="connector-type-badge ${c.type}">${c.type}</span>
     `
-    card.addEventListener('click', () => openConnectorDetail(c))
+    if (!readOnly) {
+      card.addEventListener('click', () => openConnectorDetail(c))
+    }
     connectorGrid.appendChild(card)
   }
 }
