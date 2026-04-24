@@ -4724,16 +4724,27 @@ document.getElementById('updatesApplyBtn').addEventListener('click', async () =>
   btn.disabled = true
   btn.querySelector('.btn-text').hidden = true
   btn.querySelector('.btn-loading').hidden = false
-  try {
-    const res = await fetch('/api/updates/apply', { method: 'POST' })
-    if (!res.ok) throw new Error('HTTP ' + res.status)
-    showToast('Frissítés elindult, a dashboard újratöltődik...')
-    setTimeout(() => window.location.reload(), 30000)
-  } catch (err) {
-    showToast('Hiba: ' + (err.message || err))
+  const resetBtn = () => {
     btn.disabled = false
     btn.querySelector('.btn-text').hidden = false
     btn.querySelector('.btn-loading').hidden = true
+  }
+  try {
+    const res = await fetch('/api/updates/apply', { method: 'POST' })
+    // Parse the body regardless of status so preflight reasons
+    // (not-on-main / dirty-tree / detached-head returned as 409 by
+    // the backend) land in the toast instead of a bare "HTTP 409".
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      resetBtn()
+      showToast('Frissítés nem indult: ' + (data.error || ('HTTP ' + res.status)))
+      return
+    }
+    showToast('Frissítés elindult, a dashboard újratöltődik...')
+    setTimeout(() => window.location.reload(), 30000)
+  } catch (err) {
+    resetBtn()
+    showToast('Hiba: ' + (err.message || err))
   }
 })
 

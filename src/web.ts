@@ -33,6 +33,13 @@ import {
   sanitizeAgentIdent,
 } from './prompt-safety.js'
 import { isTrustedPeer } from './team-trust.js'
+import {
+  checkUpdatePreflight,
+  checkNoConcurrentUpdate,
+  classifyLockWriteError,
+  type GitRunner,
+  type PidfileRunner,
+} from './update-preflight.js'
 
 function computeNextRun(cronExpression: string): number {
   const expr = CronExpressionParser.parse(cronExpression)
@@ -1813,6 +1820,12 @@ let updateStatusCache: UpdateStatus = {
   lastChecked: 0,
 }
 
+// Pidfile path owned by update.sh for the lifetime of an update run.
+// The dashboard never writes it -- update.sh does on entry, removes on
+// exit via a trap -- so the gate survives the stop.sh / start.sh
+// dashboard restart that happens inside a successful update.
+const UPDATE_PIDFILE = join(PROJECT_ROOT, 'store', 'update.pid')
+
 function currentGitHead(): string {
   try {
     return execFileSync('/usr/bin/git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' }).trim()
@@ -2389,15 +2402,162 @@ export function startWebServer(port = 3420): http.Server {
       // POST /api/updates/apply - spawn update.sh in the background.
       // The script restarts the dashboard itself, so we reply immediately
       // and the browser reloads after a short delay.
+      //
+      // Before spawning, run checkUpdatePreflight against the live repo.
+      // update.sh itself would still exit on a non-main branch / dirty
+      // tree, but because it is launched detached with stdio: 'ignore'
+      // the frontend has no way to see that exit code. Replying 409 here
+      // turns a silent "Frissítés elindult / same commits after reload"
+      // loop into an actionable toast.
       if (path === '/api/updates/apply' && method === 'POST') {
+        // Concurrency gate. The update flow is:
+        //   1. Dashboard atomically creates UPDATE_PIDFILE with O_EXCL.
+        //      Content: "<dashboard-pid>\n<start-epoch-ms>\n" -- enough
+        //      for the next reader to probe liveness AND reject any
+        //      pidfile older than MAX_PIDFILE_AGE_MS so a recycled PID
+        //      after SIGKILL cannot keep the button permanently locked.
+        //   2. Dashboard spawns update.sh.
+        //   3. update.sh overwrites the pidfile early with its own "$$"
+        //      plus start epoch, and removes the file on EXIT via trap.
+        //
+        // If step 1 hits EEXIST, a second caller is already in the
+        // window. The helper probes liveness + age: if fresh+live we
+        // 409; if stale we unlink and retry the create once.
+        const pf: PidfileRunner = {
+          readPidfile: () => {
+            try {
+              // Size cap: a legitimate pidfile is under ~64 bytes
+              // ("<pid>\n<epoch>\n"). Anything wildly bigger is either
+              // corrupt or a symlink to something large; treat as
+              // absent so the caller falls through to the create-retry
+              // path, and the stat call itself avoids reading an
+              // accidentally huge file into memory.
+              const st = statSync(UPDATE_PIDFILE)
+              if (!st.isFile() || st.size > 256) return null
+              return readFileSync(UPDATE_PIDFILE, 'utf-8')
+            } catch {
+              return null
+            }
+          },
+          isProcessAlive: (pid) => {
+            try {
+              process.kill(pid, 0)
+              return true
+            } catch (err) {
+              // EPERM means the process exists but is owned by a
+              // different uid; safer to treat as alive than to race
+              // a real runner. ESRCH means truly dead.
+              return (err as NodeJS.ErrnoException)?.code === 'EPERM'
+            }
+          },
+          now: () => Date.now(),
+        }
+        const pidfileContent = `${process.pid}\n${Date.now()}\n`
+        let lockHeld = false
         try {
-          spawn('/bin/bash', [join(PROJECT_ROOT, 'update.sh')], {
+          writeFileSync(UPDATE_PIDFILE, pidfileContent, { flag: 'wx' })
+          lockHeld = true
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') {
+            return json(res, {
+              error: 'Pidfile write failed: ' + (err instanceof Error ? err.message : String(err)),
+              reason: 'lock-write-failed',
+            }, 500)
+          }
+          const concurrency = checkNoConcurrentUpdate(pf)
+          if (!concurrency.ok) {
+            return json(res, {
+              error: concurrency.message,
+              reason: concurrency.reason,
+              pid: concurrency.pid,
+            }, 409)
+          }
+          // Stale pidfile: remove and retry the exclusive create once.
+          try { unlinkSync(UPDATE_PIDFILE) } catch { /* already gone */ }
+          try {
+            writeFileSync(UPDATE_PIDFILE, pidfileContent, { flag: 'wx' })
+            lockHeld = true
+          } catch (retryErr) {
+            // Delegate the errno discrimination to the pure helper so
+            // the invert-regression (=== vs !==) is caught by the
+            // unit tests on classifyLockWriteError.
+            const code = (retryErr as NodeJS.ErrnoException)?.code
+            if (classifyLockWriteError(code) === 'race') {
+              return json(res, {
+                error: 'Another update is starting concurrently. Retry in a few seconds.',
+                reason: 'already-running',
+                pid: 0,
+              }, 409)
+            }
+            return json(res, {
+              error: 'Pidfile retry-write failed: ' + (retryErr instanceof Error ? retryErr.message : String(retryErr)),
+              reason: 'lock-write-failed',
+            }, 500)
+          }
+        }
+        const releaseLock = () => {
+          if (!lockHeld) return
+          try { unlinkSync(UPDATE_PIDFILE) } catch { /* already gone */ }
+          lockHeld = false
+        }
+        const git: GitRunner = {
+          currentBranch: () => execFileSync(
+            '/usr/bin/git',
+            ['rev-parse', '--abbrev-ref', 'HEAD'],
+            { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' },
+          ),
+          porcelainStatus: () => execFileSync(
+            '/usr/bin/git',
+            ['status', '--porcelain', '--untracked-files=no'],
+            { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' },
+          ),
+        }
+        let preflight
+        try {
+          preflight = checkUpdatePreflight(git)
+        } catch (err) {
+          releaseLock()
+          return json(res, {
+            error: 'Pre-check failed: ' + (err instanceof Error ? err.message : String(err)),
+            reason: 'precheck-crashed',
+          }, 500)
+        }
+        if (!preflight.ok) {
+          releaseLock()
+          const body: Record<string, unknown> = {
+            error: preflight.message,
+            reason: preflight.reason,
+          }
+          if (preflight.reason === 'not-on-main') body.branch = preflight.branch
+          return json(res, body, 409)
+        }
+        try {
+          const child = spawn('/bin/bash', [join(PROJECT_ROOT, 'update.sh')], {
             cwd: PROJECT_ROOT,
             detached: true,
             stdio: 'ignore',
-          }).unref()
+          })
+          // .unref() + detached means Node does not keep the event loop
+          // alive for the child, but it also means an 'error' event on
+          // the ChildProcess (post-fork failure) with no listener would
+          // crash the dashboard. Attach a listener so the event is
+          // handled; log it and release the lock so a retry is possible.
+          child.on('error', (err) => {
+            logger.error({ err }, 'update.sh spawn reported an async error')
+            // Only release the lock if the pidfile still contains the
+            // dashboard-written claim. If update.sh has already started
+            // and overwritten it with its own PID, that run now owns
+            // the lock and will remove it via trap on its own EXIT.
+            let stillOurs = false
+            try {
+              stillOurs = readFileSync(UPDATE_PIDFILE, 'utf-8') === pidfileContent
+            } catch { /* file already gone -- nothing to release */ }
+            if (stillOurs) releaseLock()
+          })
+          child.unref()
           return json(res, { ok: true })
         } catch (err) {
+          releaseLock()
           return json(res, { error: err instanceof Error ? err.message : String(err) }, 500)
         }
       }
