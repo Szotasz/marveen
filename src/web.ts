@@ -1,11 +1,33 @@
 import http from 'node:http'
-import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, mkdirSync, mkdtempSync, rmSync, statSync, lstatSync, copyFileSync, renameSync, chmodSync, openSync, closeSync } from 'node:fs'
-import { join, extname, resolve, sep } from 'node:path'
+import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, mkdirSync, mkdtempSync, rmSync, statSync, lstatSync, copyFileSync, openSync, closeSync } from 'node:fs'
+import { join, extname, sep } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
-import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { spawn, execSync, execFileSync, execFile, type ChildProcess } from 'node:child_process'
-import { CronExpressionParser } from 'cron-parser'
 import { PROJECT_ROOT, OLLAMA_URL, WEB_HOST, STORE_DIR } from './config.js'
+import { atomicWriteFileSync } from './web/atomic-write.js'
+import { loadOrCreateDashboardToken, checkBearerToken } from './web/dashboard-auth.js'
+import { parseMultipart, type ParsedForm } from './web/multipart.js'
+import { computeNextRun, isValidCronShape, cronMatchesNow } from './web/cron.js'
+import { readBody, RequestBodyTooLargeError, json, serveFile } from './web/http-helpers.js'
+import { sanitizeAgentName, sanitizeSkillName, sanitizeScheduleName, safeJoin, shellEscape } from './web/sanitize.js'
+import {
+  SCHEDULED_TASKS_DIR,
+  MAX_SCHEDULED_TASK_PROMPT_LEN,
+  parseSkillMdFrontmatter,
+  readScheduledTask,
+  listScheduledTasks,
+  writeScheduledTask,
+  type ScheduledTask,
+} from './web/scheduled-tasks-io.js'
+import {
+  PROFILES_DIR,
+  HARDCODED_DEFAULT_PROFILE,
+  listProfileTemplates,
+  loadProfileTemplate,
+  resolveProfilePlaceholders,
+  type ProfileTemplate,
+} from './web/profiles.js'
 import { resolveFromPath } from './platform.js'
 import { runAgent } from './agent.js'
 import { logger } from './logger.js'
@@ -58,102 +80,10 @@ function scrubPaths(msg: string): string {
   return scrubPathsBase(msg, homedir())
 }
 
-function computeNextRun(cronExpression: string): number {
-  const expr = CronExpressionParser.parse(cronExpression)
-  return Math.floor(expr.next().getTime() / 1000)
-}
-
-// Accept 5-field (standard) and 6-field (with seconds) cron expressions;
-// cron-parser supports both. Anything else -- oversized strings, random
-// punctuation, empty fields -- gets rejected at the API boundary instead
-// of reaching the parser deep inside the scheduler loop.
-const CRON_SHAPE_RX = /^(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)(?:\s+(\S+))?$/
-
-function isValidCronShape(cron: unknown): cron is string {
-  if (typeof cron !== 'string') return false
-  const trimmed = cron.trim()
-  if (!trimmed || trimmed.length > 100) return false
-  if (!CRON_SHAPE_RX.test(trimmed)) return false
-  try {
-    const expr = CronExpressionParser.parse(trimmed)
-    expr.next()
-    return true
-  } catch {
-    return false
-  }
-}
-
 const WEB_DIR = join(PROJECT_ROOT, 'web')
 const AGENTS_BASE_DIR = join(PROJECT_ROOT, 'agents')
-const SCHEDULED_TASKS_DIR = join(homedir(), '.claude', 'scheduled-tasks')
-
-// Hard cap on the prompt length for a scheduled task, to stop a malicious
-// or accidentally-huge POST body from exhausting the target agent's
-// token budget (and wedging the tmux send-keys paste detector). 50,000
-// characters is ~12k tokens of English, which is already far beyond any
-// legitimate schedule prompt -- real ones are usually <1k chars.
-const MAX_SCHEDULED_TASK_PROMPT_LEN = 50_000
-
-const MIME: Record<string, string> = {
-  '.html': 'text/html; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.js': 'application/javascript; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp',
-  '.svg': 'image/svg+xml',
-}
-
 function ensureDirs() {
   mkdirSync(AGENTS_BASE_DIR, { recursive: true })
-}
-
-// Atomic write: write to a sibling tmp file and rename over the target, so a
-// crash/kill mid-write can never leave a zero-byte or half-written state file.
-// Use this for anything the dashboard depends on surviving a restart
-// (dashboard-token, agent CLAUDE.md / SOUL.md, telegram env + access.json).
-function atomicWriteFileSync(path: string, data: string | Buffer, opts: { mode?: number } = {}): void {
-  const tmp = `${path}.${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}.tmp`
-  writeFileSync(tmp, data)
-  if (opts.mode !== undefined) {
-    try { chmodSync(tmp, opts.mode) } catch { /* best-effort */ }
-  }
-  renameSync(tmp, path)
-}
-
-// --- Dashboard auth ---
-// A single bearer token gates every /api/* route. It is loaded from
-// DASHBOARD_TOKEN if set, otherwise persisted at store/.dashboard-token
-// (mode 0600) and auto-generated on first run. Static assets (/, /index.html,
-// /style.css, /app.js, /avatars/*) and the auth-status endpoint stay public
-// so the UI can bootstrap itself.
-const DASHBOARD_TOKEN_PATH = join(PROJECT_ROOT, 'store', '.dashboard-token')
-
-function loadOrCreateDashboardToken(): string {
-  const fromEnv = process.env.DASHBOARD_TOKEN?.trim()
-  if (fromEnv) return fromEnv
-  try {
-    if (existsSync(DASHBOARD_TOKEN_PATH)) {
-      const cached = readFileSync(DASHBOARD_TOKEN_PATH, 'utf-8').trim()
-      if (cached) return cached
-    }
-  } catch { /* fall through and regenerate */ }
-  const fresh = randomBytes(32).toString('hex')
-  mkdirSync(join(PROJECT_ROOT, 'store'), { recursive: true })
-  atomicWriteFileSync(DASHBOARD_TOKEN_PATH, fresh, { mode: 0o600 })
-  return fresh
-}
-
-function checkBearerToken(header: string | undefined, expected: string): boolean {
-  if (!header) return false
-  const m = /^Bearer\s+(.+)$/.exec(header)
-  if (!m) return false
-  const provided = Buffer.from(m[1].trim())
-  const wanted = Buffer.from(expected)
-  if (provided.length !== wanted.length) return false
-  return timingSafeEqual(provided, wanted)
 }
 
 // --- Agent management ---
@@ -179,39 +109,6 @@ interface AgentDetail extends AgentSummary {
   mcpJson: string
   skills: { name: string; hasSkillMd: boolean }[]
   hasAvatar: boolean
-}
-
-
-function sanitizeAgentName(raw: string): string {
-  // NFD + combining-mark strip so Hungarian input like "étrendíró" decays
-  // to "etrendiro" instead of silently losing every accented character
-  // and producing "trendr".
-  return raw.trim().toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9-]/g, '')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 50)  // Limit length
-}
-
-// Same rules as sanitizeAgentName -- used for skill names to prevent path traversal
-function sanitizeSkillName(raw: string): string {
-  return sanitizeAgentName(raw)
-}
-
-// Joins segments and verifies the resolved path stays inside `base`. Throws on escape.
-function safeJoin(base: string, ...parts: string[]): string {
-  const resolvedBase = resolve(base)
-  const target = resolve(base, ...parts)
-  if (target !== resolvedBase && !target.startsWith(resolvedBase + sep)) {
-    throw new Error(`Path traversal rejected: ${parts.join('/')}`)
-  }
-  return target
-}
-
-function shellEscape(s: string): string {
-  return "'" + s.replace(/'/g, "'\\''") + "'"
 }
 
 function agentDir(name: string): string {
@@ -297,53 +194,6 @@ function writeAgentDisplayName(name: string, displayName: string): void {
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
-// --- Security profiles ---
-//
-// Each profile is a JSON file under templates/profiles/ with an allow/deny
-// list that Claude Code's native permissions engine understands. Choosing a
-// strict profile also drops --dangerously-skip-permissions, so Claude Code
-// enforces the allow/deny list rather than bypassing it. Channels plugin
-// permission prompts (the Telegram Allow/Deny inline buttons) still fire
-// because they live on a different notification channel.
-
-interface ProfileTemplate {
-  id: string
-  label: string
-  description: string
-  permissionMode: 'strict' | 'permissive'
-  filesystem: { allow: string[]; deny: string[] }
-}
-
-const PROFILES_DIR = join(PROJECT_ROOT, 'templates', 'profiles')
-const HARDCODED_DEFAULT_PROFILE: ProfileTemplate = {
-  id: 'default',
-  label: 'Alapértelmezett',
-  description: 'Permissive fallback.',
-  permissionMode: 'permissive',
-  filesystem: { allow: [], deny: [] },
-}
-
-function listProfileTemplates(): ProfileTemplate[] {
-  if (!existsSync(PROFILES_DIR)) return [HARDCODED_DEFAULT_PROFILE]
-  const out: ProfileTemplate[] = []
-  for (const f of readdirSync(PROFILES_DIR)) {
-    if (!f.endsWith('.json')) continue
-    try {
-      const p = JSON.parse(readFileSync(join(PROFILES_DIR, f), 'utf-8')) as ProfileTemplate
-      if (p.id) out.push(p)
-    } catch { /* skip malformed */ }
-  }
-  return out.length ? out : [HARDCODED_DEFAULT_PROFILE]
-}
-
-function loadProfileTemplate(id: string): ProfileTemplate {
-  const path = join(PROFILES_DIR, `${id}.json`)
-  if (existsSync(path)) {
-    try { return JSON.parse(readFileSync(path, 'utf-8')) as ProfileTemplate } catch { /* fall through */ }
-  }
-  if (id !== 'default') return loadProfileTemplate('default')
-  return HARDCODED_DEFAULT_PROFILE
-}
 
 function readAgentSecurityProfile(name: string): string {
   const configPath = join(agentDir(name), 'agent-config.json')
@@ -362,13 +212,6 @@ function writeAgentSecurityProfile(name: string, profileId: string): void {
   try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
   config.securityProfile = profileId
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
-}
-
-function resolveProfilePlaceholders(value: string, ctx: { HOME: string; AGENT_DIR: string }): string {
-  return value
-    .replace(/\$\{HOME\}/g, ctx.HOME)
-    .replace(/\$\{AGENT_DIR\}/g, ctx.AGENT_DIR)
-    .replace(/\$\{WORKDIR\}/g, ctx.AGENT_DIR)
 }
 
 // --- Team / hierarchy ---
@@ -1064,208 +907,7 @@ function parseTelegramToken(name: string): string | null {
   return match ? match[1].trim() : null
 }
 
-// --- Multipart parser (egyszerű, kép + szöveg mezők) ---
 
-interface ParsedForm {
-  fields: Record<string, string>
-  file?: { name: string; data: Buffer; mime: string }
-}
-
-function parseMultipart(buf: Buffer, contentType: string): ParsedForm {
-  const boundaryMatch = contentType.match(/boundary=(.+)/)
-  if (!boundaryMatch) return { fields: {} }
-  const boundary = boundaryMatch[1]
-  const parts = buf.toString('binary').split(`--${boundary}`)
-
-  const result: ParsedForm = { fields: {} }
-
-  for (const part of parts) {
-    if (part === '--\r\n' || part === '--' || !part.includes('Content-Disposition')) continue
-    const headerEnd = part.indexOf('\r\n\r\n')
-    if (headerEnd === -1) continue
-    const headers = part.slice(0, headerEnd)
-    const body = part.slice(headerEnd + 4).replace(/\r\n$/, '')
-
-    const nameMatch = headers.match(/name="([^"]+)"/)
-    if (!nameMatch) continue
-    const fieldName = nameMatch[1]
-
-    const filenameMatch = headers.match(/filename="([^"]+)"/)
-    if (filenameMatch) {
-      const mimeMatch = headers.match(/Content-Type:\s*(.+)\r?\n?/i)
-      result.file = {
-        name: filenameMatch[1],
-        data: Buffer.from(body, 'binary'),
-        mime: mimeMatch?.[1]?.trim() || 'application/octet-stream',
-      }
-    } else {
-      result.fields[fieldName] = body
-    }
-  }
-
-  return result
-}
-
-// --- Scheduled Tasks (file-based) ---
-
-interface ScheduledTask {
-  name: string
-  description: string
-  prompt: string
-  schedule: string
-  agent: string
-  enabled: boolean
-  createdAt: number
-  type?: 'task' | 'heartbeat'  // heartbeat = silent unless important
-}
-
-function parseSkillMdFrontmatter(content: string): { name?: string; description?: string; body: string } {
-  const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/)
-  if (!fmMatch) return { body: content }
-  const yaml = fmMatch[1]
-  const body = fmMatch[2].trim()
-  const nameMatch = yaml.match(/^name:\s*(.+)$/m)
-  const descMatch = yaml.match(/^description:\s*(.+)$/m)
-  return {
-    name: nameMatch?.[1]?.trim(),
-    description: descMatch?.[1]?.trim(),
-    body,
-  }
-}
-
-function readScheduledTask(taskName: string): ScheduledTask | null {
-  const dir = join(SCHEDULED_TASKS_DIR, taskName)
-  const skillPath = join(dir, 'SKILL.md')
-  const configPath = join(dir, 'task-config.json')
-  if (!existsSync(skillPath)) return null
-
-  const skillContent = readFileOr(skillPath, '')
-  const { name, description, body } = parseSkillMdFrontmatter(skillContent)
-
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string } = {}
-  try {
-    config = JSON.parse(readFileOr(configPath, '{}'))
-  } catch { /* use defaults */ }
-
-  return {
-    name: name || taskName,
-    description: description || '',
-    prompt: body,
-    schedule: config.schedule || '0 9 * * *',
-    agent: config.agent || MAIN_AGENT_ID,
-    enabled: config.enabled !== false,
-    createdAt: config.createdAt || 0,
-    type: (config.type as 'task' | 'heartbeat') || 'task',
-  }
-}
-
-function listScheduledTasks(): ScheduledTask[] {
-  if (!existsSync(SCHEDULED_TASKS_DIR)) return []
-  const dirs = readdirSync(SCHEDULED_TASKS_DIR).filter(f => {
-    try { return statSync(join(SCHEDULED_TASKS_DIR, f)).isDirectory() } catch { return false }
-  })
-  const tasks: ScheduledTask[] = []
-  for (const d of dirs) {
-    const task = readScheduledTask(d)
-    if (task) tasks.push(task)
-  }
-  return tasks.sort((a, b) => b.createdAt - a.createdAt)
-}
-
-function sanitizeScheduleName(raw: string): string {
-  return raw.trim().toLowerCase()
-    .replace(/\s+/g, '-')
-    .replace(/[^a-z0-9-]/g, '')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-}
-
-function writeScheduledTask(
-  taskName: string,
-  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string }
-): void {
-  const dir = join(SCHEDULED_TASKS_DIR, taskName)
-  mkdirSync(dir, { recursive: true })
-
-  const skillPath = join(dir, 'SKILL.md')
-  const configPath = join(dir, 'task-config.json')
-
-  // Read existing if updating
-  const existing = readScheduledTask(taskName)
-
-  // Write SKILL.md
-  const desc = data.description ?? existing?.description ?? ''
-  const prompt = data.prompt ?? existing?.prompt ?? ''
-  const skillContent = `---\nname: ${taskName}\ndescription: ${desc}\n---\n\n${prompt}\n`
-  atomicWriteFileSync(skillPath, skillContent)
-
-  // Write/update config
-  let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch { /* use empty */ }
-  if (data.schedule !== undefined) config.schedule = data.schedule
-  if (data.agent !== undefined) config.agent = data.agent
-  if (data.enabled !== undefined) config.enabled = data.enabled
-  if (data.type !== undefined) config.type = data.type
-  if (!config.createdAt) config.createdAt = Math.floor(Date.now() / 1000)
-  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
-}
-
-// --- HTTP szerver ---
-
-// Default upper bound on a request body the dashboard will buffer in RAM.
-// Picked well above any legitimate JSON payload (the biggest legit writes
-// are agent-bundle imports, which read files separately) but low enough
-// that a rogue 10GB POST can't OOM the process. Callers with a tighter
-// real cap (e.g. schedule endpoints cap at 256KB) pass `maxBytes`.
-const DEFAULT_READ_BODY_MAX_BYTES = 20 * 1024 * 1024
-
-class RequestBodyTooLargeError extends Error {
-  readonly limit: number
-  constructor(limit: number) {
-    super(`Request body exceeded ${limit} bytes`)
-    this.name = 'RequestBodyTooLargeError'
-    this.limit = limit
-  }
-}
-
-function readBody(
-  req: http.IncomingMessage,
-  opts: { maxBytes?: number } = {},
-): Promise<Buffer> {
-  const maxBytes = opts.maxBytes ?? DEFAULT_READ_BODY_MAX_BYTES
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = []
-    let total = 0
-    req.on('data', (c: Buffer) => {
-      total += c.length
-      if (total > maxBytes) {
-        req.destroy()
-        reject(new RequestBodyTooLargeError(maxBytes))
-        return
-      }
-      chunks.push(c)
-    })
-    req.on('end', () => resolve(Buffer.concat(chunks)))
-    req.on('error', reject)
-  })
-}
-
-function json(res: http.ServerResponse, data: unknown, status = 200) {
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' })
-  res.end(JSON.stringify(data))
-}
-
-function serveFile(res: http.ServerResponse, filePath: string) {
-  try {
-    const data = readFileSync(filePath)
-    const ext = extname(filePath)
-    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' })
-    res.end(data)
-  } catch {
-    res.writeHead(404)
-    res.end('Not found')
-  }
-}
 
 // --- Agent Message Router ---
 // Checks for pending messages every 5 seconds and injects them into target agent tmux sessions
@@ -1752,18 +1394,6 @@ function countUserTurns(fromMs: number, toMs: number = Number.POSITIVE_INFINITY)
     }
   } catch { /* ignore */ }
   return total
-}
-
-function cronMatchesNow(cron: string, catchUpMs: number = 60000): boolean {
-  try {
-    const expr = CronExpressionParser.parse(cron)
-    const prev = expr.prev()
-    const prevTime = prev.getTime()
-    const now = Date.now()
-    return (now - prevTime) < catchUpMs
-  } catch {
-    return false
-  }
 }
 
 // Deliver a prompt to a Claude Code tmux session without tripping its paste
