@@ -12,6 +12,32 @@ import { computeNextRun, isValidCronShape, cronMatchesNow } from './web/cron.js'
 import { readBody, RequestBodyTooLargeError, json, serveFile } from './web/http-helpers.js'
 import { sanitizeAgentName, sanitizeSkillName, sanitizeScheduleName, safeJoin, shellEscape } from './web/sanitize.js'
 import {
+  AGENTS_BASE_DIR,
+  DEFAULT_MODEL,
+  MODEL_ALIASES,
+  agentDir,
+  readFileOr,
+  extractDescriptionFromClaudeMd,
+  findAvatarForAgent,
+  resolveModelId,
+  readAgentModel,
+  writeAgentModel,
+  readAgentDisplayName,
+  writeAgentDisplayName,
+  readAgentSecurityProfile,
+  writeAgentSecurityProfile,
+  listAgentNames,
+  isKnownAgent,
+} from './web/agent-config.js'
+import {
+  DEFAULT_TEAM,
+  readAgentTeam,
+  writeAgentTeam,
+  sanitizeTeamConfig,
+  cleanupTeamReferences,
+  type TeamConfig,
+} from './web/agent-team.js'
+import {
   SCHEDULED_TASKS_DIR,
   MAX_SCHEDULED_TASK_PROMPT_LEN,
   parseSkillMdFrontmatter,
@@ -81,7 +107,6 @@ function scrubPaths(msg: string): string {
 }
 
 const WEB_DIR = join(PROJECT_ROOT, 'web')
-const AGENTS_BASE_DIR = join(PROJECT_ROOT, 'agents')
 function ensureDirs() {
   mkdirSync(AGENTS_BASE_DIR, { recursive: true })
 }
@@ -111,255 +136,10 @@ interface AgentDetail extends AgentSummary {
   hasAvatar: boolean
 }
 
-function agentDir(name: string): string {
-  // safeJoin rejects path-traversal components. The first line of defense is
-  // still sanitizeAgentName() at the create-endpoint, but going through
-  // safeJoin turns every non-whitelisted `name` (e.g. a buggy internal caller
-  // that forgot to sanitize) into an explicit throw instead of silently
-  // writing outside AGENTS_BASE_DIR.
-  return safeJoin(AGENTS_BASE_DIR, name)
-}
-
-function readFileOr(path: string, fallback: string): string {
-  try { return readFileSync(path, 'utf-8') } catch { return fallback }
-}
-
-function extractDescriptionFromClaudeMd(content: string): string {
-  // Try to grab first meaningful paragraph after any heading
-  const lines = content.split('\n').filter((l) => l.trim() && !l.startsWith('#'))
-  return lines[0]?.trim().slice(0, 200) || ''
-}
-
-function findAvatarForAgent(name: string): string | null {
-  const dir = agentDir(name)
-  for (const ext of ['.png', '.jpg', '.jpeg', '.webp']) {
-    const p = join(dir, `avatar${ext}`)
-    if (existsSync(p)) return p
-  }
-  return null
-}
-
-const DEFAULT_MODEL = 'claude-sonnet-4-6'
-
 // Canonical memory categories. Kept in sync with the DB CHECK constraint in
 // src/db.ts so the API rejects bad values before they even reach SQLite.
 const MEMORY_CATEGORIES = new Set(['hot', 'warm', 'cold', 'shared'])
 
-// Map short model names to full Claude model IDs (backwards compat with old configs)
-const MODEL_ALIASES: Record<string, string> = {
-  'opus': 'claude-opus-4-6',
-  'sonnet': 'claude-sonnet-4-6',
-  'haiku': 'claude-haiku-4-5-20251001',
-  'inherit': DEFAULT_MODEL,
-}
-
-function resolveModelId(raw: string): string {
-  return MODEL_ALIASES[raw] || raw
-}
-
-function readAgentModel(name: string): string {
-  const configPath = join(agentDir(name), 'agent-config.json')
-  try {
-    const config = JSON.parse(readFileOr(configPath, '{}'))
-    return resolveModelId(config.model || DEFAULT_MODEL)
-  } catch {
-    return DEFAULT_MODEL
-  }
-}
-
-function writeAgentModel(name: string, model: string): void {
-  const configPath = join(agentDir(name), 'agent-config.json')
-  let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
-  config.model = model
-  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
-}
-
-function readAgentDisplayName(name: string): string {
-  const configPath = join(agentDir(name), 'agent-config.json')
-  try {
-    const config = JSON.parse(readFileOr(configPath, '{}'))
-    const raw = typeof config.displayName === 'string' ? config.displayName.trim() : ''
-    if (raw) return raw
-  } catch { /* fall through */ }
-  // Fall back to a title-cased version of the sanitized name.
-  return name.charAt(0).toUpperCase() + name.slice(1)
-}
-
-function writeAgentDisplayName(name: string, displayName: string): void {
-  const configPath = join(agentDir(name), 'agent-config.json')
-  let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
-  config.displayName = displayName
-  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
-}
-
-
-function readAgentSecurityProfile(name: string): string {
-  const configPath = join(agentDir(name), 'agent-config.json')
-  try {
-    const config = JSON.parse(readFileOr(configPath, '{}'))
-    if (typeof config.securityProfile === 'string' && config.securityProfile.trim()) {
-      return config.securityProfile.trim()
-    }
-  } catch { /* fall through */ }
-  return 'default'
-}
-
-function writeAgentSecurityProfile(name: string, profileId: string): void {
-  const configPath = join(agentDir(name), 'agent-config.json')
-  let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
-  config.securityProfile = profileId
-  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
-}
-
-// --- Team / hierarchy ---
-//
-// Pure convenience feature: each agent can declare its role (leader | member),
-// who it reports to, who it delegates to, and whether it's allowed to split a
-// task by itself. No security implications, just routing + visualization for
-// multi-tier agent setups.
-
-interface TeamConfig {
-  role: 'leader' | 'member'
-  reportsTo: string | null
-  delegatesTo: string[]
-  autoDelegation: boolean
-  // Optional override so an operator can grant "trusted peer" status to an
-  // agent outside the usual reportsTo / delegatesTo derivation -- e.g. a
-  // cross-team collaborator. Unknown names and self-references are stripped
-  // at write time (see writeAgentTeam + sanitizeTeamConfig).
-  trustFrom?: string[]
-}
-
-const DEFAULT_TEAM: TeamConfig = {
-  role: 'member',
-  reportsTo: null,
-  delegatesTo: [],
-  autoDelegation: false,
-  trustFrom: [],
-}
-
-function readAgentTeam(name: string): TeamConfig {
-  const configPath = join(agentDir(name), 'agent-config.json')
-  try {
-    const config = JSON.parse(readFileOr(configPath, '{}'))
-    const raw = config.team
-    if (raw && typeof raw === 'object') {
-      const role = raw.role === 'leader' ? 'leader' : 'member'
-      const reportsTo = typeof raw.reportsTo === 'string' && raw.reportsTo.trim() ? raw.reportsTo.trim() : null
-      const delegatesTo = Array.isArray(raw.delegatesTo) ? raw.delegatesTo.filter((x: unknown) => typeof x === 'string') : []
-      const autoDelegation = !!raw.autoDelegation
-      const trustFrom = Array.isArray(raw.trustFrom) ? raw.trustFrom.filter((x: unknown) => typeof x === 'string') : []
-      return { role, reportsTo, delegatesTo, autoDelegation, trustFrom }
-    }
-  } catch { /* fall through */ }
-  return { ...DEFAULT_TEAM, trustFrom: [] }
-}
-
-function writeAgentTeam(name: string, team: TeamConfig): void {
-  const configPath = join(agentDir(name), 'agent-config.json')
-  let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
-  config.team = team
-  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
-}
-
-// Scrub self-references and unknown agent names from a TeamConfig's name
-// fields. Returns the cleaned config plus a warnings object the caller
-// (the PUT handler) can surface to the UI so an operator isn't silently
-// missing the name they just typed.
-interface TeamSanitizeWarnings {
-  droppedSelf: string[]   // field names that referenced the agent itself
-  droppedUnknown: string[]  // agent ids not present on disk + not MAIN
-}
-
-function sanitizeTeamConfig(
-  agentName: string,
-  team: TeamConfig,
-): { team: TeamConfig; warnings: TeamSanitizeWarnings } {
-  const known = new Set<string>(listAgentNames())
-  known.add(MAIN_AGENT_ID)
-  const warnings: TeamSanitizeWarnings = { droppedSelf: [], droppedUnknown: [] }
-
-  const cleanList = (ids: string[], fieldName: string): string[] => {
-    const out: string[] = []
-    for (const id of ids) {
-      if (id === agentName) {
-        if (!warnings.droppedSelf.includes(fieldName)) warnings.droppedSelf.push(fieldName)
-        continue
-      }
-      if (!known.has(id)) {
-        warnings.droppedUnknown.push(id)
-        continue
-      }
-      if (!out.includes(id)) out.push(id)  // de-dupe too
-    }
-    return out
-  }
-
-  let reportsTo = team.reportsTo
-  if (reportsTo === agentName) {
-    warnings.droppedSelf.push('reportsTo')
-    reportsTo = null
-  } else if (reportsTo && !known.has(reportsTo)) {
-    warnings.droppedUnknown.push(reportsTo)
-    reportsTo = null
-  }
-
-  return {
-    team: {
-      role: team.role,
-      reportsTo,
-      delegatesTo: cleanList(team.delegatesTo, 'delegatesTo'),
-      autoDelegation: team.autoDelegation,
-      trustFrom: cleanList(team.trustFrom ?? [], 'trustFrom'),
-    },
-    warnings,
-  }
-}
-
-// Removing an agent leaves dangling references in other agents' team configs.
-// Call this from the DELETE handler: members who reported to the removed leader
-// fall back to the main agent, and anyone who delegated to them drops the id.
-function cleanupTeamReferences(removedName: string): void {
-  for (const other of listAgentNames()) {
-    const team = readAgentTeam(other)
-    let dirty = false
-    if (team.reportsTo === removedName) {
-      team.reportsTo = removedName === MAIN_AGENT_ID ? null : MAIN_AGENT_ID
-      dirty = true
-    }
-    const filteredDelegates = team.delegatesTo.filter(n => n !== removedName)
-    if (filteredDelegates.length !== team.delegatesTo.length) {
-      team.delegatesTo = filteredDelegates
-      dirty = true
-    }
-    const filteredTrust = (team.trustFrom ?? []).filter(n => n !== removedName)
-    if (filteredTrust.length !== (team.trustFrom ?? []).length) {
-      team.trustFrom = filteredTrust
-      dirty = true
-    }
-    if (dirty) writeAgentTeam(other, team)
-  }
-}
-
-// Does this identifier refer to a registered agent? MAIN_AGENT_ID always
-// counts (it lives outside agents/ but is a first-class peer). Sub-agents
-// need a directory on disk. One fs stat per call -- the router calls this
-// twice per pending message on its 5s tick, roughly 10-20 stats per tick
-// in practice, no memoisation needed.
-function isKnownAgent(name: string): boolean {
-  if (!name) return false
-  if (name === MAIN_AGENT_ID) return true
-  try {
-    const dir = agentDir(name)
-    return existsSync(dir) && statSync(dir).isDirectory()
-  } catch {
-    return false
-  }
-}
 
 // Merges the profile's allow/deny entries into agents/<name>/.claude/settings.json,
 // preserving any other keys (hooks, custom flags) the user added by hand.
@@ -502,13 +282,6 @@ function getAgentDetail(name: string): AgentDetail {
     skills,
     hasAvatar: findAvatarForAgent(name) !== null,
   }
-}
-
-function listAgentNames(): string[] {
-  if (!existsSync(AGENTS_BASE_DIR)) return []
-  return readdirSync(AGENTS_BASE_DIR).filter((f) => {
-    try { return statSync(join(AGENTS_BASE_DIR, f)).isDirectory() } catch { return false }
-  })
 }
 
 function listAgentSummaries(): AgentSummary[] {
