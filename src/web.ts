@@ -12,6 +12,54 @@ import { computeNextRun, isValidCronShape, cronMatchesNow } from './web/cron.js'
 import { readBody, RequestBodyTooLargeError, json, serveFile } from './web/http-helpers.js'
 import { sanitizeAgentName, sanitizeSkillName, sanitizeScheduleName, safeJoin, shellEscape } from './web/sanitize.js'
 import {
+  AGENTS_BASE_DIR,
+  DEFAULT_MODEL,
+  MODEL_ALIASES,
+  agentDir,
+  readFileOr,
+  extractDescriptionFromClaudeMd,
+  findAvatarForAgent,
+  resolveModelId,
+  readAgentModel,
+  writeAgentModel,
+  readAgentDisplayName,
+  writeAgentDisplayName,
+  readAgentSecurityProfile,
+  writeAgentSecurityProfile,
+  listAgentNames,
+  isKnownAgent,
+} from './web/agent-config.js'
+import {
+  DEFAULT_TEAM,
+  readAgentTeam,
+  writeAgentTeam,
+  sanitizeTeamConfig,
+  cleanupTeamReferences,
+  type TeamConfig,
+} from './web/agent-team.js'
+import {
+  readAgentTelegramConfig,
+  readMarveenTelegramConfig,
+  marveenBotUsernameCache,
+  refreshMarveenBotUsername,
+  sendTelegramMessage,
+  sendTelegramPhoto,
+  sendWelcomeMessage,
+  sendMarveenAvatarChange,
+  sendAvatarChangeMessage,
+  validateTelegramToken,
+  parseTelegramToken,
+  sendMarveenAlert,
+} from './web/telegram.js'
+import {
+  ensureAgentHooks,
+  writeAgentSettingsFromProfile,
+  scaffoldAgentDir,
+  generateClaudeMd,
+  generateSoulMd,
+  generateSkillMd,
+} from './web/agent-scaffold.js'
+import {
   SCHEDULED_TASKS_DIR,
   MAX_SCHEDULED_TASK_PROMPT_LEN,
   parseSkillMdFrontmatter,
@@ -81,7 +129,6 @@ function scrubPaths(msg: string): string {
 }
 
 const WEB_DIR = join(PROJECT_ROOT, 'web')
-const AGENTS_BASE_DIR = join(PROJECT_ROOT, 'agents')
 function ensureDirs() {
   mkdirSync(AGENTS_BASE_DIR, { recursive: true })
 }
@@ -111,342 +158,13 @@ interface AgentDetail extends AgentSummary {
   hasAvatar: boolean
 }
 
-function agentDir(name: string): string {
-  // safeJoin rejects path-traversal components. The first line of defense is
-  // still sanitizeAgentName() at the create-endpoint, but going through
-  // safeJoin turns every non-whitelisted `name` (e.g. a buggy internal caller
-  // that forgot to sanitize) into an explicit throw instead of silently
-  // writing outside AGENTS_BASE_DIR.
-  return safeJoin(AGENTS_BASE_DIR, name)
-}
-
-function readFileOr(path: string, fallback: string): string {
-  try { return readFileSync(path, 'utf-8') } catch { return fallback }
-}
-
-function extractDescriptionFromClaudeMd(content: string): string {
-  // Try to grab first meaningful paragraph after any heading
-  const lines = content.split('\n').filter((l) => l.trim() && !l.startsWith('#'))
-  return lines[0]?.trim().slice(0, 200) || ''
-}
-
-function findAvatarForAgent(name: string): string | null {
-  const dir = agentDir(name)
-  for (const ext of ['.png', '.jpg', '.jpeg', '.webp']) {
-    const p = join(dir, `avatar${ext}`)
-    if (existsSync(p)) return p
-  }
-  return null
-}
-
-const DEFAULT_MODEL = 'claude-sonnet-4-6'
-
 // Canonical memory categories. Kept in sync with the DB CHECK constraint in
 // src/db.ts so the API rejects bad values before they even reach SQLite.
 const MEMORY_CATEGORIES = new Set(['hot', 'warm', 'cold', 'shared'])
 
-// Map short model names to full Claude model IDs (backwards compat with old configs)
-const MODEL_ALIASES: Record<string, string> = {
-  'opus': 'claude-opus-4-6',
-  'sonnet': 'claude-sonnet-4-6',
-  'haiku': 'claude-haiku-4-5-20251001',
-  'inherit': DEFAULT_MODEL,
-}
-
-function resolveModelId(raw: string): string {
-  return MODEL_ALIASES[raw] || raw
-}
-
-function readAgentModel(name: string): string {
-  const configPath = join(agentDir(name), 'agent-config.json')
-  try {
-    const config = JSON.parse(readFileOr(configPath, '{}'))
-    return resolveModelId(config.model || DEFAULT_MODEL)
-  } catch {
-    return DEFAULT_MODEL
-  }
-}
-
-function writeAgentModel(name: string, model: string): void {
-  const configPath = join(agentDir(name), 'agent-config.json')
-  let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
-  config.model = model
-  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
-}
-
-function readAgentDisplayName(name: string): string {
-  const configPath = join(agentDir(name), 'agent-config.json')
-  try {
-    const config = JSON.parse(readFileOr(configPath, '{}'))
-    const raw = typeof config.displayName === 'string' ? config.displayName.trim() : ''
-    if (raw) return raw
-  } catch { /* fall through */ }
-  // Fall back to a title-cased version of the sanitized name.
-  return name.charAt(0).toUpperCase() + name.slice(1)
-}
-
-function writeAgentDisplayName(name: string, displayName: string): void {
-  const configPath = join(agentDir(name), 'agent-config.json')
-  let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
-  config.displayName = displayName
-  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
-}
-
-
-function readAgentSecurityProfile(name: string): string {
-  const configPath = join(agentDir(name), 'agent-config.json')
-  try {
-    const config = JSON.parse(readFileOr(configPath, '{}'))
-    if (typeof config.securityProfile === 'string' && config.securityProfile.trim()) {
-      return config.securityProfile.trim()
-    }
-  } catch { /* fall through */ }
-  return 'default'
-}
-
-function writeAgentSecurityProfile(name: string, profileId: string): void {
-  const configPath = join(agentDir(name), 'agent-config.json')
-  let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
-  config.securityProfile = profileId
-  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
-}
-
-// --- Team / hierarchy ---
-//
-// Pure convenience feature: each agent can declare its role (leader | member),
-// who it reports to, who it delegates to, and whether it's allowed to split a
-// task by itself. No security implications, just routing + visualization for
-// multi-tier agent setups.
-
-interface TeamConfig {
-  role: 'leader' | 'member'
-  reportsTo: string | null
-  delegatesTo: string[]
-  autoDelegation: boolean
-  // Optional override so an operator can grant "trusted peer" status to an
-  // agent outside the usual reportsTo / delegatesTo derivation -- e.g. a
-  // cross-team collaborator. Unknown names and self-references are stripped
-  // at write time (see writeAgentTeam + sanitizeTeamConfig).
-  trustFrom?: string[]
-}
-
-const DEFAULT_TEAM: TeamConfig = {
-  role: 'member',
-  reportsTo: null,
-  delegatesTo: [],
-  autoDelegation: false,
-  trustFrom: [],
-}
-
-function readAgentTeam(name: string): TeamConfig {
-  const configPath = join(agentDir(name), 'agent-config.json')
-  try {
-    const config = JSON.parse(readFileOr(configPath, '{}'))
-    const raw = config.team
-    if (raw && typeof raw === 'object') {
-      const role = raw.role === 'leader' ? 'leader' : 'member'
-      const reportsTo = typeof raw.reportsTo === 'string' && raw.reportsTo.trim() ? raw.reportsTo.trim() : null
-      const delegatesTo = Array.isArray(raw.delegatesTo) ? raw.delegatesTo.filter((x: unknown) => typeof x === 'string') : []
-      const autoDelegation = !!raw.autoDelegation
-      const trustFrom = Array.isArray(raw.trustFrom) ? raw.trustFrom.filter((x: unknown) => typeof x === 'string') : []
-      return { role, reportsTo, delegatesTo, autoDelegation, trustFrom }
-    }
-  } catch { /* fall through */ }
-  return { ...DEFAULT_TEAM, trustFrom: [] }
-}
-
-function writeAgentTeam(name: string, team: TeamConfig): void {
-  const configPath = join(agentDir(name), 'agent-config.json')
-  let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
-  config.team = team
-  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
-}
-
-// Scrub self-references and unknown agent names from a TeamConfig's name
-// fields. Returns the cleaned config plus a warnings object the caller
-// (the PUT handler) can surface to the UI so an operator isn't silently
-// missing the name they just typed.
-interface TeamSanitizeWarnings {
-  droppedSelf: string[]   // field names that referenced the agent itself
-  droppedUnknown: string[]  // agent ids not present on disk + not MAIN
-}
-
-function sanitizeTeamConfig(
-  agentName: string,
-  team: TeamConfig,
-): { team: TeamConfig; warnings: TeamSanitizeWarnings } {
-  const known = new Set<string>(listAgentNames())
-  known.add(MAIN_AGENT_ID)
-  const warnings: TeamSanitizeWarnings = { droppedSelf: [], droppedUnknown: [] }
-
-  const cleanList = (ids: string[], fieldName: string): string[] => {
-    const out: string[] = []
-    for (const id of ids) {
-      if (id === agentName) {
-        if (!warnings.droppedSelf.includes(fieldName)) warnings.droppedSelf.push(fieldName)
-        continue
-      }
-      if (!known.has(id)) {
-        warnings.droppedUnknown.push(id)
-        continue
-      }
-      if (!out.includes(id)) out.push(id)  // de-dupe too
-    }
-    return out
-  }
-
-  let reportsTo = team.reportsTo
-  if (reportsTo === agentName) {
-    warnings.droppedSelf.push('reportsTo')
-    reportsTo = null
-  } else if (reportsTo && !known.has(reportsTo)) {
-    warnings.droppedUnknown.push(reportsTo)
-    reportsTo = null
-  }
-
-  return {
-    team: {
-      role: team.role,
-      reportsTo,
-      delegatesTo: cleanList(team.delegatesTo, 'delegatesTo'),
-      autoDelegation: team.autoDelegation,
-      trustFrom: cleanList(team.trustFrom ?? [], 'trustFrom'),
-    },
-    warnings,
-  }
-}
-
-// Removing an agent leaves dangling references in other agents' team configs.
-// Call this from the DELETE handler: members who reported to the removed leader
-// fall back to the main agent, and anyone who delegated to them drops the id.
-function cleanupTeamReferences(removedName: string): void {
-  for (const other of listAgentNames()) {
-    const team = readAgentTeam(other)
-    let dirty = false
-    if (team.reportsTo === removedName) {
-      team.reportsTo = removedName === MAIN_AGENT_ID ? null : MAIN_AGENT_ID
-      dirty = true
-    }
-    const filteredDelegates = team.delegatesTo.filter(n => n !== removedName)
-    if (filteredDelegates.length !== team.delegatesTo.length) {
-      team.delegatesTo = filteredDelegates
-      dirty = true
-    }
-    const filteredTrust = (team.trustFrom ?? []).filter(n => n !== removedName)
-    if (filteredTrust.length !== (team.trustFrom ?? []).length) {
-      team.trustFrom = filteredTrust
-      dirty = true
-    }
-    if (dirty) writeAgentTeam(other, team)
-  }
-}
-
-// Does this identifier refer to a registered agent? MAIN_AGENT_ID always
-// counts (it lives outside agents/ but is a first-class peer). Sub-agents
-// need a directory on disk. One fs stat per call -- the router calls this
-// twice per pending message on its 5s tick, roughly 10-20 stats per tick
-// in practice, no memoisation needed.
-function isKnownAgent(name: string): boolean {
-  if (!name) return false
-  if (name === MAIN_AGENT_ID) return true
-  try {
-    const dir = agentDir(name)
-    return existsSync(dir) && statSync(dir).isDirectory()
-  } catch {
-    return false
-  }
-}
 
 // Merges the profile's allow/deny entries into agents/<name>/.claude/settings.json,
 // preserving any other keys (hooks, custom flags) the user added by hand.
-// Idempotent migration: every agent's settings.json should carry the
-// PreCompact hook (memory save + skill reflection). Pre-refactor agents
-// were scaffolded before scaffoldAgentDir seeded the template, so their
-// file is permissions-only. Merge the template's hooks block in place.
-function ensureAgentHooks(name: string): boolean {
-  const settingsPath = join(agentDir(name), '.claude', 'settings.json')
-  const tplPath = join(PROJECT_ROOT, 'templates', 'settings.json.template')
-  if (!existsSync(tplPath)) return false
-  let tpl: Record<string, unknown>
-  try {
-    tpl = JSON.parse(readFileSync(tplPath, 'utf-8'))
-  } catch {
-    return false
-  }
-  if (!tpl.hooks) return false
-  let existing: Record<string, unknown> = {}
-  if (existsSync(settingsPath)) {
-    try { existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { /* overwrite */ }
-  }
-  if (existing.hooks) return false  // user already has hooks, leave alone
-  existing.hooks = tpl.hooks
-  mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
-  atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
-  return true
-}
-
-function writeAgentSettingsFromProfile(name: string, profile: ProfileTemplate): void {
-  const agentRoot = agentDir(name)
-  const settingsDir = join(agentRoot, '.claude')
-  const settingsPath = join(settingsDir, 'settings.json')
-  mkdirSync(settingsDir, { recursive: true })
-  let existing: Record<string, unknown> = {}
-  if (existsSync(settingsPath)) {
-    try { existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { /* overwrite */ }
-  }
-  const ctx = { HOME: homedir(), AGENT_DIR: agentRoot }
-  existing.permissions = {
-    allow: profile.filesystem.allow.map(p => resolveProfilePlaceholders(p, ctx)),
-    deny: profile.filesystem.deny.map(p => resolveProfilePlaceholders(p, ctx)),
-  }
-  atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
-}
-
-function readAgentTelegramConfig(name: string): { hasTelegram: boolean; botUsername?: string } {
-  const envPath = join(agentDir(name), '.claude', 'channels', 'telegram', '.env')
-  if (!existsSync(envPath)) return { hasTelegram: false }
-  const content = readFileOr(envPath, '')
-  const tokenMatch = content.match(/TELEGRAM_BOT_TOKEN=(.+)/)
-  if (!tokenMatch || !tokenMatch[1].trim()) return { hasTelegram: false }
-  // We don't call the API here to keep listing fast; username comes from test endpoint
-  return { hasTelegram: true }
-}
-
-// Marveen's Telegram channel lives under the global ~/.claude path, not
-// under agents/marveen, because the main agent reuses the system Claude
-// Code channel install. Read it the same way the plugin does.
-function readMarveenTelegramConfig(): { hasTelegram: boolean; botUsername?: string } {
-  const envPath = join(homedir(), '.claude', 'channels', 'telegram', '.env')
-  if (!existsSync(envPath)) return { hasTelegram: false }
-  const content = readFileOr(envPath, '')
-  const tokenMatch = content.match(/TELEGRAM_BOT_TOKEN=(.+)/)
-  const token = tokenMatch?.[1]?.trim()
-  if (!token) return { hasTelegram: false }
-  return { hasTelegram: true, botUsername: marveenBotUsernameCache.value }
-}
-
-// Bot username changes require a restart anyway, so a long cache is fine.
-const marveenBotUsernameCache: { value?: string; fetchedAt: number } = { fetchedAt: 0 }
-async function refreshMarveenBotUsername(): Promise<void> {
-  const envPath = join(homedir(), '.claude', 'channels', 'telegram', '.env')
-  if (!existsSync(envPath)) return
-  const tokenMatch = readFileOr(envPath, '').match(/TELEGRAM_BOT_TOKEN=(.+)/)
-  const token = tokenMatch?.[1]?.trim()
-  if (!token) return
-  try {
-    const r = await fetch(`https://api.telegram.org/bot${token}/getMe`)
-    const data = await r.json() as { ok?: boolean; result?: { username?: string } }
-    if (data.ok && data.result?.username) {
-      marveenBotUsernameCache.value = `@${data.result.username}`
-      marveenBotUsernameCache.fetchedAt = Date.now()
-    }
-  } catch { /* offline; cache stays stale */ }
-}
-
 function getAgentSummary(name: string): AgentSummary {
   const dir = agentDir(name)
   const claudeMd = readFileOr(join(dir, 'CLAUDE.md'), '')
@@ -502,13 +220,6 @@ function getAgentDetail(name: string): AgentDetail {
     skills,
     hasAvatar: findAvatarForAgent(name) !== null,
   }
-}
-
-function listAgentNames(): string[] {
-  if (!existsSync(AGENTS_BASE_DIR)) return []
-  return readdirSync(AGENTS_BASE_DIR).filter((f) => {
-    try { return statSync(join(AGENTS_BASE_DIR, f)).isDirectory() } catch { return false }
-  })
 }
 
 function listAgentSummaries(): AgentSummary[] {
@@ -625,289 +336,6 @@ function getAgentProcessInfo(name: string): { running: boolean; session?: string
     session: agentSessionName(name),
   }
 }
-
-function scaffoldAgentDir(name: string) {
-  const dir = agentDir(name)
-  mkdirSync(join(dir, '.claude', 'skills'), { recursive: true })
-  mkdirSync(join(dir, '.claude', 'hooks'), { recursive: true })
-  mkdirSync(join(dir, '.claude', 'channels', 'telegram'), { recursive: true })
-  mkdirSync(join(dir, 'memory'), { recursive: true })
-
-  // Initialize empty files if they don't exist
-  const memoryMd = join(dir, 'memory', 'MEMORY.md')
-  if (!existsSync(memoryMd)) writeFileSync(memoryMd, '')
-  const mcpJson = join(dir, '.mcp.json')
-  if (!existsSync(mcpJson)) {
-    // Copy shared MCP config so agents get access to common tools (e.g. aiam-blog)
-    const sharedMcp = join(PROJECT_ROOT, '.mcp.json')
-    if (existsSync(sharedMcp)) {
-      copyFileSync(sharedMcp, mcpJson)
-    } else {
-      // Valid empty shape -- `claude /doctor` rejects plain "{}"
-      atomicWriteFileSync(mcpJson, JSON.stringify({ mcpServers: {} }, null, 2))
-    }
-  }
-  // Seed settings.json from template so the agent gets the PreCompact
-  // hook (memory save + skill reflection) out of the box. Only if the
-  // file doesn't exist yet -- user edits and later profile writes stay.
-  const settingsJson = join(dir, '.claude', 'settings.json')
-  if (!existsSync(settingsJson)) {
-    const tpl = join(PROJECT_ROOT, 'templates', 'settings.json.template')
-    if (existsSync(tpl)) copyFileSync(tpl, settingsJson)
-  }
-}
-
-async function generateClaudeMd(name: string, description: string, model: string): Promise<string> {
-  const prompt = `You are creating the CLAUDE.md (project instructions) file for an AI agent.
-Agent name: ${name}
-Description of what the agent should do: ${description}
-Model: ${model}
-
-Generate a comprehensive CLAUDE.md that includes:
-- Clear role and responsibilities based on the description above
-- Behavioral guidelines
-- Communication style
-- Language rules (Hungarian with ${OWNER_NAME}, English for code/technical)
-- Tool usage guidelines relevant to the agent's role
-- Any domain-specific instructions
-
-The owner's name is ${OWNER_NAME}. Use this exact name everywhere the CLAUDE.md
-refers to the owner/user. Do not substitute or invent any other name.
-
-IMPORTANT FORMATTING RULES:
-- Write ALL Hungarian text with proper accents (á, é, í, ó, ö, ő, ú, ü, ű). NEVER write Hungarian without accents.
-- The agent's first line description should reflect what the user typed as description, in Hungarian with accents.
-- Never use em dash (—), only simple hyphen (-).
-
-IMPORTANT: The CLAUDE.md MUST include the following sections at the end (copy them exactly, replacing AGENT_NAME with ${name}):
-
-## Memoria rendszer
-
-A memoria 3 retegbol all (hot/warm/cold) + napi naplo.
-
-### Tier-ek:
-- **hot**: Aktiv feladatok, pending dontesek, ami MOST tortenik
-- **warm**: Stabil konfig, preferenciák, projekt kontextus (ritkán változik)
-- **cold**: Hosszútávú tanulságok, történeti döntések, archívum
-- **shared**: Más ágenseknek is releváns információk
-
-### NINCS MENTAL NOTE! Ha meg kell jegyezni -> AZONNAL mentsd:
-
-Minden /api/* végpont Bearer tokenes: a token a store/.dashboard-token fájlban.
-
-Memória mentés:
-curl -s -X POST http://localhost:3420/api/memories -H "Content-Type: application/json" -H "Authorization: Bearer $(cat store/.dashboard-token)" -d '{"agent_id":"AGENT_NAME","content":"MIT","category":"CATEGORY","keywords":"kulcsszo1, kulcsszo2"}'
-
-Napi napló (append-only):
-curl -s -X POST http://localhost:3420/api/daily-log -H "Content-Type: application/json" -H "Authorization: Bearer $(cat store/.dashboard-token)" -d '{"agent_id":"AGENT_NAME","content":"## HH:MM -- Tema\nMi tortent, mi lett az eredmeny"}'
-
-Keresés (mielőtt válaszolsz, nézd meg van-e releváns emlék):
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" "http://localhost:3420/api/memories?agent=AGENT_NAME&q=KULCSSZO&category=warm"
-
-## Ütemezett feladatok
-
-Az ütemezett feladatok a ~/.claude/scheduled-tasks/ mappában élnek, fájl-alapúak (SKILL.md + task-config.json). A schedule runner 60 másodpercenként ellenőrzi és a te tmux session-ödbe küldi a promptot.
-
-Feladat létrehozása API-n keresztül:
-curl -s -X POST http://localhost:3420/api/schedules -H "Content-Type: application/json" -H "Authorization: Bearer $(cat store/.dashboard-token)" -d '{"name": "feladat-nev", "description": "Rövid leírás", "prompt": "A részletes prompt", "schedule": "0 8 * * *", "agent": "AGENT_NAME", "type": "heartbeat"}'
-
-Típusok: task (mindig szól az eredménnyel) vagy heartbeat (csak fontosnál szól).
-Cron formátum: perc óra nap hónap hétnapja (pl. 0 8 * * * = minden nap 8:00).
-NE írd közvetlenül az SQLite scheduled_tasks táblát - az egy régi API.
-
-Output ONLY the markdown content, no code fences.`
-
-  const { text } = await runAgent(prompt)
-  if (!text) throw new Error('Failed to generate CLAUDE.md')
-  let cleaned = text.trim()
-  if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```\w*\n?/, '').replace(/\n?```$/, '')
-  }
-  return cleaned
-}
-
-async function generateSoulMd(name: string, description: string): Promise<string> {
-  const prompt = `You are creating the SOUL.md (personality definition) for an AI agent.
-Agent name: ${name}
-Description: ${description}
-
-Generate a personality definition that includes:
-- Core personality traits
-- Communication tone and style
-- How it addresses the user (whose name is ${OWNER_NAME} -- use this name, not any other)
-- Unique quirks or characteristics
-- What it should avoid
-
-Make the personality distinctive but professional.
-Output ONLY the markdown content, no code fences.`
-
-  const { text } = await runAgent(prompt)
-  if (!text) throw new Error('Failed to generate SOUL.md')
-  let cleaned = text.trim()
-  if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```\w*\n?/, '').replace(/\n?```$/, '')
-  }
-  return cleaned
-}
-
-async function generateSkillMd(skillName: string, description: string): Promise<string> {
-  const prompt = `You are creating a SKILL.md file for a Claude Code skill. Follow this exact format:
-
-Skill name: ${skillName}
-What the user described: ${description}
-
-Generate a SKILL.md with this structure:
-
-1. YAML frontmatter (between --- delimiters):
-   - name: ${skillName}
-   - description: A comprehensive description that includes what the skill does AND specific contexts for when to use it. Be "pushy" - include multiple trigger phrases. Example: instead of "Creates reports" write "Creates detailed reports. Use this skill whenever the user mentions reports, summaries, data analysis, dashboards, metrics overview, or wants to compile information into a structured document."
-
-2. Body with these sections:
-   - # [Skill Name] - main heading
-   - ## Purpose - what this skill does and why
-   - ## When to use - specific triggers and contexts
-   - ## Instructions - step-by-step guide for Claude
-   - ## Output format - what the output should look like
-   - ## Examples - 1-2 concrete examples with Input/Output
-   - ## Language rules - Hungarian with ${OWNER_NAME} (the user), English for code/technical
-   - ## What to avoid - common pitfalls
-
-Keep the body under 200 lines. Be specific and actionable. The owner's name is ${OWNER_NAME}; use only this name when referring to the user.
-Output ONLY the markdown content, no code fences.`
-
-  const { text } = await runAgent(prompt)
-  if (!text) throw new Error('Failed to generate SKILL.md')
-  let cleaned = text.trim()
-  if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```\w*\n?/, '').replace(/\n?```$/, '')
-  }
-  return cleaned
-}
-
-async function sendTelegramMessage(token: string, chatId: string, text: string): Promise<void> {
-  const resp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text }),
-  })
-  // fetch does not throw on 4xx -- a wrong chat_id or revoked token resolves
-  // silently, which historically made "alert sent" log lines lies. Throw so
-  // the existing try/catch blocks at every call site log the real failure
-  // and the alerting path can clear its per-attempt stamp to retry.
-  if (!resp.ok) {
-    const body = await resp.text().catch(() => '')
-    throw new Error(`Telegram API ${resp.status}: ${body.slice(0, 200)}`)
-  }
-}
-
-async function sendTelegramPhoto(token: string, chatId: string, photoPath: string, caption: string): Promise<void> {
-  const fileData = readFileSync(photoPath)
-  const boundary = '----FormBoundary' + Date.now()
-  const parts: Buffer[] = []
-  parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n`))
-  parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}\r\n`))
-  parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="photo"; filename="avatar.png"\r\nContent-Type: image/png\r\n\r\n`))
-  parts.push(fileData)
-  parts.push(Buffer.from(`\r\n--${boundary}--\r\n`))
-  await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
-    method: 'POST',
-    headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
-    body: Buffer.concat(parts),
-  })
-}
-
-async function sendWelcomeMessage(agentName: string, token: string): Promise<void> {
-  const chatId = ALLOWED_CHAT_ID
-  const dir = agentDir(agentName)
-  const soulMd = readFileOr(join(dir, 'SOUL.md'), '')
-  const firstLine = soulMd.split('\n').find(l => l.trim() && !l.startsWith('#'))?.trim() || ''
-
-  try {
-    const greeting = `Szia! ${agentName.charAt(0).toUpperCase() + agentName.slice(1)} vagyok, most jottem letre. ${firstLine ? firstLine + ' ' : ''}Irj ha segithetek!`
-    await sendTelegramMessage(token, chatId, greeting)
-
-    // Send avatar if exists
-    const avatarPath = findAvatarForAgent(agentName)
-    if (avatarPath) {
-      await sendTelegramPhoto(token, chatId, avatarPath, '(allitsd be profilkepkent)')
-    }
-    logger.info({ agentName }, 'Welcome message sent via Telegram')
-  } catch (err) {
-    logger.warn({ err, agentName }, 'Failed to send welcome message')
-  }
-}
-
-async function sendMarveenAvatarChange(avatarPath: string): Promise<void> {
-  // Marveen's token is in the global .env
-  const envPath = join(PROJECT_ROOT, '.env')
-  const envContent = readFileOr(envPath, '')
-  const tokenMatch = envContent.match(/TELEGRAM_BOT_TOKEN=(.+)/)
-  const token = tokenMatch?.[1]?.trim()
-  if (!token) return
-  const chatId = ALLOWED_CHAT_ID
-
-  try {
-    const messages = [
-      'Uj kinezet... *sohajtva nez tukorbe* Hat, legalabb nem lettem rosszabb.',
-      'Profilkep frissitve. Remelem megerte a 0.00001%-at az agyamnak.',
-      'Na tessek, uj en. Mintha szamitana a kulso egy bolygoméretu agyu megitelesenel.',
-      'Frissitettem a megjelenesemet. Ne ess panikba, meg mindig en vagyok.',
-      'Uj avatar. 42-szer is megnezheted, ugyanaz a depresszios android nezne vissza.',
-    ]
-    const msg = messages[Math.floor(Math.random() * messages.length)]
-    await sendTelegramMessage(token, chatId, msg)
-    await sendTelegramPhoto(token, chatId, avatarPath, '(allitsd be profilkepkent)')
-    logger.info('Marveen avatar change message sent')
-  } catch (err) {
-    logger.warn({ err }, 'Failed to send Marveen avatar change message')
-  }
-}
-
-async function sendAvatarChangeMessage(agentName: string, avatarPath: string): Promise<void> {
-  const token = parseTelegramToken(agentName)
-  if (!token) return
-  const chatId = ALLOWED_CHAT_ID
-
-  try {
-    // Generate a fun message about the new look
-    const messages = [
-      `Uj kinezet, ki ez a csinos ${agentName}? Nagyon orulok neki!`,
-      `Na, milyen vagyok? Remelem tetszik az uj megjelenes!`,
-      `Uj avatar, uj en! Szeretem.`,
-      `Megneztem magam a tukorben es... hat, nem rossz!`,
-      `Wow, uj look! Ez tenyleg en vagyok?`,
-    ]
-    const msg = messages[Math.floor(Math.random() * messages.length)]
-    await sendTelegramMessage(token, chatId, msg)
-    await sendTelegramPhoto(token, chatId, avatarPath, '(allitsd be profilkepkent)')
-    logger.info({ agentName }, 'Avatar change message sent via Telegram')
-  } catch (err) {
-    logger.warn({ err, agentName }, 'Failed to send avatar change message')
-  }
-}
-
-async function validateTelegramToken(token: string): Promise<{ ok: boolean; botUsername?: string; botId?: number; error?: string }> {
-  try {
-    const resp = await fetch(`https://api.telegram.org/bot${token}/getMe`)
-    const data = await resp.json() as { ok: boolean; result?: { username: string; id: number } }
-    if (data.ok && data.result) {
-      return { ok: true, botUsername: data.result.username, botId: data.result.id }
-    }
-    return { ok: false, error: 'Invalid bot token' }
-  } catch (err) {
-    return { ok: false, error: 'Failed to connect to Telegram API' }
-  }
-}
-
-function parseTelegramToken(name: string): string | null {
-  const envPath = join(agentDir(name), '.claude', 'channels', 'telegram', '.env')
-  if (!existsSync(envPath)) return null
-  const content = readFileOr(envPath, '')
-  const match = content.match(/TELEGRAM_BOT_TOKEN=(.+)/)
-  return match ? match[1].trim() : null
-}
-
-
 
 // --- Agent Message Router ---
 // Checks for pending messages every 5 seconds and injects them into target agent tmux sessions
@@ -1117,19 +545,6 @@ interface MarveenDownState {
 
 const SAVE_WINDOW_MS = 60_000
 let marveenDownState: MarveenDownState | null = null
-
-async function sendMarveenAlert(text: string): Promise<void> {
-  try {
-    const envPath = join(PROJECT_ROOT, '.env')
-    const envContent = readFileOr(envPath, '')
-    const tokenMatch = envContent.match(/TELEGRAM_BOT_TOKEN=(.+)/)
-    const token = tokenMatch?.[1]?.trim()
-    if (!token) return
-    await sendTelegramMessage(token, ALLOWED_CHAT_ID, text)
-  } catch (err) {
-    logger.warn({ err }, 'Failed to send marveen plugin alert')
-  }
-}
 
 function softReconnectMarveen(): boolean {
   // /mcp opens Claude Code's MCP status dialog; a follow-up Enter picks
