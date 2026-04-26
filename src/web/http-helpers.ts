@@ -1,7 +1,18 @@
 import http from 'node:http'
 import { readFileSync } from 'node:fs'
 import { extname } from 'node:path'
-import { MIME } from './atomic-write.js'
+
+export const MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+}
 
 // Default upper bound on a request body the dashboard will buffer in RAM.
 // Picked well above any legitimate JSON payload (the biggest legit writes
