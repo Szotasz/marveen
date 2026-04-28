@@ -3792,28 +3792,7 @@ if (document.readyState === 'loading') {
 }
 
 function renderConnectors() {
-  // Builtin grid
-  const builtinGrid = document.getElementById('connectorBuiltinGrid')
-  builtinGrid.innerHTML = ''
-  for (const b of BUILTIN_MCPS) {
-    const div = document.createElement('div')
-    div.className = 'connector-builtin'
-    // No state dot: we cannot reliably detect whether the feature is
-    // currently enabled. Show a dash placeholder so the row still
-    // aligns with other connector cards.
-    div.innerHTML = `
-      <div class="connector-status-dot unknown" title="A dashboard nem tudja automatikusan detektálni ezt a képességet"></div>
-      <div class="connector-builtin-name">${escapeHtml(b.label)}<br><span style="font-size:11px;color:var(--text-muted);font-weight:400">${escapeHtml(b.desc)}</span></div>
-      <button type="button" class="connector-builtin-action btn-link" data-builtin="${escapeHtml(b.name)}">Részletek</button>
-    `
-    const btn = div.querySelector('button[data-builtin]')
-    if (btn) btn.addEventListener('click', () => openBuiltinDetail(b))
-    builtinGrid.appendChild(div)
-  }
-
-  // Stats: only render when there is real data OR a confirmed empty
-  // cache. Rendering "0 / 0" stat cards above a "still loading" message
-  // contradicts itself and confuses the user.
+  // Stats
   if (connectors.length === 0 && connectorCacheWarming) {
     connectorStats.innerHTML = ''
   } else {
@@ -3828,7 +3807,6 @@ function renderConnectors() {
     `
   }
 
-  // Grid
   connectorGrid.innerHTML = ''
   const hasClaudeAiEntries = connectors.some(c => c.source === 'claude.ai')
   if (connectors.length > 0 && !connectorCacheWarming && connectorCacheError && hasClaudeAiEntries) {
@@ -3837,7 +3815,7 @@ function renderConnectors() {
     banner.innerHTML = `Frissítés sikertelen: ${escapeHtml(connectorCacheError)} -- a claude.ai connectorok elavultak lehetnek.`
     connectorGrid.appendChild(banner)
   }
-  if (connectors.length === 0) {
+  if (connectors.length === 0 && !BUILTIN_MCPS.length) {
     if (connectorCacheWarming && connectorCacheError) {
       connectorGrid.innerHTML = `<div class="connector-loading">MCP lista nem tölthető be: ${escapeHtml(connectorCacheError)}</div>`
     } else if (connectorCacheWarming) {
@@ -3856,106 +3834,121 @@ function renderConnectors() {
     groups.get(scope).push(c)
   }
 
-  const scopeOrder = ['global', 'plugin']
+  const globalScopes = ['global', 'plugin']
   const agentScopes = []
   const projectScopes = []
   for (const scope of groups.keys()) {
     if (scope.startsWith('agent:')) agentScopes.push(scope)
     else if (scope.startsWith('project:')) projectScopes.push(scope)
-    else if (!scopeOrder.includes(scope)) scopeOrder.push(scope)
+    else if (!globalScopes.includes(scope)) globalScopes.push(scope)
   }
   agentScopes.sort()
   projectScopes.sort()
-  const orderedScopes = [...scopeOrder, ...agentScopes, ...projectScopes]
 
-  const scopeLabels = {
-    'global': 'Globális',
-    'plugin': 'Plugin',
+  const sourceLabels = {
+    'claude.ai': 'claude.ai',
+    'plugin': 'plugin',
+    'local-user': 'local (user)',
+    'local-project': 'local (project)',
+    'local': 'local',
+    'agent': 'agent',
+    'agent-project': 'project',
   }
 
-  function getScopeLabel(scope) {
-    if (scopeLabels[scope]) return scopeLabels[scope]
-    if (scope.startsWith('agent:')) return scope.slice('agent:'.length)
-    if (scope.startsWith('project:')) return scope.slice('project:'.length)
-    return scope
+  function renderCard(c, container) {
+    const card = document.createElement('div')
+    card.className = 'connector-card'
+    const sourceTag = c.source ? `<span class="connector-source-badge">${escapeHtml(sourceLabels[c.source] || c.source)}</span>` : ''
+    const readOnly = c.source === 'claude.ai'
+    if (readOnly) card.classList.add('connector-card-readonly')
+    const readonlyHint = readOnly ? '<div class="connector-readonly-hint">Kezelhető: claude.ai</div>' : ''
+    card.innerHTML = `
+      <div class="connector-status-dot ${c.status}"></div>
+      <div class="connector-info">
+        <div class="connector-name">${escapeHtml(c.name)} ${sourceTag}</div>
+        <div class="connector-endpoint">${escapeHtml(c.endpoint || '')}</div>
+        ${readonlyHint}
+      </div>
+      <span class="connector-type-badge ${c.type}">${c.type}</span>
+    `
+    if (!readOnly) card.addEventListener('click', () => openConnectorDetail(c))
+    container.appendChild(card)
   }
 
-  function getScopeIcon(scope) {
-    if (scope === 'global' || scope === 'plugin') return '🌐'
-    if (scope.startsWith('agent:')) return '🤖'
-    if (scope.startsWith('project:')) return '📁'
-    return '📦'
-  }
-
-  for (const scope of orderedScopes) {
-    const items = groups.get(scope)
-    if (!items || items.length === 0) continue
-
-    const isCollapsible = scope.startsWith('agent:') || scope.startsWith('project:')
+  function renderCollapsible(label, icon, items, container) {
     const section = document.createElement('div')
     section.className = 'connector-scope-section'
-
     const header = document.createElement('div')
-    header.className = 'connector-section-header connector-scope-header'
-    const icon = getScopeIcon(scope)
-    const label = getScopeLabel(scope)
-    const count = items.length
-    if (isCollapsible) {
-      header.classList.add('collapsible')
-      header.innerHTML = `<span class="connector-scope-toggle">▶</span> ${icon} ${escapeHtml(label)} <span class="connector-scope-count">${count}</span>`
-      header.addEventListener('click', () => {
-        const grid = section.querySelector('.connector-scope-grid')
-        const toggle = header.querySelector('.connector-scope-toggle')
-        if (grid.hidden) {
-          grid.hidden = false
-          toggle.textContent = '▼'
-        } else {
-          grid.hidden = true
-          toggle.textContent = '▶'
-        }
-      })
-    } else {
-      header.innerHTML = `${icon} ${escapeHtml(label)} <span class="connector-scope-count">${count}</span>`
-    }
+    header.className = 'connector-scope-header collapsible'
+    header.innerHTML = `<span class="connector-scope-toggle">▶</span> ${icon} ${escapeHtml(label)} <span class="connector-scope-count">${items.length}</span>`
+    header.addEventListener('click', () => {
+      const grid = section.querySelector('.connector-scope-grid')
+      const toggle = header.querySelector('.connector-scope-toggle')
+      if (grid.hidden) { grid.hidden = false; toggle.textContent = '▼' }
+      else { grid.hidden = true; toggle.textContent = '▶' }
+    })
     section.appendChild(header)
-
     const grid = document.createElement('div')
     grid.className = 'connector-scope-grid'
-    if (isCollapsible) grid.hidden = true
-
-    for (const c of items) {
-      const card = document.createElement('div')
-      card.className = 'connector-card'
-      const sourceLabels = {
-        'claude.ai': 'claude.ai',
-        'plugin': 'plugin',
-        'local-user': 'local (user)',
-        'local-project': 'local (project)',
-        'local': 'local',
-        'agent': 'agent',
-        'agent-project': 'project',
-      }
-      const sourceTag = c.source ? `<span class="connector-source-badge">${escapeHtml(sourceLabels[c.source] || c.source)}</span>` : ''
-      const readOnly = c.source === 'claude.ai'
-      if (readOnly) card.classList.add('connector-card-readonly')
-      const readonlyHint = readOnly ? '<div class="connector-readonly-hint">Kezelhető: claude.ai</div>' : ''
-      card.innerHTML = `
-        <div class="connector-status-dot ${c.status}"></div>
-        <div class="connector-info">
-          <div class="connector-name">${escapeHtml(c.name)} ${sourceTag}</div>
-          <div class="connector-endpoint">${escapeHtml(c.endpoint || '')}</div>
-          ${readonlyHint}
-        </div>
-        <span class="connector-type-badge ${c.type}">${c.type}</span>
-      `
-      if (!readOnly) {
-        card.addEventListener('click', () => openConnectorDetail(c))
-      }
-      grid.appendChild(card)
-    }
-
+    grid.hidden = true
+    for (const c of items) renderCard(c, grid)
     section.appendChild(grid)
-    connectorGrid.appendChild(section)
+    container.appendChild(section)
+  }
+
+  // === Claude globális ===
+  const globalHeading = document.createElement('div')
+  globalHeading.className = 'connector-group-heading'
+  globalHeading.textContent = 'Claude globális'
+  connectorGrid.appendChild(globalHeading)
+
+  const builtinGrid = document.createElement('div')
+  builtinGrid.className = 'connector-builtin-grid'
+  for (const b of BUILTIN_MCPS) {
+    const div = document.createElement('div')
+    div.className = 'connector-builtin'
+    div.innerHTML = `
+      <div class="connector-status-dot unknown" title="A dashboard nem tudja automatikusan detektálni ezt a képességet"></div>
+      <div class="connector-builtin-name">${escapeHtml(b.label)}<br><span style="font-size:11px;color:var(--text-muted);font-weight:400">${escapeHtml(b.desc)}</span></div>
+      <button type="button" class="connector-builtin-action btn-link" data-builtin="${escapeHtml(b.name)}">Részletek</button>
+    `
+    const btn = div.querySelector('button[data-builtin]')
+    if (btn) btn.addEventListener('click', () => openBuiltinDetail(b))
+    builtinGrid.appendChild(div)
+  }
+  connectorGrid.appendChild(builtinGrid)
+
+  const globalGrid = document.createElement('div')
+  globalGrid.className = 'connector-scope-grid'
+  for (const scope of globalScopes) {
+    for (const c of (groups.get(scope) || [])) renderCard(c, globalGrid)
+  }
+  if (globalGrid.children.length > 0) connectorGrid.appendChild(globalGrid)
+
+  // === Ágensek ===
+  if (agentScopes.length > 0) {
+    const agentHeading = document.createElement('div')
+    agentHeading.className = 'connector-group-heading'
+    agentHeading.textContent = 'Ágensek'
+    connectorGrid.appendChild(agentHeading)
+
+    for (const ag of agentScopes) {
+      const agentName = ag.slice('agent:'.length)
+      renderCollapsible(agentName, '🤖', groups.get(ag), connectorGrid)
+    }
+  }
+
+  // === Projektek ===
+  if (projectScopes.length > 0) {
+    const projectHeading = document.createElement('div')
+    projectHeading.className = 'connector-group-heading'
+    projectHeading.textContent = 'Projektek'
+    connectorGrid.appendChild(projectHeading)
+
+    for (const ps of projectScopes) {
+      const projLabel = ps.slice('project:'.length)
+      renderCollapsible(projLabel, '📁', groups.get(ps), connectorGrid)
+    }
   }
 }
 

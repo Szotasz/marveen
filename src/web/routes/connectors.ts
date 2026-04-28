@@ -75,7 +75,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         source: entry.source === 'plugin' ? 'plugin'
                : entry.source === 'claude.ai' ? 'claude.ai'
                : 'local',
-        scope: entry.source === 'claude.ai' ? 'global' : 'global',
+        scope: 'global',
       })
     }
 
