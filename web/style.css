@@ -2760,6 +2760,44 @@ main {
 }
 .connector-section-header:first-of-type { margin-top: 0; }
 
+.connector-group-heading {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  margin-top: 24px;
+  margin-bottom: 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.connector-group-heading:first-child { margin-top: 0; }
+.connector-scope-section { margin-bottom: 4px; }
+.connector-scope-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.connector-scope-header.collapsible { cursor: pointer; user-select: none; }
+.connector-scope-header.collapsible:hover { color: var(--text); }
+.connector-scope-toggle {
+  font-size: 10px;
+  width: 12px;
+  display: inline-block;
+  transition: transform 0.15s;
+}
+.connector-scope-count {
+  font-weight: 400;
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-left: 4px;
+}
+.connector-scope-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.connector-scope-grid[hidden] { display: none; }
+
 .connector-builtin-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -2830,9 +2868,7 @@ main {
 }
 
 .connector-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 12px;
+  display: block;
 }
 
 .connector-card {
@@ -2922,10 +2958,6 @@ main {
 .info-box strong { color: var(--info); }
 
 .connector-stale-banner {
-  /* Span the entire grid row -- .connector-grid is auto-fill columns,
-     so without this the banner shrinks into a single track and the
-     first connector card squeezes up beside it. */
-  grid-column: 1 / -1;
   padding: 10px 14px;
   margin: 0 0 12px;
   border-radius: 6px;
@@ -3695,7 +3727,7 @@ main {
   .timeline-hours { margin-left: 70px; }
   .timeline-marker { width: 24px; height: 24px; top: 10px; }
   .timeline-marker-tooltip { font-size: 10px; }
-  .connector-grid { grid-template-columns: 1fr; }
+  .connector-scope-grid { grid-template-columns: 1fr; }
   .connector-stats { gap: 8px; }
   .catalog-grid { grid-template-columns: 1fr; }
   .catalog-filters { gap: 4px; }

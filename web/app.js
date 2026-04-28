@@ -3792,28 +3792,7 @@ if (document.readyState === 'loading') {
 }
 
 function renderConnectors() {
-  // Builtin grid
-  const builtinGrid = document.getElementById('connectorBuiltinGrid')
-  builtinGrid.innerHTML = ''
-  for (const b of BUILTIN_MCPS) {
-    const div = document.createElement('div')
-    div.className = 'connector-builtin'
-    // No state dot: we cannot reliably detect whether the feature is
-    // currently enabled. Show a dash placeholder so the row still
-    // aligns with other connector cards.
-    div.innerHTML = `
-      <div class="connector-status-dot unknown" title="A dashboard nem tudja automatikusan detektálni ezt a képességet"></div>
-      <div class="connector-builtin-name">${escapeHtml(b.label)}<br><span style="font-size:11px;color:var(--text-muted);font-weight:400">${escapeHtml(b.desc)}</span></div>
-      <button type="button" class="connector-builtin-action btn-link" data-builtin="${escapeHtml(b.name)}">Részletek</button>
-    `
-    const btn = div.querySelector('button[data-builtin]')
-    if (btn) btn.addEventListener('click', () => openBuiltinDetail(b))
-    builtinGrid.appendChild(div)
-  }
-
-  // Stats: only render when there is real data OR a confirmed empty
-  // cache. Rendering "0 / 0" stat cards above a "still loading" message
-  // contradicts itself and confuses the user.
+  // Stats
   if (connectors.length === 0 && connectorCacheWarming) {
     connectorStats.innerHTML = ''
   } else {
@@ -3828,15 +3807,7 @@ function renderConnectors() {
     `
   }
 
-  // Grid
   connectorGrid.innerHTML = ''
-  // Stale-data warning banner. Only warns when the failed refresh
-  // would actually matter: file-based entries (enabledPlugins,
-  // project/.mcp.json, ~/.claude.json) were re-read fresh on this
-  // request, so they are always authoritative. The only subset that
-  // can go stale is the claude.ai OAuth connectors, which only land
-  // in the list via mcpListCache. If none of those are present,
-  // nothing about the displayed data is actually stale.
   const hasClaudeAiEntries = connectors.some(c => c.source === 'claude.ai')
   if (connectors.length > 0 && !connectorCacheWarming && connectorCacheError && hasClaudeAiEntries) {
     const banner = document.createElement('div')
@@ -3844,15 +3815,7 @@ function renderConnectors() {
     banner.innerHTML = `Frissítés sikertelen: ${escapeHtml(connectorCacheError)} -- a claude.ai connectorok elavultak lehetnek.`
     connectorGrid.appendChild(banner)
   }
-  if (connectors.length === 0) {
-    // Cold-start: cache has never run, so the empty list is not the
-    // ground truth, just the transient state before the 30s warmup or
-    // a manual refresh. Telling the user "there are none" would
-    // contradict the info-box above.
-    //
-    // If we have a cached error AND warming is still true (refresh has
-    // failed; cache never populated), show the error instead of
-    // instructing the user to click the button that just failed.
+  if (connectors.length === 0 && !BUILTIN_MCPS.length) {
     if (connectorCacheWarming && connectorCacheError) {
       connectorGrid.innerHTML = `<div class="connector-loading">MCP lista nem tölthető be: ${escapeHtml(connectorCacheError)}</div>`
     } else if (connectorCacheWarming) {
@@ -3862,29 +3825,42 @@ function renderConnectors() {
     }
     return
   }
+
+  // Group by scope
+  const groups = new Map()
   for (const c of connectors) {
+    const scope = c.scope || 'global'
+    if (!groups.has(scope)) groups.set(scope, [])
+    groups.get(scope).push(c)
+  }
+
+  const globalScopes = ['global', 'plugin']
+  const agentScopes = []
+  const projectScopes = []
+  for (const scope of groups.keys()) {
+    if (scope.startsWith('agent:')) agentScopes.push(scope)
+    else if (scope.startsWith('project:')) projectScopes.push(scope)
+    else if (!globalScopes.includes(scope)) globalScopes.push(scope)
+  }
+  agentScopes.sort()
+  projectScopes.sort()
+
+  const sourceLabels = {
+    'claude.ai': 'claude.ai',
+    'plugin': 'plugin',
+    'local-user': 'local (user)',
+    'local-project': 'local (project)',
+    'local': 'local',
+    'agent': 'agent',
+    'agent-project': 'project',
+  }
+
+  function renderCard(c, container) {
     const card = document.createElement('div')
     card.className = 'connector-card'
-    // Source labels: map the terse backend values to short visible tags.
-    // This is the single biggest information the user needs right now
-    // -- where did this entry come from, file or OAuth?
-    const sourceLabels = {
-      'claude.ai': 'claude.ai',
-      'plugin': 'plugin',
-      'local-user': 'local (user)',
-      'local-project': 'local (project)',
-      'local': 'local',
-    }
     const sourceTag = c.source ? `<span class="connector-source-badge">${escapeHtml(sourceLabels[c.source] || c.source)}</span>` : ''
-    // claude.ai entries are managed by the Claude.ai subscription, not
-    // the dashboard: the detail endpoint cannot resolve them and the
-    // per-agent assign endpoint would 404. Mark them read-only so a
-    // click does not 404 a confusing "Reszletek betoltese sikertelen"
-    // modal, and add a small hint instead.
     const readOnly = c.source === 'claude.ai'
     if (readOnly) card.classList.add('connector-card-readonly')
-    // Readonly hint lives OUTSIDE .connector-endpoint so the endpoint's
-    // nowrap+ellipsis truncation cannot eat it on long URLs.
     const readonlyHint = readOnly ? '<div class="connector-readonly-hint">Kezelhető: claude.ai</div>' : ''
     card.innerHTML = `
       <div class="connector-status-dot ${c.status}"></div>
@@ -3895,10 +3871,84 @@ function renderConnectors() {
       </div>
       <span class="connector-type-badge ${c.type}">${c.type}</span>
     `
-    if (!readOnly) {
-      card.addEventListener('click', () => openConnectorDetail(c))
+    if (!readOnly) card.addEventListener('click', () => openConnectorDetail(c))
+    container.appendChild(card)
+  }
+
+  function renderCollapsible(label, icon, items, container) {
+    const section = document.createElement('div')
+    section.className = 'connector-scope-section'
+    const header = document.createElement('div')
+    header.className = 'connector-scope-header collapsible'
+    header.innerHTML = `<span class="connector-scope-toggle">▶</span> ${icon} ${escapeHtml(label)} <span class="connector-scope-count">${items.length}</span>`
+    header.addEventListener('click', () => {
+      const grid = section.querySelector('.connector-scope-grid')
+      const toggle = header.querySelector('.connector-scope-toggle')
+      if (grid.hidden) { grid.hidden = false; toggle.textContent = '▼' }
+      else { grid.hidden = true; toggle.textContent = '▶' }
+    })
+    section.appendChild(header)
+    const grid = document.createElement('div')
+    grid.className = 'connector-scope-grid'
+    grid.hidden = true
+    for (const c of items) renderCard(c, grid)
+    section.appendChild(grid)
+    container.appendChild(section)
+  }
+
+  // === Claude globális ===
+  const globalHeading = document.createElement('div')
+  globalHeading.className = 'connector-group-heading'
+  globalHeading.textContent = 'Claude globális'
+  connectorGrid.appendChild(globalHeading)
+
+  const builtinGrid = document.createElement('div')
+  builtinGrid.className = 'connector-builtin-grid'
+  for (const b of BUILTIN_MCPS) {
+    const div = document.createElement('div')
+    div.className = 'connector-builtin'
+    div.innerHTML = `
+      <div class="connector-status-dot unknown" title="A dashboard nem tudja automatikusan detektálni ezt a képességet"></div>
+      <div class="connector-builtin-name">${escapeHtml(b.label)}<br><span style="font-size:11px;color:var(--text-muted);font-weight:400">${escapeHtml(b.desc)}</span></div>
+      <button type="button" class="connector-builtin-action btn-link" data-builtin="${escapeHtml(b.name)}">Részletek</button>
+    `
+    const btn = div.querySelector('button[data-builtin]')
+    if (btn) btn.addEventListener('click', () => openBuiltinDetail(b))
+    builtinGrid.appendChild(div)
+  }
+  connectorGrid.appendChild(builtinGrid)
+
+  const globalGrid = document.createElement('div')
+  globalGrid.className = 'connector-scope-grid'
+  for (const scope of globalScopes) {
+    for (const c of (groups.get(scope) || [])) renderCard(c, globalGrid)
+  }
+  if (globalGrid.children.length > 0) connectorGrid.appendChild(globalGrid)
+
+  // === Ágensek ===
+  if (agentScopes.length > 0) {
+    const agentHeading = document.createElement('div')
+    agentHeading.className = 'connector-group-heading'
+    agentHeading.textContent = 'Ágensek'
+    connectorGrid.appendChild(agentHeading)
+
+    for (const ag of agentScopes) {
+      const agentName = ag.slice('agent:'.length)
+      renderCollapsible(agentName, '🤖', groups.get(ag), connectorGrid)
     }
-    connectorGrid.appendChild(card)
+  }
+
+  // === Projektek ===
+  if (projectScopes.length > 0) {
+    const projectHeading = document.createElement('div')
+    projectHeading.className = 'connector-group-heading'
+    projectHeading.textContent = 'Projektek'
+    connectorGrid.appendChild(projectHeading)
+
+    for (const ps of projectScopes) {
+      const projLabel = ps.slice('project:'.length)
+      renderCollapsible(projLabel, '📁', groups.get(ps), connectorGrid)
+    }
   }
 }
 

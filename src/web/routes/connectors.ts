@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { execSync } from 'node:child_process'
@@ -9,7 +9,7 @@ import {
   type McpListEntry,
 } from '../../mcp-list-parser.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
-import { readFileOr } from '../agent-config.js'
+import { readFileOr, AGENTS_BASE_DIR, listAgentNames } from '../agent-config.js'
 import { getMcpListCache, refreshMcpListCache } from '../mcp-list.js'
 import { readBody, json } from '../http-helpers.js'
 import { shellEscape } from '../sanitize.js'
@@ -23,48 +23,50 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   // output. The CLI is not invoked here -- spawning every stdio / plugin
   // MCP for a health check would race the live Telegram bot.
   if (path === '/api/connectors' && method === 'GET') {
-    const connectors: Array<{
+    type ConnectorEntry = {
       name: string
       status: string
       endpoint: string
       type: string
-      source: 'plugin' | 'local-user' | 'local-project' | 'local' | 'claude.ai'
-    }> = []
-    const seen = new Set<string>()
+      source: 'plugin' | 'local-user' | 'local-project' | 'local' | 'claude.ai' | 'agent' | 'agent-project'
+      scope: string
+    }
+    const connectors: ConnectorEntry[] = []
+    const globalSeen = new Set<string>()
 
     try {
       const settings = JSON.parse(readFileOr(join(homedir(), '.claude', 'settings.json'), '{}'))
       for (const pluginKey of Object.keys(settings.enabledPlugins || {})) {
         if (!settings.enabledPlugins[pluginKey]) continue
         const name = `plugin:${pluginKey.split('@')[0].toLowerCase()}`
-        if (seen.has(name)) continue
-        seen.add(name)
-        connectors.push({ name, status: 'configured', endpoint: pluginKey, type: 'plugin', source: 'plugin' })
+        if (globalSeen.has(name)) continue
+        globalSeen.add(name)
+        connectors.push({ name, status: 'configured', endpoint: pluginKey, type: 'plugin', source: 'plugin', scope: 'plugin' })
       }
     } catch { /* ignore */ }
 
-    const fileSources: Array<[string, 'local-project' | 'local-user']> = [
-      [join(PROJECT_ROOT, '.mcp.json'), 'local-project'],
-      [join(homedir(), '.claude.json'), 'local-user'],
+    const fileSources: Array<[string, 'local-project' | 'local-user', string]> = [
+      [join(PROJECT_ROOT, '.mcp.json'), 'local-project', 'global'],
+      [join(homedir(), '.claude.json'), 'local-user', 'global'],
     ]
-    for (const [src, source] of fileSources) {
+    for (const [src, source, scope] of fileSources) {
       try {
         const parsed = JSON.parse(readFileOr(src, '{}'))
         const servers = parsed.mcpServers || {}
         for (const [name, cfg] of Object.entries(servers) as Array<[string, any]>) {
-          if (seen.has(name)) continue
-          seen.add(name)
+          if (globalSeen.has(name)) continue
+          globalSeen.add(name)
           const endpoint = cfg?.url || cfg?.command || ''
           const type = cfg?.url ? 'remote' : 'local'
-          connectors.push({ name, status: 'configured', endpoint: String(endpoint), type, source })
+          connectors.push({ name, status: 'configured', endpoint: String(endpoint), type, source, scope })
         }
       } catch { /* ignore */ }
     }
 
     for (const entry of getMcpListCache().entries) {
       const key = entry.source === 'plugin' ? `plugin:${entry.normalizedId}` : entry.name
-      if (seen.has(key)) continue
-      seen.add(key)
+      if (globalSeen.has(key)) continue
+      globalSeen.add(key)
       connectors.push({
         name: entry.name,
         status: entry.status === 'unknown' ? 'configured' : entry.status,
@@ -73,7 +75,40 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         source: entry.source === 'plugin' ? 'plugin'
                : entry.source === 'claude.ai' ? 'claude.ai'
                : 'local',
+        scope: 'global',
       })
+    }
+
+    for (const agentName of listAgentNames()) {
+      const agentMcpPath = join(AGENTS_BASE_DIR, agentName, '.mcp.json')
+      try {
+        const parsed = JSON.parse(readFileOr(agentMcpPath, '{}'))
+        const servers = parsed.mcpServers || {}
+        for (const [name, cfg] of Object.entries(servers) as Array<[string, any]>) {
+          const endpoint = cfg?.url || cfg?.command || ''
+          const type = cfg?.url ? 'remote' : 'local'
+          connectors.push({ name, status: 'configured', endpoint: String(endpoint), type, source: 'agent', scope: `agent:${agentName}` })
+        }
+      } catch { /* ignore */ }
+
+      const projectsDir = join(AGENTS_BASE_DIR, agentName, 'projects')
+      if (existsSync(projectsDir)) {
+        try {
+          for (const proj of readdirSync(projectsDir)) {
+            if (!statSync(join(projectsDir, proj)).isDirectory()) continue
+            const projMcpPath = join(projectsDir, proj, '.mcp.json')
+            try {
+              const parsed = JSON.parse(readFileOr(projMcpPath, '{}'))
+              const servers = parsed.mcpServers || {}
+              for (const [name, cfg] of Object.entries(servers) as Array<[string, any]>) {
+                const endpoint = cfg?.url || cfg?.command || ''
+                const type = cfg?.url ? 'remote' : 'local'
+                connectors.push({ name, status: 'configured', endpoint: String(endpoint), type, source: 'agent-project', scope: `project:${agentName}/${proj}` })
+              }
+            } catch { /* ignore */ }
+          }
+        } catch { /* ignore */ }
+      }
     }
 
     json(res, connectors)
@@ -123,7 +158,23 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
-    for (const [src, scope] of [[join(PROJECT_ROOT, '.mcp.json'), 'project' as const], [join(homedir(), '.claude.json'), 'user' as const]]) {
+    const searchPaths: Array<[string, string]> = [
+      [join(PROJECT_ROOT, '.mcp.json'), 'project'],
+      [join(homedir(), '.claude.json'), 'user'],
+    ]
+    for (const agentName of listAgentNames()) {
+      searchPaths.push([join(AGENTS_BASE_DIR, agentName, '.mcp.json'), `agent:${agentName}`])
+      const projectsDir = join(AGENTS_BASE_DIR, agentName, 'projects')
+      if (existsSync(projectsDir)) {
+        try {
+          for (const proj of readdirSync(projectsDir)) {
+            if (!statSync(join(projectsDir, proj)).isDirectory()) continue
+            searchPaths.push([join(projectsDir, proj, '.mcp.json'), `project:${agentName}/${proj}`])
+          }
+        } catch { /* ignore */ }
+      }
+    }
+    for (const [src, scope] of searchPaths) {
       try {
         const parsed = JSON.parse(readFileOr(src, '{}'))
         const cfg = (parsed.mcpServers || {})[name]
