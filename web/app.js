@@ -78,6 +78,7 @@ function switchPage(pageId) {
   if (pageId === 'connectors') loadConnectors()
   if (pageId === 'migrate') loadMigrateAgents()
   if (pageId === 'status') loadStatus()
+  if (pageId === 'vault') loadVaultPage()
   if (pageId === 'updates') loadUpdates()
   if (pageId === 'team') loadTeamGraph()
 }
@@ -3715,6 +3716,8 @@ async function loadConnectors() {
     }
     renderConnectors()
     loadExternalPaths()
+    loadGitHubRepos()
+    loadVault()
   } catch (err) {
     console.error('Connector betöltés hiba:', err)
     connectorGrid.innerHTML = '<div class="connector-loading">Hiba a betöltés során</div>'
@@ -3953,6 +3956,303 @@ function renderConnectors() {
     }
   }
 }
+
+// --- GitHub repo management ---
+async function loadGitHubRepos() {
+  try {
+    const res = await fetch('/api/connectors/github-repos')
+    const data = await res.json()
+    const repos = data.repos || []
+    document.getElementById('githubRepoCount').textContent = String(repos.length)
+    const list = document.getElementById('githubRepoList')
+    list.innerHTML = ''
+    for (const r of repos) {
+      const item = document.createElement('div')
+      item.className = 'connector-external-item github-repo-item'
+      const date = new Date(r.installedAt).toLocaleDateString('hu-HU')
+      item.innerHTML = `<div class="github-repo-info"><span class="github-repo-name">${escapeHtml(r.name.replace('--', '/'))}</span><span class="github-repo-date">${date}</span></div><div class="github-repo-actions"><button class="github-repo-update" title="Frissites">&#x21bb;</button><button class="github-repo-delete" title="Torles">&times;</button></div>`
+      item.querySelector('.github-repo-update').addEventListener('click', async (e) => {
+        const btn = e.currentTarget
+        btn.disabled = true
+        btn.textContent = '...'
+        try {
+          const res = await fetch(`/api/connectors/github-repos/${encodeURIComponent(r.name)}`, { method: 'PATCH' })
+          const data = await res.json()
+          if (data.error) { alert(data.error); return }
+          loadConnectors()
+        } finally { btn.disabled = false; btn.innerHTML = '&#x21bb;' }
+      })
+      item.querySelector('.github-repo-delete').addEventListener('click', async () => {
+        if (!confirm(`Torlod: ${r.name.replace('--', '/')}?`)) return
+        await fetch(`/api/connectors/github-repos/${encodeURIComponent(r.name)}`, { method: 'DELETE' })
+        loadGitHubRepos()
+        loadExternalPaths()
+        loadConnectors()
+      })
+      list.appendChild(item)
+    }
+  } catch { /* ignore */ }
+}
+
+;(function wireGitHubRepos() {
+  const toggle = document.getElementById('githubReposToggle')
+  const body = document.getElementById('githubReposBody')
+  if (!toggle || !body) return
+  toggle.addEventListener('click', () => {
+    const arrow = toggle.querySelector('.connector-scope-toggle')
+    if (body.hidden) { body.hidden = false; arrow.textContent = '▼' }
+    else { body.hidden = true; arrow.textContent = '▶' }
+  })
+  const addBtn = document.getElementById('githubRepoAddBtn')
+  const input = document.getElementById('githubRepoInput')
+  const status = document.getElementById('githubRepoStatus')
+  addBtn.addEventListener('click', async () => {
+    const val = input.value.trim()
+    if (!val) return
+    addBtn.disabled = true
+    addBtn.textContent = 'Telepites...'
+    status.hidden = false
+    status.className = 'github-repo-status loading'
+    status.textContent = 'Klonozas es telepites...'
+    try {
+      const res = await fetch('/api/connectors/github-repos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: val }),
+      })
+      const data = await res.json()
+      if (data.error) {
+        status.className = 'github-repo-status error'
+        status.textContent = data.error
+        return
+      }
+      if (data.requiredEnvVars && data.requiredEnvVars.length > 0) {
+        status.className = 'github-repo-status loading'
+        status.textContent = 'API kulcsok megadasa szukseges...'
+        const envValues = await showEnvVarModal(data.requiredEnvVars)
+        if (envValues && Object.keys(envValues).length > 0) {
+          for (const [key, value] of Object.entries(envValues)) {
+            await fetch('/api/vault', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id: `github-env-${data.repo.name}-${key}`, label: `${key} (${data.repo.name.replace('--', '/')})`, value }),
+            })
+          }
+          status.className = 'github-repo-status success'
+          status.textContent = 'Telepitve, kulcsok mentve a Vault-ba!'
+          loadVault()
+        } else {
+          status.className = 'github-repo-status success'
+          status.textContent = 'Telepitve (kulcsok kihagyva)'
+        }
+      } else {
+        status.className = 'github-repo-status success'
+        status.textContent = 'Telepitve!'
+      }
+      input.value = ''
+      loadGitHubRepos()
+      loadExternalPaths()
+      loadConnectors()
+      setTimeout(() => { status.hidden = true }, 4000)
+    } catch (err) {
+      status.className = 'github-repo-status error'
+      status.textContent = 'Hiba: ' + err.message
+    } finally {
+      addBtn.disabled = false
+      addBtn.textContent = 'Telepites'
+    }
+  })
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') addBtn.click() })
+})()
+
+// --- Vault management ---
+async function loadVault() {
+  try {
+    const res = await fetch('/api/vault')
+    const data = await res.json()
+    const secrets = data.secrets || []
+    document.getElementById('vaultCount').textContent = String(secrets.length)
+    const list = document.getElementById('vaultList')
+    list.innerHTML = ''
+    for (const s of secrets) {
+      const item = document.createElement('div')
+      item.className = 'connector-external-item'
+      const date = new Date(s.updatedAt).toLocaleDateString('hu-HU')
+      item.innerHTML = `<div class="github-repo-info"><span class="github-repo-name">${escapeHtml(s.label)}</span><span class="github-repo-date">${escapeHtml(s.id)} &middot; ${date}</span></div><button title="Torles" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:14px;padding:2px 6px">&times;</button>`
+      item.querySelector('button').addEventListener('click', async () => {
+        if (!confirm(`Torlod: ${s.label}?`)) return
+        await fetch(`/api/vault/${encodeURIComponent(s.id)}`, { method: 'DELETE' })
+        loadVault()
+      })
+      list.appendChild(item)
+    }
+  } catch { /* ignore */ }
+}
+
+;(function wireVault() {
+  const toggle = document.getElementById('vaultToggle')
+  const body = document.getElementById('vaultBody')
+  if (!toggle || !body) return
+  toggle.addEventListener('click', () => {
+    const arrow = toggle.querySelector('.connector-scope-toggle')
+    if (body.hidden) { body.hidden = false; arrow.textContent = '▼' }
+    else { body.hidden = true; arrow.textContent = '▶' }
+  })
+  const addBtn = document.getElementById('vaultAddBtn')
+  const idInput = document.getElementById('vaultIdInput')
+  const valInput = document.getElementById('vaultValueInput')
+  addBtn.addEventListener('click', async () => {
+    const id = idInput.value.trim()
+    const val = valInput.value
+    if (!id || !val) return
+    await fetch('/api/vault', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, label: id, value: val }),
+    })
+    idInput.value = ''
+    valInput.value = ''
+    loadVault()
+  })
+  valInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addBtn.click() })
+})()
+
+// --- Env var modal for GitHub repo install ---
+let _envVarResolve = null
+function showEnvVarModal(envVars) {
+  return new Promise((resolve) => {
+    _envVarResolve = resolve
+    const modal = document.getElementById('envVarModal')
+    const fields = document.getElementById('envVarFields')
+    fields.innerHTML = ''
+    for (const v of envVars) {
+      const row = document.createElement('div')
+      row.className = 'env-var-row'
+      row.innerHTML = `<label class="env-var-label">${escapeHtml(v)}</label><input type="password" class="input env-var-input" data-key="${escapeHtml(v)}" placeholder="Ertek...">`
+      fields.appendChild(row)
+    }
+    modal.hidden = false
+  })
+}
+
+;(function wireEnvVarModal() {
+  const modal = document.getElementById('envVarModal')
+  if (!modal) return
+  document.getElementById('envVarModalClose').addEventListener('click', () => {
+    modal.hidden = true
+    if (_envVarResolve) { _envVarResolve(null); _envVarResolve = null }
+  })
+  document.getElementById('envVarSkipBtn').addEventListener('click', () => {
+    modal.hidden = true
+    if (_envVarResolve) { _envVarResolve(null); _envVarResolve = null }
+  })
+  document.getElementById('envVarSaveBtn').addEventListener('click', () => {
+    const inputs = document.querySelectorAll('#envVarFields .env-var-input')
+    const env = {}
+    for (const inp of inputs) {
+      const key = inp.getAttribute('data-key')
+      const val = inp.value.trim()
+      if (key && val) env[key] = val
+    }
+    modal.hidden = true
+    if (_envVarResolve) { _envVarResolve(env); _envVarResolve = null }
+  })
+})()
+
+// --- Vault Page ---
+let _vaultSecrets = []
+
+async function loadVaultPage() {
+  try {
+    const res = await fetch('/api/vault')
+    const data = await res.json()
+    _vaultSecrets = data.secrets || []
+    document.getElementById('vaultStatTotal').textContent = String(_vaultSecrets.length)
+    renderVaultGrid(_vaultSecrets)
+  } catch { /* ignore */ }
+}
+
+function renderVaultGrid(secrets) {
+  const list = document.getElementById('vaultPageList')
+  const empty = document.getElementById('vaultPageEmpty')
+  list.innerHTML = ''
+  if (secrets.length === 0) { empty.hidden = false; return }
+  empty.hidden = true
+  for (const s of secrets) {
+    const card = document.createElement('div')
+    card.className = 'vault-card'
+    const date = new Date(s.updatedAt).toLocaleDateString('hu-HU')
+    card.innerHTML = `<div class="vault-card-header"><div class="vault-card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><div class="vault-card-title"><div class="vault-card-id">${escapeHtml(s.id)}</div>${s.label !== s.id ? `<div class="vault-card-label">${escapeHtml(s.label)}</div>` : ''}</div><div class="vault-card-meta">${date}</div></div><div class="vault-card-actions"><button class="btn-secondary btn-compact vault-card-reveal" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> Mutat</button><button class="btn-secondary btn-compact vault-card-delete" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg> Torles</button></div>`
+    list.appendChild(card)
+  }
+  list.querySelectorAll('.vault-card-reveal').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-id')
+      const card = btn.closest('.vault-card')
+      const existing = card.querySelector('.vault-card-value')
+      if (existing) { existing.remove(); btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> Mutat'; return }
+      const res = await fetch(`/api/vault/${encodeURIComponent(id)}`)
+      const data = await res.json()
+      if (data.value) {
+        const valEl = document.createElement('div')
+        valEl.className = 'vault-card-value'
+        valEl.textContent = data.value
+        card.appendChild(valEl)
+        btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg> Elrejt'
+      }
+    })
+  })
+  list.querySelectorAll('.vault-card-delete').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-id')
+      if (!confirm(`Torlod: ${id}?`)) return
+      await fetch(`/api/vault/${encodeURIComponent(id)}`, { method: 'DELETE' })
+      loadVaultPage()
+      loadVault()
+    })
+  })
+}
+
+;(function wireVaultPage() {
+  const newBtn = document.getElementById('vaultPageNewBtn')
+  const panel = document.getElementById('vaultAddPanel')
+  const closeBtn = document.getElementById('vaultAddPanelClose')
+  const addBtn = document.getElementById('vaultPageAddBtn')
+  if (!newBtn || !panel) return
+
+  newBtn.addEventListener('click', () => {
+    panel.hidden = !panel.hidden
+    if (!panel.hidden) document.getElementById('vaultPageIdInput').focus()
+  })
+  closeBtn?.addEventListener('click', () => { panel.hidden = true })
+
+  addBtn.addEventListener('click', async () => {
+    const id = document.getElementById('vaultPageIdInput').value.trim()
+    const label = document.getElementById('vaultPageLabelInput').value.trim() || id
+    const value = document.getElementById('vaultPageValueInput').value
+    if (!id || !value) return
+    addBtn.disabled = true
+    await fetch('/api/vault', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, label, value }),
+    })
+    document.getElementById('vaultPageIdInput').value = ''
+    document.getElementById('vaultPageLabelInput').value = ''
+    document.getElementById('vaultPageValueInput').value = ''
+    addBtn.disabled = false
+    panel.hidden = true
+    loadVaultPage()
+    loadVault()
+  })
+  document.getElementById('vaultPageValueInput')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') addBtn.click() })
+
+  document.getElementById('vaultSearchInput')?.addEventListener('input', (e) => {
+    const q = e.target.value.toLowerCase().trim()
+    if (!q) { renderVaultGrid(_vaultSecrets); return }
+    renderVaultGrid(_vaultSecrets.filter(s => s.id.toLowerCase().includes(q) || s.label.toLowerCase().includes(q)))
+  })
+})()
 
 // --- External project paths management ---
 async function loadExternalPaths() {

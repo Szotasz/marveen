@@ -56,6 +56,10 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
         <span class="sb-label">Státusz</span>
       </a>
+      <a href="#" class="sb-link" data-page="vault">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1"/></svg>
+        <span class="sb-label">Vault</span>
+      </a>
       <a href="#" class="sb-link" data-page="updates" id="updatesNavLink">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
         <span class="sb-label">Frissítések</span>
@@ -400,6 +404,36 @@
         <div class="connector-grid" id="connectorGrid"></div>
 
         <div class="connector-external-paths">
+          <div class="connector-external-header" id="githubReposToggle">
+            <span class="connector-scope-toggle">▶</span>
+            GitHub repok <span class="connector-scope-count" id="githubRepoCount">0</span>
+          </div>
+          <div class="connector-external-body" id="githubReposBody" hidden>
+            <div id="githubRepoList"></div>
+            <div class="connector-external-add">
+              <input type="text" id="githubRepoInput" class="input" placeholder="https://github.com/user/repo">
+              <button class="btn-secondary btn-compact" id="githubRepoAddBtn">Telepites</button>
+            </div>
+            <div id="githubRepoStatus" class="github-repo-status" hidden></div>
+          </div>
+        </div>
+
+        <div class="connector-external-paths">
+          <div class="connector-external-header" id="vaultToggle">
+            <span class="connector-scope-toggle">▶</span>
+            Vault (titkositott kulcsok) <span class="connector-scope-count" id="vaultCount">0</span>
+          </div>
+          <div class="connector-external-body" id="vaultBody" hidden>
+            <div id="vaultList"></div>
+            <div class="connector-external-add">
+              <input type="text" id="vaultIdInput" class="input" placeholder="Kulcs nev (pl. OPENAI_API_KEY)" style="flex:1">
+              <input type="password" id="vaultValueInput" class="input" placeholder="Ertek" style="flex:1">
+              <button class="btn-secondary btn-compact" id="vaultAddBtn">Mentes</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="connector-external-paths">
           <div class="connector-external-header" id="externalPathsToggle">
             <span class="connector-scope-toggle">▶</span>
             Kulso projekt utvonalak <span class="connector-scope-count" id="externalPathCount">0</span>
@@ -410,6 +444,24 @@
               <input type="text" id="externalPathInput" class="input" placeholder="/Users/...">
               <button class="btn-secondary btn-compact" id="externalPathAddBtn">Hozzaad</button>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Env var modal for GitHub repo install -->
+      <div class="modal-overlay" id="envVarModal" hidden>
+        <div class="modal-content">
+          <div class="modal-header">
+            <h3>API kulcsok megadasa</h3>
+            <button class="modal-close" id="envVarModalClose">&times;</button>
+          </div>
+          <div class="modal-body">
+            <p class="modal-desc">Ez az MCP szerver az alabbi env valtozokat igenyeli. Az ertekek titkositva a Vault-ba kerulnek.</p>
+            <div id="envVarFields"></div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn-secondary" id="envVarSkipBtn">Kihagyas</button>
+            <button class="btn-primary" id="envVarSaveBtn">Mentes es telepites</button>
           </div>
         </div>
       </div>
@@ -538,6 +590,86 @@
       <p style="color:var(--text-muted);font-size:12px;margin-top:16px">
         A szerep és a beosztott/vezető kapcsolatok az ügynök részletek &gt; Csapat fülén szerkeszthetők.
       </p>
+    </div>
+
+    <!-- === Vault Page === -->
+    <div class="page" id="vaultPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1>Vault</h1>
+            <p class="subtitle">Titkositott kulcsok es API tokenek</p>
+          </div>
+          <button class="btn-primary btn-compact" id="vaultPageNewBtn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+            Uj kulcs
+          </button>
+        </div>
+        <div class="info-box">
+          <strong>AES-256-GCM</strong> titkositas &middot; A kulcsok kizarolag a helyi gepen tarolodnak, soha nem hagyjak el a rendszert. MCP szerverek telepitesekor a szukseges API kulcsokat itt tarolhatod biztonsagosan.
+        </div>
+      </div>
+
+      <div class="vault-stats" id="vaultStats">
+        <div class="stat-card">
+          <div class="stat-value" id="vaultStatTotal">0</div>
+          <div class="stat-label">Tarolt kulcs</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="vaultStatEncryption">AES-256</div>
+          <div class="stat-label">Titkositas</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="vaultStatStorage">Helyi</div>
+          <div class="stat-label">Tarolas</div>
+        </div>
+      </div>
+
+      <!-- Add new secret panel (hidden by default, toggled by button) -->
+      <div class="vault-add-panel" id="vaultAddPanel" hidden>
+        <div class="vault-add-panel-header">
+          <h3>Uj kulcs hozzaadasa</h3>
+          <button class="modal-close" id="vaultAddPanelClose">&times;</button>
+        </div>
+        <div class="vault-add-fields">
+          <div class="vault-field-group">
+            <label class="vault-field-label">Kulcs neve</label>
+            <input type="text" id="vaultPageIdInput" class="input" placeholder="pl. OPENAI_API_KEY">
+          </div>
+          <div class="vault-field-group">
+            <label class="vault-field-label">Leiras (opcionalis)</label>
+            <input type="text" id="vaultPageLabelInput" class="input" placeholder="pl. OpenAI production key">
+          </div>
+          <div class="vault-field-group">
+            <label class="vault-field-label">Ertek</label>
+            <input type="password" id="vaultPageValueInput" class="input" placeholder="sk-...">
+          </div>
+        </div>
+        <div class="vault-add-actions">
+          <button class="btn-primary" id="vaultPageAddBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            Mentes a Vault-ba
+          </button>
+        </div>
+      </div>
+
+      <div class="vault-search-wrap">
+        <svg class="vault-search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        <input type="text" id="vaultSearchInput" class="vault-search" placeholder="Kereses a kulcsok kozott...">
+      </div>
+
+      <div class="vault-grid" id="vaultPageList"></div>
+      <div id="vaultPageEmpty" class="vault-empty" hidden>
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1"/>
+        </svg>
+        <p>Meg nincs tarolt kulcs</p>
+        <p class="vault-empty-hint">Adj hozza egyet az "Uj kulcs" gombbal</p>
+      </div>
     </div>
 
     <!-- === Updates Page === -->

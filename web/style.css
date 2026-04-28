@@ -2842,6 +2842,269 @@ main {
 }
 .connector-external-item button:hover { opacity: 0.7; }
 
+.github-repo-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.github-repo-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.github-repo-name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.github-repo-date {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: inherit;
+}
+.github-repo-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.github-repo-actions button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+}
+.github-repo-update { color: var(--accent); }
+.github-repo-update:hover { opacity: 0.7; }
+.github-repo-delete { color: var(--danger); }
+.github-repo-delete:hover { opacity: 0.7; }
+.github-repo-status {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+.github-repo-status.loading { background: var(--bg-card); color: var(--accent); border: 1px solid var(--accent); }
+.github-repo-status.error { background: var(--bg-card); color: var(--danger); border: 1px solid var(--danger); }
+.github-repo-status.success { background: var(--bg-card); color: var(--success); border: 1px solid var(--success); }
+.github-repo-status[hidden] { display: none; }
+
+/* Vault page */
+.vault-stats {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+.vault-add-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 20px;
+  animation: slideDown 0.2s ease;
+}
+.vault-add-panel[hidden] { display: none; }
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.vault-add-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.vault-add-panel-header h3 { margin: 0; font-size: 15px; }
+.vault-add-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.vault-add-fields .vault-field-group:last-child {
+  grid-column: 1 / -1;
+}
+.vault-field-group { display: flex; flex-direction: column; gap: 4px; }
+.vault-field-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+.vault-add-actions { display: flex; justify-content: flex-end; }
+@media (max-width: 600px) {
+  .vault-add-fields { grid-template-columns: 1fr; }
+  .vault-add-fields .vault-field-group:last-child { grid-column: auto; }
+}
+.vault-search-wrap {
+  position: relative;
+  margin-bottom: 16px;
+}
+.vault-search-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  pointer-events: none;
+}
+.vault-search {
+  width: 100%;
+  padding: 10px 12px 10px 38px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+  transition: border-color var(--transition);
+}
+.vault-search:focus { border-color: var(--accent); }
+.vault-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 12px;
+}
+.vault-card {
+  display: flex;
+  flex-direction: column;
+  padding: 16px 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: all var(--transition);
+  gap: 8px;
+}
+.vault-card:hover {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-sm);
+}
+.vault-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.vault-card-icon {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft, rgba(99, 102, 241, 0.1));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+}
+.vault-card-title {
+  flex: 1;
+  min-width: 0;
+}
+.vault-card-id {
+  font-family: monospace;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  word-break: break-all;
+}
+.vault-card-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.vault-card-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  align-self: flex-start;
+  margin-top: 2px;
+}
+.vault-card-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+.vault-card-value {
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: monospace;
+  font-size: 12px;
+  word-break: break-all;
+  animation: slideDown 0.15s ease;
+}
+.vault-empty {
+  text-align: center;
+  padding: 48px 20px;
+  color: var(--text-muted);
+}
+.vault-empty[hidden] { display: none; }
+.vault-empty svg { margin-bottom: 12px; opacity: 0.4; }
+.vault-empty p { margin: 4px 0; font-size: 14px; }
+.vault-empty-hint { font-size: 12px !important; opacity: 0.6; }
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.modal-overlay[hidden] { display: none; }
+.modal-content {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  width: 90%;
+  max-width: 480px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-header h3 { margin: 0; font-size: 15px; }
+.modal-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 18px;
+  padding: 4px 8px;
+}
+.modal-close:hover { color: var(--text); }
+.modal-body { padding: 16px 20px; }
+.modal-desc { font-size: 13px; color: var(--text-muted); margin: 0 0 12px; }
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+}
+.env-var-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.env-var-label {
+  font-size: 12px;
+  font-weight: 600;
+  font-family: monospace;
+  color: var(--text);
+}
+.env-var-input { width: 100%; }
 .connector-builtin-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));

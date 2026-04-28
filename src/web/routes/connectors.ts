@@ -13,7 +13,8 @@ import { readFileOr, AGENTS_BASE_DIR, listAgentNames } from '../agent-config.js'
 import { getMcpListCache, refreshMcpListCache } from '../mcp-list.js'
 import { readBody, json } from '../http-helpers.js'
 import { shellEscape } from '../sanitize.js'
-import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath } from '../dashboard-settings.js'
+import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars } from '../dashboard-settings.js'
+import { listSecrets, setSecret, getSecret, deleteSecret } from '../vault.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
@@ -170,6 +171,48 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const { path: p } = JSON.parse(body.toString()) as { path: string }
     const paths = removeExternalProjectPath(p)
     json(res, { ok: true, paths })
+    return true
+  }
+
+  if (path === '/api/connectors/github-repos' && method === 'GET') {
+    json(res, { repos: getGitHubRepos() })
+    return true
+  }
+
+  if (path === '/api/connectors/github-repos' && method === 'POST') {
+    const body = await readBody(req)
+    const { url, env } = JSON.parse(body.toString()) as { url: string, env?: Record<string, string> }
+    if (!url?.trim()) { json(res, { error: 'URL is required' }, 400); return true }
+
+    const envVarMapping: Record<string, string> = {}
+    if (env) {
+      for (const [key, value] of Object.entries(env)) {
+        const vaultId = `github-env-${key.toLowerCase()}-${Date.now()}`
+        setSecret(vaultId, `${key} (GitHub repo)`, value)
+        envVarMapping[key] = vaultId
+      }
+    }
+
+    const result = await installGitHubRepo(url.trim(), Object.keys(envVarMapping).length > 0 ? envVarMapping : undefined)
+    if (result.error) { json(res, { error: result.error }, 400); return true }
+    json(res, { ok: true, repo: result.repo, requiredEnvVars: result.requiredEnvVars })
+    return true
+  }
+
+  const githubRepoMatch = path.match(/^\/api\/connectors\/github-repos\/([^/]+)$/)
+  if (githubRepoMatch && method === 'DELETE') {
+    const name = decodeURIComponent(githubRepoMatch[1])
+    const result = removeGitHubRepo(name)
+    if (result.error) { json(res, { error: result.error }, 404); return true }
+    json(res, { ok: true })
+    return true
+  }
+
+  if (githubRepoMatch && method === 'PATCH') {
+    const name = decodeURIComponent(githubRepoMatch[1])
+    const result = updateGitHubRepo(name)
+    if (result.error) { json(res, { error: result.error }, 400); return true }
+    json(res, { ok: true })
     return true
   }
 
@@ -434,6 +477,37 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       logger.error({ err }, 'Failed to uninstall MCP from catalog')
       json(res, { error: err.message || 'Failed to uninstall' }, 500)
     }
+    return true
+  }
+
+  // === Vault ===
+  if (path === '/api/vault' && method === 'GET') {
+    json(res, { secrets: listSecrets() })
+    return true
+  }
+
+  if (path === '/api/vault' && method === 'POST') {
+    const body = await readBody(req)
+    const { id, label, value } = JSON.parse(body.toString()) as { id: string, label: string, value: string }
+    if (!id?.trim() || !value) { json(res, { error: 'id and value required' }, 400); return true }
+    setSecret(id.trim(), label || id.trim(), value)
+    json(res, { ok: true })
+    return true
+  }
+
+  const vaultMatch = path.match(/^\/api\/vault\/([^/]+)$/)
+  if (vaultMatch && method === 'GET') {
+    const id = decodeURIComponent(vaultMatch[1])
+    const val = getSecret(id)
+    if (val === null) { json(res, { error: 'Not found' }, 404); return true }
+    json(res, { id, value: val })
+    return true
+  }
+
+  if (vaultMatch && method === 'DELETE') {
+    const id = decodeURIComponent(vaultMatch[1])
+    if (!deleteSecret(id)) { json(res, { error: 'Not found' }, 404); return true }
+    json(res, { ok: true })
     return true
   }
 
