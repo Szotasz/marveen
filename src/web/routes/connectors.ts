@@ -325,15 +325,41 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
   if (connectorDetailMatch && method === 'DELETE' && !path.includes('/assign')) {
     const name = decodeURIComponent(connectorDetailMatch[1])
-    try {
-      try {
-        execSync(`claude mcp remove ${shellEscape(name)} -s project 2>&1`, { timeout: 10000 })
-      } catch {
-        execSync(`claude mcp remove ${shellEscape(name)} -s user 2>&1`, { timeout: 10000 })
+    let removed = 0
+    const mcpFiles = [
+      join(PROJECT_ROOT, '.mcp.json'),
+      join(homedir(), '.claude.json'),
+    ]
+    for (const agentName of listAgentNames()) {
+      mcpFiles.push(join(AGENTS_BASE_DIR, agentName, '.mcp.json'))
+      const projectsDir = join(AGENTS_BASE_DIR, agentName, 'projects')
+      if (existsSync(projectsDir)) {
+        try {
+          for (const proj of readdirSync(projectsDir)) {
+            if (statSync(join(projectsDir, proj)).isDirectory()) {
+              mcpFiles.push(join(projectsDir, proj, '.mcp.json'))
+            }
+          }
+        } catch { /* ignore */ }
       }
-      json(res, { ok: true })
-    } catch {
-      json(res, { error: 'Failed to remove connector' }, 500)
+    }
+    for (const extPath of getExternalProjectPaths()) {
+      mcpFiles.push(join(extPath, '.mcp.json'))
+    }
+    for (const mcpPath of mcpFiles) {
+      try {
+        const parsed = JSON.parse(readFileOr(mcpPath, '{}'))
+        if (parsed.mcpServers && parsed.mcpServers[name]) {
+          delete parsed.mcpServers[name]
+          atomicWriteFileSync(mcpPath, JSON.stringify(parsed, null, 2))
+          removed++
+        }
+      } catch { /* skip unreadable files */ }
+    }
+    if (removed > 0) {
+      json(res, { ok: true, removed })
+    } else {
+      json(res, { error: 'Connector not found in any config' }, 404)
     }
     return true
   }
