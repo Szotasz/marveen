@@ -10,7 +10,7 @@ import {
 } from '../../mcp-list-parser.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { readFileOr, AGENTS_BASE_DIR, listAgentNames } from '../agent-config.js'
-import { getMcpListCache, refreshMcpListCache } from '../mcp-list.js'
+import { getMcpListCache, refreshMcpListCache, purgeFromMcpListCache } from '../mcp-list.js'
 import { readBody, json } from '../http-helpers.js'
 import { shellEscape } from '../sanitize.js'
 import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars } from '../dashboard-settings.js'
@@ -357,7 +357,10 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       } catch { /* skip unreadable files */ }
     }
     if (removed > 0) {
+      purgeFromMcpListCache(name)
       json(res, { ok: true, removed })
+    } else if (purgeFromMcpListCache(name)) {
+      json(res, { ok: true, removed: 0, purgedFromCache: true })
     } else {
       json(res, { error: 'Connector not found in any config' }, 404)
     }

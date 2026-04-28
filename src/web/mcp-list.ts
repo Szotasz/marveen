@@ -41,6 +41,15 @@ export function getMcpListCache(): McpListCache {
   return mcpListCache
 }
 
+export function purgeFromMcpListCache(name: string): boolean {
+  const before = mcpListCache.entries.length
+  mcpListCache = {
+    ...mcpListCache,
+    entries: mcpListCache.entries.filter(e => e.name !== name),
+  }
+  return mcpListCache.entries.length < before
+}
+
 // Private working directory for `claude mcp list`. Running from /tmp
 // directly was tempting (no project-local .mcp.json to spawn), but on
 // multi-user hosts any user with write access to /tmp can plant a
