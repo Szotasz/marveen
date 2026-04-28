@@ -3466,7 +3466,7 @@ document.getElementById('connectorRefreshBtn').addEventListener('click', async (
     if (!res.ok || !data.ok) {
       showToast('Frissítés sikertelen: ' + (data.error || 'HTTP ' + res.status))
     } else {
-      showToast('Frissítve (' + (data.count || 0) + ' MCP)')
+      showToast('MCP lista frissítve (' + (data.count || 0) + ' globális connector)')
     }
     await loadConnectors()
     // Reload catalog only if the Gallery tab is currently active so we
@@ -3661,11 +3661,14 @@ document.getElementById('addConnectorBtn').addEventListener('click', () => {
   document.getElementById('connectorUrl').value = ''
   document.getElementById('connectorCmd').value = ''
   document.getElementById('connectorArgs').value = ''
-  document.getElementById('connectorType').value = 'remote'
+  document.getElementById('connectorType').value = 'stdio'
   document.getElementById('connectorScope').value = 'user'
-  document.getElementById('connectorUrlGroup').hidden = false
-  document.getElementById('connectorCmdGroup').hidden = true
-  document.getElementById('connectorArgsGroup').hidden = true
+  document.getElementById('connectorUrlGroup').hidden = true
+  document.getElementById('connectorCmdGroup').hidden = false
+  document.getElementById('connectorArgsGroup').hidden = false
+  document.getElementById('connectorEnvGroup').hidden = false
+  document.getElementById('connectorEnvList').innerHTML = ''
+  loadNewConnectorAgents()
   openModal(connectorModalOverlay)
 })
 document.getElementById('connectorModalClose').addEventListener('click', () => closeModal(connectorModalOverlay))
@@ -3675,10 +3678,11 @@ connectorDetailOverlay.addEventListener('click', (e) => { if (e.target === conne
 
 // Type toggle
 document.getElementById('connectorType').addEventListener('change', () => {
-  const isLocal = document.getElementById('connectorType').value === 'local'
-  document.getElementById('connectorUrlGroup').hidden = isLocal
-  document.getElementById('connectorCmdGroup').hidden = !isLocal
-  document.getElementById('connectorArgsGroup').hidden = !isLocal
+  const isStdio = document.getElementById('connectorType').value === 'stdio'
+  document.getElementById('connectorUrlGroup').hidden = isStdio
+  document.getElementById('connectorCmdGroup').hidden = !isStdio
+  document.getElementById('connectorArgsGroup').hidden = !isStdio
+  document.getElementById('connectorEnvGroup').hidden = !isStdio
 })
 
 // Default TRUE: if we never successfully read /api/connectors/status
@@ -3840,14 +3844,17 @@ function renderConnectors() {
 
   const globalScopes = ['global', 'plugin']
   const agentScopes = []
-  const projectScopes = []
+  const internalProjectScopes = []
+  const externalProjectScopes = []
   for (const scope of groups.keys()) {
     if (scope.startsWith('agent:')) agentScopes.push(scope)
-    else if (scope.startsWith('project:')) projectScopes.push(scope)
+    else if (scope.startsWith('project:external/')) externalProjectScopes.push(scope)
+    else if (scope.startsWith('project:')) internalProjectScopes.push(scope)
     else if (!globalScopes.includes(scope)) globalScopes.push(scope)
   }
   agentScopes.sort()
-  projectScopes.sort()
+  internalProjectScopes.sort()
+  externalProjectScopes.sort()
 
   const sourceLabels = {
     'claude.ai': 'claude.ai',
@@ -3930,11 +3937,11 @@ function renderConnectors() {
   }
   if (globalGrid.children.length > 0) connectorGrid.appendChild(globalGrid)
 
-  // === Ágensek ===
+  // === Ügynökök ===
   if (agentScopes.length > 0) {
     const agentHeading = document.createElement('div')
     agentHeading.className = 'connector-group-heading'
-    agentHeading.textContent = 'Ágensek'
+    agentHeading.textContent = 'Ügynökök'
     connectorGrid.appendChild(agentHeading)
 
     for (const ag of agentScopes) {
@@ -3943,16 +3950,33 @@ function renderConnectors() {
     }
   }
 
-  // === Projektek ===
-  if (projectScopes.length > 0) {
+  // === Projektek (belső) ===
+  if (internalProjectScopes.length > 0) {
     const projectHeading = document.createElement('div')
     projectHeading.className = 'connector-group-heading'
     projectHeading.textContent = 'Projektek'
     connectorGrid.appendChild(projectHeading)
 
-    for (const ps of projectScopes) {
-      const projLabel = ps.slice('project:'.length)
+    for (const ps of internalProjectScopes) {
+      const parts = ps.slice('project:'.length).split('/')
+      const projLabel = parts[parts.length - 1]
       renderCollapsible(projLabel, '📁', groups.get(ps), connectorGrid)
+    }
+  }
+
+  // === Külső projektek ===
+  if (externalProjectScopes.length > 0 || document.getElementById('externalPathsToggle')) {
+    const extHeading = document.createElement('div')
+    extHeading.className = 'connector-group-heading'
+    extHeading.textContent = 'Külső projektek'
+    connectorGrid.appendChild(extHeading)
+
+    const extPathsPanel = document.getElementById('externalPathsSection')
+    if (extPathsPanel) connectorGrid.appendChild(extPathsPanel)
+
+    for (const ps of externalProjectScopes) {
+      const projLabel = ps.slice('project:external/'.length)
+      renderCollapsible(projLabel, '📂', groups.get(ps), connectorGrid)
     }
   }
 }
@@ -4337,12 +4361,19 @@ async function openConnectorDetail(connector) {
     document.getElementById('connectorDetailInfo').innerHTML = '<p>Részletek betöltése sikertelen</p>'
   }
 
-  // Agent assignment. Marveen auto-loads global connectors via the project
-  // .mcp.json, so she shows up as a fixed disabled-checked entry; sub-agents
-  // need explicit assignment because the file gets copied into their dir.
   try {
-    const agentsRes = await fetch('/api/schedules/agents')
+    const [agentsRes, connectorsRes] = await Promise.all([
+      fetch('/api/schedules/agents'),
+      fetch('/api/connectors'),
+    ])
     const allAgents = await agentsRes.json()
+    const allConnectors = await connectorsRes.json()
+    const assignedAgents = new Set()
+    for (const c of allConnectors) {
+      if (c.name === connector.name && c.source === 'agent') {
+        assignedAgents.add(c.scope.replace('agent:', ''))
+      }
+    }
     const mainAgent = allAgents.find(a => a.name === 'marveen')
     const subAgents = allAgents.filter(a => a.name !== 'marveen')
 
@@ -4358,21 +4389,17 @@ async function openConnectorDetail(connector) {
       listEl.appendChild(item)
     }
     for (const agent of subAgents) {
+      const isAssigned = assignedAgents.has(agent.name)
       const item = document.createElement('div')
       item.className = 'connector-agent-item'
       item.innerHTML = `
-        <input type="checkbox" id="assign-${agent.name}" value="${agent.name}">
+        <input type="checkbox" id="assign-${agent.name}" value="${agent.name}" ${isAssigned ? 'checked' : ''}>
         <label for="assign-${agent.name}">${escapeHtml(agent.label || agent.name)}</label>
       `
       listEl.appendChild(item)
     }
     if (subAgents.length === 0 && !mainAgent) {
       listEl.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Nincsenek hozzarendelheto ügynökök</p>'
-    } else if (subAgents.length === 0) {
-      const note = document.createElement('p')
-      note.style.cssText = 'color:var(--text-muted);font-size:12px;margin-top:8px'
-      note.textContent = 'Sub-agentekhez hozzárendelés a Csapat oldalon létrehozott új ügynök után érhető el.'
-      listEl.appendChild(note)
     }
   } catch {
     document.getElementById('connectorAgentList').innerHTML = ''
@@ -4393,21 +4420,56 @@ async function openConnectorDetail(connector) {
 
   // Assign button
   document.getElementById('connectorAssignBtn').onclick = async () => {
-    const checked = [...document.querySelectorAll('#connectorAgentList input:checked')].map(i => i.value)
-    if (checked.length === 0) { showToast('Válassz legalább egy ügynököt'); return }
+    const checked = [...document.querySelectorAll('#connectorAgentList input:checked:not(:disabled)')].map(i => i.value)
+    const allVisible = [...document.querySelectorAll('#connectorAgentList input:not(:disabled)')].map(i => i.value)
     try {
       await fetch(`/api/connectors/${encodeURIComponent(connector.name)}/assign`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agents: checked }),
+        body: JSON.stringify({ agents: checked, allAgents: allVisible }),
       })
-      showToast('Connector hozzarendelve')
+      showToast('Ügynök-hozzárendelés frissítve')
+      closeModal(connectorDetailOverlay)
+      loadConnectors()
     } catch {
       showToast('Hiba a hozzárendelés során')
     }
   }
 
   openModal(connectorDetailOverlay)
+}
+
+// ENV row management for new connector form
+document.getElementById('connectorEnvAddBtn').addEventListener('click', () => {
+  const list = document.getElementById('connectorEnvList')
+  const row = document.createElement('div')
+  row.className = 'connector-env-row'
+  row.innerHTML = `
+    <input type="text" class="input env-key" placeholder="KULCS" style="flex:1">
+    <span style="color:var(--text-muted)">=</span>
+    <input type="text" class="input env-val" placeholder="érték" style="flex:2">
+    <button type="button" class="btn-link" style="color:var(--danger);padding:2px 6px">&times;</button>
+  `
+  row.querySelector('button').addEventListener('click', () => row.remove())
+  list.appendChild(row)
+})
+
+async function loadNewConnectorAgents() {
+  try {
+    const res = await fetch('/api/schedules/agents')
+    const agents = await res.json()
+    const list = document.getElementById('connectorNewAssignList')
+    list.innerHTML = ''
+    for (const agent of agents) {
+      const item = document.createElement('div')
+      item.className = 'connector-agent-item'
+      item.innerHTML = `
+        <input type="checkbox" id="new-assign-${agent.name}" value="${agent.name}">
+        <label for="new-assign-${agent.name}">${escapeHtml(agent.label || agent.name)}</label>
+      `
+      list.appendChild(item)
+    }
+  } catch { /* ignore */ }
 }
 
 // Save new connector
@@ -4419,13 +4481,23 @@ document.getElementById('saveConnectorBtn').addEventListener('click', async () =
   if (!name) { document.getElementById('connectorName').focus(); return }
 
   const data = { name, type, scope }
-  if (type === 'remote') {
+  if (type === 'http' || type === 'sse') {
     data.url = document.getElementById('connectorUrl').value.trim()
     if (!data.url) { document.getElementById('connectorUrl').focus(); return }
   } else {
     data.command = document.getElementById('connectorCmd').value.trim()
     data.args = document.getElementById('connectorArgs').value.trim()
     if (!data.command) { document.getElementById('connectorCmd').focus(); return }
+    const envRows = document.querySelectorAll('#connectorEnvList .connector-env-row')
+    if (envRows.length > 0) {
+      const env = {}
+      for (const row of envRows) {
+        const k = row.querySelector('.env-key').value.trim()
+        const v = row.querySelector('.env-val').value.trim()
+        if (k) env[k] = v
+      }
+      if (Object.keys(env).length > 0) data.env = env
+    }
   }
 
   const btn = document.getElementById('saveConnectorBtn')

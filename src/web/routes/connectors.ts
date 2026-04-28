@@ -284,7 +284,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const data = JSON.parse(body.toString()) as {
       name: string
-      type: 'remote' | 'local'
+      type: 'stdio' | 'http' | 'sse'
       url?: string
       command?: string
       args?: string
@@ -305,14 +305,15 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     try {
       const scopeFlag = data.scope === 'project' ? '-s project' : '-s user'
 
-      if (data.type === 'remote' && data.url) {
-        execSync(`claude mcp add --transport http ${scopeFlag} ${shellEscape(sanitizedName)} ${shellEscape(data.url)} 2>&1`, { timeout: 15000, encoding: 'utf-8' })
-      } else if (data.type === 'local' && data.command) {
+      if ((data.type === 'http' || data.type === 'sse') && data.url) {
+        const transport = data.type === 'sse' ? 'sse' : 'http'
+        execSync(`claude mcp add --transport ${transport} ${scopeFlag} ${shellEscape(sanitizedName)} ${shellEscape(data.url)} 2>&1`, { timeout: 15000, encoding: 'utf-8' })
+      } else if (data.type === 'stdio' && data.command) {
         const envFlags = data.env ? Object.entries(data.env).map(([k, v]) => `-e ${shellEscape(k)}=${shellEscape(v)}`).join(' ') : ''
-        const argsStr = data.args ? shellEscape(data.args) : ''
+        const argsStr = data.args ? data.args.split(/\s+/).filter(Boolean).map(a => shellEscape(a)).join(' ') : ''
         execSync(`claude mcp add ${scopeFlag} ${shellEscape(sanitizedName)} ${envFlags} -- ${shellEscape(data.command)} ${argsStr} 2>&1`, { timeout: 15000, encoding: 'utf-8' })
       } else {
-        json(res, { error: 'URL (remote) or command (local) required' }, 400)
+        json(res, { error: 'URL (http/sse) or command (stdio) required' }, 400)
         return true
       }
 
@@ -371,7 +372,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   if (connectorAssignMatch && method === 'POST') {
     const connectorName = decodeURIComponent(connectorAssignMatch[1])
     const body = await readBody(req)
-    const { agents: targetAgents } = JSON.parse(body.toString()) as { agents: string[] }
+    const { agents: targetAgents, allAgents: visibleAgents } = JSON.parse(body.toString()) as { agents: string[], allAgents?: string[] }
 
     if (connectorName.startsWith('plugin:')) {
       json(res, { ok: true, note: 'plugin:* connectors are global to every agent -- nothing to assign.' })
@@ -379,7 +380,27 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     }
 
     let connectorConfig: any = null
-    for (const src of [join(PROJECT_ROOT, '.mcp.json'), join(homedir(), '.claude.json')]) {
+    const configSources = [
+      join(PROJECT_ROOT, '.mcp.json'),
+      join(homedir(), '.claude.json'),
+    ]
+    for (const agentName of listAgentNames()) {
+      configSources.push(join(AGENTS_BASE_DIR, agentName, '.mcp.json'))
+      const projectsDir = join(AGENTS_BASE_DIR, agentName, 'projects')
+      if (existsSync(projectsDir)) {
+        try {
+          for (const proj of readdirSync(projectsDir)) {
+            if (statSync(join(projectsDir, proj)).isDirectory()) {
+              configSources.push(join(projectsDir, proj, '.mcp.json'))
+            }
+          }
+        } catch { /* ignore */ }
+      }
+    }
+    for (const extPath of getExternalProjectPaths()) {
+      configSources.push(join(extPath, '.mcp.json'))
+    }
+    for (const src of configSources) {
       try {
         const parsed = JSON.parse(readFileOr(src, '{}'))
         if (parsed.mcpServers && parsed.mcpServers[connectorName]) {
@@ -390,16 +411,30 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     }
     if (!connectorConfig) { json(res, { error: 'Connector not found' }, 404); return true }
 
-    const AGENTS_BASE = join(PROJECT_ROOT, 'agents')
+    const targetSet = new Set(targetAgents)
     for (const agentName of targetAgents) {
-      const mcpPath = join(AGENTS_BASE, agentName, '.mcp.json')
-      if (!existsSync(mcpPath)) continue
+      const mcpPath = join(AGENTS_BASE_DIR, agentName, '.mcp.json')
       let mcpConfig: any = {}
-      try { mcpConfig = JSON.parse(readFileSync(mcpPath, 'utf-8')) } catch {}
+      try { mcpConfig = JSON.parse(readFileOr(mcpPath, '{}')) } catch {}
       if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {}
       mcpConfig.mcpServers[connectorName] = connectorConfig
       atomicWriteFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2))
     }
+
+    if (visibleAgents) {
+      for (const agentName of visibleAgents) {
+        if (targetSet.has(agentName)) continue
+        const mcpPath = join(AGENTS_BASE_DIR, agentName, '.mcp.json')
+        try {
+          const mcpConfig = JSON.parse(readFileOr(mcpPath, '{}'))
+          if (mcpConfig.mcpServers && mcpConfig.mcpServers[connectorName]) {
+            delete mcpConfig.mcpServers[connectorName]
+            atomicWriteFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2))
+          }
+        } catch { /* skip */ }
+      }
+    }
+
     json(res, { ok: true })
     return true
   }
