@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, basename } from 'node:path'
 import { homedir } from 'node:os'
 import { execSync } from 'node:child_process'
 import { PROJECT_ROOT, OLLAMA_URL } from '../../config.js'
@@ -13,6 +13,7 @@ import { readFileOr, AGENTS_BASE_DIR, listAgentNames } from '../agent-config.js'
 import { getMcpListCache, refreshMcpListCache } from '../mcp-list.js'
 import { readBody, json } from '../http-helpers.js'
 import { shellEscape } from '../sanitize.js'
+import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath } from '../dashboard-settings.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
@@ -28,7 +29,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       status: string
       endpoint: string
       type: string
-      source: 'plugin' | 'local-user' | 'local-project' | 'local' | 'claude.ai' | 'agent' | 'agent-project'
+      source: 'plugin' | 'local-user' | 'local-project' | 'local' | 'claude.ai' | 'agent' | 'agent-project' | 'external-project'
       scope: string
     }
     const connectors: ConnectorEntry[] = []
@@ -111,6 +112,19 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       }
     }
 
+    for (const extPath of getExternalProjectPaths()) {
+      try {
+        const parsed = JSON.parse(readFileOr(join(extPath, '.mcp.json'), '{}'))
+        const servers = parsed.mcpServers || {}
+        const projName = basename(extPath)
+        for (const [name, cfg] of Object.entries(servers) as Array<[string, any]>) {
+          const endpoint = cfg?.url || cfg?.command || ''
+          const type = cfg?.url ? 'remote' : 'local'
+          connectors.push({ name, status: 'configured', endpoint: String(endpoint), type, source: 'external-project', scope: `project:external/${projName}` })
+        }
+      } catch { /* ignore */ }
+    }
+
     json(res, connectors)
     return true
   }
@@ -134,6 +148,28 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       lastRefreshed: cache.lastRefreshed,
       error: cache.error,
     }, httpStatus)
+    return true
+  }
+
+  if (path === '/api/connectors/external-paths' && method === 'GET') {
+    json(res, { paths: getExternalProjectPaths() })
+    return true
+  }
+
+  if (path === '/api/connectors/external-paths' && method === 'POST') {
+    const body = await readBody(req)
+    const { path: p } = JSON.parse(body.toString()) as { path: string }
+    const result = addExternalProjectPath(p)
+    if (result.error) { json(res, { error: result.error }, 400); return true }
+    json(res, { ok: true, paths: result.paths })
+    return true
+  }
+
+  if (path === '/api/connectors/external-paths' && method === 'DELETE') {
+    const body = await readBody(req)
+    const { path: p } = JSON.parse(body.toString()) as { path: string }
+    const paths = removeExternalProjectPath(p)
+    json(res, { ok: true, paths })
     return true
   }
 
@@ -173,6 +209,9 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
           }
         } catch { /* ignore */ }
       }
+    }
+    for (const extPath of getExternalProjectPaths()) {
+      searchPaths.push([join(extPath, '.mcp.json'), `project:external/${basename(extPath)}`])
     }
     for (const [src, scope] of searchPaths) {
       try {

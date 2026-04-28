@@ -3714,6 +3714,7 @@ async function loadConnectors() {
       if (s && s.cacheError) connectorCacheError = String(s.cacheError)
     }
     renderConnectors()
+    loadExternalPaths()
   } catch (err) {
     console.error('Connector betöltés hiba:', err)
     connectorGrid.innerHTML = '<div class="connector-loading">Hiba a betöltés során</div>'
@@ -3853,6 +3854,7 @@ function renderConnectors() {
     'local': 'local',
     'agent': 'agent',
     'agent-project': 'project',
+    'external-project': 'external',
   }
 
   function renderCard(c, container) {
@@ -3951,6 +3953,61 @@ function renderConnectors() {
     }
   }
 }
+
+// --- External project paths management ---
+async function loadExternalPaths() {
+  try {
+    const res = await fetch('/api/connectors/external-paths')
+    const data = await res.json()
+    const paths = data.paths || []
+    document.getElementById('externalPathCount').textContent = String(paths.length)
+    const list = document.getElementById('externalPathList')
+    list.innerHTML = ''
+    for (const p of paths) {
+      const item = document.createElement('div')
+      item.className = 'connector-external-item'
+      item.innerHTML = `<span>${escapeHtml(p)}</span><button title="Torles">&times;</button>`
+      item.querySelector('button').addEventListener('click', async () => {
+        await fetch('/api/connectors/external-paths', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: p }),
+        })
+        loadExternalPaths()
+        loadConnectors()
+      })
+      list.appendChild(item)
+    }
+  } catch { /* ignore */ }
+}
+
+;(function wireExternalPaths() {
+  const toggle = document.getElementById('externalPathsToggle')
+  const body = document.getElementById('externalPathsBody')
+  if (!toggle || !body) return
+  toggle.addEventListener('click', () => {
+    const arrow = toggle.querySelector('.connector-scope-toggle')
+    if (body.hidden) { body.hidden = false; arrow.textContent = '▼' }
+    else { body.hidden = true; arrow.textContent = '▶' }
+  })
+  const addBtn = document.getElementById('externalPathAddBtn')
+  const input = document.getElementById('externalPathInput')
+  addBtn.addEventListener('click', async () => {
+    const val = input.value.trim()
+    if (!val) return
+    const res = await fetch('/api/connectors/external-paths', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: val }),
+    })
+    const data = await res.json()
+    if (data.error) { alert(data.error); return }
+    input.value = ''
+    loadExternalPaths()
+    loadConnectors()
+  })
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') addBtn.click() })
+})()
 
 async function openConnectorDetail(connector) {
   document.getElementById('connectorDetailTitle').textContent = connector.name
