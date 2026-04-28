@@ -2798,6 +2798,50 @@ main {
 }
 .connector-scope-grid[hidden] { display: none; }
 
+.connector-external-paths {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.connector-external-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+.connector-external-header:hover { color: var(--text); }
+.connector-external-body[hidden] { display: none; }
+.connector-external-body { margin-top: 10px; }
+.connector-external-add { display: flex; gap: 8px; margin-top: 8px; }
+.connector-external-add .input { flex: 1; }
+.connector-external-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 4px;
+  font-size: 13px;
+  font-family: monospace;
+}
+.connector-external-item button {
+  background: none;
+  border: none;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+}
+.connector-external-item button:hover { opacity: 0.7; }
+
 .connector-builtin-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
