@@ -600,12 +600,22 @@
             <h1>Vault</h1>
             <p class="subtitle">Titkositott kulcsok es API tokenek</p>
           </div>
-          <button class="btn-primary btn-compact" id="vaultPageNewBtn">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-            </svg>
-            Uj kulcs
-          </button>
+          <div style="display:flex;gap:8px">
+            <button class="btn-secondary btn-compact" id="vaultScanBtn" title="MCP konfigok atvizsgalasa erzekeny kulcsokert">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              Scan &amp; Import
+            </button>
+            <button class="btn-secondary btn-compact" id="vaultSyncBtn" title="Vault ertekek szinkronizalasa a .mcp.json fajlokba">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+              Szinkron
+            </button>
+            <button class="btn-primary btn-compact" id="vaultPageNewBtn">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+              Uj kulcs
+            </button>
+          </div>
         </div>
         <div class="info-box">
           <strong>AES-256-GCM</strong> titkositas &middot; A kulcsok kizarolag a helyi gepen tarolodnak, soha nem hagyjak el a rendszert. MCP szerverek telepitesekor a szukseges API kulcsokat itt tarolhatod biztonsagosan.
@@ -620,6 +630,10 @@
         <div class="stat-card">
           <div class="stat-value" id="vaultStatEncryption">AES-256</div>
           <div class="stat-label">Titkositas</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="vaultStatBindings">0</div>
+          <div class="stat-label">Kotes</div>
         </div>
         <div class="stat-card">
           <div class="stat-value" id="vaultStatStorage">Helyi</div>
@@ -669,6 +683,24 @@
         </svg>
         <p>Meg nincs tarolt kulcs</p>
         <p class="vault-empty-hint">Adj hozza egyet az "Uj kulcs" gombbal</p>
+      </div>
+
+      <!-- Scan modal -->
+      <div class="modal-overlay" id="vaultScanOverlay" hidden>
+        <div class="modal" style="max-width:700px">
+          <div class="modal-header">
+            <h2>MCP titkok keresese</h2>
+            <button class="modal-close" id="vaultScanClose">&times;</button>
+          </div>
+          <div class="modal-body">
+            <p class="vault-scan-desc">A rendszer atvizsgalja az osszes .mcp.json fajlt es megkeresi az erzekeny konfiguracios ertekeket (API kulcsok, tokenek, jelszo-szeru ertekek).</p>
+            <div id="vaultScanResults"></div>
+            <div id="vaultScanEmpty" hidden style="text-align:center;color:var(--text-muted);padding:24px">Nem talaltam erzekeny erteket a konfiguraciokban.</div>
+          </div>
+          <div class="modal-footer" id="vaultScanFooter" hidden>
+            <button class="btn-primary" id="vaultScanImportBtn">Kivalasztottak importalasa</button>
+          </div>
+        </div>
       </div>
     </div>
 

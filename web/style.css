@@ -3048,6 +3048,65 @@ main {
 .vault-empty p { margin: 4px 0; font-size: 14px; }
 .vault-empty-hint { font-size: 12px !important; opacity: 0.6; }
 
+.vault-binding-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: white;
+  vertical-align: middle;
+  margin-left: 6px;
+}
+
+.vault-scan-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 16px;
+}
+.vault-scan-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 6px;
+  background: var(--bg-card);
+}
+.vault-scan-check { flex-shrink: 0; }
+.vault-scan-info { flex: 1; min-width: 0; }
+.vault-scan-server {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.vault-scan-env {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: monospace;
+}
+.vault-scan-env code {
+  background: var(--bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+.vault-scan-targets {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.vault-scan-id { flex-shrink: 0; }
+
+.modal-footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .modal-overlay {
   position: fixed;
   inset: 0;

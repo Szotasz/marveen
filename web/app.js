@@ -4162,12 +4162,20 @@ function showEnvVarModal(envVars) {
 // --- Vault Page ---
 let _vaultSecrets = []
 
+let _vaultBindings = []
+
 async function loadVaultPage() {
   try {
-    const res = await fetch('/api/vault')
-    const data = await res.json()
-    _vaultSecrets = data.secrets || []
+    const [secretsRes, bindingsRes] = await Promise.all([
+      fetch('/api/vault'),
+      fetch('/api/vault/bindings'),
+    ])
+    const secretsData = await secretsRes.json()
+    const bindingsData = await bindingsRes.json()
+    _vaultSecrets = secretsData.secrets || []
+    _vaultBindings = bindingsData.bindings || []
     document.getElementById('vaultStatTotal').textContent = String(_vaultSecrets.length)
+    document.getElementById('vaultStatBindings').textContent = String(_vaultBindings.length)
     renderVaultGrid(_vaultSecrets)
   } catch { /* ignore */ }
 }
@@ -4182,7 +4190,9 @@ function renderVaultGrid(secrets) {
     const card = document.createElement('div')
     card.className = 'vault-card'
     const date = new Date(s.updatedAt).toLocaleDateString('hu-HU')
-    card.innerHTML = `<div class="vault-card-header"><div class="vault-card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><div class="vault-card-title"><div class="vault-card-id">${escapeHtml(s.id)}</div>${s.label !== s.id ? `<div class="vault-card-label">${escapeHtml(s.label)}</div>` : ''}</div><div class="vault-card-meta">${date}</div></div><div class="vault-card-actions"><button class="btn-secondary btn-compact vault-card-reveal" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> Mutat</button><button class="btn-secondary btn-compact vault-card-delete" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg> Torles</button></div>`
+    const bindingCount = _vaultBindings.filter(b => b.vaultSecretId === s.id).length
+    const bindingBadge = bindingCount > 0 ? `<span class="vault-binding-badge" title="${bindingCount} kotes">${bindingCount} kotes</span>` : ''
+    card.innerHTML = `<div class="vault-card-header"><div class="vault-card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><div class="vault-card-title"><div class="vault-card-id">${escapeHtml(s.id)} ${bindingBadge}</div>${s.label !== s.id ? `<div class="vault-card-label">${escapeHtml(s.label)}</div>` : ''}</div><div class="vault-card-meta">${date}</div></div><div class="vault-card-actions"><button class="btn-secondary btn-compact vault-card-reveal" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> Mutat</button><button class="btn-secondary btn-compact vault-card-delete" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg> Torles</button></div>`
     list.appendChild(card)
   }
   list.querySelectorAll('.vault-card-reveal').forEach(btn => {
@@ -4251,6 +4261,158 @@ function renderVaultGrid(secrets) {
     const q = e.target.value.toLowerCase().trim()
     if (!q) { renderVaultGrid(_vaultSecrets); return }
     renderVaultGrid(_vaultSecrets.filter(s => s.id.toLowerCase().includes(q) || s.label.toLowerCase().includes(q)))
+  })
+})()
+
+// --- Vault Scan & Import ---
+;(function wireVaultScan() {
+  const scanBtn = document.getElementById('vaultScanBtn')
+  const syncBtn = document.getElementById('vaultSyncBtn')
+  const overlay = document.getElementById('vaultScanOverlay')
+  const closeBtn = document.getElementById('vaultScanClose')
+  const importBtn = document.getElementById('vaultScanImportBtn')
+  if (!scanBtn || !overlay) return
+
+  scanBtn.addEventListener('click', async () => {
+    scanBtn.disabled = true
+    scanBtn.textContent = 'Kereses...'
+    try {
+      const res = await fetch('/api/vault/scan')
+      const data = await res.json()
+      const findings = data.findings || []
+      renderScanResults(findings)
+      overlay.hidden = false
+    } finally {
+      scanBtn.disabled = false
+      scanBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Scan &amp; Import'
+    }
+  })
+
+  closeBtn?.addEventListener('click', () => { overlay.hidden = true })
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.hidden = true })
+
+  syncBtn?.addEventListener('click', async () => {
+    syncBtn.disabled = true
+    syncBtn.textContent = 'Szinkron...'
+    try {
+      const res = await fetch('/api/vault/sync', { method: 'POST' })
+      const data = await res.json()
+      if (data.updated > 0) {
+        showToast(`${data.updated} .mcp.json frissitve`)
+      } else {
+        showToast('Nincs szinkronizalando kotes')
+      }
+      if (data.errors?.length) {
+        showToast('Hibak: ' + data.errors.join(', '))
+      }
+    } finally {
+      syncBtn.disabled = false
+      syncBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> Szinkron'
+    }
+  })
+
+  function renderScanResults(findings) {
+    const results = document.getElementById('vaultScanResults')
+    const empty = document.getElementById('vaultScanEmpty')
+    const footer = document.getElementById('vaultScanFooter')
+    results.innerHTML = ''
+
+    const actionable = findings.filter(f => !f.alreadyInVault)
+    if (actionable.length === 0) {
+      empty.hidden = false
+      footer.hidden = true
+      if (findings.length > 0) {
+        empty.textContent = `${findings.length} erzekeny ertek talalva, de mind mar a Vault-ban van.`
+      }
+      return
+    }
+    empty.hidden = true
+    footer.hidden = false
+
+    const grouped = new Map()
+    for (const f of actionable) {
+      const key = `${f.serverName}|${f.envVar}`
+      if (!grouped.has(key)) grouped.set(key, { ...f, allTargets: [] })
+      grouped.get(key).allTargets.push({ mcpFilePath: f.mcpFilePath, serverName: f.serverName })
+    }
+
+    for (const [key, f] of grouped) {
+      const row = document.createElement('div')
+      row.className = 'vault-scan-row'
+      row.innerHTML = `
+        <label class="vault-scan-check">
+          <input type="checkbox" checked data-key="${escapeHtml(key)}">
+        </label>
+        <div class="vault-scan-info">
+          <div class="vault-scan-server">${escapeHtml(f.serverName)}</div>
+          <div class="vault-scan-env">${escapeHtml(f.envVar)} = <code>${escapeHtml(f.maskedValue)}</code></div>
+          <div class="vault-scan-targets">${f.allTargets.length} fajlban</div>
+        </div>
+        <div class="vault-scan-id">
+          <input type="text" class="input vault-scan-vault-id" value="${escapeHtml(f.suggestedVaultId)}" data-key="${escapeHtml(key)}" style="font-size:12px;width:180px">
+        </div>
+      `
+      results.appendChild(row)
+    }
+  }
+
+  importBtn?.addEventListener('click', async () => {
+    const results = document.getElementById('vaultScanResults')
+    const rows = results.querySelectorAll('.vault-scan-row')
+    const imports = []
+
+    const scanRes = await fetch('/api/vault/scan')
+    const scanData = await scanRes.json()
+    const allFindings = scanData.findings || []
+
+    for (const row of rows) {
+      const cb = row.querySelector('input[type="checkbox"]')
+      if (!cb?.checked) continue
+      const key = cb.getAttribute('data-key')
+      const [serverName, envVar] = key.split('|')
+      const vaultIdInput = row.querySelector('.vault-scan-vault-id')
+      const vaultId = vaultIdInput?.value?.trim() || key
+
+      const matchingFindings = allFindings.filter(
+        f => f.serverName === serverName && f.envVar === envVar && !f.alreadyInVault,
+      )
+      if (matchingFindings.length === 0) continue
+
+      imports.push({
+        serverName,
+        envVar,
+        vaultId,
+        label: `${envVar} (${serverName})`,
+        createBinding: true,
+        targets: matchingFindings.map(f => ({ mcpFilePath: f.mcpFilePath, serverName: f.serverName })),
+      })
+    }
+
+    if (imports.length === 0) { showToast('Nincs kivalasztott elem'); return }
+
+    importBtn.disabled = true
+    importBtn.textContent = 'Importalas...'
+
+    try {
+      const res = await fetch('/api/vault/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imports }),
+      })
+      const data = await res.json()
+      if (data.imported > 0) {
+        showToast(`${data.imported} kulcs importalva, ${data.bound} kotes letrehozva`)
+      }
+      if (data.errors?.length) {
+        showToast('Hibak: ' + data.errors.join(', '))
+      }
+    } finally {
+      importBtn.disabled = false
+      importBtn.textContent = 'Kivalasztottak importalasa'
+    }
+    overlay.hidden = true
+    loadVaultPage()
+    loadVault()
   })
 })()
 
