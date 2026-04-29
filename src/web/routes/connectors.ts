@@ -696,7 +696,9 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       imported++
       if (imp.createBinding && imp.targets.length > 0) {
         addBinding({ vaultSecretId: imp.vaultId, envVar: imp.envVar, targets: imp.targets })
+        const sync = syncSecret(imp.vaultId)
         bound++
+        errors.push(...sync.errors)
       }
     }
     json(res, { ok: true, imported, bound, errors })
