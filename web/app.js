@@ -3668,6 +3668,7 @@ document.getElementById('addConnectorBtn').addEventListener('click', () => {
   document.getElementById('connectorArgsGroup').hidden = false
   document.getElementById('connectorEnvGroup').hidden = false
   document.getElementById('connectorEnvList').innerHTML = ''
+  document.getElementById('connectorAssignGroup').hidden = true
   loadNewConnectorAgents()
   openModal(connectorModalOverlay)
 })
@@ -3683,6 +3684,12 @@ document.getElementById('connectorType').addEventListener('change', () => {
   document.getElementById('connectorCmdGroup').hidden = !isStdio
   document.getElementById('connectorArgsGroup').hidden = !isStdio
   document.getElementById('connectorEnvGroup').hidden = !isStdio
+})
+
+// Scope toggle: hide agent assignment for global scope
+document.getElementById('connectorScope').addEventListener('change', () => {
+  const isProject = document.getElementById('connectorScope').value === 'project'
+  document.getElementById('connectorAssignGroup').hidden = !isProject
 })
 
 // Default TRUE: if we never successfully read /api/connectors/status
