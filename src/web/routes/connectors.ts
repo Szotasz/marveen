@@ -17,7 +17,7 @@ import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectP
 import { listSecrets, setSecret, getSecret, deleteSecret } from '../vault.js'
 import {
   getBindings, addBinding, removeBinding, removeBindingsForSecret,
-  syncSecret, syncAllBindings, scanMcpConfigs,
+  syncSecret, syncAllBindings, scanMcpConfigs, unsyncBinding,
 } from '../vault-bindings.js'
 import type { RouteContext } from './types.js'
 
@@ -646,6 +646,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   if (bindingDeleteMatch && method === 'DELETE') {
     const secretId = decodeURIComponent(bindingDeleteMatch[1])
     const envVar = decodeURIComponent(bindingDeleteMatch[2])
+    unsyncBinding(secretId, envVar)
     if (!removeBinding(secretId, envVar)) { json(res, { error: 'Binding not found' }, 404); return true }
     json(res, { ok: true })
     return true

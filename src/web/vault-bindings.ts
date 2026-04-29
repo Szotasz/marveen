@@ -9,6 +9,7 @@ import { getExternalProjectPaths } from './dashboard-settings.js'
 import { logger } from '../logger.js'
 
 const BINDINGS_PATH = join(PROJECT_ROOT, 'store', 'vault-bindings.json')
+const VAULT_WRAPPER_PATH = join(PROJECT_ROOT, 'scripts', 'vault-env-wrapper.sh')
 
 export interface VaultBindingTarget {
   mcpFilePath: string
@@ -93,6 +94,19 @@ export function removeBinding(vaultSecretId: string, envVar: string): boolean {
 
 export function removeBindingsForSecret(vaultSecretId: string): void {
   const store = readBindings()
+  const toRemove = store.bindings.filter(b => b.vaultSecretId === vaultSecretId)
+  for (const binding of toRemove) {
+    for (const target of binding.targets) {
+      try {
+        const content = JSON.parse(readFileOr(target.mcpFilePath, '{}'))
+        const serverCfg = content.mcpServers?.[target.serverName]
+        if (!serverCfg?.env) continue
+        delete serverCfg.env[binding.envVar]
+        if (!serverHasVaultRefs(serverCfg.env)) unwrapCommand(serverCfg)
+        atomicWriteFileSync(target.mcpFilePath, JSON.stringify(content, null, 2))
+      } catch { /* skip */ }
+    }
+  }
   store.bindings = store.bindings.filter(b => b.vaultSecretId !== vaultSecretId)
   writeBindings(store)
 }
@@ -132,6 +146,7 @@ function maskValue(val: string): string {
 
 function looksLikeSensitiveValue(val: string): boolean {
   if (!val || val.length < 8) return false
+  if (val.startsWith('vault:')) return false
   for (const p of NON_SENSITIVE_VALUE_PATTERNS) {
     if (p.test(val)) return false
   }
@@ -180,12 +195,34 @@ export function scanMcpConfigs(): ScanFinding[] {
   return findings
 }
 
+function wrapCommand(serverCfg: any): void {
+  if (serverCfg.command === VAULT_WRAPPER_PATH) return
+  serverCfg._vaultOriginalCommand = serverCfg.command
+  if (serverCfg.args?.length) serverCfg._vaultOriginalArgs = serverCfg.args
+  serverCfg.args = [serverCfg.command, ...(serverCfg.args || [])]
+  serverCfg.command = VAULT_WRAPPER_PATH
+}
+
+function unwrapCommand(serverCfg: any): void {
+  if (serverCfg.command !== VAULT_WRAPPER_PATH) return
+  if (!serverCfg._vaultOriginalCommand) return
+  serverCfg.command = serverCfg._vaultOriginalCommand
+  serverCfg.args = serverCfg._vaultOriginalArgs || []
+  delete serverCfg._vaultOriginalCommand
+  delete serverCfg._vaultOriginalArgs
+}
+
+function serverHasVaultRefs(env: Record<string, string> | undefined): boolean {
+  if (!env) return false
+  return Object.values(env).some(v => typeof v === 'string' && v.startsWith('vault:'))
+}
+
 export function syncSecret(vaultSecretId: string): SyncResult {
   const bindings = getBindings().filter(b => b.vaultSecretId === vaultSecretId)
   if (bindings.length === 0) return { updated: 0, errors: [] }
 
-  const value = getSecret(vaultSecretId)
-  if (value === null) return { updated: 0, errors: [`Vault secret "${vaultSecretId}" not found`] }
+  const secret = getSecret(vaultSecretId)
+  if (secret === null) return { updated: 0, errors: [`Vault secret "${vaultSecretId}" not found`] }
 
   let updated = 0
   const errors: string[] = []
@@ -194,14 +231,14 @@ export function syncSecret(vaultSecretId: string): SyncResult {
     for (const target of binding.targets) {
       try {
         const content = JSON.parse(readFileOr(target.mcpFilePath, '{}'))
-        if (!content.mcpServers?.[target.serverName]) {
+        const serverCfg = content.mcpServers?.[target.serverName]
+        if (!serverCfg) {
           errors.push(`Server "${target.serverName}" not found in ${target.mcpFilePath}`)
           continue
         }
-        if (!content.mcpServers[target.serverName].env) {
-          content.mcpServers[target.serverName].env = {}
-        }
-        content.mcpServers[target.serverName].env[binding.envVar] = value
+        if (!serverCfg.env) serverCfg.env = {}
+        serverCfg.env[binding.envVar] = `vault:${vaultSecretId}`
+        if (serverCfg.command && !serverCfg.url) wrapCommand(serverCfg)
         atomicWriteFileSync(target.mcpFilePath, JSON.stringify(content, null, 2))
         updated++
       } catch (err: any) {
@@ -212,6 +249,24 @@ export function syncSecret(vaultSecretId: string): SyncResult {
 
   if (updated > 0) logger.info({ vaultSecretId, updated }, 'Vault secret synced to .mcp.json files')
   return { updated, errors }
+}
+
+export function unsyncBinding(vaultSecretId: string, envVar: string): void {
+  const bindings = getBindings().filter(
+    b => b.vaultSecretId === vaultSecretId && b.envVar === envVar,
+  )
+  for (const binding of bindings) {
+    for (const target of binding.targets) {
+      try {
+        const content = JSON.parse(readFileOr(target.mcpFilePath, '{}'))
+        const serverCfg = content.mcpServers?.[target.serverName]
+        if (!serverCfg?.env) continue
+        delete serverCfg.env[envVar]
+        if (!serverHasVaultRefs(serverCfg.env)) unwrapCommand(serverCfg)
+        atomicWriteFileSync(target.mcpFilePath, JSON.stringify(content, null, 2))
+      } catch { /* skip */ }
+    }
+  }
 }
 
 export function syncAllBindings(): SyncResult {
