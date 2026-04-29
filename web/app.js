@@ -4310,50 +4310,55 @@ function renderVaultGrid(secrets) {
   const statusEl = document.getElementById('vaultBindStatus')
   if (!bindBtn || !overlay) return
 
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.hidden = true })
-  closeBtn.addEventListener('click', () => { overlay.hidden = true })
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(overlay) })
+  closeBtn.addEventListener('click', () => { closeModal(overlay) })
 
   bindBtn.addEventListener('click', async () => {
-    statusEl.hidden = true
-    envVarInput.value = ''
+    try {
+      statusEl.hidden = true
+      envVarInput.value = ''
 
-    const [secretsRes, connectorsRes] = await Promise.all([
-      fetch('/api/vault'),
-      fetch('/api/connectors'),
-    ])
-    const secrets = (await secretsRes.json()).secrets || []
-    const connectors = await connectorsRes.json()
+      const [secretsRes, connectorsRes] = await Promise.all([
+        fetch('/api/vault'),
+        fetch('/api/connectors'),
+      ])
+      const secrets = (await secretsRes.json()).secrets || []
+      const connectors = await connectorsRes.json()
 
-    secretSelect.innerHTML = ''
-    for (const s of secrets) {
-      const opt = document.createElement('option')
-      opt.value = s.id
-      opt.textContent = s.label !== s.id ? `${s.id} (${s.label})` : s.id
-      secretSelect.appendChild(opt)
-    }
-    if (secrets.length === 0) {
-      const opt = document.createElement('option')
-      opt.textContent = '-- Nincs vault kulcs --'
-      opt.disabled = true
-      secretSelect.appendChild(opt)
-    }
+      secretSelect.innerHTML = ''
+      for (const s of secrets) {
+        const opt = document.createElement('option')
+        opt.value = s.id
+        opt.textContent = s.label !== s.id ? `${s.id} (${s.label})` : s.id
+        secretSelect.appendChild(opt)
+      }
+      if (secrets.length === 0) {
+        const opt = document.createElement('option')
+        opt.textContent = '-- Nincs vault kulcs --'
+        opt.disabled = true
+        secretSelect.appendChild(opt)
+      }
 
-    const mcpConnectors = connectors.filter(c => c.source !== 'plugin' && c.source !== 'claude.ai')
-    serverSelect.innerHTML = ''
-    for (const c of mcpConnectors) {
-      const opt = document.createElement('option')
-      opt.value = c.name
-      opt.textContent = c.scope !== 'global' ? `${c.name} (${c.scope})` : c.name
-      serverSelect.appendChild(opt)
-    }
-    if (mcpConnectors.length === 0) {
-      const opt = document.createElement('option')
-      opt.textContent = '-- Nincs MCP szerver --'
-      opt.disabled = true
-      serverSelect.appendChild(opt)
-    }
+      const mcpConnectors = connectors.filter(c => c.source !== 'plugin' && c.source !== 'claude.ai')
+      serverSelect.innerHTML = ''
+      for (const c of mcpConnectors) {
+        const opt = document.createElement('option')
+        opt.value = c.name
+        opt.textContent = c.scope !== 'global' ? `${c.name} (${c.scope})` : c.name
+        serverSelect.appendChild(opt)
+      }
+      if (mcpConnectors.length === 0) {
+        const opt = document.createElement('option')
+        opt.textContent = '-- Nincs MCP szerver --'
+        opt.disabled = true
+        serverSelect.appendChild(opt)
+      }
 
-    overlay.hidden = false
+      openModal(overlay)
+    } catch (err) {
+      console.error('Vault bind modal error:', err)
+      showToast('Hiba a hozzarendeles betoltesekor: ' + err.message)
+    }
   })
 
   saveBtn.addEventListener('click', async () => {
@@ -4382,7 +4387,7 @@ function renderVaultGrid(secrets) {
         statusEl.hidden = false
         loadVaultPage()
         loadVault()
-        setTimeout(() => { overlay.hidden = true }, 1500)
+        setTimeout(() => { closeModal(overlay) }, 1500)
       } else {
         statusEl.textContent = data.error || 'Hiba tortent'
         statusEl.className = 'vault-bind-status error'
