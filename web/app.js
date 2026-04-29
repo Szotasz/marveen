@@ -3800,6 +3800,10 @@ if (document.readyState === 'loading') {
 }
 
 function renderConnectors() {
+  // Detach panels that live inside connectorGrid before innerHTML wipes them
+  const _extPathsPanel = document.getElementById('externalPathsSection')
+  if (_extPathsPanel) _extPathsPanel.remove()
+
   // Stats
   if (connectors.length === 0 && connectorCacheWarming) {
     connectorStats.innerHTML = ''
@@ -3965,14 +3969,13 @@ function renderConnectors() {
   }
 
   // === Külső projektek ===
-  if (externalProjectScopes.length > 0 || document.getElementById('externalPathsToggle')) {
+  if (externalProjectScopes.length > 0 || _extPathsPanel) {
     const extHeading = document.createElement('div')
     extHeading.className = 'connector-group-heading'
     extHeading.textContent = 'Külső projektek'
     connectorGrid.appendChild(extHeading)
 
-    const extPathsPanel = document.getElementById('externalPathsSection')
-    if (extPathsPanel) connectorGrid.appendChild(extPathsPanel)
+    if (_extPathsPanel) connectorGrid.appendChild(_extPathsPanel)
 
     for (const ps of externalProjectScopes) {
       const projLabel = ps.slice('project:external/'.length)
