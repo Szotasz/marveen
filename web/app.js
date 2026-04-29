@@ -4681,9 +4681,21 @@ document.getElementById('saveConnectorBtn').addEventListener('click', async () =
       throw new Error(err.error || 'Hiba')
     }
     const result = await res.json()
+    const savedName = result.name || name
+
+    const checkedAgents = Array.from(document.querySelectorAll('#connectorNewAssignList input[type=checkbox]:checked')).map(cb => cb.value)
+    const allAgents = Array.from(document.querySelectorAll('#connectorNewAssignList input[type=checkbox]')).map(cb => cb.value)
+    if (checkedAgents.length > 0) {
+      await fetch(`/api/connectors/${encodeURIComponent(savedName)}/assign`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agents: checkedAgents, allAgents }),
+      }).catch(() => {})
+    }
+
     closeModal(connectorModalOverlay)
     if (result.nameChanged) {
-      showToast(`Connector hozzáadva "${result.name}" néven (szóköz/speciális karakter nem engedélyezett)`)
+      showToast(`Connector hozzáadva "${savedName}" néven (szóköz/speciális karakter nem engedélyezett)`)
     } else {
       showToast('Connector hozzáadva!')
     }
