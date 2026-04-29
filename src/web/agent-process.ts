@@ -5,7 +5,7 @@ import { OLLAMA_URL } from '../config.js'
 import { resolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
 import { detectPaneState } from '../pane-state.js'
-import { agentDir, readAgentModel, readAgentSecurityProfile } from './agent-config.js'
+import { agentDir, readAgentModel, readAgentSecurityProfile, readAgentClaudeConfigDir } from './agent-config.js'
 import { parseTelegramToken } from './telegram.js'
 import { loadProfileTemplate } from './profiles.js'
 import { writeAgentSettingsFromProfile } from './agent-scaffold.js'
@@ -53,6 +53,12 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
     const profile = loadProfileTemplate(readAgentSecurityProfile(name))
     writeAgentSettingsFromProfile(name, profile)
     const skipFlag = profile.permissionMode === 'strict' ? '' : '--dangerously-skip-permissions '
+    // Optional per-agent CLAUDE_CONFIG_DIR (alternate Claude Code config dir,
+    // e.g. for routing this agent to a separate Anthropic login). When the
+    // agent-config field is missing or blank, claudeConfigDir is null and we
+    // emit no export, preserving the default Claude Code behavior.
+    const claudeConfigDir = readAgentClaudeConfigDir(name)
+    const claudeConfigEnv = claudeConfigDir ? `export CLAUDE_CONFIG_DIR="${claudeConfigDir}" && ` : ''
     // bun lives under ~/.bun/bin, which isn't in the dashboard's launchd PATH.
     // The Claude plugin launcher spawns `bun`, so we must prepend it here.
     // Defensive unset of TELEGRAM_BOT_TOKEN: if anything ever pollutes the
@@ -60,7 +66,7 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
     // sourcing .env), the sub-agent would otherwise inherit the main
     // agent's token and trigger a 409 Conflict loop. The per-agent .env
     // in TELEGRAM_STATE_DIR is still the intended source of truth.
-    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && unset TELEGRAM_BOT_TOKEN && export TELEGRAM_STATE_DIR="${tgStateDir}" && ${ollamaEnv}cd "${dir}" && ${CLAUDE} ${skipFlag}--model ${model} --channels plugin:telegram@claude-plugins-official`
+    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && unset TELEGRAM_BOT_TOKEN && export TELEGRAM_STATE_DIR="${tgStateDir}" && ${claudeConfigEnv}${ollamaEnv}cd "${dir}" && ${CLAUDE} ${skipFlag}--model ${model} --channels plugin:telegram@claude-plugins-official`
     execSync(
       `${TMUX} new-session -d -s ${session} "${cmd}"`,
       { timeout: 10000 }
