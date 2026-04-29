@@ -253,6 +253,52 @@ Időzített feladatok és heartbeat monitorok beállítása:
 - Feladat: mindig szól az eredménnyel
 - Heartbeat: csendes ellenőrzés, csak fontosnál értesít
 
+### Vault & Titkosítás
+
+Az MCP szerverek API kulcsait, tokenjeit és jelszavait a Vault kezeli. A titkok AES-256-GCM titkosítással vannak tárolva, a master key macOS-en a Keychain-ben él (egyéb platformon fájl-alapú fallback).
+
+**Miért Vault?** A Claude Code `.mcp.json` fájljai alapértelmezetten plaintext-ben tárolják az API kulcsokat és tokeneket. Ez biztonsági kockázat: a fájlok olvashatóak bármely process által, prompt injection támadással kiolvashatóak, és git-be is véletlenül bekerülhetnek. A Vault ezt úgy oldja meg, hogy a `.mcp.json`-ben csak `vault:SECRET_ID` referenciák állnak, a tényleges értékek titkosítva vannak, és csak induláskor, memóriában oldódnak fel.
+
+**Master key tárolás:**
+- **macOS**: A vault master key a macOS Keychain-ben van tárolva (`com.marveen.vault` service). A Keychain az operációs rendszer titkosított kulcstárolója -- a disk encryption részeként védett, és a felhasználói bejelentkezéshez kötött. Nem kér külön jelszót, transzparens. Ha korábban fájl-alapú kulcs volt használatban (`.vault-key`), az első induláskor automatikusan migrálódik a Keychain-be.
+- **Linux**: A Keychain nem elérhető, ezért a master key fájl-alapú (`store/.vault-key`, `chmod 600`). A titkosítás továbbra is AES-256-GCM, de a master key védelme az OS fájljogosultságokra és disk encryption-re hárul. Éles környezetben érdemes LUKS vagy hasonló disk-level titkosítást használni.
+
+**Működés:**
+- A dashboard Vault oldalán hozhatod létre és kezelheted a titkokat
+- A **Scan & Import** gomb megkeresi a `.mcp.json` fájlokban lévő plaintext titkokat és felajánlja az importálást
+- Importálás után a `.mcp.json`-ben `vault:SECRET_ID` referencia áll a plaintext helyett
+- Az MCP szerver parancs automatikusan becsomagolódik a `vault-env-wrapper.sh` scripttel, ami induláskor feloldja a referenciákat
+
+**Mit érzékel a scanner:**
+- Csak a `.mcp.json` fájlok `env` szekciójában lévő érzékeny kulcsokat (`_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD`, `_PASS`, `PASSWORD`, `CREDENTIAL`, `ACCESS_KEY`, `API_*`, `AUTH_*`, `OAUTH_*`)
+- Az `args`-ban átadott titkokat (pl. `--api-key`) nem érzékeli -- ezeket manuálisan kell env var-ra átállítani
+
+**Vault struktúra:**
+```
+store/vault.json          # Titkosított titkok (AES-256-GCM)
+store/vault-bindings.json # Titok ↔ MCP szerver hozzárendelések
+scripts/vault-env-wrapper.sh  # Runtime feloldó wrapper
+scripts/vault-resolve.mjs     # Secret ID → plaintext feloldás
+```
+
+### Ágens monitorozás
+
+A `monitor_agents.sh` script összefogja az összes futó ágens tmux session-jét egyetlen `monitor` session-be, iTerm2 Control Mode-dal (`-CC`) minden ágens külön iTerm tab-ként jelenik meg.
+
+```bash
+# Lokálisan (a gépen ahol az ágensek futnak):
+./scripts/monitor_agents.sh
+
+# Távolról (laptopról SSH-n, iTerm2-vel):
+ssh macmini -t "~/marveen/scripts/monitor_agents.sh"
+
+# Ha új ágens indult és nem látod a monitorban -- kill + újraindítás:
+ssh macmini "/opt/homebrew/bin/tmux kill-session -t monitor" && \
+  ssh macmini -t "~/marveen/scripts/monitor_agents.sh"
+```
+
+A script automatikusan felderíti a futó `agent-*` és `marveen-channels` session-öket. A monitor session törlése nem érinti az ágens session-öket -- csak a linked-window referenciákat szünteti meg.
+
 ### Frissítés
 ```bash
 ./update.sh
