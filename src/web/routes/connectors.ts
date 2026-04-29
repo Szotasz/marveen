@@ -565,7 +565,8 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   }
 
   const vaultMatch = path.match(/^\/api\/vault\/([^/]+)$/)
-  if (vaultMatch && method === 'GET') {
+  const isVaultSubroute = vaultMatch && ['bindings', 'sync', 'scan', 'import'].includes(vaultMatch[1])
+  if (vaultMatch && !isVaultSubroute && method === 'GET') {
     const id = decodeURIComponent(vaultMatch[1])
     const val = getSecret(id)
     if (val === null) { json(res, { error: 'Not found' }, 404); return true }
@@ -573,7 +574,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  if (vaultMatch && method === 'DELETE') {
+  if (vaultMatch && !isVaultSubroute && method === 'DELETE') {
     const id = decodeURIComponent(vaultMatch[1])
     if (!deleteSecret(id)) { json(res, { error: 'Not found' }, 404); return true }
     removeBindingsForSecret(id)
@@ -592,13 +593,50 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const data = JSON.parse(body.toString()) as {
       vaultSecretId: string
       envVar: string
-      targets: Array<{ mcpFilePath: string, serverName: string }>
+      serverName?: string
+      targets?: Array<{ mcpFilePath: string, serverName: string }>
     }
-    if (!data.vaultSecretId || !data.envVar || !data.targets?.length) {
-      json(res, { error: 'vaultSecretId, envVar, and targets required' }, 400)
+    if (!data.vaultSecretId || !data.envVar) {
+      json(res, { error: 'vaultSecretId and envVar required' }, 400)
       return true
     }
-    addBinding(data)
+
+    let targets = data.targets || []
+    if (data.serverName && targets.length === 0) {
+      const searchPaths: Array<[string, string]> = [
+        [join(PROJECT_ROOT, '.mcp.json'), 'project'],
+        [join(homedir(), '.claude.json'), 'user'],
+      ]
+      for (const agentName of listAgentNames()) {
+        searchPaths.push([join(AGENTS_BASE_DIR, agentName, '.mcp.json'), `agent:${agentName}`])
+        const projectsDir = join(AGENTS_BASE_DIR, agentName, 'projects')
+        if (existsSync(projectsDir)) {
+          try {
+            for (const proj of readdirSync(projectsDir)) {
+              if (!statSync(join(projectsDir, proj)).isDirectory()) continue
+              searchPaths.push([join(projectsDir, proj, '.mcp.json'), `project:${agentName}/${proj}`])
+            }
+          } catch { /* ignore */ }
+        }
+      }
+      for (const extPath of getExternalProjectPaths()) {
+        searchPaths.push([join(extPath, '.mcp.json'), `project:external/${basename(extPath)}`])
+      }
+      for (const [src] of searchPaths) {
+        try {
+          const parsed = JSON.parse(readFileOr(src, '{}'))
+          if (parsed.mcpServers?.[data.serverName]) {
+            targets.push({ mcpFilePath: src, serverName: data.serverName })
+          }
+        } catch { /* skip */ }
+      }
+    }
+
+    if (targets.length === 0) {
+      json(res, { error: 'No targets found for this server' }, 400)
+      return true
+    }
+    addBinding({ vaultSecretId: data.vaultSecretId, envVar: data.envVar, targets })
     const syncResult = syncSecret(data.vaultSecretId)
     json(res, { ok: true, synced: syncResult.updated, errors: syncResult.errors })
     return true

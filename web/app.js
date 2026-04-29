@@ -4298,6 +4298,107 @@ function renderVaultGrid(secrets) {
   })
 })()
 
+// --- Vault Binding modal ---
+;(function wireVaultBind() {
+  const bindBtn = document.getElementById('vaultBindBtn')
+  const overlay = document.getElementById('vaultBindOverlay')
+  const closeBtn = document.getElementById('vaultBindClose')
+  const saveBtn = document.getElementById('vaultBindSaveBtn')
+  const secretSelect = document.getElementById('vaultBindSecret')
+  const serverSelect = document.getElementById('vaultBindServer')
+  const envVarInput = document.getElementById('vaultBindEnvVar')
+  const statusEl = document.getElementById('vaultBindStatus')
+  if (!bindBtn || !overlay) return
+
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.hidden = true })
+  closeBtn.addEventListener('click', () => { overlay.hidden = true })
+
+  bindBtn.addEventListener('click', async () => {
+    statusEl.hidden = true
+    envVarInput.value = ''
+
+    const [secretsRes, connectorsRes] = await Promise.all([
+      fetch('/api/vault'),
+      fetch('/api/connectors'),
+    ])
+    const secrets = (await secretsRes.json()).secrets || []
+    const connectors = await connectorsRes.json()
+
+    secretSelect.innerHTML = ''
+    for (const s of secrets) {
+      const opt = document.createElement('option')
+      opt.value = s.id
+      opt.textContent = s.label !== s.id ? `${s.id} (${s.label})` : s.id
+      secretSelect.appendChild(opt)
+    }
+    if (secrets.length === 0) {
+      const opt = document.createElement('option')
+      opt.textContent = '-- Nincs vault kulcs --'
+      opt.disabled = true
+      secretSelect.appendChild(opt)
+    }
+
+    const mcpConnectors = connectors.filter(c => c.source !== 'plugin' && c.source !== 'claude.ai')
+    serverSelect.innerHTML = ''
+    for (const c of mcpConnectors) {
+      const opt = document.createElement('option')
+      opt.value = c.name
+      opt.textContent = c.scope !== 'global' ? `${c.name} (${c.scope})` : c.name
+      serverSelect.appendChild(opt)
+    }
+    if (mcpConnectors.length === 0) {
+      const opt = document.createElement('option')
+      opt.textContent = '-- Nincs MCP szerver --'
+      opt.disabled = true
+      serverSelect.appendChild(opt)
+    }
+
+    overlay.hidden = false
+  })
+
+  saveBtn.addEventListener('click', async () => {
+    const vaultSecretId = secretSelect.value
+    const serverName = serverSelect.value
+    const envVar = envVarInput.value.trim()
+    if (!vaultSecretId || !serverName || !envVar) {
+      statusEl.textContent = 'Minden mezo kitoltese kotelezo'
+      statusEl.className = 'vault-bind-status error'
+      statusEl.hidden = false
+      return
+    }
+
+    saveBtn.disabled = true
+    saveBtn.textContent = 'Mentes...'
+    try {
+      const res = await fetch('/api/vault/bindings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ vaultSecretId, envVar, serverName }),
+      })
+      const data = await res.json()
+      if (data.ok) {
+        statusEl.textContent = `Hozzarendelve! ${data.synced || 0} fajl frissitve.`
+        statusEl.className = 'vault-bind-status success'
+        statusEl.hidden = false
+        loadVaultPage()
+        loadVault()
+        setTimeout(() => { overlay.hidden = true }, 1500)
+      } else {
+        statusEl.textContent = data.error || 'Hiba tortent'
+        statusEl.className = 'vault-bind-status error'
+        statusEl.hidden = false
+      }
+    } catch (err) {
+      statusEl.textContent = 'Halozati hiba'
+      statusEl.className = 'vault-bind-status error'
+      statusEl.hidden = false
+    } finally {
+      saveBtn.disabled = false
+      saveBtn.textContent = 'Hozzarendeles'
+    }
+  })
+})()
+
 // --- Vault Scan & Import ---
 ;(function wireVaultScan() {
   const scanBtn = document.getElementById('vaultScanBtn')
