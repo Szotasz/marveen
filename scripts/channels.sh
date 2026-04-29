@@ -41,7 +41,7 @@ $TMUX kill-session -t "$SESSION" 2>/dev/null
 
 # Tmux session indítás
 $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
-  "$CLAUDE --dangerously-skip-permissions --channels plugin:telegram@claude-plugins-official"
+  "$CLAUDE --dangerously-skip-permissions --continue --channels plugin:telegram@claude-plugins-official"
 
 # Session startup guard: if the --dangerously-skip-permissions confirmation
 # dialog appears (despite the settings.json flag, e.g. on a Claude Code
