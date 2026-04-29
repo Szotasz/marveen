@@ -403,6 +403,8 @@
 
         <div class="connector-grid" id="connectorGrid"></div>
 
+        <div class="connector-group-heading" style="margin-top:24px">Eszközök</div>
+
         <div class="connector-external-paths">
           <div class="connector-external-header" id="githubReposToggle">
             <span class="connector-scope-toggle">▶</span>
@@ -433,10 +435,10 @@
           </div>
         </div>
 
-        <div class="connector-external-paths">
+        <div class="connector-external-paths" id="externalPathsSection">
           <div class="connector-external-header" id="externalPathsToggle">
             <span class="connector-scope-toggle">▶</span>
-            Kulso projekt utvonalak <span class="connector-scope-count" id="externalPathCount">0</span>
+            Utvonalak <span class="connector-scope-count" id="externalPathCount">0</span>
           </div>
           <div class="connector-external-body" id="externalPathsBody" hidden>
             <div id="externalPathList"></div>
@@ -1330,8 +1332,9 @@
           <div class="form-group form-half">
             <label for="connectorType">Típus</label>
             <select id="connectorType">
-              <option value="remote">Távoli (HTTP URL)</option>
-              <option value="local">Lokális (parancs)</option>
+              <option value="stdio">stdio (parancs)</option>
+              <option value="http">HTTP (streamable)</option>
+              <option value="sse">SSE (legacy HTTP)</option>
             </select>
           </div>
           <div class="form-group form-half">
@@ -1353,6 +1356,15 @@
         <div class="form-group" id="connectorArgsGroup" hidden>
           <label for="connectorArgs">Argumentumok <span class="hint">(opcionális)</span></label>
           <input type="text" id="connectorArgs" placeholder="--port 3000">
+        </div>
+        <div class="form-group" id="connectorEnvGroup" hidden>
+          <label>Környezeti változók <span class="hint">(opcionális)</span></label>
+          <div id="connectorEnvList"></div>
+          <button type="button" class="btn-link" id="connectorEnvAddBtn" style="font-size:12px;margin-top:4px">+ Változó hozzáadása</button>
+        </div>
+        <div class="form-group" id="connectorAssignGroup">
+          <label>Hozzárendelés ügynökökhöz <span class="hint">(opcionális)</span></label>
+          <div id="connectorNewAssignList"></div>
         </div>
         <button class="btn-primary" id="saveConnectorBtn">
           <span class="btn-text">Hozzáadás</span>

@@ -2799,9 +2799,7 @@ main {
 .connector-scope-grid[hidden] { display: none; }
 
 .connector-external-paths {
-  margin-top: 24px;
-  padding-top: 16px;
-  border-top: 1px solid var(--border);
+  margin-bottom: 12px;
 }
 .connector-external-header {
   display: flex;
@@ -2841,6 +2839,13 @@ main {
   padding: 2px 6px;
 }
 .connector-external-item button:hover { opacity: 0.7; }
+
+.connector-env-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
 
 .github-repo-item {
   display: flex;
