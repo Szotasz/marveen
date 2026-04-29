@@ -3065,6 +3065,15 @@ main {
   margin-left: 6px;
 }
 
+.vault-card-edit-form {
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.vault-card-edit-form .input { flex: 1; }
+
 .vault-bind-status {
   font-size: 13px;
   padding: 8px 12px;
