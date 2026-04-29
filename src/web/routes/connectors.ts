@@ -15,6 +15,10 @@ import { readBody, json } from '../http-helpers.js'
 import { shellEscape } from '../sanitize.js'
 import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars } from '../dashboard-settings.js'
 import { listSecrets, setSecret, getSecret, deleteSecret } from '../vault.js'
+import {
+  getBindings, addBinding, removeBinding, removeBindingsForSecret,
+  syncSecret, syncAllBindings, scanMcpConfigs,
+} from '../vault-bindings.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
@@ -555,7 +559,8 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const { id, label, value } = JSON.parse(body.toString()) as { id: string, label: string, value: string }
     if (!id?.trim() || !value) { json(res, { error: 'id and value required' }, 400); return true }
     setSecret(id.trim(), label || id.trim(), value)
-    json(res, { ok: true })
+    const syncResult = syncSecret(id.trim())
+    json(res, { ok: true, synced: syncResult.updated })
     return true
   }
 
@@ -571,7 +576,91 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   if (vaultMatch && method === 'DELETE') {
     const id = decodeURIComponent(vaultMatch[1])
     if (!deleteSecret(id)) { json(res, { error: 'Not found' }, 404); return true }
+    removeBindingsForSecret(id)
     json(res, { ok: true })
+    return true
+  }
+
+  // === Vault Bindings ===
+  if (path === '/api/vault/bindings' && method === 'GET') {
+    json(res, { bindings: getBindings() })
+    return true
+  }
+
+  if (path === '/api/vault/bindings' && method === 'POST') {
+    const body = await readBody(req)
+    const data = JSON.parse(body.toString()) as {
+      vaultSecretId: string
+      envVar: string
+      targets: Array<{ mcpFilePath: string, serverName: string }>
+    }
+    if (!data.vaultSecretId || !data.envVar || !data.targets?.length) {
+      json(res, { error: 'vaultSecretId, envVar, and targets required' }, 400)
+      return true
+    }
+    addBinding(data)
+    const syncResult = syncSecret(data.vaultSecretId)
+    json(res, { ok: true, synced: syncResult.updated, errors: syncResult.errors })
+    return true
+  }
+
+  const bindingDeleteMatch = path.match(/^\/api\/vault\/bindings\/([^/]+)\/([^/]+)$/)
+  if (bindingDeleteMatch && method === 'DELETE') {
+    const secretId = decodeURIComponent(bindingDeleteMatch[1])
+    const envVar = decodeURIComponent(bindingDeleteMatch[2])
+    if (!removeBinding(secretId, envVar)) { json(res, { error: 'Binding not found' }, 404); return true }
+    json(res, { ok: true })
+    return true
+  }
+
+  if (path === '/api/vault/sync' && method === 'POST') {
+    const result = syncAllBindings()
+    json(res, { ok: true, ...result })
+    return true
+  }
+
+  // === Vault Scan & Import ===
+  if (path === '/api/vault/scan' && method === 'GET') {
+    json(res, { findings: scanMcpConfigs() })
+    return true
+  }
+
+  if (path === '/api/vault/import' && method === 'POST') {
+    const body = await readBody(req)
+    const { imports: importRequests } = JSON.parse(body.toString()) as {
+      imports: Array<{
+        serverName: string
+        envVar: string
+        vaultId: string
+        label: string
+        createBinding: boolean
+        targets: Array<{ mcpFilePath: string, serverName: string }>
+      }>
+    }
+    let imported = 0
+    let bound = 0
+    const errors: string[] = []
+    for (const imp of importRequests) {
+      let value: string | null = null
+      for (const target of imp.targets) {
+        try {
+          const content = JSON.parse(readFileOr(target.mcpFilePath, '{}'))
+          const envVal = content?.mcpServers?.[target.serverName]?.env?.[imp.envVar]
+          if (envVal && typeof envVal === 'string') { value = envVal; break }
+        } catch { /* skip */ }
+      }
+      if (!value) {
+        errors.push(`Could not read value for ${imp.envVar} from ${imp.serverName}`)
+        continue
+      }
+      setSecret(imp.vaultId, imp.label, value)
+      imported++
+      if (imp.createBinding && imp.targets.length > 0) {
+        addBinding({ vaultSecretId: imp.vaultId, envVar: imp.envVar, targets: imp.targets })
+        bound++
+      }
+    }
+    json(res, { ok: true, imported, bound, errors })
     return true
   }
 
