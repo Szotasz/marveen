@@ -17,7 +17,7 @@ import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectP
 import { listSecrets, setSecret, getSecret, deleteSecret } from '../vault.js'
 import {
   getBindings, addBinding, removeBinding, removeBindingsForSecret,
-  syncSecret, syncAllBindings, scanMcpConfigs,
+  syncSecret, syncAllBindings, scanMcpConfigs, unsyncBinding,
 } from '../vault-bindings.js'
 import type { RouteContext } from './types.js'
 
@@ -565,7 +565,8 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   }
 
   const vaultMatch = path.match(/^\/api\/vault\/([^/]+)$/)
-  if (vaultMatch && method === 'GET') {
+  const isVaultSubroute = vaultMatch && ['bindings', 'sync', 'scan', 'import'].includes(vaultMatch[1])
+  if (vaultMatch && !isVaultSubroute && method === 'GET') {
     const id = decodeURIComponent(vaultMatch[1])
     const val = getSecret(id)
     if (val === null) { json(res, { error: 'Not found' }, 404); return true }
@@ -573,7 +574,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  if (vaultMatch && method === 'DELETE') {
+  if (vaultMatch && !isVaultSubroute && method === 'DELETE') {
     const id = decodeURIComponent(vaultMatch[1])
     if (!deleteSecret(id)) { json(res, { error: 'Not found' }, 404); return true }
     removeBindingsForSecret(id)
@@ -592,13 +593,50 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const data = JSON.parse(body.toString()) as {
       vaultSecretId: string
       envVar: string
-      targets: Array<{ mcpFilePath: string, serverName: string }>
+      serverName?: string
+      targets?: Array<{ mcpFilePath: string, serverName: string }>
     }
-    if (!data.vaultSecretId || !data.envVar || !data.targets?.length) {
-      json(res, { error: 'vaultSecretId, envVar, and targets required' }, 400)
+    if (!data.vaultSecretId || !data.envVar) {
+      json(res, { error: 'vaultSecretId and envVar required' }, 400)
       return true
     }
-    addBinding(data)
+
+    let targets = data.targets || []
+    if (data.serverName && targets.length === 0) {
+      const searchPaths: Array<[string, string]> = [
+        [join(PROJECT_ROOT, '.mcp.json'), 'project'],
+        [join(homedir(), '.claude.json'), 'user'],
+      ]
+      for (const agentName of listAgentNames()) {
+        searchPaths.push([join(AGENTS_BASE_DIR, agentName, '.mcp.json'), `agent:${agentName}`])
+        const projectsDir = join(AGENTS_BASE_DIR, agentName, 'projects')
+        if (existsSync(projectsDir)) {
+          try {
+            for (const proj of readdirSync(projectsDir)) {
+              if (!statSync(join(projectsDir, proj)).isDirectory()) continue
+              searchPaths.push([join(projectsDir, proj, '.mcp.json'), `project:${agentName}/${proj}`])
+            }
+          } catch { /* ignore */ }
+        }
+      }
+      for (const extPath of getExternalProjectPaths()) {
+        searchPaths.push([join(extPath, '.mcp.json'), `project:external/${basename(extPath)}`])
+      }
+      for (const [src] of searchPaths) {
+        try {
+          const parsed = JSON.parse(readFileOr(src, '{}'))
+          if (parsed.mcpServers?.[data.serverName]) {
+            targets.push({ mcpFilePath: src, serverName: data.serverName })
+          }
+        } catch { /* skip */ }
+      }
+    }
+
+    if (targets.length === 0) {
+      json(res, { error: 'No targets found for this server' }, 400)
+      return true
+    }
+    addBinding({ vaultSecretId: data.vaultSecretId, envVar: data.envVar, targets })
     const syncResult = syncSecret(data.vaultSecretId)
     json(res, { ok: true, synced: syncResult.updated, errors: syncResult.errors })
     return true
@@ -608,6 +646,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   if (bindingDeleteMatch && method === 'DELETE') {
     const secretId = decodeURIComponent(bindingDeleteMatch[1])
     const envVar = decodeURIComponent(bindingDeleteMatch[2])
+    unsyncBinding(secretId, envVar)
     if (!removeBinding(secretId, envVar)) { json(res, { error: 'Binding not found' }, 404); return true }
     json(res, { ok: true })
     return true
@@ -657,7 +696,9 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       imported++
       if (imp.createBinding && imp.targets.length > 0) {
         addBinding({ vaultSecretId: imp.vaultId, envVar: imp.envVar, targets: imp.targets })
+        const sync = syncSecret(imp.vaultId)
         bound++
+        errors.push(...sync.errors)
       }
     }
     json(res, { ok: true, imported, bound, errors })

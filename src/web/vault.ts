@@ -1,11 +1,14 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomBytes, createCipheriv, createDecipheriv, scryptSync } from 'node:crypto'
 import { PROJECT_ROOT } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { isKeychainAvailable, keychainStore, keychainRetrieve } from './keychain.js'
+import { logger } from '../logger.js'
 
 const VAULT_PATH = join(PROJECT_ROOT, 'store', 'vault.json')
 const VAULT_KEY_PATH = join(PROJECT_ROOT, 'store', '.vault-key')
+const VAULT_KEY_MIGRATED = join(PROJECT_ROOT, 'store', '.vault-key.migrated')
 const ALGORITHM = 'aes-256-gcm'
 const KEY_LENGTH = 32
 const IV_LENGTH = 16
@@ -25,6 +28,33 @@ interface VaultStore {
 }
 
 function getMasterKey(): Buffer {
+  if (isKeychainAvailable()) {
+    if (existsSync(VAULT_KEY_PATH)) {
+      const fileKey = readFileSync(VAULT_KEY_PATH, 'utf-8').trim()
+      try {
+        keychainStore(fileKey)
+        renameSync(VAULT_KEY_PATH, VAULT_KEY_MIGRATED)
+        logger.info('Vault master key migrated from file to macOS Keychain')
+      } catch (err: any) {
+        logger.warn({ err: err.message }, 'Keychain migration failed, keeping file-based key')
+      }
+      return Buffer.from(fileKey, 'base64')
+    }
+
+    const existing = keychainRetrieve()
+    if (existing) return Buffer.from(existing, 'base64')
+
+    const newKey = randomBytes(64).toString('base64')
+    try {
+      keychainStore(newKey)
+      logger.info('New vault master key stored in macOS Keychain')
+    } catch (err: any) {
+      logger.warn({ err: err.message }, 'Keychain store failed, falling back to file')
+      atomicWriteFileSync(VAULT_KEY_PATH, newKey, { mode: 0o600 })
+    }
+    return Buffer.from(newKey, 'base64')
+  }
+
   if (!existsSync(VAULT_KEY_PATH)) {
     const key = randomBytes(64).toString('base64')
     atomicWriteFileSync(VAULT_KEY_PATH, key, { mode: 0o600 })

@@ -3668,6 +3668,7 @@ document.getElementById('addConnectorBtn').addEventListener('click', () => {
   document.getElementById('connectorArgsGroup').hidden = false
   document.getElementById('connectorEnvGroup').hidden = false
   document.getElementById('connectorEnvList').innerHTML = ''
+  document.getElementById('connectorAssignGroup').hidden = true
   loadNewConnectorAgents()
   openModal(connectorModalOverlay)
 })
@@ -3683,6 +3684,12 @@ document.getElementById('connectorType').addEventListener('change', () => {
   document.getElementById('connectorCmdGroup').hidden = !isStdio
   document.getElementById('connectorArgsGroup').hidden = !isStdio
   document.getElementById('connectorEnvGroup').hidden = !isStdio
+})
+
+// Scope toggle: hide agent assignment for global scope
+document.getElementById('connectorScope').addEventListener('change', () => {
+  const isProject = document.getElementById('connectorScope').value === 'project'
+  document.getElementById('connectorAssignGroup').hidden = !isProject
 })
 
 // Default TRUE: if we never successfully read /api/connectors/status
@@ -3800,6 +3807,10 @@ if (document.readyState === 'loading') {
 }
 
 function renderConnectors() {
+  // Detach panels that live inside connectorGrid before innerHTML wipes them
+  const _extPathsPanel = document.getElementById('externalPathsSection')
+  if (_extPathsPanel) _extPathsPanel.remove()
+
   // Stats
   if (connectors.length === 0 && connectorCacheWarming) {
     connectorStats.innerHTML = ''
@@ -3965,14 +3976,13 @@ function renderConnectors() {
   }
 
   // === Külső projektek ===
-  if (externalProjectScopes.length > 0 || document.getElementById('externalPathsToggle')) {
+  if (externalProjectScopes.length > 0 || _extPathsPanel) {
     const extHeading = document.createElement('div')
     extHeading.className = 'connector-group-heading'
     extHeading.textContent = 'Külső projektek'
     connectorGrid.appendChild(extHeading)
 
-    const extPathsPanel = document.getElementById('externalPathsSection')
-    if (extPathsPanel) connectorGrid.appendChild(extPathsPanel)
+    if (_extPathsPanel) connectorGrid.appendChild(_extPathsPanel)
 
     for (const ps of externalProjectScopes) {
       const projLabel = ps.slice('project:external/'.length)
@@ -4216,7 +4226,7 @@ function renderVaultGrid(secrets) {
     const date = new Date(s.updatedAt).toLocaleDateString('hu-HU')
     const bindingCount = _vaultBindings.filter(b => b.vaultSecretId === s.id).length
     const bindingBadge = bindingCount > 0 ? `<span class="vault-binding-badge" title="${bindingCount} kotes">${bindingCount} kotes</span>` : ''
-    card.innerHTML = `<div class="vault-card-header"><div class="vault-card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><div class="vault-card-title"><div class="vault-card-id">${escapeHtml(s.id)} ${bindingBadge}</div>${s.label !== s.id ? `<div class="vault-card-label">${escapeHtml(s.label)}</div>` : ''}</div><div class="vault-card-meta">${date}</div></div><div class="vault-card-actions"><button class="btn-secondary btn-compact vault-card-reveal" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> Mutat</button><button class="btn-secondary btn-compact vault-card-delete" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg> Torles</button></div>`
+    card.innerHTML = `<div class="vault-card-header"><div class="vault-card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><div class="vault-card-title"><div class="vault-card-id">${escapeHtml(s.id)} ${bindingBadge}</div>${s.label !== s.id ? `<div class="vault-card-label">${escapeHtml(s.label)}</div>` : ''}</div><div class="vault-card-meta">${date}</div></div><div class="vault-card-actions"><button class="btn-secondary btn-compact vault-card-reveal" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> Mutat</button><button class="btn-secondary btn-compact vault-card-edit" data-id="${escapeHtml(s.id)}" data-label="${escapeHtml(s.label)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg> Modosit</button><button class="btn-secondary btn-compact vault-card-delete" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg> Torles</button></div>`
     list.appendChild(card)
   }
   list.querySelectorAll('.vault-card-reveal').forEach(btn => {
@@ -4234,6 +4244,47 @@ function renderVaultGrid(secrets) {
         card.appendChild(valEl)
         btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg> Elrejt'
       }
+    })
+  })
+  list.querySelectorAll('.vault-card-edit').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-id')
+      const label = btn.getAttribute('data-label')
+      const card = btn.closest('.vault-card')
+      const existing = card.querySelector('.vault-card-edit-form')
+      if (existing) { existing.remove(); return }
+      card.querySelector('.vault-card-value')?.remove()
+      const res = await fetch(`/api/vault/${encodeURIComponent(id)}`)
+      const data = await res.json()
+      if (!data.value) return
+      const form = document.createElement('div')
+      form.className = 'vault-card-edit-form'
+      form.innerHTML = `<input type="password" class="input vault-edit-value" value="${escapeHtml(data.value)}" style="font-size:13px;margin-bottom:6px"><button class="btn-primary btn-compact vault-edit-save">Mentes</button> <button class="btn-secondary btn-compact vault-edit-cancel">Megse</button>`
+      card.appendChild(form)
+      const input = form.querySelector('.vault-edit-value')
+      input.focus()
+      input.select()
+      form.querySelector('.vault-edit-cancel').addEventListener('click', () => form.remove())
+      form.querySelector('.vault-edit-save').addEventListener('click', async () => {
+        const newVal = input.value
+        if (!newVal) return
+        const saveBtn = form.querySelector('.vault-edit-save')
+        saveBtn.disabled = true
+        saveBtn.textContent = '...'
+        await fetch('/api/vault', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, label, value: newVal }),
+        })
+        form.remove()
+        showToast('Kulcs frissitve es szinkronizalva')
+        loadVaultPage()
+        loadVault()
+      })
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') form.querySelector('.vault-edit-save').click()
+        if (e.key === 'Escape') form.remove()
+      })
     })
   })
   list.querySelectorAll('.vault-card-delete').forEach(btn => {
@@ -4288,6 +4339,112 @@ function renderVaultGrid(secrets) {
   })
 })()
 
+// --- Vault Binding modal ---
+;(function wireVaultBind() {
+  const bindBtn = document.getElementById('vaultBindBtn')
+  const overlay = document.getElementById('vaultBindOverlay')
+  const closeBtn = document.getElementById('vaultBindClose')
+  const saveBtn = document.getElementById('vaultBindSaveBtn')
+  const secretSelect = document.getElementById('vaultBindSecret')
+  const serverSelect = document.getElementById('vaultBindServer')
+  const envVarInput = document.getElementById('vaultBindEnvVar')
+  const statusEl = document.getElementById('vaultBindStatus')
+  if (!bindBtn || !overlay) return
+
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(overlay) })
+  closeBtn.addEventListener('click', () => { closeModal(overlay) })
+
+  bindBtn.addEventListener('click', async () => {
+    try {
+      statusEl.hidden = true
+      envVarInput.value = ''
+
+      const [secretsRes, connectorsRes] = await Promise.all([
+        fetch('/api/vault'),
+        fetch('/api/connectors'),
+      ])
+      const secrets = (await secretsRes.json()).secrets || []
+      const connectors = await connectorsRes.json()
+
+      secretSelect.innerHTML = ''
+      for (const s of secrets) {
+        const opt = document.createElement('option')
+        opt.value = s.id
+        opt.textContent = s.label !== s.id ? `${s.id} (${s.label})` : s.id
+        secretSelect.appendChild(opt)
+      }
+      if (secrets.length === 0) {
+        const opt = document.createElement('option')
+        opt.textContent = '-- Nincs vault kulcs --'
+        opt.disabled = true
+        secretSelect.appendChild(opt)
+      }
+
+      const mcpConnectors = connectors.filter(c => c.source !== 'plugin' && c.source !== 'claude.ai')
+      serverSelect.innerHTML = ''
+      for (const c of mcpConnectors) {
+        const opt = document.createElement('option')
+        opt.value = c.name
+        opt.textContent = c.scope !== 'global' ? `${c.name} (${c.scope})` : c.name
+        serverSelect.appendChild(opt)
+      }
+      if (mcpConnectors.length === 0) {
+        const opt = document.createElement('option')
+        opt.textContent = '-- Nincs MCP szerver --'
+        opt.disabled = true
+        serverSelect.appendChild(opt)
+      }
+
+      openModal(overlay)
+    } catch (err) {
+      console.error('Vault bind modal error:', err)
+      showToast('Hiba a hozzarendeles betoltesekor: ' + err.message)
+    }
+  })
+
+  saveBtn.addEventListener('click', async () => {
+    const vaultSecretId = secretSelect.value
+    const serverName = serverSelect.value
+    const envVar = envVarInput.value.trim()
+    if (!vaultSecretId || !serverName || !envVar) {
+      statusEl.textContent = 'Minden mezo kitoltese kotelezo'
+      statusEl.className = 'vault-bind-status error'
+      statusEl.hidden = false
+      return
+    }
+
+    saveBtn.disabled = true
+    saveBtn.textContent = 'Mentes...'
+    try {
+      const res = await fetch('/api/vault/bindings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ vaultSecretId, envVar, serverName }),
+      })
+      const data = await res.json()
+      if (data.ok) {
+        statusEl.textContent = `Hozzarendelve! ${data.synced || 0} fajl frissitve.`
+        statusEl.className = 'vault-bind-status success'
+        statusEl.hidden = false
+        loadVaultPage()
+        loadVault()
+        setTimeout(() => { closeModal(overlay) }, 1500)
+      } else {
+        statusEl.textContent = data.error || 'Hiba tortent'
+        statusEl.className = 'vault-bind-status error'
+        statusEl.hidden = false
+      }
+    } catch (err) {
+      statusEl.textContent = 'Halozati hiba'
+      statusEl.className = 'vault-bind-status error'
+      statusEl.hidden = false
+    } finally {
+      saveBtn.disabled = false
+      saveBtn.textContent = 'Hozzarendeles'
+    }
+  })
+})()
+
 // --- Vault Scan & Import ---
 ;(function wireVaultScan() {
   const scanBtn = document.getElementById('vaultScanBtn')
@@ -4305,15 +4462,15 @@ function renderVaultGrid(secrets) {
       const data = await res.json()
       const findings = data.findings || []
       renderScanResults(findings)
-      overlay.hidden = false
+      openModal(overlay)
     } finally {
       scanBtn.disabled = false
       scanBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Scan &amp; Import'
     }
   })
 
-  closeBtn?.addEventListener('click', () => { overlay.hidden = true })
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.hidden = true })
+  closeBtn?.addEventListener('click', () => { closeModal(overlay) })
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(overlay) })
 
   syncBtn?.addEventListener('click', async () => {
     syncBtn.disabled = true
@@ -4434,7 +4591,7 @@ function renderVaultGrid(secrets) {
       importBtn.disabled = false
       importBtn.textContent = 'Kivalasztottak importalasa'
     }
-    overlay.hidden = true
+    closeModal(overlay)
     loadVaultPage()
     loadVault()
   })
@@ -4678,9 +4835,21 @@ document.getElementById('saveConnectorBtn').addEventListener('click', async () =
       throw new Error(err.error || 'Hiba')
     }
     const result = await res.json()
+    const savedName = result.name || name
+
+    const checkedAgents = Array.from(document.querySelectorAll('#connectorNewAssignList input[type=checkbox]:checked')).map(cb => cb.value)
+    const allAgents = Array.from(document.querySelectorAll('#connectorNewAssignList input[type=checkbox]')).map(cb => cb.value)
+    if (checkedAgents.length > 0) {
+      await fetch(`/api/connectors/${encodeURIComponent(savedName)}/assign`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agents: checkedAgents, allAgents }),
+      }).catch(() => {})
+    }
+
     closeModal(connectorModalOverlay)
     if (result.nameChanged) {
-      showToast(`Connector hozzáadva "${result.name}" néven (szóköz/speciális karakter nem engedélyezett)`)
+      showToast(`Connector hozzáadva "${savedName}" néven (szóköz/speciális karakter nem engedélyezett)`)
     } else {
       showToast('Connector hozzáadva!')
     }

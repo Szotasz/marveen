@@ -603,6 +603,10 @@
             <p class="subtitle">Titkositott kulcsok es API tokenek</p>
           </div>
           <div style="display:flex;gap:8px">
+            <button class="btn-secondary btn-compact" id="vaultBindBtn" title="Vault kulcs hozzarendelese MCP szerverhez">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+              Hozzarendeles
+            </button>
             <button class="btn-secondary btn-compact" id="vaultScanBtn" title="MCP konfigok atvizsgalasa erzekeny kulcsokert">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
               Scan &amp; Import
@@ -687,8 +691,36 @@
         <p class="vault-empty-hint">Adj hozza egyet az "Uj kulcs" gombbal</p>
       </div>
 
+      <!-- Binding modal -->
+      <div class="modal-overlay" id="vaultBindOverlay">
+        <div class="modal" style="max-width:500px">
+          <div class="modal-header">
+            <h2>Kulcs hozzarendelese</h2>
+            <button class="modal-close" id="vaultBindClose">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-group">
+              <label for="vaultBindSecret">Vault kulcs</label>
+              <select id="vaultBindSecret" class="input"></select>
+            </div>
+            <div class="form-group">
+              <label for="vaultBindServer">MCP szerver</label>
+              <select id="vaultBindServer" class="input"></select>
+            </div>
+            <div class="form-group">
+              <label for="vaultBindEnvVar">Kornyezeti valtozo neve</label>
+              <input type="text" id="vaultBindEnvVar" class="input" placeholder="pl. API_KEY">
+            </div>
+            <div id="vaultBindStatus" hidden class="vault-bind-status"></div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn-primary" id="vaultBindSaveBtn">Hozzarendeles</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Scan modal -->
-      <div class="modal-overlay" id="vaultScanOverlay" hidden>
+      <div class="modal-overlay" id="vaultScanOverlay">
         <div class="modal" style="max-width:700px">
           <div class="modal-header">
             <h2>MCP titkok keresese</h2>
