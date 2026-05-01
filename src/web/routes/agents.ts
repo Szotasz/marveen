@@ -6,6 +6,7 @@ import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID, BOT_NAME } from '../../config.js'
 import { createAgentMessage } from '../../db.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
+import { getSecret } from '../vault.js'
 import {
   agentDir,
   DEFAULT_MODEL,
@@ -141,6 +142,32 @@ function listAgentSummaries(): AgentSummary[] {
 
 export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path, method } = ctx
+
+  // Lists every model the dashboard is willing to serve up to an agent.
+  // Claude IDs are static. DeepSeek is gated behind a vault secret because
+  // the agent-process launcher reads the key from there at start time --
+  // surfacing the option in the UI without the key would let the operator
+  // pick a model that 401s on first prompt. The frontend renders this list
+  // both in the "new agent" wizard and the agent edit panel.
+  if (path === '/api/models/available' && method === 'GET') {
+    const hasDeepseek = getSecret('DEEPSEEK_API_KEY') !== null
+    json(res, {
+      claude: [
+        { id: 'claude-opus-4-7', label: 'Opus 4.7 (legújabb, legjobb)' },
+        { id: 'claude-opus-4-6', label: 'Opus 4.6' },
+        { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6 (alapértelmezett)' },
+        { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 (leggyorsabb)' },
+      ],
+      deepseek: hasDeepseek
+        ? [
+            { id: 'deepseek-v4-pro', label: 'DeepSeek-V4-Pro (1M kontextus, erősebb)' },
+            { id: 'deepseek-v4-flash', label: 'DeepSeek-V4-Flash (1M kontextus, gyorsabb/olcsóbb)' },
+          ]
+        : [],
+      deepseekConfigured: hasDeepseek,
+    })
+    return true
+  }
 
   if (path === '/api/agents' && method === 'GET') {
     json(res, listAgentSummaries())

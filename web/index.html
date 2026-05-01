@@ -882,10 +882,14 @@
             <label for="agentModel">Modell</label>
             <select id="agentModel">
               <option value="inherit">Öröklött (alapértelmezett)</option>
-              <option value="claude-opus-4-7">Opus 4.7 (legújabb, legjobb)</option>
-              <option value="claude-opus-4-6">Opus 4.6</option>
-              <option value="claude-sonnet-4-6">Sonnet 4.6 (gyors és okos)</option>
-              <option value="claude-haiku-4-5-20251001">Haiku 4.5 (leggyorsabb)</option>
+              <optgroup label="☁️ Claude (felhő)">
+                <option value="claude-opus-4-7">Opus 4.7 (legújabb, legjobb)</option>
+                <option value="claude-opus-4-6">Opus 4.6</option>
+                <option value="claude-sonnet-4-6">Sonnet 4.6 (gyors és okos)</option>
+                <option value="claude-haiku-4-5-20251001">Haiku 4.5 (leggyorsabb)</option>
+              </optgroup>
+              <optgroup label="🌊 DeepSeek (alternatív)" id="agentModelDeepseekGroup">
+              </optgroup>
             </select>
           </div>
           <div class="form-group">
@@ -1019,10 +1023,15 @@
                 <option value="claude-sonnet-4-6">Sonnet 4.6 (alapértelmezett)</option>
                 <option value="claude-haiku-4-5-20251001">Haiku 4.5 (leggyorsabb)</option>
               </optgroup>
+              <optgroup label="🌊 DeepSeek (alternatív)" id="deepseekModelGroup">
+              </optgroup>
               <optgroup label="🏠 Ollama (lokális)" id="ollamaModelGroup">
               </optgroup>
             </select>
             <button class="btn-secondary btn-compact agent-save-section" id="saveModelBtn">Mentés</button>
+            <small id="deepseekHint" style="display:none;margin-top:6px;color:var(--text-muted);font-size:12px;line-height:1.4">
+              DeepSeek-V4-Pro nincs konfigurálva. <a href="#" id="deepseekConfigLink">API kulcs hozzáadása</a> a Vault oldalon.
+            </small>
           </div>
           <div class="form-group">
             <label for="editAgentProfile">Biztonsági profil</label>

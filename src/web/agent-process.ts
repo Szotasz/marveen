@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
 import { execSync, execFileSync } from 'node:child_process'
 import { OLLAMA_URL } from '../config.js'
 import { resolveFromPath } from '../platform.js'
@@ -9,6 +10,7 @@ import { agentDir, readAgentModel, readAgentSecurityProfile, readAgentClaudeConf
 import { parseTelegramToken } from './telegram.js'
 import { loadProfileTemplate } from './profiles.js'
 import { writeAgentSettingsFromProfile } from './agent-scaffold.js'
+import { getSecret } from './vault.js'
 
 const TMUX = resolveFromPath('tmux')
 const CLAUDE = resolveFromPath('claude')
@@ -45,8 +47,19 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
     } catch { /* ok */ }
 
     const model = readAgentModel(name)
-    const isOllama = !model.startsWith('claude-')
+    const isClaude = model.startsWith('claude-')
+    const isDeepseek = model.startsWith('deepseek-')
+    const isOllama = !isClaude && !isDeepseek
     const ollamaEnv = isOllama ? `export ANTHROPIC_AUTH_TOKEN=ollama && export ANTHROPIC_BASE_URL=${OLLAMA_URL} && ` : ''
+    // DeepSeek's /anthropic base URL accepts the literal Anthropic SDK
+    // request format, so Claude Code talks to it as if it were Anthropic.
+    // We pull the API key from the encrypted vault (entry id: DEEPSEEK_API_KEY)
+    // rather than process.env so operators can rotate it from the dashboard
+    // without restarting. We do NOT fail-fast on missing key here -- a 401
+    // from the upstream gives a clearer signal in the agent's tmux pane
+    // than a pre-flight error string the operator would have to dig out of logs.
+    const deepseekKey = isDeepseek ? (getSecret('DEEPSEEK_API_KEY') ?? '') : ''
+    const deepseekEnv = isDeepseek ? `export ANTHROPIC_AUTH_TOKEN="${deepseekKey}" && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && ` : ''
     // Apply security profile: write allow/deny list into settings.json, and
     // skip the dangerously-skip-permissions flag for strict profiles so
     // Claude Code enforces the list rather than bypassing it.
@@ -59,6 +72,18 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
     // emit no export, preserving the default Claude Code behavior.
     const claudeConfigDir = readAgentClaudeConfigDir(name)
     const claudeConfigEnv = claudeConfigDir ? `export CLAUDE_CONFIG_DIR="${claudeConfigDir}" && ` : ''
+    // `--continue` requires an existing session; on a brand-new agent the
+    // Claude Code projects directory does not yet exist and `claude` exits
+    // immediately with an obscure "No deferred tool marker found" error
+    // that is silent inside tmux. Detect first launch by probing for the
+    // encoded project dir and skip `--continue` only then. The encoding
+    // mirrors Claude Code's own scheme: replace every `/` with `-`.
+    const projectsRoot = claudeConfigDir
+      ? join(claudeConfigDir, 'projects')
+      : join(homedir(), '.claude', 'projects')
+    const encodedProject = dir.replace(/\//g, '-')
+    const hasPriorSession = existsSync(join(projectsRoot, encodedProject))
+    const continueFlag = hasPriorSession ? '--continue ' : ''
     // bun lives under ~/.bun/bin, which isn't in the dashboard's launchd PATH.
     // The Claude plugin launcher spawns `bun`, so we must prepend it here.
     // Defensive unset of TELEGRAM_BOT_TOKEN: if anything ever pollutes the
@@ -66,7 +91,7 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
     // sourcing .env), the sub-agent would otherwise inherit the main
     // agent's token and trigger a 409 Conflict loop. The per-agent .env
     // in TELEGRAM_STATE_DIR is still the intended source of truth.
-    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && unset TELEGRAM_BOT_TOKEN && export TELEGRAM_STATE_DIR="${tgStateDir}" && ${claudeConfigEnv}${ollamaEnv}cd "${dir}" && ${CLAUDE} --continue ${skipFlag}--model ${model} --channels plugin:telegram@claude-plugins-official`
+    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && unset TELEGRAM_BOT_TOKEN && export TELEGRAM_STATE_DIR="${tgStateDir}" && ${claudeConfigEnv}${ollamaEnv}${deepseekEnv}cd "${dir}" && ${CLAUDE} ${continueFlag}${skipFlag}--model ${model} --channels plugin:telegram@claude-plugins-official`
     execSync(
       `${TMUX} new-session -d -s ${session} "${cmd}"`,
       { timeout: 10000 }
