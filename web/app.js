@@ -551,6 +551,7 @@ function resetWizard() {
   agentName.value = ''
   agentDesc.value = ''
   agentModel.value = 'inherit'
+  loadAvailableModels()
   selectedAvatar = null
   document.querySelectorAll('#avatarGrid .avatar-grid-item').forEach(i => i.classList.remove('selected'))
   generatedClaudeMd = ''
@@ -909,7 +910,8 @@ async function openAgentDetail(agentName) {
   const tgConnected = currentAgent.hasTelegram || false
   document.getElementById('agentDetailTgStatus').innerHTML = `<span class="tg-status"><span class="tg-dot ${tgConnected ? 'connected' : 'disconnected'}"></span>${tgConnected ? 'Csatlakozva' : 'Nincs bekötve'}</span>`
 
-  // Settings tab - load Ollama models then set value
+  // Settings tab - load Ollama + DeepSeek models then set value
+  loadAvailableModels()
   loadOllamaModels().then(() => {
     document.getElementById('editAgentModel').value = currentAgent.model || 'claude-sonnet-4-6'
   })
@@ -1148,6 +1150,38 @@ async function loadOllamaModels() {
       group.appendChild(opt)
     }
   } catch { /* Ollama not available */ }
+}
+
+// Populates the DeepSeek optgroups in both the wizard and the agent edit
+// panel. Backend gates the list behind a vault entry, so an empty array
+// here means the operator has not configured an API key yet -- in that
+// case we hide the optgroup and surface a hint pointing to the Vault page.
+async function loadAvailableModels() {
+  try {
+    const res = await fetch('/api/models/available')
+    if (!res.ok) return
+    const data = await res.json()
+    const deepseekModels = Array.isArray(data.deepseek) ? data.deepseek : []
+    const editGroup = document.getElementById('deepseekModelGroup')
+    const wizardGroup = document.getElementById('agentModelDeepseekGroup')
+    const hint = document.getElementById('deepseekHint')
+    for (const group of [editGroup, wizardGroup]) {
+      if (!group) continue
+      group.innerHTML = ''
+      if (deepseekModels.length === 0) {
+        group.style.display = 'none'
+        continue
+      }
+      group.style.display = ''
+      for (const m of deepseekModels) {
+        const opt = document.createElement('option')
+        opt.value = m.id
+        opt.textContent = m.label
+        group.appendChild(opt)
+      }
+    }
+    if (hint) hint.style.display = deepseekModels.length === 0 ? 'block' : 'none'
+  } catch { /* dashboard not available */ }
 }
 
 document.getElementById('saveModelBtn').addEventListener('click', async () => {
@@ -5825,3 +5859,12 @@ setInterval(pollUpdatesBadge, 5 * 60_000)
 populateAvatarGrid()
 loadMemAgents()
 loadOverview()
+loadAvailableModels()
+
+// "DeepSeek API kulcs hozzáadása" link az agent edit panel-en --
+// a Vault page-re visz, ahol a felhasználó egy DEEPSEEK_API_KEY
+// secret-et tud felvenni, és visszatérve frissítjük a model listát.
+document.getElementById('deepseekConfigLink')?.addEventListener('click', (e) => {
+  e.preventDefault()
+  switchPage('vault')
+})

@@ -117,6 +117,23 @@ async function main() {
     warn('ElevenLabs kihagyva — hangos valaszok nem lesznek elerhetoek')
   }
 
+  // DeepSeek-V4-Pro (alternativ modell a Claude mellett)
+  console.log('\nDeepSeek-V4-Pro alternativ modell tamogatas (opcionalis).')
+  console.log('A DeepSeek olcsobb mint a Claude, kompatibilis Anthropic API-t kinal,')
+  console.log('1M token kontextussal. API kulcsot itt szerezhetsz: https://api.deepseek.com')
+  const dsKey = await ask('DeepSeek API kulcs (Enter a kihagyashoz):')
+  if (dsKey) {
+    // Mentsuk a vault-ba (titkositott tarolas), nem a sima .env-be:
+    // a kulcs igy a dashboard felulet rotacios kontrollja ala kerul es
+    // nem jelenik meg a .env fajl tartalmaban hat hosszan.
+    const { setSecret } = await import('../dist/web/vault.js')
+    setSecret('DEEPSEEK_API_KEY', 'DEEPSEEK_API_KEY', dsKey)
+    ok('DeepSeek API kulcs mentve a vault-ba (DEEPSEEK_API_KEY)')
+    ok('A deepseek-v4-pro modell most mar elerheto agensekhez')
+  } else {
+    warn('DeepSeek kihagyva — kesobb a dashboard /vault oldalrol hozzaadhato')
+  }
+
   // .env iras
   header('4. .env fajl irasa')
   let envContent = '# ClaudeClaw konfiguracio\n'
