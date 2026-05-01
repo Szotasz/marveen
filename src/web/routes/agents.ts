@@ -159,7 +159,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 (leggyorsabb)' },
       ],
       deepseek: hasDeepseek
-        ? [{ id: 'deepseek-v4-pro', label: 'DeepSeek-V4-Pro (1M kontextus)' }]
+        ? [
+            { id: 'deepseek-v4-pro', label: 'DeepSeek-V4-Pro (1M kontextus, erősebb)' },
+            { id: 'deepseek-v4-flash', label: 'DeepSeek-V4-Flash (1M kontextus, gyorsabb/olcsóbb)' },
+          ]
         : [],
       deepseekConfigured: hasDeepseek,
     })
