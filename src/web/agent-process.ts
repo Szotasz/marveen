@@ -143,10 +143,34 @@ export function getAgentProcessInfo(name: string): { running: boolean; session?:
   }
 }
 
+// Claude Code occasionally pops a "How is Claude doing this session? (optional)"
+// rating modal above the prompt input. The footer line still reads
+// "bypass permissions on (shift+tab to cycle)" so detectPaneState() classifies
+// the pane as idle, but the modal swallows the next keystroke and pinches off
+// every scheduled prompt + agent message until a human dismisses it. We strip
+// it pre-flight by sending "0" (Dismiss) when the marker is visible, so any
+// caller writing a prompt has a clear input field.
+const SURVEY_MODAL_RX = /How is Claude doing this session/
+
+function dismissSurveyModalIfPresent(session: string): void {
+  try {
+    const pane = execSync(`${TMUX} capture-pane -t ${session} -p`, { timeout: 3000, encoding: 'utf-8' })
+    if (!SURVEY_MODAL_RX.test(pane)) return
+    execFileSync(TMUX, ['send-keys', '-t', session, '0'], { timeout: 5000 })
+    // Modal close is one frame; settle window so the next send-keys lands in
+    // the prompt input, not the now-stale modal handler.
+    execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 })
+    logger.info({ session }, 'Dismissed Claude Code session-rating modal before sending prompt')
+  } catch (err) {
+    logger.warn({ err, session }, 'Failed to probe/dismiss session-rating modal')
+  }
+}
+
 // Send text to a tmux session as if typed at the prompt.
 // Uses execFileSync so callers can pass raw text -- tmux send-keys -l treats
 // the argument as literal characters, bypassing shell quoting entirely.
 export function sendPromptToSession(session: string, text: string): void {
+  dismissSurveyModalIfPresent(session)
   const oneLine = text.replace(/\r?\n/g, ' ')
   const CHUNK = 80
   // tmux send-keys doesn't support `--` option-terminator, so a chunk that
