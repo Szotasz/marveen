@@ -1,3 +1,6 @@
+import { mkdirSync } from 'node:fs'
+import { join } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
 import {
   searchMemories,
   recentMemories,
@@ -11,6 +14,29 @@ import {
 import { runAgent } from './agent.js'
 import { logger } from './logger.js'
 import { wrapUntrusted, UNTRUSTED_PREAMBLE } from './prompt-safety.js'
+
+// Dedicated cwd for the daily-digest sub-agent. We can't reuse PROJECT_ROOT
+// here -- the Marveen Telegram channels session runs claude --continue in
+// PROJECT_ROOT, and the SDK's per-cwd session/lock state collides with it
+// when two Claude Code processes share the same project dir, dropping the
+// channels plugin every night at 23:00. A throwaway dir under the user's
+// `~/.claude/projects/` tree avoids the collision while keeping the SDK
+// happy (it expects a writable cwd to place its session jsonl into).
+//
+// We honor TMPDIR via os.tmpdir() as a last-resort fallback so a hardened
+// host with a read-only home still has somewhere to land.
+function ensureDigestCwd(): string {
+  const candidates = [join(homedir(), '.claude', 'tmp', 'marveen-digest'), join(tmpdir(), 'marveen-digest')]
+  for (const dir of candidates) {
+    try {
+      mkdirSync(dir, { recursive: true })
+      return dir
+    } catch { /* try next */ }
+  }
+  // Last resort: tmpdir itself. Worst case we share with whatever else is
+  // in /tmp, but that still doesn't collide with the Marveen project dir.
+  return tmpdir()
+}
 
 // Semantic: user preferences, facts about themselves, persistent info
 const SEMANTIC_PATTERN =
@@ -133,13 +159,14 @@ Mai emlekek:
 ${memoryLines}`
 
   try {
-    const { text } = await runAgent(prompt)
+    const digestCwd = ensureDigestCwd()
+    const { text } = await runAgent(prompt, undefined, undefined, false, digestCwd)
     if (!text) return null
 
     const digest = text.trim()
     const today = new Date().toLocaleDateString('hu-HU')
     saveMemory(chatId, `[Napi naplo ${today}] ${digest}`, 'episodic')
-    logger.info({ chatId }, `Napi naplo mentve: ${today}`)
+    logger.info({ chatId, digestCwd }, `Napi naplo mentve: ${today}`)
     return digest
   } catch (err) {
     logger.error({ err }, 'Napi naplo generalas hiba')

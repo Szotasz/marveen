@@ -17,7 +17,8 @@ export async function runAgent(
   message: string,
   sessionId?: string,
   onTyping?: () => void,
-  allowTools = false
+  allowTools = false,
+  cwd: string = PROJECT_ROOT
 ): Promise<{ text: string | null; newSessionId?: string }> {
   let newSessionId: string | undefined
   let resultText: string | null = null
@@ -34,7 +35,7 @@ export async function runAgent(
       prompt: message,
       options: {
         abortController,
-        cwd: PROJECT_ROOT,
+        cwd,
         permissionMode: 'bypassPermissions',
         ...(allowTools ? {} : { disallowedTools: DEFAULT_DISALLOWED_TOOLS }),
         ...(sessionId ? { resume: sessionId } : {}),
