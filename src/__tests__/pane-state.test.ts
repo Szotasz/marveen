@@ -3,7 +3,7 @@ import { detectPaneState, isReadyForPrompt } from '../pane-state.js'
 
 // Realistic pane fixtures modelled on actual `tmux capture-pane -p`
 // output from shipping Claude Code builds. Whitespace and box-drawing
-// characters (U+2500 ─, U+2771 ❯, U+23F5 ⏵) preserved exactly so the
+// characters (U+2500 ─, U+276F ❯, U+23F5 ⏵) preserved exactly so the
 // regex matches exercise the same byte sequences they would in prod.
 
 const SEP = '─'.repeat(80)
@@ -115,6 +115,33 @@ const NON_CLAUDE = [
   'README.md  src/  test/',
 ].join('\n')
 
+// Background-shells footer variant. Claude Code rewrites the bypass-mode
+// footer when the session has one or more BashTool background shells
+// running: the "(shift+tab to cycle)" hint is replaced with the
+// "· N shells · ctrl+t to hide tasks · ↓ to manage" indicator. The pane
+// is still idle and must accept a new prompt -- otherwise inter-agent
+// messages and scheduled tasks pile up in pending forever for any agent
+// that polls (gh run list, watchers, etc.) in the background.
+const IDLE_BACKGROUND_SHELLS = [
+  '  85 tasks (84 done, 1 in progress, 0 open)',
+  '   … +80 completed',
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on · 3 shells · ctrl+t to hide tasks · ↓ to manage',
+].join('\n')
+
+// Same variant with a single shell (singular form). Defensive: the regex
+// must accept both "shell" and "shells" so a 1-shell session is not stuck.
+const IDLE_BACKGROUND_ONE_SHELL = [
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on · 1 shell · ctrl+t to hide tasks · ↓ to manage',
+].join('\n')
+
 describe('detectPaneState', () => {
   it('returns unknown for empty input', () => {
     expect(detectPaneState('')).toBe('unknown')
@@ -127,6 +154,47 @@ describe('detectPaneState', () => {
 
   it('detects idle on strict-mode footer ("? for shortcuts")', () => {
     expect(detectPaneState(IDLE_STRICT)).toBe('idle')
+  })
+
+  it('detects idle when the footer shows the multi-shell indicator', () => {
+    // Regression: Claude Code rewrites "(shift+tab to cycle)" to
+    // "· N shells · ctrl+t to hide tasks · ↓ to manage" when the session
+    // has BashTool background shells running. The old strict regex did
+    // not match this variant, so any session with a background poll
+    // was classified 'unknown' and never received inter-agent messages.
+    expect(detectPaneState(IDLE_BACKGROUND_SHELLS)).toBe('idle')
+  })
+
+  it('detects idle when the footer shows the singular "1 shell" form', () => {
+    // The footer uses the singular "1 shell" (not "1 shells") for a
+    // single background shell. Split from the multi-shell test so a
+    // future regression on either form fails with a precise signal.
+    expect(detectPaneState(IDLE_BACKGROUND_ONE_SHELL)).toBe('idle')
+  })
+
+  it('does NOT classify a truncated "· N shell" prefix as idle', () => {
+    // Defense in depth: the shells-variant requires the full
+    // "· N shells · ctrl+t" marker, not just the bare prefix. Two
+    // reasons we pin this down with an explicit negative test:
+    //   1. A malformed or partially rendered footer (terminal
+    //      corruption, mid-render frame) must classify as 'unknown'
+    //      so we do not deliver a prompt into a pane that is not
+    //      really ready.
+    //   2. The "bypass permissions on · 1 shell" substring could
+    //      appear in scrollback as quoted log output or an echoed
+    //      message, and the regex must not be tricked into treating
+    //      that as a live footer.
+    // The fixture is deliberately minimal: no other idle markers
+    // (no "(shift+tab to cycle)", no "? for shortcuts") so the
+    // assertion isolates the truncated-shells path specifically.
+    const truncated = [
+      '',
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on · 1 shell',
+    ].join('\n')
+    expect(detectPaneState(truncated)).toBe('unknown')
   })
 
   it('detects busy when "esc to interrupt" footer marker is present', () => {
@@ -285,6 +353,8 @@ describe('isReadyForPrompt', () => {
   it('is true only when state === idle', () => {
     expect(isReadyForPrompt(IDLE_BYPASS)).toBe(true)
     expect(isReadyForPrompt(IDLE_STRICT)).toBe(true)
+    expect(isReadyForPrompt(IDLE_BACKGROUND_SHELLS)).toBe(true)
+    expect(isReadyForPrompt(IDLE_BACKGROUND_ONE_SHELL)).toBe(true)
     expect(isReadyForPrompt(BUSY_FULL_FOOTER)).toBe(false)
     expect(isReadyForPrompt(BUSY_FOOTER_FRAME_GAP)).toBe(false)
     expect(isReadyForPrompt(TYPING_PARKED)).toBe(false)

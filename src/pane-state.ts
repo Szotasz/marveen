@@ -25,7 +25,25 @@ export type PaneState = 'idle' | 'busy' | 'typing' | 'unknown'
 // permissions mode (permissive) and the "strict" mode. Both are "idle"
 // surfaces. If neither is visible the pane is not a recognised Claude
 // Code surface and we report 'unknown' rather than guess.
-const IDLE_FOOTER_RX = /bypass permissions on \(shift\+tab to cycle\)|\? for shortcuts/
+//
+// The bypass-mode footer has two known trailing variants after the
+// "bypass permissions on" prefix: the original "(shift+tab to cycle)"
+// hint, and the newer background-shells indicator "· N shells · ctrl+t
+// to hide tasks · ↓ to manage" which Claude Code substitutes when one
+// or more BashTool background shells are running in the session. Both
+// must classify as idle, otherwise sessions that spawn background
+// shells (gh poll, file watchers, long-running build) get stuck
+// pending forever.
+//
+// The shells-variant requires the "· ctrl+t" marker after the shell
+// count rather than just the bare "· N shell(s)" prefix. Two reasons:
+//   (a) the full marker is what Claude Code actually renders, so
+//       insisting on it rejects malformed or mid-render frames;
+//   (b) it disambiguates the footer from scrollback content that
+//       happens to contain "bypass permissions on · 1 shell" verbatim
+//       (an echoed log line, a quoted message, etc.) which would
+//       otherwise be misread as idle.
+const IDLE_FOOTER_RX = /bypass permissions on(?: \(shift\+tab to cycle\)| · \d+ shells? · ctrl\+t)|\? for shortcuts/
 
 // Positive busy signals. ANY match anywhere in the pane means the turn
 // is mid-flight, even if the footer looks idle for a frame.
