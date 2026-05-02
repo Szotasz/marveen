@@ -166,11 +166,36 @@ function dismissSurveyModalIfPresent(session: string): void {
   }
 }
 
+// When a session approaches its context limit Claude Code shows a "Resume from
+// summary" modal with three numbered options and footer "Enter to confirm".
+// detectPaneState() reads that footer as 'unknown' (not the usual "bypass
+// permissions" string), so isSessionReadyForPrompt() refuses to deliver and
+// every scheduled task / inter-agent message piles up behind it. Pre-flight
+// pick option 1 (Resume from summary, recommended) and Enter to confirm.
+const RESUME_SUMMARY_MODAL_RX = /Resume from summary/
+
+function dismissResumeSummaryModalIfPresent(session: string): void {
+  try {
+    const pane = execSync(`${TMUX} capture-pane -t ${session} -p`, { timeout: 3000, encoding: 'utf-8' })
+    if (!RESUME_SUMMARY_MODAL_RX.test(pane)) return
+    execFileSync(TMUX, ['send-keys', '-t', session, '1'], { timeout: 5000 })
+    execFileSync('/bin/sleep', ['0.1'], { timeout: 2000 })
+    execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+    // /compact starts immediately and can run for minutes; we only need to
+    // unblock the modal so detectPaneState can transition off 'unknown'.
+    execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 })
+    logger.info({ session }, 'Dismissed Claude Code resume-from-summary modal before sending prompt')
+  } catch (err) {
+    logger.warn({ err, session }, 'Failed to probe/dismiss resume-from-summary modal')
+  }
+}
+
 // Send text to a tmux session as if typed at the prompt.
 // Uses execFileSync so callers can pass raw text -- tmux send-keys -l treats
 // the argument as literal characters, bypassing shell quoting entirely.
 export function sendPromptToSession(session: string, text: string): void {
   dismissSurveyModalIfPresent(session)
+  dismissResumeSummaryModalIfPresent(session)
   const oneLine = text.replace(/\r?\n/g, ' ')
   const CHUNK = 80
   // tmux send-keys doesn't support `--` option-terminator, so a chunk that
