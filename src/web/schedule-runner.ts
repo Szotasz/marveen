@@ -254,6 +254,16 @@ export function startScheduleRunner(): NodeJS.Timeout {
         if (pendingKeys.has(key)) continue
         const result = attemptFireTask(task, agentName, now)
         if (result === 'busy') {
+          // Heartbeat tasks fire on their own cron cadence (typically every
+          // 30 minutes) and are explicitly best-effort: a single skipped
+          // tick is fine because the next one is already on the way.
+          // Queueing them produces spurious "60 perce varakozik" Telegram
+          // alerts whenever the operator is having an active conversation
+          // in the channels session, which is the exact situation in which
+          // a heartbeat is least useful anyway. Real tasks (type !==
+          // 'heartbeat') still queue + alert so nothing business-critical
+          // is dropped silently.
+          if (task.type === 'heartbeat') continue
           // First encounter -- insert a new pending row. If somehow a
           // row already exists (race with a just-cancelled retry), do
           // nothing so the cancel wins the tiebreak.
