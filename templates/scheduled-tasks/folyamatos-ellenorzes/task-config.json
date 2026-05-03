@@ -2,5 +2,6 @@
   "schedule": "*/30 * * * *",
   "agent": "{{MAIN_AGENT_ID}}",
   "enabled": false,
-  "type": "heartbeat"
+  "type": "heartbeat",
+  "skipIfBusy": true
 }
