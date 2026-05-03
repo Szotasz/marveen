@@ -22,6 +22,13 @@ export interface ScheduledTask {
   enabled: boolean
   createdAt: number
   type?: 'task' | 'heartbeat'  // heartbeat = silent unless important
+  // When true, a tick whose target session is busy is dropped silently
+  // instead of queued. Use ONLY for cron schedules that fire often enough
+  // (every 30-60 min) that losing a single tick is harmless because the
+  // next one is already on the way. Daily/weekly schedules must keep
+  // skipIfBusy false (default) so the queue + alert path catches a
+  // long-running busy state and nothing business-critical is lost.
+  skipIfBusy?: boolean
 }
 
 function readFileOr(path: string, fallback: string): string {
@@ -51,7 +58,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
   const skillContent = readFileOr(skillPath, '')
   const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string } = {}
+  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean } = {}
   try {
     config = JSON.parse(readFileOr(configPath, '{}'))
   } catch { /* use defaults */ }
@@ -65,6 +72,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     enabled: config.enabled !== false,
     createdAt: config.createdAt || 0,
     type: (config.type as 'task' | 'heartbeat') || 'task',
+    skipIfBusy: config.skipIfBusy === true,
   }
 }
 
@@ -83,7 +91,7 @@ export function listScheduledTasks(): ScheduledTask[] {
 
 export function writeScheduledTask(
   taskName: string,
-  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string },
+  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean },
 ): void {
   const dir = join(SCHEDULED_TASKS_DIR, taskName)
   mkdirSync(dir, { recursive: true })
@@ -107,6 +115,7 @@ export function writeScheduledTask(
   if (data.agent !== undefined) config.agent = data.agent
   if (data.enabled !== undefined) config.enabled = data.enabled
   if (data.type !== undefined) config.type = data.type
+  if (data.skipIfBusy !== undefined) config.skipIfBusy = data.skipIfBusy
   if (!config.createdAt) config.createdAt = Math.floor(Date.now() / 1000)
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }

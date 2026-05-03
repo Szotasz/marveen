@@ -254,6 +254,17 @@ export function startScheduleRunner(): NodeJS.Timeout {
         if (pendingKeys.has(key)) continue
         const result = attemptFireTask(task, agentName, now)
         if (result === 'busy') {
+          if (task.skipIfBusy) {
+            // Opt-in skip for short-cadence tasks (e.g. 30-min heartbeats):
+            // a single missed tick is harmless because the next one is
+            // already on the way, and queueing them produces spurious
+            // "60 perce varakozik" Telegram alerts whenever the operator
+            // is having an active conversation in the channels session.
+            // Daily/weekly schedules keep skipIfBusy=false so the queue
+            // + alert path catches a long-running busy state.
+            logger.info({ task: task.name, agent: agentName }, 'Schedule busy, skipIfBusy=true: dropping tick silently')
+            continue
+          }
           // First encounter -- insert a new pending row. If somehow a
           // row already exists (race with a just-cancelled retry), do
           // nothing so the cancel wins the tiebreak.
