@@ -378,6 +378,33 @@ if [ -f "$INSTALL_DIR/templates/SOUL.md.template" ] && [ ! -f "$INSTALL_DIR/SOUL
   ok "SOUL.md generalva"
 fi
 
+# Default scheduled tasks scaffoldolasa ~/.claude/scheduled-tasks/ ala. A
+# template-ek {{MAIN_AGENT_ID}} placeholdert hasznalnak, igy a felhasznalo
+# valasztott agent slugja kerul be a hardcoded "marveen" helyett. Letezo task
+# konyvtarakat soha nem irjuk felul.
+SCHED_TPL_DIR="$INSTALL_DIR/templates/scheduled-tasks"
+SCHED_TARGET_DIR="$HOME/.claude/scheduled-tasks"
+if [ -d "$SCHED_TPL_DIR" ]; then
+  mkdir -p "$SCHED_TARGET_DIR"
+  for tpl in "$SCHED_TPL_DIR"/*/; do
+    [ -d "$tpl" ] || continue
+    task_name=$(basename "$tpl")
+    target="$SCHED_TARGET_DIR/$task_name"
+    if [ -d "$target" ]; then
+      continue
+    fi
+    mkdir -p "$target"
+    for f in "$tpl"*; do
+      [ -f "$f" ] || continue
+      sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
+          -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
+          -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
+          "$f" > "$target/$(basename "$f")"
+    done
+    ok "Utemezett feladat scaffoldolva: $task_name"
+  done
+fi
+
 # Telegram csatorna konfiguralasa
 if [ -n "$BOT_TOKEN" ] && [ "$BOT_TOKEN" != "" ]; then
   TELEGRAM_DIR="$HOME/.claude/channels/telegram"

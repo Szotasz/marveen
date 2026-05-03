@@ -252,6 +252,33 @@ if [ -f "$INSTALL_DIR/templates/SOUL.md.template" ] && [ ! -f "$INSTALL_DIR/SOUL
   echo -e "  ${GREEN}✓${NC} SOUL.md generalva"
 fi
 
+# Scaffold default scheduled tasks into ~/.claude/scheduled-tasks/. Templates
+# carry {{MAIN_AGENT_ID}} placeholders so tasks target the user's chosen agent
+# slug rather than hardcoded "marveen". Skip task dirs that already exist --
+# never overwrite user customizations.
+SCHED_TPL_DIR="$INSTALL_DIR/templates/scheduled-tasks"
+SCHED_TARGET_DIR="$HOME/.claude/scheduled-tasks"
+if [ -d "$SCHED_TPL_DIR" ]; then
+  mkdir -p "$SCHED_TARGET_DIR"
+  for tpl in "$SCHED_TPL_DIR"/*/; do
+    [ -d "$tpl" ] || continue
+    task_name=$(basename "$tpl")
+    target="$SCHED_TARGET_DIR/$task_name"
+    if [ -d "$target" ]; then
+      continue
+    fi
+    mkdir -p "$target"
+    for f in "$tpl"*; do
+      [ -f "$f" ] || continue
+      sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
+          -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
+          -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
+          "$f" > "$target/$(basename "$f")"
+    done
+    echo -e "  ${GREEN}✓${NC} Utemezett feladat scaffoldolva: $task_name"
+  done
+fi
+
 # Setup Telegram channel
 if [ -n "$BOT_TOKEN" ] && [ "$BOT_TOKEN" != "" ]; then
   TELEGRAM_DIR="$HOME/.claude/channels/telegram"
