@@ -142,6 +142,33 @@ const IDLE_BACKGROUND_ONE_SHELL = [
   '  ⏵⏵ bypass permissions on · 1 shell · ctrl+t to hide tasks · ↓ to manage',
 ].join('\n')
 
+// Background-shells footer with the tasks panel HIDDEN. When the
+// operator (or the agent) presses ctrl+t to hide the tasks panel,
+// Claude Code drops the "ctrl+t to hide tasks" segment and renders a
+// shorter footer: "· N shells · ↓ to manage". The pane is still idle;
+// the only difference is that the toggle hint is gone because the panel
+// it would toggle is already hidden. Observed in production on a sub-
+// agent session where the operator had hidden the tasks panel.
+const IDLE_BACKGROUND_SHELLS_HIDDEN = [
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on · 3 shells · ↓ to manage',
+].join('\n')
+
+// Same hidden-tasks variant with a single shell (singular form).
+// Defensive: covers the corner where a session has exactly one
+// background shell AND the tasks panel is hidden, so neither the
+// plural form nor the ctrl+t segment is present.
+const IDLE_BACKGROUND_ONE_SHELL_HIDDEN = [
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage',
+].join('\n')
+
 describe('detectPaneState', () => {
   it('returns unknown for empty input', () => {
     expect(detectPaneState('')).toBe('unknown')
@@ -172,10 +199,22 @@ describe('detectPaneState', () => {
     expect(detectPaneState(IDLE_BACKGROUND_ONE_SHELL)).toBe('idle')
   })
 
+  it('detects idle when the tasks panel is HIDDEN (no "ctrl+t" segment)', () => {
+    // Claude Code drops the "ctrl+t to hide tasks" segment when the
+    // tasks panel is already hidden, leaving "· N shells · ↓ to manage"
+    // as the only suffix. The pane is still idle, just with a shorter
+    // footer. The previous regex only matched the "ctrl+t" form, so
+    // sessions with the tasks panel hidden were classified 'unknown'
+    // and inter-agent messages stalled until the next manual toggle.
+    expect(detectPaneState(IDLE_BACKGROUND_SHELLS_HIDDEN)).toBe('idle')
+    expect(detectPaneState(IDLE_BACKGROUND_ONE_SHELL_HIDDEN)).toBe('idle')
+  })
+
   it('does NOT classify a truncated "· N shell" prefix as idle', () => {
-    // Defense in depth: the shells-variant requires the full
-    // "· N shells · ctrl+t" marker, not just the bare prefix. Two
-    // reasons we pin this down with an explicit negative test:
+    // Defense in depth: the shells-variant requires either the
+    // "· N shells · ctrl+t" marker or the "· N shells · ↓ to manage"
+    // marker, not just the bare "· N shell(s)" prefix. Two reasons we
+    // pin this down with an explicit negative test:
     //   1. A malformed or partially rendered footer (terminal
     //      corruption, mid-render frame) must classify as 'unknown'
     //      so we do not deliver a prompt into a pane that is not
@@ -355,6 +394,8 @@ describe('isReadyForPrompt', () => {
     expect(isReadyForPrompt(IDLE_STRICT)).toBe(true)
     expect(isReadyForPrompt(IDLE_BACKGROUND_SHELLS)).toBe(true)
     expect(isReadyForPrompt(IDLE_BACKGROUND_ONE_SHELL)).toBe(true)
+    expect(isReadyForPrompt(IDLE_BACKGROUND_SHELLS_HIDDEN)).toBe(true)
+    expect(isReadyForPrompt(IDLE_BACKGROUND_ONE_SHELL_HIDDEN)).toBe(true)
     expect(isReadyForPrompt(BUSY_FULL_FOOTER)).toBe(false)
     expect(isReadyForPrompt(BUSY_FOOTER_FRAME_GAP)).toBe(false)
     expect(isReadyForPrompt(TYPING_PARKED)).toBe(false)
