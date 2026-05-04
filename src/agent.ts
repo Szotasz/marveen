@@ -18,7 +18,8 @@ export async function runAgent(
   sessionId?: string,
   onTyping?: () => void,
   allowTools = false,
-  cwd: string = PROJECT_ROOT
+  cwd: string = PROJECT_ROOT,
+  env?: Record<string, string | undefined>,
 ): Promise<{ text: string | null; newSessionId?: string }> {
   let newSessionId: string | undefined
   let resultText: string | null = null
@@ -39,6 +40,7 @@ export async function runAgent(
         permissionMode: 'bypassPermissions',
         ...(allowTools ? {} : { disallowedTools: DEFAULT_DISALLOWED_TOOLS }),
         ...(sessionId ? { resume: sessionId } : {}),
+        ...(env ? { env: { ...process.env, ...env } } : {}),
       },
     })
 
