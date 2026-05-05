@@ -98,6 +98,30 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
     )
 
     logger.info({ name, session, tgStateDir }, 'Agent tmux session started')
+
+    // After a restart with --continue, a session that's been idle for >24h
+    // shows the "Resume from summary" modal before the prompt input is ready
+    // (113.6k tokens at 2d age in observed cases). Until the operator either
+    // sends a new prompt or dismisses the modal, every scheduled task and
+    // every inter-agent message stalls because isSessionReadyForPrompt sees
+    // a non-idle pane state. The pre-flight dismiss baked into
+    // sendPromptToSession only fires on outgoing traffic -- so on a fresh
+    // restart with no inbound, the modal can sit indefinitely.
+    //
+    // Fire a delayed dismiss after Claude Code has had time to render the
+    // modal. 8 seconds is a comfortable margin in observed restarts (modal
+    // typically appears within 4-6s). Survey-rating modals from prior
+    // sessions can also be present, so dismiss both. Errors are swallowed
+    // -- the outbound pre-flight remains the safety net if this misses.
+    setTimeout(() => {
+      try {
+        dismissSurveyModalIfPresent(session)
+        dismissResumeSummaryModalIfPresent(session)
+      } catch (err) {
+        logger.warn({ err, name, session }, 'Post-restart modal dismiss failed')
+      }
+    }, 8000)
+
     return { ok: true }
   } catch (err) {
     logger.error({ err, name }, 'Failed to start agent tmux session')
