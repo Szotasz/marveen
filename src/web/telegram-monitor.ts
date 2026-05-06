@@ -150,6 +150,14 @@ function navigateToMenuItem(session: string, pattern: RegExp, maxSteps: number =
 }
 
 function softReconnectMarveen(): boolean {
+  // The /mcp picker highlights the selected entry with a background colour
+  // (not a `❯` prefix), so `tmux capture-pane -p` (ASCII) cannot read which
+  // row the cursor is on. The picker does, however, wrap around: a single
+  // `Up` press from the default top-of-list position lands on the very last
+  // entry — which is `plugin:telegram:telegram` because Built-in MCPs come
+  // after all claude.ai connectors. Then Enter opens the Telegram submenu,
+  // where `❯ 1. View tools` is the default highlight; one Down moves to
+  // `2. Reconnect`, Enter triggers it.
   try {
     // Escape interrupts any in-progress turn, making the session ready
     execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Escape'], { timeout: 3000 })
@@ -164,43 +172,38 @@ function softReconnectMarveen(): boolean {
       execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Escape'], { timeout: 3000 })
       return false
     }
-    logger.info({ paneContent: pane1.slice(-500) }, 'soft reconnect: /mcp pane')
-
-    if (!navigateToMenuItem(MAIN_CHANNELS_SESSION, /telegram/i)) {
-      logger.warn('soft reconnect: Telegram not found in /mcp menu')
+    if (!/plugin:telegram:telegram/i.test(pane1)) {
+      logger.warn({ paneContent: pane1.slice(-500) }, 'soft reconnect: /mcp picker did not render telegram entry')
       execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Escape'], { timeout: 3000 })
       return false
     }
+
+    // Wraparound: Up from top → last entry (plugin:telegram:telegram)
+    execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Up'], { timeout: 3000 })
+    execFileSync('/bin/sleep', ['0.3'], { timeout: 1000 })
 
     execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Enter'], { timeout: 3000 })
     execFileSync('/bin/sleep', ['1'], { timeout: 3000 })
 
-    // Verify we entered the Telegram submenu, not Gmail/Calendar/Drive
+    // Verify: the submenu header reads "Plugin:telegram:telegram MCP Server"
     const pane2 = capturePane(MAIN_CHANNELS_SESSION)
-    if (!pane2) {
-      logger.warn('soft reconnect: failed to capture submenu')
-      execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Escape'], { timeout: 3000 })
-      return false
-    }
-    logger.info({ paneContent: pane2.slice(-500) }, 'soft reconnect: submenu after Enter')
-
-    if (!/telegram/i.test(pane2)) {
-      logger.warn('soft reconnect: entered wrong submenu (not Telegram), backing out')
+    if (!pane2 || !/Plugin:telegram:telegram MCP Server/i.test(pane2)) {
+      logger.warn(
+        { paneContent: pane2 ? pane2.slice(-500) : 'null' },
+        'soft reconnect: did not enter Telegram submenu (Up+Enter wrong target?)',
+      )
       execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Escape'], { timeout: 3000 })
       return false
     }
 
-    if (!navigateToMenuItem(MAIN_CHANNELS_SESSION, /reconnect/i)) {
-      logger.warn('soft reconnect: Reconnect not found in Telegram submenu')
-      execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Escape'], { timeout: 3000 })
-      return false
-    }
-
+    // Submenu cursor defaults to "❯ 1. View tools"; one Down → "2. Reconnect"
+    execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Down'], { timeout: 3000 })
+    execFileSync('/bin/sleep', ['0.3'], { timeout: 1000 })
     execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Enter'], { timeout: 3000 })
     execFileSync('/bin/sleep', ['2'], { timeout: 4000 })
 
     execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Escape'], { timeout: 3000 })
-    logger.info('soft reconnect: /mcp → Telegram → Reconnect completed')
+    logger.info('soft reconnect: /mcp → Up (telegram) → Enter → Down (Reconnect) → Enter completed')
     return true
   } catch (err) {
     logger.warn({ err }, 'Marveen soft reconnect failed')
