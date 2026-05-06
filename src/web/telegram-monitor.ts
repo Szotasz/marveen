@@ -121,6 +121,13 @@ interface MarveenDownState {
 }
 
 const SAVE_WINDOW_MS = 60_000
+// Confirmation threshold before treating a "plugin not alive" tick as real
+// downtime. The 30-min heartbeat scheduled task can monopolise the Claude
+// IPC for 60-90s while it processes the prompt, during which the plugin
+// IPC briefly looks dead. Two consecutive negative ticks (~120s) filter
+// those false positives without delaying real outages by much.
+const MARVEEN_DOWN_CONFIRM_MS = 120_000
+let marveenSuspectFirstSeen: number | null = null
 let marveenDownState: MarveenDownState | null = null
 
 // Navigate a Claude Code interactive picker by pressing Down until ❯ lands
@@ -332,6 +339,7 @@ function handleMarveenDown(): void {
 }
 
 function handleMarveenUp(): void {
+  marveenSuspectFirstSeen = null
   if (marveenDownState) {
     const downedFor = Math.round((Date.now() - marveenDownState.downSince) / 1000)
     const stage = marveenDownState.stage
@@ -341,6 +349,19 @@ function handleMarveenUp(): void {
     }
     marveenDownState = null
   }
+}
+
+// Returns true once the suspect-down state has been observed for
+// MARVEEN_DOWN_CONFIRM_MS. Called twice per minute (the monitor tick is
+// 60s); the threshold therefore translates to roughly two negative ticks
+// before recovery escalates.
+function shouldEscalateMarveenDown(): boolean {
+  const now = Date.now()
+  if (marveenSuspectFirstSeen === null) {
+    marveenSuspectFirstSeen = now
+    return false
+  }
+  return now - marveenSuspectFirstSeen >= MARVEEN_DOWN_CONFIRM_MS
 }
 
 export function startTelegramPluginMonitor(): NodeJS.Timeout {
@@ -360,7 +381,9 @@ export function startTelegramPluginMonitor(): NodeJS.Timeout {
           const lastRestart = agentLastRestart.get(t.agentName)
           if (lastRestart && Date.now() - lastRestart < AGENT_RESTART_GRACE_MS) continue
         }
-        if (t.isMarveen) handleMarveenDown()
+        if (t.isMarveen) {
+          if (shouldEscalateMarveenDown()) handleMarveenDown()
+        }
         continue
       }
       const alive = hasTelegramPluginAlive(claudePid, t.agentName)
@@ -380,7 +403,7 @@ export function startTelegramPluginMonitor(): NodeJS.Timeout {
         if (lastRestart && Date.now() - lastRestart < AGENT_RESTART_GRACE_MS) continue
       }
       if (t.isMarveen) {
-        handleMarveenDown()
+        if (shouldEscalateMarveenDown()) handleMarveenDown()
       } else {
         if (!agentDownSince.has(t.session)) agentDownSince.set(t.session, Date.now())
         logger.warn({ agent: t.agentName }, 'Agent Telegram plugin down -- auto-restarting')
