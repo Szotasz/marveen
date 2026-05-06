@@ -280,10 +280,15 @@ function handleMarveenDown(): void {
     return
   }
   if (!marveenDownState) {
-    // First tick of this outage: log, alert, try the soft fix.
+    // First tick of this outage: log + try the soft fix silently. We
+    // deliberately skip the user-facing Telegram alert at stage 1 since
+    // the Claude Code TUI does an hourly clean MCP re-handshake (sub-1-min
+    // disconnect that recovers automatically); spamming "lecsatlakozott"
+    // for those healthy cycles is more annoying than informative. Only
+    // alert from stage 2 onward, when soft reconnect failed and a real
+    // intervention (memory save / session resume / hard restart) starts.
     marveenDownState = { downSince: now, stage: 'soft', lastAlertAt: now, softAttempts: 0 }
-    logger.warn('Marveen Telegram plugin down -- stage 1 (soft /mcp reconnect)')
-    sendMarveenAlert('⚠️ Marveen Telegram plugin lecsatlakozott. Próbálok /mcp-vel reconnectálni...').catch(() => {})
+    logger.warn('Marveen Telegram plugin down -- stage 1 (soft /mcp reconnect, silent)')
     if (softReconnectMarveen()) marveenDownState.softAttempts += 1
     return
   }
