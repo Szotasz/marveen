@@ -86,6 +86,11 @@ function shouldNotify(data: HeartbeatData): boolean {
 
   if (data.system.dbWarning) return true
 
+  // 22:00 utan csendes ablak -- csak igazi rendszer-vesz (dbWarning, fent
+  // mar return-olt) lephet at. Stale urgent kanban-kartyak este nem zavarjak
+  // a felhasznalot.
+  if (hour >= 22) return false
+
   if (hour >= 21) {
     return data.kanban.urgent > 0
   }
