@@ -115,12 +115,29 @@ fi
 # scratchpads) are allowed -- the --untracked-files=no flag excludes
 # them. Only staged or unstaged modifications to already-tracked files
 # are a block.
+#
+# AUTO_STASH=1 (set by the dashboard's "Frissítés stash-elve" button)
+# turns the block into a managed stash + pop pattern: stash before
+# pulling, restore after a successful update. If the pop fails because
+# the upstream change conflicts with the stash, we drop the stash and
+# emit a warning so the operator does not lose work silently -- the
+# stash entry is also kept in `git stash list` for manual recovery.
+STASHED_AUTO=0
 DIRTY=$(git status --porcelain --untracked-files=no | head -n 1)
 if [ -n "$DIRTY" ]; then
-  echo -e "${RED}HIBA:${NC} A working tree modosult allapotban van."
-  echo "       Commitold vagy stasheld a valtozasokat, majd indithatod ujra:"
-  echo "         git stash"
-  exit 3
+  if [ "${AUTO_STASH:-0}" = "1" ]; then
+    echo -e "  Lokalis valtozasok stash-elve (auto-stash)..."
+    if ! git stash push --keep-index -m "marveen-update-auto-stash $(date +%Y%m%d-%H%M%S)"; then
+      echo -e "${RED}HIBA:${NC} Auto-stash sikertelen. Nezd meg: git status"
+      exit 3
+    fi
+    STASHED_AUTO=1
+  else
+    echo -e "${RED}HIBA:${NC} A working tree modosult allapotban van."
+    echo "       Commitold vagy stasheld a valtozasokat, majd indithatod ujra:"
+    echo "         git stash"
+    exit 3
+  fi
 fi
 
 # Save current version
@@ -175,6 +192,19 @@ npm run build --silent
 # token and loop on 409 Conflict. Safe to run every update.
 if command -v tmux >/dev/null 2>&1; then
   tmux set-environment -g -u TELEGRAM_BOT_TOKEN 2>/dev/null || true
+fi
+
+# Restore auto-stashed local changes before restarting services.
+# A stash conflict here typically means the upstream rebase touched
+# the same lines the operator had locally; we drop and warn rather
+# than block the restart, but the entry stays in `git stash list`
+# until the operator deals with it.
+if [ "$STASHED_AUTO" = "1" ]; then
+  echo -e "  Auto-stash visszaallitasa..."
+  if ! git stash pop; then
+    echo -e "${RED}FIGYELEM:${NC} Auto-stash pop konfliktusos -- a stash benne marad a 'git stash list'-ben."
+    echo -e "          Manualisan kezeld: git stash list / git stash apply / git stash drop"
+  fi
 fi
 
 # Restart services
