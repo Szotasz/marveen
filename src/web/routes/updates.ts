@@ -12,7 +12,7 @@ import {
   checkUpdatePreflight, checkNoConcurrentUpdate, classifyLockWriteError,
   type GitRunner, type PidfileRunner,
 } from '../../update-preflight.js'
-import { json } from '../http-helpers.js'
+import { json, readBody } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
 // Pidfile path owned by update.sh for the lifetime of an update run.
@@ -36,6 +36,20 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/updates/apply' && method === 'POST') {
+    // Optional body { autoStash: true } turns the dirty-tree precheck
+    // failure into a managed stash + pop pattern inside update.sh.
+    // Without it, a dirty working tree returns 409 'dirty-tree' as before.
+    let autoStash = false
+    try {
+      const buf = await readBody(ctx.req)
+      if (buf.length > 0) {
+        const parsed = JSON.parse(buf.toString()) as { autoStash?: unknown }
+        autoStash = parsed.autoStash === true
+      }
+    } catch {
+      // Empty/invalid body: treat as autoStash=false. Real validation lives
+      // at update.sh's own dirty-tree check; this is just a hint.
+    }
     const pf: PidfileRunner = {
       readPidfile: () => {
         try {
@@ -128,14 +142,20 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
       return true
     }
     if (!preflight.ok) {
-      releaseLock()
-      const body: Record<string, unknown> = {
-        error: preflight.message,
-        reason: preflight.reason,
+      // dirty-tree + autoStash=true: skip the dashboard-side block and let
+      // update.sh handle the stash+pop. Other failure reasons (detached HEAD,
+      // not-on-main, …) still hard-block since stash cannot rescue them.
+      const skipForAutoStash = preflight.reason === 'dirty-tree' && autoStash
+      if (!skipForAutoStash) {
+        releaseLock()
+        const body: Record<string, unknown> = {
+          error: preflight.message,
+          reason: preflight.reason,
+        }
+        if (preflight.reason === 'not-on-main') body.branch = preflight.branch
+        json(res, body, 409)
+        return true
       }
-      if (preflight.reason === 'not-on-main') body.branch = preflight.branch
-      json(res, body, 409)
-      return true
     }
     try {
       let outFd: number | 'ignore' = 'ignore'
@@ -149,6 +169,7 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
         cwd: PROJECT_ROOT,
         detached: true,
         stdio: ['ignore', outFd, outFd],
+        env: { ...process.env, AUTO_STASH: autoStash ? '1' : '0' },
       })
       child.on('error', (err) => {
         logger.error({ err }, 'update.sh spawn reported an async error')

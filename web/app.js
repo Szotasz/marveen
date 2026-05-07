@@ -5820,8 +5820,7 @@ document.getElementById('updatesCheckBtn').addEventListener('click', async () =>
   btn.disabled = false
 })
 
-document.getElementById('updatesApplyBtn').addEventListener('click', async () => {
-  if (!confirm('Frissítés most. A szolgáltatások újraindulnak, a dashboard ~30 másodpercig nem érhető el. Folytatod?')) return
+async function runUpdate(autoStash) {
   const btn = document.getElementById('updatesApplyBtn')
   btn.disabled = true
   btn.querySelector('.btn-text').hidden = true
@@ -5832,13 +5831,24 @@ document.getElementById('updatesApplyBtn').addEventListener('click', async () =>
     btn.querySelector('.btn-loading').hidden = true
   }
   try {
-    const res = await fetch('/api/updates/apply', { method: 'POST' })
+    const res = await fetch('/api/updates/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ autoStash: autoStash === true }),
+    })
     // Parse the body regardless of status so preflight reasons
     // (not-on-main / dirty-tree / detached-head returned as 409 by
     // the backend) land in the toast instead of a bare "HTTP 409".
     const data = await res.json().catch(() => ({}))
     if (!res.ok) {
       resetBtn()
+      // dirty-tree without autoStash: offer the auto-stash retry inline.
+      if (data.reason === 'dirty-tree' && !autoStash) {
+        if (confirm('A working tree-ben lokális változtatások vannak. Stash-eljem őket automatikusan, frissítsek, majd visszaállítsam?')) {
+          await runUpdate(true)
+        }
+        return
+      }
       showToast('Frissítés nem indult: ' + (data.error || ('HTTP ' + res.status)))
       return
     }
@@ -5848,6 +5858,11 @@ document.getElementById('updatesApplyBtn').addEventListener('click', async () =>
     resetBtn()
     showToast('Hiba: ' + (err.message || err))
   }
+}
+
+document.getElementById('updatesApplyBtn').addEventListener('click', async () => {
+  if (!confirm('Frissítés most. A szolgáltatások újraindulnak, a dashboard ~30 másodpercig nem érhető el. Folytatod?')) return
+  await runUpdate(false)
 })
 
 // Poll the badge on startup and every 5 min so the nav link reflects
