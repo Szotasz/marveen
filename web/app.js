@@ -1265,7 +1265,10 @@ function updateTelegramTab(agent) {
     document.getElementById('tgRunningNotice').hidden = !running
   }
   document.getElementById('tgTokenInput').value = ''
-  if (connected) refreshPendingPairings()
+  if (connected) {
+    refreshPendingPairings()
+    refreshAllowedList()
+  }
 }
 
 document.getElementById('tgConnectBtn').addEventListener('click', async () => {
@@ -1362,6 +1365,7 @@ async function approvePairing(code) {
     }
     showToast('Párosítás jóváhagyva!')
     refreshPendingPairings()
+    refreshAllowedList()
   } catch (err) {
     showToast(`Hiba: ${err.message}`)
   }
@@ -1369,11 +1373,74 @@ async function approvePairing(code) {
 
 document.getElementById('tgRefreshPendingBtn').addEventListener('click', refreshPendingPairings)
 
+async function refreshAllowedList() {
+  if (!currentAgent) return
+  const listEl = document.getElementById('tgAllowedList')
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/telegram/allowed`)
+    if (!res.ok) return
+    const data = await res.json()
+    const users = data.users || []
+    const groups = data.groups || []
+    if (users.length === 0 && groups.length === 0) {
+      listEl.innerHTML = '<div class="tg-allowed-empty">Még nincs bekötött chat. Lent add hozzá az elsőt.</div>'
+      return
+    }
+    listEl.innerHTML = ''
+    for (const id of users) {
+      const item = document.createElement('div')
+      item.className = 'tg-allowed-item'
+      item.innerHTML = `
+        <div class="tg-allowed-meta">
+          <span class="tg-allowed-kind">DM</span>
+          <span class="tg-allowed-id">${escapeHtml(id)}</span>
+        </div>
+        <button class="btn-icon-danger" title="Eltávolítás" data-kind="user" data-id="${escapeHtml(id)}">&times;</button>
+      `
+      item.querySelector('button').addEventListener('click', () => removeAllowed('user', id))
+      listEl.appendChild(item)
+    }
+    for (const g of groups) {
+      const item = document.createElement('div')
+      item.className = 'tg-allowed-item'
+      item.innerHTML = `
+        <div class="tg-allowed-meta">
+          <span class="tg-allowed-kind tg-allowed-kind-group">CSOPORT</span>
+          <span class="tg-allowed-id">${escapeHtml(g.id)}</span>
+        </div>
+        <button class="btn-icon-danger" title="Eltávolítás" data-kind="group" data-id="${escapeHtml(g.id)}">&times;</button>
+      `
+      item.querySelector('button').addEventListener('click', () => removeAllowed('group', g.id))
+      listEl.appendChild(item)
+    }
+  } catch { /* ignore */ }
+}
+
+async function removeAllowed(kind, id) {
+  if (!currentAgent) return
+  const label = kind === 'user' ? 'felhasználót' : 'csoportot'
+  if (!confirm(`Biztosan eltávolítod ezt a ${label} (${id})?`)) return
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/telegram/allowed/${kind}/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      throw new Error(err.error || 'Eltávolítási hiba')
+    }
+    showToast('Eltávolítva')
+    refreshAllowedList()
+  } catch (err) {
+    showToast(`Hiba: ${err.message}`)
+  }
+}
+
+document.getElementById('tgRefreshAllowedBtn').addEventListener('click', refreshAllowedList)
+
 document.getElementById('tgApproveBtn').addEventListener('click', async () => {
   const code = document.getElementById('tgPairCode').value.trim()
   if (!code) { document.getElementById('tgPairCode').focus(); return }
   await approvePairing(code)
   document.getElementById('tgPairCode').value = ''
+  refreshAllowedList()
 })
 
 document.getElementById('tgDisconnectBtn').addEventListener('click', async () => {

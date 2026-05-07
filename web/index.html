@@ -1096,8 +1096,36 @@
                 <span>Az ügynök fut, a bot aktívan figyel. A chat ID-d előre engedélyezve van, nem kell pairing kód.</span>
               </div>
             </div>
+            <div class="tg-allowed-section" id="tgAllowedSection">
+              <h4>Bekötött chat-ek és csoportok</h4>
+              <p class="tg-pairing-info">Az ügynök ide tud üzenetet küldeni és innen fogad üzenetet. Egy ügynök tetszőleges számú emberhez (DM) és csoporthoz köthető.</p>
+              <div class="tg-allowed-list" id="tgAllowedList">
+                <div class="tg-allowed-empty">Még nincs bekötött chat. Lent add hozzá az elsőt.</div>
+              </div>
+              <button class="btn-secondary btn-compact" id="tgRefreshAllowedBtn" style="margin-top:8px; font-size:12px;">Lista frissítése</button>
+            </div>
             <div class="tg-pairing-section" id="tgPairingSection">
-              <h4>Párosítás</h4>
+              <h4>Új ember vagy csoport hozzáadása</h4>
+              <details class="tg-howto" style="margin-bottom:12px;">
+                <summary style="cursor:pointer; font-weight:600;">Hogyan adj hozzá több embert vagy csoportot? &#9660;</summary>
+                <div style="padding:10px 0 0 0; font-size:13px; line-height:1.5;">
+                  <p style="margin-top:0;"><strong>1. Új ember (privát chat) hozzáadása:</strong></p>
+                  <ol style="padding-left:20px; margin-top:4px;">
+                    <li>Add meg az illetőnek a bot felhasználónevét (lent látható).</li>
+                    <li>Az illető indítsa el a botot a Telegramban (<code>/start</code>) és írjon neki egy üzenetet.</li>
+                    <li>A bot válaszol egy 6-jegyű párosítási kóddal.</li>
+                    <li>Az illető elküldi neked a kódot, te ide írod be és jóváhagyod.</li>
+                  </ol>
+                  <p style="margin-top:10px;"><strong>2. Telegram csoport hozzáadása:</strong></p>
+                  <ol style="padding-left:20px; margin-top:4px;">
+                    <li>Hívd meg a botot egy meglévő Telegram csoportba (csoport beállítások &rarr; Tagok &rarr; Hozzáadás).</li>
+                    <li>A csoportban írj <code>/pair</code>-t (vagy a bot által megadott parancsot).</li>
+                    <li>Megjelenik egy párosítási kód a csoportban.</li>
+                    <li>Másold be ide és hagyd jóvá. Ezután az ügynök fog tudni írni a csoportba és olvasni a tagok üzeneteit.</li>
+                  </ol>
+                  <p style="margin-top:10px; color:var(--muted-foreground);"><em>Eltávolításhoz használd a Bekötött chat-ek listájában az X gombot.</em></p>
+                </div>
+              </details>
               <p class="tg-pairing-info">Ha valaki ír a botnak, a plugin egy kódot küld neki. Ide írd be a kódot a jóváhagyáshoz.</p>
               <div class="tg-pending-list" id="tgPendingList"></div>
               <div class="form-row" style="gap:8px; align-items:flex-end; margin-top: 12px;">

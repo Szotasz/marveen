@@ -520,6 +520,64 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     return true
   }
 
+  // GET /api/agents/:name/telegram/allowed
+  // Returns the live allowlist: DM senders (allowFrom) + groups.
+  const tgAllowedListMatch = path.match(/^\/api\/agents\/([^/]+)\/telegram\/allowed$/)
+  if (tgAllowedListMatch && method === 'GET') {
+    const name = decodeURIComponent(tgAllowedListMatch[1])
+    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
+      json(res, { error: 'Agent not found' }, 404)
+      return true
+    }
+    const accessPath = name === MAIN_AGENT_ID
+      ? join(homedir(), '.claude', 'channels', 'telegram', 'access.json')
+      : join(agentDir(name), '.claude', 'channels', 'telegram', 'access.json')
+    const accessContent = readFileOr(accessPath, '{}')
+    try {
+      const access = JSON.parse(accessContent)
+      const users: string[] = Array.isArray(access.allowFrom) ? access.allowFrom : []
+      const groups = Object.entries(access.groups || {}).map(([id, policy]) => ({ id, policy }))
+      json(res, { users, groups })
+    } catch {
+      json(res, { users: [], groups: [] })
+    }
+    return true
+  }
+
+  // DELETE /api/agents/:name/telegram/allowed/:type/:id
+  // type = "user" or "group", id = senderId or groupId.
+  const tgAllowedRemoveMatch = path.match(/^\/api\/agents\/([^/]+)\/telegram\/allowed\/(user|group)\/(.+)$/)
+  if (tgAllowedRemoveMatch && method === 'DELETE') {
+    const name = decodeURIComponent(tgAllowedRemoveMatch[1])
+    const kind = tgAllowedRemoveMatch[2]
+    const id = decodeURIComponent(tgAllowedRemoveMatch[3])
+    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
+      json(res, { error: 'Agent not found' }, 404)
+      return true
+    }
+    const tgDir = name === MAIN_AGENT_ID
+      ? join(homedir(), '.claude', 'channels', 'telegram')
+      : join(agentDir(name), '.claude', 'channels', 'telegram')
+    const accessPath = join(tgDir, 'access.json')
+    try {
+      const access = JSON.parse(readFileOr(accessPath, '{}'))
+      if (kind === 'user') {
+        access.allowFrom = (access.allowFrom || []).filter((s: string) => s !== id)
+        const approvedFile = join(tgDir, 'approved', id)
+        try { if (existsSync(approvedFile)) unlinkSync(approvedFile) } catch { /* ignore */ }
+      } else {
+        if (access.groups) delete access.groups[id]
+      }
+      atomicWriteFileSync(accessPath, JSON.stringify(access, null, 2))
+      logger.info({ name, kind, id }, 'Telegram allowlist entry removed')
+      json(res, { ok: true })
+    } catch (err) {
+      logger.error({ err }, 'Failed to remove allowlist entry')
+      json(res, { error: 'Failed to remove allowlist entry' }, 500)
+    }
+    return true
+  }
+
   const startMatch = path.match(/^\/api\/agents\/([^/]+)\/start$/)
   if (startMatch && method === 'POST') {
     const name = decodeURIComponent(startMatch[1])
