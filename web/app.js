@@ -1265,7 +1265,11 @@ function updateTelegramTab(agent) {
     document.getElementById('tgRunningNotice').hidden = !running
   }
   document.getElementById('tgTokenInput').value = ''
-  if (connected) refreshPendingPairings()
+  if (connected) {
+    refreshPendingPairings()
+    refreshAllowedList()
+    refreshInvites()
+  }
 }
 
 document.getElementById('tgConnectBtn').addEventListener('click', async () => {
@@ -1362,6 +1366,7 @@ async function approvePairing(code) {
     }
     showToast('Párosítás jóváhagyva!')
     refreshPendingPairings()
+    refreshAllowedList()
   } catch (err) {
     showToast(`Hiba: ${err.message}`)
   }
@@ -1369,11 +1374,169 @@ async function approvePairing(code) {
 
 document.getElementById('tgRefreshPendingBtn').addEventListener('click', refreshPendingPairings)
 
+async function refreshAllowedList() {
+  if (!currentAgent) return
+  const listEl = document.getElementById('tgAllowedList')
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/telegram/allowed`)
+    if (!res.ok) return
+    const data = await res.json()
+    const users = data.users || []
+    const groups = data.groups || []
+    if (users.length === 0 && groups.length === 0) {
+      listEl.innerHTML = '<div class="tg-allowed-empty">Még nincs bekötött chat. Lent add hozzá az elsőt.</div>'
+      return
+    }
+    listEl.innerHTML = ''
+    for (const id of users) {
+      const item = document.createElement('div')
+      item.className = 'tg-allowed-item'
+      item.innerHTML = `
+        <div class="tg-allowed-meta">
+          <span class="tg-allowed-kind">DM</span>
+          <span class="tg-allowed-id">${escapeHtml(id)}</span>
+        </div>
+        <button class="btn-icon-danger" title="Eltávolítás" data-kind="user" data-id="${escapeHtml(id)}">&times;</button>
+      `
+      item.querySelector('button').addEventListener('click', () => removeAllowed('user', id))
+      listEl.appendChild(item)
+    }
+    for (const g of groups) {
+      const item = document.createElement('div')
+      item.className = 'tg-allowed-item'
+      item.innerHTML = `
+        <div class="tg-allowed-meta">
+          <span class="tg-allowed-kind tg-allowed-kind-group">CSOPORT</span>
+          <span class="tg-allowed-id">${escapeHtml(g.id)}</span>
+        </div>
+        <button class="btn-icon-danger" title="Eltávolítás" data-kind="group" data-id="${escapeHtml(g.id)}">&times;</button>
+      `
+      item.querySelector('button').addEventListener('click', () => removeAllowed('group', g.id))
+      listEl.appendChild(item)
+    }
+  } catch { /* ignore */ }
+}
+
+async function removeAllowed(kind, id) {
+  if (!currentAgent) return
+  const label = kind === 'user' ? 'felhasználót' : 'csoportot'
+  if (!confirm(`Biztosan eltávolítod ezt a ${label} (${id})?`)) return
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/telegram/allowed/${kind}/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      throw new Error(err.error || 'Eltávolítási hiba')
+    }
+    showToast('Eltávolítva')
+    refreshAllowedList()
+  } catch (err) {
+    showToast(`Hiba: ${err.message}`)
+  }
+}
+
+document.getElementById('tgRefreshAllowedBtn').addEventListener('click', refreshAllowedList)
+
+async function refreshInvites() {
+  if (!currentAgent) return
+  const listEl = document.getElementById('tgInviteList')
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/telegram/invites`)
+    if (!res.ok) return
+    const items = await res.json()
+    if (!items.length) {
+      listEl.innerHTML = '<div class="tg-allowed-empty">Nincs aktív meghívó link.</div>'
+      return
+    }
+    listEl.innerHTML = ''
+    for (const inv of items) {
+      const item = document.createElement('div')
+      item.className = 'tg-allowed-item'
+      const expiresIn = Math.max(0, Math.floor((inv.expiresAt - Date.now()) / 60000))
+      const status = inv.used
+        ? `<span class="tg-allowed-kind" style="background:rgba(180,180,180,0.15); color:var(--text-muted);">FELHASZNÁLT</span>`
+        : `<span class="tg-allowed-kind tg-allowed-kind-group">AKTÍV (${expiresIn}p)</span>`
+      const linkHtml = inv.deepLink
+        ? `<a href="${escapeHtml(inv.deepLink)}" target="_blank" class="tg-allowed-id" style="text-decoration:underline;">${escapeHtml(inv.deepLink)}</a>`
+        : `<span class="tg-allowed-id">(bot username nélkül)</span>`
+      item.innerHTML = `
+        <div class="tg-allowed-meta" style="flex-wrap:wrap; gap:6px;">
+          ${status}
+          ${linkHtml}
+        </div>
+        <div style="display:flex; gap:6px;">
+          ${inv.deepLink && !inv.used ? `<button class="btn-secondary btn-compact" data-link="${escapeHtml(inv.deepLink)}" style="padding:4px 10px; font-size:11px; margin:0;">Másol</button>` : ''}
+          <button class="btn-icon-danger" title="Visszavonás" data-token="${escapeHtml(inv.token)}">&times;</button>
+        </div>
+      `
+      const copyBtn = item.querySelector('button[data-link]')
+      if (copyBtn) {
+        copyBtn.addEventListener('click', async (e) => {
+          const link = e.currentTarget.getAttribute('data-link')
+          try { await navigator.clipboard.writeText(link); showToast('Vágólapra másolva') }
+          catch { showToast('Másolás sikertelen') }
+        })
+      }
+      const revokeBtn = item.querySelector('button[data-token]')
+      if (revokeBtn) {
+        revokeBtn.addEventListener('click', () => revokeInviteToken(inv.token))
+      }
+      listEl.appendChild(item)
+    }
+  } catch { /* ignore */ }
+}
+
+async function generateInvite() {
+  if (!currentAgent) return
+  const btn = document.getElementById('tgGenerateInviteBtn')
+  btn.disabled = true
+  btn.textContent = 'Generálás...'
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/telegram/invites`, { method: 'POST' })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      throw new Error(err.error || 'Sikertelen')
+    }
+    const data = await res.json()
+    if (data.deepLink) {
+      try { await navigator.clipboard.writeText(data.deepLink); showToast('Meghívó link létrehozva és vágólapra másolva') }
+      catch { showToast('Meghívó link létrehozva — kattints a Másol gombra') }
+    } else {
+      showToast('Meghívó létrejött (bot username pending — frissítés)')
+    }
+    refreshInvites()
+  } catch (err) {
+    showToast(`Hiba: ${err.message}`)
+  } finally {
+    btn.disabled = false
+    btn.textContent = 'Új meghívó link'
+  }
+}
+
+async function revokeInviteToken(token) {
+  if (!currentAgent) return
+  if (!confirm('Biztosan visszavonod ezt a meghívó linket?')) return
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/telegram/invites/${encodeURIComponent(token)}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      throw new Error(err.error || 'Sikertelen')
+    }
+    showToast('Meghívó visszavonva')
+    refreshInvites()
+  } catch (err) {
+    showToast(`Hiba: ${err.message}`)
+  }
+}
+
+document.getElementById('tgGenerateInviteBtn').addEventListener('click', generateInvite)
+document.getElementById('tgRefreshInvitesBtn').addEventListener('click', refreshInvites)
+
 document.getElementById('tgApproveBtn').addEventListener('click', async () => {
   const code = document.getElementById('tgPairCode').value.trim()
   if (!code) { document.getElementById('tgPairCode').focus(); return }
   await approvePairing(code)
   document.getElementById('tgPairCode').value = ''
+  refreshAllowedList()
 })
 
 document.getElementById('tgDisconnectBtn').addEventListener('click', async () => {

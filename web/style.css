@@ -1166,6 +1166,76 @@ main {
   margin-top: 16px;
 }
 
+.tg-allowed-section {
+  margin-top: 16px;
+}
+.tg-allowed-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.tg-allowed-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 8px 0;
+  font-style: italic;
+}
+.tg-allowed-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+.tg-allowed-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.tg-allowed-kind {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(0, 122, 255, 0.15);
+  color: rgb(70, 140, 240);
+  text-transform: uppercase;
+}
+.tg-allowed-kind-group {
+  background: rgba(0, 168, 132, 0.15);
+  color: rgb(40, 170, 130);
+}
+.tg-allowed-id {
+  font-family: 'JetBrains Mono', 'SF Mono', monospace;
+  font-size: 12px;
+  color: var(--text);
+}
+.btn-icon-danger {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: all 0.15s ease;
+}
+.btn-icon-danger:hover {
+  background: rgba(220, 60, 70, 0.1);
+  color: rgb(230, 90, 100);
+  border-color: rgba(220, 60, 70, 0.3);
+}
+
 /* === Skills Tab === */
 .skill-header {
   display: flex;
