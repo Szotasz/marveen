@@ -1126,6 +1126,21 @@ document.getElementById('agentTabNav').addEventListener('click', (e) => {
   switchAgentTab(btn.dataset.tab)
 })
 
+let telegramAutoPollTimer = null
+function startTelegramAutoPoll() {
+  if (telegramAutoPollTimer) return
+  telegramAutoPollTimer = setInterval(() => {
+    if (!currentAgent) return
+    if (document.getElementById('tabTelegram').hidden) return
+    refreshPendingPairings()
+    refreshAllowedList()
+    refreshInvites()
+  }, 4000)
+}
+function stopTelegramAutoPoll() {
+  if (telegramAutoPollTimer) { clearInterval(telegramAutoPollTimer); telegramAutoPollTimer = null }
+}
+
 function switchAgentTab(tab) {
   document.querySelectorAll('#agentTabNav .tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab))
   document.getElementById('tabOverview').hidden = tab !== 'overview'
@@ -1133,6 +1148,8 @@ function switchAgentTab(tab) {
   document.getElementById('tabTelegram').hidden = tab !== 'telegram'
   document.getElementById('tabSkills').hidden = tab !== 'skills'
   document.getElementById('tabTeam').hidden = tab !== 'team'
+  if (tab === 'telegram') startTelegramAutoPoll()
+  else stopTelegramAutoPoll()
 }
 
 // === Settings save buttons ===
