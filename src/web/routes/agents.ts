@@ -31,11 +31,17 @@ import {
 } from '../agent-team.js'
 import {
   readAgentTelegramConfig,
+  readMarveenTelegramConfig,
   sendAvatarChangeMessage,
   sendWelcomeMessage,
   validateTelegramToken,
   parseTelegramToken,
 } from '../telegram.js'
+import {
+  createInvite,
+  listInvites,
+  revokeInvite,
+} from '../telegram-invites.js'
 import {
   writeAgentSettingsFromProfile,
   scaffoldAgentDir,
@@ -541,6 +547,93 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     } catch {
       json(res, { users: [], groups: [] })
     }
+    return true
+  }
+
+  // POST /api/agents/:name/telegram/invites
+  // Generates a one-time deep-link token. The invite-monitor auto-approves
+  // the next pending entry during the validity window, then re-locks
+  // dmPolicy to 'allowlist' once no live invites remain.
+  const tgInviteCreateMatch = path.match(/^\/api\/agents\/([^/]+)\/telegram\/invites$/)
+  if (tgInviteCreateMatch && method === 'POST') {
+    const name = decodeURIComponent(tgInviteCreateMatch[1])
+    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
+      json(res, { error: 'Agent not found' }, 404)
+      return true
+    }
+    let botUsername: string | undefined
+    if (name === MAIN_AGENT_ID) {
+      botUsername = readMarveenTelegramConfig().botUsername
+    } else {
+      botUsername = readAgentTelegramConfig(name).botUsername
+    }
+    if (!botUsername) {
+      const tokenPath = name === MAIN_AGENT_ID
+        ? join(homedir(), '.claude', 'channels', 'telegram', '.env')
+        : join(agentDir(name), '.claude', 'channels', 'telegram', '.env')
+      try {
+        const env = readFileOr(tokenPath, '')
+        const m = env.match(/TELEGRAM_BOT_TOKEN=(.+)/)
+        const tok = m?.[1]?.trim()
+        if (tok) {
+          const r = await validateTelegramToken(tok)
+          if (r.ok) botUsername = r.botUsername
+        }
+      } catch { /* ignore */ }
+    }
+    const accessPath = name === MAIN_AGENT_ID
+      ? join(homedir(), '.claude', 'channels', 'telegram', 'access.json')
+      : join(agentDir(name), '.claude', 'channels', 'telegram', 'access.json')
+    try {
+      const result = createInvite(accessPath, botUsername)
+      json(res, result)
+    } catch (err) {
+      logger.error({ err }, 'Failed to create invite')
+      json(res, { error: 'Failed to create invite' }, 500)
+    }
+    return true
+  }
+
+  // GET /api/agents/:name/telegram/invites
+  const tgInviteListMatch = path.match(/^\/api\/agents\/([^/]+)\/telegram\/invites$/)
+  if (tgInviteListMatch && method === 'GET') {
+    const name = decodeURIComponent(tgInviteListMatch[1])
+    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
+      json(res, { error: 'Agent not found' }, 404)
+      return true
+    }
+    const accessPath = name === MAIN_AGENT_ID
+      ? join(homedir(), '.claude', 'channels', 'telegram', 'access.json')
+      : join(agentDir(name), '.claude', 'channels', 'telegram', 'access.json')
+    let botUsername: string | undefined
+    if (name === MAIN_AGENT_ID) {
+      botUsername = readMarveenTelegramConfig().botUsername
+    } else {
+      botUsername = readAgentTelegramConfig(name).botUsername
+    }
+    const items = listInvites(accessPath).map((inv) => ({
+      ...inv,
+      deepLink: botUsername ? `https://t.me/${botUsername}?start=invite-${inv.token}` : undefined,
+    }))
+    json(res, items)
+    return true
+  }
+
+  // DELETE /api/agents/:name/telegram/invites/:token
+  const tgInviteRevokeMatch = path.match(/^\/api\/agents\/([^/]+)\/telegram\/invites\/(.+)$/)
+  if (tgInviteRevokeMatch && method === 'DELETE') {
+    const name = decodeURIComponent(tgInviteRevokeMatch[1])
+    const token = decodeURIComponent(tgInviteRevokeMatch[2])
+    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
+      json(res, { error: 'Agent not found' }, 404)
+      return true
+    }
+    const accessPath = name === MAIN_AGENT_ID
+      ? join(homedir(), '.claude', 'channels', 'telegram', 'access.json')
+      : join(agentDir(name), '.claude', 'channels', 'telegram', 'access.json')
+    const ok = revokeInvite(accessPath, token)
+    if (!ok) { json(res, { error: 'Invite not found' }, 404); return true }
+    json(res, { ok: true })
     return true
   }
 

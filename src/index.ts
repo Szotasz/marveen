@@ -9,12 +9,14 @@ import {
 import { join } from 'node:path'
 import { execFileSync, execSync } from 'node:child_process'
 import type { Server as HttpServer } from 'node:http'
-import { STORE_DIR, WEB_PORT, ALLOWED_CHAT_ID } from './config.js'
+import { STORE_DIR, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID } from './config.js'
 import { initDatabase } from './db.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
 import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
 import { startWebServer } from './web.js'
 import { logger } from './logger.js'
+import { startInviteMonitor, stopInviteMonitor } from './web/telegram-invites.js'
+import { AGENTS_BASE_DIR } from './web/agent-config.js'
 import {
   acquirePortLock,
   acquirePidfileLock,
@@ -341,6 +343,7 @@ const shutdown = (): void => {
     if (heartbeatStarted) {
       try { stopHeartbeat() } catch (err) { logger.warn({ err }, 'stopHeartbeat threw during shutdown') }
     }
+    try { stopInviteMonitor() } catch (err) { logger.warn({ err }, 'stopInviteMonitor threw during shutdown') }
     if (decayInterval) clearInterval(decayInterval)
     if (digestTimer) clearTimeout(digestTimer)
     if (digestInterval) clearInterval(digestInterval)
@@ -427,6 +430,9 @@ async function main(): Promise<void> {
   initHeartbeat()
   heartbeatStarted = true
   logger.info('Heartbeat utemezo elindult')
+
+  // Telegram invite auto-approve monitor (one-click pairing).
+  startInviteMonitor(MAIN_AGENT_ID, AGENTS_BASE_DIR)
 
   // Web dashboard
   webServer = startWebServer(WEB_PORT)
