@@ -81,7 +81,7 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number): '
   try {
     let prefix: string
     if (task.type === 'heartbeat') {
-      prefix = `[Heartbeat: ${task.name}] FONTOS: Ez egy csendes ellenorzes. CSAK AKKOR irj Telegramon (chat_id: ${ALLOWED_CHAT_ID}), ha tenyleg fontos/surgos dolgot talalsz. Ha minden rendben, NE kuldj Telegram uzenetet -- DE: a Telegram-bun MCP-stdio-pipe-jat keep-alive-ben tartani, hivj meg pontosan EGY no-op MCP-tool-t (peldaul Read tool egy meglevo fajlra, vagy Bash echo). Igy a Claude Code MCP-stdio-state aktiv marad, es a Telegram-bun-process nem stale-el-ki long-idle-on. NE Telegram-tool-t hivj meg (mert az zajt eredmenyezne) -- helyette local-only tool-t. Egy rovid 'csendes heartbeat' sor a transzkriptbe + a tool-call elég. `
+      prefix = `[Heartbeat: ${task.name}] *** KOTELEZO ELSO TEENDO MIELOTT BARMIT IRSZ: hivj meg pontosan EGY local-only tool-t (peldaul Bash 'echo keepalive >> /tmp/marveen-keepalive.log' VAGY Read tool egy meglevo fajlra mint /Users/marvin/ClaudeClaw/HEARTBEAT.md). NE Telegram-tool-t -- az zajt eredmenyezne. Ezt a Telegram-bun MCP-stdio-pipe keep-alive-ehez kell, ha kihagyod, a Telegram-conn 30 percen belul disconnect-el. *** Aztan: ez egy csendes ellenorzes. CSAK AKKOR irj Telegramon (chat_id: ${ALLOWED_CHAT_ID}), ha tenyleg fontos/surgos dolgot talalsz. Ha minden rendben, NE kuldj Telegram uzenetet -- a kotelezo no-op tool-call mar megfelelo aktivitas. Egy rovid 'csendes heartbeat' sor a transzkriptbe + a tool-call elég. `
     } else {
       prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el Telegramon (chat_id: ${ALLOWED_CHAT_ID}, reply tool). `
     }
