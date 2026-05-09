@@ -209,6 +209,26 @@ fi
 # Install Telegram plugin
 claude plugin install telegram@claude-plugins-official 2>/dev/null || true
 echo '  ✓ Telegram plugin'
+
+# Pre-accept Claude Code first-run dialogs so the tmux-spawned headless
+# session (Telegram bridge) doesn't park on them forever. Without this,
+# the first launch hits "Bypass Permissions mode" + "Trust this folder"
+# prompts on a non-interactive TTY and stays stuck.
+mkdir -p ~/.claude
+node -e '
+const fs = require("fs"), os = require("os"), path = require("path");
+const cj = path.join(os.homedir(), ".claude.json");
+let d = {}; try { d = JSON.parse(fs.readFileSync(cj, "utf8")); } catch {}
+d.hasCompletedOnboarding = true;
+if (!d.theme) d.theme = "dark";
+fs.writeFileSync(cj, JSON.stringify(d, null, 2), { mode: 0o600 });
+const sj = path.join(os.homedir(), ".claude", "settings.json");
+let s = {}; try { s = JSON.parse(fs.readFileSync(sj, "utf8")); } catch {}
+s.skipDangerousModePermissionPrompt = true;
+fs.mkdirSync(path.dirname(sj), { recursive: true });
+fs.writeFileSync(sj, JSON.stringify(s, null, 2), { mode: 0o600 });
+console.log("  ✓ Claude Code first-run flags");
+'
 "@
 
 # Done!
@@ -224,7 +244,8 @@ Write-Host "  Dashboard:" -ForegroundColor White
 Write-Host "    http://localhost:3420" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Telegram bridge indítása:" -ForegroundColor White
-Write-Host "    wsl bash -c 'cd $installPath && tmux new-session -d -s marveen-channels ""claude --dangerously-skip-permissions --channels plugin:telegram@claude-plugins-official""'" -ForegroundColor Cyan
+Write-Host "    wsl bash -c 'cd $installPath && bash scripts/channels.sh &'" -ForegroundColor Cyan
+Write-Host "    (a channels.sh tartalmazza a first-run dialog auto-accept guardot)" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  Frissítés:" -ForegroundColor White
 Write-Host "    wsl bash -c 'cd $installPath && ./update.sh'" -ForegroundColor Cyan

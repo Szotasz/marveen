@@ -40,23 +40,53 @@ TMUX="$(command -v tmux)"
 $TMUX kill-session -t "$SESSION" 2>/dev/null
 
 # Tmux session indítás
-$TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
-  "$CLAUDE --dangerously-skip-permissions --continue --channels plugin:telegram@claude-plugins-official"
+#
+# --continue csak akkor mukodik ha mar van mentett session log a
+# .claude/projects/<this-cwd>/*.jsonl alatt. Friss telepitesnel nincs ->
+# Claude Code "No conversation found to continue" hibaval kilep, a launchd
+# tight-loopban ujraindit. Ezert csak akkor adjuk meg, ha latjuk hogy van
+# mentett session, kulonben szuretlenul indul (uj beszelgetes).
+PROJECT_KEY="$(echo "$INSTALL_DIR" | sed 's|/|-|g')"
+CLAUDE_PROJECT_DIR="$HOME/.claude/projects/${PROJECT_KEY}"
+CONTINUE_FLAG=""
+if [ -d "$CLAUDE_PROJECT_DIR" ] && ls "$CLAUDE_PROJECT_DIR"/*.jsonl >/dev/null 2>&1; then
+  CONTINUE_FLAG="--continue"
+fi
 
-# Session startup guard: if the --dangerously-skip-permissions confirmation
-# dialog appears (despite the settings.json flag, e.g. on a Claude Code
-# version that renamed the key), auto-accept it. Without this the headless
-# session would park forever and the Telegram plugin would never load.
-for i in 1 2 3 4 5 6; do
+$TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
+  "$CLAUDE --dangerously-skip-permissions $CONTINUE_FLAG --channels plugin:telegram@claude-plugins-official"
+
+# Session startup guard: a Claude Code first-run dialogusait auto-accept-eljuk
+# kulonben a headless session orokre parkolna a prompton es a Telegram plugin
+# soha nem toltodne be. Tobb fajta dialog elofordulhat:
+#  - "Bypass Permissions mode" (--dangerously-skip-permissions confirmation,
+#    valasz: 2 Enter = "Yes, I accept")
+#  - "Do you trust the files in this folder?" / "trust" prompts (Y Enter)
+#  - "Welcome to Claude Code" / kezdo vezetes (Enter a folytatashoz)
+# 12 sec timeout ket retry-jal, mert WSL/tmux paint slow lehet first-run-on.
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
   sleep 1
   pane=$($TMUX capture-pane -t "$SESSION" -p 2>/dev/null || true)
-  if echo "$pane" | grep -q "Bypass Permissions mode"; then
-    $TMUX send-keys -t "$SESSION" "2" Enter
-    break
-  fi
-  if echo "$pane" | grep -q "Listening for channel messages"; then
-    break
-  fi
+  case "$pane" in
+    *"Bypass Permissions mode"*)
+      $TMUX send-keys -t "$SESSION" "2" Enter
+      sleep 1
+      continue
+      ;;
+    *"trust"*|*"Trust"*)
+      $TMUX send-keys -t "$SESSION" "1" Enter
+      sleep 1
+      continue
+      ;;
+    *"Welcome to Claude Code"*)
+      $TMUX send-keys -t "$SESSION" Enter
+      sleep 1
+      continue
+      ;;
+    *"Listening for channel messages"*)
+      break
+      ;;
+  esac
 done
 
 # Bot menü beállítás (15 sec késleltetéssel, a plugin után)
