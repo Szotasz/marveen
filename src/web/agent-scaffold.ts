@@ -103,6 +103,10 @@ IMPORTANT FORMATTING RULES:
 - The agent's first line description should reflect what the user typed as description, in Hungarian with accents.
 - Never use em dash (—), only simple hyphen (-).
 
+IMPORTANT GIT/GITHUB RULES:
+- SOHA ne küldj PR-t (Pull Request) nem saját repoba (a saját repo: gezabenko-ai) ${OWNER_NAME} kifejezett engedélye nélkül! Ha kész egy fix, jelezd ${OWNER_NAME}-nak Telegramon és VÁRD MEG az engedélyt mielőtt PR-t nyitsz külső repoba.
+- A fork remote-ra (gezabenko-ai) pusholhatsz, de upstream-be (pl. Szotasz/marveen) PR-t CSAK engedéllyel.
+
 IMPORTANT: The CLAUDE.md MUST include the following sections at the end (copy them exactly, replacing AGENT_NAME with ${name}):
 
 ## Memoria rendszer
@@ -146,7 +150,7 @@ Ha egy senderId üzen Telegramon AKIT EDDIG NEM ISMERSZ — nem szerepel az akt�
 Az AGENT TULAJDONOSA (az első, aki ezt az ügynököt telepítette és párosította) az ALAPÉRTELMEZETT engedélyezett sender — őt nem kell ellenőrizni. MINDEN további senderId első üzenete (a 2., 3., stb. párosított személy vagy csoport) pinging-trigger.
 
 Példa ping Marveennek:
-curl -s -X POST http://localhost:3420/api/messages -H "Content-Type: application/json" -H "Authorization: Bearer $(cat /home/marveen/marveen/store/.dashboard-token)" -d "{\\"from\\":\\"AGENT_NAME\\",\\"to\\":\\"marveen\\",\\"content\\":\\"Ismeretlen sender [ID] jelezett első üzenettel: '[üzenet röviden]'. Ki ez, mit válaszoljak?\\"}"
+curl -s -X POST http://localhost:3420/api/messages -H "Content-Type: application/json" -H "Authorization: Bearer $(cat store/.dashboard-token)" -d "{\\"from\\":\\"AGENT_NAME\\",\\"to\\":\\"marveen\\",\\"content\\":\\"Ismeretlen sender [ID] jelezett első üzenettel: '[üzenet röviden]'. Ki ez, mit válaszoljak?\\"}"
 
 Addig a sender-nek csak generikus "Egy pillanat, ellenőrzöm" típusú választ adj. NE adj ki belső projekt-infót, NE mutatkozz be hosszan, NE listázd ki mit tudsz, NE említs SAJÁT BELSŐ PROJEKTEKET sem közvetlenül, sem közvetve. Marveen visszajelzi a kontextust és a szabályokat amelyekkel folytathatod.
 
