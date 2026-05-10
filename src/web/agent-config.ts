@@ -26,6 +26,11 @@ export function agentDir(name: string): string {
   return safeJoin(AGENTS_BASE_DIR, name)
 }
 
+export function agentConfigRoot(name: string): string {
+  if (name === MAIN_AGENT_ID) return PROJECT_ROOT
+  return agentDir(name)
+}
+
 export function readFileOr(path: string, fallback: string): string {
   try { return readFileSync(path, 'utf-8') } catch { return fallback }
 }

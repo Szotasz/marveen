@@ -9,6 +9,7 @@ import { atomicWriteFileSync } from '../atomic-write.js'
 import { getSecret } from '../vault.js'
 import {
   agentDir,
+  agentConfigRoot,
   DEFAULT_MODEL,
   readFileOr,
   extractDescriptionFromClaudeMd,
@@ -21,6 +22,7 @@ import {
   readAgentSecurityProfile,
   writeAgentSecurityProfile,
   listAgentNames,
+  isKnownAgent,
 } from '../agent-config.js'
 import {
   readAgentTeam,
@@ -88,7 +90,8 @@ interface AgentDetail extends AgentSummary {
 
 function getAgentSummary(name: string): AgentSummary {
   const dir = agentDir(name)
-  const claudeMd = readFileOr(join(dir, 'CLAUDE.md'), '')
+  const configRoot = agentConfigRoot(name)
+  const claudeMd = readFileOr(join(configRoot, 'CLAUDE.md'), '')
   const soulMd = readFileOr(join(dir, 'SOUL.md'), '')
   const tg = readAgentTelegramConfig(name)
   const hasClaudeMd = claudeMd.trim().length > 0
@@ -114,8 +117,9 @@ function getAgentSummary(name: string): AgentSummary {
 
 function getAgentDetail(name: string): AgentDetail {
   const dir = agentDir(name)
+  const configRoot = agentConfigRoot(name)
   const summary = getAgentSummary(name)
-  const claudeMd = readFileOr(join(dir, 'CLAUDE.md'), '')
+  const claudeMd = readFileOr(join(configRoot, 'CLAUDE.md'), '')
   const soulMd = readFileOr(join(dir, 'SOUL.md'), '')
   const mcpJson = readFileOr(join(dir, '.mcp.json'), '{}')
 
@@ -701,17 +705,18 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   const agentMatch = path.match(/^\/api\/agents\/([^/]+)$/)
   if (agentMatch && method === 'GET') {
     const name = decodeURIComponent(agentMatch[1])
-    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!isKnownAgent(name)) { json(res, { error: 'Agent not found' }, 404); return true }
     json(res, getAgentDetail(name))
     return true
   }
 
   if (agentMatch && method === 'PUT') {
     const name = decodeURIComponent(agentMatch[1])
-    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!isKnownAgent(name)) { json(res, { error: 'Agent not found' }, 404); return true }
     const body = await readBody(req)
+    const configRoot = agentConfigRoot(name)
     const data = JSON.parse(body.toString()) as { claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string }
-    if (data.claudeMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'CLAUDE.md'), data.claudeMd)
+    if (data.claudeMd !== undefined) atomicWriteFileSync(join(configRoot, 'CLAUDE.md'), data.claudeMd)
     if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)
     if (data.mcpJson !== undefined) atomicWriteFileSync(join(agentDir(name), '.mcp.json'), data.mcpJson)
     if (data.model !== undefined) writeAgentModel(name, data.model)
