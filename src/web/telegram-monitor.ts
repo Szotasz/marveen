@@ -149,15 +149,43 @@ function navigateToMenuItem(session: string, pattern: RegExp, maxSteps: number =
   return false
 }
 
+// Cached Telegram menu index; refreshed when the cache TTL expires or a
+// soft-reconnect fails the verification check (suggesting MCP list changed).
+let telegramMenuIndexCache: { idx: number; expiresAt: number } | null = null
+const TELEGRAM_INDEX_TTL_MS = 5 * 60 * 1000
+
+function getTelegramMenuIndex(forceRefresh = false): number {
+  const now = Date.now()
+  if (!forceRefresh && telegramMenuIndexCache && telegramMenuIndexCache.expiresAt > now) {
+    return telegramMenuIndexCache.idx
+  }
+  try {
+    const out = execFileSync('claude', ['mcp', 'list'], {
+      encoding: 'utf-8',
+      timeout: 15000,
+    })
+    const entries = out
+      .split('\n')
+      .filter((l) => /^[A-Za-z][^:]*:.*\s-\s/.test(l))
+    const idx = entries.findIndex((l) => /^plugin:telegram:telegram:/i.test(l))
+    telegramMenuIndexCache = { idx, expiresAt: now + TELEGRAM_INDEX_TTL_MS }
+    return idx
+  } catch (err) {
+    logger.warn({ err }, 'getTelegramMenuIndex: claude mcp list failed')
+    return -1
+  }
+}
+
 function softReconnectMarveen(): boolean {
   // The /mcp picker highlights the selected entry with a background colour
   // (not a `❯` prefix), so `tmux capture-pane -p` (ASCII) cannot read which
-  // row the cursor is on. The picker does, however, wrap around: a single
-  // `Up` press from the default top-of-list position lands on the very last
-  // entry — which is `plugin:telegram:telegram` because Built-in MCPs come
-  // after all claude.ai connectors. Then Enter opens the Telegram submenu,
-  // where `❯ 1. View tools` is the default highlight; one Down moves to
-  // `2. Reconnect`, Enter triggers it.
+  // row the cursor is on. The picker entries follow the same order as
+  // `claude mcp list` — we count the index of plugin:telegram:telegram and
+  // press Down that many times from the default top position. Originally
+  // (PR #69) we relied on a one-Up wraparound assuming Telegram was the last
+  // entry, but adding any new MCP after Telegram (e.g. aiam-blog, server-*)
+  // breaks that assumption silently — verification fails and the soft
+  // reconnect aborts, falling through to the (slow) hard-recovery flow.
   try {
     // Escape interrupts any in-progress turn, making the session ready
     execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Escape'], { timeout: 3000 })
@@ -178,20 +206,30 @@ function softReconnectMarveen(): boolean {
       return false
     }
 
-    // Wraparound: Up from top → last entry (plugin:telegram:telegram)
-    execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Up'], { timeout: 3000 })
-    execFileSync('/bin/sleep', ['0.3'], { timeout: 1000 })
-
+    // Navigate to the Telegram entry by pressing Down N times from the top.
+    let telegramIdx = getTelegramMenuIndex()
+    if (telegramIdx < 0) {
+      logger.warn('soft reconnect: could not determine Telegram menu index')
+      execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Escape'], { timeout: 3000 })
+      return false
+    }
+    for (let i = 0; i < telegramIdx; i++) {
+      execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Down'], { timeout: 3000 })
+      execFileSync('/bin/sleep', ['0.1'], { timeout: 1000 })
+    }
     execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Enter'], { timeout: 3000 })
     execFileSync('/bin/sleep', ['1'], { timeout: 3000 })
 
-    // Verify: the submenu header reads "Plugin:telegram:telegram MCP Server"
+    // Verify: the submenu header reads "Plugin:telegram:telegram MCP Server".
+    // If verification fails, the cached menu index is likely stale — invalidate
+    // the cache so the next attempt rebuilds it from a fresh `claude mcp list`.
     const pane2 = capturePane(MAIN_CHANNELS_SESSION)
     if (!pane2 || !/Plugin:telegram:telegram MCP Server/i.test(pane2)) {
       logger.warn(
-        { paneContent: pane2 ? pane2.slice(-500) : 'null' },
-        'soft reconnect: did not enter Telegram submenu (Up+Enter wrong target?)',
+        { paneContent: pane2 ? pane2.slice(-500) : 'null', telegramIdx },
+        'soft reconnect: did not enter Telegram submenu (menu index stale?)',
       )
+      telegramMenuIndexCache = null
       execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Escape'], { timeout: 3000 })
       return false
     }
@@ -203,7 +241,7 @@ function softReconnectMarveen(): boolean {
     execFileSync('/bin/sleep', ['2'], { timeout: 4000 })
 
     execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Escape'], { timeout: 3000 })
-    logger.info('soft reconnect: /mcp → Up (telegram) → Enter → Down (Reconnect) → Enter completed')
+    logger.info({ telegramIdx }, 'soft reconnect: /mcp → Down × N (telegram) → Enter → Down (Reconnect) → Enter completed')
     return true
   } catch (err) {
     logger.warn({ err }, 'Marveen soft reconnect failed')
