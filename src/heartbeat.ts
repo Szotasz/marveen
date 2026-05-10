@@ -101,10 +101,7 @@ function shouldNotify(data: HeartbeatData): boolean {
 
   if (data.calendar.length > 0) return true
   if (data.kanban.urgent > 0) return true
-  // A `waiting > 2` regen trigger volt, de napokon at allo waiting kartyak
-  // nem szamit ujdonsagnak -- a stale-allapot zaj. Csak urgent + naptar +
-  // dbWarning indokol munkanapi pinget. Az agent maga is utasitva van hogy
-  // ures stringet adjon vissza ha nincs uj info.
+  if (data.kanban.waiting > 2) return true
 
   return false
 }
@@ -120,20 +117,7 @@ function buildAgentPrompt(data: HeartbeatData): string {
   prompt += `Heartbeat ellenorzes -- ${timeStr}\n\n`
   prompt += `Az alabbi adatokat gyujtottem nativ modon (API/DB). Fogalmazz tomor, emberi osszefoglalot Szabolcsnak.\n`
   prompt += `FONTOS: Nezd meg az emaileket is MCP-n keresztul (search_emails, utolso 2 ora, olvasatlanok).\n`
-  prompt += `Hasznald a HEARTBEAT.md formatumot.\n`
-  prompt += `\n`
-  prompt += `KUTIKUS DONTES -- Telegram-uzenet vs csendes update:\n`
-  prompt += `Csak akkor irj Telegramon Szabolcsnak ha TENYLEG van uj vagy fontos info:\n`
-  prompt += `- Olvasatlan email ami valaszt vagy akciot igenyel\n`
-  prompt += `- Naptar-esemeny ami a kovetkezo 2 oraban inditando\n`
-  prompt += `- Uj urgent kanban kartya az utolso heartbeat ota\n`
-  prompt += `- Kritikus rendszer-figyelmeztetes (dbWarning)\n`
-  prompt += `\n`
-  prompt += `Ha NINCS ilyen ('Naptar csendes, kanban valtozatlan, nincs uj email'), AKKOR:\n`
-  prompt += `- Frissitsd a HEARTBEAT.md fajlt szokasosan\n`
-  prompt += `- DE Telegramra adj vissza UREST stringet (csak az ures string '', nincs sablonos osszefoglalo, nincs udvozles, nincs 'csendes' jelzes -- semmi)\n`
-  prompt += `\n`
-  prompt += `A 'minden csendes, kanban valtozatlan' tipusu uzenet ZAJ -- ne kuld.\n\n`
+  prompt += `Hasznald a HEARTBEAT.md formatumot.\n\n`
 
   // Calendar -- event summaries and attendee names come from whoever sent the
   // invite, so every one is wrapped individually as untrusted data.
