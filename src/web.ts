@@ -6,7 +6,7 @@ import { PROJECT_ROOT, WEB_HOST } from './config.js'
 import { loadOrCreateDashboardToken, checkBearerToken } from './web/dashboard-auth.js'
 import { json } from './web/http-helpers.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureDefaultScheduledTasks } from './web/agent-scaffold.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
 import { startUpdateChecker } from './web/update-checker.js'
@@ -229,6 +229,13 @@ export function startWebServer(port = 3420): http.Server {
     if (patched.length) logger.info({ patched }, 'PreCompact hook backfilled into agent settings.json')
   } catch (err) {
     logger.warn({ err }, 'Agent hook backfill skipped')
+  }
+
+  try {
+    ensureDefaultScheduledTasks()
+    logger.info('Default scheduled tasks seeded')
+  } catch (err) {
+    logger.warn({ err }, 'Scheduled tasks seed skipped')
   }
 
   const origClose = server.close.bind(server)

@@ -1,0 +1,7 @@
+{
+  "schedule": "30 7 * * *",
+  "agent": "marveen",
+  "enabled": true,
+  "type": "task",
+  "createdAt": 1776153060
+}

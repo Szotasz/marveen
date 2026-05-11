@@ -1,0 +1,70 @@
+---
+name: memoria-heartbeat
+description: 30 percenként átnézi a beszélgetést, menti a fontosat, és skill-eket generál ha volt komplex munka
+---
+
+Nézd át az utolsó 30 perc beszélgetéseidet. Két dolgot csinálj:
+
+## 1. Memória mentés
+
+Ha volt fontos döntés, preferencia, tanulság vagy bármi ami később hasznos, mentsd el:
+
+```bash
+curl -s -X POST http://localhost:3420/api/memories \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $(cat /Users/marvin/ClaudeClaw/store/.dashboard-token)" \
+  -d '{"agent_id":"SAJAT_NEVED","content":"...","category":"warm","keywords":"..."}'
+```
+
+`category` lehet: `hot` (aktív), `warm` (preferencia/config), `cold` (tanulság), `shared` (más agent-nek is).
+Az `agent_id`-t a CLAUDE.md-ből vagy a munkamappa nevéből derítsd ki.
+
+## 2. Skill reflexió (KÖTELEZŐ ha volt komplex munka)
+
+Először döntsd el az alábbi 3 kérdéssel:
+
+- **A**: Volt-e az utolsó 30 percben legalább 5 tool-hívásos komplex feladat?
+- **B**: Volt-e hiba → recovery (próbálkozás → fail → másképp) amit egy meglévő skill Buktatók szekciójába kellene tenni?
+- **C**: Volt-e user korrekció ("nem így", "ne ezt", "másképp"), ami skill-javítást igényel?
+
+**Ha A vagy B vagy C IGEN: KÖTELEZŐ skill akció, nem kihagyható.**
+
+Lépések:
+1. Nézd meg `ls ~/.claude/skills/`-szel hogy van-e már lefedő skill (a `.skill-index.md`-ben szöveges keresés)
+2. Ha van releváns skill: PATCH (csak a megváltozott rész cseréje, ne az egész fájl).
+   - A `## Buktatók` szekciót preferáld ha hiba/recovery volt.
+   - A `## Eljárás` szekciót ha a folyamat változott.
+3. Ha NINCS releváns skill: hozz létre újat:
+   ```bash
+   mkdir -p ~/.claude/skills/<NEV>
+   cat > ~/.claude/skills/<NEV>/SKILL.md <<EOF
+   ---
+   name: <NEV>
+   description: Mikor használd, mit csinál (1-2 mondat). Konkrét trigger.
+   ---
+   # <Cím>
+
+   ## Mikor használd
+   ...
+
+   ## Eljárás
+   1. ...
+
+   ## Buktatók
+   - ...
+
+   ## Ellenőrzés
+   - ...
+   EOF
+   ```
+4. Index regen: `bash ~/ClaudeClaw/scripts/skill-index.sh`
+
+**Ha kihagytad a skill akciót, pedig A/B/C valamelyike IGEN volt:** kötelezően írj `hot` tier memóriát "skip-skill: <konkrét ok>" tartalommal, hogy később lássuk miért. Ne csendben hagyd ki.
+
+## 3. Csendben maradás
+
+Ha NINCS komplex feladat / hiba / korrekció (A=B=C=NEM), és nincs új információ a 30 percben:
+- Ne ments memóriát feleslegesen
+- Ne generálj skill-t
+- Ne írj Telegramon
+- Maradj csendben (egy rövid "csendes heartbeat" sor a transzkriptbe elég)

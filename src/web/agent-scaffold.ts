@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT, OWNER_NAME } from '../config.js'
@@ -53,6 +53,24 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     deny: profile.filesystem.deny.map(p => resolveProfilePlaceholders(p, ctx)),
   }
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
+}
+
+export function ensureDefaultScheduledTasks(): void {
+  const repoTasks = join(PROJECT_ROOT, 'scheduled-tasks')
+  if (!existsSync(repoTasks)) return
+  const destRoot = join(homedir(), '.claude', 'scheduled-tasks')
+  mkdirSync(destRoot, { recursive: true })
+
+  for (const taskName of readdirSync(repoTasks)) {
+    const src = join(repoTasks, taskName)
+    const dest = join(destRoot, taskName)
+    if (!statSync(src).isDirectory()) continue
+    if (existsSync(dest)) continue
+    mkdirSync(dest, { recursive: true })
+    for (const file of readdirSync(src)) {
+      copyFileSync(join(src, file), join(dest, file))
+    }
+  }
 }
 
 export function scaffoldAgentDir(name: string) {
