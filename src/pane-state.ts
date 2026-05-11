@@ -170,3 +170,173 @@ export function detectPaneState(
 export function isReadyForPrompt(pane: string): boolean {
   return detectPaneState(pane) === 'idle'
 }
+
+// Locate the live Claude Code input box and return its inner content as
+// one string. Bounded strictly to the region between the two most
+// recent BOX_SEP_RX separators above the idle footer, so a parked input
+// in scrollback (post-turn artifact) is never mistaken for live state.
+//
+// Returns null when the pane does not have a live input box (no idle
+// footer, only one separator, etc.) -- callers should treat null as
+// "not enough signal to act, do nothing".
+function liveInputBox(pane: string): string | null {
+  const lines = pane.split('\n')
+  const footerIdx = lines.findIndex(l => IDLE_FOOTER_RX.test(l))
+  if (footerIdx < 0) return null
+  let bottomSep = -1
+  for (let i = footerIdx - 1; i >= 0; i--) {
+    if (BOX_SEP_RX.test(lines[i])) { bottomSep = i; break }
+  }
+  if (bottomSep <= 0) return null
+  let topSep = -1
+  for (let i = bottomSep - 1; i >= 0; i--) {
+    if (BOX_SEP_RX.test(lines[i])) { topSep = i; break }
+  }
+  if (topSep < 0) return null
+  return lines.slice(topSep + 1, bottomSep).join('\n')
+}
+
+// Marker strings from prompt-safety.ts preambles. We do NOT import them
+// to keep this module dependency-free for unit testing; the markers
+// here are stable opening phrases pinned to the first sentence of each
+// preamble. A prompt-safety.ts test pins the preamble shape so a rename
+// will surface as a failing test there, not here.
+//
+// Each regex requires an extended opening fragment so prose that
+// merely echoes the marker ("Let me search for TEAM MEMBER NOTICE in
+// the logs", "SECURITY NOTICE -- read carefully before deploying")
+// does not trigger a false-positive clear. The longer tail
+// (`<trusted-peer source` / `before acting`) is unique enough that a
+// random typed sentence is implausible to reproduce it verbatim.
+// Whitespace classes (`\s+`) intentionally include newline so a
+// terminal-wrapped preamble (TUI re-flow at narrow widths) still
+// matches -- that wrapped preamble is the genuine article, not a
+// false-positive.
+const TRUSTED_PREAMBLE_MARKER = /TEAM MEMBER NOTICE\s+--\s+the next\s+<trusted-peer\s+source/
+const UNTRUSTED_PREAMBLE_MARKER = /SECURITY NOTICE\s+--\s+read carefully before acting/
+
+// A "real" opening tag has source="<alphanumeric/colon/underscore/dash>",
+// because sanitizeAgentSource() (prompt-safety.ts) strips every other
+// character. The preambles themselves reference the tag shape with
+// source="..." (three literal full stops), which sanitizeAgentSource
+// would scrub -- so a literal "..." source can only originate from the
+// preamble text, never from a real wrapped message. Distinguishing on
+// the source content is what lets us tell a stale preamble (no real
+// tag yet) from a fully-landed message (real tag with a sanitised
+// source).
+const REAL_OPENING_TAG_RX = /<(?:trusted-peer|untrusted)\s+source="[A-Za-z0-9:_-]+"/
+
+/**
+ * Returns true when the pane likely has just-sent text sitting in the
+ * Claude Code prompt buffer that the trailing Enter never submitted --
+ * i.e. a stuck-after-send-keys state from which a retry-Enter is
+ * warranted.
+ *
+ * Two stuck signatures are handled:
+ *
+ *   1. A `[Pasted text #N]` placeholder visible in the input box. Claude
+ *      Code's bracketed-paste detector lifts long bursts of input into
+ *      stubs that do not auto-submit on the trailing Enter. The
+ *      placeholder shape is unambiguous, so any occurrence inside the
+ *      live input box is treated as stuck.
+ *
+ *   2. A verbatim payload sitting in the input box. The detector
+ *      requires `payloadHint` to be a substring of the live input box's
+ *      content, so a parked input the operator typed manually is not
+ *      mistaken for a stuck send. The minimum hint length is
+ *      configurable via opts.minHintChars (default 16) to keep short
+ *      hints from false-positiving on common UI text.
+ *
+ * Negative cases (returns false):
+ *
+ *   - The pane is busy (spinner / token counter / esc-to-interrupt) --
+ *     the prompt is being processed, no retry needed.
+ *   - The pane is not a Claude Code surface (no idle footer found).
+ *   - The input box is empty and no paste placeholder is visible.
+ *   - The verbatim path is requested but `payloadHint` is shorter than
+ *     `minHintChars` (caller passed a too-short hint).
+ *
+ * @param pane The raw `tmux capture-pane -p` output to inspect.
+ * @param payloadHint A substring of the prompt just sent. Used by the
+ *   verbatim-detection path; pass an empty string to limit the check
+ *   to the placeholder path only.
+ * @param opts.minHintChars Minimum length the hint must reach before
+ *   the verbatim path is attempted. Default 16.
+ */
+export function shouldRetrySubmit(
+  pane: string,
+  payloadHint: string,
+  opts: { minHintChars?: number } = {},
+): boolean {
+  if (!pane || !pane.trim()) return false
+
+  // Busy pane: the turn is mid-flight, no retry needed.
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(pane)) return false
+  }
+  // Without an idle footer the pane is either not Claude Code or in an
+  // unknown render state. Be conservative and skip.
+  if (!IDLE_FOOTER_RX.test(pane)) return false
+
+  const inputBox = liveInputBox(pane)
+  if (inputBox == null) return false
+
+  // Path 1: placeholder is unambiguous, retry regardless of hint.
+  if (PENDING_PASTE_RX.test(inputBox)) return true
+
+  // Path 2: verbatim payload parked in the input box.
+  // Clamp the minimum hint length to >= 1. minHintChars=0 paired with
+  // an empty payloadHint would otherwise let `inputBox.includes("")`
+  // return true for every non-empty box, retrying Enter on every idle
+  // pane. Non-finite inputs (NaN, Infinity) fall back to the default
+  // so a malformed caller can't silently disable or saturate the
+  // verbatim path either.
+  const rawMin = opts.minHintChars
+  const safeMin = typeof rawMin === 'number' && Number.isFinite(rawMin) ? rawMin : 16
+  const minHint = Math.max(safeMin, 1)
+  if (payloadHint.length < minHint) return false
+  return inputBox.includes(payloadHint)
+}
+
+/**
+ * Returns true when the pane shows a stale preamble from a wrapped
+ * message that never fully landed -- a `SECURITY NOTICE` (untrusted) or
+ * `TEAM MEMBER NOTICE` (trusted-peer) preamble visible in the input
+ * box without a matching real opening tag (`<untrusted source="...">`
+ * or `<trusted-peer source="...">` with a sanitised source value).
+ *
+ * When this returns true the caller must issue a buffer-clear (Ctrl-U)
+ * before sending the next message. Otherwise a fresh prompt would be
+ * concatenated onto the stale preamble and the receiving agent could
+ * inherit its trust semantics: e.g. an untrusted external payload
+ * landing behind a stale `TEAM MEMBER NOTICE` preamble could be read
+ * as if it came from a trusted peer.
+ *
+ * The check is scoped strictly to the live input box (between the two
+ * most recent box-separators above the idle footer). A preamble in
+ * deep scrollback (a long-ago turn's artifact) never triggers a clear.
+ *
+ * Distinguishing a stale preamble from a fully-landed message relies
+ * on the source-attribute content: real wrapped messages always carry
+ * a sanitised `source="agent:NAME"` (or similar) value, while the
+ * preambles themselves only reference the tag shape with the literal
+ * placeholder `source="..."`. The literal three full stops are
+ * impossible to produce from `sanitizeAgentSource()`, so their
+ * presence proves we are looking at preamble text rather than a real
+ * opening tag.
+ */
+export function shouldClearTruncatedPreamble(pane: string): boolean {
+  if (!pane) return false
+  const inputBox = liveInputBox(pane)
+  if (inputBox == null) return false
+
+  const hasPreamble =
+    TRUSTED_PREAMBLE_MARKER.test(inputBox) ||
+    UNTRUSTED_PREAMBLE_MARKER.test(inputBox)
+  if (!hasPreamble) return false
+
+  // A real opening tag means the wrapped content landed -- not stuck.
+  if (REAL_OPENING_TAG_RX.test(inputBox)) return false
+
+  return true
+}
