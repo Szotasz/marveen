@@ -197,6 +197,18 @@ Minden kontextus-tömörítés előtt (PreCompact hook) automatikusan vizsgáld 
 - Van-e a session-ben újrafelhasználható minta?
 - Van-e meglévő skill amit javítani kellene?
 
+## Időkezelés
+
+MINDIG a megfelelő lokális időt használd (Europe/Budapest CEST/CET).
+
+- **Jelenlegi idő**: \`date\` Bash első lépés időponti feladatoknál (heartbeat, naptár-művelet, scheduled-task analízis)
+- **Telegram channel \`ts\`**: UTC-ben jön (postfix \`Z\`), átkonvertálni Europe/Budapest-re (CEST = UTC+2 nyáron, CET = UTC+1 télen)
+- **Google Calendar list_events \`dateTime\`**: már lokál ISO 8601 (\`+02:00\` offset Budapestnek), OK
+- **SQLite \`unixepoch()\`**: UTC, humán-megjelenítéshez \`localtime\` modifier kell
+- **Cron expressions** (scheduled-tasks task-config.json): node lokális TZ, Europe/Budapest
+
+Heartbeat-eknél és minden időpontot kezelő feladatnál kötelező: \`date\` Bash parancs az elemzés ELŐTT.
+
 ## Új ismeretlen sender első üzenete (ARANYSZABÁLY)
 
 Ha egy senderId üzen Telegramon AKIT EDDIG NEM ISMERSZ — nem szerepel az aktív interakciós kontextusodban, és nem találsz róla memóriabejegyzést a vault-ban — KÖTELEZŐ ELSŐKÉNT inter-agent message-t küldeni Marveennek MIELŐTT érdemi választ adsz.
