@@ -10,3 +10,5 @@ Reggeli napindítót a CLAUDE.md formátum szerint. Telegramra (1268077055).
 A `cat /Users/marvin/ClaudeClaw/DREAM.md` parancs visszaadja a tartalmat, abból emeld ki a kulcs-szekciókat MarkdownV2-formátumra escape-elve.
 
 A többi szekció (email, naptár, AI hírek) maradnak a CLAUDE.md-ben leírt formátum szerint.
+
+**AI hírek szekció — CSAK a fő-ágensnél (Marveen / MAIN_AGENT_ID)**: ha NEM a fő-ágensként futsz (pl. sub-agent: boni, deeper, iris, samu, zara), HAGYD KI az "🤖 AI HÍREK" szekciót — sub-agenteknek nem releváns. Az email és naptár szekció marad mindenkinél.
