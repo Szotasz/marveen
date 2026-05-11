@@ -539,6 +539,18 @@ main {
   opacity: 0.4;
   transform: rotate(2deg);
 }
+.kanban-card-project {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  background: color-mix(in oklch, var(--accent) 12%, transparent);
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-bottom: 4px;
+  letter-spacing: 0.02em;
+}
+
 .kanban-card-title {
   font-size: 13px;
   font-weight: 500;

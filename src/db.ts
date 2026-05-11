@@ -652,6 +652,7 @@ export interface KanbanCard {
   status: 'planned' | 'in_progress' | 'waiting' | 'done'
   assignee: string | null
   priority: 'low' | 'normal' | 'high' | 'urgent'
+  project: string | null
   due_date: number | null
   sort_order: number
   created_at: number
@@ -695,23 +696,23 @@ export function createKanbanCard(card: {
   status?: KanbanCard['status']
   assignee?: string
   priority?: KanbanCard['priority']
+  project?: string
   due_date?: number
 }): void {
   const now = Math.floor(Date.now() / 1000)
   const status = card.status ?? 'planned'
-  // Get max sort_order for that status column
   const maxRow = db.prepare(
     'SELECT MAX(sort_order) as m FROM kanban_cards WHERE status = ? AND archived_at IS NULL'
   ).get(status) as { m: number | null }
   const sortOrder = (maxRow?.m ?? -1) + 1
 
   db.prepare(
-    `INSERT INTO kanban_cards (id, title, description, status, assignee, priority, due_date, sort_order, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO kanban_cards (id, title, description, status, assignee, priority, project, due_date, sort_order, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     card.id, card.title, card.description ?? null, status,
     card.assignee ?? null, card.priority ?? 'normal',
-    card.due_date ?? null, sortOrder, now, now
+    card.project ?? null, card.due_date ?? null, sortOrder, now, now
   )
 }
 
@@ -721,9 +722,9 @@ export function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'i
   const now = Math.floor(Date.now() / 1000)
   const f = { ...card, ...fields, updated_at: now }
   return db.prepare(
-    `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
+    `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
      WHERE id=?`
-  ).run(f.title, f.description, f.status, f.assignee, f.priority, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+  ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
 }
 
 export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrder: number): boolean {
@@ -736,6 +737,13 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
 export function archiveKanbanCard(id: string): boolean {
   const now = Math.floor(Date.now() / 1000)
   return db.prepare('UPDATE kanban_cards SET archived_at=?, updated_at=? WHERE id=?').run(now, now, id).changes > 0
+}
+
+export function listKanbanProjects(): string[] {
+  const rows = db.prepare(
+    "SELECT DISTINCT project FROM kanban_cards WHERE project IS NOT NULL AND project != '' AND archived_at IS NULL ORDER BY project"
+  ).all() as Array<{ project: string }>
+  return rows.map(r => r.project)
 }
 
 export function deleteKanbanCard(id: string): boolean {

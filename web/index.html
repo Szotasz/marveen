@@ -122,6 +122,12 @@
 
     <!-- === Kanban Page === -->
     <div class="page" id="kanbanPage" hidden>
+      <div style="margin-bottom:12px;display:flex;align-items:center;gap:8px;">
+        <label for="kanbanProjectFilter" style="font-size:13px;color:var(--muted);white-space:nowrap;">Projekt:</label>
+        <select id="kanbanProjectFilter" style="font-size:13px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);min-width:140px;">
+          <option value="">Mind</option>
+        </select>
+      </div>
       <div class="kanban-board" id="kanbanBoard">
         <div class="kanban-col" data-status="planned">
           <div class="kanban-col-header">
@@ -802,9 +808,16 @@
             </select>
           </div>
         </div>
-        <div class="form-group">
-          <label for="cardDue">Határidő <span class="hint">(opcionális)</span></label>
-          <input type="date" id="cardDue">
+        <div class="form-row">
+          <div class="form-group form-half">
+            <label for="cardDue">Határidő <span class="hint">(opcionális)</span></label>
+            <input type="date" id="cardDue">
+          </div>
+          <div class="form-group form-half">
+            <label for="cardProject">Projekt <span class="hint">(opcionális)</span></label>
+            <input type="text" id="cardProject" list="projectSuggestions" placeholder="pl. Dream Engine" autocomplete="off">
+            <datalist id="projectSuggestions"></datalist>
+          </div>
         </div>
         <input type="hidden" id="cardEditId">
         <input type="hidden" id="cardEditStatus">

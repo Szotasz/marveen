@@ -96,6 +96,8 @@ navLinks.forEach((link) => {
 
 let kanbanCards = []
 let kanbanAssignees = []
+let kanbanProjects = []
+let kanbanProjectFilter = ''
 
 const cardModalOverlay = document.getElementById('cardModalOverlay')
 const cardDetailOverlay = document.getElementById('cardDetailOverlay')
@@ -114,21 +116,56 @@ document.querySelectorAll('.kanban-add-btn').forEach((btn) => {
 
 async function loadKanban() {
   try {
-    const [cardsRes, assigneesRes] = await Promise.all([
+    const [cardsRes, assigneesRes, projectsRes] = await Promise.all([
       fetch('/api/kanban'),
       fetch('/api/kanban/assignees'),
+      fetch('/api/kanban-projects'),
     ])
     kanbanCards = await cardsRes.json()
     kanbanAssignees = await assigneesRes.json()
+    kanbanProjects = await projectsRes.json()
+    populateProjectFilter()
+    populateProjectSuggestions()
     renderKanban()
   } catch (err) {
     console.error('Kanban betöltés hiba:', err)
   }
 }
 
+function populateProjectFilter() {
+  const sel = document.getElementById('kanbanProjectFilter')
+  const prev = sel.value
+  sel.innerHTML = '<option value="">Mind</option>'
+  for (const p of kanbanProjects) {
+    const opt = document.createElement('option')
+    opt.value = p
+    opt.textContent = p
+    if (p === prev) opt.selected = true
+    sel.appendChild(opt)
+  }
+  if (prev && !kanbanProjects.includes(prev)) kanbanProjectFilter = ''
+}
+
+function populateProjectSuggestions() {
+  const dl = document.getElementById('projectSuggestions')
+  if (!dl) return
+  dl.innerHTML = ''
+  for (const p of kanbanProjects) {
+    const opt = document.createElement('option')
+    opt.value = p
+    dl.appendChild(opt)
+  }
+}
+
+document.getElementById('kanbanProjectFilter').addEventListener('change', (e) => {
+  kanbanProjectFilter = e.target.value
+  renderKanban()
+})
+
 function renderKanban() {
   const grouped = { planned: [], in_progress: [], waiting: [], done: [] }
   for (const card of kanbanCards) {
+    if (kanbanProjectFilter && (card.project || '') !== kanbanProjectFilter) continue
     if (grouped[card.status]) grouped[card.status].push(card)
   }
 
@@ -170,7 +207,12 @@ function createCardEl(card) {
     dueHtml = `<span class="kanban-card-due ${overdue ? 'overdue' : ''}">${label}</span>`
   }
 
+  const projectHtml = card.project
+    ? `<span class="kanban-card-project">${escapeHtml(card.project)}</span>`
+    : ''
+
   el.innerHTML = `
+    ${projectHtml}
     <div class="kanban-card-title">${escapeHtml(card.title)}</div>
     <div class="kanban-card-footer">${assigneeHtml}${dueHtml}</div>
   `
@@ -257,10 +299,12 @@ function openNewCardModal(status) {
   document.getElementById('cardTitle').value = ''
   document.getElementById('cardDesc').value = ''
   document.getElementById('cardPriority').value = 'normal'
+  document.getElementById('cardProject').value = ''
   document.getElementById('cardDue').value = ''
   document.getElementById('cardEditId').value = ''
   document.getElementById('cardEditStatus').value = status || 'planned'
   populateAssigneeSelect('cardAssignee')
+  populateProjectSuggestions()
   openModal(cardModalOverlay)
   setTimeout(() => document.getElementById('cardTitle').focus(), 200)
 }
@@ -287,6 +331,7 @@ document.getElementById('saveCardBtn').addEventListener('click', async () => {
     description: document.getElementById('cardDesc').value.trim() || null,
     assignee: document.getElementById('cardAssignee').value || null,
     priority: document.getElementById('cardPriority').value,
+    project: document.getElementById('cardProject').value.trim() || null,
     due_date: document.getElementById('cardDue').value
       ? Math.floor(new Date(document.getElementById('cardDue').value).getTime() / 1000)
       : null,
@@ -339,6 +384,10 @@ async function showCardDetail(card) {
     <div class="meta-item">
       <span class="meta-label">Prioritás</span>
       <span class="meta-value">${priorityLabels[card.priority]}</span>
+    </div>
+    <div class="meta-item">
+      <span class="meta-label">Projekt</span>
+      <span class="meta-value">${card.project ? escapeHtml(card.project) : '-- nincs --'}</span>
     </div>
     <div class="meta-item">
       <span class="meta-label">Határidő</span>
@@ -394,12 +443,14 @@ async function showCardDetail(card) {
     document.getElementById('cardTitle').value = card.title
     document.getElementById('cardDesc').value = card.description || ''
     document.getElementById('cardPriority').value = card.priority
+    document.getElementById('cardProject').value = card.project || ''
     document.getElementById('cardDue').value = card.due_date
       ? new Date(card.due_date * 1000).toISOString().split('T')[0]
       : ''
     document.getElementById('cardEditId').value = card.id
     document.getElementById('cardEditStatus').value = card.status
     populateAssigneeSelect('cardAssignee', card.assignee)
+    populateProjectSuggestions()
     openModal(cardModalOverlay)
   }
 

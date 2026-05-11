@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import {
   listKanbanCards, createKanbanCard, updateKanbanCard,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard,
-  getKanbanComments, addKanbanComment,
+  getKanbanComments, addKanbanComment, listKanbanProjects,
 } from '../../db.js'
 import { OWNER_NAME } from '../../config.js'
 import { listAgentNames } from '../agent-config.js'
@@ -14,6 +14,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/kanban' && method === 'GET') {
     json(res, listKanbanCards())
+    return true
+  }
+
+  if (path === '/api/kanban-projects' && method === 'GET') {
+    json(res, listKanbanProjects())
     return true
   }
 
