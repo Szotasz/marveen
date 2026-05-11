@@ -340,3 +340,48 @@ export function shouldClearTruncatedPreamble(pane: string): boolean {
 
   return true
 }
+
+export type SubmitFollowupAction = 'retry-enter' | 'done' | 'give-up'
+
+/**
+ * Decide what the post-send-keys loop should do next, given the
+ * current pane snapshot and how many retry-Enter attempts have already
+ * been made. Returns one of three discrete actions so the caller can
+ * branch without re-running the detection logic itself.
+ *
+ *   - 'done'        -- the prompt landed (or the pane is busy
+ *                      processing); no further action.
+ *   - 'retry-enter' -- the pane shows a stuck send; send another Enter
+ *                      and re-sample.
+ *   - 'give-up'     -- the retry budget is spent, or the capture failed
+ *                      and we cannot tell whether retry would help.
+ *                      Caller should log a warning and move on.
+ *
+ * Splitting the decision out as pure logic keeps the I/O-bound loop in
+ * src/web/agent-process.ts trivially testable without mocking tmux or
+ * child_process: feed snapshot strings + attempt counters in, assert
+ * the action out.
+ *
+ * @param pane         The most recent capture-pane snapshot, or null
+ *                     if the capture itself failed.
+ * @param payloadHint  Substring of the just-sent prompt, used for the
+ *                     verbatim-stuck detection path. Pass empty to
+ *                     restrict detection to the placeholder path.
+ * @param attempt      How many retry-Enters have ALREADY been sent
+ *                     (0 on the first decision after the initial send).
+ * @param maxAttempts  How many retry-Enters the caller is willing to
+ *                     send total. The decision returns 'give-up' once
+ *                     attempt >= maxAttempts and the pane is still
+ *                     stuck.
+ */
+export function decideSubmitFollowup(
+  pane: string | null,
+  payloadHint: string,
+  attempt: number,
+  maxAttempts: number,
+): SubmitFollowupAction {
+  if (pane == null) return 'give-up'
+  if (!shouldRetrySubmit(pane, payloadHint)) return 'done'
+  if (attempt >= maxAttempts) return 'give-up'
+  return 'retry-enter'
+}

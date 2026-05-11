@@ -5,7 +5,11 @@ import { execSync, execFileSync } from 'node:child_process'
 import { OLLAMA_URL } from '../config.js'
 import { resolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
-import { detectPaneState } from '../pane-state.js'
+import {
+  detectPaneState,
+  decideSubmitFollowup,
+  shouldClearTruncatedPreamble,
+} from '../pane-state.js'
 import { agentDir, readAgentModel, readAgentSecurityProfile, readAgentClaudeConfigDir } from './agent-config.js'
 import { parseTelegramToken } from './telegram.js'
 import { loadProfileTemplate } from './profiles.js'
@@ -214,12 +218,71 @@ function dismissResumeSummaryModalIfPresent(session: string): void {
   }
 }
 
+// How many follow-up Enters sendPromptToSession() is willing to fire
+// when the post-send capture says the prompt is still parked in the
+// input box. Two retries cover the observed stuck-rate (single-pane
+// recovery typically lands on the first or second extra Enter); a
+// stuck-after-two-retries pane gets a logged give-up so the operator
+// can intervene rather than the loop spinning indefinitely.
+const SUBMIT_RETRY_MAX_ATTEMPTS = 2
+// Wait between sending an Enter and re-capturing the pane. Long enough
+// for tmux to flush the keystroke into the Claude Code TUI and for
+// the TUI to either transition to busy (turn started) or stay idle
+// with the parked text (still stuck). Empirically 300ms is past the
+// frame-render gap detectPaneState already guards against.
+const SUBMIT_RETRY_POLL_MS = '0.3'
+
+// Buffer-clear (Ctrl-U) used pre-flight when shouldClearTruncatedPreamble
+// flags a stale preamble. Sent as a single key name (no `-l` literal
+// flag) so tmux interprets it as the control sequence.
+function clearInputBuffer(session: string): void {
+  try {
+    execFileSync(TMUX, ['send-keys', '-t', session, 'C-u'], { timeout: 5000 })
+    // Settle briefly so the next send-keys lands in the freshly cleared
+    // buffer rather than racing the Ctrl-U.
+    execFileSync('/bin/sleep', ['0.1'], { timeout: 2000 })
+  } catch (err) {
+    logger.warn({ err, session }, 'Failed to clear pane input buffer before send')
+  }
+}
+
 // Send text to a tmux session as if typed at the prompt.
 // Uses execFileSync so callers can pass raw text -- tmux send-keys -l treats
 // the argument as literal characters, bypassing shell quoting entirely.
+//
+// Pre-flight: if the live input box already shows a stale preamble from
+// a previous wrapped message that never fully landed (shouldClearTrun-
+// catedPreamble), Ctrl-U the buffer first so a fresh prompt is not
+// concatenated onto the stale trust-marker. Skipping this guard would
+// let an UNTRUSTED payload sit behind a stale TEAM MEMBER NOTICE
+// preamble and read as if it came from a trusted peer.
+//
+// Post-flight: bracketed-paste detection and frame-level races in the
+// Claude Code TUI occasionally swallow the trailing Enter, leaving the
+// fully written prompt parked in the input box (either as a [Pasted
+// text #N] placeholder or as verbatim text under an idle footer). We
+// re-sample the pane after the initial Enter and, if shouldRetrySubmit
+// still reports stuck, send up to SUBMIT_RETRY_MAX_ATTEMPTS extra
+// Enters. The retry budget bounds the loop so a pathologically stuck
+// pane gives up rather than spinning.
 export function sendPromptToSession(session: string, text: string): void {
   dismissSurveyModalIfPresent(session)
   dismissResumeSummaryModalIfPresent(session)
+
+  // Pre-flight buffer-clear when a stale preamble is detected. Reading
+  // the pane is best-effort: a capture failure here means we cannot
+  // prove the buffer is clean, but proceeding without the clear is no
+  // worse than the pre-fix status quo.
+  try {
+    const preCapture = execSync(`${TMUX} capture-pane -t ${session} -p`, { timeout: 3000, encoding: 'utf-8' })
+    if (shouldClearTruncatedPreamble(preCapture)) {
+      logger.info({ session }, 'Cleared stale preamble from input buffer before sending prompt')
+      clearInputBuffer(session)
+    }
+  } catch (err) {
+    logger.warn({ err, session }, 'Pre-send capture-pane failed; skipping truncated-preamble check')
+  }
+
   const oneLine = text.replace(/\r?\n/g, ' ')
   const CHUNK = 80
   // tmux send-keys doesn't support `--` option-terminator, so a chunk that
@@ -243,6 +306,29 @@ export function sendPromptToSession(session: string, text: string): void {
     if (i < oneLine.length) execFileSync('/bin/sleep', ['0.03'], { timeout: 1000 })
   }
   execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+
+  // Post-send retry loop. The payload hint is the first chunk of oneLine
+  // (truncated to a safe length) so the verbatim-stuck path has something
+  // recognisable to substring-match against without leaking the whole
+  // prompt body into log lines should the give-up branch fire.
+  const payloadHint = oneLine.slice(0, Math.min(oneLine.length, 96))
+  for (let attempt = 0; ; attempt++) {
+    try { execFileSync('/bin/sleep', [SUBMIT_RETRY_POLL_MS], { timeout: 2000 }) } catch { /* best effort */ }
+    const pane = capturePane(session)
+    const action = decideSubmitFollowup(pane, payloadHint, attempt, SUBMIT_RETRY_MAX_ATTEMPTS)
+    if (action === 'done') break
+    if (action === 'give-up') {
+      logger.warn({ session, attempt }, 'sendPromptToSession: prompt still parked after retries')
+      break
+    }
+    // action === 'retry-enter'
+    try {
+      execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+    } catch (err) {
+      logger.warn({ err, session, attempt }, 'Retry-Enter send failed')
+      break
+    }
+  }
 }
 
 // How long to wait between the two capture samples when the first one
