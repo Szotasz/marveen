@@ -4,6 +4,7 @@ import {
   isReadyForPrompt,
   shouldRetrySubmit,
   shouldClearTruncatedPreamble,
+  decideSubmitFollowup,
 } from '../pane-state.js'
 
 // Realistic pane fixtures modelled on actual `tmux capture-pane -p`
@@ -734,5 +735,47 @@ describe('shouldRetrySubmit minHintChars clamp', () => {
     // The verbatim path still works for a real-length hint with a
     // negative argument.
     expect(shouldRetrySubmit(STUCK_VERBATIM, PAYLOAD_HINT, { minHintChars: -5 })).toBe(true)
+  })
+})
+
+describe('decideSubmitFollowup', () => {
+  it('returns "give-up" when the pane capture failed', () => {
+    // A null pane means we cannot tell whether the prompt landed; the
+    // safest action is to stop retrying rather than fire a blind
+    // Enter that might submit a different turn's draft.
+    expect(decideSubmitFollowup(null, PAYLOAD_HINT, 0, 2)).toBe('give-up')
+  })
+
+  it('returns "done" when the pane is not stuck', () => {
+    // shouldRetrySubmit-positive panes are the only ones that should
+    // receive a follow-up Enter. A busy pane, a clean idle pane, and
+    // a typing pane without the hint all return "done".
+    expect(decideSubmitFollowup(BUSY_FULL_FOOTER, PAYLOAD_HINT, 0, 2)).toBe('done')
+    expect(decideSubmitFollowup(IDLE_BYPASS, PAYLOAD_HINT, 0, 2)).toBe('done')
+    expect(decideSubmitFollowup(TYPING_PARKED, PAYLOAD_HINT, 0, 2)).toBe('done')
+  })
+
+  it('returns "retry-enter" while attempts are below the cap', () => {
+    expect(decideSubmitFollowup(STUCK_VERBATIM, PAYLOAD_HINT, 0, 2)).toBe('retry-enter')
+    expect(decideSubmitFollowup(STUCK_VERBATIM, PAYLOAD_HINT, 1, 2)).toBe('retry-enter')
+    expect(decideSubmitFollowup(PENDING_PASTE, '', 0, 2)).toBe('retry-enter')
+  })
+
+  it('returns "give-up" once attempts reach the cap', () => {
+    // attempt === maxAttempts means we have already fired maxAttempts
+    // extra Enters and the pane is still stuck. Bail rather than
+    // burning more retries on a pane that refuses to flush.
+    expect(decideSubmitFollowup(STUCK_VERBATIM, PAYLOAD_HINT, 2, 2)).toBe('give-up')
+    expect(decideSubmitFollowup(STUCK_VERBATIM, PAYLOAD_HINT, 5, 2)).toBe('give-up')
+  })
+
+  it('treats maxAttempts === 0 as "give-up on first stuck observation"', () => {
+    // A caller that disabled retry by passing 0 still gets a clean
+    // "give-up" branch (with the warn-log behaviour the loop attaches
+    // to that action) rather than silently retrying.
+    expect(decideSubmitFollowup(STUCK_VERBATIM, PAYLOAD_HINT, 0, 0)).toBe('give-up')
+    // Done-state on a maxAttempts=0 pane still returns done -- there
+    // is nothing to retry.
+    expect(decideSubmitFollowup(IDLE_BYPASS, PAYLOAD_HINT, 0, 0)).toBe('done')
   })
 })
