@@ -136,6 +136,7 @@ export function initDatabase(): void {
       status TEXT NOT NULL DEFAULT 'planned' CHECK(status IN ('planned','in_progress','waiting','done')),
       assignee TEXT,
       priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('low','normal','high','urgent')),
+      project TEXT,
       due_date INTEGER,
       sort_order REAL NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
@@ -143,6 +144,16 @@ export function initDatabase(): void {
       archived_at INTEGER
     )
   `)
+  // Migration: add project column to kanban_cards for installs created
+  // before #89 (whose CREATE TABLE IF NOT EXISTS ran without `project`
+  // and is a no-op on the next boot). Without this, createKanbanCard
+  // and updateKanbanCard fail with `table kanban_cards has no column
+  // named project` and no card can be saved.
+  try {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN project TEXT')
+  } catch {
+    // column already exists
+  }
   // Migration: add agent_id, category, auto_generated columns to memories
   try {
     db.exec("ALTER TABLE memories ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'marveen'")
