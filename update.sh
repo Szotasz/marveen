@@ -186,6 +186,14 @@ fi
 echo -e "  Forditas..."
 npm run build --silent
 
+# Hook-ok szinkronizálása (~/.claude/hooks/ + ~/.claude/settings.json).
+# Minden scripts/install-*-hook.sh idempotens. Új hook-féle védelmet
+# committelve a következő update auto-deploy-olja minden installáción.
+if [ -x "$INSTALL_DIR/scripts/sync-hooks.sh" ]; then
+  echo -e "  Hook-ok szinkronizalasa..."
+  bash "$INSTALL_DIR/scripts/sync-hooks.sh" || echo -e "  FIGYELEM: sync-hooks.sh nem-nulla exit; manualisan ellenorizd."
+fi
+
 # Scrub any polluted TELEGRAM_BOT_TOKEN from the tmux server's global env
 # (legacy installs picked this up via `set -a && source .env` in the old
 # channels.sh). Leaving it there made every sub-agent poll the main bot
