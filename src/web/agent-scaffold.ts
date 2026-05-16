@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT, OWNER_NAME } from '../config.js'
+import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID } from '../config.js'
 import { runAgent } from '../agent.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { agentDir } from './agent-config.js'
@@ -55,6 +55,35 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
 
+// Copy the repo's `scheduled-tasks/<task>/task-config.json` to the
+// destination with the `agent` field rewritten to the host's
+// MAIN_AGENT_ID. The repo-side configs ship with `"agent": "marveen"`
+// hardcoded (canonical default in src/config.ts) so a non-marveen
+// install would otherwise scaffold tasks bound to an agent that does
+// not exist and the scheduler would fire silently into the void on
+// every tick. All other files in the task directory (SKILL.md, etc.)
+// are byte-identical copies as before.
+//
+// The rewrite is conservative: it only touches the `agent` field, and
+// only when the parsed JSON has one. A malformed task-config.json
+// falls back to copyFileSync so the seed does not lose its file --
+// the operator can then inspect and fix the JSON, rather than the
+// scaffold silently dropping the task.
+function copyTaskConfigWithAgentRewrite(srcPath: string, destPath: string): void {
+  try {
+    const raw = readFileSync(srcPath, 'utf-8')
+    const cfg = JSON.parse(raw) as Record<string, unknown>
+    if (typeof cfg.agent === 'string') {
+      cfg.agent = MAIN_AGENT_ID
+    }
+    atomicWriteFileSync(destPath, JSON.stringify(cfg, null, 2) + '\n')
+  } catch {
+    // Malformed or unreadable: fall back to a byte copy so the file is
+    // still seeded and the operator gets a chance to fix it.
+    copyFileSync(srcPath, destPath)
+  }
+}
+
 export function ensureDefaultScheduledTasks(): void {
   const repoTasks = join(PROJECT_ROOT, 'scheduled-tasks')
   if (!existsSync(repoTasks)) return
@@ -68,7 +97,13 @@ export function ensureDefaultScheduledTasks(): void {
     if (existsSync(dest)) continue
     mkdirSync(dest, { recursive: true })
     for (const file of readdirSync(src)) {
-      copyFileSync(join(src, file), join(dest, file))
+      const srcFile = join(src, file)
+      const destFile = join(dest, file)
+      if (file === 'task-config.json') {
+        copyTaskConfigWithAgentRewrite(srcFile, destFile)
+      } else {
+        copyFileSync(srcFile, destFile)
+      }
     }
   }
 }
