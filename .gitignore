@@ -9,6 +9,7 @@ workspace/
 agents/
 reports/
 .claude/
+!.claude/settings.json
 .config/
 
 # Database

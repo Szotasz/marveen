@@ -1404,8 +1404,15 @@ document.getElementById('chConnectBtn').addEventListener('click', async () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     })
-    if (!res.ok) {
+    if (res.status === 409) {
       const err = await res.json()
+      if (err.error === 'managed-settings-missing') {
+        showSudoModal(err.sudoCommand)
+        return
+      }
+    }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
       throw new Error(err.error || 'Kapcsolodasi hiba')
     }
     const result = await res.json()
@@ -6160,3 +6167,44 @@ document.getElementById('deepseekConfigLink')?.addEventListener('click', (e) => 
   e.preventDefault()
   switchPage('vault')
 })
+
+// === Sudo modal for managed-settings.json (Slack setup pre-flight) ===
+function showSudoModal(sudoCommand) {
+  let overlay = document.getElementById('sudoModalOverlay')
+  if (overlay) overlay.remove()
+  overlay = document.createElement('div')
+  overlay.id = 'sudoModalOverlay'
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center'
+  const card = document.createElement('div')
+  card.style.cssText = 'background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:24px;max-width:560px;width:90%'
+  card.innerHTML = `
+    <h3 style="margin:0 0 12px">Rendszerszintű beállítás szükséges</h3>
+    <p style="font-size:13px;color:var(--text-muted);margin:0 0 16px">
+      A Claude Code megköveteli, hogy a Slack channel plugin engedélyezve legyen a rendszerszintű managed-settings.json fájlban.
+      Futtasd az alábbi parancsot a Terminálban:
+    </p>
+    <div style="position:relative">
+      <pre id="sudoCmdPre" style="background:var(--bg-main);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px;overflow-x:auto;white-space:pre-wrap;word-break:break-all">${escapeHtml(sudoCommand)}</pre>
+      <button id="sudoCopyBtn" style="position:absolute;top:6px;right:6px;padding:4px 10px;font-size:11px;border-radius:6px;border:1px solid var(--border);background:var(--bg-card);cursor:pointer">Másolás</button>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+      <button id="sudoCancelBtn" class="btn btn-secondary" style="padding:6px 16px;font-size:13px">Mégse</button>
+      <button id="sudoDoneBtn" class="btn btn-primary" style="padding:6px 16px;font-size:13px">Kész, újrapróbálom</button>
+    </div>
+  `
+  overlay.appendChild(card)
+  document.body.appendChild(overlay)
+
+  document.getElementById('sudoCopyBtn').addEventListener('click', () => {
+    navigator.clipboard.writeText(sudoCommand).then(() => {
+      document.getElementById('sudoCopyBtn').textContent = 'Másolva!'
+      setTimeout(() => { document.getElementById('sudoCopyBtn').textContent = 'Másolás' }, 1500)
+    })
+  })
+  document.getElementById('sudoCancelBtn').addEventListener('click', () => overlay.remove())
+  document.getElementById('sudoDoneBtn').addEventListener('click', () => {
+    overlay.remove()
+    document.getElementById('chConnectBtn').click()
+  })
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove() })
+}

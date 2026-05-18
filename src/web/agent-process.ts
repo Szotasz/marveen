@@ -106,13 +106,15 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
     const continueFlag = hasPriorSession ? '--continue ' : ''
     const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : 'TELEGRAM_STATE_DIR'
     const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN'
+    // Slack plugin is third-party; its "not on approved allowlist" check is
+    // bypassed via `allowedChannelPlugins` in ~/.claude/settings.json.
     const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && export ${stateEnvVar}="${agentChannelDir}" && ${claudeConfigEnv}${ollamaEnv}${deepseekEnv}cd "${dir}" && ${CLAUDE} ${continueFlag}${skipFlag}--model ${model} --channels plugin:${provider.pluginId}`
     execSync(
       `${TMUX} new-session -d -s ${session} "${cmd}"`,
       { timeout: 10000 }
     )
 
-    logger.info({ name, session, tgStateDir }, 'Agent tmux session started')
+    logger.info({ name, session, channelDir: agentChannelDir }, 'Agent tmux session started')
 
     // After a restart with --continue, a session that's been idle for >24h
     // shows the "Resume from summary" modal before the prompt input is ready

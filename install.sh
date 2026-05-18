@@ -217,6 +217,48 @@ else
   echo ""
   read -p "  Bot Token (xoxb-...): " SLACK_BOT_TOKEN
   read -p "  App-Level Token (xapp-...): " SLACK_APP_TOKEN
+
+  # Managed settings: Claude Code requires allowedChannelPlugins at system level
+  MANAGED_DIR="/Library/Application Support/ClaudeCode"
+  MANAGED_FILE="$MANAGED_DIR/managed-settings.json"
+  SLACK_ENTRY='{"plugin":"slack-channel","marketplace":"marveen-marketplace"}'
+  TELEGRAM_ENTRY='{"plugin":"telegram","marketplace":"claude-plugins-official"}'
+  REQUIRED_JSON="{\"allowedChannelPlugins\":[$SLACK_ENTRY,$TELEGRAM_ENTRY]}"
+
+  if [ -f "$MANAGED_FILE" ]; then
+    HAS_SLACK=$(python3 -c "
+import json, sys
+try:
+  d = json.load(open('$MANAGED_FILE'))
+  plugins = d.get('allowedChannelPlugins', [])
+  sys.exit(0 if any(p.get('plugin')=='slack-channel' and p.get('marketplace')=='marveen-marketplace' for p in plugins) else 1)
+except: sys.exit(1)
+" 2>/dev/null && echo "yes" || echo "no")
+    if [ "$HAS_SLACK" = "no" ]; then
+      echo -e "  ${ORANGE}⚠${NC} A managed-settings.json frissitese szukseges (sudo)."
+      echo "$REQUIRED_JSON" | python3 -c "
+import json, sys
+new = json.loads(sys.stdin.read())
+try:
+  with open('$MANAGED_FILE') as f: existing = json.load(f)
+except: existing = {}
+plugins = existing.get('allowedChannelPlugins', [])
+for entry in new['allowedChannelPlugins']:
+  if not any(p.get('plugin')==entry['plugin'] and p.get('marketplace')==entry['marketplace'] for p in plugins):
+    plugins.append(entry)
+existing['allowedChannelPlugins'] = plugins
+print(json.dumps(existing, indent=2))
+" | sudo tee "$MANAGED_FILE" > /dev/null
+      echo -e "  ${GREEN}✓${NC} managed-settings.json frissitve"
+    else
+      echo -e "  ${GREEN}✓${NC} managed-settings.json mar tartalmazza a Slack plugint"
+    fi
+  else
+    echo -e "  ${ORANGE}⚠${NC} Managed settings letrehozasa szukseges (sudo)."
+    sudo mkdir -p "$MANAGED_DIR"
+    echo "$REQUIRED_JSON" | python3 -c "import json,sys; print(json.dumps(json.loads(sys.stdin.read()),indent=2))" | sudo tee "$MANAGED_FILE" > /dev/null
+    echo -e "  ${GREEN}✓${NC} managed-settings.json letrehozva"
+  fi
 fi
 
 read -p "  Mi legyen a botod neve? [Marveen]: " BOT_NAME

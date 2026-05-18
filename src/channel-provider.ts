@@ -130,7 +130,7 @@ export function formatForSlackMrkdwn(text: string): string {
 
 const slackProvider: ChannelProvider = {
   type: 'slack',
-  pluginId: 'slack@jeremylongshore/claude-code-slack-channel',
+  pluginId: 'slack-channel@marveen-marketplace',
   envKeys: ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN'],
   stateDir: 'slack',
   chatIdFormat: 'Slack channel/DM ID (e.g. C01234ABCDE)',
