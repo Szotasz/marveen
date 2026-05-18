@@ -12,7 +12,7 @@ import { startMessageRouter } from './web/message-router.js'
 import { startUpdateChecker } from './web/update-checker.js'
 import { startMcpListChecker } from './web/mcp-list.js'
 import { startScheduleRunner } from './web/schedule-runner.js'
-import { startTelegramPluginMonitor } from './web/telegram-monitor.js'
+import { startChannelPluginMonitor } from './web/channel-monitor.js'
 import { logger } from './logger.js'
 import { tryHandleProfiles } from './web/routes/profiles.js'
 import { tryHandleMessages } from './web/routes/messages.js'
@@ -201,8 +201,8 @@ export function startWebServer(port = 3420): http.Server {
   const scheduleInterval = startScheduleRunner()
   logger.info('Schedule runner started (60s poll)')
 
-  const pluginMonitorInterval = startTelegramPluginMonitor()
-  logger.info('Telegram plugin health monitor started (60s poll)')
+  const pluginMonitorInterval = startChannelPluginMonitor()
+  logger.info('Channel plugin health monitor started (60s poll)')
 
   const updateCheckerInterval = startUpdateChecker()
   logger.info('Update checker started (15min poll)')

@@ -1,33 +1,36 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import { execSync, execFileSync } from 'node:child_process'
 import { resolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID, BOT_NAME } from '../config.js'
-import { agentDir, listAgentNames } from './agent-config.js'
+import { MAIN_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER } from '../config.js'
+import { agentDir, listAgentNames, readAgentChannelProvider } from './agent-config.js'
 import {
   agentSessionName,
   capturePane,
   isAgentRunning,
-  isSessionReadyForPrompt,
   sendPromptToSession,
   startAgentProcess,
   stopAgentProcess,
 } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION, MAIN_CHANNELS_PLIST } from './main-agent.js'
-import { sendMarveenAlert } from './telegram.js'
+import { notifyChannel } from '../notify.js'
+import { getProvider, channelStateDir, type ChannelProviderType } from '../channel-provider.js'
 
 const TMUX = resolveFromPath('tmux')
 const CLAUDE = resolveFromPath('claude')
 
-// --- Telegram Plugin Health Monitor ---
-// Detect when the bun server.ts grandchild dies under a Claude session
-// by walking the process tree. (We deliberately don't pane-scan for
-// "Failed to reconnect" strings -- those persist in scrollback and fire
-// false positives, e.g. if the source containing the regex is shown.)
-// Agents recover via stop+start; for the main agent's channels session
-// we can only alert, because killing it would terminate the live agent.
+function resolveAgentProvider(name: string): ChannelProviderType {
+  const perAgent = readAgentChannelProvider(name)
+  if (perAgent === 'slack' || perAgent === 'telegram') return perAgent
+  return CHANNEL_PROVIDER
+}
+
+// --- Channel Plugin Health Monitor ---
+// Detect when the channel plugin grandchild dies under a Claude session
+// by walking the process tree. Agents recover via stop+start; for the
+// main agent's channels session we can only alert + escalate, because
+// killing it would terminate the live agent.
 
 function getClaudePidForSession(session: string): number | null {
   try {
@@ -46,7 +49,7 @@ function getClaudePidForSession(session: string): number | null {
   }
 }
 
-function hasTelegramPluginAlive(claudePid: number, agentName?: string): boolean {
+function hasChannelPluginAlive(claudePid: number, providerType: ChannelProviderType, agentName?: string): boolean {
   try {
     const ps = execFileSync('/bin/ps', ['-axo', 'pid,ppid,command'], { timeout: 3000, encoding: 'utf-8' })
     const lines = ps.split('\n').slice(1)
@@ -62,6 +65,7 @@ function hasTelegramPluginAlive(claudePid: number, agentName?: string): boolean 
       arr.push(pid)
       childrenOf.set(ppid, arr)
     }
+
     const stack = [claudePid]
     const seen = new Set<number>()
     while (stack.length) {
@@ -69,31 +73,55 @@ function hasTelegramPluginAlive(claudePid: number, agentName?: string): boolean 
       if (seen.has(p)) continue
       seen.add(p)
       const cmd = cmdOf.get(p) || ''
-      if (cmd.includes('/telegram/') && cmd.includes('bun')) return true
-      if (/\bbun\b/.test(cmd) && cmd.includes('server.ts')) return true
+      if (providerType === 'telegram') {
+        if (cmd.includes('/telegram/') && cmd.includes('bun')) return true
+        if (/\bbun\b/.test(cmd) && cmd.includes('server.ts')) return true
+      } else {
+        if (cmd.includes('slack') && cmd.includes('node')) return true
+        if (cmd.includes('slack-channel') && (cmd.includes('bun') || cmd.includes('node'))) return true
+      }
       for (const k of (childrenOf.get(p) || [])) stack.push(k)
     }
-    // Fallback: bun may have been reparented to init (ppid=1) after its
-    // intermediate parent crashed. The subtree walk from claudePid then
-    // misses it and we declare the plugin down even though it's fine.
-    // Check bot.pid directly as a last-resort liveness signal.
-    const pidDir = agentName
-      ? join(agentDir(agentName), '.claude', 'channels', 'telegram')
-      : join(homedir(), '.claude', 'channels', 'telegram')
-    const pidPath = join(pidDir, 'bot.pid')
+
+    // Fallback: plugin may have been reparented to init (ppid=1) after its
+    // intermediate parent crashed. Check bot.pid directly as last-resort.
+    const stateDir = agentName
+      ? channelStateDir(providerType, agentDir(agentName))
+      : channelStateDir(providerType)
+    const pidPath = join(stateDir, 'bot.pid')
     if (existsSync(pidPath)) {
       const pid = parseInt(readFileSync(pidPath, 'utf-8').trim(), 10)
       if (pid > 1) {
         try {
           process.kill(pid, 0)
           const cmd = cmdOf.get(pid) || ''
-          if (cmd.includes('bun') || cmd.includes('server.ts') || cmd.includes('telegram')) {
-            logger.debug({ claudePid, orphanPid: pid, agentName }, 'Telegram plugin alive via bot.pid (reparented)')
+          const isRelevant = providerType === 'telegram'
+            ? (cmd.includes('bun') || cmd.includes('server.ts') || cmd.includes('telegram'))
+            : (cmd.includes('node') || cmd.includes('slack'))
+          if (isRelevant) {
+            logger.debug({ claudePid, orphanPid: pid, agentName, providerType }, 'Channel plugin alive via bot.pid (reparented)')
             return true
           }
         } catch { /* process gone */ }
       }
     }
+
+    // Slack Socket Mode: no bot.pid file; check if the slack app token is
+    // being actively used by a child process. This is a heuristic -- Slack
+    // plugins keep a WebSocket open but don't write a pid file.
+    if (providerType === 'slack') {
+      for (const [pid, cmd] of cmdOf) {
+        if (seen.has(pid)) continue
+        if ((cmd.includes('slack') || cmd.includes('socket-mode')) && (cmd.includes('node') || cmd.includes('bun'))) {
+          try {
+            process.kill(pid, 0)
+            logger.debug({ claudePid, slackPid: pid, agentName }, 'Slack plugin alive via process scan')
+            return true
+          } catch { /* gone */ }
+        }
+      }
+    }
+
     return false
   } catch {
     return false
@@ -105,12 +133,6 @@ const agentLastRestart: Map<string, number> = new Map()
 const AGENT_RESTART_GRACE_MS = 90_000
 const PLUGIN_ALERT_DEDUP_MS = 30 * 60 * 1000
 
-// Marveen recovery is a 5-stage escalator:
-//   1. soft:   /mcp → navigate to Telegram → Reconnect (no session disruption)
-//   2. save:   ask Marveen to persist memory (~60s grace)
-//   3. resume: respawn claude with --continue (context preserved, MCPs reconnect)
-//   4. hard:   systemctl/launchctl restart (clean slate)
-//   5. gave_up: manual intervention
 type MarveenRecoveryStage = 'soft' | 'save' | 'resume' | 'hard' | 'gave_up'
 interface MarveenDownState {
   downSince: number
@@ -121,79 +143,25 @@ interface MarveenDownState {
 }
 
 const SAVE_WINDOW_MS = 60_000
-// Confirmation threshold before treating a "plugin not alive" tick as real
-// downtime. The 30-min heartbeat scheduled task can monopolise the Claude
-// IPC for 60-90s while it processes the prompt, during which the plugin
-// IPC briefly looks dead. Two consecutive negative ticks (~120s) filter
-// those false positives without delaying real outages by much.
 const MARVEEN_DOWN_CONFIRM_MS = 120_000
 let marveenSuspectFirstSeen: number | null = null
 let marveenDownState: MarveenDownState | null = null
 
-// Navigate a Claude Code interactive picker by pressing Down until ❯ lands
-// on a line matching `pattern`. Uses the LAST ❯ in the pane since the
-// dialog renders below the prompt line (which also contains ❯).
-function navigateToMenuItem(session: string, pattern: RegExp, maxSteps: number = 10): boolean {
-  for (let i = 0; i < maxSteps; i++) {
-    const pane = capturePane(session)
-    if (!pane) return false
-    const lines = pane.split('\n')
-    let cursorLine: string | undefined
-    for (let j = lines.length - 1; j >= 0; j--) {
-      if (lines[j].includes('❯')) { cursorLine = lines[j]; break }
-    }
-    if (cursorLine && pattern.test(cursorLine)) return true
-    execFileSync(TMUX, ['send-keys', '-t', session, 'Down'], { timeout: 3000 })
-    execFileSync('/bin/sleep', ['0.15'], { timeout: 1000 })
-  }
-  return false
+function getMainAgentProvider(): ChannelProviderType {
+  return CHANNEL_PROVIDER
 }
 
-// Cached Telegram menu index; refreshed when the cache TTL expires or a
-// soft-reconnect fails the verification check (suggesting MCP list changed).
-let telegramMenuIndexCache: { idx: number; expiresAt: number } | null = null
-const TELEGRAM_INDEX_TTL_MS = 5 * 60 * 1000
-
-function getTelegramMenuIndex(forceRefresh = false): number {
-  const now = Date.now()
-  if (!forceRefresh && telegramMenuIndexCache && telegramMenuIndexCache.expiresAt > now) {
-    return telegramMenuIndexCache.idx
-  }
-  try {
-    const out = execFileSync('claude', ['mcp', 'list'], {
-      encoding: 'utf-8',
-      timeout: 15000,
-    })
-    const entries = out
-      .split('\n')
-      .filter((l) => /^[A-Za-z][^:]*:.*\s-\s/.test(l))
-    const idx = entries.findIndex((l) => /^plugin:telegram:telegram:/i.test(l))
-    telegramMenuIndexCache = { idx, expiresAt: now + TELEGRAM_INDEX_TTL_MS }
-    return idx
-  } catch (err) {
-    logger.warn({ err }, 'getTelegramMenuIndex: claude mcp list failed')
-    return -1
-  }
+function getMainAgentPluginPattern(): RegExp {
+  const provider = getProvider(getMainAgentProvider())
+  const escaped = provider.pluginId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(escaped, 'i')
 }
 
 function softReconnectMarveen(): boolean {
-  // The /mcp picker highlights the selected entry with a background colour
-  // (not a `❯` prefix), so `tmux capture-pane -p` (ASCII) cannot read which
-  // row the cursor is on; with 25+ MCPs the viewport scrolls so the Telegram
-  // entry isn't visible from the default top position either. Strategy:
-  //   - The picker wraps around: pressing Up at the top jumps to the last
-  //     entry, and additional Ups walk backwards from there.
-  //   - We don't know exactly how far up the Telegram entry sits (the picker
-  //     order doesn't always match `claude mcp list`), so we brute-force
-  //     1..MAX Ups, opening the submenu after each step and checking whether
-  //     the header reads "Plugin:telegram:telegram MCP Server". On match we
-  //     proceed to Reconnect; on miss we Escape back to the picker and try
-  //     one more Up. PR #69 used a fixed 1-Up wraparound; this only worked
-  //     when Telegram was the very last entry, and broke silently as soon as
-  //     any new MCP (aiam-blog, server-*, etc.) got installed after it.
   const MAX_UP_ATTEMPTS = 8
+  const pluginPattern = getMainAgentPluginPattern()
+
   try {
-    // Escape interrupts any in-progress turn, making the session ready
     execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Escape'], { timeout: 3000 })
     execFileSync('/bin/sleep', ['1'], { timeout: 2000 })
 
@@ -215,33 +183,30 @@ function softReconnectMarveen(): boolean {
       execFileSync('/bin/sleep', ['1'], { timeout: 3000 })
 
       const pane = capturePane(MAIN_CHANNELS_SESSION)
-      if (pane && /Plugin:telegram:telegram MCP Server/i.test(pane)) {
+      if (pane && pluginPattern.test(pane)) {
         matchedAt = upCount
         break
       }
-      // Wrong submenu — Escape back to the picker and try the next Up
       execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Escape'], { timeout: 3000 })
       execFileSync('/bin/sleep', ['0.5'], { timeout: 1000 })
     }
 
     if (matchedAt < 0) {
       logger.warn(
-        { maxUpAttempts: MAX_UP_ATTEMPTS },
-        'soft reconnect: did not find Telegram submenu within Up attempts',
+        { maxUpAttempts: MAX_UP_ATTEMPTS, pluginPattern: pluginPattern.source },
+        'soft reconnect: did not find channel plugin submenu within Up attempts',
       )
       execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Escape'], { timeout: 3000 })
       return false
     }
-    void getTelegramMenuIndex // silence unused warning while we keep the helper for future use
 
-    // Submenu cursor defaults to "❯ 1. View tools"; one Down → "2. Reconnect"
     execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Down'], { timeout: 3000 })
     execFileSync('/bin/sleep', ['0.3'], { timeout: 1000 })
     execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Enter'], { timeout: 3000 })
     execFileSync('/bin/sleep', ['2'], { timeout: 4000 })
 
     execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Escape'], { timeout: 3000 })
-    logger.info({ matchedAt }, 'soft reconnect: /mcp → Up × N (telegram) → Enter → Down (Reconnect) → Enter completed')
+    logger.info({ matchedAt, provider: getMainAgentProvider() }, 'soft reconnect: /mcp → Up × N → Enter → Down (Reconnect) → Enter completed')
     return true
   } catch (err) {
     logger.warn({ err }, 'Marveen soft reconnect failed')
@@ -251,17 +216,13 @@ function softReconnectMarveen(): boolean {
 }
 
 function triggerMarveenMemorySave(): void {
-  // Nudge Marveen to persist whatever hot/warm state is still in context
-  // before the hard restart pulls the session. Uses sendPromptToSession
-  // so the long prompt isn't buffered as a [Pasted text] and actually
-  // reaches the agent as an input turn.
   const prompt = [
-    '[SYSTEM: channels recovery] A Telegram plugin nem reagál, kb 60 másodperc',
-    `múlva hard restart lesz a ${MAIN_CHANNELS_SESSION} session-ön (a beszélgetés elvész).`,
-    'MOST mentsd el a ClaudeClaw memóriába amit a következő sessionnek tudnia kell:',
-    'aktív feladatok (category hot), friss döntések/preferenciák (warm), tanulságok (cold).',
-    'Használd: curl -s -X POST http://localhost:3420/api/memories ... (lásd CLAUDE.md).',
-    'Ha kész vagy, írj egy rövid napi napló bejegyzést is a /api/daily-log-ra. Utána elég.',
+    '[SYSTEM: channels recovery] A csatorna plugin nem reagal, kb 60 masodperc',
+    `mulva hard restart lesz a ${MAIN_CHANNELS_SESSION} session-on (a beszelgetes elveszik).`,
+    'MOST mentsd el a ClaudeClaw memoriaba amit a kovetkezo sessionnek tudnia kell:',
+    'aktiv feladatok (category hot), friss dontesek/preferenciak (warm), tanulsagok (cold).',
+    'Hasznald: curl -s -X POST http://localhost:3420/api/memories ... (lasd CLAUDE.md).',
+    'Ha kesz vagy, irj egy rovid napi naplo bejegyzest is a /api/daily-log-ra. Utana eleg.',
   ].join(' ')
   try {
     sendPromptToSession(MAIN_CHANNELS_SESSION, prompt)
@@ -272,14 +233,15 @@ function triggerMarveenMemorySave(): void {
 }
 
 function resumeMarveenSession(): boolean {
+  const provider = getProvider(getMainAgentProvider())
   try {
     const claudeCmd = [
       'export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"',
       '&&', CLAUDE, '--continue', '--dangerously-skip-permissions',
-      '--channels plugin:telegram@claude-plugins-official',
+      `--channels plugin:${provider.pluginId}`,
     ].join(' ')
     execFileSync(TMUX, ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
-    logger.warn('Marveen session respawned with --continue')
+    logger.warn({ provider: provider.type }, 'Marveen session respawned with --continue')
     return true
   } catch (err) {
     logger.error({ err }, 'Marveen session respawn failed')
@@ -311,22 +273,19 @@ export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
   }
 }
 
+function sendAlert(text: string): void {
+  notifyChannel(text).catch(() => {})
+}
+
 function handleMarveenDown(): void {
   const now = Date.now()
+  const providerLabel = getMainAgentProvider()
   if (marveenLastHardRestart && now - marveenLastHardRestart < MARVEEN_HARD_RESTART_GRACE_MS) {
-    // Just hard-restarted; give the plugin time to boot before checking again.
     return
   }
   if (!marveenDownState) {
-    // First tick of this outage: log + try the soft fix silently. We
-    // deliberately skip the user-facing Telegram alert at stage 1 since
-    // the Claude Code TUI does an hourly clean MCP re-handshake (sub-1-min
-    // disconnect that recovers automatically); spamming "lecsatlakozott"
-    // for those healthy cycles is more annoying than informative. Only
-    // alert from stage 2 onward, when soft reconnect failed and a real
-    // intervention (memory save / session resume / hard restart) starts.
     marveenDownState = { downSince: now, stage: 'soft', lastAlertAt: now, softAttempts: 0 }
-    logger.warn('Marveen Telegram plugin down -- stage 1 (soft /mcp reconnect, silent)')
+    logger.warn({ provider: providerLabel }, 'Marveen channel plugin down -- stage 1 (soft /mcp reconnect, silent)')
     if (softReconnectMarveen()) marveenDownState.softAttempts += 1
     return
   }
@@ -339,8 +298,8 @@ function handleMarveenDown(): void {
     marveenDownState.stage = 'save'
     marveenDownState.stageStartedAt = now
     marveenDownState.lastAlertAt = now
-    logger.warn('Marveen Telegram plugin still down -- stage 2 (memory save)')
-    sendMarveenAlert('⚠️ /mcp nem segített. Szólok Marveennek hogy mentsen memóriát session resume előtt (~60s türelmi idő).').catch(() => {})
+    logger.warn({ provider: providerLabel }, 'Marveen channel plugin still down -- stage 2 (memory save)')
+    sendAlert(`⚠️ /mcp nem segitett. Szolok Marveennek hogy mentsen memoriat session resume elott (~60s turelmi ido).`)
     triggerMarveenMemorySave()
     return
   }
@@ -350,8 +309,8 @@ function handleMarveenDown(): void {
     marveenDownState.stage = 'resume'
     marveenDownState.stageStartedAt = now
     marveenDownState.lastAlertAt = now
-    logger.warn('Marveen Telegram plugin still down -- stage 3 (session resume)')
-    sendMarveenAlert('⚠️ Memória mentés lejárt. Session resume (claude --continue) most...').catch(() => {})
+    logger.warn({ provider: providerLabel }, 'Marveen channel plugin still down -- stage 3 (session resume)')
+    sendAlert('⚠️ Memoria mentes lejart. Session resume (claude --continue) most...')
     resumeMarveenSession()
     return
   }
@@ -361,26 +320,25 @@ function handleMarveenDown(): void {
     marveenDownState.stage = 'hard'
     marveenDownState.stageStartedAt = now
     marveenDownState.lastAlertAt = now
-    logger.warn('Marveen Telegram plugin still down -- stage 4 (hard restart)')
+    logger.warn({ provider: providerLabel }, 'Marveen channel plugin still down -- stage 4 (hard restart)')
     const svcName = process.platform === 'linux' ? 'systemctl' : 'launchctl'
-    sendMarveenAlert(`⚠️ Session resume nem segített. Hard restart (${svcName}) most a ${MAIN_CHANNELS_SESSION} session-ön...`).catch(() => {})
+    sendAlert(`⚠️ Session resume nem segitett. Hard restart (${svcName}) most a ${MAIN_CHANNELS_SESSION} session-on...`)
     hardRestartMarveenChannels()
     return
   }
   if (marveenDownState.stage === 'hard') {
     marveenDownState.stage = 'gave_up'
     marveenDownState.lastAlertAt = now
-    logger.error('Marveen Telegram plugin still down after hard restart -- giving up auto-recovery')
+    logger.error({ provider: providerLabel }, 'Marveen channel plugin still down after hard restart -- giving up auto-recovery')
     const serviceCmd = process.platform === 'linux'
       ? `\`systemctl --user status ${MAIN_AGENT_ID}-channels\``
       : `\`launchctl list | grep ${MAIN_AGENT_ID}\``
-    sendMarveenAlert(`🚨 Hard restart SEM segített. Kézzel kell megnézni: \`tmux attach -t ${MAIN_CHANNELS_SESSION}\` és ${serviceCmd}.`).catch(() => {})
+    sendAlert(`🚨 Hard restart SEM segitett. Kezzel kell megnezni: \`tmux attach -t ${MAIN_CHANNELS_SESSION}\` es ${serviceCmd}.`)
     return
   }
-  // gave_up -- re-alert at most every PLUGIN_ALERT_DEDUP_MS.
   if (now - marveenDownState.lastAlertAt > PLUGIN_ALERT_DEDUP_MS) {
     marveenDownState.lastAlertAt = now
-    sendMarveenAlert('🚨 Marveen Telegram plugin még mindig halott. Nézd meg kézzel.').catch(() => {})
+    sendAlert(`🚨 Marveen ${providerLabel} plugin meg mindig halott. Nezd meg kezzel.`)
   }
 }
 
@@ -389,18 +347,15 @@ function handleMarveenUp(): void {
   if (marveenDownState) {
     const downedFor = Math.round((Date.now() - marveenDownState.downSince) / 1000)
     const stage = marveenDownState.stage
-    logger.info({ stage, downedFor }, 'Marveen Telegram plugin recovered')
+    const providerLabel = getMainAgentProvider()
+    logger.info({ stage, downedFor, provider: providerLabel }, 'Marveen channel plugin recovered')
     if (stage !== 'soft' && stage !== 'save' && stage !== 'resume') {
-      sendMarveenAlert(`✅ Marveen Telegram plugin helyreállt (${stage} után, ${downedFor}s kiesés).`).catch(() => {})
+      sendAlert(`✅ Marveen ${providerLabel} plugin helyrealt (${stage} utan, ${downedFor}s kieses).`)
     }
     marveenDownState = null
   }
 }
 
-// Returns true once the suspect-down state has been observed for
-// MARVEEN_DOWN_CONFIRM_MS. Called twice per minute (the monitor tick is
-// 60s); the threshold therefore translates to roughly two negative ticks
-// before recovery escalates.
 function shouldEscalateMarveenDown(): boolean {
   const now = Date.now()
   if (marveenSuspectFirstSeen === null) {
@@ -410,19 +365,25 @@ function shouldEscalateMarveenDown(): boolean {
   return now - marveenSuspectFirstSeen >= MARVEEN_DOWN_CONFIRM_MS
 }
 
-export function startTelegramPluginMonitor(): NodeJS.Timeout {
+export function startChannelPluginMonitor(): NodeJS.Timeout {
+  const mainProvider = getMainAgentProvider()
+
   function check() {
-    type Target = { session: string; isMarveen: boolean; agentName?: string }
-    const targets: Target[] = [{ session: MAIN_CHANNELS_SESSION, isMarveen: true }]
+    type Target = { session: string; isMarveen: boolean; agentName?: string; provider: ChannelProviderType }
+    const targets: Target[] = [{ session: MAIN_CHANNELS_SESSION, isMarveen: true, provider: mainProvider }]
     for (const a of listAgentNames()) {
-      if (isAgentRunning(a)) targets.push({ session: agentSessionName(a), isMarveen: false, agentName: a })
+      if (isAgentRunning(a)) {
+        targets.push({
+          session: agentSessionName(a),
+          isMarveen: false,
+          agentName: a,
+          provider: resolveAgentProvider(a),
+        })
+      }
     }
     for (const t of targets) {
       const claudePid = getClaudePidForSession(t.session)
       if (!claudePid) {
-        // Grace period: we may have just restarted this agent and the
-        // claude process hasn't appeared yet. Don't escalate until boot
-        // has had a realistic chance to complete.
         if (!t.isMarveen && t.agentName) {
           const lastRestart = agentLastRestart.get(t.agentName)
           if (lastRestart && Date.now() - lastRestart < AGENT_RESTART_GRACE_MS) continue
@@ -432,18 +393,16 @@ export function startTelegramPluginMonitor(): NodeJS.Timeout {
         }
         continue
       }
-      const alive = hasTelegramPluginAlive(claudePid, t.agentName)
+      const alive = hasChannelPluginAlive(claudePid, t.provider, t.agentName)
       if (alive) {
         if (t.isMarveen) {
           handleMarveenUp()
         } else if (agentDownSince.has(t.session)) {
-          logger.info({ session: t.session }, 'Agent Telegram plugin recovered')
+          logger.info({ session: t.session, provider: t.provider }, 'Agent channel plugin recovered')
           agentDownSince.delete(t.session)
         }
         continue
       }
-      // Same grace period on the plugin-not-yet-connected path: the MCP
-      // handshake can take tens of seconds after a fresh claude start.
       if (!t.isMarveen && t.agentName) {
         const lastRestart = agentLastRestart.get(t.agentName)
         if (lastRestart && Date.now() - lastRestart < AGENT_RESTART_GRACE_MS) continue
@@ -452,7 +411,7 @@ export function startTelegramPluginMonitor(): NodeJS.Timeout {
         if (shouldEscalateMarveenDown()) handleMarveenDown()
       } else {
         if (!agentDownSince.has(t.session)) agentDownSince.set(t.session, Date.now())
-        logger.warn({ agent: t.agentName }, 'Agent Telegram plugin down -- auto-restarting')
+        logger.warn({ agent: t.agentName, provider: t.provider }, 'Agent channel plugin down -- auto-restarting')
         try {
           stopAgentProcess(t.agentName!)
           execSync('sleep 2', { timeout: 4000 })
@@ -460,7 +419,7 @@ export function startTelegramPluginMonitor(): NodeJS.Timeout {
           agentLastRestart.set(t.agentName!, Date.now())
           agentDownSince.delete(t.session)
         } catch (err) {
-          logger.error({ err, agent: t.agentName }, 'Failed to auto-restart agent after telegram plugin down')
+          logger.error({ err, agent: t.agentName }, 'Failed to auto-restart agent after channel plugin down')
         }
       }
     }
@@ -468,3 +427,6 @@ export function startTelegramPluginMonitor(): NodeJS.Timeout {
   setTimeout(check, 30000)
   return setInterval(check, 60000)
 }
+
+// Backward-compatible alias
+export const startTelegramPluginMonitor = startChannelPluginMonitor
