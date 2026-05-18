@@ -10,14 +10,22 @@ import {
   decideSubmitFollowup,
   shouldClearTruncatedPreamble,
 } from '../pane-state.js'
-import { agentDir, readAgentModel, readAgentSecurityProfile, readAgentClaudeConfigDir } from './agent-config.js'
+import { agentDir, readAgentModel, readAgentSecurityProfile, readAgentClaudeConfigDir, readAgentChannelProvider } from './agent-config.js'
 import { parseTelegramToken } from './telegram.js'
+import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
+import { CHANNEL_PROVIDER } from '../config.js'
 import { loadProfileTemplate } from './profiles.js'
 import { writeAgentSettingsFromProfile } from './agent-scaffold.js'
 import { getSecret } from './vault.js'
 
 const TMUX = resolveFromPath('tmux')
 const CLAUDE = resolveFromPath('claude')
+
+function resolveAgentProvider(name: string): ChannelProviderType {
+  const perAgent = readAgentChannelProvider(name)
+  if (perAgent === 'slack' || perAgent === 'telegram') return perAgent
+  return CHANNEL_PROVIDER
+}
 
 export function agentSessionName(name: string): string {
   return `agent-${name}`
@@ -38,10 +46,18 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
 
-  const token = parseTelegramToken(name)
-  if (!token) return { ok: false, error: 'Telegram not configured for this agent' }
+  const agentProvider = resolveAgentProvider(name)
+  const provider = getProvider(agentProvider)
+  const agentChannelDir = channelStateDir(agentProvider, dir)
+  const token = readChannelToken(agentProvider, join(agentChannelDir, '.env'))
+  // Backward compat: try legacy Telegram token if provider-aware lookup misses
+  if (!token && agentProvider === 'telegram') {
+    const legacyToken = parseTelegramToken(name)
+    if (!legacyToken) return { ok: false, error: 'Channel not configured for this agent' }
+  } else if (!token) {
+    return { ok: false, error: `${provider.type} channel not configured for this agent` }
+  }
 
-  const tgStateDir = join(dir, '.claude', 'channels', 'telegram')
   const session = agentSessionName(name)
 
   try {
@@ -88,14 +104,9 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
     const encodedProject = dir.replace(/\//g, '-')
     const hasPriorSession = existsSync(join(projectsRoot, encodedProject))
     const continueFlag = hasPriorSession ? '--continue ' : ''
-    // bun lives under ~/.bun/bin, which isn't in the dashboard's launchd PATH.
-    // The Claude plugin launcher spawns `bun`, so we must prepend it here.
-    // Defensive unset of TELEGRAM_BOT_TOKEN: if anything ever pollutes the
-    // tmux server's global env again (fresh upgrades, operator manually
-    // sourcing .env), the sub-agent would otherwise inherit the main
-    // agent's token and trigger a 409 Conflict loop. The per-agent .env
-    // in TELEGRAM_STATE_DIR is still the intended source of truth.
-    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && unset TELEGRAM_BOT_TOKEN && export TELEGRAM_STATE_DIR="${tgStateDir}" && ${claudeConfigEnv}${ollamaEnv}${deepseekEnv}cd "${dir}" && ${CLAUDE} ${continueFlag}${skipFlag}--model ${model} --channels plugin:telegram@claude-plugins-official`
+    const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : 'TELEGRAM_STATE_DIR'
+    const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN'
+    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && export ${stateEnvVar}="${agentChannelDir}" && ${claudeConfigEnv}${ollamaEnv}${deepseekEnv}cd "${dir}" && ${CLAUDE} ${continueFlag}${skipFlag}--model ${model} --channels plugin:${provider.pluginId}`
     execSync(
       `${TMUX} new-session -d -s ${session} "${cmd}"`,
       { timeout: 10000 }
@@ -140,19 +151,22 @@ export function stopAgentProcess(name: string): { ok: boolean; error?: string } 
   try {
     execSync(`${TMUX} kill-session -t ${session}`, { timeout: 5000 })
     execSync('sleep 2', { timeout: 4000 })
-    // Reap any orphaned bun server.ts (Telegram plugin) grandchildren that
-    // tmux didn't get. The plugin writes its pid to the agent's telegram
-    // state dir; prefer that, fall back to a token-scoped pkill.
+    // Reap any orphaned plugin grandchildren that tmux didn't get.
+    // The plugin writes its pid to the agent's channel state dir;
+    // prefer that, fall back to a env-var-scoped pkill.
     try {
-      const pidPath = join(agentDir(name), '.claude', 'channels', 'telegram', 'bot.pid')
+      const agentProvider = resolveAgentProvider(name)
+      const dir = agentDir(name)
+      const chanDir = channelStateDir(agentProvider, dir)
+      const pidPath = join(chanDir, 'bot.pid')
       if (existsSync(pidPath)) {
         const pid = parseInt(readFileSync(pidPath, 'utf-8').trim(), 10)
         if (pid > 1) {
           try { process.kill(pid, 'SIGTERM') } catch { /* already gone */ }
         }
       }
-      const tgStateDir = join(agentDir(name), '.claude', 'channels', 'telegram')
-      execFileSync('/usr/bin/pkill', ['-f', `TELEGRAM_STATE_DIR=${tgStateDir}`], { timeout: 3000 })
+      const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : 'TELEGRAM_STATE_DIR'
+      execFileSync('/usr/bin/pkill', ['-f', `${stateEnvVar}=${chanDir}`], { timeout: 3000 })
     } catch { /* pkill returns non-zero if no match -- fine */ }
     logger.info({ name, session }, 'Agent tmux session stopped')
     return { ok: true }

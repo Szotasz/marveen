@@ -189,6 +189,25 @@ export function readAgentClaudeConfigDir(name: string): string | null {
   return resolveClaudeConfigDir(readFileOr(configPath, '{}'), homedir())
 }
 
+export function readAgentChannelProvider(name: string): string | null {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}'))
+    if (typeof config.channelProvider === 'string' && config.channelProvider.trim()) {
+      return config.channelProvider.trim()
+    }
+  } catch { /* fall through */ }
+  return null
+}
+
+export function writeAgentChannelProvider(name: string, provider: string): void {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  let config: Record<string, unknown> = {}
+  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  config.channelProvider = provider
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
 export function writeAgentSecurityProfile(name: string, profileId: string): void {
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}

@@ -1,7 +1,8 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID } from '../config.js'
+import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, CHANNEL_PROVIDER } from '../config.js'
+import { channelStateDir } from '../channel-provider.js'
 import { runAgent } from '../agent.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { agentDir } from './agent-config.js'
@@ -112,7 +113,7 @@ export function scaffoldAgentDir(name: string) {
   const dir = agentDir(name)
   mkdirSync(join(dir, '.claude', 'skills'), { recursive: true })
   mkdirSync(join(dir, '.claude', 'hooks'), { recursive: true })
-  mkdirSync(join(dir, '.claude', 'channels', 'telegram'), { recursive: true })
+  mkdirSync(channelStateDir(CHANNEL_PROVIDER, dir), { recursive: true })
   mkdirSync(join(dir, 'memory'), { recursive: true })
 
   // Initialize empty files if they don't exist
@@ -237,7 +238,7 @@ Minden kontextus-tömörítés előtt (PreCompact hook) automatikusan vizsgáld 
 MINDIG a megfelelő lokális időt használd (Europe/Budapest CEST/CET).
 
 - **Jelenlegi idő**: \`date\` Bash első lépés időponti feladatoknál (heartbeat, naptár-művelet, scheduled-task analízis)
-- **Telegram channel \`ts\`**: UTC-ben jön (postfix \`Z\`), átkonvertálni Europe/Budapest-re (CEST = UTC+2 nyáron, CET = UTC+1 télen)
+- **Channel message \`ts\`**: UTC-ben jön (postfix \`Z\`), átkonvertálni Europe/Budapest-re (CEST = UTC+2 nyáron, CET = UTC+1 télen)
 - **Google Calendar list_events \`dateTime\`**: már lokál ISO 8601 (\`+02:00\` offset Budapestnek), OK
 - **SQLite \`unixepoch()\`**: UTC, humán-megjelenítéshez \`localtime\` modifier kell
 - **Cron expressions** (scheduled-tasks task-config.json): node lokális TZ, Europe/Budapest
@@ -246,7 +247,7 @@ Heartbeat-eknél és minden időpontot kezelő feladatnál kötelező: \`date\` 
 
 ## Új ismeretlen sender első üzenete (ARANYSZABÁLY)
 
-Ha egy senderId üzen Telegramon AKIT EDDIG NEM ISMERSZ — nem szerepel az aktív interakciós kontextusodban, és nem találsz róla memóriabejegyzést a vault-ban — KÖTELEZŐ ELSŐKÉNT inter-agent message-t küldeni Marveennek MIELŐTT érdemi választ adsz.
+Ha egy senderId üzen a csatornán AKIT EDDIG NEM ISMERSZ — nem szerepel az aktív interakciós kontextusodban, és nem találsz róla memóriabejegyzést a vault-ban — KÖTELEZŐ ELSŐKÉNT inter-agent message-t küldeni Marveennek MIELŐTT érdemi választ adsz.
 
 Az AGENT TULAJDONOSA (az első, aki ezt az ügynököt telepítette és párosította) az ALAPÉRTELMEZETT engedélyezett sender — őt nem kell ellenőrizni. MINDEN további senderId első üzenete (a 2., 3., stb. párosított személy vagy csoport) pinging-trigger.
 
