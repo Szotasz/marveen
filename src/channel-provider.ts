@@ -249,14 +249,15 @@ const SLACK_BOT_EVENTS = [
 ]
 
 export function generateSlackAppManifest(appName: string): string {
+  const safeName = appName.replace(/["\\]/g, '')
   const scopes = SLACK_BOT_SCOPES.map(s => `        - ${s}`).join('\n')
   const events = SLACK_BOT_EVENTS.map(e => `        - ${e}`).join('\n')
   return [
     'display_information:',
-    `  name: "${appName}"`,
+    `  name: ${JSON.stringify(safeName)}`,
     'features:',
     '  bot_user:',
-    `    display_name: "${appName}"`,
+    `    display_name: ${JSON.stringify(safeName)}`,
     '    always_online: true',
     'oauth_config:',
     '  scopes:',
@@ -277,12 +278,12 @@ export function generateSlackAppManifest(appName: string): string {
 export function getSlackAppSetupInstructions(): string[] {
   return [
     'Nyisd meg az api.slack.com/apps oldalt',
-    'Kattints a "Create New App" gombra, majd valaszd a "From an app manifest" lehetoseget',
-    'Valaszd ki a workspace-t ahova telepiteni szeretned',
-    'Valts YAML formatumra es illeszd be a manifestet',
+    'Kattints a "Create New App" gombra, majd válaszd a "From an app manifest" lehetőséget',
+    'Válaszd ki a workspace-t ahova telepíteni szeretnéd',
+    'Válts YAML formátumra és illeszd be a manifestet',
     'Kattints a "Create" gombra, majd az "Install to Workspace" gombra',
-    'Masold ki a Bot User OAuth Token-t (xoxb-...) a "OAuth & Permissions" oldalrol',
-    'Menj a "Basic Information" oldalra, "App-Level Tokens" szekcio, kattints a "Generate Token and Scopes" gombra, adj hozza a connections:write scope-ot, majd masold ki a tokent (xapp-...)',
+    'Másold ki a Bot User OAuth Token-t (xoxb-...) a "OAuth & Permissions" oldalról',
+    'Menj a "Basic Information" oldalra, "App-Level Tokens" szekció, kattints a "Generate Token and Scopes" gombra, adj hozzá a connections:write scope-ot, majd másold ki a tokent (xapp-...)',
   ]
 }
 

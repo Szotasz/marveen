@@ -1345,8 +1345,8 @@ function updateProviderUI() {
     if (slackGroup) slackGroup.hidden = true
     if (manifestBtnGroup) manifestBtnGroup.hidden = true
   } else {
-    if (title) title.textContent = 'Slack app bekotese'
-    if (steps) steps.innerHTML = '<li>Hozz letre egy Slack App-ot, vagy hasznald a manifest gombot lent</li><li>Masold be a Bot Token-t (xoxb-...) es az App Token-t (xapp-...)</li>'
+    if (title) title.textContent = 'Slack app bekötése'
+    if (steps) steps.innerHTML = '<li>Hozz létre egy Slack App-ot, vagy használd a manifest gombot lent</li><li>Másold be a Bot Token-t (xoxb-...) és az App Token-t (xapp-...)</li>'
     if (label) label.textContent = 'Bot Token (xoxb-...)'
     if (input) input.placeholder = 'xoxb-...'
     if (slackGroup) slackGroup.hidden = false
@@ -6332,6 +6332,27 @@ function showSudoModal(sudoCommand) {
   overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove() })
 }
 
+// === Clipboard fallback (non-secure context / legacy browser) ===
+function fallbackCopyToClipboard(text, btn) {
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.style.cssText = 'position:fixed;left:-9999px'
+  document.body.appendChild(ta)
+  ta.select()
+  try {
+    const ok = document.execCommand('copy')
+    if (ok) {
+      btn.textContent = 'Másolva!'
+      setTimeout(() => { btn.textContent = 'Másolás' }, 1500)
+    } else {
+      showToast('A vágólapra másolás nem sikerült')
+    }
+  } catch {
+    showToast('A vágólapra másolás nem sikerült')
+  }
+  document.body.removeChild(ta)
+}
+
 // === Slack App manifest modal ===
 function showSlackManifestModal(manifest, instructions) {
   let overlay = document.getElementById('slackManifestOverlay')
@@ -6345,21 +6366,21 @@ function showSlackManifestModal(manifest, instructions) {
   const stepsHtml = instructions.map((s, i) => `<li style="margin-bottom:6px">${escapeHtml(s)}</li>`).join('')
 
   card.innerHTML = `
-    <h3 style="margin:0 0 16px">Slack App letrehozasa</h3>
+    <h3 style="margin:0 0 16px">Slack App létrehozása</h3>
     <p style="font-size:13px;color:var(--text-muted);margin:0 0 12px">
-      Illeszd be az alabbi YAML manifestet a Slack App letrehozasakor.
-      Ez automatikusan beallitja az osszes szukseges scope-ot, esemenyt es a Socket Mode-ot.
+      Illeszd be az alábbi YAML manifestet a Slack App létrehozásakor.
+      Ez automatikusan beállítja az összes szükséges scope-ot, eseményt és a Socket Mode-ot.
     </p>
     <div style="position:relative;margin-bottom:16px">
       <pre id="slackManifestPre" style="background:var(--bg-main);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px;overflow-x:auto;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto">${escapeHtml(manifest)}</pre>
-      <button id="slackManifestCopyBtn" style="position:absolute;top:6px;right:6px;padding:4px 10px;font-size:11px;border-radius:6px;border:1px solid var(--border);background:var(--bg-card);cursor:pointer">Masolas</button>
+      <button id="slackManifestCopyBtn" style="position:absolute;top:6px;right:6px;padding:4px 10px;font-size:11px;border-radius:6px;border:1px solid var(--border);background:var(--bg-card);cursor:pointer">Másolás</button>
     </div>
-    <h4 style="margin:0 0 8px;font-size:14px">Lepesek</h4>
+    <h4 style="margin:0 0 8px;font-size:14px">Lépések</h4>
     <ol style="font-size:13px;padding-left:20px;margin:0 0 16px">${stepsHtml}</ol>
     <div style="display:flex;gap:8px;justify-content:flex-end">
-      <button id="slackManifestCloseBtn" class="btn btn-secondary" style="padding:6px 16px;font-size:13px">Bezaras</button>
+      <button id="slackManifestCloseBtn" class="btn btn-secondary" style="padding:6px 16px;font-size:13px">Bezárás</button>
       <a href="https://api.slack.com/apps" target="_blank" rel="noopener" class="btn btn-primary" style="padding:6px 16px;font-size:13px;text-decoration:none;display:inline-flex;align-items:center;gap:4px">
-        Megnyitas (api.slack.com)
+        Megnyitás (api.slack.com)
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
       </a>
     </div>
@@ -6368,10 +6389,17 @@ function showSlackManifestModal(manifest, instructions) {
   document.body.appendChild(overlay)
 
   document.getElementById('slackManifestCopyBtn').addEventListener('click', () => {
-    navigator.clipboard.writeText(manifest).then(() => {
-      document.getElementById('slackManifestCopyBtn').textContent = 'Masolva!'
-      setTimeout(() => { document.getElementById('slackManifestCopyBtn').textContent = 'Masolas' }, 1500)
-    })
+    const copyBtn = document.getElementById('slackManifestCopyBtn')
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(manifest).then(() => {
+        copyBtn.textContent = 'Másolva!'
+        setTimeout(() => { copyBtn.textContent = 'Másolás' }, 1500)
+      }).catch(() => {
+        fallbackCopyToClipboard(manifest, copyBtn)
+      })
+    } else {
+      fallbackCopyToClipboard(manifest, copyBtn)
+    }
   })
   document.getElementById('slackManifestCloseBtn').addEventListener('click', () => overlay.remove())
   overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove() })
@@ -6387,7 +6415,7 @@ document.getElementById('chSlackManifestBtn').addEventListener('click', async ()
     const data = await res.json()
     showSlackManifestModal(data.manifest, data.instructions)
   } catch {
-    showToast('Nem sikerult betolteni a manifestet')
+    showToast('Nem sikerült betölteni a manifestet')
   } finally {
     btn.disabled = false
   }

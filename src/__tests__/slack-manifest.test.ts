@@ -37,9 +37,15 @@ describe('generateSlackAppManifest', () => {
     expect(yaml).toContain('is_enabled: true')
   })
 
-  it('handles special characters in app name', () => {
+  it('strips quotes and backslashes from app name for valid YAML', () => {
     const yaml = generateSlackAppManifest('My "Bot"')
-    expect(yaml).toContain('name: "My "Bot""')
+    expect(yaml).toContain('name: "My Bot"')
+    expect(yaml).toContain('display_name: "My Bot"')
+  })
+
+  it('strips backslashes from app name', () => {
+    const yaml = generateSlackAppManifest('Bot\\Name')
+    expect(yaml).toContain('name: "BotName"')
   })
 })
 
