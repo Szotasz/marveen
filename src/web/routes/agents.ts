@@ -24,6 +24,7 @@ import {
   listAgentNames,
   isKnownAgent,
   readAgentChannelProvider,
+  writeAgentChannelProvider,
 } from '../agent-config.js'
 import {
   readAgentTeam,
@@ -359,6 +360,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       pending: {},
     }, null, 2))
 
+    writeAgentChannelProvider(name, provider)
+
     if (provider === 'telegram') sendWelcomeMessage(name, botToken.trim()).catch(() => {})
 
     const wasRunning = isAgentRunning(name)
@@ -385,6 +388,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const accessFile = join(stateDir, 'access.json')
     if (existsSync(envFile)) unlinkSync(envFile)
     if (existsSync(accessFile)) unlinkSync(accessFile)
+    writeAgentChannelProvider(name, '')
     json(res, { ok: true })
     return true
   }
