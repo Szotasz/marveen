@@ -812,7 +812,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
 
     const body = await readBody(req)
-    const opts = JSON.parse(body.toString()) as { requireMention?: boolean; allowFromAll?: boolean }
+    const opts = JSON.parse(body.toString() || '{}') as { requireMention?: boolean; allowFromAll?: boolean }
 
     const pending = listPendingChannelRequests(name)
     const request = pending.find(r => r.id === reqId)
@@ -823,7 +823,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
     const accessPath = resolveAccessPath(name, provider)
     try {
-      const access = existsSync(accessPath) ? JSON.parse(readFileSync(accessPath, 'utf-8')) : { dmPolicy: 'allowlist', allowFrom: [], groups: {} }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let access: any = { dmPolicy: 'allowlist', allowFrom: [], groups: {} }
+      if (existsSync(accessPath)) {
+        try { access = JSON.parse(readFileSync(accessPath, 'utf-8')) } catch { /* start fresh if corrupt */ }
+      }
       if (!access.channels) access.channels = {}
 
       const channelConfig: Record<string, unknown> = { requireMention: opts.requireMention !== false }

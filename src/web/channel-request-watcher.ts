@@ -26,12 +26,12 @@ const fileOffsets = new Map<string, number>()
 function scanAuditLog(agent: string, auditPath: string): void {
   if (!existsSync(auditPath)) return
 
-  const currentSize = readFileSync(auditPath).length
+  const buf = readFileSync(auditPath)
+  const currentSize = buf.length
   const lastOffset = fileOffsets.get(auditPath) ?? 0
   if (currentSize <= lastOffset) return
 
-  const content = readFileSync(auditPath, 'utf-8')
-  const newContent = content.slice(lastOffset)
+  const newContent = buf.subarray(lastOffset).toString('utf-8')
   fileOffsets.set(auditPath, currentSize)
 
   for (const line of newContent.split('\n')) {
@@ -51,7 +51,13 @@ function scanAuditLog(agent: string, auditPath: string): void {
   }
 }
 
+const channelNameCache = new Map<string, { name: string; ts: number }>()
+const CHANNEL_CACHE_TTL = 300_000
+
 async function lookupChannelName(agent: string, channelId: string): Promise<void> {
+  const cached = channelNameCache.get(channelId)
+  if (cached && Date.now() - cached.ts < CHANNEL_CACHE_TTL) return
+
   const provider = resolveAgentProvider(agent)
   if (provider !== 'slack') return
   const stateDir = channelStateDir(provider, agentDir(agent))
@@ -69,6 +75,7 @@ async function lookupChannelName(agent: string, channelId: string): Promise<void
     })
     const data = await resp.json() as { ok: boolean; channel?: { name: string } }
     if (data.ok && data.channel?.name) {
+      channelNameCache.set(channelId, { name: data.channel.name, ts: Date.now() })
       const pending = listPendingChannelRequests(agent)
       const match = pending.find(r => r.channel_id === channelId && !r.channel_name)
       if (match) updateChannelRequestName(match.id, data.channel.name)
@@ -79,12 +86,17 @@ async function lookupChannelName(agent: string, channelId: string): Promise<void
 }
 
 function runScanTick(): void {
+  const activeAgents = new Set<string>()
   for (const name of listAgentNames()) {
     const provider = resolveAgentProvider(name)
     if (provider !== 'slack') continue
     const stateDir = channelStateDir(provider, agentDir(name))
     const auditPath = join(stateDir, 'audit.jsonl')
+    activeAgents.add(auditPath)
     scanAuditLog(name, auditPath)
+  }
+  for (const key of fileOffsets.keys()) {
+    if (!activeAgents.has(key)) fileOffsets.delete(key)
   }
 }
 

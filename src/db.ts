@@ -1110,9 +1110,10 @@ export interface PendingChannelRequest {
 
 export function upsertChannelRequest(agent: string, channelId: string, userId?: string): boolean {
   const now = Math.floor(Date.now() / 1000)
+  const sevenDaysAgo = now - 7 * 86400
   const existing = db.prepare(
-    "SELECT id FROM pending_channel_requests WHERE agent = ? AND channel_id = ? AND status = 'pending'"
-  ).get(agent, channelId)
+    "SELECT id FROM pending_channel_requests WHERE agent = ? AND channel_id = ? AND (status = 'pending' OR (status = 'denied' AND requested_at > ?))"
+  ).get(agent, channelId, sevenDaysAgo)
   if (existing) return false
   db.prepare(
     'INSERT INTO pending_channel_requests (agent, channel_id, user_id, requested_at, status) VALUES (?, ?, ?, ?, ?)'
