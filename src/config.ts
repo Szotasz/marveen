@@ -1,7 +1,7 @@
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readEnvFile } from './env.js'
-import { getProviderType, type ChannelProviderType } from './channel-provider.js'
+import { getProviderType, getChannelToken, getChannelChatId, type ChannelProviderType } from './channel-provider.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -12,6 +12,10 @@ const env = readEnvFile()
 
 export const TELEGRAM_BOT_TOKEN = env['TELEGRAM_BOT_TOKEN'] ?? ''
 export const ALLOWED_CHAT_ID = env['ALLOWED_CHAT_ID'] ?? ''
+
+export const SLACK_BOT_TOKEN = env['SLACK_BOT_TOKEN'] ?? ''
+export const SLACK_APP_TOKEN = env['SLACK_APP_TOKEN'] ?? ''
+export const SLACK_CHANNEL_ID = env['SLACK_CHANNEL_ID'] ?? ''
 
 export const OWNER_NAME = env['OWNER_NAME'] ?? 'Szabolcs'
 export const BOT_NAME = env['BOT_NAME'] ?? 'Marveen'
@@ -27,9 +31,11 @@ export const WEB_PORT = parseInt(env['WEB_PORT'] ?? '3420', 10)
 export const WEB_HOST = env['WEB_HOST'] ?? '127.0.0.1'
 export const OLLAMA_URL = env['OLLAMA_URL'] ?? 'http://localhost:11434'
 
-// Heartbeat
 export const CHANNEL_PROVIDER: ChannelProviderType = getProviderType(env['CHANNEL_PROVIDER'])
+export const CHANNEL_TOKEN = getChannelToken(CHANNEL_PROVIDER, env)
+export const CHANNEL_CHAT_ID = getChannelChatId(CHANNEL_PROVIDER, env)
 
+// Heartbeat
 export const HEARTBEAT_INTERVAL_MS = 60 * 60 * 1000 // 1 hour
 export const HEARTBEAT_START_HOUR = 9
 export const HEARTBEAT_END_HOUR = 23
