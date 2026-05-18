@@ -15,7 +15,7 @@ import { runDecaySweep, runDailyDigest } from './memory.js'
 import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
 import { startWebServer } from './web.js'
 import { logger } from './logger.js'
-import { startInviteMonitor, stopInviteMonitor } from './web/telegram-invites.js'
+import { startInviteMonitor, stopInviteMonitor } from './web/channel-invites.js'
 import { AGENTS_BASE_DIR } from './web/agent-config.js'
 import {
   acquirePortLock,
