@@ -1686,35 +1686,73 @@ async function refreshChannelRequests() {
           <button class="btn-icon-danger" data-deny="${req.id}" title="Elutasítás">&times;</button>
         </div>
       `
-      item.querySelector('[data-approve]').addEventListener('click', () => approveChannelRequest(req.id))
-      item.querySelector('[data-deny]').addEventListener('click', () => denyChannelRequest(req.id))
+      item.dataset.reqId = req.id
+      item.querySelector('[data-approve]').addEventListener('click', () => openApproveModal(req.id, req.channel_name || req.channel_id, req.user_id))
+      item.querySelector('[data-deny]').addEventListener('click', () => denyChannelRequest(req.id, item))
       listEl.appendChild(item)
     }
   } catch { section.hidden = true }
 }
 
-async function approveChannelRequest(id) {
+let _approveReqId = null
+
+function openApproveModal(id, channelName, userId) {
+  _approveReqId = id
+  const desc = document.getElementById('chApproveModalDesc')
+  const userNote = userId ? ` (kérő: ${escapeHtml(userId)})` : ''
+  desc.textContent = `#${escapeHtml(channelName)}${userNote} csatorna engedélyezési beállításai:`
+  document.getElementById('chApproveRequireMention').checked = true
+  document.getElementById('chApproveAllowFromAll').checked = false
+  document.getElementById('chApproveModalOverlay').hidden = false
+}
+
+async function submitApproveModal() {
+  const id = _approveReqId
+  if (!id) return
+  const requireMention = document.getElementById('chApproveRequireMention').checked
+  const allowFromAll = document.getElementById('chApproveAllowFromAll').checked
+  const confirmBtn = document.getElementById('chApproveModalConfirm')
+  confirmBtn.querySelector('.btn-text').hidden = true
+  confirmBtn.querySelector('.btn-loading').hidden = false
+  confirmBtn.disabled = true
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/channel-requests/${id}/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ requireMention: true, allowFromAll: false }),
+      body: JSON.stringify({ requireMention, allowFromAll }),
     })
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Hiba')
-    showToast('Csatorna jóváhagyva')
+    document.getElementById('chApproveModalOverlay').hidden = true
+    const item = document.querySelector(`[data-req-id="${id}"]`)
+    if (item) item.remove()
+    showToast('Csatorna engedélyezve')
     refreshChannelRequests()
-  } catch (err) { showToast(`Hiba: ${err.message}`) }
+  } catch (err) {
+    showToast(`Hiba: ${err.message}`)
+  } finally {
+    confirmBtn.querySelector('.btn-text').hidden = false
+    confirmBtn.querySelector('.btn-loading').hidden = true
+    confirmBtn.disabled = false
+  }
 }
 
-async function denyChannelRequest(id) {
-  if (!confirm('Biztosan elutasítod?')) return
+async function denyChannelRequest(id, itemEl) {
+  if (itemEl) itemEl.remove()
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/channel-requests/${id}/deny`, { method: 'POST' })
     if (!res.ok) throw new Error('Hiba')
     showToast('Kérés elutasítva')
     refreshChannelRequests()
-  } catch (err) { showToast(`Hiba: ${err.message}`) }
+  } catch (err) {
+    showToast(`Hiba: ${err.message}`)
+    refreshChannelRequests()
+  }
 }
+
+document.getElementById('chApproveModalConfirm').addEventListener('click', submitApproveModal)
+document.getElementById('chApproveModalClose').addEventListener('click', () => { document.getElementById('chApproveModalOverlay').hidden = true })
+document.getElementById('chApproveModalCancel').addEventListener('click', () => { document.getElementById('chApproveModalOverlay').hidden = true })
+document.getElementById('chApproveModalOverlay').addEventListener('click', (e) => { if (e.target === e.currentTarget) e.currentTarget.hidden = true })
 
 document.getElementById('chApproveBtn').addEventListener('click', async () => {
   const code = document.getElementById('chPairCode').value.trim()
