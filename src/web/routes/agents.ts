@@ -410,9 +410,16 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (provider !== 'slack') { json(res, { error: 'Nem Slack provider' }, 400); return true }
     const scriptPath = join(agentDir(name), '..', '..', 'scripts', 'smoke-test-slack-channel.sh')
     if (!existsSync(scriptPath)) { json(res, { error: 'Smoke-test script nem található' }, 404); return true }
+    const agentEnvPath = join(channelStateDir('slack', agentDir(name)), '.env')
+    let envContent = ''
+    try { envContent = readFileSync(agentEnvPath, 'utf-8') } catch { /* no .env */ }
+    if (!/SLACK_SMOKE_TEST_ALLOWED=true/.test(envContent)) {
+      json(res, { error: 'SLACK_SMOKE_TEST_ALLOWED=true nincs beállítva az agent .env-jében' }, 403)
+      return true
+    }
     try {
       const output = execSync(`bash "${scriptPath}" "${name}"`, {
-        timeout: 30000,
+        timeout: 60000,
         encoding: 'utf-8',
         env: { ...process.env, SLACK_SMOKE_TEST_ALLOWED: 'true' },
       })

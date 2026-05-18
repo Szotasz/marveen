@@ -223,7 +223,9 @@ if [ -d "$MARKETPLACE_PLUGIN_DIR" ]; then
         fi
       fi
     fi
-    echo "$CURRENT_REF" > "$SLACK_REF_FILE"
+    SLACK_REF_TMP="$(mktemp "${SLACK_REF_FILE}.XXXXXX")"
+    echo "$CURRENT_REF" > "$SLACK_REF_TMP"
+    mv "$SLACK_REF_TMP" "$SLACK_REF_FILE"
   fi
 fi
 

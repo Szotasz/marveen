@@ -19,13 +19,14 @@ ENV_FILE="$STATE_DIR/.env"
 ACCESS_FILE="$STATE_DIR/access.json"
 AUDIT_FILE="$STATE_DIR/audit.jsonl"
 DRY_RUN="${SMOKE_TEST_DRY_RUN:-0}"
-WAIT_SECONDS=15
+POLL_MAX=30
 PASS=0
 FAIL=0
 
 log() { echo "[smoke-test] $*"; }
 fail() { log "FAIL: $*"; FAIL=$((FAIL + 1)); }
 pass() { log "OK: $*"; PASS=$((PASS + 1)); }
+redact() { sed 's/xoxb-[A-Za-z0-9_-]*/xoxb-REDACTED/g; s/xapp-[A-Za-z0-9_-]*/xapp-REDACTED/g'; }
 
 # Safety gate
 if [ "${SLACK_SMOKE_TEST_ALLOWED:-}" != "true" ]; then
@@ -66,9 +67,9 @@ else
     -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
     -H 'Content-Type: application/json' \
     -d "{\"users\":\"$USER_ID\"}" 2>/dev/null || true)"
-  DM_OK="$(echo "$OPEN_RESP" | python3 -c "import json,sys; print(json.load(sys.stdin).get('ok',''))" 2>/dev/null || true)"
-  if [ "$DM_OK" != "True" ]; then
-    fail "conversations.open sikertelen: $OPEN_RESP"
+  DM_OK="$(echo "$OPEN_RESP" | python3 -c "import json,sys; print(str(json.load(sys.stdin).get('ok','')).lower())" 2>/dev/null || true)"
+  if [ "$DM_OK" != "true" ]; then
+    fail "conversations.open sikertelen: $(echo "$OPEN_RESP" | redact)"
     exit 1
   fi
   DM_CHANNEL="$(echo "$OPEN_RESP" | python3 -c "import json,sys; print(json.load(sys.stdin)['channel']['id'])" 2>/dev/null)"
@@ -99,20 +100,43 @@ else
     -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
     -H 'Content-Type: application/json' \
     -d "{\"channel\":\"$DM_CHANNEL\",\"text\":\"$RANDOM_ID\"}" 2>/dev/null || true)"
-  MSG_OK="$(echo "$MSG_RESP" | python3 -c "import json,sys; print(json.load(sys.stdin).get('ok',''))" 2>/dev/null || true)"
-  if [ "$MSG_OK" != "True" ]; then
-    fail "chat.postMessage sikertelen: $MSG_RESP"
+  MSG_OK="$(echo "$MSG_RESP" | python3 -c "import json,sys; print(str(json.load(sys.stdin).get('ok','')).lower())" 2>/dev/null || true)"
+  if [ "$MSG_OK" != "true" ]; then
+    fail "chat.postMessage sikertelen: $(echo "$MSG_RESP" | redact)"
     exit 1
   fi
   log "Üzenet elküldve: $RANDOM_ID"
 fi
 
-# Wait for plugin to process
+# Poll for plugin to process (early exit on match, max POLL_MAX seconds)
 if [ "$DRY_RUN" = "1" ]; then
   log "[DRY-RUN] Várakozás kihagyva"
+  POLL_HIT=0
 else
-  log "Várakozás ${WAIT_SECONDS}s..."
-  sleep "$WAIT_SECONDS"
+  log "Polling audit.jsonl-t max ${POLL_MAX}s..."
+  POLL_HIT=0
+  for i in $(seq 1 "$POLL_MAX"); do
+    if [ -f "$AUDIT_FILE" ]; then
+      NEW_LINES="$(tail -c +"$((AUDIT_BEFORE + 1))" "$AUDIT_FILE" 2>/dev/null || true)"
+      if echo "$NEW_LINES" | python3 -c "
+import sys, json
+for line in sys.stdin:
+    line = line.strip()
+    if not line: continue
+    try:
+        entry = json.loads(line)
+        if entry.get('kind') == 'gate.inbound.deliver':
+            sys.exit(0)
+    except: pass
+sys.exit(1)
+" 2>/dev/null; then
+        POLL_HIT=1
+        log "gate.inbound.deliver megjelent ${i}s utan"
+        break
+      fi
+    fi
+    sleep 1
+  done
 fi
 
 # Check 1: new session file
@@ -131,19 +155,14 @@ else
   fi
 fi
 
-# Check 2: audit.jsonl grew
+# Check 2: audit.jsonl has gate.inbound.deliver entry
 if [ "$DRY_RUN" = "1" ]; then
   pass "Audit.jsonl ellenőrzés (dry-run: kihagyva)"
 else
-  if [ -f "$AUDIT_FILE" ]; then
-    AUDIT_AFTER="$(wc -c < "$AUDIT_FILE" | tr -d ' ')"
+  if [ "$POLL_HIT" = "1" ]; then
+    pass "Audit.jsonl tartalmaz gate.inbound.deliver bejegyzést"
   else
-    AUDIT_AFTER=0
-  fi
-  if [ "$AUDIT_AFTER" -gt "$AUDIT_BEFORE" ]; then
-    pass "Audit.jsonl bővült ($AUDIT_BEFORE -> $AUDIT_AFTER bytes)"
-  else
-    fail "Audit.jsonl nem bővült ($AUDIT_BEFORE -> $AUDIT_AFTER bytes)"
+    fail "Audit.jsonl-ben NEM jelent meg gate.inbound.deliver bejegyzés ${POLL_MAX}s alatt"
   fi
 fi
 
