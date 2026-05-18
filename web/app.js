@@ -1737,6 +1737,8 @@ async function submitApproveModal() {
 }
 
 async function denyChannelRequest(id, itemEl) {
+  if (itemEl?.dataset.denying) return
+  if (itemEl) itemEl.dataset.denying = '1'
   if (itemEl) itemEl.remove()
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/channel-requests/${id}/deny`, { method: 'POST' })
@@ -1749,10 +1751,18 @@ async function denyChannelRequest(id, itemEl) {
   }
 }
 
-document.getElementById('chApproveModalConfirm').addEventListener('click', submitApproveModal)
-document.getElementById('chApproveModalClose').addEventListener('click', () => { document.getElementById('chApproveModalOverlay').hidden = true })
-document.getElementById('chApproveModalCancel').addEventListener('click', () => { document.getElementById('chApproveModalOverlay').hidden = true })
-document.getElementById('chApproveModalOverlay').addEventListener('click', (e) => { if (e.target === e.currentTarget) e.currentTarget.hidden = true })
+;(function initApproveModal() {
+  function closeApproveModal() { document.getElementById('chApproveModalOverlay').hidden = true }
+  document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('chApproveModalConfirm').addEventListener('click', submitApproveModal)
+    document.getElementById('chApproveModalClose').addEventListener('click', closeApproveModal)
+    document.getElementById('chApproveModalCancel').addEventListener('click', closeApproveModal)
+    document.getElementById('chApproveModalOverlay').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeApproveModal() })
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !document.getElementById('chApproveModalOverlay').hidden) closeApproveModal()
+    })
+  })
+})()
 
 document.getElementById('chApproveBtn').addEventListener('click', async () => {
   const code = document.getElementById('chPairCode').value.trim()
