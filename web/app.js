@@ -736,13 +736,13 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
     }
 
     closeModal(agentWizardOverlay)
-    showToast('Ügynök létrehozva. Kösd be a Telegramot a párosításhoz.')
+    showToast('Ugynok letrehozva. Kosd be a csatornat a parosatashoz.')
     await loadAgents()
     // Drop the operator straight into the Telegram tab of the new agent so
     // the pairing step is in front of them -- easy to miss otherwise.
     try {
       await openAgentDetail(name)
-      switchAgentTab('telegram')
+      switchAgentTab('channel')
     } catch { /* detail open failed, list refresh already happened */ }
   } catch (err) {
     showToast(`Hiba: ${err.message}`)
@@ -790,7 +790,7 @@ async function openMarveenDetail() {
   document.getElementById('agentDetailName').textContent = displayName
   document.getElementById('agentDetailDesc').textContent = m.description || ''
   document.getElementById('agentDetailModel').textContent = 'claude-opus-4-6'
-  document.getElementById('agentDetailTgStatus').innerHTML = '<span class="tg-status"><span class="tg-dot connected"></span>Csatlakozva</span>'
+  document.getElementById('agentDetailChStatus').innerHTML = '<span class="tg-status"><span class="tg-dot connected"></span>Csatlakozva</span>'
   document.getElementById('agentDetailSkillCount').textContent = '-'
 
   // Process control for Marveen - always running, no start/stop
@@ -822,7 +822,7 @@ async function openMarveenDetail() {
 
   // Telegram tab -- without this the tab stays in the default "not connected"
   // view even though the bot is running and receiving messages.
-  updateTelegramTab({
+  updateChannelTab({
     name: 'marveen',
     hasTelegram: mFull.hasTelegram !== undefined ? mFull.hasTelegram : true,
     telegramBotUsername: mFull.telegramBotUsername,
@@ -904,9 +904,9 @@ function renderAgents() {
 
     const modelClass = agent.model && agent.model !== 'inherit' ? agent.model : ''
     const modelLabel = agent.model || 'inherit'
-    const tgConnected = agent.hasTelegram || false
-    const tgDotClass = tgConnected ? 'connected' : 'disconnected'
-    const tgLabel = tgConnected ? 'Online' : 'Offline'
+    const chConnected = agent.hasTelegram || false
+    const chDotClass = chConnected ? 'connected' : 'disconnected'
+    const chLabel = chConnected ? 'Online' : 'Offline'
     const isRunning = agent.running || false
     const runDotClass = isRunning ? 'running' : 'stopped'
     const runLabel = isRunning ? 'Fut' : 'Leállva'
@@ -922,7 +922,7 @@ function renderAgents() {
       <div class="agent-card-footer">
         <span class="agent-model-badge ${escapeHtml(modelClass)}">${escapeHtml(modelLabel)}</span>
         <span class="process-indicator"><span class="process-dot ${runDotClass}"></span>${runLabel}</span>
-        <span class="tg-status"><span class="tg-dot ${tgDotClass}"></span>${tgLabel}</span>
+        <span class="tg-status"><span class="tg-dot ${chDotClass}"></span>${chLabel}</span>
       </div>
     `
     card.addEventListener('click', () => openAgentDetail(agent.name))
@@ -958,8 +958,8 @@ async function openAgentDetail(agentName) {
   document.getElementById('agentDetailDesc').textContent = currentAgent.description || ''
   document.getElementById('agentDetailModel').textContent = currentAgent.model || 'inherit'
 
-  const tgConnected = currentAgent.hasTelegram || false
-  document.getElementById('agentDetailTgStatus').innerHTML = `<span class="tg-status"><span class="tg-dot ${tgConnected ? 'connected' : 'disconnected'}"></span>${tgConnected ? 'Csatlakozva' : 'Nincs bekötve'}</span>`
+  const chConnected = currentAgent.hasTelegram || false
+  document.getElementById('agentDetailChStatus').innerHTML = `<span class="tg-status"><span class="tg-dot ${chConnected ? 'connected' : 'disconnected'}"></span>${chConnected ? 'Csatlakozva' : 'Nincs bekötve'}</span>`
 
   // Settings tab - load Ollama + DeepSeek models then set value
   loadAvailableModels()
@@ -977,7 +977,7 @@ async function openAgentDetail(agentName) {
   document.getElementById('editMcpJson').value = currentAgent.mcpJson || ''
 
   // Telegram tab
-  updateTelegramTab(currentAgent)
+  updateChannelTab(currentAgent)
 
   // Skills tab
   await loadSkills(currentAgent.name)
@@ -1177,30 +1177,35 @@ document.getElementById('agentTabNav').addEventListener('click', (e) => {
   switchAgentTab(btn.dataset.tab)
 })
 
-let telegramAutoPollTimer = null
-function startTelegramAutoPoll() {
-  if (telegramAutoPollTimer) return
-  telegramAutoPollTimer = setInterval(() => {
+let currentChannelProvider = 'telegram'
+let channelAutoPollTimer = null
+function startChannelAutoPoll() {
+  if (channelAutoPollTimer) return
+  channelAutoPollTimer = setInterval(() => {
     if (!currentAgent) return
-    if (document.getElementById('tabTelegram').hidden) return
+    if (document.getElementById('tabChannel').hidden) return
     refreshPendingPairings()
     refreshAllowedList()
     refreshInvites()
   }, 4000)
 }
-function stopTelegramAutoPoll() {
-  if (telegramAutoPollTimer) { clearInterval(telegramAutoPollTimer); telegramAutoPollTimer = null }
+function stopChannelAutoPoll() {
+  if (channelAutoPollTimer) { clearInterval(channelAutoPollTimer); channelAutoPollTimer = null }
+}
+
+function channelApiBase() {
+  return `/api/agents/${encodeURIComponent(currentAgent.name)}/channels/${currentChannelProvider}`
 }
 
 function switchAgentTab(tab) {
   document.querySelectorAll('#agentTabNav .tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab))
   document.getElementById('tabOverview').hidden = tab !== 'overview'
   document.getElementById('tabSettings').hidden = tab !== 'settings'
-  document.getElementById('tabTelegram').hidden = tab !== 'telegram'
+  document.getElementById('tabChannel').hidden = tab !== 'channel'
   document.getElementById('tabSkills').hidden = tab !== 'skills'
   document.getElementById('tabTeam').hidden = tab !== 'team'
-  if (tab === 'telegram') startTelegramAutoPoll()
-  else stopTelegramAutoPoll()
+  if (tab === 'channel') startChannelAutoPoll()
+  else stopChannelAutoPoll()
 }
 
 // === Settings save buttons ===
@@ -1321,18 +1326,44 @@ document.getElementById('saveMcpJsonBtn').addEventListener('click', async () => 
   } catch { showToast('Hiba a mentés során') }
 })
 
-// === Telegram tab ===
-function updateTelegramTab(agent) {
+// === Channel tab ===
+function updateProviderUI() {
+  const isTg = currentChannelProvider === 'telegram'
+  const title = document.getElementById('chSetupTitle')
+  const steps = document.getElementById('chSetupSteps')
+  const label = document.getElementById('chTokenLabel')
+  const input = document.getElementById('chTokenInput')
+  const slackGroup = document.getElementById('chSlackAppTokenGroup')
+
+  if (isTg) {
+    if (title) title.textContent = 'Telegram bot bekotese'
+    if (steps) steps.innerHTML = '<li>Nyisd meg a <strong>@BotFather</strong>-t a Telegramban</li><li>Hozz letre egy uj botot a <code>/newbot</code> paranccsal</li><li>Masold be az API tokent ide</li>'
+    if (label) label.textContent = 'Bot API Token'
+    if (input) input.placeholder = '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11'
+    if (slackGroup) slackGroup.hidden = true
+  } else {
+    if (title) title.textContent = 'Slack app bekotese'
+    if (steps) steps.innerHTML = '<li>Hozz letre egy Slack App-ot a <strong>api.slack.com/apps</strong> oldalon</li><li>Engedeld a Socket Mode-ot es a szukseges scope-okat</li><li>Masold be a Bot Token-t (xoxb-...) es az App Token-t (xapp-...)</li>'
+    if (label) label.textContent = 'Bot Token (xoxb-...)'
+    if (input) input.placeholder = 'xoxb-...'
+    if (slackGroup) slackGroup.hidden = false
+  }
+}
+
+function updateChannelTab(agent) {
   const connected = agent.hasTelegram || false
   const running = agent.running || false
-  document.getElementById('tgNotConnected').hidden = connected
-  document.getElementById('tgConnected').hidden = !connected
+  document.getElementById('chNotConnected').hidden = connected
+  document.getElementById('chConnected').hidden = !connected
   if (connected) {
-    document.getElementById('tgBotUsername').textContent = agent.telegramBotUsername || '@bot'
-    document.getElementById('tgRunNotice').hidden = running
-    document.getElementById('tgRunningNotice').hidden = !running
+    document.getElementById('chBotUsername').textContent = agent.telegramBotUsername || '@bot'
+    document.getElementById('chRunNotice').hidden = running
+    document.getElementById('chRunningNotice').hidden = !running
   }
-  document.getElementById('tgTokenInput').value = ''
+  document.getElementById('chTokenInput').value = ''
+  const slackInput = document.getElementById('chSlackAppToken')
+  if (slackInput) slackInput.value = ''
+  updateProviderUI()
   if (connected) {
     refreshPendingPairings()
     refreshAllowedList()
@@ -1340,31 +1371,39 @@ function updateTelegramTab(agent) {
   }
 }
 
-document.getElementById('tgConnectBtn').addEventListener('click', async () => {
+document.getElementById('chProviderSelect').addEventListener('change', (e) => {
+  currentChannelProvider = e.target.value
+  updateProviderUI()
+  if (currentAgent) {
+    updateChannelTab(currentAgent)
+  }
+})
+
+document.getElementById('chConnectBtn').addEventListener('click', async () => {
   if (!currentAgent) return
-  const token = document.getElementById('tgTokenInput').value.trim()
+  const token = document.getElementById('chTokenInput').value.trim()
   if (!token) {
-    document.getElementById('tgTokenInput').focus()
+    document.getElementById('chTokenInput').focus()
     return
   }
 
-  const btn = document.getElementById('tgConnectBtn')
+  const btn = document.getElementById('chConnectBtn')
   btn.disabled = true
   btn.querySelector('.btn-text').hidden = true
   btn.querySelector('.btn-loading').hidden = false
 
   try {
-    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/telegram`, {
+    const res = await fetch(`${channelApiBase()}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ botToken: token }),
     })
     if (!res.ok) {
       const err = await res.json()
-      throw new Error(err.error || 'Kapcsolódási hiba')
+      throw new Error(err.error || 'Kapcsolodasi hiba')
     }
     const result = await res.json()
-    showToast('Telegram bot sikeresen csatlakoztatva!')
+    showToast(`${currentChannelProvider === 'telegram' ? 'Telegram' : 'Slack'} sikeresen csatlakoztatva!`)
     // Refresh detail
     await openAgentDetail(currentAgent.name)
     loadAgents()
@@ -1377,10 +1416,10 @@ document.getElementById('tgConnectBtn').addEventListener('click', async () => {
   }
 })
 
-document.getElementById('tgTestBtn').addEventListener('click', async () => {
+document.getElementById('chTestBtn').addEventListener('click', async () => {
   if (!currentAgent) return
   try {
-    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/telegram/test`, { method: 'POST' })
+    const res = await fetch(`${channelApiBase()}/test`, { method: 'POST' })
     if (!res.ok) throw new Error()
     showToast('Kapcsolat rendben!')
   } catch {
@@ -1391,9 +1430,9 @@ document.getElementById('tgTestBtn').addEventListener('click', async () => {
 // Pairing: refresh pending list
 async function refreshPendingPairings() {
   if (!currentAgent) return
-  const listEl = document.getElementById('tgPendingList')
+  const listEl = document.getElementById('chPendingList')
   try {
-    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/telegram/pending`)
+    const res = await fetch(`${channelApiBase()}/pending`)
     if (!res.ok) return
     const pending = await res.json()
     listEl.innerHTML = ''
@@ -1423,7 +1462,7 @@ async function refreshPendingPairings() {
 async function approvePairing(code) {
   if (!currentAgent) return
   try {
-    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/telegram/approve`, {
+    const res = await fetch(`${channelApiBase()}/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code }),
@@ -1440,13 +1479,13 @@ async function approvePairing(code) {
   }
 }
 
-document.getElementById('tgRefreshPendingBtn').addEventListener('click', refreshPendingPairings)
+document.getElementById('chRefreshPendingBtn').addEventListener('click', refreshPendingPairings)
 
 async function refreshAllowedList() {
   if (!currentAgent) return
-  const listEl = document.getElementById('tgAllowedList')
+  const listEl = document.getElementById('chAllowedList')
   try {
-    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/telegram/allowed`)
+    const res = await fetch(`${channelApiBase()}/allowed`)
     if (!res.ok) return
     const data = await res.json()
     const users = data.users || []
@@ -1490,7 +1529,7 @@ async function removeAllowed(kind, id) {
   const label = kind === 'user' ? 'felhasználót' : 'csoportot'
   if (!confirm(`Biztosan eltávolítod ezt a ${label} (${id})?`)) return
   try {
-    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/telegram/allowed/${kind}/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    const res = await fetch(`${channelApiBase()}/allowed/${kind}/${encodeURIComponent(id)}`, { method: 'DELETE' })
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
       throw new Error(err.error || 'Eltávolítási hiba')
@@ -1502,13 +1541,13 @@ async function removeAllowed(kind, id) {
   }
 }
 
-document.getElementById('tgRefreshAllowedBtn').addEventListener('click', refreshAllowedList)
+document.getElementById('chRefreshAllowedBtn').addEventListener('click', refreshAllowedList)
 
 async function refreshInvites() {
   if (!currentAgent) return
-  const listEl = document.getElementById('tgInviteList')
+  const listEl = document.getElementById('chInviteList')
   try {
-    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/telegram/invites`)
+    const res = await fetch(`${channelApiBase()}/invites`)
     if (!res.ok) return
     const items = await res.json()
     if (!items.length) {
@@ -1555,11 +1594,11 @@ async function refreshInvites() {
 
 async function generateInvite() {
   if (!currentAgent) return
-  const btn = document.getElementById('tgGenerateInviteBtn')
+  const btn = document.getElementById('chGenerateInviteBtn')
   btn.disabled = true
   btn.textContent = 'Generálás...'
   try {
-    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/telegram/invites`, { method: 'POST' })
+    const res = await fetch(`${channelApiBase()}/invites`, { method: 'POST' })
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
       throw new Error(err.error || 'Sikertelen')
@@ -1584,7 +1623,7 @@ async function revokeInviteToken(token) {
   if (!currentAgent) return
   if (!confirm('Biztosan visszavonod ezt a meghívó linket?')) return
   try {
-    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/telegram/invites/${encodeURIComponent(token)}`, { method: 'DELETE' })
+    const res = await fetch(`${channelApiBase()}/invites/${encodeURIComponent(token)}`, { method: 'DELETE' })
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
       throw new Error(err.error || 'Sikertelen')
@@ -1596,23 +1635,24 @@ async function revokeInviteToken(token) {
   }
 }
 
-document.getElementById('tgGenerateInviteBtn').addEventListener('click', generateInvite)
-document.getElementById('tgRefreshInvitesBtn').addEventListener('click', refreshInvites)
+document.getElementById('chGenerateInviteBtn').addEventListener('click', generateInvite)
+document.getElementById('chRefreshInvitesBtn').addEventListener('click', refreshInvites)
 
-document.getElementById('tgApproveBtn').addEventListener('click', async () => {
-  const code = document.getElementById('tgPairCode').value.trim()
-  if (!code) { document.getElementById('tgPairCode').focus(); return }
+document.getElementById('chApproveBtn').addEventListener('click', async () => {
+  const code = document.getElementById('chPairCode').value.trim()
+  if (!code) { document.getElementById('chPairCode').focus(); return }
   await approvePairing(code)
-  document.getElementById('tgPairCode').value = ''
+  document.getElementById('chPairCode').value = ''
   refreshAllowedList()
 })
 
-document.getElementById('tgDisconnectBtn').addEventListener('click', async () => {
+document.getElementById('chDisconnectBtn').addEventListener('click', async () => {
   if (!currentAgent) return
-  if (!confirm('Biztosan leválasztod a Telegram botot?')) return
+  const provLabel = currentChannelProvider === 'telegram' ? 'Telegram' : 'Slack'
+  if (!confirm(`Biztosan levalasztod a ${provLabel} csatornat?`)) return
   try {
-    await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/telegram`, { method: 'DELETE' })
-    showToast('Telegram bot leválasztva')
+    await fetch(`${channelApiBase()}`, { method: 'DELETE' })
+    showToast(`${provLabel} levalasztva`)
     await openAgentDetail(currentAgent.name)
     loadAgents()
   } catch {

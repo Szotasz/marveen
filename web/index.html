@@ -959,7 +959,7 @@
         <div class="tab-nav" id="agentTabNav">
           <button class="tab-btn active" data-tab="overview">Áttekintés</button>
           <button class="tab-btn" data-tab="settings">Beállítások</button>
-          <button class="tab-btn" data-tab="telegram">Telegram</button>
+          <button class="tab-btn" data-tab="channel">Csatorna</button>
           <button class="tab-btn" data-tab="skills">Skillek</button>
           <button class="tab-btn" data-tab="team">Csapat</button>
         </div>
@@ -990,8 +990,8 @@
               <span class="meta-value" id="agentDetailModel"></span>
             </div>
             <div class="agent-overview-item">
-              <span class="meta-label">Telegram</span>
-              <span class="meta-value" id="agentDetailTgStatus"></span>
+              <span class="meta-label">Csatorna</span>
+              <span class="meta-value" id="agentDetailChStatus"></span>
             </div>
             <div class="agent-overview-item">
               <span class="meta-label">Skillek</span>
@@ -1069,66 +1069,77 @@
           </div>
         </div>
 
-        <!-- Tab: Telegram -->
-        <div class="tab-panel" id="tabTelegram" hidden>
-          <div id="tgNotConnected">
-            <div class="tg-instructions">
-              <h4>Telegram bot bekötése</h4>
-              <ol>
+        <!-- Tab: Channel -->
+        <div class="tab-panel" id="tabChannel" hidden>
+          <div class="form-group" style="margin-bottom:16px;">
+            <label for="chProviderSelect">Csatorna provider</label>
+            <select id="chProviderSelect" style="max-width:200px;">
+              <option value="telegram">Telegram</option>
+              <option value="slack">Slack</option>
+            </select>
+          </div>
+          <div id="chNotConnected">
+            <div class="tg-instructions" id="chSetupInstructions">
+              <h4 id="chSetupTitle">Telegram bot bekotese</h4>
+              <ol id="chSetupSteps">
                 <li>Nyisd meg a <strong>@BotFather</strong>-t a Telegramban</li>
-                <li>Hozz létre egy új botot a <code>/newbot</code> paranccsal</li>
-                <li>Másold be az API tokent ide</li>
+                <li>Hozz letre egy uj botot a <code>/newbot</code> paranccsal</li>
+                <li>Masold be az API tokent ide</li>
               </ol>
             </div>
             <div class="form-group">
-              <label for="tgTokenInput">Bot API Token</label>
-              <input type="text" id="tgTokenInput" placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11">
+              <label for="chTokenInput" id="chTokenLabel">Bot API Token</label>
+              <input type="text" id="chTokenInput" placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11">
             </div>
-            <button class="btn-primary" id="tgConnectBtn">
-              <span class="btn-text">Összekapcsolás</span>
-              <span class="btn-loading" hidden><span class="spinner"></span> Csatlakozás...</span>
+            <div class="form-group" id="chSlackAppTokenGroup" hidden>
+              <label for="chSlackAppToken">App-Level Token (xapp-...)</label>
+              <input type="text" id="chSlackAppToken" placeholder="xapp-1-...">
+            </div>
+            <button class="btn-primary" id="chConnectBtn">
+              <span class="btn-text">Osszekapcsolas</span>
+              <span class="btn-loading" hidden><span class="spinner"></span> Csatlakozas...</span>
             </button>
           </div>
-          <div id="tgConnected" hidden>
+          <div id="chConnected" hidden>
             <div class="tg-connected-info">
               <div class="tg-bot-badge">
                 <span class="tg-dot connected"></span>
-                <span id="tgBotUsername">@bot</span>
+                <span id="chBotUsername">@bot</span>
                 <span class="badge badge-active">Token beállítva</span>
               </div>
-              <div class="tg-notice" id="tgRunNotice">
+              <div class="tg-notice" id="chRunNotice">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
                 </svg>
                 <span>A bot csak akkor fogad üzeneteket, ha az ügynök fut. Indítsd el az Áttekintés tab-on az "Indítás" gombbal.</span>
               </div>
-              <div class="tg-notice tg-notice-ok" id="tgRunningNotice" hidden>
+              <div class="tg-notice tg-notice-ok" id="chRunningNotice" hidden>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
                 </svg>
                 <span>Az ügynök fut, a bot aktívan figyel. A chat ID-d előre engedélyezve van, nem kell pairing kód.</span>
               </div>
             </div>
-            <div class="tg-allowed-section" id="tgAllowedSection">
+            <div class="tg-allowed-section" id="chAllowedSection">
               <h4>Bekötött chat-ek és csoportok</h4>
               <p class="tg-pairing-info">Az ügynök ide tud üzenetet küldeni és innen fogad üzenetet. Egy ügynök tetszőleges számú emberhez (DM) és csoporthoz köthető.</p>
-              <div class="tg-allowed-list" id="tgAllowedList">
+              <div class="tg-allowed-list" id="chAllowedList">
                 <div class="tg-allowed-empty">Még nincs bekötött chat. Lent add hozzá az elsőt.</div>
               </div>
-              <button class="btn-secondary btn-compact" id="tgRefreshAllowedBtn" style="margin-top:8px; font-size:12px;">Lista frissítése</button>
+              <button class="btn-secondary btn-compact" id="chRefreshAllowedBtn" style="margin-top:8px; font-size:12px;">Lista frissítése</button>
             </div>
-            <div class="tg-invite-section" id="tgInviteSection">
+            <div class="tg-invite-section" id="chInviteSection">
               <h4>Meghívó link (egy kattintásos hozzáadás)</h4>
               <p class="tg-pairing-info">Generálj egy egyedi linket. Aki rákattint, automatikusan elindítja a botot, és Te a UI-n láthatóan azonnal jóváhagyhatod. Egy link csak egyszer használható.</p>
-              <div class="tg-invite-list" id="tgInviteList">
+              <div class="tg-invite-list" id="chInviteList">
                 <div class="tg-allowed-empty">Nincs aktív meghívó link.</div>
               </div>
               <div class="form-row" style="gap:8px; align-items:center; margin-top:10px;">
-                <button class="btn-primary btn-compact" id="tgGenerateInviteBtn" style="margin-top:0">Új meghívó link</button>
-                <button class="btn-secondary btn-compact" id="tgRefreshInvitesBtn" style="margin-top:0; font-size:12px;">Frissítés</button>
+                <button class="btn-primary btn-compact" id="chGenerateInviteBtn" style="margin-top:0">Új meghívó link</button>
+                <button class="btn-secondary btn-compact" id="chRefreshInvitesBtn" style="margin-top:0; font-size:12px;">Frissítés</button>
               </div>
             </div>
-            <div class="tg-pairing-section" id="tgPairingSection">
+            <div class="tg-pairing-section" id="chPairingSection">
               <h4>Új ember vagy csoport hozzáadása</h4>
               <details class="tg-howto" style="margin-bottom:12px;">
                 <summary style="cursor:pointer; font-weight:600;">Hogyan adj hozzá több embert vagy csoportot? &#9660;</summary>
@@ -1151,19 +1162,19 @@
                 </div>
               </details>
               <p class="tg-pairing-info">Ha valaki ír a botnak, a plugin egy kódot küld neki. Ide írd be a kódot a jóváhagyáshoz.</p>
-              <div class="tg-pending-list" id="tgPendingList"></div>
+              <div class="tg-pending-list" id="chPendingList"></div>
               <div class="form-row" style="gap:8px; align-items:flex-end; margin-top: 12px;">
                 <div class="form-group" style="flex:1; margin-bottom:0">
-                  <label for="tgPairCode">Párosítási kód</label>
-                  <input type="text" id="tgPairCode" placeholder="pl. a1b2c3">
+                  <label for="chPairCode">Párosítási kód</label>
+                  <input type="text" id="chPairCode" placeholder="pl. a1b2c3">
                 </div>
-                <button class="btn-primary btn-compact" id="tgApproveBtn" style="margin-top:0">Jóváhagyás</button>
+                <button class="btn-primary btn-compact" id="chApproveBtn" style="margin-top:0">Jóváhagyás</button>
               </div>
-              <button class="btn-secondary btn-compact" id="tgRefreshPendingBtn" style="margin-top:10px; font-size:12px;">Várakozók frissítése</button>
+              <button class="btn-secondary btn-compact" id="chRefreshPendingBtn" style="margin-top:10px; font-size:12px;">Várakozók frissítése</button>
             </div>
             <div class="tg-connected-actions">
-              <button class="btn-secondary" id="tgTestBtn">Kapcsolat tesztelése</button>
-              <button class="btn-danger" id="tgDisconnectBtn">Leválasztás</button>
+              <button class="btn-secondary" id="chTestBtn">Kapcsolat tesztelése</button>
+              <button class="btn-danger" id="chDisconnectBtn">Leválasztás</button>
             </div>
           </div>
         </div>
