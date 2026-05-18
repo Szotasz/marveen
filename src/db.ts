@@ -305,10 +305,12 @@ export function initDatabase(): void {
       channel_name TEXT,
       user_id TEXT,
       requested_at INTEGER NOT NULL,
+      resolved_at INTEGER,
       status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','denied'))
     )
   `)
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pcr_agent_channel ON pending_channel_requests(agent, channel_id) WHERE status = 'pending'`)
+  try { db.exec('ALTER TABLE pending_channel_requests ADD COLUMN resolved_at INTEGER') } catch { /* already exists */ }
 
   // --- Task Run History ---
   // Log every scheduled-task firing so the dashboard overview's "tasksToday"
@@ -1112,7 +1114,7 @@ export function upsertChannelRequest(agent: string, channelId: string, userId?: 
   const now = Math.floor(Date.now() / 1000)
   const sevenDaysAgo = now - 7 * 86400
   const existing = db.prepare(
-    "SELECT id FROM pending_channel_requests WHERE agent = ? AND channel_id = ? AND (status = 'pending' OR (status = 'denied' AND requested_at > ?))"
+    "SELECT id FROM pending_channel_requests WHERE agent = ? AND channel_id = ? AND (status = 'pending' OR (status = 'denied' AND COALESCE(resolved_at, requested_at) > ?))"
   ).get(agent, channelId, sevenDaysAgo)
   if (existing) return false
   db.prepare(
@@ -1128,9 +1130,10 @@ export function listPendingChannelRequests(agent: string): PendingChannelRequest
 }
 
 export function updateChannelRequestStatus(id: number, status: 'approved' | 'denied'): boolean {
+  const now = Math.floor(Date.now() / 1000)
   return db.prepare(
-    'UPDATE pending_channel_requests SET status = ? WHERE id = ? AND status = ?'
-  ).run(status, id, 'pending').changes > 0
+    'UPDATE pending_channel_requests SET status = ?, resolved_at = ? WHERE id = ? AND status = ?'
+  ).run(status, now, id, 'pending').changes > 0
 }
 
 export function updateChannelRequestName(id: number, channelName: string): void {

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { logger } from '../logger.js'
 import { CHANNEL_PROVIDER } from '../config.js'
@@ -51,12 +51,16 @@ function scanAuditLog(agent: string, auditPath: string): void {
   }
 }
 
-const channelNameCache = new Map<string, { name: string; ts: number }>()
+const channelNameCache = new Map<string, { name: string | null; ts: number }>()
 const CHANNEL_CACHE_TTL = 300_000
+const NEGATIVE_CACHE_TTL = 60_000
 
 async function lookupChannelName(agent: string, channelId: string): Promise<void> {
   const cached = channelNameCache.get(channelId)
-  if (cached && Date.now() - cached.ts < CHANNEL_CACHE_TTL) return
+  if (cached) {
+    const ttl = cached.name ? CHANNEL_CACHE_TTL : NEGATIVE_CACHE_TTL
+    if (Date.now() - cached.ts < ttl) return
+  }
 
   const provider = resolveAgentProvider(agent)
   if (provider !== 'slack') return
@@ -81,6 +85,7 @@ async function lookupChannelName(agent: string, channelId: string): Promise<void
       if (match) updateChannelRequestName(match.id, data.channel.name)
     }
   } catch (err) {
+    channelNameCache.set(channelId, { name: null, ts: Date.now() })
     logger.warn({ err, agent, channelId }, 'Failed to look up Slack channel name')
   }
 }
@@ -94,6 +99,9 @@ function runScanTick(): void {
     const auditPath = join(stateDir, 'audit.jsonl')
     activeAgents.add(auditPath)
     scanAuditLog(name, auditPath)
+    for (const req of listPendingChannelRequests(name)) {
+      if (!req.channel_name) lookupChannelName(name, req.channel_id).catch(() => {})
+    }
   }
   for (const key of fileOffsets.keys()) {
     if (!activeAgents.has(key)) fileOffsets.delete(key)
