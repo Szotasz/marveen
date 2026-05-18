@@ -197,6 +197,36 @@ if [ -x "$INSTALL_DIR/scripts/sync-hooks.sh" ]; then
   bash "$INSTALL_DIR/scripts/sync-hooks.sh" || echo -e "  FIGYELEM: sync-hooks.sh nem-nulla exit; manualisan ellenorizd."
 fi
 
+# Slack channel plugin smoke-test: if the marketplace slack-channel ref
+# changed since the last update, and a slack-provider agent exists, run
+# the smoke-test (if SLACK_SMOKE_TEST_ALLOWED=true in its .env).
+SLACK_REF_FILE="$INSTALL_DIR/store/marveen-marketplace-slack-channel-ref.txt"
+MARKETPLACE_PLUGIN_DIR="$HOME/.claude/plugins/cache/marveen-marketplace/slack-channel"
+if [ -d "$MARKETPLACE_PLUGIN_DIR" ]; then
+  CURRENT_REF="$(ls "$MARKETPLACE_PLUGIN_DIR" 2>/dev/null | head -1)"
+  LAST_REF="$(cat "$SLACK_REF_FILE" 2>/dev/null || true)"
+  if [ -n "$CURRENT_REF" ] && [ "$CURRENT_REF" != "$LAST_REF" ]; then
+    echo -e "  Slack channel plugin ref valtozott: ${LAST_REF:-ismeretlen} -> $CURRENT_REF"
+    SLACK_AGENT=""
+    for agent_dir in "$INSTALL_DIR"/agents/*/; do
+      if [ -f "${agent_dir}.claude/channels/slack/.env" ]; then
+        SLACK_AGENT="$(basename "$agent_dir")"
+        break
+      fi
+    done
+    if [ -n "$SLACK_AGENT" ] && [ -x "$INSTALL_DIR/scripts/smoke-test-slack-channel.sh" ]; then
+      AGENT_ENV="${INSTALL_DIR}/agents/${SLACK_AGENT}/.claude/channels/slack/.env"
+      if grep -q 'SLACK_SMOKE_TEST_ALLOWED=true' "$AGENT_ENV" 2>/dev/null; then
+        echo -e "  Slack smoke-test futtatasa ($SLACK_AGENT)..."
+        if ! bash "$INSTALL_DIR/scripts/smoke-test-slack-channel.sh" "$SLACK_AGENT"; then
+          echo -e "${RED}FIGYELEM:${NC} Slack smoke-test SIKERTELEN. Ellenorizd a plugin integraciot."
+        fi
+      fi
+    fi
+    echo "$CURRENT_REF" > "$SLACK_REF_FILE"
+  fi
+fi
+
 # Scrub any polluted channel tokens from the tmux server's global env
 # (legacy installs picked this up via `set -a && source .env` in the old
 # channels.sh). Leaving it there made every sub-agent poll the main bot

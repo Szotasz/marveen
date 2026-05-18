@@ -1336,6 +1336,7 @@ function updateProviderUI() {
   const input = document.getElementById('chTokenInput')
   const slackGroup = document.getElementById('chSlackAppTokenGroup')
   const manifestBtnGroup = document.getElementById('chSlackManifestBtnGroup')
+  const smokeTestBtn = document.getElementById('chSmokeTestBtn')
 
   if (isTg) {
     if (title) title.textContent = 'Telegram bot bekotese'
@@ -1344,6 +1345,7 @@ function updateProviderUI() {
     if (input) input.placeholder = '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11'
     if (slackGroup) slackGroup.hidden = true
     if (manifestBtnGroup) manifestBtnGroup.hidden = true
+    if (smokeTestBtn) smokeTestBtn.hidden = true
   } else {
     if (title) title.textContent = 'Slack app bekötése'
     if (steps) steps.innerHTML = '<li>Hozz létre egy Slack App-ot, vagy használd a manifest gombot lent</li><li>Másold be a Bot Token-t (xoxb-...) és az App Token-t (xapp-...)</li>'
@@ -1351,6 +1353,7 @@ function updateProviderUI() {
     if (input) input.placeholder = 'xoxb-...'
     if (slackGroup) slackGroup.hidden = false
     if (manifestBtnGroup) manifestBtnGroup.hidden = false
+    if (smokeTestBtn) smokeTestBtn.hidden = false
   }
 }
 
@@ -1444,6 +1447,44 @@ document.getElementById('chTestBtn').addEventListener('click', async () => {
     showToast('Kapcsolat tesztelése sikertelen')
   }
 })
+
+document.getElementById('chSmokeTestBtn').addEventListener('click', async () => {
+  if (!currentAgent) return
+  const btn = document.getElementById('chSmokeTestBtn')
+  const origText = btn.textContent
+  btn.disabled = true
+  btn.textContent = 'Futtatás...'
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent)}/channels/slack/smoke-test`, { method: 'POST' })
+    const data = await res.json()
+    if (!res.ok) {
+      showToast(data.error || 'Smoke-test sikertelen', true)
+      return
+    }
+    showSmokeTestResult(data.output || 'OK')
+  } catch {
+    showToast('Smoke-test hiba', true)
+  } finally {
+    btn.disabled = false
+    btn.textContent = origText
+  }
+})
+
+function showSmokeTestResult(output) {
+  const overlay = document.createElement('div')
+  overlay.className = 'modal-overlay'
+  overlay.innerHTML = `
+    <div class="modal-content" style="max-width:600px">
+      <h3>Slack smoke-test eredmény</h3>
+      <pre style="background:#1a1a2e;color:#e0e0e0;padding:12px;border-radius:6px;overflow-x:auto;font-size:13px;max-height:400px;white-space:pre-wrap">${output.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>
+      <div style="text-align:right;margin-top:12px">
+        <button class="btn-secondary" id="smokeTestCloseBtn">Bezárás</button>
+      </div>
+    </div>`
+  document.body.appendChild(overlay)
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove() })
+  document.getElementById('smokeTestCloseBtn').addEventListener('click', () => overlay.remove())
+}
 
 // Pairing: refresh pending list
 async function refreshPendingPairings() {
