@@ -5,7 +5,7 @@
 #   - store/claudeclaw.db (SQLite; WAL-checkpointed before copy)
 #   - store/.dashboard-token
 #   - agents/*/CLAUDE.md, SOUL.md, .mcp.json
-#   - agents/*/.claude/channels/telegram/.env, access.json
+#   - agents/*/.claude/channels/{telegram,slack}/.env, access.json
 #   - .env (project root)
 #   - scheduled-tasks.json (if present)
 #

@@ -1,4 +1,6 @@
 #!/bin/bash
+# DEPRECATED: use channel-image-resize.sh instead. This file is kept for
+# backward compatibility with existing hook installations.
 # PreToolUse hook: auto-resize Telegram-fogadott nagy képeket a Read tool előtt
 # Védelem: ha egy >500KB Telegram-fogadott kép kerülne a Marveen session-be, a
 # base64-encoded representation megtelítheti a context window-t és /compact-ot

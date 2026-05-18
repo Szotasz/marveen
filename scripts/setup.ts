@@ -89,20 +89,48 @@ async function main() {
   const envPath = join(PROJECT_ROOT, '.env')
   const config: Record<string, string> = {}
 
-  // Telegram token
-  console.log('\nTelegram bot token szukseges.')
-  console.log('Igy szerezhetsz egyet:')
-  console.log('  1. Nyisd meg a Telegram-ot es keress ra: @BotFather')
-  console.log('  2. Kuldj neki: /newbot')
-  console.log('  3. Adj nevet es usernevet a botnak')
-  console.log('  4. Masold ki a tokent amit kapsz\n')
+  // Channel provider selection
+  console.log('\nMelyik csatorna-szolgaltatot hasznalod?')
+  console.log('  1. Telegram (alapertelmezett)')
+  console.log('  2. Slack\n')
+  const providerChoice = await ask('Valassz (1/2, Enter = Telegram):')
+  const provider = providerChoice === '2' ? 'slack' : 'telegram'
+  config['CHANNEL_PROVIDER'] = provider
+  ok(`Csatorna: ${provider}`)
 
-  config['TELEGRAM_BOT_TOKEN'] = await ask('Telegram bot token:')
-  if (!config['TELEGRAM_BOT_TOKEN']) {
-    fail('Token szukseges!')
-    process.exit(1)
+  if (provider === 'telegram') {
+    console.log('\nTelegram bot token szukseges.')
+    console.log('Igy szerezhetsz egyet:')
+    console.log('  1. Nyisd meg a Telegram-ot es keress ra: @BotFather')
+    console.log('  2. Kuldj neki: /newbot')
+    console.log('  3. Adj nevet es usernevet a botnak')
+    console.log('  4. Masold ki a tokent amit kapsz\n')
+
+    config['TELEGRAM_BOT_TOKEN'] = await ask('Telegram bot token:')
+    if (!config['TELEGRAM_BOT_TOKEN']) {
+      fail('Token szukseges!')
+      process.exit(1)
+    }
+    ok('Token rogzitve')
+  } else {
+    console.log('\nSlack app tokenek szuksegesek.')
+    console.log('  1. Hozz letre egy Slack App-ot: api.slack.com/apps')
+    console.log('  2. Engedeld a Socket Mode-ot')
+    console.log('  3. Adj hozza Bot Token Scopes: chat:write, channels:read, files:write')
+    console.log('  4. Installald a workspace-be\n')
+
+    config['SLACK_BOT_TOKEN'] = await ask('Bot Token (xoxb-...):')
+    if (!config['SLACK_BOT_TOKEN']) {
+      fail('Bot Token szukseges!')
+      process.exit(1)
+    }
+    config['SLACK_APP_TOKEN'] = await ask('App-Level Token (xapp-...):')
+    if (!config['SLACK_APP_TOKEN']) {
+      fail('App Token szukseges!')
+      process.exit(1)
+    }
+    ok('Slack tokenek rogzitve')
   }
-  ok('Token rogzitve')
 
   // ElevenLabs TTS
   console.log('\nElevenLabs TTS (szoveg-beszed) beallitas.')
@@ -248,19 +276,24 @@ WantedBy=default.target`
     console.log('  pm2 save && pm2 startup')
   }
 
-  // Chat ID
+  // Chat/Channel ID
   header('7. Chat azonosito')
-  console.log('Ha mar fut a bot, kuldj neki /chatid uzenetet a Telegram-on.')
-  console.log('A bot visszaküldi a chat azonositodat.')
-  const chatId = await ask('Chat ID (Enter a kihagyashoz, kesobb is megadhatod):')
-  if (chatId) {
-    // Hozzáadjuk a .env-hez
-    let envData = readFileSync(envPath, 'utf-8')
-    envData += `ALLOWED_CHAT_ID=${chatId}\n`
-    writeFileSync(envPath, envData)
-    ok(`Chat ID mentve: ${chatId}`)
+  if (provider === 'telegram') {
+    console.log('Ha mar fut a bot, kuldj neki /chatid uzenetet a Telegram-on.')
+    console.log('A bot visszaküldi a chat azonositodat.')
   } else {
-    warn('Chat ID kesobb megadhato a .env fajlban: ALLOWED_CHAT_ID=...')
+    console.log('Add meg a Slack channel ID-t ahova a bot irhat.')
+    console.log('(Jobb klikk a csatornan -> "Copy channel ID")')
+  }
+  const chatIdLabel = provider === 'telegram' ? 'ALLOWED_CHAT_ID' : 'SLACK_CHANNEL_ID'
+  const chatId = await ask(`${chatIdLabel} (Enter a kihagyashoz, kesobb is megadhatod):`)
+  if (chatId) {
+    let envData = readFileSync(envPath, 'utf-8')
+    envData += `${chatIdLabel}=${chatId}\n`
+    writeFileSync(envPath, envData)
+    ok(`${chatIdLabel} mentve: ${chatId}`)
+  } else {
+    warn(`${chatIdLabel} kesobb megadhato a .env fajlban`)
   }
 
   // Kész

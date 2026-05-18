@@ -1,8 +1,18 @@
 #!/bin/bash
-# Marveen - Telegram bot menü beállítás
-# Futtatandó a channels.sh indulása után (a plugin felülírja a menüt induláskor)
+# Telegram bot menu setup. Only runs for Telegram provider; Slack uses
+# the App Manifest for slash commands.
+# Called by channels.sh after plugin startup (with 15s delay).
 
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Read provider from .env; skip if not telegram
+if [ -f "$INSTALL_DIR/.env" ]; then
+  CHANNEL_PROVIDER="$(grep -E '^CHANNEL_PROVIDER=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
+fi
+CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"
+if [ "$CHANNEL_PROVIDER" != "telegram" ]; then
+  exit 0
+fi
 
 # Load bot token
 if [ -f "$HOME/.claude/channels/telegram/.env" ]; then

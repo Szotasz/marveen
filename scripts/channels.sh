@@ -1,5 +1,9 @@
 #!/bin/bash
-# Main agent Channels -- Claude Code + Telegram bridge tmux session-ben
+# Main agent Channels -- Claude Code channel bridge in a tmux session.
+#
+# Supports Telegram (default) and Slack providers. The provider is read
+# from CHANNEL_PROVIDER in .env; when absent, defaults to "telegram" for
+# full backward compatibility.
 #
 # A LaunchAgent hívja. Működés:
 # 1. Tmux session indul a claude processzel
@@ -11,23 +15,32 @@
 
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-# Read MAIN_AGENT_ID from .env WITHOUT exporting every variable into the
-# shell environment. `set -a && source .env` would also export
-# TELEGRAM_BOT_TOKEN, which then leaks into the tmux server's global
-# environment and gets inherited by every sub-agent tmux session the
-# dashboard starts later -- they'd all use the main agent's token and
-# fight over the same getUpdates slot, 409 Conflict in a tight loop.
+# Read MAIN_AGENT_ID and CHANNEL_PROVIDER from .env WITHOUT exporting
+# every variable into the shell environment. `set -a && source .env`
+# would also export TELEGRAM_BOT_TOKEN, which then leaks into the tmux
+# server's global environment and gets inherited by every sub-agent tmux
+# session the dashboard starts later -- they'd all use the main agent's
+# token and fight over the same getUpdates slot, 409 Conflict in a loop.
 if [ -f "$INSTALL_DIR/.env" ]; then
   MAIN_AGENT_ID="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
+  CHANNEL_PROVIDER="$(grep -E '^CHANNEL_PROVIDER=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
 fi
+CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"
 SESSION="${MAIN_AGENT_ID:-marveen}-channels"
 
+# Resolve plugin ID from provider
+case "$CHANNEL_PROVIDER" in
+  slack)  PLUGIN_ID="slack@jeremylongshore/claude-code-slack-channel" ;;
+  *)      PLUGIN_ID="telegram@claude-plugins-official" ;;
+esac
+
 # Extra safety net for existing installs whose tmux server already has a
-# polluted global env -- scrub the key so new child sessions don't inherit it.
-# The main agent's plugin will still load its token from
-# ~/.claude/channels/telegram/.env via the plugin's own bootstrap.
+# polluted global env -- scrub channel tokens so new child sessions don't
+# inherit them. The main agent's plugin will still load its token from
+# ~/.claude/channels/<provider>/.env via the plugin's own bootstrap.
 command -v tmux >/dev/null 2>&1 && tmux set-environment -g -u TELEGRAM_BOT_TOKEN 2>/dev/null || true
-unset TELEGRAM_BOT_TOKEN
+command -v tmux >/dev/null 2>&1 && tmux set-environment -g -u SLACK_BOT_TOKEN 2>/dev/null || true
+unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN
 
 export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
@@ -54,7 +67,7 @@ if [ -d "$CLAUDE_PROJECT_DIR" ] && ls "$CLAUDE_PROJECT_DIR"/*.jsonl >/dev/null 2
 fi
 
 $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
-  "$CLAUDE --dangerously-skip-permissions $CONTINUE_FLAG --channels plugin:telegram@claude-plugins-official"
+  "$CLAUDE --dangerously-skip-permissions $CONTINUE_FLAG --channels plugin:${PLUGIN_ID}"
 
 # Session startup guard: a Claude Code first-run dialogusait auto-accept-eljuk
 # kulonben a headless session orokre parkolna a prompton es a Telegram plugin
@@ -89,8 +102,10 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
   esac
 done
 
-# Bot menü beállítás (15 sec késleltetéssel, a plugin után)
-"$INSTALL_DIR/scripts/set-bot-menu.sh" &
+# Bot menu setup (Telegram only; Slack uses App Manifest)
+if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
+  "$INSTALL_DIR/scripts/set-bot-menu.sh" &
+fi
 
 # Várakozás amíg a session él
 while $TMUX has-session -t "$SESSION" 2>/dev/null; do
