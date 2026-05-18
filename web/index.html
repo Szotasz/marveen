@@ -1589,6 +1589,42 @@
     </div>
   </div>
 
+  <!-- Modal: Csatorna-kérés jóváhagyása -->
+  <div class="modal-overlay" id="chApproveModalOverlay" hidden>
+    <div class="modal" style="max-width:420px">
+      <div class="modal-header">
+        <h2>Csatorna engedélyezése</h2>
+        <button class="modal-close" id="chApproveModalClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p id="chApproveModalDesc" style="font-size:13px;color:var(--text-muted);margin-bottom:20px;"></p>
+        <div class="form-group" style="margin-bottom:14px;">
+          <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;gap:12px;">
+            <span style="font-size:13px;line-height:1.4;"><strong>Csak @-tageléskor figyeljen</strong><br>
+              <span style="color:var(--text-muted);font-size:12px;">Az ügynök csak @-tagelt üzenetekre reagál</span>
+            </span>
+            <input type="checkbox" id="chApproveRequireMention" checked style="width:16px;height:16px;accent-color:var(--accent);flex-shrink:0;">
+          </label>
+        </div>
+        <div class="form-group" style="margin-bottom:4px;">
+          <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;gap:12px;">
+            <span style="font-size:13px;line-height:1.4;"><strong>Bárkitől fogadjon</strong><br>
+              <span style="color:var(--text-muted);font-size:12px;">Ha ki van kapcsolva, csak a kérést indító felhasználótól fogad</span>
+            </span>
+            <input type="checkbox" id="chApproveAllowFromAll" style="width:16px;height:16px;accent-color:var(--accent);flex-shrink:0;">
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer" style="display:flex;gap:8px;justify-content:flex-end;">
+        <button class="btn-secondary" id="chApproveModalCancel">Mégse</button>
+        <button class="btn-primary btn-compact" id="chApproveModalConfirm">
+          <span class="btn-text">Jóváhagyás</span>
+          <span class="btn-loading" hidden><span class="spinner"></span></span>
+        </button>
+      </div>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
 
   <script src="/app.js"></script>
