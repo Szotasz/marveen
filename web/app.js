@@ -1387,6 +1387,12 @@ document.getElementById('chConnectBtn').addEventListener('click', async () => {
     return
   }
 
+  const payload = { botToken: token }
+  if (currentChannelProvider === 'slack') {
+    const appToken = document.getElementById('chSlackAppToken').value.trim()
+    if (appToken) payload.appToken = appToken
+  }
+
   const btn = document.getElementById('chConnectBtn')
   btn.disabled = true
   btn.querySelector('.btn-text').hidden = true
@@ -1396,7 +1402,7 @@ document.getElementById('chConnectBtn').addEventListener('click', async () => {
     const res = await fetch(`${channelApiBase()}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ botToken: token }),
+      body: JSON.stringify(payload),
     })
     if (!res.ok) {
       const err = await res.json()

@@ -337,7 +337,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
 
     const body = await readBody(req)
-    const { botToken } = JSON.parse(body.toString()) as { botToken: string }
+    const { botToken, appToken } = JSON.parse(body.toString()) as { botToken: string; appToken?: string }
     if (!botToken?.trim()) { json(res, { error: 'botToken is required' }, 400); return true }
 
     const channelProvider = getProvider(provider)
@@ -347,7 +347,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const stateDir = channelStateDir(provider, agentDir(name))
     mkdirSync(stateDir, { recursive: true })
     const tokenKey = provider === 'slack' ? 'SLACK_BOT_TOKEN' : 'TELEGRAM_BOT_TOKEN'
-    atomicWriteFileSync(join(stateDir, '.env'), `${tokenKey}=${botToken.trim()}\n`, { mode: 0o600 })
+    let envContent = `${tokenKey}=${botToken.trim()}\n`
+    if (provider === 'slack' && appToken?.trim()) {
+      envContent += `SLACK_APP_TOKEN=${appToken.trim()}\n`
+    }
+    atomicWriteFileSync(join(stateDir, '.env'), envContent, { mode: 0o600 })
     atomicWriteFileSync(join(stateDir, 'access.json'), JSON.stringify({
       dmPolicy: 'pairing',
       allowFrom: [],
