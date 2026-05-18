@@ -1,58 +1,29 @@
-import https from 'node:https'
-import { TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_ID } from './config.js'
-import { formatForTelegram, splitMessage } from './format.js'
+import { TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_ID, CHANNEL_PROVIDER } from './config.js'
+import { getProvider } from './channel-provider.js'
 import { logger } from './logger.js'
 
-export async function notifyTelegram(text: string): Promise<void> {
+export async function notifyChannel(text: string): Promise<void> {
   if (!TELEGRAM_BOT_TOKEN || !ALLOWED_CHAT_ID) {
-    logger.warn('Telegram ertesites kihagyva: token vagy chat ID hianyzik')
+    logger.warn('Channel ertesites kihagyva: token vagy chat ID hianyzik')
     return
   }
 
-  const formatted = formatForTelegram(text)
-  const chunks = splitMessage(formatted)
+  const provider = getProvider(CHANNEL_PROVIDER)
+  const formatted = provider.formatMessage(text)
+  const chunks = provider.splitMessage(formatted)
 
   for (const chunk of chunks) {
     try {
-      await sendMessage(ALLOWED_CHAT_ID, chunk, 'HTML')
+      const parseMode = CHANNEL_PROVIDER === 'telegram' ? 'HTML' : undefined
+      await provider.sendMessage(TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_ID, chunk, parseMode)
     } catch {
-      // Fallback: plain text without HTML parse mode
-      await sendMessage(ALLOWED_CHAT_ID, text.slice(0, 4096)).catch(() => {})
+      // Fallback: plain text without formatting
+      try {
+        await provider.sendMessage(TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_ID, text.slice(0, 4096))
+      } catch { /* last resort, give up */ }
     }
   }
 }
 
-function sendMessage(chatId: string, text: string, parseMode?: string): Promise<void> {
-  const payload: Record<string, string> = { chat_id: chatId, text }
-  if (parseMode) payload.parse_mode = parseMode
-
-  const body = JSON.stringify(payload)
-
-  return new Promise((resolve, reject) => {
-    const req = https.request(
-      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(body),
-        },
-      },
-      (res) => {
-        res.resume()
-        if (res.statusCode === 200) {
-          resolve()
-        } else {
-          logger.error({ status: res.statusCode }, 'Telegram kuldes hiba')
-          reject(new Error(`Telegram API hiba: ${res.statusCode}`))
-        }
-      }
-    )
-    req.on('error', (err) => {
-      logger.error({ err }, 'Telegram kuldes hiba')
-      reject(err)
-    })
-    req.write(body)
-    req.end()
-  })
-}
+// Backward-compatible alias
+export const notifyTelegram = notifyChannel

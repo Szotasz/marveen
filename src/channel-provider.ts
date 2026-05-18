@@ -1,0 +1,329 @@
+import https from 'node:https'
+import { readFileSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { logger } from './logger.js'
+
+export type ChannelProviderType = 'telegram' | 'slack'
+
+export interface ChannelProvider {
+  readonly type: ChannelProviderType
+  readonly pluginId: string
+  readonly envKeys: string[]
+  readonly stateDir: string
+  readonly chatIdFormat: string
+  sendMessage(token: string, chatId: string, text: string, parseMode?: string): Promise<void>
+  sendPhoto(token: string, chatId: string, photoPath: string, caption: string): Promise<void>
+  validateToken(token: string): Promise<{ ok: boolean; botName?: string; error?: string }>
+  formatMessage(text: string): string
+  splitMessage(text: string): string[]
+}
+
+// -- Telegram implementation --
+
+const TELEGRAM_MAX_MESSAGE_LENGTH = 4096
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+function formatForTelegramHtml(text: string): string {
+  const codeBlocks: string[] = []
+  let result = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_match, lang: string, code: string) => {
+    const idx = codeBlocks.length
+    const escaped = escapeHtml(code.trimEnd())
+    codeBlocks.push(lang ? `<pre><code class="language-${lang}">${escaped}</code></pre>` : `<pre>${escaped}</pre>`)
+    return `\x00CB${idx}\x00`
+  })
+
+  const inlineCodes: string[] = []
+  result = result.replace(/`([^`]+)`/g, (_match, code: string) => {
+    const idx = inlineCodes.length
+    inlineCodes.push(`<code>${escapeHtml(code)}</code>`)
+    return `\x00IC${idx}\x00`
+  })
+
+  result = escapeHtml(result)
+
+  result = result.replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>')
+  result = result.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+  result = result.replace(/__(.+?)__/g, '<b>$1</b>')
+  result = result.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<i>$1</i>')
+  result = result.replace(/(?<!_)_(?!_)(.+?)(?<!_)_(?!_)/g, '<i>$1</i>')
+  result = result.replace(/~~(.+?)~~/g, '<s>$1</s>')
+  result = result.replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2">$1</a>')
+  result = result.replace(/^- \[ \]/gm, '☐')
+  result = result.replace(/^- \[x\]/gm, '☑')
+
+  result = result.replace(/^---+$/gm, '')
+  result = result.replace(/^\*\*\*+$/gm, '')
+
+  result = result.replace(/\x00CB(\d+)\x00/g, (_m, idx) => codeBlocks[parseInt(idx)])
+  result = result.replace(/\x00IC(\d+)\x00/g, (_m, idx) => inlineCodes[parseInt(idx)])
+
+  return result.trim()
+}
+
+function splitMessageImpl(text: string, limit: number): string[] {
+  if (text.length <= limit) return [text]
+
+  const chunks: string[] = []
+  let remaining = text
+
+  while (remaining.length > 0) {
+    if (remaining.length <= limit) {
+      chunks.push(remaining)
+      break
+    }
+
+    let splitAt = remaining.lastIndexOf('\n', limit)
+    if (splitAt === -1 || splitAt < limit * 0.3) {
+      splitAt = remaining.lastIndexOf(' ', limit)
+    }
+    if (splitAt === -1 || splitAt < limit * 0.3) {
+      splitAt = limit
+    }
+
+    chunks.push(remaining.slice(0, splitAt))
+    remaining = remaining.slice(splitAt).trimStart()
+  }
+
+  return chunks
+}
+
+function telegramHttpPost(token: string, method: string, body: string, contentType: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      `https://api.telegram.org/bot${token}/${method}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': contentType,
+          'Content-Length': Buffer.byteLength(body),
+        },
+      },
+      (res) => {
+        res.resume()
+        if (res.statusCode === 200) {
+          resolve()
+        } else {
+          reject(new Error(`Telegram API ${res.statusCode}`))
+        }
+      }
+    )
+    req.on('error', reject)
+    req.write(body)
+    req.end()
+  })
+}
+
+const telegramProvider: ChannelProvider = {
+  type: 'telegram',
+  pluginId: 'telegram@claude-plugins-official',
+  envKeys: ['TELEGRAM_BOT_TOKEN'],
+  stateDir: 'telegram',
+  chatIdFormat: 'numeric (e.g. 1268077055)',
+
+  async sendMessage(token, chatId, text, parseMode) {
+    const payload: Record<string, string> = { chat_id: chatId, text }
+    if (parseMode) payload.parse_mode = parseMode
+    const body = JSON.stringify(payload)
+    await telegramHttpPost(token, 'sendMessage', body, 'application/json')
+  },
+
+  async sendPhoto(token, chatId, photoPath, caption) {
+    const fileData = readFileSync(photoPath)
+    const boundary = '----FormBoundary' + Date.now()
+    const parts: Buffer[] = []
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n`))
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}\r\n`))
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="photo"; filename="avatar.png"\r\nContent-Type: image/png\r\n\r\n`))
+    parts.push(fileData)
+    parts.push(Buffer.from(`\r\n--${boundary}--\r\n`))
+    const body = Buffer.concat(parts)
+    const resp = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+      method: 'POST',
+      headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+      body,
+    })
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '')
+      throw new Error(`Telegram sendPhoto ${resp.status}: ${text.slice(0, 200)}`)
+    }
+  },
+
+  async validateToken(token) {
+    try {
+      const resp = await fetch(`https://api.telegram.org/bot${token}/getMe`)
+      const data = await resp.json() as { ok: boolean; result?: { username: string; id: number } }
+      if (data.ok && data.result) {
+        return { ok: true, botName: data.result.username }
+      }
+      return { ok: false, error: 'Invalid bot token' }
+    } catch {
+      return { ok: false, error: 'Failed to connect to Telegram API' }
+    }
+  },
+
+  formatMessage: formatForTelegramHtml,
+  splitMessage: (text) => splitMessageImpl(text, TELEGRAM_MAX_MESSAGE_LENGTH),
+}
+
+// -- Slack implementation (stub) --
+// The actual Slack channel plugin (jeremylongshore/claude-code-slack-channel)
+// handles message delivery via its own MCP tools. This stub provides the
+// notification path (direct API calls for alerts/heartbeats outside the
+// plugin's scope) and token validation.
+
+const SLACK_MAX_MESSAGE_LENGTH = 4000
+
+function formatForSlackMrkdwn(text: string): string {
+  // Slack uses mrkdwn, not HTML. The subset that matters:
+  // bold: *text*, italic: _text_, strikethrough: ~text~,
+  // code: `code`, code block: ```code```, link: <url|text>
+  let result = text
+
+  result = result.replace(/^#{1,6}\s+(.+)$/gm, '*$1*')
+  result = result.replace(/\*\*(.+?)\*\*/g, '*$1*')
+  result = result.replace(/__(.+?)__/g, '*$1*')
+  result = result.replace(/~~(.+?)~~/g, '~$1~')
+  result = result.replace(/\[(.+?)\]\((.+?)\)/g, '<$2|$1>')
+  result = result.replace(/^- \[ \]/gm, ':white_square: ')
+  result = result.replace(/^- \[x\]/gm, ':white_check_mark: ')
+
+  result = result.replace(/^---+$/gm, '')
+  result = result.replace(/^\*\*\*+$/gm, '')
+
+  return result.trim()
+}
+
+const slackProvider: ChannelProvider = {
+  type: 'slack',
+  pluginId: 'slack@jeremylongshore/claude-code-slack-channel',
+  envKeys: ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN'],
+  stateDir: 'slack',
+  chatIdFormat: 'Slack channel/DM ID (e.g. C01234ABCDE)',
+
+  async sendMessage(token, chatId, text) {
+    const resp = await fetch('https://slack.com/api/chat.postMessage', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        channel: chatId,
+        text,
+        unfurl_links: false,
+        unfurl_media: false,
+      }),
+    })
+    if (!resp.ok) {
+      throw new Error(`Slack API HTTP ${resp.status}`)
+    }
+    const data = await resp.json() as { ok: boolean; error?: string }
+    if (!data.ok) {
+      throw new Error(`Slack API error: ${data.error}`)
+    }
+  },
+
+  async sendPhoto(token, chatId, photoPath, caption) {
+    // Slack file upload v2: get upload URL, upload file, complete
+    const fileData = readFileSync(photoPath)
+    const filename = photoPath.split('/').pop() || 'image.png'
+
+    const urlResp = await fetch('https://slack.com/api/files.getUploadURLExternal', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: `filename=${encodeURIComponent(filename)}&length=${fileData.length}`,
+    })
+    const urlData = await urlResp.json() as { ok: boolean; upload_url?: string; file_id?: string; error?: string }
+    if (!urlData.ok || !urlData.upload_url || !urlData.file_id) {
+      throw new Error(`Slack getUploadURL: ${urlData.error || 'unknown error'}`)
+    }
+
+    await fetch(urlData.upload_url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: fileData,
+    })
+
+    const completeResp = await fetch('https://slack.com/api/files.completeUploadExternal', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        files: [{ id: urlData.file_id, title: caption || filename }],
+        channel_id: chatId,
+        initial_comment: caption || undefined,
+      }),
+    })
+    const completeData = await completeResp.json() as { ok: boolean; error?: string }
+    if (!completeData.ok) {
+      throw new Error(`Slack completeUpload: ${completeData.error}`)
+    }
+  },
+
+  async validateToken(token) {
+    try {
+      const resp = await fetch('https://slack.com/api/auth.test', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Authorization': `Bearer ${token}`,
+        },
+      })
+      const data = await resp.json() as { ok: boolean; bot_id?: string; user?: string; error?: string }
+      if (data.ok) {
+        return { ok: true, botName: data.user || data.bot_id }
+      }
+      return { ok: false, error: data.error || 'Invalid token' }
+    } catch {
+      return { ok: false, error: 'Failed to connect to Slack API' }
+    }
+  },
+
+  formatMessage: formatForSlackMrkdwn,
+  splitMessage: (text) => splitMessageImpl(text, SLACK_MAX_MESSAGE_LENGTH),
+}
+
+// -- Provider registry --
+
+const providers: Record<ChannelProviderType, ChannelProvider> = {
+  telegram: telegramProvider,
+  slack: slackProvider,
+}
+
+export function getProvider(type: ChannelProviderType): ChannelProvider {
+  return providers[type]
+}
+
+export function getProviderType(envValue: string | undefined): ChannelProviderType {
+  if (envValue === 'slack') return 'slack'
+  return 'telegram'
+}
+
+export function channelStateDir(provider: ChannelProviderType, agentDir?: string): string {
+  const base = agentDir
+    ? join(agentDir, '.claude', 'channels')
+    : join(homedir(), '.claude', 'channels')
+  return join(base, provider === 'slack' ? 'slack' : 'telegram')
+}
+
+export function readChannelToken(provider: ChannelProviderType, envFilePath: string): string | null {
+  if (!existsSync(envFilePath)) return null
+  let content: string
+  try {
+    content = readFileSync(envFilePath, 'utf-8')
+  } catch {
+    return null
+  }
+  const key = provider === 'slack' ? 'SLACK_BOT_TOKEN' : 'TELEGRAM_BOT_TOKEN'
+  const match = content.match(new RegExp(`${key}=(.+)`))
+  return match ? match[1].trim() : null
+}

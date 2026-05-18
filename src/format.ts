@@ -1,4 +1,10 @@
+import { getProvider, type ChannelProviderType } from './channel-provider.js'
+
 const MAX_MESSAGE_LENGTH = 4096
+
+export function formatForChannel(text: string, provider: ChannelProviderType): string {
+  return getProvider(provider).formatMessage(text)
+}
 
 export function formatForTelegram(text: string): string {
   // Kódblokkok kimentése placeholderekbe

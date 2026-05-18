@@ -1,6 +1,7 @@
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readEnvFile } from './env.js'
+import { getProviderType, type ChannelProviderType } from './channel-provider.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -27,6 +28,8 @@ export const WEB_HOST = env['WEB_HOST'] ?? '127.0.0.1'
 export const OLLAMA_URL = env['OLLAMA_URL'] ?? 'http://localhost:11434'
 
 // Heartbeat
+export const CHANNEL_PROVIDER: ChannelProviderType = getProviderType(env['CHANNEL_PROVIDER'])
+
 export const HEARTBEAT_INTERVAL_MS = 60 * 60 * 1000 // 1 hour
 export const HEARTBEAT_START_HOUR = 9
 export const HEARTBEAT_END_HOUR = 23
