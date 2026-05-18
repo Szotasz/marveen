@@ -66,5 +66,5 @@ Lépések:
 Ha NINCS komplex feladat / hiba / korrekció (A=B=C=NEM), és nincs új információ a 30 percben:
 - Ne ments memóriát feleslegesen
 - Ne generálj skill-t
-- Ne írj Telegramon
+- Ne küldj üzenetet a csatornára
 - Maradj csendben (egy rövid "csendes heartbeat" sor a transzkriptbe elég)

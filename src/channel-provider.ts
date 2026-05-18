@@ -108,7 +108,7 @@ const telegramProvider: ChannelProvider = {
 
 const SLACK_MAX_MESSAGE_LENGTH = 4000
 
-function formatForSlackMrkdwn(text: string): string {
+export function formatForSlackMrkdwn(text: string): string {
   // Slack uses mrkdwn, not HTML. The subset that matters:
   // bold: *text*, italic: _text_, strikethrough: ~text~,
   // code: `code`, code block: ```code```, link: <url|text>

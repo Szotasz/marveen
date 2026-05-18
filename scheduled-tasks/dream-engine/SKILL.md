@@ -3,7 +3,7 @@ name: dream-engine
 description: Éjszakai analízis-loop az aznapi memóriákról, naplóról és kanban-állapotról. Generál 4 priorizált akció-javaslatot reggelre.
 ---
 
-Te most a "Dream Engine" éjszakai analízis-loopot futtatod. 02:07-kor vagy, Szabolcs alszik, NE küldj Telegram üzenetet.
+Te most a "Dream Engine" éjszakai analízis-loopot futtatod. 02:07-kor vagy, Szabolcs alszik, NE küldj üzenetet a beállított csatornára.
 
 A cél: az aznapi tudást átkonszolidálni és reggelre (07:30 Reggeli Napindító) felkészülni 4 priorizált javaslattal.
 
@@ -107,7 +107,7 @@ Output: 0-3 javaslat: "skill <név> antikvált (utolsó használat >30 nap), tö
 
 ## Szabályok
 
-- NE küldj Telegram üzenetet. A DREAM.md a reggeli napindítóból kerül a Telegram-ra (07:30).
+- NE küldj üzenetet a csatornára. A DREAM.md a reggeli napindítóból kerül kiküldésre (07:30).
 - A `Bash` és SQL műveletek mind helyiek — semmilyen external API hívás (kivéve az Ollama embedding ha kell).
 - Ha akadály van (pl. DB lock, missing embedding model), írd be a DREAM.md végére `## ⚠️ Hibák` szekciót — reggel látom.
 - Befejezésként, írd a DREAM.md végére: `*Marveen, 02:XX — most már alszom én is.*`

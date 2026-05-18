@@ -8,15 +8,16 @@
 [![Claude Code](https://img.shields.io/badge/Claude_Code-Anthropic-D97757?logo=anthropic&logoColor=white)](https://claude.ai/code)
 [![Ollama](https://img.shields.io/badge/Ollama-nomic--embed-000000?logo=ollama&logoColor=white)](https://ollama.com/)
 [![Telegram](https://img.shields.io/badge/Telegram-Bot_API-26A5E4?logo=telegram&logoColor=white)](https://core.telegram.org/bots)
+[![Slack](https://img.shields.io/badge/Slack-Socket_Mode-4A154B?logo=slack&logoColor=white)](https://api.slack.com/)
 [![GitHub stars](https://img.shields.io/github/stars/Szotasz/marveen?style=social)](https://github.com/Szotasz/marveen)
 
 > AI csapatod, ami fut amíg te alszol.
 
-Marveen egy AI asszisztens keretrendszer, ami Claude Code-ra épül. Saját AI csapatot építhetsz, akik Telegramon kommunikálnak veled, önállóan dolgoznak, és egymással is együttműködnek.
+Marveen egy AI asszisztens keretrendszer, ami Claude Code-ra épül. Saját AI csapatot építhetsz, akik Telegramon vagy Slacken kommunikálnak veled, önállóan dolgoznak, és egymással is együttműködnek.
 
 ## Funkciók
 
-- **AI Csapat**: Több ágens, mindegyik saját Telegram bottal, személyiséggel és memóriával
+- **AI Csapat**: Több ágens, mindegyik saját csatornával (Telegram vagy Slack), személyiséggel és memóriával
 - **Mission Control**: Web dashboard (http://localhost:3420) a csapat kezeléséhez
 - **Inter-agent kommunikáció**: Az ágensek delegálhatnak egymásnak feladatokat
 - **Ütemezések**: Cron-alapú feladatok automatikus futtatása
@@ -237,8 +238,33 @@ A telepítő végigvezet a beállításokon:
 ### Dashboard
 Nyisd meg: http://localhost:3420
 
-### Telegram
+### Csatorna (Telegram vagy Slack)
+
+A telepítés során választhatsz csatorna providert. Az alapértelmezett a Telegram.
+
+#### Telegram (alapértelmezett)
 Írj a botodnak Telegramon -- Marveen válaszol.
+
+#### Slack (alternatív)
+
+Slack használatához a telepítő automatikusan végigvezet, de manuálisan is beállíthatod:
+
+1. Hozz létre egy Slack App-ot a [Slack API](https://api.slack.com/apps) oldalon
+2. Engedélyezd a Socket Mode-ot (Settings > Socket Mode > Enable)
+3. Generálj egy App-Level Token-t (`xapp-...`) a `connections:write` scope-pal
+4. Add hozzá a Bot Token Scopes-okat (OAuth & Permissions): `chat:write`, `channels:read`, `files:write`, `files:read`
+5. Installáld az App-ot a workspace-edbe -- megkapod a Bot User OAuth Token-t (`xoxb-...`)
+6. Hívd meg a botot a kívánt csatornába (`/invite @BotNev`)
+7. A `.env` fájlban állítsd be:
+   ```
+   CHANNEL_PROVIDER=slack
+   SLACK_BOT_TOKEN=xoxb-...
+   SLACK_APP_TOKEN=xapp-...
+   SLACK_CHANNEL_ID=C01234ABCDE
+   ```
+8. A Slack channel plugin automatikusan települ: `slack@jeremylongshore/claude-code-slack-channel`
+
+A csatorna váltáshoz futtasd újra a `./install.sh`-t vagy szerkeszd a `.env` fájlt manuálisan.
 
 ### Ágensek
 A Csapat oldalon hozz létre új ágenseket. Mindegyik:
@@ -333,7 +359,7 @@ A token 1 évig érvényes. Ne állíts be `ANTHROPIC_API_KEY`-t mellé.
 - macOS, Linux, vagy Windows 10/11 (WSL-lel)
 - Node.js 20+
 - Claude Code CLI (Claude Max/Pro előfizetés szükséges)
-- Telegram fiók
+- Telegram fiók vagy Slack workspace
 
 ## Közösség és támogatás
 

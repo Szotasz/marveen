@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { formatForTelegram, splitMessage } from '../format.js'
+import { formatForSlackMrkdwn } from '../channel-provider.js'
 
 describe('formatForTelegram', () => {
   it('felcimeket vastagit', () => {
@@ -48,6 +49,53 @@ describe('formatForTelegram', () => {
 
   it('elvalaszto vonalakat eltavolít', () => {
     expect(formatForTelegram('szoveg\n---\nszoveg')).not.toContain('---')
+  })
+})
+
+describe('formatForSlackMrkdwn', () => {
+  it('converts markdown headers to bold', () => {
+    expect(formatForSlackMrkdwn('# Hello')).toBe('*Hello*')
+    expect(formatForSlackMrkdwn('## Section')).toBe('*Section*')
+    expect(formatForSlackMrkdwn('### Sub')).toBe('*Sub*')
+  })
+
+  it('converts **bold** to mrkdwn bold', () => {
+    expect(formatForSlackMrkdwn('ez **vastag** szoveg')).toBe('ez *vastag* szoveg')
+  })
+
+  it('converts __bold__ to mrkdwn bold', () => {
+    expect(formatForSlackMrkdwn('ez __vastag__ szoveg')).toBe('ez *vastag* szoveg')
+  })
+
+  it('converts markdown links to Slack format', () => {
+    expect(formatForSlackMrkdwn('[text](https://example.com)')).toBe('<https://example.com|text>')
+  })
+
+  it('converts strikethrough to single tilde', () => {
+    expect(formatForSlackMrkdwn('~~torolt~~')).toBe('~torolt~')
+  })
+
+  it('converts checkboxes to Slack emojis', () => {
+    expect(formatForSlackMrkdwn('- [ ] teendo')).toContain(':white_square:')
+    expect(formatForSlackMrkdwn('- [x] kesz')).toContain(':white_check_mark:')
+  })
+
+  it('removes horizontal rules', () => {
+    expect(formatForSlackMrkdwn('above\n---\nbelow')).not.toContain('---')
+    expect(formatForSlackMrkdwn('above\n***\nbelow')).not.toContain('***')
+  })
+
+  it('preserves inline code', () => {
+    expect(formatForSlackMrkdwn('use `cmd` here')).toBe('use `cmd` here')
+  })
+
+  it('preserves code blocks', () => {
+    const input = '```js\nconsole.log("hi")\n```'
+    expect(formatForSlackMrkdwn(input)).toContain('```')
+  })
+
+  it('trims whitespace from output', () => {
+    expect(formatForSlackMrkdwn('  hello  ')).toBe('hello')
   })
 })
 

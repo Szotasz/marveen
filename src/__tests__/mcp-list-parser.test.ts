@@ -94,6 +94,16 @@ describe('parseMcpListLine -- plugin entries', () => {
     expect(result?.normalizedId).toBe('my-server')
   })
 
+  it('parses a plugin:slack:slack entry (Slack channel provider)', () => {
+    const result = parseMcpListLine(
+      'plugin:slack:slack: node /path/to/slack-server.js - Connected',
+    )
+    expect(result).not.toBeNull()
+    expect(result?.source).toBe('plugin')
+    expect(result?.normalizedId).toBe('slack')
+    expect(result?.status).toBe('connected')
+  })
+
   it('uses the last colon-separated segment for a two-part plugin name', () => {
     // "plugin:telegram" only has one segment after the prefix. Take the
     // last segment ("telegram") as the id; it lines up with the canonical
@@ -157,13 +167,14 @@ describe('parseMcpList -- full output', () => {
       'claude.ai Gmail: https://gmailmcp.googleapis.com/mcp/v1 - Connected',
       'claude.ai Google Calendar: https://calendarmcp.googleapis.com/mcp/v1 - Connected',
       'plugin:telegram:telegram: bun run /path - Connected',
+      'plugin:slack:slack: node /path/slack - Connected',
       'my-local: node /tmp/x - Failed to connect',
       '',
     ].join('\n')
     const result = parseMcpList(output)
-    expect(result).toHaveLength(4)
-    expect(result.map(r => r.normalizedId)).toEqual(['gmail', 'google-calendar', 'telegram', 'my-local'])
-    expect(result.map(r => r.source)).toEqual(['claude.ai', 'claude.ai', 'plugin', 'local'])
+    expect(result).toHaveLength(5)
+    expect(result.map(r => r.normalizedId)).toEqual(['gmail', 'google-calendar', 'telegram', 'slack', 'my-local'])
+    expect(result.map(r => r.source)).toEqual(['claude.ai', 'claude.ai', 'plugin', 'plugin', 'local'])
   })
 
   it('returns an empty array for a banner-only output', () => {
