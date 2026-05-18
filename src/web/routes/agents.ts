@@ -51,6 +51,8 @@ import {
   getProvider,
   channelStateDir,
   readChannelToken,
+  generateSlackAppManifest,
+  getSlackAppSetupInstructions,
   type ChannelProviderType,
 } from '../../channel-provider.js'
 import {
@@ -386,6 +388,19 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     return true
   }
 
+  // GET /api/agents/:name/channels/slack/manifest
+  const manifestMatch = path.match(/^\/api\/agents\/([^/]+)\/channels\/slack\/manifest$/)
+  if (manifestMatch && method === 'GET') {
+    const name = decodeURIComponent(manifestMatch[1])
+    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    const displayName = readAgentDisplayName(name) || name
+    json(res, {
+      manifest: generateSlackAppManifest(displayName),
+      instructions: getSlackAppSetupInstructions(),
+    })
+    return true
+  }
+
   // POST /api/agents/:name/channels/:provider/test (legacy: /telegram/test)
   const testMatch = matchChannelRoute(path, '/test')
   if (testMatch && method === 'POST') {
@@ -417,9 +432,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (!validation.ok) { json(res, { error: validation.error || 'Invalid token' }, 400); return true }
 
     if (provider === 'slack' && !isManagedSettingsReady()) {
+      const displayName = readAgentDisplayName(name) || name
       json(res, {
         error: 'managed-settings-missing',
         sudoCommand: getManagedSettingsSudoCommand(),
+        slackAppManifest: generateSlackAppManifest(displayName),
+        slackAppInstructions: getSlackAppSetupInstructions(),
       }, 409)
       return true
     }
