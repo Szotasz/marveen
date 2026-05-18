@@ -101,7 +101,7 @@ const MANAGED_SETTINGS_PATH = platform() === 'darwin'
   : '/etc/claude-code/managed-settings.json'
 const SLACK_ALLOWLIST_ENTRY = { plugin: 'slack-channel', marketplace: 'marveen-marketplace' }
 
-function isManagedSettingsReady(): boolean {
+export function isManagedSettingsReady(): boolean {
   if (!existsSync(MANAGED_SETTINGS_PATH)) return false
   try {
     const data = JSON.parse(readFileSync(MANAGED_SETTINGS_PATH, 'utf-8')) as {
@@ -116,7 +116,7 @@ function isManagedSettingsReady(): boolean {
   }
 }
 
-function getManagedSettingsSudoCommand(): string {
+export function getManagedSettingsSudoCommand(): string {
   const mergeScript = [
     'import json, sys',
     'new_plugins = json.loads(sys.stdin.read())["allowedChannelPlugins"]',
@@ -139,7 +139,7 @@ function getManagedSettingsSudoCommand(): string {
   return `echo '${payload}' | sudo python3 -c '${mergeScript}' | sudo tee "${MANAGED_SETTINGS_PATH}" > /dev/null`
 }
 
-function setAgentEnabledPlugins(name: string, provider: ChannelProviderType): void {
+export function setAgentEnabledPlugins(name: string, provider: ChannelProviderType): void {
   const settingsDir = join(agentDir(name), '.claude')
   const settingsPath = join(settingsDir, 'settings.json')
   mkdirSync(settingsDir, { recursive: true })
@@ -157,7 +157,7 @@ function setAgentEnabledPlugins(name: string, provider: ChannelProviderType): vo
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
 
-function resetAgentEnabledPlugins(name: string): void {
+export function resetAgentEnabledPlugins(name: string): void {
   const settingsPath = join(agentDir(name), '.claude', 'settings.json')
   if (!existsSync(settingsPath)) return
   try {

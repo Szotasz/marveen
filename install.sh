@@ -226,7 +226,7 @@ else
   REQUIRED_JSON="{\"allowedChannelPlugins\":[$SLACK_ENTRY,$TELEGRAM_ENTRY]}"
 
   if [ -f "$MANAGED_FILE" ]; then
-    HAS_SLACK=$(python3 -c "
+    HAS_SLACK=$(sudo python3 -c "
 import json, sys
 try:
   d = json.load(open('$MANAGED_FILE'))
@@ -236,7 +236,7 @@ except: sys.exit(1)
 " 2>/dev/null && echo "yes" || echo "no")
     if [ "$HAS_SLACK" = "no" ]; then
       echo -e "  ${ORANGE}⚠${NC} A managed-settings.json frissítése szükséges (sudo)."
-      echo "$REQUIRED_JSON" | python3 -c "
+      echo "$REQUIRED_JSON" | sudo python3 -c "
 import json, sys
 new = json.loads(sys.stdin.read())
 try:
