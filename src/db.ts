@@ -296,6 +296,20 @@ export function initDatabase(): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_messages_status ON agent_messages(status, to_agent)`)
 
+  // --- Pending Channel Requests (Slack channel opt-in workflow) ---
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pending_channel_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      channel_name TEXT,
+      user_id TEXT,
+      requested_at INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','denied'))
+    )
+  `)
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pcr_agent_channel ON pending_channel_requests(agent, channel_id) WHERE status = 'pending'`)
+
   // --- Task Run History ---
   // Log every scheduled-task firing so the dashboard overview's "tasksToday"
   // survives dashboard restarts. Replaces the old store/task-run-history.json
@@ -1080,4 +1094,44 @@ export async function backfillEmbeddings(): Promise<number> {
     await new Promise(r => setTimeout(r, 100))
   }
   return count
+}
+
+// --- Pending Channel Requests ---
+
+export interface PendingChannelRequest {
+  id: number
+  agent: string
+  channel_id: string
+  channel_name: string | null
+  user_id: string | null
+  requested_at: number
+  status: 'pending' | 'approved' | 'denied'
+}
+
+export function upsertChannelRequest(agent: string, channelId: string, userId?: string): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  const existing = db.prepare(
+    "SELECT id FROM pending_channel_requests WHERE agent = ? AND channel_id = ? AND status = 'pending'"
+  ).get(agent, channelId)
+  if (existing) return false
+  db.prepare(
+    'INSERT INTO pending_channel_requests (agent, channel_id, user_id, requested_at, status) VALUES (?, ?, ?, ?, ?)'
+  ).run(agent, channelId, userId ?? null, now, 'pending')
+  return true
+}
+
+export function listPendingChannelRequests(agent: string): PendingChannelRequest[] {
+  return db.prepare(
+    "SELECT * FROM pending_channel_requests WHERE agent = ? AND status = 'pending' ORDER BY requested_at DESC"
+  ).all(agent) as PendingChannelRequest[]
+}
+
+export function updateChannelRequestStatus(id: number, status: 'approved' | 'denied'): boolean {
+  return db.prepare(
+    'UPDATE pending_channel_requests SET status = ? WHERE id = ? AND status = ?'
+  ).run(status, id, 'pending').changes > 0
+}
+
+export function updateChannelRequestName(id: number, channelName: string): void {
+  db.prepare('UPDATE pending_channel_requests SET channel_name = ? WHERE id = ?').run(channelName, id)
 }

@@ -16,6 +16,7 @@ import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
 import { startWebServer } from './web.js'
 import { logger } from './logger.js'
 import { startInviteMonitor, stopInviteMonitor } from './web/channel-invites.js'
+import { startChannelRequestWatcher, stopChannelRequestWatcher } from './web/channel-request-watcher.js'
 import { AGENTS_BASE_DIR } from './web/agent-config.js'
 import {
   acquirePortLock,
@@ -344,6 +345,7 @@ const shutdown = (): void => {
       try { stopHeartbeat() } catch (err) { logger.warn({ err }, 'stopHeartbeat threw during shutdown') }
     }
     try { stopInviteMonitor() } catch (err) { logger.warn({ err }, 'stopInviteMonitor threw during shutdown') }
+    try { stopChannelRequestWatcher() } catch (err) { logger.warn({ err }, 'stopChannelRequestWatcher threw during shutdown') }
     if (decayInterval) clearInterval(decayInterval)
     if (digestTimer) clearTimeout(digestTimer)
     if (digestInterval) clearInterval(digestInterval)
@@ -433,6 +435,9 @@ async function main(): Promise<void> {
 
   // Telegram invite auto-approve monitor (one-click pairing).
   startInviteMonitor(MAIN_AGENT_ID, AGENTS_BASE_DIR)
+
+  // Slack channel request watcher (audit.jsonl -> pending_channel_requests).
+  startChannelRequestWatcher()
 
   // Web dashboard
   webServer = startWebServer(WEB_PORT)
