@@ -1342,8 +1342,8 @@ function updateProviderUI() {
     if (input) input.placeholder = '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11'
     if (slackGroup) slackGroup.hidden = true
   } else {
-    if (title) title.textContent = 'Slack app bekotese'
-    if (steps) steps.innerHTML = '<li>Hozz letre egy Slack App-ot a <strong>api.slack.com/apps</strong> oldalon</li><li>Engedeld a Socket Mode-ot es a szukseges scope-okat</li><li>Masold be a Bot Token-t (xoxb-...) es az App Token-t (xapp-...)</li>'
+    if (title) title.textContent = 'Slack app bekötése'
+    if (steps) steps.innerHTML = '<li>Hozz létre egy Slack App-ot a <strong>api.slack.com/apps</strong> oldalon</li><li>Engedélyezd a Socket Mode-ot és a szükséges scope-okat</li><li>Másold be a Bot Token-t (xoxb-...) és az App Token-t (xapp-...)</li>'
     if (label) label.textContent = 'Bot Token (xoxb-...)'
     if (input) input.placeholder = 'xoxb-...'
     if (slackGroup) slackGroup.hidden = false
@@ -4365,7 +4365,7 @@ async function loadGitHubRepos() {
     addBtn.textContent = 'Telepites...'
     status.hidden = false
     status.className = 'github-repo-status loading'
-    status.textContent = 'Klonozas es telepites...'
+    status.textContent = 'Klónozás és telepítés...'
     try {
       const res = await fetch('/api/connectors/github-repos', {
         method: 'POST',
@@ -4380,7 +4380,7 @@ async function loadGitHubRepos() {
       }
       if (data.requiredEnvVars && data.requiredEnvVars.length > 0) {
         status.className = 'github-repo-status loading'
-        status.textContent = 'API kulcsok megadasa szukseges...'
+        status.textContent = 'API kulcsok megadása szükséges...'
         const envValues = await showEnvVarModal(data.requiredEnvVars)
         if (envValues && Object.keys(envValues).length > 0) {
           for (const [key, value] of Object.entries(envValues)) {

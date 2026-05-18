@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, mkdirSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync, copyFileSync } from 'node:fs'
 import { join, extname } from 'node:path'
-import { homedir } from 'node:os'
+import { homedir, platform } from 'node:os'
 import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID, BOT_NAME } from '../../config.js'
@@ -96,7 +96,9 @@ function matchChannelRoute(path: string, suffix: string): [string, ChannelProvid
   return null
 }
 
-const MANAGED_SETTINGS_PATH = '/Library/Application Support/ClaudeCode/managed-settings.json'
+const MANAGED_SETTINGS_PATH = platform() === 'darwin'
+  ? '/Library/Application Support/ClaudeCode/managed-settings.json'
+  : '/etc/claude-code/managed-settings.json'
 const SLACK_ALLOWLIST_ENTRY = { plugin: 'slack-channel', marketplace: 'marveen-marketplace' }
 
 function isManagedSettingsReady(): boolean {
@@ -115,13 +117,26 @@ function isManagedSettingsReady(): boolean {
 }
 
 function getManagedSettingsSudoCommand(): string {
+  const mergeScript = [
+    'import json, sys',
+    'new_plugins = json.loads(sys.stdin.read())["allowedChannelPlugins"]',
+    'try:',
+    `  with open("${MANAGED_SETTINGS_PATH}") as f: data = json.load(f)`,
+    'except: data = {}',
+    'existing = data.get("allowedChannelPlugins", [])',
+    'for e in new_plugins:',
+    '  if not any(p.get("plugin")==e["plugin"] and p.get("marketplace")==e["marketplace"] for p in existing):',
+    '    existing.append(e)',
+    'data["allowedChannelPlugins"] = existing',
+    'print(json.dumps(data, indent=2))',
+  ].join('; ')
   const payload = JSON.stringify({
     allowedChannelPlugins: [
       SLACK_ALLOWLIST_ENTRY,
       { plugin: 'telegram', marketplace: 'claude-plugins-official' },
     ],
   })
-  return `echo '${payload}' | sudo tee "${MANAGED_SETTINGS_PATH}"`
+  return `echo '${payload}' | sudo python3 -c '${mergeScript}' | sudo tee "${MANAGED_SETTINGS_PATH}" > /dev/null`
 }
 
 function setAgentEnabledPlugins(name: string, provider: ChannelProviderType): void {
@@ -140,6 +155,16 @@ function setAgentEnabledPlugins(name: string, provider: ChannelProviderType): vo
   }
   existing.enabledPlugins = plugins
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
+}
+
+function resetAgentEnabledPlugins(name: string): void {
+  const settingsPath = join(agentDir(name), '.claude', 'settings.json')
+  if (!existsSync(settingsPath)) return
+  try {
+    const existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown>
+    delete existing.enabledPlugins
+    atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
+  } catch { /* settings corrupt, nothing to reset */ }
 }
 
 function resolveAccessPath(name: string, provider: ChannelProviderType): string {
@@ -444,6 +469,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (existsSync(envFile)) unlinkSync(envFile)
     if (existsSync(accessFile)) unlinkSync(accessFile)
     writeAgentChannelProvider(name, '')
+    resetAgentEnabledPlugins(name)
     json(res, { ok: true })
     return true
   }
