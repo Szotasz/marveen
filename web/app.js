@@ -1187,6 +1187,7 @@ function startChannelAutoPoll() {
     refreshPendingPairings()
     refreshAllowedList()
     refreshInvites()
+    refreshChannelRequests()
   }, 4000)
 }
 function stopChannelAutoPoll() {
@@ -1368,6 +1369,7 @@ function updateChannelTab(agent) {
     refreshPendingPairings()
     refreshAllowedList()
     refreshInvites()
+    refreshChannelRequests()
   }
 }
 
@@ -1650,6 +1652,76 @@ async function revokeInviteToken(token) {
 
 document.getElementById('chGenerateInviteBtn').addEventListener('click', generateInvite)
 document.getElementById('chRefreshInvitesBtn').addEventListener('click', refreshInvites)
+
+// --- Channel Requests (Slack channel opt-in) ---
+async function refreshChannelRequests() {
+  if (!currentAgent) return
+  const section = document.getElementById('chRequestSection')
+  const listEl = document.getElementById('chRequestList')
+  const badge = document.getElementById('chRequestBadge')
+  if (currentChannelProvider !== 'slack') {
+    section.hidden = true
+    return
+  }
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/channel-requests`)
+    if (!res.ok) { section.hidden = true; return }
+    const items = await res.json()
+    if (!items.length) {
+      section.hidden = true
+      badge.hidden = true
+      return
+    }
+    section.hidden = false
+    badge.hidden = false
+    badge.textContent = items.length
+    listEl.innerHTML = ''
+    for (const req of items) {
+      const item = document.createElement('div')
+      item.className = 'tg-allowed-item'
+      const name = req.channel_name ? escapeHtml(req.channel_name) : req.channel_id
+      const ts = new Date(req.requested_at * 1000).toLocaleString('hu-HU')
+      const userId = req.user_id ? `<span class="tg-allowed-id">user: ${escapeHtml(req.user_id)}</span>` : ''
+      item.innerHTML = `
+        <div class="tg-allowed-meta">
+          <span class="tg-allowed-kind tg-allowed-kind-group">#${name}</span>
+          ${userId}
+          <span class="tg-allowed-id" style="font-size:11px;color:var(--text-muted)">${ts}</span>
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="btn-primary btn-compact" data-approve="${req.id}" style="padding:4px 10px;font-size:11px;margin:0">Jóváhagyás</button>
+          <button class="btn-icon-danger" data-deny="${req.id}" title="Elutasítás">&times;</button>
+        </div>
+      `
+      item.querySelector('[data-approve]').addEventListener('click', () => approveChannelRequest(req.id))
+      item.querySelector('[data-deny]').addEventListener('click', () => denyChannelRequest(req.id))
+      listEl.appendChild(item)
+    }
+  } catch { section.hidden = true }
+}
+
+async function approveChannelRequest(id) {
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/channel-requests/${id}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requireMention: true, allowFromAll: false }),
+    })
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Hiba')
+    showToast('Csatorna jóváhagyva')
+    refreshChannelRequests()
+  } catch (err) { showToast(`Hiba: ${err.message}`) }
+}
+
+async function denyChannelRequest(id) {
+  if (!confirm('Biztosan elutasítod?')) return
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/channel-requests/${id}/deny`, { method: 'POST' })
+    if (!res.ok) throw new Error('Hiba')
+    showToast('Kérés elutasítva')
+    refreshChannelRequests()
+  } catch (err) { showToast(`Hiba: ${err.message}`) }
+}
 
 document.getElementById('chApproveBtn').addEventListener('click', async () => {
   const code = document.getElementById('chPairCode').value.trim()
