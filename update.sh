@@ -123,7 +123,10 @@ fi
 # emit a warning so the operator does not lose work silently -- the
 # stash entry is also kept in `git stash list` for manual recovery.
 STASHED_AUTO=0
-DIRTY=$(git status --porcelain --untracked-files=no | head -n 1)
+# HEARTBEAT.md is rewritten by the agent every heartbeat tick (self-modifying).
+# Exclude it from the dirty check; the preflight ignores it too. It will be
+# auto-overwritten on the next heartbeat anyway, so no data loss.
+DIRTY=$(git status --porcelain --untracked-files=no | grep -vE ' HEARTBEAT\.md$' | head -n 1)
 if [ -n "$DIRTY" ]; then
   if [ "${AUTO_STASH:-0}" = "1" ]; then
     echo -e "  Lokalis valtozasok stash-elve (auto-stash)..."
