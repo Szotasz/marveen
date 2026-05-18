@@ -224,8 +224,10 @@ if [ -d "$MARKETPLACE_PLUGIN_DIR" ]; then
       fi
     fi
     SLACK_REF_TMP="$(mktemp "${SLACK_REF_FILE}.XXXXXX")"
+    trap 'rm -f "$UPDATE_PIDFILE" "$UPDATE_PIDFILE_TMP" "$SLACK_REF_TMP"' EXIT
     echo "$CURRENT_REF" > "$SLACK_REF_TMP"
     mv "$SLACK_REF_TMP" "$SLACK_REF_FILE"
+    trap 'rm -f "$UPDATE_PIDFILE" "$UPDATE_PIDFILE_TMP"' EXIT
   fi
 fi
 
