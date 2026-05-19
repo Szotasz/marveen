@@ -6,21 +6,29 @@ import type { RouteContext } from './types.js'
 const TZ = 'Europe/Budapest'
 
 function todayBudapest(): string {
-  return new Date().toLocaleDateString('sv-SE', { timeZone: TZ })
+  return new Intl.DateTimeFormat('sv-SE', { timeZone: TZ }).format(new Date())
+}
+
+function budapestDate(d: Date): string {
+  return new Intl.DateTimeFormat('sv-SE', { timeZone: TZ }).format(d)
 }
 
 function addDays(dateStr: string, days: number): string {
-  const d = new Date(`${dateStr}T12:00:00`)
-  d.setDate(d.getDate() + days)
-  return d.toISOString().split('T')[0]
+  const ms = new Date(`${dateStr}T12:00:00Z`).getTime() + days * 86_400_000
+  return budapestDate(new Date(ms))
+}
+
+function dayOfWeekBudapest(dateStr: string): number {
+  const d = new Date(`${dateStr}T12:00:00Z`)
+  const weekday = new Intl.DateTimeFormat('en-US', { timeZone: TZ, weekday: 'short' }).format(d)
+  const map: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }
+  return map[weekday] ?? 0
 }
 
 function startOfWeek(dateStr: string): string {
-  const d = new Date(`${dateStr}T12:00:00`)
-  const day = d.getDay()
-  const diff = day === 0 ? -6 : 1 - day
-  d.setDate(d.getDate() + diff)
-  return d.toISOString().split('T')[0]
+  const dow = dayOfWeekBudapest(dateStr)
+  const diff = dow === 0 ? -6 : 1 - dow
+  return addDays(dateStr, diff)
 }
 
 function startOfMonth(dateStr: string): string {
@@ -28,10 +36,9 @@ function startOfMonth(dateStr: string): string {
 }
 
 function endOfMonth(dateStr: string): string {
-  const d = new Date(`${dateStr.slice(0, 8)}01T12:00:00`)
-  d.setMonth(d.getMonth() + 1)
-  d.setDate(0)
-  return d.toISOString().split('T')[0]
+  const [y, m] = dateStr.split('-').map(Number)
+  const last = new Date(Date.UTC(y, m, 0))
+  return budapestDate(last)
 }
 
 const HU_MONTHS: Record<string, string> = {
@@ -43,20 +50,37 @@ const HU_MONTHS: Record<string, string> = {
   'szept': '09', 'okt': '10', 'nov': '11', 'dec': '12',
 }
 
+const HU_DAYS: Record<string, number> = {
+  'hetfo': 1, 'kedd': 2, 'szerda': 3, 'csutortok': 4,
+  'pentek': 5, 'szombat': 6, 'vasarnap': 0,
+}
+
 interface DateRange { from: string; to: string }
 
-export function parseDateExpression(input: string): DateRange | null {
-  const s = input.trim().toLowerCase()
+function stripAccents(s: string): string {
+  return s
     .replace(/á/g, 'a').replace(/é/g, 'e').replace(/í/g, 'i')
     .replace(/ó/g, 'o').replace(/ö/g, 'o').replace(/ő/g, 'o')
     .replace(/ú/g, 'u').replace(/ü/g, 'u').replace(/ű/g, 'u')
+}
+
+function lastOccurrence(targetDow: number, today: string): string {
+  const todayDow = dayOfWeekBudapest(today)
+  let diff = todayDow - targetDow
+  if (diff <= 0) diff += 7
+  return addDays(today, -diff)
+}
+
+export function parseDateExpression(input: string): DateRange | null {
+  const raw = input.trim()
+  const s = stripAccents(raw.toLowerCase())
   const today = todayBudapest()
 
-  if (/^(\d{4})-(\d{2})-(\d{2})$/.test(input.trim())) {
-    return { from: input.trim(), to: input.trim() }
+  if (/^(\d{4})-(\d{2})-(\d{2})$/.test(raw)) {
+    return { from: raw, to: raw }
   }
 
-  const rangeMatch = input.trim().match(/^(\d{4}-\d{2}-\d{2})\s*[-–]\s*(\d{4}-\d{2}-\d{2})$/)
+  const rangeMatch = raw.match(/^(\d{4}-\d{2}-\d{2})\s*[-–]\s*(\d{4}-\d{2}-\d{2})$/)
   if (rangeMatch) {
     return { from: rangeMatch[1], to: rangeMatch[2] }
   }
@@ -69,6 +93,13 @@ export function parseDateExpression(input: string): DateRange | null {
   if (s === 'tegnapelott') {
     const d = addDays(today, -2)
     return { from: d, to: d }
+  }
+
+  for (const [name, dow] of Object.entries(HU_DAYS)) {
+    if (s === name || s === `mult ${name}` || s === `elozo ${name}`) {
+      const d = lastOccurrence(dow, today)
+      return { from: d, to: d }
+    }
   }
 
   const daysAgoMatch = s.match(/^(\d+)\s*nap(?:ja|pal?\s+ezelott)?$/)
@@ -120,7 +151,9 @@ export function parseDateExpression(input: string): DateRange | null {
         return { from, to }
       }
       const weekIdx = weekMap[weekMatch[1]] ?? 0
-      const from = addDays(startOfWeek(monthStart), weekIdx * 7)
+      let weekStart = startOfWeek(monthStart)
+      if (weekStart < monthStart) weekStart = addDays(weekStart, 7)
+      const from = addDays(weekStart, weekIdx * 7)
       const to = addDays(from, 6)
       return { from, to: to > monthEnd ? monthEnd : to }
     }
@@ -141,6 +174,10 @@ export function parseDateExpression(input: string): DateRange | null {
   }
 
   return null
+}
+
+function escapeLike(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')
 }
 
 export async function tryHandleRecall(ctx: RouteContext): Promise<boolean> {
@@ -168,7 +205,8 @@ export async function tryHandleRecall(ctx: RouteContext): Promise<boolean> {
     const result = recallByDateRange(range.from, range.to, agent)
 
     if (query) {
-      const qLower = query.toLowerCase()
+      const escaped = escapeLike(query)
+      const qLower = escaped.toLowerCase()
       result.logs = result.logs.filter(l => l.content.toLowerCase().includes(qLower))
       result.memories = result.memories.filter(m => m.content.toLowerCase().includes(qLower) || (m.keywords || '').toLowerCase().includes(qLower))
     }

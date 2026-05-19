@@ -6543,8 +6543,25 @@ async function loadRecallPage() {
     document.getElementById('recallBtn').addEventListener('click', doRecall)
     document.getElementById('recallExpr').addEventListener('keydown', e => { if (e.key === 'Enter') doRecall() })
     document.getElementById('recallSearch').addEventListener('keydown', e => { if (e.key === 'Enter') doRecall() })
+
+    loadRecallDates()
   }
   doRecall()
+}
+
+async function loadRecallDates() {
+  try {
+    const agentVal = document.getElementById('recallAgent').value
+    const params = agentVal ? `?agent=${encodeURIComponent(agentVal)}&limit=90` : '?limit=90'
+    const res = await fetch('/api/recall/dates' + params)
+    if (!res.ok) return
+    const dates = await res.json()
+    const dateInput = document.getElementById('recallDate')
+    if (dates.length && !dateInput.value) {
+      dateInput.value = dates[0]
+    }
+    dateInput.setAttribute('title', `${dates.length} nap naplóval`)
+  } catch {}
 }
 
 async function doRecall() {
@@ -6627,7 +6644,7 @@ function renderRecallTimeline(el, data) {
     } else {
       const catColors = { hot: '#ef4444', warm: '#f59e0b', cold: '#3b82f6', shared: '#8b5cf6' }
       const catColor = catColors[item.category] || '#6b7280'
-      html += `<div class="recall-item recall-memory" style="margin-bottom:12px;padding:10px 14px;border-radius:8px;background:var(--surface);border-left:3px solid ${catColor};border:1px solid var(--border);border-left:3px solid ${catColor};">
+      html += `<div class="recall-item recall-memory" style="margin-bottom:12px;padding:10px 14px;border-radius:8px;background:var(--surface);border:1px solid var(--border);border-left:3px solid ${catColor};">
         <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
           <span style="font-size:12px;color:var(--text-muted)">${esc(item.label)}</span>
           <div style="display:flex;gap:6px;">

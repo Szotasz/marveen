@@ -606,6 +606,26 @@ export interface RecallResult {
   dateRange: { from: string; to: string }
 }
 
+function toBudapestTs(dateStr: string, endOfDay: boolean): number {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Europe/Budapest',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  })
+  const refDate = new Date(`${dateStr}T${endOfDay ? '23:59:59' : '00:00:00'}`)
+  const parts = fmt.formatToParts(refDate)
+  const get = (t: string) => parts.find(p => p.type === t)?.value || '0'
+  const localStr = `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}`
+  const localMs = new Date(localStr + 'Z').getTime()
+  const offsetMs = localMs - refDate.getTime()
+  const target = new Date(`${dateStr}T${endOfDay ? '23:59:59' : '00:00:00'}Z`)
+  return Math.floor((target.getTime() - offsetMs) / 1000)
+}
+
+function escapeLike(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')
+}
+
 export function recallByDateRange(from: string, to: string, agentId?: string): RecallResult {
   const logSql = agentId
     ? 'SELECT id, agent_id, date, content, created_at FROM daily_logs WHERE date >= ? AND date <= ? AND agent_id = ? ORDER BY date ASC, created_at ASC'
@@ -613,8 +633,8 @@ export function recallByDateRange(from: string, to: string, agentId?: string): R
   const logParams = agentId ? [from, to, agentId] : [from, to]
   const logs = db.prepare(logSql).all(...logParams) as RecallResult['logs']
 
-  const fromTs = Math.floor(new Date(`${from}T00:00:00+02:00`).getTime() / 1000)
-  const toTs = Math.floor(new Date(`${to}T23:59:59+02:00`).getTime() / 1000)
+  const fromTs = toBudapestTs(from, false)
+  const toTs = toBudapestTs(to, true)
   const memSql = agentId
     ? "SELECT * FROM memories WHERE created_at >= ? AND created_at <= ? AND (agent_id = ? OR category = 'shared') ORDER BY created_at ASC"
     : 'SELECT * FROM memories WHERE created_at >= ? AND created_at <= ? ORDER BY created_at ASC'
@@ -627,6 +647,7 @@ export function recallByDateRange(from: string, to: string, agentId?: string): R
 export function recallSearch(query: string, agentId?: string, limit = 50): RecallResult {
   const terms = buildFtsMatchExpression(query)
   let memories: Memory[] = []
+  const escaped = escapeLike(query)
   if (terms) {
     try {
       const sql = agentId
@@ -637,20 +658,22 @@ export function recallSearch(query: string, agentId?: string, limit = 50): Recal
         : db.prepare(sql).all(terms, limit) as Memory[]
     } catch {
       const sql = agentId
-        ? "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?) ORDER BY created_at DESC LIMIT ?"
-        : 'SELECT * FROM memories WHERE (content LIKE ? OR keywords LIKE ?) ORDER BY created_at DESC LIMIT ?'
+        ? "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY created_at DESC LIMIT ?"
+        : "SELECT * FROM memories WHERE (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY created_at DESC LIMIT ?"
+      const pat = `%${escaped}%`
       memories = agentId
-        ? db.prepare(sql).all(agentId, `%${query}%`, `%${query}%`, limit) as Memory[]
-        : db.prepare(sql).all(`%${query}%`, `%${query}%`, limit) as Memory[]
+        ? db.prepare(sql).all(agentId, pat, pat, limit) as Memory[]
+        : db.prepare(sql).all(pat, pat, limit) as Memory[]
     }
   }
 
   const logSql = agentId
-    ? 'SELECT id, agent_id, date, content, created_at FROM daily_logs WHERE content LIKE ? AND agent_id = ? ORDER BY date DESC, created_at DESC LIMIT ?'
-    : 'SELECT id, agent_id, date, content, created_at FROM daily_logs WHERE content LIKE ? ORDER BY date DESC, created_at DESC LIMIT ?'
+    ? "SELECT id, agent_id, date, content, created_at FROM daily_logs WHERE content LIKE ? ESCAPE '\\' AND agent_id = ? ORDER BY date DESC, created_at DESC LIMIT ?"
+    : "SELECT id, agent_id, date, content, created_at FROM daily_logs WHERE content LIKE ? ESCAPE '\\' ORDER BY date DESC, created_at DESC LIMIT ?"
+  const logPat = `%${escaped}%`
   const logs = agentId
-    ? db.prepare(logSql).all(`%${query}%`, agentId, limit) as RecallResult['logs']
-    : db.prepare(logSql).all(`%${query}%`, limit) as RecallResult['logs']
+    ? db.prepare(logSql).all(logPat, agentId, limit) as RecallResult['logs']
+    : db.prepare(logSql).all(logPat, limit) as RecallResult['logs']
 
   const dates = logs.map(l => l.date)
   const from = dates.length ? dates[dates.length - 1] : ''
