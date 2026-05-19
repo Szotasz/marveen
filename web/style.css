@@ -1131,6 +1131,11 @@ main {
   border-color: rgba(120, 140, 93, 0.2);
 }
 .tg-notice-ok svg { color: var(--success); }
+.tg-notice-warn {
+  background: rgba(200, 140, 40, 0.08);
+  border-color: rgba(200, 140, 40, 0.3);
+}
+.tg-notice-warn svg { color: #c88c28; }
 
 .tg-pairing-section {
   margin-top: 20px;

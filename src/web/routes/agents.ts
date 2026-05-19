@@ -67,6 +67,8 @@ import {
   stopAgentProcess,
   getAgentProcessInfo,
 } from '../agent-process.js'
+import { attemptChannelMcpReconnect } from '../channel-mcp-reconnect.js'
+import { getChannelHealth } from '../channel-health-monitor.js'
 import {
   loadProfileTemplate,
   resolveProfilePlaceholders,
@@ -428,6 +430,32 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       const execErr = err as { stdout?: string; stderr?: string }
       json(res, { ok: false, output: (execErr.stdout || '') + (execErr.stderr || '') }, 200)
     }
+    return true
+  }
+
+  // POST /api/agents/:name/channel/reconnect
+  const reconnectMatch = path.match(/^\/api\/agents\/([^/]+)\/channel\/reconnect$/)
+  if (reconnectMatch && method === 'POST') {
+    const name = decodeURIComponent(reconnectMatch[1])
+    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
+      json(res, { error: 'Agent not found' }, 404); return true
+    }
+    if (name !== MAIN_AGENT_ID && !isAgentRunning(name)) {
+      json(res, { error: 'Agent is not running' }, 400); return true
+    }
+    const result = attemptChannelMcpReconnect(name)
+    json(res, result)
+    return true
+  }
+
+  // GET /api/agents/:name/channel/health
+  const healthMatch = path.match(/^\/api\/agents\/([^/]+)\/channel\/health$/)
+  if (healthMatch && method === 'GET') {
+    const name = decodeURIComponent(healthMatch[1])
+    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
+      json(res, { error: 'Agent not found' }, 404); return true
+    }
+    json(res, getChannelHealth(name))
     return true
   }
 

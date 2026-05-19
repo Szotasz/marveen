@@ -1337,6 +1337,7 @@ function updateProviderUI() {
   const slackGroup = document.getElementById('chSlackAppTokenGroup')
   const manifestBtnGroup = document.getElementById('chSlackManifestBtnGroup')
   const smokeTestBtn = document.getElementById('chSmokeTestBtn')
+  const reconnectBtn = document.getElementById('chReconnectBtn')
 
   if (isTg) {
     if (title) title.textContent = 'Telegram bot bekotese'
@@ -1355,6 +1356,9 @@ function updateProviderUI() {
     if (manifestBtnGroup) manifestBtnGroup.hidden = false
     if (smokeTestBtn) smokeTestBtn.hidden = false
   }
+  if (reconnectBtn) {
+    reconnectBtn.hidden = !(currentAgent && currentAgent.running && currentAgent.hasTelegram)
+  }
 }
 
 function updateChannelTab(agent) {
@@ -1371,12 +1375,36 @@ function updateChannelTab(agent) {
   const slackInput = document.getElementById('chSlackAppToken')
   if (slackInput) slackInput.value = ''
   updateProviderUI()
+  if (connected && running) {
+    refreshChannelHealth()
+  } else {
+    document.getElementById('chDisconnectedNotice').hidden = true
+    document.getElementById('chReconnectBtn').hidden = true
+  }
   if (connected) {
     refreshPendingPairings()
     refreshAllowedList()
     refreshInvites()
     refreshChannelRequests()
   }
+}
+
+async function refreshChannelHealth() {
+  if (!currentAgent) return
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/channel/health`)
+    if (!res.ok) return
+    const data = await res.json()
+    const notice = document.getElementById('chDisconnectedNotice')
+    const btn = document.getElementById('chReconnectBtn')
+    if (!data.healthy) {
+      if (notice) notice.hidden = false
+      if (btn) btn.hidden = false
+    } else {
+      if (notice) notice.hidden = true
+      if (btn) btn.hidden = false
+    }
+  } catch { /* ignore */ }
 }
 
 document.getElementById('chProviderSelect').addEventListener('change', (e) => {
@@ -1445,6 +1473,29 @@ document.getElementById('chTestBtn').addEventListener('click', async () => {
     showToast('Kapcsolat rendben!')
   } catch {
     showToast('Kapcsolat tesztelése sikertelen')
+  }
+})
+
+document.getElementById('chReconnectBtn').addEventListener('click', async () => {
+  if (!currentAgent) return
+  const btn = document.getElementById('chReconnectBtn')
+  const origText = btn.textContent
+  btn.disabled = true
+  btn.textContent = 'Reconnect...'
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/channel/reconnect`, { method: 'POST' })
+    const data = await res.json()
+    if (data.ok) {
+      showToast('Channel-MCP reconnect sikeres')
+      document.getElementById('chDisconnectedNotice').hidden = true
+    } else {
+      showToast(data.message || 'Reconnect sikertelen', true)
+    }
+  } catch {
+    showToast('Reconnect hiba', true)
+  } finally {
+    btn.disabled = false
+    btn.textContent = origText
   }
 })
 

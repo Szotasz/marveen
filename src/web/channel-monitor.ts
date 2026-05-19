@@ -16,6 +16,7 @@ import {
 import { MAIN_CHANNELS_SESSION, MAIN_CHANNELS_PLIST } from './main-agent.js'
 import { notifyChannel } from '../notify.js'
 import { getProvider, channelStateDir, type ChannelProviderType } from '../channel-provider.js'
+import { attemptChannelMcpReconnect } from './channel-mcp-reconnect.js'
 
 const TMUX = resolveFromPath('tmux')
 const CLAUDE = resolveFromPath('claude')
@@ -151,68 +152,8 @@ function getMainAgentProvider(): ChannelProviderType {
   return CHANNEL_PROVIDER
 }
 
-function getMainAgentPluginPattern(): RegExp {
-  const provider = getProvider(getMainAgentProvider())
-  const escaped = provider.pluginId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return new RegExp(escaped, 'i')
-}
-
 function softReconnectMarveen(): boolean {
-  const MAX_UP_ATTEMPTS = 8
-  const pluginPattern = getMainAgentPluginPattern()
-
-  try {
-    execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Escape'], { timeout: 3000 })
-    execFileSync('/bin/sleep', ['1'], { timeout: 2000 })
-
-    execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, '/mcp', 'Enter'], { timeout: 3000 })
-    execFileSync('/bin/sleep', ['1'], { timeout: 3000 })
-
-    const pane1 = capturePane(MAIN_CHANNELS_SESSION)
-    if (!pane1) {
-      logger.warn('soft reconnect: failed to capture pane after /mcp')
-      execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Escape'], { timeout: 3000 })
-      return false
-    }
-
-    let matchedAt = -1
-    for (let upCount = 1; upCount <= MAX_UP_ATTEMPTS; upCount++) {
-      execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Up'], { timeout: 3000 })
-      execFileSync('/bin/sleep', ['0.2'], { timeout: 1000 })
-      execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Enter'], { timeout: 3000 })
-      execFileSync('/bin/sleep', ['1'], { timeout: 3000 })
-
-      const pane = capturePane(MAIN_CHANNELS_SESSION)
-      if (pane && pluginPattern.test(pane)) {
-        matchedAt = upCount
-        break
-      }
-      execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Escape'], { timeout: 3000 })
-      execFileSync('/bin/sleep', ['0.5'], { timeout: 1000 })
-    }
-
-    if (matchedAt < 0) {
-      logger.warn(
-        { maxUpAttempts: MAX_UP_ATTEMPTS, pluginPattern: pluginPattern.source },
-        'soft reconnect: did not find channel plugin submenu within Up attempts',
-      )
-      execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Escape'], { timeout: 3000 })
-      return false
-    }
-
-    execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Down'], { timeout: 3000 })
-    execFileSync('/bin/sleep', ['0.3'], { timeout: 1000 })
-    execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Enter'], { timeout: 3000 })
-    execFileSync('/bin/sleep', ['2'], { timeout: 4000 })
-
-    execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Escape'], { timeout: 3000 })
-    logger.info({ matchedAt, provider: getMainAgentProvider() }, 'soft reconnect: /mcp → Up × N → Enter → Down (Reconnect) → Enter completed')
-    return true
-  } catch (err) {
-    logger.warn({ err }, 'Marveen soft reconnect failed')
-    try { execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, 'Escape'], { timeout: 3000 }) } catch { /* */ }
-    return false
-  }
+  return attemptChannelMcpReconnect(MAIN_AGENT_ID).ok
 }
 
 function triggerMarveenMemorySave(): void {
