@@ -530,6 +530,50 @@ main {
   cursor: grab;
   transition: all var(--transition);
   user-select: none;
+  position: relative;
+}
+.kanban-card-actions {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.kanban-card:hover .kanban-card-actions {
+  opacity: 1;
+}
+.card-breakdown-btn {
+  background: color-mix(in oklch, var(--accent) 15%, transparent);
+  border: 1px solid color-mix(in oklch, var(--accent) 30%, transparent);
+  border-radius: 5px;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 5px;
+  transition: background 0.15s;
+}
+.card-breakdown-btn:hover {
+  background: color-mix(in oklch, var(--accent) 25%, transparent);
+}
+.card-breakdown-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.kanban-subtask-badge {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  background: color-mix(in oklch, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in oklch, var(--accent) 25%, transparent);
+  padding: 1px 7px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.kanban-subtask-badge:hover {
+  background: color-mix(in oklch, var(--accent) 20%, transparent);
 }
 .kanban-card:hover {
   border-color: var(--accent);

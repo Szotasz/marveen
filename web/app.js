@@ -189,7 +189,34 @@ function renderKanban() {
   document.getElementById('countInProgress').textContent = grouped.in_progress.length
   document.getElementById('countWaiting').textContent = grouped.waiting.length
   document.getElementById('countDone').textContent = grouped.done.length
+
+  // Async parent-badge: fetch children count per card, show badge if any
+  loadSubtaskBadges()
 }
+
+async function loadSubtaskBadges() {
+  const cardEls = document.querySelectorAll('.kanban-card[data-id]')
+  await Promise.all([...cardEls].map(async (el) => {
+    const id = el.dataset.id
+    try {
+      const res = await fetch(`/api/kanban/${encodeURIComponent(id)}/children`)
+      if (!res.ok) return
+      const children = await res.json()
+      const badge = el.querySelector('.kanban-subtask-badge')
+      if (!badge) return
+      if (children.length > 0) {
+        badge.textContent = `${children.length} subtask`
+        badge.style.display = ''
+        badge.onclick = (e) => {
+          e.stopPropagation()
+          const card = kanbanCards.find((c) => c.id === id)
+          if (card) showCardDetail(card)
+        }
+      } else {
+        badge.style.display = 'none'
+      }
+    } catch { /* ignore */ }
+  }))
 
 function createCardEl(card) {
   const el = document.createElement('div')
@@ -220,7 +247,17 @@ function createCardEl(card) {
     ${projectHtml}
     <div class="kanban-card-title">${escapeHtml(card.title)}</div>
     <div class="kanban-card-footer">${assigneeHtml}${dueHtml}</div>
+    <div class="kanban-card-actions">
+      <button class="card-breakdown-btn" title="AI szétbont" aria-label="AI szétbont">⚡</button>
+    </div>
+    <div class="kanban-subtask-badge" style="display:none"></div>
   `
+
+  // "AI szétbont" gomb – ne nyissa meg a detail modalt
+  el.querySelector('.card-breakdown-btn').addEventListener('click', (e) => {
+    e.stopPropagation()
+    triggerBreakdown(card)
+  })
 
   // Drag events
   el.addEventListener('dragstart', (e) => {
@@ -531,32 +568,75 @@ async function showCardDetail(card) {
   openModal(cardDetailOverlay)
 }
 
+async function triggerBreakdown(card) {
+  const btn = document.querySelector(`.kanban-card[data-id="${card.id}"] .card-breakdown-btn`)
+  if (btn) { btn.disabled = true; btn.textContent = '...' }
+  try {
+    const res = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/breakdown`, { method: 'POST' })
+    const data = await res.json()
+    if (!res.ok) { showToast(data.error || 'Breakdown hiba'); return }
+    breakdownCardId = card.id
+    breakdownSubtasks = data.subtasks
+    showBreakdownModal(data.subtasks, data.provider, card)
+  } catch {
+    showToast('Breakdown hiba')
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⚡' }
+  }
+}
+
 function showBreakdownModal(subtasks, provider, parentCard) {
-  document.getElementById('breakdownProvider').textContent = `Provider: ${provider} | Szulő: ${escapeHtml(parentCard.title)}`
+  document.getElementById('breakdownProvider').textContent = `${provider} · Szülő: ${escapeHtml(parentCard.title)}`
   const list = document.getElementById('breakdownList')
   list.innerHTML = ''
+
+  const priorityLabels = { low: 'Alacsony', normal: 'Normál', high: 'Magas', urgent: 'Sürgős' }
+  const assigneeOptions = kanbanAssignees
+    .map((a) => `<option value="${escapeHtml(a.name)}">${escapeHtml(a.name)}</option>`)
+    .join('')
+
   subtasks.forEach((st, i) => {
     const div = document.createElement('div')
-    div.className = 'comment-item'
+    div.className = 'comment-item breakdown-subtask-item'
+    div.dataset.idx = i
     div.style.borderLeft = '3px solid var(--accent)'
     div.innerHTML = `
-      <div style="display:flex; justify-content:space-between; align-items:center">
-        <strong>${i + 1}. ${escapeHtml(st.title)}</strong>
-        <label style="font-size:0.85em"><input type="checkbox" class="breakdown-check" data-idx="${i}" checked> Elfogad</label>
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px">
+        <label style="font-size:0.8em; color:var(--text-muted); white-space:nowrap">${i + 1}.</label>
+        <input type="text" class="breakdown-title-input" value="${escapeHtml(st.title)}"
+          style="flex:1; padding:5px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text); font-size:0.9em">
+        <label style="font-size:0.8em; white-space:nowrap">
+          <input type="checkbox" class="breakdown-check" data-idx="${i}" checked> Bele
+        </label>
       </div>
-      <div style="font-size:0.85em; margin-top:4px">${escapeHtml(st.description)}</div>
-      <div style="font-size:0.85em; color:var(--text-muted); margin-top:2px">
-        Felelős: ${st.assignee ? escapeHtml(st.assignee) : '-- nincs --'} | Prioritás: ${st.priority}
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+        <select class="breakdown-assignee-select" style="padding:4px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text); font-size:0.85em">
+          <option value="">-- nincs --</option>
+          ${assigneeOptions}
+        </select>
+        <span class="priority-badge priority-${st.priority}">${priorityLabels[st.priority] || st.priority}</span>
       </div>
     `
+    // Set assignee select value after insert
+    const sel = div.querySelector('.breakdown-assignee-select')
+    if (st.assignee) sel.value = st.assignee
     list.appendChild(div)
   })
   openModal(breakdownOverlay)
 }
 
 document.getElementById('breakdownAcceptBtn').addEventListener('click', async () => {
-  const checks = document.querySelectorAll('.breakdown-check')
-  const accepted = breakdownSubtasks.filter((_, i) => checks[i]?.checked)
+  const items = document.querySelectorAll('.breakdown-subtask-item')
+  const accepted = []
+  items.forEach((item) => {
+    const idx = parseInt(item.dataset.idx, 10)
+    const checked = item.querySelector('.breakdown-check')?.checked
+    if (!checked) return
+    const title = item.querySelector('.breakdown-title-input')?.value.trim() || breakdownSubtasks[idx]?.title
+    const assignee = item.querySelector('.breakdown-assignee-select')?.value || breakdownSubtasks[idx]?.assignee
+    const priority = breakdownSubtasks[idx]?.priority || 'normal'
+    accepted.push({ title, assignee, priority })
+  })
   if (accepted.length === 0) { showToast('Válassz legalább egy subtask-ot'); return }
   try {
     const res = await fetch(`/api/kanban/${encodeURIComponent(breakdownCardId)}/breakdown/accept`, {
