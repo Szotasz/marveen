@@ -3,7 +3,7 @@ import {
   listKanbanCards, createKanbanCard, updateKanbanCard,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard,
   getKanbanComments, addKanbanComment, listKanbanProjects,
-  getKanbanCard, getChildCards,
+  getKanbanCard, getChildCards, getDb,
 } from '../../db.js'
 import { OWNER_NAME } from '../../config.js'
 import { listAgentNames } from '../agent-config.js'
@@ -124,21 +124,25 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'Subtask lista kötelező' }, 400)
       return true
     }
-    const created: string[] = []
-    for (const st of subtasks) {
-      const id = randomUUID().slice(0, 8).toUpperCase()
-      createKanbanCard({
-        id,
-        title: st.title,
-        description: st.description,
-        assignee: st.assignee ?? undefined,
-        priority: (st.priority as any) ?? 'normal',
-        project: parent.project ?? undefined,
-        parent_id: parentId,
-      })
-      created.push(id)
-    }
-    addKanbanComment(parentId, 'Marveen', `Auto-breakdown: ${created.length} subtask létrehozva (${created.join(', ')})`)
+    const db = getDb()
+    const created = db.transaction(() => {
+      const ids: string[] = []
+      for (const st of subtasks) {
+        const id = randomUUID().slice(0, 8).toUpperCase()
+        createKanbanCard({
+          id,
+          title: st.title,
+          description: st.description,
+          assignee: st.assignee ?? undefined,
+          priority: (st.priority as any) ?? 'normal',
+          project: parent.project ?? undefined,
+          parent_id: parentId,
+        })
+        ids.push(id)
+      }
+      addKanbanComment(parentId, 'Marveen', `Auto-breakdown: ${ids.length} subtask létrehozva (${ids.join(', ')})`)
+      return ids
+    })()
     json(res, { ok: true, created })
     return true
   }
