@@ -352,6 +352,20 @@ export function initDatabase(): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_pending_retries_first_attempt ON pending_task_retries(first_attempt)`)
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS background_tasks (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','done','failed','timeout')),
+      tmux_session TEXT,
+      started_at INTEGER NOT NULL,
+      finished_at INTEGER,
+      output TEXT
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_bg_tasks_agent ON background_tasks(agent_id, status)`)
+
   // One-shot migration from the old JSON file (which had a read-modify-write
   // race). Import rows if they exist, then rename the file so we don't keep
   // re-importing. Wrapped in a transaction so a crash mid-import is safe.
@@ -680,6 +694,53 @@ export function recallSearch(query: string, agentId?: string, limit = 50): Recal
   const to = dates.length ? dates[0] : ''
 
   return { logs, memories, dateRange: { from, to } }
+}
+
+// --- Background tasks ---
+
+export interface BackgroundTask {
+  id: string
+  agent_id: string
+  prompt: string
+  status: 'running' | 'done' | 'failed' | 'timeout'
+  tmux_session: string | null
+  started_at: number
+  finished_at: number | null
+  output: string | null
+}
+
+export function createBackgroundTask(id: string, agentId: string, prompt: string, tmuxSession: string): BackgroundTask {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare('INSERT INTO background_tasks (id, agent_id, prompt, status, tmux_session, started_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(id, agentId, prompt, 'running', tmuxSession, now)
+  return { id, agent_id: agentId, prompt, status: 'running', tmux_session: tmuxSession, started_at: now, finished_at: null, output: null }
+}
+
+export function finishBackgroundTask(id: string, status: 'done' | 'failed' | 'timeout', output: string | null): void {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare('UPDATE background_tasks SET status = ?, finished_at = ?, output = ? WHERE id = ?')
+    .run(status, now, output, id)
+}
+
+export function getBackgroundTasks(agentId?: string, includeFinished = false): BackgroundTask[] {
+  if (agentId) {
+    const sql = includeFinished
+      ? 'SELECT * FROM background_tasks WHERE agent_id = ? ORDER BY started_at DESC LIMIT 50'
+      : "SELECT * FROM background_tasks WHERE agent_id = ? AND status = 'running' ORDER BY started_at DESC"
+    return db.prepare(sql).all(agentId) as BackgroundTask[]
+  }
+  const sql = includeFinished
+    ? 'SELECT * FROM background_tasks ORDER BY started_at DESC LIMIT 50'
+    : "SELECT * FROM background_tasks WHERE status = 'running' ORDER BY started_at DESC"
+  return db.prepare(sql).all() as BackgroundTask[]
+}
+
+export function getBackgroundTask(id: string): BackgroundTask | undefined {
+  return db.prepare('SELECT * FROM background_tasks WHERE id = ?').get(id) as BackgroundTask | undefined
+}
+
+export function countRunningBackgroundTasks(agentId: string): number {
+  return (db.prepare("SELECT COUNT(*) as c FROM background_tasks WHERE agent_id = ? AND status = 'running'").get(agentId) as { c: number }).c
 }
 
 // --- Ütemezett feladatok ---

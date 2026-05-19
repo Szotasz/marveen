@@ -44,6 +44,10 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
         <span class="sb-label">Napló</span>
       </a>
+      <a href="#" class="sb-link" data-page="bgTasks">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        <span class="sb-label">Háttér</span>
+      </a>
       <a href="#" class="sb-link" data-page="skills">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15 8.5 22 9.3 17 14.2 18.2 21 12 17.8 5.8 21 7 14.2 2 9.3 9 8.5"/></svg>
         <span class="sb-label">Skillek</span>
@@ -391,6 +395,29 @@
       </div>
       <div class="recall-summary" id="recallSummary" style="margin-bottom:12px;"></div>
       <div class="recall-timeline" id="recallTimeline"></div>
+    </div>
+
+    <!-- === Background Tasks Page === -->
+    <div class="page" id="bgTasksPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1>Háttérfeladatok</h1>
+            <p class="subtitle">Háttérben futó feladatok indítása és követése</p>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;gap:12px;margin-bottom:16px;align-items:center;flex-wrap:wrap;">
+        <select id="bgAgent" class="input" style="width:150px;">
+          <option value="">Ágens</option>
+        </select>
+        <input type="text" id="bgPrompt" class="input" placeholder="Feladat leírása..." style="flex:1;min-width:300px;">
+        <button class="btn btn-primary" id="bgStartBtn">Indítás</button>
+        <label style="font-size:13px;color:var(--text-muted);display:flex;align-items:center;gap:4px;">
+          <input type="checkbox" id="bgShowAll"> Befejezettek is
+        </label>
+      </div>
+      <div id="bgTasksList"></div>
     </div>
 
     <!-- === Connectors Page === -->

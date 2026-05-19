@@ -79,6 +79,7 @@ function switchPage(pageId) {
   if (pageId === 'migrate') loadMigrateAgents()
   if (pageId === 'status') loadStatus()
   if (pageId === 'recall') loadRecallPage()
+  if (pageId === 'bgTasks') loadBgTasksPage()
   if (pageId === 'vault') loadVaultPage()
   if (pageId === 'updates') loadUpdates()
   if (pageId === 'team') loadTeamGraph()
@@ -6665,4 +6666,151 @@ function esc(s) {
   const d = document.createElement('div')
   d.textContent = String(s)
   return d.innerHTML
+}
+
+// ============================================================
+// === Background Tasks ===
+// ============================================================
+
+let bgInitialized = false
+let bgRefreshTimer = null
+
+async function loadBgTasksPage() {
+  if (!bgInitialized) {
+    bgInitialized = true
+    try {
+      const res = await fetch('/api/agents')
+      if (res.ok) {
+        const agents = await res.json()
+        const sel = document.getElementById('bgAgent')
+        agents.forEach(a => {
+          const opt = document.createElement('option')
+          opt.value = a.name
+          opt.textContent = a.name
+          sel.appendChild(opt)
+        })
+        if (agents.length === 1) sel.value = agents[0].name
+      }
+    } catch {}
+
+    document.getElementById('bgStartBtn').addEventListener('click', startBgTask)
+    document.getElementById('bgPrompt').addEventListener('keydown', e => { if (e.key === 'Enter') startBgTask() })
+    document.getElementById('bgShowAll').addEventListener('change', loadBgTasks)
+  }
+  loadBgTasks()
+  if (bgRefreshTimer) clearInterval(bgRefreshTimer)
+  bgRefreshTimer = setInterval(loadBgTasks, 10000)
+}
+
+async function startBgTask() {
+  const agent = document.getElementById('bgAgent').value
+  const prompt = document.getElementById('bgPrompt').value.trim()
+  if (!agent) { showToast('Válassz ágenst'); return }
+  if (!prompt) { showToast('Add meg a feladatot'); return }
+
+  const btn = document.getElementById('bgStartBtn')
+  btn.disabled = true
+  try {
+    const res = await fetch('/api/background-tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_id: agent, prompt }),
+    })
+    const data = await res.json()
+    if (!res.ok) {
+      showToast(data.error || 'Hiba történt')
+      return
+    }
+    document.getElementById('bgPrompt').value = ''
+    showToast('Háttérfeladat elindítva')
+    loadBgTasks()
+  } catch {
+    showToast('Nem sikerült elindítani')
+  } finally {
+    btn.disabled = false
+  }
+}
+
+async function loadBgTasks() {
+  const list = document.getElementById('bgTasksList')
+  const showAll = document.getElementById('bgShowAll').checked
+  const agentVal = document.getElementById('bgAgent')?.value || ''
+
+  try {
+    const params = new URLSearchParams()
+    if (agentVal) params.set('agent', agentVal)
+    if (showAll) params.set('all', 'true')
+    const res = await fetch('/api/background-tasks?' + params.toString())
+    if (!res.ok) { list.innerHTML = '<p style="color:var(--danger)">Hiba a betöltésnél</p>'; return }
+    const tasks = await res.json()
+
+    if (!tasks.length) {
+      list.innerHTML = '<p style="color:var(--text-muted)">Nincs háttérfeladat.</p>'
+      return
+    }
+
+    list.innerHTML = tasks.map(t => {
+      const statusColors = { running: '#f59e0b', done: '#22c55e', failed: '#ef4444', timeout: '#6b7280' }
+      const statusLabels = { running: 'Fut', done: 'Kész', failed: 'Hiba', timeout: 'Időtúllépés' }
+      const color = statusColors[t.status] || '#6b7280'
+      const label = statusLabels[t.status] || t.status
+      const output = t.output ? `<pre style="margin-top:8px;padding:8px;background:var(--bg);border-radius:6px;font-size:12px;max-height:200px;overflow:auto;white-space:pre-wrap;">${esc(t.output.slice(-2000))}</pre>` : ''
+      return `<div style="margin-bottom:12px;padding:12px 16px;border-radius:8px;background:var(--surface);border:1px solid var(--border);border-left:3px solid ${color};">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+          <div style="display:flex;gap:8px;align-items:center;">
+            <span style="font-weight:600;font-size:13px;">${esc(t.id)}</span>
+            <span class="badge" style="font-size:11px;background:${color};color:#fff;padding:2px 8px;border-radius:12px;">${label}</span>
+            <span class="badge" style="font-size:11px;background:var(--primary);color:#fff;padding:2px 8px;border-radius:12px;">${esc(t.agent_id)}</span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <span style="font-size:12px;color:var(--text-muted)">${esc(t.started_label)}</span>
+            ${t.status === 'running' ? `<button class="btn btn-sm" onclick="viewBgTask('${esc(t.id)}')" style="font-size:11px;padding:2px 8px;">Kimenet</button><button class="btn btn-sm" onclick="cancelBgTask('${esc(t.id)}')" style="font-size:11px;padding:2px 8px;color:var(--danger)">Leállítás</button>` : ''}
+          </div>
+        </div>
+        <div style="font-size:13px;color:var(--text-primary);margin-bottom:4px;">${esc(t.prompt)}</div>
+        ${t.finished_label ? `<div style="font-size:12px;color:var(--text-muted);">Befejezve: ${esc(t.finished_label)}</div>` : ''}
+        ${output}
+      </div>`
+    }).join('')
+  } catch {
+    list.innerHTML = '<p style="color:var(--danger)">Nem sikerült betölteni</p>'
+  }
+}
+
+async function viewBgTask(id) {
+  try {
+    const res = await fetch(`/api/background-tasks/${id}`)
+    if (!res.ok) { showToast('Nem sikerült betölteni'); return }
+    const task = await res.json()
+    const output = task.liveOutput || task.output || '(nincs kimenet)'
+    const modal = document.createElement('div')
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center;'
+    modal.innerHTML = `<div style="background:var(--surface);border-radius:12px;padding:20px;max-width:800px;width:90%;max-height:80vh;overflow:auto;">
+      <div style="display:flex;justify-content:space-between;margin-bottom:12px;">
+        <h3 style="margin:0;">Háttérfeladat ${esc(id)}</h3>
+        <button class="btn btn-sm" id="bgModalClose" style="font-size:13px;">Bezárás</button>
+      </div>
+      <pre style="white-space:pre-wrap;font-size:12px;line-height:1.4;">${esc(output)}</pre>
+    </div>`
+    document.body.appendChild(modal)
+    modal.addEventListener('click', e => { if (e.target === modal) modal.remove() })
+    document.getElementById('bgModalClose').addEventListener('click', () => modal.remove())
+  } catch {
+    showToast('Hiba')
+  }
+}
+
+async function cancelBgTask(id) {
+  if (!confirm('Biztosan leállítod?')) return
+  try {
+    const res = await fetch(`/api/background-tasks/${id}`, { method: 'DELETE' })
+    if (res.ok) {
+      showToast('Leállítva')
+      loadBgTasks()
+    } else {
+      showToast('Nem sikerült leállítani')
+    }
+  } catch {
+    showToast('Hiba')
+  }
 }
