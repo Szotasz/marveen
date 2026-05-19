@@ -154,6 +154,12 @@ export function initDatabase(): void {
   } catch {
     // column already exists
   }
+  try {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN parent_id TEXT REFERENCES kanban_cards(id)')
+  } catch {
+    // column already exists
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_kanban_parent ON kanban_cards(parent_id)')
   // Migration: add agent_id, category, auto_generated columns to memories
   try {
     db.exec("ALTER TABLE memories ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'marveen'")
@@ -841,6 +847,7 @@ export interface KanbanCard {
   assignee: string | null
   priority: 'low' | 'normal' | 'high' | 'urgent'
   project: string | null
+  parent_id: string | null
   due_date: number | null
   sort_order: number
   created_at: number
@@ -885,6 +892,7 @@ export function createKanbanCard(card: {
   assignee?: string
   priority?: KanbanCard['priority']
   project?: string
+  parent_id?: string
   due_date?: number
 }): void {
   const now = Math.floor(Date.now() / 1000)
@@ -895,12 +903,12 @@ export function createKanbanCard(card: {
   const sortOrder = (maxRow?.m ?? -1) + 1
 
   db.prepare(
-    `INSERT INTO kanban_cards (id, title, description, status, assignee, priority, project, due_date, sort_order, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO kanban_cards (id, title, description, status, assignee, priority, project, parent_id, due_date, sort_order, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     card.id, card.title, card.description ?? null, status,
     card.assignee ?? null, card.priority ?? 'normal',
-    card.project ?? null, card.due_date ?? null, sortOrder, now, now
+    card.project ?? null, card.parent_id ?? null, card.due_date ?? null, sortOrder, now, now
   )
 }
 
@@ -910,9 +918,13 @@ export function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'i
   const now = Math.floor(Date.now() / 1000)
   const f = { ...card, ...fields, updated_at: now }
   return db.prepare(
-    `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
+    `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
      WHERE id=?`
-  ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+  ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+}
+
+export function getChildCards(parentId: string): KanbanCard[] {
+  return db.prepare('SELECT * FROM kanban_cards WHERE parent_id = ? AND archived_at IS NULL ORDER BY sort_order ASC').all(parentId) as KanbanCard[]
 }
 
 export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrder: number): boolean {

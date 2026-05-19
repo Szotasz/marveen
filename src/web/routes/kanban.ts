@@ -3,9 +3,12 @@ import {
   listKanbanCards, createKanbanCard, updateKanbanCard,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard,
   getKanbanComments, addKanbanComment, listKanbanProjects,
+  getKanbanCard, getChildCards,
 } from '../../db.js'
 import { OWNER_NAME } from '../../config.js'
 import { listAgentNames } from '../agent-config.js'
+import { generateBreakdown } from '../llm-breakdown.js'
+import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
@@ -88,6 +91,62 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const { author, content } = JSON.parse(body.toString())
     if (!author || !content) { json(res, { error: 'Szerző és tartalom kötelező' }, 400); return true }
     json(res, addKanbanComment(cardId, author, content))
+    return true
+  }
+
+  const breakdownMatch = path.match(/^\/api\/kanban\/([^/]+)\/breakdown$/)
+  if (breakdownMatch && method === 'POST') {
+    const cardId = decodeURIComponent(breakdownMatch[1])
+    const card = getKanbanCard(cardId)
+    if (!card) { json(res, { error: 'Kártya nem található' }, 404); return true }
+    const existing = getChildCards(cardId)
+    if (existing.length > 0) { json(res, { error: 'A kártya már rendelkezik subtask-okkal' }, 409); return true }
+    try {
+      const result = await generateBreakdown(card.title, card.description)
+      json(res, { subtasks: result.subtasks, provider: result.provider })
+    } catch (err) {
+      logger.error({ err, cardId }, 'Breakdown generation failed')
+      json(res, { error: (err as Error).message }, 500)
+    }
+    return true
+  }
+
+  const acceptMatch = path.match(/^\/api\/kanban\/([^/]+)\/breakdown\/accept$/)
+  if (acceptMatch && method === 'POST') {
+    const parentId = decodeURIComponent(acceptMatch[1])
+    const parent = getKanbanCard(parentId)
+    if (!parent) { json(res, { error: 'Szülő kártya nem található' }, 404); return true }
+    const body = await readBody(req)
+    const { subtasks } = JSON.parse(body.toString()) as {
+      subtasks: Array<{ title: string; description: string; assignee: string | null; priority: string }>
+    }
+    if (!Array.isArray(subtasks) || subtasks.length === 0) {
+      json(res, { error: 'Subtask lista kötelező' }, 400)
+      return true
+    }
+    const created: string[] = []
+    for (const st of subtasks) {
+      const id = randomUUID().slice(0, 8).toUpperCase()
+      createKanbanCard({
+        id,
+        title: st.title,
+        description: st.description,
+        assignee: st.assignee ?? undefined,
+        priority: (st.priority as any) ?? 'normal',
+        project: parent.project ?? undefined,
+        parent_id: parentId,
+      })
+      created.push(id)
+    }
+    addKanbanComment(parentId, 'Marveen', `Auto-breakdown: ${created.length} subtask létrehozva (${created.join(', ')})`)
+    json(res, { ok: true, created })
+    return true
+  }
+
+  const childrenMatch = path.match(/^\/api\/kanban\/([^/]+)\/children$/)
+  if (childrenMatch && method === 'GET') {
+    const parentId = decodeURIComponent(childrenMatch[1])
+    json(res, getChildCards(parentId))
     return true
   }
 
