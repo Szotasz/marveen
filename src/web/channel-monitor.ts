@@ -240,7 +240,6 @@ function handleMarveenDown(): void {
     marveenDownState.stageStartedAt = now
     marveenDownState.lastAlertAt = now
     logger.warn({ provider: providerLabel }, 'Marveen channel plugin still down -- stage 2 (memory save)')
-    sendAlert(`⚠️ /mcp nem segitett. Szolok Marveennek hogy mentsen memoriat session resume elott (~60s turelmi ido).`)
     triggerMarveenMemorySave()
     return
   }
@@ -251,7 +250,6 @@ function handleMarveenDown(): void {
     marveenDownState.stageStartedAt = now
     marveenDownState.lastAlertAt = now
     logger.warn({ provider: providerLabel }, 'Marveen channel plugin still down -- stage 3 (session resume)')
-    sendAlert('⚠️ Memoria mentes lejart. Session resume (claude --continue) most...')
     resumeMarveenSession()
     return
   }
