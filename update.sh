@@ -198,19 +198,19 @@ if [ -x "$INSTALL_DIR/scripts/sync-hooks.sh" ]; then
 fi
 
 # Seed skills & scheduled tasks (idempotent: skip existing)
-# Source .env for template variables
+# Source .env for template variables needed by seed-scheduled-tasks
+MAIN_AGENT_ID=""
+BOT_NAME=""
+OWNER_NAME=""
 if [ -f "$INSTALL_DIR/.env" ]; then
   MAIN_AGENT_ID=$(grep '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" | cut -d= -f2-)
   BOT_NAME=$(grep '^BOT_NAME=' "$INSTALL_DIR/.env" | cut -d= -f2-)
   OWNER_NAME=$(grep '^OWNER_NAME=' "$INSTALL_DIR/.env" | cut -d= -f2-)
 fi
-MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
-BOT_NAME="${BOT_NAME:-Marveen}"
-OWNER_NAME="${OWNER_NAME:-}"
 SKILLS_DIR="$HOME/.claude/skills"
 SCHED_TARGET_DIR="$HOME/.claude/scheduled-tasks"
 
-# Seed skills
+# Seed skills (no template vars needed, safe without .env)
 SEED_SKILLS_DIR="$INSTALL_DIR/seed-skills"
 if [ -d "$SEED_SKILLS_DIR" ]; then
   SEED_NEW=0
@@ -231,43 +231,47 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
     SEED_NEW=$((SEED_NEW + 1))
   done
   if [ "$SEED_NEW" -gt 0 ] || [ "$SEED_SKIP" -gt 0 ]; then
-    echo -e "  ${GREEN}✓${NC} Seed skills: ${SEED_NEW} uj, ${SEED_SKIP} kihagyva"
+    echo -e "  ${GREEN}✓${NC} Seed skills: ${SEED_NEW} új, ${SEED_SKIP} kihagyva"
   fi
 fi
 
-# Seed scheduled tasks
+# Seed scheduled tasks (requires MAIN_AGENT_ID from .env for template substitution)
 SEED_SCHED_DIR="$INSTALL_DIR/seed-scheduled-tasks"
 if [ -d "$SEED_SCHED_DIR" ]; then
-  mkdir -p "$SCHED_TARGET_DIR"
-  SCHED_NEW=0
-  SCHED_SKIP=0
-  for tpl in "$SEED_SCHED_DIR"/*/; do
-    [ -d "$tpl" ] || continue
-    task_name=$(basename "$tpl")
-    target="$SCHED_TARGET_DIR/$task_name"
-    if [ -d "$target" ]; then
-      SCHED_SKIP=$((SCHED_SKIP + 1))
-      continue
-    fi
-    mkdir -p "$target"
-    for f in "$tpl"*; do
-      [ -f "$f" ] || continue
-      sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-          -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-          -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-          -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-          "$f" > "$target/$(basename "$f")"
+  if [ -z "$MAIN_AGENT_ID" ]; then
+    echo -e "  ${ORANGE}⚠${NC} Seed scheduled tasks kihagyva: .env hiányzik vagy MAIN_AGENT_ID nincs beállítva"
+  else
+    mkdir -p "$SCHED_TARGET_DIR"
+    SCHED_NEW=0
+    SCHED_SKIP=0
+    for tpl in "$SEED_SCHED_DIR"/*/; do
+      [ -d "$tpl" ] || continue
+      task_name=$(basename "$tpl")
+      target="$SCHED_TARGET_DIR/$task_name"
+      if [ -d "$target" ]; then
+        SCHED_SKIP=$((SCHED_SKIP + 1))
+        continue
+      fi
+      mkdir -p "$target"
+      for f in "$tpl"*; do
+        [ -f "$f" ] || continue
+        sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
+            -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
+            -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
+            -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+            "$f" > "$target/$(basename "$f")"
+      done
+      SCHED_NEW=$((SCHED_NEW + 1))
     done
-    SCHED_NEW=$((SCHED_NEW + 1))
-  done
-  if [ "$SCHED_NEW" -gt 0 ] || [ "$SCHED_SKIP" -gt 0 ]; then
-    echo -e "  ${GREEN}✓${NC} Seed scheduled tasks: ${SCHED_NEW} uj, ${SCHED_SKIP} kihagyva"
-  fi
-  # Init state files for new seeded tasks
-  if [ "$SCHED_NEW" -gt 0 ]; then
-    STATE_FILE="$INSTALL_DIR/store/kanban-audit-state.json"
-    if [ ! -f "$STATE_FILE" ]; then
-      echo '{"last_audit_at":null}' > "$STATE_FILE"
+    if [ "$SCHED_NEW" -gt 0 ] || [ "$SCHED_SKIP" -gt 0 ]; then
+      echo -e "  ${GREEN}✓${NC} Seed scheduled tasks: ${SCHED_NEW} új, ${SCHED_SKIP} kihagyva"
+    fi
+    # Init state files for new seeded tasks
+    if [ "$SCHED_NEW" -gt 0 ]; then
+      STATE_FILE="$INSTALL_DIR/store/kanban-audit-state.json"
+      if [ ! -f "$STATE_FILE" ]; then
+        echo '{"last_audit_at":null}' > "$STATE_FILE"
+      fi
     fi
   fi
 fi
