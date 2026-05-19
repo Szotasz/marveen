@@ -436,6 +436,72 @@ if [ -d "$INSTALL_DIR/skills/skill-factory" ]; then
   echo -e "  ${GREEN}✓${NC} skill-factory telepítve"
 fi
 
+# Seed skills: fleet-level skills from seed-skills/ into ~/.claude/skills/
+# Idempotent: skip directories that already exist (never overwrite user customizations)
+SEED_SKILLS_DIR="$INSTALL_DIR/seed-skills"
+if [ -d "$SEED_SKILLS_DIR" ]; then
+  SEED_NEW=0
+  SEED_SKIP=0
+  for skill_dir in "$SEED_SKILLS_DIR"/*/; do
+    [ -d "$skill_dir" ] || continue
+    skill_name=$(basename "$skill_dir")
+    target="$SKILLS_DIR/$skill_name"
+    if [ -d "$target" ]; then
+      SEED_SKIP=$((SEED_SKIP + 1))
+      continue
+    fi
+    mkdir -p "$target"
+    for f in "$skill_dir"*; do
+      [ -f "$f" ] || continue
+      cp "$f" "$target/$(basename "$f")"
+    done
+    SEED_NEW=$((SEED_NEW + 1))
+  done
+  if [ "$SEED_NEW" -gt 0 ] || [ "$SEED_SKIP" -gt 0 ]; then
+    echo -e "  ${GREEN}✓${NC} Seed skills: ${SEED_NEW} új, ${SEED_SKIP} kihagyva (már létezik)"
+  fi
+fi
+
+# Seed scheduled tasks: from seed-scheduled-tasks/ into ~/.claude/scheduled-tasks/
+# Idempotent: skip directories that already exist. Templates use {{MAIN_AGENT_ID}},
+# {{BOT_NAME}}, {{OWNER_NAME}}, {{INSTALL_DIR}} placeholders.
+SEED_SCHED_DIR="$INSTALL_DIR/seed-scheduled-tasks"
+if [ -d "$SEED_SCHED_DIR" ]; then
+  mkdir -p "$SCHED_TARGET_DIR"
+  SCHED_NEW=0
+  SCHED_SKIP=0
+  for tpl in "$SEED_SCHED_DIR"/*/; do
+    [ -d "$tpl" ] || continue
+    task_name=$(basename "$tpl")
+    target="$SCHED_TARGET_DIR/$task_name"
+    if [ -d "$target" ]; then
+      SCHED_SKIP=$((SCHED_SKIP + 1))
+      continue
+    fi
+    mkdir -p "$target"
+    for f in "$tpl"*; do
+      [ -f "$f" ] || continue
+      sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
+          -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
+          -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
+          -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+          "$f" > "$target/$(basename "$f")"
+    done
+    SCHED_NEW=$((SCHED_NEW + 1))
+  done
+  if [ "$SCHED_NEW" -gt 0 ] || [ "$SCHED_SKIP" -gt 0 ]; then
+    echo -e "  ${GREEN}✓${NC} Seed scheduled tasks: ${SCHED_NEW} új, ${SCHED_SKIP} kihagyva"
+  fi
+  # Init state files for seeded tasks
+  if [ "$SCHED_NEW" -gt 0 ]; then
+    STATE_FILE="$INSTALL_DIR/store/kanban-audit-state.json"
+    if [ ! -f "$STATE_FILE" ]; then
+      echo '{"last_audit_at":null}' > "$STATE_FILE"
+      echo -e "  ${GREEN}✓${NC} kanban-audit state inicializálva"
+    fi
+  fi
+fi
+
 # Ollama + nomic-embed-text (szemantikus kereséshez)
 echo ""
 echo -e "  Ollama ellenőrzés (szemantikus memória kereséshez)..."
