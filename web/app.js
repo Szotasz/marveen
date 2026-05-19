@@ -1481,7 +1481,7 @@ document.getElementById('chReconnectBtn').addEventListener('click', async () => 
   const btn = document.getElementById('chReconnectBtn')
   const origText = btn.textContent
   btn.disabled = true
-  btn.textContent = 'Reconnect...'
+  btn.textContent = 'Újracsatlakozás...'
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/channel/reconnect`, { method: 'POST' })
     const data = await res.json()
