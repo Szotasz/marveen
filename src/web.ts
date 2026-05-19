@@ -28,6 +28,7 @@ import { tryHandleAgentsSkills } from './web/routes/agents-skills.js'
 import { tryHandleSkills } from './web/routes/skills.js'
 import { tryHandleAgents } from './web/routes/agents.js'
 import { tryHandleMarveen } from './web/routes/marveen.js'
+import { tryHandleRecall } from './web/routes/recall.js'
 import { tryHandleOverview } from './web/routes/overview.js'
 import { tryHandleUpdates } from './web/routes/updates.js'
 import { tryHandleStatus } from './web/routes/status.js'
@@ -116,6 +117,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleSkills(routeCtx)) return
       if (await tryHandleAgents(routeCtx, WEB_DIR)) return
       if (await tryHandleMarveen(routeCtx, WEB_DIR)) return
+      if (await tryHandleRecall(routeCtx)) return
       if (await tryHandleOverview(routeCtx)) return
       if (await tryHandleUpdates(routeCtx)) return
       if (await tryHandleStatus(routeCtx)) return

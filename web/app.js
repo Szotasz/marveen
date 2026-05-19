@@ -78,6 +78,7 @@ function switchPage(pageId) {
   if (pageId === 'connectors') loadConnectors()
   if (pageId === 'migrate') loadMigrateAgents()
   if (pageId === 'status') loadStatus()
+  if (pageId === 'recall') loadRecallPage()
   if (pageId === 'vault') loadVaultPage()
   if (pageId === 'updates') loadUpdates()
   if (pageId === 'team') loadTeamGraph()
@@ -6512,3 +6513,139 @@ document.getElementById('chSlackManifestBtn').addEventListener('click', async ()
     btn.disabled = false
   }
 })
+
+// ============================================================
+// === Recall / Napló ===
+// ============================================================
+
+let recallInitialized = false
+
+async function loadRecallPage() {
+  if (!recallInitialized) {
+    recallInitialized = true
+    const today = new Date().toISOString().split('T')[0]
+    document.getElementById('recallDate').value = today
+
+    try {
+      const res = await fetch('/api/agents')
+      if (res.ok) {
+        const agents = await res.json()
+        const sel = document.getElementById('recallAgent')
+        agents.forEach(a => {
+          const opt = document.createElement('option')
+          opt.value = a.name
+          opt.textContent = a.name
+          sel.appendChild(opt)
+        })
+      }
+    } catch {}
+
+    document.getElementById('recallBtn').addEventListener('click', doRecall)
+    document.getElementById('recallExpr').addEventListener('keydown', e => { if (e.key === 'Enter') doRecall() })
+    document.getElementById('recallSearch').addEventListener('keydown', e => { if (e.key === 'Enter') doRecall() })
+  }
+  doRecall()
+}
+
+async function doRecall() {
+  const dateInput = document.getElementById('recallDate').value
+  const exprInput = document.getElementById('recallExpr').value.trim()
+  const searchInput = document.getElementById('recallSearch').value.trim()
+  const agentInput = document.getElementById('recallAgent').value
+
+  const params = new URLSearchParams()
+  if (exprInput) {
+    params.set('date', exprInput)
+  } else if (dateInput) {
+    params.set('date', dateInput)
+  }
+  if (searchInput) params.set('q', searchInput)
+  if (agentInput) params.set('agent', agentInput)
+
+  const timeline = document.getElementById('recallTimeline')
+  const summary = document.getElementById('recallSummary')
+  timeline.innerHTML = '<p style="color:var(--text-muted)">Betöltés...</p>'
+  summary.innerHTML = ''
+
+  try {
+    const res = await fetch('/api/recall?' + params.toString())
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      timeline.innerHTML = `<p style="color:var(--danger)">${esc(err.error || 'Hiba történt')}</p>`
+      return
+    }
+    const data = await res.json()
+    renderRecallSummary(summary, data)
+    renderRecallTimeline(timeline, data)
+  } catch (err) {
+    timeline.innerHTML = '<p style="color:var(--danger)">Nem sikerült betölteni</p>'
+  }
+}
+
+function renderRecallSummary(el, data) {
+  const { dateRange, summary: s } = data
+  const parts = []
+  if (dateRange.from === dateRange.to) {
+    parts.push(`<strong>${esc(dateRange.from)}</strong>`)
+  } else if (dateRange.from && dateRange.to) {
+    parts.push(`<strong>${esc(dateRange.from)}</strong> &ndash; <strong>${esc(dateRange.to)}</strong>`)
+  }
+  parts.push(`${s.logCount} naplóbejegyzés`)
+  parts.push(`${s.memoryCount} emlék`)
+  if (s.agents.length) parts.push(`Ágensek: ${s.agents.map(esc).join(', ')}`)
+  el.innerHTML = `<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:14px;color:var(--text-muted)">${parts.map(p => `<span>${p}</span>`).join('')}</div>`
+}
+
+function renderRecallTimeline(el, data) {
+  const { logs, memories } = data
+  if (!logs.length && !memories.length) {
+    el.innerHTML = '<p style="color:var(--text-muted)">Nincs találat erre az időszakra.</p>'
+    return
+  }
+
+  const items = []
+  logs.forEach(l => items.push({ type: 'log', ts: l.created_at, agent: l.agent_id, date: l.date, content: l.content, label: l.created_label }))
+  memories.forEach(m => items.push({ type: 'memory', ts: m.created_at, agent: m.agent_id, category: m.category, content: m.content, keywords: m.keywords, label: m.created_label }))
+  items.sort((a, b) => a.ts - b.ts)
+
+  let currentDate = ''
+  let html = ''
+  for (const item of items) {
+    const dateStr = item.date || new Date(item.ts * 1000).toISOString().split('T')[0]
+    if (dateStr !== currentDate) {
+      currentDate = dateStr
+      html += `<div class="recall-date-header" style="margin-top:20px;margin-bottom:8px;font-weight:600;font-size:15px;color:var(--text-primary);border-bottom:1px solid var(--border);padding-bottom:4px;">${esc(dateStr)}</div>`
+    }
+    if (item.type === 'log') {
+      html += `<div class="recall-item recall-log" style="margin-bottom:12px;padding:10px 14px;border-radius:8px;background:var(--surface);border:1px solid var(--border);">
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+          <span style="font-size:12px;color:var(--text-muted)">${esc(item.label)}</span>
+          <span class="badge" style="font-size:11px;background:var(--primary);color:#fff;padding:2px 8px;border-radius:12px;">${esc(item.agent)}</span>
+        </div>
+        <div style="white-space:pre-wrap;font-size:13px;line-height:1.5;">${esc(item.content)}</div>
+      </div>`
+    } else {
+      const catColors = { hot: '#ef4444', warm: '#f59e0b', cold: '#3b82f6', shared: '#8b5cf6' }
+      const catColor = catColors[item.category] || '#6b7280'
+      html += `<div class="recall-item recall-memory" style="margin-bottom:12px;padding:10px 14px;border-radius:8px;background:var(--surface);border-left:3px solid ${catColor};border:1px solid var(--border);border-left:3px solid ${catColor};">
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+          <span style="font-size:12px;color:var(--text-muted)">${esc(item.label)}</span>
+          <div style="display:flex;gap:6px;">
+            <span class="badge" style="font-size:11px;background:${catColor};color:#fff;padding:2px 8px;border-radius:12px;">${esc(item.category)}</span>
+            <span class="badge" style="font-size:11px;background:var(--primary);color:#fff;padding:2px 8px;border-radius:12px;">${esc(item.agent)}</span>
+          </div>
+        </div>
+        <div style="white-space:pre-wrap;font-size:13px;line-height:1.5;">${esc(item.content)}</div>
+        ${item.keywords ? `<div style="margin-top:4px;font-size:11px;color:var(--text-muted)">Kulcsszavak: ${esc(item.keywords)}</div>` : ''}
+      </div>`
+    }
+  }
+  el.innerHTML = html
+}
+
+function esc(s) {
+  if (!s) return ''
+  const d = document.createElement('div')
+  d.textContent = String(s)
+  return d.innerHTML
+}
