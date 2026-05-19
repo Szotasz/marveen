@@ -1,6 +1,7 @@
-import { readEnvFile } from '../env.js'
+import { execFile } from 'node:child_process'
 import { logger } from '../logger.js'
 import { listAgentNames } from './agent-config.js'
+import { resolveFromPath } from '../platform.js'
 
 export interface SubtaskSuggestion {
   title: string
@@ -11,8 +12,9 @@ export interface SubtaskSuggestion {
 
 export interface BreakdownResult {
   subtasks: SubtaskSuggestion[]
-  provider: 'anthropic' | 'gemini'
 }
+
+const TIMEOUT_MS = 60_000
 
 const SYSTEM_PROMPT = `You are a project management assistant that breaks down kanban cards into actionable subtasks.
 
@@ -50,53 +52,41 @@ function getValidAssignees(): Set<string> {
   return new Set(['Szabolcs', 'Marveen', ...agents])
 }
 
-async function callAnthropic(apiKey: string, userPrompt: string): Promise<SubtaskSuggestion[]> {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1024,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: userPrompt }],
-    }),
-  })
-  if (!res.ok) {
-    const body = await res.text()
-    throw new Error(`Anthropic API ${res.status}: ${body.slice(0, 200)}`)
-  }
-  const data = await res.json() as { content: Array<{ type: string; text: string }> }
-  const text = data.content.find(b => b.type === 'text')?.text ?? '[]'
-  return JSON.parse(text) as SubtaskSuggestion[]
+function resolveClaudeBinary(): string {
+  return resolveFromPath('claude')
 }
 
-async function callGemini(apiKey: string, userPrompt: string): Promise<SubtaskSuggestion[]> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-      contents: [{ parts: [{ text: userPrompt }] }],
-      generationConfig: {
-        responseMimeType: 'application/json',
-        temperature: 0.3,
+async function callClaudeP(userPrompt: string): Promise<SubtaskSuggestion[]> {
+  const claude = resolveClaudeBinary()
+  const fullPrompt = `${SYSTEM_PROMPT}\n\n${userPrompt}`
+
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      claude,
+      ['-p', '--model', 'claude-sonnet-4-6', '--output-format', 'json'],
+      { timeout: TIMEOUT_MS, maxBuffer: 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) {
+          if ((err as any).killed || err.message.includes('TIMEOUT') || err.message.includes('timed out')) {
+            return reject(new Error('claude -p timed out after 60s'))
+          }
+          logger.warn({ err, stderr: stderr?.slice(0, 300) }, 'claude -p failed')
+          return reject(new Error(`claude -p failed: ${err.message}`))
+        }
+        try {
+          const parsed = JSON.parse(stdout)
+          const text = parsed?.result ?? stdout
+          const subtasks = typeof text === 'string' ? JSON.parse(text) : text
+          resolve(Array.isArray(subtasks) ? subtasks : [])
+        } catch (parseErr) {
+          logger.warn({ stdout: stdout?.slice(0, 500) }, 'claude -p output parse failed')
+          reject(new Error('Failed to parse claude -p output as JSON'))
+        }
       },
-    }),
+    )
+    child.stdin?.write(fullPrompt)
+    child.stdin?.end()
   })
-  if (!res.ok) {
-    const body = await res.text()
-    throw new Error(`Gemini API ${res.status}: ${body.slice(0, 200)}`)
-  }
-  const data = await res.json() as {
-    candidates: Array<{ content: { parts: Array<{ text: string }> } }>
-  }
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '[]'
-  return JSON.parse(text) as SubtaskSuggestion[]
 }
 
 export function validateSubtasks(raw: unknown, validAssignees?: Set<string>): SubtaskSuggestion[] {
@@ -118,27 +108,18 @@ export function validateSubtasks(raw: unknown, validAssignees?: Set<string>): Su
 }
 
 export async function generateBreakdown(title: string, description: string | null): Promise<BreakdownResult> {
-  const env = readEnvFile()
-  const anthropicKey = env['ANTHROPIC_API_KEY']
-  const geminiKey = env['GOOGLE_API_KEY']
-
   const validAssignees = getValidAssignees()
   const agents = [...validAssignees]
   const userPrompt = buildUserPrompt(title, description, agents)
 
-  if (anthropicKey) {
-    try {
-      const raw = await callAnthropic(anthropicKey, userPrompt)
-      return { subtasks: validateSubtasks(raw, validAssignees), provider: 'anthropic' }
-    } catch (err) {
-      logger.warn({ err }, 'Anthropic breakdown failed, trying Gemini fallback')
+  try {
+    const raw = await callClaudeP(userPrompt)
+    return { subtasks: validateSubtasks(raw, validAssignees) }
+  } catch (err) {
+    const msg = (err as Error).message
+    if (msg.includes('not found on PATH')) {
+      throw new Error('claude CLI not available on this system')
     }
+    throw err
   }
-
-  if (geminiKey) {
-    const raw = await callGemini(geminiKey, userPrompt)
-    return { subtasks: validateSubtasks(raw, validAssignees), provider: 'gemini' }
-  }
-
-  throw new Error('No API key available (ANTHROPIC_API_KEY or GOOGLE_API_KEY required in .env)')
 }

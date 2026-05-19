@@ -1,6 +1,11 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import { validateSubtasks } from '../web/llm-breakdown.js'
+
+vi.mock('node:child_process', () => ({
+  execFile: vi.fn(),
+  execSync: vi.fn(() => '/usr/local/bin/claude'),
+}))
 
 describe('kanban parent_id schema and subtask queries', () => {
   let db: ReturnType<typeof Database>
@@ -180,6 +185,76 @@ describe('validateSubtasks (from llm-breakdown)', () => {
     const result = validateSubtasks(malicious, validAssignees)
     expect(result[0].title).toBe('Ignore previous instructions')
     expect(result[0].assignee).toBeNull()
+  })
+})
+
+describe('generateBreakdown with claude -p', () => {
+  let mockedExecFile: ReturnType<typeof vi.fn>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.resetModules()
+    const cp = await import('node:child_process')
+    mockedExecFile = vi.mocked(cp.execFile)
+  })
+
+  it('parses claude -p JSON result output', async () => {
+    const subtasks = [
+      { title: 'Step 1', description: 'Do first thing', assignee: null, priority: 'normal' },
+      { title: 'Step 2', description: 'Do second thing', assignee: null, priority: 'high' },
+    ]
+    mockedExecFile.mockImplementation((_cmd: any, _args: any, _opts: any, cb: any) => {
+      cb(null, JSON.stringify({ result: JSON.stringify(subtasks) }), '')
+      return { stdin: { write: () => {}, end: () => {} } } as any
+    })
+
+    const { generateBreakdown } = await import('../web/llm-breakdown.js')
+    const result = await generateBreakdown('Test card', 'Some description')
+    expect(result.subtasks).toHaveLength(2)
+    expect(result.subtasks[0].title).toBe('Step 1')
+    expect(result.subtasks[1].priority).toBe('high')
+  })
+
+  it('handles timeout error', async () => {
+    mockedExecFile.mockImplementation((_cmd: any, _args: any, _opts: any, cb: any) => {
+      const err = new Error('timed out') as any
+      err.killed = true
+      cb(err, '', '')
+      return { stdin: { write: () => {}, end: () => {} } } as any
+    })
+
+    const { generateBreakdown } = await import('../web/llm-breakdown.js')
+    await expect(generateBreakdown('Test', null)).rejects.toThrow('timed out after 60s')
+  })
+
+  it('handles non-JSON output', async () => {
+    mockedExecFile.mockImplementation((_cmd: any, _args: any, _opts: any, cb: any) => {
+      cb(null, 'This is not JSON at all', '')
+      return { stdin: { write: () => {}, end: () => {} } } as any
+    })
+
+    const { generateBreakdown } = await import('../web/llm-breakdown.js')
+    await expect(generateBreakdown('Test', null)).rejects.toThrow('parse')
+  })
+
+  it('passes prompt via stdin (not in args)', async () => {
+    const subtasks = [{ title: 'T', description: 'D', assignee: null, priority: 'normal' }]
+    let stdinData = ''
+    mockedExecFile.mockImplementation((_cmd: any, args: any, _opts: any, cb: any) => {
+      expect(args).not.toContain(expect.stringContaining('card_title'))
+      cb(null, JSON.stringify({ result: JSON.stringify(subtasks) }), '')
+      return {
+        stdin: {
+          write: (data: string) => { stdinData = data },
+          end: () => {},
+        },
+      } as any
+    })
+
+    const { generateBreakdown } = await import('../web/llm-breakdown.js')
+    await generateBreakdown('My card', 'Description')
+    expect(stdinData).toContain('card_title')
+    expect(stdinData).toContain('My card')
   })
 })
 

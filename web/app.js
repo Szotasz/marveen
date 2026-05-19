@@ -557,7 +557,7 @@ async function showCardDetail(card) {
       if (!res.ok) { showToast(data.error || 'Hiba'); btn.disabled = false; btn.textContent = 'Breakdown'; return }
       breakdownCardId = card.id
       breakdownSubtasks = data.subtasks
-      showBreakdownModal(data.subtasks, data.provider, card)
+      showBreakdownModal(data.subtasks, card)
     } catch (err) {
       showToast('Breakdown hiba')
     } finally {
@@ -578,7 +578,7 @@ async function triggerBreakdown(card) {
     if (!res.ok) { showToast(data.error || 'Breakdown hiba'); return }
     breakdownCardId = card.id
     breakdownSubtasks = data.subtasks
-    showBreakdownModal(data.subtasks, data.provider, card)
+    showBreakdownModal(data.subtasks, card)
   } catch {
     showToast('Breakdown hiba')
   } finally {
@@ -586,8 +586,8 @@ async function triggerBreakdown(card) {
   }
 }
 
-function showBreakdownModal(subtasks, provider, parentCard) {
-  document.getElementById('breakdownProvider').textContent = `${provider} · Szülő: ${escapeHtml(parentCard.title)}`
+function showBreakdownModal(subtasks, parentCard) {
+  document.getElementById('breakdownProvider').textContent = `Szülő: ${escapeHtml(parentCard.title)}`
   const list = document.getElementById('breakdownList')
   list.innerHTML = ''
 

@@ -103,7 +103,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     if (existing.length > 0) { json(res, { error: 'A kártya már rendelkezik subtask-okkal' }, 409); return true }
     try {
       const result = await generateBreakdown(card.title, card.description)
-      json(res, { subtasks: result.subtasks, provider: result.provider })
+      json(res, { subtasks: result.subtasks })
     } catch (err) {
       logger.error({ err, cardId }, 'Breakdown generation failed')
       json(res, { error: (err as Error).message }, 500)
