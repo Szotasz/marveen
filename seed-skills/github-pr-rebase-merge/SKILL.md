@@ -105,4 +105,4 @@ gh pr close N --comment "Merged manually via rebase due to conflict with <prior 
 
 ## Példa
 
-Ha the user azt írja: "8 PR van, menj sorban, review és merge", és 3 egymás után konfliktál (mert mindegyik `src/web.ts`-t szerkeszti), az idő-becslés ~3-5 perc PR-onként konfliktussal, ~30 mp PR-onként clean merge-nél. Küldj progress update-et 50%-nál, hogy the user tudja haladsz.
+Ha a user azt írja: "8 PR van, menj sorban, review és merge", és 3 egymás után konfliktál (mert mindegyik `src/web.ts`-t szerkeszti), az idő-becslés ~3-5 perc PR-onként konfliktussal, ~30 mp PR-onként clean merge-nél. Küldj progress update-et 50%-nál, hogy a user tudja haladsz.

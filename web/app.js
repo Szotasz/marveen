@@ -6761,14 +6761,14 @@ async function doRecall() {
 
   const timeline = document.getElementById('recallTimeline')
   const summary = document.getElementById('recallSummary')
-  timeline.innerHTML = '<p style="color:var(--text-muted)">Betöltés...</p>'
+  timeline.innerHTML = '<p class="recall-loading">Betöltés...</p>'
   summary.innerHTML = ''
 
   try {
     const res = await fetch('/api/recall?' + params.toString())
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
-      timeline.innerHTML = `<p style="color:var(--danger)">${esc(err.error || 'Hiba történt')}</p>`
+      timeline.innerHTML = `<p class="recall-error">${esc(err.error || 'Hiba történt')}</p>`
       return
     }
     const data = await res.json()
@@ -6790,13 +6790,13 @@ function renderRecallSummary(el, data) {
   parts.push(`${s.logCount} naplóbejegyzés`)
   parts.push(`${s.memoryCount} emlék`)
   if (s.agents.length) parts.push(`Ágensek: ${s.agents.map(esc).join(', ')}`)
-  el.innerHTML = `<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:14px;color:var(--text-muted)">${parts.map(p => `<span>${p}</span>`).join('')}</div>`
+  el.innerHTML = `<div class="recall-summary-row">${parts.map(p => `<span>${p}</span>`).join('')}</div>`
 }
 
 function renderRecallTimeline(el, data) {
   const { logs, memories } = data
   if (!logs.length && !memories.length) {
-    el.innerHTML = '<p style="color:var(--text-muted)">Nincs találat erre az időszakra.</p>'
+    el.innerHTML = '<p class="recall-empty">Nincs találat erre az időszakra.</p>'
     return
   }
 
@@ -6811,29 +6811,30 @@ function renderRecallTimeline(el, data) {
     const dateStr = item.date || new Date(item.ts * 1000).toISOString().split('T')[0]
     if (dateStr !== currentDate) {
       currentDate = dateStr
-      html += `<div class="recall-date-header" style="margin-top:20px;margin-bottom:8px;font-weight:600;font-size:15px;color:var(--text-primary);border-bottom:1px solid var(--border);padding-bottom:4px;">${esc(dateStr)}</div>`
+      html += `<div class="recall-date-header">${esc(dateStr)}</div>`
     }
     if (item.type === 'log') {
-      html += `<div class="recall-item recall-log" style="margin-bottom:12px;padding:10px 14px;border-radius:8px;background:var(--surface);border:1px solid var(--border);">
-        <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-          <span style="font-size:12px;color:var(--text-muted)">${esc(item.label)}</span>
-          <span class="badge" style="font-size:11px;background:var(--primary);color:#fff;padding:2px 8px;border-radius:12px;">${esc(item.agent)}</span>
-        </div>
-        <div style="white-space:pre-wrap;font-size:13px;line-height:1.5;">${esc(item.content)}</div>
-      </div>`
-    } else {
-      const catColors = { hot: '#ef4444', warm: '#f59e0b', cold: '#3b82f6', shared: '#8b5cf6' }
-      const catColor = catColors[item.category] || '#6b7280'
-      html += `<div class="recall-item recall-memory" style="margin-bottom:12px;padding:10px 14px;border-radius:8px;background:var(--surface);border:1px solid var(--border);border-left:3px solid ${catColor};">
-        <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-          <span style="font-size:12px;color:var(--text-muted)">${esc(item.label)}</span>
-          <div style="display:flex;gap:6px;">
-            <span class="badge" style="font-size:11px;background:${catColor};color:#fff;padding:2px 8px;border-radius:12px;">${esc(item.category)}</span>
-            <span class="badge" style="font-size:11px;background:var(--primary);color:#fff;padding:2px 8px;border-radius:12px;">${esc(item.agent)}</span>
+      html += `<div class="recall-item recall-log">
+        <div class="recall-item-header">
+          <span class="recall-item-label">${esc(item.label)}</span>
+          <div class="recall-item-badges">
+            <span class="recall-badge recall-badge-agent">${esc(item.agent)}</span>
           </div>
         </div>
-        <div style="white-space:pre-wrap;font-size:13px;line-height:1.5;">${esc(item.content)}</div>
-        ${item.keywords ? `<div style="margin-top:4px;font-size:11px;color:var(--text-muted)">Kulcsszavak: ${esc(item.keywords)}</div>` : ''}
+        <div class="recall-item-content">${esc(item.content)}</div>
+      </div>`
+    } else {
+      const cat = item.category || 'warm'
+      html += `<div class="recall-item recall-memory" data-cat="${esc(cat)}">
+        <div class="recall-item-header">
+          <span class="recall-item-label">${esc(item.label)}</span>
+          <div class="recall-item-badges">
+            <span class="recall-badge recall-badge-cat" data-cat="${esc(cat)}">${esc(item.category)}</span>
+            <span class="recall-badge recall-badge-agent">${esc(item.agent)}</span>
+          </div>
+        </div>
+        <div class="recall-item-content">${esc(item.content)}</div>
+        ${item.keywords ? `<div class="recall-item-keywords">Kulcsszavak: ${esc(item.keywords)}</div>` : ''}
       </div>`
     }
   }

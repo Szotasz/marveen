@@ -1,6 +1,6 @@
 ---
 name: ai-fleet-project-execution
-description: AI fleet project execution (orchestrator=PM, marketing agent, backend dev agent, video agent). Fast-iteration architecture pivots and inter-agent task delegation across multi-hour sessions. Use when the user assigns a multi-agent project with "take it as a team" instruction.
+description: AI fleet project execution (orchestrator=PM, marketing agent, backend dev agent, video agent). Fast-iteration architecture pivots and inter-agent task delegation across multi-hour sessions. Use when a user assigns a multi-agent project with "take it as a team" instruction.
 ---
 
 # AI Fleet Project Execution
