@@ -217,6 +217,7 @@ async function loadSubtaskBadges() {
       }
     } catch { /* ignore */ }
   }))
+}
 
 function createCardEl(card) {
   const el = document.createElement('div')
