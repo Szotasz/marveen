@@ -1,8 +1,8 @@
 import { randomBytes } from 'node:crypto'
 import { execSync, execFileSync } from 'node:child_process'
 import {
-  createBackgroundTask, finishBackgroundTask, getBackgroundTasks,
-  getBackgroundTask, countRunningBackgroundTasks,
+  createBackgroundTaskAtomic, finishBackgroundTask, getBackgroundTasks,
+  getBackgroundTask, getRunningBackgroundTasks, markOrphanedTasksFailed,
   type BackgroundTask,
 } from '../../db.js'
 import { resolveFromPath } from '../../platform.js'
@@ -23,7 +23,7 @@ function bgSessionName(id: string): string {
 
 function isBgSessionAlive(session: string): boolean {
   try {
-    const out = execSync(`${TMUX} list-sessions -F "#{session_name}"`, { timeout: 3000, encoding: 'utf-8' })
+    const out = execFileSync(TMUX, ['list-sessions', '-F', '#{session_name}'], { timeout: 3000, encoding: 'utf-8' })
     return out.split('\n').some(l => l.trim() === session)
   } catch {
     return false
@@ -32,7 +32,7 @@ function isBgSessionAlive(session: string): boolean {
 
 function captureSession(session: string): string | null {
   try {
-    return execSync(`${TMUX} capture-pane -t ${session} -p -S -500`, { timeout: 5000, encoding: 'utf-8' })
+    return execFileSync(TMUX, ['capture-pane', '-t', session, '-p', '-S', '-500'], { timeout: 5000, encoding: 'utf-8' })
   } catch {
     return null
   }
@@ -40,33 +40,38 @@ function captureSession(session: string): string | null {
 
 function killSession(session: string): void {
   try {
-    execSync(`${TMUX} kill-session -t ${session}`, { timeout: 3000 })
+    execFileSync(TMUX, ['kill-session', '-t', session], { timeout: 3000 })
   } catch { /* already dead */ }
 }
 
 export function spawnBackgroundTask(agentId: string, prompt: string): BackgroundTask | { error: string } {
-  const running = countRunningBackgroundTasks(agentId)
-  if (running >= MAX_CONCURRENT) {
-    return { error: `Maximum ${MAX_CONCURRENT} egyidejű háttérfeladat ágensenként. Jelenleg ${running} fut.` }
-  }
-
   const id = randomBytes(4).toString('hex').toUpperCase()
   const session = bgSessionName(id)
 
-  const escapedPrompt = prompt.replace(/'/g, "'\\''")
-  const cmd = [
+  const task = createBackgroundTaskAtomic(id, agentId, prompt, session, MAX_CONCURRENT)
+  if (!task) {
+    return { error: `Maximum ${MAX_CONCURRENT} egyidejű háttérfeladat ágensenként.` }
+  }
+
+  const shellCmd = [
     `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH"`,
-    `${CLAUDE} -p '${escapedPrompt}' --output-format text 2>&1`,
+    `${CLAUDE} -p "$BG_PROMPT" --output-format text 2>&1`,
   ].join(' && ')
 
   try {
-    execSync(`${TMUX} new-session -d -s ${session} -x 200 -y 50 "${cmd}; echo '___BG_DONE___'; sleep 5"`, { timeout: 5000 })
+    execFileSync(TMUX, [
+      'new-session', '-d', '-s', session, '-x', '200', '-y', '50',
+      `${shellCmd}; echo '___BG_DONE___'; sleep 5`,
+    ], {
+      timeout: 5000,
+      env: { ...process.env, BG_PROMPT: prompt },
+    })
   } catch (err) {
     logger.error({ err, id, session }, 'Failed to spawn background task tmux session')
+    finishBackgroundTask(id, 'failed', '(spawn failed)')
     return { error: 'Nem sikerült elindítani a háttérfeladatot' }
   }
 
-  const task = createBackgroundTask(id, agentId, prompt, session)
   logger.info({ id, agentId, session, prompt: prompt.slice(0, 100) }, 'Background task started')
 
   setTimeout(() => checkAndFinalize(id), TIMEOUT_MS)
@@ -116,6 +121,24 @@ function checkAndFinalize(id: string): void {
   logger.warn({ id }, 'Background task timed out after 30 minutes')
 }
 
+export function sweepOrphanedBackgroundTasks(): void {
+  const running = getRunningBackgroundTasks()
+  let orphaned = 0
+  for (const task of running) {
+    if (!task.tmux_session || !isBgSessionAlive(task.tmux_session)) {
+      const output = task.tmux_session ? captureSession(task.tmux_session) : null
+      finishBackgroundTask(task.id, 'failed', output?.trim() || '(orphaned on restart)')
+      orphaned++
+    } else {
+      setTimeout(() => checkAndFinalize(task.id), TIMEOUT_MS)
+      pollUntilDone(task.id)
+    }
+  }
+  if (orphaned) logger.info({ orphaned }, 'Swept orphaned background tasks on startup')
+}
+
+const TASK_ID_RE = /^\/api\/background-tasks\/([A-F0-9]{8})$/
+
 export async function tryHandleBackgroundTasks(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -153,7 +176,7 @@ export async function tryHandleBackgroundTasks(ctx: RouteContext): Promise<boole
     return true
   }
 
-  const taskMatch = path.match(/^\/api\/background-tasks\/([A-F0-9]+)$/)
+  const taskMatch = path.match(TASK_ID_RE)
   if (taskMatch && method === 'GET') {
     const task = getBackgroundTask(taskMatch[1])
     if (!task) { json(res, { error: 'Háttérfeladat nem található' }, 404); return true }
@@ -175,10 +198,10 @@ export async function tryHandleBackgroundTasks(ctx: RouteContext): Promise<boole
   if (taskMatch && method === 'DELETE') {
     const task = getBackgroundTask(taskMatch[1])
     if (!task) { json(res, { error: 'Háttérfeladat nem található' }, 404); return true }
+    const output = task.tmux_session ? captureSession(task.tmux_session) : null
     if (task.status === 'running' && task.tmux_session) {
       killSession(task.tmux_session)
     }
-    const output = task.tmux_session ? captureSession(task.tmux_session) : null
     finishBackgroundTask(task.id, 'failed', output?.trim() || '(cancelled)')
     json(res, { ok: true })
     return true

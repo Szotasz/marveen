@@ -709,11 +709,20 @@ export interface BackgroundTask {
   output: string | null
 }
 
-export function createBackgroundTask(id: string, agentId: string, prompt: string, tmuxSession: string): BackgroundTask {
+export function createBackgroundTaskAtomic(id: string, agentId: string, prompt: string, tmuxSession: string, maxConcurrent: number): BackgroundTask | null {
   const now = Math.floor(Date.now() / 1000)
-  db.prepare('INSERT INTO background_tasks (id, agent_id, prompt, status, tmux_session, started_at) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(id, agentId, prompt, 'running', tmuxSession, now)
-  return { id, agent_id: agentId, prompt, status: 'running', tmux_session: tmuxSession, started_at: now, finished_at: null, output: null }
+  const result = db.transaction(() => {
+    const running = (db.prepare("SELECT COUNT(*) as c FROM background_tasks WHERE agent_id = ? AND status = 'running'").get(agentId) as { c: number }).c
+    if (running >= maxConcurrent) return null
+    db.prepare('INSERT INTO background_tasks (id, agent_id, prompt, status, tmux_session, started_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(id, agentId, prompt, 'running', tmuxSession, now)
+    return { id, agent_id: agentId, prompt, status: 'running' as const, tmux_session: tmuxSession, started_at: now, finished_at: null, output: null }
+  })()
+  return result
+}
+
+export function getRunningBackgroundTasks(): BackgroundTask[] {
+  return db.prepare("SELECT * FROM background_tasks WHERE status = 'running'").all() as BackgroundTask[]
 }
 
 export function finishBackgroundTask(id: string, status: 'done' | 'failed' | 'timeout', output: string | null): void {
@@ -741,6 +750,13 @@ export function getBackgroundTask(id: string): BackgroundTask | undefined {
 
 export function countRunningBackgroundTasks(agentId: string): number {
   return (db.prepare("SELECT COUNT(*) as c FROM background_tasks WHERE agent_id = ? AND status = 'running'").get(agentId) as { c: number }).c
+}
+
+export function markOrphanedTasksFailed(): number {
+  const now = Math.floor(Date.now() / 1000)
+  const info = db.prepare("UPDATE background_tasks SET status = 'failed', finished_at = ?, output = '(orphaned on restart)' WHERE status = 'running'")
+    .run(now)
+  return info.changes
 }
 
 // --- Ütemezett feladatok ---
