@@ -11,9 +11,9 @@ Minden lap két szemszögből mutatja be a funkciót:
 | Funkció | Leírás |
 |---------|--------|
 | [Heartbeat + fokozatos autonómia](heartbeat-autonomy.md) | Önjáró ütemezett ellenőrzések + kategóriánként állítható bizalmi-létra (jelez → javasol → autonóm) |
-| Memória-rendszer *(hamarosan)* | 3-tier (hot/warm/cold) FTS5 + napi salience decay + napi napló |
-| Kanban + auto-breakdown *(hamarosan)* | Feladatkezelés LLM-es részfeladat-bontással |
-| Ügynök-flotta + inter-agent kommunikáció *(hamarosan)* | Több specializált ügynök közös üzenetsoron keresztül |
+| [Memória-rendszer](memory-system.md) | 3-tier (hot/warm/cold) FTS5 + napi salience decay + napi napló |
+| [Kanban + auto-breakdown](kanban.md) | Feladatkezelés LLM-es részfeladat-bontással |
+| [Ügynök-flotta + inter-agent kommunikáció](agent-fleet.md) | Több specializált ügynök közös üzenetsoron keresztül |
 | Skill-factory (öntanulás) *(hamarosan)* | Visszatérő munkafolyamatokból újrahasznosítható skill-ek |
 | Channels (Telegram / Slack) *(hamarosan)* | Natív üzenetküldő-integráció proaktív értesítésekkel |
 | Printing-press CLI-k *(hamarosan)* | API nélküli oldalakhoz is agent-natív CLI generálás |
