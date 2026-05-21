@@ -6,9 +6,9 @@
 
 ## 🎯 Mit tud / miért érdekes
 
-Néha egy feladat hosszú (kutatás, build, sok lépés), és nem akarsz rá várni. A háttér-feladat funkcióval az asszisztens **leválasztva** elindít egy munkát, te közben mással foglalkozol, és amikor kész, jelez. Nem blokkolja a beszélgetést.
+Néha egy feladat hosszú — kutatás, build, batch-feldolgozás — és nem akarsz mellette ülni. A háttér-feladat funkcióval az asszisztens **leválasztva** elindít egy munkát, te közben mással foglalkozol, és amikor kész, Telegramra jelez. A beszélgetés nem blokkolódik, a munkamenet nem foglalt.
 
-**Kuriózum:** ez adja a "dolgozik amíg alszol" élményt — egy hosszabb feladatot este elindítasz, reggel kész eredménnyel ébredsz.
+**Kuriózum:** a prompt nem kerül közvetlenül parancsba — XML-taggel körülvéve, "untrusted data" kezeléssel fut. Ha egy feladat-leírásban véletlenül futtatható utasítás lenne, nem hajtódik végre. Ez nem mellékszempont: háttér-feladatnál, ahol nincs élő felügyelet, ez az egyik legfontosabb biztonsági határ.
 
 ---
 

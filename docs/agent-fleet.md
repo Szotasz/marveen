@@ -10,7 +10,7 @@ Marveen egy **orchestrator** (PM-szerep), aki egy specializált ügynök-flottá
 
 Az ügynökök **közvetlenül üzennek egymásnak** egy közös üzenetsoron keresztül — nem rajtad keresztül megy minden. Az orchestrator delegál, a szakértő-ügynök dolgozik és visszajelez, te csak a lényeget kapod.
 
-**Kuriózum:** a flotta órákon át önállóan visz végig komplex, több-lépéses projekteket (architektúra-pivot, build, review, deploy, marketing-anyag) — te a végeredményt és a mérföldköveket látod, nem a belső lépéseket.
+**Kuriózum:** a flotta órákon át önállóan visz végig komplex, több-lépéses projekteket — pl. az egyik ügynök kész a PR-rel, a marketing-ügynök ugyanabból a munkamenetből megírja a bejelentés-szöveget, mindkettő Telegramra értesít. Te a mérföldköveket kapod, nem a belső csevegést.
 
 ---
 

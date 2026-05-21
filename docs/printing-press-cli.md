@@ -6,11 +6,13 @@
 
 ## 🎯 Mit tud / miért érdekes
 
-Az ügynökök sokszor lassan és drágán dolgoznak külső szolgáltatásokkal (sok API-hívás, vagy böngésző-kattintgatás). A **printing-press** ezt megfordítja: egy parancsból agent-natív **CLI**-t generál egy szolgáltatáshoz — API-specifikációból, vagy ha nincs API, akár a böngésző-forgalom rögzítéséből (HAR fájl).
+Az ügynökök sokszor lassan és drágán dolgoznak külső szolgáltatásokkal: böngésző-kattintgatás, sok apró API-hívás, koordináció. A **printing-press** ezt megfordítja: egy parancsból agent-natív **CLI**-t generál egy szolgáltatáshoz — API-specifikációból, vagy ha nincs API, akár a böngésző-forgalom rögzítéséből (HAR fájl).
 
-A generált CLI token-hatékony (egy összetett parancs sok API-round-trip helyett), helyi gyorsítótárral, és skill-ként is települ, így az ügynökök azonnal használják.
+A generált CLI token-hatékony (egy összetett parancs sok API-round-trip helyett), helyi gyorsítótárral rendelkezik, és skill-ként is települ, így az ügynökök azonnal és következetesen használják.
 
-**Kuriózum:** API NÉLKÜLI oldalakhoz is működik. Egy belépett munkamenet hálózati forgalmát rögzítve a press kiolvassa a "rejtett" végpontokat, és kész CLI-t épít belőlük — robusztusabb mint a böngésző-automatizálás. Pl. egy közösségi platformhoz (amihez nincs hivatalos API) percek alatt lett teljes parancssori eszköz: poszt, kurzus, feltöltés, mind másodperc alatt.
+Ha nincs idő egyedi fejlesztésre: a press **149+ azonnal telepíthető kész CLI-t** tartalmaz (YouTube, Stripe, Supabase, Notion, Slack, Cal.com és mások). Ami nincs a könyvtárban, percek alatt el lehet készíteni.
+
+**Kuriózum:** API NÉLKÜLI oldalakhoz is működik. Egy belépett munkamenet hálózati forgalmát rögzítve a press kiolvassa a "rejtett" végpontokat, és kész CLI-t épít belőlük — robusztusabb, mint a böngésző-automatizálás, és nem törik meg minden dizájn-változásra. Pl. egy közösségi platformhoz (amihez nincs hivatalos API) 20 perc alatt lett teljes parancssori eszköz: poszt, kurzus, feltöltés, mind másodperc alatt.
 
 ---
 

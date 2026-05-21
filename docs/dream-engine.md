@@ -6,11 +6,11 @@
 
 ## 🎯 Mit tud / miért érdekes
 
-Minden éjjel lefut egy csendes analízis-loop — a **dream-engine**. Nem zavar senkit (nem küld üzenetet), hanem átkonszolidálja az aznapi tudást, és felkészíti a reggelt: egy priorizált javaslat-csomagot rak össze, amit a reggeli napindító visz eléd.
+Minden éjjel lefut egy csendes analízis-loop — a **dream-engine**. Nem zavar senkit (nem küld üzenetet), hanem átkonszolidálja az aznapi tudást, és felkészíti a reggelt: rendberakja a memóriát, kalibrálja a holnapi prioritásokat, és egy priorizált javaslat-csomagot rak össze, amit a reggeli napindító visz eléd.
 
-Olyan, mintha az asszisztens éjszaka átgondolná a napot: mit tanultunk, mit kell rendberakni a memóriában, mi a holnap három legfontosabb feladata, és van-e a flottának olyan visszatérő mintája, amiből új skill születhetne.
+Olyan, mintha az asszisztens éjszaka "átgondolná a napot": mit tanultunk, mit kell a memóriában rendberakni, mi a holnap három legfontosabb feladata, és van-e a flottának olyan visszatérő mintája, amiből új skill születhetne — reggelre mindez feldolgozva vár.
 
-**Kuriózum:** a reggeli napindítód nem nulláról készül 7:30-kor — a nehezét az éjszakai dream-engine már elvégezte, te csak a kész, priorizált összefoglalót kapod.
+**Kuriózum:** a reggeli napindítód nem nulláról készül — az éjszakai dream-engine a kanban-kártyák és az aznapi tanulságok alapján már elvégezte a nehezét. Te nem "tájékozódsz" reggel: folytatod, ahol tegnap abbahagytad. A 7:30-as összefoglaló ezért sokkal sűrűbb, mint amit egy fresh-start asszisztens össze tudna rakni.
 
 ---
 

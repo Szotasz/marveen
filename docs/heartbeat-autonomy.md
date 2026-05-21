@@ -18,7 +18,7 @@ Egy dashboard-felületen, kategóriánként húzod feljebb-lejjebb a szintet —
 
 **A biztonsági korlát beépített:** a visszafordíthatatlan, kifelé menő műveletek (email-küldés, publikálás, vásárlás, törlés, jogosultság-változtatás) **zárolva** vannak — akármit állítasz, ezek sosem válhatnak teljesen autonómmá. Ez nem opció, hanem kódba égetett határ.
 
-**Kuriózum:** ez a minta lényegében az, amit az Anthropic később hivatalosan "Routines" néven mutatott be — proaktív, ütemezett agentek. Marveen ezt már korábban élesben futtatta saját ütemezett-feladat + heartbeat infrastruktúrán.
+**Kuriózum:** ez a minta lényegében az, amit az Anthropic 2025-ben hivatalosan "Routines" névvel mutatott be — proaktív, ütemezett ügynökök, kategóriánként állítható autonómiával. Marveen ezt a mintát már korábban élesben futtatta, saját ütemezett-feladat + heartbeat infrastruktúrán. Nem konceptként, hanem valódi termelési rendszerként, amely naponta fut.
 
 ---
 

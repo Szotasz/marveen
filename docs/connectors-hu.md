@@ -6,11 +6,11 @@
 
 ## 🎯 Mit tud / miért érdekes
 
-A connectors.hu egy **hosted MCP-átjáró**, ami magyar és nemzetközi üzleti szolgáltatásokat tesz elérhetővé AI-ügynökök számára egységesen: NAV Online Számla, Billingo (számlázás), Wise (deviza/utalás), fal.ai (képgenerálás) és tovább. Egy felhasználó a saját fiókjait beköti, és az ügynök egy felületen át éri el mindet.
+Egy ügynök önmagában nem tudja, hogyan kell NAV-on számlaadatot lekérni, Billingo-n számlát kiállítani, vagy Wise-on devizát konvertálni. A connectors.hu ezt adja meg: **hosted MCP-átjáró**, ami magyar és nemzetközi üzleti API-kat tesz elérhetővé ügynökök számára egységesen. Bekötsz egy fiókot, az ügynök azonnal eléri — külön integrációs munka nélkül.
 
-A felépítés "nyomdagép" (printing-press) stílusú: egy vékony proxy-CLI/MCP, amely dinamikusan adja vissza a felhasználó aktuális, bekötött eszközeit — így új connector hozzáadása percek kérdése, nem napoké.
+A jelenlegi connectorok: NAV Online Számla, Billingo (számlázás), Wise (deviza/utalás), fal.ai (képgenerálás). Új connector hozzáadása percek kérdése, nem napoké.
 
-**Kuriózum:** a platform önkiszolgáló irányba megy — az ügyfelek a saját connectorukat is feltölthetik, és skálázható bevételi modellt ad (use-based billing).
+**Kuriózum:** a platform önkiszolgáló irányba megy — az ügyfelek a saját connectorukat is feltölthetik. Ez a terjeszkedési modell: nem egyedi fejlesztés minden integrációhoz, hanem egy piactér, ahol a connectorok skálázódnak a felhasználók számával (use-based billing).
 
 ---
 

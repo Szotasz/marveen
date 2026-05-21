@@ -6,14 +6,14 @@
 
 ## 🎯 Mit tud / miért érdekes
 
-A flotta minden munkája egy **kanban-táblán** fut: a feladatok kártyák, státuszokkal (tervezett → folyamatban → várakozik → kész) és felelőssel (melyik ügynök csinálja). Ez adja a közös, átlátható munkateret — te bármikor látod min dolgozik ki.
+Nem kell mikromenedzselni a flottát — ez a kanban-rendszer lényege. Ha odadobsz egy nagy, homályos célt ("csináljuk meg X-et"), az ügynök magától részfeladat-hierarchiára bontja, kiosztja a megfelelő felelősnek, és nyomon követi. Te a végeredményt és a mérföldköveket látod, nem a belső lépéseket.
 
 Két dolog teszi különlegessé:
 
-1. **Automatikus bontás:** ha egy nagy, homályos feladatot adsz ("csináljuk meg X-et"), egy LLM részfeladat-hierarchiára bontja, amit jóváhagyhatsz vagy módosíthatsz. Nem neked kell mikromenedzselni a lépéseket.
-2. **Önjáró audit:** a rendszer 4 óránként átnézi a táblát — archiválja a régi lezárt kártyákat, és számon kéri a beakadt feladatokat a felelősön (a fokozatos autonómia szintje szerint).
+1. **Automatikus bontás:** az LLM egy feladatból kártyák hierarchiáját csinálja (`parent_id`-vel összekötve), amit jóváhagyhatsz vagy finomíthatsz — nem kell fejből tartani a teendők sorát.
+2. **Önjáró audit:** 4 óránként a rendszer maga átnézi a táblát — archiválja a régi lezárt kártyákat, és számon kéri a beakadt feladatokat a felelősön. Nem neked kell kopogtatni, hogy "na, hogy áll az a dolog?"
 
-**Kuriózum:** a kártyák és a státuszok automatikusan bekerülnek minden ügynök kontextusába, így mindenki tudja a teljes kép aktuális állását anélkül hogy külön rákérdezne.
+**Kuriózum:** a kártyák és státuszok automatikusan bekerülnek minden ügynök kontextusába. Nem kell külön tájékoztatni senkit arról, "hol tartunk" — mindenki látja a teljes képet, és ott folytatja, ahol a másik abbahagyta.
 
 ---
 

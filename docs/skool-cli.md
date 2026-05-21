@@ -8,9 +8,11 @@
 
 A Skool egy népszerű közösségi platform, amihez **nincs publikus API**. Marveen mégis teljes parancssori eszközt használ hozzá: posztot ír, kurzust hoz létre a classroomban, képet/videót tölt fel, szavazást indít, tartalmat töröl — mind másodperc alatt, böngésző-kattintgatás nélkül.
 
-Ez a [printing-press](printing-press-cli.md) HAR-útvonalával készült: egy belépett munkamenet forgalmát rögzítve a rendszer kiolvasta a platform belső végpontjait, és kész CLI-t generált belőlük.
+Ez a [printing-press](printing-press-cli.md) HAR-útvonalával készült: egy belépett munkamenet forgalmát rögzítve a rendszer kiolvasta a platform belső végpontjait, és 20 perc alatt kész CLI-t generált belőlük.
 
-**Kuriózum:** az első éles használat épp az volt, hogy a CLI-ről szóló posztot maga a CLI tette ki — másodpercek alatt, miközben kézzel ugyanez 10-30 másodperc kattintgatás lett volna posztonként.
+Egy poszt kézzel: 10-30 másodperc kattintgatás, kategória-keresés, szöveg beírás. CLI-vel: 1 parancs, 1-2 másodperc. Ügynök-szinten ez a különbség multiplikálódik: a flotta tempójában dolgozik, nem a kattintgatás tempójában.
+
+**Kuriózum:** az első éles használat épp az volt, hogy a CLI-ről szóló posztot maga a CLI tette ki — azok a másodpercek, amíg a parancs futott, kisebbek voltak mint amennyi idő a böngészőben eltelne csak a szerkesztő megnyitásáig.
 
 ---
 

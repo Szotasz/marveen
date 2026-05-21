@@ -10,7 +10,7 @@ A legtöbb AI újra és újra elköveti ugyanazt a hibát. Marveen ehelyett **ö
 
 Ha menet közben jobb megoldást talál egy meglévő recepthez, nem írja újra az egészet — csak a megváltozott részt javítja (patch), és feljegyzi a "Buktatók" közé hogy miért.
 
-**Kuriózum:** a skill-ek progresszív betöltéssel működnek — alapból csak a nevük + rövid leírásuk van a memóriában (pár szó), a teljes recept csak akkor töltődik be, amikor tényleg releváns. Így több tucat skill is elfér token-pazarlás nélkül.
+**Kuriózum:** a skill nem csak a sikerekből születik. Ha az ügynök beleszalad egy hibába, kijön belőle, és legközelebb már tudja a csapdát — a "Buktatók" szekció pontosan ezekből az első kudarcokból épül. Az öntanulás tehát mindkét irányba megy: sikeres workflow → recept, hiba → buktató-bejegyzés. A receptek progresszív betöltéssel dolgoznak: alapból csak a nevük + rövid leírásuk töltődik be, a teljes tartalom csak akkor, ha tényleg kell. Így akár 50+ skill is gond nélkül elfér.
 
 ---
 
