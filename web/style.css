@@ -4567,3 +4567,91 @@ main {
   font-size: 12px;
   color: var(--text-muted);
 }
+
+/* === connectors.hu cross-promo banner === */
+.cxhu-banner {
+  margin-bottom: 16px;
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid rgba(0, 151, 124, 0.25);
+  background: linear-gradient(135deg, rgba(0, 151, 124, 0.06) 0%, rgba(89, 233, 206, 0.04) 100%);
+}
+[data-theme="dark"] .cxhu-banner {
+  background: linear-gradient(135deg, rgba(0, 151, 124, 0.12) 0%, rgba(89, 233, 206, 0.06) 100%);
+  border-color: rgba(0, 151, 124, 0.35);
+}
+.cxhu-banner-inner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+}
+.cxhu-banner-logo { flex-shrink: 0; line-height: 0; }
+.cxhu-banner-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+.cxhu-banner-headline {
+  font-weight: 700;
+  font-size: 14px;
+  color: #00977c;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-theme="dark"] .cxhu-banner-headline { color: #59e9ce; }
+.cxhu-banner-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.cxhu-banner-sub strong { color: var(--text-secondary); font-weight: 600; }
+.cxhu-banner-sub em { font-style: normal; color: var(--text-muted); }
+.cxhu-banner-cta {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 14px;
+  border-radius: var(--radius-sm);
+  background: #00977c;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background var(--transition), transform var(--transition);
+}
+.cxhu-banner-cta:hover {
+  background: #007d67;
+  transform: translateY(-1px);
+}
+.cxhu-banner-close {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color var(--transition), background var(--transition);
+}
+.cxhu-banner-close:hover {
+  color: var(--text);
+  background: var(--bg-input);
+}
+@media (max-width: 640px) {
+  .cxhu-banner-inner { flex-wrap: wrap; }
+  .cxhu-banner-logo { display: none; }
+  .cxhu-banner-text { min-width: 100%; }
+  .cxhu-banner-headline { white-space: normal; }
+  .cxhu-banner-cta { width: 100%; justify-content: center; }
+  .cxhu-banner-close { position: absolute; top: 10px; right: 10px; }
+  .cxhu-banner { position: relative; }
+}

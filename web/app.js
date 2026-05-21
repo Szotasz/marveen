@@ -7083,3 +7083,24 @@ async function setAutonomyLevel(key, level) {
     showToast('Hiba a mentésnél')
   }
 }
+
+// === connectors.hu promo banner ===
+;(function () {
+  const DISMISSED_KEY = 'cxhu_banner_dismissed'
+  const banner = document.getElementById('cxhuBanner')
+  const closeBtn = document.getElementById('cxhuBannerClose')
+  if (!banner || !closeBtn) return
+  if (localStorage.getItem(DISMISSED_KEY) === '1') {
+    banner.hidden = true
+    return
+  }
+  closeBtn.addEventListener('click', () => {
+    banner.style.transition = 'opacity 0.2s ease, max-height 0.3s ease'
+    banner.style.overflow = 'hidden'
+    banner.style.opacity = '0'
+    banner.style.maxHeight = banner.offsetHeight + 'px'
+    requestAnimationFrame(() => { banner.style.maxHeight = '0' })
+    setTimeout(() => { banner.hidden = true }, 300)
+    localStorage.setItem(DISMISSED_KEY, '1')
+  })
+})()
