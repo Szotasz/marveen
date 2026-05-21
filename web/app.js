@@ -7103,4 +7103,17 @@ async function setAutonomyLevel(key, level) {
     setTimeout(() => { banner.hidden = true }, 300)
     localStorage.setItem(DISMISSED_KEY, '1')
   })
+
+  const copyBtn = document.getElementById('cxhuCopyBtn')
+  if (copyBtn) {
+    copyBtn.addEventListener('click', () => {
+      navigator.clipboard.writeText('curl -fsSL https://connectors.hu/install.sh | sh').then(() => {
+        const copyIcon = copyBtn.querySelector('.cxhu-copy-icon')
+        const checkIcon = copyBtn.querySelector('.cxhu-check-icon')
+        copyIcon.hidden = true
+        checkIcon.hidden = false
+        setTimeout(() => { copyIcon.hidden = false; checkIcon.hidden = true }, 2000)
+      })
+    })
+  }
 })()
