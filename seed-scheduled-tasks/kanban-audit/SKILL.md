@@ -8,6 +8,16 @@ description: 4 óránkénti kanban-tábla audit. Tisztítás (7+ napos done arch
 ## Mikor fut
 - 8:00, 12:00, 16:00, 20:00 (kanban-audit cron 0 8,12,16,20)
 
+## Autonómia-szint (config-vezérelt, KÖTELEZŐ ELŐSZÖR)
+
+Olvasd be: `jq -r '.categories[]|select(.key=="kanban_archive_done" or .key=="kanban_stuck_nudge")|"\(.key) \(.level)"' /Users/marvin/ClaudeClaw/store/autonomy-config.json`
+
+A két kategória szintje szabályozza a 2. és 4. lépést:
+- **`kanban_archive_done`** (2. lépés): level 3 → archiváld magától (alapért). level 2 → NE archiválj, Telegramon javasold ("X db 7+ napos done archiválásra vár, mehet?") és várj jóváhagyást. level 1 → csak jelezd a számot.
+- **`kanban_stuck_nudge`** (4. lépés): level 3 → pingeld az assignee-t magától, és CSAK 2 eredménytelen audit-kör után eszkalálj Szabihoz (a komment-történetből látod hányszor pingelted). level 2 → ne pingelj magadtól, Telegramon javasold Szabinak. level 1 → csak listázd a beakadt taskokat.
+
+Ha a config hiányzik vagy a kulcs nincs benne → default level 3 (régi viselkedés).
+
 ## Eljárás
 
 1. **State-fájl beolvasás**: `store/kanban-audit-state.json` tartalmazza `last_audit_at` Unix timestampet. Első futáskor null -> ne pingelj senkit, csak állítsd be a state-et.

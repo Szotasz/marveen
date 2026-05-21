@@ -442,6 +442,20 @@ if [ -d "$SCHED_TPL_DIR" ]; then
   done
 fi
 
+# Seed config: copy default config files into store/ (idempotent: never overwrite)
+SEED_CONFIG_DIR="$INSTALL_DIR/seed-config"
+if [ -d "$SEED_CONFIG_DIR" ]; then
+  for cfg in "$SEED_CONFIG_DIR"/*.json; do
+    [ -f "$cfg" ] || continue
+    cfg_name=$(basename "$cfg")
+    target="$INSTALL_DIR/store/$cfg_name"
+    if [ ! -f "$target" ]; then
+      cp "$cfg" "$target"
+      ok "Seed config: $cfg_name"
+    fi
+  done
+fi
+
 # Channel state directory setup
 CHANNEL_DIR="$HOME/.claude/channels/$CHANNEL_PROVIDER"
 mkdir -p "$CHANNEL_DIR"

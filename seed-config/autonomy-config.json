@@ -1,0 +1,98 @@
+{
+  "version": 1,
+  "updated_at": 0,
+  "_doc": "Heartbeat fokozatos autonomia. level: 1=csak jelez, 2=javasol+jovahagyas, 3=autonom+jelent. locked=true eseten a hard safety-szabaly miatt maxLevel=1, nem emelheto.",
+  "categories": [
+    {
+      "key": "kanban_archive_done",
+      "label": "7+ napos done kartya archivalas",
+      "level": 1,
+      "locked": false,
+      "maxLevel": 3
+    },
+    {
+      "key": "kanban_stuck_nudge",
+      "label": "Beakadt task: assignee nudge (2 kor utan eszkalal)",
+      "level": 1,
+      "locked": false,
+      "maxLevel": 3
+    },
+    {
+      "key": "memory_maintenance",
+      "label": "Memoria rendberakas (vektorizalas, teszt-spam cold-ba)",
+      "level": 1,
+      "locked": false,
+      "maxLevel": 3
+    },
+    {
+      "key": "routine_trivial_fix",
+      "label": "Deli/reggeli rutin trivialis javitasai",
+      "level": 1,
+      "locked": false,
+      "maxLevel": 3
+    },
+    {
+      "key": "deploy_retry",
+      "label": "Elbukott deploy/CI ujraprobalkozas",
+      "level": 1,
+      "locked": false,
+      "maxLevel": 3
+    },
+    {
+      "key": "kanban_restructure",
+      "label": "Kanban kartya atstrukturlas / sub-task bontas",
+      "level": 1,
+      "locked": false,
+      "maxLevel": 3
+    },
+    {
+      "key": "skill_patch",
+      "label": "Skill-patch alkalmazas",
+      "level": 1,
+      "locked": false,
+      "maxLevel": 3
+    },
+    {
+      "key": "email_send",
+      "label": "Email kuldes / valasz",
+      "level": 1,
+      "locked": false,
+      "maxLevel": 2
+    },
+    {
+      "key": "publish_content",
+      "label": "Publikalas (Skool / blog / kozosseg)",
+      "level": 1,
+      "locked": true,
+      "maxLevel": 1
+    },
+    {
+      "key": "payment",
+      "label": "Vasarlas / penzmozgas",
+      "level": 1,
+      "locked": true,
+      "maxLevel": 1
+    },
+    {
+      "key": "data_delete",
+      "label": "Fajl / adat torles",
+      "level": 1,
+      "locked": true,
+      "maxLevel": 1
+    },
+    {
+      "key": "permission_change",
+      "label": "Jogosultsag-valtoztatas / megosztas",
+      "level": 1,
+      "locked": true,
+      "maxLevel": 1
+    },
+    {
+      "key": "external_message",
+      "label": "Kulso uzenet kuldes",
+      "level": 1,
+      "locked": true,
+      "maxLevel": 1
+    }
+  ]
+}

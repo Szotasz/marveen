@@ -276,6 +276,40 @@ if [ -d "$SEED_SCHED_DIR" ]; then
   fi
 fi
 
+# Seed config: merge missing keys into existing store/ configs.
+# Fresh install: copy if target absent. Existing install: merge new
+# categories into autonomy-config.json without touching user-set levels.
+SEED_CONFIG_DIR="$INSTALL_DIR/seed-config"
+if [ -d "$SEED_CONFIG_DIR" ]; then
+  for cfg in "$SEED_CONFIG_DIR"/*.json; do
+    [ -f "$cfg" ] || continue
+    cfg_name=$(basename "$cfg")
+    target="$INSTALL_DIR/store/$cfg_name"
+    if [ ! -f "$target" ]; then
+      cp "$cfg" "$target"
+      echo -e "  ${GREEN}✓${NC} Seed config: $cfg_name"
+    elif [ "$cfg_name" = "autonomy-config.json" ] && command -v node >/dev/null 2>&1; then
+      MERGED=$(node -e "
+        const seed = JSON.parse(require('fs').readFileSync('$cfg','utf8'));
+        const live = JSON.parse(require('fs').readFileSync('$target','utf8'));
+        const existing = new Set(live.categories.map(c => c.key));
+        let added = 0;
+        for (const c of seed.categories) {
+          if (!existing.has(c.key)) { live.categories.push(c); added++; }
+        }
+        if (added) {
+          live.updated_at = Math.floor(Date.now()/1000);
+          require('fs').writeFileSync('$target', JSON.stringify(live,null,2)+'\n');
+        }
+        console.log(added);
+      " 2>/dev/null || echo "0")
+      if [ "$MERGED" != "0" ] && [ -n "$MERGED" ]; then
+        echo -e "  ${GREEN}✓${NC} autonomy-config.json: ${MERGED} uj kategoria merge-elve"
+      fi
+    fi
+  done
+fi
+
 # Slack channel plugin smoke-test: if the marketplace slack-channel ref
 # changed since the last update, and a slack-provider agent exists, run
 # the smoke-test (if SLACK_SMOKE_TEST_ALLOWED=true in its .env).
