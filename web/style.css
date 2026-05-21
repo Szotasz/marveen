@@ -4644,11 +4644,90 @@ main {
   color: var(--text);
   background: var(--bg-input);
 }
+/* install flow states */
+.cxhu-banner-action {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+.cxhu-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cxhu-banner-cta {
+  border: none;
+  cursor: pointer;
+}
+.cxhu-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(0, 151, 124, 0.25);
+  border-top-color: #00977c;
+  border-radius: 50%;
+  animation: cxhu-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes cxhu-spin { to { transform: rotate(360deg); } }
+.cxhu-state-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.cxhu-done-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #00977c;
+  background: rgba(0, 151, 124, 0.1);
+  padding: 5px 10px;
+  border-radius: 999px;
+}
+[data-theme="dark"] .cxhu-done-badge { color: #59e9ce; background: rgba(89, 233, 206, 0.1); }
+.cxhu-link-sm {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+}
+.cxhu-link-sm:hover { color: #00977c; }
+.cxhu-state--token {
+  gap: 6px;
+}
+.cxhu-token-input {
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text);
+  outline: none;
+  width: 200px;
+  transition: border-color var(--transition);
+}
+.cxhu-token-input:focus { border-color: #00977c; }
+.cxhu-token-input::placeholder { color: var(--text-muted); font-size: 11px; }
+.cxhu-error-msg {
+  font-size: 12px;
+  color: var(--danger);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cxhu-retry-btn { background: var(--danger); }
+.cxhu-retry-btn:hover { background: var(--danger-hover); }
 @media (max-width: 640px) {
   .cxhu-banner-inner { flex-wrap: wrap; }
   .cxhu-banner-logo { display: none; }
   .cxhu-banner-text { min-width: 100%; }
   .cxhu-banner-headline { white-space: normal; }
+  .cxhu-banner-action { width: 100%; }
+  .cxhu-state--token { flex-wrap: wrap; }
+  .cxhu-token-input { width: 100%; }
   .cxhu-banner-cta { width: 100%; justify-content: center; }
   .cxhu-banner-close { position: absolute; top: 10px; right: 10px; }
   .cxhu-banner { position: relative; }
