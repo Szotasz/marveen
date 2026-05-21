@@ -1,8 +1,12 @@
 import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { readBody, json } from '../http-helpers.js'
 import { setSecret, getSecret } from '../vault.js'
 import { logger } from '../../logger.js'
 import type { RouteContext } from './types.js'
+
+const LOCAL_BIN = `${process.env.HOME}/.local/bin`
+const EXTENDED_PATH = `${LOCAL_BIN}:${process.env.PATH || ''}`
 
 const VAULT_ID = 'CONNECTORS_HU_TOKEN'
 const VAULT_LABEL = 'connectors.hu API token'
@@ -18,12 +22,12 @@ function which(bin: string): Promise<string | null> {
   })
 }
 
-function isInstalled(): Promise<{ installed: boolean; path: string | null }> {
-  return new Promise(async resolve => {
-    const homeLocal = `${process.env.HOME}/.local/bin/connectors`
-    const p = await which('connectors')
-    resolve({ installed: p !== null, path: p })
-  })
+async function isInstalled(): Promise<{ installed: boolean; path: string | null }> {
+  const p = await which('connectors')
+  if (p) return { installed: true, path: p }
+  const localPath = `${LOCAL_BIN}/connectors`
+  if (existsSync(localPath)) return { installed: true, path: localPath }
+  return { installed: false, path: null }
 }
 
 function runCommand(cmd: string, args: string[], opts: { timeout: number; env?: Record<string, string> }): Promise<{ ok: boolean; output: string }> {
@@ -46,7 +50,7 @@ export async function tryHandleConnectorsHu(ctx: RouteContext): Promise<boolean>
       const configured = getSecret(VAULT_ID) !== null
       let version: string | undefined
       if (installed) {
-        const result = await runCommand('connectors', ['--version'], { timeout: 5000 })
+        const result = await runCommand('connectors', ['--version'], { timeout: 5000, env: { PATH: EXTENDED_PATH } })
         if (result.ok && result.output) version = result.output.split('\n')[0].trim()
       }
       json(res, { ok: true, installed, configured, ...(version ? { version } : {}) })
@@ -90,7 +94,7 @@ export async function tryHandleConnectorsHu(ctx: RouteContext): Promise<boolean>
 
       const result = await runCommand('connectors', ['sync'], {
         timeout: SYNC_TIMEOUT,
-        env: { CONNECTORS_HU_TOKEN: token.trim() },
+        env: { PATH: EXTENDED_PATH, CONNECTORS_HU_TOKEN: token.trim() },
       })
 
       json(res, { ok: result.ok, configured: true, syncOutput: result.output })
