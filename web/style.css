@@ -4655,6 +4655,7 @@ main {
   align-items: center;
   gap: 8px;
 }
+.cxhu-state[hidden] { display: none; }
 .cxhu-banner-cta {
   border: none;
   cursor: pointer;
