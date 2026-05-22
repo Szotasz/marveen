@@ -1,0 +1,1573 @@
+{
+  "schema_version": "0.1.0",
+  "_comment": "Best-effort public Mini/Shai-Hulud May 2026 package exposure catalog generated from the static OX Security affected-package table and cross-checked against public Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting. This is intended for exact package/version presence checks, not network/file/process IOC checks. Public reporting says 170+ packages were affected; this file contains the static package/version rows available from the cited public table at generation time. Keep it updated from authoritative advisories before production use.",
+  "entries": [
+    {
+      "id": "mini-shai-hulud-2026-npm-beproduct-nestjs-auth",
+      "name": "@beproduct/nestjs-auth (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@beproduct/nestjs-auth",
+      "versions": [
+        "0.1.18",
+        "0.1.19",
+        "0.1.17",
+        "0.1.16",
+        "0.1.15",
+        "0.1.13",
+        "0.1.14",
+        "0.1.8",
+        "0.1.6",
+        "0.1.9",
+        "0.1.2",
+        "0.1.5",
+        "0.1.11",
+        "0.1.4",
+        "0.1.3",
+        "0.1.7",
+        "0.1.10",
+        "0.1.12"
+      ],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-dirigible-ai-sdk",
+      "name": "@dirigible-ai/sdk (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@dirigible-ai/sdk",
+      "versions": ["0.6.3", "0.6.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-draftauth-client",
+      "name": "@draftauth/client (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@draftauth/client",
+      "versions": ["0.2.2", "0.2.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-draftauth-core",
+      "name": "@draftauth/core (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@draftauth/core",
+      "versions": ["0.13.1", "0.13.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-draftlab-auth",
+      "name": "@draftlab/auth (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@draftlab/auth",
+      "versions": ["0.24.2", "0.24.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-draftlab-auth-router",
+      "name": "@draftlab/auth-router (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@draftlab/auth-router",
+      "versions": ["0.5.1", "0.5.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-draftlab-db",
+      "name": "@draftlab/db (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@draftlab/db",
+      "versions": ["0.16.2", "0.16.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-mesadev-rest",
+      "name": "@mesadev/rest (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@mesadev/rest",
+      "versions": ["0.28.3"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-mesadev-saguaro",
+      "name": "@mesadev/saguaro (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@mesadev/saguaro",
+      "versions": ["0.4.22"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-mesadev-sdk",
+      "name": "@mesadev/sdk (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@mesadev/sdk",
+      "versions": ["0.28.3"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-mistralai-mistralai",
+      "name": "@mistralai/mistralai (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@mistralai/mistralai",
+      "versions": ["2.2.4", "2.2.3", "2.2.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-mistralai-mistralai-azure",
+      "name": "@mistralai/mistralai-azure (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@mistralai/mistralai-azure",
+      "versions": ["1.7.3", "1.7.1", "1.7.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-mistralai-mistralai-gcp",
+      "name": "@mistralai/mistralai-gcp (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@mistralai/mistralai-gcp",
+      "versions": ["1.7.3", "1.7.1", "1.7.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-ml-toolkit-ts-preprocessing",
+      "name": "@ml-toolkit-ts/preprocessing (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@ml-toolkit-ts/preprocessing",
+      "versions": ["1.0.2", "1.0.3"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-ml-toolkit-ts-xgboost",
+      "name": "@ml-toolkit-ts/xgboost (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@ml-toolkit-ts/xgboost",
+      "versions": ["1.0.3", "1.0.4"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-opensearch-project-opensearch",
+      "name": "@opensearch-project/opensearch (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@opensearch-project/opensearch",
+      "versions": ["3.5.3", "3.8.0", "3.7.0", "3.6.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-squawk-airport-data",
+      "name": "@squawk/airport-data (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@squawk/airport-data",
+      "versions": ["0.7.8", "0.7.7", "0.7.6", "0.7.5", "0.7.4"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-squawk-airports",
+      "name": "@squawk/airports (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@squawk/airports",
+      "versions": ["0.6.6", "0.6.5", "0.6.4", "0.6.3", "0.6.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-squawk-airspace",
+      "name": "@squawk/airspace (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@squawk/airspace",
+      "versions": ["0.8.5", "0.8.3", "0.8.4", "0.8.2", "0.8.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-squawk-airspace-data",
+      "name": "@squawk/airspace-data (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@squawk/airspace-data",
+      "versions": ["0.5.7", "0.5.5", "0.5.6", "0.5.4", "0.5.3"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-squawk-airway-data",
+      "name": "@squawk/airway-data (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@squawk/airway-data",
+      "versions": ["0.5.8", "0.5.7", "0.5.6", "0.5.5", "0.5.4"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-squawk-airways",
+      "name": "@squawk/airways (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@squawk/airways",
+      "versions": ["0.4.6", "0.4.4", "0.4.5", "0.4.3", "0.4.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-squawk-fix-data",
+      "name": "@squawk/fix-data (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@squawk/fix-data",
+      "versions": ["0.6.8", "0.6.7", "0.6.6", "0.6.5", "0.6.4"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-squawk-fixes",
+      "name": "@squawk/fixes (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@squawk/fixes",
+      "versions": ["0.3.6", "0.3.5", "0.3.4", "0.3.3", "0.3.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-squawk-flight-math",
+      "name": "@squawk/flight-math (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@squawk/flight-math",
+      "versions": ["0.5.8", "0.5.7", "0.5.6", "0.5.5", "0.5.4"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-squawk-flightplan",
+      "name": "@squawk/flightplan (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@squawk/flightplan",
+      "versions": ["0.5.6", "0.5.5", "0.5.4", "0.5.3", "0.5.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-squawk-geo",
+      "name": "@squawk/geo (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@squawk/geo",
+      "versions": ["0.4.8", "0.4.7", "0.4.6", "0.4.5", "0.4.4"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-squawk-icao-registry",
+      "name": "@squawk/icao-registry (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@squawk/icao-registry",
+      "versions": ["0.5.6", "0.5.5", "0.5.4", "0.5.3", "0.5.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-squawk-icao-registry-data",
+      "name": "@squawk/icao-registry-data (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@squawk/icao-registry-data",
+      "versions": ["0.8.8", "0.8.6", "0.8.7", "0.8.5", "0.8.4"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-squawk-mcp",
+      "name": "@squawk/mcp (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@squawk/mcp",
+      "versions": ["0.9.5", "0.9.4", "0.9.3", "0.9.2", "0.9.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-squawk-navaid-data",
+      "name": "@squawk/navaid-data (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@squawk/navaid-data",
+      "versions": ["0.6.8", "0.6.7", "0.6.6", "0.6.5", "0.6.4"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-squawk-navaids",
+      "name": "@squawk/navaids (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@squawk/navaids",
+      "versions": ["0.4.6", "0.4.5", "0.4.4", "0.4.3", "0.4.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-squawk-notams",
+      "name": "@squawk/notams (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@squawk/notams",
+      "versions": ["0.3.10", "0.3.9", "0.3.8", "0.3.7", "0.3.6"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-squawk-procedure-data",
+      "name": "@squawk/procedure-data (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@squawk/procedure-data",
+      "versions": ["0.7.7", "0.7.5", "0.7.6", "0.7.4", "0.7.3"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-squawk-procedures",
+      "name": "@squawk/procedures (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@squawk/procedures",
+      "versions": ["0.5.6", "0.5.4", "0.5.5", "0.5.3", "0.5.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-squawk-types",
+      "name": "@squawk/types (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@squawk/types",
+      "versions": ["0.8.5", "0.8.3", "0.8.4", "0.8.2", "0.8.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-squawk-units",
+      "name": "@squawk/units (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@squawk/units",
+      "versions": ["0.4.7", "0.4.5", "0.4.6", "0.4.4", "0.4.3"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-squawk-weather",
+      "name": "@squawk/weather (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@squawk/weather",
+      "versions": ["0.5.10", "0.5.8", "0.5.9", "0.5.7", "0.5.6"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-supersurkhet-cli",
+      "name": "@supersurkhet/cli (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@supersurkhet/cli",
+      "versions": ["0.0.7", "0.0.6", "0.0.5", "0.0.4", "0.0.3", "0.0.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-supersurkhet-sdk",
+      "name": "@supersurkhet/sdk (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@supersurkhet/sdk",
+      "versions": ["0.0.7", "0.0.6", "0.0.5", "0.0.4", "0.0.3", "0.0.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tallyui-components",
+      "name": "@tallyui/components (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tallyui/components",
+      "versions": ["1.0.3", "1.0.2", "1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tallyui-connector-medusa",
+      "name": "@tallyui/connector-medusa (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tallyui/connector-medusa",
+      "versions": ["1.0.3", "1.0.2", "1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tallyui-connector-shopify",
+      "name": "@tallyui/connector-shopify (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tallyui/connector-shopify",
+      "versions": ["1.0.3", "1.0.2", "1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tallyui-connector-vendure",
+      "name": "@tallyui/connector-vendure (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tallyui/connector-vendure",
+      "versions": ["1.0.3", "1.0.2", "1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tallyui-connector-woocommerce",
+      "name": "@tallyui/connector-woocommerce (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tallyui/connector-woocommerce",
+      "versions": ["1.0.3", "1.0.2", "1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tallyui-core",
+      "name": "@tallyui/core (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tallyui/core",
+      "versions": ["0.2.3", "0.2.2", "0.2.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tallyui-database",
+      "name": "@tallyui/database (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tallyui/database",
+      "versions": ["1.0.3", "1.0.2", "1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tallyui-pos",
+      "name": "@tallyui/pos (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tallyui/pos",
+      "versions": ["0.1.3", "0.1.2", "0.1.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tallyui-storage-sqlite",
+      "name": "@tallyui/storage-sqlite (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tallyui/storage-sqlite",
+      "versions": ["0.2.3", "0.2.2", "0.2.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tallyui-theme",
+      "name": "@tallyui/theme (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tallyui/theme",
+      "versions": ["0.2.3", "0.2.2", "0.2.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-arktype-adapter",
+      "name": "@tanstack/arktype-adapter (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/arktype-adapter",
+      "versions": ["1.166.15", "1.166.12"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-eslint-plugin-router",
+      "name": "@tanstack/eslint-plugin-router (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/eslint-plugin-router",
+      "versions": ["1.161.12", "1.161.9"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-eslint-plugin-start",
+      "name": "@tanstack/eslint-plugin-start (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/eslint-plugin-start",
+      "versions": ["0.0.7", "0.0.4"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-history",
+      "name": "@tanstack/history (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/history",
+      "versions": ["1.161.12", "1.161.9"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-nitro-v2-vite-plugin",
+      "name": "@tanstack/nitro-v2-vite-plugin (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/nitro-v2-vite-plugin",
+      "versions": ["1.154.15", "1.154.12"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-react-router",
+      "name": "@tanstack/react-router (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/react-router",
+      "versions": ["1.169.8", "1.169.5"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-react-router-devtools",
+      "name": "@tanstack/react-router-devtools (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/react-router-devtools",
+      "versions": ["1.166.19", "1.166.16"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-react-router-ssr-query",
+      "name": "@tanstack/react-router-ssr-query (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/react-router-ssr-query",
+      "versions": ["1.166.18", "1.166.15"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-react-start",
+      "name": "@tanstack/react-start (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/react-start",
+      "versions": ["1.167.71", "1.167.68"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-react-start-client",
+      "name": "@tanstack/react-start-client (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/react-start-client",
+      "versions": ["1.166.54", "1.166.51"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-react-start-rsc",
+      "name": "@tanstack/react-start-rsc (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/react-start-rsc",
+      "versions": ["0.0.50", "0.0.47"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-react-start-server",
+      "name": "@tanstack/react-start-server (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/react-start-server",
+      "versions": ["1.166.58", "1.166.55"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-router-cli",
+      "name": "@tanstack/router-cli (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/router-cli",
+      "versions": ["1.166.49", "1.166.46"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-router-core",
+      "name": "@tanstack/router-core (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/router-core",
+      "versions": ["1.169.8", "1.169.5"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-router-devtools",
+      "name": "@tanstack/router-devtools (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/router-devtools",
+      "versions": ["1.166.19", "1.166.16"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-router-devtools-core",
+      "name": "@tanstack/router-devtools-core (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/router-devtools-core",
+      "versions": ["1.167.9", "1.167.6"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-router-generator",
+      "name": "@tanstack/router-generator (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/router-generator",
+      "versions": ["1.166.48", "1.166.45"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-router-plugin",
+      "name": "@tanstack/router-plugin (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/router-plugin",
+      "versions": ["1.167.41", "1.167.38"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-router-ssr-query-core",
+      "name": "@tanstack/router-ssr-query-core (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/router-ssr-query-core",
+      "versions": ["1.168.6", "1.168.3"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-router-utils",
+      "name": "@tanstack/router-utils (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/router-utils",
+      "versions": ["1.161.14", "1.161.11"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-router-vite-plugin",
+      "name": "@tanstack/router-vite-plugin (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/router-vite-plugin",
+      "versions": ["1.166.56", "1.166.53"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-solid-router",
+      "name": "@tanstack/solid-router (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/solid-router",
+      "versions": ["1.169.8", "1.169.5"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-solid-router-devtools",
+      "name": "@tanstack/solid-router-devtools (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/solid-router-devtools",
+      "versions": ["1.166.19", "1.166.16"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-solid-router-ssr-query",
+      "name": "@tanstack/solid-router-ssr-query (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/solid-router-ssr-query",
+      "versions": ["1.166.18", "1.166.15"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-solid-start",
+      "name": "@tanstack/solid-start (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/solid-start",
+      "versions": ["1.167.68", "1.167.65"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-solid-start-client",
+      "name": "@tanstack/solid-start-client (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/solid-start-client",
+      "versions": ["1.166.53", "1.166.50"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-solid-start-server",
+      "name": "@tanstack/solid-start-server (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/solid-start-server",
+      "versions": ["1.166.57", "1.166.54"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-start-client-core",
+      "name": "@tanstack/start-client-core (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/start-client-core",
+      "versions": ["1.168.8", "1.168.5"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-start-fn-stubs",
+      "name": "@tanstack/start-fn-stubs (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/start-fn-stubs",
+      "versions": ["1.161.12", "1.161.9"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-start-plugin-core",
+      "name": "@tanstack/start-plugin-core (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/start-plugin-core",
+      "versions": ["1.169.26", "1.169.23"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-start-server-core",
+      "name": "@tanstack/start-server-core (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/start-server-core",
+      "versions": ["1.167.36", "1.167.33"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-start-static-server-functions",
+      "name": "@tanstack/start-static-server-functions (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/start-static-server-functions",
+      "versions": ["1.166.47", "1.166.44"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-start-storage-context",
+      "name": "@tanstack/start-storage-context (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/start-storage-context",
+      "versions": ["1.166.41", "1.166.38"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-valibot-adapter",
+      "name": "@tanstack/valibot-adapter (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/valibot-adapter",
+      "versions": ["1.166.15", "1.166.12"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-virtual-file-routes",
+      "name": "@tanstack/virtual-file-routes (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/virtual-file-routes",
+      "versions": ["1.161.13", "1.161.10"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-vue-router",
+      "name": "@tanstack/vue-router (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/vue-router",
+      "versions": ["1.169.8", "1.169.5"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-vue-router-devtools",
+      "name": "@tanstack/vue-router-devtools (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/vue-router-devtools",
+      "versions": ["1.166.19", "1.166.16"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-vue-router-ssr-query",
+      "name": "@tanstack/vue-router-ssr-query (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/vue-router-ssr-query",
+      "versions": ["1.166.18", "1.166.15"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-vue-start",
+      "name": "@tanstack/vue-start (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/vue-start",
+      "versions": ["1.167.64", "1.167.61"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-vue-start-client",
+      "name": "@tanstack/vue-start-client (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/vue-start-client",
+      "versions": ["1.166.49", "1.166.46"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-vue-start-server",
+      "name": "@tanstack/vue-start-server (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/vue-start-server",
+      "versions": ["1.166.53", "1.166.50"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tanstack-zod-adapter",
+      "name": "@tanstack/zod-adapter (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tanstack/zod-adapter",
+      "versions": ["1.166.15", "1.166.12"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-taskflow-corp-cli",
+      "name": "@taskflow-corp/cli (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@taskflow-corp/cli",
+      "versions": ["0.1.29", "0.1.28", "0.1.27", "0.1.26", "0.1.25", "0.1.24"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-tolka-cli",
+      "name": "@tolka/cli (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@tolka/cli",
+      "versions": ["1.0.5", "1.0.6", "1.0.4", "1.0.3", "1.0.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-access-policy-sdk",
+      "name": "@uipath/access-policy-sdk (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/access-policy-sdk",
+      "versions": ["0.3.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-access-policy-tool",
+      "name": "@uipath/access-policy-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/access-policy-tool",
+      "versions": ["0.3.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-admin-tool",
+      "name": "@uipath/admin-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/admin-tool",
+      "versions": ["0.1.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-agent-sdk",
+      "name": "@uipath/agent-sdk (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/agent-sdk",
+      "versions": ["1.0.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-agent-tool",
+      "name": "@uipath/agent-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/agent-tool",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-agent.sdk",
+      "name": "@uipath/agent.sdk (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/agent.sdk",
+      "versions": ["0.0.18"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-aops-policy-tool",
+      "name": "@uipath/aops-policy-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/aops-policy-tool",
+      "versions": ["0.3.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-ap-chat",
+      "name": "@uipath/ap-chat (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/ap-chat",
+      "versions": ["1.5.7"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-api-workflow-tool",
+      "name": "@uipath/api-workflow-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/api-workflow-tool",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-apollo-core",
+      "name": "@uipath/apollo-core (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/apollo-core",
+      "versions": ["5.9.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-apollo-react",
+      "name": "@uipath/apollo-react (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/apollo-react",
+      "versions": ["4.24.5"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-apollo-wind",
+      "name": "@uipath/apollo-wind (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/apollo-wind",
+      "versions": ["2.16.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-auth",
+      "name": "@uipath/auth (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/auth",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-case-tool",
+      "name": "@uipath/case-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/case-tool",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-cli",
+      "name": "@uipath/cli (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/cli",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-codedagent-tool",
+      "name": "@uipath/codedagent-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/codedagent-tool",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-codedagents-tool",
+      "name": "@uipath/codedagents-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/codedagents-tool",
+      "versions": ["0.1.12"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-codedapp-tool",
+      "name": "@uipath/codedapp-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/codedapp-tool",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-common",
+      "name": "@uipath/common (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/common",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-context-grounding-tool",
+      "name": "@uipath/context-grounding-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/context-grounding-tool",
+      "versions": ["0.1.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-data-fabric-tool",
+      "name": "@uipath/data-fabric-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/data-fabric-tool",
+      "versions": ["1.0.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-docsai-tool",
+      "name": "@uipath/docsai-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/docsai-tool",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-filesystem",
+      "name": "@uipath/filesystem (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/filesystem",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-flow-tool",
+      "name": "@uipath/flow-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/flow-tool",
+      "versions": ["1.0.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-functions-tool",
+      "name": "@uipath/functions-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/functions-tool",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-gov-tool",
+      "name": "@uipath/gov-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/gov-tool",
+      "versions": ["0.3.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-identity-tool",
+      "name": "@uipath/identity-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/identity-tool",
+      "versions": ["0.1.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-insights-sdk",
+      "name": "@uipath/insights-sdk (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/insights-sdk",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-insights-tool",
+      "name": "@uipath/insights-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/insights-tool",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-integrationservice-sdk",
+      "name": "@uipath/integrationservice-sdk (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/integrationservice-sdk",
+      "versions": ["1.0.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-integrationservice-tool",
+      "name": "@uipath/integrationservice-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/integrationservice-tool",
+      "versions": ["1.0.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-llmgw-tool",
+      "name": "@uipath/llmgw-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/llmgw-tool",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-maestro-sdk",
+      "name": "@uipath/maestro-sdk (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/maestro-sdk",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-maestro-tool",
+      "name": "@uipath/maestro-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/maestro-tool",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-orchestrator-tool",
+      "name": "@uipath/orchestrator-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/orchestrator-tool",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-packager-tool-apiworkflow",
+      "name": "@uipath/packager-tool-apiworkflow (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/packager-tool-apiworkflow",
+      "versions": ["0.0.19"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-packager-tool-bpmn",
+      "name": "@uipath/packager-tool-bpmn (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/packager-tool-bpmn",
+      "versions": ["0.0.9"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-packager-tool-case",
+      "name": "@uipath/packager-tool-case (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/packager-tool-case",
+      "versions": ["0.0.9"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-packager-tool-connector",
+      "name": "@uipath/packager-tool-connector (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/packager-tool-connector",
+      "versions": ["0.0.19"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-packager-tool-flow",
+      "name": "@uipath/packager-tool-flow (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/packager-tool-flow",
+      "versions": ["0.0.19"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-packager-tool-functions",
+      "name": "@uipath/packager-tool-functions (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/packager-tool-functions",
+      "versions": ["0.1.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-packager-tool-webapp",
+      "name": "@uipath/packager-tool-webapp (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/packager-tool-webapp",
+      "versions": ["1.0.6"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-packager-tool-workflowcompiler",
+      "name": "@uipath/packager-tool-workflowcompiler (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/packager-tool-workflowcompiler",
+      "versions": ["0.0.16"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-packager-tool-workflowcompiler-browser",
+      "name": "@uipath/packager-tool-workflowcompiler-browser (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/packager-tool-workflowcompiler-browser",
+      "versions": ["0.0.34"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-platform-tool",
+      "name": "@uipath/platform-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/platform-tool",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-project-packager",
+      "name": "@uipath/project-packager (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/project-packager",
+      "versions": ["1.1.16"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-resource-tool",
+      "name": "@uipath/resource-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/resource-tool",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-resourcecatalog-tool",
+      "name": "@uipath/resourcecatalog-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/resourcecatalog-tool",
+      "versions": ["0.1.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-resources-tool",
+      "name": "@uipath/resources-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/resources-tool",
+      "versions": ["0.1.11"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-robot",
+      "name": "@uipath/robot (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/robot",
+      "versions": ["1.3.4"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-rpa-legacy-tool",
+      "name": "@uipath/rpa-legacy-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/rpa-legacy-tool",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-rpa-tool",
+      "name": "@uipath/rpa-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/rpa-tool",
+      "versions": ["0.9.5"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-solution-packager",
+      "name": "@uipath/solution-packager (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/solution-packager",
+      "versions": ["0.0.35"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-solution-tool",
+      "name": "@uipath/solution-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/solution-tool",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-solutionpackager-sdk",
+      "name": "@uipath/solutionpackager-sdk (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/solutionpackager-sdk",
+      "versions": ["1.0.11"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-solutionpackager-tool-core",
+      "name": "@uipath/solutionpackager-tool-core (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/solutionpackager-tool-core",
+      "versions": ["0.0.34"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-tasks-tool",
+      "name": "@uipath/tasks-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/tasks-tool",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-telemetry",
+      "name": "@uipath/telemetry (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/telemetry",
+      "versions": ["0.0.7"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-test-manager-tool",
+      "name": "@uipath/test-manager-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/test-manager-tool",
+      "versions": ["1.0.2"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-tool-workflowcompiler",
+      "name": "@uipath/tool-workflowcompiler (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/tool-workflowcompiler",
+      "versions": ["0.0.12"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-traces-tool",
+      "name": "@uipath/traces-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/traces-tool",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-ui-widgets-multi-file-upload",
+      "name": "@uipath/ui-widgets-multi-file-upload (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/ui-widgets-multi-file-upload",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-uipath-python-bridge",
+      "name": "@uipath/uipath-python-bridge (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/uipath-python-bridge",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-vertical-solutions-tool",
+      "name": "@uipath/vertical-solutions-tool (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/vertical-solutions-tool",
+      "versions": ["1.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-vss",
+      "name": "@uipath/vss (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/vss",
+      "versions": ["0.1.6"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-uipath-widget.sdk",
+      "name": "@uipath/widget.sdk (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "@uipath/widget.sdk",
+      "versions": ["1.2.3"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-agentwork-cli",
+      "name": "agentwork-cli (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "agentwork-cli",
+      "versions": ["0.1.4", "0.1.5"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-cmux-agent-mcp",
+      "name": "cmux-agent-mcp (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "cmux-agent-mcp",
+      "versions": ["0.1.8", "0.1.7", "0.1.6", "0.1.5", "0.1.4", "0.1.3"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-cross-stitch",
+      "name": "cross-stitch (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "cross-stitch",
+      "versions": ["1.1.7", "1.1.5", "1.1.6", "1.1.4", "1.1.3"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-git-branch-selector",
+      "name": "git-branch-selector (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "git-branch-selector",
+      "versions": ["1.3.7", "1.3.6", "1.3.5", "1.3.4", "1.3.3"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-git-git-git",
+      "name": "git-git-git (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "git-git-git",
+      "versions": ["1.0.12", "1.0.11", "1.0.10", "1.0.9", "1.0.8"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-pypi-guardrails-ai",
+      "name": "guardrails-ai (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "pypi",
+      "package": "guardrails-ai",
+      "versions": ["0.10.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-pypi-mistralai",
+      "name": "mistralai (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "pypi",
+      "package": "mistralai",
+      "versions": ["2.4.6"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-ml-toolkit-ts",
+      "name": "ml-toolkit-ts (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "ml-toolkit-ts",
+      "versions": ["1.0.5", "1.0.4"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-nextmove-mcp",
+      "name": "nextmove-mcp (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "nextmove-mcp",
+      "versions": ["0.1.7", "0.1.6", "0.1.5", "0.1.4", "0.1.3"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-safe-action",
+      "name": "safe-action (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "safe-action",
+      "versions": ["0.8.4", "0.8.3"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-ts-dna",
+      "name": "ts-dna (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "ts-dna",
+      "versions": ["3.0.5", "3.0.4", "3.0.3", "3.0.2", "3.0.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    },
+    {
+      "id": "mini-shai-hulud-2026-npm-wot-api",
+      "name": "wot-api (Mini/Shai-Hulud May 2026 compromised)",
+      "ecosystem": "npm",
+      "package": "wot-api",
+      "versions": ["0.8.3", "0.8.4", "0.8.2", "0.8.1"],
+      "severity": "critical",
+      "source": "OX Security affected package table; corroborate high-impact entries with Fleet, Socket, Snyk, Mistral, TanStack, and The Hacker News reporting"
+    }
+  ]
+}

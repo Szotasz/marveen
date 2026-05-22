@@ -500,6 +500,15 @@ if [ -d "$SEED_SCHED_DIR" ]; then
       echo -e "  ${GREEN}✓${NC} kanban-audit state inicializálva"
     fi
   fi
+
+  # Seed bumblebee threat-intel catalogs into ~/.claude/tools/
+  BB_SEED_TI="$SEED_SCHED_DIR/bumblebee-hygiene-scan/threat-intel"
+  BB_TARGET_TI="$HOME/.claude/tools/bumblebee-threat-intel"
+  if [ -d "$BB_SEED_TI" ] && [ ! -d "$BB_TARGET_TI" ]; then
+    mkdir -p "$BB_TARGET_TI"
+    cp "$BB_SEED_TI"/*.json "$BB_TARGET_TI/" 2>/dev/null
+    echo -e "  ${GREEN}✓${NC} Bumblebee threat-intel katalógusok telepítve"
+  fi
 fi
 
 # Seed config: copy default config files into store/ (idempotent: never overwrite)

@@ -442,6 +442,15 @@ if [ -d "$SCHED_TPL_DIR" ]; then
   done
 fi
 
+# Seed bumblebee threat-intel catalogs into ~/.claude/tools/
+BB_SEED_TI="$INSTALL_DIR/seed-scheduled-tasks/bumblebee-hygiene-scan/threat-intel"
+BB_TARGET_TI="$HOME/.claude/tools/bumblebee-threat-intel"
+if [ -d "$BB_SEED_TI" ] && [ ! -d "$BB_TARGET_TI" ]; then
+  mkdir -p "$BB_TARGET_TI"
+  cp "$BB_SEED_TI"/*.json "$BB_TARGET_TI/" 2>/dev/null
+  ok "Bumblebee threat-intel katalogusok telepitve"
+fi
+
 # Seed config: copy default config files into store/ (idempotent: never overwrite)
 SEED_CONFIG_DIR="$INSTALL_DIR/seed-config"
 if [ -d "$SEED_CONFIG_DIR" ]; then

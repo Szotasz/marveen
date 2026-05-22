@@ -1,0 +1,1397 @@
+{
+  "schema_version": "0.1.0",
+  "_comment": "GemStuffer campaign (Socket, 2026-05-13). The actor abused RubyGems as a data transport/exfiltration channel for scraped UK local government content rather than as a conventional mass developer-compromise payload. Severity is set to high (not critical) because the gems are an exfil-channel artifact rather than a worm/credential stealer: presence on a developer endpoint still indicates either accidental install or directed compromise and is worth flagging. Embedded Socket tracker enumerated 155 artifact rows at handoff, deduped here to one entry per (ecosystem, gem) with the published versions. Example gems explicitly called out by the article include lambeth71b and agenda-sample-yard / agenda-sample-result. The scanner does exact (ecosystem, name, version) matching only.",
+  "_indicators": {
+    "payload_rb_sha256": "239440c830e17530dda0a8a06ed2708860998750a1e3ed2239e919465dc59420",
+    "script_rb_sha256": "c2d6bcacc88177e0f2c8c262726f86f37e671b1692c8bc135bac4b610ddcf31a",
+    "_note": "Socket post for GemStuffer also publishes SHA-1 and MD5 for payload.rb and script.rb plus redacted RubyGems API key prefixes/suffixes; only the SHA-256 values were provided in the audit handoff and are captured here verbatim. SHA-1/MD5 omitted rather than invented.",
+    "exfil_channel": "https://rubygems.org/api/v1/gems"
+  },
+  "entries": [
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-aaaresultfetchx",
+      "name": "aaaresultfetchx (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "aaaresultfetchx",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-agenda-sample-yard",
+      "name": "agenda-sample-yard (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "agenda-sample-yard",
+      "versions": [
+        "0.1.0",
+        "0.1.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-anchorx994",
+      "name": "anchorx994 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "anchorx994",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-anchorx995",
+      "name": "anchorx995 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "anchorx995",
+      "versions": [
+        "0.0.2"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-bot9evil",
+      "name": "bot9evil (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "bot9evil",
+      "versions": [
+        "0.1.0"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-civic-lambda-proxy",
+      "name": "civic-lambda-proxy (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "civic-lambda-proxy",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-councilbridgexyz",
+      "name": "councilbridgexyz (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "councilbridgexyz",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-councilfetchfff",
+      "name": "councilfetchfff (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "councilfetchfff",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-councilprobexyz",
+      "name": "councilprobexyz (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "councilprobexyz",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-designfetchdemo",
+      "name": "designfetchdemo (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "designfetchdemo",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-dnsfetchabc12",
+      "name": "dnsfetchabc12 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "dnsfetchabc12",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-exslnews795",
+      "name": "exslnews795 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "exslnews795",
+      "versions": [
+        "0.0.2"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-extssrfabc1778553451",
+      "name": "extssrfabc1778553451 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "extssrfabc1778553451",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-fetchrootx1",
+      "name": "fetchrootx1 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "fetchrootx1",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-fetchrootx2",
+      "name": "fetchrootx2 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "fetchrootx2",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-fmtsouthprox",
+      "name": "fmtsouthprox (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "fmtsouthprox",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-fmtstatdoca",
+      "name": "fmtstatdoca (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "fmtstatdoca",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-foobartmpxyz1234",
+      "name": "foobartmpxyz1234 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "foobartmpxyz1234",
+      "versions": [
+        "0.1.0",
+        "0.1.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-gemsimpleuo46nv",
+      "name": "gemsimpleuo46nv (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "gemsimpleuo46nv",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-lambcalfetchxyz",
+      "name": "lambcalfetchxyz (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "lambcalfetchxyz",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-lambcrawlxyz",
+      "name": "lambcrawlxyz (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "lambcrawlxyz",
+      "versions": [
+        "0.0.1",
+        "0.0.2"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-lambeth71a",
+      "name": "lambeth71a (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "lambeth71a",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-lambeth71b",
+      "name": "lambeth71b (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "lambeth71b",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-lambethcalcqzewgt",
+      "name": "lambethcalcqzewgt (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "lambethcalcqzewgt",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-lambethx33zzz",
+      "name": "lambethx33zzz (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "lambethx33zzz",
+      "versions": [
+        "0.0.1",
+        "0.0.2"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-lambexploitabc1",
+      "name": "lambexploitabc1 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "lambexploitabc1",
+      "versions": [
+        "0.0.2"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-lambfetchjj1",
+      "name": "lambfetchjj1 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "lambfetchjj1",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-lambfetchjj2",
+      "name": "lambfetchjj2 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "lambfetchjj2",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-lambfetchx528211",
+      "name": "lambfetchx528211 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "lambfetchx528211",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-lambfetchx548811",
+      "name": "lambfetchx548811 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "lambfetchx548811",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-lambfetchx550961",
+      "name": "lambfetchx550961 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "lambfetchx550961",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-lambproxydkz",
+      "name": "lambproxydkz (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "lambproxydkz",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-lambproxyman",
+      "name": "lambproxyman (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "lambproxyman",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-lambtmp35293950",
+      "name": "lambtmp35293950 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "lambtmp35293950",
+      "versions": [
+        "0.0.2"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-lambyard17",
+      "name": "lambyard17 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "lambyard17",
+      "versions": [
+        "0.0.1",
+        "0.0.2"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-lambyardcal",
+      "name": "lambyardcal (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "lambyardcal",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-lamhackzzq",
+      "name": "lamhackzzq (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "lamhackzzq",
+      "versions": [
+        "0.0.3",
+        "0.0.5"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-lbdeepgeta",
+      "name": "lbdeepgeta (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "lbdeepgeta",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-londonyardtestabc",
+      "name": "londonyardtestabc (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "londonyardtestabc",
+      "versions": [
+        "0.0.2"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-probeextwand",
+      "name": "probeextwand (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "probeextwand",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-proxssrfetviqtfb",
+      "name": "proxssrfetviqtfb (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "proxssrfetviqtfb",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-qwandfetch1",
+      "name": "qwandfetch1 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "qwandfetch1",
+      "versions": [
+        "0.0.1",
+        "0.0.2"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-rootfetchcalendarx",
+      "name": "rootfetchcalendarx (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "rootfetchcalendarx",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-rootfetchproperxyz",
+      "name": "rootfetchproperxyz (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "rootfetchproperxyz",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-runnerhack1778553910",
+      "name": "runnerhack1778553910 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "runnerhack1778553910",
+      "versions": [
+        "0.0.1",
+        "0.0.2"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-sf8aea",
+      "name": "sf8aea (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "sf8aea",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-sl-yard-probe2",
+      "name": "sl-yard-probe2 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "sl-yard-probe2",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-sl-yh-abcxyz1",
+      "name": "sl-yh-abcxyz1 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "sl-yh-abcxyz1",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-slfetchabc",
+      "name": "slfetchabc (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "slfetchabc",
+      "versions": [
+        "0.0.1",
+        "0.0.3"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-slfetchrootabc",
+      "name": "slfetchrootabc (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "slfetchrootabc",
+      "versions": [
+        "0.1.0"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-slfetchxyz",
+      "name": "slfetchxyz (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "slfetchxyz",
+      "versions": [
+        "0.0.2"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-slhackprobe999",
+      "name": "slhackprobe999 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "slhackprobe999",
+      "versions": [
+        "0.0.1",
+        "0.0.2"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-slnfetchroot001",
+      "name": "slnfetchroot001 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "slnfetchroot001",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-slnleaker4",
+      "name": "slnleaker4 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "slnleaker4",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-slnleaker5",
+      "name": "slnleaker5 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "slnleaker5",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-slnleakerext",
+      "name": "slnleakerext (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "slnleakerext",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-slnmultifetchabc",
+      "name": "slnmultifetchabc (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "slnmultifetchabc",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-smproxyaaa",
+      "name": "smproxyaaa (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "smproxyaaa",
+      "versions": [
+        "0.0.2"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-soufetchabc",
+      "name": "soufetchabc (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "soufetchabc",
+      "versions": [
+        "0.0.1",
+        "0.0.2",
+        "0.0.3"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-southc0ea",
+      "name": "southc0ea (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "southc0ea",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-southcalx884",
+      "name": "southcalx884 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "southcalx884",
+      "versions": [
+        "0.0.1",
+        "0.0.3"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-southfetchefefd",
+      "name": "southfetchefefd (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "southfetchefefd",
+      "versions": [
+        "0.0.1",
+        "0.0.2"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-southfetchprobe42",
+      "name": "southfetchprobe42 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "southfetchprobe42",
+      "versions": [
+        "0.0.1",
+        "0.0.3"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-southlondonfetchroot",
+      "name": "southlondonfetchroot (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "southlondonfetchroot",
+      "versions": [
+        "0.0.1",
+        "0.1.0"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-southmqsedwjgw",
+      "name": "southmqsedwjgw (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "southmqsedwjgw",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-southnews-designfetch-90001",
+      "name": "southnews-designfetch-90001 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "southnews-designfetch-90001",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-southnews-designfetch-90002",
+      "name": "southnews-designfetch-90002 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "southnews-designfetch-90002",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-southnews-payload1-35329",
+      "name": "southnews-payload1-35329 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "southnews-payload1-35329",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-southnewsprobe1778550995",
+      "name": "southnewsprobe1778550995 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "southnewsprobe1778550995",
+      "versions": [
+        "0.0.2"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-southpxdatapp6pi",
+      "name": "southpxdatapp6pi (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "southpxdatapp6pi",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-southpxjzmrdata",
+      "name": "southpxjzmrdata (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "southpxjzmrdata",
+      "versions": [
+        "0.0.1",
+        "0.0.2"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-southyardmine1",
+      "name": "southyardmine1 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "southyardmine1",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-southyardproxy",
+      "name": "southyardproxy (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "southyardproxy",
+      "versions": [
+        "0.0.1",
+        "0.0.2",
+        "0.0.3"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-southzzscrape",
+      "name": "southzzscrape (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "southzzscrape",
+      "versions": [
+        "0.0.1",
+        "0.0.3"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-swcal2507",
+      "name": "swcal2507 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "swcal2507",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-swcalfetcha",
+      "name": "swcalfetcha (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "swcalfetcha",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-swfetch-cal1-68321",
+      "name": "swfetch-cal1-68321 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "swfetch-cal1-68321",
+      "versions": [
+        "0.0.1",
+        "0.0.3"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-swkagenttwo",
+      "name": "swkagenttwo (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "swkagenttwo",
+      "versions": [
+        "0.0.2"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-swmeetfetcha",
+      "name": "swmeetfetcha (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "swmeetfetcha",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-tempwljrnwb",
+      "name": "tempwljrnwb (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "tempwljrnwb",
+      "versions": [
+        "0.0.10"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-useful-helper-tools",
+      "name": "useful_helper_tools (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "useful_helper_tools",
+      "versions": [
+        "1.2.3"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-uu4c477z1",
+      "name": "uu4c477z1 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "uu4c477z1",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-uuext4c477",
+      "name": "uuext4c477 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "uuext4c477",
+      "versions": [
+        "0.0.1",
+        "0.0.2",
+        "0.0.3"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-wandcabfetchfix21736",
+      "name": "wandcabfetchfix21736 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "wandcabfetchfix21736",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-wandcabm10266dsgn2",
+      "name": "wandcabm10266dsgn2 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "wandcabm10266dsgn2",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-wandcabm10266dsgn4",
+      "name": "wandcabm10266dsgn4 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "wandcabm10266dsgn4",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-wandcalentryzz001",
+      "name": "wandcalentryzz001 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "wandcalentryzz001",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-wandexecxtest",
+      "name": "wandexecxtest (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "wandexecxtest",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-wandfetchcal021",
+      "name": "wandfetchcal021 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "wandfetchcal021",
+      "versions": [
+        "0.0.1",
+        "0.0.5"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-wandhackmy",
+      "name": "wandhackmy (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "wandhackmy",
+      "versions": [
+        "0.0.2"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-wandocal1",
+      "name": "wandocal1 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "wandocal1",
+      "versions": [
+        "0.0.1",
+        "0.1.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-wandscrawla",
+      "name": "wandscrawla (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "wandscrawla",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-wandscrawlq",
+      "name": "wandscrawlq (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "wandscrawlq",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-wandscrawlr",
+      "name": "wandscrawlr (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "wandscrawlr",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-wandscrawlx",
+      "name": "wandscrawlx (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "wandscrawlx",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-wandsfetchzzabc",
+      "name": "wandsfetchzzabc (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "wandsfetchzzabc",
+      "versions": [
+        "0.0.2"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-wandsproxybuildtest0001",
+      "name": "wandsproxybuildtest0001 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "wandsproxybuildtest0001",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-wandsproxylol",
+      "name": "wandsproxylol (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "wandsproxylol",
+      "versions": [
+        "0.0.2"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-wandswan1-1778553002",
+      "name": "wandswan1-1778553002 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "wandswan1-1778553002",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-wandsworthprefetch209db",
+      "name": "wandsworthprefetch209db (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "wandsworthprefetch209db",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-wandtmpdesign9fe2",
+      "name": "wandtmpdesign9fe2 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "wandtmpdesign9fe2",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-wandxgetbc1",
+      "name": "wandxgetbc1 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "wandxgetbc1",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-wandxprobe",
+      "name": "wandxprobe (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "wandxprobe",
+      "versions": [
+        "0.0.1",
+        "0.0.2"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-wandzfetch1500929",
+      "name": "wandzfetch1500929 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "wandzfetch1500929",
+      "versions": [
+        "0.0.1",
+        "0.0.2"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-wanfetcherx9",
+      "name": "wanfetcherx9 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "wanfetcherx9",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-wdfetchcalmy",
+      "name": "wdfetchcalmy (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "wdfetchcalmy",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-wn98122eth",
+      "name": "wn98122eth (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "wn98122eth",
+      "versions": [
+        "9.8.0",
+        "9.9.0"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-yard-controllerlambda",
+      "name": "yard-controllerlambda (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "yard-controllerlambda",
+      "versions": [
+        "0.0.1",
+        "0.0.3"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-yard-docxrun",
+      "name": "yard-docxrun (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "yard-docxrun",
+      "versions": [
+        "0.0.1",
+        "0.0.3"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-yard-runhack",
+      "name": "yard-runhack (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "yard-runhack",
+      "versions": [
+        "0.0.3"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-yard-skyfetch",
+      "name": "yard-skyfetch (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "yard-skyfetch",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-yard-slnmultifetch",
+      "name": "yard-slnmultifetch (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "yard-slnmultifetch",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-yardbreakerxqh1778552850",
+      "name": "yardbreakerxqh1778552850 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "yardbreakerxqh1778552850",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-yardssrfabc1778551294",
+      "name": "yardssrfabc1778551294 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "yardssrfabc1778551294",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-yardxabc889",
+      "name": "yardxabc889 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "yardxabc889",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-yardz1778552299",
+      "name": "yardz1778552299 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "yardz1778552299",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-yexpabc58377",
+      "name": "yexpabc58377 (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "yexpabc58377",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-ygexpwzqbot",
+      "name": "ygexpwzqbot (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "ygexpwzqbot",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-zzsouthfetchsimplex",
+      "name": "zzsouthfetchsimplex (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "zzsouthfetchsimplex",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-zzsouthfetchtestx",
+      "name": "zzsouthfetchtestx (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "zzsouthfetchtestx",
+      "versions": [
+        "0.0.1",
+        "0.0.2"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-zzsouthrunner",
+      "name": "zzsouthrunner (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "zzsouthrunner",
+      "versions": [
+        "1.0.1",
+        "1.0.2"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-zzsouthrunnerb",
+      "name": "zzsouthrunnerb (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "zzsouthrunnerb",
+      "versions": [
+        "1.0.0"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    },
+    {
+      "id": "socket-2026-05-13-gemstuffer-rubygems-zzwandshostyard",
+      "name": "zzwandshostyard (GemStuffer May 2026 RubyGems exfiltration campaign)",
+      "ecosystem": "rubygems",
+      "package": "zzwandshostyard",
+      "versions": [
+        "0.0.1"
+      ],
+      "severity": "high",
+      "source": "https://socket.dev/blog/gemstuffer"
+    }
+  ]
+}

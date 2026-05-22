@@ -1,0 +1,3900 @@
+{
+  "schema_version": "0.1.0",
+  "_comment": "AntV / Mini Shai-Hulud npm worm wave reported by Socket on 2026-05-19. Scoped to artifacts the Socket tracker (attackId 22) first detected on or after 2026-05-13, i.e. the in-PR-window 5/19 wave. Pre-2026-05-13 artifacts from the cumulative Mini Shai-Hulud campaign (TanStack/2026-05-11, Lightning/2026-04-30, and earlier waves) are intentionally excluded from this catalog and are tracked separately. The compromised package.json carries preinstall: 'bun run index.js' and an optional dependency @antv/setup pinned to github:antvis/G2#1916faa365f2788b6e193514872d51a242876569. The worm validates stolen npm tokens, enumerates maintainable packages, injects payload/preinstall, bumps versions, and republishes.",
+  "_indicators": {
+    "exfil_endpoint": "https://t.m-kosche.com:443/api/public/otel/v1/traces",
+    "antv_setup_dep_commit": "github:antvis/G2#1916faa365f2788b6e193514872d51a242876569",
+    "preinstall_script": "bun run index.js",
+    "decryptor_global": "fc2edea72",
+    "exfil_repo_name_pattern": "<word>-<word>-<3 digits>",
+    "exfil_repo_example": "sayyadina-stillsuit-852",
+    "github_fallback_path": "results/results-<timestamp>-<counter>.json",
+    "reversed_marker": "niagA oG eW ereH :duluH-iahS",
+    "plaintext_marker": "Shai-Hulud: Here We Go Again"
+  },
+  "entries": [
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-a8",
+      "name": "@@antv/a8 (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/a8",
+      "versions": [
+        "0.1.1",
+        "0.2.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-adjust",
+      "name": "@@antv/adjust (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/adjust",
+      "versions": [
+        "0.3.5",
+        "0.4.5"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-algorithm",
+      "name": "@@antv/algorithm (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/algorithm",
+      "versions": [
+        "0.2.26",
+        "0.3.26"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-async-hook",
+      "name": "@@antv/async-hook (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/async-hook",
+      "versions": [
+        "2.3.9",
+        "2.4.9"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-attr",
+      "name": "@@antv/attr (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/attr",
+      "versions": [
+        "0.4.5",
+        "0.5.5"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-ava",
+      "name": "@@antv/ava (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/ava",
+      "versions": [
+        "3.5.1",
+        "3.6.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-ava-react",
+      "name": "@@antv/ava-react (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/ava-react",
+      "versions": [
+        "3.4.2",
+        "3.5.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-awards",
+      "name": "@@antv/awards (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/awards",
+      "versions": [
+        "0.1.9",
+        "0.2.9"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-calendar-heatmap",
+      "name": "@@antv/calendar-heatmap (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/calendar-heatmap",
+      "versions": [
+        "1.2.2",
+        "1.3.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-chart-linter",
+      "name": "@@antv/chart-linter (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/chart-linter",
+      "versions": [
+        "1.2.6",
+        "1.3.6"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-chart-node-g6",
+      "name": "@@antv/chart-node-g6 (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/chart-node-g6",
+      "versions": [
+        "0.1.4",
+        "0.2.4"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-chart-visualization-skills",
+      "name": "@@antv/chart-visualization-skills (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/chart-visualization-skills",
+      "versions": [
+        "0.2.3",
+        "0.3.3"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-ckb",
+      "name": "@@antv/ckb (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/ckb",
+      "versions": [
+        "2.1.4",
+        "2.2.4"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-color-schema",
+      "name": "@@antv/color-schema (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/color-schema",
+      "versions": [
+        "0.3.3",
+        "0.4.3"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-color-util",
+      "name": "@@antv/color-util (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/color-util",
+      "versions": [
+        "2.1.6",
+        "2.2.6"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-component",
+      "name": "@@antv/component (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/component",
+      "versions": [
+        "2.2.11",
+        "2.3.11"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-coord",
+      "name": "@@antv/coord (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/coord",
+      "versions": [
+        "0.5.7",
+        "0.6.7"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-d3-color",
+      "name": "@@antv/d3-color (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/d3-color",
+      "versions": [
+        "1.1.0",
+        "1.2.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-d3-interpolate",
+      "name": "@@antv/d3-interpolate (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/d3-interpolate",
+      "versions": [
+        "1.1.3",
+        "1.2.3"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-data-samples",
+      "name": "@@antv/data-samples (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/data-samples",
+      "versions": [
+        "1.1.1",
+        "1.2.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-data-set",
+      "name": "@@antv/data-set (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/data-set",
+      "versions": [
+        "0.12.8",
+        "0.13.8"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-data-wizard",
+      "name": "@@antv/data-wizard (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/data-wizard",
+      "versions": [
+        "2.1.4",
+        "2.2.4"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-dipper-component",
+      "name": "@@antv/dipper-component (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/dipper-component",
+      "versions": [
+        "0.1.4",
+        "0.2.4"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-dipper-hooks",
+      "name": "@@antv/dipper-hooks (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/dipper-hooks",
+      "versions": [
+        "0.3.1",
+        "0.4.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-dipper-map",
+      "name": "@@antv/dipper-map (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/dipper-map",
+      "versions": [
+        "1.1.10",
+        "1.2.10"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-dom-util",
+      "name": "@@antv/dom-util (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/dom-util",
+      "versions": [
+        "2.1.4",
+        "2.2.4"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-dumi-theme-antv",
+      "name": "@@antv/dumi-theme-antv (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/dumi-theme-antv",
+      "versions": [
+        "0.9.4",
+        "0.10.4"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-dw-analyzer",
+      "name": "@@antv/dw-analyzer (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/dw-analyzer",
+      "versions": [
+        "1.2.5",
+        "1.3.5"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-dw-random",
+      "name": "@@antv/dw-random (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/dw-random",
+      "versions": [
+        "1.2.7",
+        "1.3.7"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-dw-transform",
+      "name": "@@antv/dw-transform (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/dw-transform",
+      "versions": [
+        "1.2.7",
+        "1.3.7"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-dw-util",
+      "name": "@@antv/dw-util (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/dw-util",
+      "versions": [
+        "1.2.4",
+        "1.3.4"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-event-emitter",
+      "name": "@@antv/event-emitter (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/event-emitter",
+      "versions": [
+        "0.2.3",
+        "0.3.3"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-expr",
+      "name": "@@antv/expr (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/expr",
+      "versions": [
+        "1.1.2",
+        "1.2.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f-charts",
+      "name": "@@antv/f-charts (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f-charts",
+      "versions": [
+        "0.1.0",
+        "0.2.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f-engine",
+      "name": "@@antv/f-engine (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f-engine",
+      "versions": [
+        "1.11.0",
+        "1.12.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f-lottie",
+      "name": "@@antv/f-lottie (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f-lottie",
+      "versions": [
+        "1.11.0",
+        "1.12.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f-my",
+      "name": "@@antv/f-my (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f-my",
+      "versions": [
+        "1.11.0",
+        "1.12.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f-react",
+      "name": "@@antv/f-react (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f-react",
+      "versions": [
+        "1.11.0",
+        "1.12.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f-test-utils",
+      "name": "@@antv/f-test-utils (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f-test-utils",
+      "versions": [
+        "1.1.9",
+        "1.2.9"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f-vue",
+      "name": "@@antv/f-vue (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f-vue",
+      "versions": [
+        "1.11.0",
+        "1.12.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f-wx",
+      "name": "@@antv/f-wx (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f-wx",
+      "versions": [
+        "1.11.0",
+        "1.12.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f2",
+      "name": "@@antv/f2 (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f2",
+      "versions": [
+        "5.15.0",
+        "5.16.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f2-algorithm",
+      "name": "@@antv/f2-algorithm (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f2-algorithm",
+      "versions": [
+        "5.8.0",
+        "5.9.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f2-canvas",
+      "name": "@@antv/f2-canvas (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f2-canvas",
+      "versions": [
+        "1.1.5",
+        "1.2.5"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f2-context",
+      "name": "@@antv/f2-context (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f2-context",
+      "versions": [
+        "0.1.1",
+        "0.2.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f2-graphic",
+      "name": "@@antv/f2-graphic (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f2-graphic",
+      "versions": [
+        "0.1.16",
+        "0.2.16"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f2-my",
+      "name": "@@antv/f2-my (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f2-my",
+      "versions": [
+        "4.1.52",
+        "4.2.52"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f2-react",
+      "name": "@@antv/f2-react (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f2-react",
+      "versions": [
+        "5.15.0",
+        "5.16.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f2-site",
+      "name": "@@antv/f2-site (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f2-site",
+      "versions": [
+        "4.1.42",
+        "4.2.42"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f2-vue",
+      "name": "@@antv/f2-vue (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f2-vue",
+      "versions": [
+        "4.1.33",
+        "4.2.33"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f2-wordcloud",
+      "name": "@@antv/f2-wordcloud (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f2-wordcloud",
+      "versions": [
+        "5.15.0",
+        "5.16.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f2-wx",
+      "name": "@@antv/f2-wx (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f2-wx",
+      "versions": [
+        "4.1.51",
+        "4.2.51"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f6",
+      "name": "@@antv/f6 (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f6",
+      "versions": [
+        "0.1.19",
+        "0.2.19"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f6-alipay",
+      "name": "@@antv/f6-alipay (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f6-alipay",
+      "versions": [
+        "0.1.7",
+        "0.2.7"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f6-core",
+      "name": "@@antv/f6-core (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f6-core",
+      "versions": [
+        "0.1.2",
+        "0.2.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f6-element",
+      "name": "@@antv/f6-element (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f6-element",
+      "versions": [
+        "0.1.1",
+        "0.2.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f6-hammerjs",
+      "name": "@@antv/f6-hammerjs (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f6-hammerjs",
+      "versions": [
+        "0.1.2",
+        "0.2.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f6-plugin",
+      "name": "@@antv/f6-plugin (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f6-plugin",
+      "versions": [
+        "1.1.6",
+        "1.2.6"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f6-ui",
+      "name": "@@antv/f6-ui (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f6-ui",
+      "versions": [
+        "1.1.3",
+        "1.2.3"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-f6-wx",
+      "name": "@@antv/f6-wx (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/f6-wx",
+      "versions": [
+        "0.1.7",
+        "0.2.7"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g",
+      "name": "@@antv/g (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g",
+      "versions": [
+        "6.4.1",
+        "6.5.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-base",
+      "name": "@@antv/g-base (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-base",
+      "versions": [
+        "0.6.16",
+        "0.7.16"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-camera-api",
+      "name": "@@antv/g-camera-api (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-camera-api",
+      "versions": [
+        "2.1.45",
+        "2.2.45"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-canvas",
+      "name": "@@antv/g-canvas (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-canvas",
+      "versions": [
+        "2.3.0",
+        "2.4.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-canvaskit",
+      "name": "@@antv/g-canvaskit (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-canvaskit",
+      "versions": [
+        "1.2.1",
+        "1.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-compat",
+      "name": "@@antv/g-compat (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-compat",
+      "versions": [
+        "1.1.11",
+        "1.2.11"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-components",
+      "name": "@@antv/g-components (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-components",
+      "versions": [
+        "2.1.42",
+        "2.2.42"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-css-layout-api",
+      "name": "@@antv/g-css-layout-api (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-css-layout-api",
+      "versions": [
+        "1.1.38",
+        "1.2.38"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-css-typed-om-api",
+      "name": "@@antv/g-css-typed-om-api (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-css-typed-om-api",
+      "versions": [
+        "1.1.38",
+        "1.2.38"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-device-api",
+      "name": "@@antv/g-device-api (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-device-api",
+      "versions": [
+        "1.7.13",
+        "1.8.13"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-dom-mutation-observer-api",
+      "name": "@@antv/g-dom-mutation-observer-api (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-dom-mutation-observer-api",
+      "versions": [
+        "2.1.42",
+        "2.2.42"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-gesture",
+      "name": "@@antv/g-gesture (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-gesture",
+      "versions": [
+        "3.1.42",
+        "3.2.42"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-image-exporter",
+      "name": "@@antv/g-image-exporter (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-image-exporter",
+      "versions": [
+        "1.1.42",
+        "1.2.42"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-layout-blocklike",
+      "name": "@@antv/g-layout-blocklike (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-layout-blocklike",
+      "versions": [
+        "1.8.49",
+        "1.9.49"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-lite",
+      "name": "@@antv/g-lite (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-lite",
+      "versions": [
+        "2.8.0",
+        "2.9.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-lottie-player",
+      "name": "@@antv/g-lottie-player (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-lottie-player",
+      "versions": [
+        "1.2.1",
+        "1.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-math",
+      "name": "@@antv/g-math (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-math",
+      "versions": [
+        "3.2.0",
+        "3.3.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-mobile",
+      "name": "@@antv/g-mobile (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-mobile",
+      "versions": [
+        "1.2.5",
+        "1.3.5"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-mobile-canvas",
+      "name": "@@antv/g-mobile-canvas (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-mobile-canvas",
+      "versions": [
+        "1.2.1",
+        "1.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-mobile-canvas-element",
+      "name": "@@antv/g-mobile-canvas-element (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-mobile-canvas-element",
+      "versions": [
+        "1.1.42",
+        "1.2.42"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-mobile-svg",
+      "name": "@@antv/g-mobile-svg (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-mobile-svg",
+      "versions": [
+        "1.2.1",
+        "1.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-mobile-webgl",
+      "name": "@@antv/g-mobile-webgl (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-mobile-webgl",
+      "versions": [
+        "1.2.1",
+        "1.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-pattern",
+      "name": "@@antv/g-pattern (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-pattern",
+      "versions": [
+        "2.1.42",
+        "2.2.42"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-perf",
+      "name": "@@antv/g-perf (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-perf",
+      "versions": [
+        "1.1.0",
+        "1.2.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-3d",
+      "name": "@@antv/g-plugin-3d (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-3d",
+      "versions": [
+        "2.2.1",
+        "2.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-a11y",
+      "name": "@@antv/g-plugin-a11y (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-a11y",
+      "versions": [
+        "1.5.1",
+        "1.6.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-annotation",
+      "name": "@@antv/g-plugin-annotation (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-annotation",
+      "versions": [
+        "1.3.0",
+        "1.4.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-box2d",
+      "name": "@@antv/g-plugin-box2d (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-box2d",
+      "versions": [
+        "2.2.1",
+        "2.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-canvas-path-generator",
+      "name": "@@antv/g-plugin-canvas-path-generator (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-canvas-path-generator",
+      "versions": [
+        "2.2.26",
+        "2.3.26"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-canvas-picker",
+      "name": "@@antv/g-plugin-canvas-picker (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-canvas-picker",
+      "versions": [
+        "2.4.1",
+        "2.5.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-canvas-renderer",
+      "name": "@@antv/g-plugin-canvas-renderer (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-canvas-renderer",
+      "versions": [
+        "2.6.1",
+        "2.7.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-canvaskit-renderer",
+      "name": "@@antv/g-plugin-canvaskit-renderer (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-canvaskit-renderer",
+      "versions": [
+        "2.4.1",
+        "2.5.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-control",
+      "name": "@@antv/g-plugin-control (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-control",
+      "versions": [
+        "2.2.1",
+        "2.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-css-select",
+      "name": "@@antv/g-plugin-css-select (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-css-select",
+      "versions": [
+        "2.2.1",
+        "2.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-device-renderer",
+      "name": "@@antv/g-plugin-device-renderer (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-device-renderer",
+      "versions": [
+        "2.7.1",
+        "2.8.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-dom-interaction",
+      "name": "@@antv/g-plugin-dom-interaction (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-dom-interaction",
+      "versions": [
+        "2.2.31",
+        "2.3.31"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-dragndrop",
+      "name": "@@antv/g-plugin-dragndrop (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-dragndrop",
+      "versions": [
+        "2.2.1",
+        "2.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-gesture",
+      "name": "@@antv/g-plugin-gesture (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-gesture",
+      "versions": [
+        "2.2.1",
+        "2.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-gpgpu",
+      "name": "@@antv/g-plugin-gpgpu (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-gpgpu",
+      "versions": [
+        "1.10.20",
+        "1.11.20"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-html-renderer",
+      "name": "@@antv/g-plugin-html-renderer (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-html-renderer",
+      "versions": [
+        "2.4.1",
+        "2.5.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-image-loader",
+      "name": "@@antv/g-plugin-image-loader (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-image-loader",
+      "versions": [
+        "2.4.1",
+        "2.5.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-matterjs",
+      "name": "@@antv/g-plugin-matterjs (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-matterjs",
+      "versions": [
+        "2.2.1",
+        "2.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-mobile-interaction",
+      "name": "@@antv/g-plugin-mobile-interaction (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-mobile-interaction",
+      "versions": [
+        "1.1.42",
+        "1.2.42"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-physx",
+      "name": "@@antv/g-plugin-physx (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-physx",
+      "versions": [
+        "2.2.1",
+        "2.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-rough-canvas-renderer",
+      "name": "@@antv/g-plugin-rough-canvas-renderer (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-rough-canvas-renderer",
+      "versions": [
+        "2.2.1",
+        "2.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-rough-svg-renderer",
+      "name": "@@antv/g-plugin-rough-svg-renderer (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-rough-svg-renderer",
+      "versions": [
+        "2.2.1",
+        "2.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-svg-picker",
+      "name": "@@antv/g-plugin-svg-picker (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-svg-picker",
+      "versions": [
+        "2.1.46",
+        "2.2.46"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-svg-renderer",
+      "name": "@@antv/g-plugin-svg-renderer (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-svg-renderer",
+      "versions": [
+        "2.5.1",
+        "2.6.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-webgl-device",
+      "name": "@@antv/g-plugin-webgl-device (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-webgl-device",
+      "versions": [
+        "1.10.17",
+        "1.11.17"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-webgl-renderer",
+      "name": "@@antv/g-plugin-webgl-renderer (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-webgl-renderer",
+      "versions": [
+        "1.1.26",
+        "1.2.26"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-webgpu-device",
+      "name": "@@antv/g-plugin-webgpu-device (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-webgpu-device",
+      "versions": [
+        "1.10.17",
+        "1.11.17"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-yoga",
+      "name": "@@antv/g-plugin-yoga (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-yoga",
+      "versions": [
+        "2.4.1",
+        "2.5.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-zdog-canvas-renderer",
+      "name": "@@antv/g-plugin-zdog-canvas-renderer (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-zdog-canvas-renderer",
+      "versions": [
+        "2.2.1",
+        "2.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-plugin-zdog-svg-renderer",
+      "name": "@@antv/g-plugin-zdog-svg-renderer (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-plugin-zdog-svg-renderer",
+      "versions": [
+        "2.2.1",
+        "2.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-shader-components",
+      "name": "@@antv/g-shader-components (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-shader-components",
+      "versions": [
+        "2.1.0",
+        "2.2.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-svg",
+      "name": "@@antv/g-svg (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-svg",
+      "versions": [
+        "2.2.1",
+        "2.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-web-animations-api",
+      "name": "@@antv/g-web-animations-api (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-web-animations-api",
+      "versions": [
+        "2.2.32",
+        "2.3.32"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-web-components",
+      "name": "@@antv/g-web-components (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-web-components",
+      "versions": [
+        "2.2.1",
+        "2.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-webgl",
+      "name": "@@antv/g-webgl (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-webgl",
+      "versions": [
+        "2.2.1",
+        "2.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-webgl-compute",
+      "name": "@@antv/g-webgl-compute (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-webgl-compute",
+      "versions": [
+        "0.1.1",
+        "0.2.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-webgpu",
+      "name": "@@antv/g-webgpu (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-webgpu",
+      "versions": [
+        "2.2.1",
+        "2.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-webgpu-compiler",
+      "name": "@@antv/g-webgpu-compiler (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-webgpu-compiler",
+      "versions": [
+        "0.8.2",
+        "0.9.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-webgpu-core",
+      "name": "@@antv/g-webgpu-core (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-webgpu-core",
+      "versions": [
+        "0.8.2",
+        "0.9.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-webgpu-engine",
+      "name": "@@antv/g-webgpu-engine (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-webgpu-engine",
+      "versions": [
+        "0.8.2",
+        "0.9.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-webgpu-raytracer",
+      "name": "@@antv/g-webgpu-raytracer (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-webgpu-raytracer",
+      "versions": [
+        "0.6.1",
+        "0.7.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g-webgpu-unitchart",
+      "name": "@@antv/g-webgpu-unitchart (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g-webgpu-unitchart",
+      "versions": [
+        "0.6.1",
+        "0.7.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g2",
+      "name": "@@antv/g2 (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g2",
+      "versions": [
+        "5.5.8",
+        "5.6.8"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g2-brush",
+      "name": "@@antv/g2-brush (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g2-brush",
+      "versions": [
+        "0.1.2",
+        "0.2.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g2-extension-3d",
+      "name": "@@antv/g2-extension-3d (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g2-extension-3d",
+      "versions": [
+        "0.3.0",
+        "0.4.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g2-extension-ava",
+      "name": "@@antv/g2-extension-ava (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g2-extension-ava",
+      "versions": [
+        "0.3.0",
+        "0.4.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g2-extension-plot",
+      "name": "@@antv/g2-extension-plot (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g2-extension-plot",
+      "versions": [
+        "0.3.2",
+        "0.4.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g2-plugin-slider",
+      "name": "@@antv/g2-plugin-slider (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g2-plugin-slider",
+      "versions": [
+        "2.2.1",
+        "2.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g2-ssr",
+      "name": "@@antv/g2-ssr (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g2-ssr",
+      "versions": [
+        "0.3.0",
+        "0.4.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g2plot",
+      "name": "@@antv/g2plot (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g2plot",
+      "versions": [
+        "2.5.35",
+        "2.6.35"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g2plot-schemas",
+      "name": "@@antv/g2plot-schemas (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g2plot-schemas",
+      "versions": [
+        "1.3.2",
+        "1.4.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g6",
+      "name": "@@antv/g6 (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g6",
+      "versions": [
+        "5.2.1",
+        "5.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g6-alipay",
+      "name": "@@antv/g6-alipay (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g6-alipay",
+      "versions": [
+        "0.1.1",
+        "0.2.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g6-cli",
+      "name": "@@antv/g6-cli (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g6-cli",
+      "versions": [
+        "0.1.4",
+        "0.2.4"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g6-core",
+      "name": "@@antv/g6-core (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g6-core",
+      "versions": [
+        "0.9.24",
+        "0.10.24"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g6-editor",
+      "name": "@@antv/g6-editor (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g6-editor",
+      "versions": [
+        "1.3.0",
+        "1.4.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g6-element",
+      "name": "@@antv/g6-element (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g6-element",
+      "versions": [
+        "0.9.25",
+        "0.10.25"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g6-extension-3d",
+      "name": "@@antv/g6-extension-3d (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g6-extension-3d",
+      "versions": [
+        "0.2.23",
+        "0.3.23"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g6-extension-react",
+      "name": "@@antv/g6-extension-react (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g6-extension-react",
+      "versions": [
+        "0.3.7",
+        "0.4.7"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g6-mobile",
+      "name": "@@antv/g6-mobile (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g6-mobile",
+      "versions": [
+        "0.2.2",
+        "0.3.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g6-pc",
+      "name": "@@antv/g6-pc (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g6-pc",
+      "versions": [
+        "0.9.25",
+        "0.10.25"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g6-plugin",
+      "name": "@@antv/g6-plugin (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g6-plugin",
+      "versions": [
+        "0.9.25",
+        "0.10.25"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g6-plugin-map-view",
+      "name": "@@antv/g6-plugin-map-view (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g6-plugin-map-view",
+      "versions": [
+        "0.1.4",
+        "0.2.4"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g6-plugins",
+      "name": "@@antv/g6-plugins (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g6-plugins",
+      "versions": [
+        "1.1.9",
+        "1.2.9"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g6-react-node",
+      "name": "@@antv/g6-react-node (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g6-react-node",
+      "versions": [
+        "1.5.8",
+        "1.6.8"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g6-ssr",
+      "name": "@@antv/g6-ssr (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g6-ssr",
+      "versions": [
+        "0.2.1",
+        "0.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-g6-wx",
+      "name": "@@antv/g6-wx (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/g6-wx",
+      "versions": [
+        "0.1.1",
+        "0.2.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-gatsby-theme",
+      "name": "@@antv/gatsby-theme (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/gatsby-theme",
+      "versions": [
+        "0.2.0",
+        "0.3.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-geo-coord",
+      "name": "@@antv/geo-coord (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/geo-coord",
+      "versions": [
+        "1.1.8",
+        "1.2.8"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-gi-assets-advance",
+      "name": "@@antv/gi-assets-advance (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/gi-assets-advance",
+      "versions": [
+        "2.6.22",
+        "2.7.22"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-gi-assets-algorithm",
+      "name": "@@antv/gi-assets-algorithm (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/gi-assets-algorithm",
+      "versions": [
+        "2.4.19",
+        "2.5.19"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-gi-assets-basic",
+      "name": "@@antv/gi-assets-basic (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/gi-assets-basic",
+      "versions": [
+        "2.5.40",
+        "2.6.40"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-gi-assets-galaxybase",
+      "name": "@@antv/gi-assets-galaxybase (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/gi-assets-galaxybase",
+      "versions": [
+        "1.3.15",
+        "1.4.15"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-gi-assets-graphscope",
+      "name": "@@antv/gi-assets-graphscope (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/gi-assets-graphscope",
+      "versions": [
+        "2.2.15",
+        "2.3.15"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-gi-assets-hugegraph",
+      "name": "@@antv/gi-assets-hugegraph (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/gi-assets-hugegraph",
+      "versions": [
+        "1.2.15",
+        "1.3.15"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-gi-assets-janusgraph",
+      "name": "@@antv/gi-assets-janusgraph (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/gi-assets-janusgraph",
+      "versions": [
+        "1.2.15",
+        "1.3.15"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-gi-assets-neo4j",
+      "name": "@@antv/gi-assets-neo4j (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/gi-assets-neo4j",
+      "versions": [
+        "2.2.15",
+        "2.3.15"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-gi-assets-scene",
+      "name": "@@antv/gi-assets-scene (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/gi-assets-scene",
+      "versions": [
+        "2.3.21",
+        "2.4.21"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-gi-assets-tugraph",
+      "name": "@@antv/gi-assets-tugraph (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/gi-assets-tugraph",
+      "versions": [
+        "2.2.15",
+        "2.3.15"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-gi-assets-tugraph-analytics",
+      "name": "@@antv/gi-assets-tugraph-analytics (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/gi-assets-tugraph-analytics",
+      "versions": [
+        "0.3.15",
+        "0.4.15"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-gi-assets-xlab",
+      "name": "@@antv/gi-assets-xlab (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/gi-assets-xlab",
+      "versions": [
+        "0.2.30",
+        "0.3.30"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-gi-cli",
+      "name": "@@antv/gi-cli (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/gi-cli",
+      "versions": [
+        "1.3.11",
+        "1.4.11"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-gi-common-components",
+      "name": "@@antv/gi-common-components (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/gi-common-components",
+      "versions": [
+        "1.4.16",
+        "1.5.16"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-gi-mock-data",
+      "name": "@@antv/gi-mock-data (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/gi-mock-data",
+      "versions": [
+        "1.1.5",
+        "1.2.5"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-gi-public-data",
+      "name": "@@antv/gi-public-data (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/gi-public-data",
+      "versions": [
+        "1.1.1",
+        "1.2.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-gi-sdk",
+      "name": "@@antv/gi-sdk (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/gi-sdk",
+      "versions": [
+        "3.1.0",
+        "3.2.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-gi-sdk-app",
+      "name": "@@antv/gi-sdk-app (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/gi-sdk-app",
+      "versions": [
+        "1.3.10",
+        "1.4.10"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-gi-theme-antd",
+      "name": "@@antv/gi-theme-antd (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/gi-theme-antd",
+      "versions": [
+        "0.7.11",
+        "0.8.11"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-github-config-cli",
+      "name": "@@antv/github-config-cli (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/github-config-cli",
+      "versions": [
+        "0.2.0",
+        "0.3.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-gl-matrix",
+      "name": "@@antv/gl-matrix (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/gl-matrix",
+      "versions": [
+        "2.8.1",
+        "2.9.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-gpt-vis",
+      "name": "@@antv/gpt-vis (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/gpt-vis",
+      "versions": [
+        "1.1.0",
+        "1.2.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-gpt-vis-ssr",
+      "name": "@@antv/gpt-vis-ssr (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/gpt-vis-ssr",
+      "versions": [
+        "0.4.7",
+        "0.5.7"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-graphin",
+      "name": "@@antv/graphin (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/graphin",
+      "versions": [
+        "3.1.5",
+        "3.2.5"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-graphin-components",
+      "name": "@@antv/graphin-components (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/graphin-components",
+      "versions": [
+        "2.5.1",
+        "2.6.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-graphin-graphscope",
+      "name": "@@antv/graphin-graphscope (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/graphin-graphscope",
+      "versions": [
+        "1.1.5",
+        "1.2.5"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-graphin-icons",
+      "name": "@@antv/graphin-icons (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/graphin-icons",
+      "versions": [
+        "1.1.0",
+        "1.2.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-graphlib",
+      "name": "@@antv/graphlib (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/graphlib",
+      "versions": [
+        "2.1.4",
+        "2.2.4"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-hierarchy",
+      "name": "@@antv/hierarchy (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/hierarchy",
+      "versions": [
+        "0.8.1",
+        "0.9.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-infographic",
+      "name": "@@antv/infographic (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/infographic",
+      "versions": [
+        "0.3.19",
+        "0.4.19"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-insight-component",
+      "name": "@@antv/insight-component (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/insight-component",
+      "versions": [
+        "1.1.0",
+        "1.2.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-interaction",
+      "name": "@@antv/interaction (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/interaction",
+      "versions": [
+        "0.2.5",
+        "0.3.5"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-istanbul",
+      "name": "@@antv/istanbul (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/istanbul",
+      "versions": [
+        "0.1.0",
+        "0.2.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-knowledge",
+      "name": "@@antv/knowledge (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/knowledge",
+      "versions": [
+        "1.2.4",
+        "1.3.4"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-l7",
+      "name": "@@antv/l7 (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/l7",
+      "versions": [
+        "2.26.10",
+        "2.27.10"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-l7-component",
+      "name": "@@antv/l7-component (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/l7-component",
+      "versions": [
+        "2.26.10",
+        "2.27.10"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-l7-composite-layers",
+      "name": "@@antv/l7-composite-layers (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/l7-composite-layers",
+      "versions": [
+        "0.18.1",
+        "0.19.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-l7-core",
+      "name": "@@antv/l7-core (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/l7-core",
+      "versions": [
+        "2.26.10",
+        "2.27.10"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-l7-district",
+      "name": "@@antv/l7-district (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/l7-district",
+      "versions": [
+        "2.4.12",
+        "2.5.12"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-l7-draw",
+      "name": "@@antv/l7-draw (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/l7-draw",
+      "versions": [
+        "3.2.5",
+        "3.3.5"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-l7-editor",
+      "name": "@@antv/l7-editor (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/l7-editor",
+      "versions": [
+        "1.2.13",
+        "1.3.13"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-l7-extension-g-layer",
+      "name": "@@antv/l7-extension-g-layer (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/l7-extension-g-layer",
+      "versions": [
+        "1.1.0",
+        "1.2.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-l7-layers",
+      "name": "@@antv/l7-layers (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/l7-layers",
+      "versions": [
+        "2.26.10",
+        "2.27.10"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-l7-leaflet",
+      "name": "@@antv/l7-leaflet (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/l7-leaflet",
+      "versions": [
+        "1.1.2",
+        "1.2.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-l7-map",
+      "name": "@@antv/l7-map (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/l7-map",
+      "versions": [
+        "2.26.10",
+        "2.27.10"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-l7-mapkit",
+      "name": "@@antv/l7-mapkit (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/l7-mapkit",
+      "versions": [
+        "0.6.0",
+        "0.7.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-l7-maps",
+      "name": "@@antv/l7-maps (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/l7-maps",
+      "versions": [
+        "2.26.10",
+        "2.27.10"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-l7-mini",
+      "name": "@@antv/l7-mini (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/l7-mini",
+      "versions": [
+        "2.21.8",
+        "2.22.8"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-l7-pass",
+      "name": "@@antv/l7-pass (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/l7-pass",
+      "versions": [
+        "1.1.0",
+        "1.2.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-l7-react",
+      "name": "@@antv/l7-react (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/l7-react",
+      "versions": [
+        "2.5.3",
+        "2.6.3"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-l7-renderer",
+      "name": "@@antv/l7-renderer (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/l7-renderer",
+      "versions": [
+        "2.26.10",
+        "2.27.10"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-l7-scene",
+      "name": "@@antv/l7-scene (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/l7-scene",
+      "versions": [
+        "2.26.10",
+        "2.27.10"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-l7-source",
+      "name": "@@antv/l7-source (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/l7-source",
+      "versions": [
+        "2.26.10",
+        "2.27.10"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-l7-three",
+      "name": "@@antv/l7-three (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/l7-three",
+      "versions": [
+        "2.26.10",
+        "2.27.10"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-l7-utils",
+      "name": "@@antv/l7-utils (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/l7-utils",
+      "versions": [
+        "2.26.10",
+        "2.27.10"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-l7plot",
+      "name": "@@antv/l7plot (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/l7plot",
+      "versions": [
+        "0.6.11",
+        "0.7.11"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-l7plot-component",
+      "name": "@@antv/l7plot-component (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/l7plot-component",
+      "versions": [
+        "0.1.11",
+        "0.2.11"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-larkmap",
+      "name": "@@antv/larkmap (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/larkmap",
+      "versions": [
+        "1.6.1",
+        "1.7.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-layout-gpu",
+      "name": "@@antv/layout-gpu (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/layout-gpu",
+      "versions": [
+        "1.2.7",
+        "1.3.7"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-layout-wasm",
+      "name": "@@antv/layout-wasm (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/layout-wasm",
+      "versions": [
+        "1.5.2",
+        "1.6.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-li-aiearth-assets",
+      "name": "@@antv/li-aiearth-assets (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/li-aiearth-assets",
+      "versions": [
+        "0.5.7",
+        "0.6.7"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-li-analysis-assets",
+      "name": "@@antv/li-analysis-assets (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/li-analysis-assets",
+      "versions": [
+        "1.10.1",
+        "1.11.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-li-core-assets",
+      "name": "@@antv/li-core-assets (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/li-core-assets",
+      "versions": [
+        "1.4.7",
+        "1.5.7"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-li-editor",
+      "name": "@@antv/li-editor (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/li-editor",
+      "versions": [
+        "1.7.1",
+        "1.8.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-li-p2",
+      "name": "@@antv/li-p2 (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/li-p2",
+      "versions": [
+        "1.9.2",
+        "1.10.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-li-sam-assets",
+      "name": "@@antv/li-sam-assets (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/li-sam-assets",
+      "versions": [
+        "0.1.4",
+        "0.2.4",
+        "0.3.4"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-li-sdk",
+      "name": "@@antv/li-sdk (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/li-sdk",
+      "versions": [
+        "1.6.1",
+        "1.7.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-lite-insight",
+      "name": "@@antv/lite-insight (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/lite-insight",
+      "versions": [
+        "2.2.1",
+        "2.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-matrix-util",
+      "name": "@@antv/matrix-util (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/matrix-util",
+      "versions": [
+        "3.1.4",
+        "3.2.4"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-mcp-server-antv",
+      "name": "@@antv/mcp-server-antv (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/mcp-server-antv",
+      "versions": [
+        "0.2.8",
+        "0.3.8"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-mcp-server-chart",
+      "name": "@@antv/mcp-server-chart (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/mcp-server-chart",
+      "versions": [
+        "0.10.10",
+        "0.11.10"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-my-f2",
+      "name": "@@antv/my-f2 (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/my-f2",
+      "versions": [
+        "2.2.7",
+        "2.3.7"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-my-f2-pc",
+      "name": "@@antv/my-f2-pc (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/my-f2-pc",
+      "versions": [
+        "0.2.1",
+        "0.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-narrative-text-editor",
+      "name": "@@antv/narrative-text-editor (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/narrative-text-editor",
+      "versions": [
+        "0.3.20",
+        "0.4.20"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-narrative-text-schema",
+      "name": "@@antv/narrative-text-schema (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/narrative-text-schema",
+      "versions": [
+        "0.4.7",
+        "0.5.7"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-narrative-text-vis",
+      "name": "@@antv/narrative-text-vis (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/narrative-text-vis",
+      "versions": [
+        "0.4.16",
+        "0.5.16"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-path-util",
+      "name": "@@antv/path-util (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/path-util",
+      "versions": [
+        "3.1.1",
+        "3.2.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-react-g",
+      "name": "@@antv/react-g (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/react-g",
+      "versions": [
+        "2.2.1",
+        "2.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-s2",
+      "name": "@@antv/s2 (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/s2",
+      "versions": [
+        "2.8.1",
+        "2.9.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-s2-react",
+      "name": "@@antv/s2-react (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/s2-react",
+      "versions": [
+        "2.4.1",
+        "2.5.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-s2-react-components",
+      "name": "@@antv/s2-react-components (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/s2-react-components",
+      "versions": [
+        "2.2.2",
+        "2.3.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-s2-ssr",
+      "name": "@@antv/s2-ssr (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/s2-ssr",
+      "versions": [
+        "0.2.1",
+        "0.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-s2-vue",
+      "name": "@@antv/s2-vue (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/s2-vue",
+      "versions": [
+        "2.3.0",
+        "2.4.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-sam",
+      "name": "@@antv/sam (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/sam",
+      "versions": [
+        "0.3.0",
+        "0.4.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-scale",
+      "name": "@@antv/scale (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/scale",
+      "versions": [
+        "0.6.2",
+        "0.7.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-semantic-release-pnpm",
+      "name": "@@antv/semantic-release-pnpm (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/semantic-release-pnpm",
+      "versions": [
+        "1.1.4",
+        "1.2.4"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-smart-color",
+      "name": "@@antv/smart-color (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/smart-color",
+      "versions": [
+        "0.3.1",
+        "0.4.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-stat",
+      "name": "@@antv/stat (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/stat",
+      "versions": [
+        "0.1.2",
+        "0.2.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-t8",
+      "name": "@@antv/t8 (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/t8",
+      "versions": [
+        "0.4.0",
+        "0.5.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-thumbnails",
+      "name": "@@antv/thumbnails (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/thumbnails",
+      "versions": [
+        "2.1.0",
+        "2.2.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-thumbnails-component",
+      "name": "@@antv/thumbnails-component (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/thumbnails-component",
+      "versions": [
+        "2.1.0",
+        "2.2.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-torch",
+      "name": "@@antv/torch (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/torch",
+      "versions": [
+        "1.1.6",
+        "1.2.6"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-translator",
+      "name": "@@antv/translator (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/translator",
+      "versions": [
+        "1.1.1",
+        "1.2.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-util",
+      "name": "@@antv/util (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/util",
+      "versions": [
+        "3.4.11",
+        "3.5.11"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-vendor",
+      "name": "@@antv/vendor (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/vendor",
+      "versions": [
+        "1.1.11",
+        "1.2.11"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-vis-predict-engine",
+      "name": "@@antv/vis-predict-engine (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/vis-predict-engine",
+      "versions": [
+        "0.2.1",
+        "0.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-webgpu-graph",
+      "name": "@@antv/webgpu-graph (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/webgpu-graph",
+      "versions": [
+        "1.1.0",
+        "1.2.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-word-scale-chart",
+      "name": "@@antv/word-scale-chart (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/word-scale-chart",
+      "versions": [
+        "0.4.4",
+        "0.5.4"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-wx-f2",
+      "name": "@@antv/wx-f2 (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/wx-f2",
+      "versions": [
+        "2.2.1",
+        "2.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-x6",
+      "name": "@@antv/x6 (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/x6",
+      "versions": [
+        "3.2.7",
+        "3.3.7"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-x6-angular-shape",
+      "name": "@@antv/x6-angular-shape (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/x6-angular-shape",
+      "versions": [
+        "3.1.1",
+        "3.2.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-x6-common",
+      "name": "@@antv/x6-common (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/x6-common",
+      "versions": [
+        "2.1.17",
+        "2.2.17"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-x6-components",
+      "name": "@@antv/x6-components (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/x6-components",
+      "versions": [
+        "0.11.7",
+        "0.12.7"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-x6-geometry",
+      "name": "@@antv/x6-geometry (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/x6-geometry",
+      "versions": [
+        "2.1.5",
+        "2.2.5"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-x6-plugin-clipboard",
+      "name": "@@antv/x6-plugin-clipboard (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/x6-plugin-clipboard",
+      "versions": [
+        "2.2.6",
+        "2.3.6"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-x6-plugin-dnd",
+      "name": "@@antv/x6-plugin-dnd (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/x6-plugin-dnd",
+      "versions": [
+        "2.2.1",
+        "2.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-x6-plugin-export",
+      "name": "@@antv/x6-plugin-export (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/x6-plugin-export",
+      "versions": [
+        "2.2.6",
+        "2.3.6"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-x6-plugin-history",
+      "name": "@@antv/x6-plugin-history (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/x6-plugin-history",
+      "versions": [
+        "2.3.4",
+        "2.4.4"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-x6-plugin-keyboard",
+      "name": "@@antv/x6-plugin-keyboard (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/x6-plugin-keyboard",
+      "versions": [
+        "2.3.3",
+        "2.4.3"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-x6-plugin-minimap",
+      "name": "@@antv/x6-plugin-minimap (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/x6-plugin-minimap",
+      "versions": [
+        "2.1.7",
+        "2.2.7"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-x6-plugin-scroller",
+      "name": "@@antv/x6-plugin-scroller (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/x6-plugin-scroller",
+      "versions": [
+        "2.1.10",
+        "2.2.10"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-x6-plugin-selection",
+      "name": "@@antv/x6-plugin-selection (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/x6-plugin-selection",
+      "versions": [
+        "2.3.2",
+        "2.4.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-x6-plugin-snapline",
+      "name": "@@antv/x6-plugin-snapline (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/x6-plugin-snapline",
+      "versions": [
+        "2.2.7",
+        "2.3.7"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-x6-plugin-stencil",
+      "name": "@@antv/x6-plugin-stencil (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/x6-plugin-stencil",
+      "versions": [
+        "2.2.5",
+        "2.3.5"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-x6-plugin-transform",
+      "name": "@@antv/x6-plugin-transform (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/x6-plugin-transform",
+      "versions": [
+        "2.2.8",
+        "2.3.8"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-x6-react",
+      "name": "@@antv/x6-react (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/x6-react",
+      "versions": [
+        "0.2.26",
+        "0.3.26"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-x6-react-components",
+      "name": "@@antv/x6-react-components (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/x6-react-components",
+      "versions": [
+        "2.1.9",
+        "2.2.9"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-x6-react-shape",
+      "name": "@@antv/x6-react-shape (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/x6-react-shape",
+      "versions": [
+        "3.1.1",
+        "3.2.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-x6-vector",
+      "name": "@@antv/x6-vector (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/x6-vector",
+      "versions": [
+        "1.5.2",
+        "1.6.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-x6-vue-shape",
+      "name": "@@antv/x6-vue-shape (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/x6-vue-shape",
+      "versions": [
+        "3.1.2",
+        "3.2.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-x6-vue3-shape",
+      "name": "@@antv/x6-vue3-shape (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/x6-vue3-shape",
+      "versions": [
+        "1.1.0",
+        "1.2.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-xflow",
+      "name": "@@antv/xflow (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/xflow",
+      "versions": [
+        "2.2.13",
+        "2.3.13"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-xflow-core",
+      "name": "@@antv/xflow-core (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/xflow-core",
+      "versions": [
+        "1.1.55",
+        "1.2.55"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-xflow-diff",
+      "name": "@@antv/xflow-diff (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/xflow-diff",
+      "versions": [
+        "1.1.0",
+        "1.2.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-xflow-extension",
+      "name": "@@antv/xflow-extension (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/xflow-extension",
+      "versions": [
+        "1.1.55",
+        "1.2.55"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-antv-xflow-hook",
+      "name": "@@antv/xflow-hook (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@antv/xflow-hook",
+      "versions": [
+        "1.1.55",
+        "1.2.55"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-lint-md-cli-bf9305",
+      "name": "@@lint-md/cli (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@lint-md/cli",
+      "versions": [
+        "2.1.0",
+        "2.2.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-lint-md-core",
+      "name": "@@lint-md/core (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@lint-md/core",
+      "versions": [
+        "2.1.0",
+        "2.2.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-lint-md-parser",
+      "name": "@@lint-md/parser (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@lint-md/parser",
+      "versions": [
+        "0.1.14",
+        "0.2.14"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-openclaw-cn-cli",
+      "name": "@@openclaw-cn/cli (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@openclaw-cn/cli",
+      "versions": [
+        "1.4.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-openclaw-cn-feishu",
+      "name": "@@openclaw-cn/feishu (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@openclaw-cn/feishu",
+      "versions": [
+        "0.2.11"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-openclaw-cn-libsignal",
+      "name": "@@openclaw-cn/libsignal (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@openclaw-cn/libsignal",
+      "versions": [
+        "2.1.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-openclaw-cn-toutiao-ops",
+      "name": "@@openclaw-cn/toutiao-ops (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@openclaw-cn/toutiao-ops",
+      "versions": [
+        "1.2.4"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-starmind-collector-cli",
+      "name": "@@starmind/collector-cli (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "@@starmind/collector-cli",
+      "versions": [
+        "0.3.10"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-ai-figure",
+      "name": "ai-figure (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "ai-figure",
+      "versions": [
+        "0.5.0",
+        "0.6.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-amapcn",
+      "name": "amapcn (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "amapcn",
+      "versions": [
+        "0.2.2",
+        "0.3.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-ast-plugin",
+      "name": "ast-plugin (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "ast-plugin",
+      "versions": [
+        "0.1.7",
+        "0.2.7"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-babel-plugin-version",
+      "name": "babel-plugin-version (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "babel-plugin-version",
+      "versions": [
+        "0.3.3",
+        "0.4.3"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-boring-avatars-vanilla",
+      "name": "boring-avatars-vanilla (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "boring-avatars-vanilla",
+      "versions": [
+        "1.1.2",
+        "1.2.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-byte-parser",
+      "name": "byte-parser (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "byte-parser",
+      "versions": [
+        "1.1.0",
+        "1.2.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-canvas-nest-js",
+      "name": "canvas-nest.js (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "canvas-nest.js",
+      "versions": [
+        "2.1.4",
+        "2.2.4"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-echarts-for-react",
+      "name": "echarts-for-react (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "echarts-for-react",
+      "versions": [
+        "3.1.7",
+        "3.2.7"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-filesize-js",
+      "name": "filesize.js (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "filesize.js",
+      "versions": [
+        "2.1.0",
+        "2.2.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-fixed-round",
+      "name": "fixed-round (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "fixed-round",
+      "versions": [
+        "1.1.2",
+        "1.2.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-gantt-for-react",
+      "name": "gantt-for-react (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "gantt-for-react",
+      "versions": [
+        "0.3.0",
+        "0.4.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-jest-canvas-mock",
+      "name": "jest-canvas-mock (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "jest-canvas-mock",
+      "versions": [
+        "2.6.3",
+        "2.7.3"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-jest-date-mock",
+      "name": "jest-date-mock (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "jest-date-mock",
+      "versions": [
+        "1.1.11",
+        "1.2.11"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-jest-electron",
+      "name": "jest-electron (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "jest-electron",
+      "versions": [
+        "0.2.12",
+        "0.3.12"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-jest-expect",
+      "name": "jest-expect (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "jest-expect",
+      "versions": [
+        "0.1.1",
+        "0.2.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-jest-less-loader",
+      "name": "jest-less-loader (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "jest-less-loader",
+      "versions": [
+        "0.3.0",
+        "0.4.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-jest-random-mock",
+      "name": "jest-random-mock (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "jest-random-mock",
+      "versions": [
+        "1.1.0",
+        "1.2.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-jest-url-loader",
+      "name": "jest-url-loader (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "jest-url-loader",
+      "versions": [
+        "0.2.0",
+        "0.3.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-limit-size",
+      "name": "limit-size (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "limit-size",
+      "versions": [
+        "0.2.4",
+        "0.3.4"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-lint-md",
+      "name": "lint-md (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "lint-md",
+      "versions": [
+        "0.3.0",
+        "0.4.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-lint-md-cli-71b94e",
+      "name": "lint-md-cli (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "lint-md-cli",
+      "versions": [
+        "0.2.2",
+        "0.3.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-mcp-echarts",
+      "name": "mcp-echarts (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "mcp-echarts",
+      "versions": [
+        "0.8.1",
+        "0.9.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-mcp-mermaid",
+      "name": "mcp-mermaid (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "mcp-mermaid",
+      "versions": [
+        "0.5.1",
+        "0.6.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-miz",
+      "name": "miz (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "miz",
+      "versions": [
+        "1.1.1",
+        "1.2.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-onfire-js",
+      "name": "onfire.js (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "onfire.js",
+      "versions": [
+        "2.1.1",
+        "2.2.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-openclaw-cn",
+      "name": "openclaw-cn (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "openclaw-cn",
+      "versions": [
+        "0.3.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-react-adsense",
+      "name": "react-adsense (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "react-adsense",
+      "versions": [
+        "0.2.0",
+        "0.3.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-relationship-js",
+      "name": "relationship.js (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "relationship.js",
+      "versions": [
+        "1.3.9",
+        "1.4.9"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-ribbon-js",
+      "name": "ribbon.js (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "ribbon.js",
+      "versions": [
+        "1.1.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-size-sensor",
+      "name": "size-sensor (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "size-sensor",
+      "versions": [
+        "1.1.4",
+        "1.2.4"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-slice-js",
+      "name": "slice.js (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "slice.js",
+      "versions": [
+        "1.2.1",
+        "1.3.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-timeago-react",
+      "name": "timeago-react (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "timeago-react",
+      "versions": [
+        "3.1.7",
+        "3.2.7"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-timeago-js",
+      "name": "timeago.js (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "timeago.js",
+      "versions": [
+        "4.1.2",
+        "4.2.2"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-uri-parse",
+      "name": "uri-parse (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "uri-parse",
+      "versions": [
+        "1.1.0",
+        "1.2.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-word-width",
+      "name": "word-width (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "word-width",
+      "versions": [
+        "1.1.1",
+        "1.2.1"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-npm-xmorse",
+      "name": "xmorse (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "npm",
+      "package": "xmorse",
+      "versions": [
+        "1.1.0",
+        "1.2.0"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    },
+    {
+      "id": "socket-2026-05-19-antv-mini-shai-hulud-pypi-durabletask",
+      "name": "durabletask (AntV / Mini Shai-Hulud May 2026 wave)",
+      "ecosystem": "pypi",
+      "package": "durabletask",
+      "versions": [
+        "1.4.1",
+        "1.4.2",
+        "1.4.3"
+      ],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/antv-packages-compromised"
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "schema_version": "0.1.0",
+  "_comment": "Go module github.com/shopsprint/decimal v1.3.3, a long-running typosquat of github.com/shopspring/decimal. The v1.3.3 release adds an init() DNS TXT C2 polling dnslog-cdn-images.freemyip.com every five minutes and executes returned TXT values with os/exec.Command. Indicators sourced from Socket's 2026-05-19 report. Network/file IOCs (C2 domain, commit hash, file/tarball hashes) are noted for analyst context; the scanner itself does exact (ecosystem, name, version) matching only.",
+  "entries": [
+    {
+      "id": "socket-2026-05-19-go-shopsprint-decimal-typosquat",
+      "name": "github.com/shopsprint/decimal v1.3.3 (typosquat DNS backdoor)",
+      "ecosystem": "go",
+      "package": "github.com/shopsprint/decimal",
+      "versions": ["v1.3.3"],
+      "severity": "critical",
+      "source": "https://socket.dev/blog/popular-go-decimal-library-typosquat-dns-backdoor",
+      "indicators": {
+        "commit_sha": "2f0ee073c6f29d66188a845592029c9b52528f04",
+        "module_zip_sha256": "dd9c0268c8944e6ddf90d4d0c81aa843785b7a9ee965faa635841ed9fc0ba086",
+        "decimal_go_sha256": "387d7ea5ca733b1e7219c943f4b461877a8df0148adfef42b1538b6c398fbb41",
+        "decimal_go_sha1": "fd26f4ca4746ee390e22043a5e19ebf2b7fcd1f9",
+        "decimal_go_md5": "e3c6ce0440d9acd0f1cef1f0da3cdb5d",
+        "c2_dns": "dnslog-cdn-images.freemyip.com"
+      }
+    }
+  ]
+}

