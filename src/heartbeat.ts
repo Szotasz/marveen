@@ -5,6 +5,7 @@ import {
   HEARTBEAT_END_HOUR,
   HEARTBEAT_CALENDAR_ID,
   STORE_DIR,
+  DB_FILENAME,
 } from './config.js'
 import { getHeartbeatKanbanSummary, getActiveScheduledTaskCount } from './db.js'
 import { getCalendarEvents, type CalendarEvent } from './google-api.js'
@@ -59,7 +60,7 @@ function collectKanban(): HeartbeatData['kanban'] {
 
 function collectSystem(): SystemInfo {
   try {
-    const dbPath = join(STORE_DIR, 'claudeclaw.db')
+    const dbPath = join(STORE_DIR, DB_FILENAME)
     const dbSize = statSync(dbPath).size / (1024 * 1024)
     return { dbSizeMB: Math.round(dbSize * 10) / 10, dbWarning: dbSize > 100 }
   } catch {

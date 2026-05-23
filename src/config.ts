@@ -7,6 +7,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 
 export const PROJECT_ROOT = join(__dirname, '..')
 export const STORE_DIR = join(PROJECT_ROOT, 'store')
+export const DB_FILENAME = 'claudeclaw.db'
+export const PID_FILENAME = 'claudeclaw.pid'
 
 const env = readEnvFile()
 

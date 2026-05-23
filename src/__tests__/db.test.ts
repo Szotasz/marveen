@@ -22,7 +22,7 @@ import {
   markPendingTaskRetryAlert,
   clearPendingTaskRetryAlert,
 } from '../db.js'
-import { STORE_DIR } from '../config.js'
+import { STORE_DIR, DB_FILENAME } from '../config.js'
 
 beforeAll(() => {
   // Teszt adatbázis inicializálás
@@ -246,7 +246,7 @@ describe('database file permissions', () => {
   // simply retain whatever mode a previous test run left them at.
   beforeAll(async () => {
     const { chmodSync } = await import('node:fs')
-    const dbPath = join(STORE_DIR, 'claudeclaw.db')
+    const dbPath = join(STORE_DIR, DB_FILENAME)
     for (const p of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`]) {
       if (existsSync(p)) {
         try { chmodSync(p, 0o644) } catch { /* best effort */ }
@@ -256,28 +256,28 @@ describe('database file permissions', () => {
   })
 
   it('claudeclaw.db is tightened to owner-only (0o600) by initDatabase', () => {
-    const dbPath = join(STORE_DIR, 'claudeclaw.db')
+    const dbPath = join(STORE_DIR, DB_FILENAME)
     expect(existsSync(dbPath)).toBe(true)
     const mode = statSync(dbPath).mode & 0o777
     expect(mode).toBe(0o600)
   })
 
   it('WAL sidecar (when present) is tightened to 0o600', () => {
-    const walPath = join(STORE_DIR, 'claudeclaw.db-wal')
+    const walPath = join(STORE_DIR, `${DB_FILENAME}-wal`)
     if (!existsSync(walPath)) return // WAL may not exist on a freshly-initialised empty DB
     const mode = statSync(walPath).mode & 0o777
     expect(mode).toBe(0o600)
   })
 
   it('SHM sidecar (when present) is tightened to 0o600', () => {
-    const shmPath = join(STORE_DIR, 'claudeclaw.db-shm')
+    const shmPath = join(STORE_DIR, `${DB_FILENAME}-shm`)
     if (!existsSync(shmPath)) return
     const mode = statSync(shmPath).mode & 0o777
     expect(mode).toBe(0o600)
   })
 
   it('rollback-journal sidecar (when present) is tightened to 0o600', () => {
-    const journalPath = join(STORE_DIR, 'claudeclaw.db-journal')
+    const journalPath = join(STORE_DIR, `${DB_FILENAME}-journal`)
     if (!existsSync(journalPath)) return
     const mode = statSync(journalPath).mode & 0o777
     expect(mode).toBe(0o600)

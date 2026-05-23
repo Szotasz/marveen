@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync } from 'node:fs'
-import { STORE_DIR, ALLOWED_CHAT_ID, OLLAMA_URL } from './config.js'
+import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL } from './config.js'
 import { logger } from './logger.js'
 
 let db: Database.Database
@@ -37,7 +37,7 @@ export function initDatabase(): void {
   if (db) {
     try { db.close() } catch { /* already closed */ }
   }
-  const dbPath = join(STORE_DIR, 'claudeclaw.db')
+  const dbPath = join(STORE_DIR, DB_FILENAME)
   // Step 1: close the TOCTOU window on fresh installs. openSync with 'wx'
   // + 0o600 creates the file ONLY if it doesn't exist and sets the strict
   // mode atomically. better-sqlite3 then opens the existing file rather

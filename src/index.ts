@@ -9,7 +9,7 @@ import {
 import { join } from 'node:path'
 import { execFileSync, execSync } from 'node:child_process'
 import type { Server as HttpServer } from 'node:http'
-import { STORE_DIR, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID } from './config.js'
+import { STORE_DIR, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID } from './config.js'
 import { initDatabase } from './db.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
 import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
@@ -42,7 +42,7 @@ const BANNER = `
  ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝  (lite)
 `
 
-const PID_FILE = join(STORE_DIR, 'claudeclaw.pid')
+const PID_FILE = join(STORE_DIR, PID_FILENAME)
 // Hard-kill timeout: if graceful shutdown (HTTP drain + releaseLock) has not
 // finished in this window, exit so launchd's KeepAlive isn't blocked by a
 // hung socket. closeAllConnections (Node 18.2+) normally drains in ms, but
