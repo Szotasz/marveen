@@ -434,8 +434,13 @@ else
   echo -e "${DIM}  Az AI asszisztensed Slack-en kommunikal veled.${NC}"
   echo -e "${DIM}  1. Hozz letre egy Slack App-ot: api.slack.com/apps${NC}"
   echo -e "${DIM}  2. Engedeld a Socket Mode-ot${NC}"
-  echo -e "${DIM}  3. Adj hozza scope-okat: chat:write, channels:read, files:write${NC}"
-  echo -e "${DIM}  4. Installald a workspace-be${NC}"
+  echo -e "${DIM}  3. OAuth & Permissions > Bot Token Scopes:${NC}"
+  echo -e "${DIM}     app_mentions:read, channels:history, channels:join,${NC}"
+  echo -e "${DIM}     channels:read, chat:write, files:read, files:write,${NC}"
+  echo -e "${DIM}     groups:history, im:history, reactions:write, users:read${NC}"
+  echo -e "${DIM}  4. Event Subscriptions > Bot Events:${NC}"
+  echo -e "${DIM}     app_mention, message.channels, message.groups, message.im${NC}"
+  echo -e "${DIM}  5. Installald a workspace-be${NC}"
   echo ""
   read -p "  Bot Token (xoxb-...): " SLACK_BOT_TOKEN
   read -p "  App-Level Token (xapp-...): " SLACK_APP_TOKEN
@@ -649,7 +654,7 @@ SLACKENVEOF
 {
   "dmPolicy": "pairing",
   "allowFrom": [],
-  "groups": {},
+  "channels": {},
   "pending": {}
 }
 ACCESSEOF
@@ -660,9 +665,11 @@ fi
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   PLUGIN_MARKETPLACE="anthropics/claude-plugins-official"
   PLUGIN_ID="telegram@claude-plugins-official"
+  PLUGIN_SHORT="telegram"
 else
-  PLUGIN_MARKETPLACE="jeremylongshore/claude-code-slack-channel"
-  PLUGIN_ID="slack@jeremylongshore/claude-code-slack-channel"
+  PLUGIN_MARKETPLACE="Szotasz/marveen-marketplace"
+  PLUGIN_ID="slack-channel@marveen-marketplace"
+  PLUGIN_SHORT="slack-channel"
 fi
 
 echo -e "  ${CHANNEL_PROVIDER} plugin telepites..."
@@ -681,6 +688,16 @@ else
     echo -e "  ${BLUE}claude plugin install ${PLUGIN_ID}${NC}"
     echo ""
   fi
+fi
+
+# Enable plugin at project scope so --channels can boot-time activate it
+cd "$INSTALL_DIR"
+if claude plugin enable "$PLUGIN_SHORT@marveen-marketplace" --scope project 2>/dev/null || \
+   claude plugin enable "$PLUGIN_ID" --scope project 2>/dev/null; then
+  ok "${CHANNEL_PROVIDER} plugin project-scope-ban engedelyezve"
+else
+  warn "Plugin project-scope enable sikertelen. Futtasd kezzel:"
+  echo -e "  ${DIM}cd $INSTALL_DIR && claude plugin enable ${PLUGIN_ID} --scope project${NC}"
 fi
 
 # skill-factory telepitese (self-learning meta-skill)

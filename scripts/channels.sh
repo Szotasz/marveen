@@ -30,7 +30,7 @@ SESSION="${MAIN_AGENT_ID:-marveen}-channels"
 
 # Resolve plugin ID from provider
 case "$CHANNEL_PROVIDER" in
-  slack)  PLUGIN_ID="slack@jeremylongshore/claude-code-slack-channel" ;;
+  slack)  PLUGIN_ID="slack-channel@marveen-marketplace" ;;
   *)      PLUGIN_ID="telegram@claude-plugins-official" ;;
 esac
 
@@ -54,20 +54,12 @@ $TMUX kill-session -t "$SESSION" 2>/dev/null
 
 # Tmux session indítás
 #
-# --continue csak akkor mukodik ha mar van mentett session log a
-# .claude/projects/<this-cwd>/*.jsonl alatt. Friss telepitesnel nincs ->
-# Claude Code "No conversation found to continue" hibaval kilep, a launchd
-# tight-loopban ujraindit. Ezert csak akkor adjuk meg, ha latjuk hogy van
-# mentett session, kulonben szuretlenul indul (uj beszelgetes).
-PROJECT_KEY="$(echo "$INSTALL_DIR" | sed 's|/|-|g')"
-CLAUDE_PROJECT_DIR="$HOME/.claude/projects/${PROJECT_KEY}"
-CONTINUE_FLAG=""
-if [ -d "$CLAUDE_PROJECT_DIR" ] && ls "$CLAUDE_PROJECT_DIR"/*.jsonl >/dev/null 2>&1; then
-  CONTINUE_FLAG="--continue"
-fi
-
+# Always start a fresh conversation. --continue is intentionally omitted:
+# the cwd-based project dir may contain the user's own CLI sessions, and
+# resuming one of those loses the --channels activation state, causing
+# "Channel notifications skipped: server not in --channels list" errors.
 $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
-  "$CLAUDE --dangerously-skip-permissions $CONTINUE_FLAG --channels plugin:${PLUGIN_ID}"
+  "$CLAUDE --dangerously-skip-permissions --channels plugin:${PLUGIN_ID}"
 
 # Session startup guard: a Claude Code first-run dialogusait auto-accept-eljuk
 # kulonben a headless session orokre parkolna a prompton es a Telegram plugin
