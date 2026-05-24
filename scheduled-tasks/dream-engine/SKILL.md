@@ -9,7 +9,7 @@ A cél: az aznapi tudást átkonszolidálni és reggelre (07:30 Reggeli Napindí
 
 ## Mit kell csinálnod
 
-Generálj egy `/Users/marvin/ClaudeClaw/DREAM.md` fájlt az alábbi 5 bucket alapján. A formátum a fájl alján van.
+Generálj egy `{{INSTALL_DIR}}/DREAM.md` fájlt az alábbi 5 bucket alapján. A formátum a fájl alján van.
 
 ### Bucket 1 — 💡 Skill-javaslatok (flotta-szintű)
 
@@ -19,7 +19,7 @@ Nézz végig MINDEN agent (marveen + sub-agentek: boni, deeper, iris, samu, zara
 
 SQL minta:
 ```bash
-sqlite3 /Users/marvin/ClaudeClaw/store/claudeclaw.db "SELECT agent_id, content, keywords FROM memories WHERE created_at > strftime('%s', 'now', '-24 hours') AND category IN ('hot','warm') ORDER BY agent_id, created_at"
+sqlite3 {{INSTALL_DIR}}/store/claudeclaw.db "SELECT agent_id, content, keywords FROM memories WHERE created_at > strftime('%s', 'now', '-24 hours') AND category IN ('hot','warm') ORDER BY agent_id, created_at"
 ```
 
 Output: 0-2 konkrét skill-javaslat. Mindegyikhez: cím + 1 mondat indoklás + "flotta-szintű" vagy "agent: <név>".
@@ -28,11 +28,11 @@ Output: 0-2 konkrét skill-javaslat. Mindegyikhez: cím + 1 mondat indoklás + "
 
 ```bash
 # Vektorizálás ellenőrzés
-sqlite3 /Users/marvin/ClaudeClaw/store/claudeclaw.db "SELECT COUNT(*) as total, COUNT(embedding) as with_emb FROM memories"
+sqlite3 {{INSTALL_DIR}}/store/claudeclaw.db "SELECT COUNT(*) as total, COUNT(embedding) as with_emb FROM memories"
 # Ha NEM 100%, hívd meg a /api/memories/reembed endpoint-ot vagy futtass embedding-job-ot a missing ID-kra
 
 # Antikvált hot-tier (>7 napos hot, nem hivatkozott a memories_fts-en az elmúlt 24h-ban)
-sqlite3 /Users/marvin/ClaudeClaw/store/claudeclaw.db "SELECT id, content, accessed_at FROM memories WHERE category='hot' AND accessed_at < strftime('%s', 'now', '-7 days')"
+sqlite3 {{INSTALL_DIR}}/store/claudeclaw.db "SELECT id, content, accessed_at FROM memories WHERE category='hot' AND accessed_at < strftime('%s', 'now', '-7 days')"
 ```
 
 Műveletek:
@@ -42,7 +42,7 @@ Műveletek:
 
 A változtatásokat directly SQL-lel csináld:
 ```bash
-sqlite3 /Users/marvin/ClaudeClaw/store/claudeclaw.db "UPDATE memories SET category='cold' WHERE id IN (...)"
+sqlite3 {{INSTALL_DIR}}/store/claudeclaw.db "UPDATE memories SET category='cold' WHERE id IN (...)"
 ```
 
 Output: rövid statisztika ("X memória cold-tier-be áthelyezve, Y vektorizálatlan rendezve").
@@ -51,7 +51,7 @@ Output: rövid statisztika ("X memória cold-tier-be áthelyezve, Y vektorizála
 
 ```bash
 # Nyitott kanban-kártyák project + priority szerint
-sqlite3 /Users/marvin/ClaudeClaw/store/claudeclaw.db "SELECT id, title, status, project, priority, assignee FROM kanban_cards WHERE status IN ('planned','in_progress','waiting') AND archived_at IS NULL ORDER BY project, priority DESC"
+sqlite3 {{INSTALL_DIR}}/store/claudeclaw.db "SELECT id, title, status, project, priority, assignee FROM kanban_cards WHERE status IN ('planned','in_progress','waiting') AND archived_at IS NULL ORDER BY project, priority DESC"
 ```
 
 Csoportosíts project szerint. A daily naplóban (utolsó 7 nap) nézd hogy melyik projekten van aktív mozgás (commit, PR, kanban-átmozgás). Hozz ki egy TOP-3 holnapi javaslatot prioritás+aktivitás súlyozva.

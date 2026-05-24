@@ -362,6 +362,7 @@ if [ -d "$SCHED_TPL_DIR" ]; then
       sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
           -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
           -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
+          -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
           "$f" > "$target/$(basename "$f")"
     done
     echo -e "  ${GREEN}✓${NC} Utemezett feladat scaffoldolva: $task_name"

@@ -10,7 +10,7 @@ description: 4 óránkénti kanban-tábla audit. Tisztítás (7+ napos done arch
 
 ## Autonómia-szint (config-vezérelt, KÖTELEZŐ ELŐSZÖR)
 
-Olvasd be: `jq -r '.categories[]|select(.key=="kanban_archive_done" or .key=="kanban_stuck_nudge")|"\(.key) \(.level)"' /Users/marvin/ClaudeClaw/store/autonomy-config.json`
+Olvasd be: `jq -r '.categories[]|select(.key=="kanban_archive_done" or .key=="kanban_stuck_nudge")|"\(.key) \(.level)"' {{INSTALL_DIR}}/store/autonomy-config.json`
 
 A két kategória szintje szabályozza a 2. és 4. lépést:
 - **`kanban_archive_done`** (2. lépés): level 3 → archiváld magától (alapért). level 2 → NE archiválj, Telegramon javasold ("X db 7+ napos done archiválásra vár, mehet?") és várj jóváhagyást. level 1 → csak jelezd a számot.

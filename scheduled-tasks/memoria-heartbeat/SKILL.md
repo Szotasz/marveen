@@ -12,7 +12,7 @@ Ha volt fontos döntés, preferencia, tanulság vagy bármi ami később hasznos
 ```bash
 curl -s -X POST http://localhost:3420/api/memories \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat /Users/marvin/ClaudeClaw/store/.dashboard-token)" \
+  -H "Authorization: Bearer $(cat {{INSTALL_DIR}}/store/.dashboard-token)" \
   -d '{"agent_id":"SAJAT_NEVED","content":"...","category":"warm","keywords":"..."}'
 ```
 
