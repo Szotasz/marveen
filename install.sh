@@ -283,12 +283,18 @@ fi
 echo ""
 echo -e "${BOLD}[5/7] Függőségek telepítése...${NC}"
 cd "$INSTALL_DIR"
-npm install --silent
+if ! npm install --loglevel warn; then
+  echo -e "  ${RED}✗${NC} npm install sikertelen. Ellenorizd a hibauzeneteket fentebb."
+  exit 1
+fi
 echo -e "  ${GREEN}✓${NC} npm csomagok telepítve"
 
 # Build TypeScript
 echo -e "  Forditas..."
-npm run build --silent
+if ! npm run build --loglevel warn; then
+  echo -e "  ${RED}✗${NC} TypeScript forditas sikertelen. Ellenorizd a hibauzeneteket fentebb."
+  exit 1
+fi
 echo -e "  ${GREEN}✓${NC} TypeScript leforditva"
 
 # Step 6: Configuration
@@ -329,6 +335,8 @@ if [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
       -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
       "$INSTALL_DIR/templates/CLAUDE.md.template" > "$INSTALL_DIR/CLAUDE.md"
   echo -e "  ${GREEN}✓${NC} CLAUDE.md generalva"
+else
+  echo -e "  ${ORANGE}⚠${NC} CLAUDE.md.template nem talalhato, CLAUDE.md nem generalhato"
 fi
 
 # Generate SOUL.md from template (personality definition for the main agent).
@@ -339,6 +347,8 @@ if [ -f "$INSTALL_DIR/templates/SOUL.md.template" ] && [ ! -f "$INSTALL_DIR/SOUL
       -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
       "$INSTALL_DIR/templates/SOUL.md.template" > "$INSTALL_DIR/SOUL.md"
   echo -e "  ${GREEN}✓${NC} SOUL.md generalva"
+elif [ ! -f "$INSTALL_DIR/templates/SOUL.md.template" ] && [ ! -f "$INSTALL_DIR/SOUL.md" ]; then
+  echo -e "  ${ORANGE}⚠${NC} SOUL.md.template nem talalhato, SOUL.md nem generalhato"
 fi
 
 # Scaffold default scheduled tasks into ~/.claude/scheduled-tasks/. Templates

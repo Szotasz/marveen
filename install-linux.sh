@@ -362,11 +362,15 @@ echo -e "${BOLD}[5/7] Fuggosegek telepitese...${NC}"
 cd "$INSTALL_DIR"
 
 echo -e "  npm install..."
-npm ci --silent 2>/dev/null || npm install --silent
+if ! (npm ci --loglevel warn 2>/dev/null || npm install --loglevel warn); then
+  fail "npm install sikertelen. Ellenorizd a hibauzeneteket fentebb."
+fi
 ok "npm csomagok telepitve"
 
 echo -e "  TypeScript forditas..."
-npm run build --silent
+if ! npm run build --loglevel warn; then
+  fail "TypeScript forditas sikertelen. Ellenorizd a hibauzeneteket fentebb."
+fi
 ok "TypeScript leforditva"
 
 mkdir -p "$INSTALL_DIR/store"
@@ -405,6 +409,8 @@ if [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
     -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
     "$INSTALL_DIR/templates/CLAUDE.md.template" >"$INSTALL_DIR/CLAUDE.md"
   ok "CLAUDE.md generalva"
+else
+  warn "CLAUDE.md.template nem talalhato, CLAUDE.md nem generalhato"
 fi
 
 # SOUL.md generalasa template-bol (personality definition for the main agent).
@@ -413,6 +419,8 @@ if [ -f "$INSTALL_DIR/templates/SOUL.md.template" ] && [ ! -f "$INSTALL_DIR/SOUL
       -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
       "$INSTALL_DIR/templates/SOUL.md.template" > "$INSTALL_DIR/SOUL.md"
   ok "SOUL.md generalva"
+elif [ ! -f "$INSTALL_DIR/templates/SOUL.md.template" ] && [ ! -f "$INSTALL_DIR/SOUL.md" ]; then
+  warn "SOUL.md.template nem talalhato, SOUL.md nem generalhato"
 fi
 
 # Default scheduled tasks scaffoldolasa ~/.claude/scheduled-tasks/ ala. A
@@ -473,6 +481,13 @@ if [ -d "$SEED_SCHED_DIR" ]; then
   done
   if [ "$SCHED_NEW" -gt 0 ] || [ "$SCHED_SKIP" -gt 0 ]; then
     ok "Seed scheduled tasks: ${SCHED_NEW} uj, ${SCHED_SKIP} kihagyva"
+  fi
+  if [ "$SCHED_NEW" -gt 0 ]; then
+    STATE_FILE="$INSTALL_DIR/store/kanban-audit-state.json"
+    if [ ! -f "$STATE_FILE" ]; then
+      echo '{"last_audit_at":null}' > "$STATE_FILE"
+      ok "kanban-audit state inicializalva"
+    fi
   fi
 fi
 
@@ -566,6 +581,32 @@ if [ -d "$INSTALL_DIR/skills/skill-factory" ]; then
   mkdir -p "$SKILLS_DIR/skill-factory"
   cp -r "$INSTALL_DIR/skills/skill-factory/"* "$SKILLS_DIR/skill-factory/"
   ok "skill-factory telepitve"
+fi
+
+# Seed skills: fleet-level skills from seed-skills/ into ~/.claude/skills/
+# Idempotent: skip directories that already exist (never overwrite user customizations)
+SEED_SKILLS_DIR="$INSTALL_DIR/seed-skills"
+if [ -d "$SEED_SKILLS_DIR" ]; then
+  SEED_NEW=0
+  SEED_SKIP=0
+  for skill_dir in "$SEED_SKILLS_DIR"/*/; do
+    [ -d "$skill_dir" ] || continue
+    skill_name=$(basename "$skill_dir")
+    target="$SKILLS_DIR/$skill_name"
+    if [ -d "$target" ]; then
+      SEED_SKIP=$((SEED_SKIP + 1))
+      continue
+    fi
+    mkdir -p "$target"
+    for f in "$skill_dir"*; do
+      [ -f "$f" ] || continue
+      cp "$f" "$target/$(basename "$f")"
+    done
+    SEED_NEW=$((SEED_NEW + 1))
+  done
+  if [ "$SEED_NEW" -gt 0 ] || [ "$SEED_SKIP" -gt 0 ]; then
+    ok "Seed skills: ${SEED_NEW} uj, ${SEED_SKIP} kihagyva (mar letezik)"
+  fi
 fi
 
 # ─────────────────────────────────────────────
