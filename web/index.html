@@ -1166,6 +1166,18 @@
           <div class="detail-avatar-gallery" id="detailAvatarGallery" hidden>
             <label class="form-label-sm">Válassz új avatart</label>
             <div class="avatar-grid" id="detailAvatarGrid"></div>
+            <div class="avatar-upload-divider"><span>vagy</span></div>
+            <div class="avatar-upload-zone" id="avatarUploadZone">
+              <input type="file" id="avatarFileInput" accept=".png,.jpg,.jpeg,.webp" hidden>
+              <div class="avatar-upload-content" id="avatarUploadContent">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                <span>Kep feltoltese (max 1 MB)</span>
+              </div>
+              <div class="avatar-upload-preview" id="avatarUploadPreview" hidden>
+                <img id="avatarPreviewImg" alt="">
+                <button class="avatar-preview-clear" id="avatarPreviewClear" title="Torles">&times;</button>
+              </div>
+            </div>
           </div>
           <div class="agent-overview-grid">
             <div class="agent-overview-item">

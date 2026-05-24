@@ -1261,6 +1261,79 @@ document.getElementById('avatarChangeBtn').addEventListener('click', () => {
   }
 })
 
+// === Avatar file upload ===
+;(() => {
+  const zone = document.getElementById('avatarUploadZone')
+  const fileInput = document.getElementById('avatarFileInput')
+  const content = document.getElementById('avatarUploadContent')
+  const preview = document.getElementById('avatarUploadPreview')
+  const previewImg = document.getElementById('avatarPreviewImg')
+  const clearBtn = document.getElementById('avatarPreviewClear')
+  const MAX_SIZE = 1024 * 1024
+
+  zone.addEventListener('click', (e) => {
+    if (e.target === clearBtn || clearBtn.contains(e.target)) return
+    fileInput.click()
+  })
+  zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('drag-over') })
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'))
+  zone.addEventListener('drop', (e) => {
+    e.preventDefault()
+    zone.classList.remove('drag-over')
+    const file = e.dataTransfer.files[0]
+    if (file) handleAvatarFile(file)
+  })
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files[0]) handleAvatarFile(fileInput.files[0])
+  })
+  clearBtn.addEventListener('click', (e) => {
+    e.stopPropagation()
+    resetAvatarUpload()
+  })
+
+  function resetAvatarUpload() {
+    fileInput.value = ''
+    content.hidden = false
+    preview.hidden = true
+  }
+
+  async function handleAvatarFile(file) {
+    if (!file.type.match(/^image\/(png|jpe?g|webp)$/)) {
+      showToast('Csak png/jpg/webp formatum')
+      return
+    }
+    if (file.size > MAX_SIZE) {
+      showToast('Max 1 MB meretu kep')
+      return
+    }
+    previewImg.src = URL.createObjectURL(file)
+    content.hidden = true
+    preview.hidden = false
+    await uploadAvatarFile(file)
+  }
+
+  async function uploadAvatarFile(file) {
+    if (!currentAgent) return
+    const isMarveen = currentAgent.role === 'main'
+    const endpoint = isMarveen ? '/api/marveen/avatar' : `/api/agents/${encodeURIComponent(currentAgent.name)}/avatar`
+    const form = new FormData()
+    form.append('avatar', file, file.name)
+    try {
+      const res = await fetch(endpoint, { method: 'POST', body: form })
+      if (!res.ok) throw new Error()
+      showToast('Avatar feltoltve, kep elkuldve Telegramon')
+      const imgUrl = isMarveen ? `/api/marveen/avatar?t=${Date.now()}` : `/api/agents/${encodeURIComponent(currentAgent.name)}/avatar?t=${Date.now()}`
+      document.getElementById('agentDetailAvatar').innerHTML = `<img src="${imgUrl}" alt="">`
+      document.getElementById('detailAvatarGallery').hidden = true
+      resetAvatarUpload()
+      loadAgents()
+    } catch {
+      showToast('Hiba a feltoltes soran')
+      resetAvatarUpload()
+    }
+  }
+})()
+
 // === Process control ===
 function updateProcessControl(agent) {
   const running = agent.running || false
