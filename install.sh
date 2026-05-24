@@ -724,25 +724,24 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
     ACCESS_FILE="$CHANNEL_DIR/access.json"
     if [ -f "$ACCESS_FILE" ]; then
       # Get the chat ID from the pending pairing in access.json
-      PENDING_CHAT_ID=$(python3 -c "
-import json
+      PENDING_CHAT_ID=$(PAIR_CODE="$PAIR_CODE" python3 -c "
+import json, os
 with open('$ACCESS_FILE') as f:
     data = json.load(f)
-pending = data.get('pending', {})
-for code, info in pending.items():
-    if code == '$PAIR_CODE':
+code = os.environ['PAIR_CODE']
+for c, info in data.get('pending', {}).items():
+    if c == code:
         print(info.get('chatId', info.get('from', '')))
         break
 " 2>/dev/null)
 
       if [ -n "$PENDING_CHAT_ID" ]; then
         # Approve the pairing and switch to allowlist
-        python3 -c "
-import json
+        PENDING_CHAT_ID="$PENDING_CHAT_ID" python3 -c "
+import json, os
 with open('$ACCESS_FILE') as f:
     data = json.load(f)
-# Move from pending to allowFrom
-chat_id = str('$PENDING_CHAT_ID')
+chat_id = os.environ['PENDING_CHAT_ID']
 if chat_id not in data.get('allowFrom', []):
     data.setdefault('allowFrom', []).append(chat_id)
 data['pending'] = {}
