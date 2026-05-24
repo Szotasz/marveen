@@ -19,13 +19,13 @@ ok() { echo -e "  ${GREEN}✓${NC} $*"; }
 warn() { echo -e "  ${ORANGE}!${NC} $*"; }
 
 offer_claude_fallback() {
-  local step="$1" err_msg="$2"
+  local step="$1" err_msg="$2" line_info="${3:+:$3}"
   if ! command -v claude &>/dev/null; then
     return
   fi
   echo ""
   echo -e "${ORANGE}Claude Code elérhető a gépen.${NC}"
-  local prompt="Marveen installer failed at step '${step}'. Error: ${err_msg}. OS: macOS $(sw_vers -productVersion 2>/dev/null || echo unknown). Node: $(node -v 2>/dev/null || echo missing). Dir: ${INSTALL_DIR}. Diagnose and suggest fixes."
+  local prompt="Marveen installer failed at step \"${step}\". Error: ${err_msg}. Script: install.sh${line_info}. Repo: https://github.com/Szotasz/marveen. OS: macOS $(sw_vers -productVersion 2>/dev/null || echo unknown). Node: $(node -v 2>/dev/null || echo missing). Dir: ${INSTALL_DIR}. Your task: diagnose this Marveen installer failure. The install scripts are install.sh (macOS) and install-linux.sh. Read the relevant section, check for missing dependencies or permission issues, and suggest concrete shell commands to fix."
   if [ -t 0 ]; then
     read -p "  Megnyissam Claude Code-ot a hiba diagnosztizálásához? (i/n) [n]: " OPEN_CLAUDE
     OPEN_CLAUDE=${OPEN_CLAUDE:-n}
@@ -40,14 +40,14 @@ offer_claude_fallback() {
 
 fail() {
   echo -e "  ${RED}✗${NC} $*"
-  offer_claude_fallback "$INSTALL_STEP" "$*"
+  offer_claude_fallback "$INSTALL_STEP" "$*" "${BASH_LINENO[0]}"
   exit 1
 }
 
 on_error() {
   echo ""
   echo -e "${RED}Varatlan hiba a(z) '${INSTALL_STEP}' lepesben (sor: $1).${NC}"
-  offer_claude_fallback "$INSTALL_STEP" "Unexpected error at line $1"
+  offer_claude_fallback "$INSTALL_STEP" "Unexpected error at line $1" "$1"
   exit 1
 }
 trap 'on_error $LINENO' ERR
