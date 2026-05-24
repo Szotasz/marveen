@@ -716,6 +716,8 @@ cat > "$PLIST_DIR/${CHANNELS_PLIST}.plist" << PLISTEOF
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
   <key>StandardOutPath</key>
   <string>${INSTALL_DIR}/store/channels.log</string>
   <key>StandardErrorPath</key>
@@ -802,8 +804,11 @@ data['dmPolicy'] = 'allowlist'
 with open('$ACCESS_FILE', 'w') as f:
     json.dump(data, f, indent=2)
 " 2>/dev/null
-        echo -e "  ${GREEN}✓${NC} Parositas sikeres! (chat ID: $PENDING_CHAT_ID)"
-        echo -e "  ${GREEN}✓${NC} Policy: allowlist (csak te erheted el a botot)"
+        CHAT_ID="$PENDING_CHAT_ID"
+        sed -i '' "s/^ALLOWED_CHAT_ID=.*/ALLOWED_CHAT_ID=${CHAT_ID}/" "$INSTALL_DIR/.env"
+        ok "Parositas sikeres! (chat ID: $PENDING_CHAT_ID)"
+        ok ".env ALLOWED_CHAT_ID frissitve"
+        ok "Policy: allowlist (csak te erheted el a botot)"
       else
         # Fallback: try tmux send-keys approach
         echo -e "  ${ORANGE}A kod nem talalhato az access.json-ban.${NC}"
@@ -828,6 +833,21 @@ if [ "$DO_MIGRATE" = "i" ]; then
   else
     echo -e "  ${ORANGE}A migrate.sh nem található. Használd a dashboardot: http://localhost:3420 -> Költöztetés${NC}"
   fi
+fi
+
+# Warn if Telegram pairing was skipped
+if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ "$CHAT_ID" = "0" ]; then
+  echo ""
+  echo -e "${ORANGE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo -e "${RED}  FIGYELEM: Telegram parositas nem tortent meg!${NC}"
+  echo -e "${ORANGE}  Az ALLOWED_CHAT_ID=0 marad az .env-ben, ami azt jelenti${NC}"
+  echo -e "${ORANGE}  hogy a bot NEM fog valaszolni senkinek.${NC}"
+  echo ""
+  echo -e "  ${BOLD}Javitas:${NC}"
+  echo -e "  1. Irj a botodnak Telegramon (barmit)"
+  echo -e "  2. Masold a kapott parosito kodot"
+  echo -e "  3. Futtasd: ${BOLD}claude${NC}, majd ${BOLD}/telegram:access pair AKOD${NC}"
+  echo -e "${ORANGE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 fi
 
 # Done!

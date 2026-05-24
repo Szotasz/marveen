@@ -794,7 +794,9 @@ Type=simple
 WorkingDirectory=$INSTALL_DIR
 ExecStart=$INSTALL_DIR/scripts/channels.sh
 Restart=on-failure
-RestartSec=5
+RestartSec=10
+StartLimitIntervalSec=300
+StartLimitBurst=5
 StandardOutput=append:$INSTALL_DIR/store/channels.log
 StandardError=append:$INSTALL_DIR/store/channels.error.log
 Environment=PATH=$HOME/.local/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin
@@ -958,7 +960,10 @@ data['dmPolicy'] = 'allowlist'
 with open('$ACCESS_FILE', 'w') as f:
     json.dump(data, f, indent=2)
 " 2>/dev/null
+          CHAT_ID="$PENDING_CHAT_ID"
+          sed -i "s/^ALLOWED_CHAT_ID=.*/ALLOWED_CHAT_ID=${CHAT_ID}/" "$INSTALL_DIR/.env"
           ok "Parositas sikeres! (chat ID: $PENDING_CHAT_ID)"
+          ok ".env ALLOWED_CHAT_ID frissitve"
           ok "Policy: allowlist (csak te erheted el a botot)"
           # Ujrainditjuk, hogy felvegye az uj access.json-t
           systemctl --user restart "${CHAN_UNIT}" 2>/dev/null || true
@@ -992,6 +997,21 @@ if [ "$DO_MIGRATE" = "i" ]; then
   else
     warn "A migrate.sh nem talalhato. Hasznald a dashboardot: http://localhost:3420 -> Koltoztes"
   fi
+fi
+
+# Warn if Telegram pairing was skipped
+if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ "$CHAT_ID" = "0" ]; then
+  echo ""
+  echo -e "${ORANGE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo -e "${RED}  FIGYELEM: Telegram parositas nem tortent meg!${NC}"
+  echo -e "${ORANGE}  Az ALLOWED_CHAT_ID=0 marad az .env-ben, ami azt jelenti${NC}"
+  echo -e "${ORANGE}  hogy a bot NEM fog valaszolni senkinek.${NC}"
+  echo ""
+  echo -e "  ${BOLD}Javitas:${NC}"
+  echo -e "  1. Irj a botodnak Telegramon (barmit)"
+  echo -e "  2. Masold a kapott parosito kodot"
+  echo -e "  3. Futtasd: ${BOLD}claude${NC}, majd ${BOLD}/telegram:access pair AKOD${NC}"
+  echo -e "${ORANGE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 fi
 
 # ─────────────────────────────────────────────

@@ -107,9 +107,33 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   "$INSTALL_DIR/scripts/set-bot-menu.sh" &
 fi
 
+# Rapid-failure detection: if claude exits within 30s of startup, this is
+# likely a config error (bad token, missing plugin, auth issue). We log the
+# failure and exit non-zero so the service manager's own back-off kicks in
+# instead of tight-looping and burning API tokens.
+START_TS=$(date +%s)
+
 # Várakozás amíg a session él
 while $TMUX has-session -t "$SESSION" 2>/dev/null; do
   sleep 5
 done
 
+ELAPSED=$(( $(date +%s) - START_TS ))
+if [ "$ELAPSED" -lt 30 ]; then
+  echo "WARN: channels session exited after ${ELAPSED}s (likely config error). Check logs." >&2
+  echo "$(date '+%Y-%m-%d %H:%M:%S') rapid-exit after ${ELAPSED}s" >> "$INSTALL_DIR/store/channels-failures.log"
+  FAIL_COUNT=$(wc -l < "$INSTALL_DIR/store/channels-failures.log" 2>/dev/null || echo 0)
+  FAIL_COUNT=$((FAIL_COUNT))
+  if [ "$FAIL_COUNT" -ge 5 ]; then
+    echo "ERROR: ${FAIL_COUNT} rapid failures detected. Waiting 300s before next attempt." >&2
+    sleep 300
+  elif [ "$FAIL_COUNT" -ge 3 ]; then
+    echo "WARN: ${FAIL_COUNT} rapid failures. Waiting 60s." >&2
+    sleep 60
+  fi
+  exit 1
+fi
+
+# Normal exit: clear failure log
+rm -f "$INSTALL_DIR/store/channels-failures.log"
 exit 0
