@@ -29,6 +29,17 @@ export interface ScheduledTask {
   // skipIfBusy false (default) so the queue + alert path catches a
   // long-running busy state and nothing business-critical is lost.
   skipIfBusy?: boolean
+  // When true, skip the busy-state check entirely and inject the prompt
+  // via tmux send-keys regardless. The Claude session will process it at
+  // the next idle slot. Useful for critical tasks that must never be
+  // deferred to a retry queue (e.g. daily briefings, heartbeats during
+  // active conversations).
+  forceSend?: boolean
+  // Override the default tmux session name derived from the agent. When
+  // set, the scheduler targets this exact tmux session instead of
+  // `agent-<name>` or MAIN_CHANNELS_SESSION. Enables dedicated
+  // scheduler-only sessions in the future.
+  targetSession?: string
 }
 
 function readFileOr(path: string, fallback: string): string {
@@ -58,7 +69,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
   const skillContent = readFileOr(skillPath, '')
   const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean } = {}
+  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string } = {}
   try {
     config = JSON.parse(readFileOr(configPath, '{}'))
   } catch { /* use defaults */ }
@@ -73,6 +84,8 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     createdAt: config.createdAt || 0,
     type: (config.type as 'task' | 'heartbeat') || 'task',
     skipIfBusy: config.skipIfBusy === true,
+    forceSend: config.forceSend === true,
+    targetSession: config.targetSession || undefined,
   }
 }
 
@@ -91,7 +104,7 @@ export function listScheduledTasks(): ScheduledTask[] {
 
 export function writeScheduledTask(
   taskName: string,
-  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean },
+  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string },
 ): void {
   const dir = join(SCHEDULED_TASKS_DIR, taskName)
   mkdirSync(dir, { recursive: true })
@@ -116,6 +129,8 @@ export function writeScheduledTask(
   if (data.enabled !== undefined) config.enabled = data.enabled
   if (data.type !== undefined) config.type = data.type
   if (data.skipIfBusy !== undefined) config.skipIfBusy = data.skipIfBusy
+  if (data.forceSend !== undefined) config.forceSend = data.forceSend
+  if (data.targetSession !== undefined) config.targetSession = data.targetSession
   if (!config.createdAt) config.createdAt = Math.floor(Date.now() / 1000)
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }

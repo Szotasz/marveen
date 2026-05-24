@@ -60,7 +60,11 @@ const scheduleLastRun: Map<string, number> = new Map()
 // pendingTaskRetries loop and the normal cron loop share one code path.
 function attemptFireTask(task: ScheduledTask, agentName: string, now: number): 'fired' | 'busy' | 'missing' | 'error' {
   const isMainAgent = agentName === MAIN_AGENT_ID
-  const session = isMainAgent ? MAIN_CHANNELS_SESSION : agentSessionName(agentName)
+  // Allow per-task session override via targetSession config field.
+  // Falls back to the standard agent session name derivation.
+  const session = task.targetSession
+    ? task.targetSession
+    : isMainAgent ? MAIN_CHANNELS_SESSION : agentSessionName(agentName)
 
   let sessionExists = false
   try {
@@ -73,9 +77,18 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number): '
     return 'missing'
   }
 
-  if (!isSessionReadyForPrompt(session)) {
+  // When forceSend is true, skip the busy-state check entirely and inject
+  // the prompt regardless. The Claude session queues it internally and
+  // will process it at the next idle slot. This prevents the infinite
+  // retry loop observed when the target session stays busy for hours
+  // (275 retries overnight in production).
+  if (!task.forceSend && !isSessionReadyForPrompt(session)) {
     logger.warn({ task: task.name, agent: agentName, session }, 'Schedule target session busy or has pending input, will retry')
     return 'busy'
+  }
+
+  if (task.forceSend) {
+    logger.info({ task: task.name, agent: agentName, session }, 'forceSend=true, bypassing busy-state check')
   }
 
   try {
