@@ -6196,37 +6196,45 @@ function renderTeamGraph(container, data) {
     }
     return div
   }
-  // BFS levels starting from main
-  const levels = [[mainAgentId]]
-  const seen = new Set([mainAgentId])
-  while (levels[levels.length - 1].length) {
-    const nextIds = []
-    for (const id of levels[levels.length - 1]) {
-      for (const child of childrenOf.get(id) || []) {
-        if (!seen.has(child)) { seen.add(child); nextIds.push(child) }
-      }
-    }
-    if (nextIds.length === 0) break
-    levels.push(nextIds)
-  }
-  // Orphans (nodes not reachable from main, shouldn't happen with the auto
-  // fallback on the backend but guard just in case) go to a trailing level.
-  const orphans = nodes.filter(n => !seen.has(n.id))
-  if (orphans.length) levels.push(orphans.map(n => n.id))
-  for (let i = 0; i < levels.length; i++) {
-    const level = document.createElement('div')
-    level.className = 'team-level'
-    for (const id of levels[i]) {
-      const node = byId.get(id)
-      if (!node) continue
-      level.appendChild(renderNode(node))
-    }
-    container.appendChild(level)
-    if (i < levels.length - 1) {
+  // Recursive tree render: each parent shows its own children below it
+  const rendered = new Set()
+  const renderSubtree = (id) => {
+    const node = byId.get(id)
+    if (!node || rendered.has(id)) return null
+    rendered.add(id)
+    const branch = document.createElement('div')
+    branch.className = 'team-branch'
+    branch.appendChild(renderNode(node))
+    const children = (childrenOf.get(id) || []).filter(c => !rendered.has(c))
+    if (children.length > 0) {
       const conn = document.createElement('div')
       conn.className = 'team-connector'
-      container.appendChild(conn)
+      branch.appendChild(conn)
+      const row = document.createElement('div')
+      row.className = 'team-level'
+      for (const childId of children) {
+        const sub = renderSubtree(childId)
+        if (sub) row.appendChild(sub)
+      }
+      branch.appendChild(row)
     }
+    return branch
+  }
+  const rootBranch = renderSubtree(mainAgentId)
+  if (rootBranch) container.appendChild(rootBranch)
+  // Orphans: nodes not reachable from main
+  const orphans = nodes.filter(n => !rendered.has(n.id))
+  if (orphans.length) {
+    const conn = document.createElement('div')
+    conn.className = 'team-connector'
+    container.appendChild(conn)
+    const row = document.createElement('div')
+    row.className = 'team-level'
+    for (const n of orphans) {
+      const sub = renderSubtree(n.id)
+      if (sub) row.appendChild(sub)
+    }
+    container.appendChild(row)
   }
   if (nodes.length === 1) {
     const empty = document.createElement('div')
