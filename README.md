@@ -210,6 +210,10 @@ Ha hasznos számodra a Marveen, támogasd a fejlesztést:
 
 [![Támogatás](https://img.shields.io/badge/Támogatás-Donably-orange)](https://www.donably.com/ai-a-mindennapokban-szabolccsal)
 
+## Köszönet
+
+A Marveen több külső projektre és koncepcióra épít. A teljes felsorolás (forrás, szerző, licensz, hogyan használjuk) az [ATTRIBUTIONS.md](./ATTRIBUTIONS.md) fájlban található. Köszönet a Perplexity AI-nek (Bumblebee), Artem Zhutovnak (handoff / retrospective / skill-management skill suite), Mike Van Hornnak (printing-press), Andrej Karpathynak (CLAUDE.md pattern), és Matt Pococknak (handoff design tippek) a munkájukért.
+
 ## Készítette
 
 **Szota Szabolcs** -- AI konzultáns, az "AI a mindennapokban" csatorna készítője
