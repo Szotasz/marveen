@@ -92,7 +92,7 @@ export async function sendWelcomeMessage(agentName: string, token: string): Prom
     // Send avatar if exists
     const avatarPath = findAvatarForAgent(agentName)
     if (avatarPath) {
-      await sendTelegramPhoto(token, chatId, avatarPath, '(allitsd be profilkepkent)')
+      await sendTelegramPhoto(token, chatId, avatarPath, 'Allitsd be profilkepkent: nyisd meg @BotFather chatet, /setuserpic, valaszd ki a botodat, kuldd be ezt a kepet.')
     }
     logger.info({ agentName }, 'Welcome message sent via Telegram')
   } catch (err) {
@@ -119,7 +119,7 @@ export async function sendMarveenAvatarChange(avatarPath: string): Promise<void>
     ]
     const msg = messages[Math.floor(Math.random() * messages.length)]
     await sendTelegramMessage(token, chatId, msg)
-    await sendTelegramPhoto(token, chatId, avatarPath, '(allitsd be profilkepkent)')
+    await sendTelegramPhoto(token, chatId, avatarPath, 'Allitsd be profilkepkent: nyisd meg @BotFather chatet, /setuserpic, valaszd ki a botodat, kuldd be ezt a kepet.')
     logger.info('Marveen avatar change message sent')
   } catch (err) {
     logger.warn({ err }, 'Failed to send Marveen avatar change message')
@@ -142,7 +142,7 @@ export async function sendAvatarChangeMessage(agentName: string, avatarPath: str
     ]
     const msg = messages[Math.floor(Math.random() * messages.length)]
     await sendTelegramMessage(token, chatId, msg)
-    await sendTelegramPhoto(token, chatId, avatarPath, '(allitsd be profilkepkent)')
+    await sendTelegramPhoto(token, chatId, avatarPath, 'Allitsd be profilkepkent: nyisd meg @BotFather chatet, /setuserpic, valaszd ki a botodat, kuldd be ezt a kepet.')
     logger.info({ agentName }, 'Avatar change message sent via Telegram')
   } catch (err) {
     logger.warn({ err, agentName }, 'Failed to send avatar change message')
