@@ -103,6 +103,38 @@ if ! command -v apt-get &>/dev/null; then
   fail "Ez a telepito csak Ubuntu/Debian rendszeren fut (apt-get szukseges)"
 fi
 
+# RAM check: npm build can fail on low-memory instances (e.g. t3.micro)
+if command -v free &>/dev/null; then
+  TOTAL_RAM_MB=$(free -m | awk '/^Mem:/ {print $2}')
+  TOTAL_SWAP_MB=$(free -m | awk '/^Swap:/ {print $2}')
+  TOTAL_AVAIL=$((TOTAL_RAM_MB + TOTAL_SWAP_MB))
+  if [ "$TOTAL_AVAIL" -lt 2048 ]; then
+    warn "Kevés memória: ${TOTAL_RAM_MB} MB RAM + ${TOTAL_SWAP_MB} MB swap = ${TOTAL_AVAIL} MB"
+    echo -e "  ${ORANGE}Az npm build legalabb 2 GB memoriat igenyel.${NC}"
+    if [ "$TOTAL_SWAP_MB" -lt 1024 ]; then
+      read -p "  Letrehozzak 2 GB swap fajlt? (i/n) [i]: " CREATE_SWAP
+      CREATE_SWAP=${CREATE_SWAP:-i}
+      if [ "$CREATE_SWAP" = "i" ]; then
+        echo -e "  Swap letrehozasa (sudo szukseges)..."
+        sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+        if swapon --show | grep -q '/swapfile'; then
+          ok "2 GB swap aktivalva"
+          if ! grep -q '/swapfile' /etc/fstab; then
+            echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
+            ok "Swap hozzaadva az /etc/fstab-hoz (ujrainditas utan is megmarad)"
+          fi
+        else
+          warn "Swap letrehozas sikertelen. A build elbukthat."
+        fi
+      else
+        warn "Swap kihagyva. Ha a build elbukik, futtasd: sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile"
+      fi
+    fi
+  else
+    ok "Memoria: ${TOTAL_RAM_MB} MB RAM + ${TOTAL_SWAP_MB} MB swap"
+  fi
+fi
+
 MISSING_PKGS=""
 for pkg in ffmpeg git tmux lsof curl python3 pipx unzip; do
   if ! command -v "$pkg" &>/dev/null; then
@@ -219,18 +251,35 @@ INSTALL_STEP="claude-auth"
 echo ""
 echo -e "${BOLD}[3/7] Claude bejelentkezes${NC}"
 
+IS_HEADLESS=false
+if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+  IS_HEADLESS=true
+fi
+
 if claude auth status &>/dev/null; then
   ok "Claude mar be van jelentkezve"
 else
   echo -e "  ${ORANGE}Nincs aktiv Claude bejelentkezes.${NC}"
+  if [ "$IS_HEADLESS" = "true" ]; then
+    echo ""
+    echo -e "  ${BLUE}Headless szerver detektalva (nincs DISPLAY).${NC}"
+    echo -e "  ${BLUE}Bongeszo-alapu bejelentkezes nem lehetseges.${NC}"
+    echo -e "  ${BOLD}Ajanlott: OAuth token (2) vagy API key (1).${NC}"
+    echo ""
+  fi
   echo ""
   echo -e "  Valassz bejelentkezesi modot:"
   echo -e "  ${BOLD}1.${NC} API key ${DIM}(Anthropic Console -> fizeteses/pay-as-you-go)${NC}"
   echo -e "  ${BOLD}2.${NC} OAuth token ${DIM}(Pro/Max elofizetes - tokennel egy masik geprol)${NC}"
   echo -e "  ${BOLD}3.${NC} Kihagyas ${DIM}(kesobb allitod be)${NC}"
   echo ""
-  read -p "  Valasztas (1/2/3) [3]: " AUTH_MODE
-  AUTH_MODE=${AUTH_MODE:-3}
+  if [ "$IS_HEADLESS" = "true" ]; then
+    read -p "  Valasztas (1/2/3) [2]: " AUTH_MODE
+    AUTH_MODE=${AUTH_MODE:-2}
+  else
+    read -p "  Valasztas (1/2/3) [3]: " AUTH_MODE
+    AUTH_MODE=${AUTH_MODE:-3}
+  fi
 
   if [ "$AUTH_MODE" = "1" ]; then
     echo ""
@@ -330,6 +379,26 @@ read -p "  Mi a neved? " OWNER_NAME
 # Chat ID is NOT asked here -- the user doesn't know it yet.
 # It will be set automatically during the Telegram pairing flow.
 CHAT_ID="0"
+
+# VPS/cloud MCP warning (headless only)
+if [ "$IS_HEADLESS" = "true" ]; then
+  echo ""
+  echo -e "${ORANGE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo -e "${ORANGE}  FIGYELEM: VPS / cloud szerver detektalva${NC}"
+  echo -e "${ORANGE}  Ha a claude.ai fiokodban sok MCP connector van${NC}"
+  echo -e "${ORANGE}  engedelyezve, a headless session megprobalja betolteni${NC}"
+  echo -e "${ORANGE}  mindet, ami instabilitast okozhat.${NC}"
+  echo ""
+  echo -e "  ${BOLD}Javasoljuk:${NC} lepj be a claude.ai Settings oldalara es"
+  echo -e "  tiltsd le a felesleges MCP-ket telepites elott."
+  echo -e "${ORANGE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  read -p "  Folytassam a telepitést? (i/n) [i]: " CONTINUE_MCP
+  CONTINUE_MCP=${CONTINUE_MCP:-i}
+  if [ "$CONTINUE_MCP" != "i" ]; then
+    echo -e "  ${DIM}Telepites megszakitva. Tiltsd le a felesleges MCP-ket, majd futtasd ujra.${NC}"
+    exit 0
+  fi
+fi
 
 # Channel provider setup
 echo ""

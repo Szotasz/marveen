@@ -171,9 +171,9 @@ A script automatikusan felderíti a futó `agent-*` és `marveen-channels` sessi
 ./scripts/start.sh
 ```
 
-### VPS telepítés (szerver)
+### VPS / AWS EC2 telepítés (szerver)
 
-Linux VPS-en (Ubuntu/Debian) az `install.sh` változtatás nélkül fut. Az egyetlen különbség: a bejelentkezéshez token kell, mert nincs böngésző.
+Linux VPS-en (Ubuntu 22+, Debian 12+) az `./install.sh` automatikusan az `install-linux.sh`-t futtatja. Headless szerveren a bejelentkezéshez OAuth token kell, mert nincs böngésző.
 
 ```bash
 # 1. A SAJÁT gépeden (ahol van böngésző):
@@ -184,10 +184,15 @@ claude setup-token
 export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
 git clone https://github.com/Szotasz/marveen.git
 cd marveen
-./install.sh
+./install.sh    # automatikusan install-linux.sh-t futtat
 ```
 
 A token 1 évig érvényes. Ne állíts be `ANTHROPIC_API_KEY`-t mellé.
+
+**Fontos VPS-specifikus tudnivalók:**
+- **RAM**: legalább 2 GB ajánlott (t3.small). 1 GB-os gépen az npm build swap nélkül elbukhat -- a telepítő figyelmeztet és felajánl swap-létrehozást.
+- **claude.ai MCP-k**: ha a claude.ai fiókodban sok MCP connector van engedélyezve, a headless claude session megpróbálja betölteni mindet, ami instabilitást okozhat. Telepítés előtt tiltsd le a felesleges MCP-ket a claude.ai Settings oldalán.
+- **Közvetlen futtatás**: `./install-linux.sh` (Linux) vagy `./install-macos.sh` (macOS) ha az OS-detekciót ki akarod hagyni.
 
 ## Követelmények
 
