@@ -1299,11 +1299,11 @@ document.getElementById('avatarChangeBtn').addEventListener('click', () => {
 
   async function handleAvatarFile(file) {
     if (!file.type.match(/^image\/(png|jpe?g|webp)$/)) {
-      showToast('Csak png/jpg/webp formatum')
+      showToast('Csak png/jpg/webp formátum')
       return
     }
     if (file.size > MAX_SIZE) {
-      showToast('Max 1 MB meretu kep')
+      showToast('Max 1 MB méretű kép')
       return
     }
     previewImg.src = URL.createObjectURL(file)
@@ -1321,14 +1321,14 @@ document.getElementById('avatarChangeBtn').addEventListener('click', () => {
     try {
       const res = await fetch(endpoint, { method: 'POST', body: form })
       if (!res.ok) throw new Error()
-      showToast('Avatar feltoltve, kep elkuldve Telegramon')
+      showToast('Avatar feltöltve, kép elküldve Telegramon')
       const imgUrl = isMarveen ? `/api/marveen/avatar?t=${Date.now()}` : `/api/agents/${encodeURIComponent(currentAgent.name)}/avatar?t=${Date.now()}`
       document.getElementById('agentDetailAvatar').innerHTML = `<img src="${imgUrl}" alt="">`
       document.getElementById('detailAvatarGallery').hidden = true
       resetAvatarUpload()
       loadAgents()
     } catch {
-      showToast('Hiba a feltoltes soran')
+      showToast('Hiba a feltöltés során')
       resetAvatarUpload()
     }
   }

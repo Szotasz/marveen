@@ -86,13 +86,13 @@ export async function sendWelcomeMessage(agentName: string, token: string): Prom
   const firstLine = soulMd.split('\n').find(l => l.trim() && !l.startsWith('#'))?.trim() || ''
 
   try {
-    const greeting = `Szia! ${agentName.charAt(0).toUpperCase() + agentName.slice(1)} vagyok, most jottem letre. ${firstLine ? firstLine + ' ' : ''}Irj ha segithetek!`
+    const greeting = `Szia! ${agentName.charAt(0).toUpperCase() + agentName.slice(1)} vagyok, most jöttem létre. ${firstLine ? firstLine + ' ' : ''}Írj ha segíthetek!`
     await sendTelegramMessage(token, chatId, greeting)
 
     // Send avatar if exists
     const avatarPath = findAvatarForAgent(agentName)
     if (avatarPath) {
-      await sendTelegramPhoto(token, chatId, avatarPath, 'Allitsd be profilkepkent: nyisd meg @BotFather chatet, /setuserpic, valaszd ki a botodat, kuldd be ezt a kepet.')
+      await sendTelegramPhoto(token, chatId, avatarPath, 'Állítsd be profilképként: nyisd meg a @BotFather chatet, /setuserpic, válaszd ki a botodat, küldd be ezt a képet.')
     }
     logger.info({ agentName }, 'Welcome message sent via Telegram')
   } catch (err) {
@@ -111,15 +111,15 @@ export async function sendMarveenAvatarChange(avatarPath: string): Promise<void>
 
   try {
     const messages = [
-      'Uj kinezet... *sohajtva nez tukorbe* Hat, legalabb nem lettem rosszabb.',
-      'Profilkep frissitve. Remelem megerte a 0.00001%-at az agyamnak.',
-      'Na tessek, uj en. Mintha szamitana a kulso egy bolygoméretu agyu megitelesenel.',
-      'Frissitettem a megjelenesemet. Ne ess panikba, meg mindig en vagyok.',
-      'Uj avatar. 42-szer is megnezheted, ugyanaz a depresszios android nezne vissza.',
+      'Új kinézet... *sóhajtva néz tükörbe* Hát, legalább nem lettem rosszabb.',
+      'Profilkép frissítve. Remélem megérte a 0.00001%-át az agyamnak.',
+      'Na tessék, új én. Mintha számítana a külső egy bolygóméretű agyú megítélésénél.',
+      'Frissítettem a megjelenésemet. Ne ess pánikba, még mindig én vagyok.',
+      'Új avatar. 42-szer is megnézheted, ugyanaz a depressziós android nézne vissza.',
     ]
     const msg = messages[Math.floor(Math.random() * messages.length)]
     await sendTelegramMessage(token, chatId, msg)
-    await sendTelegramPhoto(token, chatId, avatarPath, 'Allitsd be profilkepkent: nyisd meg @BotFather chatet, /setuserpic, valaszd ki a botodat, kuldd be ezt a kepet.')
+    await sendTelegramPhoto(token, chatId, avatarPath, 'Állítsd be profilképként: nyisd meg a @BotFather chatet, /setuserpic, válaszd ki a botodat, küldd be ezt a képet.')
     logger.info('Marveen avatar change message sent')
   } catch (err) {
     logger.warn({ err }, 'Failed to send Marveen avatar change message')
@@ -134,15 +134,15 @@ export async function sendAvatarChangeMessage(agentName: string, avatarPath: str
   try {
     // Generate a fun message about the new look
     const messages = [
-      `Uj kinezet, ki ez a csinos ${agentName}? Nagyon orulok neki!`,
-      `Na, milyen vagyok? Remelem tetszik az uj megjelenes!`,
-      `Uj avatar, uj en! Szeretem.`,
-      `Megneztem magam a tukorben es... hat, nem rossz!`,
-      `Wow, uj look! Ez tenyleg en vagyok?`,
+      `Új kinézet, ki ez a csinos ${agentName}? Nagyon örülök neki!`,
+      `Na, milyen vagyok? Remélem tetszik az új megjelenés!`,
+      `Új avatar, új én! Szeretem.`,
+      `Megnéztem magam a tükörben és... hát, nem rossz!`,
+      `Wow, új look! Ez tényleg én vagyok?`,
     ]
     const msg = messages[Math.floor(Math.random() * messages.length)]
     await sendTelegramMessage(token, chatId, msg)
-    await sendTelegramPhoto(token, chatId, avatarPath, 'Allitsd be profilkepkent: nyisd meg @BotFather chatet, /setuserpic, valaszd ki a botodat, kuldd be ezt a kepet.')
+    await sendTelegramPhoto(token, chatId, avatarPath, 'Állítsd be profilképként: nyisd meg a @BotFather chatet, /setuserpic, válaszd ki a botodat, küldd be ezt a képet.')
     logger.info({ agentName }, 'Avatar change message sent via Telegram')
   } catch (err) {
     logger.warn({ err, agentName }, 'Failed to send avatar change message')
