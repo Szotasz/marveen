@@ -72,6 +72,10 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1"/></svg>
         <span class="sb-label">Vault</span>
       </a>
+      <a href="#" class="sb-link" data-page="tokenUsage">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>
+        <span class="sb-label">Token Monitor</span>
+      </a>
       <a href="#" class="sb-link" data-page="updates" id="updatesNavLink">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
         <span class="sb-label">Frissítések</span>
@@ -901,6 +905,66 @@
             <button class="btn-primary" id="vaultScanImportBtn">Kivalasztottak importalasa</button>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- === Token Usage Page === -->
+    <style>
+      .tu-active { outline: 2px solid var(--accent, #6366f1); outline-offset: -2px; }
+      #tuSummaryCards { display: flex; flex-wrap: wrap; gap: 12px; }
+      #tuSummaryCards .overview-stat { flex: 1 1 140px; min-width: 120px; }
+      @media (max-width: 768px) {
+        .tu-header-controls { flex-direction: column; align-items: stretch !important; gap: 8px !important; }
+        #tuSummaryCards .overview-stat { flex: 1 1 100%; }
+        #tuTimelineChart { height: 220px !important; }
+      }
+    </style>
+    <div class="page" id="tokenUsagePage" hidden>
+      <div class="page-header">
+        <div class="page-header-row" style="flex-wrap:wrap">
+          <div style="flex:1;min-width:200px">
+            <h1>Token Monitor</h1>
+            <p class="subtitle" id="tokenUsageSubtitle">Ügynök token-fogyasztás nyomon követése</p>
+          </div>
+          <div class="tu-header-controls" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <select id="tuPeriod" class="input-compact" style="width:auto">
+              <option value="1h">1 óra</option>
+              <option value="24h">24 óra</option>
+              <option value="7d" selected>7 nap</option>
+              <option value="30d">30 nap</option>
+            </select>
+            <select id="tuAgent" class="input-compact" style="width:auto">
+              <option value="">Mind</option>
+            </select>
+            <button class="btn-secondary btn-compact" id="tuCollectBtn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+              </svg>
+              Gyűjtés
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="overview-stats" id="tuSummaryCards"></div>
+
+      <div class="overview-stats" id="tuBudgetCards" style="margin-bottom:8px"></div>
+
+      <div class="overview-card" style="margin-bottom:16px">
+        <h3>Idővonal</h3>
+        <div id="tuTimelineChart" style="height:370px;position:relative;overflow:hidden">
+          <canvas id="tuCanvas"></canvas>
+        </div>
+      </div>
+
+      <div class="overview-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+          <h3 style="margin:0">Legnagyobb hívások</h3>
+          <label style="font-size:13px;color:var(--text-secondary)">
+            Min token: <input type="number" id="tuMinTokens" value="50000" class="input-compact" style="width:80px">
+          </label>
+        </div>
+        <div id="tuDetailsTable"></div>
       </div>
     </div>
 
