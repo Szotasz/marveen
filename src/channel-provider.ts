@@ -10,6 +10,7 @@ export type ChannelProviderType = 'telegram' | 'slack'
 export interface ChannelProvider {
   readonly type: ChannelProviderType
   readonly pluginId: string
+  readonly pluginPaneId: string
   readonly envKeys: string[]
   readonly stateDir: string
   readonly chatIdFormat: string
@@ -51,6 +52,7 @@ function telegramHttpPost(token: string, method: string, body: string, contentTy
 const telegramProvider: ChannelProvider = {
   type: 'telegram',
   pluginId: 'telegram@claude-plugins-official',
+  pluginPaneId: 'plugin:telegram:telegram',
   envKeys: ['TELEGRAM_BOT_TOKEN'],
   stateDir: 'telegram',
   chatIdFormat: 'numeric (e.g. 1268077055)',
@@ -131,6 +133,7 @@ export function formatForSlackMrkdwn(text: string): string {
 const slackProvider: ChannelProvider = {
   type: 'slack',
   pluginId: 'slack-channel@marveen-marketplace',
+  pluginPaneId: 'plugin:slack-channel:marveen-marketplace',
   envKeys: ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN'],
   stateDir: 'slack',
   chatIdFormat: 'Slack channel/DM ID (e.g. C01234ABCDE)',

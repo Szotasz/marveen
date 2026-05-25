@@ -28,7 +28,7 @@ export function resolveAgentProviderType(agentName: string): ChannelProviderType
 
 function getPluginPattern(providerType: ChannelProviderType): RegExp {
   const provider = getProvider(providerType)
-  const escaped = provider.pluginId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const escaped = provider.pluginPaneId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   return new RegExp(escaped, 'i')
 }
 
