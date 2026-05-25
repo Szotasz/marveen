@@ -392,7 +392,18 @@ export function initDatabase(): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_token_usage_agent ON token_usage(agent)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_token_usage_ts ON token_usage(timestamp)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_token_usage_agent_ts ON token_usage(agent, timestamp)`)
-  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_token_usage_dedup ON token_usage(agent, session_id, timestamp, input_tokens, output_tokens)`)
+  // Deduplicate existing rows before creating unique index
+  try {
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_token_usage_dedup ON token_usage(agent, session_id, timestamp, input_tokens, output_tokens)`)
+  } catch {
+    db.exec(`
+      DELETE FROM token_usage WHERE id NOT IN (
+        SELECT MIN(id) FROM token_usage
+        GROUP BY agent, session_id, timestamp, input_tokens, output_tokens
+      )
+    `)
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_token_usage_dedup ON token_usage(agent, session_id, timestamp, input_tokens, output_tokens)`)
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS token_usage_cursors (
