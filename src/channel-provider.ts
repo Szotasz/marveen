@@ -242,6 +242,7 @@ function formatForDiscord(text: string): string {
 const discordProvider: ChannelProvider = {
   type: 'discord',
   pluginId: 'discord@claude-plugins-official',
+  pluginPaneId: 'plugin:discord:discord',
   envKeys: ['DISCORD_BOT_TOKEN'],
   stateDir: 'discord',
   chatIdFormat: 'Discord channel ID (e.g. 1234567890123456789)',
