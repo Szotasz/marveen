@@ -1339,6 +1339,19 @@
                 </div>
               </label>
             </div>
+            <div id="authModeSharedSection" hidden style="margin-top:12px;padding:12px 14px;background:var(--bg-input);border-radius:var(--radius-sm)">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+                <div>
+                  <div style="font-size:13px;font-weight:500;color:var(--text)">Host OAuth alkalmazasa</div>
+                  <small style="color:var(--text-muted);font-size:12px">Ujrainditja az agentet a host hitelesitesevel. Nincs kulon bejelentkezes.</small>
+                </div>
+                <button class="btn-primary btn-compact" id="authSharedApplyBtn">
+                  <span class="btn-text">Alkalmazas</span>
+                  <span class="btn-loading" hidden><span class="spinner"></span></span>
+                </button>
+              </div>
+              <div id="authSharedError" hidden style="margin-top:10px;font-size:12px;color:var(--danger)"></div>
+            </div>
             <div id="authModeOwnTeamSection" hidden style="margin-top:12px;padding:12px 14px;background:var(--bg-input);border-radius:var(--radius-sm)">
               <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
                 <div>

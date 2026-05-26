@@ -1555,10 +1555,12 @@ function selectAuthModeCard(mode) {
     c.classList.toggle('selected', isSelected)
     c.querySelector('input[type="radio"]').checked = isSelected
   })
+  document.getElementById('authModeSharedSection').hidden = mode !== 'shared'
   document.getElementById('authModeApiKeySection').hidden = mode !== 'api'
   document.getElementById('authModeOwnTeamSection').hidden = mode !== 'own_team'
   document.getElementById('authFlowResult').hidden = true
   document.getElementById('authFlowError').hidden = true
+  document.getElementById('authSharedError').hidden = true
 }
 
 function updateAuthModeUI(mode, hasApiKey) {
@@ -1576,6 +1578,53 @@ document.querySelectorAll('.auth-mode-card').forEach(card => {
   card.addEventListener('click', () => {
     selectAuthModeCard(card.dataset.mode)
   })
+})
+
+document.getElementById('authSharedApplyBtn').addEventListener('click', async () => {
+  if (!currentAgent) return
+  const btn = document.getElementById('authSharedApplyBtn')
+  const btnText = btn.querySelector('.btn-text')
+  const btnLoading = btn.querySelector('.btn-loading')
+  const errorDiv = document.getElementById('authSharedError')
+  errorDiv.hidden = true
+  btnText.hidden = true
+  btnLoading.hidden = false
+  btn.disabled = true
+  try {
+    const base = `/api/agents/${encodeURIComponent(currentAgent.name)}`
+    const saveRes = await fetch(base, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ authMode: 'shared' }),
+    })
+    if (!saveRes.ok) throw new Error('Save failed')
+    if (currentAgent.running) {
+      await fetch(`${base}/stop`, { method: 'POST' })
+      await new Promise(r => setTimeout(r, 2000))
+      const startRes = await fetch(`${base}/start`, { method: 'POST' })
+      const startData = await startRes.json()
+      if (!startRes.ok) {
+        errorDiv.textContent = startData.error || 'Agent ujrainditasa sikertelen'
+        errorDiv.hidden = false
+        return
+      }
+    }
+    showToast('Agent ujrainditva host OAuth-tal')
+    loadAgents()
+    const detailRes = await fetch(base)
+    if (detailRes.ok) {
+      currentAgent = await detailRes.json()
+      updateAuthModeUI(currentAgent.authMode || 'shared', currentAgent.hasApiKey || false)
+      updateProcessControl(currentAgent)
+    }
+  } catch {
+    errorDiv.textContent = 'Hiba az alkalmazas soran'
+    errorDiv.hidden = false
+  } finally {
+    btnText.hidden = false
+    btnLoading.hidden = true
+    btn.disabled = false
+  }
 })
 
 document.getElementById('authFlowInitBtn').addEventListener('click', async () => {
