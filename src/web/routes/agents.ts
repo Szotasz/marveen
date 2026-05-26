@@ -70,6 +70,9 @@ import {
   startAgentProcess,
   stopAgentProcess,
   getAgentProcessInfo,
+  agentSessionName,
+  sendPromptToSession,
+  capturePane,
 } from '../agent-process.js'
 import { attemptChannelMcpReconnect } from '../channel-mcp-reconnect.js'
 import { getChannelHealth } from '../channel-health-monitor.js'
@@ -955,6 +958,42 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       json(res, { ok: true })
     } else {
       json(res, { error: 'Request not found or already resolved' }, 404)
+    }
+    return true
+  }
+
+  // POST /api/agents/:name/auth/init -- trigger /login in the agent's tmux,
+  // wait a few seconds for the auth URL to appear, then scrape it back.
+  const authInitMatch = path.match(/^\/api\/agents\/([^/]+)\/auth\/init$/)
+  if (authInitMatch && method === 'POST') {
+    const name = decodeURIComponent(authInitMatch[1])
+    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!isAgentRunning(name)) { json(res, { error: 'Agent is not running' }, 400); return true }
+    const session = agentSessionName(name)
+    try {
+      sendPromptToSession(session, '/login')
+      // Wait for Claude Code to render the auth URL (typically 3-6s)
+      let authUrl: string | null = null
+      for (let i = 0; i < 12; i++) {
+        execSync('sleep 1', { timeout: 3000 })
+        const pane = capturePane(session)
+        if (!pane) continue
+        const urlMatch = pane.match(/https:\/\/console\.anthropic\.com\/[^\s"']+/)
+          || pane.match(/https:\/\/auth\.anthropic\.com\/[^\s"']+/)
+          || pane.match(/https:\/\/claude\.ai\/[^\s"']+login[^\s"']*/)
+        if (urlMatch) {
+          authUrl = urlMatch[0]
+          break
+        }
+      }
+      if (authUrl) {
+        json(res, { ok: true, authUrl })
+      } else {
+        json(res, { ok: false, error: 'Auth URL nem jelent meg 12 masodpercen belul. Probald ujra, vagy nezd a tmux session-t.' })
+      }
+    } catch (err) {
+      logger.error({ err, name }, 'Auth init failed')
+      json(res, { error: 'Auth flow inditasa sikertelen' }, 500)
     }
     return true
   }

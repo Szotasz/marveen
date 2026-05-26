@@ -1306,29 +1306,65 @@
             </small>
           </div>
           <div class="form-group" id="authModeGroup">
-            <label>Hitelesítési mód</label>
-            <div class="auth-mode-radios" style="display:flex;gap:12px;margin:8px 0">
-              <label class="radio-label" style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
-                <input type="radio" name="authMode" value="shared" checked> Megosztott (host OAuth)
+            <label>Hitelesitesi mod</label>
+            <div class="auth-mode-cards">
+              <label class="auth-mode-card selected" data-mode="shared">
+                <input type="radio" name="authMode" value="shared" checked>
+                <div class="auth-mode-card-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+                </div>
+                <div class="auth-mode-card-body">
+                  <div class="auth-mode-card-title">Megosztott</div>
+                  <div class="auth-mode-card-desc">A host OAuth hitelesiteset hasznalja (alapertelmezett)</div>
+                </div>
               </label>
-              <label class="radio-label" style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
-                <input type="radio" name="authMode" value="own_team"> Saját Team login
+              <label class="auth-mode-card" data-mode="own_team">
+                <input type="radio" name="authMode" value="own_team">
+                <div class="auth-mode-card-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                </div>
+                <div class="auth-mode-card-body">
+                  <div class="auth-mode-card-title">Sajat Team login</div>
+                  <div class="auth-mode-card-desc">Kulon Anthropic Team login sajat OAuth-tal</div>
+                </div>
               </label>
-              <label class="radio-label" style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
-                <input type="radio" name="authMode" value="api"> API kulcs
+              <label class="auth-mode-card" data-mode="api">
+                <input type="radio" name="authMode" value="api">
+                <div class="auth-mode-card-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                </div>
+                <div class="auth-mode-card-body">
+                  <div class="auth-mode-card-title">API kulcs</div>
+                  <div class="auth-mode-card-desc">ANTHROPIC_API_KEY a vault-bol</div>
+                </div>
               </label>
             </div>
-            <div id="authModeApiKeySection" hidden style="margin-top:8px">
-              <input type="password" id="editAgentApiKey" placeholder="sk-ant-..." style="width:100%;padding:8px 10px;border-radius:var(--radius);border:1px solid var(--border);background:var(--bg-input);color:var(--text);font-family:monospace;font-size:13px">
-              <small id="authModeApiKeyStatus" style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px"></small>
+            <div id="authModeOwnTeamSection" hidden style="margin-top:12px;padding:12px 14px;background:var(--bg-input);border-radius:var(--radius-sm)">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+                <div>
+                  <div style="font-size:13px;font-weight:500;color:var(--text)">Auth-flow inditasa</div>
+                  <small style="color:var(--text-muted);font-size:12px">Az agent tmux session-jeben elinditja a <code>/login</code> parancsot es visszaadja az auth URL-t.</small>
+                </div>
+                <button class="btn-primary btn-compact" id="authFlowInitBtn">
+                  <span class="btn-text">Bejelentkezes</span>
+                  <span class="btn-loading" hidden><span class="spinner"></span></span>
+                </button>
+              </div>
+              <div id="authFlowResult" hidden style="margin-top:10px;padding:10px 12px;background:var(--bg-card);border-radius:var(--radius-sm);border:1px solid var(--border)">
+                <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px">Nyisd meg a bongeszodben:</div>
+                <div style="display:flex;align-items:center;gap:8px">
+                  <a id="authFlowUrl" href="#" target="_blank" style="font-size:13px;color:var(--accent);word-break:break-all;flex:1"></a>
+                  <button class="btn-secondary btn-compact" id="authFlowCopyBtn" style="flex-shrink:0">Masolas</button>
+                </div>
+              </div>
+              <div id="authFlowError" hidden style="margin-top:10px;font-size:12px;color:var(--danger)"></div>
             </div>
-            <div id="authModeOwnTeamHint" hidden style="margin-top:8px">
-              <small style="color:var(--text-muted);font-size:12px;line-height:1.4">
-                Az agent saját Claude Code config könyvtárat használ (claudeConfigDir az agent-config.json-ban).
-                Állítsd be a <code>claudeConfigDir</code> mezőt, majd indítsd újra az agentet, hogy a saját login-ját használja.
-              </small>
+            <div id="authModeApiKeySection" hidden style="margin-top:12px;padding:12px 14px;background:var(--bg-input);border-radius:var(--radius-sm)">
+              <div style="font-size:13px;font-weight:500;color:var(--text);margin-bottom:8px">API kulcs</div>
+              <input type="password" id="editAgentApiKey" placeholder="sk-ant-..." style="width:100%;padding:8px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-card);color:var(--text);font-family:monospace;font-size:13px">
+              <small id="authModeApiKeyStatus" style="display:block;margin-top:6px;font-size:12px"></small>
             </div>
-            <button class="btn-secondary btn-compact agent-save-section" id="saveAuthModeBtn">Mentés</button>
+            <button class="btn-secondary btn-compact agent-save-section" id="saveAuthModeBtn" style="margin-top:12px">Mentes</button>
           </div>
           <div class="form-group">
             <label for="editAgentProfile">Biztonsági profil</label>
