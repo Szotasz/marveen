@@ -993,7 +993,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       }
     } catch (err) {
       logger.error({ err, name }, 'Auth init failed')
-      json(res, { error: 'Auth flow inditasa sikertelen' }, 500)
+      json(res, { error: 'Auth flow indítása sikertelen' }, 500)
     }
     return true
   }

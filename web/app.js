@@ -1604,12 +1604,12 @@ document.getElementById('authSharedApplyBtn').addEventListener('click', async ()
       const startRes = await fetch(`${base}/start`, { method: 'POST' })
       const startData = await startRes.json()
       if (!startRes.ok) {
-        errorDiv.textContent = startData.error || 'Agent ujrainditasa sikertelen'
+        errorDiv.textContent = startData.error || 'Agent újraindítása sikertelen'
         errorDiv.hidden = false
         return
       }
     }
-    showToast('Agent ujrainditva host OAuth-tal')
+    showToast('Agent újraindítva host OAuth-tal')
     loadAgents()
     const detailRes = await fetch(base)
     if (detailRes.ok) {
@@ -1618,7 +1618,7 @@ document.getElementById('authSharedApplyBtn').addEventListener('click', async ()
       updateProcessControl(currentAgent)
     }
   } catch {
-    errorDiv.textContent = 'Hiba az alkalmazas soran'
+    errorDiv.textContent = 'Hiba az alkalmazás során'
     errorDiv.hidden = false
   } finally {
     btnText.hidden = false
@@ -1655,7 +1655,7 @@ document.getElementById('authFlowInitBtn').addEventListener('click', async () =>
       errorDiv.hidden = false
     }
   } catch {
-    errorDiv.textContent = 'Halozati hiba az auth-flow inditasakor'
+    errorDiv.textContent = 'Hálózati hiba az auth-flow indításakor'
     errorDiv.hidden = false
   } finally {
     btnText.hidden = false
@@ -1684,7 +1684,7 @@ document.getElementById('saveAuthModeBtn').addEventListener('click', async () =>
       body: JSON.stringify(payload),
     })
     if (!res.ok) throw new Error()
-    showToast('Hitelesitesi mod mentve (ujrainditás szukseges)')
+    showToast('Hitelesítési mód mentve (ujrainditás szukseges)')
     loadAgents()
     const detailRes = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`)
     if (detailRes.ok) {

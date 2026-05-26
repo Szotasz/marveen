@@ -1306,7 +1306,7 @@
             </small>
           </div>
           <div class="form-group" id="authModeGroup">
-            <label>Hitelesitesi mod</label>
+            <label>Hitelesítési mód</label>
             <div class="auth-mode-cards">
               <label class="auth-mode-card selected" data-mode="shared">
                 <input type="radio" name="authMode" value="shared" checked>
@@ -1315,7 +1315,7 @@
                 </div>
                 <div class="auth-mode-card-body">
                   <div class="auth-mode-card-title">Megosztott</div>
-                  <div class="auth-mode-card-desc">A host OAuth hitelesiteset hasznalja (alapertelmezett)</div>
+                  <div class="auth-mode-card-desc">A host OAuth hitelesiteset használja (alapértelmezett)</div>
                 </div>
               </label>
               <label class="auth-mode-card" data-mode="own_team">
@@ -1324,8 +1324,8 @@
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
                 </div>
                 <div class="auth-mode-card-body">
-                  <div class="auth-mode-card-title">Sajat Team login</div>
-                  <div class="auth-mode-card-desc">Kulon Anthropic Team login sajat OAuth-tal</div>
+                  <div class="auth-mode-card-title">Saját Team login</div>
+                  <div class="auth-mode-card-desc">Külön Anthropic Team login saját OAuth-tal</div>
                 </div>
               </label>
               <label class="auth-mode-card" data-mode="api">
@@ -1342,11 +1342,11 @@
             <div id="authModeSharedSection" hidden style="margin-top:12px;padding:12px 14px;background:var(--bg-input);border-radius:var(--radius-sm)">
               <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
                 <div>
-                  <div style="font-size:13px;font-weight:500;color:var(--text)">Host OAuth alkalmazasa</div>
-                  <small style="color:var(--text-muted);font-size:12px">Ujrainditja az agentet a host hitelesitesevel. Nincs kulon bejelentkezes.</small>
+                  <div style="font-size:13px;font-weight:500;color:var(--text)">Host OAuth alkalmazása</div>
+                  <small style="color:var(--text-muted);font-size:12px">Újraindítja az agentet a host hitelesítésével. Nincs külön bejelentkezés.</small>
                 </div>
                 <button class="btn-primary btn-compact" id="authSharedApplyBtn">
-                  <span class="btn-text">Alkalmazas</span>
+                  <span class="btn-text">Alkalmazás</span>
                   <span class="btn-loading" hidden><span class="spinner"></span></span>
                 </button>
               </div>
@@ -1355,11 +1355,11 @@
             <div id="authModeOwnTeamSection" hidden style="margin-top:12px;padding:12px 14px;background:var(--bg-input);border-radius:var(--radius-sm)">
               <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
                 <div>
-                  <div style="font-size:13px;font-weight:500;color:var(--text)">Auth-flow inditasa</div>
-                  <small style="color:var(--text-muted);font-size:12px">Az agent tmux session-jeben elinditja a <code>/login</code> parancsot es visszaadja az auth URL-t.</small>
+                  <div style="font-size:13px;font-weight:500;color:var(--text)">Auth-flow indítása</div>
+                  <small style="color:var(--text-muted);font-size:12px">Az agent tmux session-jében elindítja a <code>/login</code> parancsot és visszaadja az auth URL-t.</small>
                 </div>
                 <button class="btn-primary btn-compact" id="authFlowInitBtn">
-                  <span class="btn-text">Bejelentkezes</span>
+                  <span class="btn-text">Bejelentkezés</span>
                   <span class="btn-loading" hidden><span class="spinner"></span></span>
                 </button>
               </div>
