@@ -197,6 +197,10 @@ function resumeMarveenSession(): boolean {
     const claudeCmd = [
       'export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"',
       '&&', CLAUDE, '--continue', '--dangerously-skip-permissions',
+      // Discord plugin is not on the org-approved channels allowlist.
+      // Flag REQUIRES a tagged entry -- bare flag exits 1 with
+      // "entries must be tagged". Telegram + Slack don't need this.
+      ...(provider.type === 'discord' ? [`--dangerously-load-development-channels plugin:${provider.pluginId}`] : []),
       `--channels plugin:${provider.pluginId}`,
     ].join(' ')
     execFileSync(TMUX, ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
