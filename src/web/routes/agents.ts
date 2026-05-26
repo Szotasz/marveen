@@ -27,6 +27,8 @@ import {
   writeAgentChannelProvider,
   readAgentAuthMode,
   writeAgentAuthMode,
+  readAgentDepartment,
+  writeAgentDepartment,
   type AuthMode,
 } from '../agent-config.js'
 import {
@@ -193,6 +195,7 @@ function resolveAccessPath(name: string, provider: ChannelProviderType): string 
 interface AgentSummary {
   name: string
   displayName: string
+  department: string
   description: string
   model: string
   authMode: AuthMode
@@ -231,6 +234,7 @@ function getAgentSummary(name: string): AgentSummary {
   return {
     name,
     displayName: readAgentDisplayName(name),
+    department: readAgentDepartment(name),
     description: extractDescriptionFromClaudeMd(claudeMd),
     model: readAgentModel(name),
     authMode: readAgentAuthMode(name),
@@ -606,6 +610,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const nodes: Array<{
       id: string
       label: string
+      department: string
       role: 'main' | 'leader' | 'member'
       reportsTo: string | null
       delegatesTo: string[]
@@ -614,7 +619,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }> = []
     nodes.push({
       id: MAIN_AGENT_ID,
-      label: BOT_NAME,
+      label: readAgentDisplayName(MAIN_AGENT_ID) || BOT_NAME,
+      department: readAgentDepartment(MAIN_AGENT_ID),
       role: 'main',
       reportsTo: null,
       delegatesTo: [],
@@ -625,6 +631,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       nodes.push({
         id: agentName,
         label: readAgentDisplayName(agentName),
+        department: readAgentDepartment(agentName),
         role: team.role,
         reportsTo: team.reportsTo,
         delegatesTo: team.delegatesTo,
@@ -1040,12 +1047,13 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const configRoot = agentConfigRoot(name)
     const data = JSON.parse(body.toString()) as {
       claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string
-      authMode?: AuthMode; apiKey?: string
+      authMode?: AuthMode; apiKey?: string; department?: string
     }
     if (data.claudeMd !== undefined) atomicWriteFileSync(join(configRoot, 'CLAUDE.md'), data.claudeMd)
     if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)
     if (data.mcpJson !== undefined) atomicWriteFileSync(join(agentDir(name), '.mcp.json'), data.mcpJson)
     if (data.model !== undefined) writeAgentModel(name, data.model)
+    if (data.department !== undefined) writeAgentDepartment(name, data.department)
     if (data.authMode !== undefined) {
       writeAgentAuthMode(name, data.authMode)
       if (data.authMode === 'api' && typeof data.apiKey === 'string' && data.apiKey.trim()) {

@@ -1148,6 +1148,7 @@ async function openAgentDetail(agentName) {
   document.getElementById('agentDetailChStatus').innerHTML = `<span class="tg-status"><span class="tg-dot ${chConnected ? 'connected' : 'disconnected'}"></span>${chConnected ? 'Csatlakozva' : 'Nincs bekötve'}</span>`
 
   // Settings tab - load Ollama + DeepSeek models then set value
+  document.getElementById('editAgentDepartment').value = currentAgent.department || ''
   loadAvailableModels()
   loadOllamaModels().then(() => {
     document.getElementById('editAgentModel').value = currentAgent.model || 'claude-sonnet-4-6'
@@ -1517,6 +1518,22 @@ async function loadAvailableModels() {
     if (hint) hint.style.display = deepseekModels.length === 0 ? 'block' : 'none'
   } catch { /* dashboard not available */ }
 }
+
+document.getElementById('saveDepartmentBtn').addEventListener('click', async () => {
+  if (!currentAgent || currentAgent.role === 'main') return
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ department: document.getElementById('editAgentDepartment').value.trim() }),
+    })
+    if (!res.ok) throw new Error()
+    currentAgent.department = document.getElementById('editAgentDepartment').value.trim()
+    showToast('Szakterület mentve')
+    loadAgents()
+    if (document.getElementById('teamGraph')) loadTeamGraph()
+  } catch { showToast('Hiba a mentés során') }
+})
 
 document.getElementById('saveModelBtn').addEventListener('click', async () => {
   if (!currentAgent || currentAgent.role === 'main') return
@@ -6418,9 +6435,13 @@ function renderTeamGraph(container, data) {
     const avatarUrl = node.id === mainAgentId
       ? `/api/marveen/avatar?t=${Date.now()}`
       : `/api/agents/${encodeURIComponent(node.id)}/avatar?t=${Date.now()}`
+    const deptHtml = node.department
+      ? `<div class="team-node-dept">${escapeHtml(node.department)}</div>`
+      : ''
     div.innerHTML = `
       <div class="team-node-avatar"><img src="${avatarUrl}" alt="${escapeHtml(node.label || node.id)}" onerror="this.style.display='none'"></div>
       <div class="team-node-name">${escapeHtml(node.label || node.id)}</div>
+      ${deptHtml}
       <div class="team-node-meta">${escapeHtml(roleLabel)}</div>
       <div class="team-node-meta">${running}</div>
     `

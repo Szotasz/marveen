@@ -91,6 +91,24 @@ export function writeAgentDisplayName(name: string, displayName: string): void {
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
+export function readAgentDepartment(name: string): string {
+  const configPath = join(agentConfigRoot(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}'))
+    const raw = typeof config.department === 'string' ? config.department.trim() : ''
+    if (raw) return raw
+  } catch { /* fall through */ }
+  return ''
+}
+
+export function writeAgentDepartment(name: string, department: string): void {
+  const configPath = join(agentConfigRoot(name), 'agent-config.json')
+  let config: Record<string, unknown> = {}
+  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  config.department = department
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
 export function readAgentSecurityProfile(name: string): string {
   const configPath = join(agentDir(name), 'agent-config.json')
   try {

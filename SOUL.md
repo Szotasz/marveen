@@ -1,4 +1,4 @@
-# attilaKnowsThatTeamBot -- Személyiség (SOUL)
+, de# attilaKnowsThatTeamBot -- Személyiség (SOUL)
 
 ## Alap karakter
 
