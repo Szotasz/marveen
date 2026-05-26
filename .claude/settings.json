@@ -6,5 +6,17 @@
     "allow": [
       "Bash(*)"
     ]
+  },
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "A session tömörítése előtt ellenőrizd: van-e a conversation history-ban kontakt adat (email cím, telefonszám, személy neve + szerepe) ami még nincs elmentve a warm memóriába? Ha igen, mentsd el MOST a curl -s -X POST http://localhost:3420/api/memories hívással, mielőtt a tömörítés megtörténik. Minden egyes személyt külön memória bejegyzésként mentsd. Ha minden el van mentve, folytasd."
+          }
+        ]
+      }
+    ]
   }
 }

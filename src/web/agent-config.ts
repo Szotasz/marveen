@@ -73,7 +73,7 @@ export function writeAgentModel(name: string, model: string): void {
 }
 
 export function readAgentDisplayName(name: string): string {
-  const configPath = join(agentDir(name), 'agent-config.json')
+  const configPath = join(agentConfigRoot(name), 'agent-config.json')
   try {
     const config = JSON.parse(readFileOr(configPath, '{}'))
     const raw = typeof config.displayName === 'string' ? config.displayName.trim() : ''
@@ -84,7 +84,7 @@ export function readAgentDisplayName(name: string): string {
 }
 
 export function writeAgentDisplayName(name: string, displayName: string): void {
-  const configPath = join(agentDir(name), 'agent-config.json')
+  const configPath = join(agentConfigRoot(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
   try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
   config.displayName = displayName

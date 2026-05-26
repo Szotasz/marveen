@@ -41,7 +41,7 @@ This repository is an AI agent orchestration framework built on Claude Code. It 
 
 ## Practical guidance
 
-- When changing runtime behavior, prefer `npm run build` + local validation.
+- When changing runtime behavior, prefer `nnézd pm run build` + local validation.
 - For TypeScript changes, run `npm run typecheck`.
 - If you add a new agent skill or scheduled task, document it in `docs/` or the relevant `seed-*` folder.
 - Treat `CLAUDE.md` as the root agent persona/instruction file for the default agent in this repo.

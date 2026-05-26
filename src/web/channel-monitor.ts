@@ -7,7 +7,6 @@ import { MAIN_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER } from '../config.js'
 import { agentDir, listAgentNames, readAgentChannelProvider } from './agent-config.js'
 import {
   agentSessionName,
-  capturePane,
   isAgentRunning,
   sendPromptToSession,
   startAgentProcess,
@@ -143,8 +142,13 @@ interface MarveenDownState {
   stageStartedAt?: number
 }
 
+// Short outages (under this threshold) skip the memory-save prompt and go
+// directly to silent session respawn — avoids injecting disruptive prompts
+// into the Boss session for routine MCP pipe drops that self-heal quickly.
+const SHORT_OUTAGE_THRESHOLD_MS = 8 * 60 * 1000
 const SAVE_WINDOW_MS = 60_000
-const MARVEEN_DOWN_CONFIRM_MS = 120_000
+// Reduce confirmation window: detect faster, recover faster.
+const MARVEEN_DOWN_CONFIRM_MS = 60_000
 let marveenSuspectFirstSeen: number | null = null
 let marveenDownState: MarveenDownState | null = null
 
@@ -234,6 +238,18 @@ function handleMarveenDown(): void {
     if (marveenDownState.softAttempts < 3 && softReconnectMarveen()) {
       marveenDownState.softAttempts += 1
       marveenDownState.lastAlertAt = now
+      return
+    }
+    // Short outage: skip memory-save prompt (avoids disruptive injection) and
+    // go directly to silent session respawn. Only trigger memory-save for
+    // prolonged outages where context loss is a real risk.
+    const outageMs = now - marveenDownState.downSince
+    if (outageMs < SHORT_OUTAGE_THRESHOLD_MS) {
+      marveenDownState.stage = 'resume'
+      marveenDownState.stageStartedAt = now
+      marveenDownState.lastAlertAt = now
+      logger.warn({ provider: providerLabel, outageMs }, 'Marveen channel plugin down -- skipping memory save (short outage), going to resume')
+      resumeMarveenSession()
       return
     }
     marveenDownState.stage = 'save'
@@ -349,7 +365,8 @@ export function startChannelPluginMonitor(): NodeJS.Timeout {
       if (t.isMarveen) {
         if (shouldEscalateMarveenDown()) handleMarveenDown()
       } else {
-        if (!agentDownSince.has(t.session)) agentDownSince.set(t.session, Date.now())
+        const isFirstDown = !agentDownSince.has(t.session)
+        if (isFirstDown) agentDownSince.set(t.session, Date.now())
         logger.warn({ agent: t.agentName, provider: t.provider }, 'Agent channel plugin down -- auto-restarting')
         try {
           stopAgentProcess(t.agentName!)
@@ -357,8 +374,12 @@ export function startChannelPluginMonitor(): NodeJS.Timeout {
           startAgentProcess(t.agentName!)
           agentLastRestart.set(t.agentName!, Date.now())
           agentDownSince.delete(t.session)
+          if (isFirstDown) {
+            sendAlert(`⚠️ ${t.agentName} channel plugin leesett -- automatikusan ujraindítottam. Ellenőrizd hogy a folyamatban lévő feladatot folytatta-e.`)
+          }
         } catch (err) {
           logger.error({ err, agent: t.agentName }, 'Failed to auto-restart agent after channel plugin down')
+          sendAlert(`🚨 ${t.agentName} channel plugin leesett és az újraindítás SIKERTELEN. Kézi beavatkozás kell: tmux attach -t ${agentSessionName(t.agentName!)}`)
         }
       }
     }
