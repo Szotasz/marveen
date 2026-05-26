@@ -85,6 +85,7 @@ function switchPage(pageId) {
   if (pageId === 'updates') loadUpdates()
   if (pageId === 'team') loadTeamGraph()
   if (pageId === 'console') loadConsolePage()
+  else stopConsolePolling()
   if (pageId === 'tokenUsage') loadTokenUsage()
 }
 
@@ -6838,7 +6839,12 @@ setInterval(pollUpdatesBadge, 5 * 60_000)
 // ============================================================
 
 let consoleRefreshTimer = null
-let currentConsoleAgent = 'marveen'
+let currentConsoleSession = 'marveen-channels'
+let currentConsoleAgentId = 'marveen'
+
+function stripAnsi(str) {
+  return str.replace(/\x1b\[[0-9;]*[mGKHFJA-Za-z]/g, '')
+}
 
 async function loadConsolePage() {
   await loadAgentConsoleList()
@@ -6852,8 +6858,9 @@ async function loadAgentConsoleList() {
     const agents = await res.json()
     const tabsDiv = document.getElementById('consoleTabs')
     tabsDiv.innerHTML = agents.map(a =>
-      `<button class="console-tab ${a.id === currentConsoleAgent ? 'active' : ''}"
+      `<button class="console-tab ${a.id === currentConsoleAgentId ? 'active' : ''}"
               data-agent="${a.id}"
+              data-session="${a.sessionName}"
               style="padding: 8px 16px; margin: 0 4px 12px 0; background: ${a.isRunning ? '#4CAF50' : '#999'};
                       color: white; border: none; cursor: pointer; border-radius: 4px; font-size: 13px;">
         ${a.displayName} ${a.isRunning ? '🟢' : '🔴'}
@@ -6862,12 +6869,15 @@ async function loadAgentConsoleList() {
 
     tabsDiv.querySelectorAll('.console-tab').forEach(btn => {
       btn.addEventListener('click', e => {
-        currentConsoleAgent = e.target.dataset.agent
+        const t = e.currentTarget
+        currentConsoleAgentId = t.dataset.agent
+        currentConsoleSession = t.dataset.session
+        tabsDiv.querySelectorAll('.console-tab').forEach(b => b.classList.remove('active'))
+        t.classList.add('active')
         loadConsoleOutput()
       })
     })
 
-    // Load initial output
     await loadConsoleOutput()
   } catch (err) {
     console.error('Agent console list error:', err)
@@ -6876,7 +6886,7 @@ async function loadAgentConsoleList() {
 
 async function loadConsoleOutput() {
   try {
-    const res = await fetch(`/api/agent-console/${encodeURIComponent(currentConsoleAgent)}`)
+    const res = await fetch(`/api/agent-console/${encodeURIComponent(currentConsoleSession)}`)
     if (!res.ok) {
       document.getElementById('consoleOutput').textContent = '[error]'
       return
@@ -6886,10 +6896,9 @@ async function loadConsoleOutput() {
     const outputDiv = document.getElementById('consoleOutput')
     const statusDiv = document.getElementById('consoleStatus')
 
-    outputDiv.textContent = data.output || '[no output]'
+    outputDiv.textContent = stripAnsi(data.output || '[no output]')
     statusDiv.textContent = data.isRunning ? '🟢 Futó' : '🔴 Leállított'
 
-    // Auto-scroll to bottom
     const container = outputDiv.parentElement
     container.scrollTop = container.scrollHeight
   } catch (err) {
@@ -6903,7 +6912,7 @@ function startConsolePolling() {
 }
 
 function stopConsolePolling() {
-  if (consoleRefreshTimer) clearInterval(consoleRefreshTimer)
+  if (consoleRefreshTimer) { clearInterval(consoleRefreshTimer); consoleRefreshTimer = null }
 }
 
 // === Init ===
