@@ -1137,6 +1137,10 @@ else
   echo -e "  ${BOLD}Dashboard:${NC} http://localhost:3420"
   echo -e "  ${DIM}(A tokenes URL-t a szerver logban talalod)${NC}"
 fi
+echo ""
+echo -e "  ${DIM}VPS/szerver eleres tavolrol:${NC}"
+echo -e "  ${DIM}  A .env fajlba ird: WEB_HOST=0.0.0.0${NC}"
+echo -e "  ${DIM}  Majd: systemctl --user restart ${DASH_UNIT}${NC}"
 echo -e "  ${BOLD}Telegram:${NC} Irj a botodnak!"
 echo ""
 echo -e "  ${DIM}Kovetkezo lepesek:${NC}"
