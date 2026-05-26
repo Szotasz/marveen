@@ -3,9 +3,9 @@ import {
   listKanbanCards, createKanbanCard, updateKanbanCard,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard,
   getKanbanComments, addKanbanComment, listKanbanProjects,
-  getKanbanCard, getChildCards, getDb,
+  getKanbanCard, getChildCards, getDb, createAgentMessage,
 } from '../../db.js'
-import { OWNER_NAME } from '../../config.js'
+import { MAIN_AGENT_ID, OWNER_NAME } from '../../config.js'
 import { listAgentNames } from '../agent-config.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
@@ -40,6 +40,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const data = JSON.parse(body.toString())
     const id = randomUUID().slice(0, 8)
     createKanbanCard({ id, ...data })
+    // Notify assigned agent if no deadline set
+    if (!data.due_date && data.assignee && listAgentNames().includes(data.assignee)) {
+      try {
+        createAgentMessage(
+          MAIN_AGENT_ID, data.assignee,
+          `Új kanban feladat lett hozzád rendelve határidő nélkül: "${data.title}" (id: ${id}). Kérdezz rá Attilán Telegramon a határidőre, majd állítsd be: curl -s -X PUT http://localhost:3420/api/kanban/${id} -H "Content-Type: application/json" -H "Authorization: Bearer $(cat store/.dashboard-token)" -d '{"due_date": UNIX_TIMESTAMP}'`
+        )
+      } catch { /* non-fatal */ }
+    }
     json(res, { ok: true, id })
     return true
   }

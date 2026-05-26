@@ -240,48 +240,53 @@ nav { display: flex; gap: 4px; }
 .team-graph {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 16px;
   align-items: center;
-  padding: 24px 0;
+  padding: 20px 8px;
+  overflow-x: auto;
+  min-width: 0;
 }
 .team-level {
   display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
+  gap: 8px;
+  flex-wrap: nowrap;
   justify-content: center;
+  align-items: flex-start;
 }
 .team-node {
   display: flex;
   flex-direction: column;
   align-items: center;
-  min-width: 160px;
-  max-width: 220px;
-  padding: 12px 14px;
+  width: 110px;
+  flex-shrink: 0;
+  padding: 8px 8px 10px;
   border-radius: var(--radius);
   background: var(--bg-card);
   border: 1px solid var(--border);
   cursor: pointer;
   transition: border-color var(--transition), transform var(--transition);
+  text-align: center;
 }
 .team-node:hover { border-color: var(--accent); transform: translateY(-1px); }
 .team-node.main { background: var(--accent-soft); border-color: var(--accent); }
 .team-node.leader { border-color: var(--accent); }
 .team-node-avatar {
-  width: 56px;
-  height: 56px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   overflow: hidden;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
   background: var(--bg-input);
+  flex-shrink: 0;
 }
 .team-node-avatar img {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
-.team-node-name { font-weight: 600; font-size: 14px; color: var(--text); margin-bottom: 2px; }
-.team-node-dept { font-size: 11px; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2px; }
-.team-node-meta { font-size: 12px; color: var(--text-muted); }
+.team-node-name { font-weight: 600; font-size: 12px; color: var(--text); margin-bottom: 2px; line-height: 1.2; }
+.team-node-dept { font-size: 10px; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2px; }
+.team-node-meta { font-size: 10px; color: var(--text-muted); line-height: 1.3; }
 .team-branch {
   display: flex;
   flex-direction: column;
@@ -289,7 +294,7 @@ nav { display: flex; gap: 4px; }
 }
 .team-connector {
   width: 2px;
-  height: 16px;
+  height: 12px;
   background: var(--border);
 }
 .team-empty {
@@ -385,17 +390,17 @@ main {
 .overview-card-meta { font-size: 12px; color: var(--text-muted); }
 
 .overview-team-graph {
-  padding: 12px 0;
-  gap: 14px;
+  padding: 8px 0;
+  gap: 10px;
 }
 .overview-team-graph .team-node {
-  min-width: 120px;
-  max-width: 160px;
-  padding: 8px 10px;
+  width: 88px;
+  padding: 6px 6px 8px;
 }
-.overview-team-graph .team-node-avatar { width: 40px; height: 40px; }
-.overview-team-graph .team-node-name { font-size: 13px; }
-.overview-team-graph .team-node-meta { font-size: 11px; }
+.overview-team-graph .team-node-avatar { width: 32px; height: 32px; margin-bottom: 4px; }
+.overview-team-graph .team-node-name { font-size: 11px; }
+.overview-team-graph .team-node-dept { font-size: 9px; }
+.overview-team-graph .team-node-meta { font-size: 9px; }
 .overview-agent {
   display: flex;
   align-items: center;
@@ -644,6 +649,8 @@ main {
   margin-left: auto;
 }
 .kanban-card-due.overdue { color: var(--danger); font-weight: 600; }
+.kanban-card-due.no-due { color: var(--danger); opacity: 0.7; }
+.kanban-no-assignee { color: var(--text-muted); opacity: 0.4; }
 
 .priority-bar {
   width: 3px;

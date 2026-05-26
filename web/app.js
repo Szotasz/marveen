@@ -232,7 +232,7 @@ function createCardEl(card) {
   const assignee = card.assignee ? kanbanAssignees.find((a) => a.name === card.assignee) : null
   const assigneeHtml = assignee
     ? `<span class="kanban-card-assignee"><span class="assignee-dot ${assignee.type}">${assignee.name[0]}</span>${escapeHtml(assignee.name)}</span>`
-    : ''
+    : `<span class="kanban-card-assignee kanban-no-assignee">—</span>`
 
   let dueHtml = ''
   if (card.due_date) {
@@ -241,6 +241,8 @@ function createCardEl(card) {
     const overdue = d < now && card.status !== 'done'
     const label = d.toLocaleDateString('hu-HU', { month: 'short', day: 'numeric' })
     dueHtml = `<span class="kanban-card-due ${overdue ? 'overdue' : ''}">${label}</span>`
+  } else {
+    dueHtml = `<span class="kanban-card-due no-due">N/A</span>`
   }
 
   const projectHtml = card.project
