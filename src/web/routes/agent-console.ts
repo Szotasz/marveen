@@ -25,7 +25,7 @@ const AGENT_INFO: Record<string, AgentInfo> = {
   },
   coder: {
     id: 'coder',
-    displayName: 'Coder',
+    displayName: 'Cody a kódmester',
     sessionName: 'agent-coder',
     isRunning: false,
   },

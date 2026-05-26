@@ -389,25 +389,27 @@ document.getElementById('saveCardBtn').addEventListener('click', async () => {
 
   try {
     if (editId) {
-      await fetch(`/api/kanban/${encodeURIComponent(editId)}`, {
+      const res = await fetch(`/api/kanban/${encodeURIComponent(editId)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       })
+      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || res.status) }
       showToast('Kártya frissítve')
     } else {
       data.status = document.getElementById('cardEditStatus').value
-      await fetch('/api/kanban', {
+      const res = await fetch('/api/kanban', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       })
+      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || res.status) }
       showToast('Kártya létrehozva')
     }
     closeModal(cardModalOverlay)
     loadKanban()
   } catch (err) {
-    showToast('Hiba a mentés során')
+    showToast(`Hiba a mentés során: ${err.message}`)
   }
 })
 
@@ -3151,18 +3153,19 @@ function renderWeekView(data) {
 }
 
 function openEditSchedule(task) {
-  // Reset expand state
-  document.getElementById('expandQuestions').hidden = true
-  document.getElementById('expandStatus').textContent = ''
-  expandAnswers = []
-
   loadScheduleAgents().then(() => {
+    resetScheduleForm()
     document.getElementById('scheduleModalTitle').textContent = 'Feladat szerkesztése'
     document.getElementById('scheduleName').value = task.name
     document.getElementById('scheduleName').disabled = true
     document.getElementById('scheduleDesc').value = task.description || ''
     document.getElementById('schedulePrompt').value = task.prompt || ''
     document.getElementById('scheduleEditName').value = task.name
+
+    // Set type (heartbeat or task; custom types fall back to task)
+    const typeEl = document.getElementById('scheduleType')
+    typeEl.value = (task.type === 'heartbeat') ? 'heartbeat' : 'task'
+    document.getElementById('heartbeatTemplateGroup').hidden = typeEl.value !== 'heartbeat'
 
     // Set agent
     const agentSel = document.getElementById('scheduleAgent')
