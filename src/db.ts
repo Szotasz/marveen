@@ -1353,3 +1353,36 @@ export function updateChannelRequestStatus(id: number, status: 'approved' | 'den
 export function updateChannelRequestName(id: number, channelName: string): void {
   db.prepare('UPDATE pending_channel_requests SET channel_name = ? WHERE id = ?').run(channelName, id)
 }
+
+// --- Telegram History ---
+
+export function saveTelegramMessage(
+  chatId: string,
+  messageId: string,
+  direction: 'in' | 'out',
+  text: string,
+  userId?: string,
+  ts?: number,
+): void {
+  const now = ts ?? Math.floor(Date.now() / 1000)
+  db.prepare(
+    `INSERT OR IGNORE INTO telegram_history (chat_id, message_id, user_id, direction, text, ts)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(chatId, messageId, userId ?? null, direction, text, now)
+}
+
+export interface TelegramHistoryRow {
+  id: number
+  chat_id: string
+  message_id: string
+  user_id: string | null
+  direction: 'in' | 'out'
+  text: string
+  ts: number
+}
+
+export function getTelegramHistory(chatId: string, limit: number = 50): TelegramHistoryRow[] {
+  return db.prepare(
+    'SELECT * FROM telegram_history WHERE chat_id = ? ORDER BY ts DESC LIMIT ?'
+  ).all(chatId, limit) as TelegramHistoryRow[]
+}

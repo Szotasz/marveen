@@ -84,6 +84,7 @@ function switchPage(pageId) {
   if (pageId === 'autonomy') loadAutonomy()
   if (pageId === 'updates') loadUpdates()
   if (pageId === 'team') loadTeamGraph()
+  if (pageId === 'console') loadConsolePage()
   if (pageId === 'tokenUsage') loadTokenUsage()
 }
 
@@ -6831,6 +6832,79 @@ document.getElementById('updatesApplyBtn').addEventListener('click', async () =>
 // the cached status even on tabs other than the Updates page.
 pollUpdatesBadge()
 setInterval(pollUpdatesBadge, 5 * 60_000)
+
+// ============================================================
+// === Agent Console ===
+// ============================================================
+
+let consoleRefreshTimer = null
+let currentConsoleAgent = 'marveen'
+
+async function loadConsolePage() {
+  await loadAgentConsoleList()
+  startConsolePolling()
+}
+
+async function loadAgentConsoleList() {
+  try {
+    const res = await fetch('/api/agent-console/agents')
+    if (!res.ok) return
+    const agents = await res.json()
+    const tabsDiv = document.getElementById('consoleTabs')
+    tabsDiv.innerHTML = agents.map(a =>
+      `<button class="console-tab ${a.id === currentConsoleAgent ? 'active' : ''}"
+              data-agent="${a.id}"
+              style="padding: 8px 16px; margin: 0 4px 12px 0; background: ${a.isRunning ? '#4CAF50' : '#999'};
+                      color: white; border: none; cursor: pointer; border-radius: 4px; font-size: 13px;">
+        ${a.displayName} ${a.isRunning ? '🟢' : '🔴'}
+      </button>`
+    ).join('')
+
+    tabsDiv.querySelectorAll('.console-tab').forEach(btn => {
+      btn.addEventListener('click', e => {
+        currentConsoleAgent = e.target.dataset.agent
+        loadConsoleOutput()
+      })
+    })
+
+    // Load initial output
+    await loadConsoleOutput()
+  } catch (err) {
+    console.error('Agent console list error:', err)
+  }
+}
+
+async function loadConsoleOutput() {
+  try {
+    const res = await fetch(`/api/agent-console/${encodeURIComponent(currentConsoleAgent)}`)
+    if (!res.ok) {
+      document.getElementById('consoleOutput').textContent = '[error]'
+      return
+    }
+    const data = await res.json()
+
+    const outputDiv = document.getElementById('consoleOutput')
+    const statusDiv = document.getElementById('consoleStatus')
+
+    outputDiv.textContent = data.output || '[no output]'
+    statusDiv.textContent = data.isRunning ? '🟢 Futó' : '🔴 Leállított'
+
+    // Auto-scroll to bottom
+    const container = outputDiv.parentElement
+    container.scrollTop = container.scrollHeight
+  } catch (err) {
+    console.error('Agent console output error:', err)
+  }
+}
+
+function startConsolePolling() {
+  if (consoleRefreshTimer) clearInterval(consoleRefreshTimer)
+  consoleRefreshTimer = setInterval(loadConsoleOutput, 2000)
+}
+
+function stopConsolePolling() {
+  if (consoleRefreshTimer) clearInterval(consoleRefreshTimer)
+}
 
 // === Init ===
 populateAvatarGrid()
