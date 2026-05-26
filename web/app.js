@@ -1021,7 +1021,7 @@ async function openMarveenDetail() {
 
 function applyMarveenReadonlyMode(readOnly) {
   const textareaIds = ['editClaudeMd', 'editSoulMd', 'editMcpJson']
-  const saveButtonIds = ['saveClaudeMdBtn', 'saveSoulMdBtn', 'saveMcpJsonBtn', 'saveModelBtn']
+  const saveButtonIds = ['saveClaudeMdBtn', 'saveSoulMdBtn', 'saveMcpJsonBtn', 'saveModelBtn', 'saveAuthModeBtn']
   for (const id of textareaIds) {
     const el = document.getElementById(id)
     if (!el) continue
@@ -1034,6 +1034,8 @@ function applyMarveenReadonlyMode(readOnly) {
     const btn = document.getElementById(id)
     if (btn) btn.hidden = readOnly
   }
+  const authModeGroup = document.getElementById('authModeGroup')
+  if (authModeGroup) authModeGroup.hidden = readOnly
   const note = document.getElementById('marveenReadonlyNote')
   if (note) note.hidden = !readOnly
 }
@@ -1154,6 +1156,7 @@ async function openAgentDetail(agentName) {
     currentAgent.securityProfile || 'default',
   )
   renderTeamEditor(currentAgent, agents)
+  updateAuthModeUI(currentAgent.authMode || 'shared', currentAgent.hasApiKey || false)
   document.getElementById('editClaudeMd').value = currentAgent.claudeMd || currentAgent.content || ''
   document.getElementById('editSoulMd').value = currentAgent.soulMd || ''
   document.getElementById('editMcpJson').value = currentAgent.mcpJson || ''
@@ -1541,6 +1544,55 @@ document.getElementById('saveProfileBtn').addEventListener('click', async () => 
     showToast(body.requiresRestart ? 'Profil mentve (újraindítás szükséges)' : 'Profil mentve')
     loadAgents()
   } catch { showToast('Hiba a profil mentésekor') }
+})
+
+// === Auth Mode ===
+function updateAuthModeUI(mode, hasApiKey) {
+  document.querySelectorAll('input[name="authMode"]').forEach(r => { r.checked = r.value === mode })
+  document.getElementById('authModeApiKeySection').hidden = mode !== 'api'
+  document.getElementById('authModeOwnTeamHint').hidden = mode !== 'own_team'
+  const statusEl = document.getElementById('authModeApiKeyStatus')
+  const keyInput = document.getElementById('editAgentApiKey')
+  keyInput.value = ''
+  if (mode === 'api') {
+    statusEl.textContent = hasApiKey ? 'API kulcs konfigurálva a vault-ban' : 'Nincs API kulcs beállítva'
+    statusEl.style.color = hasApiKey ? 'var(--success)' : 'var(--warning)'
+  }
+}
+
+document.querySelectorAll('input[name="authMode"]').forEach(radio => {
+  radio.addEventListener('change', (e) => {
+    const mode = e.target.value
+    document.getElementById('authModeApiKeySection').hidden = mode !== 'api'
+    document.getElementById('authModeOwnTeamHint').hidden = mode !== 'own_team'
+  })
+})
+
+document.getElementById('saveAuthModeBtn').addEventListener('click', async () => {
+  if (!currentAgent || currentAgent.role === 'main') return
+  const mode = document.querySelector('input[name="authMode"]:checked')?.value || 'shared'
+  const payload = { authMode: mode }
+  if (mode === 'api') {
+    const key = document.getElementById('editAgentApiKey').value.trim()
+    if (key) payload.apiKey = key
+  }
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!res.ok) throw new Error()
+    showToast('Hitelesítési mód mentve (újraindítás szükséges)')
+    loadAgents()
+    // Refresh detail to update hasApiKey status
+    const detailRes = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`)
+    if (detailRes.ok) {
+      const updated = await detailRes.json()
+      currentAgent = updated
+      updateAuthModeUI(updated.authMode || 'shared', updated.hasApiKey || false)
+    }
+  } catch { showToast('Hiba a mentés során') }
 })
 
 document.getElementById('saveClaudeMdBtn').addEventListener('click', async () => {

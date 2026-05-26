@@ -1241,6 +1241,31 @@
               DeepSeek-V4-Pro nincs konfigurálva. <a href="#" id="deepseekConfigLink">API kulcs hozzáadása</a> a Vault oldalon.
             </small>
           </div>
+          <div class="form-group" id="authModeGroup">
+            <label>Hitelesítési mód</label>
+            <div class="auth-mode-radios" style="display:flex;gap:12px;margin:8px 0">
+              <label class="radio-label" style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
+                <input type="radio" name="authMode" value="shared" checked> Megosztott (host OAuth)
+              </label>
+              <label class="radio-label" style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
+                <input type="radio" name="authMode" value="own_team"> Saját Team login
+              </label>
+              <label class="radio-label" style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
+                <input type="radio" name="authMode" value="api"> API kulcs
+              </label>
+            </div>
+            <div id="authModeApiKeySection" hidden style="margin-top:8px">
+              <input type="password" id="editAgentApiKey" placeholder="sk-ant-..." style="width:100%;padding:8px 10px;border-radius:var(--radius);border:1px solid var(--border);background:var(--bg-input);color:var(--text);font-family:monospace;font-size:13px">
+              <small id="authModeApiKeyStatus" style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px"></small>
+            </div>
+            <div id="authModeOwnTeamHint" hidden style="margin-top:8px">
+              <small style="color:var(--text-muted);font-size:12px;line-height:1.4">
+                Az agent saját Claude Code config könyvtárat használ (claudeConfigDir az agent-config.json-ban).
+                Állítsd be a <code>claudeConfigDir</code> mezőt, majd indítsd újra az agentet, hogy a saját login-ját használja.
+              </small>
+            </div>
+            <button class="btn-secondary btn-compact agent-save-section" id="saveAuthModeBtn">Mentés</button>
+          </div>
           <div class="form-group">
             <label for="editAgentProfile">Biztonsági profil</label>
             <select id="editAgentProfile"></select>

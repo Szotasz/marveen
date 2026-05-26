@@ -10,7 +10,7 @@ import {
   decideSubmitFollowup,
   shouldClearTruncatedPreamble,
 } from '../pane-state.js'
-import { agentDir, readAgentModel, readAgentSecurityProfile, readAgentClaudeConfigDir, readAgentChannelProvider } from './agent-config.js'
+import { agentDir, readAgentModel, readAgentSecurityProfile, readAgentClaudeConfigDir, readAgentChannelProvider, readAgentAuthMode } from './agent-config.js'
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { CHANNEL_PROVIDER } from '../config.js'
@@ -67,19 +67,24 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
     } catch { /* ok */ }
 
     const model = readAgentModel(name)
+    const authMode = readAgentAuthMode(name)
     const isClaude = model.startsWith('claude-')
     const isDeepseek = model.startsWith('deepseek-')
     const isOllama = !isClaude && !isDeepseek
     const ollamaEnv = isOllama ? `export ANTHROPIC_AUTH_TOKEN=ollama && export ANTHROPIC_BASE_URL=${OLLAMA_URL} && ` : ''
-    // DeepSeek's /anthropic base URL accepts the literal Anthropic SDK
-    // request format, so Claude Code talks to it as if it were Anthropic.
-    // We pull the API key from the encrypted vault (entry id: DEEPSEEK_API_KEY)
-    // rather than process.env so operators can rotate it from the dashboard
-    // without restarting. We do NOT fail-fast on missing key here -- a 401
-    // from the upstream gives a clearer signal in the agent's tmux pane
-    // than a pre-flight error string the operator would have to dig out of logs.
     const deepseekKey = isDeepseek ? (getSecret('DEEPSEEK_API_KEY') ?? '') : ''
     const deepseekEnv = isDeepseek ? `export ANTHROPIC_AUTH_TOKEN="${deepseekKey}" && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && ` : ''
+    // When authMode is 'api', the agent uses its own ANTHROPIC_API_KEY from
+    // the vault instead of the host's OAuth. The vault entry ID follows the
+    // convention `agent-{name}-api-key`. We inject it as an env var so Claude
+    // Code picks it up without needing OAuth credentials at all.
+    let apiKeyEnv = ''
+    if (isClaude && authMode === 'api') {
+      const agentApiKey = getSecret(`agent-${name}-api-key`) ?? ''
+      if (agentApiKey) {
+        apiKeyEnv = `export ANTHROPIC_API_KEY="${agentApiKey}" && `
+      }
+    }
     // Apply security profile: write allow/deny list into settings.json, and
     // skip the dangerously-skip-permissions flag for strict profiles so
     // Claude Code enforces the list rather than bypassing it.
@@ -109,7 +114,7 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
     // Slack plugin is third-party; its "not on approved allowlist" check is
     // bypassed via `allowedChannelPlugins` in /Library/Application Support/ClaudeCode/managed-settings.json.
     const auditLogEnv = agentProvider === 'slack' ? ` && export SLACK_AUDIT_LOG="${agentChannelDir}/audit.jsonl"` : ''
-    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && export ${stateEnvVar}="${agentChannelDir}"${auditLogEnv} && ${claudeConfigEnv}${ollamaEnv}${deepseekEnv}cd "${dir}" && ${CLAUDE} ${continueFlag}${skipFlag}--model ${model} --channels plugin:${provider.pluginId}`
+    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && export ${stateEnvVar}="${agentChannelDir}"${auditLogEnv} && ${apiKeyEnv}${claudeConfigEnv}${ollamaEnv}${deepseekEnv}cd "${dir}" && ${CLAUDE} ${continueFlag}${skipFlag}--model ${model} --channels plugin:${provider.pluginId}`
     execSync(
       `${TMUX} new-session -d -s ${session} "${cmd}"`,
       { timeout: 10000 }

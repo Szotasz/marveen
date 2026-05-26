@@ -6,7 +6,7 @@ import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID, BOT_NAME } from '../../config.js'
 import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus } from '../../db.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
-import { getSecret } from '../vault.js'
+import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
 import {
   agentDir,
   agentConfigRoot,
@@ -25,6 +25,9 @@ import {
   isKnownAgent,
   readAgentChannelProvider,
   writeAgentChannelProvider,
+  readAgentAuthMode,
+  writeAgentAuthMode,
+  type AuthMode,
 } from '../agent-config.js'
 import {
   readAgentTeam,
@@ -183,6 +186,7 @@ interface AgentSummary {
   displayName: string
   description: string
   model: string
+  authMode: AuthMode
   securityProfile: string
   team: TeamConfig
   hasTelegram: boolean
@@ -199,6 +203,7 @@ interface AgentDetail extends AgentSummary {
   mcpJson: string
   skills: { name: string; hasSkillMd: boolean }[]
   hasAvatar: boolean
+  hasApiKey: boolean
 }
 
 function getAgentSummary(name: string): AgentSummary {
@@ -217,6 +222,7 @@ function getAgentSummary(name: string): AgentSummary {
     displayName: readAgentDisplayName(name),
     description: extractDescriptionFromClaudeMd(claudeMd),
     model: readAgentModel(name),
+    authMode: readAgentAuthMode(name),
     securityProfile: readAgentSecurityProfile(name),
     team: readAgentTeam(name),
     hasTelegram: tg.hasTelegram,
@@ -256,6 +262,7 @@ function getAgentDetail(name: string): AgentDetail {
     mcpJson,
     skills,
     hasAvatar: findAvatarForAgent(name) !== null,
+    hasApiKey: getSecret(`agent-${name}-api-key`) !== null,
   }
 }
 
@@ -983,11 +990,23 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (!isKnownAgent(name)) { json(res, { error: 'Agent not found' }, 404); return true }
     const body = await readBody(req)
     const configRoot = agentConfigRoot(name)
-    const data = JSON.parse(body.toString()) as { claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string }
+    const data = JSON.parse(body.toString()) as {
+      claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string
+      authMode?: AuthMode; apiKey?: string
+    }
     if (data.claudeMd !== undefined) atomicWriteFileSync(join(configRoot, 'CLAUDE.md'), data.claudeMd)
     if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)
     if (data.mcpJson !== undefined) atomicWriteFileSync(join(agentDir(name), '.mcp.json'), data.mcpJson)
     if (data.model !== undefined) writeAgentModel(name, data.model)
+    if (data.authMode !== undefined) {
+      writeAgentAuthMode(name, data.authMode)
+      if (data.authMode === 'api' && typeof data.apiKey === 'string' && data.apiKey.trim()) {
+        setSecret(`agent-${name}-api-key`, `API key for agent ${name}`, data.apiKey.trim())
+      }
+      if (data.authMode !== 'api') {
+        deleteSecret(`agent-${name}-api-key`)
+      }
+    }
     json(res, { ok: true })
     return true
   }

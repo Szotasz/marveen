@@ -208,6 +208,30 @@ export function writeAgentChannelProvider(name: string, provider: string): void 
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
+export type AuthMode = 'shared' | 'own_team' | 'api'
+
+const VALID_AUTH_MODES = new Set<AuthMode>(['shared', 'own_team', 'api'])
+
+export function readAgentAuthMode(name: string): AuthMode {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}'))
+    if (typeof config.authMode === 'string' && VALID_AUTH_MODES.has(config.authMode as AuthMode)) {
+      return config.authMode as AuthMode
+    }
+  } catch { /* fall through */ }
+  return 'shared'
+}
+
+export function writeAgentAuthMode(name: string, mode: AuthMode): void {
+  if (!VALID_AUTH_MODES.has(mode)) return
+  const configPath = join(agentDir(name), 'agent-config.json')
+  let config: Record<string, unknown> = {}
+  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  config.authMode = mode
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
 export function writeAgentSecurityProfile(name: string, profileId: string): void {
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
