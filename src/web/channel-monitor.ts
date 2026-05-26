@@ -22,7 +22,7 @@ const CLAUDE = resolveFromPath('claude')
 
 function resolveAgentProvider(name: string): ChannelProviderType {
   const perAgent = readAgentChannelProvider(name)
-  if (perAgent === 'slack' || perAgent === 'telegram') return perAgent
+  if (perAgent === 'slack' || perAgent === 'telegram' || perAgent === 'discord') return perAgent
   return CHANNEL_PROVIDER
 }
 
@@ -76,6 +76,8 @@ function hasChannelPluginAlive(claudePid: number, providerType: ChannelProviderT
       if (providerType === 'telegram') {
         if (cmd.includes('/telegram/') && cmd.includes('bun')) return true
         if (/\bbun\b/.test(cmd) && cmd.includes('server.ts')) return true
+      } else if (providerType === 'discord') {
+        if (cmd.includes('discord') && (cmd.includes('node') || cmd.includes('bun'))) return true
       } else {
         if (cmd.includes('slack') && cmd.includes('node')) return true
         if (cmd.includes('slack-channel') && (cmd.includes('bun') || cmd.includes('node'))) return true
@@ -97,7 +99,9 @@ function hasChannelPluginAlive(claudePid: number, providerType: ChannelProviderT
           const cmd = cmdOf.get(pid) || ''
           const isRelevant = providerType === 'telegram'
             ? (cmd.includes('bun') || cmd.includes('server.ts') || cmd.includes('telegram'))
-            : (cmd.includes('node') || cmd.includes('slack'))
+            : providerType === 'discord'
+              ? (cmd.includes('discord') && (cmd.includes('node') || cmd.includes('bun')))
+              : (cmd.includes('node') || cmd.includes('slack'))
           if (isRelevant) {
             logger.debug({ claudePid, orphanPid: pid, agentName, providerType }, 'Channel plugin alive via bot.pid (reparented)')
             return true
@@ -116,6 +120,20 @@ function hasChannelPluginAlive(claudePid: number, providerType: ChannelProviderT
           try {
             process.kill(pid, 0)
             logger.debug({ claudePid, slackPid: pid, agentName }, 'Slack plugin alive via process scan')
+            return true
+          } catch { /* gone */ }
+        }
+      }
+    }
+
+    // Discord: same heuristic -- no bot.pid, check for discord node/bun process.
+    if (providerType === 'discord') {
+      for (const [pid, cmd] of cmdOf) {
+        if (seen.has(pid)) continue
+        if (cmd.includes('discord') && (cmd.includes('node') || cmd.includes('bun'))) {
+          try {
+            process.kill(pid, 0)
+            logger.debug({ claudePid, discordPid: pid, agentName }, 'Discord plugin alive via process scan')
             return true
           } catch { /* gone */ }
         }

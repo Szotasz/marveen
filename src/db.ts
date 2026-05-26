@@ -372,6 +372,47 @@ export function initDatabase(): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_bg_tasks_agent ON background_tasks(agent_id, status)`)
 
+  // --- Token Usage Monitoring ---
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS token_usage (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      timestamp INTEGER NOT NULL,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+      content_preview TEXT,
+      tool_name TEXT,
+      task_title TEXT,
+      project TEXT
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_token_usage_agent ON token_usage(agent)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_token_usage_ts ON token_usage(timestamp)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_token_usage_agent_ts ON token_usage(agent, timestamp)`)
+  // Deduplicate existing rows before creating unique index
+  try {
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_token_usage_dedup ON token_usage(agent, session_id, timestamp, input_tokens, output_tokens)`)
+  } catch {
+    db.exec(`
+      DELETE FROM token_usage WHERE id NOT IN (
+        SELECT MIN(id) FROM token_usage
+        GROUP BY agent, session_id, timestamp, input_tokens, output_tokens
+      )
+    `)
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_token_usage_dedup ON token_usage(agent, session_id, timestamp, input_tokens, output_tokens)`)
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS token_usage_cursors (
+      file_path TEXT PRIMARY KEY,
+      last_line INTEGER NOT NULL DEFAULT 0,
+      last_size INTEGER NOT NULL DEFAULT 0
+    )
+  `)
+
   // One-shot migration from the old JSON file (which had a read-modify-write
   // race). Import rows if they exist, then rename the file so we don't keep
   // re-importing. Wrapped in a transaction so a crash mid-import is safe.

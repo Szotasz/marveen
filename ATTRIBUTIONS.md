@@ -26,6 +26,10 @@ A Marveen saját licensze: [LICENSE](./LICENSE) (MIT).
 
 ## Koncepcionális hatás (nem becsomagolt kód)
 
+### Mark Kashef -- Claude Code-alapú AI-asszisztens architektúra
+- **Forrás**: https://youtube.com/@mark_kashef
+- **Hol a Marveen-ben**: a Marveen alapkoncepciója (Claude Code mint folyamatosan futó AI-asszisztens, saját Telegram-csatornával, tmux-session-alapú headless működéssel, scheduled-task-okkal). A közösség a megközelítést "Claude Claw" / "ClaudeClaw" néven hivatkozza; a Marveen első verziója is ezen a néven indult (2026-04-08), nem fork, hanem a koncepció alapján nulláról felépített saját implementáció. A névváltás Marveen-re azután történt, hogy elegendő saját megoldás (memory tiers, kanban, channel-plugin, autonómia-config, multi-agent inter-agent messaging) került be ahhoz, hogy a projekt önálló identitást viseljen.
+
 ### Karpathy CLAUDE.md alapelvek
 - **Forrás**: Andrej Karpathy CLAUDE.md útmutatása (publikus)
 - **Hol a Marveen-ben**: a saját gyökér `CLAUDE.md` mintareferenciája. Nem másoltunk kódot; a felépítés és a szabály-stílus Karpathy mintájából inspirálódott.

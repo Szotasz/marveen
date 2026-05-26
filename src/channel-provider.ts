@@ -5,11 +5,12 @@ import { homedir } from 'node:os'
 import { logger } from './logger.js'
 import { formatForTelegram, splitMessage } from './format.js'
 
-export type ChannelProviderType = 'telegram' | 'slack'
+export type ChannelProviderType = 'telegram' | 'slack' | 'discord'
 
 export interface ChannelProvider {
   readonly type: ChannelProviderType
   readonly pluginId: string
+  readonly pluginPaneId: string
   readonly envKeys: string[]
   readonly stateDir: string
   readonly chatIdFormat: string
@@ -51,6 +52,7 @@ function telegramHttpPost(token: string, method: string, body: string, contentTy
 const telegramProvider: ChannelProvider = {
   type: 'telegram',
   pluginId: 'telegram@claude-plugins-official',
+  pluginPaneId: 'plugin:telegram:telegram',
   envKeys: ['TELEGRAM_BOT_TOKEN'],
   stateDir: 'telegram',
   chatIdFormat: 'numeric (e.g. 1268077055)',
@@ -131,6 +133,7 @@ export function formatForSlackMrkdwn(text: string): string {
 const slackProvider: ChannelProvider = {
   type: 'slack',
   pluginId: 'slack-channel@marveen-marketplace',
+  pluginPaneId: 'plugin:slack-channel:marveen-marketplace',
   envKeys: ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN'],
   stateDir: 'slack',
   chatIdFormat: 'Slack channel/DM ID (e.g. C01234ABCDE)',
@@ -223,6 +226,89 @@ const slackProvider: ChannelProvider = {
   splitMessage: (text) => splitMessage(text, SLACK_MAX_MESSAGE_LENGTH),
 }
 
+// -- Discord implementation --
+
+const DISCORD_MAX_MESSAGE_LENGTH = 2000
+
+function formatForDiscord(text: string): string {
+  // Discord natively renders GFM markdown (bold, italic, code blocks, links).
+  // Only convert task-list checkboxes which Discord does not support.
+  let result = text
+  result = result.replace(/^- \[ \]/gm, '☐')
+  result = result.replace(/^- \[x\]/gm, '☑')
+  return result
+}
+
+const discordProvider: ChannelProvider = {
+  type: 'discord',
+  pluginId: 'discord@claude-plugins-official',
+  pluginPaneId: 'plugin:discord:discord',
+  envKeys: ['DISCORD_BOT_TOKEN'],
+  stateDir: 'discord',
+  chatIdFormat: 'Discord channel ID (e.g. 1234567890123456789)',
+
+  async sendMessage(token, chatId, text) {
+    const resp = await fetch(`https://discord.com/api/v10/channels/${chatId}/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bot ${token}`,
+      },
+      body: JSON.stringify({ content: text }),
+    })
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => '')
+      throw new Error(`Discord API ${resp.status}: ${body.slice(0, 200)}`)
+    }
+  },
+
+  async sendPhoto(token, chatId, photoPath, caption) {
+    const fileData = readFileSync(photoPath)
+    const filename = photoPath.split('/').pop() || 'image.png'
+    const boundary = '----FormBoundary' + Date.now()
+    const parts: Buffer[] = []
+    const payloadJson = JSON.stringify({
+      content: caption || undefined,
+      attachments: [{ id: '0', filename }],
+    })
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n${payloadJson}\r\n`))
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="files[0]"; filename="${filename}"\r\nContent-Type: application/octet-stream\r\n\r\n`))
+    parts.push(fileData)
+    parts.push(Buffer.from(`\r\n--${boundary}--\r\n`))
+    const body = Buffer.concat(parts)
+    const resp = await fetch(`https://discord.com/api/v10/channels/${chatId}/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        'Authorization': `Bot ${token}`,
+      },
+      body,
+    })
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '')
+      throw new Error(`Discord sendPhoto ${resp.status}: ${text.slice(0, 200)}`)
+    }
+  },
+
+  async validateToken(token) {
+    try {
+      const resp = await fetch('https://discord.com/api/v10/users/@me', {
+        headers: { 'Authorization': `Bot ${token}` },
+      })
+      const data = await resp.json() as { id?: string; username?: string }
+      if (resp.ok && data.username) {
+        return { ok: true, botName: data.username }
+      }
+      return { ok: false, error: 'Invalid bot token' }
+    } catch {
+      return { ok: false, error: 'Failed to connect to Discord API' }
+    }
+  },
+
+  formatMessage: formatForDiscord,
+  splitMessage: (text) => splitMessage(text, DISCORD_MAX_MESSAGE_LENGTH),
+}
+
 // -- Slack App manifest --
 
 const SLACK_BOT_SCOPES = [
@@ -291,11 +377,13 @@ export function getSlackAppSetupInstructions(): string[] {
 
 export function getChannelToken(provider: ChannelProviderType, env: Record<string, string>): string {
   if (provider === 'slack') return env['SLACK_BOT_TOKEN'] ?? ''
+  if (provider === 'discord') return env['DISCORD_BOT_TOKEN'] ?? ''
   return env['TELEGRAM_BOT_TOKEN'] ?? ''
 }
 
 export function getChannelChatId(provider: ChannelProviderType, env: Record<string, string>): string {
   if (provider === 'slack') return env['SLACK_CHANNEL_ID'] ?? ''
+  if (provider === 'discord') return env['DISCORD_CHANNEL_ID'] ?? ''
   return env['ALLOWED_CHAT_ID'] ?? ''
 }
 
@@ -304,6 +392,7 @@ export function getChannelChatId(provider: ChannelProviderType, env: Record<stri
 const providers: Record<ChannelProviderType, ChannelProvider> = {
   telegram: telegramProvider,
   slack: slackProvider,
+  discord: discordProvider,
 }
 
 export function getProvider(type: ChannelProviderType): ChannelProvider {
@@ -312,6 +401,7 @@ export function getProvider(type: ChannelProviderType): ChannelProvider {
 
 export function getProviderType(envValue: string | undefined): ChannelProviderType {
   if (envValue === 'slack') return 'slack'
+  if (envValue === 'discord') return 'discord'
   return 'telegram'
 }
 
@@ -319,7 +409,8 @@ export function channelStateDir(provider: ChannelProviderType, agentDir?: string
   const base = agentDir
     ? join(agentDir, '.claude', 'channels')
     : join(homedir(), '.claude', 'channels')
-  return join(base, provider === 'slack' ? 'slack' : 'telegram')
+  const subdir = provider === 'slack' ? 'slack' : provider === 'discord' ? 'discord' : 'telegram'
+  return join(base, subdir)
 }
 
 export function readChannelToken(provider: ChannelProviderType, envFilePath: string): string | null {
@@ -330,7 +421,7 @@ export function readChannelToken(provider: ChannelProviderType, envFilePath: str
   } catch {
     return null
   }
-  const key = provider === 'slack' ? 'SLACK_BOT_TOKEN' : 'TELEGRAM_BOT_TOKEN'
+  const key = provider === 'slack' ? 'SLACK_BOT_TOKEN' : provider === 'discord' ? 'DISCORD_BOT_TOKEN' : 'TELEGRAM_BOT_TOKEN'
   const match = content.match(new RegExp(`${key}=(.+)`))
   return match ? match[1].trim() : null
 }

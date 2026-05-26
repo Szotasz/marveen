@@ -51,6 +51,7 @@ vi.mock('../web/channel-mcp-reconnect.js', () => ({
 vi.mock('../channel-provider.js', () => ({
   getProvider: () => ({
     pluginId: 'telegram@claude-plugins-official',
+    pluginPaneId: 'plugin:telegram:telegram',
   }),
 }))
 
@@ -83,7 +84,7 @@ describe('startChannelHealthMonitor', () => {
 
   it('does not reconnect when pane shows no failure', () => {
     const timer = startChannelHealthMonitor()
-    mockCapturePane.mockReturnValue('normal pane content with telegram@claude-plugins-official active')
+    mockCapturePane.mockReturnValue('normal pane content with plugin:telegram:telegram active')
 
     vi.advanceTimersByTime(46_000)
 
@@ -95,7 +96,7 @@ describe('startChannelHealthMonitor', () => {
     mockReconnect.mockReturnValue({ ok: false, message: 'test' })
     const timer = startChannelHealthMonitor()
     mockCapturePane.mockReturnValue(
-      'plugin:telegram@claude-plugins-official  ✘ failed\nsome other output',
+      'plugin:telegram:telegram  ✘ failed\nsome other output',
     )
 
     vi.advanceTimersByTime(46_000)

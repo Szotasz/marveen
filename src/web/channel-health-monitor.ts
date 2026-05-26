@@ -32,8 +32,8 @@ function getBackoffMs(attempt: number): number {
   return BACKOFF_BASE_MS * Math.pow(BACKOFF_MULTIPLIER, attempt)
 }
 
-function isPluginFailedInPane(pane: string, pluginId: string): boolean {
-  if (!pane.includes(pluginId)) return false
+function isPluginFailedInPane(pane: string, pluginPaneId: string): boolean {
+  if (!pane.includes(pluginPaneId)) return false
   return PLUGIN_FAILED_RX.test(pane)
 }
 
@@ -72,7 +72,7 @@ function checkAgent(agentName: string, session: string): void {
   const providerType = resolveAgentProviderType(agentName)
   const provider = getProvider(providerType)
 
-  if (!isPluginFailedInPane(pane, provider.pluginId)) {
+  if (!isPluginFailedInPane(pane, provider.pluginPaneId)) {
     if (state) {
       logger.info({ agentName, provider: providerType }, 'channel-health-monitor: plugin recovered')
       reconnectState.delete(agentName)

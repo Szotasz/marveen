@@ -45,6 +45,9 @@ vi.mock('../channel-provider.js', () => ({
     pluginId: type === 'slack'
       ? 'slack-channel@marveen-marketplace'
       : 'telegram@claude-plugins-official',
+    pluginPaneId: type === 'slack'
+      ? 'plugin:slack-channel:marveen-marketplace'
+      : 'plugin:telegram:telegram',
   }),
 }))
 
@@ -83,7 +86,7 @@ describe('attemptChannelMcpReconnect', () => {
   it('returns ok:true when plugin submenu is found on first Up', () => {
     mockCapturePane
       .mockReturnValueOnce('/mcp menu content')
-      .mockReturnValueOnce('some content with telegram@claude-plugins-official listed')
+      .mockReturnValueOnce('some content with plugin:telegram:telegram listed')
 
     const result = attemptChannelMcpReconnect('marveen')
 
@@ -101,7 +104,7 @@ describe('attemptChannelMcpReconnect', () => {
       .mockReturnValueOnce('/mcp menu')
       .mockReturnValueOnce('no match')
       .mockReturnValueOnce('no match')
-      .mockReturnValueOnce('telegram@claude-plugins-official here')
+      .mockReturnValueOnce('plugin:telegram:telegram here')
 
     const result = attemptChannelMcpReconnect('marveen')
 
@@ -133,7 +136,7 @@ describe('attemptChannelMcpReconnect', () => {
   it('uses correct session for sub-agents', () => {
     mockCapturePane
       .mockReturnValueOnce('/mcp')
-      .mockReturnValueOnce('slack-channel@marveen-marketplace found')
+      .mockReturnValueOnce('plugin:slack-channel:marveen-marketplace found')
 
     attemptChannelMcpReconnect('slacker')
 

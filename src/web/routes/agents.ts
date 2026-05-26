@@ -6,7 +6,7 @@ import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID, BOT_NAME } from '../../config.js'
 import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus } from '../../db.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
-import { getSecret } from '../vault.js'
+import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
 import {
   agentDir,
   agentConfigRoot,
@@ -25,6 +25,9 @@ import {
   isKnownAgent,
   readAgentChannelProvider,
   writeAgentChannelProvider,
+  readAgentAuthMode,
+  writeAgentAuthMode,
+  type AuthMode,
 } from '../agent-config.js'
 import {
   readAgentTeam,
@@ -35,6 +38,7 @@ import {
 } from '../agent-team.js'
 import {
   readAgentTelegramConfig,
+  readAgentDiscordConfig,
   readMarveenTelegramConfig,
   sendAvatarChangeMessage,
   sendWelcomeMessage,
@@ -66,6 +70,9 @@ import {
   startAgentProcess,
   stopAgentProcess,
   getAgentProcessInfo,
+  agentSessionName,
+  sendPromptToSession,
+  capturePane,
 } from '../agent-process.js'
 import { attemptChannelMcpReconnect } from '../channel-mcp-reconnect.js'
 import { getChannelHealth } from '../channel-health-monitor.js'
@@ -78,7 +85,7 @@ import { parseMultipart } from '../multipart.js'
 import { readBody, json, serveFile } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
-const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack'])
+const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'discord'])
 
 function parseChannelProvider(raw: string): ChannelProviderType | null {
   if (VALID_PROVIDERS.has(raw as ChannelProviderType)) return raw as ChannelProviderType
@@ -88,7 +95,7 @@ function parseChannelProvider(raw: string): ChannelProviderType | null {
 // Match both new /channels/:provider/ and legacy /telegram/ URL patterns.
 // Returns [agentName, provider] or null. Legacy routes always resolve to 'telegram'.
 function matchChannelRoute(path: string, suffix: string): [string, ChannelProviderType] | null {
-  const newPattern = new RegExp(`^/api/agents/([^/]+)/channels/(telegram|slack)${suffix}$`)
+  const newPattern = new RegExp(`^/api/agents/([^/]+)/channels/(telegram|slack|discord)${suffix}$`)
   const newMatch = path.match(newPattern)
   if (newMatch) {
     const provider = parseChannelProvider(newMatch[2])
@@ -152,10 +159,15 @@ export function setAgentEnabledPlugins(name: string, provider: ChannelProviderTy
     try { existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { /* overwrite */ }
   }
   const plugins = (existing.enabledPlugins ?? {}) as Record<string, boolean>
-  if (provider === 'slack') {
+  if (provider === 'discord') {
     plugins['telegram@claude-plugins-official'] = false
+    plugins['slack-channel@marveen-marketplace'] = false
+  } else if (provider === 'slack') {
+    plugins['telegram@claude-plugins-official'] = false
+    plugins['discord@claude-plugins-official'] = false
   } else {
     plugins['slack-channel@marveen-marketplace'] = false
+    plugins['discord@claude-plugins-official'] = false
   }
   existing.enabledPlugins = plugins
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
@@ -183,10 +195,12 @@ interface AgentSummary {
   displayName: string
   description: string
   model: string
+  authMode: AuthMode
   securityProfile: string
   team: TeamConfig
   hasTelegram: boolean
   telegramBotUsername?: string
+  hasDiscord: boolean
   status: 'configured' | 'draft'
   running: boolean
   session?: string
@@ -199,6 +213,7 @@ interface AgentDetail extends AgentSummary {
   mcpJson: string
   skills: { name: string; hasSkillMd: boolean }[]
   hasAvatar: boolean
+  hasApiKey: boolean
 }
 
 function getAgentSummary(name: string): AgentSummary {
@@ -207,6 +222,7 @@ function getAgentSummary(name: string): AgentSummary {
   const claudeMd = readFileOr(join(configRoot, 'CLAUDE.md'), '')
   const soulMd = readFileOr(join(dir, 'SOUL.md'), '')
   const tg = readAgentTelegramConfig(name)
+  const dc = readAgentDiscordConfig(name)
   const hasClaudeMd = claudeMd.trim().length > 0
   const hasSoulMd = soulMd.trim().length > 0
 
@@ -217,10 +233,12 @@ function getAgentSummary(name: string): AgentSummary {
     displayName: readAgentDisplayName(name),
     description: extractDescriptionFromClaudeMd(claudeMd),
     model: readAgentModel(name),
+    authMode: readAgentAuthMode(name),
     securityProfile: readAgentSecurityProfile(name),
     team: readAgentTeam(name),
     hasTelegram: tg.hasTelegram,
     telegramBotUsername: tg.botUsername,
+    hasDiscord: dc.hasDiscord,
     status: hasClaudeMd && hasSoulMd ? 'configured' : 'draft',
     running: proc.running,
     session: proc.session,
@@ -256,6 +274,7 @@ function getAgentDetail(name: string): AgentDetail {
     mcpJson,
     skills,
     hasAvatar: findAvatarForAgent(name) !== null,
+    hasApiKey: getSecret(`agent-${name}-api-key`) !== null,
   }
 }
 
@@ -814,7 +833,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   }
 
   // DELETE /api/agents/:name/channels/:provider/invites/:token (legacy: /telegram/invites/:token)
-  const inviteRevokeNewMatch = path.match(/^\/api\/agents\/([^/]+)\/channels\/(telegram|slack)\/invites\/(.+)$/)
+  const inviteRevokeNewMatch = path.match(/^\/api\/agents\/([^/]+)\/channels\/(telegram|slack|discord)\/invites\/(.+)$/)
   const inviteRevokeLegacyMatch = path.match(/^\/api\/agents\/([^/]+)\/telegram\/invites\/(.+)$/)
   const inviteRevokeMatch = inviteRevokeNewMatch
     ? { name: decodeURIComponent(inviteRevokeNewMatch[1]), provider: inviteRevokeNewMatch[2] as ChannelProviderType, token: decodeURIComponent(inviteRevokeNewMatch[3]) }
@@ -835,7 +854,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   }
 
   // DELETE /api/agents/:name/channels/:provider/allowed/:type/:id (legacy: /telegram/allowed/:type/:id)
-  const allowedRemoveNewMatch = path.match(/^\/api\/agents\/([^/]+)\/channels\/(telegram|slack)\/allowed\/(user|group)\/(.+)$/)
+  const allowedRemoveNewMatch = path.match(/^\/api\/agents\/([^/]+)\/channels\/(telegram|slack|discord)\/allowed\/(user|group)\/(.+)$/)
   const allowedRemoveLegacyMatch = path.match(/^\/api\/agents\/([^/]+)\/telegram\/allowed\/(user|group)\/(.+)$/)
   const allowedRemoveMatch = allowedRemoveNewMatch
     ? { name: decodeURIComponent(allowedRemoveNewMatch[1]), provider: allowedRemoveNewMatch[2] as ChannelProviderType, kind: allowedRemoveNewMatch[3], id: decodeURIComponent(allowedRemoveNewMatch[4]) }
@@ -943,6 +962,42 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     return true
   }
 
+  // POST /api/agents/:name/auth/init -- trigger /login in the agent's tmux,
+  // wait a few seconds for the auth URL to appear, then scrape it back.
+  const authInitMatch = path.match(/^\/api\/agents\/([^/]+)\/auth\/init$/)
+  if (authInitMatch && method === 'POST') {
+    const name = decodeURIComponent(authInitMatch[1])
+    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!isAgentRunning(name)) { json(res, { error: 'Agent is not running' }, 400); return true }
+    const session = agentSessionName(name)
+    try {
+      sendPromptToSession(session, '/login')
+      // Wait for Claude Code to render the auth URL (typically 3-6s)
+      let authUrl: string | null = null
+      for (let i = 0; i < 12; i++) {
+        execSync('sleep 1', { timeout: 3000 })
+        const pane = capturePane(session)
+        if (!pane) continue
+        const urlMatch = pane.match(/https:\/\/console\.anthropic\.com\/[^\s"']+/)
+          || pane.match(/https:\/\/auth\.anthropic\.com\/[^\s"']+/)
+          || pane.match(/https:\/\/claude\.ai\/[^\s"']+login[^\s"']*/)
+        if (urlMatch) {
+          authUrl = urlMatch[0]
+          break
+        }
+      }
+      if (authUrl) {
+        json(res, { ok: true, authUrl })
+      } else {
+        json(res, { ok: false, error: 'Auth URL nem jelent meg 12 masodpercen belul. Probald ujra, vagy nezd a tmux session-t.' })
+      }
+    } catch (err) {
+      logger.error({ err, name }, 'Auth init failed')
+      json(res, { error: 'Auth flow indítása sikertelen' }, 500)
+    }
+    return true
+  }
+
   const startMatch = path.match(/^\/api\/agents\/([^/]+)\/start$/)
   if (startMatch && method === 'POST') {
     const name = decodeURIComponent(startMatch[1])
@@ -983,11 +1038,23 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (!isKnownAgent(name)) { json(res, { error: 'Agent not found' }, 404); return true }
     const body = await readBody(req)
     const configRoot = agentConfigRoot(name)
-    const data = JSON.parse(body.toString()) as { claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string }
+    const data = JSON.parse(body.toString()) as {
+      claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string
+      authMode?: AuthMode; apiKey?: string
+    }
     if (data.claudeMd !== undefined) atomicWriteFileSync(join(configRoot, 'CLAUDE.md'), data.claudeMd)
     if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)
     if (data.mcpJson !== undefined) atomicWriteFileSync(join(agentDir(name), '.mcp.json'), data.mcpJson)
     if (data.model !== undefined) writeAgentModel(name, data.model)
+    if (data.authMode !== undefined) {
+      writeAgentAuthMode(name, data.authMode)
+      if (data.authMode === 'api' && typeof data.apiKey === 'string' && data.apiKey.trim()) {
+        setSecret(`agent-${name}-api-key`, `API key for agent ${name}`, data.apiKey.trim())
+      }
+      if (data.authMode !== 'api') {
+        deleteSecret(`agent-${name}-api-key`)
+      }
+    }
     json(res, { ok: true })
     return true
   }

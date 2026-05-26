@@ -288,6 +288,7 @@ else
     if [ -n "$ANTHROPIC_API_KEY_INPUT" ]; then
       export ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY_INPUT"
       ensure_in_rc 'ANTHROPIC_API_KEY' "export ANTHROPIC_API_KEY=\"$ANTHROPIC_API_KEY_INPUT\""
+      CLAUDE_AUTH_ENV_LINE="ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY_INPUT}"
       ok "ANTHROPIC_API_KEY beallitva"
     else
       warn "API key nem lett megadva, kihagyas."
@@ -305,6 +306,7 @@ else
     if [ -n "$OAUTH_TOKEN_INPUT" ]; then
       export CLAUDE_CODE_OAUTH_TOKEN="$OAUTH_TOKEN_INPUT"
       ensure_in_rc 'CLAUDE_CODE_OAUTH_TOKEN' "export CLAUDE_CODE_OAUTH_TOKEN=\"$OAUTH_TOKEN_INPUT\""
+      CLAUDE_AUTH_ENV_LINE="CLAUDE_CODE_OAUTH_TOKEN=${OAUTH_TOKEN_INPUT}"
       # Ellenorzes
       if claude auth status &>/dev/null; then
         ok "OAuth token elfogadva, bejelentkezes sikeres"
@@ -322,10 +324,20 @@ else
   fi
 fi
 
+# Ensure ~/.claude directory tree has correct ownership and permissions.
+# On Ubuntu desktop, umask or prior package installs can leave these dirs
+# world-readable or owned by root, which blocks Claude Code from writing
+# its config/settings files.
+mkdir -p "$HOME/.claude"
+chmod 700 "$HOME/.claude"
+for d in "$HOME/.claude/channels" "$HOME/.claude/skills" "$HOME/.claude/scheduled-tasks"; do
+  mkdir -p "$d"
+  chmod 700 "$d"
+done
+
 # Mark the Claude Code first-run wizard as completed so the tmux-spawned
 # `claude --channels ...` process doesn't stop on the theme picker and
 # block the Telegram plugin from ever initializing.
-mkdir -p "$HOME/.claude"
 python3 - <<'PYEOF'
 import json, os, pathlib
 p = pathlib.Path(os.path.expanduser("~/.claude.json"))
@@ -509,6 +521,11 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
 else
   echo "SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}" >> "$INSTALL_DIR/.env"
   echo "SLACK_APP_TOKEN=${SLACK_APP_TOKEN}" >> "$INSTALL_DIR/.env"
+fi
+# Claude auth credentials (API key or OAuth token) -- channels.sh reads
+# these selectively so the tmux-spawned claude process can authenticate.
+if [ -n "${CLAUDE_AUTH_ENV_LINE:-}" ]; then
+  echo "$CLAUDE_AUTH_ENV_LINE" >> "$INSTALL_DIR/.env"
 fi
 chmod 600 "$INSTALL_DIR/.env"
 ok ".env letrehozva (chmod 600)"

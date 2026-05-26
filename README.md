@@ -130,6 +130,22 @@ A Csapat oldalon hozz létre új ágenseket. Mindegyik:
 - Saját utasítások (CLAUDE.md)
 - Saját memória és skillek
 
+### Telegram bot profilkép
+
+A telepítő automatikusan generál egy pixel-art avatart és Telegramon elküldi neked a beállítási utasításokkal. Ha egyedi képet szeretnél:
+
+1. Tedd a fájlt `agents/<AGENT_NEVE>/avatar.png` alá (png/jpg/jpeg/webp)
+2. Indítsd újra a szolgáltatást (`./scripts/stop.sh && ./scripts/start.sh`)
+3. Az install-flow újra elküldi az avatart a Telegram chatbe
+
+**Beállítás a Telegram botodra:**
+1. Nyisd meg a [@BotFather](https://t.me/BotFather) chatet
+2. Küld a `/setuserpic` parancsot
+3. Válaszd ki a botodat a listából
+4. Küldd be a kapott képet
+
+A dashboardon (Csapat oldal) is cserélhetsz avatart: kattints a bot kártyájára, válassz a galériából vagy tölts fel sajátot -- a rendszer automatikusan elküldi a Telegram chatbe.
+
 ### Ütemezések
 Időzített feladatok és heartbeat monitorok beállítása:
 - Lista, napi idővonal és heti nézet
