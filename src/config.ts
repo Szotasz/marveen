@@ -42,3 +42,8 @@ export const HEARTBEAT_INTERVAL_MS = 60 * 60 * 1000 // 1 hour
 export const HEARTBEAT_START_HOUR = 9
 export const HEARTBEAT_END_HOUR = 23
 export const HEARTBEAT_CALENDAR_ID = env['HEARTBEAT_CALENDAR_ID'] ?? ''
+
+// Calendar provider: 'google' (default, backward-compat) or 'm365'
+const rawCalendarProvider = env['CALENDAR_PROVIDER'] ?? 'google'
+export const CALENDAR_PROVIDER: 'google' | 'm365' =
+  rawCalendarProvider === 'm365' ? 'm365' : 'google'

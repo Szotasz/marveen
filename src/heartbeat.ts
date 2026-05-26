@@ -8,7 +8,7 @@ import {
   DB_FILENAME,
 } from './config.js'
 import { getHeartbeatKanbanSummary, getActiveScheduledTaskCount } from './db.js'
-import { getCalendarEvents, type CalendarEvent } from './google-api.js'
+import { getCalendarEventsForHeartbeat, type CalendarEvent } from './calendar-provider.js'
 import { runAgent } from './agent.js'
 import { notifyTelegram } from './notify.js'
 import { logger } from './logger.js'
@@ -35,7 +35,7 @@ async function collectCalendar(): Promise<CalendarEvent[]> {
   try {
     const now = new Date()
     const twoHoursLater = new Date(now.getTime() + 2 * 60 * 60 * 1000)
-    return await getCalendarEvents(HEARTBEAT_CALENDAR_ID, now, twoHoursLater)
+    return await getCalendarEventsForHeartbeat(HEARTBEAT_CALENDAR_ID, now, twoHoursLater)
   } catch (err) {
     logger.error({ err }, 'Heartbeat: calendar fetch failed')
     return []
