@@ -38,6 +38,7 @@ import { tryHandleAutonomy } from './web/routes/autonomy.js'
 import { tryHandleTokenUsage } from './web/routes/token-usage.js'
 import { tryHandleAgentConsole } from './web/routes/agent-console.js'
 import { tryHandleTelegramHistory } from './web/routes/telegram-history.js'
+import { tryHandleAgentActivity } from './web/routes/agent-activity.js'
 import { tryHandleStatic } from './web/routes/static.js'
 import type { RouteContext } from './web/routes/types.js'
 
@@ -133,6 +134,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleTokenUsage(routeCtx)) return
       if (await tryHandleAgentConsole(routeCtx)) return
       if (await tryHandleTelegramHistory(routeCtx)) return
+      if (await tryHandleAgentActivity(routeCtx)) return
       if (await tryHandleStatic(routeCtx, WEB_DIR)) return
 
       res.writeHead(404)

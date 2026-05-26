@@ -69,7 +69,7 @@ const pages = document.querySelectorAll('.page')
 function switchPage(pageId) {
   pages.forEach((p) => (p.hidden = p.id !== pageId + 'Page'))
   navLinks.forEach((l) => l.classList.toggle('active', l.dataset.page === pageId))
-  if (pageId === 'overview') loadOverview()
+  if (pageId === 'overview') { loadOverview(); loadAgentActivityWidget() }
   if (pageId === 'kanban') loadKanban()
   if (pageId === 'tasks') loadSchedules()
   if (pageId === 'agents') loadAgents()
@@ -6846,6 +6846,30 @@ function stripAnsi(str) {
   return str.replace(/\x1b\[[0-9;]*[mGKHFJA-Za-z]/g, '')
 }
 
+async function loadAgentActivityWidget() {
+  const el = document.getElementById('agentActivityWidget')
+  if (!el) return
+  try {
+    const res = await fetch('/api/agent-activity')
+    if (!res.ok) { el.innerHTML = '<div style="color:var(--text-muted);font-size:13px">Hiba</div>'; return }
+    const rows = await res.json()
+    const now = Math.floor(Date.now() / 1000)
+    el.innerHTML = rows.filter(r => r.agent !== 'system').map(r => {
+      const ago = now - r.last_active_at
+      const agoStr = ago < 60 ? 'most' : ago < 3600 ? `${Math.floor(ago/60)}p` : ago < 86400 ? `${Math.floor(ago/3600)}ó` : `${Math.floor(ago/86400)}n`
+      const dot = ago < 300 ? '#4CAF50' : ago < 3600 ? '#FF9800' : '#999'
+      return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border-color)">
+        <span style="width:8px;height:8px;border-radius:50%;background:${dot};flex-shrink:0"></span>
+        <span style="flex:1;font-size:13px;font-weight:500">${escapeHtml(r.agent)}</span>
+        <span style="font-size:12px;color:var(--text-muted)">${r.today_count} ma</span>
+        <span style="font-size:11px;color:var(--text-muted);min-width:30px;text-align:right">${agoStr}</span>
+      </div>`
+    }).join('') || '<div style="color:var(--text-muted);font-size:13px">Nincs adat</div>'
+  } catch {
+    el.innerHTML = '<div style="color:var(--text-muted);font-size:13px">Nem elérhető</div>'
+  }
+}
+
 async function loadConsolePage() {
   await loadAgentConsoleList()
   startConsolePolling()
@@ -6919,6 +6943,7 @@ function stopConsolePolling() {
 populateAvatarGrid()
 loadMemAgents()
 loadOverview()
+loadAgentActivityWidget()
 loadAvailableModels()
 
 // "DeepSeek API kulcs hozzáadása" link az agent edit panel-en --

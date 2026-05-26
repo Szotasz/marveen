@@ -1080,6 +1080,31 @@ export function listAgentMessages(limit = 50): AgentMessage[] {
   return db.prepare('SELECT * FROM agent_messages ORDER BY created_at DESC LIMIT ?').all(limit) as AgentMessage[]
 }
 
+export interface AgentActivityRow {
+  agent: string
+  last_active_at: number
+  today_count: number
+}
+
+export function getAgentActivity(): AgentActivityRow[] {
+  return db.prepare(`
+    SELECT agent, MAX(last_msg) AS last_active_at, SUM(today_count) AS today_count
+    FROM (
+      SELECT to_agent AS agent,
+             MAX(created_at) AS last_msg,
+             SUM(CASE WHEN created_at >= strftime('%s', date('now')) THEN 1 ELSE 0 END) AS today_count
+      FROM agent_messages GROUP BY to_agent
+      UNION ALL
+      SELECT from_agent AS agent,
+             MAX(created_at) AS last_msg,
+             SUM(CASE WHEN created_at >= strftime('%s', date('now')) THEN 1 ELSE 0 END) AS today_count
+      FROM agent_messages GROUP BY from_agent
+    )
+    GROUP BY agent
+    ORDER BY last_active_at DESC
+  `).all() as AgentActivityRow[]
+}
+
 // --- Task Run History ---
 
 export interface TaskRunEntry { name: string; agent: string; ts: number }

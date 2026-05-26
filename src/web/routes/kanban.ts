@@ -10,7 +10,13 @@ import { listAgentNames } from '../agent-config.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
+import { notifyTelegram } from '../../notify.js'
 import type { RouteContext } from './types.js'
+
+async function notifyDone(title: string, assignee: string | null | undefined): Promise<void> {
+  const who = assignee || 'ismeretlen'
+  await notifyTelegram(`✅ Kanban kész: <b>${title}</b>\nFelelős: ${who}`).catch(() => {})
+}
 
 export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
@@ -47,9 +53,16 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const kanbanCardMatch = path.match(/^\/api\/kanban\/([^/]+)$/)
   if (kanbanCardMatch && method === 'PUT') {
     const id = decodeURIComponent(kanbanCardMatch[1])
+    const before = getKanbanCard(id)
     const body = await readBody(req)
     const data = JSON.parse(body.toString())
-    if (updateKanbanCard(id, data)) { json(res, { ok: true }); return true }
+    if (updateKanbanCard(id, data)) {
+      if (data.status === 'done' && before?.status !== 'done') {
+        notifyDone(before?.title ?? data.title ?? id, data.assignee ?? before?.assignee)
+      }
+      json(res, { ok: true })
+      return true
+    }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
   }
@@ -64,9 +77,16 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const kanbanMoveMatch = path.match(/^\/api\/kanban\/([^/]+)\/move$/)
   if (kanbanMoveMatch && method === 'POST') {
     const id = decodeURIComponent(kanbanMoveMatch[1])
+    const before = getKanbanCard(id)
     const body = await readBody(req)
     const { status, sort_order } = JSON.parse(body.toString())
-    if (moveKanbanCard(id, status, sort_order ?? 0)) { json(res, { ok: true }); return true }
+    if (moveKanbanCard(id, status, sort_order ?? 0)) {
+      if (status === 'done' && before?.status !== 'done') {
+        notifyDone(before?.title ?? id, before?.assignee)
+      }
+      json(res, { ok: true })
+      return true
+    }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
   }
