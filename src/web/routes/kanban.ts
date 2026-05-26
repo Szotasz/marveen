@@ -5,7 +5,7 @@ import {
   getKanbanComments, addKanbanComment, listKanbanProjects,
   getKanbanCard, getChildCards, getDb,
 } from '../../db.js'
-import { OWNER_NAME } from '../../config.js'
+import { OWNER_NAME, BOT_NAME } from '../../config.js'
 import { listAgentNames } from '../agent-config.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
@@ -29,7 +29,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const agents = listAgentNames().map((name) => ({ name, type: 'agent' }))
     json(res, [
       { name: OWNER_NAME, type: 'owner' },
-      { name: 'Marveen', type: 'bot' },
+      { name: BOT_NAME, type: 'bot' },
       ...agents,
     ])
     return true
@@ -140,7 +140,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         })
         ids.push(id)
       }
-      addKanbanComment(parentId, 'Marveen', `Auto-breakdown: ${ids.length} subtask létrehozva (${ids.join(', ')})`)
+      addKanbanComment(parentId, BOT_NAME, `Auto-breakdown: ${ids.length} subtask létrehozva (${ids.join(', ')})`)
       return ids
     })()
     json(res, { ok: true, created })
