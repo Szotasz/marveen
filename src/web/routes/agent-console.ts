@@ -1,4 +1,4 @@
-import { isAgentRunning, capturePane, agentSessionName } from '../agent-process.js'
+import { isSessionRunning, capturePane } from '../agent-process.js'
 import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
@@ -71,7 +71,7 @@ export async function tryHandleAgentConsole(ctx: RouteContext): Promise<boolean>
       id: info.id,
       displayName: info.displayName,
       sessionName: info.sessionName,
-      isRunning: isAgentRunning(info.id),
+      isRunning: isSessionRunning(info.sessionName),
     }))
     json(res, agents)
     return true
@@ -89,7 +89,7 @@ export async function tryHandleAgentConsole(ctx: RouteContext): Promise<boolean>
     }
 
     const agentInfo = AGENT_INFO[agentId]
-    const isRunning = isAgentRunning(agentId)
+    const isRunning = isSessionRunning(agentInfo.sessionName)
     const rawOutput = isRunning ? capturePane(sessionName) : null
     const output = getCaptureLines(rawOutput, 50)
 

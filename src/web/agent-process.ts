@@ -31,13 +31,17 @@ export function agentSessionName(name: string): string {
   return `agent-${name}`
 }
 
-export function isAgentRunning(name: string): boolean {
+export function isSessionRunning(sessionName: string): boolean {
   try {
     const output = execSync(`${TMUX} list-sessions -F "#{session_name}"`, { timeout: 3000, encoding: 'utf-8' })
-    return output.split('\n').some(line => line.trim() === agentSessionName(name))
+    return output.split('\n').some(line => line.trim() === sessionName)
   } catch {
     return false
   }
+}
+
+export function isAgentRunning(name: string): boolean {
+  return isSessionRunning(agentSessionName(name))
 }
 
 export function startAgentProcess(name: string): { ok: boolean; pid?: number; error?: string } {
