@@ -1684,7 +1684,7 @@ document.getElementById('saveAuthModeBtn').addEventListener('click', async () =>
       body: JSON.stringify(payload),
     })
     if (!res.ok) throw new Error()
-    showToast('Hitelesítési mód mentve (ujrainditás szukseges)')
+    showToast('Hitelesítési mód mentve (újraindítás szukseges)')
     loadAgents()
     const detailRes = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`)
     if (detailRes.ok) {
@@ -5207,7 +5207,7 @@ function renderVaultGrid(secrets) {
       if (!data.value) return
       const form = document.createElement('div')
       form.className = 'vault-card-edit-form'
-      form.innerHTML = `<input type="password" class="input vault-edit-value" value="${escapeHtml(data.value)}" style="font-size:13px;margin-bottom:6px"><button class="btn-primary btn-compact vault-edit-save">Mentes</button> <button class="btn-secondary btn-compact vault-edit-cancel">Megse</button>`
+      form.innerHTML = `<input type="password" class="input vault-edit-value" value="${escapeHtml(data.value)}" style="font-size:13px;margin-bottom:6px"><button class="btn-primary btn-compact vault-edit-save">Mentés</button> <button class="btn-secondary btn-compact vault-edit-cancel">Mégse</button>`
       card.appendChild(form)
       const input = form.querySelector('.vault-edit-value')
       input.focus()
@@ -5362,7 +5362,7 @@ function renderVaultGrid(secrets) {
     }
 
     saveBtn.disabled = true
-    saveBtn.textContent = 'Mentes...'
+    saveBtn.textContent = 'Mentés...'
     try {
       const res = await fetch('/api/vault/bindings', {
         method: 'POST',
