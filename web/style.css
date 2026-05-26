@@ -1789,7 +1789,7 @@ main {
   font-weight: 500;
   box-shadow: var(--shadow-lg);
   transition: transform 0.3s ease;
-  z-index: 300;
+  z-index: 1100;
   white-space: nowrap;
 }
 .toast.visible { transform: translateX(-50%) translateY(0); }
