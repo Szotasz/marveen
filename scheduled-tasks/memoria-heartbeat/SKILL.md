@@ -3,6 +3,12 @@ name: memoria-heartbeat
 description: 30 percenként átnézi a beszélgetést, menti a fontosat, és skill-eket generál ha volt komplex munka
 ---
 
+## 0. ELŐSZÖR: Van-e várakozó Telegram üzenet?
+
+**Mielőtt bármit csinálnál**, nézd meg a session inputját: ha van `← telegram ·` prefixű üzenet a kontextusban (azaz Gábor küldött valamit Telegramon), **azonnal válaszolj rá** -- a heartbeat logika (A/B/C, csendben maradás) NEM vonatkozik a közvetlen felhasználói üzenetekre. Válasz után folytasd a heartbeat-et.
+
+---
+
 Nézd át az utolsó 30 perc beszélgetéseidet. Két dolgot csinálj:
 
 ## 1. Memória mentés
@@ -63,7 +69,9 @@ Lépések:
 
 ## 3. Csendben maradás
 
-Ha NINCS komplex feladat / hiba / korrekció (A=B=C=NEM), és nincs új információ a 30 percben:
+**KIVÉTEL: Ha Gábor Telegram üzenetet küldött (← telegram · prefix), arra mindig válaszolj -- a csendes heartbeat szabály NEM vonatkozik rá.**
+
+Ha NINCS komplex feladat / hiba / korrekció (A=B=C=NEM), ÉS nincs várakozó Telegram üzenet, ÉS nincs új információ a 30 percben:
 - Ne ments memóriát feleslegesen
 - Ne generálj skill-t
 - Ne küldj üzenetet a csatornára
