@@ -22,6 +22,7 @@ import {
   wrapUntrusted,
 } from '../prompt-safety.js'
 import { cronMatchesNow } from './cron.js'
+import { runKanbanDispatch } from './kanban-dispatcher.js'
 import {
   listScheduledTasks,
   type ScheduledTask,
@@ -31,6 +32,7 @@ import {
   agentSessionName,
   isAgentRunning,
   isSessionReadyForPrompt,
+  capturePane,
   sendPromptToSession,
 } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
@@ -55,6 +57,31 @@ const TMUX = resolveFromPath('tmux')
 
 const scheduleLastRun: Map<string, number> = new Map()
 
+// Rate limit guard: session -> unix ms when the limit expires.
+// Populated by parseRateLimitReset; cleared when the expiry passes.
+const sessionRateLimitUntil: Map<string, number> = new Map()
+
+// Parse Claude Code rate limit messages from a tmux pane snapshot.
+// Returns the expiry timestamp (ms) or null if no rate limit is detected.
+function parseRateLimitReset(pane: string): number | null {
+  // "Resets in 11 min" / "resets in 47 min" (Claude Code status bar)
+  const minMatch = pane.match(/[Rr]esets?\s+in\s+(\d+)\s*min/i)
+  if (minMatch) return Date.now() + parseInt(minMatch[1], 10) * 60_000
+
+  const secMatch = pane.match(/[Rr]esets?\s+in\s+(\d+)\s*sec/i)
+  if (secMatch) return Date.now() + parseInt(secMatch[1], 10) * 1_000
+
+  // "try again in X minutes" fallback
+  const tryMatch = pane.match(/try\s+again\s+in\s+(\d+)\s*min/i)
+  if (tryMatch) return Date.now() + parseInt(tryMatch[1], 10) * 60_000
+
+  // Generic presence without a parseable time: assume 5 min
+  if (/usage\s+limit\s+reached|rate\s+limit\s+reached/i.test(pane)) {
+    return Date.now() + 5 * 60_000
+  }
+  return null
+}
+
 // Try to fire a task at a single target agent. Returns the outcome so the
 // caller can decide whether to queue a retry. Splitting this out means the
 // pendingTaskRetries loop and the normal cron loop share one code path.
@@ -75,6 +102,26 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number): '
   if (!sessionExists) {
     logger.warn({ task: task.name, agent: agentName, session }, 'Schedule target session not running, skipping')
     return 'missing'
+  }
+
+  // Rate limit guard: check stored expiry first, then sample the live pane.
+  const storedExpiry = sessionRateLimitUntil.get(session)
+  if (storedExpiry && now < storedExpiry) {
+    const remaining = Math.ceil((storedExpiry - now) / 60_000)
+    logger.info({ task: task.name, session, remainingMin: remaining }, 'Session rate-limited, deferring until reset')
+    return 'busy'
+  }
+  const paneSnapshot = capturePane(session)
+  if (paneSnapshot) {
+    const resetAt = parseRateLimitReset(paneSnapshot)
+    if (resetAt) {
+      sessionRateLimitUntil.set(session, resetAt)
+      const remaining = Math.ceil((resetAt - now) / 60_000)
+      logger.warn({ task: task.name, session, remainingMin: remaining }, 'Rate limit detected in pane, deferring task')
+      return 'busy'
+    }
+    // Clear any expired rate limit entry
+    sessionRateLimitUntil.delete(session)
   }
 
   // When forceSend is true, skip the busy-state check entirely and inject
@@ -192,6 +239,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
   let firstRun = true
 
   function runCheck() {
+    runKanbanDispatch()
     const tasks = listScheduledTasks()
     const now = Date.now()
     // On first run after restart, catch up missed tasks from last 30 min

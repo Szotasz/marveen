@@ -160,6 +160,11 @@ export function initDatabase(): void {
     // column already exists
   }
   db.exec('CREATE INDEX IF NOT EXISTS idx_kanban_parent ON kanban_cards(parent_id)')
+  try {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN dispatched_at INTEGER')
+  } catch {
+    // column already exists
+  }
   // Migration: add agent_id, category, auto_generated columns to memories
   try {
     db.exec("ALTER TABLE memories ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'marveen'")
@@ -1410,4 +1415,32 @@ export function getTelegramHistory(chatId: string, limit: number = 50): Telegram
   return db.prepare(
     'SELECT * FROM telegram_history WHERE chat_id = ? ORDER BY ts DESC LIMIT ?'
   ).all(chatId, limit) as TelegramHistoryRow[]
+}
+
+// --- Kanban Dispatcher ---
+
+export interface KanbanDispatchCandidate {
+  id: string
+  title: string
+  description: string | null
+  assignee: string
+  priority: 'high' | 'urgent'
+}
+
+export function getUndispatchedHighPriorityCards(): KanbanDispatchCandidate[] {
+  return db.prepare(
+    `SELECT id, title, description, assignee, priority
+     FROM kanban_cards
+     WHERE status = 'planned'
+       AND priority IN ('high', 'urgent')
+       AND assignee IS NOT NULL
+       AND assignee != ''
+       AND dispatched_at IS NULL
+       AND archived_at IS NULL`
+  ).all() as KanbanDispatchCandidate[]
+}
+
+export function markKanbanCardDispatched(id: string): void {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare('UPDATE kanban_cards SET dispatched_at = ? WHERE id = ?').run(now, id)
 }
