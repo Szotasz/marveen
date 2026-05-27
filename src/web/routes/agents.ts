@@ -190,6 +190,46 @@ function resolveAccessPath(name: string, provider: ChannelProviderType): string 
   return join(dir, 'access.json')
 }
 
+function extractBotId(token: string): string | null {
+  const colon = token.indexOf(':')
+  if (colon < 1) return null
+  const id = token.slice(0, colon)
+  return /^\d+$/.test(id) ? id : null
+}
+
+function findBotTokenDuplicate(
+  provider: ChannelProviderType,
+  token: string,
+  excludeAgent: string,
+): string | null {
+  const botId = extractBotId(token)
+  if (!botId) return null
+
+  const candidates: Array<{ name: string; envPath: string }> = []
+
+  // Main agent's channel .env
+  if (excludeAgent !== MAIN_AGENT_ID) {
+    const mainEnv = join(channelStateDir(provider), '.env')
+    candidates.push({ name: MAIN_AGENT_ID, envPath: mainEnv })
+  }
+
+  // All sub-agents
+  for (const agentName of listAgentNames()) {
+    if (agentName === excludeAgent) continue
+    const envPath = join(channelStateDir(provider, agentDir(agentName)), '.env')
+    candidates.push({ name: agentName, envPath })
+  }
+
+  for (const { name, envPath } of candidates) {
+    const existing = readChannelToken(provider, envPath)
+    if (!existing) continue
+    const existingBotId = extractBotId(existing)
+    if (existingBotId === botId) return name
+  }
+
+  return null
+}
+
 interface AgentSummary {
   name: string
   displayName: string
@@ -507,6 +547,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const channelProvider = getProvider(provider)
     const validation = await channelProvider.validateToken(botToken.trim())
     if (!validation.ok) { json(res, { error: validation.error || 'Invalid token' }, 400); return true }
+
+    const dupeOwner = findBotTokenDuplicate(provider, botToken.trim(), name)
+    if (dupeOwner) {
+      json(res, { error: `This bot token is already used by agent "${dupeOwner}". Each agent needs its own bot token to avoid getUpdates conflicts.` }, 409)
+      return true
+    }
 
     if (provider === 'slack' && !isManagedSettingsReady()) {
       const displayName = readAgentDisplayName(name) || name
