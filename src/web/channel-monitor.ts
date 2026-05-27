@@ -15,7 +15,7 @@ import {
 } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION, MAIN_CHANNELS_PLIST } from './main-agent.js'
 import { notifyChannel } from '../notify.js'
-import { getProvider, channelStateDir, type ChannelProviderType } from '../channel-provider.js'
+import { getProvider, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { attemptChannelMcpReconnect } from './channel-mcp-reconnect.js'
 
 const TMUX = resolveFromPath('tmux')
@@ -376,6 +376,13 @@ export function startChannelPluginMonitor(): NodeJS.Timeout {
         if (shouldEscalateMarveenDown()) handleMarveenDown()
       } else {
         if (!agentDownSince.has(t.session)) agentDownSince.set(t.session, Date.now())
+        const agentProvider = resolveAgentProvider(t.agentName!)
+        const stateDir = channelStateDir(agentProvider, agentDir(t.agentName!))
+        const agentToken = readChannelToken(agentProvider, join(stateDir, '.env'))
+        if (!agentToken) {
+          logger.warn({ agent: t.agentName, provider: agentProvider }, 'Agent has no channel token in state dir -- skipping restart to avoid token conflict')
+          continue
+        }
         logger.warn({ agent: t.agentName, provider: t.provider }, 'Agent channel plugin down -- auto-restarting')
         try {
           stopAgentProcess(t.agentName!)

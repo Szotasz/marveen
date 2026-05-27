@@ -160,15 +160,13 @@ export function setAgentEnabledPlugins(name: string, provider: ChannelProviderTy
     try { existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { /* overwrite */ }
   }
   const plugins = (existing.enabledPlugins ?? {}) as Record<string, boolean>
-  if (provider === 'discord') {
-    plugins['telegram@claude-plugins-official'] = false
-    plugins['slack-channel@marveen-marketplace'] = false
-  } else if (provider === 'slack') {
-    plugins['telegram@claude-plugins-official'] = false
-    plugins['discord@claude-plugins-official'] = false
-  } else {
-    plugins['slack-channel@marveen-marketplace'] = false
-    plugins['discord@claude-plugins-official'] = false
+  const allPlugins: Record<ChannelProviderType, string> = {
+    telegram: 'telegram@claude-plugins-official',
+    slack: 'slack-channel@marveen-marketplace',
+    discord: 'discord@claude-plugins-official',
+  }
+  for (const [p, pluginKey] of Object.entries(allPlugins)) {
+    plugins[pluginKey] = p === provider
   }
   existing.enabledPlugins = plugins
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
