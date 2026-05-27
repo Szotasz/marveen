@@ -1934,6 +1934,13 @@ main {
   font-size: 13px;
   color: var(--text-secondary);
 }
+.meta-value-editable {
+  cursor: pointer;
+  border-bottom: 1px dashed var(--border);
+}
+.meta-value-editable:hover {
+  color: var(--text);
+}
 
 .task-detail-result {
   margin-bottom: 20px;

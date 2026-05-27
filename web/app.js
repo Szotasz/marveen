@@ -425,7 +425,7 @@ async function showCardDetail(card) {
     </div>
     <div class="meta-item">
       <span class="meta-label">Felelős</span>
-      <span class="meta-value">${assignee ? escapeHtml(assignee.name) : '-- nincs --'}</span>
+      <span class="meta-value meta-value-editable" id="metaAssigneeValue" data-card-id="${card.id}" title="Kattints a módosításhoz">${assignee ? escapeHtml(assignee.name) : '-- nincs --'}</span>
     </div>
     <div class="meta-item">
       <span class="meta-label">Prioritás</span>
@@ -440,6 +440,54 @@ async function showCardDetail(card) {
       <span class="meta-value">${card.due_date ? new Date(card.due_date * 1000).toLocaleDateString('hu-HU') : '-- nincs --'}</span>
     </div>
   `
+
+  // Inline edit for assignee on detail view
+  const assigneeValueEl = document.getElementById('metaAssigneeValue')
+  assigneeValueEl.addEventListener('click', () => {
+    if (assigneeValueEl.querySelector('select')) return
+    const current = card.assignee || ''
+    const sel = document.createElement('select')
+    sel.style.cssText = 'padding:2px 6px; border-radius:4px; border:1px solid var(--border); background:var(--bg-card); color:var(--text); font-size:inherit'
+    sel.innerHTML = '<option value="">-- Nincs --</option>'
+    for (const a of kanbanAssignees) {
+      const opt = document.createElement('option')
+      opt.value = a.name
+      opt.textContent = a.name
+      if (a.name === current) opt.selected = true
+      sel.appendChild(opt)
+    }
+    assigneeValueEl.innerHTML = ''
+    assigneeValueEl.appendChild(sel)
+    sel.focus()
+    const save = async () => {
+      const newVal = sel.value || null
+      if (newVal === current || (newVal === null && !current)) {
+        assigneeValueEl.textContent = current ? current : '-- nincs --'
+        return
+      }
+      try {
+        const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...card, assignee: newVal }),
+        })
+        if (!r.ok) throw new Error('PUT failed')
+        card.assignee = newVal
+        assigneeValueEl.textContent = newVal ? newVal : '-- nincs --'
+        showToast('Felelős frissítve')
+        loadKanban && loadKanban()
+      } catch {
+        assigneeValueEl.textContent = current ? current : '-- nincs --'
+        showToast('Hiba a mentésnél')
+      }
+    }
+    sel.addEventListener('change', save)
+    sel.addEventListener('blur', () => {
+      if (assigneeValueEl.querySelector('select')) {
+        assigneeValueEl.textContent = card.assignee ? card.assignee : '-- nincs --'
+      }
+    })
+  })
 
   document.getElementById('cardDetailDesc').textContent = card.description || ''
 
