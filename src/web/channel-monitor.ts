@@ -13,6 +13,7 @@ import {
   startAgentProcess,
   stopAgentProcess,
 } from './agent-process.js'
+import { detectPaneState, decidePaneErrorAlert, type PaneErrorAlertState } from '../pane-state.js'
 import { MAIN_CHANNELS_SESSION, MAIN_CHANNELS_PLIST } from './main-agent.js'
 import { notifyChannel } from '../notify.js'
 import { getProvider, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
@@ -151,6 +152,22 @@ const agentDownSince: Map<string, number> = new Map()
 const agentLastRestart: Map<string, number> = new Map()
 const AGENT_RESTART_GRACE_MS = 90_000
 const PLUGIN_ALERT_DEDUP_MS = 30 * 60 * 1000
+
+// Per-session tracking for the wedged thinking-block error (a Claude
+// session stuck returning `400 ... thinking blocks cannot be modified`
+// on every prompt). detectPaneState() classifies such a pane as
+// 'error'; the monitor alerts so the operator can reset it. Alert-only
+// by design -- auto-reset would destroy the agent's working memory and a
+// false positive must not nuke a healthy session.
+const paneErrorState: Map<string, PaneErrorAlertState> = new Map()
+// Must persist for at least two monitor ticks (60s interval) before the
+// first alert, so a one-tick transient never reports. 30 min dedup
+// matches the channel-plugin alert cadence. clearMs (5 min) keeps a
+// spell alive across brief non-error blips (null capture, mid-flight
+// busy) so a flapping but genuinely wedged session still alerts.
+const PANE_ERROR_CONFIRM_MS = 120_000
+const PANE_ERROR_DEDUP_MS = 30 * 60 * 1000
+const PANE_ERROR_CLEAR_MS = 5 * 60 * 1000
 
 type MarveenRecoveryStage = 'soft' | 'save' | 'resume' | 'hard' | 'gave_up'
 interface MarveenDownState {
@@ -346,6 +363,32 @@ export function startChannelPluginMonitor(): NodeJS.Timeout {
         })
       }
     }
+
+    // Pane-level thinking-block error detection. Independent of channel
+    // plugin liveness: a session can keep a live plugin yet be wedged on
+    // the API error, every injected prompt yielding another 400. Detect
+    // it via the pane state and alert (never auto-reset).
+    for (const t of targets) {
+      const pane = capturePane(t.session)
+      const isError = pane != null && detectPaneState(pane) === 'error'
+      const prev = paneErrorState.get(t.session) ?? { firstSeenAt: null, lastAlertAt: null, lastErrorAt: null }
+      const decision = decidePaneErrorAlert(isError, prev, Date.now(), {
+        confirmMs: PANE_ERROR_CONFIRM_MS,
+        dedupMs: PANE_ERROR_DEDUP_MS,
+        clearMs: PANE_ERROR_CLEAR_MS,
+      })
+      if (decision.next.firstSeenAt === null) {
+        paneErrorState.delete(t.session)
+      } else {
+        paneErrorState.set(t.session, decision.next)
+      }
+      if (decision.alert) {
+        const label = t.isMarveen ? BOT_NAME : (t.agentName ?? t.session)
+        logger.error({ session: t.session, agent: label }, 'Agent wedged on thinking-block API error -- manual reset needed')
+        sendAlert(`🚨 A(z) ${label} agens elakadt egy thinking-block API hibaban (a session-history korrupt, minden uj prompt ugyanazt a 400-at adja). Kezi reset kell: allitsd le es inditsd ujra, friss session indul. Reszletek: tmux attach -t ${t.session}`)
+      }
+    }
+
     for (const t of targets) {
       const claudePid = getClaudePidForSession(t.session)
       if (!claudePid) {

@@ -19,7 +19,7 @@
 // captured pane fixtures. The I/O (capture-pane + double-sample) lives
 // in src/web.ts alongside the rest of the scheduler.
 
-export type PaneState = 'idle' | 'busy' | 'typing' | 'unknown'
+export type PaneState = 'idle' | 'busy' | 'typing' | 'unknown' | 'error'
 
 // Claude Code shows the footer in one of two modes: the default "bypass"
 // permissions mode (permissive) and the "strict" mode. Both are "idle"
@@ -101,6 +101,88 @@ const BOX_SEP_RX = /^─{10,}/
 // ([ \t] not \s) to avoid crossing into the next line.
 const PARKED_INPUT_RX = /❯[ \t]+\S/
 
+// Persistent Anthropic thinking-block API error. When an assistant turn
+// ends with a 400 about thinking/redacted_thinking blocks that "cannot
+// be modified", the session is wedged: every subsequent prompt re-sends
+// the same context and yields the identical 400. The pane shows the idle
+// footer (turn "finished") plus a past-tense thinking stamp but NO live
+// busy indicator, so detectPaneState would otherwise classify it 'idle'
+// and the scheduler/router would keep injecting -- each injection
+// another doomed 400. Surfacing this as a distinct 'error' state makes
+// isReadyForPrompt() return false so injection stops, and lets the
+// channel monitor alert that a manual reset is needed.
+//
+// Three guards, ALL required, to avoid flagging a healthy session that
+// merely quotes the error text (a bug-report message, a log analysis):
+//
+//   (a) Position scope: only the "live tail" (the lines just above the
+//       idle footer) is inspected, never deep scrollback. A long-ago
+//       turn's error echo above the live region is ignored. The footer
+//       is found from the BOTTOM (the live footer is always the last
+//       line of the pane) so a footer-looking string quoted higher up
+//       in scrollback does not shift the scope.
+//   (b) Chrome glyph: the error must render as a tool-output line
+//       `⎿  API Error: <code>` -- the U+23BF result glyph Claude Code
+//       prints before a turn-level error. Prose that quotes "API Error
+//       400" in a message body has no leading `⎿  API Error: <num>`.
+//   (c) Specific phrase: the thinking-block signature `cannot be
+//       modified` together with `thinking` or `redacted_thinking`. A
+//       generic API error (rate limit, overloaded) is NOT this class.
+//
+// (b) and (c) are required WITHIN ONE CHROME BLOCK (the chrome line plus
+// its wrapped continuation), not anywhere in the joined tail. Otherwise
+// a benign `⎿ API Error: 429` on one line plus an unrelated "thinking
+// ... cannot be modified" prose on another line would AND-combine into
+// a false positive on a healthy session.
+const ERROR_CHROME_RX = /⎿\s*API Error:\s*\d+/
+const ERROR_THINKING_PHRASE_RX = /cannot be modified/
+const ERROR_THINKING_KIND_RX = /\b(?:redacted_thinking|thinking)\b/
+
+// How many lines above the idle footer count as the "live tail". The
+// error output (the `⎿` line + its wrapped continuation), the thinking
+// stamp, and the input box together span well under 20 lines; 20 gives
+// margin for terminal re-flow without reaching deep scrollback.
+const ERROR_LIVE_TAIL_LINES = 20
+
+// How many lines a single API-error render spans: the `⎿` chrome line
+// plus its wrapped continuation. The thinking-block message is long and
+// the terminal wraps it; at ~80 cols "cannot be modified" lands on the
+// 2nd line, at ~60 cols on the 3rd-4th. 4 covers narrow panes while
+// staying short enough that an adjacent unrelated chrome block does not
+// bleed in (the decoupled-benign test pins this boundary).
+const ERROR_BLOCK_LINES = 4
+
+/**
+ * True when the pane is wedged in the persistent thinking-block API
+ * error described above. Scoped to the live tail above the idle footer
+ * so a quoted error string in scrollback or a message body does not
+ * trigger a false positive. Returns false when there is no idle footer
+ * (the pane is busy or not a recognised Claude Code surface).
+ */
+export function detectsThinkingBlockError(pane: string): boolean {
+  if (!pane) return false
+  const lines = pane.split('\n')
+  // Find the footer from the bottom: the live footer is the last line of
+  // the pane, so a footer-looking line quoted in scrollback must not win.
+  let footerIdx = -1
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (IDLE_FOOTER_RX.test(lines[i])) { footerIdx = i; break }
+  }
+  if (footerIdx < 0) return false
+  const start = Math.max(0, footerIdx - ERROR_LIVE_TAIL_LINES)
+  const tail = lines.slice(start, footerIdx)
+  // The chrome glyph and the thinking-block phrase+kind must co-occur
+  // within ONE chrome block, not be scattered across the tail.
+  for (let i = 0; i < tail.length; i++) {
+    if (!ERROR_CHROME_RX.test(tail[i])) continue
+    const block = tail.slice(i, i + ERROR_BLOCK_LINES).join('\n')
+    if (ERROR_THINKING_PHRASE_RX.test(block) && ERROR_THINKING_KIND_RX.test(block)) {
+      return true
+    }
+  }
+  return false
+}
+
 export interface DetectPaneStateOptions {
   /** If true, the 'typing' state (text parked in input box) is
    * merged into 'busy'. Default false -- callers that care about
@@ -117,9 +199,13 @@ export interface DetectPaneStateOptions {
  *      wider spinner/token-count fallbacks that catch the frame-level
  *      footer gap.
  *   3. No idle footer visible -> 'unknown' (pane is not Claude Code).
- *   4. Pending paste placeholder -> 'busy'.
- *   5. Text parked inside the bottom input box -> 'typing'.
- *   6. Otherwise -> 'idle'.
+ *   4. Wedged thinking-block API error in the live tail -> 'error'.
+ *      Checked after the busy guard (a live turn is never 'error') and
+ *      after the footer guard (an 'error' surface still shows the
+ *      footer) so the scheduler/router stop injecting doomed prompts.
+ *   5. Pending paste placeholder -> 'busy'.
+ *   6. Text parked inside the bottom input box -> 'typing'.
+ *   7. Otherwise -> 'idle'.
  */
 export function detectPaneState(
   pane: string,
@@ -132,6 +218,8 @@ export function detectPaneState(
   }
 
   if (!IDLE_FOOTER_RX.test(pane)) return 'unknown'
+
+  if (detectsThinkingBlockError(pane)) return 'error'
 
   if (PENDING_PASTE_RX.test(pane)) return 'busy'
 
@@ -384,4 +472,101 @@ export function decideSubmitFollowup(
   if (!shouldRetrySubmit(pane, payloadHint)) return 'done'
   if (attempt >= maxAttempts) return 'give-up'
   return 'retry-enter'
+}
+
+export interface PaneErrorAlertState {
+  /** When the session was first observed in the error state during the
+   * current spell, or null when there is no active spell. */
+  firstSeenAt: number | null
+  /** When the last alert was sent for this session, or null if never. */
+  lastAlertAt: number | null
+  /** When the session was last observed in the error state. Used to
+   * keep a spell alive across brief non-error blips (a flapping
+   * capture, or a busy spinner mid-flight) so the confirm window is
+   * not reset to zero by a single non-error tick. */
+  lastErrorAt: number | null
+}
+
+export interface PaneErrorAlertThresholds {
+  /** How long the session must stay in error before the first alert, so
+   * a transient one-tick error that clears on its own is not reported. */
+  confirmMs: number
+  /** Minimum gap between repeated alerts within one unbroken error
+   * spell, so a wedged session does not alert on every monitor tick. */
+  dedupMs: number
+  /** How long the session must be continuously error-free before an
+   * active spell is cleared. A single non-error tick (null capture, a
+   * mid-flight busy spinner) must NOT reset the spell, otherwise a
+   * genuinely wedged but flapping session never reaches the confirm
+   * window and never alerts. */
+  clearMs: number
+}
+
+export interface PaneErrorAlertDecision {
+  alert: boolean
+  next: PaneErrorAlertState
+}
+
+/**
+ * Pure state machine for "should the monitor alert that this session is
+ * wedged in the thinking-block error". Dependency-free so it is
+ * unit-testable without tmux or timers: feed the current error
+ * observation, the previous persisted state and a clock, get back the
+ * alert decision plus the next state to persist.
+ *
+ * Deliberately ALERT-only -- it never decides to reset or restart a
+ * session. Auto-reset destroys the agent's in-context working memory,
+ * and while the deep trigger is not fully understood a false positive
+ * must not nuke a healthy agent. A human (or the hub agent) acts on the
+ * alert. Guards that keep it quiet: the first sighting only records
+ * (never alerts, so an error must be seen on at least two ticks even
+ * when confirmMs is 0), a confirm window (the error must persist), and a
+ * dedup window (one alert per spell, not per tick). A non-error tick
+ * does NOT immediately end a spell -- it ends only after clearMs of
+ * continuous error-free time, so a flapping capture (null / mid-flight
+ * busy between error frames) cannot starve the confirm window. A
+ * future-dated stored timestamp (wall-clock skew, NTP correction)
+ * restarts the spell instead of stalling the deltas negative.
+ */
+export function decidePaneErrorAlert(
+  isError: boolean,
+  prev: PaneErrorAlertState,
+  now: number,
+  thresholds: PaneErrorAlertThresholds,
+): PaneErrorAlertDecision {
+  if (!isError) {
+    // No active spell: nothing to track.
+    if (prev.firstSeenAt === null) {
+      return { alert: false, next: { firstSeenAt: null, lastAlertAt: null, lastErrorAt: null } }
+    }
+    // Active spell: clear only after a sustained error-free gap, so a
+    // single flapping non-error tick does not reset the confirm window.
+    // A future-dated lastErrorAt (clock skew) counts as "clear now".
+    const errorFreeFor = prev.lastErrorAt === null ? Infinity : now - prev.lastErrorAt
+    if (errorFreeFor >= thresholds.clearMs || errorFreeFor < 0) {
+      return { alert: false, next: { firstSeenAt: null, lastAlertAt: null, lastErrorAt: null } }
+    }
+    // Hold the spell unchanged.
+    return { alert: false, next: { ...prev } }
+  }
+  // First sighting in this spell: record only, never alert. Guarantees
+  // at least two observations before any alert, independent of confirmMs.
+  if (prev.firstSeenAt === null) {
+    return { alert: false, next: { firstSeenAt: now, lastAlertAt: prev.lastAlertAt, lastErrorAt: now } }
+  }
+  // Clock skew: a stored timestamp in the future relative to now would
+  // drive the deltas negative and stall the machine silently. Restart
+  // the spell from now and drop the stale alert time.
+  if (now < prev.firstSeenAt || (prev.lastAlertAt !== null && now < prev.lastAlertAt)) {
+    return { alert: false, next: { firstSeenAt: now, lastAlertAt: null, lastErrorAt: now } }
+  }
+  const sustained = now - prev.firstSeenAt >= thresholds.confirmMs
+  if (!sustained) {
+    return { alert: false, next: { firstSeenAt: prev.firstSeenAt, lastAlertAt: prev.lastAlertAt, lastErrorAt: now } }
+  }
+  const dedupElapsed = prev.lastAlertAt === null || now - prev.lastAlertAt >= thresholds.dedupMs
+  if (dedupElapsed) {
+    return { alert: true, next: { firstSeenAt: prev.firstSeenAt, lastAlertAt: now, lastErrorAt: now } }
+  }
+  return { alert: false, next: { firstSeenAt: prev.firstSeenAt, lastAlertAt: prev.lastAlertAt, lastErrorAt: now } }
 }
