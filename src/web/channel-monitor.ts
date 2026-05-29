@@ -232,7 +232,9 @@ function resumeMarveenSession(): boolean {
     const claudeCmd = [
       'export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"',
       '&&', CLAUDE, '--continue', '--dangerously-skip-permissions',
-      ...(model ? ['--model', model] : []),
+      // Single-quote the model id so a value like `claude-opus-4-8[1m]` is not
+      // glob-expanded by the shell that tmux respawn-pane spawns the command in.
+      ...(model ? ['--model', `'${model}'`] : []),
       // NOTE: inbound from `--channels` goes through a separate
       // allowlist at /etc/claude-code/managed-settings.json
       // (allowedChannelPlugins). If the plugin isn't listed there,

@@ -161,7 +161,9 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
       ? `export ${stateEnvVar}="${agentChannelDir}"${auditLogEnv} && `
       : ''
     const channelFlag = hasChannel ? `--channels plugin:${provider.pluginId}` : ''
-    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${channelSetup}${apiKeyEnv}${claudeConfigEnv}${ollamaEnv}${deepseekEnv}cd "${dir}" && ${CLAUDE} ${continueFlag}${skipFlag}--model ${model} ${channelFlag}`.trimEnd()
+    // Single-quote `${model}` so values like `claude-opus-4-8[1m]` (1M-context
+    // suffix) are not glob-expanded by the shell that tmux spawns the command in.
+    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${channelSetup}${apiKeyEnv}${claudeConfigEnv}${ollamaEnv}${deepseekEnv}cd "${dir}" && ${CLAUDE} ${continueFlag}${skipFlag}--model '${model}' ${channelFlag}`.trimEnd()
     execSync(
       `${TMUX} new-session -d -s ${session} "${cmd}"`,
       { timeout: 10000 }

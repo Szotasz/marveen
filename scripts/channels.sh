@@ -91,7 +91,9 @@ if [ -f "$INSTALL_DIR/.claude/settings.json" ] && command -v jq >/dev/null 2>&1;
   MAIN_MODEL="$(jq -r '.model // empty' "$INSTALL_DIR/.claude/settings.json" 2>/dev/null)"
 fi
 MODEL_FLAG=""
-[ -n "$MAIN_MODEL" ] && MODEL_FLAG="--model $MAIN_MODEL "
+# Single-quote the model id so values like `claude-opus-4-8[1m]` survive the
+# tmux command-string round-trip without the inner shell glob-expanding `[1m]`.
+[ -n "$MAIN_MODEL" ] && MODEL_FLAG="--model '$MAIN_MODEL' "
 
 # Régi session takarítás
 $TMUX kill-session -t "$SESSION" 2>/dev/null
