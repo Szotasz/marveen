@@ -11,7 +11,7 @@ export const DEFAULT_MODEL = 'claude-sonnet-4-6'
 
 // Map short model names to full Claude model IDs (backwards compat with old configs)
 export const MODEL_ALIASES: Record<string, string> = {
-  'opus': 'claude-opus-4-6',
+  'opus': 'claude-opus-4-8',
   'sonnet': 'claude-sonnet-4-6',
   'haiku': 'claude-haiku-4-5-20251001',
   'inherit': DEFAULT_MODEL,
