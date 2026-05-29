@@ -316,7 +316,10 @@ function handleMarveenDown(): void {
     const serviceCmd = process.platform === 'linux'
       ? `\`systemctl --user status ${MAIN_AGENT_ID}-channels\``
       : `\`launchctl list | grep ${MAIN_AGENT_ID}\``
-    sendAlert(`🚨 Hard restart SEM segitett. Kezzel kell megnezni: \`tmux attach -t ${MAIN_CHANNELS_SESSION}\` es ${serviceCmd}.`)
+    // Issue #189: a plain `tmux attach -t ...` may itself fail with "Permission
+    // denied" when the operator is running it from another tmux session. Prefix
+    // with `unset TMUX` so the hint works in both nested and non-nested cases.
+    sendAlert(`🚨 Hard restart SEM segitett. Kezzel kell megnezni: \`unset TMUX && tmux attach -t ${MAIN_CHANNELS_SESSION}\` es ${serviceCmd}.`)
     return
   }
   if (now - marveenDownState.lastAlertAt > PLUGIN_ALERT_DEDUP_MS) {

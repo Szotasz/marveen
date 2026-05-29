@@ -66,6 +66,15 @@ command -v tmux >/dev/null 2>&1 && tmux set-environment -g -u SLACK_BOT_TOKEN 2>
 command -v tmux >/dev/null 2>&1 && tmux set-environment -g -u DISCORD_BOT_TOKEN 2>/dev/null || true
 unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN
 
+# Issue #189: when this script runs from inside an existing tmux session (the
+# user's own work session, for example), the inherited TMUX env var points at
+# the parent client's socket. Any `tmux new-session` we spawn then tries to
+# attach to that socket and fails with "Permission denied" (different uid,
+# different socket dir, or just the new-session-from-inside-tmux block). The
+# child marveen-channels session must live on a fresh tmux client context, so
+# scrub the env var before any tmux command runs.
+unset TMUX
+
 export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
 CLAUDE="$(command -v claude)"
