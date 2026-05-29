@@ -92,6 +92,19 @@ import type { RouteContext } from './types.js'
 
 const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'discord'])
 
+// Discord channel ids are snowflakes — base-10 numeric ids, 17 to 20 digits
+// long in practice (current Discord scheme is 64-bit, with the leading bit
+// always 0). Rejects empty, whitespace-only, non-numeric, or wrong-length
+// values before any state write so a typo in the dashboard cannot bounce the
+// live Marveen session through hardRestartMarveenChannels().
+export function validateDiscordChannelId(cid: string | undefined): { ok: boolean; error?: string } {
+  const trimmed = cid?.trim()
+  if (!trimmed || !/^[0-9]{17,20}$/.test(trimmed)) {
+    return { ok: false, error: 'Discord channelId is required and must be a numeric snowflake (17-20 digits).' }
+  }
+  return { ok: true }
+}
+
 function parseChannelProvider(raw: string): ChannelProviderType | null {
   if (VALID_PROVIDERS.has(raw as ChannelProviderType)) return raw as ChannelProviderType
   return null
@@ -560,6 +573,16 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const body = await readBody(req)
     const { botToken, appToken, channelId } = JSON.parse(body.toString()) as { botToken: string; appToken?: string; channelId?: string }
     if (!botToken?.trim()) { json(res, { error: 'botToken is required' }, 400); return true }
+
+    // Discord-specific channelId guard: the dashboard ships the channel where
+    // the bot will post by default; without it the plugin spins up but cannot
+    // resolve a default channel, and on the main Marveen agent the missing
+    // value would still trigger hardRestartMarveenChannels and bounce the
+    // live session for no useful reason. Reject before any state write.
+    if (provider === 'discord') {
+      const cidCheck = validateDiscordChannelId(channelId)
+      if (!cidCheck.ok) { json(res, { error: cidCheck.error }, 400); return true }
+    }
 
     const channelProvider = getProvider(provider)
     const validation = await channelProvider.validateToken(botToken.trim())
