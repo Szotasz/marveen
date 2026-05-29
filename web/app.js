@@ -1021,7 +1021,7 @@ async function openMarveenDetail() {
   avatar.innerHTML = `<img src="/api/marveen/avatar?t=${Date.now()}" alt="${escapeHtml(displayName)}">`
   document.getElementById('agentDetailName').textContent = displayName
   document.getElementById('agentDetailDesc').textContent = m.description || ''
-  document.getElementById('agentDetailModel').textContent = 'claude-opus-4-6'
+  document.getElementById('agentDetailModel').textContent = m.model || 'claude-opus-4-8'
   document.getElementById('agentDetailChStatus').innerHTML = '<span class="tg-status"><span class="tg-dot connected"></span>Csatlakozva</span>'
   document.getElementById('agentDetailSkillCount').textContent = '-'
 
