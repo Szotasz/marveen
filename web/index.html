@@ -28,6 +28,10 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
         <span class="sb-label">Ügynökök</span>
       </a>
+      <a href="#" class="sb-link" data-page="activity">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>
+        <span class="sb-label">Aktivitás</span>
+      </a>
       <a href="#" class="sb-link" data-page="team">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"/><path d="M12 8v4"/><circle cx="5" cy="18" r="3"/><circle cx="19" cy="18" r="3"/><path d="M12 12l-7 6M12 12l7 6"/></svg>
         <span class="sb-label">Csapat</span>
@@ -198,6 +202,22 @@
           </div>
           <span>Új ügynök</span>
         </button>
+      </div>
+    </div>
+
+    <!-- === Activity (live agent status) Page === -->
+    <div class="page" id="activityPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1>Aktivitás</h1>
+            <p class="subtitle">Mit csinál épp minden ügynök — élő nézet, 3 mp-enként frissül</p>
+          </div>
+          <div class="activity-meta"><span id="activityUpdated" class="activity-updated"></span></div>
+        </div>
+      </div>
+      <div class="activity-list" id="activityList">
+        <p class="activity-empty">Betöltés…</p>
       </div>
     </div>
 

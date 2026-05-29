@@ -4894,3 +4894,40 @@ main {
   .auth-mode-cards { gap: 6px; }
   .auth-mode-card { padding: 10px 12px; gap: 10px; }
 }
+
+/* === Activity (live agent status) === */
+.activity-meta { display: flex; align-items: center; }
+.activity-updated { font-size: 12px; color: var(--text-muted); }
+.activity-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+.activity-empty { color: var(--text-muted); font-size: 14px; }
+.activity-card {
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  padding: 14px 16px;
+}
+.activity-card.act-working { border-left-color: #22c55e; }
+.activity-card.act-idle    { border-left-color: #9ca3af; }
+.activity-card.act-error   { border-left-color: #ef4444; }
+.activity-card.act-unknown { border-left-color: #eab308; }
+.activity-card.act-stopped { border-left-color: #6b7280; opacity: 0.7; }
+.activity-card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.activity-name { font-weight: 600; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+.act-main-badge {
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+  background: var(--border); color: var(--text-muted); border-radius: 4px; padding: 1px 6px;
+}
+.activity-badge { font-size: 12px; font-weight: 600; border-radius: 999px; padding: 2px 10px; }
+.activity-badge.act-working { background: rgba(34,197,94,0.15); color: #16a34a; }
+.activity-badge.act-idle    { background: rgba(156,163,175,0.18); color: #6b7280; }
+.activity-badge.act-error   { background: rgba(239,68,68,0.15); color: #dc2626; }
+.activity-badge.act-unknown { background: rgba(234,179,8,0.18); color: #ca8a04; }
+.activity-badge.act-stopped { background: rgba(107,114,128,0.15); color: #6b7280; }
+.activity-tail {
+  margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
+  line-height: 1.45; color: var(--text-muted); white-space: pre-wrap; word-break: break-word;
+  max-height: 160px; overflow: auto; background: var(--bg-subtle, rgba(127,127,127,0.06));
+  border-radius: 6px; padding: 8px 10px;
+}
+.activity-tail-empty { margin: 0; font-size: 12px; color: var(--text-muted); font-style: italic; }

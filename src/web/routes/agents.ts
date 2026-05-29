@@ -79,6 +79,8 @@ import {
   capturePane,
 } from '../agent-process.js'
 import { readActiveModelFromProjectDir } from '../active-model.js'
+import { detectPaneState } from '../../pane-state.js'
+import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { attemptChannelMcpReconnect } from '../channel-mcp-reconnect.js'
 import { getChannelHealth } from '../channel-health-monitor.js'
 import {
@@ -376,6 +378,56 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
   if (path === '/api/agents' && method === 'GET') {
     json(res, listAgentSummaries())
+    return true
+  }
+
+  // Live activity panel: per-agent "what is it doing right now". Read-only.
+  // Reads each agent's tmux pane (capturePane), classifies it with the same
+  // detector the scheduler uses (detectPaneState), and returns the last few
+  // non-empty lines as a "live tail". Polled by the dashboard every few sec
+  // (no SSE infra in this codebase). Includes the main agent's channels
+  // session so the operator sees the whole fleet, not just sub-agents.
+  if (path === '/api/agents/activity' && method === 'GET') {
+    // PaneState -> coarse label the UI renders as a colored badge.
+    const label = (running: boolean, pane: string | null): string => {
+      if (!running) return 'stopped'
+      if (pane === null) return 'unknown'
+      const s = detectPaneState(pane)
+      if (s === 'busy' || s === 'typing') return 'working'
+      if (s === 'idle') return 'idle'
+      return s // 'unknown' | 'error'
+    }
+    const tailOf = (pane: string | null): string[] =>
+      pane === null
+        ? []
+        : pane
+            .split('\n')
+            .map(l => l.replace(/\s+$/, ''))
+            .filter(l => l.trim().length > 0)
+            .slice(-8)
+
+    const entries: Array<{ name: string; isMain: boolean; running: boolean; state: string; tail: string[] }> = []
+
+    // Main agent (runs in the --channels session, not agent-<name>).
+    {
+      const mainPane = capturePane(MAIN_CHANNELS_SESSION)
+      const running = mainPane !== null
+      entries.push({
+        name: MAIN_AGENT_ID,
+        isMain: true,
+        running,
+        state: label(running, mainPane),
+        tail: tailOf(mainPane),
+      })
+    }
+
+    for (const name of listAgentNames()) {
+      const running = isAgentRunning(name)
+      const pane = running ? capturePane(agentSessionName(name)) : null
+      entries.push({ name, isMain: false, running, state: label(running, pane), tail: tailOf(pane) })
+    }
+
+    json(res, entries)
     return true
   }
 

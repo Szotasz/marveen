@@ -69,6 +69,9 @@ const pages = document.querySelectorAll('.page')
 function switchPage(pageId) {
   pages.forEach((p) => (p.hidden = p.id !== pageId + 'Page'))
   navLinks.forEach((l) => l.classList.toggle('active', l.dataset.page === pageId))
+  // Activity page runs a live poll; stop it whenever we navigate away.
+  if (pageId !== 'activity') stopActivityPoll()
+  if (pageId === 'activity') startActivityPoll()
   if (pageId === 'overview') loadOverview()
   if (pageId === 'kanban') loadKanban()
   if (pageId === 'tasks') loadSchedules()
@@ -93,6 +96,73 @@ navLinks.forEach((link) => {
     switchPage(link.dataset.page)
   })
 })
+
+
+// ============================================================
+// === Activity (live agent status) ===
+// ============================================================
+
+let activityTimer = null
+
+const ACTIVITY_STATE_META = {
+  working: { label: 'dolgozik', cls: 'act-working' },
+  idle: { label: 'várakozik', cls: 'act-idle' },
+  unknown: { label: 'ismeretlen', cls: 'act-unknown' },
+  error: { label: 'hiba', cls: 'act-error' },
+  stopped: { label: 'leállt', cls: 'act-stopped' },
+}
+
+function startActivityPoll() {
+  loadActivity()
+  if (activityTimer) clearInterval(activityTimer)
+  activityTimer = setInterval(loadActivity, 3000)
+}
+
+function stopActivityPoll() {
+  if (activityTimer) {
+    clearInterval(activityTimer)
+    activityTimer = null
+  }
+}
+
+async function loadActivity() {
+  try {
+    const res = await fetch('/api/agents/activity')
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const entries = await res.json()
+    renderActivity(entries)
+    const upd = document.getElementById('activityUpdated')
+    if (upd) upd.textContent = 'Frissítve: ' + new Date().toLocaleTimeString('hu-HU')
+  } catch (e) {
+    const list = document.getElementById('activityList')
+    if (list) list.innerHTML = '<p class="activity-empty">Nem sikerült lekérni az aktivitást: ' + escapeHtml(String(e.message || e)) + '</p>'
+  }
+}
+
+function renderActivity(entries) {
+  const list = document.getElementById('activityList')
+  if (!list) return
+  if (!Array.isArray(entries) || entries.length === 0) {
+    list.innerHTML = '<p class="activity-empty">Nincs ügynök.</p>'
+    return
+  }
+  list.innerHTML = entries.map((a) => {
+    const meta = ACTIVITY_STATE_META[a.state] || ACTIVITY_STATE_META.unknown
+    const tail = (a.tail || []).map((l) => escapeHtml(l)).join('\n')
+    const mainBadge = a.isMain ? '<span class="act-main-badge">fő</span>' : ''
+    return (
+      '<div class="activity-card ' + meta.cls + '">' +
+        '<div class="activity-card-head">' +
+          '<span class="activity-name">' + escapeHtml(a.name) + mainBadge + '</span>' +
+          '<span class="activity-badge ' + meta.cls + '">' + meta.label + '</span>' +
+        '</div>' +
+        (tail
+          ? '<pre class="activity-tail">' + tail + '</pre>'
+          : '<p class="activity-tail-empty">' + (a.running ? 'nincs friss kimenet' : 'a session nem fut') + '</p>') +
+      '</div>'
+    )
+  }).join('')
+}
 
 
 // ============================================================
