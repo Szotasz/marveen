@@ -6,6 +6,7 @@ import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER } from '../config.js'
 import { agentDir, listAgentNames, readAgentChannelProvider } from './agent-config.js'
 import {
+  agentHasChannel,
   agentSessionName,
   capturePane,
   isAgentRunning,
@@ -354,7 +355,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout {
     type Target = { session: string; isMarveen: boolean; agentName?: string; provider: ChannelProviderType }
     const targets: Target[] = [{ session: MAIN_CHANNELS_SESSION, isMarveen: true, provider: mainProvider }]
     for (const a of listAgentNames()) {
-      if (isAgentRunning(a)) {
+      if (isAgentRunning(a) && agentHasChannel(a)) {
         targets.push({
           session: agentSessionName(a),
           isMarveen: false,

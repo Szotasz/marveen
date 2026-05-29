@@ -40,6 +40,16 @@ export function isAgentRunning(name: string): boolean {
   }
 }
 
+export function agentHasChannel(name: string): boolean {
+  const agentProvider = resolveAgentProvider(name)
+  const dir = agentDir(name)
+  const agentChannelDir = channelStateDir(agentProvider, dir)
+  const token = readChannelToken(agentProvider, join(agentChannelDir, '.env'))
+  if (token) return true
+  if (agentProvider === 'telegram') return !!parseTelegramToken(name)
+  return false
+}
+
 export function startAgentProcess(name: string): { ok: boolean; pid?: number; error?: string } {
   if (isAgentRunning(name)) return { ok: false, error: 'Agent is already running' }
 
