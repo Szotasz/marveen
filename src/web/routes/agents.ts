@@ -27,6 +27,7 @@ import {
   writeAgentChannelProvider,
   readAgentAuthMode,
   writeAgentAuthMode,
+  readAgentClaudeConfigDir,
   type AuthMode,
 } from '../agent-config.js'
 import {
@@ -278,7 +279,7 @@ function getAgentSummary(name: string): AgentSummary {
     displayName: readAgentDisplayName(name),
     description: extractDescriptionFromClaudeMd(claudeMd),
     model: readAgentModel(name),
-    activeModel: proc.running ? readActiveModelFromProjectDir(dir, runningSince ?? undefined) : null,
+    activeModel: proc.running ? readActiveModelFromProjectDir(dir, runningSince ?? undefined, readAgentClaudeConfigDir(name) ?? undefined) : null,
     runningSince,
     authMode: readAgentAuthMode(name),
     securityProfile: readAgentSecurityProfile(name),

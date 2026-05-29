@@ -17,15 +17,25 @@ import { homedir } from 'node:os'
 const cache = new Map<string, { value: string | null; expiresAt: number }>()
 const TTL_MS = 3000
 
-export function readActiveModelFromProjectDir(workingDir: string, sinceUnixSec?: number): string | null {
+// Resolve the session-log directory Claude Code writes for a working dir.
+// Logs live under <config-root>/projects/<encoded-working-dir>/, where the
+// config root is ~/.claude by default but an alternate one when the agent was
+// launched with CLAUDE_CONFIG_DIR. Pass that absolute config root as configDir
+// so we read the right project dir for agents on a non-default config.
+export function projectsDirFor(workingDir: string, configDir?: string, homeDirOverride?: string): string {
+  const base = configDir ?? join(homeDirOverride ?? homedir(), '.claude')
+  const encoded = workingDir.replace(/[/.]/g, '-')
+  return join(base, 'projects', encoded)
+}
+
+export function readActiveModelFromProjectDir(workingDir: string, sinceUnixSec?: number, configDir?: string): string | null {
   const now = Date.now()
-  const cacheKey = `${workingDir}:${sinceUnixSec ?? ''}`
+  const cacheKey = `${workingDir}:${sinceUnixSec ?? ''}:${configDir ?? ''}`
   const cached = cache.get(cacheKey)
   if (cached && cached.expiresAt > now) return cached.value
   let value: string | null = null
   try {
-    const encoded = workingDir.replace(/[/.]/g, '-')
-    const dir = join(homedir(), '.claude', 'projects', encoded)
+    const dir = projectsDirFor(workingDir, configDir)
     if (!existsSync(dir)) {
       cache.set(cacheKey, { value: null, expiresAt: now + TTL_MS })
       return null
