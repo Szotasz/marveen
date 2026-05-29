@@ -8458,6 +8458,18 @@ function renderWorkflowList() {
     const steps = (() => { try { return JSON.parse(w.steps_json) } catch { return [] } })()
     const rate = w.run_count > 0 ? Math.round(w.success_count / w.run_count * 100) : null
     const rateHtml = rate !== null ? `<span style="font-size:11px;color:${rate >= 80 ? '#22c55e' : '#f59e0b'}">${rate}% siker (${w.run_count}x)</span>` : `<span style="font-size:11px;color:var(--text-muted)">Még nem futott</span>`
+    const branchStats = (() => { try { return JSON.parse(w.branch_stats_json || '{}') } catch { return {} } })()
+    const branchStatsHtml = Object.keys(branchStats).length ? `
+      <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px">
+        ${Object.entries(branchStats).map(([bId, bs]) => {
+          const br = bs
+          const bRate = br.runs > 0 ? Math.round(br.successes / br.runs * 100) : 0
+          const bColor = bRate >= 80 ? '#22c55e' : '#f59e0b'
+          return `<span style="font-size:10px;background:var(--surface-2,var(--surface));border:1px solid var(--border);border-radius:4px;padding:2px 6px">
+            <span style="color:var(--text-muted)">${escapeHtml(bId)}:</span> <span style="color:${bColor}">${bRate}%</span> <span style="color:var(--text-muted)">(${br.successes}/${br.runs})</span>
+          </span>`
+        }).join('')}
+      </div>` : ''
     const kw = w.trigger_keywords ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">Triggerek: ${escapeHtml(w.trigger_keywords)}</div>` : ''
     const stepTypeColor = { command: 'var(--accent)', decision: '#f59e0b', recovery: '#ef4444' }
     const stepTypeLabel = { command: '⚙', decision: '⤷', recovery: '↺' }
@@ -8478,7 +8490,7 @@ function renderWorkflowList() {
             <span style="font-weight:600;font-size:14px">${escapeHtml(w.name)}</span>${rateHtml}
           </div>
           ${w.description ? `<div style="font-size:13px;color:var(--text-muted);margin-top:2px">${escapeHtml(w.description)}</div>` : ''}
-          ${kw}${stepsHtml}
+          ${kw}${branchStatsHtml}${stepsHtml}
         </div>
         <div style="display:flex;gap:6px;flex-shrink:0">
           <button class="btn-secondary btn-compact" onclick="openWorkflowEdit('${w.id}')" style="font-size:12px">Szerkeszt</button>

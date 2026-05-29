@@ -453,6 +453,7 @@ export function initDatabase(): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_workflow_agent ON workflow_recordings(agent_id)`)
   try { db.exec('ALTER TABLE workflow_recordings ADD COLUMN trigger_description TEXT') } catch { }
   try { db.exec('ALTER TABLE workflow_recordings ADD COLUMN embedding TEXT') } catch { }
+  try { db.exec("ALTER TABLE workflow_recordings ADD COLUMN branch_stats_json TEXT NOT NULL DEFAULT '{}'") } catch { }
 
   // One-shot migration from the old JSON file (which had a read-modify-write
   // race). Import rows if they exist, then rename the file so we don't keep
@@ -1535,6 +1536,11 @@ export function listIdeaCategories(): string[] {
 
 // --- Workflow Recordings ---
 
+export interface WorkflowBranchStat {
+  runs: number
+  successes: number
+}
+
 export interface WorkflowRecordingRow {
   id: string
   name: string
@@ -1543,6 +1549,7 @@ export interface WorkflowRecordingRow {
   trigger_description: string | null
   embedding: string | null
   steps_json: string
+  branch_stats_json: string
   run_count: number
   success_count: number
   agent_id: string
@@ -1655,6 +1662,18 @@ export async function matchWorkflowRecordingsSemantic(query: string, threshold =
 
   results.sort((a, b) => b.score - a.score)
   return results
+}
+
+export function recordWorkflowBranchRun(id: string, branchId: string, success: boolean): boolean {
+  const rec = db.prepare('SELECT branch_stats_json FROM workflow_recordings WHERE id = ?').get(id) as { branch_stats_json: string } | undefined
+  if (!rec) return false
+  let stats: Record<string, WorkflowBranchStat> = {}
+  try { stats = JSON.parse(rec.branch_stats_json || '{}') } catch { /* use empty */ }
+  if (!stats[branchId]) stats[branchId] = { runs: 0, successes: 0 }
+  stats[branchId].runs++
+  if (success) stats[branchId].successes++
+  const now = Math.floor(Date.now() / 1000)
+  return db.prepare('UPDATE workflow_recordings SET branch_stats_json = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(stats), now, id).changes > 0
 }
 
 export async function backfillWorkflowEmbeddings(): Promise<number> {

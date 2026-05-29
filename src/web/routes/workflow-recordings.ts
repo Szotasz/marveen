@@ -7,6 +7,7 @@ import {
   matchWorkflowRecordings,
   matchWorkflowRecordingsSemantic,
   backfillWorkflowEmbeddings,
+  recordWorkflowBranchRun,
 } from '../../db.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
@@ -49,6 +50,7 @@ export async function tryHandleWorkflowRecordings(ctx: RouteContext): Promise<bo
       trigger_keywords: data.trigger_keywords ?? '',
       trigger_description: data.trigger_description ?? null,
       embedding: null,
+      branch_stats_json: '{}',
       steps_json: JSON.stringify(data.steps ?? []),
       agent_id: data.agent_id ?? 'marveen',
     })
@@ -85,6 +87,21 @@ export async function tryHandleWorkflowRecordings(ctx: RouteContext): Promise<bo
     if (type === 'run') updateWorkflowRecording(id, { run_count: rec.run_count + 1 })
     if (type === 'success') updateWorkflowRecording(id, { success_count: rec.success_count + 1 })
     json(res, { ok: true })
+    return true
+  }
+
+  // Branch stats: POST /api/workflow-recordings/:id/branch { branch_id, success }
+  const branchMatch = path.match(/^\/api\/workflow-recordings\/([^/]+)\/branch$/)
+  if (branchMatch && method === 'POST') {
+    const id = decodeURIComponent(branchMatch[1])
+    const body = await readBody(req)
+    const data = JSON.parse(body.toString()) as { branch_id: string; success: boolean }
+    if (!data.branch_id) { json(res, { error: 'branch_id required' }, 400); return true }
+    if (recordWorkflowBranchRun(id, data.branch_id, !!data.success)) {
+      json(res, { ok: true })
+    } else {
+      json(res, { error: 'Nem található' }, 404)
+    }
     return true
   }
 
