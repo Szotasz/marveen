@@ -2,17 +2,24 @@
 //
 // Flow:
 // 1. Operator generates an invite via POST /api/agents/:name/channels/:provider/invites.
-//    The token + expiry is stored in access.json under `invites`.
-//    If dmPolicy was 'allowlist', it is flipped to 'pairing' so the bot will
+//    The token + expiry is stored in invites.json (a sidecar next to access.json).
+//    access.json's dmPolicy is flipped to 'pairing' so the channel plugin will
 //    actually issue codes for unknown senders during the validity window.
-// 2. The invitee opens the deep-link (Telegram: t.me/?start=TOKEN, Slack: CLI pair),
+// 2. The invitee opens the deep-link (Telegram: t.me/<bot>?start=invite-TOKEN, Slack: CLI pair),
 //    the plugin creates a pending entry in access.json (standard pairing behaviour).
-// 3. This monitor (started in src/index.ts) polls access.json files every
-//    few seconds. When it sees a pending entry land while at least one
-//    non-used, non-expired invite token exists for that agent, it
-//    auto-approves the entry: marks the token used, moves the senderId
-//    into allowFrom, drops the pending row, restores allowlist policy if
-//    no other invites are still active.
+// 3. This monitor (started in src/index.ts) polls both files every few seconds.
+//    When it sees a pending entry in access.json while at least one non-used,
+//    non-expired invite token exists in invites.json, it auto-approves the entry:
+//    marks the token used (in invites.json), moves the senderId into allowFrom
+//    (in access.json), drops the pending row, restores allowlist policy if no
+//    other invites are still active.
+//
+// Why a sidecar file: access.json is co-owned by the channel plugin (e.g.
+// telegram@claude-plugins-official). That plugin rewrites access.json from its
+// own schema on every pairing event and does NOT preserve unknown keys, so an
+// `invites` map written into access.json gets silently wiped the moment an
+// invitee triggers a pending entry. Storing tokens in invites.json — which the
+// plugin never reads or writes — keeps them safe across plugin saves.
 //
 // The invite-token is a "shared secret" that grants exactly one auto-approve.
 // Tokens are 16 random bytes (base64url, ~22 chars), unguessable in practice.
@@ -32,11 +39,17 @@ interface InviteEntry {
   usedAt?: number
 }
 
+// access.json is co-owned by the channel plugin. We only ever touch the fields
+// the plugin also understands (dmPolicy, allowFrom, pending); invite tokens live
+// in the sidecar InvitesFile so the plugin can't clobber them.
 interface AccessFile {
   dmPolicy?: 'pairing' | 'allowlist' | 'disabled'
   allowFrom?: string[]
   groups?: Record<string, unknown>
   pending?: Record<string, { senderId: string; chatId: string; createdAt: number; expiresAt: number; replies?: number }>
+}
+
+interface InvitesFile {
   invites?: Record<string, InviteEntry>
 }
 
@@ -46,6 +59,11 @@ export function agentChannelDir(name: string, mainAgentId: string, provider: Cha
   return name === mainAgentId
     ? channelStateDir(provider)
     : channelStateDir(provider, agentDir(name))
+}
+
+// invites.json sits next to access.json in the same channel state dir.
+function invitesPathFor(accessPath: string): string {
+  return join(accessPath, '..', 'invites.json')
 }
 
 function readAccess(path: string): AccessFile {
@@ -61,22 +79,35 @@ function writeAccess(path: string, data: AccessFile): void {
   atomicWriteFileSync(path, JSON.stringify(data, null, 2))
 }
 
-function pruneInvites(access: AccessFile, now: number): boolean {
-  if (!access.invites) return false
+function readInvites(path: string): InvitesFile {
+  try {
+    return JSON.parse(readFileSync(path, 'utf-8')) as InvitesFile
+  } catch {
+    return {}
+  }
+}
+
+function writeInvites(path: string, data: InvitesFile): void {
+  mkdirSync(join(path, '..'), { recursive: true })
+  atomicWriteFileSync(path, JSON.stringify(data, null, 2))
+}
+
+function pruneInvites(store: InvitesFile, now: number): boolean {
+  if (!store.invites) return false
   let mutated = false
-  for (const [token, inv] of Object.entries(access.invites)) {
+  for (const [token, inv] of Object.entries(store.invites)) {
     if (inv.expiresAt < now && !inv.used) {
-      delete access.invites[token]
+      delete store.invites[token]
       mutated = true
     }
   }
   return mutated
 }
 
-function activeInviteCount(access: AccessFile, now: number): number {
-  if (!access.invites) return 0
+function activeInviteCount(store: InvitesFile, now: number): number {
+  if (!store.invites) return 0
   let n = 0
-  for (const inv of Object.values(access.invites)) {
+  for (const inv of Object.values(store.invites)) {
     if (!inv.used && inv.expiresAt >= now) n++
   }
   return n
@@ -94,9 +125,10 @@ export function createInvite(
   provider: ChannelProviderType = 'telegram',
   ttlMs: number = INVITE_DEFAULT_TTL_MS,
 ): CreateInviteResult {
-  const access = readAccess(accessPath)
+  const invitesPath = invitesPathFor(accessPath)
+  const store = readInvites(invitesPath)
   const now = Date.now()
-  pruneInvites(access, now)
+  pruneInvites(store, now)
 
   const token = randomBytes(16).toString('base64url').slice(0, 22)
   const entry: InviteEntry = {
@@ -104,26 +136,34 @@ export function createInvite(
     expiresAt: now + ttlMs,
     used: false,
   }
-  access.invites = access.invites || {}
-  access.invites[token] = entry
+  store.invites = store.invites || {}
+  store.invites[token] = entry
+  writeInvites(invitesPath, store)
 
-  if (access.dmPolicy !== 'disabled') access.dmPolicy = 'pairing'
-
-  writeAccess(accessPath, access)
+  // Flip dmPolicy to 'pairing' so the plugin issues codes for unknown senders
+  // during the validity window. This is the one field we must set in access.json;
+  // the plugin preserves it across its own writes.
+  const access = readAccess(accessPath)
+  if (access.dmPolicy !== 'disabled') {
+    access.dmPolicy = 'pairing'
+    writeAccess(accessPath, access)
+  }
 
   let deepLink: string | undefined
   if (provider === 'telegram' && botUsername) {
-    deepLink = `https://t.me/${botUsername}?start=invite-${token}`
+    const cleanUsername = botUsername.replace(/^@/, '')
+    deepLink = `https://t.me/${cleanUsername}?start=invite-${token}`
   }
   return { token, expiresAt: entry.expiresAt, deepLink }
 }
 
 export function listInvites(accessPath: string): Array<{ token: string; createdAt: number; expiresAt: number; used: boolean; usedBy?: string; deepLink?: string }> {
-  const access = readAccess(accessPath)
+  const invitesPath = invitesPathFor(accessPath)
+  const store = readInvites(invitesPath)
   const now = Date.now()
-  if (pruneInvites(access, now)) writeAccess(accessPath, access)
-  if (!access.invites) return []
-  return Object.entries(access.invites).map(([token, inv]) => ({
+  if (pruneInvites(store, now)) writeInvites(invitesPath, store)
+  if (!store.invites) return []
+  return Object.entries(store.invites).map(([token, inv]) => ({
     token,
     createdAt: inv.createdAt,
     expiresAt: inv.expiresAt,
@@ -133,13 +173,18 @@ export function listInvites(accessPath: string): Array<{ token: string; createdA
 }
 
 export function revokeInvite(accessPath: string, token: string): boolean {
-  const access = readAccess(accessPath)
-  if (!access.invites?.[token]) return false
-  delete access.invites[token]
-  if (activeInviteCount(access, Date.now()) === 0) {
-    access.dmPolicy = 'allowlist'
+  const invitesPath = invitesPathFor(accessPath)
+  const store = readInvites(invitesPath)
+  if (!store.invites?.[token]) return false
+  delete store.invites[token]
+  writeInvites(invitesPath, store)
+  if (activeInviteCount(store, Date.now()) === 0) {
+    const access = readAccess(accessPath)
+    if (access.dmPolicy === 'pairing') {
+      access.dmPolicy = 'allowlist'
+      writeAccess(accessPath, access)
+    }
   }
-  writeAccess(accessPath, access)
   return true
 }
 
@@ -160,24 +205,26 @@ export function runInviteMonitorTick(mainAgentId: string, agentsRoot: string): v
     }
 
     for (const { name, accessPath } of targets) {
+      const invitesPath = invitesPathFor(accessPath)
+      const store = readInvites(invitesPath)
+      if (!store.invites) continue
+
       const access = readAccess(accessPath)
-      if (!access.invites || !access.pending) continue
-
       const now = Date.now()
-      const expiredOrUsed = pruneInvites(access, now)
+      if (pruneInvites(store, now)) writeInvites(invitesPath, store)
 
-      const live = Object.entries(access.invites)
+      const live = Object.entries(store.invites)
         .filter(([, inv]) => !inv.used && inv.expiresAt >= now)
         .sort((a, b) => a[1].createdAt - b[1].createdAt)
       if (live.length === 0) {
-        if (expiredOrUsed && activeInviteCount(access, now) === 0 && access.dmPolicy === 'pairing') {
+        if (activeInviteCount(store, now) === 0 && access.dmPolicy === 'pairing') {
           access.dmPolicy = 'allowlist'
           writeAccess(accessPath, access)
         }
         continue
       }
 
-      const pendingEntries = Object.entries(access.pending)
+      const pendingEntries = Object.entries(access.pending || {})
         .sort((a, b) => a[1].createdAt - b[1].createdAt)
       if (pendingEntries.length === 0) continue
 
@@ -186,13 +233,13 @@ export function runInviteMonitorTick(mainAgentId: string, agentsRoot: string): v
 
       if (!access.allowFrom) access.allowFrom = []
       if (!access.allowFrom.includes(pEntry.senderId)) access.allowFrom.push(pEntry.senderId)
-      delete access.pending[pCode]
+      if (access.pending) delete access.pending[pCode]
 
       tEntry.used = true
       tEntry.usedBy = pEntry.senderId
       tEntry.usedAt = now
 
-      if (activeInviteCount(access, now) === 0) access.dmPolicy = 'allowlist'
+      if (activeInviteCount(store, now) === 0) access.dmPolicy = 'allowlist'
 
       try {
         const approvedDir = join(accessPath, '..', 'approved')
@@ -203,6 +250,7 @@ export function runInviteMonitorTick(mainAgentId: string, agentsRoot: string): v
       }
 
       writeAccess(accessPath, access)
+      writeInvites(invitesPath, store)
       logger.info({ name, provider, senderId: pEntry.senderId, token: tToken }, 'Channel invite auto-approved')
     }
   }
