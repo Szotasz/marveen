@@ -864,6 +864,10 @@
             <div class="form-group"><label class="form-label">Név *</label><input type="text" id="workflowNameInput" class="input" placeholder="pl. upstream-merge"></div>
             <div class="form-group"><label class="form-label">Leírás</label><input type="text" id="workflowDescInput" class="input"></div>
             <div class="form-group"><label class="form-label">Trigger kulcsszavak</label><input type="text" id="workflowKeywordsInput" class="input" placeholder="szóközzel elválasztva"></div>
+            <div class="form-group">
+              <label class="form-label">Trigger leírás <span style="font-size:11px;color:var(--text-muted)">(természetes nyelven -- vektoros kereséshez)</span></label>
+              <input type="text" id="workflowTriggerDescInput" class="input" placeholder="pl. upstream repository szinkronizálása, fork frissítése, main branch merge">
+            </div>
             <div class="form-group"><label class="form-label">Lépések (JSON)</label><textarea id="workflowStepsInput" class="input" rows="8"></textarea></div>
           </div>
           <div class="modal-footer" style="display:flex;gap:8px;justify-content:flex-end">

@@ -8459,7 +8459,18 @@ function renderWorkflowList() {
     const rate = w.run_count > 0 ? Math.round(w.success_count / w.run_count * 100) : null
     const rateHtml = rate !== null ? `<span style="font-size:11px;color:${rate >= 80 ? '#22c55e' : '#f59e0b'}">${rate}% siker (${w.run_count}x)</span>` : `<span style="font-size:11px;color:var(--text-muted)">Még nem futott</span>`
     const kw = w.trigger_keywords ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">Triggerek: ${escapeHtml(w.trigger_keywords)}</div>` : ''
-    const stepsHtml = steps.length ? `<div style="margin-top:8px;display:flex;flex-direction:column;gap:3px">${steps.map((s, i) => `<div style="font-size:12px;color:var(--text-muted);display:flex;gap:6px"><span style="opacity:.4;min-width:16px">${i + 1}.</span><span><strong style="font-size:11px;color:var(--accent)">${escapeHtml(s.tool)}</strong> — ${escapeHtml(s.description)}</span></div>`).join('')}</div>` : ''
+    const stepTypeColor = { command: 'var(--accent)', decision: '#f59e0b', recovery: '#ef4444' }
+    const stepTypeLabel = { command: '⚙', decision: '⤷', recovery: '↺' }
+    const stepsHtml = steps.length ? `<div style="margin-top:8px;display:flex;flex-direction:column;gap:3px">${steps.map((s, i) => {
+      const typeColor = stepTypeColor[s.type] || 'var(--accent)'
+      const typeIcon = stepTypeLabel[s.type] || ''
+      const onFail = s.on_failure ? `<span style="font-size:10px;color:#ef4444;margin-left:4px">→ ${escapeHtml(s.on_failure)}</span>` : ''
+      const branches = s.branches ? `<div style="font-size:10px;color:var(--text-muted);margin-left:22px">${Object.entries(s.branches).map(([k, v]) => `${escapeHtml(k)}: [${v.join(', ')}]`).join(' | ')}</div>` : ''
+      return `<div style="font-size:12px;color:var(--text-muted);display:flex;gap:6px;flex-wrap:wrap">
+        <span style="opacity:.4;min-width:16px">${s.id || (i + 1) + '.'}</span>
+        <span><strong style="font-size:11px;color:${typeColor}">${typeIcon}${escapeHtml(s.tool || s.action || '')}</strong> — ${escapeHtml(s.description || s.action || '')}${onFail}</span>
+      </div>${branches}`
+    }).join('')}</div>` : ''
     return `<div class="card" style="padding:14px 16px">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
         <div style="flex:1;min-width:0">
@@ -8484,6 +8495,7 @@ function openWorkflowNew() {
   document.getElementById('workflowNameInput').value = ''
   document.getElementById('workflowDescInput').value = ''
   document.getElementById('workflowKeywordsInput').value = ''
+  document.getElementById('workflowTriggerDescInput').value = ''
   document.getElementById('workflowStepsInput').value = '[]'
   document.getElementById('workflowModalOverlay').hidden = false
 }
@@ -8496,6 +8508,7 @@ function openWorkflowEdit(id) {
   document.getElementById('workflowNameInput').value = w.name
   document.getElementById('workflowDescInput').value = w.description || ''
   document.getElementById('workflowKeywordsInput').value = w.trigger_keywords || ''
+  document.getElementById('workflowTriggerDescInput').value = w.trigger_description || ''
   document.getElementById('workflowStepsInput').value = w.steps_json || '[]'
   document.getElementById('workflowModalOverlay').hidden = false
 }
@@ -8505,7 +8518,7 @@ async function saveWorkflow() {
   if (!name) { showToast('Név kötelező', 'error'); return }
   let steps
   try { steps = JSON.parse(document.getElementById('workflowStepsInput').value) } catch { showToast('Érvénytelen JSON', 'error'); return }
-  const body = { name, description: document.getElementById('workflowDescInput').value.trim() || undefined, trigger_keywords: document.getElementById('workflowKeywordsInput').value.trim(), steps }
+  const body = { name, description: document.getElementById('workflowDescInput').value.trim() || undefined, trigger_keywords: document.getElementById('workflowKeywordsInput').value.trim(), trigger_description: document.getElementById('workflowTriggerDescInput').value.trim() || undefined, steps }
   if (workflowEditId) {
     await fetch(`/api/workflow-recordings/${workflowEditId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
   } else {

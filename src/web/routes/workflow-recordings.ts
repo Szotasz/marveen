@@ -5,6 +5,8 @@ import {
   updateWorkflowRecording,
   deleteWorkflowRecording,
   matchWorkflowRecordings,
+  matchWorkflowRecordingsSemantic,
+  backfillWorkflowEmbeddings,
 } from '../../db.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
@@ -15,7 +17,12 @@ export async function tryHandleWorkflowRecordings(ctx: RouteContext): Promise<bo
   if (path === '/api/workflow-recordings' && method === 'GET') {
     const agent = url.searchParams.get('agent') || undefined
     const q = url.searchParams.get('q')
-    if (q) {
+    const semantic = url.searchParams.get('semantic') === '1'
+    const threshold = parseFloat(url.searchParams.get('threshold') || '0.6')
+    if (q && semantic) {
+      const results = await matchWorkflowRecordingsSemantic(q, threshold)
+      json(res, results)
+    } else if (q) {
       json(res, matchWorkflowRecordings(q))
     } else {
       json(res, listWorkflowRecordings(agent))
@@ -29,7 +36,8 @@ export async function tryHandleWorkflowRecordings(ctx: RouteContext): Promise<bo
       name: string
       description?: string
       trigger_keywords?: string
-      steps?: Array<{ tool: string; description: string; command?: string }>
+      trigger_description?: string
+      steps?: unknown[]
       agent_id?: string
     }
     if (!data.name) { json(res, { error: 'name required' }, 400); return true }
@@ -39,6 +47,8 @@ export async function tryHandleWorkflowRecordings(ctx: RouteContext): Promise<bo
       name: data.name,
       description: data.description ?? null,
       trigger_keywords: data.trigger_keywords ?? '',
+      trigger_description: data.trigger_description ?? null,
+      embedding: null,
       steps_json: JSON.stringify(data.steps ?? []),
       agent_id: data.agent_id ?? 'marveen',
     })
@@ -75,6 +85,27 @@ export async function tryHandleWorkflowRecordings(ctx: RouteContext): Promise<bo
     if (type === 'run') updateWorkflowRecording(id, { run_count: rec.run_count + 1 })
     if (type === 'success') updateWorkflowRecording(id, { success_count: rec.success_count + 1 })
     json(res, { ok: true })
+    return true
+  }
+
+  // Backfill embeddings for all workflows missing them
+  if (path === '/api/workflow-recordings/backfill-embeddings' && method === 'POST') {
+    const count = await backfillWorkflowEmbeddings()
+    json(res, { ok: true, count })
+    return true
+  }
+
+  // Semantic suggest: best match above threshold for a given query
+  if (path === '/api/workflow-recordings/suggest' && method === 'GET') {
+    const q = url.searchParams.get('q') || ''
+    const threshold = parseFloat(url.searchParams.get('threshold') || '0.6')
+    if (!q) { json(res, { suggestion: null }); return true }
+    const results = await matchWorkflowRecordingsSemantic(q, threshold)
+    const best = results[0] || null
+    if (!best) { json(res, { suggestion: null }); return true }
+    // High confidence (>0.82): auto-suggest; medium (0.6-0.82): ask
+    const confidence = best.score > 0.82 ? 'high' : 'medium'
+    json(res, { suggestion: { workflow: best.workflow, score: best.score, source: best.source, confidence } })
     return true
   }
 

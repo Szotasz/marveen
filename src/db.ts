@@ -451,6 +451,8 @@ export function initDatabase(): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_workflow_agent ON workflow_recordings(agent_id)`)
+  try { db.exec('ALTER TABLE workflow_recordings ADD COLUMN trigger_description TEXT') } catch { }
+  try { db.exec('ALTER TABLE workflow_recordings ADD COLUMN embedding TEXT') } catch { }
 
   // One-shot migration from the old JSON file (which had a read-modify-write
   // race). Import rows if they exist, then rename the file so we don't keep
@@ -1538,6 +1540,8 @@ export interface WorkflowRecordingRow {
   name: string
   description: string | null
   trigger_keywords: string
+  trigger_description: string | null
+  embedding: string | null
   steps_json: string
   run_count: number
   success_count: number
@@ -1556,18 +1560,33 @@ export function listWorkflowRecordings(agent_id?: string): WorkflowRecordingRow[
 export function createWorkflowRecording(rec: Omit<WorkflowRecordingRow, 'created_at' | 'updated_at' | 'run_count' | 'success_count'>): void {
   const now = Math.floor(Date.now() / 1000)
   db.prepare(
-    `INSERT INTO workflow_recordings (id, name, description, trigger_keywords, steps_json, run_count, success_count, agent_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?)`
-  ).run(rec.id, rec.name, rec.description ?? null, rec.trigger_keywords, rec.steps_json, rec.agent_id, now, now)
+    `INSERT INTO workflow_recordings (id, name, description, trigger_keywords, trigger_description, embedding, steps_json, run_count, success_count, agent_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, NULL, ?, 0, 0, ?, ?, ?)`
+  ).run(rec.id, rec.name, rec.description ?? null, rec.trigger_keywords, rec.trigger_description ?? null, rec.steps_json, rec.agent_id, now, now)
+  // Fire-and-forget: generate embedding for the trigger_description
+  if (rec.trigger_description) {
+    generateEmbedding(rec.trigger_description).then(emb => {
+      if (emb) db.prepare('UPDATE workflow_recordings SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), rec.id)
+    }).catch(() => { /* Ollama not running */ })
+  }
 }
 
-export function updateWorkflowRecording(id: string, patch: Partial<Pick<WorkflowRecordingRow, 'name' | 'description' | 'trigger_keywords' | 'steps_json' | 'run_count' | 'success_count'>>): boolean {
+export function updateWorkflowRecording(id: string, patch: Partial<Pick<WorkflowRecordingRow, 'name' | 'description' | 'trigger_keywords' | 'trigger_description' | 'steps_json' | 'run_count' | 'success_count'>>): boolean {
   const now = Math.floor(Date.now() / 1000)
   const sets: string[] = ['updated_at = ?']
   const params: unknown[] = [now]
   if (patch.name !== undefined) { sets.push('name = ?'); params.push(patch.name) }
   if (patch.description !== undefined) { sets.push('description = ?'); params.push(patch.description) }
   if (patch.trigger_keywords !== undefined) { sets.push('trigger_keywords = ?'); params.push(patch.trigger_keywords) }
+  if (patch.trigger_description !== undefined) {
+    sets.push('trigger_description = ?'); params.push(patch.trigger_description)
+    // Regenerate embedding when trigger_description changes
+    if (patch.trigger_description) {
+      generateEmbedding(patch.trigger_description).then(emb => {
+        if (emb) db.prepare('UPDATE workflow_recordings SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), id)
+      }).catch(() => { /* Ollama not running */ })
+    }
+  }
   if (patch.steps_json !== undefined) { sets.push('steps_json = ?'); params.push(patch.steps_json) }
   if (patch.run_count !== undefined) { sets.push('run_count = ?'); params.push(patch.run_count) }
   if (patch.success_count !== undefined) { sets.push('success_count = ?'); params.push(patch.success_count) }
@@ -1586,4 +1605,68 @@ export function matchWorkflowRecordings(keywords: string): WorkflowRecordingRow[
     const kw = r.trigger_keywords.toLowerCase()
     return words.some(w => kw.includes(w))
   })
+}
+
+export interface WorkflowMatchResult {
+  workflow: WorkflowRecordingRow
+  score: number
+  source: 'keyword' | 'vector' | 'both'
+}
+
+export async function matchWorkflowRecordingsSemantic(query: string, threshold = 0.6): Promise<WorkflowMatchResult[]> {
+  const all = db.prepare('SELECT * FROM workflow_recordings ORDER BY success_count DESC').all() as WorkflowRecordingRow[]
+
+  // Keyword match
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean)
+  const keywordMatches = new Set(all.filter(r => {
+    const kw = (r.trigger_keywords + ' ' + (r.trigger_description || '')).toLowerCase()
+    return words.some(w => kw.includes(w))
+  }).map(r => r.id))
+
+  // Vector match
+  const vectorMatches = new Map<string, number>()
+  const queryEmb = await generateEmbedding(query)
+  if (queryEmb) {
+    for (const r of all) {
+      if (!r.embedding) continue
+      try {
+        const emb = JSON.parse(r.embedding) as number[]
+        const score = cosineSimilarity(queryEmb, emb)
+        if (score >= threshold) vectorMatches.set(r.id, score)
+      } catch { /* skip */ }
+    }
+  }
+
+  const results: WorkflowMatchResult[] = []
+  const seen = new Set<string>()
+
+  for (const r of all) {
+    const inKw = keywordMatches.has(r.id)
+    const vecScore = vectorMatches.get(r.id)
+    if (!inKw && vecScore === undefined) continue
+    if (seen.has(r.id)) continue
+    seen.add(r.id)
+    results.push({
+      workflow: r,
+      score: vecScore ?? (inKw ? 1.0 : 0),
+      source: inKw && vecScore !== undefined ? 'both' : inKw ? 'keyword' : 'vector',
+    })
+  }
+
+  results.sort((a, b) => b.score - a.score)
+  return results
+}
+
+export async function backfillWorkflowEmbeddings(): Promise<number> {
+  const rows = db.prepare('SELECT id, trigger_description FROM workflow_recordings WHERE embedding IS NULL AND trigger_description IS NOT NULL').all() as { id: string; trigger_description: string }[]
+  let count = 0
+  for (const row of rows) {
+    const emb = await generateEmbedding(row.trigger_description)
+    if (emb) {
+      db.prepare('UPDATE workflow_recordings SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), row.id)
+      count++
+    }
+    await new Promise(r => setTimeout(r, 100))
+  }
+  return count
 }
