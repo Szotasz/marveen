@@ -24,6 +24,7 @@ INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 if [ -f "$INSTALL_DIR/.env" ]; then
   MAIN_AGENT_ID="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
   CHANNEL_PROVIDER="$(grep -E '^CHANNEL_PROVIDER=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
+  BOT_NAME="$(grep -E '^BOT_NAME=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
   # Claude Code auth: pass API key or OAuth token so the tmux-spawned
   # claude process can authenticate. These are safe to export -- unlike
   # TELEGRAM_BOT_TOKEN they don't cause cross-session conflicts.
@@ -116,6 +117,14 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
       ;;
   esac
 done
+
+# Set agent name and remote-control identifier once the session is ready.
+_bot_name="${BOT_NAME:-${MAIN_AGENT_ID:-marveen}}"
+sleep 1
+$TMUX send-keys -t "$SESSION" "/name ${_bot_name}" Enter
+sleep 1
+$TMUX send-keys -t "$SESSION" "/remote-control ${_bot_name}" Enter
+unset _bot_name
 
 # Bot menu setup (Telegram only; Slack uses App Manifest)
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then

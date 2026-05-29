@@ -1,5 +1,6 @@
 {
   "enabledPlugins": {
-    "slack-channel@marveen-marketplace": false
+    "slack-channel@marveen-marketplace": false,
+    "telegram@claude-plugins-official": true
   }
 }

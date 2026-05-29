@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { execSync, execFileSync } from 'node:child_process'
@@ -10,7 +10,7 @@ import {
   decideSubmitFollowup,
   shouldClearTruncatedPreamble,
 } from '../pane-state.js'
-import { agentDir, readAgentModel, readAgentSecurityProfile, readAgentClaudeConfigDir, readAgentChannelProvider, readAgentAuthMode } from './agent-config.js'
+import { agentDir, readAgentModel, readAgentSecurityProfile, readAgentClaudeConfigDir, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName } from './agent-config.js'
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { CHANNEL_PROVIDER } from '../config.js'
@@ -100,6 +100,25 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
     // Claude Code enforces the list rather than bypassing it.
     const profile = loadProfileTemplate(readAgentSecurityProfile(name))
     writeAgentSettingsFromProfile(name, profile)
+    // Channel-less agents must not load the global channel plugins from
+    // enabledPlugins. Without this, they fall back to the main agent's
+    // token and two instances fight over the same getUpdates slot (409
+    // Conflict / orphan watchdog loop causing recurring MCP disconnects).
+    if (!hasChannel) {
+      const settingsPath = join(agentDir(name), '.claude', 'settings.json')
+      try {
+        const s = JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown>
+        s.enabledPlugins = {
+          ...(s.enabledPlugins as Record<string, boolean> | undefined ?? {}),
+          'telegram@claude-plugins-official': false,
+          'slack-channel@marveen-marketplace': false,
+          'discord@claude-plugins-official': false,
+        }
+        writeFileSync(settingsPath, JSON.stringify(s, null, 2))
+      } catch (err) {
+        logger.warn({ err, name }, 'Could not disable channel plugins for channel-less agent')
+      }
+    }
     const skipFlag = profile.permissionMode === 'strict' ? '' : '--dangerously-skip-permissions '
     // Optional per-agent CLAUDE_CONFIG_DIR (alternate Claude Code config dir,
     // e.g. for routing this agent to a separate Anthropic login). When the
@@ -157,6 +176,18 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
       } catch (err) {
         logger.warn({ err, name, session }, 'Post-restart modal dismiss failed')
       }
+      // Set /name and /remote-control so the agent is identifiable.
+      setTimeout(() => {
+        try {
+          const displayName = readAgentDisplayName(name)
+          execFileSync(TMUX, ['send-keys', '-t', session, `/name ${displayName}`, 'Enter'], { timeout: 5000 })
+          execFileSync('/bin/sleep', ['1'], { timeout: 2000 })
+          execFileSync(TMUX, ['send-keys', '-t', session, `/remote-control ${displayName}`, 'Enter'], { timeout: 5000 })
+          logger.info({ name, session, displayName }, 'Set agent /name and /remote-control')
+        } catch (err) {
+          logger.warn({ err, name, session }, 'Failed to set agent /name or /remote-control')
+        }
+      }, 5000)
     }, 8000)
 
     return { ok: true }
