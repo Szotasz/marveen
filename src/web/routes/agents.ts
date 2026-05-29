@@ -394,7 +394,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     } catch (err) {
       rmSync(agentDir(name), { recursive: true, force: true })
       logger.error({ err, name }, 'Failed to generate agent files')
-      json(res, { error: 'Failed to generate agent files' }, 500)
+      // Propagate the underlying message so the dashboard surfaces the actual
+      // cause (auth not configured, Claude Code CLI missing, etc.) instead of
+      // the previous opaque "Failed to generate agent files" — Issue #179.
+      const detail = err instanceof Error ? err.message : 'Unknown error'
+      json(res, { error: 'Failed to generate agent files', detail }, 500)
       return true
     }
 
