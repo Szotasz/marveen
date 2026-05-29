@@ -16,6 +16,7 @@ import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
 import { startWebServer } from './web.js'
 import { logger } from './logger.js'
 import { startInviteMonitor, stopInviteMonitor } from './web/channel-invites.js'
+import { ensureDiscordChannelGroup } from './web/discord-group-bootstrap.js'
 import { startChannelRequestWatcher, stopChannelRequestWatcher } from './web/channel-request-watcher.js'
 import { AGENTS_BASE_DIR } from './web/agent-config.js'
 import {
@@ -432,6 +433,12 @@ async function main(): Promise<void> {
   initHeartbeat()
   heartbeatStarted = true
   logger.info('Heartbeat utemezo elindult')
+
+  // Discord-only: ensure the operator-configured DISCORD_CHANNEL_ID is
+  // in access.groups so the plugin's outbound `reply` tool can send to
+  // server channels without a manual `/discord:access group add` step.
+  // No-op for non-discord providers.
+  ensureDiscordChannelGroup()
 
   // Telegram invite auto-approve monitor (one-click pairing).
   startInviteMonitor(MAIN_AGENT_ID, AGENTS_BASE_DIR)

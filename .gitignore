@@ -23,6 +23,7 @@ reports/
 
 # Test artifacts
 test-results/
+.playwright-mcp/
 
 # macOS
 .DS_Store

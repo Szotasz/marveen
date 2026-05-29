@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import {
   detectPaneState,
+  detectsThinkingBlockError,
   isReadyForPrompt,
   shouldRetrySubmit,
   shouldClearTruncatedPreamble,
   decideSubmitFollowup,
+  decidePaneErrorAlert,
 } from '../pane-state.js'
 
 // Realistic pane fixtures modelled on actual `tmux capture-pane -p`
@@ -175,6 +177,130 @@ const IDLE_BACKGROUND_ONE_SHELL_HIDDEN = [
   '  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage',
 ].join('\n')
 
+// Wedged thinking-block API error. An assistant turn ended with the
+// 400 about thinking blocks that "cannot be modified"; the pane shows
+// the tool-output chrome (`⎿  API Error: ...`), a past-tense thinking
+// stamp, an empty input box and the idle footer. The U+23BF result
+// glyph and the full phrase are reproduced exactly so the regex sees
+// the same bytes it would in prod. Sanitised: no internal names/paths.
+const ERROR_THINKING_BLOCK = [
+  '  ⎿  API Error: 400 messages.55.content.19: `thinking` or `redacted_thinking` blocks in the latest assistant message',
+  '      cannot be modified. These blocks must remain as they were in the original response.',
+  '',
+  '✻ Sauteed for 1s',
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+].join('\n')
+
+// A message body that QUOTES "API Error 400" in prose (an instruction
+// to report if the error recurs). No `⎿  API Error: <num>` chrome and
+// no "cannot be modified" phrase -- must NOT be read as a wedged error.
+const ERROR_ECHO_IN_MESSAGE = [
+  '  HA a session-history korrupt es ismet API Error 400 jon a feldolgozas',
+  '  elejen, AZONNAL jelezd vissza inter-agent uzenetben.',
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+].join('\n')
+
+// A reply that quotes the FULL phrase ("thinking ... cannot be
+// modified") in prose, e.g. a bug analysis, but WITHOUT the
+// `⎿  API Error: <num>` chrome glyph. The chrome guard must keep this
+// out of the 'error' class.
+const ERROR_FULL_PHRASE_PROSE = [
+  '  A hiba lenyege: a thinking vagy redacted_thinking blocks cannot be',
+  '  modified ket API-hivas kozott. Ezt most csak elemzem, nem elo hiba.',
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+].join('\n')
+
+// An old error far up in scrollback (above the live tail), with a fresh
+// idle turn below it. The position scope must ignore the stale error so
+// a recovered session is not stuck classified as 'error'.
+const ERROR_DEEP_SCROLLBACK = [
+  '  ⎿  API Error: 400 messages.55.content.19: `thinking` blocks cannot be modified.',
+  ...Array(24).fill('  (normal output line after the session recovered)'),
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+].join('\n')
+
+// Error chrome present BUT a live spinner is also rendered: the turn is
+// running again, not wedged. The busy guard must win so we do not stop
+// injecting into a session that is actually working.
+const ERROR_DURING_BUSY = [
+  '  ⎿  API Error: 400 messages.55.content.19: `thinking` blocks cannot be modified.',
+  '✻ Combobulating… (12s · ↓ 480 tokens)',
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt',
+].join('\n')
+
+// A BENIGN chrome error (429) on one line AND an unrelated "thinking ...
+// cannot be modified" prose several lines below it (outside the chrome
+// block). The guards are required WITHIN one chrome block, so this must
+// NOT be flagged -- otherwise a healthy session that hits a rate limit
+// and elsewhere mentions the phrase would be wrongly reset.
+const ERROR_DECOUPLED_BENIGN = [
+  '  ⎿  API Error: 429 overloaded_error: server busy, retrying',
+  '  retry succeeded, continuing the task',
+  '  finished that step',
+  '',
+  '  Note: the thinking-block error is when a block cannot be modified.',
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+].join('\n')
+
+// A real wedged error with a STRAY footer-looking line ("? for
+// shortcuts") quoted higher up in scrollback. The footer must be found
+// from the bottom, otherwise the scope locks onto the stray line and the
+// real error below it is missed (false negative).
+const ERROR_WITH_STRAY_FOOTER_ABOVE = [
+  '  Use the ? for shortcuts hint mentioned in the docs',
+  '  (a scrollback message that quotes help text)',
+  '  ⎿  API Error: 400 messages.55.content.19: `thinking` or `redacted_thinking` blocks in the latest assistant message',
+  '      cannot be modified. These blocks must remain as they were in the original response.',
+  '✻ Sauteed for 1s',
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+].join('\n')
+
+// Narrow terminal: the long error message wraps so "cannot be modified"
+// lands on the 4th line of the chrome block (chrome + 3 continuations).
+// A 3-line window would miss it (false negative); the 4-line block
+// catches it. The thinking kind is on the chrome line, redacted_thinking
+// on the 2nd, the phrase on the 4th.
+const ERROR_NARROW_WRAP = [
+  '  ⎿  API Error: 400 messages.55.content.19: `thinking`',
+  '      or `redacted_thinking` blocks in the latest assistant',
+  '      message. These response',
+  '      blocks cannot be modified and must remain unchanged.',
+  '✻ Sauteed for 1s',
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+].join('\n')
+
 describe('detectPaneState', () => {
   it('returns unknown for empty input', () => {
     expect(detectPaneState('')).toBe('unknown')
@@ -261,6 +387,64 @@ describe('detectPaneState', () => {
 
   it('detects busy when a tool-use summary is paired with a live spinner', () => {
     expect(detectPaneState(BUSY_TOOL_USE_ACTIVE)).toBe('busy')
+  })
+
+  it('detects error when wedged on the thinking-block 400', () => {
+    // The wedged state: idle footer (turn finished) + past-tense
+    // thinking stamp, no live busy signal, but the live tail shows the
+    // `⎿  API Error: ... thinking ... cannot be modified` output. Old
+    // detector said 'idle' here, so the scheduler kept injecting doomed
+    // prompts. Must now be 'error' so isReadyForPrompt() returns false.
+    expect(detectPaneState(ERROR_THINKING_BLOCK)).toBe('error')
+  })
+
+  it('does NOT classify a prose "API Error 400" mention as error', () => {
+    // A message body quoting "API Error 400" (an instruction to report
+    // recurrence) has no `⎿  API Error: <num>` chrome and no
+    // "cannot be modified" phrase. Must stay idle.
+    expect(detectPaneState(ERROR_ECHO_IN_MESSAGE)).toBe('idle')
+  })
+
+  it('does NOT classify the full phrase in prose (no chrome) as error', () => {
+    // A bug-analysis reply quoting "thinking ... cannot be modified" in
+    // prose, without the tool-output chrome glyph, must not trip the
+    // detector. The chrome guard is what discriminates a real wedged
+    // turn from a quote.
+    expect(detectPaneState(ERROR_FULL_PHRASE_PROSE)).toBe('idle')
+  })
+
+  it('does NOT classify a stale error in deep scrollback as error', () => {
+    // Once a session recovers, its old error scrolls up out of the live
+    // tail. The position scope must ignore it so a healthy session is
+    // not stuck flagged. Below the stale error the pane is plainly idle.
+    expect(detectPaneState(ERROR_DEEP_SCROLLBACK)).toBe('idle')
+  })
+
+  it('prefers busy over error when a live spinner is rendered', () => {
+    // Error chrome on screen but the turn is running again (spinner +
+    // token tail). The busy guard precedes the error guard so we do not
+    // stop injecting into a session that is actually working.
+    expect(detectPaneState(ERROR_DURING_BUSY)).toBe('busy')
+  })
+
+  it('does NOT flag a benign chrome + decoupled phrase as error', () => {
+    // A 429 chrome on one line and an unrelated "cannot be modified"
+    // prose several lines below (outside the chrome block) must not
+    // AND-combine into a false positive. This is the per-block guard.
+    expect(detectPaneState(ERROR_DECOUPLED_BENIGN)).toBe('idle')
+  })
+
+  it('detects error even when a stray footer line sits in scrollback', () => {
+    // The footer is found from the bottom, so a "? for shortcuts" string
+    // quoted higher up does not steal the scope from the real wedged
+    // error sitting just above the live footer.
+    expect(detectPaneState(ERROR_WITH_STRAY_FOOTER_ABOVE)).toBe('error')
+  })
+
+  it('detects error when a narrow terminal wraps the message onto 4 lines', () => {
+    // The phrase "cannot be modified" wraps to the 4th line of the
+    // chrome block. The 4-line block window must still catch it.
+    expect(detectPaneState(ERROR_NARROW_WRAP)).toBe('error')
   })
 
   it('does NOT classify idle-with-stale-tool-use-scrollback as busy', () => {
@@ -408,6 +592,71 @@ describe('isReadyForPrompt', () => {
     expect(isReadyForPrompt(PENDING_PASTE)).toBe(false)
     expect(isReadyForPrompt(NON_CLAUDE)).toBe(false)
     expect(isReadyForPrompt('')).toBe(false)
+    // A wedged thinking-block error is not idle, so it is not ready --
+    // this is what stops the router/scheduler injecting doomed prompts.
+    expect(isReadyForPrompt(ERROR_THINKING_BLOCK)).toBe(false)
+  })
+})
+
+describe('detectsThinkingBlockError', () => {
+  it('is true on the wedged thinking-block 400 pane', () => {
+    expect(detectsThinkingBlockError(ERROR_THINKING_BLOCK)).toBe(true)
+  })
+
+  it('is false on a healthy idle pane', () => {
+    expect(detectsThinkingBlockError(IDLE_BYPASS)).toBe(false)
+    expect(detectsThinkingBlockError(IDLE_BACKGROUND_SHELLS)).toBe(false)
+  })
+
+  it('is false when only the chrome is present without the thinking phrase', () => {
+    // A different turn-level API error (rate limit, overloaded) renders
+    // the same `⎿  API Error:` chrome but is NOT the thinking-block
+    // class. Those recover on their own / via the rate-limit watchdog,
+    // so they must not be flagged as the wedged state.
+    const rateLimit = [
+      '  ⎿  API Error: 429 rate_limit_error: too many requests',
+      '',
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(detectsThinkingBlockError(rateLimit)).toBe(false)
+  })
+
+  it('is false when the phrase appears without the chrome glyph', () => {
+    expect(detectsThinkingBlockError(ERROR_FULL_PHRASE_PROSE)).toBe(false)
+  })
+
+  it('is false when there is no idle footer (no live region to scope)', () => {
+    // Without an idle footer the pane is busy or not a Claude surface;
+    // there is no settled live tail to inspect, so we never flag error.
+    const noFooter = [
+      '  ⎿  API Error: 400 messages.55.content.19: `thinking` blocks cannot be modified.',
+      '✻ Combobulating… (12s · ↓ 480 tokens · esc to interrupt)',
+    ].join('\n')
+    expect(detectsThinkingBlockError(noFooter)).toBe(false)
+  })
+
+  it('is false on a stale error above the live tail', () => {
+    expect(detectsThinkingBlockError(ERROR_DEEP_SCROLLBACK)).toBe(false)
+  })
+
+  it('is false when chrome and phrase are in different blocks', () => {
+    // Benign 429 chrome + decoupled phrase prose below it: the phrase
+    // and kind must co-occur within ONE chrome block, not anywhere in
+    // the tail, so this stays false.
+    expect(detectsThinkingBlockError(ERROR_DECOUPLED_BENIGN)).toBe(false)
+  })
+
+  it('is true with a stray footer line above the real footer', () => {
+    // Footer found from the bottom: the stray "? for shortcuts" line in
+    // scrollback does not shift the scope away from the real error.
+    expect(detectsThinkingBlockError(ERROR_WITH_STRAY_FOOTER_ABOVE)).toBe(true)
+  })
+
+  it('is false on empty input', () => {
+    expect(detectsThinkingBlockError('')).toBe(false)
   })
 })
 
@@ -777,5 +1026,107 @@ describe('decideSubmitFollowup', () => {
     // Done-state on a maxAttempts=0 pane still returns done -- there
     // is nothing to retry.
     expect(decideSubmitFollowup(IDLE_BYPASS, PAYLOAD_HINT, 0, 0)).toBe('done')
+  })
+})
+
+describe('decidePaneErrorAlert', () => {
+  const TH = { confirmMs: 120_000, dedupMs: 1_800_000, clearMs: 300_000 }
+  const NONE = { firstSeenAt: null, lastAlertAt: null, lastErrorAt: null }
+
+  it('does nothing when not in error and no active spell', () => {
+    const d = decidePaneErrorAlert(false, NONE, 5000, TH)
+    expect(d.alert).toBe(false)
+    expect(d.next).toEqual(NONE)
+  })
+
+  it('records first sighting without alerting (confirm window)', () => {
+    const d = decidePaneErrorAlert(true, NONE, 10_000, TH)
+    expect(d.alert).toBe(false)
+    expect(d.next.firstSeenAt).toBe(10_000)
+    expect(d.next.lastAlertAt).toBe(null)
+    expect(d.next.lastErrorAt).toBe(10_000)
+  })
+
+  it('does not alert while still inside the confirm window', () => {
+    // First seen at t=0, now t=60s, confirm window 120s -> not yet.
+    const d = decidePaneErrorAlert(true, { firstSeenAt: 0, lastAlertAt: null, lastErrorAt: 0 }, 60_000, TH)
+    expect(d.alert).toBe(false)
+    expect(d.next.firstSeenAt).toBe(0)
+  })
+
+  it('alerts once the confirm window elapses (first alert)', () => {
+    const d = decidePaneErrorAlert(true, { firstSeenAt: 0, lastAlertAt: null, lastErrorAt: 60_000 }, 120_000, TH)
+    expect(d.alert).toBe(true)
+    expect(d.next.firstSeenAt).toBe(0)
+    expect(d.next.lastAlertAt).toBe(120_000)
+  })
+
+  it('suppresses repeat alerts inside the dedup window', () => {
+    // Sustained error, last alert 10 min ago, dedup 30 min -> quiet.
+    const d = decidePaneErrorAlert(true, { firstSeenAt: 0, lastAlertAt: 120_000, lastErrorAt: 660_000 }, 720_000, TH)
+    expect(d.alert).toBe(false)
+    expect(d.next.lastAlertAt).toBe(120_000)
+  })
+
+  it('re-alerts once the dedup window elapses', () => {
+    // Last alert at t=120s, now t=120s+30min -> dedup elapsed.
+    const now = 120_000 + 1_800_000
+    const d = decidePaneErrorAlert(true, { firstSeenAt: 0, lastAlertAt: 120_000, lastErrorAt: now - 60_000 }, now, TH)
+    expect(d.alert).toBe(true)
+    expect(d.next.lastAlertAt).toBe(now)
+  })
+
+  it('clears the spell after a sustained error-free gap', () => {
+    // error stops, last error 6 min ago (> clearMs 5 min) -> clear.
+    const d = decidePaneErrorAlert(false, { firstSeenAt: 0, lastAlertAt: 120_000, lastErrorAt: 60_000 }, 420_000, TH)
+    expect(d.alert).toBe(false)
+    expect(d.next).toEqual(NONE)
+  })
+
+  it('starts a fresh spell after the cleared recovery', () => {
+    // error -> sustained recovery (cleared) -> error again times its own
+    // confirm window from the new sighting.
+    const recovered = decidePaneErrorAlert(false, { firstSeenAt: 0, lastAlertAt: 120_000, lastErrorAt: 60_000 }, 420_000, TH)
+    expect(recovered.next).toEqual(NONE)
+    const reappeared = decidePaneErrorAlert(true, recovered.next, 500_000, TH)
+    expect(reappeared.alert).toBe(false)
+    expect(reappeared.next.firstSeenAt).toBe(500_000)
+  })
+
+  it('holds the spell across a brief non-error blip (flapping capture)', () => {
+    // A genuinely wedged but flapping session: error, then one non-error
+    // tick (null capture / mid-flight busy) only 60s after the last
+    // error (< clearMs). The spell must NOT reset, otherwise the confirm
+    // window never elapses and the wedged session never alerts.
+    const held = decidePaneErrorAlert(false, { firstSeenAt: 0, lastAlertAt: null, lastErrorAt: 60_000 }, 120_000, TH)
+    expect(held.alert).toBe(false)
+    expect(held.next.firstSeenAt).toBe(0) // spell preserved
+    // The next error tick is sustained from the original firstSeenAt and
+    // alerts (confirm window elapsed), proving the flap did not starve it.
+    const back = decidePaneErrorAlert(true, held.next, 180_000, TH)
+    expect(back.alert).toBe(true)
+  })
+
+  it('never alerts on the first sighting even when confirmMs is 0', () => {
+    // The first-sighting guard means an error must be observed on at
+    // least two ticks before any alert, independent of confirmMs. A
+    // single transient one-tick error never fires an alert.
+    const zeroTh = { confirmMs: 0, dedupMs: 1_800_000, clearMs: 300_000 }
+    const first = decidePaneErrorAlert(true, NONE, 1000, zeroTh)
+    expect(first.alert).toBe(false)
+    expect(first.next.firstSeenAt).toBe(1000)
+    // Second tick with confirmMs=0 now alerts (sustained from tick 1).
+    const second = decidePaneErrorAlert(true, first.next, 1001, zeroTh)
+    expect(second.alert).toBe(true)
+  })
+
+  it('does not stall on backwards clock skew (future timestamp)', () => {
+    // now jumps backwards (NTP correction): a stored firstSeenAt in the
+    // future would drive the delta negative and stall. Instead restart
+    // the spell from now rather than getting stuck never-alerting.
+    const skewed = decidePaneErrorAlert(true, { firstSeenAt: 1_000_000, lastAlertAt: 1_000_000, lastErrorAt: 1_000_000 }, 500_000, TH)
+    expect(skewed.alert).toBe(false)
+    expect(skewed.next.firstSeenAt).toBe(500_000)
+    expect(skewed.next.lastAlertAt).toBe(null)
   })
 })

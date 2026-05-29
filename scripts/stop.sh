@@ -15,7 +15,18 @@ if [ "$OS" = "Darwin" ]; then
   launchctl unload "$HOME/Library/LaunchAgents/com.${SLUG}.dashboard.plist" 2>/dev/null
   launchctl unload "$HOME/Library/LaunchAgents/com.${SLUG}.channels.plist" 2>/dev/null
 elif [ "$OS" = "Linux" ]; then
-  systemctl --user stop "${SLUG}-dashboard" "${SLUG}-channels" 2>/dev/null || true
+  if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
+    systemctl --user stop "${SLUG}-dashboard" "${SLUG}-channels" 2>/dev/null || true
+  else
+    for svc in dashboard channels; do
+      pidfile="$INSTALL_DIR/store/${svc}.pid"
+      if [ -f "$pidfile" ]; then
+        pid=$(cat "$pidfile")
+        kill "$pid" 2>/dev/null || true
+        rm -f "$pidfile"
+      fi
+    done
+  fi
 fi
 
 # Stop the main channels tmux session. Do NOT kill sub-agent sessions --

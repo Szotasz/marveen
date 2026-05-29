@@ -1073,7 +1073,8 @@
               </div>
             </div>
             <div class="form-row" style="gap:8px; align-items:center">
-              <select id="commentAuthor" class="comment-author-select"></select>
+              <label for="commentAuthor" style="font-size:0.85em; color:var(--text-muted)">Komment szerzője:</label>
+              <select id="commentAuthor" class="comment-author-select" title="A komment szerzője. A kártya felelőse fent, a Felelős mezőre kattintva állítható."></select>
               <button class="btn-primary btn-compact" id="addCommentBtn">Küldés</button>
             </div>
           </div>
@@ -1143,7 +1144,8 @@
             <select id="agentModel">
               <option value="inherit">Öröklött (alapértelmezett)</option>
               <optgroup label="☁️ Claude (felhő)">
-                <option value="claude-opus-4-7">Opus 4.7 (legújabb, legjobb)</option>
+                <option value="claude-opus-4-8[1m]">Opus 4.8 (1M kontextus)</option>
+                <option value="claude-opus-4-7">Opus 4.7</option>
                 <option value="claude-opus-4-6">Opus 4.6</option>
                 <option value="claude-sonnet-4-6">Sonnet 4.6 (gyors és okos)</option>
                 <option value="claude-haiku-4-5-20251001">Haiku 4.5 (leggyorsabb)</option>
@@ -1246,7 +1248,10 @@
           <div class="agent-overview-grid">
             <div class="agent-overview-item">
               <span class="meta-label">Modell</span>
-              <span class="meta-value" id="agentDetailModel"></span>
+              <div class="meta-value-row">
+                <span class="meta-value" id="agentDetailModel"></span>
+                <span class="meta-badge" id="agentDetailModelRestarting" hidden>újraindítás alatt</span>
+              </div>
             </div>
             <div class="agent-overview-item">
               <span class="meta-label">Csatorna</span>
@@ -1298,7 +1303,8 @@
             <label for="editAgentModel">Modell</label>
             <select id="editAgentModel">
               <optgroup label="☁️ Claude (felhő)">
-                <option value="claude-opus-4-7">Opus 4.7 (legújabb, legjobb)</option>
+                <option value="claude-opus-4-8[1m]">Opus 4.8 (1M kontextus)</option>
+                <option value="claude-opus-4-7">Opus 4.7</option>
                 <option value="claude-opus-4-6">Opus 4.6</option>
                 <option value="claude-sonnet-4-6">Sonnet 4.6 (alapértelmezett)</option>
                 <option value="claude-haiku-4-5-20251001">Haiku 4.5 (leggyorsabb)</option>

@@ -173,5 +173,51 @@
     "authType": "oauth",
     "authNote": "Első használatkor OAuth bejelentkezés (Google/Microsoft fiók) a böngészőben",
     "infoUrl": "https://fireflies.ai/blog/fireflies-mcp-server/"
+  },
+  {
+    "id": "billingo-netmask",
+    "name": "Billingo (Netmask Interactive Kft.)",
+    "description": "Magyar online számlázó (Netmask partner-fiók): számlák, partnerek, termékek a Billingo API v3-on",
+    "type": "local",
+    "category": "productivity",
+    "icon": "🧾",
+    "command": "node",
+    "args": ["/Users/boo/marveen-vendor/billingo-mcp/dist/cli.js"],
+    "env": {"BILLINGO_API_KEY": ""},
+    "authType": "apikey",
+    "authNote": "Kulcs forrás: /Users/boo/marveen/store/secrets.json -> .billingo.netmask (NEM commit-olható, gitignored)",
+    "secretRef": "billingo.netmask",
+    "infoUrl": "https://github.com/Szotasz/billingo-mcp",
+    "partner_id": "netmask"
+  },
+  {
+    "id": "billingo-habana",
+    "name": "Billingo (Habana Kft.)",
+    "description": "Magyar online számlázó (Habana partner-fiók): számlák, partnerek, termékek a Billingo API v3-on",
+    "type": "local",
+    "category": "productivity",
+    "icon": "🧾",
+    "command": "node",
+    "args": ["/Users/boo/marveen-vendor/billingo-mcp/dist/cli.js"],
+    "env": {"BILLINGO_API_KEY": ""},
+    "authType": "apikey",
+    "authNote": "Kulcs forrás: /Users/boo/marveen/store/secrets.json -> .billingo.habana (NEM commit-olható, gitignored)",
+    "secretRef": "billingo.habana",
+    "infoUrl": "https://github.com/Szotasz/billingo-mcp",
+    "partner_id": "habana"
+  },
+  {
+    "id": "playwright",
+    "name": "Playwright (böngészővezérlés)",
+    "description": "Chromium/Firefox/WebKit böngésző automatizáció: navigate, click, fill, screenshot, JavaScript futtatás. Headless (default) és headed (--headed flag) is.",
+    "type": "local",
+    "category": "automation",
+    "icon": "🌐",
+    "command": "npx",
+    "args": ["-y", "@playwright/mcp@latest"],
+    "env": {},
+    "authType": "none",
+    "authNote": "Nincs auth. Headed mode-hoz adjuk hozzá az --headed flag-et az args-hoz.",
+    "infoUrl": "https://github.com/microsoft/playwright-mcp"
   }
 ]

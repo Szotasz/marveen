@@ -209,6 +209,26 @@ if [ "$DO_AUTH" = "i" ]; then
 fi
 echo -e "  ${GREEN}✓${NC} Claude Code first-run beállítás kész"
 
+# Pre-flight headless probe — Issue #179.
+# `claude auth login` may exit 0 even when the resulting token is unusable for
+# headless queries (browser flow interrupted, stale cached state, etc.). The
+# agent-create flow runs `claude --print` under the hood; surface the failure
+# here while the user is still at the install prompt.
+echo ""
+echo -e "  ${DIM}Headless Claude Code teszt...${NC}"
+set +e
+CLAUDE_PROBE_OUT=$(claude --print "ping" 2>&1 | head -c 200)
+CLAUDE_PROBE_EXIT=$?
+set -e
+if [ "$CLAUDE_PROBE_EXIT" -eq 0 ] && [ -n "$CLAUDE_PROBE_OUT" ]; then
+  echo -e "  ${GREEN}✓${NC} Headless Claude Code futtathato (\`claude --print\` valaszolt)"
+else
+  warn "Headless Claude Code probe SIKERTELEN. Az agent-letrehozas KESOBB EL fog hasalni."
+  echo -e "    ${DIM}Kimenet: ${CLAUDE_PROBE_OUT:-<ures>}${NC}"
+  echo -e "    ${DIM}Tipikus okok: nincs ervenyes auth, halozati problema, regi claude CLI.${NC}"
+  echo -e "    ${DIM}Javitas: \`claude --version\` -> \`claude /login\` (vagy ANTHROPIC_API_KEY/CLAUDE_CODE_OAUTH_TOKEN beallitas) -> \`claude --print \"ping\"\` ujra.${NC}"
+fi
+
 INSTALL_STEP="personal-info"
 # Step 3: Personal info
 echo ""

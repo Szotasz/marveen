@@ -427,7 +427,7 @@ async function showCardDetail(card) {
     </div>
     <div class="meta-item">
       <span class="meta-label">Felelős</span>
-      <span class="meta-value">${assignee ? escapeHtml(assignee.name) : '-- nincs --'}</span>
+      <span class="meta-value meta-value-editable" id="metaAssigneeValue" data-card-id="${card.id}" title="Kattints a módosításhoz">${assignee ? escapeHtml(assignee.name) : '-- nincs --'}</span>
     </div>
     <div class="meta-item">
       <span class="meta-label">Prioritás</span>
@@ -442,6 +442,54 @@ async function showCardDetail(card) {
       <span class="meta-value">${card.due_date ? new Date(card.due_date * 1000).toLocaleDateString('hu-HU') : '-- nincs --'}</span>
     </div>
   `
+
+  // Inline edit for assignee on detail view
+  const assigneeValueEl = document.getElementById('metaAssigneeValue')
+  assigneeValueEl.addEventListener('click', () => {
+    if (assigneeValueEl.querySelector('select')) return
+    const current = card.assignee || ''
+    const sel = document.createElement('select')
+    sel.style.cssText = 'padding:2px 6px; border-radius:4px; border:1px solid var(--border); background:var(--bg-card); color:var(--text); font-size:inherit'
+    sel.innerHTML = '<option value="">-- Nincs --</option>'
+    for (const a of kanbanAssignees) {
+      const opt = document.createElement('option')
+      opt.value = a.name
+      opt.textContent = a.name
+      if (a.name === current) opt.selected = true
+      sel.appendChild(opt)
+    }
+    assigneeValueEl.innerHTML = ''
+    assigneeValueEl.appendChild(sel)
+    sel.focus()
+    const save = async () => {
+      const newVal = sel.value || null
+      if (newVal === current || (newVal === null && !current)) {
+        assigneeValueEl.textContent = current ? current : '-- nincs --'
+        return
+      }
+      try {
+        const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...card, assignee: newVal }),
+        })
+        if (!r.ok) throw new Error('PUT failed')
+        card.assignee = newVal
+        assigneeValueEl.textContent = newVal ? newVal : '-- nincs --'
+        showToast('Felelős frissítve')
+        loadKanban && loadKanban()
+      } catch {
+        assigneeValueEl.textContent = current ? current : '-- nincs --'
+        showToast('Hiba a mentésnél')
+      }
+    }
+    sel.addEventListener('change', save)
+    sel.addEventListener('blur', () => {
+      if (assigneeValueEl.querySelector('select')) {
+        assigneeValueEl.textContent = card.assignee ? card.assignee : '-- nincs --'
+      }
+    })
+  })
 
   document.getElementById('cardDetailDesc').textContent = card.description || ''
 
@@ -975,16 +1023,20 @@ async function openMarveenDetail() {
   avatar.innerHTML = `<img src="/api/marveen/avatar?t=${Date.now()}" alt="${escapeHtml(displayName)}">`
   document.getElementById('agentDetailName').textContent = displayName
   document.getElementById('agentDetailDesc').textContent = m.description || ''
-  document.getElementById('agentDetailModel').textContent = 'claude-opus-4-6'
+  document.getElementById('agentDetailModel').textContent = m.model || '-'
   document.getElementById('agentDetailChStatus').innerHTML = '<span class="tg-status"><span class="tg-dot connected"></span>Csatlakozva</span>'
   document.getElementById('agentDetailSkillCount').textContent = '-'
 
   // Process control for Marveen - always running, no start/stop
   document.getElementById('processDot').className = 'process-dot running'
   document.getElementById('processLabel').textContent = 'Fut'
-  document.getElementById('processUptime').textContent = 'tmux: marveen-channels'
+  document.getElementById('processUptime').textContent = `tmux: ${m.tmuxSession || '-'}`
   document.getElementById('agentStartBtn').hidden = true
   document.getElementById('agentStopBtn').hidden = true
+  // Sync the settings tab model select with Marveen's actual model so it
+  // doesn't carry over the previously opened sub-agent's selection.
+  const marveenModelSelect = document.getElementById('editAgentModel')
+  if (marveenModelSelect) marveenModelSelect.value = m.activeModel || m.model || ''
   // Surface the "channels restart" button -- destructive, but mobile-safe
   // when the Telegram plugin wedges and you're away from a terminal.
   document.getElementById('marveenRestartBtn').hidden = false
@@ -1025,7 +1077,12 @@ async function openMarveenDetail() {
 
 function applyMarveenReadonlyMode(readOnly) {
   const textareaIds = ['editClaudeMd', 'editSoulMd', 'editMcpJson']
-  const saveButtonIds = ['saveClaudeMdBtn', 'saveSoulMdBtn', 'saveMcpJsonBtn', 'saveModelBtn', 'saveAuthModeBtn']
+  // saveModelBtn stays VISIBLE but disabled for Marveen, so the settings tab
+  // doesn't look like the row is missing -- the other save buttons (tied to
+  // readonly textareas) are hidden because the textareas are also hidden by
+  // the readonly note flow.
+  const hideButtonIds = ['saveClaudeMdBtn', 'saveSoulMdBtn', 'saveMcpJsonBtn', 'saveAuthModeBtn']
+  const disableButtonIds = ['saveModelBtn']
   for (const id of textareaIds) {
     const el = document.getElementById(id)
     if (!el) continue
@@ -1034,9 +1091,13 @@ function applyMarveenReadonlyMode(readOnly) {
   }
   const modelSelect = document.getElementById('editAgentModel')
   if (modelSelect) modelSelect.disabled = readOnly
-  for (const id of saveButtonIds) {
+  for (const id of hideButtonIds) {
     const btn = document.getElementById(id)
     if (btn) btn.hidden = readOnly
+  }
+  for (const id of disableButtonIds) {
+    const btn = document.getElementById(id)
+    if (btn) { btn.hidden = false; btn.disabled = readOnly }
   }
   const authModeGroup = document.getElementById('authModeGroup')
   if (authModeGroup) authModeGroup.hidden = readOnly
@@ -1144,7 +1205,8 @@ async function openAgentDetail(agentName) {
     : initial
   document.getElementById('agentDetailName').textContent = detailLabel
   document.getElementById('agentDetailDesc').textContent = currentAgent.description || ''
-  document.getElementById('agentDetailModel').textContent = currentAgent.model || 'inherit'
+  document.getElementById('agentDetailModel').textContent = currentAgent.activeModel || currentAgent.model || 'inherit'
+  document.getElementById('agentDetailModelRestarting').hidden = true
 
   const chConnected = currentAgent.hasTelegram || false
   document.getElementById('agentDetailChStatus').innerHTML = `<span class="tg-status"><span class="tg-dot ${chConnected ? 'connected' : 'disconnected'}"></span>${chConnected ? 'Csatlakozva' : 'Nincs bekötve'}</span>`
@@ -1153,7 +1215,7 @@ async function openAgentDetail(agentName) {
   document.getElementById('editAgentDepartment').value = currentAgent.department || ''
   loadAvailableModels()
   loadOllamaModels().then(() => {
-    document.getElementById('editAgentModel').value = currentAgent.model || 'claude-sonnet-4-6'
+    document.getElementById('editAgentModel').value = currentAgent.activeModel || currentAgent.model || 'claude-sonnet-4-6'
   })
   populateProfileSelect(
     document.getElementById('editAgentProfile'),
@@ -1537,17 +1599,93 @@ document.getElementById('saveDepartmentBtn').addEventListener('click', async () 
   } catch { showToast('Hiba a mentés során') }
 })
 
+let modelRestartPollTimer = null
+let modelRestartPollName = null
+
+function stopModelRestartPolling() {
+  if (modelRestartPollTimer) { clearInterval(modelRestartPollTimer); modelRestartPollTimer = null }
+  modelRestartPollName = null
+}
+
+function startModelRestartPolling(name, expectedModel, triggeredAt) {
+  stopModelRestartPolling()
+  modelRestartPollName = name
+  const badge = document.getElementById('agentDetailModelRestarting')
+  const display = document.getElementById('agentDetailModel')
+  const processLabel = document.getElementById('processLabel')
+  const processDot = document.getElementById('processDot')
+  const deadline = Date.now() + 60000
+  modelRestartPollTimer = setInterval(async () => {
+    if (modelRestartPollName !== name || !currentAgent || currentAgent.name !== name) {
+      stopModelRestartPolling(); return
+    }
+    if (Date.now() > deadline) {
+      stopModelRestartPolling()
+      badge.hidden = true
+      if (currentAgent) updateProcessControl(currentAgent)
+      showToast('Az újraindítás állapotát nem tudtam visszaolvasni, ellenőrizd a sessiont')
+      return
+    }
+    try {
+      const r = await fetch(`/api/agents/${encodeURIComponent(name)}`)
+      if (!r.ok) return
+      const data = await r.json()
+      // The new tmux session's creation timestamp is the reliable "restart
+      // complete" signal. Claude Code writes the "model" field into the
+      // session jsonl only when it answers a message, so activeModel may
+      // stay null/old until the agent receives its first prompt -- waiting
+      // for that match would time out on idle agents. The configured model
+      // is what the agent was just started with via --model.
+      const restarted = data.runningSince && data.runningSince >= triggeredAt
+      if (restarted) {
+        const displayModel = data.activeModel || data.model
+        if (currentAgent && currentAgent.name === name) {
+          currentAgent.activeModel = data.activeModel
+          currentAgent.runningSince = data.runningSince
+          currentAgent.model = data.model
+          currentAgent.running = !!data.running
+          currentAgent.session = data.session
+          display.textContent = displayModel
+        }
+        badge.hidden = true
+        processDot.className = 'process-dot running'
+        processLabel.textContent = 'Fut'
+        stopModelRestartPolling()
+        const liveMatched = data.activeModel === expectedModel
+        showToast(liveMatched
+          ? `Új modell aktív: ${displayModel}`
+          : `Újraindítva: ${displayModel}`)
+      }
+    } catch { /* network blip, keep polling */ }
+  }, 2000)
+}
+
 document.getElementById('saveModelBtn').addEventListener('click', async () => {
   if (!currentAgent || currentAgent.role === 'main') return
+  const newModel = document.getElementById('editAgentModel').value
+  const name = currentAgent.name
   try {
-    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`, {
+    const res = await fetch(`/api/agents/${encodeURIComponent(name)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: document.getElementById('editAgentModel').value }),
+      body: JSON.stringify({ model: newModel }),
     })
     if (!res.ok) throw new Error()
-    showToast('Modell mentve (újraindítás szükséges)')
+    currentAgent.model = newModel
+    const triggeredAt = Math.floor(Date.now() / 1000)
+    document.getElementById('agentDetailModelRestarting').hidden = false
+    document.getElementById('processLabel').textContent = 'Újraindítás'
+    document.getElementById('processDot').className = 'process-dot restarting'
+    showToast('Modell mentve, agent újraindítása...')
     loadAgents()
+    const restartRes = await fetch(`/api/agents/${encodeURIComponent(name)}/restart`, { method: 'POST' })
+    if (!restartRes.ok) {
+      document.getElementById('agentDetailModelRestarting').hidden = true
+      if (currentAgent) updateProcessControl(currentAgent)
+      showToast('Az újraindítás indítása sikertelen')
+      return
+    }
+    startModelRestartPolling(name, newModel, triggeredAt)
   } catch { showToast('Hiba a mentés során') }
 })
 

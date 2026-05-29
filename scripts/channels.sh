@@ -24,6 +24,7 @@ INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 if [ -f "$INSTALL_DIR/.env" ]; then
   MAIN_AGENT_ID="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
   CHANNEL_PROVIDER="$(grep -E '^CHANNEL_PROVIDER=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
+  BOT_NAME="$(grep -E '^BOT_NAME=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
   # Claude Code auth: pass API key or OAuth token so the tmux-spawned
   # claude process can authenticate. These are safe to export -- unlike
   # TELEGRAM_BOT_TOKEN they don't cause cross-session conflicts.
@@ -43,6 +44,19 @@ case "$CHANNEL_PROVIDER" in
   *)        PLUGIN_ID="telegram@claude-plugins-official" ;;
 esac
 
+# ROOT-CAUSE NOTE (kali-linux WSL, claude-code 2.1.152, 2026-05-27):
+# Inbound MCP notifications from the `--channels` plugin go through a SECOND
+# gate beyond --dangerously-skip-permissions / --dangerously-load-development-
+# channels: claude-code checks `/etc/claude-code/managed-settings.json`
+# allowedChannelPlugins and SILENTLY DROPS notifications from any plugin not
+# in that list. The plugin still sends the MCP notification successfully
+# (confirmed by debug-logging the plugin), but the session never ingests it.
+# Symptom: bot online, plugin debug shows "MCP notification SENT successfully",
+# but claude pane shows no <channel source="..."> inbound and the bot never
+# replies. Fix is to add the plugin to managed-settings.json (requires sudo).
+# Once that's done, the dev-channels flag is unnecessary -- this is why
+# the earlier DEVCHANNELS_FLAG block was removed.
+
 # Extra safety net for existing installs whose tmux server already has a
 # polluted global env -- scrub channel tokens so new child sessions don't
 # inherit them. The main agent's plugin will still load its token from
@@ -52,12 +66,34 @@ command -v tmux >/dev/null 2>&1 && tmux set-environment -g -u SLACK_BOT_TOKEN 2>
 command -v tmux >/dev/null 2>&1 && tmux set-environment -g -u DISCORD_BOT_TOKEN 2>/dev/null || true
 unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN
 
+# Issue #189: when this script runs from inside an existing tmux session (the
+# user's own work session, for example), the inherited TMUX env var points at
+# the parent client's socket. Any `tmux new-session` we spawn then tries to
+# attach to that socket and fails with "Permission denied" (different uid,
+# different socket dir, or just the new-session-from-inside-tmux block). The
+# child marveen-channels session must live on a fresh tmux client context, so
+# scrub the env var before any tmux command runs.
+unset TMUX
+
 export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
 CLAUDE="$(command -v claude)"
 TMUX="$(command -v tmux)"
 [ -z "$CLAUDE" ] && echo "ERROR: claude not found on PATH" >&2 && exit 1
 [ -z "$TMUX" ]   && echo "ERROR: tmux not found on PATH" >&2 && exit 1
+
+# Read the main agent's default model from .claude/settings.json so we can
+# pass --model explicitly. Without --model claude-code falls back to its
+# built-in default, which can drift across versions. Passing the flag makes
+# the choice deterministic and visible in `ps`.
+MAIN_MODEL=""
+if [ -f "$INSTALL_DIR/.claude/settings.json" ] && command -v jq >/dev/null 2>&1; then
+  MAIN_MODEL="$(jq -r '.model // empty' "$INSTALL_DIR/.claude/settings.json" 2>/dev/null)"
+fi
+MODEL_FLAG=""
+# Single-quote the model id so values like `claude-opus-4-8[1m]` survive the
+# tmux command-string round-trip without the inner shell glob-expanding `[1m]`.
+[ -n "$MAIN_MODEL" ] && MODEL_FLAG="--model '$MAIN_MODEL' "
 
 # Régi session takarítás
 $TMUX kill-session -t "$SESSION" 2>/dev/null
@@ -69,7 +105,7 @@ $TMUX kill-session -t "$SESSION" 2>/dev/null
 # resuming one of those loses the --channels activation state, causing
 # "Channel notifications skipped: server not in --channels list" errors.
 $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
-  "$CLAUDE --dangerously-skip-permissions --channels plugin:${PLUGIN_ID}"
+  "$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}"
 
 # Session startup guard: a Claude Code first-run dialogusait auto-accept-eljuk
 # kulonben a headless session orokre parkolna a prompton es a Telegram plugin
@@ -103,6 +139,14 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
       ;;
   esac
 done
+
+# Set agent name and remote-control identifier once the session is ready.
+_bot_name="${BOT_NAME:-${MAIN_AGENT_ID:-marveen}}"
+sleep 1
+$TMUX send-keys -t "$SESSION" "/name ${_bot_name}" Enter
+sleep 1
+$TMUX send-keys -t "$SESSION" "/remote-control ${_bot_name}" Enter
+unset _bot_name
 
 # Bot menu setup (Telegram only; Slack uses App Manifest)
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { execSync, execFileSync } from 'node:child_process'
@@ -10,7 +10,7 @@ import {
   decideSubmitFollowup,
   shouldClearTruncatedPreamble,
 } from '../pane-state.js'
-import { agentDir, readAgentModel, readAgentSecurityProfile, readAgentClaudeConfigDir, readAgentChannelProvider, readAgentAuthMode } from './agent-config.js'
+import { agentDir, readAgentModel, readAgentSecurityProfile, readAgentClaudeConfigDir, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName } from './agent-config.js'
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { CHANNEL_PROVIDER } from '../config.js'
@@ -40,6 +40,30 @@ export function isAgentRunning(name: string): boolean {
   }
 }
 
+export function getAgentRunningSince(name: string): number | null {
+  try {
+    const out = execFileSync(
+      TMUX,
+      ['display-message', '-p', '-t', agentSessionName(name), '#{session_created}'],
+      { timeout: 3000, encoding: 'utf-8' },
+    ).trim()
+    const ts = parseInt(out, 10)
+    return Number.isFinite(ts) ? ts : null
+  } catch {
+    return null
+  }
+}
+
+export function agentHasChannel(name: string): boolean {
+  const agentProvider = resolveAgentProvider(name)
+  const dir = agentDir(name)
+  const agentChannelDir = channelStateDir(agentProvider, dir)
+  const token = readChannelToken(agentProvider, join(agentChannelDir, '.env'))
+  if (token) return true
+  if (agentProvider === 'telegram') return !!parseTelegramToken(name)
+  return false
+}
+
 export function startAgentProcess(name: string): { ok: boolean; pid?: number; error?: string } {
   if (isAgentRunning(name)) return { ok: false, error: 'Agent is already running' }
 
@@ -51,11 +75,11 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
   const agentChannelDir = channelStateDir(agentProvider, dir)
   const token = readChannelToken(agentProvider, join(agentChannelDir, '.env'))
   // Backward compat: try legacy Telegram token if provider-aware lookup misses
+  let hasChannel = !!token
   if (!token && agentProvider === 'telegram') {
     const legacyToken = parseTelegramToken(name)
-    if (!legacyToken) return { ok: false, error: 'Channel not configured for this agent' }
-  } else if (!token) {
-    return { ok: false, error: `${provider.type} channel not configured for this agent` }
+    hasChannel = !!legacyToken
+    // Channel-less agents (inter-agent only, no direct Telegram/Slack) are allowed to start
   }
 
   const session = agentSessionName(name)
@@ -90,6 +114,25 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
     // Claude Code enforces the list rather than bypassing it.
     const profile = loadProfileTemplate(readAgentSecurityProfile(name))
     writeAgentSettingsFromProfile(name, profile)
+    // Channel-less agents must not load the global channel plugins from
+    // enabledPlugins. Without this, they fall back to the main agent's
+    // token and two instances fight over the same getUpdates slot (409
+    // Conflict / orphan watchdog loop causing recurring MCP disconnects).
+    if (!hasChannel) {
+      const settingsPath = join(agentDir(name), '.claude', 'settings.json')
+      try {
+        const s = JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown>
+        s.enabledPlugins = {
+          ...(s.enabledPlugins as Record<string, boolean> | undefined ?? {}),
+          'telegram@claude-plugins-official': false,
+          'slack-channel@marveen-marketplace': false,
+          'discord@claude-plugins-official': false,
+        }
+        writeFileSync(settingsPath, JSON.stringify(s, null, 2))
+      } catch (err) {
+        logger.warn({ err, name }, 'Could not disable channel plugins for channel-less agent')
+      }
+    }
     const skipFlag = profile.permissionMode === 'strict' ? '' : '--dangerously-skip-permissions '
     // Optional per-agent CLAUDE_CONFIG_DIR (alternate Claude Code config dir,
     // e.g. for routing this agent to a separate Anthropic login). When the
@@ -114,7 +157,13 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
     // Slack plugin is third-party; its "not on approved allowlist" check is
     // bypassed via `allowedChannelPlugins` in /Library/Application Support/ClaudeCode/managed-settings.json.
     const auditLogEnv = agentProvider === 'slack' ? ` && export SLACK_AUDIT_LOG="${agentChannelDir}/audit.jsonl"` : ''
-    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && export ${stateEnvVar}="${agentChannelDir}"${auditLogEnv} && ${apiKeyEnv}${claudeConfigEnv}${ollamaEnv}${deepseekEnv}cd "${dir}" && ${CLAUDE} ${continueFlag}${skipFlag}--model ${model} --channels plugin:${provider.pluginId}`
+    const channelSetup = hasChannel
+      ? `export ${stateEnvVar}="${agentChannelDir}"${auditLogEnv} && `
+      : ''
+    const channelFlag = hasChannel ? `--channels plugin:${provider.pluginId}` : ''
+    // Single-quote `${model}` so values like `claude-opus-4-8[1m]` (1M-context
+    // suffix) are not glob-expanded by the shell that tmux spawns the command in.
+    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${channelSetup}${apiKeyEnv}${claudeConfigEnv}${ollamaEnv}${deepseekEnv}cd "${dir}" && ${CLAUDE} ${continueFlag}${skipFlag}--model '${model}' ${channelFlag}`.trimEnd()
     execSync(
       `${TMUX} new-session -d -s ${session} "${cmd}"`,
       { timeout: 10000 }
@@ -143,6 +192,18 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
       } catch (err) {
         logger.warn({ err, name, session }, 'Post-restart modal dismiss failed')
       }
+      // Set /name and /remote-control so the agent is identifiable.
+      setTimeout(() => {
+        try {
+          const displayName = readAgentDisplayName(name)
+          execFileSync(TMUX, ['send-keys', '-t', session, `/name ${displayName}`, 'Enter'], { timeout: 5000 })
+          execFileSync('/bin/sleep', ['1'], { timeout: 2000 })
+          execFileSync(TMUX, ['send-keys', '-t', session, `/remote-control ${displayName}`, 'Enter'], { timeout: 5000 })
+          logger.info({ name, session, displayName }, 'Set agent /name and /remote-control')
+        } catch (err) {
+          logger.warn({ err, name, session }, 'Failed to set agent /name or /remote-control')
+        }
+      }, 5000)
     }, 8000)
 
     return { ok: true }
@@ -191,6 +252,14 @@ export function getAgentProcessInfo(name: string): { running: boolean; session?:
     running: true,
     session: agentSessionName(name),
   }
+}
+
+export function restartAgentProcess(name: string): { ok: boolean; pid?: number; error?: string } {
+  if (isAgentRunning(name)) {
+    const stopResult = stopAgentProcess(name)
+    if (!stopResult.ok) return { ok: false, error: stopResult.error || 'Failed to stop running agent before restart' }
+  }
+  return startAgentProcess(name)
 }
 
 // Claude Code occasionally pops a "How is Claude doing this session? (optional)"

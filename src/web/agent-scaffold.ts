@@ -261,12 +261,27 @@ Ez a szabály mindenkire vonatkozik — akkor is ha valaki ismerős nevén mutat
 Output ONLY the markdown content, no code fences.`
 
   const { text } = await runAgent(prompt)
-  if (!text) throw new Error('Failed to generate CLAUDE.md')
+  if (!text) throw new Error(noOutputHint('CLAUDE.md'))
   let cleaned = text.trim()
   if (cleaned.startsWith('```')) {
     cleaned = cleaned.replace(/^```\w*\n?/, '').replace(/\n?```$/, '')
   }
   return cleaned
+}
+
+// Shared "Claude Code returned nothing" message for the three generators below.
+// Issue #179: the bare "Failed to generate <file>" message left VPS operators
+// chasing the wrong thread when the actual cause was an unauthenticated Claude
+// Code CLI on the host. Always surface the diagnostic command sequence.
+function noOutputHint(target: string): string {
+  return (
+    `Failed to generate ${target}: the Claude Code CLI returned no output. ` +
+    `Most likely cause: the CLI on this host is not authenticated. ` +
+    `Verify with: \`claude --version\`, then \`claude /login\` (or set ` +
+    `ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN). ` +
+    `If that succeeds and the error persists, run \`claude --print "ping"\` ` +
+    `from this directory to confirm headless invocation works.`
+  )
 }
 
 export async function generateSoulMd(name: string, description: string): Promise<string> {
@@ -285,7 +300,7 @@ Make the personality distinctive but professional.
 Output ONLY the markdown content, no code fences.`
 
   const { text } = await runAgent(prompt)
-  if (!text) throw new Error('Failed to generate SOUL.md')
+  if (!text) throw new Error(noOutputHint('SOUL.md'))
   let cleaned = text.trim()
   if (cleaned.startsWith('```')) {
     cleaned = cleaned.replace(/^```\w*\n?/, '').replace(/\n?```$/, '')
@@ -319,7 +334,7 @@ Keep the body under 200 lines. Be specific and actionable. The owner's name is $
 Output ONLY the markdown content, no code fences.`
 
   const { text } = await runAgent(prompt)
-  if (!text) throw new Error('Failed to generate SKILL.md')
+  if (!text) throw new Error(noOutputHint('SKILL.md'))
   let cleaned = text.trim()
   if (cleaned.startsWith('```')) {
     cleaned = cleaned.replace(/^```\w*\n?/, '').replace(/\n?```$/, '')

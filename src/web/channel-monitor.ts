@@ -3,18 +3,20 @@ import { join } from 'node:path'
 import { execSync, execFileSync } from 'node:child_process'
 import { resolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER } from '../config.js'
+import { MAIN_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, PROJECT_ROOT } from '../config.js'
 import { agentDir, listAgentNames, readAgentChannelProvider } from './agent-config.js'
 import {
+  agentHasChannel,
   agentSessionName,
   isAgentRunning,
   sendPromptToSession,
   startAgentProcess,
   stopAgentProcess,
 } from './agent-process.js'
+import { detectPaneState, decidePaneErrorAlert, type PaneErrorAlertState } from '../pane-state.js'
 import { MAIN_CHANNELS_SESSION, MAIN_CHANNELS_PLIST } from './main-agent.js'
 import { notifyChannel } from '../notify.js'
-import { getProvider, channelStateDir, type ChannelProviderType } from '../channel-provider.js'
+import { getProvider, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { attemptChannelMcpReconnect } from './channel-mcp-reconnect.js'
 
 const TMUX = resolveFromPath('tmux')
@@ -151,6 +153,22 @@ const agentLastRestart: Map<string, number> = new Map()
 const AGENT_RESTART_GRACE_MS = 90_000
 const PLUGIN_ALERT_DEDUP_MS = 30 * 60 * 1000
 
+// Per-session tracking for the wedged thinking-block error (a Claude
+// session stuck returning `400 ... thinking blocks cannot be modified`
+// on every prompt). detectPaneState() classifies such a pane as
+// 'error'; the monitor alerts so the operator can reset it. Alert-only
+// by design -- auto-reset would destroy the agent's working memory and a
+// false positive must not nuke a healthy session.
+const paneErrorState: Map<string, PaneErrorAlertState> = new Map()
+// Must persist for at least two monitor ticks (60s interval) before the
+// first alert, so a one-tick transient never reports. 30 min dedup
+// matches the channel-plugin alert cadence. clearMs (5 min) keeps a
+// spell alive across brief non-error blips (null capture, mid-flight
+// busy) so a flapping but genuinely wedged session still alerts.
+const PANE_ERROR_CONFIRM_MS = 120_000
+const PANE_ERROR_DEDUP_MS = 30 * 60 * 1000
+const PANE_ERROR_CLEAR_MS = 5 * 60 * 1000
+
 type MarveenRecoveryStage = 'soft' | 'save' | 'resume' | 'hard' | 'gave_up'
 interface MarveenDownState {
   downSince: number
@@ -195,12 +213,40 @@ function triggerMarveenMemorySave(): void {
   }
 }
 
+// Read the main agent's configured model from .claude/settings.json so a
+// soft resume passes --model explicitly, mirroring scripts/channels.sh. Without
+// it the respawned session falls back to claude-code's built-in default and
+// silently drifts off the model the user picked. Returns '' when unset.
+function readConfiguredMainModel(): string {
+  try {
+    const settingsPath = join(PROJECT_ROOT, '.claude', 'settings.json')
+    if (!existsSync(settingsPath)) return ''
+    const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    const model = parsed?.model
+    return typeof model === 'string' ? model.trim() : ''
+  } catch {
+    return ''
+  }
+}
+
 function resumeMarveenSession(): boolean {
   const provider = getProvider(getMainAgentProvider())
   try {
+    const model = readConfiguredMainModel()
     const claudeCmd = [
       'export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"',
       '&&', CLAUDE, '--continue', '--dangerously-skip-permissions',
+      // Single-quote the model id so a value like `claude-opus-4-8[1m]` is not
+      // glob-expanded by the shell that tmux respawn-pane spawns the command in.
+      ...(model ? ['--model', `'${model}'`] : []),
+      // NOTE: inbound from `--channels` goes through a separate
+      // allowlist at /etc/claude-code/managed-settings.json
+      // (allowedChannelPlugins). If the plugin isn't listed there,
+      // claude-code 2.1.152+ silently drops MCP notifications even
+      // with --dangerously-skip-permissions. The dev-channels flag
+      // does NOT bypass this -- you must edit managed-settings.json
+      // (root) to add the plugin. See scripts/channels.sh for the
+      // full root-cause note.
       `--channels plugin:${provider.pluginId}`,
     ].join(' ')
     execFileSync(TMUX, ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
@@ -306,7 +352,10 @@ function handleMarveenDown(): void {
     const serviceCmd = process.platform === 'linux'
       ? `\`systemctl --user status ${MAIN_AGENT_ID}-channels\``
       : `\`launchctl list | grep ${MAIN_AGENT_ID}\``
-    sendAlert(`🚨 Hard restart SEM segitett. Kezzel kell megnezni: \`tmux attach -t ${MAIN_CHANNELS_SESSION}\` es ${serviceCmd}.`)
+    // Issue #189: a plain `tmux attach -t ...` may itself fail with "Permission
+    // denied" when the operator is running it from another tmux session. Prefix
+    // with `unset TMUX` so the hint works in both nested and non-nested cases.
+    sendAlert(`🚨 Hard restart SEM segitett. Kezzel kell megnezni: \`unset TMUX && tmux attach -t ${MAIN_CHANNELS_SESSION}\` es ${serviceCmd}.`)
     return
   }
   if (now - marveenDownState.lastAlertAt > PLUGIN_ALERT_DEDUP_MS) {
@@ -345,7 +394,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout {
     type Target = { session: string; isMarveen: boolean; agentName?: string; provider: ChannelProviderType }
     const targets: Target[] = [{ session: MAIN_CHANNELS_SESSION, isMarveen: true, provider: mainProvider }]
     for (const a of listAgentNames()) {
-      if (isAgentRunning(a)) {
+      if (isAgentRunning(a) && agentHasChannel(a)) {
         targets.push({
           session: agentSessionName(a),
           isMarveen: false,
@@ -354,6 +403,32 @@ export function startChannelPluginMonitor(): NodeJS.Timeout {
         })
       }
     }
+
+    // Pane-level thinking-block error detection. Independent of channel
+    // plugin liveness: a session can keep a live plugin yet be wedged on
+    // the API error, every injected prompt yielding another 400. Detect
+    // it via the pane state and alert (never auto-reset).
+    for (const t of targets) {
+      const pane = capturePane(t.session)
+      const isError = pane != null && detectPaneState(pane) === 'error'
+      const prev = paneErrorState.get(t.session) ?? { firstSeenAt: null, lastAlertAt: null, lastErrorAt: null }
+      const decision = decidePaneErrorAlert(isError, prev, Date.now(), {
+        confirmMs: PANE_ERROR_CONFIRM_MS,
+        dedupMs: PANE_ERROR_DEDUP_MS,
+        clearMs: PANE_ERROR_CLEAR_MS,
+      })
+      if (decision.next.firstSeenAt === null) {
+        paneErrorState.delete(t.session)
+      } else {
+        paneErrorState.set(t.session, decision.next)
+      }
+      if (decision.alert) {
+        const label = t.isMarveen ? BOT_NAME : (t.agentName ?? t.session)
+        logger.error({ session: t.session, agent: label }, 'Agent wedged on thinking-block API error -- manual reset needed')
+        sendAlert(`🚨 A(z) ${label} agens elakadt egy thinking-block API hibaban (a session-history korrupt, minden uj prompt ugyanazt a 400-at adja). Kezi reset kell: allitsd le es inditsd ujra, friss session indul. Reszletek: tmux attach -t ${t.session}`)
+      }
+    }
+
     for (const t of targets) {
       const claudePid = getClaudePidForSession(t.session)
       if (!claudePid) {
@@ -385,6 +460,13 @@ export function startChannelPluginMonitor(): NodeJS.Timeout {
       } else {
         const isFirstDown = !agentDownSince.has(t.session)
         if (isFirstDown) agentDownSince.set(t.session, Date.now())
+        const agentProvider = resolveAgentProvider(t.agentName!)
+        const stateDir = channelStateDir(agentProvider, agentDir(t.agentName!))
+        const agentToken = readChannelToken(agentProvider, join(stateDir, '.env'))
+        if (!agentToken) {
+          logger.warn({ agent: t.agentName, provider: agentProvider }, 'Agent has no channel token in state dir -- skipping restart to avoid token conflict')
+          continue
+        }
         logger.warn({ agent: t.agentName, provider: t.provider }, 'Agent channel plugin down -- auto-restarting')
         try {
           stopAgentProcess(t.agentName!)

@@ -324,6 +324,25 @@ else
   fi
 fi
 
+# Pre-flight headless probe — Issue #179.
+# `claude auth status` only checks the token file; it does NOT verify the SDK
+# can actually run a query against the live API. On a VPS where the token is
+# stale or the network blocks api.anthropic.com, agent create later bombs out
+# with "Failed to generate CLAUDE.md". Catch it here while the user is still in
+# front of the install script.
+echo ""
+echo -e "  ${DIM}Headless Claude Code teszt...${NC}"
+CLAUDE_PROBE_OUT=$(claude --print "ping" 2>&1 | head -c 200)
+CLAUDE_PROBE_EXIT=$?
+if [ "$CLAUDE_PROBE_EXIT" -eq 0 ] && [ -n "$CLAUDE_PROBE_OUT" ]; then
+  ok "Headless Claude Code futtathato (\`claude --print\` valaszolt)"
+else
+  warn "Headless Claude Code probe SIKERTELEN. Az agent-letrehozas KESOBB EL fog hasalni."
+  echo -e "    ${DIM}Kimenet: ${CLAUDE_PROBE_OUT:-<ures>}${NC}"
+  echo -e "    ${DIM}Tipikus okok: nincs ervenyes auth, halozati problema, regi claude CLI.${NC}"
+  echo -e "    ${DIM}Javitas: \`claude --version\` -> \`claude /login\` (vagy ANTHROPIC_API_KEY/CLAUDE_CODE_OAUTH_TOKEN beallitas) -> \`claude --print \"ping\"\` ujra.${NC}"
+fi
+
 # Ensure ~/.claude directory tree has correct ownership and permissions.
 # On Ubuntu desktop, umask or prior package installs can leave these dirs
 # world-readable or owned by root, which blocks Claude Code from writing
@@ -1137,6 +1156,10 @@ else
   echo -e "  ${BOLD}Dashboard:${NC} http://localhost:3420"
   echo -e "  ${DIM}(A tokenes URL-t a szerver logban talalod)${NC}"
 fi
+echo ""
+echo -e "  ${DIM}VPS/szerver eleres tavolrol:${NC}"
+echo -e "  ${DIM}  A .env fajlba ird: WEB_HOST=0.0.0.0${NC}"
+echo -e "  ${DIM}  Majd: systemctl --user restart ${DASH_UNIT}${NC}"
 echo -e "  ${BOLD}Telegram:${NC} Irj a botodnak!"
 echo ""
 echo -e "  ${DIM}Kovetkezo lepesek:${NC}"

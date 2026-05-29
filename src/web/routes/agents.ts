@@ -71,11 +71,14 @@ import {
   isAgentRunning,
   startAgentProcess,
   stopAgentProcess,
+  restartAgentProcess,
+  getAgentRunningSince,
   getAgentProcessInfo,
   agentSessionName,
   sendPromptToSession,
   capturePane,
 } from '../agent-process.js'
+import { readActiveModelFromProjectDir } from '../active-model.js'
 import { attemptChannelMcpReconnect } from '../channel-mcp-reconnect.js'
 import { getChannelHealth } from '../channel-health-monitor.js'
 import {
@@ -118,8 +121,10 @@ export function isManagedSettingsReady(): boolean {
   if (!existsSync(MANAGED_SETTINGS_PATH)) return false
   try {
     const data = JSON.parse(readFileSync(MANAGED_SETTINGS_PATH, 'utf-8')) as {
+      channelsEnabled?: boolean
       allowedChannelPlugins?: Array<{ plugin: string; marketplace: string }>
     }
+    if (!data.channelsEnabled) return false
     const plugins = data.allowedChannelPlugins ?? []
     return plugins.some(
       p => p.plugin === SLACK_ALLOWLIST_ENTRY.plugin && p.marketplace === SLACK_ALLOWLIST_ENTRY.marketplace
@@ -132,24 +137,23 @@ export function isManagedSettingsReady(): boolean {
 export function getManagedSettingsSudoCommand(): string {
   const mergeScript = [
     'import json, sys',
-    'new_plugins = json.loads(sys.stdin.read())["allowedChannelPlugins"]',
-    'try:',
-    `  with open("${MANAGED_SETTINGS_PATH}") as f: data = json.load(f)`,
-    'except: data = {}',
+    'new_data = json.loads(sys.stdin.read())',
+    'try:\n  with open("' + MANAGED_SETTINGS_PATH + '") as f: data = json.load(f)',
+    'except:\n  data = {}',
+    'data["channelsEnabled"] = True',
     'existing = data.get("allowedChannelPlugins", [])',
-    'for e in new_plugins:',
-    '  if not any(p.get("plugin")==e["plugin"] and p.get("marketplace")==e["marketplace"] for p in existing):',
-    '    existing.append(e)',
+    'for e in new_data["allowedChannelPlugins"]:\n  if not any(p.get("plugin")==e["plugin"] and p.get("marketplace")==e["marketplace"] for p in existing):\n    existing.append(e)',
     'data["allowedChannelPlugins"] = existing',
     'print(json.dumps(data, indent=2))',
-  ].join('; ')
+  ].join('\n')
   const payload = JSON.stringify({
     allowedChannelPlugins: [
       SLACK_ALLOWLIST_ENTRY,
       { plugin: 'telegram', marketplace: 'claude-plugins-official' },
     ],
   })
-  return `echo '${payload}' | sudo python3 -c '${mergeScript}' | sudo tee "${MANAGED_SETTINGS_PATH}" > /dev/null`
+  const escapedScript = mergeScript.replace(/'/g, "'\\''")
+  return `echo '${payload}' | sudo python3 -c '${escapedScript}' | sudo tee "${MANAGED_SETTINGS_PATH}" > /dev/null`
 }
 
 export function setAgentEnabledPlugins(name: string, provider: ChannelProviderType): void {
@@ -161,15 +165,13 @@ export function setAgentEnabledPlugins(name: string, provider: ChannelProviderTy
     try { existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { /* overwrite */ }
   }
   const plugins = (existing.enabledPlugins ?? {}) as Record<string, boolean>
-  if (provider === 'discord') {
-    plugins['telegram@claude-plugins-official'] = false
-    plugins['slack-channel@marveen-marketplace'] = false
-  } else if (provider === 'slack') {
-    plugins['telegram@claude-plugins-official'] = false
-    plugins['discord@claude-plugins-official'] = false
-  } else {
-    plugins['slack-channel@marveen-marketplace'] = false
-    plugins['discord@claude-plugins-official'] = false
+  const allPlugins: Record<ChannelProviderType, string> = {
+    telegram: 'telegram@claude-plugins-official',
+    slack: 'slack-channel@marveen-marketplace',
+    discord: 'discord@claude-plugins-official',
+  }
+  for (const [p, pluginKey] of Object.entries(allPlugins)) {
+    plugins[pluginKey] = p === provider
   }
   existing.enabledPlugins = plugins
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
@@ -192,12 +194,54 @@ function resolveAccessPath(name: string, provider: ChannelProviderType): string 
   return join(dir, 'access.json')
 }
 
+function extractBotId(token: string): string | null {
+  const colon = token.indexOf(':')
+  if (colon < 1) return null
+  const id = token.slice(0, colon)
+  return /^\d+$/.test(id) ? id : null
+}
+
+function findBotTokenDuplicate(
+  provider: ChannelProviderType,
+  token: string,
+  excludeAgent: string,
+): string | null {
+  const botId = extractBotId(token)
+  if (!botId) return null
+
+  const candidates: Array<{ name: string; envPath: string }> = []
+
+  // Main agent's channel .env
+  if (excludeAgent !== MAIN_AGENT_ID) {
+    const mainEnv = join(channelStateDir(provider), '.env')
+    candidates.push({ name: MAIN_AGENT_ID, envPath: mainEnv })
+  }
+
+  // All sub-agents
+  for (const agentName of listAgentNames()) {
+    if (agentName === excludeAgent) continue
+    const envPath = join(channelStateDir(provider, agentDir(agentName)), '.env')
+    candidates.push({ name: agentName, envPath })
+  }
+
+  for (const { name, envPath } of candidates) {
+    const existing = readChannelToken(provider, envPath)
+    if (!existing) continue
+    const existingBotId = extractBotId(existing)
+    if (existingBotId === botId) return name
+  }
+
+  return null
+}
+
 interface AgentSummary {
   name: string
   displayName: string
   department: string
   description: string
   model: string
+  activeModel: string | null
+  runningSince: number | null
   authMode: AuthMode
   securityProfile: string
   team: TeamConfig
@@ -230,6 +274,7 @@ function getAgentSummary(name: string): AgentSummary {
   const hasSoulMd = soulMd.trim().length > 0
 
   const proc = getAgentProcessInfo(name)
+  const runningSince = proc.running ? getAgentRunningSince(name) : null
 
   return {
     name,
@@ -237,6 +282,8 @@ function getAgentSummary(name: string): AgentSummary {
     department: readAgentDepartment(name),
     description: extractDescriptionFromClaudeMd(claudeMd),
     model: readAgentModel(name),
+    activeModel: proc.running ? readActiveModelFromProjectDir(dir, runningSince ?? undefined) : null,
+    runningSince,
     authMode: readAgentAuthMode(name),
     securityProfile: readAgentSecurityProfile(name),
     team: readAgentTeam(name),
@@ -299,7 +346,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const hasDeepseek = getSecret('DEEPSEEK_API_KEY') !== null
     json(res, {
       claude: [
-        { id: 'claude-opus-4-7', label: 'Opus 4.7 (legújabb, legjobb)' },
+        { id: 'claude-opus-4-8[1m]', label: 'Opus 4.8 (1M kontextus)' },
+        { id: 'claude-opus-4-7', label: 'Opus 4.7' },
         { id: 'claude-opus-4-6', label: 'Opus 4.6' },
         { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6 (alapértelmezett)' },
         { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 (leggyorsabb)' },
@@ -358,7 +406,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     } catch (err) {
       rmSync(agentDir(name), { recursive: true, force: true })
       logger.error({ err, name }, 'Failed to generate agent files')
-      json(res, { error: 'Failed to generate agent files' }, 500)
+      // Propagate the underlying message so the dashboard surfaces the actual
+      // cause (auth not configured, Claude Code CLI missing, etc.) instead of
+      // the previous opaque "Failed to generate agent files" — Issue #179.
+      const detail = err instanceof Error ? err.message : 'Unknown error'
+      json(res, { error: 'Failed to generate agent files', detail }, 500)
       return true
     }
 
@@ -511,6 +563,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const channelProvider = getProvider(provider)
     const validation = await channelProvider.validateToken(botToken.trim())
     if (!validation.ok) { json(res, { error: validation.error || 'Invalid token' }, 400); return true }
+
+    const dupeOwner = findBotTokenDuplicate(provider, botToken.trim(), name)
+    if (dupeOwner) {
+      json(res, { error: `This bot token is already used by agent "${dupeOwner}". Each agent needs its own bot token to avoid getUpdates conflicts.` }, 409)
+      return true
+    }
 
     if (provider === 'slack' && !isManagedSettingsReady()) {
       const displayName = readAgentDisplayName(name) || name
@@ -829,10 +887,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         ? readMarveenTelegramConfig().botUsername
         : readAgentTelegramConfig(name).botUsername
     }
+    const cleanBotName = botName?.replace(/^@/, '')
     const items = listInvites(accessPath).map((inv) => ({
       ...inv,
-      deepLink: provider === 'telegram' && botName
-        ? `https://t.me/${botName}?start=invite-${inv.token}`
+      deepLink: provider === 'telegram' && cleanBotName
+        ? `https://t.me/${cleanBotName}?start=invite-${inv.token}`
         : undefined,
     }))
     json(res, items)
@@ -1019,6 +1078,16 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   if (stopMatch && method === 'POST') {
     const name = decodeURIComponent(stopMatch[1])
     const result = stopAgentProcess(name)
+    if (result.ok) { json(res, { ok: true }); return true }
+    json(res, { error: result.error }, 400)
+    return true
+  }
+
+  const restartMatch = path.match(/^\/api\/agents\/([^/]+)\/restart$/)
+  if (restartMatch && method === 'POST') {
+    const name = decodeURIComponent(restartMatch[1])
+    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    const result = restartAgentProcess(name)
     if (result.ok) { json(res, { ok: true }); return true }
     json(res, { error: result.error }, 400)
     return true
