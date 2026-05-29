@@ -173,5 +173,19 @@
     "authType": "oauth",
     "authNote": "Első használatkor OAuth bejelentkezés (Google/Microsoft fiók) a böngészőben",
     "infoUrl": "https://fireflies.ai/blog/fireflies-mcp-server/"
+  },
+  {
+    "id": "playwright",
+    "name": "Playwright (böngészővezérlés)",
+    "description": "Chromium/Firefox/WebKit böngésző automatizáció: navigate, click, fill, screenshot, JavaScript futtatás. Headless (default) és headed (--headed flag) is.",
+    "type": "local",
+    "category": "automation",
+    "icon": "🌐",
+    "command": "npx",
+    "args": ["-y", "@playwright/mcp@latest"],
+    "env": {},
+    "authType": "none",
+    "authNote": "Nincs auth. Headed mode-hoz adjuk hozzá az --headed flag-et az args-hoz.",
+    "infoUrl": "https://github.com/microsoft/playwright-mcp"
   }
 ]
