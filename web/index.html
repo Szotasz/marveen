@@ -80,6 +80,14 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17h16"/><path d="M4 13h16"/><path d="M4 9h16"/><path d="M4 5h16"/></svg>
         <span class="sb-label">Ügynök Konzol</span>
       </a>
+      <a href="#" class="sb-link" data-page="ideas">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+        <span class="sb-label">Ötletláda</span>
+      </a>
+      <a href="#" class="sb-link" data-page="workflows">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        <span class="sb-label">Workflow-k</span>
+      </a>
       <a href="#" class="sb-link" data-page="updates" id="updatesNavLink">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
         <span class="sb-label">Frissítések</span>
@@ -773,6 +781,97 @@
 
       <div class="autonomy-grid" id="autonomyGrid"></div>
       <p class="autonomy-footer" id="autonomyUpdatedAt"></p>
+    </div>
+
+    <!-- === Ötletláda Page === -->
+    <div class="page" id="ideasPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1>Ötletláda</h1>
+            <p class="subtitle">Fejlesztési ötletek és javaslatok</p>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="ideaCategoryFilter" class="input" style="width:160px;font-size:13px">
+              <option value="">Összes kategória</option>
+            </select>
+            <select id="ideaStatusFilter" class="input" style="width:130px;font-size:13px">
+              <option value="">Összes státusz</option>
+              <option value="new">Új</option>
+              <option value="reviewed">Átnézve</option>
+              <option value="kanban">Kanbanban</option>
+              <option value="rejected">Elutasítva</option>
+            </select>
+            <button class="btn-primary btn-compact" id="ideaNewBtn">+ Új ötlet</button>
+          </div>
+        </div>
+      </div>
+      <div class="ideas-stats" id="ideasStats" style="display:flex;gap:16px;margin-bottom:16px;flex-wrap:wrap"></div>
+      <div id="ideasList" style="display:flex;flex-direction:column;gap:8px"></div>
+      <div class="modal-overlay" id="ideaModalOverlay" hidden>
+        <div class="modal" style="max-width:540px">
+          <div class="modal-header">
+            <h2 id="ideaModalTitle">Új ötlet</h2>
+            <button class="modal-close" id="ideaModalClose">&times;</button>
+          </div>
+          <div class="modal-body" style="display:flex;flex-direction:column;gap:12px">
+            <div class="form-group"><label class="form-label">Cím *</label><input type="text" id="ideaTitleInput" class="input" placeholder="Rövid, egyértelmű cím"></div>
+            <div class="form-group"><label class="form-label">Leírás</label><textarea id="ideaDescInput" class="input" rows="4" placeholder="Részletes leírás..."></textarea></div>
+            <div style="display:flex;gap:8px">
+              <div class="form-group" style="flex:1"><label class="form-label">Kategória</label>
+                <select id="ideaCategoryInput" class="input"><option>Sales</option><option>Oktatás</option><option>Automatizálás</option><option>Integráció</option><option>Rendszer</option><option>Egyéb</option></select>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer" style="display:flex;gap:8px;justify-content:flex-end">
+            <button class="btn-secondary" id="ideaModalCancel">Mégse</button>
+            <button class="btn-primary btn-compact" id="ideaModalSave">Mentés</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-overlay" id="ideaPromoteOverlay" hidden>
+        <div class="modal" style="max-width:400px">
+          <div class="modal-header"><h2>Kanbanba küldés</h2><button class="modal-close" id="ideaPromoteClose">&times;</button></div>
+          <div class="modal-body">
+            <p style="margin-bottom:16px;font-size:14px">Melyik fázisban?</p>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <button class="btn-secondary" id="ideaPromoteDetail" style="text-align:left;padding:12px 16px"><strong>Részlet kidolgozás (Várakozik)</strong></button>
+              <button class="btn-primary btn-compact" id="ideaPromotePlan" style="text-align:left;padding:12px 16px"><strong>Terv (Tervezett)</strong></button>
+            </div>
+          </div>
+          <div class="modal-footer" style="justify-content:flex-end"><button class="btn-secondary" id="ideaPromoteCancel">Mégse</button></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- === Workflow Recordings Page === -->
+    <div class="page" id="workflowsPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div><h1>Workflow-k</h1><p class="subtitle">Elmentett agent workflow sablonok</p></div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="text" id="workflowSearchInput" class="input" placeholder="Keresés..." style="width:200px;font-size:13px">
+            <button class="btn-primary btn-compact" id="workflowNewBtn">+ Új workflow</button>
+          </div>
+        </div>
+      </div>
+      <div id="workflowStats" style="display:flex;gap:16px;margin-bottom:16px;flex-wrap:wrap"></div>
+      <div id="workflowList" style="display:flex;flex-direction:column;gap:8px"></div>
+      <div class="modal-overlay" id="workflowModalOverlay" hidden>
+        <div class="modal" style="max-width:600px">
+          <div class="modal-header"><h2 id="workflowModalTitle">Új workflow</h2><button class="modal-close" id="workflowModalClose">&times;</button></div>
+          <div class="modal-body" style="display:flex;flex-direction:column;gap:12px">
+            <div class="form-group"><label class="form-label">Név *</label><input type="text" id="workflowNameInput" class="input" placeholder="pl. upstream-merge"></div>
+            <div class="form-group"><label class="form-label">Leírás</label><input type="text" id="workflowDescInput" class="input"></div>
+            <div class="form-group"><label class="form-label">Trigger kulcsszavak</label><input type="text" id="workflowKeywordsInput" class="input" placeholder="szóközzel elválasztva"></div>
+            <div class="form-group"><label class="form-label">Lépések (JSON)</label><textarea id="workflowStepsInput" class="input" rows="8"></textarea></div>
+          </div>
+          <div class="modal-footer" style="display:flex;gap:8px;justify-content:flex-end">
+            <button class="btn-secondary" id="workflowModalCancel">Mégse</button>
+            <button class="btn-primary btn-compact" id="workflowModalSave">Mentés</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- === Vault Page === -->
