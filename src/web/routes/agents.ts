@@ -822,10 +822,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         ? readMarveenTelegramConfig().botUsername
         : readAgentTelegramConfig(name).botUsername
     }
+    const cleanBotName = botName?.replace(/^@/, '')
     const items = listInvites(accessPath).map((inv) => ({
       ...inv,
-      deepLink: provider === 'telegram' && botName
-        ? `https://t.me/${botName}?start=invite-${inv.token}`
+      deepLink: provider === 'telegram' && cleanBotName
+        ? `https://t.me/${cleanBotName}?start=invite-${inv.token}`
         : undefined,
     }))
     json(res, items)
