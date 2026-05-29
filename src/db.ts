@@ -455,6 +455,20 @@ export function initDatabase(): void {
   try { db.exec('ALTER TABLE workflow_recordings ADD COLUMN embedding TEXT') } catch { }
   try { db.exec("ALTER TABLE workflow_recordings ADD COLUMN branch_stats_json TEXT NOT NULL DEFAULT '{}'") } catch { }
 
+  // --- Tool Call Log (auto-recorder) ---
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS tool_call_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      input_summary TEXT,
+      success INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_tool_log_session ON tool_call_log(session_id, created_at)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_tool_log_ts ON tool_call_log(created_at)`)
+
   // One-shot migration from the old JSON file (which had a read-modify-write
   // race). Import rows if they exist, then rename the file so we don't keep
   // re-importing. Wrapped in a transaction so a crash mid-import is safe.
@@ -1535,6 +1549,81 @@ export function listIdeaCategories(): string[] {
 }
 
 // --- Workflow Recordings ---
+
+// --- Tool Call Log ---
+
+export function logToolCall(sessionId: string, toolName: string, inputSummary: string | null, success = true): void {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare('INSERT INTO tool_call_log (session_id, tool_name, input_summary, success, created_at) VALUES (?, ?, ?, ?, ?)').run(sessionId, toolName, inputSummary, success ? 1 : 0, now)
+}
+
+export interface ToolCallLogRow {
+  id: number
+  session_id: string
+  tool_name: string
+  input_summary: string | null
+  success: number
+  created_at: number
+}
+
+export interface WorkflowCandidate {
+  session_id: string
+  tool_calls: ToolCallLogRow[]
+  start_ts: number
+  end_ts: number
+  duration_minutes: number
+}
+
+export function getRecentToolCalls(sinceSecs: number): ToolCallLogRow[] {
+  const cutoff = Math.floor(Date.now() / 1000) - sinceSecs
+  return db.prepare('SELECT * FROM tool_call_log WHERE created_at >= ? ORDER BY created_at ASC').all(cutoff) as ToolCallLogRow[]
+}
+
+export function analyzeWorkflowCandidates(sinceSecs = 3600, minToolCalls = 5, gapSecs = 300): WorkflowCandidate[] {
+  const calls = getRecentToolCalls(sinceSecs)
+  if (calls.length === 0) return []
+
+  // Group by session_id, then split by time gaps > gapSecs
+  const bySession: Map<string, ToolCallLogRow[]> = new Map()
+  for (const c of calls) {
+    if (!bySession.has(c.session_id)) bySession.set(c.session_id, [])
+    bySession.get(c.session_id)!.push(c)
+  }
+
+  const candidates: WorkflowCandidate[] = []
+  for (const [sessionId, sessionCalls] of bySession) {
+    // Split into chunks by time gap
+    const chunks: ToolCallLogRow[][] = []
+    let current: ToolCallLogRow[] = [sessionCalls[0]]
+    for (let i = 1; i < sessionCalls.length; i++) {
+      if (sessionCalls[i].created_at - sessionCalls[i - 1].created_at > gapSecs) {
+        chunks.push(current)
+        current = []
+      }
+      current.push(sessionCalls[i])
+    }
+    chunks.push(current)
+
+    for (const chunk of chunks) {
+      if (chunk.length >= minToolCalls) {
+        candidates.push({
+          session_id: sessionId,
+          tool_calls: chunk,
+          start_ts: chunk[0].created_at,
+          end_ts: chunk[chunk.length - 1].created_at,
+          duration_minutes: Math.round((chunk[chunk.length - 1].created_at - chunk[0].created_at) / 60),
+        })
+      }
+    }
+  }
+
+  return candidates
+}
+
+export function pruneToolCallLog(olderThanSecs = 86400): void {
+  const cutoff = Math.floor(Date.now() / 1000) - olderThanSecs
+  db.prepare('DELETE FROM tool_call_log WHERE created_at < ?').run(cutoff)
+}
 
 export interface WorkflowBranchStat {
   runs: number
