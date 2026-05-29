@@ -19,9 +19,22 @@ import { MAIN_CHANNELS_SESSION, MAIN_CHANNELS_PLIST } from './main-agent.js'
 import { notifyChannel } from '../notify.js'
 import { getProvider, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { attemptChannelMcpReconnect } from './channel-mcp-reconnect.js'
+import { shouldAutoRestartDownAgent, parseEtimeToSeconds } from './agent-restart-policy.js'
 
 const TMUX = resolveFromPath('tmux')
 const CLAUDE = resolveFromPath('claude')
+
+// How long the agent's claude process has been running. Returns -1 when it
+// cannot be determined, which the restart policy treats as "do not restart".
+function getProcessAgeMs(pid: number): number {
+  try {
+    const out = execFileSync('/bin/ps', ['-o', 'etime=', '-p', String(pid)], { timeout: 3000, encoding: 'utf-8' })
+    const secs = parseEtimeToSeconds(out)
+    return secs < 0 ? -1 : secs * 1000
+  } catch {
+    return -1
+  }
+}
 
 function resolveAgentProvider(name: string): ChannelProviderType {
   const perAgent = readAgentChannelProvider(name)
@@ -152,6 +165,11 @@ function hasChannelPluginAlive(claudePid: number, providerType: ChannelProviderT
 const agentDownSince: Map<string, number> = new Map()
 const agentLastRestart: Map<string, number> = new Map()
 const AGENT_RESTART_GRACE_MS = 90_000
+// A freshly started agent can take well over the first-probe window to bring
+// its channel plugin up (a large-context model launched with --continue spawns
+// the plugin only after a slow session load). Never restart a process younger
+// than this on a "plugin down" reading, or the watchdog crash-loops it.
+const AGENT_STARTUP_GRACE_MS = 180_000
 const PLUGIN_ALERT_DEDUP_MS = 30 * 60 * 1000
 
 // Per-session tracking for the wedged thinking-block error (a Claude
@@ -435,14 +453,21 @@ export function startChannelPluginMonitor(): NodeJS.Timeout {
         }
         continue
       }
-      if (!t.isMarveen && t.agentName) {
-        const lastRestart = agentLastRestart.get(t.agentName)
-        if (lastRestart && Date.now() - lastRestart < AGENT_RESTART_GRACE_MS) continue
-      }
       if (t.isMarveen) {
         if (shouldEscalateMarveenDown()) handleMarveenDown()
       } else {
         if (!agentDownSince.has(t.session)) agentDownSince.set(t.session, Date.now())
+        const lastRestart = agentLastRestart.get(t.agentName!)
+        const restart = shouldAutoRestartDownAgent({
+          processAgeMs: getProcessAgeMs(claudePid),
+          msSinceLastRestart: lastRestart != null ? Date.now() - lastRestart : null,
+          startupGraceMs: AGENT_STARTUP_GRACE_MS,
+          restartGraceMs: AGENT_RESTART_GRACE_MS,
+        })
+        if (!restart) {
+          logger.debug({ agent: t.agentName, provider: t.provider }, 'Channel plugin probe reports down but agent is within startup/restart grace -- deferring')
+          continue
+        }
         const agentProvider = resolveAgentProvider(t.agentName!)
         const stateDir = channelStateDir(agentProvider, agentDir(t.agentName!))
         const agentToken = readChannelToken(agentProvider, join(stateDir, '.env'))
