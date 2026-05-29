@@ -51,11 +51,11 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
   const agentChannelDir = channelStateDir(agentProvider, dir)
   const token = readChannelToken(agentProvider, join(agentChannelDir, '.env'))
   // Backward compat: try legacy Telegram token if provider-aware lookup misses
+  let hasChannel = !!token
   if (!token && agentProvider === 'telegram') {
     const legacyToken = parseTelegramToken(name)
-    if (!legacyToken) return { ok: false, error: 'Channel not configured for this agent' }
-  } else if (!token) {
-    return { ok: false, error: `${provider.type} channel not configured for this agent` }
+    hasChannel = !!legacyToken
+    // Channel-less agents (inter-agent only, no direct Telegram/Slack) are allowed to start
   }
 
   const session = agentSessionName(name)
@@ -114,7 +114,11 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
     // Slack plugin is third-party; its "not on approved allowlist" check is
     // bypassed via `allowedChannelPlugins` in /Library/Application Support/ClaudeCode/managed-settings.json.
     const auditLogEnv = agentProvider === 'slack' ? ` && export SLACK_AUDIT_LOG="${agentChannelDir}/audit.jsonl"` : ''
-    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && export ${stateEnvVar}="${agentChannelDir}"${auditLogEnv} && ${apiKeyEnv}${claudeConfigEnv}${ollamaEnv}${deepseekEnv}cd "${dir}" && ${CLAUDE} ${continueFlag}${skipFlag}--model ${model} --channels plugin:${provider.pluginId}`
+    const channelSetup = hasChannel
+      ? `export ${stateEnvVar}="${agentChannelDir}"${auditLogEnv} && `
+      : ''
+    const channelFlag = hasChannel ? `--channels plugin:${provider.pluginId}` : ''
+    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${channelSetup}${apiKeyEnv}${claudeConfigEnv}${ollamaEnv}${deepseekEnv}cd "${dir}" && ${CLAUDE} ${continueFlag}${skipFlag}--model ${model} ${channelFlag}`.trimEnd()
     execSync(
       `${TMUX} new-session -d -s ${session} "${cmd}"`,
       { timeout: 10000 }
