@@ -25,7 +25,7 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
     json(res, {
       name: BOT_NAME,
       description,
-      model: 'claude-opus-4-6',
+      model: 'claude-opus-4-8',
       running: true,
       hasTelegram: tg.hasTelegram,
       telegramBotUsername: tg.botUsername,
