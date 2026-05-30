@@ -231,7 +231,7 @@ function createCardEl(card) {
 
   const assignee = card.assignee ? kanbanAssignees.find((a) => a.name === card.assignee) : null
   const assigneeHtml = assignee
-    ? `<span class="kanban-card-assignee"><span class="assignee-dot ${assignee.type}">${assignee.name[0]}</span>${escapeHtml(assignee.name)}</span>`
+    ? `<span class="kanban-card-assignee"><span class="assignee-dot ${assignee.type}">${(assignee.displayName || assignee.name)[0]}</span>${escapeHtml(assignee.displayName || assignee.name)}</span>`
     : ''
 
   let dueHtml = ''
@@ -361,7 +361,7 @@ function populateAssigneeSelect(selectId, selected) {
   for (const a of kanbanAssignees) {
     const opt = document.createElement('option')
     opt.value = a.name
-    opt.textContent = a.name
+    opt.textContent = a.displayName || a.name
     if (selected && a.name === selected) opt.selected = true
     sel.appendChild(opt)
   }
@@ -425,7 +425,7 @@ async function showCardDetail(card) {
     </div>
     <div class="meta-item">
       <span class="meta-label">Felelős</span>
-      <span class="meta-value meta-value-editable" id="metaAssigneeValue" data-card-id="${card.id}" title="Kattints a módosításhoz">${assignee ? escapeHtml(assignee.name) : '-- nincs --'}</span>
+      <span class="meta-value meta-value-editable" id="metaAssigneeValue" data-card-id="${card.id}" title="Kattints a módosításhoz">${assignee ? escapeHtml(assignee.displayName || assignee.name) : '-- nincs --'}</span>
     </div>
     <div class="meta-item">
       <span class="meta-label">Prioritás</span>
@@ -452,7 +452,7 @@ async function showCardDetail(card) {
     for (const a of kanbanAssignees) {
       const opt = document.createElement('option')
       opt.value = a.name
-      opt.textContent = a.name
+      opt.textContent = a.displayName || a.name
       if (a.name === current) opt.selected = true
       sel.appendChild(opt)
     }
@@ -644,7 +644,7 @@ function showBreakdownModal(subtasks, parentCard) {
 
   const priorityLabels = { low: 'Alacsony', normal: 'Normál', high: 'Magas', urgent: 'Sürgős' }
   const assigneeOptions = kanbanAssignees
-    .map((a) => `<option value="${escapeHtml(a.name)}">${escapeHtml(a.name)}</option>`)
+    .map((a) => `<option value="${escapeHtml(a.name)}">${escapeHtml(a.displayName || a.name)}</option>`)
     .join('')
 
   subtasks.forEach((st, i) => {

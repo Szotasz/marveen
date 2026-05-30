@@ -6,7 +6,7 @@ import {
   getKanbanCard, getChildCards, getDb,
 } from '../../db.js'
 import { OWNER_NAME, BOT_NAME } from '../../config.js'
-import { listAgentNames } from '../agent-config.js'
+import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
@@ -26,7 +26,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/kanban/assignees' && method === 'GET') {
-    const agents = listAgentNames().map((name) => ({ name, type: 'agent' }))
+    const agents = listAgentNames().map((name) => ({ name, type: 'agent', displayName: readAgentDisplayName(name) || name }))
     json(res, [
       { name: OWNER_NAME, type: 'owner' },
       { name: BOT_NAME, type: 'bot' },
