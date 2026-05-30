@@ -5,7 +5,7 @@ description: 30 percenként átnézi a beszélgetést, menti a fontosat, és ski
 
 ## 0. ELŐSZÖR: Van-e várakozó Telegram üzenet?
 
-**Mielőtt bármit csinálnál**, nézd meg a session inputját: ha van `← telegram ·` prefixű üzenet a kontextusban (azaz Gábor küldött valamit Telegramon), **azonnal válaszolj rá** -- a heartbeat logika (A/B/C, csendben maradás) NEM vonatkozik a közvetlen felhasználói üzenetekre. Válasz után folytasd a heartbeat-et.
+**Mielőtt bármit csinálnál**, nézd meg a session inputját: ha van `<channel source=` kezdetű blokk a kontextusban (azaz a felhasználó küldött valamit egy csatornán -- Telegram, Slack, stb.), **azonnal válaszolj rá** -- a heartbeat logika (A/B/C, csendben maradás) NEM vonatkozik a közvetlen felhasználói üzenetekre. Válasz után folytasd a heartbeat-et.
 
 ---
 
@@ -69,7 +69,7 @@ Lépések:
 
 ## 3. Csendben maradás
 
-**KIVÉTEL: Ha Gábor Telegram üzenetet küldött (← telegram · prefix), arra mindig válaszolj -- a csendes heartbeat szabály NEM vonatkozik rá.**
+**KIVÉTEL: Ha a felhasználó üzenetet küldött egy csatornán (`<channel source=` kezdetű blokk a kontextusban), arra mindig válaszolj -- a csendes heartbeat szabály NEM vonatkozik rá.**
 
 Ha NINCS komplex feladat / hiba / korrekció (A=B=C=NEM), ÉS nincs várakozó Telegram üzenet, ÉS nincs új információ a 30 percben:
 - Ne ments memóriát feleslegesen
