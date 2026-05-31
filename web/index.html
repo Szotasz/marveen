@@ -1308,6 +1308,10 @@
               <span class="meta-label">Skillek</span>
               <span class="meta-value" id="agentDetailSkillCount">0</span>
             </div>
+            <div class="agent-overview-item">
+              <span class="meta-label">Kontextus</span>
+              <span class="meta-value" id="agentDetailContext">-</span>
+            </div>
           </div>
           <div class="agent-process-control" id="agentProcessControl">
             <div class="process-status" id="processStatus">
@@ -1357,6 +1361,47 @@
             <small id="deepseekHint" style="display:none;margin-top:6px;color:var(--text-muted);font-size:12px;line-height:1.4">
               DeepSeek-V4-Pro nincs konfigurálva. <a href="#" id="deepseekConfigLink">API kulcs hozzáadása</a> a Vault oldalon.
             </small>
+          </div>
+          <div class="form-group" id="autoRestartGroup">
+            <label>Automatikus újraindítás</label>
+            <p style="margin:4px 0 10px;font-size:12.5px;line-height:1.5;color:var(--text-muted)">
+              A hosszú sessionök lelassulnak: a teljes kontextust minden válasznál újra fel kell dolgozni,
+              ezért a nagyobb kontextus lassabb és drágább, és hamarabb eléri a limitet. Érdemes időnként
+              újraindítani, hogy a session friss és lendületes maradjon. Alapértelmezetten az éjszakai
+              konszolidáció (DREAM) után fut, mint az alvás: az agy éjjel rendet rak, és reggel frissen ébredsz.
+            </p>
+            <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:10px;cursor:pointer">
+              <input type="checkbox" id="arEnabled"> Bekapcsolva
+            </label>
+            <div class="form-row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+              <div class="form-group" style="flex:1;min-width:200px;margin-bottom:0">
+                <label for="arMode" style="font-size:12px;color:var(--text-muted)">Mód</label>
+                <select id="arMode">
+                  <option value="continue">Folytatás — kontextus megmarad, tier/limit frissül</option>
+                  <option value="fresh">Friss — kontextus eldobása (ez gyorsít)</option>
+                </select>
+              </div>
+              <div class="form-group" style="margin-bottom:0">
+                <label for="arSchedKind" style="font-size:12px;color:var(--text-muted)">Ütemezés</label>
+                <select id="arSchedKind">
+                  <option value="daily">Napi időpont</option>
+                  <option value="interval">Óránként</option>
+                </select>
+              </div>
+              <div class="form-group" id="arDailyWrap" style="margin-bottom:0">
+                <label for="arDailyTime" style="font-size:12px;color:var(--text-muted)">Időpont</label>
+                <input type="time" id="arDailyTime" value="03:00">
+              </div>
+              <div class="form-group" id="arIntervalWrap" hidden style="margin-bottom:0">
+                <label for="arIntervalHours" style="font-size:12px;color:var(--text-muted)">Óránként</label>
+                <input type="number" id="arIntervalHours" min="1" max="168" value="12" style="width:80px">
+              </div>
+            </div>
+            <small style="display:block;margin-top:8px;color:var(--text-muted);font-size:12px;line-height:1.5">
+              A fő channels-session mindig friss indul (a Folytatás mód rá nem vonatkozik).
+              Soha nem szakít meg futó munkát: csak üresjáratban (idle) indít újra, különben a következő körre halaszt.
+            </small>
+            <button class="btn-secondary btn-compact agent-save-section" id="saveAutoRestartBtn" style="margin-top:10px">Mentés</button>
           </div>
           <div class="form-group" id="authModeGroup">
             <label>Hitelesítési mód</label>

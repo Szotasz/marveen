@@ -1252,12 +1252,59 @@ async function loadAgents() {
   }
 }
 
+// Format a context-token count for display (e.g. 699884 -> "≈700k token").
+function formatContextTokens(n) {
+  if (typeof n !== 'number' || !isFinite(n) || n <= 0) return '-'
+  if (n < 1000) return `${n} token`
+  const k = n / 1000
+  return `≈${k < 10 ? k.toFixed(1) : Math.round(k)}k token`
+}
+
+// Populate the auto-restart controls + context display from an agent payload.
+// Works for sub-agents (agent.name) and the main session (agent.autoRestartId).
+function setupAutoRestartUI(agent) {
+  const ctxEl = document.getElementById('agentDetailContext')
+  if (ctxEl) ctxEl.textContent = formatContextTokens(agent && agent.contextTokens)
+
+  const ar = (agent && agent.autoRestart) || { enabled: false, mode: 'continue', dailyTime: null, intervalHours: null }
+  const enabled = document.getElementById('arEnabled')
+  const mode = document.getElementById('arMode')
+  const schedKind = document.getElementById('arSchedKind')
+  const dailyWrap = document.getElementById('arDailyWrap')
+  const dailyTime = document.getElementById('arDailyTime')
+  const intervalWrap = document.getElementById('arIntervalWrap')
+  const intervalHours = document.getElementById('arIntervalHours')
+  if (!enabled || !mode || !schedKind) return
+
+  enabled.checked = ar.enabled === true
+  mode.value = ar.mode === 'fresh' ? 'fresh' : 'continue'
+  if (ar.intervalHours) {
+    schedKind.value = 'interval'
+    intervalHours.value = ar.intervalHours
+  } else {
+    schedKind.value = 'daily'
+    if (ar.dailyTime) dailyTime.value = ar.dailyTime
+  }
+  const syncSched = () => {
+    const isInterval = schedKind.value === 'interval'
+    intervalWrap.hidden = !isInterval
+    dailyWrap.hidden = isInterval
+  }
+  syncSched()
+  // Attach the show/hide listener once.
+  if (schedKind.dataset.wired !== '1') {
+    schedKind.addEventListener('change', syncSched)
+    schedKind.dataset.wired = '1'
+  }
+}
+
 async function openMarveenDetail() {
   const m = window._marveen
   if (!m) return
 
   // Reuse the agent detail modal for Marveen
   currentAgent = { ...m, name: 'marveen', claudeMd: '', soulMd: '', mcpJson: '', skills: [] }
+  setupAutoRestartUI(currentAgent)
 
   const displayName = m.name || 'Marveen'
   document.getElementById('agentDetailTitle').textContent = displayName
@@ -1475,6 +1522,9 @@ async function openAgentDetail(agentName) {
   document.getElementById('editClaudeMd').value = currentAgent.claudeMd || currentAgent.content || ''
   document.getElementById('editSoulMd').value = currentAgent.soulMd || ''
   document.getElementById('editMcpJson').value = currentAgent.mcpJson || ''
+
+  // Auto-restart settings + live context size
+  setupAutoRestartUI(currentAgent)
 
   // Telegram tab
   updateChannelTab(currentAgent)
@@ -1933,6 +1983,33 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
       return
     }
     startModelRestartPolling(name, newModel, triggeredAt)
+  } catch { showToast('Hiba a mentés során') }
+})
+
+document.getElementById('saveAutoRestartBtn').addEventListener('click', async () => {
+  if (!currentAgent) return
+  // Auto-restart applies to the main session too, so (unlike model/profile) we
+  // do NOT skip role === 'main'. The store key is autoRestartId for the main
+  // session, the sanitized name for sub-agents.
+  const id = currentAgent.autoRestartId || currentAgent.name
+  const schedKind = document.getElementById('arSchedKind').value
+  const cfg = {
+    enabled: document.getElementById('arEnabled').checked,
+    mode: document.getElementById('arMode').value === 'fresh' ? 'fresh' : 'continue',
+    dailyTime: schedKind === 'daily' ? document.getElementById('arDailyTime').value : null,
+    intervalHours: schedKind === 'interval' ? Number(document.getElementById('arIntervalHours').value) : null,
+    handoff: false,
+  }
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(id)}/auto-restart`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    })
+    if (!res.ok) throw new Error()
+    const body = await res.json()
+    if (currentAgent) currentAgent.autoRestart = body.autoRestart
+    showToast('Auto-restart beállítás mentve')
   } catch { showToast('Hiba a mentés során') }
 })
 

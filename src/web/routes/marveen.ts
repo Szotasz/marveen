@@ -7,7 +7,8 @@ import { readFileOr } from '../agent-config.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json, serveFile } from '../http-helpers.js'
 import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
-import { readActiveModelFromProjectDir } from '../active-model.js'
+import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
+import { readAutoRestartConfig } from '../auto-restart-store.js'
 import type { RouteContext } from './types.js'
 
 function getActiveMarveenModel(): string {
@@ -40,6 +41,11 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
       model: getActiveMarveenModel(),
       tmuxSession: MAIN_CHANNELS_SESSION,
       running: true,
+      // Auto-restart applies to the main channels session too; key it by the
+      // orchestrator id (autoRestartId) so the UI PUTs to the right store entry.
+      autoRestart: readAutoRestartConfig(MAIN_AGENT_ID),
+      autoRestartId: MAIN_AGENT_ID,
+      contextTokens: readContextTokensFromProjectDir(PROJECT_ROOT),
       hasTelegram: tg.hasTelegram,
       hasDiscord: dc.hasDiscord,
       hasSlack: sl.hasSlack,
