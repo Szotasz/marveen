@@ -79,8 +79,10 @@ import {
   sendPromptToSession,
   capturePane,
 } from '../agent-process.js'
-import { readActiveModelFromProjectDir } from '../active-model.js'
+import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
 import { detectPaneState } from '../../pane-state.js'
+import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
+import type { AutoRestartConfig } from '../../auto-restart.js'
 import { attemptChannelMcpReconnect } from '../channel-mcp-reconnect.js'
 import { getChannelHealth } from '../channel-health-monitor.js'
 import {
@@ -266,6 +268,10 @@ interface AgentSummary {
   running: boolean
   session?: string
   hasAvatar: boolean
+  autoRestart: AutoRestartConfig
+  /** Live context size in tokens (input+cache_read+cache_creation of the last
+   *  turn), or null when not running / no transcript yet. */
+  contextTokens: number | null
 }
 
 interface AgentDetail extends AgentSummary {
@@ -307,6 +313,8 @@ function getAgentSummary(name: string): AgentSummary {
     running: proc.running,
     session: proc.session,
     hasAvatar: findAvatarForAgent(name) !== null,
+    autoRestart: readAutoRestartConfig(name),
+    contextTokens: proc.running ? readContextTokensFromProjectDir(dir, readAgentClaudeConfigDir(name) ?? undefined) : null,
   }
 }
 
@@ -752,6 +760,22 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     writeAgentSecurityProfile(name, requested)
     writeAgentSettingsFromProfile(name, profile)
     json(res, { ok: true, requiresRestart: isAgentRunning(name) })
+    return true
+  }
+
+  // PUT /api/agents/:name/auto-restart -- set the per-agent auto-restart config.
+  // Accepts the main orchestrator id too (auto-restart applies to it as well).
+  // The body is normalized server-side, so a partial/garbled payload is coerced
+  // to a safe config rather than rejected.
+  const autoRestartMatch = path.match(/^\/api\/agents\/([^/]+)\/auto-restart$/)
+  if (autoRestartMatch && method === 'PUT') {
+    const name = decodeURIComponent(autoRestartMatch[1])
+    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    const body = await readBody(req)
+    let data: unknown
+    try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'invalid JSON' }, 400); return true }
+    const saved = writeAutoRestartConfig(name, data)
+    json(res, { ok: true, autoRestart: saved })
     return true
   }
 

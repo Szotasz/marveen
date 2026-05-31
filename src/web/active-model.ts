@@ -72,3 +72,50 @@ export function readActiveModelFromProjectDir(workingDir: string, sinceUnixSec?:
   cache.set(cacheKey, { value, expiresAt: now + TTL_MS })
   return value
 }
+
+const ctxCache = new Map<string, { value: number | null; expiresAt: number }>()
+
+// Current context size of the live session, in tokens. Claude Code records a
+// `usage` object on each assistant turn; the context that gets re-read every
+// turn is input_tokens + cache_read_input_tokens + cache_creation_input_tokens
+// (output_tokens is the new reply, not context). We scan the newest transcript
+// from the end for the last turn carrying a usage and sum those three. Returns
+// null when there is no transcript / no usage yet (fresh session). This is what
+// the dashboard surfaces so the operator can see a session growing heavy and
+// decide to restart it.
+export function readContextTokensFromProjectDir(workingDir: string, configDir?: string): number | null {
+  const now = Date.now()
+  const cacheKey = `${workingDir}:${configDir ?? ''}`
+  const cached = ctxCache.get(cacheKey)
+  if (cached && cached.expiresAt > now) return cached.value
+  let value: number | null = null
+  try {
+    const dir = projectsDirFor(workingDir, configDir)
+    if (existsSync(dir)) {
+      const jsonls = readdirSync(dir)
+        .filter(f => f.endsWith('.jsonl'))
+        .map(f => ({ f, mtime: statSync(join(dir, f)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime)
+      if (jsonls.length > 0) {
+        const content = readFileSync(join(dir, jsonls[0].f), 'utf-8')
+        const lines = content.split('\n')
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const line = lines[i].trim()
+          if (!line) continue
+          try {
+            const u = JSON.parse(line)?.message?.usage
+            if (u && typeof u === 'object') {
+              const inp = Number(u.input_tokens) || 0
+              const cr = Number(u.cache_read_input_tokens) || 0
+              const cc = Number(u.cache_creation_input_tokens) || 0
+              const total = inp + cr + cc
+              if (total > 0) { value = total; break }
+            }
+          } catch { /* skip malformed JSON line */ }
+        }
+      }
+    }
+  } catch { /* fall through */ }
+  ctxCache.set(cacheKey, { value, expiresAt: now + TTL_MS })
+  return value
+}

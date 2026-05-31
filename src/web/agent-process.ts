@@ -66,7 +66,7 @@ export function agentHasChannel(name: string): boolean {
   return false
 }
 
-export function startAgentProcess(name: string): { ok: boolean; pid?: number; error?: string } {
+export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): { ok: boolean; pid?: number; error?: string } {
   if (isAgentRunning(name)) return { ok: false, error: 'Agent is already running' }
 
   const dir = agentDir(name)
@@ -167,7 +167,10 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
       : join(homedir(), '.claude', 'projects')
     const encodedProject = dir.replace(/\//g, '-')
     const hasPriorSession = existsSync(join(projectsRoot, encodedProject))
-    const continueFlag = hasPriorSession ? '--continue ' : ''
+    // opts.fresh forces a brand-new conversation (auto-restart 'fresh' mode):
+    // omit --continue so the heavy accumulated context is dropped. Without it
+    // we resume the prior session (the 'continue' mode / normal restart).
+    const continueFlag = (hasPriorSession && !opts.fresh) ? '--continue ' : ''
     const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : agentProvider === 'discord' ? 'DISCORD_STATE_DIR' : 'TELEGRAM_STATE_DIR'
     const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN'
     // Slack plugin is third-party; its "not on approved allowlist" check is
@@ -244,12 +247,12 @@ export function getAgentProcessInfo(name: string): { running: boolean; session?:
   }
 }
 
-export function restartAgentProcess(name: string): { ok: boolean; pid?: number; error?: string } {
+export function restartAgentProcess(name: string, opts: { fresh?: boolean } = {}): { ok: boolean; pid?: number; error?: string } {
   if (isAgentRunning(name)) {
     const stopResult = stopAgentProcess(name)
     if (!stopResult.ok) return { ok: false, error: stopResult.error || 'Failed to stop running agent before restart' }
   }
-  return startAgentProcess(name)
+  return startAgentProcess(name, opts)
 }
 
 // Claude Code occasionally pops a "How is Claude doing this session? (optional)"
