@@ -1,6 +1,8 @@
 import { join } from 'node:path'
+import { readFileSync } from 'node:fs'
 import { execSync, execFileSync } from 'node:child_process'
 import { resolveFromPath } from '../platform.js'
+import { atomicWriteFileSync } from './atomic-write.js'
 import { logger } from '../logger.js'
 import {
   PROJECT_ROOT,
@@ -53,7 +55,32 @@ const TMUX = resolveFromPath('tmux')
 // giving exactly-one stamp per attempt and at-least-once delivery until
 // success. See sendPendingRetryAlert below.
 
+// When a task fires we record its time here so the catch-up window (30 min on
+// the first tick after a restart) does not re-run it. This map is in-memory, so
+// a dashboard restart that lands inside a task's catch-up window used to re-fire
+// an already-run task (observed: a restart re-sent a second vmd-report). Persist
+// it to disk and reload on startup so the skip-check survives restarts.
+const SCHEDULE_LAST_RUN_PATH = join(PROJECT_ROOT, 'store', 'schedule-last-run.json')
 const scheduleLastRun: Map<string, number> = new Map()
+
+function loadScheduleLastRun(): void {
+  try {
+    const raw = JSON.parse(readFileSync(SCHEDULE_LAST_RUN_PATH, 'utf-8'))
+    if (raw && typeof raw === 'object') {
+      for (const [name, ts] of Object.entries(raw)) {
+        if (typeof ts === 'number' && Number.isFinite(ts)) scheduleLastRun.set(name, ts)
+      }
+    }
+  } catch { /* no file yet / unreadable -- start empty */ }
+}
+
+function persistScheduleLastRun(): void {
+  try {
+    atomicWriteFileSync(SCHEDULE_LAST_RUN_PATH, JSON.stringify(Object.fromEntries(scheduleLastRun), null, 2))
+  } catch (err) {
+    logger.warn({ err }, 'schedule-runner: failed to persist last-run map')
+  }
+}
 
 // Try to fire a task at a single target agent. Returns the outcome so the
 // caller can decide whether to queue a retry. Splitting this out means the
@@ -108,6 +135,7 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number): '
       wrapUntrusted(`scheduled-task:${task.name}`, task.prompt)
     sendPromptToSession(session, fullPrompt)
     scheduleLastRun.set(task.name, now)
+    persistScheduleLastRun()
     appendTaskRun(task.name, agentName)
     logger.info({ task: task.name, agent: agentName, session }, 'Scheduled task fired')
 
@@ -209,6 +237,9 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
 }
 
 export function startScheduleRunner(): NodeJS.Timeout {
+  // Reload the persisted last-run times so a restart inside a task's catch-up
+  // window does not re-fire an already-run task.
+  loadScheduleLastRun()
   let firstRun = true
 
   function runCheck() {
