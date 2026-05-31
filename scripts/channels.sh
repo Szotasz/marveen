@@ -128,18 +128,6 @@ $TMUX kill-session -t "$SESSION" 2>/dev/null
 $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
   "$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}"
 
-# Save the PID of the just-started claude process. We wait briefly so the
-# shell wrapper (if any) has time to exec into claude. If the pane runs a
-# shell, we look one level deeper for the actual claude child.
-sleep 2
-_pane_pid=$($TMUX list-panes -t "$SESSION" -F "#{pane_pid}" 2>/dev/null | head -1)
-if [ -n "$_pane_pid" ] && [ "$_pane_pid" -gt 1 ] 2>/dev/null; then
-  _child_pid=$(pgrep -P "$_pane_pid" 2>/dev/null | head -1)
-  _save_pid="${_child_pid:-$_pane_pid}"
-  echo "$_save_pid" > "$PID_FILE"
-fi
-unset _pane_pid _child_pid _save_pid
-
 # Session startup guard: a Claude Code first-run dialogusait auto-accept-eljuk
 # kulonben a headless session orokre parkolna a prompton es a Telegram plugin
 # soha nem toltodne be. Tobb fajta dialog elofordulhat:
@@ -172,6 +160,18 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
       ;;
   esac
 done
+
+# Save the claude PID now that the session is confirmed running. The tmux
+# new-session call keeps a wrapper process alive as the parent of claude,
+# so pane_pid can point to a transient shell. We find the stable claude PID
+# by looking for the child of the tmux new-session wrapper process that has
+# our session name in its command line.
+_tmux_wrapper_pid=$(pgrep -f "tmux.*new-session.*${SESSION}" 2>/dev/null | head -1)
+if [ -n "$_tmux_wrapper_pid" ]; then
+  _claude_pid=$(pgrep -P "$_tmux_wrapper_pid" 2>/dev/null | head -1)
+  [ -n "$_claude_pid" ] && echo "$_claude_pid" > "$PID_FILE"
+fi
+unset _tmux_wrapper_pid _claude_pid
 
 # Set agent name and remote-control identifier once the session is ready.
 _bot_name="${BOT_NAME:-${MAIN_AGENT_ID:-marveen}}"
