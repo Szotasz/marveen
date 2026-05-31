@@ -1,0 +1,48 @@
+{
+  "_comment": "Machine-readable profile of what Donat knows and what needs explanation. Agents load this at session start via Read tool and update it when Donat signals ignorance or demonstrated knowledge.",
+  "version": "1.0",
+  "last_updated": "2026-05-31",
+  "known": [
+    "Rails",
+    "Ruby",
+    "git",
+    "PR (pull request)",
+    "CI (continuous integration)",
+    "kanban",
+    "agent",
+    "REST API",
+    "JSON",
+    "HTTP",
+    "PostgreSQL alapok",
+    "migration (adatbázis-séma változtatás)",
+    "ActiveRecord",
+    "Gemfile",
+    "systemd",
+    "deploy",
+    "Telegram",
+    "VS Code",
+    "Sidekiq / background job fogalom",
+    "branch",
+    "commit",
+    "merge"
+  ],
+  "needs_explanation": [
+    "brakeman (statikus biztonsági kódscanner Ruby/Rails projektekhez)",
+    "solid_queue belső működése",
+    "Sentry DSN (hibagyűjtő szolgáltatás kapcsolati kulcsa)",
+    "RSpec matcher részletek",
+    "importmap (JS bundle-mentes module loading Rails-ben)",
+    "EnvironmentFile (systemd unit fájl direktíva: env változók betöltése fájlból)"
+  ],
+  "update_protocol": {
+    "when_donat_asks_mi_az_X": "Add to needs_explanation with a parenthetical explanation, then Edit this file",
+    "when_donat_uses_term_correctly_without_asking": "Move to known list, then Edit this file",
+    "format": "needs_explanation entries: 'term (one-sentence explanation in Hungarian)'"
+  },
+  "communication_rules": {
+    "language": "Hungarian",
+    "jargon_policy": "Explain in parentheses on first use per session if term is in needs_explanation",
+    "response_length": "short",
+    "forbidden": ["em dash", "AI clichés (Természetesen!, Remek kérdés!, Szívesen segítek)", "excessive apologies"]
+  }
+}
