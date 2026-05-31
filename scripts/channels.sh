@@ -95,6 +95,27 @@ MODEL_FLAG=""
 # tmux command-string round-trip without the inner shell glob-expanding `[1m]`.
 [ -n "$MAIN_MODEL" ] && MODEL_FLAG="--model '$MAIN_MODEL' "
 
+# PID file for the claude process inside the tmux session. A plain
+# kill-session is not enough: when tmux new-session is invoked via a detached
+# LaunchAgent or background shell, the claude child can survive the session
+# death because its parent PID chain leads back to the now-gone tmux
+# new-session call rather than the tmux server socket. Two instances then
+# compete for the same bot token -- Telegram returns 409 Conflict in a loop
+# and neither session receives messages. (Root cause observed 2026-05-29.)
+PID_FILE="$INSTALL_DIR/store/boss-channels-claude.pid"
+
+# Kill any claude process saved from a previous run before we start a new one.
+if [ -f "$PID_FILE" ]; then
+  _old_pid=$(cat "$PID_FILE" 2>/dev/null | tr -d '[:space:]')
+  if [ -n "$_old_pid" ] && [ "$_old_pid" -gt 1 ] 2>/dev/null && kill -0 "$_old_pid" 2>/dev/null; then
+    echo "Killing orphaned boss channel process PID ${_old_pid}" >&2
+    kill "$_old_pid" 2>/dev/null || true
+    sleep 1
+    kill -9 "$_old_pid" 2>/dev/null || true
+  fi
+  rm -f "$PID_FILE"
+fi
+
 # Régi session takarítás
 $TMUX kill-session -t "$SESSION" 2>/dev/null
 
@@ -106,6 +127,18 @@ $TMUX kill-session -t "$SESSION" 2>/dev/null
 # "Channel notifications skipped: server not in --channels list" errors.
 $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
   "$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}"
+
+# Save the PID of the just-started claude process. We wait briefly so the
+# shell wrapper (if any) has time to exec into claude. If the pane runs a
+# shell, we look one level deeper for the actual claude child.
+sleep 2
+_pane_pid=$($TMUX list-panes -t "$SESSION" -F "#{pane_pid}" 2>/dev/null | head -1)
+if [ -n "$_pane_pid" ] && [ "$_pane_pid" -gt 1 ] 2>/dev/null; then
+  _child_pid=$(pgrep -P "$_pane_pid" 2>/dev/null | head -1)
+  _save_pid="${_child_pid:-$_pane_pid}"
+  echo "$_save_pid" > "$PID_FILE"
+fi
+unset _pane_pid _child_pid _save_pid
 
 # Session startup guard: a Claude Code first-run dialogusait auto-accept-eljuk
 # kulonben a headless session orokre parkolna a prompton es a Telegram plugin

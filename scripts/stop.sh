@@ -29,6 +29,19 @@ elif [ "$OS" = "Linux" ]; then
   fi
 fi
 
+# Kill the specific claude process saved by channels.sh. This handles the
+# case where the process outlives its tmux session (detached parent chain).
+PID_FILE="$INSTALL_DIR/store/boss-channels-claude.pid"
+if [ -f "$PID_FILE" ]; then
+  _old_pid=$(cat "$PID_FILE" 2>/dev/null | tr -d '[:space:]')
+  if [ -n "$_old_pid" ] && [ "$_old_pid" -gt 1 ] 2>/dev/null && kill -0 "$_old_pid" 2>/dev/null; then
+    kill "$_old_pid" 2>/dev/null || true
+    sleep 1
+    kill -9 "$_old_pid" 2>/dev/null || true
+  fi
+  rm -f "$PID_FILE"
+fi
+
 # Stop the main channels tmux session. Do NOT kill sub-agent sessions --
 # the dashboard restart (update flow) doesn't need them down, and this
 # script doesn't bring them back up. Leaving them running keeps the
