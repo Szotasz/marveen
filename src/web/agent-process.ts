@@ -429,6 +429,21 @@ export function sendPromptToSession(session: string, text: string): void {
 // spinner lands; a quarter-second settle window is well past that.
 const PANE_READY_CONFIRM_DELAY_S = '0.25'
 
+// Send a bare Enter to a session. Used by the stuck-input watcher to
+// re-submit a prompt whose trailing Enter was swallowed on the channel-
+// notification path (where the plugin, not sendPromptToSession, delivered
+// the text, so the post-send retry budget never ran). Best-effort: a
+// tmux failure is logged and swallowed so the watcher loop keeps going.
+export function sendEnterToSession(session: string): boolean {
+  try {
+    execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+    return true
+  } catch (err) {
+    logger.warn({ err, session }, 'sendEnterToSession: failed to send recovery Enter')
+    return false
+  }
+}
+
 // Capture a pane snapshot with an execSync timeout. Null on any error so
 // the caller can treat "capture failed" as "not ready".
 export function capturePane(session: string): string | null {

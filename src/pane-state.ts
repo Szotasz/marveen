@@ -570,3 +570,127 @@ export function decidePaneErrorAlert(
   }
   return { alert: false, next: { firstSeenAt: prev.firstSeenAt, lastAlertAt: prev.lastAlertAt, lastErrorAt: now } }
 }
+
+// A stable signature of the text parked in the live input box, or null
+// when the pane is not in the 'typing' (parked-input) state.
+//
+// Used by the stuck-input watcher to decide whether a swallowed Enter on
+// the channel-notification path left a message stranded in the prompt
+// box. Whitespace is collapsed so a cursor blink or a terminal re-flow at
+// a different width does not read as "new text" and reset the recovery
+// confirm window. Returns null (not an empty string) when there is no
+// parked text so callers can branch on "is anything parked at all".
+export function stuckInputSignature(pane: string): string | null {
+  if (detectPaneState(pane) !== 'typing') return null
+  const box = liveInputBox(pane)
+  if (box == null) return null
+  const sig = box.replace(/\s+/g, ' ').trim()
+  return sig.length > 0 ? sig : null
+}
+
+// Per-session bookkeeping for the stuck-input recovery watcher. A "spell"
+// is one continuous stretch of the SAME text parked in the input box.
+export interface StuckInputState {
+  /** Signature of the parked text for the active spell, or null when no
+   * spell is active (the box is empty / the pane is busy). */
+  parkedSig: string | null
+  /** When the active spell was first observed. */
+  firstSeenAt: number | null
+  /** When the last recovery Enter was sent in this spell, or null. */
+  lastRecoverAt: number | null
+  /** How many recovery Enters have been sent in the active spell. */
+  attempts: number
+}
+
+export interface StuckInputThresholds {
+  /** How long the SAME text must stay parked before the first recovery
+   * Enter, so a turn that is about to submit on its own (frame race) is
+   * not pre-empted and a human mid-typing is left alone. */
+  confirmMs: number
+  /** Minimum gap between recovery Enters within one spell, so a pane
+   * that ignores the Enter is not hammered every tick. */
+  dedupMs: number
+  /** Max recovery Enters per spell before giving up (caller logs). A
+   * pane still stuck after this is not the swallowed-Enter case the
+   * watcher targets; further Enters would not help. */
+  maxAttempts: number
+}
+
+export interface StuckInputDecision {
+  recover: boolean
+  next: StuckInputState
+}
+
+const NO_STUCK_INPUT: StuckInputState = {
+  parkedSig: null,
+  firstSeenAt: null,
+  lastRecoverAt: null,
+  attempts: 0,
+}
+
+/**
+ * Pure decision for "should the watcher send a recovery Enter to this
+ * session". Dependency-free so it is unit-testable without tmux or
+ * timers: feed the current parked-input signature (from
+ * stuckInputSignature), the previous persisted state and a clock, get
+ * back whether to send Enter plus the next state to persist.
+ *
+ * The channel-notification path (inbound Telegram/Slack delivered by the
+ * plugin) does not go through sendPromptToSession, so its post-send
+ * Enter-retry budget cannot cover a swallowed Enter there. This watcher
+ * is the backstop: it detects the symptom (text stranded in the prompt
+ * box) and re-submits.
+ *
+ * Guards that keep it from firing on healthy panes:
+ *   - A new or CHANGED parked signature restarts the confirm window
+ *     (record-only), so text that is still arriving / being edited and a
+ *     turn that submits on its own are never pre-empted. With confirmMs
+ *     > 0 this also guarantees at least two observations before any Enter.
+ *   - A confirm window: the same text must persist for confirmMs.
+ *   - A dedup window between Enters, and a maxAttempts cap per spell.
+ *   - Backwards clock skew (a future stored timestamp) restarts the
+ *     spell instead of stalling the deltas negative.
+ *
+ * @param parkedSig   Signature of the parked input now, or null when the
+ *                    pane is not in the parked-input state.
+ * @param prev        Previously persisted state for this session.
+ * @param now         Current clock (ms).
+ * @param thresholds  Confirm / dedup / maxAttempts knobs.
+ */
+export function decideStuckInputRecovery(
+  parkedSig: string | null,
+  prev: StuckInputState,
+  now: number,
+  thresholds: StuckInputThresholds,
+): StuckInputDecision {
+  // Nothing parked: end any active spell.
+  if (parkedSig === null) {
+    return { recover: false, next: { ...NO_STUCK_INPUT } }
+  }
+  // New spell, or the parked text changed (still arriving / edited /
+  // a different message): restart the confirm window, record only.
+  if (prev.parkedSig !== parkedSig || prev.firstSeenAt === null) {
+    return { recover: false, next: { parkedSig, firstSeenAt: now, lastRecoverAt: null, attempts: 0 } }
+  }
+  // Backwards clock skew: a stored timestamp in the future relative to
+  // now would drive the deltas negative and stall. Restart the spell.
+  if (now < prev.firstSeenAt || (prev.lastRecoverAt !== null && now < prev.lastRecoverAt)) {
+    return { recover: false, next: { parkedSig, firstSeenAt: now, lastRecoverAt: null, attempts: 0 } }
+  }
+  // Retry budget spent: hold without acting.
+  if (prev.attempts >= thresholds.maxAttempts) {
+    return { recover: false, next: { ...prev } }
+  }
+  // Confirm window not yet elapsed.
+  if (now - prev.firstSeenAt < thresholds.confirmMs) {
+    return { recover: false, next: { ...prev } }
+  }
+  // Dedup gap between recovery Enters.
+  if (prev.lastRecoverAt !== null && now - prev.lastRecoverAt < thresholds.dedupMs) {
+    return { recover: false, next: { ...prev } }
+  }
+  return {
+    recover: true,
+    next: { parkedSig, firstSeenAt: prev.firstSeenAt, lastRecoverAt: now, attempts: prev.attempts + 1 },
+  }
+}
