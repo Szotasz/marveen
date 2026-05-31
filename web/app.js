@@ -103,6 +103,11 @@ let kanbanCards = []
 let kanbanAssignees = []
 let kanbanProjects = []
 let kanbanProjectFilter = ''
+// Assignee filter for the kanban board. '' = show all. Set via the
+// assignee dropdown / "Csak Gábor" toggle injected by setupAssigneeFilter().
+// Matched case-insensitively against card.assignee so a casing mismatch
+// (e.g. card "gorcsevivan" vs list "GorcsevIvan") still filters correctly.
+let kanbanAssigneeFilter = ''
 
 const cardModalOverlay = document.getElementById('cardModalOverlay')
 const cardDetailOverlay = document.getElementById('cardDetailOverlay')
@@ -134,6 +139,7 @@ async function loadKanban() {
     kanbanProjects = await projectsRes.json()
     populateProjectFilter()
     populateProjectSuggestions()
+    setupAssigneeFilter()
     renderKanban()
   } catch (err) {
     console.error('Kanban betöltés hiba:', err)
@@ -170,10 +176,100 @@ document.getElementById('kanbanProjectFilter').addEventListener('change', (e) =>
   renderKanban()
 })
 
+// The kanban "owner" is the assignee whose type is 'owner' -- the person the
+// board is primarily run for, on any deployment. Identified by type, never by
+// a hard-coded display name, so the quick "show what's on me" view is generic.
+// Returns null when no owner-type assignee exists (then the quick button is
+// hidden and only the general per-assignee dropdown is shown).
+function ownerAssigneeName() {
+  const owner = kanbanAssignees.find((a) => a.type === 'owner')
+  return owner ? owner.name : null
+}
+
+// Reflect the active state of the owner quick-toggle button (hidden when there
+// is no owner-type assignee).
+function syncOwnerFilterBtn() {
+  const btn = document.getElementById('kanbanOwnerBtn')
+  if (!btn) return
+  const owner = ownerAssigneeName()
+  if (!owner) { btn.style.display = 'none'; return }
+  btn.style.display = ''
+  const on = !!kanbanAssigneeFilter && kanbanAssigneeFilter.toLowerCase() === owner.toLowerCase()
+  btn.style.background = on ? 'var(--accent)' : 'var(--bg)'
+  btn.style.color = on ? '#081a2d' : 'var(--fg)'
+  btn.setAttribute('aria-pressed', on ? 'true' : 'false')
+}
+
+// Inject the assignee filter (per-assignee dropdown + an owner "Rám vár" quick
+// toggle) into the kanban toolbar. Built in JS rather than as static markup so
+// the toolbar stays self-contained. Idempotent: the controls are created once;
+// later calls only refresh the <option>s from the current assignee list.
+function setupAssigneeFilter() {
+  const projectSel = document.getElementById('kanbanProjectFilter')
+  if (!projectSel) return
+  const toolbar = projectSel.parentElement
+  let sel = document.getElementById('kanbanAssigneeFilter')
+  if (!sel) {
+    const label = document.createElement('label')
+    label.setAttribute('for', 'kanbanAssigneeFilter')
+    label.textContent = 'Felelős:'
+    label.style.cssText = 'font-size:13px;color:var(--muted);white-space:nowrap;margin-left:8px;'
+
+    sel = document.createElement('select')
+    sel.id = 'kanbanAssigneeFilter'
+    sel.style.cssText = 'font-size:13px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);min-width:140px;'
+    sel.addEventListener('change', (e) => {
+      kanbanAssigneeFilter = e.target.value
+      syncOwnerFilterBtn()
+      renderKanban()
+    })
+
+    const ownerBtn = document.createElement('button')
+    ownerBtn.id = 'kanbanOwnerBtn'
+    ownerBtn.type = 'button'
+    ownerBtn.textContent = '👤 Rám vár'
+    ownerBtn.title = 'Csak a rám (a board felelőse) váró kártyák'
+    ownerBtn.style.cssText = 'font-size:13px;padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);cursor:pointer;'
+    ownerBtn.addEventListener('click', () => {
+      const owner = ownerAssigneeName()
+      if (!owner) return
+      const on = kanbanAssigneeFilter.toLowerCase() === owner.toLowerCase()
+      kanbanAssigneeFilter = on ? '' : owner
+      // Keep the dropdown in sync (only selectable if the owner is a known assignee).
+      sel.value = kanbanAssignees.some((a) => a.name === kanbanAssigneeFilter) ? kanbanAssigneeFilter : ''
+      syncOwnerFilterBtn()
+      renderKanban()
+    })
+
+    toolbar.appendChild(label)
+    toolbar.appendChild(sel)
+    toolbar.appendChild(ownerBtn)
+  }
+
+  // (Re)populate options from the current assignee list, preserving selection.
+  const prev = kanbanAssigneeFilter
+  sel.innerHTML = '<option value="">Mind</option>'
+  for (const a of kanbanAssignees) {
+    const opt = document.createElement('option')
+    opt.value = a.name
+    // Show the persona displayName (id as fallback), matching #216; the
+    // option value / filter key stays the agent id.
+    opt.textContent = a.displayName || a.name
+    if (a.name === prev) opt.selected = true
+    sel.appendChild(opt)
+  }
+  // syncOwnerFilterBtn shows/hides the owner quick-button based on whether an
+  // owner-type assignee exists in the freshly loaded list.
+  syncOwnerFilterBtn()
+}
+
 function renderKanban() {
   const grouped = { planned: [], in_progress: [], waiting: [], done: [] }
+  const assigneeFilter = kanbanAssigneeFilter.toLowerCase()
   for (const card of kanbanCards) {
     if (kanbanProjectFilter && (card.project || '') !== kanbanProjectFilter) continue
+    // Assignee filter (case-insensitive). Empty = no filter.
+    if (assigneeFilter && String(card.assignee || '').trim().toLowerCase() !== assigneeFilter) continue
     if (grouped[card.status]) grouped[card.status].push(card)
   }
 
@@ -229,10 +325,23 @@ function createCardEl(card) {
   el.dataset.priority = card.priority
   el.draggable = true
 
-  const assignee = card.assignee ? kanbanAssignees.find((a) => a.name === card.assignee) : null
+  // Assignee chip. Match the card's assignee against the known list
+  // case-insensitively (a card stored as "gorcsevivan" must still match the
+  // list entry "GorcsevIvan"). When the assignee is set but not in the list
+  // at all, still render a fallback chip with the raw name + a neutral dot,
+  // so a card never silently loses its assignee chip on a name mismatch.
+  const rawAssignee = card.assignee ? String(card.assignee).trim() : ''
+  const assignee = rawAssignee
+    ? kanbanAssignees.find((a) => a.name.toLowerCase() === rawAssignee.toLowerCase())
+    : null
+  // Display the persona displayName (falling back to the id) per #216, while
+  // keeping the robust match above and the raw-name fallback chip below.
+  const assigneeLabel = assignee ? (assignee.displayName || assignee.name) : ''
   const assigneeHtml = assignee
-    ? `<span class="kanban-card-assignee"><span class="assignee-dot ${assignee.type}">${(assignee.displayName || assignee.name)[0]}</span>${escapeHtml(assignee.displayName || assignee.name)}</span>`
-    : ''
+    ? `<span class="kanban-card-assignee"><span class="assignee-dot ${assignee.type}">${escapeHtml(assigneeLabel[0])}</span>${escapeHtml(assigneeLabel)}</span>`
+    : rawAssignee
+      ? `<span class="kanban-card-assignee"><span class="assignee-dot unknown">${escapeHtml(rawAssignee[0])}</span>${escapeHtml(rawAssignee)}</span>`
+      : ''
 
   let dueHtml = ''
   if (card.due_date) {
@@ -413,7 +522,13 @@ document.getElementById('saveCardBtn').addEventListener('click', async () => {
 async function showCardDetail(card) {
   document.getElementById('cardDetailTitle').textContent = card.title
 
-  const assignee = card.assignee ? kanbanAssignees.find((a) => a.name === card.assignee) : null
+  // Case-insensitive match; fall back to the raw stored name so a casing
+  // mismatch (or an unregistered assignee) shows the actual name, not "nincs".
+  const rawDetailAssignee = card.assignee ? String(card.assignee).trim() : ''
+  const assignee = rawDetailAssignee
+    ? kanbanAssignees.find((a) => a.name.toLowerCase() === rawDetailAssignee.toLowerCase())
+    : null
+  const assigneeDisplay = assignee ? (assignee.displayName || assignee.name) : (rawDetailAssignee || '-- nincs --')
   const priorityLabels = { low: 'Alacsony', normal: 'Normál', high: 'Magas', urgent: 'Sürgős' }
   const statusLabels = { planned: 'Tervezett', in_progress: 'Folyamatban', waiting: 'Várakozik', done: 'Kész' }
 
@@ -425,7 +540,7 @@ async function showCardDetail(card) {
     </div>
     <div class="meta-item">
       <span class="meta-label">Felelős</span>
-      <span class="meta-value meta-value-editable" id="metaAssigneeValue" data-card-id="${card.id}" title="Kattints a módosításhoz">${assignee ? escapeHtml(assignee.displayName || assignee.name) : '-- nincs --'}</span>
+      <span class="meta-value meta-value-editable" id="metaAssigneeValue" data-card-id="${card.id}" title="Kattints a módosításhoz">${escapeHtml(assigneeDisplay)}</span>
     </div>
     <div class="meta-item">
       <span class="meta-label">Prioritás</span>

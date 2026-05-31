@@ -631,6 +631,7 @@ main {
 .assignee-dot.owner { background: var(--accent); }
 .assignee-dot.bot { background: var(--info); }
 .assignee-dot.agent { background: var(--success); }
+.assignee-dot.unknown { background: var(--text-muted); }
 
 .kanban-card-due {
   font-size: 10px;
