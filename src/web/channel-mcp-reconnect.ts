@@ -40,6 +40,19 @@ const RECONNECT_RX = /reconnect/i
 // never activate). "Disable" contains no "enable" substring anyway, but the
 // boundary keeps intent explicit.
 const ENABLE_RX = /\benable\b/i
+// Plugin-state markers Claude Code renders in the submenu header line
+// `Status: <glyph> <word>`. We use the STATUS as authoritative when present,
+// because scanning the whole pane for "reconnect"/"enable" is fragile in two
+// ways: (a) Claude Code's own footer line ("Use /mcp to reconnect") triggers
+// a false RECONNECT match even for disabled plugins; (b) action labels can
+// change order across CC versions. Status text is rendered once, plugin-
+// header-line, and is the ground truth for what action menu is offered.
+//   ✔ connected -> View tools / Reconnect / Disable
+//   ✗ failed    -> Reconnect / ...
+//   ◯ disabled  -> Enable
+// The ◯ vs ○ ambiguity is real (Claude Code has shipped both); match either.
+const DISABLED_STATUS_RX = /Status:\s*[◯○]\s*disabled/i
+const FAILED_STATUS_RX = /Status:\s*[✗x×]\s*failed/i
 // Claude Code's TUI marks the selected list row with a `❯` cursor (same glyph
 // the input prompt uses -- see pane-state.ts). capture-pane -p strips colour,
 // so this textual marker is our only selection signal.
@@ -55,11 +68,29 @@ export function selectedSubmenuLine(pane: string): string | null {
 
 /**
  * Pick which action to drive in the plugin submenu based on what the pane
- * offers. Prefer "Reconnect"; if the plugin sits in the disabled state only
- * "Enable" is available. Returns null when neither is present -- in that case
- * we must NOT press anything, because the remaining option could be "Disable".
+ * offers. Authoritative source is the `Status: <glyph> <word>` header that
+ * Claude Code renders for every plugin in the submenu -- because scanning
+ * for the option labels themselves false-positives on CC's own footer text
+ * ("Use /mcp to reconnect", etc.) and pulled stage-1 onto Reconnect even
+ * for disabled plugins (2026-06-01 20:02 incident: "could not place cursor
+ * on target option ... target: reconnect" while the plugin was actually
+ * `◯ disabled` and only an Enable row existed).
+ *
+ *   ◯ disabled -> Enable
+ *   ✗ failed   -> Reconnect
+ *   ✔ connected -> Reconnect (View tools is safe, Disable is forbidden)
+ *
+ * Returns null when neither status nor option label is found -- in that
+ * case we must NOT press anything, because the remaining option could be
+ * "Disable".
  */
 export function chooseSubmenuTarget(pane: string): RegExp | null {
+  // Status-first: ground truth, immune to footer false-positives.
+  if (DISABLED_STATUS_RX.test(pane)) return ENABLE_RX
+  if (FAILED_STATUS_RX.test(pane)) return RECONNECT_RX
+  // Fallback: status header absent (older CC versions or partial captures).
+  // Prefer Reconnect -- if the plugin were truly disabled it would not
+  // expose a Reconnect row, so seeing one means we are NOT disabled.
   if (RECONNECT_RX.test(pane)) return RECONNECT_RX
   if (ENABLE_RX.test(pane)) return ENABLE_RX
   return null

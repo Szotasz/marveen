@@ -135,7 +135,47 @@ describe('chooseSubmenuTarget', () => {
     // \benable\b must not match the "Disable" row.
     expect(chooseSubmenuTarget('plugin:x\n❯ View tools\n  Disable')).toBeNull()
   })
+
+  it('uses status header as ground truth: disabled status -> Enable even if pane contains the word "reconnect"', () => {
+    // 2026-06-01 20:02 incident: stage 1 logged
+    //   "could not place cursor on target option ... target: reconnect"
+    // while the plugin was actually `◯ disabled`. Cause was a stray
+    // "reconnect" substring elsewhere in the pane (Claude Code's own
+    // footer / scrollback). Status header is now authoritative.
+    const paneWithDisabledStatusAndFooterText = [
+      'Plugin:telegram:telegram MCP Server',
+      '',
+      'Status:           ◯ disabled',
+      '',
+      '❯ 1. Enable',
+      '',
+      '↑/↓ to navigate · Enter to select · Esc to back',
+      '※ Run claude --debug to see error logs / use /mcp to reconnect',
+    ].join('\n')
+    const t = chooseSubmenuTarget(paneWithDisabledStatusAndFooterText)
+    expect(t?.test('Enable')).toBe(true)
+    expect(t?.source).not.toBe('reconnect')
+  })
+
+  it('uses status header: failed status -> Reconnect', () => {
+    const failedPane = [
+      'Plugin:telegram:telegram MCP Server',
+      'Status:           ✗ failed',
+      '❯ 1. Reconnect',
+    ].join('\n')
+    expect(chooseSubmenuTarget(failedPane)?.source).toBe('reconnect')
+  })
+
+  it('handles the ◯/○ glyph variants Claude Code has shipped', () => {
+    const withHollow = 'Status: ○ disabled\n❯ Enable'
+    const withCircled = 'Status: ◯ disabled\n❯ Enable'
+    expect(chooseSubmenuTarget(withHollow)?.source).toBe(ENABLE_RX.source)
+    expect(chooseSubmenuTarget(withCircled)?.source).toBe(ENABLE_RX.source)
+  })
 })
+
+// Re-export the regex for the glyph-variant test (defined in helper file)
+const ENABLE_RX = /\benable\b/i
 
 describe('attemptChannelMcpReconnect', () => {
   beforeEach(() => {
