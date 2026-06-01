@@ -195,27 +195,67 @@ unset _bot_name
 # Enter twice (enter submenu, press Reconnect) brings the plugin live -
 # Szabi's empirical sequence that fixed the 16:31 hard-restart aftermath.
 #
-# We replicate that sequence here in the background, idempotently: wait ~15s
-# for Claude Code to settle, then check whether a bun poller scoped to
-# $MAIN_CHAN_DIR is running. If none, fire the unlock keystrokes. The
-# subshell is detached so the main script keeps moving to the wait-loop.
+# Two-stage detection, both must indicate "no plugin" before we fire keystrokes:
+#
+#   1. pgrep -P claude_pid bun   -- looks for a bun child of the marveen-channels
+#      claude process. This catches the case the env-var grep misses: Claude Code
+#      does NOT inherit TELEGRAM_STATE_DIR into the spawned poller on the main
+#      session (only on sub-agents), so an env-var-needle scan reports "no
+#      poller" even when one is running. A direct child-of-claude pgrep is the
+#      authoritative signal.
+#
+#   2. capture-pane after `/mcp` shows the plugin row marked with "✗ Failed".
+#      Connected/Enabled rows must NOT trigger the keystroke sequence, because
+#      then `Up`+`Enter`+`Enter` would land on "Disable" in the submenu and
+#      disable the plugin instead of reconnecting it (Szabi msg 427).
+#
+# We sequence both checks, log the decision, and fire only when both agree.
+# The subshell is detached so the main script keeps moving to the wait-loop.
 (
   sleep 15
-  POST_POLLERS=$(/bin/ps eww -e 2>/dev/null | awk -v needle="${STATE_ENV_VAR}=${MAIN_CHAN_DIR}" '$0 ~ needle { print $1 }' | head -1)
-  if [ -z "$POST_POLLERS" ]; then
-    echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh post-init: no ${STATE_ENV_VAR} poller for ${MAIN_CHAN_DIR} after 15s, firing /mcp+Up+Enter+Enter unlock" >> "$INSTALL_DIR/store/channels-failures.log"
-    $TMUX send-keys -t "$SESSION" Escape
-    sleep 1
-    $TMUX send-keys -t "$SESSION" "/mcp" Enter
-    sleep 3
-    $TMUX send-keys -t "$SESSION" Up
-    sleep 1
-    $TMUX send-keys -t "$SESSION" Enter
-    sleep 2
-    $TMUX send-keys -t "$SESSION" Enter
-    sleep 4
-    $TMUX send-keys -t "$SESSION" Escape
+  CLAUDE_PID="$($TMUX list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)"
+  # Check 1: bun grandchild of the marveen-channels claude
+  BUN_CHILD=""
+  if [ -n "$CLAUDE_PID" ]; then
+    BUN_CHILD="$(/usr/bin/pgrep -P "$CLAUDE_PID" bun 2>/dev/null | head -1)"
   fi
+  if [ -n "$BUN_CHILD" ]; then
+    # Plugin is alive via the authoritative process-tree check. Don't probe the
+    # /mcp menu - any keystroke sequence from idle would risk a stray Enter
+    # disabling a healthy plugin.
+    exit 0
+  fi
+
+  # Check 2: TUI confirmation that the plugin shows ✗ Failed. The /mcp view
+  # also shows "(disabled)" markers; we only fire on Failed, never on disabled
+  # (Enable-only submenu has no Reconnect, the Up+Enter+Enter sequence would
+  # land somewhere unsafe).
+  $TMUX send-keys -t "$SESSION" Escape
+  sleep 1
+  $TMUX send-keys -t "$SESSION" "/mcp" Enter
+  sleep 3
+  PANE="$($TMUX capture-pane -t "$SESSION" -p 2>/dev/null || true)"
+
+  case "$PANE" in
+    *"plugin:telegram@"*"✗ Failed"*|*"plugin:telegram@"*"✗ failed"*)
+      echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh post-init: telegram plugin in ✗ Failed state, firing /mcp Up+Enter+Enter unlock" >> "$INSTALL_DIR/store/channels-failures.log"
+      $TMUX send-keys -t "$SESSION" Up
+      sleep 1
+      $TMUX send-keys -t "$SESSION" Enter
+      sleep 2
+      $TMUX send-keys -t "$SESSION" Enter
+      sleep 4
+      $TMUX send-keys -t "$SESSION" Escape
+      ;;
+    *)
+      # Plugin is connected/enabled/not-listed, or we couldn't capture. Bail
+      # out safely. If the plugin row literally doesn't appear in the /mcp
+      # listing (truly unreachable), the dashboard's channel-monitor will
+      # detect down and run its own recovery ladder; we don't second-guess.
+      echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh post-init: no Failed plugin row in /mcp pane, skipping unlock (bun child absent but plugin not failed - check manually)" >> "$INSTALL_DIR/store/channels-failures.log"
+      $TMUX send-keys -t "$SESSION" Escape
+      ;;
+  esac
 ) &
 
 # Bot menu setup (Telegram only; Slack uses App Manifest)
