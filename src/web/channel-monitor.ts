@@ -16,6 +16,7 @@ import {
   stopAgentProcess,
 } from './agent-process.js'
 import { reapChannelOrphans } from './channel-poller-reap.js'
+import { probeTelegramConflict } from './channel-conflict-probe.js'
 import { detectPaneState, decidePaneErrorAlert, type PaneErrorAlertState } from '../pane-state.js'
 import { MAIN_CHANNELS_SESSION, MAIN_CHANNELS_PLIST } from './main-agent.js'
 import { notifyChannel } from '../notify.js'
@@ -197,6 +198,9 @@ interface MarveenDownState {
   lastAlertAt: number
   softAttempts: number
   stageStartedAt?: number
+  // Set once we've issued the diagnostic getUpdates probe for this down-cycle,
+  // so we don't spam the upstream API every poll while recovery is running.
+  conflictProbed?: boolean
 }
 
 const SAVE_WINDOW_MS = 60_000
@@ -346,6 +350,35 @@ function handleMarveenDown(): void {
   if (!marveenDownState) {
     marveenDownState = { downSince: now, stage: 'soft', lastAlertAt: now, softAttempts: 0 }
     logger.warn({ provider: providerLabel }, 'Marveen channel plugin down -- stage 1 (soft /mcp reconnect, silent)')
+    // Diagnostic 409 probe (Telegram only). Fire-and-forget so the sync
+    // check-loop is not blocked on a network call. Logs explicitly when the
+    // upstream returns the orphan-poller's "terminated by other getUpdates
+    // request" message, so dashboard.log carries hard evidence of the real
+    // cause instead of leaving the operator to infer it from a pane scan.
+    if (providerLabel === 'telegram' && !marveenDownState.conflictProbed) {
+      marveenDownState.conflictProbed = true
+      const tokenPath = join(channelStateDir(providerLabel, PROJECT_ROOT), '.env')
+      const tok = readChannelToken(providerLabel, tokenPath)
+      if (tok) {
+        probeTelegramConflict(tok)
+          .then(r => {
+            if (r.conflicted) {
+              logger.warn(
+                { status: r.status, description: r.description },
+                'Telegram getUpdates 409 Conflict confirmed -- orphan poller is contending for the bot token. Recovery will reap and respawn.',
+              )
+            } else if (r.status > 0) {
+              logger.info(
+                { status: r.status, description: r.description },
+                'Telegram getUpdates returned non-409 status on diagnostic probe -- the down state has a different cause than orphan poller contention',
+              )
+            }
+          })
+          .catch(err => {
+            logger.warn({ err }, 'Telegram conflict probe failed to complete')
+          })
+      }
+    }
     if (softReconnectMarveen()) marveenDownState.softAttempts += 1
     return
   }
