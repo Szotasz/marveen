@@ -5200,11 +5200,17 @@ function renderConnectors() {
     connectorStats.innerHTML = ''
   } else {
     const connected = connectors.filter(c => c.status === 'connected').length
+    // 'configured' = declared in a .mcp.json (not health-checked, the backend
+    // never spawns them). These are known-good, not broken -- surface them in a
+    // positive count so file-defined servers (e.g. gmail-egov) do not look
+    // un-ready just because they never went through the claude mcp list cache.
+    const configured = connectors.filter(c => c.status === 'configured').length
     const needsAuth = connectors.filter(c => c.status === 'needs_auth').length
     const failed = connectors.filter(c => c.status === 'failed').length
     connectorStats.innerHTML = `
       <div class="stat-card"><div class="stat-value">${connectors.length}</div><div class="stat-label">Összes</div></div>
       <div class="stat-card"><div class="stat-value" style="color:var(--success)">${connected}</div><div class="stat-label">Aktív</div></div>
+      ${configured ? `<div class="stat-card"><div class="stat-value" style="color:var(--info)">${configured}</div><div class="stat-label">Konfigurálva</div></div>` : ''}
       ${needsAuth ? `<div class="stat-card"><div class="stat-value" style="color:var(--accent)">${needsAuth}</div><div class="stat-label">Auth szükséges</div></div>` : ''}
       ${failed ? `<div class="stat-card"><div class="stat-value" style="color:var(--danger)">${failed}</div><div class="stat-label">Hibás</div></div>` : ''}
     `

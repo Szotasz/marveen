@@ -3701,6 +3701,7 @@ main {
   flex-shrink: 0;
 }
 .connector-status-dot.connected { background: var(--success); box-shadow: 0 0 6px rgba(120,140,93,0.4); }
+.connector-status-dot.configured { background: var(--info); }
 .connector-status-dot.needs_auth { background: var(--accent); }
 .connector-status-dot.failed { background: var(--danger); }
 .connector-status-dot.unknown { background: var(--text-muted); }
