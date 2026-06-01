@@ -1,4 +1,4 @@
-import { statSync } from 'node:fs'
+import { statSync, mkdirSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   HEARTBEAT_START_HOUR,
@@ -6,6 +6,7 @@ import {
   HEARTBEAT_CALENDAR_ID,
   STORE_DIR,
   DB_FILENAME,
+  PROJECT_ROOT,
 } from './config.js'
 import { getHeartbeatKanbanSummary, getActiveScheduledTaskCount } from './db.js'
 import { getCalendarEvents, type CalendarEvent } from './google-api.js'
@@ -13,6 +14,35 @@ import { runAgent } from './agent.js'
 import { notifyTelegram } from './notify.js'
 import { logger } from './logger.js'
 import { wrapUntrusted, UNTRUSTED_PREAMBLE } from './prompt-safety.js'
+
+// Isolation cwd for the heartbeat sub-agent. Keep this OUT of PROJECT_ROOT
+// so the @anthropic-ai/claude-agent-sdk-spawned headless claude does NOT
+// load Marveen's project + user plugin config -- in particular the
+// claude-plugins-official Telegram channel plugin, which would spawn its
+// own `bun` poller against the same bot token Marveen is already polling
+// (409 Conflict crashes the live Marveen poller). 2026-06-01: ~65 % of
+// daily Marveen restarts clustered in the 0-10 min window after each
+// hourly heartbeat fire BECAUSE of this collision; 20:00 fire window
+// directly observed taking the bun-poller down within 2 min.
+//
+// agents/ is gitignored (per-install state), so this directory is built
+// at runtime by ensureHeartbeatWorkerCwd() on every executeHeartbeat()
+// call -- safe to delete by hand, will be recreated next tick.
+const HEARTBEAT_AGENT_CWD = join(PROJECT_ROOT, 'agents', 'heartbeat-worker')
+
+function ensureHeartbeatWorkerCwd(): void {
+  try {
+    if (!existsSync(HEARTBEAT_AGENT_CWD)) {
+      mkdirSync(HEARTBEAT_AGENT_CWD, { recursive: true })
+    }
+    const mcpPath = join(HEARTBEAT_AGENT_CWD, '.mcp.json')
+    if (!existsSync(mcpPath)) {
+      writeFileSync(mcpPath, '{"mcpServers":{}}\n')
+    }
+  } catch (err) {
+    logger.warn({ err, cwd: HEARTBEAT_AGENT_CWD }, 'Heartbeat: failed to ensure isolated worker cwd, falling back to PROJECT_ROOT')
+  }
+}
 
 // --- Data types ---
 
@@ -214,9 +244,22 @@ async function executeHeartbeat(): Promise<void> {
 
   logger.info('Heartbeat: van tennivalo, agent indul...')
   const prompt = buildAgentPrompt(data)
+  ensureHeartbeatWorkerCwd()
 
   try {
-    const { text } = await runAgent(prompt)
+    // CRITICAL: run the sub-agent in an isolated cwd that does NOT load
+    // the Marveen project's plugin config. The default cwd=PROJECT_ROOT
+    // makes the SDK-spawned headless claude load claude-plugins-official
+    // (the Telegram channel plugin), which spawns its own `bun` poller
+    // against the same bot token Marveen is already polling. Telegram's
+    // getUpdates allows only ONE concurrent long-poll per bot, so the
+    // second poll triggers a 409 Conflict and the live Marveen bun
+    // child dies -- which is why ~65 % of all Marveen restarts on
+    // 2026-06-01 clustered in the 0-10 min window after every hourly
+    // heartbeat fire. The agents/heartbeat-worker dir has an empty
+    // .mcp.json and no agent-config, so claude finds no channel plugin
+    // to activate.
+    const { text } = await runAgent(prompt, undefined, undefined, false, HEARTBEAT_AGENT_CWD)
     if (text) {
       await notifyTelegram(text)
       logger.info('Heartbeat ertesites elkuldve')
@@ -225,6 +268,7 @@ async function executeHeartbeat(): Promise<void> {
     logger.error({ err }, 'Heartbeat agent hiba')
   }
 }
+
 
 // --- Public API ---
 
