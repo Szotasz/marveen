@@ -98,6 +98,28 @@ MODEL_FLAG=""
 # Régi session takarítás
 $TMUX kill-session -t "$SESSION" 2>/dev/null
 
+# Reap orphan main-agent channel pollers (bun/node grandchildren of the
+# previous tmux server). A tmux kill-session does not always tear them down,
+# they keep polling getUpdates with the same bot token, and the fresh poller
+# we spawn below 409-Conflicts on every cycle until the old one exits. The
+# poller env contains *_STATE_DIR=<this main agent's channel dir>; argv does
+# not, so `pkill -f` against the env var never matches. We grep `ps eww -e`
+# instead, which surfaces each process environment on macOS BSD ps.
+MAIN_CHAN_DIR="$INSTALL_DIR/.claude/channels/$CHANNEL_PROVIDER"
+case "$CHANNEL_PROVIDER" in
+  slack)    STATE_ENV_VAR="SLACK_STATE_DIR" ;;
+  discord)  STATE_ENV_VAR="DISCORD_STATE_DIR" ;;
+  *)        STATE_ENV_VAR="TELEGRAM_STATE_DIR" ;;
+esac
+ORPHAN_PIDS="$(/bin/ps eww -e 2>/dev/null | awk -v needle="${STATE_ENV_VAR}=${MAIN_CHAN_DIR}" '$0 ~ needle { print $1 }')"
+if [ -n "$ORPHAN_PIDS" ]; then
+  # shellcheck disable=SC2086
+  /bin/kill -TERM $ORPHAN_PIDS 2>/dev/null || true
+  /bin/sleep 0.3
+  # shellcheck disable=SC2086
+  /bin/kill -KILL $ORPHAN_PIDS 2>/dev/null || true
+fi
+
 # Tmux session indítás
 #
 # Always start a fresh conversation. --continue is intentionally omitted:

@@ -17,6 +17,7 @@ import { CHANNEL_PROVIDER } from '../config.js'
 import { loadProfileTemplate } from './profiles.js'
 import { writeAgentSettingsFromProfile } from './agent-scaffold.js'
 import { getSecret } from './vault.js'
+import { reapChannelOrphans } from './channel-poller-reap.js'
 
 const TMUX = resolveFromPath('tmux')
 const CLAUDE = resolveFromPath('claude')
@@ -90,6 +91,20 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
       execSync(`${TMUX} kill-session -t ${session} 2>/dev/null`, { timeout: 3000 })
       execSync('sleep 3', { timeout: 5000 })
     } catch { /* ok */ }
+
+    // Reap any orphan poller (bun/node) left over from a previous run BEFORE
+    // we spawn the new tmux session. The plugin process is a grandchild of
+    // the tmux server, so a tmux kill-session does not always tear it down -
+    // it can be orphaned and keep polling getUpdates with the agent's bot
+    // token, racing the freshly-spawned poller and producing 409 Conflict on
+    // a roughly hourly cadence. See channel-poller-reap.ts.
+    try {
+      const agentProvider = resolveAgentProvider(name)
+      const dir = agentDir(name)
+      reapChannelOrphans(agentProvider, dir)
+    } catch (err) {
+      logger.warn({ err, name }, 'pre-launch channel-poller reap failed (continuing)')
+    }
 
     const model = readAgentModel(name)
     const authMode = readAgentAuthMode(name)
@@ -221,23 +236,16 @@ export function stopAgentProcess(name: string): { ok: boolean; error?: string } 
   try {
     execSync(`${TMUX} kill-session -t ${session}`, { timeout: 5000 })
     execSync('sleep 2', { timeout: 4000 })
-    // Reap any orphaned plugin grandchildren that tmux didn't get.
-    // The plugin writes its pid to the agent's channel state dir;
-    // prefer that, fall back to a env-var-scoped pkill.
+    // Reap any orphaned plugin grandchild that tmux did not tear down.
+    // See channel-poller-reap.ts - the old pkill-by-env-var-on-cmdline did
+    // not work because the env vars are not part of argv on macOS.
     try {
       const agentProvider = resolveAgentProvider(name)
       const dir = agentDir(name)
-      const chanDir = channelStateDir(agentProvider, dir)
-      const pidPath = join(chanDir, 'bot.pid')
-      if (existsSync(pidPath)) {
-        const pid = parseInt(readFileSync(pidPath, 'utf-8').trim(), 10)
-        if (pid > 1) {
-          try { process.kill(pid, 'SIGTERM') } catch { /* already gone */ }
-        }
-      }
-      const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : agentProvider === 'discord' ? 'DISCORD_STATE_DIR' : 'TELEGRAM_STATE_DIR'
-      execFileSync('/usr/bin/pkill', ['-f', `${stateEnvVar}=${chanDir}`], { timeout: 3000 })
-    } catch { /* pkill returns non-zero if no match -- fine */ }
+      reapChannelOrphans(agentProvider, dir)
+    } catch (err) {
+      logger.warn({ err, name }, 'post-stop channel-poller reap failed')
+    }
     logger.info({ name, session }, 'Agent tmux session stopped')
     return { ok: true }
   } catch (err) {
