@@ -18,6 +18,7 @@ import {
 } from './agent-process.js'
 import { reapChannelOrphans } from './channel-poller-reap.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
+import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { detectPaneState, decidePaneErrorAlert, type PaneErrorAlertState, type PaneState } from '../pane-state.js'
 import { MAIN_CHANNELS_SESSION, MAIN_CHANNELS_PLIST } from './main-agent.js'
 import { notifyChannel } from '../notify.js'
@@ -331,6 +332,12 @@ function resumeMarveenSession(): boolean {
     // identity is gone after respawn-pane; channels.sh sets it on a normal
     // start). /remote-control was dropped (the operator no longer uses it).
     scheduleIdentitySetup(MAIN_CHANNELS_SESSION, BOT_NAME)
+    // channels.sh runs an /mcp+Up+Enter+Enter unlock probe after launching
+    // the main session to revive a Failed/disabled channel plugin (#231/#232),
+    // but THIS code path skips channels.sh entirely - tmux respawn-pane is
+    // direct. Schedule the same probe in-process so the plugin doesn't get
+    // stuck in `◯ disabled` after an in-process respawn (2026-06-01 18:55).
+    schedulePluginUnlockAfterRespawn(MAIN_CHANNELS_SESSION, provider.type)
     return true
   } catch (err) {
     logger.error({ err }, 'Marveen session respawn failed')
@@ -400,6 +407,12 @@ function respawnMarveenSessionFresh(): boolean {
     logger.warn({ provider: provider.type }, 'Hard restart: marveen session respawned fresh (no --continue)')
     // Re-establish /name on the fresh process (see note in resumeMarveenSession).
     scheduleIdentitySetup(MAIN_CHANNELS_SESSION, BOT_NAME)
+    // Same channels.sh-bypass concern as in resumeMarveenSession: this respawn
+    // path does NOT invoke channels.sh, so the post-init plugin unlock probe
+    // (#231/#232) never runs. Wire it in-process so the keep-alive-watchdog
+    // fresh-respawn path also revives a Failed/disabled plugin instead of
+    // leaving the channel offline until manual intervention.
+    schedulePluginUnlockAfterRespawn(MAIN_CHANNELS_SESSION, provider.type)
     writeRespawnStamp() // coordinate with the systemd-timer watchdog (covers the keepalive path too)
     return true
   } catch (err) {
