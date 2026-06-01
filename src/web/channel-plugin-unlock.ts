@@ -60,6 +60,12 @@ const UNLOCK_PROBE_MAX_RETRIES = 2
 // the first Enter opens the menu (~2s), the second Enter activates it (~3s).
 const MCP_OPEN_SETTLE_MS = 3000
 const KEYSTROKE_SETTLE_MS = 1500
+// After the second Enter activates Enable/Reconnect, the plugin handshake
+// takes a moment and Claude Code renders an action confirmation toast.
+// Wait long enough for the toast to settle before Escape, otherwise the
+// first Escape can be swallowed by the toast dismiss instead of backing
+// out of the action menu.
+const POST_UNLOCK_SETTLE_MS = 3000
 
 function getSessionClaudePid(session: string): number | null {
   try {
@@ -136,7 +142,21 @@ function sendUnlockKeystrokes(session: string): void {
     // Second Enter activates the first action - "Enable" for disabled,
     // "Reconnect" for failed. Both revive the plugin.
     execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
-    logger.warn({ session }, 'channel-plugin-unlock: sent /mcp+Up+Enter+Enter unlock sequence')
+    // After activation, the pane stays in the MCP server list (Claude Code
+    // does NOT auto-dismiss to the prompt). detectPaneState reads that as
+    // non-idle, every scheduled tick + inter-agent msg piles up with
+    // "Schedule target session busy" until someone manually presses Esc.
+    // 2026-06-01 19:25 incident: the unlock probe recovered the plugin at
+    // 19:27:16, but the pane stayed wedged in the MCP list until manual
+    // Escape at 19:40 -- 13 minutes of dropped traffic. Escape twice to
+    // back out of both menu levels (action menu -> server list -> idle
+    // prompt), with a settle between so the first Escape lands before
+    // the second arrives.
+    execFileSync('/bin/sleep', [String(POST_UNLOCK_SETTLE_MS / 1000)], { timeout: POST_UNLOCK_SETTLE_MS + 2000 })
+    execFileSync(TMUX, ['send-keys', '-t', session, 'Escape'], { timeout: 5000 })
+    execFileSync('/bin/sleep', [String(KEYSTROKE_SETTLE_MS / 1000)], { timeout: KEYSTROKE_SETTLE_MS + 2000 })
+    execFileSync(TMUX, ['send-keys', '-t', session, 'Escape'], { timeout: 5000 })
+    logger.warn({ session }, 'channel-plugin-unlock: sent /mcp+Up+Enter+Enter+Esc+Esc unlock sequence')
   } catch (err) {
     logger.error({ err, session }, 'channel-plugin-unlock: failed to deliver unlock keystrokes')
   }

@@ -55,21 +55,32 @@ describe('channel-plugin-unlock helper contract', () => {
     expect(helper).toMatch(/bypass permissions on/)
   })
 
-  it('delivers exactly /mcp, Up, Enter, Enter as the unlock sequence', () => {
-    // Pinning the exact 4-key sequence: anything else would either fail
-    // to revive the plugin or risk an unintended menu action.
+  it('delivers /mcp, Up, Enter, Enter then Esc, Esc to back the pane out to idle', () => {
+    // Pinning the full 6-key sequence:
+    //   /mcp + Up + Enter + Enter   -> revive plugin (Enable / Reconnect)
+    //   Esc + Esc                   -> back out of menu so pane returns idle
+    // Both Escapes are required: one for the action menu, one for the
+    // server list. Without them, detectPaneState stays non-idle and every
+    // scheduled task + inter-agent msg piles up "session busy"
+    // (2026-06-01 19:25 incident -- 13 min of dropped traffic).
     const sendStart = helper.indexOf('function sendUnlockKeystrokes')
     expect(sendStart, 'sendUnlockKeystrokes not found').toBeGreaterThan(0)
     const sendEnd = helper.indexOf('\n}\n', sendStart)
     const sendBody = helper.slice(sendStart, sendEnd > sendStart ? sendEnd : undefined)
     expect(sendBody).toMatch(/'\/mcp',\s*'Enter'/)
-    // Two stand-alone Enters after Up (open menu, activate first action).
     const upIdx = sendBody.indexOf("'Up'")
     expect(upIdx, "'Up' keystroke missing").toBeGreaterThan(0)
     const afterUp = sendBody.slice(upIdx)
-    // Count standalone Enter keystrokes after Up: must be exactly two.
+    // Exactly two Enters after Up.
     const enterMatches = afterUp.match(/send-keys[^]*?'Enter'\]/g) ?? []
     expect(enterMatches.length).toBe(2)
+    // Exactly two Escapes after the second Enter.
+    const escapeMatches = afterUp.match(/send-keys[^]*?'Escape'\]/g) ?? []
+    expect(escapeMatches.length).toBe(2)
+    // Order: both Escapes must come AFTER the last Enter.
+    const lastEnterIdx = afterUp.lastIndexOf("'Enter'")
+    const firstEscapeIdx = afterUp.indexOf("'Escape'")
+    expect(firstEscapeIdx).toBeGreaterThan(lastEnterIdx)
   })
 
   it('schedules the probe with a cold-start delay >= 25 seconds', () => {
