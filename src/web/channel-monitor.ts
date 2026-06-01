@@ -559,6 +559,31 @@ function checkMainKeepaliveStaleness(): void {
   // SAFETY NET first: let any fresh inbound traffic warm the file before we
   // judge staleness, so a busy-but-alive session is never seen as stale-deaf.
   refreshKeepaliveFromInbound()
+
+  // GROUND-TRUTH SHORTCUT (2026-06-01 21:18 incident): if the channel
+  // plugin's bun poller is ALIVE under Marveen's claude pid, the channel
+  // is healthy by definition -- Telegram traffic CAN reach us. A stale
+  // keepalive file with a live poller is just a quiet conversation, NOT
+  // deafness. Respawning here would kill the session for nothing (Szabi
+  // got "channel keep-alive 18 perce nem frissült" alerts every 30 min
+  // during idle periods, each one losing the running --continue context).
+  // The bun-child check is the same liveness signal channel-plugin-unlock
+  // already uses; reuse it here so the two paths agree on "alive".
+  try {
+    const claudePid = getClaudePidForSession(MAIN_CHANNELS_SESSION)
+    if (claudePid != null) {
+      const provider = getProvider(getMainAgentProvider())
+      if (hasChannelPluginAlive(claudePid, provider.type)) {
+        logger.debug({ claudePid, provider: provider.type }, 'Keepalive stale but channel plugin is alive -- skipping respawn')
+        return
+      }
+    }
+  } catch (err) {
+    // Fail-open: if we couldn't probe liveness, fall through to the
+    // existing staleness path so a genuinely dead session still recovers.
+    logger.debug({ err }, 'Keepalive liveness shortcut probe failed, falling through')
+  }
+
   let ageMs: number | null = null
   try {
     ageMs = Date.now() - statSync(KEEPALIVE_FILE).mtimeMs
