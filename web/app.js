@@ -90,10 +90,25 @@ function switchPage(pageId) {
   if (pageId === 'tokenUsage') loadTokenUsage()
 }
 
+// Mobile off-canvas sidebar toggle. No-op visual effect on desktop (the
+// hamburger/backdrop are display:none there); on narrow screens it slides the
+// sidebar in over a backdrop.
+const sidebarEl = document.querySelector('.sidebar')
+const sidebarBackdrop = document.getElementById('sidebarBackdrop')
+const mobileMenuBtn = document.getElementById('mobileMenuBtn')
+function setSidebarOpen(open) {
+  if (sidebarEl) sidebarEl.classList.toggle('open', open)
+  if (sidebarBackdrop) sidebarBackdrop.classList.toggle('open', open)
+  if (mobileMenuBtn) mobileMenuBtn.setAttribute('aria-expanded', open ? 'true' : 'false')
+}
+if (mobileMenuBtn) mobileMenuBtn.addEventListener('click', () => setSidebarOpen(!sidebarEl.classList.contains('open')))
+if (sidebarBackdrop) sidebarBackdrop.addEventListener('click', () => setSidebarOpen(false))
+
 navLinks.forEach((link) => {
   link.addEventListener('click', (e) => {
     e.preventDefault()
     switchPage(link.dataset.page)
+    setSidebarOpen(false) // close the drawer after navigating on mobile
   })
 })
 
