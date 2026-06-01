@@ -120,6 +120,23 @@ if [ -n "$ORPHAN_PIDS" ]; then
   /bin/kill -KILL $ORPHAN_PIDS 2>/dev/null || true
 fi
 
+# P1 FIX: put the Claude auth token into the tmux SERVER global env BEFORE
+# new-session. A new session inherits the tmux SERVER's global environment, not
+# this shell's. The tmux server is SHARED across every agent, so if a sub-agent
+# created the server first, this shell's `export CLAUDE_CODE_OAUTH_TOKEN` (above)
+# never reaches the channels claude -> "Not logged in" until the hourly restart.
+# Setting it -g makes the launch order irrelevant. Safe to share globally: every
+# agent uses the same Claude login (unlike the channel tokens scrubbed above,
+# which DO conflict and are -u'd). `|| true` tolerates "no server yet" -- in that
+# case new-session creates the server from this shell's exported env, which is
+# already correct.
+if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  $TMUX set-environment -g CLAUDE_CODE_OAUTH_TOKEN "$CLAUDE_CODE_OAUTH_TOKEN" 2>/dev/null || true
+fi
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  $TMUX set-environment -g ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY" 2>/dev/null || true
+fi
+
 # Tmux session indítás
 #
 # Always start a fresh conversation. --continue is intentionally omitted:
@@ -162,12 +179,11 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
   esac
 done
 
-# Set agent name and remote-control identifier once the session is ready.
+# Set agent name once the session is ready. (/remote-control dropped: the operator no
+# longer uses Remote Control.)
 _bot_name="${BOT_NAME:-${MAIN_AGENT_ID:-marveen}}"
 sleep 1
 $TMUX send-keys -t "$SESSION" "/name ${_bot_name}" Enter
-sleep 1
-$TMUX send-keys -t "$SESSION" "/remote-control ${_bot_name}" Enter
 unset _bot_name
 
 # Bot menu setup (Telegram only; Slack uses App Manifest)

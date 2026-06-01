@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync, writeFileSync, utimesSync } from 'node:fs'
 import { join } from 'node:path'
 import { execSync, execFileSync } from 'node:child_process'
 import { resolveFromPath } from '../platform.js'
@@ -14,14 +14,16 @@ import {
   sendPromptToSession,
   startAgentProcess,
   stopAgentProcess,
+  scheduleIdentitySetup,
 } from './agent-process.js'
 import { reapChannelOrphans } from './channel-poller-reap.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
-import { detectPaneState, decidePaneErrorAlert, type PaneErrorAlertState } from '../pane-state.js'
+import { detectPaneState, decidePaneErrorAlert, type PaneErrorAlertState, type PaneState } from '../pane-state.js'
 import { MAIN_CHANNELS_SESSION, MAIN_CHANNELS_PLIST } from './main-agent.js'
 import { notifyChannel } from '../notify.js'
 import { getProvider, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { attemptChannelMcpReconnect } from './channel-mcp-reconnect.js'
+import { readLastIngestionTimestamp, TRANSCRIPT_DIR } from './inbound-probe.js'
 import { shouldAutoRestartDownAgent, parseEtimeToSeconds } from './agent-restart-policy.js'
 
 const TMUX = resolveFromPath('tmux')
@@ -249,42 +251,67 @@ function readConfiguredMainModel(): string {
   }
 }
 
+// Build the claude command used to (re)spawn the main channels session via
+// `tmux respawn-pane`. Pure + exported so the contract test can LOCK the
+// presence of the `$HOME/.bun/bin` PATH export (without it the respawned bun
+// telegram bridge can't be found and the session comes up channel-less). The
+// PATH and flags mirror scripts/channels.sh. `continueSession` resumes the
+// prior conversation (stage-3 recovery) vs a clean start (hard restart).
+//
+// NOTE: inbound from `--channels` also goes through the allowlist at
+// /etc/claude-code/managed-settings.json (allowedChannelPlugins); a plugin not
+// listed there has its MCP notifications silently dropped. See channels.sh.
+export function buildMainSessionRespawnCmd(opts: {
+  claudePath: string
+  pluginId: string
+  model: string
+  continueSession: boolean
+}): string {
+  return [
+    'export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"',
+    '&&', opts.claudePath,
+    ...(opts.continueSession ? ['--continue'] : []),
+    '--dangerously-skip-permissions',
+    // Single-quote the model id so a value like `claude-opus-4-8[1m]` is not
+    // glob-expanded by the shell that tmux respawn-pane spawns the command in.
+    ...(opts.model ? ['--model', `'${opts.model}'`] : []),
+    `--channels plugin:${opts.pluginId}`,
+  ].join(' ')
+}
+
 function resumeMarveenSession(): boolean {
   const provider = getProvider(getMainAgentProvider())
   try {
-    // Reap any orphan bun/node poller BEFORE we respawn. `tmux respawn-pane -k`
+    // Reap any orphan bun/node poller BEFORE we respawn. tmux respawn-pane -k
     // kills the parent claude process but leaves grandchild pollers running -
-    // see channel-poller-reap.ts for the full background. Without this, the
-    // freshly-respawned --continue session would race a still-alive poller for
-    // the same bot token (409 Conflict on getUpdates) and stage 3 would fail
-    // exactly the way it did 2026-06-01 13:09 / 13:51 / 15:03, forcing the
-    // recovery to fall through to stage 4 hard restart and lose conversation
-    // context. The reap is best-effort: any failure logs and the respawn
-    // continues, because a stale orphan is better than no respawn at all.
+    // see channel-poller-reap.ts. Without this, the freshly-respawned
+    // --continue session would race a still-alive poller for the same bot
+    // token (409 Conflict on getUpdates).
     try {
       reapChannelOrphans(provider.type, PROJECT_ROOT)
     } catch (err) {
       logger.warn({ err }, 'resumeMarveenSession: pre-respawn reap failed (continuing)')
     }
 
-    const model = readConfiguredMainModel()
-    const claudeCmd = [
-      'export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"',
-      '&&', CLAUDE, '--continue', '--dangerously-skip-permissions',
-      // Single-quote the model id so a value like `claude-opus-4-8[1m]` is not
-      // glob-expanded by the shell that tmux respawn-pane spawns the command in.
-      ...(model ? ['--model', `'${model}'`] : []),
-      // NOTE: inbound from `--channels` goes through a separate
-      // allowlist at /etc/claude-code/managed-settings.json
-      // (allowedChannelPlugins). If the plugin isn't listed there,
-      // claude-code 2.1.152+ silently drops MCP notifications even
-      // with --dangerously-skip-permissions. The dev-channels flag
-      // does NOT bypass this -- you must edit managed-settings.json
-      // (root) to add the plugin. See scripts/channels.sh for the
-      // full root-cause note.
-      `--channels plugin:${provider.pluginId}`,
-    ].join(' ')
+    const claudeCmd = buildMainSessionRespawnCmd({
+      claudePath: CLAUDE,
+      pluginId: provider.pluginId,
+      model: readConfiguredMainModel(),
+      continueSession: true,
+    })
     execFileSync(TMUX, ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
+
+    // --continue replays the last conversation. When the prior session is large
+    // (>200k tokens) Claude Code opens with a "Resume from summary" modal that
+    // parks the prompt - the plugin never reaches inbound-ready and stage 3
+    // silently times out into stage 4. The agent-process startup path already
+    // dismisses this modal; we mirror it here for the resume path.
+    try {
+      execFileSync('/bin/sleep', ['2'], { timeout: 4000 })
+      dismissResumeSummaryModalIfPresent(MAIN_CHANNELS_SESSION)
+    } catch (err) {
+      logger.warn({ err }, 'resumeMarveenSession: post-respawn modal dismiss failed (continuing)')
+    }
 
     // --continue replays the last conversation. When the prior session is
     // large (>200k tokens) Claude Code opens with a "Resume from summary"
@@ -300,6 +327,10 @@ function resumeMarveenSession(): boolean {
     }
 
     logger.warn({ provider: provider.type }, 'Marveen session respawned with --continue')
+    // Re-establish /name on the brand-new claude process (the prior session's
+    // identity is gone after respawn-pane; channels.sh sets it on a normal
+    // start). /remote-control was dropped (the operator no longer uses it).
+    scheduleIdentitySetup(MAIN_CHANNELS_SESSION, BOT_NAME)
     return true
   } catch (err) {
     logger.error({ err }, 'Marveen session respawn failed')
@@ -319,23 +350,227 @@ const RESUME_GRACE_MS = 240_000
 let marveenLastHardRestart = 0
 const MARVEEN_HARD_RESTART_GRACE_MS = 120_000
 
-export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
+/**
+ * B2 fix: shared cross-path grace accessor.
+ * Returns the wall-clock time (ms since epoch) of the most recent main-session
+ * respawn, regardless of which path triggered it (keepalive or inbound-probe).
+ * Both paths check this before firing so they cannot double-respawn within
+ * KEEPALIVE_RESPAWN_GRACE_MS of each other.
+ */
+export function lastMainRespawnAt(): number {
+  return Math.max(marveenLastKeepaliveRespawn, marveenLastHardRestart, fileRespawnStampMs())
+}
+
+// Cross-LAYER coordination with the independent systemd-timer watchdog
+// (scripts/channel-watchdog.sh). That timer writes RESPAWN_STAMP_FILE (epoch
+// SECONDS) when IT respawns; reading it here means an out-of-process respawn
+// also suppresses this in-process watchdog for the grace window. Symmetrically,
+// hardRestartMarveenChannels writes the same file so the timer defers to us.
+// Best-effort: 0 if absent/garbage.
+const RESPAWN_STAMP_FILE = join(PROJECT_ROOT, 'store', '.channel-last-respawn')
+function fileRespawnStampMs(): number {
   try {
-    if (process.platform === 'linux') {
-      const unit = `${MAIN_AGENT_ID}-channels.service`
-      execFileSync('/usr/bin/systemctl', ['--user', 'restart', unit], { timeout: 15000 })
-      logger.warn(`Hard restart: systemctl --user restart ${unit}`)
-    } else {
+    const s = parseInt(readFileSync(RESPAWN_STAMP_FILE, 'utf-8').trim(), 10)
+    return Number.isFinite(s) && s > 0 ? s * 1000 : 0
+  } catch {
+    return 0
+  }
+}
+function writeRespawnStamp(): void {
+  try {
+    writeFileSync(RESPAWN_STAMP_FILE, String(Math.floor(Date.now() / 1000)))
+  } catch { /* best effort */ }
+}
+
+// Hard-restart fallback when there is no systemd unit to bounce: respawn the
+// tmux pane with a FRESH claude (no --continue). Mirrors resumeMarveenSession
+// but starts a clean session -- exactly what scripts/channels.sh does -- so a
+// wedged plugin gets a brand-new process even on pure-tmux installs. Distinct
+// from the stage-3 resume (which keeps --continue) by clearing session state.
+function respawnMarveenSessionFresh(): boolean {
+  const provider = getProvider(getMainAgentProvider())
+  try {
+    const claudeCmd = buildMainSessionRespawnCmd({
+      claudePath: CLAUDE,
+      pluginId: provider.pluginId,
+      model: readConfiguredMainModel(),
+      continueSession: false,
+    })
+    execFileSync(TMUX, ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
+    logger.warn({ provider: provider.type }, 'Hard restart: marveen session respawned fresh (no --continue)')
+    // Re-establish /name on the fresh process (see note in resumeMarveenSession).
+    scheduleIdentitySetup(MAIN_CHANNELS_SESSION, BOT_NAME)
+    writeRespawnStamp() // coordinate with the systemd-timer watchdog (covers the keepalive path too)
+    return true
+  } catch (err) {
+    logger.error({ err }, 'Fresh session respawn failed')
+    return false
+  }
+}
+
+export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
+  // macOS: bounce the launchd job (its own process group -- safe).
+  if (process.platform !== 'linux') {
+    try {
       execFileSync('/bin/launchctl', ['unload', MAIN_CHANNELS_PLIST], { timeout: 5000 })
       execFileSync('/bin/sleep', ['2'], { timeout: 4000 })
       execFileSync('/bin/launchctl', ['load', MAIN_CHANNELS_PLIST], { timeout: 5000 })
       logger.warn(`Hard restart: launchctl reload of com.${MAIN_AGENT_ID}.channels`)
+      marveenLastHardRestart = Date.now()
+      writeRespawnStamp() // coordinate with the systemd-timer watchdog
+      return { ok: true }
+    } catch (err) {
+      logger.error({ err }, 'Hard restart failed (launchctl)')
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
+  }
+
+  // Linux: respawn-pane ONLY -- NEVER `systemctl --user restart`. The channels
+  // unit (e.g. marveen-channels.service) runs with KillMode=control-group and
+  // the shared tmux SERVER lives in its cgroup, so restarting the unit kills the
+  // tmux server and with it EVERY agent session, not just the main one.
+  // respawn-pane replaces only the claude process in the main channels pane,
+  // leaving the server and all other sessions intact.
+  if (respawnMarveenSessionFresh()) {
     marveenLastHardRestart = Date.now()
     return { ok: true }
+  }
+  return { ok: false, error: 'hard restart failed: tmux respawn-pane failed' }
+}
+
+// --- Keep-alive staleness watchdog (deafness safety net, decision #3) ---
+//
+// The keep-alive (a scheduled edit_message round-trip from the channels
+// session) touches store/.channel-keepalive on every success. If that file
+// goes stale while the session is otherwise process-alive, the MCP stdio pipe
+// is likely wedged -> respawn the pane.
+//
+// LIMITATION (documented on purpose): this staleness net does NOT catch a clean
+// inbound-ONLY deafness, where outbound edit_message still succeeds and keeps the
+// file fresh while server->claude notifications are dropped. The keep-alive
+// PREVENTS that case (warm pipe); the ACTIVE detector for it now ships as
+// src/web/inbound-probe.ts (2026-06-01) -- a userbot sends a marker the watchdog
+// verifies in the transcript. This staleness path remains the coarse backstop.
+const KEEPALIVE_FILE = join(PROJECT_ROOT, 'store', '.channel-keepalive')
+const KEEPALIVE_STALE_MS = 18 * 60 * 1000 // ~3 missed 6-min cycles
+const KEEPALIVE_RESPAWN_GRACE_MS = 15 * 60 * 1000 // let a respawned session re-establish the file
+let marveenLastKeepaliveRespawn = 0
+
+/**
+ * Pure decision: should the keepalive respawn be deferred because the
+ * main session pane is actively busy?
+ *
+ * Returns true (defer) for 'busy' | 'typing'.
+ * Returns false (proceed) for 'idle' | 'unknown' | 'error' | null.
+ *
+ * Fail-OPEN on unknown/error/null: a wedged or unreadable pane must still
+ * be recoverable. Never block a respawn because we couldn't read the pane.
+ */
+export function shouldDeferKeepaliveRespawn(
+  paneState: PaneState | null
+): boolean {
+  return paneState === 'busy' || paneState === 'typing'
+}
+
+// Pure decision: respawn only when the file EXISTS but has gone stale (a file
+// that was once fresh and stopped updating). A missing file means the keep-
+// alive hasn't established a baseline yet (fresh boot) -- never respawn on
+// absence, or we'd loop before the first keep-alive runs.
+export function shouldRespawnForStaleKeepalive(opts: {
+  keepaliveAgeMs: number | null
+  stalenessThresholdMs: number
+  msSinceLastRespawn: number | null
+  respawnGraceMs: number
+}): boolean {
+  if (opts.keepaliveAgeMs == null) return false
+  if (opts.msSinceLastRespawn != null && opts.msSinceLastRespawn < opts.respawnGraceMs) return false
+  return opts.keepaliveAgeMs > opts.stalenessThresholdMs
+}
+
+// SOURCE FIX (2026-06-01): the staleness watchdog's only health signal was the
+// scheduled edit_message round-trip, injected into the SAME busy channels
+// session. When the session is busy carrying a real conversation, that prompt
+// is skipped/stuck, so the keepalive file ages WHILE THE CHANNEL IS PERFECTLY
+// ALIVE -- and the watchdog respawned the live conversation in an idle gap.
+//
+// Real inbound traffic is direct proof the server->claude pipe is alive (it is
+// exactly that pipe which dies in a deafness). So the dashboard advances the
+// keepalive file's mtime to the timestamp of the last ingested `<channel
+// source=` block. Now an active conversation keeps the file warm -- precisely
+// when it used to go stale -- while a genuinely silent/deaf session still ages
+// out. Both watchdogs (this one + the systemd timer) key off the file mtime, so
+// both benefit. The scheduled edit_message round-trip stays as the IDLE-path
+// keep-alive (no organic traffic); its busy-skip no longer causes false
+// staleness because organic inbound covers the busy case.
+
+// Pure decision: should the keepalive file be advanced to the last-inbound
+// timestamp? Only when there IS a last inbound and it is newer than the file
+// (never move the mtime backward; the scheduled keepalive may be more recent).
+export function shouldRefreshKeepaliveFromInbound(
+  lastInboundTs: number | null,
+  keepaliveMtimeMs: number,
+): boolean {
+  return lastInboundTs != null && lastInboundTs > keepaliveMtimeMs
+}
+
+// Side-effecting: advance store/.channel-keepalive's mtime to the last ingested
+// inbound message time, so live conversation proves the pipe healthy. Best
+// effort; never throws into the monitor tick.
+function refreshKeepaliveFromInbound(): void {
+  try {
+    const lastInboundTs = readLastIngestionTimestamp(TRANSCRIPT_DIR)
+    let mtimeMs = 0
+    try { mtimeMs = statSync(KEEPALIVE_FILE).mtimeMs } catch { /* missing -> 0 */ }
+    if (!shouldRefreshKeepaliveFromInbound(lastInboundTs, mtimeMs)) return
+    if (!existsSync(KEEPALIVE_FILE)) {
+      writeFileSync(KEEPALIVE_FILE, String(Math.floor((lastInboundTs as number) / 1000)))
+    }
+    const when = new Date(lastInboundTs as number)
+    utimesSync(KEEPALIVE_FILE, when, when)
   } catch (err) {
-    logger.error({ err }, 'Hard restart failed')
-    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    logger.debug({ err }, 'refreshKeepaliveFromInbound failed (non-fatal)')
+  }
+}
+
+function checkMainKeepaliveStaleness(): void {
+  // SAFETY NET first: let any fresh inbound traffic warm the file before we
+  // judge staleness, so a busy-but-alive session is never seen as stale-deaf.
+  refreshKeepaliveFromInbound()
+  let ageMs: number | null = null
+  try {
+    ageMs = Date.now() - statSync(KEEPALIVE_FILE).mtimeMs
+  } catch {
+    ageMs = null // file missing -> keep-alive not yet established
+  }
+  const now = Date.now()
+  // B2 fix: cross-path grace — use the later of the two respawn timestamps so
+  // an inbound-probe respawn also suppresses the keepalive path for the grace window.
+  const msSinceLastRespawn = lastMainRespawnAt() ? now - lastMainRespawnAt() : null
+  const respawn = shouldRespawnForStaleKeepalive({
+    keepaliveAgeMs: ageMs,
+    stalenessThresholdMs: KEEPALIVE_STALE_MS,
+    msSinceLastRespawn,
+    respawnGraceMs: KEEPALIVE_RESPAWN_GRACE_MS,
+  })
+  if (!respawn) return
+  // Busy-guard: do not respawn a pane that is actively processing a turn.
+  // capturePane returns null if the pane can't be read; detectPaneState
+  // returns 'unknown' for null input — shouldDeferKeepaliveRespawn is
+  // fail-open on unknown, so a broken capture never blocks recovery.
+  const paneContent = capturePane(MAIN_CHANNELS_SESSION)
+  const paneState = paneContent != null ? detectPaneState(paneContent) : null
+  if (shouldDeferKeepaliveRespawn(paneState)) {
+    logger.info({ paneState }, 'Keepalive stale but pane is busy -- deferring respawn')
+    return
+  }
+  const ageMin = Math.round((ageMs ?? 0) / 60000)
+  logger.warn({ ageMs, paneState }, 'Channel keep-alive stale -- main session likely wedged/deaf, respawning via respawn-pane')
+  sendAlert(`⚠️ A fő channel keep-alive ${ageMin} perce nem frissült -- respawn-pane a ${MAIN_CHANNELS_SESSION} session-on (a beszelgetes elveszik, memoria marad).`)
+  if (respawnMarveenSessionFresh()) {
+    marveenLastKeepaliveRespawn = now
+    // Suppress the process-down handler during the respawn window (reuses the
+    // existing hard-restart grace) so the two recovery paths don't collide.
+    marveenLastHardRestart = now
   }
 }
 
@@ -519,6 +754,9 @@ export function startChannelPluginMonitor(): NodeJS.Timeout {
       if (alive) {
         if (t.isMarveen) {
           handleMarveenUp()
+          // Process-alive does NOT prove the inbound MCP pipe is healthy (the
+          // deafness blind spot). Cross-check the keep-alive freshness.
+          checkMainKeepaliveStaleness()
         } else if (agentDownSince.has(t.session)) {
           logger.info({ session: t.session, provider: t.provider }, 'Agent channel plugin recovered')
           agentDownSince.delete(t.session)

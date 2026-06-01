@@ -1,0 +1,30 @@
+# NOTE: replace /path/to/marveen (install dir), /home/USER (home), and USER=youruser with your values.
+[Unit]
+Description=Marveen Channels (Telegram bridge)
+After=network.target
+# P1 FIX: StartLimit* belong in [Unit], not [Service] (systemd logged
+# "Unknown key StartLimitIntervalSec" and ignored them in [Service]).
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/marveen
+ExecStart=/path/to/marveen/scripts/channels.sh
+# P1 FIX: always (not on-failure). channels.sh exits 0 when the tmux session
+# dies normally, which on-failure did NOT restart -> the bridge was dead for
+# ~28 min (08:29-08:57). The StartLimit above + channels.sh's own rapid-fail
+# backoff protect against a tight restart loop.
+Restart=always
+RestartSec=10
+StandardOutput=append:/path/to/marveen/store/channels.log
+StandardError=append:/path/to/marveen/store/channels.error.log
+Environment=PATH=/home/USER/.local/bin:/home/USER/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/USER
+Environment=USER=youruser
+Environment=TERM=xterm-256color
+Environment=LANG=en_US.UTF-8
+Environment=TZ=Europe/Budapest
+
+[Install]
+WantedBy=default.target

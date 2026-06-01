@@ -201,26 +201,7 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
     // typically appears within 4-6s). Survey-rating modals from prior
     // sessions can also be present, so dismiss both. Errors are swallowed
     // -- the outbound pre-flight remains the safety net if this misses.
-    setTimeout(() => {
-      try {
-        dismissSurveyModalIfPresent(session)
-        dismissResumeSummaryModalIfPresent(session)
-      } catch (err) {
-        logger.warn({ err, name, session }, 'Post-restart modal dismiss failed')
-      }
-      // Set /name and /remote-control so the agent is identifiable.
-      setTimeout(() => {
-        try {
-          const displayName = readAgentDisplayName(name)
-          execFileSync(TMUX, ['send-keys', '-t', session, `/name ${displayName}`, 'Enter'], { timeout: 5000 })
-          execFileSync('/bin/sleep', ['1'], { timeout: 2000 })
-          execFileSync(TMUX, ['send-keys', '-t', session, `/remote-control ${displayName}`, 'Enter'], { timeout: 5000 })
-          logger.info({ name, session, displayName }, 'Set agent /name and /remote-control')
-        } catch (err) {
-          logger.warn({ err, name, session }, 'Failed to set agent /name or /remote-control')
-        }
-      }, 5000)
-    }, 8000)
+    scheduleIdentitySetup(session, readAgentDisplayName(name))
 
     return { ok: true }
   } catch (err) {
@@ -316,6 +297,49 @@ export function dismissResumeSummaryModalIfPresent(session: string): void {
   } catch (err) {
     logger.warn({ err, session }, 'Failed to probe/dismiss resume-from-summary modal')
   }
+}
+
+// Post-(re)start identity setup. Every freshly spawned Claude Code session is
+// given `/name` so it is identifiable. (`/remote-control` was dropped: the
+// operator no longer uses Remote Control, and the agent's inference-only OAuth
+// token can't satisfy it anyway.) Pure helper for the exact slash commands so
+// they are unit-tested; scheduleIdentitySetup wires them to tmux after a wait.
+export function identitySlashCommands(displayName: string): string[] {
+  return [`/name ${displayName}`]
+}
+
+// Delays mirror the observed Claude Code first-render timing: the first-run /
+// resume modals appear within ~4-6s, so dismiss at 8s; the prompt input is
+// reliably ready ~5s after that.
+const MODAL_DISMISS_DELAY_MS = 8000
+const IDENTITY_SEND_DELAY_MS = 5000
+
+// Schedule the identity setup for a freshly (re)spawned session: once it has
+// had time to render, dismiss any first-run/resume modals, then send `/name`.
+// Shared by startAgentProcess and the channel-monitor recovery respawns
+// (resumeMarveenSession / respawnMarveenSessionFresh), which previously left the
+// main session without its identity after auto-recovery. Fire-and-forget; all
+// errors are swallowed/logged so a missed setup never tears down the caller.
+export function scheduleIdentitySetup(session: string, displayName: string): void {
+  setTimeout(() => {
+    try {
+      dismissSurveyModalIfPresent(session)
+      dismissResumeSummaryModalIfPresent(session)
+    } catch (err) {
+      logger.warn({ err, session }, 'Post-restart modal dismiss failed')
+    }
+    setTimeout(() => {
+      try {
+        for (const cmd of identitySlashCommands(displayName)) {
+          execFileSync(TMUX, ['send-keys', '-t', session, cmd, 'Enter'], { timeout: 5000 })
+          execFileSync('/bin/sleep', ['1'], { timeout: 2000 })
+        }
+        logger.info({ session, displayName }, 'Set session /name')
+      } catch (err) {
+        logger.warn({ err, session, displayName }, 'Failed to set session /name')
+      }
+    }, IDENTITY_SEND_DELAY_MS)
+  }, MODAL_DISMISS_DELAY_MS)
 }
 
 // How many follow-up Enters sendPromptToSession() is willing to fire

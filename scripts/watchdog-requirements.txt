@@ -1,0 +1,7 @@
+# W5: pinned telethon + crypto dependencies for the inbound-probe venv.
+# Generated from: .watchdog-venv/bin/pip freeze | grep -iE 'telethon|pyaes|rsa|pyasn1'
+# Install: pip install -r scripts/watchdog-requirements.txt
+pyaes==1.6.1
+pyasn1==0.6.3
+rsa==4.9.1
+Telethon==1.43.2

@@ -53,6 +53,7 @@ import {
   agentChannelDir,
 } from '../channel-invites.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
+import { isMainChannelsAgent } from '../main-agent.js'
 import {
   getProvider,
   channelStateDir,
@@ -79,8 +80,6 @@ import {
   capturePane,
 } from '../agent-process.js'
 import { readActiveModelFromProjectDir } from '../active-model.js'
-import { detectPaneState } from '../../pane-state.js'
-import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { attemptChannelMcpReconnect } from '../channel-mcp-reconnect.js'
 import { getChannelHealth } from '../channel-health-monitor.js'
 import {
@@ -378,56 +377,6 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
   if (path === '/api/agents' && method === 'GET') {
     json(res, listAgentSummaries())
-    return true
-  }
-
-  // Live activity panel: per-agent "what is it doing right now". Read-only.
-  // Reads each agent's tmux pane (capturePane), classifies it with the same
-  // detector the scheduler uses (detectPaneState), and returns the last few
-  // non-empty lines as a "live tail". Polled by the dashboard every few sec
-  // (no SSE infra in this codebase). Includes the main agent's channels
-  // session so the operator sees the whole fleet, not just sub-agents.
-  if (path === '/api/agents/activity' && method === 'GET') {
-    // PaneState -> coarse label the UI renders as a colored badge.
-    const label = (running: boolean, pane: string | null): string => {
-      if (!running) return 'stopped'
-      if (pane === null) return 'unknown'
-      const s = detectPaneState(pane)
-      if (s === 'busy' || s === 'typing') return 'working'
-      if (s === 'idle') return 'idle'
-      return s // 'unknown' | 'error'
-    }
-    const tailOf = (pane: string | null): string[] =>
-      pane === null
-        ? []
-        : pane
-            .split('\n')
-            .map(l => l.replace(/\s+$/, ''))
-            .filter(l => l.trim().length > 0)
-            .slice(-8)
-
-    const entries: Array<{ name: string; isMain: boolean; running: boolean; state: string; tail: string[] }> = []
-
-    // Main agent (runs in the --channels session, not agent-<name>).
-    {
-      const mainPane = capturePane(MAIN_CHANNELS_SESSION)
-      const running = mainPane !== null
-      entries.push({
-        name: MAIN_AGENT_ID,
-        isMain: true,
-        running,
-        state: label(running, mainPane),
-        tail: tailOf(mainPane),
-      })
-    }
-
-    for (const name of listAgentNames()) {
-      const running = isAgentRunning(name)
-      const pane = running ? capturePane(agentSessionName(name)) : null
-      entries.push({ name, isMain: false, running, state: label(running, pane), tail: tailOf(pane) })
-    }
-
-    json(res, entries)
     return true
   }
 
@@ -1175,6 +1124,17 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   const restartMatch = path.match(/^\/api\/agents\/([^/]+)\/restart$/)
   if (restartMatch && method === 'POST') {
     const name = decodeURIComponent(restartMatch[1])
+    // The main agent runs in the systemd/launchd-managed `<id>-channels` session,
+    // not the `agent-<name>` template. Restart it through the channels helper --
+    // the agent-process path would spawn a rogue duplicate session and fire
+    // `/remote-control` (needs a full-scope login token the agent lacks). Mirror
+    // the precedent in the channels-config handler above. Sub-agents unchanged.
+    if (isMainChannelsAgent(name)) {
+      const r = hardRestartMarveenChannels()
+      if (r.ok) { json(res, { ok: true }); return true }
+      json(res, { error: r.error || 'Restart failed' }, 500)
+      return true
+    }
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
     const result = restartAgentProcess(name)
     if (result.ok) { json(res, { ok: true }); return true }
