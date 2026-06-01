@@ -307,13 +307,15 @@ function resumeMarveenSession(): boolean {
   }
 }
 
-// Bumped 90s -> 150s 2026-06-01: --continue + plugin re-init on a
-// large-context session can take past 90s, and the channel-monitor poll only
-// re-evaluates every 60s, so the previous window left ~30s of safety margin
-// before stage 4 fired. With the new reap+modal-dismiss path the resume
-// itself should succeed more often, but the budget still has to cover plugin
-// re-handshake + first getUpdates round-trip on the upstream provider.
-const RESUME_GRACE_MS = 150_000
+// Grace history: 90s -> 150s -> 240s.
+// 2026-06-01 16:31 incident: with the reap+modal-dismiss path landed,
+// resumeMarveenSession respawned cleanly, but a >200k-token --continue
+// session-load + plugin re-handshake exceeded the 150s window and stage 4
+// fired anyway (context lost). Bumped to 240s so the slowest realistic
+// large-context resume completes inside the window. The monitor polls every
+// 60s, so the effective resolution rounds up to the next poll - 240s gives
+// 3-4 polls' worth of slack before the hard restart escalates.
+const RESUME_GRACE_MS = 240_000
 let marveenLastHardRestart = 0
 const MARVEEN_HARD_RESTART_GRACE_MS = 120_000
 

@@ -68,13 +68,15 @@ describe('channel-monitor: stage-3 resumeMarveenSession recovery hardening', () 
     expect(respawnIdx).toBeLessThan(dismissIdx)
   })
 
-  it('RESUME_GRACE_MS is at least 150 seconds (post-2026-06-01 budget)', () => {
-    // 90s was the pre-fix budget; the new path needs more headroom to
-    // cover the plugin re-handshake. We pin >=150000 to catch a
-    // future refactor that drops it back down to 90s.
+  it('RESUME_GRACE_MS is at least 240 seconds (post-2026-06-01-16:31 budget)', () => {
+    // 90s -> 150s -> 240s. The 150s window was empirically insufficient on
+    // a >200k-token --continue session (2026-06-01 16:31 incident); the
+    // resume respawned cleanly but the plugin re-handshake did not finish
+    // inside the window and stage 4 fired. Pin >=240000 to catch a future
+    // refactor that drops the budget back below the observed worst case.
     const m = src.match(/const\s+RESUME_GRACE_MS\s*=\s*([\d_]+)/)
     expect(m, 'RESUME_GRACE_MS constant not found').not.toBeNull()
     const value = parseInt((m![1] as string).replace(/_/g, ''), 10)
-    expect(value).toBeGreaterThanOrEqual(150_000)
+    expect(value).toBeGreaterThanOrEqual(240_000)
   })
 })
