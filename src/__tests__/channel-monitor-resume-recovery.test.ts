@@ -80,3 +80,44 @@ describe('channel-monitor: stage-3 resumeMarveenSession recovery hardening', () 
     expect(value).toBeGreaterThanOrEqual(240_000)
   })
 })
+
+describe('channel-monitor: post-respawn cold-start guard (2026-06-01 480s outage)', () => {
+  // Background: a keepalive fresh-respawn at 17:59:20 was followed by a
+  // down-detect at 18:03 because the post-respawn grace was only 120s -- it
+  // expired while the new large-context session was still booting, so the
+  // recovery cascade (soft->save->resume->hard) stacked THREE restarts onto a
+  // session that was merely cold-starting. downedFor was 480s. The fix widens
+  // the grace and gates the cascade on lastMainRespawnAt() (which folds in the
+  // keepalive-respawn timestamp, not just the hard-restart one).
+  const src = readFileSync(MONITOR_PATH, 'utf-8')
+
+  const fnStart = src.indexOf('function handleMarveenDown')
+  expect(fnStart, 'handleMarveenDown not found').toBeGreaterThan(0)
+  const fnEnd = src.indexOf('\nfunction ', fnStart + 1)
+  const fnBody = src.slice(fnStart, fnEnd > fnStart ? fnEnd : undefined)
+
+  it('post-respawn grace is at least 300 seconds (covers a large-context cold start)', () => {
+    const m = src.match(/const\s+MARVEEN_POST_RESPAWN_GRACE_MS\s*=\s*([\d_]+)/)
+    expect(m, 'MARVEEN_POST_RESPAWN_GRACE_MS constant not found').not.toBeNull()
+    const value = parseInt((m![1] as string).replace(/_/g, ''), 10)
+    expect(value).toBeGreaterThanOrEqual(300_000)
+  })
+
+  it('handleMarveenDown gates on lastMainRespawnAt() so a keepalive respawn also suppresses escalation', () => {
+    // The earlier code gated only on marveenLastHardRestart, which a keepalive
+    // fresh-respawn updated but a future refactor might not. lastMainRespawnAt()
+    // is the single source of truth for "we respawned recently, give it time".
+    expect(fnBody).toMatch(/lastMainRespawnAt\(\)/)
+    expect(fnBody).toMatch(/MARVEEN_POST_RESPAWN_GRACE_MS/)
+  })
+
+  it('the cold-start guard returns BEFORE the cascade creates a down state', () => {
+    // The grace check must short-circuit before the `if (!marveenDownState)`
+    // branch, otherwise a still-booting session would begin stage 1 and stack.
+    const guardIdx = fnBody.indexOf('MARVEEN_POST_RESPAWN_GRACE_MS')
+    const downStateIdx = fnBody.indexOf('if (!marveenDownState)')
+    expect(guardIdx, 'grace guard missing from handleMarveenDown').toBeGreaterThan(0)
+    expect(downStateIdx, 'down-state init missing from handleMarveenDown').toBeGreaterThan(0)
+    expect(guardIdx).toBeLessThan(downStateIdx)
+  })
+})

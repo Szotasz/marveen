@@ -348,7 +348,17 @@ function resumeMarveenSession(): boolean {
 // 3-4 polls' worth of slack before the hard restart escalates.
 const RESUME_GRACE_MS = 240_000
 let marveenLastHardRestart = 0
-const MARVEEN_HARD_RESTART_GRACE_MS = 120_000
+// Post-respawn cold-start grace. After ANY main-session respawn (keepalive
+// fresh-respawn, stage-3 resume, or stage-4 hard restart) the new claude needs
+// minutes to load its large context and complete the channel-plugin handshake.
+// The 2026-06-01 480s outage was self-inflicted churn: a keepalive fresh-respawn
+// at 17:59:20 was followed by a down-detect at 18:03 because this grace was only
+// 120s -- it expired mid cold-start, so soft->save->resume->hard piled THREE
+// restarts onto a session that was merely still booting. 6 min comfortably
+// covers the slowest realistic cold start while staying under the 18-min
+// keepalive-staleness net, so a session that is genuinely dead after a respawn
+// is still caught by another path.
+const MARVEEN_POST_RESPAWN_GRACE_MS = 360_000
 
 /**
  * B2 fix: shared cross-path grace accessor.
@@ -581,7 +591,15 @@ function sendAlert(text: string): void {
 function handleMarveenDown(): void {
   const now = Date.now()
   const providerLabel = getMainAgentProvider()
-  if (marveenLastHardRestart && now - marveenLastHardRestart < MARVEEN_HARD_RESTART_GRACE_MS) {
+  // Cold-start guard: defer the ENTIRE down cascade while a recent respawn
+  // (from any recovery path -- keepalive fresh-respawn, stage-3 resume, stage-4
+  // hard restart, or the external watchdog's file stamp) is still inside its
+  // boot window. lastMainRespawnAt() folds all three timestamps together, so a
+  // keepalive respawn that did NOT touch marveenLastHardRestart still suppresses
+  // escalation. This is what stops the restart-on-restart stacking that caused
+  // the 2026-06-01 480s outage (see MARVEEN_POST_RESPAWN_GRACE_MS).
+  const lastRespawn = lastMainRespawnAt()
+  if (lastRespawn && now - lastRespawn < MARVEEN_POST_RESPAWN_GRACE_MS) {
     return
   }
   if (!marveenDownState) {
