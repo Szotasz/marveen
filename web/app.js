@@ -86,7 +86,7 @@ function switchPage(pageId) {
   if (pageId === 'vault') loadVaultPage()
   if (pageId === 'autonomy') loadAutonomy()
   if (pageId === 'updates') loadUpdates()
-  if (pageId === 'team') loadTeamGraph()
+  if (pageId === 'team') { loadTeamGraph(); loadTeamMessages(); populateMsgComposeTargets() }
   if (pageId === 'tokenUsage') loadTokenUsage()
 }
 
@@ -6907,6 +6907,109 @@ function renderTeamGraph(container, data) {
 
 const refreshTeamBtn = document.getElementById('refreshTeamBtn')
 if (refreshTeamBtn) refreshTeamBtn.addEventListener('click', loadTeamGraph)
+
+// === Team: inter-agent message log + compose ===
+// View the /api/messages queue and let the operator send a message to an agent
+// from the dashboard. Targets come from /api/schedules/agents (the same allowed
+// agent list the scheduler uses) -- never a free-text target. The sender is the
+// owner (resolved by type from /api/kanban/assignees), so the receiving agent
+// sees a message from Gábor, not a spoofable string. /api/messages sits behind
+// the dashboard bearer token + Cloudflare Access.
+const MSG_STATUS_META = {
+  pending: { label: 'függőben', cls: 'badge-warm' },
+  delivered: { label: 'kézbesítve', cls: 'badge-active' },
+  done: { label: 'kész', cls: 'badge-active' },
+  failed: { label: 'hibás', cls: 'badge-paused' },
+}
+let msgComposeReady = false
+
+async function loadTeamMessages() {
+  const list = document.getElementById('teamMessageList')
+  if (!list) return
+  const filter = document.getElementById('msgFilter')?.value || ''
+  try {
+    const q = filter ? `?status=${encodeURIComponent(filter)}&limit=50` : '?limit=50'
+    const res = await fetch('/api/messages' + q)
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const msgs = await res.json()
+    if (!Array.isArray(msgs) || msgs.length === 0) {
+      list.innerHTML = '<p class="activity-empty">Nincs üzenet.</p>'
+      return
+    }
+    list.innerHTML = msgs.map(m => {
+      const meta = MSG_STATUS_META[m.status] || { label: m.status || '-', cls: 'badge' }
+      const when = m.created_at ? new Date(m.created_at * 1000).toLocaleString('hu-HU') : ''
+      return `<div class="team-message">
+        <div class="team-message-head">
+          <span class="team-message-route">${escapeHtml(m.from_agent)} &rarr; ${escapeHtml(m.to_agent)}</span>
+          <span class="badge ${meta.cls}">${escapeHtml(meta.label)}</span>
+        </div>
+        <div class="team-message-body">${escapeHtml(m.content)}</div>
+        <div class="team-message-time">${escapeHtml(when)}</div>
+      </div>`
+    }).join('')
+  } catch (e) {
+    list.innerHTML = '<p class="activity-empty">Nem sikerült betölteni az üzeneteket: ' + escapeHtml(String(e.message || e)) + '</p>'
+  }
+}
+
+async function populateMsgComposeTargets() {
+  const sel = document.getElementById('msgComposeTo')
+  if (!sel || msgComposeReady) return
+  try {
+    const res = await fetch('/api/schedules/agents')
+    if (!res.ok) return
+    const agents = await res.json()
+    sel.innerHTML = ''
+    for (const a of agents) {
+      const opt = document.createElement('option')
+      opt.value = a.name
+      opt.textContent = a.label || a.name
+      sel.appendChild(opt)
+    }
+    msgComposeReady = true
+  } catch { /* leave empty; send will warn */ }
+}
+
+async function resolveOwnerName() {
+  try {
+    const res = await fetch('/api/kanban/assignees')
+    if (res.ok) {
+      const list = await res.json()
+      const owner = Array.isArray(list) ? list.find(a => a.type === 'owner') : null
+      if (owner && owner.name) return owner.name
+    }
+  } catch { /* fall through */ }
+  return 'owner'
+}
+
+async function sendComposeMessage() {
+  const to = document.getElementById('msgComposeTo').value
+  const content = document.getElementById('msgComposeContent').value.trim()
+  if (!to) { showToast('Válassz címzett ügynököt'); return }
+  if (!content) { document.getElementById('msgComposeContent').focus(); return }
+  const btn = document.getElementById('msgComposeSend')
+  btn.disabled = true
+  try {
+    const from = await resolveOwnerName()
+    const res = await fetch('/api/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from, to, content }),
+    })
+    if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Hiba') }
+    document.getElementById('msgComposeContent').value = ''
+    showToast('Üzenet elküldve')
+    loadTeamMessages()
+  } catch (e) {
+    showToast('Hiba: ' + (e.message || e))
+  } finally {
+    btn.disabled = false
+  }
+}
+
+document.getElementById('msgFilter')?.addEventListener('change', loadTeamMessages)
+document.getElementById('msgComposeSend')?.addEventListener('click', sendComposeMessage)
 
 function renderTeamEditor(agent, allAgents) {
   const team = agent.team || { role: 'member', reportsTo: null, delegatesTo: [], autoDelegation: false, trustFrom: [] }

@@ -4932,3 +4932,14 @@ main {
   border-radius: 6px; padding: 8px 10px;
 }
 .activity-tail-empty { margin: 0; font-size: 12px; color: var(--text-muted); font-style: italic; }
+
+/* Team page: inter-agent message log + compose */
+.team-messages { margin-top: 28px; }
+.team-message-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 18px; max-height: 420px; overflow-y: auto; }
+.team-message { border: 1px solid var(--border); border-radius: 10px; background: var(--bg-card); padding: 10px 14px; }
+.team-message-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.team-message-route { font-weight: 600; font-size: 13px; }
+.team-message-body { font-size: 13px; white-space: pre-wrap; word-break: break-word; }
+.team-message-time { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+.team-compose { border-top: 1px solid var(--border); padding-top: 16px; }
+.team-compose textarea { width: 100%; resize: vertical; }

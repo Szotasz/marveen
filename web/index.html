@@ -746,6 +746,30 @@
       <p style="color:var(--text-muted);font-size:12px;margin-top:16px">
         A szerep és a beosztott/vezető kapcsolatok az ügynök részletek &gt; Csapat fülén szerkeszthetők.
       </p>
+
+      <div class="team-messages">
+        <div class="page-header-row" style="margin-bottom:14px">
+          <h2 style="font-size:18px;margin:0">Üzenetek</h2>
+          <select id="msgFilter">
+            <option value="">Összes</option>
+            <option value="pending">Függőben</option>
+            <option value="done">Kész</option>
+            <option value="failed">Hibás</option>
+          </select>
+        </div>
+        <div id="teamMessageList" class="team-message-list"></div>
+        <div class="team-compose">
+          <div class="form-group">
+            <label for="msgComposeTo">Címzett ügynök</label>
+            <select id="msgComposeTo"></select>
+          </div>
+          <div class="form-group">
+            <label for="msgComposeContent">Üzenet</label>
+            <textarea id="msgComposeContent" rows="2" placeholder="Üzenet egy ügynöknek (a dashboardról küldve)"></textarea>
+          </div>
+          <button class="btn-primary btn-compact" id="msgComposeSend">Küldés</button>
+        </div>
+      </div>
     </div>
 
     <!-- === Autonomy Page === -->
