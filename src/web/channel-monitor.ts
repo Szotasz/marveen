@@ -8,6 +8,7 @@ import { agentDir, listAgentNames, readAgentChannelProvider } from './agent-conf
 import {
   agentHasChannel,
   agentSessionName,
+  capturePane,
   isAgentRunning,
   sendPromptToSession,
   startAgentProcess,

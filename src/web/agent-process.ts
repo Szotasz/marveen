@@ -192,16 +192,19 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
       } catch (err) {
         logger.warn({ err, name, session }, 'Post-restart modal dismiss failed')
       }
-      // Set /name and /remote-control so the agent is identifiable.
+      // Set /name so the agent is identifiable. Sub-agents deliberately do
+      // NOT get /remote-control: enabling it makes Claude Code pop a blocking
+      // "Remote Control / Continue" modal on every inbound inter-agent message,
+      // which swallows the injected prompt so the agent never processes it.
+      // Phone remote control is only needed on the main Boss session (set in
+      // scripts/channels.sh), not on the inter-agent-only sub-agents.
       setTimeout(() => {
         try {
           const displayName = readAgentDisplayName(name)
           execFileSync(TMUX, ['send-keys', '-t', session, `/name ${displayName}`, 'Enter'], { timeout: 5000 })
-          execFileSync('/bin/sleep', ['1'], { timeout: 2000 })
-          execFileSync(TMUX, ['send-keys', '-t', session, `/remote-control ${displayName}`, 'Enter'], { timeout: 5000 })
-          logger.info({ name, session, displayName }, 'Set agent /name and /remote-control')
+          logger.info({ name, session, displayName }, 'Set agent /name')
         } catch (err) {
-          logger.warn({ err, name, session }, 'Failed to set agent /name or /remote-control')
+          logger.warn({ err, name, session }, 'Failed to set agent /name' )
         }
       }, 5000)
     }, 8000)

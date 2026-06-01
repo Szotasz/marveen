@@ -3,7 +3,7 @@
 fiREG email olvasó -- a@fireg.hu IMAP
 Használat: python3 read-emails.py [--count N] [--search QUERY] [--folder FOLDER]
 """
-import imaplib, email, sys, argparse
+import imaplib, email, sys, argparse, os
 from email.header import decode_header
 
 def decode_str(s):
@@ -18,8 +18,8 @@ def decode_str(s):
     return result
 
 def read_emails(count=10, search='ALL', folder='INBOX'):
-    with imaplib.IMAP4_SSL('mail.fws.hu', 993) as imap:
-        imap.login('a@fireg.hu', 'FW1intel8')
+    with imaplib.IMAP4_SSL(os.environ.get('IMAP_HOST', 'mail.fws.hu'), 993) as imap:
+        imap.login(os.environ.get('IMAP_USER', 'boss@fireg.hu'), os.environ.get('IMAP_PASS', '8MeqaFtzFd'))
         imap.select(folder)
         _, msg_ids = imap.search(None, search)
         ids = msg_ids[0].split()
