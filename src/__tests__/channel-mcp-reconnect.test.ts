@@ -55,7 +55,33 @@ import {
   attemptChannelMcpReconnect,
   resolveAgentSession,
   resolveAgentProviderType,
+  selectedSubmenuLine,
+  chooseSubmenuTarget,
 } from '../web/channel-mcp-reconnect.js'
+
+// Submenu panes Claude Code renders for each plugin state. The `❯` marks the
+// row the cursor sits on when the submenu first opens (top row).
+const SUBMENU_CONNECTED_TOP = [
+  'plugin:telegram:telegram',
+  '❯ View tools',
+  '  Reconnect',
+  '  Disable',
+].join('\n')
+const SUBMENU_CONNECTED_ON_RECONNECT = [
+  'plugin:telegram:telegram',
+  '  View tools',
+  '❯ Reconnect',
+  '  Disable',
+].join('\n')
+const SUBMENU_FAILED_TOP = [
+  'plugin:telegram:telegram',
+  '❯ Reconnect',
+  '  Disable',
+].join('\n')
+const SUBMENU_DISABLED_TOP = [
+  'plugin:telegram:telegram',
+  '❯ Enable',
+].join('\n')
 
 describe('resolveAgentSession', () => {
   it('returns main channels session for main agent', () => {
@@ -78,33 +104,117 @@ describe('resolveAgentProviderType', () => {
   })
 })
 
+describe('selectedSubmenuLine', () => {
+  it('returns the row marked with the cursor', () => {
+    expect(selectedSubmenuLine(SUBMENU_CONNECTED_TOP)).toBe('❯ View tools')
+    expect(selectedSubmenuLine(SUBMENU_FAILED_TOP)).toBe('❯ Reconnect')
+  })
+
+  it('returns null when no cursor is present', () => {
+    expect(selectedSubmenuLine('  View tools\n  Reconnect')).toBeNull()
+  })
+})
+
+describe('chooseSubmenuTarget', () => {
+  it('prefers Reconnect when present', () => {
+    expect(chooseSubmenuTarget(SUBMENU_CONNECTED_TOP)?.source).toBe('reconnect')
+    expect(chooseSubmenuTarget(SUBMENU_FAILED_TOP)?.source).toBe('reconnect')
+  })
+
+  it('falls back to Enable in the disabled state', () => {
+    const t = chooseSubmenuTarget(SUBMENU_DISABLED_TOP)
+    expect(t?.test('❯ Enable')).toBe(true)
+    expect(t?.source).not.toBe('reconnect')
+  })
+
+  it('never targets Disable when no Reconnect/Enable exists', () => {
+    expect(chooseSubmenuTarget('plugin:x\n❯ View tools\n  Disable')).toBeNull()
+  })
+
+  it('does not mistake "Disable" for an Enable target', () => {
+    // \benable\b must not match the "Disable" row.
+    expect(chooseSubmenuTarget('plugin:x\n❯ View tools\n  Disable')).toBeNull()
+  })
+})
+
 describe('attemptChannelMcpReconnect', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
-  it('returns ok:true when plugin submenu is found on first Up', () => {
+  it('connected state: steps Down onto Reconnect, then activates it', () => {
     mockCapturePane
-      .mockReturnValueOnce('/mcp menu content')
-      .mockReturnValueOnce('some content with plugin:telegram:telegram listed')
+      .mockReturnValueOnce('/mcp menu content')            // after /mcp
+      .mockReturnValueOnce('plugin:telegram:telegram')     // first loop: matched on Up x1
+      .mockReturnValueOnce(SUBMENU_CONNECTED_TOP)          // submenu capture: cursor on View tools
+      .mockReturnValueOnce(SUBMENU_CONNECTED_ON_RECONNECT) // after one Down: cursor on Reconnect
 
     const result = attemptChannelMcpReconnect('marveen')
 
     expect(result.ok).toBe(true)
+    expect(result.message).toContain('Reconnect')
     expect(result.message).toContain('Up x1')
-    expect(mockExecFileSync).toHaveBeenCalledWith(
-      '/usr/local/bin/tmux',
-      ['send-keys', '-t', 'marveen-channels', '/mcp', 'Enter'],
-      expect.any(Object),
+    // Exactly one Enter is sent inside the submenu (the activation).
+    const submenuEnters = mockExecFileSync.mock.calls.filter(
+      (c) => Array.isArray(c[1]) && c[1].includes('Enter') && !c[1].includes('/mcp'),
     )
+    expect(submenuEnters.length).toBeGreaterThanOrEqual(2) // open submenu + activate
   })
 
-  it('returns ok:true when plugin found on third Up', () => {
+  it('failed state: Reconnect is already selected, activates WITHOUT pressing Down', () => {
+    mockCapturePane
+      .mockReturnValueOnce('/mcp menu')
+      .mockReturnValueOnce('plugin:telegram:telegram')
+      .mockReturnValueOnce(SUBMENU_FAILED_TOP) // cursor already on Reconnect
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(true)
+    expect(result.message).toContain('Reconnect')
+    // Regression guard: the old code blindly pressed Down here and landed on
+    // "Disable", killing the plugin. No Down may be sent in the submenu.
+    const downCalls = mockExecFileSync.mock.calls.filter(
+      (c) => Array.isArray(c[1]) && c[1].includes('Down'),
+    )
+    expect(downCalls.length).toBe(0)
+  })
+
+  it('disabled state: activates Enable', () => {
+    mockCapturePane
+      .mockReturnValueOnce('/mcp menu')
+      .mockReturnValueOnce('plugin:telegram:telegram')
+      .mockReturnValueOnce(SUBMENU_DISABLED_TOP)
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(true)
+    expect(result.message).toContain('Enable')
+  })
+
+  it('never activates when only unsafe options exist (no Reconnect/Enable)', () => {
+    mockCapturePane
+      .mockReturnValueOnce('/mcp menu')
+      .mockReturnValueOnce('plugin:telegram:telegram')
+      .mockReturnValueOnce('plugin:telegram:telegram\n❯ View tools\n  Disable')
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('No Reconnect/Enable')
+    // No Enter is pressed inside the submenu -> Disable can never be triggered.
+    const downCalls = mockExecFileSync.mock.calls.filter(
+      (c) => Array.isArray(c[1]) && c[1].includes('Down'),
+    )
+    expect(downCalls.length).toBe(0)
+  })
+
+  it('finds the plugin on the third Up before opening the submenu', () => {
     mockCapturePane
       .mockReturnValueOnce('/mcp menu')
       .mockReturnValueOnce('no match')
       .mockReturnValueOnce('no match')
-      .mockReturnValueOnce('plugin:telegram:telegram here')
+      .mockReturnValueOnce('plugin:telegram:telegram here') // matched on Up x3
+      .mockReturnValueOnce(SUBMENU_FAILED_TOP)              // submenu: Reconnect selected
 
     const result = attemptChannelMcpReconnect('marveen')
 
@@ -137,6 +247,7 @@ describe('attemptChannelMcpReconnect', () => {
     mockCapturePane
       .mockReturnValueOnce('/mcp')
       .mockReturnValueOnce('plugin:slack-channel:marveen-marketplace found')
+      .mockReturnValueOnce('plugin:slack-channel:marveen-marketplace\n❯ Reconnect\n  Disable')
 
     attemptChannelMcpReconnect('slacker')
 
