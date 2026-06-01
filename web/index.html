@@ -649,17 +649,9 @@
         <div class="migrate-step" id="migrateStep1">
           <h3>1. Forrás megadása</h3>
           <div class="form-row">
-            <div class="form-group" style="flex:2">
+            <div class="form-group" style="flex:1">
               <label for="migratePath">Workspace / mappa útvonala</label>
               <input type="text" id="migratePath" placeholder="/Users/username/.openclaw/workspace">
-            </div>
-            <div class="form-group" style="flex:1">
-              <label for="migrateType">Típus</label>
-              <select id="migrateType">
-                <option value="openclaw">OpenClaw</option>
-                <option value="custom">Egyéni Claude bot</option>
-                <option value="general">Általános mappa</option>
-              </select>
             </div>
           </div>
           <div class="form-group">
@@ -1750,6 +1742,16 @@
         <div class="form-group" id="customScheduleGroup" hidden>
           <label for="scheduleCustomCron">Cron kifejezés <span class="hint">(perc óra nap hónap hétnap)</span></label>
           <input type="text" id="scheduleCustomCron" placeholder="0 12 * * *">
+        </div>
+        <div class="form-group">
+          <label>Haladó beállítások</label>
+          <label style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:4px">
+            <input type="checkbox" id="scheduleSkipIfBusy"> Kihagyás, ha az ügynök foglalt
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:4px">
+            <input type="checkbox" id="scheduleForceSend"> Mindig küldje (a foglaltság ellenére is)
+          </label>
+          <input type="text" id="scheduleTargetSession" placeholder="Cél tmux session (opcionális, felülírja az alapértelmezettet)" style="margin-top:8px">
         </div>
         <input type="hidden" id="scheduleEditName">
         <button class="btn-primary" id="saveScheduleBtn">

@@ -921,6 +921,13 @@ const AVATARS = [
 let selectedAvatar = null
 let agents = []
 let currentAgent = null
+// API-safe agent id for the currently open detail modal. Sub-agents key off
+// their name; the main agent's detail object carries name:'marveen' for legacy
+// UI checks but its real agent-dir id is agentId (MAIN_AGENT_ID, e.g.
+// 'gorcsevivan') -- the /api/agents/<id>/skills endpoints need that real id.
+function agentApiName() {
+  return currentAgent ? (currentAgent.agentId || currentAgent.name) : ''
+}
 let wizardStep = 1
 let generatedClaudeMd = ''
 let generatedSoulMd = ''
@@ -1218,7 +1225,11 @@ async function openMarveenDetail() {
   document.getElementById('agentDetailDesc').textContent = m.description || ''
   document.getElementById('agentDetailModel').textContent = m.model || '-'
   document.getElementById('agentDetailChStatus').innerHTML = '<span class="tg-status"><span class="tg-dot connected"></span>Csatlakozva</span>'
-  document.getElementById('agentDetailSkillCount').textContent = '-'
+  // Populate the Skills tab for the main agent too: the endpoint returns the
+  // global ~/.claude/skills under its real id (agentId), which every agent
+  // inherits. Previously this was hard-set to '-' and loadSkills was never
+  // called, so the main agent's Skills tab always looked empty.
+  loadSkills(agentApiName())
 
   // Process control for Marveen - always running, no start/stop
   document.getElementById('processDot').className = 'process-dot running'
@@ -2841,7 +2852,7 @@ document.getElementById('saveSkillBtn').addEventListener('click', async () => {
   try {
     const url = isGlobal
       ? '/api/skills'
-      : `/api/agents/${encodeURIComponent(currentAgent.name)}/skills`
+      : `/api/agents/${encodeURIComponent(agentApiName())}/skills`
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2859,7 +2870,7 @@ document.getElementById('saveSkillBtn').addEventListener('click', async () => {
     if (isGlobal) {
       loadGlobalSkills()
     } else {
-      loadSkills(currentAgent.name)
+      loadSkills(agentApiName())
     }
   } catch (err) {
     showToast(`Hiba: ${err.message}`)
@@ -2886,7 +2897,7 @@ document.getElementById('importSkillBtn').addEventListener('click', async () => 
     formData.append('file', skillFile)
     const url = isGlobal
       ? '/api/skills/import'
-      : `/api/agents/${encodeURIComponent(currentAgent.name)}/skills/import`
+      : `/api/agents/${encodeURIComponent(agentApiName())}/skills/import`
     const res = await fetch(url, {
       method: 'POST',
       body: formData,
@@ -2904,7 +2915,7 @@ document.getElementById('importSkillBtn').addEventListener('click', async () => 
     if (isGlobal) {
       loadGlobalSkills()
     } else {
-      loadSkills(currentAgent.name)
+      loadSkills(agentApiName())
     }
   } catch (err) {
     showToast(`Hiba: ${err.message}`)
@@ -3020,6 +3031,9 @@ function resetScheduleForm() {
   document.getElementById('scheduleName').value = ''
   document.getElementById('scheduleDesc').value = ''
   document.getElementById('schedulePrompt').value = ''
+  document.getElementById('scheduleSkipIfBusy').checked = false
+  document.getElementById('scheduleForceSend').checked = false
+  document.getElementById('scheduleTargetSession').value = ''
   scheduleFrequency.value = 'daily'
   document.getElementById('scheduleTime').value = '09:00'
   document.getElementById('scheduleCustomCron').value = ''
@@ -3549,6 +3563,9 @@ function openEditSchedule(task) {
     document.getElementById('scheduleDesc').value = task.description || ''
     document.getElementById('schedulePrompt').value = task.prompt || ''
     document.getElementById('scheduleEditName').value = task.name
+    document.getElementById('scheduleSkipIfBusy').checked = !!task.skipIfBusy
+    document.getElementById('scheduleForceSend').checked = !!task.forceSend
+    document.getElementById('scheduleTargetSession').value = task.targetSession || ''
 
     // Set agent
     const agentSel = document.getElementById('scheduleAgent')
@@ -3671,6 +3688,12 @@ saveScheduleBtn.addEventListener('click', async () => {
   const schedule = getScheduleCron()
   const agent = document.getElementById('scheduleAgent').value
   const type = document.getElementById('scheduleType').value
+  // Advanced options -- the backend already persists these; expose them here.
+  const skipIfBusy = document.getElementById('scheduleSkipIfBusy').checked
+  const forceSend = document.getElementById('scheduleForceSend').checked
+  const targetSession = document.getElementById('scheduleTargetSession').value.trim()
+  const advanced = { skipIfBusy, forceSend }
+  if (targetSession) advanced.targetSession = targetSession
 
   if (!name) { document.getElementById('scheduleName').focus(); return }
   if (!prompt) { document.getElementById('schedulePrompt').focus(); return }
@@ -3686,7 +3709,7 @@ saveScheduleBtn.addEventListener('click', async () => {
       const res = await fetch(`/api/schedules/${encodeURIComponent(editName)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ description, prompt, schedule, agent, type }),
+        body: JSON.stringify({ description, prompt, schedule, agent, type, ...advanced }),
       })
       if (!res.ok) {
         const err = await res.json()
@@ -3698,7 +3721,7 @@ saveScheduleBtn.addEventListener('click', async () => {
       const res = await fetch('/api/schedules', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, description, prompt, schedule, agent, type }),
+        body: JSON.stringify({ name, description, prompt, schedule, agent, type, ...advanced }),
       })
       if (!res.ok) {
         const err = await res.json()
@@ -6258,14 +6281,14 @@ function escapeHtml(str) {
 // === Status ===
 // ============================================================
 
-const CLAUDE_SERVICES = [
-  { name: 'claude.ai', label: 'Claude.ai' },
-  { name: 'api', label: 'Claude API' },
-  { name: 'code', label: 'Claude Code' },
-  { name: 'platform', label: 'Platform' },
-  { name: 'cowork', label: 'Claude Cowork' },
-  { name: 'gov', label: 'Claude for Gov' },
-]
+// Statuspage component status -> short Hungarian label for non-operational states.
+const STATUS_COMPONENT_LABELS = {
+  operational: 'működik',
+  degraded_performance: 'lassú',
+  partial_outage: 'részleges kimaradás',
+  major_outage: 'kimaradás',
+  under_maintenance: 'karbantartás',
+}
 
 document.getElementById('refreshStatusBtn').addEventListener('click', loadStatus)
 
@@ -6292,20 +6315,25 @@ async function loadStatus() {
     overallEl.className = `status-overall ${data.overall}`
     overallEl.textContent = overallLabels[data.overall] || data.overall
 
-    // Services grid (static list with status derived from incidents)
-    const activeIssues = data.incidents.filter(i => i.status !== 'resolved')
-    for (const svc of CLAUDE_SERVICES) {
-      const affected = activeIssues.some(i =>
-        i.title.toLowerCase().includes(svc.name) ||
-        i.description.toLowerCase().includes(svc.name)
-      )
-      const div = document.createElement('div')
-      div.className = 'status-service'
-      div.innerHTML = `
-        <div class="status-service-dot ${affected ? 'degraded' : 'operational'}"></div>
-        <span class="status-service-name">${escapeHtml(svc.label)}</span>
-      `
-      gridEl.appendChild(div)
+    // Services grid: real per-service status from the Statuspage components API
+    // (data.components). No more inventing a service list and substring-matching
+    // incident text -- if the components feed is unavailable we say so honestly
+    // instead of rendering a fake all-green grid.
+    const components = Array.isArray(data.components) ? data.components : []
+    if (components.length === 0) {
+      gridEl.innerHTML = '<div class="status-service-empty" style="color:var(--text-muted);font-size:13px">Nincs per-szolgáltatás adat (a komponens-státusz nem elérhető).</div>'
+    } else {
+      for (const c of components) {
+        const ok = c.status === 'operational'
+        const div = document.createElement('div')
+        div.className = 'status-service'
+        div.innerHTML = `
+          <div class="status-service-dot ${ok ? 'operational' : 'degraded'}"></div>
+          <span class="status-service-name">${escapeHtml(c.name)}</span>
+          ${ok ? '' : `<span class="status-service-state" style="margin-left:auto;font-size:11px;color:var(--text-muted)">${escapeHtml(STATUS_COMPONENT_LABELS[c.status] || c.status)}</span>`}
+        `
+        gridEl.appendChild(div)
+      }
     }
 
     // Incidents
@@ -6523,7 +6551,6 @@ async function loadMigrateAgents() {
 // Step 1: Scan
 document.getElementById('migrateScanBtn').addEventListener('click', async () => {
   const path = document.getElementById('migratePath').value.trim()
-  const type = document.getElementById('migrateType').value
   if (!path) { document.getElementById('migratePath').focus(); return }
 
   const btn = document.getElementById('migrateScanBtn')
@@ -6535,7 +6562,7 @@ document.getElementById('migrateScanBtn').addEventListener('click', async () => 
     const res = await fetch('/api/migrate/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sourcePath: path, sourceType: type }),
+      body: JSON.stringify({ sourcePath: path }),
     })
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || 'Hiba')

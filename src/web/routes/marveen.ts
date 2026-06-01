@@ -1,6 +1,6 @@
 import { existsSync, unlinkSync, copyFileSync, writeFileSync } from 'node:fs'
 import { join, extname } from 'node:path'
-import { PROJECT_ROOT, OWNER_NAME, BOT_NAME, CHANNEL_PROVIDER } from '../../config.js'
+import { PROJECT_ROOT, OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, CHANNEL_PROVIDER } from '../../config.js'
 import { readMarveenTelegramConfig, readMarveenDiscordConfig, readMarveenSlackConfig, sendMarveenAvatarChange } from '../telegram.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
 import { readFileOr } from '../agent-config.js'
@@ -32,6 +32,10 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
     const sl = readMarveenSlackConfig()
     json(res, {
       name: BOT_NAME,
+      // Canonical agent id (MAIN_AGENT_ID, e.g. "gorcsevivan") so the dashboard
+      // can hit /api/agents/<id>/skills for the main agent -- the display name
+      // (BOT_NAME) is not a valid agent-dir id.
+      agentId: MAIN_AGENT_ID,
       description,
       model: getActiveMarveenModel(),
       tmuxSession: MAIN_CHANNELS_SESSION,
