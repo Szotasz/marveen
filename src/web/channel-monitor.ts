@@ -154,6 +154,17 @@ const agentLastRestart: Map<string, number> = new Map()
 const AGENT_RESTART_GRACE_MS = 90_000
 const PLUGIN_ALERT_DEDUP_MS = 30 * 60 * 1000
 
+// Watchdog: detect when the main Boss session has text stuck in the input
+// buffer ('typing' state) without being submitted. This happens when a
+// Telegram channel message is queued while Boss is busy -- Claude Code parks
+// it at the ❯ prompt but does not auto-submit it. The stuck input blocks
+// ALL scheduled heartbeats (skipIfBusy=true sees 'typing' as not-idle) and
+// prevents Boss from seeing incoming messages. Fix: send Enter after the
+// text has been parked for two consecutive monitor ticks (~90s), confirming
+// it is genuinely stuck and not just a transient delivery frame.
+let mainInputStuckSince: number | null = null
+const MAIN_INPUT_STUCK_CONFIRM_MS = 90_000
+
 // Per-session tracking for the wedged thinking-block error (a Claude
 // session stuck returning `400 ... thinking blocks cannot be modified`
 // on every prompt). detectPaneState() classifies such a pane as
@@ -427,6 +438,27 @@ export function startChannelPluginMonitor(): NodeJS.Timeout {
         const label = t.isMarveen ? BOT_NAME : (t.agentName ?? t.session)
         logger.error({ session: t.session, agent: label }, 'Agent wedged on thinking-block API error -- manual reset needed')
         sendAlert(`🚨 A(z) ${label} agens elakadt egy thinking-block API hibaban (a session-history korrupt, minden uj prompt ugyanazt a 400-at adja). Kezi reset kell: allitsd le es inditsd ujra, friss session indul. Reszletek: tmux attach -t ${t.session}`)
+      }
+    }
+
+    // Stuck-input watchdog for the main Boss session only.
+    // If the pane has been in 'typing' state for MAIN_INPUT_STUCK_CONFIRM_MS,
+    // the queued channel message will never self-submit -- send Enter to unblock.
+    {
+      const mainPane = capturePane(MAIN_CHANNELS_SESSION)
+      const mainState = mainPane != null ? detectPaneState(mainPane) : 'unknown'
+      if (mainState === 'typing') {
+        if (mainInputStuckSince === null) {
+          mainInputStuckSince = Date.now()
+        } else if (Date.now() - mainInputStuckSince >= MAIN_INPUT_STUCK_CONFIRM_MS) {
+          logger.warn({ session: MAIN_CHANNELS_SESSION }, 'Boss input stuck in typing state -- sending Enter to unblock')
+          try {
+            execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, '', 'Enter'], { timeout: 3000 })
+          } catch { /* best effort */ }
+          mainInputStuckSince = null
+        }
+      } else {
+        mainInputStuckSince = null
       }
     }
 
