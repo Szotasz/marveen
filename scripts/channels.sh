@@ -186,6 +186,22 @@ sleep 1
 $TMUX send-keys -t "$SESSION" "/name ${_bot_name}" Enter
 unset _bot_name
 
+# Reset the keep-alive watchdog baseline so a session that was just restarted
+# is not immediately judged stale by the dashboard's checkMainKeepaliveStaleness
+# (channel-monitor.ts, ~18min threshold). The dashboard's hardRestartMarveenChannels
+# path writes both files when it triggers the restart, but a manual
+# `launchctl kickstart -k com.marveen.channels` (or the launchd KeepAlive's own
+# restart after a crash) bypasses the dashboard - those code paths never touched
+# the watchdog baseline, and the old mtimes survived into the fresh session,
+# triggering a false-positive respawn loop within minutes (2026-06-01 18:26).
+#
+# touch + epoch-write happens unconditionally here so every channels.sh launch
+# (manual or dashboard-driven) leaves a consistent baseline. The scheduled
+# edit_message keep-alive (every ~6min) takes over from there.
+mkdir -p "$INSTALL_DIR/store"
+touch "$INSTALL_DIR/store/.channel-keepalive"
+date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
+
 # POST-INIT PLUGIN UNLOCK (2026-06-01 Szabi 15:24 incident workaround):
 # Claude Code 2.1.159 + telegram-plugin 0.0.6: the `--channels` parameter
 # announces "Listening for channel messages from: plugin:telegram@..." in the
