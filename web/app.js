@@ -720,11 +720,16 @@ async function showCardDetail(card) {
     }
   } catch { /* ignore */ }
 
-  // Author select for new comment. Default to the human owner "Gábor" -- a
-  // value that actually exists in the assignee list, so the select never falls
-  // back to the empty "-- Nincs --" option (which silently produced author=""
-  // -> server 400 -> a lost comment).
-  populateAssigneeSelect('commentAuthor', 'Gábor')
+  // Author select for new comment. Default to the bot assignee resolved by
+  // type (never a hard-coded display name -- BOT_NAME differs per deployment),
+  // falling back to the first assignee. The old literal 'Marveen' never matched
+  // on non-Marveen installs, so the select stayed on "-- Nincs --" and the
+  // comment submit silently no-opped (addCommentBtn returns when !author).
+  // (Resolution of the #254/#241 overlap: keep #241's type-resolved default
+  // over #254's hard-coded "Gábor" -- same deployment-agnostic reasoning.)
+  const defaultCommentAuthor =
+    (kanbanAssignees.find((a) => a.type === 'bot') || kanbanAssignees[0] || {}).name || ''
+  populateAssigneeSelect('commentAuthor', defaultCommentAuthor)
 
   // Add comment
   document.getElementById('addCommentBtn').onclick = async () => {
@@ -7578,6 +7583,9 @@ async function loadRecallPage() {
     document.getElementById('recallBtn').addEventListener('click', doRecall)
     document.getElementById('recallExpr').addEventListener('keydown', e => { if (e.key === 'Enter') doRecall() })
     document.getElementById('recallSearch').addEventListener('keydown', e => { if (e.key === 'Enter') doRecall() })
+    // Re-fetch per-agent log dates when the agent filter changes; without this
+    // the date hint stayed stuck on the agent active at first page load.
+    document.getElementById('recallAgent').addEventListener('change', loadRecallDates)
 
     loadRecallDates()
   }
@@ -7714,14 +7722,17 @@ async function loadBgTasksPage() {
   if (!bgInitialized) {
     bgInitialized = true
     try {
-      const res = await fetch('/api/agents')
+      // Use /api/schedules/agents (not /api/agents) so the main agent is a
+      // selectable background-task target too -- /api/agents lists sub-agents
+      // only, while the backend (spawnBackgroundTask) accepts any agent_id.
+      const res = await fetch('/api/schedules/agents')
       if (res.ok) {
         const agents = await res.json()
         const sel = document.getElementById('bgAgent')
         agents.forEach(a => {
           const opt = document.createElement('option')
           opt.value = a.name
-          opt.textContent = a.name
+          opt.textContent = a.label || a.name
           sel.appendChild(opt)
         })
         if (agents.length === 1) sel.value = agents[0].name
