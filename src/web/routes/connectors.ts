@@ -6,6 +6,7 @@ import { PROJECT_ROOT, OLLAMA_URL } from '../../config.js'
 import { logger } from '../../logger.js'
 import {
   slugify as slugifyMcp,
+  catalogMatchesConfigured,
   type McpListEntry,
 } from '../../mcp-list-parser.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
@@ -50,6 +51,37 @@ function loadMcpCatalog(): any[] {
   for (const item of central) byId.set(String(item.id), item)
   for (const item of readLocalCatalog()) byId.set(String(item.id), item)
   return [...byId.values()]
+}
+
+// Slugs of every MCP server declared in a .mcp.json / .claude.json the fleet
+// can see. The mcp-list cache (`claude mcp list`) only reflects servers Claude
+// Code has actually spawned this run, and a catalog id ("gmail") rarely equals
+// the server name a user chose ("gmail-egov", "gmail-personal"). Collecting the
+// configured names lets the catalog mark an entry installed by exact id or the
+// "<id>-<variant>" naming convention, so a working, configured connector stops
+// showing as "telepítésre vár".
+function collectConfiguredServerSlugs(): Set<string> {
+  const slugs = new Set<string>()
+  const files = [
+    join(PROJECT_ROOT, '.mcp.json'),
+    join(homedir(), '.claude.json'),
+  ]
+  for (const agentName of listAgentNames()) {
+    files.push(join(AGENTS_BASE_DIR, agentName, '.mcp.json'))
+  }
+  for (const extPath of getExternalProjectPaths()) {
+    files.push(join(extPath, '.mcp.json'))
+  }
+  for (const f of files) {
+    try {
+      const parsed = JSON.parse(readFileOr(f, '{}'))
+      for (const name of Object.keys(parsed.mcpServers || {})) {
+        const s = slugifyMcp(name)
+        if (s) slugs.add(s)
+      }
+    } catch { /* ignore unreadable / malformed config */ }
+  }
+  return slugs
 }
 
 // Persist a user-installed MCP into the gitignored local catalog so it shows up
@@ -522,15 +554,29 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
           installedSource.set(entry.normalizedId, entry.source)
         }
       }
+      // Servers configured in .mcp.json files count as installed too, even when
+      // the mcp-list cache misses them or names them differently from the
+      // catalog id (e.g. "gmail-egov" / "gmail-personal" for catalog id "gmail").
+      const configuredSlugs = collectConfiguredServerSlugs()
 
       const result = catalog.map(item => {
         const itemId = slugifyMcp(String(item.id ?? ''))
         const itemNameSlug = slugifyMcp(String(item.name ?? ''))
-        const source = installedSource.get(itemId) || installedSource.get(itemNameSlug)
+        let source = installedSource.get(itemId) || installedSource.get(itemNameSlug)
+        // configMatch flags entries detected only via .mcp.json. They are
+        // installed under a custom server name, so the catalog's generic-id
+        // uninstall (`claude mcp remove <id>`) would not target them -- the
+        // frontend hides the uninstall link and points at the Connectors list.
+        let configMatch = false
+        if (source === undefined && catalogMatchesConfigured(itemId, itemNameSlug, configuredSlugs)) {
+          source = 'local'
+          configMatch = true
+        }
         return {
           ...item,
           installed: source !== undefined,
           installedSource: source,
+          configMatch,
         }
       })
 

@@ -56,6 +56,27 @@ export function slugify(raw: string): string {
     .replace(/^-+|-+$/g, '')
 }
 
+// Decide whether an MCP catalog entry (identified by its slug id and/or slug
+// name) is satisfied by one of the MCP server names actually configured in the
+// fleet's .mcp.json files. A user installs the catalog's "gmail" entry but
+// names the servers "gmail-egov" / "gmail-personal"; the exact-id check the
+// catalog used to do never matched those, so a working connector showed as
+// "telepítésre vár". Match rule: exact slug equality, or the "<id>-<variant>"
+// convention. The hyphen guard keeps "github" from matching a configured
+// "github-actions-runner" only when intended -- a bare "<id>" prefix without
+// the trailing hyphen (e.g. "githubby") never matches.
+export function catalogMatchesConfigured(
+  idSlug: string,
+  nameSlug: string,
+  configuredSlugs: Iterable<string>,
+): boolean {
+  for (const s of configuredSlugs) {
+    if (idSlug && (s === idSlug || s.startsWith(idSlug + '-'))) return true
+    if (nameSlug && (s === nameSlug || s.startsWith(nameSlug + '-'))) return true
+  }
+  return false
+}
+
 function classifyName(raw: string): { source: McpListSource; normalizedId: string } {
   const trimmed = raw.trim()
   // "plugin:<package>:<name>" -- the trailing segment is the actual

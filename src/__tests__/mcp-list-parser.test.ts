@@ -4,6 +4,7 @@ import {
   parseMcpList,
   applyRefreshOutcome,
   scrubPaths,
+  catalogMatchesConfigured,
   type McpListEntry,
 } from '../mcp-list-parser.js'
 
@@ -27,6 +28,35 @@ describe('parseMcpListLine -- guard rails', () => {
 
   it('returns null when the status separator is missing', () => {
     expect(parseMcpListLine('name: endpoint only')).toBeNull()
+  })
+})
+
+describe('catalogMatchesConfigured -- catalog vs .mcp.json server names', () => {
+  it('matches a catalog id against an exact configured slug', () => {
+    expect(catalogMatchesConfigured('slack', 'slack', ['slack'])).toBe(true)
+  })
+
+  it('matches the "<id>-<variant>" convention (gmail -> gmail-egov / gmail-personal)', () => {
+    const configured = ['gmail-egov', 'gmail-personal']
+    expect(catalogMatchesConfigured('gmail', 'gmail', configured)).toBe(true)
+  })
+
+  it('matches on the name slug when the id slug differs', () => {
+    expect(catalogMatchesConfigured('gdrive', 'google-drive', ['google-drive-work'])).toBe(true)
+  })
+
+  it('does not match an unrelated server that merely shares a prefix without the hyphen', () => {
+    // "githubby" must not satisfy catalog id "github" -- only "github" or
+    // "github-..." counts.
+    expect(catalogMatchesConfigured('github', 'github', ['githubby'])).toBe(false)
+  })
+
+  it('returns false when nothing is configured', () => {
+    expect(catalogMatchesConfigured('gmail', 'gmail', [])).toBe(false)
+  })
+
+  it('ignores empty id/name slugs so a blank catalog field cannot match everything', () => {
+    expect(catalogMatchesConfigured('', '', ['anything', 'else'])).toBe(false)
   })
 })
 

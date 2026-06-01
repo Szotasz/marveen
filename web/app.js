@@ -2805,25 +2805,36 @@ async function loadSkills(agentName) {
     for (const skill of skills) {
       const item = document.createElement('div')
       item.className = 'skill-item'
+      // Inherited global skills (~/.claude/skills) are shared across every
+      // agent, so they get a badge and no per-agent delete button -- only the
+      // agent's own local skills are deletable from this view.
+      const isGlobal = skill.source === 'global'
+      const badge = isGlobal
+        ? '<span class="skill-item-badge" title="Globális skill, minden agent örökli">globális</span>'
+        : ''
+      const deletable = skill.deletable !== false
       item.innerHTML = `
         <div class="skill-item-info">
-          <div class="skill-item-name">${escapeHtml(skill.name)}</div>
+          <div class="skill-item-name">${escapeHtml(skill.name)}${badge}</div>
           ${skill.description ? `<div class="skill-item-desc">${escapeHtml(skill.description)}</div>` : ''}
         </div>
         <div class="skill-item-actions">
-          <button class="btn-icon btn-icon-danger" title="Törlés">${trashIcon()}</button>
+          ${deletable ? `<button class="btn-icon btn-icon-danger" title="Törlés">${trashIcon()}</button>` : ''}
         </div>
       `
-      item.querySelector('.btn-icon-danger').addEventListener('click', async () => {
-        if (!confirm(`Skill törlése: ${skill.name}?`)) return
-        try {
-          await fetch(`/api/agents/${encodeURIComponent(agentName)}/skills/${encodeURIComponent(skill.name)}`, { method: 'DELETE' })
-          showToast('Skill törölve')
-          loadSkills(agentName)
-        } catch {
-          showToast('Hiba a törlés során')
-        }
-      })
+      const delBtn = item.querySelector('.btn-icon-danger')
+      if (delBtn) {
+        delBtn.addEventListener('click', async () => {
+          if (!confirm(`Skill törlése: ${skill.name}?`)) return
+          try {
+            await fetch(`/api/agents/${encodeURIComponent(agentName)}/skills/${encodeURIComponent(skill.name)}`, { method: 'DELETE' })
+            showToast('Skill törölve')
+            loadSkills(agentName)
+          } catch {
+            showToast('Hiba a törlés során')
+          }
+        })
+      }
       listEl.appendChild(item)
     }
   } catch {
@@ -4979,7 +4990,7 @@ function renderCatalog() {
       </div>
       <div class="catalog-card-footer">
         ${item.installed
-          ? `<span class="catalog-install-btn installed" title="Forrás: ${escapeHtml(item.installedSource || 'ismeretlen')}">Telepítve &#10003;${item.installedSource === 'claude.ai' ? ' (claude.ai)' : item.installedSource === 'plugin' ? ' (plugin)' : ''}</span>${item.installedSource === 'claude.ai' ? '' : `<a class="catalog-uninstall-link" data-id="${item.id}">Eltávolítás</a>`}`
+          ? `<span class="catalog-install-btn installed" title="${item.configMatch ? 'Bekötve a .mcp.json-ban (a Connectors listán kezelhető)' : 'Forrás: ' + escapeHtml(item.installedSource || 'ismeretlen')}">Telepítve &#10003;${item.configMatch ? ' (.mcp.json)' : item.installedSource === 'claude.ai' ? ' (claude.ai)' : item.installedSource === 'plugin' ? ' (plugin)' : ''}</span>${(item.installedSource === 'claude.ai' || item.configMatch) ? '' : `<a class="catalog-uninstall-link" data-id="${item.id}">Eltávolítás</a>`}`
           : `<button class="catalog-install-btn install" data-id="${item.id}">Telepítés</button>${authHint}`
         }
       </div>
