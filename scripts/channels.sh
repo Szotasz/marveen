@@ -186,6 +186,38 @@ sleep 1
 $TMUX send-keys -t "$SESSION" "/name ${_bot_name}" Enter
 unset _bot_name
 
+# POST-INIT PLUGIN UNLOCK (2026-06-01 Szabi 15:24 incident workaround):
+# Claude Code 2.1.159 + telegram-plugin 0.0.6: the `--channels` parameter
+# announces "Listening for channel messages from: plugin:telegram@..." in the
+# TUI, but the plugin server itself is NOT always spawned on fresh-session
+# init - it lands in /mcp's Failed state with no bun-poller child. Manually
+# opening /mcp, moving the cursor up to the failed plugin row, and pressing
+# Enter twice (enter submenu, press Reconnect) brings the plugin live -
+# Szabi's empirical sequence that fixed the 16:31 hard-restart aftermath.
+#
+# We replicate that sequence here in the background, idempotently: wait ~15s
+# for Claude Code to settle, then check whether a bun poller scoped to
+# $MAIN_CHAN_DIR is running. If none, fire the unlock keystrokes. The
+# subshell is detached so the main script keeps moving to the wait-loop.
+(
+  sleep 15
+  POST_POLLERS=$(/bin/ps eww -e 2>/dev/null | awk -v needle="${STATE_ENV_VAR}=${MAIN_CHAN_DIR}" '$0 ~ needle { print $1 }' | head -1)
+  if [ -z "$POST_POLLERS" ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh post-init: no ${STATE_ENV_VAR} poller for ${MAIN_CHAN_DIR} after 15s, firing /mcp+Up+Enter+Enter unlock" >> "$INSTALL_DIR/store/channels-failures.log"
+    $TMUX send-keys -t "$SESSION" Escape
+    sleep 1
+    $TMUX send-keys -t "$SESSION" "/mcp" Enter
+    sleep 3
+    $TMUX send-keys -t "$SESSION" Up
+    sleep 1
+    $TMUX send-keys -t "$SESSION" Enter
+    sleep 2
+    $TMUX send-keys -t "$SESSION" Enter
+    sleep 4
+    $TMUX send-keys -t "$SESSION" Escape
+  fi
+) &
+
 # Bot menu setup (Telegram only; Slack uses App Manifest)
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   "$INSTALL_DIR/scripts/set-bot-menu.sh" &
