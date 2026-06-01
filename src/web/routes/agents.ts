@@ -53,7 +53,7 @@ import {
   agentChannelDir,
 } from '../channel-invites.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
-import { isMainChannelsAgent } from '../main-agent.js'
+import { isMainChannelsAgent, MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import {
   getProvider,
   channelStateDir,
@@ -80,6 +80,7 @@ import {
   capturePane,
 } from '../agent-process.js'
 import { readActiveModelFromProjectDir } from '../active-model.js'
+import { detectPaneState } from '../../pane-state.js'
 import { attemptChannelMcpReconnect } from '../channel-mcp-reconnect.js'
 import { getChannelHealth } from '../channel-health-monitor.js'
 import {
@@ -377,6 +378,55 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
   if (path === '/api/agents' && method === 'GET') {
     json(res, listAgentSummaries())
+    return true
+  }
+
+  // Live activity panel: per-agent "what is it doing right now". Read-only,
+  // polled by the dashboard every 3s; uses the same pane-state detector as the
+  // scheduler (detectPaneState) and returns the last few output lines as a tail.
+  // Includes the main agent's channels session so the operator sees the whole
+  // fleet, not just sub-agents. Restored after #226 dropped this route while the
+  // frontend kept calling /api/agents/activity (which then 404'd the panel).
+  if (path === '/api/agents/activity' && method === 'GET') {
+    const label = (running: boolean, pane: string | null): string => {
+      if (!running) return 'stopped'
+      if (pane === null) return 'unknown'
+      const s = detectPaneState(pane)
+      if (s === 'busy' || s === 'typing') return 'working'
+      if (s === 'idle') return 'idle'
+      return s // 'unknown' | 'error'
+    }
+    const tailOf = (pane: string | null): string[] =>
+      pane === null
+        ? []
+        : pane
+            .split('\n')
+            .map(l => l.replace(/\s+$/, ''))
+            .filter(l => l.trim().length > 0)
+            .slice(-8)
+
+    const entries: Array<{ name: string; isMain: boolean; running: boolean; state: string; tail: string[] }> = []
+
+    // Main agent runs in the --channels session, not agent-<name>.
+    {
+      const mainPane = capturePane(MAIN_CHANNELS_SESSION)
+      const running = mainPane !== null
+      entries.push({
+        name: MAIN_AGENT_ID,
+        isMain: true,
+        running,
+        state: label(running, mainPane),
+        tail: tailOf(mainPane),
+      })
+    }
+
+    for (const name of listAgentNames()) {
+      const running = isAgentRunning(name)
+      const pane = running ? capturePane(agentSessionName(name)) : null
+      entries.push({ name, isMain: false, running, state: label(running, pane), tail: tailOf(pane) })
+    }
+
+    json(res, entries)
     return true
   }
 
