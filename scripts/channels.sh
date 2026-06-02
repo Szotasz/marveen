@@ -152,6 +152,15 @@ fi
 if [ "${COORDINATOR_INBOUND:-}" = "1" ]; then
   export TELEGRAM_OUTBOUND_ONLY=1
   $TMUX set-environment -g TELEGRAM_OUTBOUND_ONLY 1 2>/dev/null || true
+  # Drift guard: TELEGRAM_OUTBOUND_ONLY only takes effect if the plugin's
+  # bot.start() guard is present. A plugin update can silently overwrite it, in
+  # which case BOTH the plugin and the coordinator would poll getUpdates -> 409
+  # storm (the coordinator alerts on that, but we catch it earlier and louder
+  # here). If the guard is missing, re-apply it and fire a degraded alert.
+  if ! bash "$INSTALL_DIR/scripts/patch-telegram-outbound-only.sh" --check >/dev/null 2>&1; then
+    bash "$INSTALL_DIR/scripts/patch-telegram-outbound-only.sh" >/dev/null 2>&1 || true
+    bash "$INSTALL_DIR/scripts/notify.sh" "Marveen: telegram plugin outbound-only guard hianyzott (plugin-update drift?), ujra-alkalmaztam. Ha ez ismetlodik, upstream PR kell a flagre." >/dev/null 2>&1 || true
+  fi
 else
   # Make sure a stale -g value from a previous coordinator run does not linger
   # and silence inbound after the operator opts back out.
