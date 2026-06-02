@@ -150,9 +150,13 @@ export function insertIncomingEvent(
 }
 
 // Create the pending agent_messages row that the dashboard's message-router
-// will pick up and inject into the main agent's tmux session. The router wraps
-// it as <untrusted> because 'telegram-coordinator' is not a trusted team peer
-// -- which is correct: the content is raw external user input.
+// will pick up and inject into the main agent's tmux session. The router
+// identity-matches COORDINATOR_AGENT_ID and delivers it as CHANNEL-INBOUND:
+// the verbatim <channel ...> block (built by buildHandoffContent) plus a
+// reply-expected preamble, so the main agent REPLIES to it like a native
+// inbound message -- while still treating the message body as untrusted user
+// data. (External callers cannot forge this id via /api/messages: a 403 guard
+// rejects it; only this in-process direct DB insert is trusted.)
 export function createHandoffMessage(content: string): number {
   const now = Math.floor(Date.now() / 1000)
   const info = requireDb().prepare(
