@@ -739,29 +739,42 @@ export function stuckToolCallSignature(pane: string): ToolCallProgressSignature 
 export interface StuckToolCallState {
   /** Current tool-call tag we are watching (e.g. "worked"), or null if no spell active. */
   tag: string | null
-  /** The seconds value observed when the spell started -- so we can detect
-   * non-progression by comparing to the current seconds. */
+  /** The seconds value observed when the spell started -- preserved for the
+   * audit log so an operator can tell at what counter value the freeze happened. */
   spellStartSeconds: number | null
   /** When the spell was first observed (ms). */
   firstSeenAt: number | null
-  /** Last observed seconds value, to detect stagnation across polls. */
+  /** Last observed seconds value, used to detect stagnation across polls. */
   lastSeconds: number | null
   /** Consecutive polls in which the seconds value did NOT increase. */
   stagnantPolls: number
+  /** Wall-clock timestamp (ms) at which the counter first stopped advancing
+   * in this spell, or null if the counter is currently progressing. This is
+   * the load-bearing measurement for the freeze decision: a wedged TUI keeps
+   * displaying the same `<verb> for Ns` regardless of real time, so we
+   * measure freeze duration in WALL CLOCK from stagnantSince, NOT from the
+   * displayed counter value. (PR #246 review fix, 2026-06-02: the prior
+   * version gated on sig.seconds >= freezeSeconds and so could never fire on
+   * a counter frozen at <180s -- exactly the 2026-06-02 06:41 incident shape
+   * where it sat at 31s.) */
+  stagnantSince: number | null
   /** Recoveries fired in this spell (cap at 1 -- a respawn is the only
    * action, and the next sweep observes the new pane fresh). */
   attempts: number
 }
 
 export interface StuckToolCallThresholds {
-  /** A tool-call may legitimately run for a long time (a slow Anthropic
-   * inference, a multi-stage research agent). Only flag as frozen once
-   * the displayed seconds value reaches this -- below it, just record. */
+  /** How long the TUI counter must remain stagnant in WALL-CLOCK terms
+   * before we conclude the render loop is wedged. A healthy long-running
+   * tool-call increments the counter every TUI redraw (~once per second),
+   * so a counter that holds the same value for >= this many ms is wedged
+   * regardless of what value it holds. The previous "displayed-value
+   * threshold" reading was the PR #246 review bug. */
   freezeSeconds: number
   /** How many consecutive polls of NON-INCREASING seconds count as
-   * "the TUI render loop is wedged". A real tool-call increments the
-   * counter every TUI redraw (~once per second), so a stagnant counter
-   * across multiple poll intervals is conclusive. */
+   * "the TUI render loop is wedged" (anti-fluke). A real tool-call
+   * increments every TUI redraw, so multi-poll stagnation is conclusive.
+   * Composed WITH the wall-clock freezeSeconds check -- BOTH must hold. */
   stagnantPolls: number
 }
 
@@ -776,24 +789,33 @@ const NO_STUCK_TOOL_CALL: StuckToolCallState = {
   firstSeenAt: null,
   lastSeconds: null,
   stagnantPolls: 0,
+  stagnantSince: null,
   attempts: 0,
 }
 
 /**
- * Pure decision: should the watcher respawn this session because the
- * tool-call line has been frozen at the same value past the threshold?
+ * Pure decision: should the watcher respawn this session because the TUI
+ * tool-call counter has stopped advancing for too long?
+ *
+ * Load-bearing measurement is WALL-CLOCK stagnation duration, NOT the
+ * displayed counter value. A wedged TUI keeps showing the same
+ * `<verb> for Ns` regardless of real time; gating on `sig.seconds >=
+ * freezeSeconds` (PR #246 review bug, 2026-06-02) would miss exactly the
+ * incident shape the watchdog is built for (counter frozen at 31s, never
+ * reaches 180s, never recovers).
  *
  * Guards against false positives on legitimate long tool-calls:
- *   - The counter must have REACHED freezeSeconds (180s default). Below
- *     that, we just record.
- *   - The counter must have been STAGNANT for stagnantPolls (2 default)
- *     consecutive polls. A real tool-call increments every TUI redraw,
- *     so a non-incrementing counter across 30s+ of wall clock is the
- *     wedge signature -- not normal long-running behaviour.
+ *   - Wall-clock stagnation `(now - stagnantSince) >= freezeSeconds`. A
+ *     healthy long-running call increments the counter every TUI redraw,
+ *     so stagnantSince keeps resetting to null and the duration never
+ *     accumulates. A wedged TUI lets it accumulate.
+ *   - Anti-fluke: stagnantPolls >= thresholds.stagnantPolls (two
+ *     consecutive non-incrementing observations), composed AND with the
+ *     wall-clock check.
  *   - Recovery is one-shot per spell (attempts cap at 1). The next sweep
  *     reads a fresh pane after the respawn.
- *   - A tag change (e.g. Brewed -> Worked) resets the spell -- the
- *     tool-call moved to a new phase, that IS progress.
+ *   - A tag change (e.g. Brewed -> Worked) or counter increment resets
+ *     the spell -- both are genuine progress.
  */
 export function decideStuckToolCallRecovery(
   sig: ToolCallProgressSignature | null,
@@ -815,12 +837,13 @@ export function decideStuckToolCallRecovery(
         firstSeenAt: now,
         lastSeconds: sig.seconds,
         stagnantPolls: 0,
+        stagnantSince: null,
         attempts: 0,
       },
     }
   }
   // Backwards clock skew: restart the spell rather than stall.
-  if (now < prev.firstSeenAt) {
+  if (now < prev.firstSeenAt || (prev.stagnantSince !== null && now < prev.stagnantSince)) {
     return {
       recover: false,
       next: {
@@ -829,33 +852,49 @@ export function decideStuckToolCallRecovery(
         firstSeenAt: now,
         lastSeconds: sig.seconds,
         stagnantPolls: 0,
+        stagnantSince: null,
         attempts: 0,
       },
     }
   }
-  // Counter advanced: real progress, reset the stagnant counter. We keep
-  // the spell open (tag is the same) so that if it freezes LATER we don't
-  // have to wait through another freezeSeconds runup.
+  // Counter advanced: real progress. Reset both the stagnant-poll counter
+  // and the stagnantSince timestamp -- the TUI is alive. Keep the spell
+  // open with the same tag so a LATER freeze is detected without re-running
+  // the full freezeSeconds window from scratch (the wall-clock measurement
+  // restarts from the next stagnation onward, which is the right thing).
   if (prev.lastSeconds !== null && sig.seconds > prev.lastSeconds) {
     return {
       recover: false,
-      next: { ...prev, lastSeconds: sig.seconds, stagnantPolls: 0 },
+      next: { ...prev, lastSeconds: sig.seconds, stagnantPolls: 0, stagnantSince: null },
     }
   }
-  // Counter stagnant (same or rolled-back). Tick the stagnant counter.
+  // Counter stagnant (same or rolled-back). Tick the stagnant counter and
+  // stamp stagnantSince on the FIRST stagnant observation in this stretch.
+  // Subsequent stagnant polls preserve the original stagnantSince so the
+  // wall-clock duration accumulates correctly.
   const nextStagnant = prev.stagnantPolls + 1
+  const nextStagnantSince = prev.stagnantSince ?? now
   // Recovery already fired in this spell: hold.
   if (prev.attempts >= 1) {
-    return { recover: false, next: { ...prev, lastSeconds: sig.seconds, stagnantPolls: nextStagnant } }
+    return {
+      recover: false,
+      next: { ...prev, lastSeconds: sig.seconds, stagnantPolls: nextStagnant, stagnantSince: nextStagnantSince },
+    }
   }
-  // Not yet at the freeze threshold -- a tool-call can pause briefly mid-
-  // run without being wedged. Only fire once the counter sits at >=
-  // freezeSeconds AND has held there for stagnantPolls consecutive polls.
-  if (sig.seconds < thresholds.freezeSeconds || nextStagnant < thresholds.stagnantPolls) {
-    return { recover: false, next: { ...prev, lastSeconds: sig.seconds, stagnantPolls: nextStagnant } }
+  // Recover only when BOTH gates hold: wall-clock freeze duration AND
+  // anti-fluke poll count. A 5-minute genuine tool-call resets
+  // stagnantSince on every redraw, so even though the call is long this
+  // duration never accumulates.
+  const stagnantMs = now - nextStagnantSince
+  const freezeMs = thresholds.freezeSeconds * 1000
+  if (stagnantMs < freezeMs || nextStagnant < thresholds.stagnantPolls) {
+    return {
+      recover: false,
+      next: { ...prev, lastSeconds: sig.seconds, stagnantPolls: nextStagnant, stagnantSince: nextStagnantSince },
+    }
   }
   return {
     recover: true,
-    next: { ...prev, lastSeconds: sig.seconds, stagnantPolls: nextStagnant, attempts: 1 },
+    next: { ...prev, lastSeconds: sig.seconds, stagnantPolls: nextStagnant, stagnantSince: nextStagnantSince, attempts: 1 },
   }
 }

@@ -70,6 +70,7 @@ const NO_STATE: StuckToolCallState = {
   firstSeenAt: null,
   lastSeconds: null,
   stagnantPolls: 0,
+  stagnantSince: null,
   attempts: 0,
 }
 
