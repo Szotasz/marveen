@@ -160,6 +160,21 @@ function ensureHeartbeatWorkerCwd(): void {
       const next: ClaudeSettings = { ...current, enabledPlugins }
       writeFileSync(settingsPath, JSON.stringify(next, null, 2) + '\n')
     }
+
+    // macOS auth bridge: the Keychain holds the credentials JSON but there
+    // is no source file to symlink into the isolated config dir. Read the
+    // blob and materialise it as .credentials.json so the sub-agent finds
+    // standard config-dir auth there (the same path Claude Code uses on
+    // Linux installs natively). Marveen 2026-06-02 live A/B confirmed this
+    // path succeeds where the CLAUDE_CODE_OAUTH_TOKEN env-var approach
+    // failed with 401 (the Keychain output is the full JSON, not a bare
+    // bearer token). The write is mode 0600 (owner rw only). Re-written
+    // every tick so a rotated Keychain token propagates within the hour.
+    const credentialsJson = readClaudeCodeOauthJson()
+    if (credentialsJson) {
+      const credPath = join(HEARTBEAT_CONFIG_DIR, '.credentials.json')
+      writeFileSync(credPath, credentialsJson, { mode: 0o600 })
+    }
   } catch (err) {
     logger.warn({ err, cwd: HEARTBEAT_AGENT_CWD }, 'Heartbeat: failed to ensure isolated worker cwd, falling back to PROJECT_ROOT')
   }
@@ -169,29 +184,45 @@ function lstatSyncSafe(p: string): ReturnType<typeof lstatSync> | null {
   try { return lstatSync(p) } catch { return null }
 }
 
-// Read the Claude Code OAuth token from the macOS Keychain.
+// Read the Claude Code credentials JSON from the macOS Keychain and write
+// it to the isolated CLAUDE_CONFIG_DIR's `.credentials.json` so the
+// SDK-spawned claude finds the standard auth file there.
 //
-// On macOS, Claude Code stores the OAuth token in the login Keychain under
-// service='Claude Code-credentials', account=<unix user>. There is NO
-// .credentials.json file we could symlink into CLAUDE_CONFIG_DIR. Without
-// the token, the SDK-spawned claude treats CLAUDE_CONFIG_DIR as a fresh
-// install ("Not logged in -- Please run /login") and instantly exits with
-// no heartbeat notification sent (verified live at 13:00 hb fire of
-// 2026-06-02).
+// On macOS, Claude Code stores the FULL credentials JSON in the login
+// Keychain under service='Claude Code-credentials', account=<unix user>.
+// There is NO ~/.claude/.credentials.json file to symlink. Without auth
+// in CLAUDE_CONFIG_DIR, the sub-agent treats it as a fresh install
+// ("Not logged in -- Please run /login") and exits before sending the
+// heartbeat (verified live 13:00 hb of 2026-06-02).
 //
-// The Claude Code binary honours CLAUDE_CODE_OAUTH_TOKEN as a config-dir
-// bypass for the login check, so we read the Keychain value here and
-// inject it as an env var into the sub-agent's process.env via the
-// runAgent env-override.
+// IMPORTANT (Marveen 2026-06-02 review with live test): the `security -w`
+// output is the FULL credentials JSON, NOT a bare bearer token:
+//   { "claudeAiOauth": { accessToken, refreshToken, expiresAt, ... },
+//     "mcpOAuth": { ... } }
+// (~809 bytes). We MUST write the whole blob -- the refreshToken inside
+// is what lets the sub-agent renew its session without us. An earlier
+// attempt to drop the JSON into CLAUDE_CODE_OAUTH_TOKEN (env-var) failed
+// with 401 because that env expects a bare access token (sk-ant-oat...).
+// The config-dir .credentials.json path is the one Claude Code expects
+// on Linux installs and Marveen's live A/B test confirmed it succeeds.
 //
-// SECURITY: the token value MUST NOT be logged or written to disk. We
-// invoke `security` with execFileSync so the token never traverses a
-// shell-string, capture stdout to a local variable, and pass it directly
-// to runAgent's env. The variable goes out of scope when runAgent returns.
-// On Linux there is no Keychain analogue; returning null lets the caller
-// fall through to symlinked auth (Linux installs put credentials at
-// ~/.claude/.credentials.json which the existing symlink loop covers).
-function readClaudeCodeOauthToken(): string | null {
+// SECURITY:
+//   - `security` is invoked via execFileSync so the JSON never traverses
+//     a shell string.
+//   - stdio = ['ignore', 'pipe', 'ignore'] keeps it off stderr.
+//   - The catch block logs ONLY a bare message; `err` is NEVER passed to
+//     the logger (some macOS auth errors echo a fragment of the lookup
+//     key, and we never want that anywhere near our log stream).
+//   - The .credentials.json file is written with mode 0600 (owner rw),
+//     same as how Claude Code creates it on Linux.
+//   - Local file lifetime: until the next ensureHeartbeatWorkerCwd
+//     rewrites it. We re-write it every tick so a rotated Keychain
+//     token reaches the sub-agent within an hour.
+//
+// Returns the JSON string on success, null on failure or non-darwin.
+// On Linux, the existing symlink loop captures ~/.claude/.credentials.json
+// so this function intentionally does nothing.
+function readClaudeCodeOauthJson(): string | null {
   if (process.platform !== 'darwin') return null
   try {
     const out = execFileSync(
@@ -201,12 +232,12 @@ function readClaudeCodeOauthToken(): string | null {
     ).trim()
     if (!out) return null
     return out
-  } catch (err) {
-    // Intentionally NOT logging `err` -- on some macOS auth failures the
-    // error message can echo back a fragment of the lookup key. Bare
-    // failure is enough info; the operator can manually reproduce with
-    // the documented `security find-generic-password ...` command.
-    logger.warn('Heartbeat: failed to read Claude Code OAuth token from Keychain (sub-agent will run logged-out)')
+  } catch {
+    // Intentionally NOT logging `err` -- some macOS auth errors echo a
+    // fragment of the lookup key. Bare message is enough; the operator
+    // can reproduce manually with the documented `security
+    // find-generic-password ...` command.
+    logger.warn('Heartbeat: failed to read Claude Code credentials from Keychain (sub-agent will run logged-out)')
     return null
   }
 }
@@ -431,22 +462,17 @@ async function executeHeartbeat(): Promise<void> {
     // the user-scope enabledPlugins:{telegram:true} from leaking in --
     // the project-scope override in #247 did NOT (verified: 09/10/11/12
     // hb all loaded the plugin and crashed Marveen via 409 Conflict).
-    // CLAUDE_CODE_OAUTH_TOKEN bypasses the SDK's config-dir login check
-    // (#250 regression: macOS stores the OAuth token in the Keychain, not
-    // in ~/.claude/.credentials.json, so the symlink loop misses it and
-    // the isolated CLAUDE_CONFIG_DIR looks like a fresh install -- the
-    // sub-agent exited 13:00:00.838 of 2026-06-02 with "Not logged in --
-    // Please run /login"). Read the token here, inject it as an env var,
-    // never log/echo the value. On Linux readClaudeCodeOauthToken returns
-    // null and the symlinked .credentials.json carries the auth.
-    const oauthToken = readClaudeCodeOauthToken()
-    const subAgentEnv: Record<string, string | undefined> = {
+    // Auth lives in $HEARTBEAT_CONFIG_DIR/.credentials.json -- the
+    // ensureHeartbeatWorkerCwd() call above wrote it from the macOS
+    // Keychain JSON. The previous version injected the JSON via the
+    // CLAUDE_CODE_OAUTH_TOKEN env var (Marveen-suggested but later
+    // empirically disproved: that env expects a bare bearer token, the
+    // JSON blob comes back 401 "Invalid bearer token"). Config-dir file
+    // path is what Claude Code's Linux installs use natively and what
+    // the SDK config-dir code honours.
+    const { text } = await runAgent(prompt, undefined, undefined, false, HEARTBEAT_AGENT_CWD, {
       CLAUDE_CONFIG_DIR: HEARTBEAT_CONFIG_DIR,
-    }
-    if (oauthToken) {
-      subAgentEnv['CLAUDE_CODE_OAUTH_TOKEN'] = oauthToken
-    }
-    const { text } = await runAgent(prompt, undefined, undefined, false, HEARTBEAT_AGENT_CWD, subAgentEnv)
+    })
     if (text) {
       await notifyTelegram(text)
       logger.info('Heartbeat ertesites elkuldve')
