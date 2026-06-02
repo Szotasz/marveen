@@ -100,6 +100,27 @@ export interface InsertResult {
   eventId: number | null
 }
 
+// Full incoming_events row, used by the reconcile/replay path to rebuild the
+// handoff content from the stored fields.
+export interface IncomingEventRow {
+  id: number
+  source: string
+  update_id: number
+  chat_id: number | null
+  user_id: number | null
+  username: string | null
+  message_id: number | null
+  kind: string
+  content: string | null
+  meta: string | null
+  tg_date: number | null
+  status: string
+  agent_message_id: number | null
+  error: string | null
+  created_at: number
+  delivered_at: number | null
+}
+
 // INSERT OR IGNORE on the unique (source,update_id). Returns inserted=false when
 // the update was already stored (dedup), so the caller skips re-handoff.
 export function insertIncomingEvent(
@@ -149,6 +170,33 @@ export function markEventDelivered(eventId: number, agentMessageId: number): voi
 
 export function markEventFailed(eventId: number, error: string): void {
   requireDb().prepare("UPDATE incoming_events SET status = 'failed', error = ? WHERE id = ?").run(error, eventId)
+}
+
+// No-message-loss replay. Returns events that still need to reach the main
+// agent, either because:
+//   (a) they were inserted but never handed off (coordinator crashed between
+//       insert and createHandoffMessage -> agent_message_id IS NULL), or
+//   (b) they were handed off but the message-router abandoned the agent_message
+//       after its retry window (am.status = 'failed') -- the user's message
+//       never actually reached Marveen.
+// Events whose handoff is still in-flight (am.status pending/delivered/done) are
+// NOT returned, so we never double-deliver a message that is merely waiting.
+// Idempotency against re-handoff is further guaranteed by UNIQUE(source,update_id)
+// on the source row (we re-queue a NEW agent_message, never a duplicate event).
+export function getEventsNeedingHandoff(source: string, limit = 50): IncomingEventRow[] {
+  return requireDb().prepare(`
+    SELECT ie.* FROM incoming_events ie
+    LEFT JOIN agent_messages am ON am.id = ie.agent_message_id
+    WHERE ie.source = ?
+      AND ie.status != 'failed'
+      AND (
+        ie.agent_message_id IS NULL
+        OR am.id IS NULL
+        OR am.status = 'failed'
+      )
+    ORDER BY ie.id ASC
+    LIMIT ?
+  `).all(source, limit) as IncomingEventRow[]
 }
 
 export function getOffset(source: string): number {

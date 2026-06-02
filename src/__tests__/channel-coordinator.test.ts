@@ -10,6 +10,7 @@ import {
   insertIncomingEvent,
   createHandoffMessage,
   markEventDelivered,
+  getEventsNeedingHandoff,
   getOffset,
   setOffset,
   closeIngestDb,
@@ -133,6 +134,60 @@ describe('ingest', () => {
     expect(getOffset('telegram')).toBe(500)
     setOffset('telegram', 512) // UPSERT advances
     expect(getOffset('telegram')).toBe(512)
+  })
+
+  // No-message-loss replay (Marveen decision #2): events whose handoff was
+  // abandoned by the router, or that were never handed off, must be re-queued.
+  it('reconcile_returns_event_never_handed_off (crash between insert and handoff)', () => {
+    const ins = insertIncomingEvent('telegram', sampleEvent(300))
+    // No createHandoffMessage call -> agent_message_id stays NULL, status pending
+    const need = getEventsNeedingHandoff('telegram')
+    expect(need.map((e) => e.id)).toContain(ins.eventId)
+  })
+
+  it('reconcile_returns_event_with_failed_agent_message (router abandon-window)', () => {
+    const db = initIngestDb(':memory:')
+    const ins = insertIncomingEvent('telegram', sampleEvent(301))
+    const amId = createHandoffMessage(buildHandoffContent(sampleEvent(301)))
+    markEventDelivered(ins.eventId!, amId)
+    // Router abandoned it after 1h:
+    db.prepare("UPDATE agent_messages SET status = 'failed' WHERE id = ?").run(amId)
+    const need = getEventsNeedingHandoff('telegram')
+    expect(need.map((e) => e.id)).toContain(ins.eventId)
+  })
+
+  it('reconcile_excludes_in_flight_and_delivered (no double-delivery)', () => {
+    const db = initIngestDb(':memory:')
+    // pending handoff (in-flight) -> excluded
+    const a = insertIncomingEvent('telegram', sampleEvent(302))
+    const amA = createHandoffMessage(buildHandoffContent(sampleEvent(302)))
+    markEventDelivered(a.eventId!, amA) // agent_message still 'pending'
+    // delivered handoff (done) -> excluded
+    const b = insertIncomingEvent('telegram', sampleEvent(303))
+    const amB = createHandoffMessage(buildHandoffContent(sampleEvent(303)))
+    markEventDelivered(b.eventId!, amB)
+    db.prepare("UPDATE agent_messages SET status = 'delivered' WHERE id = ?").run(amB)
+
+    const ids = getEventsNeedingHandoff('telegram').map((e) => e.id)
+    expect(ids).not.toContain(a.eventId)
+    expect(ids).not.toContain(b.eventId)
+  })
+
+  it('reconcile re-handoff is idempotent against the source event (dedup still holds)', () => {
+    const db = initIngestDb(':memory:')
+    const ins = insertIncomingEvent('telegram', sampleEvent(304))
+    const amId1 = createHandoffMessage(buildHandoffContent(sampleEvent(304)))
+    markEventDelivered(ins.eventId!, amId1)
+    db.prepare("UPDATE agent_messages SET status = 'failed' WHERE id = ?").run(amId1)
+    // Simulate a reconcile re-handoff: new agent_message, re-link.
+    const amId2 = createHandoffMessage(buildHandoffContent(sampleEvent(304)))
+    markEventDelivered(ins.eventId!, amId2)
+    // Still exactly ONE source event (no duplicate incoming_events row).
+    const count = db.prepare("SELECT COUNT(*) c FROM incoming_events WHERE update_id = 304").get() as { c: number }
+    expect(count.c).toBe(1)
+    // And the event now points at the fresh (pending) handoff.
+    const ev = db.prepare('SELECT agent_message_id FROM incoming_events WHERE id = ?').get(ins.eventId) as any
+    expect(ev.agent_message_id).toBe(amId2)
   })
 })
 

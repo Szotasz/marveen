@@ -31,6 +31,7 @@ import {
   insertIncomingEvent,
   createHandoffMessage,
   markEventDelivered,
+  getEventsNeedingHandoff,
   getOffset,
   setOffset,
   closeIngestDb,
@@ -224,11 +225,48 @@ function processBatch(updates: { update_id: number }[]): number | null {
   return maxUpdateId
 }
 
+// ---- reconcile (no-message-loss replay) ----------------------------------
+
+// Re-hand-off events the message-router abandoned (agent_message failed after
+// its 1h retry window) or that were never handed off (crash between insert and
+// handoff). This is the invariant the whole decoupling exists for: a frozen
+// main agent DELAYS a message, never LOSES it. Runs once per poll iteration
+// (~30s cadence), which is ample against a 1h abandon window. Idempotent:
+// in-flight handoffs are excluded by getEventsNeedingHandoff, and a re-handoff
+// creates a fresh agent_message rather than duplicating the source event.
+function reconcilePending(): void {
+  let events
+  try {
+    events = getEventsNeedingHandoff(SOURCE)
+  } catch (err) {
+    logger.error({ err }, 'channel-coordinator: reconcile query failed')
+    return
+  }
+  for (const ev of events) {
+    try {
+      const agentMessageId = createHandoffMessage(buildHandoffContent({
+        kind: ev.kind,
+        chat_id: ev.chat_id,
+        user_id: ev.user_id,
+        username: ev.username,
+        message_id: ev.message_id,
+        content: ev.content ?? '',
+        tg_date: ev.tg_date,
+      }))
+      markEventDelivered(ev.id, agentMessageId)
+      logger.warn({ update_id: ev.update_id, eventId: ev.id, agentMessageId }, 'channel-coordinator: re-queued abandoned/stranded inbound message')
+    } catch (err) {
+      logger.error({ err, eventId: ev.id }, 'channel-coordinator: reconcile re-handoff failed; will retry next cycle')
+    }
+  }
+}
+
 // ---- main loop -----------------------------------------------------------
 
 async function pollLoop(token: string): Promise<void> {
   let transientAttempt = 0
   while (!stopping) {
+    reconcilePending() // replay abandoned/stranded events before the next poll
     const offset = getOffset(SOURCE) + 1 // getUpdates offset = last confirmed + 1
     let updates: { update_id: number }[]
     try {
