@@ -33,6 +33,14 @@ if [ -f "$INSTALL_DIR/.env" ]; then
   _oauth="$(grep -E '^CLAUDE_CODE_OAUTH_TOKEN=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
   [ -n "$_oauth" ] && export CLAUDE_CODE_OAUTH_TOKEN="$_oauth"
   unset _api_key _oauth
+  # Channel-ingest decoupling (marveen-channel-coordinator): when COORDINATOR_INBOUND=1
+  # the standalone coordinator owns getUpdates, so the in-TUI plugin must NOT poll
+  # (two pollers on one token = 409 Conflict). TELEGRAM_OUTBOUND_ONLY=1 keeps the
+  # plugin's reply/react/edit tools alive but skips its bot.start() poll loop (see
+  # the plugin server.ts guard applied by scripts/patch-telegram-outbound-only.sh).
+  # SAFE BY DEFAULT: unset/0 leaves the plugin polling inbound exactly as before, so
+  # this change is inert until the operator opts in at cutover.
+  COORDINATOR_INBOUND="$(grep -E '^COORDINATOR_INBOUND=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
 fi
 CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"
 SESSION="${MAIN_AGENT_ID:-marveen}-channels"
@@ -135,6 +143,19 @@ if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
 fi
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   $TMUX set-environment -g ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY" 2>/dev/null || true
+fi
+
+# Outbound-only mode for the in-TUI plugin when the coordinator handles inbound.
+# Export + tmux -g so the plugin poller (a grandchild of the session's claude)
+# inherits it regardless of launch order. Gated on COORDINATOR_INBOUND=1 so the
+# default deploy is unchanged (plugin keeps polling inbound).
+if [ "${COORDINATOR_INBOUND:-}" = "1" ]; then
+  export TELEGRAM_OUTBOUND_ONLY=1
+  $TMUX set-environment -g TELEGRAM_OUTBOUND_ONLY 1 2>/dev/null || true
+else
+  # Make sure a stale -g value from a previous coordinator run does not linger
+  # and silence inbound after the operator opts back out.
+  $TMUX set-environment -g -u TELEGRAM_OUTBOUND_ONLY 2>/dev/null || true
 fi
 
 # Tmux session indítás
