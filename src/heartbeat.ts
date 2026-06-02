@@ -1,6 +1,7 @@
 import { statSync, mkdirSync, writeFileSync, existsSync, readFileSync, symlinkSync, readdirSync, lstatSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
+import { homedir, userInfo } from 'node:os'
+import { execFileSync } from 'node:child_process'
 import {
   HEARTBEAT_START_HOUR,
   HEARTBEAT_END_HOUR,
@@ -166,6 +167,48 @@ function ensureHeartbeatWorkerCwd(): void {
 
 function lstatSyncSafe(p: string): ReturnType<typeof lstatSync> | null {
   try { return lstatSync(p) } catch { return null }
+}
+
+// Read the Claude Code OAuth token from the macOS Keychain.
+//
+// On macOS, Claude Code stores the OAuth token in the login Keychain under
+// service='Claude Code-credentials', account=<unix user>. There is NO
+// .credentials.json file we could symlink into CLAUDE_CONFIG_DIR. Without
+// the token, the SDK-spawned claude treats CLAUDE_CONFIG_DIR as a fresh
+// install ("Not logged in -- Please run /login") and instantly exits with
+// no heartbeat notification sent (verified live at 13:00 hb fire of
+// 2026-06-02).
+//
+// The Claude Code binary honours CLAUDE_CODE_OAUTH_TOKEN as a config-dir
+// bypass for the login check, so we read the Keychain value here and
+// inject it as an env var into the sub-agent's process.env via the
+// runAgent env-override.
+//
+// SECURITY: the token value MUST NOT be logged or written to disk. We
+// invoke `security` with execFileSync so the token never traverses a
+// shell-string, capture stdout to a local variable, and pass it directly
+// to runAgent's env. The variable goes out of scope when runAgent returns.
+// On Linux there is no Keychain analogue; returning null lets the caller
+// fall through to symlinked auth (Linux installs put credentials at
+// ~/.claude/.credentials.json which the existing symlink loop covers).
+function readClaudeCodeOauthToken(): string | null {
+  if (process.platform !== 'darwin') return null
+  try {
+    const out = execFileSync(
+      '/usr/bin/security',
+      ['find-generic-password', '-s', 'Claude Code-credentials', '-a', userInfo().username, '-w'],
+      { timeout: 3000, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
+    ).trim()
+    if (!out) return null
+    return out
+  } catch (err) {
+    // Intentionally NOT logging `err` -- on some macOS auth failures the
+    // error message can echo back a fragment of the lookup key. Bare
+    // failure is enough info; the operator can manually reproduce with
+    // the documented `security find-generic-password ...` command.
+    logger.warn('Heartbeat: failed to read Claude Code OAuth token from Keychain (sub-agent will run logged-out)')
+    return null
+  }
 }
 
 // --- Data types ---
@@ -388,9 +431,22 @@ async function executeHeartbeat(): Promise<void> {
     // the user-scope enabledPlugins:{telegram:true} from leaking in --
     // the project-scope override in #247 did NOT (verified: 09/10/11/12
     // hb all loaded the plugin and crashed Marveen via 409 Conflict).
-    const { text } = await runAgent(prompt, undefined, undefined, false, HEARTBEAT_AGENT_CWD, {
+    // CLAUDE_CODE_OAUTH_TOKEN bypasses the SDK's config-dir login check
+    // (#250 regression: macOS stores the OAuth token in the Keychain, not
+    // in ~/.claude/.credentials.json, so the symlink loop misses it and
+    // the isolated CLAUDE_CONFIG_DIR looks like a fresh install -- the
+    // sub-agent exited 13:00:00.838 of 2026-06-02 with "Not logged in --
+    // Please run /login"). Read the token here, inject it as an env var,
+    // never log/echo the value. On Linux readClaudeCodeOauthToken returns
+    // null and the symlinked .credentials.json carries the auth.
+    const oauthToken = readClaudeCodeOauthToken()
+    const subAgentEnv: Record<string, string | undefined> = {
       CLAUDE_CONFIG_DIR: HEARTBEAT_CONFIG_DIR,
-    })
+    }
+    if (oauthToken) {
+      subAgentEnv['CLAUDE_CODE_OAUTH_TOKEN'] = oauthToken
+    }
+    const { text } = await runAgent(prompt, undefined, undefined, false, HEARTBEAT_AGENT_CWD, subAgentEnv)
     if (text) {
       await notifyTelegram(text)
       logger.info('Heartbeat ertesites elkuldve')
