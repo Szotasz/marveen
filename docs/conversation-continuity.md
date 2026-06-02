@@ -81,7 +81,7 @@ self-scope by cwd, so they are safe even if inherited. Merge this `hooks` object
       { "matcher": "mcp__plugin.telegram.telegram__reply", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/ledger-outbound.py\"", "timeout": 15 } ] }
     ],
     "SessionStart": [
-      { "matcher": "auto", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/ledger-replay.py\"", "timeout": 15 } ] }
+      { "matcher": "startup|resume|clear", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/ledger-replay.py\"", "timeout": 15 } ] }
     ]
   }
 }
@@ -91,8 +91,12 @@ self-scope by cwd, so they are safe even if inherited. Merge this `hooks` object
 - `PostToolUse` matcher `mcp__plugin.telegram.telegram__reply`: the `.` are regex
   wildcards that match the sanitized tool name `mcp__plugin_telegram_telegram__reply`
   (the hook also double-checks `tool_name` contains `telegram`+`reply`).
-- `SessionStart` matcher `auto`: fires on startup / resume / clear / compact — the
-  replay is a no-op when the transcript is empty.
+- `SessionStart` matcher `startup|resume|clear`: the matcher is a **regex over the
+  `source` field**, whose only values are `startup` / `resume` / `clear` / `compact`.
+  There is no `auto` source — an `"auto"` matcher silently matches nothing, so the
+  replay never fires (this was the 2026-06-02 deafness-replay bug). `compact` is
+  intentionally excluded: the compaction summary already preserves live context.
+  The replay is a no-op when the transcript is empty.
 
 **No systemd needed** — these are event-driven Claude Code hooks, not timers. The
 hooks read `store/claudeclaw.db` via `python3` stdlib `sqlite3` (no node startup,
