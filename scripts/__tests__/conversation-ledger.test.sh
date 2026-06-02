@@ -37,6 +37,24 @@ run_hook() {
         python3 "$HOOKS_DIR/$hook" "$@"
 }
 
+# Run the live-drain from cwd=INSTALL_DIR so agent_id resolves to 'marveen'
+# (matching the capture/outbound rows). The drain's dedup statefile lands beside
+# the DB (dirname of LEDGER_DB_PATH), so per-case subdirs keep it isolated.
+run_drain() { # db
+    ( cd "$INSTALL_DIR" && LEDGER_DB_PATH="$1" LEDGER_OWNER_CHAT="8517922966" \
+        MAIN_AGENT_ID="marveen" python3 "$HOOKS_DIR/ledger-live-drain.py" )
+}
+
+# Age every row in a ledger DB backwards so an open question clears the grace window.
+age_rows() { # db seconds
+    python3 - "$1" "$2" <<'PYEOF'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.execute("UPDATE conversation_log SET created_at = created_at - ?", (int(sys.argv[2]),))
+con.commit(); con.close()
+PYEOF
+}
+
 # Single-value SELECT; DB path and SQL passed as argv (no shell interpolation
 # into python source). Missing table / no row -> 'NULL'.
 db_scalar() {
@@ -317,6 +335,48 @@ if [ "$E3_OUT" = "0" ] || [ "$E3_OUT" = "NULL" ]; then
 else
     fail "edge: non-telegram tool recorded an outbound row: $E3_OUT"
 fi
+
+# ---------------------------------------------------------------------------
+# (g) LIVE-SESSION DRAIN -- re-surface an open question into a running session
+# ---------------------------------------------------------------------------
+echo ""
+echo "(g) Live-session open-question drain"
+
+# (g1) aged + unanswered + not yet surfaced -> writes block + updates statefile
+mkdir -p "$TMPDIR_BASE/ld1"; DB_LD1="$TMPDIR_BASE/ld1/x.db"
+emit_inbound 8517922966 1122 "Elveszett elo kerdes" | run_hook ledger-capture.py "$DB_LD1"
+age_rows "$DB_LD1" 120
+OUT_G1="$(run_drain "$DB_LD1")"
+if printf '%s' "$OUT_G1" | grep -q "OPEN_QUESTION chat_id=8517922966 message_id=1122"; then
+    pass "live drain: surfaces an aged, unanswered open question"
+else
+    fail "live drain: did not surface the open question (got: $OUT_G1)"
+fi
+if printf '%s' "$OUT_G1" | grep -q "Elveszett elo kerdes"; then
+    pass "live drain: output includes the question text"
+else
+    fail "live drain: output missing question text"
+fi
+assert_eq "live drain: statefile records the surfaced message_id" "1122" \
+    "$(cat "$TMPDIR_BASE/ld1/.ledger-drain-marveen" 2>/dev/null)"
+
+# (g2) same open question again -> dedup, no output
+OUT_G2="$(run_drain "$DB_LD1")"
+assert_eq "live drain: dedup suppresses re-surfacing the same message_id" "" "$OUT_G2"
+
+# (g3) a later 'out' answered it -> no output
+mkdir -p "$TMPDIR_BASE/ld3"; DB_LD3="$TMPDIR_BASE/ld3/x.db"
+emit_inbound 8517922966 1130 "Megvalaszolt kerdes" | run_hook ledger-capture.py "$DB_LD3"
+age_rows "$DB_LD3" 120
+emit_reply 8517922966 "Itt a valasz" | run_hook ledger-outbound.py "$DB_LD3"
+OUT_G3="$(run_drain "$DB_LD3")"
+assert_eq "live drain: an answered question is not surfaced" "" "$OUT_G3"
+
+# (g4) open question younger than the grace window (in-flight) -> no output
+mkdir -p "$TMPDIR_BASE/ld4"; DB_LD4="$TMPDIR_BASE/ld4/x.db"
+emit_inbound 8517922966 1131 "Epp most erkezett" | run_hook ledger-capture.py "$DB_LD4"
+OUT_G4="$(run_drain "$DB_LD4")"
+assert_eq "live drain: in-flight question (within grace) is not surfaced" "" "$OUT_G4"
 
 # ---------------------------------------------------------------------------
 # Summary

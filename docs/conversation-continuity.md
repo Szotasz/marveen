@@ -35,6 +35,18 @@ agent behaviour (which can fail or restart).
 
    The agent does not need to *remember* to look — the context and the open question
    are already in front of it.
+5. **Live-session drain** — `SessionStart` replay only fires on a *respawn*, but a
+   message can also be lost in an **already-running** session (a mid-session
+   deafness gap): capture still records it, yet the live session never sees it
+   until the next respawn. `scripts/hooks/ledger-live-drain.py` (run every ~2 min
+   by the `ledger-live-drain` scheduled task in the live session) re-surfaces the
+   still-unanswered inbound — `OPEN_QUESTION chat_id=… message_id=…\n<text>` on
+   stdout — so the running agent answers it without waiting for a respawn. Two
+   safety rails: a **grace window** (`GRACE_SECONDS = 60` — never fight an in-flight
+   reply) and a **dedup statefile** (`store/.ledger-drain-<agent_id>` — a missed
+   question is surfaced once, not every tick). Never blocks (any error → exit 0,
+   silent). NOT a settings.json hook — it is a heartbeat scheduled task whose
+   prompt answers via the telegram reply tool only when a block is printed.
 
 **Multi-agent scope.** The hooks are **generic across all channel agents**
 (marveen / dia / erno-ba): `agent_id` is derived from the session's cwd
@@ -88,9 +100,10 @@ no `jq`). Take effect on the next session start after the settings change.
 
 ## Tests
 
-- `bash scripts/__tests__/conversation-ledger.test.sh` — 28 cases (inbound/outbound
+- `bash scripts/__tests__/conversation-ledger.test.sh` — 34 cases (inbound/outbound
   capture / replay context window / N-limit / chronological order + prefixes /
-  open-question / answered-no-block / idempotency / multi-agent scope / edges)
-  against the real hooks, isolated via `LEDGER_DB_PATH` + `LEDGER_OWNER_CHAT`.
+  open-question / answered-no-block / idempotency / multi-agent scope / live-drain
+  grace + dedup + answered / edges) against the real hooks, isolated via
+  `LEDGER_DB_PATH` + `LEDGER_OWNER_CHAT`.
 - `npx vitest run src/__tests__/conversation-ledger-schema.test.ts` — schema-drift
   guard (db.ts migration == ledger_lib.py).

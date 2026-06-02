@@ -139,9 +139,10 @@ def recent(agent_id, limit=RECENT_LIMIT):
         con.close()
 
 
-def open_question(agent_id):
-    """The most recent inbound with NO later outbound (the unanswered question),
-    or None. Returns (chat_id, message_id, text, ts)."""
+def open_question_with_age(agent_id):
+    """Like open_question() but also returns the open inbound's created_at (unix
+    epoch). Returns (chat_id, message_id, text, ts, created_at) or None. Used by
+    the live-drain hook, which needs the age for its grace window."""
     con = connect()
     try:
         row = con.execute(
@@ -160,6 +161,13 @@ def open_question(agent_id):
         ).fetchone()
         if later_out:
             return None  # the last inbound has already been answered
-        return (chat_id, message_id, text, ts)
+        return (chat_id, message_id, text, ts, created_at)
     finally:
         con.close()
+
+
+def open_question(agent_id):
+    """The most recent inbound with NO later outbound (the unanswered question),
+    or None. Returns (chat_id, message_id, text, ts)."""
+    oq = open_question_with_age(agent_id)
+    return oq[:4] if oq else None
