@@ -16,6 +16,7 @@ import { startChannelPluginMonitor } from './web/channel-monitor.js'
 import { startInboundProber } from './web/inbound-probe.js'
 import { startChannelHealthMonitor } from './web/channel-health-monitor.js'
 import { startStuckInputWatcher } from './web/stuck-input-watcher.js'
+import { startStuckToolCallWatcher } from './web/stuck-tool-call-watcher.js'
 import { logger } from './logger.js'
 import { tryHandleProfiles } from './web/routes/profiles.js'
 import { tryHandleMessages } from './web/routes/messages.js'
@@ -233,6 +234,9 @@ export function startWebServer(port = 3420): http.Server {
   const stuckInputInterval = startStuckInputWatcher()
   logger.info('Stuck-input watcher started (15s poll, 20s offset)')
 
+  const stuckToolCallInterval = startStuckToolCallWatcher()
+  logger.info('Stuck-tool-call watcher started (30s poll, 35s offset)')
+
   const updateCheckerInterval = startUpdateChecker()
   logger.info('Update checker started (15min poll)')
 
@@ -280,6 +284,7 @@ export function startWebServer(port = 3420): http.Server {
     clearInterval(pluginMonitorInterval)
     clearInterval(channelHealthInterval)
     clearInterval(stuckInputInterval)
+    clearInterval(stuckToolCallInterval)
     clearInterval(updateCheckerInterval)
     return origClose(cb)
   }
