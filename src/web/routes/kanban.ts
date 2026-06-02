@@ -4,13 +4,42 @@ import {
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard,
   getKanbanComments, addKanbanComment, listKanbanProjects,
   getKanbanCard, getChildCards, getDb,
+  createAgentMessage, markKanbanCardDispatched,
 } from '../../db.js'
-import { OWNER_NAME, BOT_NAME } from '../../config.js'
+import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID } from '../../config.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
+import { isAgentRunning } from '../agent-process.js'
+import { resolveKanbanDispatchTarget } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
+
+// Option D: kanban -> agent dispatch. When a card moves to in_progress, wake the
+// assigned agent once via the inter-agent message router (createAgentMessage),
+// which gives retry / dedup / trust-wrapping / busy-receiver handling for free.
+// dispatched_at is the once-only guard; errors never block the card move.
+function fireKanbanDispatch(id: string): void {
+  try {
+    const card = getKanbanCard(id)
+    if (!card || card.dispatched_at) return
+    const target = resolveKanbanDispatchTarget(card.assignee, {
+      ownerName: OWNER_NAME,
+      botName: BOT_NAME,
+      mainAgentId: MAIN_AGENT_ID,
+      agentNames: listAgentNames(),
+      isRunning: isAgentRunning,
+    })
+    if (!target) return
+    const desc = (card.description ?? '').trim()
+    const content = `[Kanban feladat #${id}]: ${card.title}${desc ? ' — ' + desc : ''}\n\nA kártyát in_progress-re húzták. Ha kész vagy, húzd "done"-ra.`
+    createAgentMessage(MAIN_AGENT_ID, target, content)
+    markKanbanCardDispatched(id)
+    logger.info({ id, target, assignee: card.assignee }, 'Kanban in_progress dispatch fired')
+  } catch (err) {
+    logger.warn({ err, id }, 'Kanban dispatch failed (card move still succeeded)')
+  }
+}
 
 export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
@@ -66,7 +95,12 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(kanbanMoveMatch[1])
     const body = await readBody(req)
     const { status, sort_order } = JSON.parse(body.toString())
-    if (moveKanbanCard(id, status, sort_order ?? 0)) { json(res, { ok: true }); return true }
+    if (moveKanbanCard(id, status, sort_order ?? 0)) {
+      // Wake the assigned agent once when the card enters in_progress.
+      if (status === 'in_progress') fireKanbanDispatch(id)
+      json(res, { ok: true })
+      return true
+    }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
   }

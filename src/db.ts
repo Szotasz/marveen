@@ -160,6 +160,13 @@ export function initDatabase(): void {
     // column already exists
   }
   db.exec('CREATE INDEX IF NOT EXISTS idx_kanban_parent ON kanban_cards(parent_id)')
+  // Migration: add dispatched_at to kanban_cards (kanban -> agent dispatch
+  // once-only guard). Older installs created the table without it.
+  try {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN dispatched_at INTEGER')
+  } catch {
+    // column already exists
+  }
   // Migration: add agent_id, category, auto_generated columns to memories
   try {
     db.exec("ALTER TABLE memories ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'marveen'")
@@ -894,6 +901,10 @@ export interface KanbanCard {
   created_at: number
   updated_at: number
   archived_at: number | null
+  // Set the first time the card is moved to in_progress and the assigned agent
+  // is woken (kanban -> agent dispatch). NULL = never dispatched; the once-only
+  // guard so re-dragging a card does not re-prompt the agent.
+  dispatched_at: number | null
 }
 
 export interface KanbanComment {
@@ -973,6 +984,13 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   return db.prepare(
     'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
   ).run(status, sortOrder, now, id).changes > 0
+}
+
+// Stamp the once-only kanban -> agent dispatch guard. Returns false if the
+// card id does not exist.
+export function markKanbanCardDispatched(id: string): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  return db.prepare('UPDATE kanban_cards SET dispatched_at=? WHERE id=?').run(now, id).changes > 0
 }
 
 export function archiveKanbanCard(id: string): boolean {
