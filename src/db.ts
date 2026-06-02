@@ -882,6 +882,9 @@ export function updateTask(id: string, prompt: string, schedule: string, nextRun
 
 export interface KanbanCard {
   id: string
+  // Stable running number derived from the SQLite rowid (insertion order, never
+  // reused) -- a human-friendly "#N" shown next to the 8-char hex id.
+  seq?: number
   title: string
   description: string | null
   status: 'planned' | 'in_progress' | 'waiting' | 'done'
@@ -911,7 +914,7 @@ export function listKanbanCards(): KanbanCard[] {
     "UPDATE kanban_cards SET archived_at = ? WHERE status = 'done' AND archived_at IS NULL AND updated_at < ?"
   ).run(Math.floor(Date.now() / 1000), thirtyDaysAgo)
   return db
-    .prepare('SELECT * FROM kanban_cards WHERE archived_at IS NULL ORDER BY sort_order ASC')
+    .prepare('SELECT rowid AS seq, * FROM kanban_cards WHERE archived_at IS NULL ORDER BY sort_order ASC')
     .all() as KanbanCard[]
 }
 
@@ -922,7 +925,7 @@ export function listKanbanCardsSummary(): { status: string; title: string; assig
 }
 
 export function getKanbanCard(id: string): KanbanCard | undefined {
-  return db.prepare('SELECT * FROM kanban_cards WHERE id = ?').get(id) as KanbanCard | undefined
+  return db.prepare('SELECT rowid AS seq, * FROM kanban_cards WHERE id = ?').get(id) as KanbanCard | undefined
 }
 
 export function createKanbanCard(card: {

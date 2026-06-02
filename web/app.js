@@ -426,9 +426,13 @@ function createCardEl(card) {
     ? `<span class="kanban-card-project">${escapeHtml(card.project)}</span>`
     : ''
 
+  const seqHtml = card.seq != null
+    ? `<span class="kanban-card-seq" style="font-family:monospace;font-size:11px;color:var(--muted);margin-right:5px">#${card.seq}</span>`
+    : ''
+
   el.innerHTML = `
     ${projectHtml}
-    <div class="kanban-card-title">${escapeHtml(card.title)}</div>
+    <div class="kanban-card-title">${seqHtml}${escapeHtml(card.title)}</div>
     <div class="kanban-card-footer">${assigneeHtml}${dueHtml}</div>
     <div class="kanban-card-actions">
       <button class="card-breakdown-btn" title="AI szétbont" aria-label="AI szétbont">⚡</button>
@@ -590,7 +594,9 @@ document.getElementById('saveCardBtn').addEventListener('click', async () => {
 
 // === Card detail ===
 async function showCardDetail(card) {
-  document.getElementById('cardDetailTitle').textContent = card.title
+  // Running number (#N) in the title bar, plus the stable hex id in the meta.
+  const seqPrefix = card.seq != null ? `#${card.seq} ` : ''
+  document.getElementById('cardDetailTitle').textContent = `${seqPrefix}${card.title}`
 
   // Case-insensitive match; fall back to the raw stored name so a casing
   // mismatch (or an unregistered assignee) shows the actual name, not "nincs".
@@ -603,7 +609,12 @@ async function showCardDetail(card) {
   const statusLabels = { planned: 'Tervezett', in_progress: 'Folyamatban', waiting: 'Várakozik', done: 'Kész' }
 
   const meta = document.getElementById('cardDetailMeta')
+  const idLabel = (card.seq != null ? `#${card.seq} · ` : '') + card.id
   meta.innerHTML = `
+    <div class="meta-item">
+      <span class="meta-label">Azonosító</span>
+      <span class="meta-value" style="font-family:monospace" title="Futó sorszám · hex azonosító">${escapeHtml(idLabel)}</span>
+    </div>
     <div class="meta-item">
       <span class="meta-label">Állapot</span>
       <span class="meta-value">${statusLabels[card.status] || card.status}</span>
@@ -694,20 +705,32 @@ async function showCardDetail(card) {
     }
   } catch { /* ignore */ }
 
-  // Author select for new comment
-  populateAssigneeSelect('commentAuthor', 'Marveen')
+  // Author select for new comment. Default to the human owner "Gábor" -- a
+  // value that actually exists in the assignee list, so the select never falls
+  // back to the empty "-- Nincs --" option (which silently produced author=""
+  // -> server 400 -> a lost comment).
+  populateAssigneeSelect('commentAuthor', 'Gábor')
 
   // Add comment
   document.getElementById('addCommentBtn').onclick = async () => {
     const content = document.getElementById('commentContent').value.trim()
     const author = document.getElementById('commentAuthor').value
-    if (!content || !author) return
+    if (!content) { document.getElementById('commentContent').focus(); return }
+    if (!author) { showToast('Válassz szerzőt a megjegyzéshez'); return }
     try {
-      await fetch(`/api/kanban/${encodeURIComponent(card.id)}/comments`, {
+      const res = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/comments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ author, content }),
       })
+      // Without this check an HTTP error (e.g. 400) still cleared the textarea
+      // and "refreshed", so the comment looked sent but was never saved.
+      if (!res.ok) {
+        let msg = `HTTP ${res.status}`
+        try { msg = (await res.json()).error || msg } catch {}
+        showToast('Megjegyzés nem mentődött: ' + msg)
+        return
+      }
       document.getElementById('commentContent').value = ''
       showCardDetail(card) // refresh
     } catch {
