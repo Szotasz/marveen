@@ -1,20 +1,19 @@
 #!/bin/bash
 # install-channel-coordinator.sh
 #
-# Installs the marveen-channel-coordinator launchd unit (macOS). This is the
-# CUTOVER entry point for the channel-ingest decoupling -- it is intentionally
-# NOT run by the normal setup. Run it deliberately, after review, when ready to
-# move inbound Telegram polling from the in-TUI plugin to the standalone poller.
+# Installs the marveen-channel-coordinator launchd unit (macOS). The coordinator
+# is a SILENT BACKFILL safety-net: the native plugin stays the primary inbound
+# path and the coordinator only polls while the native is down, so installing +
+# loading it is safe alongside the running native channel (no outbound-only
+# cutover, no second steady-state poller).
 #
 # Steps performed:
 #   1. Verify the build artifact (dist/channel-coordinator.js) exists.
 #   2. Provision the coordinator STATE_DIR (~/.claude/channels/telegram-coordinator)
 #      and copy the bot token into its 0600 .env (NOT exported to any shell env).
-#   3. Apply the plugin outbound-only guard (scripts/patch-telegram-outbound-only.sh).
-#   4. Write ~/Library/LaunchAgents/com.marveen.channel-coordinator.plist.
-#   5. With --load: launchctl load the unit (starts polling). Without --load:
-#      install only, so you can do the channels.sh restart + load in your own
-#      controlled cutover window.
+#   3. Write ~/Library/LaunchAgents/com.marveen.channel-coordinator.plist.
+#   4. With --load: launchctl load the unit (starts the backfill watcher in idle).
+#      Without --load: install only.
 #
 # Usage:
 #   scripts/install-channel-coordinator.sh            # install, do not start
@@ -62,10 +61,7 @@ else
   echo "Coordinator .env already present, leaving as-is: $COORD_STATE_DIR/.env"
 fi
 
-# 3. plugin outbound-only guard
-bash "$SCRIPT_DIR/patch-telegram-outbound-only.sh"
-
-# 4. launchd plist (env block mirrors com.marveen.channels.plist)
+# 3. launchd plist (env block mirrors com.marveen.channels.plist)
 mkdir -p "$HOME/Library/LaunchAgents"
 cat > "$PLIST" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -109,12 +105,11 @@ cat > "$PLIST" <<PLIST_EOF
 PLIST_EOF
 echo "Wrote launchd unit: $PLIST"
 
-# 5. optional load
+# 4. optional load
 if [ "$LOAD" = "1" ]; then
   launchctl unload "$PLIST" 2>/dev/null || true
   launchctl load "$PLIST"
-  echo "Loaded $LABEL (coordinator polling). Remember: set COORDINATOR_INBOUND=1 in .env and restart channels.sh so the plugin goes outbound-only."
+  echo "Loaded $LABEL. It starts IDLE and only backfills while the native channel is down -- safe to run alongside the live native plugin."
 else
   echo "Installed but NOT loaded. To start: launchctl load $PLIST"
-  echo "Cutover reminder: set COORDINATOR_INBOUND=1 in .env, restart channels.sh (plugin -> outbound-only), then load this unit."
 fi

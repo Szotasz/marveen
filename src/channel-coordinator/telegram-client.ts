@@ -6,10 +6,11 @@
 // a raw fetch + AbortController read-timeout and persist the offset ourselves
 // (see ingest.ts), so a crash/restart resumes exactly where we left off.
 //
-// Outbound (reply/react/edit) stays in the Telegram channel plugin running in
-// outbound-only mode (TELEGRAM_OUTBOUND_ONLY=1). This client never sends; it
-// only ingests. Keeping inbound here and outbound there means a single poller
-// holds the token's getUpdates slot, so there is no 409 Conflict.
+// This client never sends (outbound stays with the native plugin); it only
+// ingests, and only while the native plugin is down (the coordinator backfills,
+// see channel-coordinator.ts). In steady state the native plugin is the sole
+// poller, so there is no 409 Conflict; a 409 here means the native came back
+// and the coordinator yields.
 
 const API_BASE = 'https://api.telegram.org'
 
@@ -186,4 +187,39 @@ export async function getUpdates(
   const json = await res.json() as { ok: boolean; result?: RawUpdate[]; description?: string }
   if (!json.ok) throw new TelegramApiError('transient', `getUpdates ok=false: ${json.description ?? 'unknown'}`)
   return json.result ?? []
+}
+
+// Probe the current server-side high-water update_id WITHOUT confirming anything
+// and WITHOUT sending allowed_updates. Telegram's negative offset returns the
+// last |offset| updates from the end of the queue and does not advance the
+// confirmed pointer, so this is a non-destructive read. We deliberately omit
+// allowed_updates here: Telegram REMEMBERS the last allowed_updates passed, so
+// sending our whitelist on a seed call could alter what a subsequent (or the
+// native plugin's) poll receives. Returns the highest pending update_id, or
+// null when the queue is empty. Used to seed poll_offset on entering a backfill
+// window so we never re-deliver below the true high-water.
+export async function probeHighWater(token: string): Promise<number | null> {
+  const controller = new AbortController()
+  const abortTimer = setTimeout(() => controller.abort(), 10_000)
+  let res: Response
+  try {
+    res = await fetch(`${API_BASE}/bot${token}/getUpdates`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ offset: -1, limit: 1, timeout: 0 }),
+      signal: controller.signal,
+    })
+  } catch (err) {
+    throw new TelegramApiError('transient', `high-water probe network error: ${err instanceof Error ? err.message : String(err)}`)
+  } finally {
+    clearTimeout(abortTimer)
+  }
+  if (!res.ok) {
+    if (res.status === 401) throw new TelegramApiError('fatal', '401 unauthorized (high-water probe)')
+    if (res.status === 409) throw new TelegramApiError('conflict', '409 conflict (high-water probe)')
+    throw new TelegramApiError('transient', `high-water probe HTTP ${res.status}`)
+  }
+  const json = await res.json() as { ok: boolean; result?: RawUpdate[] }
+  const last = json.result && json.result.length ? json.result[json.result.length - 1] : null
+  return last ? last.update_id : null
 }

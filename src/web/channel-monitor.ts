@@ -26,6 +26,9 @@ import { getProvider, channelStateDir, readChannelToken, type ChannelProviderTyp
 import { attemptChannelMcpReconnect } from './channel-mcp-reconnect.js'
 import { readLastIngestionTimestamp, TRANSCRIPT_DIR } from './inbound-probe.js'
 import { shouldAutoRestartDownAgent, parseEtimeToSeconds } from './agent-restart-policy.js'
+// getClaudePidForSession + hasChannelPluginAlive live in the shared liveness
+// module so the standalone channel-coordinator reuses the exact same probe.
+import { getClaudePidForSession, hasChannelPluginAlive } from '../channel-coordinator/liveness.js'
 
 const TMUX = resolveFromPath('tmux')
 const CLAUDE = resolveFromPath('claude')
@@ -53,120 +56,6 @@ function resolveAgentProvider(name: string): ChannelProviderType {
 // by walking the process tree. Agents recover via stop+start; for the
 // main agent's channels session we can only alert + escalate, because
 // killing it would terminate the live agent.
-
-function getClaudePidForSession(session: string): number | null {
-  try {
-    const out = execFileSync(TMUX, ['list-panes', '-t', session, '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf-8' })
-    const panePid = parseInt(out.trim().split('\n')[0], 10)
-    if (!panePid) return null
-    const cmd = execFileSync('/bin/ps', ['-p', String(panePid), '-o', 'comm='], { timeout: 3000, encoding: 'utf-8' }).trim()
-    if (cmd === 'claude' || cmd.endsWith('/claude')) return panePid
-    try {
-      const child = execFileSync('/usr/bin/pgrep', ['-P', String(panePid), '-x', 'claude'], { timeout: 3000, encoding: 'utf-8' }).trim()
-      if (child) return parseInt(child.split('\n')[0], 10)
-    } catch { /* none */ }
-    return null
-  } catch {
-    return null
-  }
-}
-
-function hasChannelPluginAlive(claudePid: number, providerType: ChannelProviderType, agentName?: string): boolean {
-  try {
-    const ps = execFileSync('/bin/ps', ['-axo', 'pid,ppid,command'], { timeout: 3000, encoding: 'utf-8' })
-    const lines = ps.split('\n').slice(1)
-    const childrenOf = new Map<number, number[]>()
-    const cmdOf = new Map<number, string>()
-    for (const line of lines) {
-      const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/)
-      if (!m) continue
-      const pid = parseInt(m[1], 10)
-      const ppid = parseInt(m[2], 10)
-      cmdOf.set(pid, m[3])
-      const arr = childrenOf.get(ppid) || []
-      arr.push(pid)
-      childrenOf.set(ppid, arr)
-    }
-
-    const stack = [claudePid]
-    const seen = new Set<number>()
-    while (stack.length) {
-      const p = stack.pop()!
-      if (seen.has(p)) continue
-      seen.add(p)
-      const cmd = cmdOf.get(p) || ''
-      if (providerType === 'telegram') {
-        if (cmd.includes('/telegram/') && cmd.includes('bun')) return true
-        if (/\bbun\b/.test(cmd) && cmd.includes('server.ts')) return true
-      } else if (providerType === 'discord') {
-        if (cmd.includes('discord') && (cmd.includes('node') || cmd.includes('bun'))) return true
-      } else {
-        if (cmd.includes('slack') && cmd.includes('node')) return true
-        if (cmd.includes('slack-channel') && (cmd.includes('bun') || cmd.includes('node'))) return true
-      }
-      for (const k of (childrenOf.get(p) || [])) stack.push(k)
-    }
-
-    // Fallback: plugin may have been reparented to init (ppid=1) after its
-    // intermediate parent crashed. Check bot.pid directly as last-resort.
-    const stateDir = agentName
-      ? channelStateDir(providerType, agentDir(agentName))
-      : channelStateDir(providerType)
-    const pidPath = join(stateDir, 'bot.pid')
-    if (existsSync(pidPath)) {
-      const pid = parseInt(readFileSync(pidPath, 'utf-8').trim(), 10)
-      if (pid > 1) {
-        try {
-          process.kill(pid, 0)
-          const cmd = cmdOf.get(pid) || ''
-          const isRelevant = providerType === 'telegram'
-            ? (cmd.includes('bun') || cmd.includes('server.ts') || cmd.includes('telegram'))
-            : providerType === 'discord'
-              ? (cmd.includes('discord') && (cmd.includes('node') || cmd.includes('bun')))
-              : (cmd.includes('node') || cmd.includes('slack'))
-          if (isRelevant) {
-            logger.debug({ claudePid, orphanPid: pid, agentName, providerType }, 'Channel plugin alive via bot.pid (reparented)')
-            return true
-          }
-        } catch { /* process gone */ }
-      }
-    }
-
-    // Slack Socket Mode: no bot.pid file; check if the slack app token is
-    // being actively used by a child process. This is a heuristic -- Slack
-    // plugins keep a WebSocket open but don't write a pid file.
-    if (providerType === 'slack') {
-      for (const [pid, cmd] of cmdOf) {
-        if (seen.has(pid)) continue
-        if ((cmd.includes('slack') || cmd.includes('socket-mode')) && (cmd.includes('node') || cmd.includes('bun'))) {
-          try {
-            process.kill(pid, 0)
-            logger.debug({ claudePid, slackPid: pid, agentName }, 'Slack plugin alive via process scan')
-            return true
-          } catch { /* gone */ }
-        }
-      }
-    }
-
-    // Discord: same heuristic -- no bot.pid, check for discord node/bun process.
-    if (providerType === 'discord') {
-      for (const [pid, cmd] of cmdOf) {
-        if (seen.has(pid)) continue
-        if (cmd.includes('discord') && (cmd.includes('node') || cmd.includes('bun'))) {
-          try {
-            process.kill(pid, 0)
-            logger.debug({ claudePid, discordPid: pid, agentName }, 'Discord plugin alive via process scan')
-            return true
-          } catch { /* gone */ }
-        }
-      }
-    }
-
-    return false
-  } catch {
-    return false
-  }
-}
 
 const agentDownSince: Map<string, number> = new Map()
 const agentLastRestart: Map<string, number> = new Map()

@@ -1,22 +1,30 @@
-// marveen-channel-coordinator: standalone Telegram inbound poller.
+// marveen-channel-coordinator: standalone Telegram inbound BACKFILL poller.
 //
-// WHY THIS EXISTS
-// The Telegram channel plugin runs getUpdates INSIDE the Marveen Claude Code
-// TUI process. When that TUI freezes on a wedged tool-call, inbound polling
-// freezes with it -- the user's messages pile up server-side and Marveen looks
-// "deaf". This process decouples inbound ingest from the TUI: it long-polls
-// getUpdates, writes each update to store/claudeclaw.db (incoming_events), and
-// hands it off to Marveen via the existing agent_messages queue + message-
-// router. If the TUI freezes, ingest keeps running; the message just waits in
-// the queue and is delivered when the TUI recovers -- no message is lost.
+// WHY THIS EXISTS (hybrid model -- Szabi 2026-06-02)
+// The native Telegram channel plugin runs getUpdates INSIDE the Marveen TUI and
+// stays the PRIMARY inbound path (it gives the "typing..." indicator, low
+// latency, and native reply-semantics for free). But the plugin's ~hourly
+// disconnects / TUI freezes leave inbound messages stranded server-side.
 //
-// The plugin stays loaded in OUTBOUND-ONLY mode (TELEGRAM_OUTBOUND_ONLY=1) so
-// Marveen's reply/react/edit tools still work. Because only this coordinator
-// polls getUpdates, there is no 409 Conflict over the bot token.
+// This coordinator is a SILENT BACKFILL safety-net: while the native channel is
+// UP it does NOTHING (no getUpdates, so no 409, native owns inbound). Only when
+// the native is observed DOWN (process gone, or alive-but-wedged per a stale
+// keepalive) does it poll getUpdates, write to store/claudeclaw.db
+// (incoming_events), and hand off to Marveen via the existing agent_messages
+// queue + message-router (which delivers it as channel-inbound -- reply-
+// expected, body untrusted).
 //
-// Lifecycle: launchd (com.marveen.channel-coordinator) with KeepAlive. On
-// SIGTERM it drains the current batch, persists the offset, and exits cleanly
-// so the next start does not collide with a half-finished poll.
+// NO DOUBLE-DELIVERY: on entering a backfill window it seeds poll_offset to the
+// current server high-water (probeHighWater), so it only delivers messages that
+// arrive DURING the outage and confirms them; the detection-window backlog
+// (<= high-water) is left for the native to deliver when it recovers (it polls
+// from its own older offset). It yields the instant the native returns -- on a
+// 409 OR a liveness flip -- and re-checks liveness BEFORE handing off a batch,
+// discarding it if the native just recovered. Bias: under-deliver, since the
+// native + typing is the better UX and Telegram holds unconfirmed updates 24h.
+//
+// Lifecycle: launchd (com.marveen.channel-coordinator) with KeepAlive. SIGTERM
+// drains, persists offset, exits cleanly.
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
@@ -24,8 +32,9 @@ import { homedir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { execFile } from 'node:child_process'
 import { logger } from './logger.js'
-import { PROJECT_ROOT } from './config.js'
-import { getUpdates, mapUpdate, TelegramApiError } from './channel-coordinator/telegram-client.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, CHANNEL_PROVIDER } from './config.js'
+import { getUpdates, probeHighWater, mapUpdate, TelegramApiError } from './channel-coordinator/telegram-client.js'
+import { probeNativeChannelDown } from './channel-coordinator/liveness.js'
 import {
   initIngestDb,
   insertIncomingEvent,
@@ -42,24 +51,32 @@ const SOURCE = 'telegram'
 const LONGPOLL_TIMEOUT_SEC = 30
 const POLL_LIMIT = 100
 
+// The native main-agent channels session + its provider. The coordinator only
+// backfills for THIS session's channel.
+const SESSION = `${MAIN_AGENT_ID}-channels`
+const PROVIDER = CHANNEL_PROVIDER
+
+// State-machine tick / liveness-probe cadence while IDLE.
+const TICK_MS = 5000
+// Enter BACKFILLING only after the native reads DOWN this many consecutive
+// probes -- a single transient process-tree race or a restart blip must not
+// flip us into polling (which could 409 the recovering native).
+const DOWN_DEBOUNCE = 2
+
+// Transient-error backoff (5xx / network) while BACKFILLING.
+const BACKOFF_BASE_MS = 1000
+const BACKOFF_CAP_MS = 60_000
+
 // The coordinator keeps its OWN state dir, separate from the plugin's
 // ~/.claude/channels/telegram. Sharing it would let the plugin's orphan-PID
 // watchdog SIGTERM our process (it kills "stale" pids in its bot.pid).
 const STATE_DIR = process.env['COORDINATOR_STATE_DIR'] ?? join(homedir(), '.claude', 'channels', 'telegram-coordinator')
 const PID_FILE = join(STATE_DIR, 'coordinator.pid')
 
-// Backoff tuning (transient errors: 5xx, network, abort).
-const BACKOFF_BASE_MS = 1000
-const BACKOFF_CAP_MS = 60_000
-// 409: another poller holds the token. Fixed short backoff, but if it persists
-// (window threshold), escalate to a degraded alert instead of tight-looping.
-const CONFLICT_BACKOFF_MS = 4000
-const CONFLICT_WINDOW_MS = 5 * 60 * 1000
-const CONFLICT_WINDOW_THRESHOLD = 5
-
+type State = 'idle' | 'backfilling'
+let state: State = 'idle'
+let downStreak = 0
 let stopping = false
-let conflictTimes: number[] = []
-let degradedAlerted = false
 
 // ---- token --------------------------------------------------------------
 
@@ -116,8 +133,8 @@ function releaseLock(): void {
 // ---- alerting ------------------------------------------------------------
 
 // Best-effort Telegram alert to the owner via the existing notify.sh (which
-// uses the project's own token+chat). Used for fatal (401) and degraded (409
-// storm) states so a silent inbound outage does not go unnoticed.
+// uses the project's own token+chat). Used for fatal (401) only -- a 409 here
+// is the EXPECTED "native is back" signal, not an error worth alerting.
 function sendAlert(message: string): void {
   const script = join(PROJECT_ROOT, 'scripts', 'notify.sh')
   execFile('/bin/bash', [script, message], { timeout: 10_000 }, (err) => {
@@ -128,17 +145,15 @@ function sendAlert(message: string): void {
 // ---- handoff content -----------------------------------------------------
 
 // Neutralize any <channel ...> / </channel> the user typed, so their text can
-// never break out of the channel frame we wrap it in below. (The outer
-// <untrusted> wrapper added by the message-router already scrubs untrusted/
-// trusted-peer tags, but not <channel>.)
+// never break out of the channel frame we wrap it in below. (The message-router
+// also scrubs untrusted/trusted-peer tags, but not <channel>.)
 export function neutralizeChannelTags(text: string): string {
   return text.replace(/<\s*\/?\s*channel\b[^>]*>/gi, '[stripped-tag]')
 }
 
-// Mirror the native plugin's <channel ...> block so Marveen's existing inbound
-// handling (reply with chat_id) works with zero behavior change. The message-
-// router wraps this whole string as <untrusted source="agent:telegram-
-// coordinator">, which is correct: it is raw external user input.
+// Mirror the native plugin's <channel ...> block so the message-router can
+// deliver it as channel-inbound and Marveen replies exactly as she would to a
+// native message (reply with chat_id), while the body stays untrusted.
 export function buildHandoffContent(ev: {
   kind: string
   chat_id: number | null
@@ -171,26 +186,6 @@ export function transientBackoffMs(attempt: number): number {
   return Math.floor(Math.random() * ceiling)
 }
 
-// Pure sliding-window evaluation: given the prior conflict timestamps and now,
-// return the pruned window and whether it crossed the storm threshold. Kept
-// pure so the 409-window behavior is unit-testable without wall-clock state.
-export function evalConflictWindow(
-  prev: number[],
-  now: number,
-  windowMs = CONFLICT_WINDOW_MS,
-  threshold = CONFLICT_WINDOW_THRESHOLD,
-): { times: number[]; storm: boolean } {
-  const times = prev.filter((t) => now - t < windowMs)
-  times.push(now)
-  return { times, storm: times.length >= threshold }
-}
-
-function recordConflict(): boolean {
-  const { times, storm } = evalConflictWindow(conflictTimes, Date.now())
-  conflictTimes = times
-  return storm
-}
-
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 // ---- batch processing ----------------------------------------------------
@@ -217,7 +212,7 @@ function processBatch(updates: { update_id: number }[]): number | null {
     try {
       const agentMessageId = createHandoffMessage(buildHandoffContent(ev))
       markEventDelivered(ins.eventId, agentMessageId)
-      logger.info({ update_id: ev.update_id, chat_id: ev.chat_id, kind: ev.kind, agentMessageId }, 'channel-coordinator: handed off to main agent')
+      logger.info({ update_id: ev.update_id, chat_id: ev.chat_id, kind: ev.kind, agentMessageId }, 'channel-coordinator: backfilled to main agent')
     } catch (err) {
       logger.error({ err, eventId: ins.eventId }, 'channel-coordinator: handoff failed; event left pending for replay')
     }
@@ -230,10 +225,11 @@ function processBatch(updates: { update_id: number }[]): number | null {
 // Re-hand-off events the message-router abandoned (agent_message failed after
 // its 1h retry window) or that were never handed off (crash between insert and
 // handoff). This is the invariant the whole decoupling exists for: a frozen
-// main agent DELAYS a message, never LOSES it. Runs once per poll iteration
-// (~30s cadence), which is ample against a 1h abandon window. Idempotent:
-// in-flight handoffs are excluded by getEventsNeedingHandoff, and a re-handoff
-// creates a fresh agent_message rather than duplicating the source event.
+// main agent DELAYS a message, never LOSES it. Runs every tick in ALL states,
+// because a message backfilled during a past window can still be abandoned by
+// the router later while we sit idle. Idempotent: in-flight handoffs are
+// excluded by getEventsNeedingHandoff, and a re-handoff creates a fresh
+// agent_message rather than duplicating the source event.
 function reconcilePending(): void {
   let events
   try {
@@ -261,60 +257,100 @@ function reconcilePending(): void {
   }
 }
 
-// ---- main loop -----------------------------------------------------------
+// ---- fatal --------------------------------------------------------------
 
-async function pollLoop(token: string): Promise<void> {
+async function fatalExit(err: TelegramApiError): Promise<never> {
+  logger.error({ msg: err.message }, 'channel-coordinator: fatal error, exiting')
+  sendAlert(`Marveen channel-coordinator FATAL: ${err.message}. Inbound backfill leallt amig nem javitod.`)
+  await sleep(1500) // let notify.sh fire before exit
+  process.exit(1)
+}
+
+// ---- main loop (IDLE <-> BACKFILLING state machine) ----------------------
+
+async function runLoop(token: string): Promise<void> {
   let transientAttempt = 0
   while (!stopping) {
-    reconcilePending() // replay abandoned/stranded events before the next poll
-    const offset = getOffset(SOURCE) + 1 // getUpdates offset = last confirmed + 1
-    let updates: { update_id: number }[]
-    try {
-      updates = await getUpdates(token, offset, LONGPOLL_TIMEOUT_SEC, POLL_LIMIT)
-      transientAttempt = 0
-      if (conflictTimes.length) { conflictTimes = []; degradedAlerted = false }
-    } catch (err) {
-      if (stopping) break
-      if (!(err instanceof TelegramApiError)) {
-        logger.error({ err }, 'channel-coordinator: unexpected poll error')
-        await sleep(transientBackoffMs(Math.min(++transientAttempt, 6)))
-        continue
-      }
-      switch (err.kind) {
-        case 'fatal':
-          logger.error({ msg: err.message }, 'channel-coordinator: fatal error, exiting')
-          sendAlert(`Marveen channel-coordinator FATAL: ${err.message}. Inbound Telegram leallt amig nem javitod.`)
-          // give notify.sh a beat to fire before launchd-less exit
-          await sleep(1500)
-          process.exit(1)
-          break
-        case 'rate_limit': {
-          const wait = (err.retryAfterSec ?? 5) * 1000
-          logger.warn({ waitMs: wait }, 'channel-coordinator: 429 rate limit, waiting retry_after')
-          await sleep(wait)
-          break
-        }
-        case 'conflict': {
-          const storm = recordConflict()
-          if (storm && !degradedAlerted) {
-            degradedAlerted = true
-            logger.error('channel-coordinator: 409 conflict storm -- another poller holds the token')
-            sendAlert('Marveen channel-coordinator: tartos 409 Conflict -- masik poller fogja a tokent (plugin nem outbound-only? stray bun?). Inbound akadozhat.')
+    // No-message-loss replay runs every tick, regardless of state.
+    reconcilePending()
+
+    if (state === 'idle') {
+      // Watch the native channel. Debounce DOWN readings so a momentary blip
+      // (process-tree race, restart) does not flip us into polling.
+      const down = probeNativeChannelDown(SESSION, PROVIDER)
+      downStreak = down ? downStreak + 1 : 0
+      if (downStreak >= DOWN_DEBOUNCE) {
+        try {
+          // Seed poll_offset to the current high-water so we only deliver
+          // messages that arrive DURING the outage; the detection-window
+          // backlog (<= hw) is left for the native to deliver on recovery.
+          const hw = await probeHighWater(token)
+          if (hw != null) setOffset(SOURCE, hw)
+          state = 'backfilling'
+          transientAttempt = 0
+          logger.warn({ session: SESSION, seededHighWater: hw }, 'channel-coordinator: native channel DOWN, entering BACKFILLING')
+        } catch (err) {
+          if (err instanceof TelegramApiError && err.kind === 'fatal') { await fatalExit(err) }
+          // A 409 on the seed means the native is in fact polling -> stay idle.
+          if (err instanceof TelegramApiError && err.kind === 'conflict') {
+            logger.info('channel-coordinator: high-water seed 409 -- native is polling, staying idle')
+            downStreak = 0
+          } else {
+            logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'channel-coordinator: high-water seed failed, retrying next tick')
           }
-          await sleep(CONFLICT_BACKOFF_MS)
-          break
         }
-        case 'transient':
-        default:
-          await sleep(transientBackoffMs(Math.min(++transientAttempt, 6)))
-          break
       }
+      await sleep(TICK_MS)
       continue
     }
 
-    if (updates.length === 0) continue // long-poll timed out with no updates
+    // state === 'backfilling'
+    // Yield the instant the native is back -- it owns inbound + the typing
+    // indicator. Re-check before every poll.
+    if (!probeNativeChannelDown(SESSION, PROVIDER)) {
+      logger.info('channel-coordinator: native channel back UP, yielding to native (-> idle)')
+      state = 'idle'; downStreak = 0
+      continue
+    }
+
+    let updates: { update_id: number }[]
+    try {
+      updates = await getUpdates(token, getOffset(SOURCE) + 1, LONGPOLL_TIMEOUT_SEC, POLL_LIMIT)
+      transientAttempt = 0
+    } catch (err) {
+      if (stopping) break
+      if (err instanceof TelegramApiError && err.kind === 'fatal') { await fatalExit(err) }
+      // 409 during backfill = the native grabbed the slot back. This is the
+      // EXPECTED end-of-window signal, not an error: yield immediately, no
+      // storm machinery, no tight loop.
+      if (err instanceof TelegramApiError && err.kind === 'conflict') {
+        logger.info('channel-coordinator: 409 during backfill -- native owns the slot again, yielding (-> idle)')
+        state = 'idle'; downStreak = 0
+        continue
+      }
+      if (err instanceof TelegramApiError && err.kind === 'rate_limit') {
+        await sleep((err.retryAfterSec ?? 5) * 1000)
+        continue
+      }
+      // transient (5xx / network / unexpected): exponential backoff, stay in backfilling
+      await sleep(transientBackoffMs(Math.min(++transientAttempt, 6)))
+      continue
+    }
+
+    if (updates.length === 0) continue // long-poll timed out; re-loop re-checks liveness
+
+    // YIELD-BEFORE-HANDOFF: re-check the native did not just recover. If it did,
+    // DISCARD this batch (do NOT hand off, do NOT advance the offset) and yield
+    // -- the native will deliver these from its own offset. This closes the
+    // recovery-overlap double-delivery window.
+    if (!probeNativeChannelDown(SESSION, PROVIDER)) {
+      logger.info({ batch: updates.length }, 'channel-coordinator: native recovered mid-batch, discarding + yielding (native will deliver)')
+      state = 'idle'; downStreak = 0
+      continue
+    }
+
     const maxUpdateId = processBatch(updates)
-    // Persist offset ONLY after the batch is durable (at-least-once ordering).
+    // Persist offset ONLY after the batch is durable + handed off.
     if (maxUpdateId != null) setOffset(SOURCE, maxUpdateId)
   }
 }
@@ -325,9 +361,7 @@ function installSignalHandlers(): void {
   const onSignal = (sig: string) => {
     if (stopping) return
     stopping = true
-    logger.info({ sig }, 'channel-coordinator: shutting down, draining current poll')
-    // The poll loop checks `stopping` after its current iteration. Give the
-    // in-flight long-poll up to a few seconds to settle, then force-exit.
+    logger.info({ sig }, 'channel-coordinator: shutting down')
     setTimeout(() => {
       releaseLock()
       closeIngestDb()
@@ -343,8 +377,8 @@ async function main(): Promise<void> {
   acquireSingleInstanceLock()
   initIngestDb()
   installSignalHandlers()
-  logger.info({ stateDir: STATE_DIR }, 'channel-coordinator: started, polling getUpdates')
-  await pollLoop(token)
+  logger.info({ stateDir: STATE_DIR, session: SESSION, provider: PROVIDER }, 'channel-coordinator: started in BACKFILL mode (idle while native is up)')
+  await runLoop(token)
   releaseLock()
   closeIngestDb()
 }

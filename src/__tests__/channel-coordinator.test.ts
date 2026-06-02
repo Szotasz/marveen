@@ -1,9 +1,4 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { mapUpdate, getUpdates, TelegramApiError } from '../channel-coordinator/telegram-client.js'
 import {
   initIngestDb,
@@ -20,8 +15,8 @@ import {
   neutralizeChannelTags,
   buildHandoffContent,
   transientBackoffMs,
-  evalConflictWindow,
 } from '../channel-coordinator.js'
+import { decideNativeChannelDown } from '../channel-coordinator/liveness.js'
 
 // ---- mapUpdate (pure normalization) -------------------------------------
 
@@ -243,9 +238,9 @@ describe('getUpdates error classification', () => {
   })
 })
 
-// ---- backoff + conflict window (pure) -----------------------------------
+// ---- backoff (pure) -----------------------------------------------------
 
-describe('backoff and conflict window', () => {
+describe('backoff', () => {
   it('classify_error_5xx_exponential_backoff is capped', () => {
     for (let attempt = 0; attempt <= 10; attempt++) {
       const d = transientBackoffMs(attempt)
@@ -253,27 +248,39 @@ describe('backoff and conflict window', () => {
       expect(d).toBeLessThanOrEqual(60_000) // cap
     }
   })
+})
 
-  it('classify_error_409_window escalates only past threshold', () => {
-    const now = 1_000_000
-    let times: number[] = []
-    let storm = false
-    // 4 conflicts within window -> no storm yet (threshold 5)
-    for (let i = 0; i < 4; i++) {
-      ({ times, storm } = evalConflictWindow(times, now + i * 1000))
-    }
-    expect(storm).toBe(false)
-    // 5th within window -> storm
-    ;({ times, storm } = evalConflictWindow(times, now + 4000))
-    expect(storm).toBe(true)
+// ---- backfill liveness gate (pure decision) -----------------------------
+// Hybrid model: the coordinator only backfills when the native channel is DOWN.
+// decideNativeChannelDown is the pure gate (process/wedged/startup-grace).
+
+describe('decideNativeChannelDown (backfill gate)', () => {
+  const STARTUP_GRACE_MS = 360_000
+  const KEEPALIVE_STALE_MS = 18 * 60 * 1000
+
+  it('within startup grace after a respawn: NOT down (plugin still coming up)', () => {
+    // even with no claude pid, a recent respawn suppresses a down verdict
+    expect(decideNativeChannelDown({ claudePid: null, pluginAlive: false, keepaliveAgeMs: 99 * 60 * 1000, msSinceLastRespawn: 1000 })).toBe(false)
   })
 
-  it('conflict window prunes entries older than the window', () => {
-    const now = 1_000_000
-    const old = [now - 10 * 60 * 1000, now - 9 * 60 * 1000] // older than 5 min
-    const { times, storm } = evalConflictWindow(old, now)
-    expect(times).toEqual([now]) // old ones pruned, only the new push remains
-    expect(storm).toBe(false)
+  it('session/process gone past grace -> DOWN', () => {
+    expect(decideNativeChannelDown({ claudePid: null, pluginAlive: false, keepaliveAgeMs: 0, msSinceLastRespawn: STARTUP_GRACE_MS + 1 })).toBe(true)
+  })
+
+  it('plugin grandchild gone past grace -> DOWN', () => {
+    expect(decideNativeChannelDown({ claudePid: 1234, pluginAlive: false, keepaliveAgeMs: 0, msSinceLastRespawn: null })).toBe(true)
+  })
+
+  it('alive + fresh keepalive (quiet but healthy) -> NOT down (no false backfill on a quiet channel)', () => {
+    expect(decideNativeChannelDown({ claudePid: 1234, pluginAlive: true, keepaliveAgeMs: 60_000, msSinceLastRespawn: null })).toBe(false)
+  })
+
+  it('alive + STALE keepalive (wedged TUI) -> DOWN', () => {
+    expect(decideNativeChannelDown({ claudePid: 1234, pluginAlive: true, keepaliveAgeMs: KEEPALIVE_STALE_MS + 1, msSinceLastRespawn: null })).toBe(true)
+  })
+
+  it('alive + missing keepalive file (null age) -> NOT down (cannot prove wedged)', () => {
+    expect(decideNativeChannelDown({ claudePid: 1234, pluginAlive: true, keepaliveAgeMs: null, msSinceLastRespawn: null })).toBe(false)
   })
 })
 
@@ -319,58 +326,3 @@ describe('handoff content safety', () => {
   })
 })
 
-// ---- plugin outbound-only patch script ----------------------------------
-
-describe('patch-telegram-outbound-only.sh', () => {
-  const here = dirname(fileURLToPath(import.meta.url))
-  const scriptPath = join(here, '..', '..', 'scripts', 'patch-telegram-outbound-only.sh')
-  let fakeHome: string
-  let pluginFile: string
-
-  // Minimal fixture mirroring the real plugin structure: the reply tool handler
-  // is registered BEFORE the bot.start() IIFE, exactly as in server.ts.
-  const FIXTURE = [
-    'mcp.setRequestHandler(CallToolRequestSchema, async (req) => { /* reply tool */ })',
-    'await mcp.connect(transport)',
-    'void (async () => {',
-    '  for (let attempt = 1; ; attempt++) {',
-    '    await bot.start({})',
-    '  }',
-    '})()',
-    '',
-  ].join('\n')
-
-  beforeEach(() => {
-    fakeHome = mkdtempSync(join(tmpdir(), 'patch-test-'))
-    const pluginDir = join(fakeHome, '.claude', 'plugins', 'marketplaces', 'claude-plugins-official', 'external_plugins', 'telegram')
-    mkdirSync(pluginDir, { recursive: true })
-    pluginFile = join(pluginDir, 'server.ts')
-    writeFileSync(pluginFile, FIXTURE)
-  })
-
-  afterEach(() => { rmSync(fakeHome, { recursive: true, force: true }) })
-
-  it('plugin_outbound_only_keeps_reply_tool: guard wraps the poll loop, not the tool handler', () => {
-    execFileSync('bash', [scriptPath], { env: { ...process.env, HOME: fakeHome } })
-    const patched = readFileSync(pluginFile, 'utf-8')
-    // getUpdates poll loop is guarded
-    expect(patched).toContain("if (process.env.TELEGRAM_OUTBOUND_ONLY !== '1') void (async () => {")
-    // reply tool handler + mcp.connect stay OUTSIDE the guard (before it)
-    const guardIdx = patched.indexOf('TELEGRAM_OUTBOUND_ONLY')
-    expect(patched.indexOf('CallToolRequestSchema')).toBeLessThan(guardIdx)
-    expect(patched.indexOf('mcp.connect')).toBeLessThan(guardIdx)
-  })
-
-  it('is idempotent (second run is a no-op, single guard)', () => {
-    execFileSync('bash', [scriptPath], { env: { ...process.env, HOME: fakeHome } })
-    execFileSync('bash', [scriptPath], { env: { ...process.env, HOME: fakeHome } })
-    const patched = readFileSync(pluginFile, 'utf-8')
-    expect(patched.match(/TELEGRAM_OUTBOUND_ONLY/g)?.length).toBe(1)
-  })
-
-  it('--check exits non-zero before patch, zero after', () => {
-    expect(() => execFileSync('bash', [scriptPath, '--check'], { env: { ...process.env, HOME: fakeHome } })).toThrow()
-    execFileSync('bash', [scriptPath], { env: { ...process.env, HOME: fakeHome } })
-    expect(() => execFileSync('bash', [scriptPath, '--check'], { env: { ...process.env, HOME: fakeHome } })).not.toThrow()
-  })
-})
