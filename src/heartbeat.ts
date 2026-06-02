@@ -1,5 +1,6 @@
-import { statSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { statSync, mkdirSync, writeFileSync, existsSync, readFileSync, symlinkSync, readdirSync, lstatSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
 import {
   HEARTBEAT_START_HOUR,
   HEARTBEAT_END_HOUR,
@@ -30,6 +31,22 @@ import { wrapUntrusted, UNTRUSTED_PREAMBLE } from './prompt-safety.js'
 // call -- safe to delete by hand, will be recreated next tick.
 const HEARTBEAT_AGENT_CWD = join(PROJECT_ROOT, 'agents', 'heartbeat-worker')
 
+// Isolated CLAUDE_CONFIG_DIR for the heartbeat sub-agent. The claude-agent-sdk
+// recognises the CLAUDE_CONFIG_DIR env var and reads ALL Claude Code config
+// (settings.json, projects/, plugins/, marketplaces/, OAuth tokens) from this
+// path instead of ~/.claude/. We construct this dir as a SET OF SYMLINKS to
+// the real ~/.claude/ -- preserving auth, project transcripts and plugin
+// marketplaces -- but REPLACE settings.json with an explicit
+// enabledPlugins:{} (all-false) override.
+//
+// Why: 2026-06-02 10:00 incident proved that the project-scope settings.json
+// (#247) does NOT override the user-scope enabledPlugins map inside the
+// claude-agent-sdk spawn path. The SDK reads ~/.claude/settings.json
+// directly. Repointing CLAUDE_CONFIG_DIR is the documented way the SDK
+// supports an isolated config root (sdk.d.ts: "set CLAUDE_CONFIG_DIR=/tmp
+// for ephemeral local copy").
+const HEARTBEAT_CONFIG_DIR = join(HEARTBEAT_AGENT_CWD, '.claude-config')
+
 // Plugins that MUST be disabled at the project-scope settings.json for the
 // heartbeat sub-agent. The user-scope ~/.claude/settings.json keeps these
 // enabled for Marveen / sub-agents that legitimately need them; the
@@ -52,29 +69,69 @@ interface ClaudeSettings {
   [key: string]: unknown
 }
 
+// Items under ~/.claude/ that must NOT be symlinked into the isolated
+// config dir. settings.json is the WHOLE POINT -- it gets replaced with
+// our enabledPlugins:{} override. .DS_Store / lock files are just noise.
+const HEARTBEAT_CONFIG_SKIP = new Set(['settings.json', '.DS_Store', '.lock'])
+
 function ensureHeartbeatWorkerCwd(): void {
   try {
     if (!existsSync(HEARTBEAT_AGENT_CWD)) {
       mkdirSync(HEARTBEAT_AGENT_CWD, { recursive: true })
     }
     // Project-scope empty MCP list (defense in depth -- the load-bearing
-    // gate is the enabledPlugins override below).
+    // gates are the enabledPlugins override + CLAUDE_CONFIG_DIR).
     const mcpPath = join(HEARTBEAT_AGENT_CWD, '.mcp.json')
     if (!existsSync(mcpPath)) {
       writeFileSync(mcpPath, '{"mcpServers":{}}\n')
     }
 
-    // Project-scope settings.json with enabledPlugins override. MERGE with
-    // anything Claude Code (or a prior tick) may have written -- a stale
-    // hooks: section or other field must survive. We only force-write the
-    // enabledPlugins map.
-    const settingsDir = join(HEARTBEAT_AGENT_CWD, '.claude')
-    const settingsPath = join(settingsDir, 'settings.json')
-    if (!existsSync(settingsDir)) {
-      mkdirSync(settingsDir, { recursive: true })
+    // Build the isolated CLAUDE_CONFIG_DIR. Symlink every top-level entry
+    // from ~/.claude/ EXCEPT settings.json (which we replace) and noise
+    // files. Symlinks let auth tokens / project transcripts / plugin
+    // marketplaces remain shared, while settings.json -- the only file
+    // whose enabledPlugins map matters here -- is private to this dir.
+    if (!existsSync(HEARTBEAT_CONFIG_DIR)) {
+      mkdirSync(HEARTBEAT_CONFIG_DIR, { recursive: true })
     }
+    const realClaude = join(homedir(), '.claude')
+    if (existsSync(realClaude)) {
+      for (const entry of readdirSync(realClaude)) {
+        if (HEARTBEAT_CONFIG_SKIP.has(entry)) continue
+        const linkPath = join(HEARTBEAT_CONFIG_DIR, entry)
+        const target = join(realClaude, entry)
+        // Already a correct symlink? Skip. Anything else (stale file,
+        // wrong target) gets unlinked and re-created so a manual edit
+        // doesn't permanently break the isolation.
+        let needsLink = true
+        if (existsSync(linkPath) || lstatSyncSafe(linkPath)) {
+          try {
+            const st = lstatSync(linkPath)
+            if (st.isSymbolicLink()) {
+              needsLink = false
+            } else {
+              rmSync(linkPath, { recursive: true, force: true })
+            }
+          } catch { /* will recreate */ }
+        }
+        if (needsLink) {
+          try {
+            symlinkSync(target, linkPath)
+          } catch (err) {
+            logger.warn({ err, target, linkPath }, 'Heartbeat: failed to symlink config entry, sub-agent may degrade')
+          }
+        }
+      }
+    }
+
+    // The actual override: a fresh settings.json with enabledPlugins:{}
+    // (every channel plugin explicitly false). MERGE with anything
+    // Claude Code may have written in a prior tick so hook configs etc.
+    // survive -- but if a real ~/.claude/settings.json exists, we DO NOT
+    // copy its content (only the enabledPlugins flip is intended).
+    const settingsPath = join(HEARTBEAT_CONFIG_DIR, 'settings.json')
     let current: ClaudeSettings = {}
-    if (existsSync(settingsPath)) {
+    if (existsSync(settingsPath) && !lstatSync(settingsPath).isSymbolicLink()) {
       try {
         const raw = readFileSync(settingsPath, 'utf-8')
         const parsed = JSON.parse(raw)
@@ -84,6 +141,11 @@ function ensureHeartbeatWorkerCwd(): void {
       } catch (err) {
         logger.warn({ err, path: settingsPath }, 'Heartbeat: failed to parse worker settings.json, rewriting')
       }
+    } else if (lstatSyncSafe(settingsPath)?.isSymbolicLink()) {
+      // Symlink to real settings.json from a prior tick or HEARTBEAT_CONFIG_SKIP
+      // change -- remove it so we own the file. Reading through the symlink
+      // would import the user-scope enabledPlugins, defeating the override.
+      rmSync(settingsPath, { force: true })
     }
     const enabledPlugins: Record<string, boolean> = { ...(current.enabledPlugins ?? {}) }
     let dirty = false
@@ -93,13 +155,17 @@ function ensureHeartbeatWorkerCwd(): void {
         dirty = true
       }
     }
-    if (dirty || current.enabledPlugins == null) {
+    if (dirty || current.enabledPlugins == null || !existsSync(settingsPath)) {
       const next: ClaudeSettings = { ...current, enabledPlugins }
       writeFileSync(settingsPath, JSON.stringify(next, null, 2) + '\n')
     }
   } catch (err) {
     logger.warn({ err, cwd: HEARTBEAT_AGENT_CWD }, 'Heartbeat: failed to ensure isolated worker cwd, falling back to PROJECT_ROOT')
   }
+}
+
+function lstatSyncSafe(p: string): ReturnType<typeof lstatSync> | null {
+  try { return lstatSync(p) } catch { return null }
 }
 
 // --- Data types ---
@@ -317,7 +383,14 @@ async function executeHeartbeat(): Promise<void> {
     // heartbeat fire. The agents/heartbeat-worker dir has an empty
     // .mcp.json and no agent-config, so claude finds no channel plugin
     // to activate.
-    const { text } = await runAgent(prompt, undefined, undefined, false, HEARTBEAT_AGENT_CWD)
+    // CLAUDE_CONFIG_DIR repoints the SDK-spawned claude to the isolated
+    // config root we just built. That's the gate that actually prevents
+    // the user-scope enabledPlugins:{telegram:true} from leaking in --
+    // the project-scope override in #247 did NOT (verified: 09/10/11/12
+    // hb all loaded the plugin and crashed Marveen via 409 Conflict).
+    const { text } = await runAgent(prompt, undefined, undefined, false, HEARTBEAT_AGENT_CWD, {
+      CLAUDE_CONFIG_DIR: HEARTBEAT_CONFIG_DIR,
+    })
     if (text) {
       await notifyTelegram(text)
       logger.info('Heartbeat ertesites elkuldve')

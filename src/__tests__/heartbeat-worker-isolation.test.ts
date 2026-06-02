@@ -2,58 +2,69 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-// Contract tests for the 2026-06-02 09:00-incident fix: the heartbeat
-// sub-agent must NOT load the Telegram / Slack / Discord channel plugins,
-// because doing so spawns a duplicate bun poller against Marveen's bot
-// token and crashes the live Marveen channel via 409 Conflict.
+// Contract tests for the 2026-06-02 channel-disconnect chain.
 //
-// The #237 fix scoped only project-level MCPs (empty .mcp.json), but
-// `enabledPlugins` lives at the USER scope in ~/.claude/settings.json and
-// is global to every Claude Code spawn unless a project-scope settings.json
-// overrides it. This PR adds that override.
+// - #237: project-scope .mcp.json={} -- necessary but not sufficient
+// - #247: project-scope .claude/settings.json enabledPlugins:false --
+//         DID NOT WORK in production (9/10/11/12 hb all spawned the
+//         Telegram plugin and crashed Marveen via 409 Conflict). The
+//         claude-agent-sdk reads ~/.claude/settings.json directly and
+//         ignores the project-scope override.
+// - THIS PR: CLAUDE_CONFIG_DIR repointing -- the SDK-documented way to
+//         override the entire ~/.claude/ root for an SDK-spawned claude.
+//         Combined with a symlinked passthrough of auth + projects, the
+//         heartbeat sub-agent now operates with enabledPlugins:{} and
+//         cannot load any channel plugin.
 
 const SRC = readFileSync(join(__dirname, '../heartbeat.ts'), 'utf-8')
 
-describe('heartbeat worker cwd isolation (2026-06-02 09:00 incident)', () => {
-  it('declares the disabled-plugins list explicitly', () => {
+describe('heartbeat worker cwd + CLAUDE_CONFIG_DIR isolation (2026-06-02 incident chain)', () => {
+  it('uses CLAUDE_CONFIG_DIR as the load-bearing override -- not just project-scope settings.json', () => {
+    expect(SRC).toMatch(/CLAUDE_CONFIG_DIR/)
+    expect(SRC).toMatch(/HEARTBEAT_CONFIG_DIR/)
+  })
+
+  it('passes CLAUDE_CONFIG_DIR to runAgent via the env override', () => {
+    // runAgent's 6th positional arg is env: Record<string, string | undefined>.
+    // CLAUDE_CONFIG_DIR must travel through that channel to actually reach the
+    // SDK-spawned claude.
+    expect(SRC).toMatch(/runAgent\([^)]+CLAUDE_CONFIG_DIR/)
+  })
+
+  it('symlinks ~/.claude/ entries INTO the isolated config dir (preserve auth + projects)', () => {
+    // An empty CLAUDE_CONFIG_DIR would lose the OAuth tokens needed for the
+    // sub-agent to call the Anthropic API. We symlink everything except
+    // settings.json (which we replace) and noise files.
+    expect(SRC).toMatch(/symlinkSync/)
+    expect(SRC).toMatch(/homedir\(\)/)
+    expect(SRC).toMatch(/readdirSync/)
+    expect(SRC).toMatch(/HEARTBEAT_CONFIG_SKIP/)
+  })
+
+  it('explicitly skips settings.json from the symlink set (it is the WHOLE POINT to replace it)', () => {
+    expect(SRC).toMatch(/HEARTBEAT_CONFIG_SKIP[^)]*settings\.json/s)
+  })
+
+  it('writes a fresh settings.json with enabledPlugins:false for telegram/slack/discord', () => {
     expect(SRC).toMatch(/HEARTBEAT_DISABLED_PLUGINS/)
     expect(SRC).toMatch(/telegram@claude-plugins-official/)
     expect(SRC).toMatch(/slack-channel@marveen-marketplace/)
+    expect(SRC).toMatch(/discord@claude-plugins-official/)
   })
 
-  it('writes a project-scope .claude/settings.json with enabledPlugins:false', () => {
-    expect(SRC).toMatch(/\.claude/)
-    expect(SRC).toMatch(/enabledPlugins/)
-    // The write path must call writeFileSync with a settings.json target.
-    expect(SRC).toMatch(/settingsPath/)
-    expect(SRC).toMatch(/writeFileSync\(settingsPath/)
+  it('refuses to read through a settings.json symlink (would import user-scope enabledPlugins)', () => {
+    // If a prior tick's HEARTBEAT_CONFIG_SKIP didn't contain settings.json
+    // and it got symlinked, we must unlink it and write our own file --
+    // never inherit the user-scope content silently.
+    expect(SRC).toMatch(/isSymbolicLink/)
+    expect(SRC).toMatch(/rmSync\(settingsPath/)
   })
 
-  it('MERGES with existing settings.json (preserves hooks/etc., does not clobber)', () => {
-    // The Claude Code TUI auto-generates a settings.json with a PreCompact
-    // hooks section. The ensureHeartbeatWorkerCwd must NOT overwrite that
-    // (Marveen audit memoria-mentes hook relies on it). Re-read, parse,
-    // merge enabledPlugins only.
-    expect(SRC).toMatch(/readFileSync\(settingsPath/)
-    expect(SRC).toMatch(/JSON\.parse/)
-    expect(SRC).toMatch(/\.\.\.current/)
-  })
-
-  it('idempotent: a no-op tick must NOT rewrite the file (dirty flag)', () => {
-    // Repeated writes would tick the mtime every minute and add noise to
-    // any file watcher / SCM diff. Only write when the enabledPlugins map
-    // actually changes.
-    expect(SRC).toMatch(/dirty/)
-    expect(SRC).toMatch(/dirty\s*\|\|/)
-  })
-
-  it('keeps the empty .mcp.json -- defense in depth for project-scope MCPs', () => {
-    expect(SRC).toMatch(/mcpServers/)
+  it('keeps the empty .mcp.json -- defense in depth', () => {
     expect(SRC).toMatch(/"mcpServers":\{\}/)
   })
 
-  it('runs in the same ensureHeartbeatWorkerCwd that heartbeat.ts already calls', () => {
-    expect(SRC).toMatch(/function ensureHeartbeatWorkerCwd/)
-    expect(SRC).toMatch(/ensureHeartbeatWorkerCwd\(\)/)
+  it('idempotent: stale non-symlinks under the config dir get rebuilt, not appended', () => {
+    expect(SRC).toMatch(/rmSync\(linkPath/)
   })
 })
