@@ -1,38 +1,63 @@
-# Deterministic conversation continuity (pending-message ledger)
+# Deterministic conversation continuity (rolling-transcript ledger)
 
 **Problem.** The channel-watchdog respawns the channels session as a *fresh* claude
 (`channels.sh`, no `--continue` — because `--continue` breaks `--channels`
 activation). A fresh session has **zero memory** of the live conversation, so if
-Gyula is mid-conversation when a respawn happens, his last unanswered question is
-lost. This must be impossible to miss — guaranteed by a **deterministic harness**
-(hooks + a durable ledger), never by agent behaviour (which can fail or restart).
+Gyula is mid-conversation when a respawn happens, both his last unanswered question
+**and the context it refers to** are lost. This must be impossible to miss —
+guaranteed by a **deterministic harness** (hooks + a durable ledger), never by
+agent behaviour (which can fail or restart).
 
 **Mechanism (zero agent discretion).**
 
-1. **Durable ledger** — `store/claudeclaw.db` → table `pending_messages`
-   (`chat_id, message_id, text, ts, answered, answered_at, created_at`,
-   `UNIQUE(chat_id, message_id)`). Created by the `db.ts` `initDatabase()`
-   migration; `scripts/hooks/ledger_lib.py` re-creates it defensively too.
+1. **Durable rolling transcript** — `store/claudeclaw.db` → table `conversation_log`
+   (`id, agent_id, chat_id, direction('in'|'out'), message_id, text, ts, created_at`,
+   `UNIQUE(agent_id, chat_id, direction, message_id)`). Every channel turn — inbound
+   user messages AND outbound replies — is appended here. Created by the `db.ts`
+   `initDatabase()` migration; `scripts/hooks/ledger_lib.py` re-creates it defensively
+   too (a hook may run before the dashboard migration on a fresh boot).
 2. **Inbound capture** — `UserPromptSubmit` hook `scripts/hooks/ledger-capture.py`
    parses every inbound `<channel source="plugin:telegram:telegram" …>` block from
-   the prompt and `INSERT OR IGNORE`s it `answered=0`, **before** the agent acts.
-3. **Answered flip** — `PostToolUse` hook `scripts/hooks/ledger-answered.py` on the
-   telegram reply tool flips the chat's open rows to `answered=1` (resolves the
-   `chat_id=0` shorthand to the owner chat).
+   the prompt and `INSERT OR IGNORE`s it as `direction='in'`, **before** the agent
+   acts. The `UNIQUE` constraint makes re-capture idempotent.
+3. **Outbound capture** — `PostToolUse` hook `scripts/hooks/ledger-outbound.py` on the
+   telegram reply tool records the reply text as `direction='out'` (resolves the
+   `chat_id=0` shorthand to the owner chat). Outbound rows carry `message_id=NULL`, so
+   they are never deduped against each other.
 4. **Startup replay** — `SessionStart` hook `scripts/hooks/ledger-replay.py` injects
-   any still-`answered=0` message as hidden `additionalContext` at the top of the
-   fresh session's context: "MEGVÁLASZOLATLAN … válaszolj rá MOST". The agent does
-   not need to *remember* to look — it's already in front of it.
+   hidden `additionalContext` at the top of the fresh session's context:
+   - the **last N turns** of the transcript in chronological order, each prefixed
+     `Gyula:` (inbound) / `Te:` (outbound), so the fresh session knows *what the
+     conversation was about*;
+   - a highlighted **OPEN QUESTION** — the most recent inbound with no later outbound
+     ("NYITOTT KÉRDÉS … válaszolj rá MOST") — with its `chat_id` so the reply goes to
+     the right chat.
 
-**Scope.** Wire the hooks in the **project** `/home/marveen/marveen/.claude/settings.json`
-(NOT user scope). The main channels session runs with cwd `/home/marveen/marveen`,
-so it picks these up; sub-agents (Dia, Ernő bá) run from a different cwd and do NOT
-— their separate-bot chats never enter Gyula's main ledger.
+   The agent does not need to *remember* to look — the context and the open question
+   are already in front of it.
+
+**Multi-agent scope.** The hooks are **generic across all channel agents**
+(marveen / dia / erno-ba): `agent_id` is derived from the session's cwd
+(`<install>/agents/<id>` → `<id>`; `<install>` → `MAIN_AGENT_ID`). Every read and
+write is scoped by `agent_id`, so a session only ever replays its **own** chat and
+agents never cross-contaminate.
+
+**Tuning (env).**
+
+- `LEDGER_CONTEXT_WINDOW` — number of recent turns to replay (default `20`). If the
+  rendered window exceeds ~4000 tokens (`CONTEXT_CHAR_BUDGET = 16000` chars in
+  `ledger-replay.py`), the **oldest** turns are dropped so injected context stays
+  bounded.
+- `LEDGER_OWNER_CHAT` / `ALLOWED_CHAT_ID` — resolves the reply tool's `chat_id=0`
+  shorthand to the owner chat in `ledger-outbound.py`.
+- `LEDGER_DB_PATH` — test-only DB path override.
 
 ## settings.json block to add (`/home/marveen/marveen/.claude/settings.json`)
 
-Merge this `hooks` object (the file currently has none). `$CLAUDE_PROJECT_DIR` is
-substituted by Claude Code (→ `/home/marveen/marveen` for the main session).
+Wire the hooks in the **project** settings (NOT user scope). The main channels
+session runs with cwd `/home/marveen/marveen`, so it picks these up. The hooks
+self-scope by cwd, so they are safe even if inherited. Merge this `hooks` object
+(`$CLAUDE_PROJECT_DIR` → `/home/marveen/marveen` for the main session).
 
 ```json
 {
@@ -41,7 +66,7 @@ substituted by Claude Code (→ `/home/marveen/marveen` for the main session).
       { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/ledger-capture.py\"", "timeout": 15 } ] }
     ],
     "PostToolUse": [
-      { "matcher": "mcp__plugin.telegram.telegram__reply", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/ledger-answered.py\"", "timeout": 15 } ] }
+      { "matcher": "mcp__plugin.telegram.telegram__reply", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/ledger-outbound.py\"", "timeout": 15 } ] }
     ],
     "SessionStart": [
       { "matcher": "auto", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/ledger-replay.py\"", "timeout": 15 } ] }
@@ -55,7 +80,7 @@ substituted by Claude Code (→ `/home/marveen/marveen` for the main session).
   wildcards that match the sanitized tool name `mcp__plugin_telegram_telegram__reply`
   (the hook also double-checks `tool_name` contains `telegram`+`reply`).
 - `SessionStart` matcher `auto`: fires on startup / resume / clear / compact — the
-  replay is idempotent (no open rows → no-op).
+  replay is a no-op when the transcript is empty.
 
 **No systemd needed** — these are event-driven Claude Code hooks, not timers. The
 hooks read `store/claudeclaw.db` via `python3` stdlib `sqlite3` (no node startup,
@@ -63,8 +88,9 @@ no `jq`). Take effect on the next session start after the settings change.
 
 ## Tests
 
-- `bash scripts/__tests__/conversation-ledger.test.sh` — 17 cases (capture / answered
-  / replay / idempotency / edges) against the real hooks, isolated via
-  `LEDGER_DB_PATH` + `LEDGER_OWNER_CHAT`.
+- `bash scripts/__tests__/conversation-ledger.test.sh` — 28 cases (inbound/outbound
+  capture / replay context window / N-limit / chronological order + prefixes /
+  open-question / answered-no-block / idempotency / multi-agent scope / edges)
+  against the real hooks, isolated via `LEDGER_DB_PATH` + `LEDGER_OWNER_CHAT`.
 - `npx vitest run src/__tests__/conversation-ledger-schema.test.ts` — schema-drift
   guard (db.ts migration == ledger_lib.py).

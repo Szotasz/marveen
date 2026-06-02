@@ -9,39 +9,44 @@ import { join } from 'node:path'
 // have, or vice versa. This test locks them together.
 const ROOT = join(__dirname, '..', '..')
 
-function pendingColumns(src: string): string[] {
-  const m = src.match(/CREATE TABLE IF NOT EXISTS pending_messages\s*\(([\s\S]*?)\n\s*\)/)
+function logColumns(src: string): string[] {
+  const m = src.match(/CREATE TABLE IF NOT EXISTS conversation_log\s*\(([\s\S]*?)\n\s*\)/)
   if (!m) return []
   return m[1]
     .split('\n')
-    .map((l) => l.trim())
+    .map((l) => l.trim().replace(/,$/, ''))
     .filter((l) => l && !/^(UNIQUE|PRIMARY|FOREIGN|CHECK)\b/i.test(l))
     .map((l) => l.split(/\s+/)[0])
     .filter(Boolean)
 }
 
-describe('pending_messages schema: db.ts migration == ledger_lib.py (no drift)', () => {
+describe('conversation_log schema: db.ts migration == ledger_lib.py (no drift)', () => {
   const dbts = readFileSync(join(ROOT, 'src/db.ts'), 'utf-8')
   const lib = readFileSync(join(ROOT, 'scripts/hooks/ledger_lib.py'), 'utf-8')
 
   it('both places define the table', () => {
-    expect(dbts).toMatch(/CREATE TABLE IF NOT EXISTS pending_messages/)
-    expect(lib).toMatch(/CREATE TABLE IF NOT EXISTS pending_messages/)
+    expect(dbts).toMatch(/CREATE TABLE IF NOT EXISTS conversation_log/)
+    expect(lib).toMatch(/CREATE TABLE IF NOT EXISTS conversation_log/)
   })
 
   it('the column sets are identical and complete', () => {
-    const a = pendingColumns(dbts).sort()
-    const b = pendingColumns(lib).sort()
-    expect(a).toEqual(['answered', 'answered_at', 'chat_id', 'created_at', 'message_id', 'text', 'ts'])
+    const a = logColumns(dbts).sort()
+    const b = logColumns(lib).sort()
+    expect(a).toEqual(['agent_id', 'chat_id', 'created_at', 'direction', 'id', 'message_id', 'text', 'ts'])
     expect(b).toEqual(a)
   })
 
-  it('both enforce capture idempotency via UNIQUE(chat_id, message_id)', () => {
-    expect(dbts).toMatch(/UNIQUE\(chat_id,\s*message_id\)/)
-    expect(lib).toMatch(/UNIQUE\(chat_id,\s*message_id\)/)
+  it('both constrain direction to in/out', () => {
+    expect(dbts).toMatch(/direction\s+TEXT\s+NOT NULL\s+CHECK\(direction IN \('in','out'\)\)/)
+    expect(lib).toMatch(/direction\s+TEXT\s+NOT NULL\s+CHECK\(direction IN \('in','out'\)\)/)
   })
 
-  it('db.ts creates the unanswered lookup index', () => {
-    expect(dbts).toMatch(/CREATE INDEX IF NOT EXISTS idx_pending_unanswered ON pending_messages\(chat_id, answered\)/)
+  it('both dedupe inbound capture via UNIQUE(agent_id, chat_id, direction, message_id)', () => {
+    expect(dbts).toMatch(/UNIQUE\(agent_id,\s*chat_id,\s*direction,\s*message_id\)/)
+    expect(lib).toMatch(/UNIQUE\(agent_id,\s*chat_id,\s*direction,\s*message_id\)/)
+  })
+
+  it('db.ts creates the per-agent lookup index', () => {
+    expect(dbts).toMatch(/CREATE INDEX IF NOT EXISTS idx_convlog_agent ON conversation_log\(agent_id, created_at\)/)
   })
 })

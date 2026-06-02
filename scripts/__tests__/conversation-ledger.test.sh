@@ -1,5 +1,15 @@
 #!/bin/bash
 # Unit tests for the deterministic conversation-continuity ledger hooks.
+#
+# Architecture under test (increment 2 -- CONTEXT WINDOW): a single rolling
+# transcript table `conversation_log` (direction in/out) is the SOLE source of
+# truth. ledger-capture.py records inbound user turns (direction='in'),
+# ledger-outbound.py records the agent's replies (direction='out'), and
+# ledger-replay.py injects the last N turns of context (chronological, prefixed)
+# PLUS a highlighted open question (the most recent inbound with no later
+# outbound). agent_id is derived from the session cwd so each agent only ever
+# sees its OWN chat.
+#
 # Run: bash scripts/__tests__/conversation-ledger.test.sh
 
 set -e
@@ -11,28 +21,31 @@ trap 'rm -rf "$TMPDIR_BASE"' EXIT
 
 pass() { PASS=$((PASS + 1)); echo "  PASS: $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1"; }
+assert_eq() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1 (expected '$2', got '$3')"; fi; }
 
 INSTALL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 HOOKS_DIR="$INSTALL_DIR/scripts/hooks"
 
-# Helper: run a hook with isolation env vars; stdin is already set by caller
+# Run a hook with isolation env vars. MAIN_AGENT_ID is pinned so a payload with
+# no cwd resolves deterministically to agent 'marveen'. Extra env (e.g.
+# LEDGER_CONTEXT_WINDOW=3) can be exported by the caller and is inherited.
 run_hook() {
     local hook="$1"
     local db="$2"
     shift 2
-    LEDGER_DB_PATH="$db" LEDGER_OWNER_CHAT="8517922966" python3 "$HOOKS_DIR/$hook" "$@"
+    LEDGER_DB_PATH="$db" LEDGER_OWNER_CHAT="8517922966" MAIN_AGENT_ID="marveen" \
+        python3 "$HOOKS_DIR/$hook" "$@"
 }
 
-# Helper: run a single-value SELECT, DB path and SQL passed as argv (no shell interpolation into python source)
+# Single-value SELECT; DB path and SQL passed as argv (no shell interpolation
+# into python source). Missing table / no row -> 'NULL'.
 db_scalar() {
-    local db="$1"
-    local sql="$2"
-    python3 - "$db" "$sql" <<'PYEOF'
+    python3 - "$1" "$2" <<'PYEOF'
 import sqlite3, sys
 con = sqlite3.connect(sys.argv[1])
 try:
     val = con.execute(sys.argv[2]).fetchone()
-    print(val[0] if val else 'NULL')
+    print(val[0] if val and val[0] is not None else 'NULL')
 except Exception:
     print('NULL')
 finally:
@@ -40,185 +53,227 @@ finally:
 PYEOF
 }
 
-# Standard channel-block prompt payload (JSON, inline \n becomes literal newline after echo -e / printf is NOT used)
-# The \n in the JSON string value is a JSON escape sequence, preserved as-is in the bash string.
-CHANNEL_PROMPT='{"hook_event_name":"UserPromptSubmit","prompt":"<channel source=\"plugin:telegram:telegram\" chat_id=\"8517922966\" message_id=\"1054\" user=\"x\" ts=\"2026-06-02T14:20:25.000Z\">\nJók a Fókusz e-mail címek\n</channel>"}'
+# Emit an inbound UserPromptSubmit payload (JSON built in python -> no escaping pain).
+emit_inbound() { # chat_id message_id text [cwd]
+    python3 - "$@" <<'PYEOF'
+import json, sys
+chat_id, message_id, text = sys.argv[1], sys.argv[2], sys.argv[3]
+block = (f'<channel source="plugin:telegram:telegram" chat_id="{chat_id}" '
+         f'message_id="{message_id}" user="x" ts="2026-06-02T14:20:25.000Z">\n{text}\n</channel>')
+payload = {"hook_event_name": "UserPromptSubmit", "prompt": block}
+if len(sys.argv) > 4:
+    payload["cwd"] = sys.argv[4]
+print(json.dumps(payload))
+PYEOF
+}
+
+# Emit a Telegram reply PostToolUse payload.
+emit_reply() { # chat_id text [cwd]
+    python3 - "$@" <<'PYEOF'
+import json, sys
+payload = {"tool_name": "mcp__plugin_telegram_telegram__reply",
+           "tool_input": {"chat_id": sys.argv[1], "text": sys.argv[2]}}
+if len(sys.argv) > 3:
+    payload["cwd"] = sys.argv[3]
+print(json.dumps(payload))
+PYEOF
+}
+
+# Emit a SessionStart payload.
+emit_session() { # [cwd]
+    python3 - "$@" <<'PYEOF'
+import json, sys
+payload = {"hook_event_name": "SessionStart", "source": "startup"}
+if len(sys.argv) > 1:
+    payload["cwd"] = sys.argv[1]
+print(json.dumps(payload))
+PYEOF
+}
+
+# Extract hookSpecificOutput.additionalContext from a replay JSON blob (file).
+# Empty / no output -> prints nothing.
+ctx_of() {
+    python3 - "$1" <<'PYEOF'
+import json, sys
+try:
+    raw = open(sys.argv[1]).read().strip()
+    if not raw:
+        sys.exit(0)
+    print(json.loads(raw)["hookSpecificOutput"]["additionalContext"])
+except Exception:
+    sys.exit(0)
+PYEOF
+}
 
 echo "conversation-ledger tests"
 echo "========================="
 
 # ---------------------------------------------------------------------------
-# (a) INBOUND CAPTURE
+# (a) INBOUND CAPTURE -> conversation_log direction='in'
 # ---------------------------------------------------------------------------
 echo ""
 echo "(a) Inbound capture"
 
 DB_A="$TMPDIR_BASE/a.db"
-printf '%s' "$CHANNEL_PROMPT" | run_hook ledger-capture.py "$DB_A"
+emit_inbound 8517922966 1054 "Jok a Fokusz e-mail cimek" | run_hook ledger-capture.py "$DB_A"
 
-ROW_COUNT=$(db_scalar "$DB_A" "SELECT COUNT(*) FROM pending_messages")
-if [ "$ROW_COUNT" = "1" ]; then
-    pass "inbound capture: exactly 1 row inserted"
-else
-    fail "inbound capture: expected 1 row, got $ROW_COUNT"
-fi
-
-CHAT_ID_VAL=$(db_scalar "$DB_A" "SELECT chat_id FROM pending_messages")
-if [ "$CHAT_ID_VAL" = "8517922966" ]; then
-    pass "inbound capture: chat_id=8517922966"
-else
-    fail "inbound capture: chat_id expected 8517922966, got $CHAT_ID_VAL"
-fi
-
-MSG_ID_VAL=$(db_scalar "$DB_A" "SELECT message_id FROM pending_messages")
-if [ "$MSG_ID_VAL" = "1054" ]; then
-    pass "inbound capture: message_id=1054"
-else
-    fail "inbound capture: message_id expected 1054, got $MSG_ID_VAL"
-fi
-
-ANSWERED_VAL=$(db_scalar "$DB_A" "SELECT answered FROM pending_messages")
-if [ "$ANSWERED_VAL" = "0" ]; then
-    pass "inbound capture: answered=0"
-else
-    fail "inbound capture: answered expected 0, got $ANSWERED_VAL"
-fi
-
-# Check text is non-empty and contains content from the message ("Fókusz")
-python3 - "$DB_A" <<'PYEOF'
-import sqlite3, sys
-con = sqlite3.connect(sys.argv[1])
-text = con.execute("SELECT text FROM pending_messages").fetchone()[0]
-con.close()
-assert text and len(text.strip()) > 0, f"text is empty: {text!r}"
-# The message text "Jók a Fókusz e-mail címek" should be partially present
-# (the JSON \n is decoded by json.load in the hook before the regex runs)
-assert any(fragment in text for fragment in ["k", "mail", "Fókusz", "J"]), f"unexpected text: {text!r}"
-print("  PASS: inbound capture: text contains message content")
-PYEOF
-if [ $? -ne 0 ]; then
-    fail "inbound capture: text check failed"
-fi
+assert_eq "inbound capture: exactly 1 row" "1" \
+    "$(db_scalar "$DB_A" "SELECT COUNT(*) FROM conversation_log")"
+assert_eq "inbound capture: direction='in'" "in" \
+    "$(db_scalar "$DB_A" "SELECT direction FROM conversation_log")"
+assert_eq "inbound capture: chat_id" "8517922966" \
+    "$(db_scalar "$DB_A" "SELECT chat_id FROM conversation_log")"
+assert_eq "inbound capture: message_id" "1054" \
+    "$(db_scalar "$DB_A" "SELECT message_id FROM conversation_log")"
+assert_eq "inbound capture: text recorded" "Jok a Fokusz e-mail cimek" \
+    "$(db_scalar "$DB_A" "SELECT text FROM conversation_log")"
 
 # ---------------------------------------------------------------------------
-# (b) ANSWERED FLIP
+# (b) OUTBOUND CAPTURE -> conversation_log direction='out'
 # ---------------------------------------------------------------------------
 echo ""
-echo "(b) Answered flip"
+echo "(b) Outbound capture"
 
 DB_B="$TMPDIR_BASE/b.db"
-printf '%s' "$CHANNEL_PROMPT" | run_hook ledger-capture.py "$DB_B"
+emit_inbound 8517922966 1054 "kerdes" | run_hook ledger-capture.py "$DB_B"
+emit_reply 8517922966 "ez a valaszom" | run_hook ledger-outbound.py "$DB_B"
 
-REPLY_PAYLOAD='{"tool_name":"mcp__plugin_telegram_telegram__reply","tool_input":{"chat_id":"8517922966","text":"ok"}}'
-printf '%s' "$REPLY_PAYLOAD" | run_hook ledger-answered.py "$DB_B"
+assert_eq "outbound: exactly 1 out row" "1" \
+    "$(db_scalar "$DB_B" "SELECT COUNT(*) FROM conversation_log WHERE direction='out'")"
+assert_eq "outbound: reply text recorded" "ez a valaszom" \
+    "$(db_scalar "$DB_B" "SELECT text FROM conversation_log WHERE direction='out'")"
+assert_eq "outbound: out row chat_id" "8517922966" \
+    "$(db_scalar "$DB_B" "SELECT chat_id FROM conversation_log WHERE direction='out'")"
 
-ANSWERED_B=$(db_scalar "$DB_B" "SELECT answered FROM pending_messages WHERE message_id='1054'")
-if [ "$ANSWERED_B" = "1" ]; then
-    pass "answered flip: answered=1 after reply"
-else
-    fail "answered flip: expected answered=1, got $ANSWERED_B"
-fi
-
-ANSWERED_AT=$(db_scalar "$DB_B" "SELECT answered_at FROM pending_messages WHERE message_id='1054'")
-if [ "$ANSWERED_AT" != "NULL" ] && [ -n "$ANSWERED_AT" ]; then
-    pass "answered flip: answered_at is not null"
-else
-    fail "answered flip: answered_at is null"
-fi
-
-# chat_id=0 shorthand: fresh DB with message_id=1055, flip using chat_id=0
+# chat_id=0 shorthand resolves to the owner chat
 DB_B2="$TMPDIR_BASE/b2.db"
-PROMPT_1055='{"hook_event_name":"UserPromptSubmit","prompt":"<channel source=\"plugin:telegram:telegram\" chat_id=\"8517922966\" message_id=\"1055\" user=\"x\" ts=\"2026-06-02T14:21:00.000Z\">\nMasik uzenet\n</channel>"}'
-printf '%s' "$PROMPT_1055" | run_hook ledger-capture.py "$DB_B2"
-
-ZERO_REPLY='{"tool_name":"mcp__plugin_telegram_telegram__reply","tool_input":{"chat_id":0,"text":"ok zero shorthand"}}'
-printf '%s' "$ZERO_REPLY" | run_hook ledger-answered.py "$DB_B2"
-
-ANSWERED_B2=$(db_scalar "$DB_B2" "SELECT answered FROM pending_messages WHERE message_id='1055'")
-if [ "$ANSWERED_B2" = "1" ]; then
-    pass "answered flip: chat_id=0 shorthand resolves to owner chat"
-else
-    fail "answered flip: chat_id=0 shorthand did NOT flip row, answered=$ANSWERED_B2"
-fi
+emit_reply 0 "valasz nullaval" | run_hook ledger-outbound.py "$DB_B2"
+assert_eq "outbound: chat_id=0 shorthand resolves to owner chat" "8517922966" \
+    "$(db_scalar "$DB_B2" "SELECT chat_id FROM conversation_log WHERE direction='out'")"
 
 # ---------------------------------------------------------------------------
-# (c) STARTUP REPLAY
+# (c) STARTUP REPLAY -- context window + open question
 # ---------------------------------------------------------------------------
 echo ""
 echo "(c) Startup replay"
 
+# Open question present: single unanswered inbound
 DB_C="$TMPDIR_BASE/c.db"
-printf '%s' "$CHANNEL_PROMPT" | run_hook ledger-capture.py "$DB_C"
-
-SESSION_PAYLOAD='{"hook_event_name":"SessionStart","source":"startup"}'
-REPLAY_OUT=$(printf '%s' "$SESSION_PAYLOAD" | run_hook ledger-replay.py "$DB_C")
-
-if [ -z "$REPLAY_OUT" ]; then
-    fail "replay: expected JSON output for open row, got empty"
+emit_inbound 8517922966 1054 "Jok a Fokusz cimek" | run_hook ledger-capture.py "$DB_C"
+emit_session | run_hook ledger-replay.py "$DB_C" > "$TMPDIR_BASE/c.json"
+C_CTX="$(ctx_of "$TMPDIR_BASE/c.json")"
+if [ -n "$C_CTX" ]; then pass "replay: produced output for open conversation"; else fail "replay: expected output, got empty"; fi
+if printf '%s' "$C_CTX" | grep -q "1054" && printf '%s' "$C_CTX" | grep -q "Fokusz"; then
+    pass "replay: context contains the open message (id + text)"
 else
-    pass "replay: produced output for open row"
+    fail "replay: open message not found in context"
+fi
+if printf '%s' "$C_CTX" | grep -q "NYITOTT KÉRDÉS"; then
+    pass "replay: highlights the open (unanswered) question"
+else
+    fail "replay: missing open-question block"
 fi
 
-# Write the replay output to a temp file and assert via python3 script
-REPLAY_TMP="$TMPDIR_BASE/replay_out.json"
-printf '%s\n' "$REPLAY_OUT" > "$REPLAY_TMP"
+# Context window is chronological and prefixed (Gyula: / Te:)
+DB_CW="$TMPDIR_BASE/cw.db"
+emit_inbound 8517922966 1 "ELSO_UZENET"  | run_hook ledger-capture.py  "$DB_CW"
+emit_reply   8517922966   "VALASZ_KOZEP" | run_hook ledger-outbound.py "$DB_CW"
+emit_inbound 8517922966 2 "MASODIK_UZENET" | run_hook ledger-capture.py "$DB_CW"
+emit_session | run_hook ledger-replay.py "$DB_CW" > "$TMPDIR_BASE/cw.json"
+CW_CTX="$(ctx_of "$TMPDIR_BASE/cw.json")"
+if printf '%s' "$CW_CTX" | grep -q "Gyula:" && printf '%s' "$CW_CTX" | grep -q "Te:"; then
+    pass "replay: turns carry Gyula:/Te: prefixes"
+else
+    fail "replay: missing direction prefixes"
+fi
+if printf '%s' "$CW_CTX" | python3 -c '
+import sys
+s = sys.stdin.read()
+a, b, c = s.find("ELSO_UZENET"), s.find("VALASZ_KOZEP"), s.find("MASODIK_UZENET")
+sys.exit(0 if (a != -1 and b != -1 and c != -1 and a < b < c) else 1)
+'; then
+    pass "replay: context window is in chronological order"
+else
+    fail "replay: context window not in chronological order"
+fi
 
-REPLAY_CHECK="$TMPDIR_BASE/replay_check.py"
-cat > "$REPLAY_CHECK" <<'PYEOF'
-import json, sys
-with open(sys.argv[1]) as f:
-    raw = f.read().strip()
-if not raw:
-    print("  FAIL: replay output file is empty")
-    sys.exit(1)
-data = json.loads(raw)
-assert "hookSpecificOutput" in data, f"missing hookSpecificOutput in: {raw[:300]}"
-ctx = data["hookSpecificOutput"]["additionalContext"]
-assert ctx, "additionalContext is empty"
-print("  PASS: replay: JSON has hookSpecificOutput.additionalContext")
-assert "1054" in ctx, f"message_id 1054 not in ctx: {ctx[:300]}"
-print("  PASS: replay: context contains message_id 1054")
-assert any(fragment in ctx for fragment in ["Fókusz", "mail", "J", "k"]), f"message text not found in ctx: {ctx[:300]}"
-print("  PASS: replay: context contains message text")
-PYEOF
-
-python3 "$REPLAY_CHECK" "$REPLAY_TMP"
-
-# Empty ledger: no-op, no stdout
+# Empty ledger -> no output (no-op)
 DB_C_EMPTY="$TMPDIR_BASE/c_empty.db"
-REPLAY_EMPTY=$(printf '%s' "$SESSION_PAYLOAD" | run_hook ledger-replay.py "$DB_C_EMPTY")
-if [ -z "$REPLAY_EMPTY" ]; then
-    pass "replay: empty ledger prints nothing"
-else
-    fail "replay: empty ledger should print nothing, got: $REPLAY_EMPTY"
-fi
+EMPTY_OUT="$(emit_session | run_hook ledger-replay.py "$DB_C_EMPTY")"
+assert_eq "replay: empty ledger prints nothing" "" "$EMPTY_OUT"
 
-# All-answered ledger: also no-op
+# All-answered ledger -> STILL prints transcript context, but NO open-question block
 DB_C_DONE="$TMPDIR_BASE/c_done.db"
-printf '%s' "$CHANNEL_PROMPT" | run_hook ledger-capture.py "$DB_C_DONE"
-printf '%s' "$REPLY_PAYLOAD" | run_hook ledger-answered.py "$DB_C_DONE"
-REPLAY_DONE=$(printf '%s' "$SESSION_PAYLOAD" | run_hook ledger-replay.py "$DB_C_DONE")
-if [ -z "$REPLAY_DONE" ]; then
-    pass "replay: all-answered ledger prints nothing"
+emit_inbound 8517922966 1054 "regi kerdes" | run_hook ledger-capture.py "$DB_C_DONE"
+emit_reply 8517922966 "regi valasz" | run_hook ledger-outbound.py "$DB_C_DONE"
+emit_session | run_hook ledger-replay.py "$DB_C_DONE" > "$TMPDIR_BASE/c_done.json"
+DONE_CTX="$(ctx_of "$TMPDIR_BASE/c_done.json")"
+if [ -n "$DONE_CTX" ]; then
+    pass "replay: answered ledger still replays transcript context"
 else
-    fail "replay: all-answered ledger should print nothing, got: $REPLAY_DONE"
+    fail "replay: answered ledger should still replay context"
+fi
+if printf '%s' "$DONE_CTX" | grep -q "NYITOTT KÉRDÉS"; then
+    fail "replay: answered ledger must NOT show an open-question block"
+else
+    pass "replay: answered ledger has no open-question block"
 fi
 
 # ---------------------------------------------------------------------------
-# (d) IDEMPOTENCY
+# (d) N-LIMIT -- LEDGER_CONTEXT_WINDOW caps the number of replayed turns
 # ---------------------------------------------------------------------------
 echo ""
-echo "(d) Idempotency"
+echo "(d) Context-window N-limit"
+
+DB_N="$TMPDIR_BASE/n.db"
+for i in 1 2 3 4 5; do
+    emit_inbound 8517922966 "$i" "MSG_NUM_${i}" | run_hook ledger-capture.py "$DB_N"
+done
+LEDGER_CONTEXT_WINDOW=3 run_hook ledger-replay.py "$DB_N" < <(emit_session) > "$TMPDIR_BASE/n.json"
+N_CTX="$(ctx_of "$TMPDIR_BASE/n.json")"
+if printf '%s' "$N_CTX" | grep -q "MSG_NUM_5" && printf '%s' "$N_CTX" | grep -q "MSG_NUM_3"; then
+    pass "replay: N-limit keeps the most recent turns"
+else
+    fail "replay: N-limit dropped a recent turn it should have kept"
+fi
+if printf '%s' "$N_CTX" | grep -q "MSG_NUM_1" || printf '%s' "$N_CTX" | grep -q "MSG_NUM_2"; then
+    fail "replay: N-limit did not drop the oldest turns"
+else
+    pass "replay: N-limit drops turns beyond the window"
+fi
+
+# ---------------------------------------------------------------------------
+# (e) IDEMPOTENCY -- duplicate inbound capture yields one row
+# ---------------------------------------------------------------------------
+echo ""
+echo "(e) Idempotency"
 
 DB_D="$TMPDIR_BASE/d.db"
-printf '%s' "$CHANNEL_PROMPT" | run_hook ledger-capture.py "$DB_D"
-printf '%s' "$CHANNEL_PROMPT" | run_hook ledger-capture.py "$DB_D"
+emit_inbound 8517922966 1054 "ugyanaz" | run_hook ledger-capture.py "$DB_D"
+emit_inbound 8517922966 1054 "ugyanaz" | run_hook ledger-capture.py "$DB_D"
+assert_eq "idempotency: duplicate inbound capture -> exactly 1 row" "1" \
+    "$(db_scalar "$DB_D" "SELECT COUNT(*) FROM conversation_log WHERE direction='in'")"
 
-IDEM_COUNT=$(db_scalar "$DB_D" "SELECT COUNT(*) FROM pending_messages")
-if [ "$IDEM_COUNT" = "1" ]; then
-    pass "idempotency: duplicate capture yields exactly 1 row"
+# ---------------------------------------------------------------------------
+# (f) MULTI-AGENT SCOPE -- a session only ever replays its OWN chat
+# ---------------------------------------------------------------------------
+echo ""
+echo "(f) Multi-agent scope"
+
+DB_M="$TMPDIR_BASE/m.db"
+emit_inbound 100 1 "FO_AGENS_UZENET" "$INSTALL_DIR"             | run_hook ledger-capture.py "$DB_M"
+emit_inbound 200 1 "DIA_UZENET"      "$INSTALL_DIR/agents/dia"  | run_hook ledger-capture.py "$DB_M"
+emit_session "$INSTALL_DIR/agents/dia" | run_hook ledger-replay.py "$DB_M" > "$TMPDIR_BASE/m.json"
+M_CTX="$(ctx_of "$TMPDIR_BASE/m.json")"
+if printf '%s' "$M_CTX" | grep -q "DIA_UZENET"; then
+    pass "scope: dia session replays its own chat"
 else
-    fail "idempotency: expected 1 row, got $IDEM_COUNT"
+    fail "scope: dia session did not replay its own chat"
+fi
+if printf '%s' "$M_CTX" | grep -q "FO_AGENS_UZENET"; then
+    fail "scope: dia session LEAKED the main agent's chat"
+else
+    pass "scope: dia session does not see the main agent's chat"
 fi
 
 # ---------------------------------------------------------------------------
@@ -229,41 +284,38 @@ echo "Edge cases"
 
 # Edge 1: prompt with no channel block -> 0 rows, exit 0
 DB_E1="$TMPDIR_BASE/e1.db"
-NO_CHANNEL='{"hook_event_name":"UserPromptSubmit","prompt":"Hello, how are you today?"}'
-printf '%s' "$NO_CHANNEL" | run_hook ledger-capture.py "$DB_E1"
-# DB may not have the table at all if no rows were ever written; handle gracefully
-E1_COUNT=$(db_scalar "$DB_E1" "SELECT COUNT(*) FROM pending_messages")
+echo '{"hook_event_name":"UserPromptSubmit","prompt":"Hello, how are you today?"}' | run_hook ledger-capture.py "$DB_E1"
+E1_COUNT="$(db_scalar "$DB_E1" "SELECT COUNT(*) FROM conversation_log")"
 if [ "$E1_COUNT" = "0" ] || [ "$E1_COUNT" = "NULL" ]; then
     pass "edge: no-channel prompt inserts 0 rows"
 else
     fail "edge: no-channel prompt inserted unexpected rows: $E1_COUNT"
 fi
 
-# Edge 2: malformed/empty stdin -> no crash, exit 0
+# Edge 2: malformed / empty stdin -> no crash, exit 0
 DB_E2="$TMPDIR_BASE/e2.db"
 printf '' | run_hook ledger-capture.py "$DB_E2" \
     && pass "edge: empty stdin does not crash ledger-capture" \
-    || fail "edge: empty stdin caused crash in ledger-capture"
+    || fail "edge: empty stdin crashed ledger-capture"
 printf 'not json at all {{{' | run_hook ledger-capture.py "$DB_E2" \
     && pass "edge: malformed JSON does not crash ledger-capture" \
     || fail "edge: malformed JSON crashed ledger-capture"
-printf '' | run_hook ledger-answered.py "$DB_E2" \
-    && pass "edge: empty stdin does not crash ledger-answered" \
-    || fail "edge: empty stdin caused crash in ledger-answered"
-printf 'not json' | run_hook ledger-answered.py "$DB_E2" \
-    && pass "edge: malformed JSON does not crash ledger-answered" \
-    || fail "edge: malformed JSON crashed ledger-answered"
+printf '' | run_hook ledger-outbound.py "$DB_E2" \
+    && pass "edge: empty stdin does not crash ledger-outbound" \
+    || fail "edge: empty stdin crashed ledger-outbound"
+printf 'not json' | run_hook ledger-outbound.py "$DB_E2" \
+    && pass "edge: malformed JSON does not crash ledger-outbound" \
+    || fail "edge: malformed JSON crashed ledger-outbound"
 
-# Edge 3: answered hook with a non-telegram tool_name -> no flip
+# Edge 3: outbound hook with a non-telegram tool -> no out row recorded
 DB_E3="$TMPDIR_BASE/e3.db"
-printf '%s' "$CHANNEL_PROMPT" | run_hook ledger-capture.py "$DB_E3"
-NON_TELEGRAM='{"tool_name":"mcp__github__create_issue","tool_input":{"chat_id":"8517922966","text":"irrelevant"}}'
-printf '%s' "$NON_TELEGRAM" | run_hook ledger-answered.py "$DB_E3"
-E3_ANSWERED=$(db_scalar "$DB_E3" "SELECT answered FROM pending_messages WHERE chat_id='8517922966'")
-if [ "$E3_ANSWERED" = "0" ]; then
-    pass "edge: non-telegram tool does not flip answered"
+echo '{"tool_name":"mcp__github__create_issue","tool_input":{"chat_id":"8517922966","text":"irrelevant"}}' \
+    | run_hook ledger-outbound.py "$DB_E3"
+E3_OUT="$(db_scalar "$DB_E3" "SELECT COUNT(*) FROM conversation_log WHERE direction='out'")"
+if [ "$E3_OUT" = "0" ] || [ "$E3_OUT" = "NULL" ]; then
+    pass "edge: non-telegram tool records no outbound row"
 else
-    fail "edge: non-telegram tool flipped answered (expected 0, got $E3_ANSWERED)"
+    fail "edge: non-telegram tool recorded an outbound row: $E3_OUT"
 fi
 
 # ---------------------------------------------------------------------------

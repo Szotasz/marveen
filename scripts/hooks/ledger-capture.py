@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit hook: capture inbound Telegram messages into the ledger
-(answered=0) BEFORE the agent processes the prompt. Deterministic and
-agent-independent -- the continuity does not depend on the LLM remembering to do
-anything. Never blocks the prompt (always exit 0), even on errors.
+"""UserPromptSubmit hook: capture inbound Telegram messages into the rolling
+transcript (direction='in') BEFORE the agent processes the prompt. Deterministic
+and agent-independent. agent_id is derived from the session's cwd so the hook is
+generic across all three channel agents and never cross-contaminates. Never
+blocks the prompt (always exit 0).
 """
 import sys
 import os
@@ -31,6 +32,7 @@ def main():
         payload = json.load(sys.stdin)
     except Exception:
         sys.exit(0)
+    agent_id = ledger_lib.agent_id_from_cwd(payload.get("cwd"))
     prompt = payload.get("prompt") or ""
     for m in CHANNEL_RX.finditer(prompt):
         attrs, text = m.group(1), m.group(2)
@@ -39,7 +41,7 @@ def main():
         ts = _attr(attrs, "ts")
         if chat_id and message_id:
             try:
-                ledger_lib.upsert_inbound(chat_id, message_id, text.strip(), ts)
+                ledger_lib.log_inbound(agent_id, chat_id, message_id, text.strip(), ts)
             except Exception:
                 pass  # never block the prompt on a ledger error
     sys.exit(0)
