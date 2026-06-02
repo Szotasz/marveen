@@ -179,6 +179,28 @@ export function initDatabase(): void {
 
   db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_agent ON memories(agent_id, category)`)
 
+  // --- Conversation-continuity ledger (deterministic; P0 2026-06-02) ---
+  // A durable record of inbound channel messages and whether they have been
+  // answered, so a respawn (a fresh --channels session with no memory of the live
+  // conversation) can replay the last UNANSWERED message and continue from where
+  // the connection dropped -- with ZERO agent discretion. Written by the
+  // settings.json hooks: UserPromptSubmit capture (INSERT OR IGNORE, answered=0)
+  // + PostToolUse answered-flip; read by the SessionStart replay hook.
+  // UNIQUE(chat_id, message_id) makes the capture idempotent.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pending_messages (
+      chat_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      text TEXT,
+      ts TEXT,
+      answered INTEGER NOT NULL DEFAULT 0,
+      answered_at INTEGER,
+      created_at INTEGER NOT NULL,
+      UNIQUE(chat_id, message_id)
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_pending_unanswered ON pending_messages(chat_id, answered)`)
+
   // Migration: hot/warm/cold/shared tier system with an enforced CHECK.
   // Rebuilds the table whenever its current schema doesn't include the
   // canonical CHECK -- covers both the legacy ('user_pref'...) and the
