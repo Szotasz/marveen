@@ -5,12 +5,55 @@ import {
   getKanbanComments, addKanbanComment, listKanbanProjects,
   getKanbanCard, getChildCards, getDb,
 } from '../../db.js'
-import { OWNER_NAME, BOT_NAME } from '../../config.js'
+import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID } from '../../config.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
+import {
+  agentSessionName, isAgentRunning, sendPromptToSession,
+} from '../agent-process.js'
+import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
+
+// Resolve a kanban assignee name to a tmux session, or null if not an agent.
+function resolveAgentSession(assignee: string | null | undefined): string | null {
+  if (!assignee) return null
+  if (assignee === OWNER_NAME) return null
+
+  // Main bot (Cuzcoo) → channels session
+  if (assignee.toLowerCase() === BOT_NAME.toLowerCase() ||
+      assignee.toLowerCase() === MAIN_AGENT_ID.toLowerCase()) {
+    return MAIN_CHANNELS_SESSION
+  }
+
+  // Sub-agents: match by name (case-insensitive)
+  const agentNames = listAgentNames()
+  const match = agentNames.find(n => n.toLowerCase() === assignee.toLowerCase())
+  if (match && isAgentRunning(match)) return agentSessionName(match)
+
+  return null
+}
+
+function fireKanbanTrigger(cardId: string): void {
+  const card = getKanbanCard(cardId)
+  if (!card) return
+  const session = resolveAgentSession(card.assignee)
+  if (!session) return
+
+  const prompt = [
+    `[Kanban trigger] A(z) "${card.title}" (#${card.id}) kártya in_progress státuszba került és te vagy a felelős.`,
+    card.description ? `Leírás:\n${card.description}` : '',
+    'Kezdd el a végrehajtást. Ha kész vagy, zárd le a kártyát (done státusz) és küldj összefoglalót Telegramon.',
+  ].filter(Boolean).join('\n\n')
+
+  try {
+    sendPromptToSession(session, prompt)
+    logger.info({ cardId, session, assignee: card.assignee }, 'Kanban in_progress trigger fired')
+  } catch (err) {
+    logger.warn({ err, cardId, session }, 'Kanban trigger failed to send prompt')
+  }
+}
 
 export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
@@ -66,7 +109,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(kanbanMoveMatch[1])
     const body = await readBody(req)
     const { status, sort_order } = JSON.parse(body.toString())
-    if (moveKanbanCard(id, status, sort_order ?? 0)) { json(res, { ok: true }); return true }
+    if (moveKanbanCard(id, status, sort_order ?? 0)) {
+      if (status === 'in_progress') fireKanbanTrigger(id)
+      json(res, { ok: true })
+      return true
+    }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
   }
