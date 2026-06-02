@@ -5,6 +5,7 @@ import {
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID } from '../../channel-coordinator/ingest.js'
+import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
@@ -24,7 +25,16 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // inserts directly into the DB -- it never POSTs here. The dashboard token
     // is readable by every sub-agent, so without this guard any sub-agent could
     // forge a reply-expected message addressed at the main agent. Reject it.
-    if (from.trim() === COORDINATOR_AGENT_ID) {
+    //
+    // CRITICAL: normalize with the EXACT function the router matches on
+    // (sanitizeAgentIdent), NOT from.trim(). The router does
+    // CHANNEL_COORDINATOR_AGENTS.has(sanitizeAgentIdent(from)), and
+    // sanitizeAgentIdent STRIPS [^a-zA-Z0-9_-] rather than trimming. A bypass
+    // like from="@telegram-coordinator" / "telegram-coordinator." survives
+    // .trim() (!= the constant) yet sanitizes to "telegram-coordinator" in the
+    // router -> channel-inbound with an attacker-controlled body. Matching the
+    // router's normalization here closes that asymmetry.
+    if (sanitizeAgentIdent(from) === COORDINATOR_AGENT_ID) {
       logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST forging channel-coordinator id')
       json(res, { error: 'from is reserved for the in-process channel coordinator' }, 403)
       return true
