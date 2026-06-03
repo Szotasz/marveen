@@ -53,6 +53,12 @@ case "$STUCK_SECONDS" in (''|*[!0-9]*) STUCK_SECONDS=120;; esac
 GRACE_SECONDS=$(( 15 * 60 ))                   # shared respawn grace (matches watchdog)
 MAX_CONSECUTIVE=3                              # respawns before backoff+alert
 MAX_ESCAPES=4                                  # ensure_modal_closed bound
+# Respawn target plugin: config-overridable so a non-default install (renamed or
+# locally-built plugin) is never respawned with a WRONG plugin id -- a mismatch
+# makes claude exit immediately while the alert would falsely say "respawned".
+# %q-quoted at interpolation (like the model id), so a hostile value can't break
+# out of the respawn shell-string.
+RESPAWN_PLUGIN="${STUCK_MODAL_PLUGIN:-plugin:telegram@claude-plugins-official}"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*" || true; }
 
@@ -67,7 +73,10 @@ classify_pane() {
   fi
   # 2. any busy marker anywhere -> busy (turn mid-flight)
   #    'esc to interrupt' footer, or the turn-scoped "(Ns · ↓" token counter.
-  if printf '%s' "$pane" | grep -qE 'esc to interrupt|\([0-9]+s ·'; then
+  #    The counter separator may render as a Unicode middle-dot (·) OR an ASCII
+  #    period depending on terminal/locale -- match BOTH, else a working pane is
+  #    misread as STUCK and gets respawned mid-turn (dropping the live reply).
+  if printf '%s' "$pane" | grep -qE 'esc to interrupt|\([0-9]+s (·|\.)'; then
     echo busy; return
   fi
   # 3. idle footer present -> idle (healthy prompt)
@@ -240,7 +249,9 @@ run_guard() {
   # W4: %q-quote the claude path so a path with spaces/specials can't break out
   # of the respawn command string.
   CLAUDE_Q="$(printf '%q' "$CLAUDE")"
-  local RESPAWN_CMD="export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && $CLAUDE_Q --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:telegram@claude-plugins-official"
+  # W2: %q-quote the (config-overridable) plugin id, same treatment as the model.
+  local PLUGIN_Q; PLUGIN_Q="$(printf '%q' "$RESPAWN_PLUGIN")"
+  local RESPAWN_CMD="export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && $CLAUDE_Q --dangerously-skip-permissions ${MODEL_FLAG}--channels $PLUGIN_Q"
 
   log "stuck modal not cleared by Escape -- respawn-pane $SESSION (respawn #$((count+1)))"
   # G: alert ONLY after the respawn-pane actually succeeds, so a failed respawn

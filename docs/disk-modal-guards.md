@@ -61,3 +61,26 @@ systemctl --user list-timers | grep -E 'disk-space|stuck-modal'
 bash scripts/__tests__/disk-space-guard.test.sh    # thresholds / age-guard / alert+cooldown / malformed
 bash scripts/__tests__/stuck-modal-guard.test.sh   # classify fixtures (idle/busy/stuck/empty) + confirm-window
 ```
+
+## Re-review hardening (2026-06-03, post-cross-model)
+
+- **W2a — busy-marker glyph robustness:** the `(Ns · ↓` token-counter separator can
+  render as a Unicode middle-dot OR an ASCII period depending on terminal/locale.
+  `classify_pane` now matches both (`(·|\.)`), so a working pane is never misread as
+  STUCK and respawned mid-turn. Locked by a regression fixture in the test suite.
+- **W2b — respawn plugin id is config-overridable:** `STUCK_MODAL_PLUGIN` (default
+  `plugin:telegram@claude-plugins-official`) so a renamed/local-build install isn't
+  respawned with a wrong plugin id (which would exit immediately while the alert
+  falsely says "respawned"). `%q`-quoted at interpolation, like the model id.
+
+## Deferred findings
+
+- **Telegram bot token in the `curl` URL path (`alert_owner`, both guards).** The
+  token is interpolated as `…/bot${token}/sendMessage`, so it is visible in
+  `/proc/<pid>/cmdline` for the curl process's lifetime. **Disposition: ACCEPTED**
+  for this deployment — the host is single-user and the guards run as
+  `systemctl --user`, so no other local user can read the process table; the token
+  already lives in a local `.env` the same user owns. On a shared/multi-user host
+  this would be a real exposure and must move to a `--config`/netrc (mode 0600) form.
+  Re-evaluate if the deployment model changes. (Source: PR #264 cross-model + sec-*
+  re-review, 2026-06-03.)

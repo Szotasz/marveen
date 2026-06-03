@@ -45,6 +45,12 @@ assert_eq "busy: 'esc to interrupt' (working footer) -> busy NOT stuck" "busy" "
 BUSY_TOKENS='✻ Thinking… (52s · ↓ 2.6k tokens)'
 assert_eq "busy: token counter '(Ns · ↓' -> busy" "busy" "$(classify "$BUSY_TOKENS")"
 
+# W2 regression: the counter separator may render as an ASCII period (locale /
+# terminal dependent) instead of the Unicode middle-dot. A working pane MUST
+# still classify as busy, never stuck (else it gets respawned mid-turn).
+BUSY_TOKENS_ASCII='✻ Thinking… (52s . ↓ 2.6k tokens)'
+assert_eq "busy: token counter '(Ns . ↓' ASCII-dot -> busy" "busy" "$(classify "$BUSY_TOKENS_ASCII")"
+
 # ---------------------------------------------------------------------------
 # (b) Classifier: a wedged /mcp modal -> stuck
 # ---------------------------------------------------------------------------
