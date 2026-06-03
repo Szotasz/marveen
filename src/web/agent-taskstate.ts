@@ -91,7 +91,7 @@ const SENTINEL = '=== TASK-FOLYTATAS (NEM uj feladat) ==='
 export function buildTaskStateInjection(r: AgentTaskState): string {
   const lines: string[] = [
     SENTINEL,
-    'A kontextusod tomoritodott egy FOLYAMATBAN LEVO feladat kozben. Ez NEM uj feladat -- FOLYTASD onnan ahol abbamaradt. NE inditems ujra a mar kesz lepeseket, es NE delegald ujra amit mar atadtal.',
+    'A kontextusod tomoritodott egy FOLYAMATBAN LEVO feladat kozben. Ez NEM uj feladat -- FOLYTASD onnan ahol abbamaradt. NE INDITSD ujra a mar kesz lepeseket, es NE delegald ujra amit mar atadtal.',
   ]
   if (r.summary.trim()) lines.push(`FELADAT: ${r.summary.trim()}`)
   if (r.doneSteps.length) lines.push('MAR KESZ (NE ismeteld meg):\n' + r.doneSteps.map((s) => `  - ${s}`).join('\n'))
