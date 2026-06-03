@@ -5,6 +5,7 @@ import {
   type StuckToolCallState,
   type StuckToolCallThresholds,
 } from '../pane-state.js'
+import { shouldDeferForRecentRespawn } from '../web/stuck-tool-call-watcher.js'
 
 // Thresholds matching the production defaults in stuck-tool-call-watcher.ts.
 // Repeated here so the tests pin the contract independently of the wrapper
@@ -268,5 +269,39 @@ describe('stuck-tool-call-watcher wiring contract', () => {
   it('web.ts boots the watcher', () => {
     expect(webSrc).toMatch(/startStuckToolCallWatcher\(\)/)
     expect(webSrc).toMatch(/Stuck-tool-call watcher started/)
+  })
+})
+
+// Post-respawn grace: the watcher must NOT hard-restart a session that was just
+// respawned (by any source: itself, channel-monitor, channel-watchdog.sh, or
+// the #264 stuck-modal-guard on Linux) -- avoids boot-churn + double-respawn.
+describe('shouldDeferForRecentRespawn', () => {
+  const GRACE = 360_000
+  const now = 1_000_000_000
+
+  it('no respawn recorded (0) -> do not defer', () => {
+    expect(shouldDeferForRecentRespawn(0, now)).toBe(false)
+  })
+
+  it('respawn just now -> defer', () => {
+    expect(shouldDeferForRecentRespawn(now, now)).toBe(true)
+  })
+
+  it('respawn 5 min ago (< 6 min grace) -> defer', () => {
+    expect(shouldDeferForRecentRespawn(now - 5 * 60_000, now)).toBe(true)
+  })
+
+  it('respawn exactly at the grace boundary -> do not defer (>= grace fires)', () => {
+    expect(shouldDeferForRecentRespawn(now - GRACE, now)).toBe(false)
+  })
+
+  it('respawn 10 min ago (> grace) -> do not defer (a genuine re-wedge is caught)', () => {
+    expect(shouldDeferForRecentRespawn(now - 10 * 60_000, now)).toBe(false)
+  })
+
+  it('default grace matches the shared MARVEEN_POST_RESPAWN_GRACE_MS (360s)', () => {
+    // 359s defers, 361s does not, with the default arg.
+    expect(shouldDeferForRecentRespawn(now - 359_000, now)).toBe(true)
+    expect(shouldDeferForRecentRespawn(now - 361_000, now)).toBe(false)
   })
 })

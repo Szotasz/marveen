@@ -253,8 +253,9 @@ let marveenLastHardRestart = 0
 // restarts onto a session that was merely still booting. 6 min comfortably
 // covers the slowest realistic cold start while staying under the 18-min
 // keepalive-staleness net, so a session that is genuinely dead after a respawn
-// is still caught by another path.
-const MARVEEN_POST_RESPAWN_GRACE_MS = 360_000
+// is still caught by another path. Exported so the stuck-tool-call-watcher
+// shares the same post-respawn grace (single source of truth).
+export const MARVEEN_POST_RESPAWN_GRACE_MS = 360_000
 
 /**
  * B2 fix: shared cross-path grace accessor.

@@ -35,7 +35,7 @@
 import { logger } from '../logger.js'
 import { capturePane } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
-import { hardRestartMarveenChannels } from './channel-monitor.js'
+import { hardRestartMarveenChannels, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS } from './channel-monitor.js'
 import {
   stuckToolCallSignature,
   decideStuckToolCallRecovery,
@@ -78,6 +78,18 @@ const NO_STATE: StuckToolCallState = {
 // but the map shape leaves room for sub-agents without an API change.
 const watchState = new Map<string, StuckToolCallState>()
 
+// Pure: should a hard-restart be deferred because a respawn (any source --
+// this watcher, channel-monitor's cascade, channel-watchdog.sh, or the #264
+// stuck-modal-guard) happened within the post-respawn grace? lastRespawnMs is
+// lastMainRespawnAt()'s epoch-ms (0 when none recorded).
+export function shouldDeferForRecentRespawn(
+  lastRespawnMs: number,
+  nowMs: number,
+  graceMs = MARVEEN_POST_RESPAWN_GRACE_MS,
+): boolean {
+  return lastRespawnMs > 0 && nowMs - lastRespawnMs < graceMs
+}
+
 function checkSession(label: string, session: string): void {
   const pane = capturePane(session)
   const sig = pane == null ? null : stuckToolCallSignature(pane)
@@ -92,6 +104,24 @@ function checkSession(label: string, session: string): void {
   }
 
   if (recover) {
+    // Post-respawn grace: defer if a respawn (this watcher, channel-monitor's
+    // cascade, channel-watchdog.sh, or the #264 stuck-modal-guard on Linux)
+    // happened within the grace window. Two reasons: (1) a freshly respawned
+    // session's TUI counter can read as a fresh "spell" while it is still
+    // booting -- re-restarting it would churn; (2) it symmetrizes coordination
+    // with every other respawner via the shared lastMainRespawnAt() stamp, so a
+    // recent external respawn can't be double-acted here (bounded the worst
+    // case to a single overlap; this closes it). A genuine re-wedge is still
+    // caught: the stagnation detection (freeze threshold + 2 stagnant polls)
+    // restarts the clock, so it fires again once the grace has elapsed.
+    const lastRespawn = lastMainRespawnAt()
+    if (shouldDeferForRecentRespawn(lastRespawn, Date.now())) {
+      logger.info(
+        { label, session, sinceRespawnMs: lastRespawn ? Date.now() - lastRespawn : null, graceMs: MARVEEN_POST_RESPAWN_GRACE_MS },
+        'stuck-tool-call-watcher: recent respawn within grace, deferring hard-restart (avoid double-respawn / boot churn)',
+      )
+      return
+    }
     // Audit log requested by Marveen 2026-06-02: every respawn this watcher
     // decides on must record the input that led to it, so a regression
     // (spurious respawn during legitimate long work) is easy to spot.
