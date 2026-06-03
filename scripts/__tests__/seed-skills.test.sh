@@ -161,7 +161,9 @@ fi
 echo ""
 echo "Test 4: seed-scheduled-tasks skips existing (full loop)"
 SCHED_TARGET2="$TMPDIR_BASE/t4-sched"
-mkdir -p "$SCHED_TARGET2/kanban-audit"
+# Pre-create EVERY existing seed template so the skip-existing path covers them
+# all (the test asserts 0 newly seeded). Robust to new templates being added.
+for tpl in "$SEED_SCHED_DIR"/*/; do [ -d "$tpl" ] && mkdir -p "$SCHED_TARGET2/$(basename "$tpl")"; done
 echo "custom" > "$SCHED_TARGET2/kanban-audit/task-config.json"
 
 SCHED_NEW=0
