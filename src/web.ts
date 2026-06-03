@@ -23,6 +23,8 @@ import { logger } from './logger.js'
 import { tryHandleProfiles } from './web/routes/profiles.js'
 import { tryHandleMessages } from './web/routes/messages.js'
 import { tryHandleAgentTerminal } from './web/routes/agent-terminal.js'
+import { tryHandleAgentTaskState } from './web/routes/agent-taskstate.js'
+import { sweepOrphanTaskStates } from './web/agent-taskstate.js'
 import { tryHandleDailyLog } from './web/routes/daily-log.js'
 import { tryHandleMemories } from './web/routes/memories.js'
 import { tryHandleMigrate } from './web/routes/migrate.js'
@@ -135,6 +137,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleAgentsSkills(routeCtx)) return
       if (await tryHandleSkills(routeCtx)) return
       if (await tryHandleAgentTerminal(routeCtx)) return
+      if (await tryHandleAgentTaskState(routeCtx)) return
       if (await tryHandleAgents(routeCtx, WEB_DIR)) return
       if (await tryHandleMarveen(routeCtx, WEB_DIR)) return
       if (await tryHandleBackgroundTasks(routeCtx)) return
@@ -294,6 +297,13 @@ export function startWebServer(port = 3420): http.Server {
     sweepOrphanedBackgroundTasks()
   } catch (err) {
     logger.warn({ err }, 'Background task sweep skipped')
+  }
+
+  try {
+    const swept = sweepOrphanTaskStates(Date.now())
+    if (swept > 0) logger.info({ swept }, 'Orphan agent task-state records swept')
+  } catch (err) {
+    logger.warn({ err }, 'Task-state orphan sweep skipped')
   }
 
   const origClose = server.close.bind(server)
