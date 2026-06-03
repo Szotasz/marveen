@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, statSync, writeFileSync, utimesSync } from 'node:fs'
 import { join } from 'node:path'
-import { execSync, execFileSync } from 'node:child_process'
+import { execSync, execFileSync, spawn } from 'node:child_process'
 import { resolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, PROJECT_ROOT } from '../config.js'
@@ -397,6 +397,72 @@ function writeRespawnStamp(): void {
   try {
     writeFileSync(RESPAWN_STAMP_FILE, String(Math.floor(Date.now() / 1000)))
   } catch { /* best effort */ }
+}
+
+// --- Vanished-session recovery (self-healing main session) ---
+//
+// The down-cascade (handleMarveenDown) recovers a main session whose claude
+// process is alive but whose channel plugin died, by replacing the claude
+// process in the EXISTING pane via `tmux respawn-pane`. respawn-pane needs a
+// live pane: it cannot bring back a session that has disappeared entirely
+// (crash, self-update mid-restart, OOM kill, host reboot). On a deployment
+// where nothing supervises the session -- marveen-channels.service disabled,
+// or any pure-tmux install -- a vanished session stays gone, and because the
+// scheduler skips every task whose target tmux session is missing
+// (schedule-runner !sessionExists branch), ALL main-agent scheduled jobs
+// (morning briefing, daily-log, dream-engine, audits, heartbeats) silently
+// stop firing with no error surfaced anywhere. This closes that gap by
+// recreating the session from scratch via the canonical scripts/channels.sh --
+// the same path the service uses -- so recovery is channel-independent and
+// works even with the service disabled.
+const CHANNELS_SCRIPT = join(PROJECT_ROOT, 'scripts', 'channels.sh')
+// channels.sh creates the session, runs the first-run dialog auto-accept, sets
+// /name, and brings up the channel plugin -- a cold start that takes minutes.
+// Throttle relaunches so a session that is still booting is not torn down and
+// recreated on the next 60s poll.
+const MAIN_SESSION_CREATE_GRACE_MS = 360_000
+let marveenLastSessionCreate = 0
+
+export function mainChannelsSessionExists(): boolean {
+  try {
+    execFileSync(TMUX, ['has-session', '-t', MAIN_CHANNELS_SESSION], { timeout: 3000 })
+    return true
+  } catch {
+    return false
+  }
+}
+
+export function createMainChannelsSession(): boolean {
+  const now = Date.now()
+  if (marveenLastSessionCreate && now - marveenLastSessionCreate < MAIN_SESSION_CREATE_GRACE_MS) {
+    return false
+  }
+  if (!existsSync(CHANNELS_SCRIPT)) {
+    logger.error({ script: CHANNELS_SCRIPT }, 'Cannot recreate main channels session: channels.sh missing')
+    return false
+  }
+  try {
+    // Detached + unref'd: channels.sh is a long-lived supervisor (it tails the
+    // session in a wait loop), so it must outlive this check() tick without
+    // keeping the dashboard event loop alive. stdio ignored -- channels.sh does
+    // its own logging to store/channels-failures.log.
+    const child = spawn('/bin/bash', [CHANNELS_SCRIPT], {
+      detached: true,
+      stdio: 'ignore',
+      cwd: PROJECT_ROOT,
+    })
+    child.unref()
+    marveenLastSessionCreate = now
+    // Fold into the shared cold-start grace so the down-cascade defers to this
+    // boot instead of stacking a respawn on a session that is still coming up.
+    writeRespawnStamp()
+    logger.warn({ session: MAIN_CHANNELS_SESSION }, 'Main channels session absent -- recreating via channels.sh')
+    sendAlert(`♻️ A ${MAIN_CHANNELS_SESSION} session eltunt -- ujrainditom (channels.sh). Enelkul minden utemezett feladat csendben kimaradna.`)
+    return true
+  } catch (err) {
+    logger.error({ err }, 'Failed to recreate main channels session via channels.sh')
+    return false
+  }
 }
 
 // Hard-restart fallback when there is no systemd unit to bounce: respawn the
@@ -802,7 +868,22 @@ export function startChannelPluginMonitor(): NodeJS.Timeout {
           if (lastRestart && Date.now() - lastRestart < AGENT_RESTART_GRACE_MS) continue
         }
         if (t.isMarveen) {
-          if (shouldEscalateMarveenDown()) handleMarveenDown()
+          // The claude pid is gone. WHY decides recovery: a session that no
+          // longer exists at all must be recreated from scratch (respawn-pane,
+          // the only tool the down-cascade has on Linux, cannot resurrect a
+          // vanished session); a session that still exists with a dead/wedged
+          // claude is the down-cascade's job. Without this split a crashed,
+          // self-updated or rebooted main session never returns on installs
+          // with no supervising service, and every scheduled main-agent task
+          // silently skips (scheduler !sessionExists branch).
+          if (!mainChannelsSessionExists()) {
+            if (shouldEscalateMarveenDown() && createMainChannelsSession()) {
+              marveenDownState = null
+              marveenSuspectFirstSeen = null
+            }
+          } else if (shouldEscalateMarveenDown()) {
+            handleMarveenDown()
+          }
         }
         continue
       }
