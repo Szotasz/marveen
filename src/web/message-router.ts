@@ -22,9 +22,11 @@ import { isKnownAgent } from './agent-config.js'
 import { readAgentTeam } from './agent-team.js'
 import {
   agentSessionName,
+  capturePane,
   isSessionReadyForPrompt,
   sendPromptToSession,
 } from './agent-process.js'
+import { detectsCreditWallWedge } from '../pane-state.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 
 const TMUX = resolveFromPath('tmux')
@@ -48,6 +50,37 @@ const MESSAGE_ABANDON_WINDOW_MS = 60 * 60 * 1000
 // Log "skipping, target not ready" at most once per message id so a busy
 // receiver over many 5s ticks does not spam the log.
 const routerLoggedMisses: Set<number> = new Set()
+
+// How many PARKED injection outcomes (text typed but submit never landed;
+// buffer rolled back) a single message may accumulate before it is marked
+// failed. Each attempt re-types from a clean buffer, so this bounds a
+// pathological never-submitting target instead of retrying forever.
+export const MAX_PARKED_INJECTIONS = 3
+const parkedCounts: Map<number, number> = new Map()
+
+// Credit-wall defer (msg #220 loss at erno-ba): when the target pane shows
+// the "Usage credits required for 1M context" wedge in its live tail, an
+// injected prompt is doomed -- the turn dies on the same error and the
+// message would be lost-as-delivered. Defer instead; agent-context-guard
+// auto-/clears a REAL wall within ~1-11 minutes, after which delivery
+// proceeds. The escape hatch bounds a false positive (a finished reply
+// QUOTING the phrase in its last lines would otherwise defer forever,
+// because no new turn ever scrolls it away).
+const WALL_DEFER_MAX_MS = 15 * 60 * 1000
+const wallFirstSeen: Map<string, number> = new Map()
+// Re-log the defer roughly once a minute per session (not once per message)
+// so an operator watching the log can SEE an ongoing wall-stall instead of
+// a single line 14 minutes ago.
+const wallLastLogAt: Map<string, number> = new Map()
+
+/**
+ * Pure disposition for a parked injection outcome: 'retry' keeps the
+ * message pending for a clean re-send, 'fail' marks it failed once the
+ * cap is reached. Exported for contract tests.
+ */
+export function decideParkedDisposition(parkedSoFar: number, cap: number): 'retry' | 'fail' {
+  return parkedSoFar >= cap ? 'fail' : 'retry'
+}
 
 /**
  * Pure decision: should a pending inter-agent message be abandoned?
@@ -106,6 +139,32 @@ export function startMessageRouter(): NodeJS.Timeout {
         continue
       }
 
+      // Credit-wall check BEFORE readiness: a wedged pane often still shows
+      // an idle footer, so isSessionReadyForPrompt alone would inject a
+      // doomed prompt into it (the msg #220 loss path).
+      const wallPane = capturePane(session)
+      if (wallPane != null && detectsCreditWallWedge(wallPane)) {
+        const firstSeen = wallFirstSeen.get(session) ?? now
+        if (!wallFirstSeen.has(session)) wallFirstSeen.set(session, now)
+        if (now - firstSeen < WALL_DEFER_MAX_MS) {
+          const lastLog = wallLastLogAt.get(session) ?? 0
+          if (now - lastLog >= 60_000) {
+            wallLastLogAt.set(session, now)
+            logger.warn(
+              { id: msg.id, to: msg.to_agent, session, deferredForMs: now - firstSeen, deferRemainingMs: WALL_DEFER_MAX_MS - (now - firstSeen) },
+              'Agent message deferred: target pane is on the context/credit wall (agent-context-guard should clear it)',
+            )
+          }
+          continue
+        }
+        // Escape hatch: a real wall would have been cleared by the guard by
+        // now; treat the lingering phrase as quoted scrollback and proceed.
+        logger.warn({ session }, 'Credit-wall phrase persisted past the defer window -- treating as stale/quoted and resuming delivery')
+      } else {
+        wallFirstSeen.delete(session)
+        wallLastLogAt.delete(session)
+      }
+
       if (!isSessionReadyForPrompt(session)) {
         if (!routerLoggedMisses.has(msg.id)) {
           logger.warn({ id: msg.id, to: msg.to_agent, session }, 'Agent message target session busy, will retry')
@@ -161,10 +220,33 @@ export function startMessageRouter(): NodeJS.Timeout {
         }
         // Inline preamble so a fresh session (post hard-restart) doesn't miss
         // the context that explains the tag semantics.
-        sendPromptToSession(session, prefix + wrapped)
+        // Merged resolution (52c84e4 x coordinator prefix-building): the prefix
+        // is built above (channel-inbound aware); here we keep the VERIFIED
+        // submit flow (outcome=parked -> never mark delivered, msg #230 loss).
+        const outcome = sendPromptToSession(session, prefix + wrapped)
+        if (outcome === 'parked') {
+          // The text never submitted; sendPromptToSession rolled the input
+          // buffer back, so the message can re-send cleanly. Do NOT mark
+          // delivered (msg #230 was lost exactly that way) -- retry up to
+          // the cap, then fail VISIBLY so the sender knows.
+          const parked = (parkedCounts.get(msg.id) ?? 0) + 1
+          parkedCounts.set(msg.id, parked)
+          if (decideParkedDisposition(parked, MAX_PARKED_INJECTIONS) === 'fail') {
+            logger.warn({ id: msg.id, to: msg.to_agent, session, parked }, 'Agent message FAILED: injected text would not submit after repeated clean attempts')
+            if (!markMessageFailed(msg.id, `Injected text would not submit (parked) after ${parked} attempts`)) {
+              logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
+            }
+            parkedCounts.delete(msg.id)
+            routerLoggedMisses.delete(msg.id)
+          } else {
+            logger.warn({ id: msg.id, to: msg.to_agent, session, parked }, 'Agent message injection parked; buffer cleared, will re-send')
+          }
+          continue
+        }
         if (!markMessageDelivered(msg.id)) {
           logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
         }
+        parkedCounts.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
         logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, category: isChannelInbound ? 'channel-inbound' : trusted ? 'trusted-peer' : 'untrusted' }, 'Agent message delivered')
       } catch (err) {

@@ -991,11 +991,13 @@ describe('shouldRetrySubmit minHintChars clamp', () => {
 })
 
 describe('decideSubmitFollowup', () => {
-  it('returns "give-up" when the pane capture failed', () => {
-    // A null pane means we cannot tell whether the prompt landed; the
-    // safest action is to stop retrying rather than fire a blind
-    // Enter that might submit a different turn's draft.
-    expect(decideSubmitFollowup(null, PAYLOAD_HINT, 0, 2)).toBe('give-up')
+  it('returns "wait" when the pane capture failed (2026-06-03 semantics)', () => {
+    // A null pane means we cannot tell whether the prompt landed. The
+    // old contract said 'give-up', which the caller treated as terminal
+    // and the router marked the message delivered -- a single capture
+    // hiccup became silent loss (msg #230). 'wait' re-samples WITHOUT
+    // firing a blind Enter; the caller's poll budget bounds the loop.
+    expect(decideSubmitFollowup(null, PAYLOAD_HINT, 0, 2)).toBe('wait')
   })
 
   it('returns "done" when the pane is not stuck', () => {
@@ -1151,8 +1153,13 @@ describe('stuckInputSignature', () => {
     expect(stuckInputSignature(BUSY_FULL_FOOTER)).toBeNull()
   })
 
-  it('is null for a paste placeholder (treated as busy, not parked text)', () => {
-    expect(stuckInputSignature(PENDING_PASTE)).toBeNull()
+  it('returns a signature for a parked paste placeholder (2026-06-03 unblinding)', () => {
+    // The placeholder never auto-submits, so the watcher MUST see it to
+    // Enter-recover it -- previously it was invisible to every net and a
+    // parked inter-agent message sat 25 minutes until a manual Enter
+    // (msg #230). detectPaneState still reports 'busy' for scheduler
+    // purposes; only the watcher signature changed.
+    expect(stuckInputSignature(PENDING_PASTE)).toContain('[Pasted text #1')
   })
 
   it('ignores a ❯ caret left in scrollback', () => {

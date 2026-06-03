@@ -24,7 +24,11 @@ import {
 // pane-state.ts (unit-tested); this module is only the I/O + per-session
 // state map, mirroring channel-health-monitor.ts.
 
-const THRESHOLDS: StuckInputThresholds = {
+// Exported for the timing-contract test: confirmMs MUST exceed the total
+// of agent-process.ts SUBMIT_VERIFY_SLEEPS, so a router-injected park is
+// always rolled back BEFORE this watcher could confirm-and-Enter it
+// (duplicate-delivery guard).
+export const THRESHOLDS: StuckInputThresholds = {
   // The same text must stay parked this long before the first recovery
   // Enter. A real turn transitions typing -> busy within a second or two
   // of submit, so 10s comfortably clears the frame race while still

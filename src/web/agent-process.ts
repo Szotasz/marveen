@@ -8,6 +8,7 @@ import { logger } from '../logger.js'
 import {
   detectPaneState,
   decideSubmitFollowup,
+  shouldRetrySubmit,
   shouldClearTruncatedPreamble,
 } from '../pane-state.js'
 import { agentDir, readAgentModel, readAgentSecurityProfile, readAgentClaudeConfigDir, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName } from './agent-config.js'
@@ -359,29 +360,41 @@ export function scheduleIdentitySetup(session: string, displayName: string): voi
 
 // How many follow-up Enters sendPromptToSession() is willing to fire
 // when the post-send capture says the prompt is still parked in the
-// input box. Two retries cover the observed stuck-rate (single-pane
-// recovery typically lands on the first or second extra Enter); a
-// stuck-after-two-retries pane gets a logged give-up so the operator
-// can intervene rather than the loop spinning indefinitely.
-const SUBMIT_RETRY_MAX_ATTEMPTS = 2
-// Wait between sending an Enter and re-capturing the pane. Long enough
-// for tmux to flush the keystroke into the Claude Code TUI and for
-// the TUI to either transition to busy (turn started) or stay idle
-// with the parked text (still stuck). Empirically 300ms is past the
-// frame-render gap detectPaneState already guards against.
-const SUBMIT_RETRY_POLL_MS = '0.3'
+// input box. Four because a bracketed-paste placeholder ignores Enters
+// until the paste settles (msg #230: 2 quick retries all lost the race,
+// yet ONE manual Enter 25 minutes later worked instantly).
+const SUBMIT_RETRY_MAX_ATTEMPTS = 4
+// Escalating poll sleeps for the post-send verification loop, in
+// seconds (passed to /bin/sleep). Total worst case ~8.3s -- bounded
+// because everything here is execSync and blocks the event loop; the
+// typical verified-submit path exits on the first or second poll, and a
+// pure-miss path (only ambiguous frames, no park ever seen) breaks
+// early after 3 polls (~1.8s).
+//
+// TIMING CONTRACT (locked by interagent-submit-verify.test.ts): the
+// total of these sleeps MUST stay below the stuck-input watcher's
+// confirmMs (10s). A router-injected park is always rolled back within
+// this budget, so the watcher can never confirm-and-Enter the SAME text
+// the router is about to re-send -- that ordering is what prevents the
+// duplicate-delivery race.
+export const SUBMIT_VERIFY_SLEEPS = ['0.3', '0.5', '1', '1.5', '2', '3'] as const
 
 // Buffer-clear (Ctrl-U) used pre-flight when shouldClearTruncatedPreamble
 // flags a stale preamble. Sent as a single key name (no `-l` literal
 // flag) so tmux interprets it as the control sequence.
-export function clearInputBuffer(session: string): void {
+// Merged resolution (52c84e4 x upstream #293): keep the export (the stuck-input
+// watchdog calls this externally) AND the boolean return (the verified-submit
+// flow checks the outcome). void-callers are unaffected by a boolean return.
+export function clearInputBuffer(session: string): boolean {
   try {
     execFileSync(TMUX, ['send-keys', '-t', session, 'C-u'], { timeout: 5000 })
     // Settle briefly so the next send-keys lands in the freshly cleared
     // buffer rather than racing the Ctrl-U.
     execFileSync('/bin/sleep', ['0.1'], { timeout: 2000 })
+    return true
   } catch (err) {
     logger.warn({ err, session }, 'Failed to clear pane input buffer before send')
+    return false
   }
 }
 
@@ -404,7 +417,9 @@ export function clearInputBuffer(session: string): void {
 // still reports stuck, send up to SUBMIT_RETRY_MAX_ATTEMPTS extra
 // Enters. The retry budget bounds the loop so a pathologically stuck
 // pane gives up rather than spinning.
-export function sendPromptToSession(session: string, text: string): void {
+export type SendPromptOutcome = 'submitted' | 'parked'
+
+export function sendPromptToSession(session: string, text: string): SendPromptOutcome {
   dismissSurveyModalIfPresent(session)
   dismissResumeSummaryModalIfPresent(session)
 
@@ -446,28 +461,66 @@ export function sendPromptToSession(session: string, text: string): void {
   }
   execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
 
-  // Post-send retry loop. The payload hint is the first chunk of oneLine
-  // (truncated to a safe length) so the verbatim-stuck path has something
-  // recognisable to substring-match against without leaking the whole
-  // prompt body into log lines should the give-up branch fire.
+  // Post-send verification loop (2026-06-03 msg #230 silent-loss fix).
+  // The payload hint is the first chunk of oneLine (truncated) so the
+  // verbatim-stuck path has something recognisable to substring-match
+  // against without leaking the whole prompt body into logs.
+  //
+  // 'done' now requires POSITIVE evidence (busy indicator, or idle footer
+  // with a clean input box); ambiguous frames return 'wait' and we
+  // re-sample. The sleeps ESCALATE because a bracketed-paste placeholder
+  // needs a moment to settle before an Enter lands -- the old fixed
+  // 2x0.3s budget always lost that race.
   const payloadHint = oneLine.slice(0, Math.min(oneLine.length, 96))
-  for (let attempt = 0; ; attempt++) {
-    try { execFileSync('/bin/sleep', [SUBMIT_RETRY_POLL_MS], { timeout: 2000 }) } catch { /* best effort */ }
+  let enters = 0
+  for (let poll = 0; poll < SUBMIT_VERIFY_SLEEPS.length; poll++) {
+    try { execFileSync('/bin/sleep', [SUBMIT_VERIFY_SLEEPS[poll]], { timeout: 4000 }) } catch { /* best effort */ }
     const pane = capturePane(session)
-    const action = decideSubmitFollowup(pane, payloadHint, attempt, SUBMIT_RETRY_MAX_ATTEMPTS)
-    if (action === 'done') break
-    if (action === 'give-up') {
-      logger.warn({ session, attempt }, 'sendPromptToSession: prompt still parked after retries')
-      break
+    const action = decideSubmitFollowup(pane, payloadHint, enters, SUBMIT_RETRY_MAX_ATTEMPTS)
+    if (action === 'done') return 'submitted'
+    if (action === 'wait') {
+      // Pure-miss early break: if 3 polls produced only ambiguous frames
+      // and we never positively saw a park, stop burning the event loop
+      // (~1.8s spent) -- the final capture below decides, and the watcher
+      // backstop covers a park we could not see.
+      if (enters === 0 && poll >= 2) break
+      continue
     }
+    if (action === 'give-up') break
     // action === 'retry-enter'
+    enters++
     try {
       execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
     } catch (err) {
-      logger.warn({ err, session, attempt }, 'Retry-Enter send failed')
+      logger.warn({ err, session, enters }, 'Retry-Enter send failed')
       break
     }
   }
+
+  // Budget spent. Roll back ONLY a park we can positively see, so the
+  // caller can re-inject cleanly later (a parked prompt must never be
+  // reported as submitted -- that is how msg #230 was lost-as-delivered).
+  // An unreadable final frame is left alone: blind-clearing a pane we
+  // cannot read risks destroying state, so we report submitted and rely
+  // on the stuck-input watcher backstop.
+  const last = capturePane(session)
+  if (last != null && shouldRetrySubmit(last, payloadHint)) {
+    // 'parked' PROMISES the caller a clean buffer for re-injection. If the
+    // rollback fails, that promise would be false: the next injection
+    // would concatenate onto the stale text, AND the (paste-unblinded)
+    // stuck-input watcher could later Enter the leftover while the router
+    // re-sends -- the duplicate-delivery race. So a failed clear reports
+    // 'submitted' instead and the watcher backstop delivers the parked
+    // copy exactly once.
+    if (clearInputBuffer(session)) {
+      logger.warn({ session, enters }, 'sendPromptToSession: prompt PARKED after retry budget -- input cleared for a clean re-send')
+      return 'parked'
+    }
+    logger.warn({ session, enters }, 'sendPromptToSession: prompt parked AND buffer-clear failed; deferring to the stuck-input watcher (single delivery preserved)')
+    return 'submitted'
+  }
+  logger.warn({ session, enters }, 'sendPromptToSession: could not verify submit (ambiguous frames); assuming submitted')
+  return 'submitted'
 }
 
 // How long to wait between the two capture samples when the first one

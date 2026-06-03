@@ -457,7 +457,7 @@ export function shouldClearTruncatedPreamble(pane: string): boolean {
   return true
 }
 
-export type SubmitFollowupAction = 'retry-enter' | 'done' | 'give-up'
+export type SubmitFollowupAction = 'retry-enter' | 'done' | 'give-up' | 'wait'
 
 /**
  * Decide what the post-send-keys loop should do next, given the
@@ -489,6 +489,15 @@ export type SubmitFollowupAction = 'retry-enter' | 'done' | 'give-up'
  *                     send total. The decision returns 'give-up' once
  *                     attempt >= maxAttempts and the pane is still
  *                     stuck.
+ *
+ * SEMANTICS (2026-06-03, msg #230 silent-loss fix): 'done' requires
+ * POSITIVE evidence — a live busy indicator (the turn started) or an
+ * idle footer with a clean input box (the prompt left the box). An
+ * ambiguous frame (capture failed, no idle footer mid-redraw, input box
+ * not parseable) returns 'wait': re-sample, never conclude success. The
+ * old behavior declared 'done' on exactly those ambiguous frames, so a
+ * paste-placeholder park behind one mid-redraw frame was reported as
+ * submitted and the message was lost-as-delivered.
  */
 export function decideSubmitFollowup(
   pane: string | null,
@@ -496,10 +505,24 @@ export function decideSubmitFollowup(
   attempt: number,
   maxAttempts: number,
 ): SubmitFollowupAction {
-  if (pane == null) return 'give-up'
-  if (!shouldRetrySubmit(pane, payloadHint)) return 'done'
-  if (attempt >= maxAttempts) return 'give-up'
-  return 'retry-enter'
+  // Capture failed: cannot conclude anything -- re-sample.
+  if (pane == null || !pane.trim()) return 'wait'
+  // Positive evidence the turn started: any live busy indicator.
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(pane)) return 'done'
+  }
+  // No idle footer: mid-redraw / unknown surface. NOT success -- wait.
+  if (!IDLE_FOOTER_RX.test(pane)) return 'wait'
+  const inputBox = liveInputBox(pane)
+  if (inputBox == null) return 'wait'
+  // Parked: paste placeholder, or the just-sent payload verbatim.
+  const parked =
+    PENDING_PASTE_RX.test(inputBox) ||
+    (payloadHint.length >= 16 && inputBox.includes(payloadHint))
+  if (parked) return attempt >= maxAttempts ? 'give-up' : 'retry-enter'
+  // Positive evidence of submit: idle footer + the box no longer holds
+  // our payload.
+  return 'done'
 }
 
 export interface PaneErrorAlertState {
@@ -609,9 +632,27 @@ export function decidePaneErrorAlert(
 // confirm window. Returns null (not an empty string) when there is no
 // parked text so callers can branch on "is anything parked at all".
 export function stuckInputSignature(pane: string): string | null {
-  if (detectPaneState(pane) !== 'typing') return null
+  if (!pane || !pane.trim()) return null
+  // A live turn (busy indicator) is never a parked input.
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(pane)) return null
+  }
+  if (!IDLE_FOOTER_RX.test(pane)) return null
   const box = liveInputBox(pane)
   if (box == null) return null
+  // Paste-placeholder park (2026-06-03, msg #230): a `[Pasted text #N]`
+  // stub under an idle footer never auto-submits. detectPaneState
+  // deliberately reports it 'busy' so the scheduler/router won't pile a
+  // second prompt on top -- but the recovery watcher MUST see it, else a
+  // parked paste is invisible to every safety net and sits until a human
+  // presses Enter. Signature on the placeholder text (stable once the
+  // paste has settled; still-arriving chunks change the box content and
+  // keep restarting the confirm window).
+  if (PENDING_PASTE_RX.test(box)) {
+    const sig = box.replace(/\s+/g, ' ').trim()
+    return sig.length > 0 ? sig : null
+  }
+  if (detectPaneState(pane) !== 'typing') return null
   const sig = box.replace(/\s+/g, ' ').trim()
   return sig.length > 0 ? sig : null
 }
@@ -657,6 +698,68 @@ export function parkedChannelInput(pane: string): ParkedChannelInput | null {
   // rather than re-inject to a wrong chat_id.
   if (!cm || /\s/.test(cm[1])) return { complete: false, block, chatId: null }
   return { complete: true, block, chatId: cm[1] }
+
+// =============================================================================
+// Context/credit-wall wedge (2026-06-03, msg #220 loss at erno-ba)
+// =============================================================================
+
+// The exact error claude prints when the conversation has outgrown the
+// normal window and the 1M-context spill needs usage credits that are
+// not enabled. Mirrors WEDGE_RE in scripts/agent-context-guard.sh (the
+// guard that auto-/clears the session); keep the two in sync.
+const CREDIT_WALL_PHRASE = 'Usage credits required for 1M context'
+
+// How many lines above the idle footer count as the live tail for the
+// wall check. Same rationale as ERROR_LIVE_TAIL_LINES.
+const WALL_LIVE_TAIL_LINES = 20
+
+/**
+ * True when the pane shows the credit-wall wedge in its LIVE TAIL: the
+ * session cannot process any prompt (every turn dies on the same error)
+ * until agent-context-guard /clears it. The router checks this before
+ * injecting so an inter-agent message is not typed into a doomed pane
+ * and then marked delivered (the msg #220 loss).
+ *
+ * False-positive guards:
+ *   - busy indicator anywhere -> false (a live turn merely STREAMING the
+ *     quoted phrase is not wedged);
+ *   - scope: only the WALL_LIVE_TAIL_LINES above the bottom-most idle
+ *     footer; the phrase deep in scrollback (an old discussion) never
+ *     triggers;
+ *   - the live input box content is EXCLUDED, so an operator/agent
+ *     composing a message that quotes the phrase does not trigger.
+ * Residual risk (a finished reply quoting the phrase in its last lines)
+ * is bounded by the caller's defer window, not here.
+ */
+export function detectsCreditWallWedge(pane: string): boolean {
+  if (!pane || !pane.includes(CREDIT_WALL_PHRASE)) return false
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(pane)) return false
+  }
+  const lines = pane.split('\n')
+  // Bottom-most idle footer (the live footer is the last one rendered).
+  let footerIdx = -1
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (IDLE_FOOTER_RX.test(lines[i])) { footerIdx = i; break }
+  }
+  if (footerIdx < 0) return false
+  // Identify the live input box bounds so its content can be excluded.
+  let bottomSep = -1
+  for (let i = footerIdx - 1; i >= 0; i--) {
+    if (BOX_SEP_RX.test(lines[i])) { bottomSep = i; break }
+  }
+  let topSep = -1
+  if (bottomSep > 0) {
+    for (let i = bottomSep - 1; i >= 0; i--) {
+      if (BOX_SEP_RX.test(lines[i])) { topSep = i; break }
+    }
+  }
+  const tailStart = Math.max(0, footerIdx - WALL_LIVE_TAIL_LINES)
+  for (let i = tailStart; i < footerIdx; i++) {
+    if (topSep >= 0 && i > topSep && i < bottomSep) continue // inside input box
+    if (lines[i].includes(CREDIT_WALL_PHRASE)) return true
+  }
+  return false
 }
 
 // Per-session bookkeeping for the stuck-input recovery watcher. A "spell"
