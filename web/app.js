@@ -93,7 +93,11 @@ function switchPage(pageId) {
 navLinks.forEach((link) => {
   link.addEventListener('click', (e) => {
     e.preventDefault()
-    switchPage(link.dataset.page)
+    const pageId = link.dataset.page
+    // Same hash won't fire 'hashchange', so re-render manually; otherwise let the
+    // hashchange listener drive switchPage so the URL stays the single source of truth.
+    if (location.hash.slice(1) === pageId) switchPage(pageId)
+    else location.hash = pageId
   })
 })
 
@@ -7231,7 +7235,7 @@ loadAvailableModels()
 // secret-et tud felvenni, és visszatérve frissítjük a model listát.
 document.getElementById('deepseekConfigLink')?.addEventListener('click', (e) => {
   e.preventDefault()
-  switchPage('vault')
+  location.hash = 'vault'
 })
 
 // === Sudo modal for managed-settings.json (Slack setup pre-flight) ===
@@ -8552,6 +8556,11 @@ window.addEventListener('resize', () => {
 })
 
 ;(() => {
-  const p = new URLSearchParams(window.location.search).get('page')
-  if (p) switchPage(p)
+  function routeFromHash() {
+    let pageId = decodeURIComponent((location.hash || '').replace(/^#/, ''))
+    if (!pageId) pageId = new URLSearchParams(window.location.search).get('page') || ''
+    if (pageId && document.getElementById(pageId + 'Page')) switchPage(pageId)
+  }
+  window.addEventListener('hashchange', routeFromHash)
+  routeFromHash()
 })()
