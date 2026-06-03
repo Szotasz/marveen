@@ -105,11 +105,11 @@ navLinks.forEach((link) => {
 let activityTimer = null
 
 const ACTIVITY_STATE_META = {
-  working: { label: 'dolgozik', cls: 'act-working' },
-  idle: { label: 'várakozik', cls: 'act-idle' },
-  unknown: { label: 'ismeretlen', cls: 'act-unknown' },
-  error: { label: 'hiba', cls: 'act-error' },
-  stopped: { label: 'leállt', cls: 'act-stopped' },
+  working: { label: 'dolgozik', cls: 'act-working', tip: 'Élő állapot (a tmux pane tartalmából, 3 másodpercenként): éppen dolgozik / gondolkodik.' },
+  idle: { label: 'várakozik', cls: 'act-idle', tip: 'Élő állapot (3 másodpercenként): fut, de épp nem csinál semmit.' },
+  unknown: { label: 'ismeretlen', cls: 'act-unknown', tip: 'Élő állapot: nem sikerült megállapítani a session pane tartalmából.' },
+  error: { label: 'hiba', cls: 'act-error', tip: 'Élő állapot: hiba látszik az ágens session paneljén.' },
+  stopped: { label: 'leállt', cls: 'act-stopped', tip: 'Élő állapot: az ágens session nem fut.' },
 }
 
 function startActivityPoll() {
@@ -154,7 +154,7 @@ function renderActivity(entries) {
       '<div class="activity-card ' + meta.cls + '">' +
         '<div class="activity-card-head">' +
           '<span class="activity-name">' + escapeHtml(a.name) + mainBadge + '</span>' +
-          '<span class="activity-badge ' + meta.cls + '">' + meta.label + '</span>' +
+          '<span class="activity-badge ' + meta.cls + '" title="' + escapeHtml(meta.tip || '') + '">' + meta.label + '</span>' +
         '</div>' +
         (tail
           ? '<pre class="activity-tail">' + tail + '</pre>'
@@ -1306,6 +1306,20 @@ function getAvatarGradient(name) {
   return 'gradient-' + ((hash % 3) + 1)
 }
 
+// Tooltip text for the "Fut" / "Leállva" footer indicator (process state).
+function processTip(isRunning) {
+  return isRunning
+    ? 'Fut: él az ágens tmux session-je (a Claude Code folyamat fut). Forrás: tmux list-sessions.'
+    : 'Leállva: nincs élő tmux session az ágensnek. Forrás: tmux list-sessions.'
+}
+
+// Tooltip text for the "Online" / "Offline" footer indicator (channel state).
+function channelTip(isConnected) {
+  return isConnected
+    ? 'Online: van bekonfigurált csatorna-token (saját bot). Figyelem: ez nem élő kapcsolat, csak a token meglétét jelzi.'
+    : 'Offline: nincs csatorna bekötve (channel-less, csak inter-agent ágens).'
+}
+
 function renderAgents() {
   agentsGrid.querySelectorAll('.agent-card:not(.add-card)').forEach((el) => el.remove())
 
@@ -1325,8 +1339,8 @@ function renderAgents() {
       </div>
       <div class="agent-card-footer">
         <span class="agent-model-badge opus">opus</span>
-        <span class="process-indicator"><span class="process-dot running"></span>Fut</span>
-        <span class="tg-status"><span class="tg-dot connected"></span>Online</span>
+        <span class="process-indicator" title="Fut: a fő asszisztens mindig a --channels session-ben fut. Ez a kártya fixen Fut állapotot mutat, nincs per-ágens tmux-ellenőrzés."><span class="process-dot running"></span>Fut</span>
+        <span class="tg-status" title="Online: a fő asszisztens csatornáját a --channels session kezeli, ezért fixen online (nincs külön token-ellenőrzés)."><span class="tg-dot connected"></span>Online</span>
       </div>
     `
     mCard.addEventListener('click', () => openMarveenDetail())
@@ -1365,8 +1379,8 @@ function renderAgents() {
       </div>
       <div class="agent-card-footer">
         <span class="agent-model-badge ${escapeHtml(modelClass)}">${escapeHtml(modelLabel)}</span>
-        <span class="process-indicator"><span class="process-dot ${runDotClass}"></span>${runLabel}</span>
-        <span class="tg-status"><span class="tg-dot ${chDotClass}"></span>${chLabel}</span>
+        <span class="process-indicator" title="${escapeHtml(processTip(isRunning))}"><span class="process-dot ${runDotClass}"></span>${runLabel}</span>
+        <span class="tg-status" title="${escapeHtml(channelTip(chConnected))}"><span class="tg-dot ${chDotClass}"></span>${chLabel}</span>
       </div>
     `
     card.addEventListener('click', () => openAgentDetail(agent.name))

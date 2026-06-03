@@ -4920,11 +4920,23 @@ main {
   background: var(--border); color: var(--text-muted); border-radius: 4px; padding: 1px 6px;
 }
 .activity-badge { font-size: 12px; font-weight: 600; border-radius: 999px; padding: 2px 10px; }
-.activity-badge.act-working { background: rgba(34,197,94,0.15); color: #16a34a; }
+.activity-badge.act-working {
+  background: rgba(34,197,94,0.15); color: #16a34a;
+  /* "Breathing" pulse so the live "dolgozik" badge reads as active, mirroring
+     the .process-dot.running pulse (same 2s ease-in-out cadence). */
+  animation: badge-breathe 2s ease-in-out infinite;
+}
 .activity-badge.act-idle    { background: rgba(156,163,175,0.18); color: #6b7280; }
 .activity-badge.act-error   { background: rgba(239,68,68,0.15); color: #dc2626; }
 .activity-badge.act-unknown { background: rgba(234,179,8,0.18); color: #ca8a04; }
 .activity-badge.act-stopped { background: rgba(107,114,128,0.15); color: #6b7280; }
+
+/* Green "breathing" glow for the working badge: saturates the pill and pulses a
+   soft halo at peak, then settles. */
+@keyframes badge-breathe {
+  0%, 100% { background: rgba(34,197,94,0.12); box-shadow: 0 0 0 0 rgba(34,197,94,0); }
+  50%      { background: rgba(34,197,94,0.32); box-shadow: 0 0 8px 1px rgba(34,197,94,0.40); }
+}
 .activity-tail {
   margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
   line-height: 1.45; color: var(--text-muted); white-space: pre-wrap; word-break: break-word;
