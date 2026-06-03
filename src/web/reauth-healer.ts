@@ -110,8 +110,12 @@ async function sendBestEffortLogin(session: string): Promise<void> {
   }
 }
 
-function escalate(label: string, reason: string): void {
-  const msg = `🔐 A(z) ${label} ágens halott OAuth tokent jelez (${reason}) ~9 perce. Manuális browser /login kell a dashboardon (az ügynök kártyáján a "Bejelentkezés" gomb), automatikusan nem gyógyítható.`
+function escalate(label: string, reason: string, consecutiveDead: number): void {
+  // Dynamic duration: consecutiveDead probes at PROBE_INTERVAL_MS each. On a
+  // re-alert (after the 30min cooldown, still dead) this grows past the initial
+  // ~9min, so a hardcoded value would lie -- compute it from the probe count.
+  const approxMin = Math.round((consecutiveDead * PROBE_INTERVAL_MS) / 60_000)
+  const msg = `🔐 A(z) ${label} ágens halott OAuth tokent jelez (${reason}) több mint ~${approxMin} perce. Manuális browser /login kell a dashboardon (az ügynök kártyáján a "Bejelentkezés" gomb), automatikusan nem gyógyítható.`
   execFile('/bin/bash', [NOTIFY_SCRIPT, msg], { timeout: 10_000 }, (err) => {
     if (err) logger.warn({ err, label }, 'reauth-healer: notify.sh escalation failed')
   })
@@ -140,7 +144,7 @@ function checkSession(label: string, session: string, isMain: boolean): void {
   }
   if (decision.escalate) {
     logger.error({ label, session, reason: reauth.reason }, 'reauth-healer: dead OAuth token on live session -- escalating to owner')
-    escalate(label, reauth.reason ?? 'auth failure')
+    escalate(label, reauth.reason ?? 'auth failure', decision.next.consecutiveDead)
   }
 }
 
