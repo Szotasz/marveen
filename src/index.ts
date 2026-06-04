@@ -9,11 +9,11 @@ import {
 import { join } from 'node:path'
 import { execFileSync, execSync } from 'node:child_process'
 import type { Server as HttpServer } from 'node:http'
-import { STORE_DIR, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED } from './config.js'
+import { STORE_DIR, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
 import { initDatabase } from './db.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
 import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
-import { ensureHeartbeatAgent, HEARTBEAT_AGENT_NAME } from './web/heartbeat-agent-scaffold.js'
+import { ensureHeartbeatAgent, shouldBootHeartbeatAgent, HEARTBEAT_AGENT_NAME } from './web/heartbeat-agent-scaffold.js'
 import { startAgentProcess } from './web/agent-process.js'
 import { startWebServer } from './web.js'
 import { logger } from './logger.js'
@@ -439,10 +439,13 @@ async function main(): Promise<void> {
   // isolation-chain attempt). We keep the native module imported so other
   // code paths that reference its exports still compile, but we do NOT
   // start its scheduler.
-  // Only the respawn host runs the heartbeat sub-agent. On a gated-off machine
-  // (e.g. a dev box) we must not spawn it -- otherwise it would fight the
-  // production host over the channel, exactly what RESPAWN_ENABLED prevents.
-  if (RESPAWN_ENABLED) {
+  // The heartbeat sub-agent is OFF by default. It auto-starts only when it
+  // is explicitly opted in (HEARTBEAT_AGENT_ENABLED) AND this host owns the
+  // respawn gate -- a fresh or upgrading install must not silently spawn a
+  // sub-agent that reads the operator's calendar and DB, and a gated-off
+  // machine (e.g. a dev box) must not fight the production host over the
+  // channel.
+  if (shouldBootHeartbeatAgent({ respawnEnabled: RESPAWN_ENABLED, agentEnabled: HEARTBEAT_AGENT_ENABLED })) {
     ensureHeartbeatAgent()
     logger.info({ agent: HEARTBEAT_AGENT_NAME }, 'Heartbeat agent scaffold ensured (channel-less, dashboard-hidden)')
     const heartbeatStart = startAgentProcess(HEARTBEAT_AGENT_NAME)
@@ -454,7 +457,7 @@ async function main(): Promise<void> {
       logger.warn({ error: heartbeatStart.error }, 'Heartbeat agent failed to start (legacy native heartbeat is NOT a fallback any more)')
     }
   } else {
-    logger.info('Heartbeat agent boot-start skipped (respawn disabled on this host)')
+    logger.info('Heartbeat agent boot-start skipped (set HEARTBEAT_AGENT_ENABLED=1 on the respawn host to enable)')
   }
 
   // Discord-only: ensure the operator-configured DISCORD_CHANNEL_ID is

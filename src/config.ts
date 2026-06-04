@@ -63,5 +63,19 @@ export const RESPAWN_ENABLED =
 // Heartbeat
 export const HEARTBEAT_INTERVAL_MS = 60 * 60 * 1000 // 1 hour
 export const HEARTBEAT_START_HOUR = 9
+
+// Dedicated channel-less `heartbeat` sub-agent (hourly summary worker).
+// OFF by default: a fresh or upgrading install must NOT silently spawn a
+// sub-agent that reads the operator's calendar and database. Opt in with
+// HEARTBEAT_AGENT_ENABLED=1 (it additionally requires the respawn gate
+// above, since the heartbeat has to run on exactly one host).
+export const HEARTBEAT_AGENT_ENABLED =
+  ['1', 'true', 'yes', 'on'].includes((env['HEARTBEAT_AGENT_ENABLED'] ?? '').trim().toLowerCase())
+
+// Google Calendar account the heartbeat summarises (next 2h). Empty (the
+// default) means the agent uses whatever calendar its MCP server is
+// authenticated as, so no personal address is baked into the shipped
+// scaffold.
+export const HEARTBEAT_CALENDAR_ACCOUNT = (env['HEARTBEAT_CALENDAR_ACCOUNT'] ?? '').trim()
 export const HEARTBEAT_END_HOUR = 23
 export const HEARTBEAT_CALENDAR_ID = env['HEARTBEAT_CALENDAR_ID'] ?? ''

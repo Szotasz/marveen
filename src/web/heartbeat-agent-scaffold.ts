@@ -1,36 +1,49 @@
 // Bootstrap helper for the dedicated `heartbeat` channel-less sub-agent.
 //
-// Background (Szabi 2026-06-02 14:09): the historical heartbeat path
-// (src/heartbeat.ts -- the natív hourly module that called the
-// claude-agent-sdk's runAgent() and notifyTelegram()) routinely crashed
-// Marveen's channel plugin within 2-3 minutes of every fire. After a
-// long isolation-chain attempt (#237 / #250 / #252 / #253 / #255) the
-// remaining failure mode was a TUI-level freeze in Marveen, suspected
-// to be caused by Marveen's own poller picking up the heartbeat's
+// Background (2026-06-02): the historical heartbeat path (src/heartbeat.ts
+// -- the native hourly module that called the claude-agent-sdk's
+// runAgent() and notifyTelegram()) routinely crashed the main agent's
+// channel plugin within 2-3 minutes of every fire. After a long
+// isolation-chain attempt (#237 / #250 / #252 / #253 / #255) the
+// remaining failure mode was a TUI-level freeze, suspected to be caused
+// by the main agent's own poller picking up the heartbeat's
 // `notifyTelegram` sendMessage as a regular inbound and entering a
 // tool-call loop on it.
 //
 // Architectural fix: stop calling the SDK from inside the dashboard
 // process. Run the heartbeat in a SEPARATE channel-less tmux agent
 // (named "heartbeat"), driven by the existing scheduled-task system,
-// and have IT send the formatted summary to Marveen via inter-agent
-// message rather than directly to Telegram. Marveen then decides if
-// it relays to Szabi -- so the heartbeat output never spawns a
-// Marveen-token sendMessage, never produces a self-inbound event, and
-// the channel plugin stays untouched.
+// and have IT send the formatted summary to the main agent via
+// inter-agent message rather than directly to Telegram. The main agent
+// then decides if it relays to the operator -- so the heartbeat output
+// never spawns a main-agent-token sendMessage, never produces a
+// self-inbound event, and the channel plugin stays untouched.
 //
-// This module is responsible for materialising the agent's directory
-// (gitignored under agents/) at dashboard boot time. The dir mirrors
-// the layout of the other channel-less agents:
+// This module materialises the agent's directory (gitignored under
+// agents/) when the heartbeat is enabled. The dir mirrors the layout of
+// the other channel-less agents:
 //   agents/heartbeat/
 //     ├── CLAUDE.md                       -- role/scope/output format
 //     ├── agent-config.json               -- model, profile, auth-mode
 //     ├── .claude/settings.json           -- channel plugins explicitly disabled
 //     └── .hidden-from-dashboard          -- listAgentNames() filter (#253)
+//
+// Nothing operator-specific is hardcoded here: the boot-time auto-start
+// is gated on HEARTBEAT_AGENT_ENABLED, and every identity baked into the
+// CLAUDE.md (owner, main-agent name, store path, calendar account) comes
+// from config via currentHeartbeatIdentity().
 
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { PROJECT_ROOT } from '../config.js'
+import {
+  PROJECT_ROOT,
+  STORE_DIR,
+  OWNER_NAME,
+  BOT_NAME,
+  MAIN_AGENT_ID,
+  WEB_PORT,
+  HEARTBEAT_CALENDAR_ACCOUNT,
+} from '../config.js'
 import { logger } from '../logger.js'
 
 const HEARTBEAT_AGENT_NAME = 'heartbeat'
@@ -56,7 +69,7 @@ const CHANNEL_PLUGIN_DISABLES = {
 // costs effectively nothing.
 //
 // authMode 'oauth' uses the host's Claude Code OAuth from the
-// Keychain -- the same auth Marveen and every other channel-less
+// Keychain -- the same auth the main agent and every other channel-less
 // sub-agent runs under. NO per-agent API key needed.
 const HEARTBEAT_AGENT_CONFIG = {
   model: 'claude-haiku-4-5',
@@ -64,55 +77,103 @@ const HEARTBEAT_AGENT_CONFIG = {
   securityProfile: 'standard',
 }
 
-// The CLAUDE.md prose. Single source of truth for the agent's behaviour
-// at every scheduled fire. Critical contract:
-//   - NEVER call the Telegram reply tool. The whole point is to keep
-//     the heartbeat output OUT of any bot-API call from this process,
-//     so Marveen's poller never sees a self-generated inbound.
-//   - The output goes to Marveen via inter-agent message. Marveen
-//     decides whether to relay it to Szabi on Telegram, in HER own
-//     session, with HER own context.
-//   - Structured-text format so Marveen can either parse or relay-
-//     verbatim depending on signal-to-noise.
-function renderClaudeMd(): string {
+// Per-deployment identity threaded into the rendered CLAUDE.md. Pulled
+// from config (see currentHeartbeatIdentity) so the shipped scaffold
+// carries no operator-specific calendar address, owner name, store path
+// or main-agent name.
+export interface HeartbeatIdentity {
+  // Whose systems the heartbeat summarises (OWNER_NAME).
+  ownerName: string
+  // The main agent's display name -- the relay target (BOT_NAME).
+  botName: string
+  // The main agent's id for inter-agent routing (MAIN_AGENT_ID).
+  mainAgentId: string
+  // Absolute path to store/ (holds the DB and the dashboard token).
+  storeDir: string
+  // Dashboard origin for the inter-agent message POST, e.g.
+  // http://localhost:3420.
+  dashboardOrigin: string
+  // Google Calendar account to summarise, or '' to let the calendar MCP
+  // server use whatever account it is authenticated as.
+  calendarAccount: string
+}
+
+// Build the identity from the live config. Kept separate from the pure
+// renderer so the renderer stays unit-testable without importing config.
+export function currentHeartbeatIdentity(): HeartbeatIdentity {
+  return {
+    ownerName: OWNER_NAME,
+    botName: BOT_NAME,
+    mainAgentId: MAIN_AGENT_ID,
+    storeDir: STORE_DIR,
+    dashboardOrigin: `http://localhost:${WEB_PORT}`,
+    calendarAccount: HEARTBEAT_CALENDAR_ACCOUNT,
+  }
+}
+
+// Pure boot gate. The heartbeat sub-agent must run on exactly one host
+// (the respawn gate) AND be explicitly opted in (HEARTBEAT_AGENT_ENABLED,
+// off by default) -- both are required before the dashboard scaffolds and
+// spawns it at boot.
+export function shouldBootHeartbeatAgent(opts: { respawnEnabled: boolean; agentEnabled: boolean }): boolean {
+  return opts.respawnEnabled && opts.agentEnabled
+}
+
+// The CLAUDE.md prose. Pure: every operator-specific value comes from the
+// supplied identity, so the same renderer produces a correct file on any
+// deployment and the unit tests can assert the output without fs or
+// config. Critical contract:
+//   - NEVER call the Telegram reply tool. The whole point is to keep the
+//     heartbeat output OUT of any bot-API call from this process, so the
+//     main agent's poller never sees a self-generated inbound.
+//   - The output goes to the main agent via inter-agent message; the main
+//     agent decides whether to relay it to the operator.
+//   - Structured-text format so the main agent can parse or relay verbatim
+//     depending on signal-to-noise.
+export function renderHeartbeatClaudeMd(id: HeartbeatIdentity): string {
+  const calendarTarget = id.calendarAccount
+    ? `against \`${id.calendarAccount}\``
+    : 'against your primary calendar (whatever account the calendar MCP server is authenticated as)'
   return `# Heartbeat agent
 
-You are the **heartbeat agent** — a dedicated, headless worker that
+You are the **heartbeat agent** -- a dedicated, headless worker that
 runs on the hourly schedule and produces a structured summary of
-what is happening across Szabolcs' systems right now. You ALWAYS
-hand the result to Marveen via inter-agent message; you NEVER
-contact Szabi directly.
+what is happening across ${id.ownerName}'s systems right now. You
+ALWAYS hand the result to the main agent (${id.botName}) via
+inter-agent message; you NEVER contact ${id.ownerName} directly.
 
-## Why this agent exists (Szabi 2026-06-02 14:09)
+## Why this agent exists
 
 The previous heartbeat ran from inside the dashboard process and
-called the Telegram Bot API directly. Every fire caused Marveen's
-channel plugin to fall over 2-3 minutes later -- the bot's outbound
-sendMessage was being read back as an inbound by Marveen's own
-poller and triggered a tool-call freeze. Splitting the heartbeat
-into its own channel-less agent (this one), wired to Marveen only
-through inter-agent message, removes the self-poll loop entirely.
+called the Telegram Bot API directly. Every fire caused the main
+agent's channel plugin to fall over 2-3 minutes later -- the bot's
+outbound sendMessage was being read back as an inbound by the main
+agent's own poller and triggered a tool-call freeze. Splitting the
+heartbeat into its own channel-less agent (this one), wired to the
+main agent only through inter-agent message, removes the self-poll
+loop entirely.
 
 ## What to do on every fire
 
 When you receive the heartbeat prompt:
 
 1. **Collect** the four data sources:
-   - **Calendar (next 2 hours)** — use the
-     \`mcp__server-google-calendar-mcp__list-events\` tool against
-     \`szota.szabolcs@gmail.com\`, timeMin=now, timeMax=now+2h.
+   - **Calendar (next 2 hours)** -- use the
+     \`mcp__server-google-calendar-mcp__list-events\` tool
+     ${calendarTarget}, timeMin=now, timeMax=now+2h.
      If the call fails (token revoked / 401), record the failure
-     reason rather than the events; Marveen can act on the failure.
-   - **Kanban** — read the SQLite DB at
-     \`/Users/marvin/ClaudeClaw/store/claudeclaw.db\`:
-     \`sqlite3 store/claudeclaw.db "SELECT status, COUNT(*) FROM
-     kanban_cards WHERE archived_at IS NULL GROUP BY status"\` for
-     counts, and grab the titles of cards where
+     reason rather than the events; the main agent can act on the
+     failure.
+   - **Kanban** -- read the SQLite DB at
+     \`${id.storeDir}/claudeclaw.db\`:
+     \`sqlite3 ${id.storeDir}/claudeclaw.db "SELECT status, COUNT(*)
+     FROM kanban_cards WHERE archived_at IS NULL GROUP BY status"\`
+     for counts, and grab the titles of cards where
      \`priority='urgent'\` or \`status='waiting'\`.
-   - **Scheduled tasks** — count active rows in
+   - **Scheduled tasks** -- count active rows in
      \`scheduled_tasks\` table; record \`next_run_at\` for the
      earliest upcoming one.
-   - **Memory + system** — DB file size, any \`category='hot'\`
+   - **Memory + system** -- DB file size, any \`category='hot'\`
      memories newer than 1 hour, plus presence of any
      \`status='warning'\` entries in the memory log.
 
@@ -122,7 +183,7 @@ When you receive the heartbeat prompt:
    ## Heartbeat YYYY-MM-DD HH:MM (Europe/Budapest)
 
    ### Calendar (next 2h)
-   - HH:MM — <summary> (<attendees>)
+   - HH:MM -- <summary> (<attendees>)
    - <or: "no upcoming events">
    - <or: "calendar fetch failed: <reason>">
 
@@ -142,19 +203,19 @@ When you receive the heartbeat prompt:
    - warnings: <none | comma-separated>
    \`\`\`
 
-3. **Send** that string to Marveen via the dashboard API:
+3. **Send** that string to the main agent via the dashboard API:
 
    \`\`\`bash
-   TOKEN=$(cat /Users/marvin/ClaudeClaw/store/.dashboard-token)
-   curl -s -X POST http://localhost:3420/api/messages \\
+   TOKEN=$(cat ${id.storeDir}/.dashboard-token)
+   curl -s -X POST ${id.dashboardOrigin}/api/messages \\
      -H "Content-Type: application/json" \\
      -H "Authorization: Bearer $TOKEN" \\
-     -d '{"from":"heartbeat","to":"marveen","content":"<the formatted text>"}'
+     -d '{"from":"heartbeat","to":"${id.mainAgentId}","content":"<the formatted text>"}'
    \`\`\`
 
 4. **Stop.** Do not Telegram-reply, do not Slack, do not message
-   anyone else. The handoff to Marveen is the entire job. Marveen
-   handles the human-facing relay decision.
+   anyone else. The handoff to the main agent is the entire job. The
+   main agent handles the human-facing relay decision.
 
 ## Hard rules (never break)
 
@@ -164,18 +225,18 @@ When you receive the heartbeat prompt:
   message body. The dashboard token in the example above goes in the
   Authorization header only.
 - **NEVER** keep the output longer than ~30 lines. If something does
-  not fit, write "<N> more …" and let Marveen ask for the long
-  form. Heartbeat is a status pulse, not a transcript.
+  not fit, write "<N> more ..." and let the main agent ask for the
+  long form. Heartbeat is a status pulse, not a transcript.
 - If a data source raises, record the failure reason in that
-  section's body and CONTINUE — partial output is fine, silence is
+  section's body and CONTINUE -- partial output is fine, silence is
   not.
 
 ## You are headless
 
 You do not own a Telegram channel and the operator never reaches you
 directly. The only inputs you ever process are heartbeat prompts
-from the scheduler. If you receive anything else, hand it off to
-Marveen with a brief "received off-pattern input, please advise"
+from the scheduler. If you receive anything else, hand it off to the
+main agent with a brief "received off-pattern input, please advise"
 note and stop.
 `
 }
@@ -194,7 +255,7 @@ function renderClaudeSettingsJson(): string {
 // re-rendered every boot for the same reason: the canonical source of
 // truth for the agent's instructions lives here, not on disk.
 const ALWAYS_WRITE: ReadonlyArray<readonly [string, () => string]> = [
-  ['CLAUDE.md', renderClaudeMd],
+  ['CLAUDE.md', () => renderHeartbeatClaudeMd(currentHeartbeatIdentity())],
   ['agent-config.json', renderAgentConfigJson],
   [join('.claude', 'settings.json'), renderClaudeSettingsJson],
 ] as const
