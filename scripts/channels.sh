@@ -192,9 +192,46 @@ fi
 # instead of tight-looping and burning API tokens.
 START_TS=$(date +%s)
 
+# Plugin watchdog: if the Telegram bot process (tracked via bot.pid) dies
+# and stays dead for PLUGIN_DEAD_GRACE seconds, exit so launchd restarts us
+# with a fresh Claude + plugin. This catches silent plugin crashes that the
+# dashboard-side channel-monitor misses when the dashboard itself restarts
+# (resetting its in-memory down-state machine).
+# Start watching only after PLUGIN_WATCH_DELAY to allow for initial startup.
+BOT_PID_FILE="$HOME/.claude/channels/${CHANNEL_PROVIDER}/bot.pid"
+PLUGIN_WATCH_START=$((START_TS + 90))
+PLUGIN_DOWN_SINCE=0
+PLUGIN_DEAD_GRACE=180
+
 # Várakozás amíg a session él
 while $TMUX has-session -t "$SESSION" 2>/dev/null; do
-  sleep 5
+  sleep 30
+
+  NOW=$(date +%s)
+  # Skip plugin check during initial startup grace window
+  [ "$NOW" -lt "$PLUGIN_WATCH_START" ] && continue
+
+  # Determine if plugin process is alive
+  _plugin_alive=false
+  if [ -f "$BOT_PID_FILE" ]; then
+    _bot_pid=$(cat "$BOT_PID_FILE" 2>/dev/null | tr -d '[:space:]')
+    if [ -n "$_bot_pid" ] && [ "$_bot_pid" -gt 1 ] 2>/dev/null && kill -0 "$_bot_pid" 2>/dev/null; then
+      _plugin_alive=true
+    fi
+  fi
+  unset _bot_pid
+
+  if [ "$_plugin_alive" = "true" ]; then
+    PLUGIN_DOWN_SINCE=0
+  else
+    if [ "$PLUGIN_DOWN_SINCE" -eq 0 ]; then
+      PLUGIN_DOWN_SINCE=$NOW
+      echo "WARN: ${CHANNEL_PROVIDER} plugin not detected -- starting ${PLUGIN_DEAD_GRACE}s grace timer" >&2
+    elif [ "$((NOW - PLUGIN_DOWN_SINCE))" -ge "$PLUGIN_DEAD_GRACE" ]; then
+      echo "WARN: ${CHANNEL_PROVIDER} plugin dead for $((NOW - PLUGIN_DOWN_SINCE))s -- exiting for launchd restart" >&2
+      break
+    fi
+  fi
 done
 
 ELAPSED=$(( $(date +%s) - START_TS ))
