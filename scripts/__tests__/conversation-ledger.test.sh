@@ -33,7 +33,9 @@ run_hook() {
     local hook="$1"
     local db="$2"
     shift 2
-    LEDGER_DB_PATH="$db" LEDGER_OWNER_CHAT="8517922966" MAIN_AGENT_ID="marveen" \
+    # OWNER_NAME set explicitly: upstream #291 derives the transcript prefix
+    # from env (no hardcoded name); the prefix assertions below rely on it.
+    LEDGER_DB_PATH="$db" LEDGER_OWNER_CHAT="8517922966" MAIN_AGENT_ID="marveen" OWNER_NAME="Gyula" \
         python3 "$HOOKS_DIR/$hook" "$@"
 }
 
@@ -363,6 +365,32 @@ assert_eq "live drain: statefile records the surfaced message_id" "1122" \
 # (g2) same open question again -> dedup, no output
 OUT_G2="$(run_drain "$DB_LD1")"
 assert_eq "live drain: dedup suppresses re-surfacing the same message_id" "" "$OUT_G2"
+
+# (g-wd) watchdog probes are NEVER open questions (2026-06-04, marveen report:
+# the drain surfaced `__wd_ping <ISO>` as OPEN_QUESTION; answering probes is
+# forbidden by CLAUDE.md). Two invariants: a probe-only inbound surfaces
+# nothing; AND a probe arriving AFTER a real unanswered question must not
+# mask it (the source filter selects the newest NON-probe inbound).
+mkdir -p "$TMPDIR_BASE/ldw1"; DB_LDW1="$TMPDIR_BASE/ldw1/x.db"
+emit_inbound 8517922966 1571 "__wd_ping 2026-06-04T13:25:00Z" | run_hook ledger-capture.py "$DB_LDW1"
+age_rows "$DB_LDW1" 120
+OUT_GW1="$(run_drain "$DB_LDW1")"
+if printf '%s' "$OUT_GW1" | grep -q "OPEN_QUESTION"; then
+    fail "live drain: wd_ping probe surfaced as OPEN_QUESTION (got: $OUT_GW1)"
+else
+    pass "live drain: wd_ping probe-only inbound surfaces nothing"
+fi
+
+mkdir -p "$TMPDIR_BASE/ldw2"; DB_LDW2="$TMPDIR_BASE/ldw2/x.db"
+emit_inbound 8517922966 1580 "Valodi kerdes valasz nelkul" | run_hook ledger-capture.py "$DB_LDW2"
+emit_inbound 8517922966 1581 "__wd_ping 2026-06-04T13:30:00Z" | run_hook ledger-capture.py "$DB_LDW2"
+age_rows "$DB_LDW2" 120
+OUT_GW2="$(run_drain "$DB_LDW2")"
+if printf '%s' "$OUT_GW2" | grep -q "OPEN_QUESTION chat_id=8517922966 message_id=1580"; then
+    pass "live drain: a newer wd_ping does NOT mask the real unanswered question"
+else
+    fail "live drain: real question masked by a newer wd_ping (got: $OUT_GW2)"
+fi
 
 # (g3) a later 'out' answered it -> no output
 mkdir -p "$TMPDIR_BASE/ld3"; DB_LD3="$TMPDIR_BASE/ld3/x.db"

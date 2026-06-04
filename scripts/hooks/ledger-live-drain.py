@@ -83,6 +83,13 @@ def main():
         sys.exit(0)
 
     snippet = (text or "").strip()
+    # Safety net (ac66f49; the source filter lives in ledger_lib): a watchdog
+    # probe must never surface as an open question -- answering it is forbidden,
+    # so surfacing it only burns an operator decision. Worse, a probe arriving
+    # after a real unanswered question would mask it. Dedup it away silently.
+    if snippet.startswith("__wd_ping"):
+        _record_surfaced(path, message_id)
+        sys.exit(0)
     sys.stdout.write(f"OPEN_QUESTION chat_id={chat_id} message_id={message_id}\n{snippet}\n")
     _record_surfaced(path, message_id)
     sys.exit(0)

@@ -168,9 +168,17 @@ def open_question_with_age(agent_id):
     the live-drain hook, which needs the age for its grace window."""
     con = connect()
     try:
+        # Watchdog liveness probes (`__wd_ping <ISO-ts>`) are by definition
+        # never to be answered (CLAUDE.md), so they are not open questions --
+        # AND they must not mask an older real unanswered question by being
+        # the newest inbound. Filtering here (the source) covers every
+        # consumer (open_question, the live-drain, future callers). SQLite
+        # LIKE treats '_' as a wildcard, hence the ESCAPE.
         row = con.execute(
             "SELECT chat_id, message_id, text, ts, created_at, id FROM conversation_log"
-            " WHERE agent_id=? AND direction='in' ORDER BY created_at DESC, id DESC LIMIT 1",
+            " WHERE agent_id=? AND direction='in'"
+            "   AND text NOT LIKE '\\_\\_wd\\_ping%' ESCAPE '\\'"
+            " ORDER BY created_at DESC, id DESC LIMIT 1",
             (str(agent_id),),
         ).fetchone()
         if not row:

@@ -698,6 +698,7 @@ export function parkedChannelInput(pane: string): ParkedChannelInput | null {
   // rather than re-inject to a wrong chat_id.
   if (!cm || /\s/.test(cm[1])) return { complete: false, block, chatId: null }
   return { complete: true, block, chatId: cm[1] }
+}
 
 // =============================================================================
 // Context/credit-wall wedge (2026-06-03, msg #220 loss at erno-ba)
