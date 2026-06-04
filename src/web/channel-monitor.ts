@@ -445,8 +445,15 @@ export function startChannelPluginMonitor(): NodeJS.Timeout {
     }
 
     // Stuck-input watchdog for the main Boss session only.
-    // If the pane has been in 'typing' state for MAIN_INPUT_STUCK_CONFIRM_MS,
-    // the queued channel message will never self-submit -- send Enter to unblock.
+    // When a Telegram channel message arrives while Boss is busy, Claude Code
+    // parks it as plain text at the ❯ prompt ('typing' state). Raw tmux
+    // send-keys Enter does NOT submit it -- Claude Code TUI uses raw-mode stdin
+    // and ignores keystrokes injected while it is between turns. The fix is to
+    // use sendPromptToSession which pre-clears the buffer (Ctrl-U) then
+    // re-injects the parked text with proper chunked send + Enter, which the
+    // TUI does accept. The re-injection loses the Telegram channel header
+    // (← telegram ·) so Boss processes it as a plain prompt, but the content
+    // gets through. Blocks after MAIN_INPUT_STUCK_CONFIRM_MS (90s).
     {
       const mainPane = capturePane(MAIN_CHANNELS_SESSION)
       const mainState = mainPane != null ? detectPaneState(mainPane) : 'unknown'
@@ -454,9 +461,15 @@ export function startChannelPluginMonitor(): NodeJS.Timeout {
         if (mainInputStuckSince === null) {
           mainInputStuckSince = Date.now()
         } else if (Date.now() - mainInputStuckSince >= MAIN_INPUT_STUCK_CONFIRM_MS) {
-          logger.warn({ session: MAIN_CHANNELS_SESSION }, 'Boss input stuck in typing state -- sending Enter to unblock')
+          // Extract the parked text from the input box so we can re-inject it.
+          // PARKED_INPUT_RX matches lines like "❯ some text" inside the input box.
+          const parkedLine = mainPane?.split('\n').find(l => /^[❯>]\s+\S/.test(l.trim()))
+          const parkedText = parkedLine ? parkedLine.replace(/^[❯>]\s+/, '').trim() : ''
+          logger.warn({ session: MAIN_CHANNELS_SESSION, parkedText }, 'Boss input stuck in typing state -- re-injecting via sendPromptToSession')
           try {
-            execFileSync(TMUX, ['send-keys', '-t', MAIN_CHANNELS_SESSION, '', 'Enter'], { timeout: 3000 })
+            // sendPromptToSession clears stale preamble (Ctrl-U) then sends
+            // the text in chunks followed by Enter, which the TUI accepts.
+            sendPromptToSession(MAIN_CHANNELS_SESSION, parkedText || '[SYSTEM: stuck input cleared]')
           } catch { /* best effort */ }
           mainInputStuckSince = null
         }
