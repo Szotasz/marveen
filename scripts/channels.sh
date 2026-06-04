@@ -202,17 +202,17 @@ BOT_PID_FILE="$HOME/.claude/channels/${CHANNEL_PROVIDER}/bot.pid"
 PLUGIN_WATCH_START=$((START_TS + 90))
 PLUGIN_DOWN_SINCE=0
 PLUGIN_DEAD_GRACE=180
-# Only start the dead-timer after bot.pid has been seen at least once.
-# This prevents a false-positive on slow machines where the plugin takes
-# longer than PLUGIN_WATCH_START to write its PID file.
 PLUGIN_SEEN_ONCE=false
+# If the plugin never starts at all (e.g. Claude Code version bug disabling
+# --channels), exit after PLUGIN_NEVER_STARTED_GRACE so launchd triggers a
+# fresh restart with a (hopefully updated) Claude Code binary.
+PLUGIN_NEVER_STARTED_DEADLINE=$((START_TS + 300))
 
 # Várakozás amíg a session él
 while $TMUX has-session -t "$SESSION" 2>/dev/null; do
   sleep 30
 
   NOW=$(date +%s)
-  # Skip plugin check during initial startup grace window
   [ "$NOW" -lt "$PLUGIN_WATCH_START" ] && continue
 
   # Determine if plugin process is alive
@@ -229,12 +229,18 @@ while $TMUX has-session -t "$SESSION" 2>/dev/null; do
   if [ "$_plugin_alive" = "true" ]; then
     PLUGIN_DOWN_SINCE=0
   elif [ "$PLUGIN_SEEN_ONCE" = "true" ]; then
-    # Only start the dead-timer after we've confirmed the plugin started at least once
     if [ "$PLUGIN_DOWN_SINCE" -eq 0 ]; then
       PLUGIN_DOWN_SINCE=$NOW
       echo "WARN: ${CHANNEL_PROVIDER} plugin not detected -- starting ${PLUGIN_DEAD_GRACE}s grace timer" >&2
     elif [ "$((NOW - PLUGIN_DOWN_SINCE))" -ge "$PLUGIN_DEAD_GRACE" ]; then
       echo "WARN: ${CHANNEL_PROVIDER} plugin dead for $((NOW - PLUGIN_DOWN_SINCE))s -- exiting for launchd restart" >&2
+      break
+    fi
+  else
+    # Plugin never started at all -- catch Claude Code version bugs where
+    # --channels is silently ignored (shows as 'disabled' in /mcp output).
+    if [ "$NOW" -ge "$PLUGIN_NEVER_STARTED_DEADLINE" ]; then
+      echo "WARN: ${CHANNEL_PROVIDER} plugin never started within $((PLUGIN_NEVER_STARTED_DEADLINE - START_TS))s -- exiting for launchd restart" >&2
       break
     fi
   fi
