@@ -96,19 +96,15 @@ function hasChannelPluginAlive(claudePid: number, providerType: ChannelProviderT
     const pidPath = join(stateDir, 'bot.pid')
     if (existsSync(pidPath)) {
       const pid = parseInt(readFileSync(pidPath, 'utf-8').trim(), 10)
-      if (pid > 1) {
+      if (Number.isFinite(pid) && pid > 1) {
         try {
           process.kill(pid, 0)
-          const cmd = cmdOf.get(pid) || ''
-          const isRelevant = providerType === 'telegram'
-            ? (cmd.includes('bun') || cmd.includes('server.ts') || cmd.includes('telegram'))
-            : providerType === 'discord'
-              ? (cmd.includes('discord') && (cmd.includes('node') || cmd.includes('bun')))
-              : (cmd.includes('node') || cmd.includes('slack'))
-          if (isRelevant) {
-            logger.debug({ claudePid, orphanPid: pid, agentName, providerType }, 'Channel plugin alive via bot.pid (reparented)')
-            return true
-          }
+          // Process is alive. The ps snapshot may not contain a freshly
+          // reparented process (race between snapshot and kill -0), so
+          // skip the command-line relevance check here -- liveness alone
+          // is sufficient evidence that the plugin is still running.
+          logger.debug({ claudePid, orphanPid: pid, agentName, providerType }, 'Channel plugin alive via bot.pid')
+          return true
         } catch { /* process gone */ }
       }
     }
@@ -152,6 +148,13 @@ function hasChannelPluginAlive(claudePid: number, providerType: ChannelProviderT
 const agentDownSince: Map<string, number> = new Map()
 const agentLastRestart: Map<string, number> = new Map()
 const AGENT_RESTART_GRACE_MS = 90_000
+// A sub-agent's channel plugin must stay down for this whole window (across
+// multiple monitor ticks) before we do the destructive stop+start. Transient
+// Telegram MCP pipe flaps self-heal within a tick or two and clear
+// agentDownSince via the `alive` branch -- restarting on the first down-tick
+// wiped agents' in-progress work (long research/render tasks especially).
+// Mirrors the main-agent MARVEEN_DOWN_CONFIRM_MS confirmation pattern.
+const AGENT_DOWN_CONFIRM_MS = 5 * 60 * 1000
 const PLUGIN_ALERT_DEDUP_MS = 30 * 60 * 1000
 
 // Watchdog: detect when the main Boss session has text stuck in the input
@@ -491,8 +494,18 @@ export function startChannelPluginMonitor(): NodeJS.Timeout {
       if (t.isMarveen) {
         if (shouldEscalateMarveenDown()) handleMarveenDown()
       } else {
-        const isFirstDown = !agentDownSince.has(t.session)
-        if (isFirstDown) agentDownSince.set(t.session, Date.now())
+        // Channel plugin looks down. Wait for SUSTAINED downtime before the
+        // destructive stop+start: a transient Telegram MCP pipe flap self-heals
+        // within a tick or two (cleared by the `alive` branch above) and must
+        // NOT trigger a restart -- that wiped agents' in-progress work (long
+        // research/render tasks especially). Only a genuinely dead channel that
+        // stays down for the whole AGENT_DOWN_CONFIRM_MS window gets restarted.
+        const firstDownAt = agentDownSince.get(t.session)
+        if (firstDownAt === undefined) {
+          agentDownSince.set(t.session, Date.now())
+          continue
+        }
+        if (Date.now() - firstDownAt < AGENT_DOWN_CONFIRM_MS) continue
         const agentProvider = resolveAgentProvider(t.agentName!)
         const stateDir = channelStateDir(agentProvider, agentDir(t.agentName!))
         const agentToken = readChannelToken(agentProvider, join(stateDir, '.env'))
@@ -500,16 +513,15 @@ export function startChannelPluginMonitor(): NodeJS.Timeout {
           logger.warn({ agent: t.agentName, provider: agentProvider }, 'Agent has no channel token in state dir -- skipping restart to avoid token conflict')
           continue
         }
-        logger.warn({ agent: t.agentName, provider: t.provider }, 'Agent channel plugin down -- auto-restarting')
+        const downForMs = Date.now() - firstDownAt
+        logger.warn({ agent: t.agentName, provider: t.provider, downForMs }, 'Agent channel plugin sustained-down -- auto-restarting')
         try {
           stopAgentProcess(t.agentName!)
           execSync('sleep 2', { timeout: 4000 })
           startAgentProcess(t.agentName!)
           agentLastRestart.set(t.agentName!, Date.now())
           agentDownSince.delete(t.session)
-          if (isFirstDown) {
-            sendAlert(`⚠️ ${t.agentName} channel plugin leesett -- automatikusan ujraindítottam. Ellenőrizd hogy a folyamatban lévő feladatot folytatta-e.`)
-          }
+          sendAlert(`⚠️ ${t.agentName} channel plugin tartósan (>${Math.round(AGENT_DOWN_CONFIRM_MS / 60000)} perc) leesett -- automatikusan ujraindítottam. Ellenőrizd hogy a folyamatban lévő feladatot folytatta-e.`)
         } catch (err) {
           logger.error({ err, agent: t.agentName }, 'Failed to auto-restart agent after channel plugin down')
           sendAlert(`🚨 ${t.agentName} channel plugin leesett és az újraindítás SIKERTELEN. Kézi beavatkozás kell: tmux attach -t ${agentSessionName(t.agentName!)}`)

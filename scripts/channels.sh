@@ -202,6 +202,10 @@ BOT_PID_FILE="$HOME/.claude/channels/${CHANNEL_PROVIDER}/bot.pid"
 PLUGIN_WATCH_START=$((START_TS + 90))
 PLUGIN_DOWN_SINCE=0
 PLUGIN_DEAD_GRACE=180
+# Only start the dead-timer after bot.pid has been seen at least once.
+# This prevents a false-positive on slow machines where the plugin takes
+# longer than PLUGIN_WATCH_START to write its PID file.
+PLUGIN_SEEN_ONCE=false
 
 # Várakozás amíg a session él
 while $TMUX has-session -t "$SESSION" 2>/dev/null; do
@@ -217,13 +221,15 @@ while $TMUX has-session -t "$SESSION" 2>/dev/null; do
     _bot_pid=$(cat "$BOT_PID_FILE" 2>/dev/null | tr -d '[:space:]')
     if [ -n "$_bot_pid" ] && [ "$_bot_pid" -gt 1 ] 2>/dev/null && kill -0 "$_bot_pid" 2>/dev/null; then
       _plugin_alive=true
+      PLUGIN_SEEN_ONCE=true
     fi
   fi
   unset _bot_pid
 
   if [ "$_plugin_alive" = "true" ]; then
     PLUGIN_DOWN_SINCE=0
-  else
+  elif [ "$PLUGIN_SEEN_ONCE" = "true" ]; then
+    # Only start the dead-timer after we've confirmed the plugin started at least once
     if [ "$PLUGIN_DOWN_SINCE" -eq 0 ]; then
       PLUGIN_DOWN_SINCE=$NOW
       echo "WARN: ${CHANNEL_PROVIDER} plugin not detected -- starting ${PLUGIN_DEAD_GRACE}s grace timer" >&2
