@@ -18,7 +18,7 @@
 #     .claude/scheduled-tasks/**   (file-based scheduled tasks: SKILL.md + config)
 #     .claude/channels/*/.env      (MAIN orchestrator channel token)
 #     .claude/channels/*/access.json, invites.json, approved/**  (pairing state)
-#     Library/LaunchAgents/com.gorcsevivan.*.plist (launchd jobs)
+#     Library/LaunchAgents/com.<MAIN_AGENT_ID>.*.plist (launchd jobs)
 #
 # Output: backups/claudeclaw-YYYYmmdd-HHMMSS.tar.gz
 # Retention: keeps the most recent 14 archives, prunes the rest.
@@ -87,9 +87,22 @@ if [[ -d "${HOME}/.claude/channels" ]]; then
       -print ) >> "${HOMELIST}"
   ( cd "${HOME}" && find .claude/channels -maxdepth 2 -type d -name 'approved' -print ) >> "${HOMELIST}"
 fi
-# launchd jobs for this fleet.
+# launchd jobs for this fleet. The job labels are com.<MAIN_AGENT_ID>.<service>
+# (see src/web/main-agent.ts), so resolve MAIN_AGENT_ID the way the app does
+# (src/env.ts: read from .env, default "marveen" when unset) instead of
+# hardcoding one deployment's prefix. Parsing mirrors env.ts: last definition
+# wins, surrounding matching quotes stripped.
+MAIN_AGENT_ID="marveen"
+if [[ -f "${REPO_ROOT}/.env" ]]; then
+  # `|| true`: with `set -o pipefail`, a no-match grep would otherwise fail the
+  # whole substitution (and, under `set -e`, abort the backup) on any install
+  # that leaves MAIN_AGENT_ID unset and relies on the "marveen" default.
+  _mid="$(grep -E '^[[:space:]]*MAIN_AGENT_ID[[:space:]]*=' "${REPO_ROOT}/.env" | tail -1 \
+    | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//; s/^"(.*)"$/\1/; s/^'\''(.*)'\''$/\1/' || true)"
+  [[ -n "${_mid}" ]] && MAIN_AGENT_ID="${_mid}"
+fi
 if [[ -d "${HOME}/Library/LaunchAgents" ]]; then
-  ( cd "${HOME}" && find Library/LaunchAgents -maxdepth 1 -name 'com.gorcsevivan.*.plist' -print ) >> "${HOMELIST}"
+  ( cd "${HOME}" && find Library/LaunchAgents -maxdepth 1 -name "com.${MAIN_AGENT_ID}.*.plist" -print ) >> "${HOMELIST}"
 fi
 
 if [[ ! -s "${REPOLIST}" && ! -s "${HOMELIST}" ]]; then

@@ -30,7 +30,7 @@ the Docker volumes (3) are **separate** and must be moved on their own.
 - `~/.claude/scheduled-tasks/**` — file-based scheduled tasks (SKILL.md + task-config.json)
 - `~/.claude/channels/*/.env` — MAIN orchestrator channel token
 - `~/.claude/channels/*/access.json`, `invites.json`, `approved/**` — pairing allowlist + approvals
-- `~/Library/LaunchAgents/com.gorcsevivan.*.plist` — launchd jobs
+- `~/Library/LaunchAgents/com.<MAIN_AGENT_ID>.*.plist` -- launchd jobs (the prefix is your `MAIN_AGENT_ID`, `marveen` by default)
 
 **(3) Docker volumes — NOT in the tarball, migrate separately**
 - `stack_influxdb-data`, `stack_influxdb-config` — InfluxDB 2.7 time-series (Loxone history)
@@ -110,11 +110,12 @@ the Docker volumes (3) are **separate** and must be moved on their own.
    their packages so the torch/whisper wheels are arm64, not the old Intel x86_64.
 7. **Fix + install the launchd jobs:**
    - If the user/home/repo path changed, edit each
-     `~/Library/LaunchAgents/com.gorcsevivan.*.plist` (`ProgramArguments`,
+     `~/Library/LaunchAgents/com.<MAIN_AGENT_ID>.*.plist` (`ProgramArguments`,
      `WorkingDirectory`, `StandardOutPath`, env `HOME`/`PATH`) to the new paths.
-   - Load them: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.gorcsevivan.<job>.plist`
-     (jobs: `channels`, `dashboard`, `channels-nightly-restart`, `hosttemp`,
-     `poller-watchdog`, `session-limit-watchdog`).
+     The label prefix is your `MAIN_AGENT_ID` (`marveen` by default).
+   - Load them: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.<MAIN_AGENT_ID>.<job>.plist`
+     (the core jobs are `channels` and `dashboard`; load any other
+     `com.<MAIN_AGENT_ID>.*` jobs you run too).
 8. **Grant macOS permissions (TCC):** the first time the new processes need
    Full Disk Access / Automation / Accessibility, macOS silently blocks them
    until granted in System Settings → Privacy & Security. Grant Full Disk
@@ -126,10 +127,10 @@ the Docker volumes (3) are **separate** and must be moved on their own.
 ## 4. Cutover (the irreversible step — do last)
 
 1. On the OLD machine: stop everything that polls a bot token, in this order:
-   `launchctl bootout gui/$(id -u)/com.gorcsevivan.channels` (and the dashboard,
+   `launchctl bootout gui/$(id -u)/com.<MAIN_AGENT_ID>.channels` (and the dashboard,
    watchdogs), then confirm no `bun server.ts` / poller is left
    (`pgrep -fl "claude .*--channels"`). Leaving the old poller alive = 409 on the new one.
-2. On the NEW machine: start `com.gorcsevivan.channels` (and dashboard). Confirm
+2. On the NEW machine: start `com.<MAIN_AGENT_ID>.channels` (and dashboard). Confirm
    a fresh poller: `pgrep -P <channels_pid>` shows a `bun` child, `bot.pid`
    appears, `getWebhookInfo` `pending_update_count` drains to 0.
 3. Send a test Telegram message → it must reach the new fleet and get a reply.
@@ -179,5 +180,5 @@ the Docker volumes (3) are **separate** and must be moved on their own.
 - [ ] Pairing intact: previously-approved chats still allowed (no re-pairing).
 - [ ] InfluxDB has the history: a Flux `count()` over the Loxone measurement
       matches the old machine; Grafana dashboards render.
-- [ ] All six launchd jobs are loaded: `launchctl list | grep gorcsevivan`.
+- [ ] All your launchd jobs are loaded: `launchctl list | grep com.<MAIN_AGENT_ID>`.
 - [ ] Old machine's pollers are fully stopped (no 409).
