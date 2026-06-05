@@ -10,7 +10,6 @@ import { ensureAgentHooks, ensureDefaultScheduledTasks } from './web/agent-scaff
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
 import { startUpdateChecker } from './web/update-checker.js'
-import { startMcpListChecker } from './web/mcp-list.js'
 import { startScheduleRunner } from './web/schedule-runner.js'
 import { startChannelPluginMonitor } from './web/channel-monitor.js'
 import { startInboundProber } from './web/inbound-probe.js'
@@ -255,12 +254,21 @@ export function startWebServer(port = 3420): http.Server {
   const updateCheckerInterval = startUpdateChecker()
   logger.info('Update checker started (15min poll)')
 
-  // Warm the MCP list cache so the Connectors page reflects claude.ai OAuth
-  // connectors on first load. 30s delay lets the main-channels session settle
-  // first so the telegram plugin's single-poller token is claimed before
-  // `claude mcp list` spawns it for a health check.
-  startMcpListChecker()
-  logger.info('MCP list cache warmup scheduled (30s delay, manual refresh only)')
+  // NOTE: startMcpListChecker() is intentionally NOT called here.
+  //
+  // Root cause: calling `claude mcp list` at boot time (30s delay) spawns the
+  // Telegram plugin for a health check. The plugin claims the bot-token poller
+  // slot, which 409-kills the live session-bridge process that already holds
+  // the same token. On every deploy this caused the Telegram channel to go
+  // offline within 33s of startup (3/3 observed deploys, 2026-06-04).
+  //
+  // The Connectors page already has a manual "Refresh" button that calls
+  // refreshMcpListCache() on demand. The cache starts empty; users see their
+  // connectors after the first manual refresh.
+  //
+  // Related: PR #269 fixed a DIFFERENT 409 source (runtime poller-flapping /
+  // channel-coordinator 409 cooldown hysteresis). That fix and this one are
+  // complementary -- both 409 vectors must be addressed.
 
   // Warm the Marveen bot username cache so /api/marveen returns @username on
   // the first dashboard load. Re-fetched lazily otherwise.
