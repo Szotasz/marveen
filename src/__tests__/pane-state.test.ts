@@ -1238,3 +1238,44 @@ describe('decideStuckInputRecovery', () => {
     expect(d.next.attempts).toBe(0)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Contract tests: esc-to-interrupt live-region scoping (port from kovesdan/marveen)
+//
+// Root cause: a watchdog report or log output that quotes "esc to interrupt"
+// anywhere in the scrollback permanently classified an otherwise-idle session
+// as busy (81-retry starvation incident). The fix scopes the phrase check to
+// the bottom LIVE_FOOTER_REGION_LINES of the pane.
+// ---------------------------------------------------------------------------
+describe('detectPaneState: esc-to-interrupt scoped to live footer region', () => {
+  const SEP_R = '─'.repeat(80)
+
+  it('classifies as idle when "esc to interrupt" appears only in scrollback prose', () => {
+    // A watchdog report or tool-call output that QUOTES the phrase somewhere
+    // above the live input box. With whole-pane scanning this would pin the
+    // session as busy forever; scoped to the footer region it is correctly idle.
+    const pane = [
+      '  [watchdog report]: session was busy, waiting for esc to interrupt signal',
+      '  (scrollback content continues)',
+      '',
+      SEP_R,
+      '❯ ',
+      SEP_R,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('idle')
+  })
+
+  it('classifies as busy when "esc to interrupt" appears in the footer line (live turn)', () => {
+    // The real busy signal: Claude Code appends "· esc to interrupt" to the
+    // bypass-mode footer during an active turn. Must still be caught.
+    const pane = [
+      '',
+      SEP_R,
+      '❯ ',
+      SEP_R,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('busy')
+  })
+})

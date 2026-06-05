@@ -70,11 +70,17 @@ const IDLE_FOOTER_RX = /bypass permissions on(?: \(shift\+tab to cycle\)| · \d+
 //
 // The load-bearing signal is the tokens-down-arrow pattern `(Ns · ↓N`,
 // which every extended-thinking turn renders regardless of spinner
-// label. `esc to interrupt` is the footer-scoped fallback. A future
-// Claude Code release that renames the spinner labels will miss the
-// label regex but still be caught by the tokens pattern.
+// label. `esc to interrupt` is the footer-scoped fallback checked only
+// in the live footer region (see LIVE_FOOTER_REGION_LINES below) to
+// prevent prose-quoting false positives. A future Claude Code release
+// that renames the spinner labels will miss the label regex but still
+// be caught by the tokens pattern.
 const BUSY_INDICATORS: RegExp[] = [
-  /\besc to interrupt\b/,
+  // NOTE: /\besc to interrupt\b/ is NOT in this whole-pane list.
+  // It is checked separately via BUSY_ESC_TO_INTERRUPT_RX scoped to the
+  // bottom LIVE_FOOTER_REGION_LINES lines, because a watchdog report or
+  // tool-call output that quotes the phrase in scrollback would otherwise
+  // permanently pin the session as busy (81-retry starvation incident).
   // Tokens-down-arrow counter: "(52s · ↓ 2.6k tokens ..." Turn-scoped,
   // overwritten with whitespace the moment the turn completes.
   /\(\s*\d+s\s*·\s*↓\s*\d/,
@@ -84,6 +90,16 @@ const BUSY_INDICATORS: RegExp[] = [
   // above is the authoritative fallback.
   /\b(?:Combobulating|Beaming|Thinking|Pondering|Reticulating|Configuring|Noodling|Ruminating|Percolating|Cogitating|Deliberating|Contemplating|Musing|Brewing|Synthesizing|Distilling|Refining|Simmering|Crafting|Formulating|Consulting|Unfurling|Unspooling|Unraveling)…\s*\(\s*\d+s\s*·\s*↓/,
 ]
+
+// `esc to interrupt` is a footer-region-only busy signal: Claude Code
+// appends it to the bypass-mode footer line during a live turn. Scoping
+// the check to the bottom LIVE_FOOTER_REGION_LINES lines prevents a
+// watchdog report or tool-call output that quotes the phrase anywhere
+// in the scrollback from permanently pinning the session as busy
+// (observed incident: 81 consecutive scheduler retries on a report that
+// contained the phrase in its body).
+const BUSY_ESC_TO_INTERRUPT_RX = /\besc to interrupt\b/
+const LIVE_FOOTER_REGION_LINES = 5
 
 // Pasted-text placeholder. Claude Code lifts bursts of input keys into
 // `[Pasted text #N +X chars]` stubs, which sit in the input buffer and
@@ -216,6 +232,14 @@ export function detectPaneState(
   for (const rx of BUSY_INDICATORS) {
     if (rx.test(pane)) return 'busy'
   }
+
+  // Scope `esc to interrupt` check to the live footer region only.
+  // Checking the whole pane would let a scrollback quote of the phrase
+  // (e.g. in a watchdog report or a log analysis) permanently classify
+  // an idle session as busy.
+  const paneLines = pane.split('\n')
+  const footerRegion = paneLines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return 'busy'
 
   if (!IDLE_FOOTER_RX.test(pane)) return 'unknown'
 
@@ -362,6 +386,10 @@ export function shouldRetrySubmit(
   for (const rx of BUSY_INDICATORS) {
     if (rx.test(pane)) return false
   }
+  // Footer-region `esc to interrupt` check (same scoping as detectPaneState).
+  const retryPaneLines = pane.split('\n')
+  const retryFooterRegion = retryPaneLines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(retryFooterRegion)) return false
   // Without an idle footer the pane is either not Claude Code or in an
   // unknown render state. Be conservative and skip.
   if (!IDLE_FOOTER_RX.test(pane)) return false
