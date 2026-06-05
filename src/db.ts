@@ -1073,8 +1073,22 @@ export function listKanbanProjects(): string[] {
 }
 
 export function deleteKanbanCard(id: string): boolean {
-  db.prepare('DELETE FROM kanban_comments WHERE card_id = ?').run(id)
-  return db.prepare('DELETE FROM kanban_cards WHERE id = ?').run(id).changes > 0
+  // Wrapped in a transaction to ensure atomicity: all three mutations
+  // succeed together or none of them do. Steps in FK-safe order:
+  //   1. Delete comments that reference this card (FK: kanban_comments.card_id).
+  //   2. Null-out child cards that reference this card as their parent
+  //      (FK: kanban_cards.parent_id). Setting parent_id = NULL keeps the
+  //      children alive as root-level cards rather than leaving them with a
+  //      dangling reference. FK enforcement is currently OFF by default
+  //      (better-sqlite3 default), but the dangling parent_id is still a
+  //      data bug -- orphaned children do not appear under any parent and
+  //      are invisible in hierarchy views.
+  //   3. Delete the card itself.
+  return db.transaction((cardId: string) => {
+    db.prepare('DELETE FROM kanban_comments WHERE card_id = ?').run(cardId)
+    db.prepare('UPDATE kanban_cards SET parent_id = NULL WHERE parent_id = ?').run(cardId)
+    return db.prepare('DELETE FROM kanban_cards WHERE id = ?').run(cardId).changes > 0
+  })(id) as boolean
 }
 
 export function getKanbanComments(cardId: string): KanbanComment[] {
