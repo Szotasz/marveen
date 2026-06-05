@@ -1247,6 +1247,59 @@ describe('decideStuckInputRecovery', () => {
 // as busy (81-retry starvation incident). The fix scopes the phrase check to
 // the bottom LIVE_FOOTER_REGION_LINES of the pane.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Contract tests: shouldRetrySubmit footer-region scoping
+//
+// shouldRetrySubmit applies the same esc-to-interrupt footer-region scope as
+// detectPaneState (lines 390-392 of pane-state.ts). A pane whose TRANSCRIPT
+// prose quotes "esc to interrupt" in scrollback but whose footer is idle
+// must NOT be treated as busy by shouldRetrySubmit -- if stuck content is
+// present in the input box the function must return true (idle-path).
+//
+// Mental-revert: if the footer-scoped check in shouldRetrySubmit were replaced
+// by a whole-pane scan (e.g. `BUSY_ESC_TO_INTERRUPT_RX.test(pane)` instead of
+// `BUSY_ESC_TO_INTERRUPT_RX.test(retryFooterRegion)`), the busy branch fires
+// and shouldRetrySubmit returns false -- making this test fail.
+// ---------------------------------------------------------------------------
+describe('shouldRetrySubmit: esc-to-interrupt scoped to live footer region', () => {
+  const SEP_R = '─'.repeat(80)
+  const HINT = '[Uzenet @dev2-tol -- trusted team member]: <trusted-peer source="agent:dev2">'
+
+  it('returns true (stuck) when "esc to interrupt" appears only in scrollback and the input box holds the payload', () => {
+    // The transcript prose quotes "esc to interrupt" (e.g. a watchdog log
+    // line) but the footer is plain idle and the live input box contains the
+    // just-sent payload. With whole-pane scanning the busy check would fire
+    // and return false (incorrectly skipping the retry). With footer-region
+    // scoping the busy path is not triggered, so the stuck input is detected
+    // and shouldRetrySubmit returns true.
+    const pane = [
+      '  [watchdog]: waited for esc to interrupt before giving up',
+      '  (some other scrollback)',
+      '',
+      SEP_R,
+      `❯ ${HINT} cycle-077 BACKEND iter-1 close-iter ack`,
+      SEP_R,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(shouldRetrySubmit(pane, HINT)).toBe(true)
+  })
+
+  it('returns false (busy, no retry) when "esc to interrupt" is in the live footer (active turn)', () => {
+    // Confirms that a real active-turn footer with "esc to interrupt" appended
+    // still prevents a spurious retry -- the region-scoped check fires on the
+    // footer itself, so shouldRetrySubmit correctly returns false.
+    const pane = [
+      '',
+      SEP_R,
+      `❯ ${HINT} cycle-077`,
+      SEP_R,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt',
+    ].join('\n')
+    expect(shouldRetrySubmit(pane, HINT)).toBe(false)
+  })
+})
+
 describe('detectPaneState: esc-to-interrupt scoped to live footer region', () => {
   const SEP_R = '─'.repeat(80)
 
