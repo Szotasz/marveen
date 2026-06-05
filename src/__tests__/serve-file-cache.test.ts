@@ -18,6 +18,33 @@ import http from 'node:http'
 import { etagMatches, serveFile, json } from '../web/http-helpers.js'
 
 // ---------------------------------------------------------------------------
+// json() Cache-Control contract test
+// ---------------------------------------------------------------------------
+describe('json() cache headers', () => {
+  it('sends Cache-Control: private, no-store on every json() response', () => {
+    // Intermediate proxies must never cache API responses that may contain
+    // user-specific data or session state. json() must set the header on
+    // every call regardless of status code.
+    let capturedStatus: number | null = null
+    const capturedHeaders: Record<string, string | string[]> = {}
+    let capturedBody: string | null = null
+    const res = {
+      writeHead(status: number, hdrs?: Record<string, string | string[]>) {
+        capturedStatus = status
+        if (hdrs) Object.assign(capturedHeaders, hdrs)
+      },
+      end(data?: string) { capturedBody = data ?? null },
+    } as unknown as http.ServerResponse
+
+    json(res, { ok: true })
+    expect(capturedStatus).toBe(200)
+    const cc = (capturedHeaders['Cache-Control'] ?? capturedHeaders['cache-control']) as string
+    expect(cc).toBe('private, no-store')
+    expect(capturedBody).toBe(JSON.stringify({ ok: true }))
+  })
+})
+
+// ---------------------------------------------------------------------------
 // etagMatches unit tests (pure function, no I/O)
 // ---------------------------------------------------------------------------
 describe('etagMatches', () => {
@@ -39,6 +66,16 @@ describe('etagMatches', () => {
 
   it('does not normalise double W/ prefix (malformed → miss)', () => {
     expect(etagMatches('W/W/"abc-123"', '"abc-123"')).toBe(false)
+  })
+
+  it('coerces string[] to RFC-joined string before comparing', () => {
+    // HTTP/1.1 proxies may send duplicate If-None-Match header lines, which
+    // Node.js surfaces as string[]. Without coercion the array would be
+    // passed to startsWith() and throw a TypeError, yielding a 500.
+    // RFC 7230 §3.2.2 canonical join is ", ".
+    expect(etagMatches(['"abc-123"'], '"abc-123"')).toBe(true)
+    expect(etagMatches(['W/"abc-123"'], '"abc-123"')).toBe(true)
+    expect(etagMatches(['"abc-123"', '"def-456"'], '"abc-123"')).toBe(false)
   })
 })
 

@@ -68,10 +68,17 @@ export function json(res: http.ServerResponse, data: unknown, status = 200): voi
  * single leading W/ prefix (weak validator) so `W/"abc"` compares equal to
  * `"abc"`. Multiple W/ prefixes or bare unquoted values are left as-is
  * (malformed; the comparison will simply miss and the full response is sent).
+ *
+ * The header value may arrive as string[] when proxies or HTTP/1.1 clients
+ * send multiple If-None-Match header lines. RFC 7230 §3.2.2 allows this and
+ * the canonical interpretation is to join them with ", ". We coerce here so
+ * the caller (serveFile) does not need to handle the union type explicitly,
+ * and a string[] value does not throw or produce a wrong 404/500.
  */
-export function etagMatches(ifNoneMatch: string | undefined, etag: string): boolean {
+export function etagMatches(ifNoneMatch: string | string[] | undefined, etag: string): boolean {
   if (!ifNoneMatch) return false
-  const normalised = ifNoneMatch.startsWith('W/') ? ifNoneMatch.slice(2) : ifNoneMatch
+  const raw = Array.isArray(ifNoneMatch) ? ifNoneMatch.join(', ') : ifNoneMatch
+  const normalised = raw.startsWith('W/') ? raw.slice(2) : raw
   return normalised === etag
 }
 
