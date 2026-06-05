@@ -49,6 +49,26 @@ const MESSAGE_ABANDON_WINDOW_MS = 60 * 60 * 1000
 // receiver over many 5s ticks does not spam the log.
 const routerLoggedMisses: Set<number> = new Set()
 
+/**
+ * Pure decision: should a pending inter-agent message be abandoned?
+ *
+ * Abandon ONLY when the target session has been ABSENT for the full retry
+ * window. A session that EXISTS (even if busy or mid-turn) is never hard-
+ * abandoned -- it keeps retrying until an idle gap delivers the message.
+ *
+ * The previous inline code checked `ageMs > window` BEFORE the session-
+ * existence check, which abandoned messages to an alive-but-busy main
+ * session at the 1h mark even though the session was continuously running
+ * (incident: two reports lost while the session was busy).
+ *
+ * @param sessionExists Whether the target tmux session is currently alive.
+ * @param ageMs         How long the message has been pending (ms).
+ * @param windowMs      The abandon window threshold (ms).
+ */
+export function shouldAbandon(sessionExists: boolean, ageMs: number, windowMs: number): boolean {
+  return !sessionExists && ageMs > windowMs
+}
+
 // Checks for pending messages every 5 seconds and injects them into target
 // agent tmux sessions.
 export function startMessageRouter(): NodeJS.Timeout {
@@ -57,14 +77,6 @@ export function startMessageRouter(): NodeJS.Timeout {
     const now = Date.now()
     for (const msg of pending) {
       const ageMs = now - msg.created_at * 1000
-      if (ageMs > MESSAGE_ABANDON_WINDOW_MS) {
-        logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent, ageMs }, 'Agent message abandoned: target never ready within window')
-        if (!markMessageFailed(msg.id, 'Abandoned: target session never ready within retry window')) {
-          logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
-        }
-        routerLoggedMisses.delete(msg.id)
-        continue
-      }
       // The main agent runs in `${MAIN_AGENT_ID}-channels`, not `agent-${name}`,
       // so agentSessionName() would miss it and strand every sub-agent → main
       // message as pending forever. Mirror the scheduler's session resolution.
@@ -76,6 +88,15 @@ export function startMessageRouter(): NodeJS.Timeout {
         const sessions = execSync(`${TMUX} list-sessions -F "#{session_name}"`, { timeout: 3000, encoding: 'utf-8' })
         sessionExists = sessions.split('\n').some(s => s.trim() === session)
       } catch { /* no tmux */ }
+
+      if (shouldAbandon(sessionExists, ageMs, MESSAGE_ABANDON_WINDOW_MS)) {
+        logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent, ageMs }, 'Agent message abandoned: target session absent for full retry window')
+        if (!markMessageFailed(msg.id, 'Abandoned: target session absent for full retry window')) {
+          logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
+        }
+        routerLoggedMisses.delete(msg.id)
+        continue
+      }
 
       if (!sessionExists) {
         if (!routerLoggedMisses.has(msg.id)) {
