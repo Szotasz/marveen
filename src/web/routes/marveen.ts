@@ -1,13 +1,14 @@
 import { existsSync, unlinkSync, copyFileSync, writeFileSync } from 'node:fs'
 import { join, extname } from 'node:path'
-import { PROJECT_ROOT, OWNER_NAME, BOT_NAME, MAIN_AGENT_ID } from '../../config.js'
-import { readMarveenTelegramConfig, sendMarveenAvatarChange } from '../telegram.js'
+import { PROJECT_ROOT, OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, CHANNEL_PROVIDER } from '../../config.js'
+import { readMarveenTelegramConfig, readMarveenDiscordConfig, readMarveenSlackConfig, sendMarveenAvatarChange } from '../telegram.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
 import { readFileOr, readAgentDisplayName } from '../agent-config.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json, serveFile } from '../http-helpers.js'
 import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
-import { readActiveModelFromProjectDir } from '../active-model.js'
+import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
+import { readAutoRestartConfig } from '../auto-restart-store.js'
 import type { RouteContext } from './types.js'
 
 function getActiveMarveenModel(): string {
@@ -28,13 +29,26 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
     const descFromPersonality = soulSection.split('\n').filter(l => l.trim()).slice(0, 2).join(' ').slice(0, 200)
     const description = firstLine || descFromPersonality || `${OWNER_NAME} AI asszisztense`
     const tg = readMarveenTelegramConfig()
+    const dc = readMarveenDiscordConfig()
+    const sl = readMarveenSlackConfig()
     json(res, {
-      name: readAgentDisplayName(MAIN_AGENT_ID) || BOT_NAME,
+      name: BOT_NAME,
+      // Canonical agent id (MAIN_AGENT_ID, e.g. "gorcsevivan") so the dashboard
+      // can hit /api/agents/<id>/skills for the main agent -- the display name
+      // (BOT_NAME) is not a valid agent-dir id.
+      agentId: MAIN_AGENT_ID,
       description,
       model: getActiveMarveenModel(),
       tmuxSession: MAIN_CHANNELS_SESSION,
       running: true,
+      // Auto-restart applies to the main channels session too; key it by the
+      // orchestrator id (autoRestartId) so the UI PUTs to the right store entry.
+      autoRestart: readAutoRestartConfig(MAIN_AGENT_ID),
+      autoRestartId: MAIN_AGENT_ID,
+      contextTokens: readContextTokensFromProjectDir(PROJECT_ROOT),
       hasTelegram: tg.hasTelegram,
+      hasDiscord: dc.hasDiscord,
+      hasSlack: sl.hasSlack,
       telegramBotUsername: tg.botUsername,
       role: 'main',
       personality: soulSection,
@@ -42,6 +56,10 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
       soulMd,
       mcpJson,
       readonly: true,
+      // Dashboard kliens defaultja a provider-dropdown-hoz: a backend
+      // CHANNEL_PROVIDER env-jébe pinneljük, hogy a UI ne hardcode-olt
+      // 'telegram'-mal induljon.
+      channelProvider: CHANNEL_PROVIDER,
     })
     return true
   }

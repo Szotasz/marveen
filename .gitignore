@@ -34,6 +34,7 @@ CLAUDE.md
 # Custom MCP servers and config (user-specific)
 mcp-servers/
 .mcp.json
+mcp-catalog.local.json
 
 # Personal/project-specific docs (not part of the product)
 # Old rebuild prompts (keep V3 which is the current one)

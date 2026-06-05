@@ -1,3 +1,4 @@
+import { hostname } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readEnvFile } from './env.js'
@@ -31,11 +32,33 @@ export const MAIN_AGENT_ID = env['MAIN_AGENT_ID'] ?? 'marveen'
 export const WEB_PORT = parseInt(env['WEB_PORT'] ?? '3420', 10)
 
 export const WEB_HOST = env['WEB_HOST'] ?? '127.0.0.1'
+export const DASHBOARD_PUBLIC_URL = env['DASHBOARD_PUBLIC_URL'] ?? ''
 export const OLLAMA_URL = env['OLLAMA_URL'] ?? 'http://localhost:11434'
 
 export const CHANNEL_PROVIDER: ChannelProviderType = getProviderType(env['CHANNEL_PROVIDER'])
 export const CHANNEL_TOKEN = getChannelToken(CHANNEL_PROVIDER, env)
 export const CHANNEL_CHAT_ID = getChannelChatId(CHANNEL_PROVIDER, env)
+
+// Respawn / keep-alive gate.
+// The in-process channel-plugin monitor (main-agent respawn + sub-agent
+// auto-restart) must run on exactly ONE machine. When the same checkout runs
+// on more than one host (e.g. a dev box alongside the production host), each
+// would independently respawn agents and the two would fight over the same bot
+// tokens / getUpdates slot. Gate it so only the intended host keeps agents alive.
+//   RESPAWN_ENABLED -- "1"/"true" forces on, "0"/"false" forces off
+//   RESPAWN_HOST    -- optional substring matched against the OS hostname; when
+//                      set, respawn is enabled only on a host whose name matches
+// Default (neither set): enabled, so a single-host install needs no config.
+const RESPAWN_HOST = (env['RESPAWN_HOST'] ?? '').toLowerCase()
+const RESPAWN_OVERRIDE = (env['RESPAWN_ENABLED'] ?? '').toLowerCase()
+export const RESPAWN_ENABLED =
+  RESPAWN_OVERRIDE === '1' || RESPAWN_OVERRIDE === 'true'
+    ? true
+    : RESPAWN_OVERRIDE === '0' || RESPAWN_OVERRIDE === 'false'
+      ? false
+      : RESPAWN_HOST
+        ? hostname().toLowerCase().includes(RESPAWN_HOST)
+        : true
 
 // Heartbeat
 export const HEARTBEAT_INTERVAL_MS = 60 * 60 * 1000 // 1 hour

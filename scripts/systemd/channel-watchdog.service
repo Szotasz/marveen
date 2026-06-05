@@ -1,0 +1,13 @@
+# NOTE: replace /path/to/marveen (install dir), /home/USER (home), and USER=youruser with your values.
+[Unit]
+Description=Marveen channels watchdog (coarse independent net for a wedged channels session)
+After=marveen-channels.service
+
+[Service]
+Type=oneshot
+ExecStart=/path/to/marveen/scripts/channel-watchdog.sh
+Environment=PATH=/home/USER/.local/bin:/home/USER/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/USER
+Environment=TZ=Europe/Budapest
+StandardOutput=append:/path/to/marveen/store/channel-watchdog.log
+StandardError=append:/path/to/marveen/store/channel-watchdog.log

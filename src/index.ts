@@ -9,10 +9,12 @@ import {
 import { join } from 'node:path'
 import { execFileSync, execSync } from 'node:child_process'
 import type { Server as HttpServer } from 'node:http'
-import { STORE_DIR, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID } from './config.js'
+import { STORE_DIR, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED } from './config.js'
 import { initDatabase } from './db.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
 import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
+import { ensureHeartbeatAgent, HEARTBEAT_AGENT_NAME } from './web/heartbeat-agent-scaffold.js'
+import { startAgentProcess } from './web/agent-process.js'
 import { startWebServer } from './web.js'
 import { logger } from './logger.js'
 import { startInviteMonitor, stopInviteMonitor } from './web/channel-invites.js'
@@ -429,10 +431,31 @@ async function main(): Promise<void> {
   }
   scheduleDailyDigest()
 
-  // Heartbeat
-  initHeartbeat()
-  heartbeatStarted = true
-  logger.info('Heartbeat utemezo elindult')
+  // Heartbeat -- 2026-06-02 architecture switch: the dedicated channel-less
+  // `heartbeat` sub-agent now handles the hourly summary via the scheduled-
+  // task runner. The legacy native scheduler (initHeartbeat) was the source
+  // of the Marveen self-poll loop that caused channel-disconnect every fire
+  // (see commit history #237/#250/#252/#253/#255 for the abandoned
+  // isolation-chain attempt). We keep the native module imported so other
+  // code paths that reference its exports still compile, but we do NOT
+  // start its scheduler.
+  // Only the respawn host runs the heartbeat sub-agent. On a gated-off machine
+  // (e.g. a dev box) we must not spawn it -- otherwise it would fight the
+  // production host over the channel, exactly what RESPAWN_ENABLED prevents.
+  if (RESPAWN_ENABLED) {
+    ensureHeartbeatAgent()
+    logger.info({ agent: HEARTBEAT_AGENT_NAME }, 'Heartbeat agent scaffold ensured (channel-less, dashboard-hidden)')
+    const heartbeatStart = startAgentProcess(HEARTBEAT_AGENT_NAME)
+    if (heartbeatStart.ok) {
+      logger.info({ agent: HEARTBEAT_AGENT_NAME }, 'Heartbeat agent started')
+    } else if (heartbeatStart.error === 'Agent is already running') {
+      logger.info({ agent: HEARTBEAT_AGENT_NAME }, 'Heartbeat agent already running')
+    } else {
+      logger.warn({ error: heartbeatStart.error }, 'Heartbeat agent failed to start (legacy native heartbeat is NOT a fallback any more)')
+    }
+  } else {
+    logger.info('Heartbeat agent boot-start skipped (respawn disabled on this host)')
+  }
 
   // Discord-only: ensure the operator-configured DISCORD_CHANNEL_ID is
   // in access.groups so the plugin's outbound `reply` tool can send to

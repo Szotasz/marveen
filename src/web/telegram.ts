@@ -37,6 +37,25 @@ export function readMarveenTelegramConfig(): { hasTelegram: boolean; botUsername
   return { hasTelegram: true, botUsername: marveenBotUsernameCache.value }
 }
 
+// Discord / Slack mirror of the above: same global ~/.claude/channels path
+// since Marveen's channel session reuses the system install. Lets the
+// dashboard answer "is Marveen connected?" per provider without per-agent
+// state lookup. botUsername omitted -- the Discord/Slack flows don't
+// surface a @username the same way Telegram does.
+export function readMarveenDiscordConfig(): { hasDiscord: boolean } {
+  const envPath = join(homedir(), '.claude', 'channels', 'discord', '.env')
+  if (!existsSync(envPath)) return { hasDiscord: false }
+  const tokenMatch = readFileOr(envPath, '').match(/DISCORD_BOT_TOKEN=(.+)/)
+  return { hasDiscord: !!tokenMatch?.[1]?.trim() }
+}
+
+export function readMarveenSlackConfig(): { hasSlack: boolean } {
+  const envPath = join(homedir(), '.claude', 'channels', 'slack', '.env')
+  if (!existsSync(envPath)) return { hasSlack: false }
+  const tokenMatch = readFileOr(envPath, '').match(/SLACK_BOT_TOKEN=(.+)/)
+  return { hasSlack: !!tokenMatch?.[1]?.trim() }
+}
+
 // Bot username changes require a restart anyway, so a long cache is fine.
 export const marveenBotUsernameCache: { value?: string; fetchedAt: number } = { fetchedAt: 0 }
 

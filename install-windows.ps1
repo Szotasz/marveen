@@ -1,4 +1,4 @@
-# Marveen - Windows telepítő (WSL alapú)
+﻿# Marveen - Windows telepítő (WSL alapú)
 # Futtatás: PowerShell-ben: .\install-windows.ps1
 
 Write-Host ""

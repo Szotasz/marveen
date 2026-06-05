@@ -17,15 +17,25 @@ import { homedir } from 'node:os'
 const cache = new Map<string, { value: string | null; expiresAt: number }>()
 const TTL_MS = 3000
 
-export function readActiveModelFromProjectDir(workingDir: string, sinceUnixSec?: number): string | null {
+// Resolve the session-log directory Claude Code writes for a working dir.
+// Logs live under <config-root>/projects/<encoded-working-dir>/, where the
+// config root is ~/.claude by default but an alternate one when the agent was
+// launched with CLAUDE_CONFIG_DIR. Pass that absolute config root as configDir
+// so we read the right project dir for agents on a non-default config.
+export function projectsDirFor(workingDir: string, configDir?: string, homeDirOverride?: string): string {
+  const base = configDir ?? join(homeDirOverride ?? homedir(), '.claude')
+  const encoded = workingDir.replace(/[/.]/g, '-')
+  return join(base, 'projects', encoded)
+}
+
+export function readActiveModelFromProjectDir(workingDir: string, sinceUnixSec?: number, configDir?: string): string | null {
   const now = Date.now()
-  const cacheKey = `${workingDir}:${sinceUnixSec ?? ''}`
+  const cacheKey = `${workingDir}:${sinceUnixSec ?? ''}:${configDir ?? ''}`
   const cached = cache.get(cacheKey)
   if (cached && cached.expiresAt > now) return cached.value
   let value: string | null = null
   try {
-    const encoded = workingDir.replace(/[/.]/g, '-')
-    const dir = join(homedir(), '.claude', 'projects', encoded)
+    const dir = projectsDirFor(workingDir, configDir)
     if (!existsSync(dir)) {
       cache.set(cacheKey, { value: null, expiresAt: now + TTL_MS })
       return null
@@ -60,5 +70,52 @@ export function readActiveModelFromProjectDir(workingDir: string, sinceUnixSec?:
     }
   } catch { /* fall through */ }
   cache.set(cacheKey, { value, expiresAt: now + TTL_MS })
+  return value
+}
+
+const ctxCache = new Map<string, { value: number | null; expiresAt: number }>()
+
+// Current context size of the live session, in tokens. Claude Code records a
+// `usage` object on each assistant turn; the context that gets re-read every
+// turn is input_tokens + cache_read_input_tokens + cache_creation_input_tokens
+// (output_tokens is the new reply, not context). We scan the newest transcript
+// from the end for the last turn carrying a usage and sum those three. Returns
+// null when there is no transcript / no usage yet (fresh session). This is what
+// the dashboard surfaces so the operator can see a session growing heavy and
+// decide to restart it.
+export function readContextTokensFromProjectDir(workingDir: string, configDir?: string): number | null {
+  const now = Date.now()
+  const cacheKey = `${workingDir}:${configDir ?? ''}`
+  const cached = ctxCache.get(cacheKey)
+  if (cached && cached.expiresAt > now) return cached.value
+  let value: number | null = null
+  try {
+    const dir = projectsDirFor(workingDir, configDir)
+    if (existsSync(dir)) {
+      const jsonls = readdirSync(dir)
+        .filter(f => f.endsWith('.jsonl'))
+        .map(f => ({ f, mtime: statSync(join(dir, f)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime)
+      if (jsonls.length > 0) {
+        const content = readFileSync(join(dir, jsonls[0].f), 'utf-8')
+        const lines = content.split('\n')
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const line = lines[i].trim()
+          if (!line) continue
+          try {
+            const u = JSON.parse(line)?.message?.usage
+            if (u && typeof u === 'object') {
+              const inp = Number(u.input_tokens) || 0
+              const cr = Number(u.cache_read_input_tokens) || 0
+              const cc = Number(u.cache_creation_input_tokens) || 0
+              const total = inp + cr + cc
+              if (total > 0) { value = total; break }
+            }
+          } catch { /* skip malformed JSON line */ }
+        }
+      }
+    }
+  } catch { /* fall through */ }
+  ctxCache.set(cacheKey, { value, expiresAt: now + TTL_MS })
   return value
 }

@@ -11,7 +11,7 @@ case "$(uname -s)" in
     ;;
   *)
     echo "Nem tamogatott operacios rendszer: $(uname -s)"
-    echo "Tamogatott: macOS (Darwin), Linux (Ubuntu/Debian)"
+    echo "Tamogatott: macOS (Darwin), Linux (Ubuntu/Debian + Fedora/Nobara/RHEL)"
     exit 1
     ;;
 esac

@@ -7,6 +7,8 @@ import {
   shouldClearTruncatedPreamble,
   decideSubmitFollowup,
   decidePaneErrorAlert,
+  stuckInputSignature,
+  decideStuckInputRecovery,
 } from '../pane-state.js'
 
 // Realistic pane fixtures modelled on actual `tmux capture-pane -p`
@@ -1128,5 +1130,111 @@ describe('decidePaneErrorAlert', () => {
     expect(skewed.alert).toBe(false)
     expect(skewed.next.firstSeenAt).toBe(500_000)
     expect(skewed.next.lastAlertAt).toBe(null)
+  })
+})
+
+describe('stuckInputSignature', () => {
+  it('returns a normalised signature for parked input', () => {
+    const sig = stuckInputSignature(TYPING_PARKED)
+    expect(sig).not.toBeNull()
+    expect(sig).toContain('Valami amit a felhasznalo elkezdett geppelni')
+    // Whitespace collapsed so a re-flow / cursor blink does not look new.
+    expect(sig).not.toMatch(/\s{2,}/)
+  })
+
+  it('is null for an idle empty input box', () => {
+    expect(stuckInputSignature(IDLE_BYPASS)).toBeNull()
+  })
+
+  it('is null for a busy pane', () => {
+    expect(stuckInputSignature(BUSY_FULL_FOOTER)).toBeNull()
+  })
+
+  it('is null for a paste placeholder (treated as busy, not parked text)', () => {
+    expect(stuckInputSignature(PENDING_PASTE)).toBeNull()
+  })
+
+  it('ignores a ❯ caret left in scrollback', () => {
+    expect(stuckInputSignature(IDLE_WITH_SCROLLBACK_CARET)).toBeNull()
+  })
+})
+
+describe('decideStuckInputRecovery', () => {
+  const TH = { confirmMs: 10_000, dedupMs: 12_000, maxAttempts: 3 }
+  const NONE = { parkedSig: null, firstSeenAt: null, lastRecoverAt: null, attempts: 0 }
+
+  it('does nothing when nothing is parked and no spell is active', () => {
+    const d = decideStuckInputRecovery(null, NONE, 5_000, TH)
+    expect(d.recover).toBe(false)
+    expect(d.next).toEqual(NONE)
+  })
+
+  it('records the first sighting without recovering (confirm window)', () => {
+    const d = decideStuckInputRecovery('msg-A', NONE, 10_000, TH)
+    expect(d.recover).toBe(false)
+    expect(d.next).toEqual({ parkedSig: 'msg-A', firstSeenAt: 10_000, lastRecoverAt: null, attempts: 0 })
+  })
+
+  it('does not recover while still inside the confirm window', () => {
+    const prev = { parkedSig: 'msg-A', firstSeenAt: 0, lastRecoverAt: null, attempts: 0 }
+    const d = decideStuckInputRecovery('msg-A', prev, 9_000, TH)
+    expect(d.recover).toBe(false)
+    expect(d.next.firstSeenAt).toBe(0)
+  })
+
+  it('recovers once the same text persists past the confirm window', () => {
+    const prev = { parkedSig: 'msg-A', firstSeenAt: 0, lastRecoverAt: null, attempts: 0 }
+    const d = decideStuckInputRecovery('msg-A', prev, 10_000, TH)
+    expect(d.recover).toBe(true)
+    expect(d.next.attempts).toBe(1)
+    expect(d.next.lastRecoverAt).toBe(10_000)
+    expect(d.next.firstSeenAt).toBe(0)
+  })
+
+  it('restarts the confirm window when the parked text changes', () => {
+    // A new/different message arriving (or text still being composed)
+    // must not inherit the prior spell's elapsed time.
+    const prev = { parkedSig: 'msg-A', firstSeenAt: 0, lastRecoverAt: null, attempts: 0 }
+    const d = decideStuckInputRecovery('msg-B', prev, 9_000, TH)
+    expect(d.recover).toBe(false)
+    expect(d.next).toEqual({ parkedSig: 'msg-B', firstSeenAt: 9_000, lastRecoverAt: null, attempts: 0 })
+  })
+
+  it('suppresses a repeat recovery inside the dedup window', () => {
+    const prev = { parkedSig: 'msg-A', firstSeenAt: 0, lastRecoverAt: 10_000, attempts: 1 }
+    const d = decideStuckInputRecovery('msg-A', prev, 18_000, TH) // 8s < 12s dedup
+    expect(d.recover).toBe(false)
+    expect(d.next.attempts).toBe(1)
+  })
+
+  it('recovers again once the dedup window elapses', () => {
+    const prev = { parkedSig: 'msg-A', firstSeenAt: 0, lastRecoverAt: 10_000, attempts: 1 }
+    const d = decideStuckInputRecovery('msg-A', prev, 22_000, TH) // 12s >= dedup
+    expect(d.recover).toBe(true)
+    expect(d.next.attempts).toBe(2)
+    expect(d.next.lastRecoverAt).toBe(22_000)
+  })
+
+  it('gives up after maxAttempts without further recoveries', () => {
+    const prev = { parkedSig: 'msg-A', firstSeenAt: 0, lastRecoverAt: 40_000, attempts: 3 }
+    const d = decideStuckInputRecovery('msg-A', prev, 60_000, TH)
+    expect(d.recover).toBe(false)
+    expect(d.next.attempts).toBe(3)
+  })
+
+  it('clears the spell when the input box empties', () => {
+    const prev = { parkedSig: 'msg-A', firstSeenAt: 0, lastRecoverAt: 10_000, attempts: 1 }
+    const d = decideStuckInputRecovery(null, prev, 30_000, TH)
+    expect(d.recover).toBe(false)
+    expect(d.next).toEqual(NONE)
+  })
+
+  it('does not stall on backwards clock skew (future timestamp)', () => {
+    const prev = { parkedSig: 'msg-A', firstSeenAt: 1_000_000, lastRecoverAt: 1_000_000, attempts: 1 }
+    const d = decideStuckInputRecovery('msg-A', prev, 500_000, TH)
+    expect(d.recover).toBe(false)
+    expect(d.next.firstSeenAt).toBe(500_000)
+    expect(d.next.lastRecoverAt).toBe(null)
+    expect(d.next.attempts).toBe(0)
   })
 })

@@ -54,6 +54,33 @@ export function shouldSendAlert(
 }
 
 /**
+ * Classify a Telegram send failure as transient (worth retrying) or
+ * permanent (a config / client error that will fail identically every
+ * tick). sendTelegramMessage throws `Error("Telegram API <status>: ...")`
+ * on a non-2xx response and a bare network error (TypeError "fetch
+ * failed") when the request never reaches Telegram.
+ *
+ *   - transient: network failure (no status), HTTP 429 (rate limited),
+ *     or any 5xx. The next 60s tick should retry, so the caller clears
+ *     the per-attempt stamp.
+ *   - permanent: HTTP 4xx other than 429 (400 bad chat_id, 401/404 bad
+ *     token, 403 blocked). Retrying every tick just spams the log with
+ *     the identical failure, so the caller KEEPS the stamp to stop the
+ *     alert from re-firing until the underlying config is fixed.
+ *
+ * Pure (takes the error message string) so it is unit-testable without a
+ * live Telegram endpoint.
+ */
+export function classifyTelegramSendError(errMessage: string): 'transient' | 'permanent' {
+  const m = /Telegram API (\d{3})\b/.exec(errMessage)
+  if (!m) return 'transient' // no HTTP status -> network-level failure
+  const status = Number(m[1])
+  if (status === 429 || status >= 500) return 'transient'
+  if (status >= 400) return 'permanent'
+  return 'transient'
+}
+
+/**
  * Shape of a pending retry used by the UI + the alert layer. A small
  * subset of the DB row, decoupled from the DB type so tests don't need
  * better-sqlite3.

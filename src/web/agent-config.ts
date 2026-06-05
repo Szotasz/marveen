@@ -258,10 +258,27 @@ export function writeAgentSecurityProfile(name: string, profileId: string): void
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
+// Sentinel filename. A subdirectory under agents/ that contains this empty
+// file is treated as a TECHNICAL worker, not a first-class agent: it stays
+// out of listAgentNames() (so it never appears on the dashboard, in the
+// schedule runner, in inter-agent message routing, etc.), but is still a
+// real directory on disk for whatever workflow needs it. Used today by
+// agents/heartbeat-worker/, the sentinel cwd for the SDK-spawned hourly
+// heartbeat sub-agent (Szabi 2026-06-02: "ez a technikai agent meg se
+// jelenjen a dashboardon").
+export const HIDDEN_AGENT_SENTINEL = '.hidden-from-dashboard'
+
 export function listAgentNames(): string[] {
   if (!existsSync(AGENTS_BASE_DIR)) return []
   return readdirSync(AGENTS_BASE_DIR).filter((f) => {
-    try { return statSync(join(AGENTS_BASE_DIR, f)).isDirectory() } catch { return false }
+    try {
+      if (!statSync(join(AGENTS_BASE_DIR, f)).isDirectory()) return false
+      // Hide technical workers explicitly opted out via the sentinel
+      // file. Cheap fs stat -- one extra existsSync per agent dir per
+      // tick; the agent list is small (~6 today).
+      if (existsSync(join(AGENTS_BASE_DIR, f, HIDDEN_AGENT_SENTINEL))) return false
+      return true
+    } catch { return false }
   })
 }
 

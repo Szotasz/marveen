@@ -119,6 +119,51 @@ fi
 # Régi session takarítás
 $TMUX kill-session -t "$SESSION" 2>/dev/null
 
+# Reap orphan main-agent channel pollers (bun/node grandchildren of the
+# previous tmux server). A tmux kill-session does not always tear them down,
+# they keep polling getUpdates with the same bot token, and the fresh poller
+# we spawn below 409-Conflicts on every cycle until the old one exits. The
+# poller env contains *_STATE_DIR=<this main agent's channel dir>; argv does
+# not, so `pkill -f` against the env var never matches. We grep `ps eww -e`
+# instead, which surfaces each process environment on macOS BSD ps.
+MAIN_CHAN_DIR="$INSTALL_DIR/.claude/channels/$CHANNEL_PROVIDER"
+case "$CHANNEL_PROVIDER" in
+  slack)    STATE_ENV_VAR="SLACK_STATE_DIR" ;;
+  discord)  STATE_ENV_VAR="DISCORD_STATE_DIR" ;;
+  *)        STATE_ENV_VAR="TELEGRAM_STATE_DIR" ;;
+esac
+ORPHAN_PIDS="$(/bin/ps eww -e 2>/dev/null | awk -v needle="${STATE_ENV_VAR}=${MAIN_CHAN_DIR}" '$0 ~ needle { print $1 }')"
+if [ -n "$ORPHAN_PIDS" ]; then
+  # shellcheck disable=SC2086
+  /bin/kill -TERM $ORPHAN_PIDS 2>/dev/null || true
+  /bin/sleep 0.3
+  # shellcheck disable=SC2086
+  /bin/kill -KILL $ORPHAN_PIDS 2>/dev/null || true
+fi
+
+# P1 FIX: put the Claude auth token into the tmux SERVER global env BEFORE
+# new-session. A new session inherits the tmux SERVER's global environment, not
+# this shell's. The tmux server is SHARED across every agent, so if a sub-agent
+# created the server first, this shell's `export CLAUDE_CODE_OAUTH_TOKEN` (above)
+# never reaches the channels claude -> "Not logged in" until the hourly restart.
+# Setting it -g makes the launch order irrelevant. Safe to share globally: every
+# agent uses the same Claude login (unlike the channel tokens scrubbed above,
+# which DO conflict and are -u'd). `|| true` tolerates "no server yet" -- in that
+# case new-session creates the server from this shell's exported env, which is
+# already correct.
+if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  $TMUX set-environment -g CLAUDE_CODE_OAUTH_TOKEN "$CLAUDE_CODE_OAUTH_TOKEN" 2>/dev/null || true
+fi
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  $TMUX set-environment -g ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY" 2>/dev/null || true
+fi
+
+# Hybrid channel-coordinator model: the native plugin stays the PRIMARY inbound
+# path (it always polls getUpdates here -- never outbound-only). The standalone
+# marveen-channel-coordinator only BACKFILLS while this session's plugin is
+# down, so there is never a second concurrent poller in steady state. Nothing to
+# set here: the coordinator gates itself on native liveness.
+
 # Tmux session indítás
 #
 # Always start a fresh conversation. --continue is intentionally omitted:
@@ -161,25 +206,100 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
   esac
 done
 
-# Save the claude PID now that the session is confirmed running. The tmux
-# new-session call keeps a wrapper process alive as the parent of claude,
-# so pane_pid can point to a transient shell. We find the stable claude PID
-# by looking for the child of the tmux new-session wrapper process that has
-# our session name in its command line.
-_tmux_wrapper_pid=$(pgrep -f "tmux.*new-session.*${SESSION}" 2>/dev/null | head -1)
-if [ -n "$_tmux_wrapper_pid" ]; then
-  _claude_pid=$(pgrep -P "$_tmux_wrapper_pid" 2>/dev/null | head -1)
-  [ -n "$_claude_pid" ] && echo "$_claude_pid" > "$PID_FILE"
-fi
-unset _tmux_wrapper_pid _claude_pid
-
-# Set agent name and remote-control identifier once the session is ready.
+# Set agent name once the session is ready. (/remote-control dropped: the operator no
+# longer uses Remote Control.)
 _bot_name="${BOT_NAME:-${MAIN_AGENT_ID:-marveen}}"
 sleep 1
 $TMUX send-keys -t "$SESSION" "/name ${_bot_name}" Enter
-sleep 1
-$TMUX send-keys -t "$SESSION" "/remote-control ${_bot_name}" Enter
 unset _bot_name
+
+# Reset the keep-alive watchdog baseline so a session that was just restarted
+# is not immediately judged stale by the dashboard's checkMainKeepaliveStaleness
+# (channel-monitor.ts, ~18min threshold). The dashboard's hardRestartMarveenChannels
+# path writes both files when it triggers the restart, but a manual
+# `launchctl kickstart -k com.marveen.channels` (or the launchd KeepAlive's own
+# restart after a crash) bypasses the dashboard - those code paths never touched
+# the watchdog baseline, and the old mtimes survived into the fresh session,
+# triggering a false-positive respawn loop within minutes (2026-06-01 18:26).
+#
+# touch + epoch-write happens unconditionally here so every channels.sh launch
+# (manual or dashboard-driven) leaves a consistent baseline. The scheduled
+# edit_message keep-alive (every ~6min) takes over from there.
+mkdir -p "$INSTALL_DIR/store"
+touch "$INSTALL_DIR/store/.channel-keepalive"
+date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
+
+# POST-INIT PLUGIN UNLOCK (2026-06-01 Szabi 15:24 incident workaround):
+# Claude Code 2.1.159 + telegram-plugin 0.0.6: the `--channels` parameter
+# announces "Listening for channel messages from: plugin:telegram@..." in the
+# TUI, but the plugin server itself is NOT always spawned on fresh-session
+# init - it lands in /mcp's Failed state with no bun-poller child. Manually
+# opening /mcp, moving the cursor up to the failed plugin row, and pressing
+# Enter twice (enter submenu, press Reconnect) brings the plugin live -
+# Szabi's empirical sequence that fixed the 16:31 hard-restart aftermath.
+#
+# Two-stage detection, both must indicate "no plugin" before we fire keystrokes:
+#
+#   1. pgrep -P claude_pid bun   -- looks for a bun child of the marveen-channels
+#      claude process. This catches the case the env-var grep misses: Claude Code
+#      does NOT inherit TELEGRAM_STATE_DIR into the spawned poller on the main
+#      session (only on sub-agents), so an env-var-needle scan reports "no
+#      poller" even when one is running. A direct child-of-claude pgrep is the
+#      authoritative signal.
+#
+#   2. capture-pane after `/mcp` shows the plugin row marked with "✗ Failed".
+#      Connected/Enabled rows must NOT trigger the keystroke sequence, because
+#      then `Up`+`Enter`+`Enter` would land on "Disable" in the submenu and
+#      disable the plugin instead of reconnecting it (Szabi msg 427).
+#
+# We sequence both checks, log the decision, and fire only when both agree.
+# The subshell is detached so the main script keeps moving to the wait-loop.
+(
+  sleep 15
+  CLAUDE_PID="$($TMUX list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)"
+  # Check 1: bun grandchild of the marveen-channels claude
+  BUN_CHILD=""
+  if [ -n "$CLAUDE_PID" ]; then
+    BUN_CHILD="$(/usr/bin/pgrep -P "$CLAUDE_PID" bun 2>/dev/null | head -1)"
+  fi
+  if [ -n "$BUN_CHILD" ]; then
+    # Plugin is alive via the authoritative process-tree check. Don't probe the
+    # /mcp menu - any keystroke sequence from idle would risk a stray Enter
+    # disabling a healthy plugin.
+    exit 0
+  fi
+
+  # Check 2: TUI confirmation that the plugin shows ✗ Failed. The /mcp view
+  # also shows "(disabled)" markers; we only fire on Failed, never on disabled
+  # (Enable-only submenu has no Reconnect, the Up+Enter+Enter sequence would
+  # land somewhere unsafe).
+  $TMUX send-keys -t "$SESSION" Escape
+  sleep 1
+  $TMUX send-keys -t "$SESSION" "/mcp" Enter
+  sleep 3
+  PANE="$($TMUX capture-pane -t "$SESSION" -p 2>/dev/null || true)"
+
+  case "$PANE" in
+    *"plugin:telegram@"*"✗ Failed"*|*"plugin:telegram@"*"✗ failed"*)
+      echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh post-init: telegram plugin in ✗ Failed state, firing /mcp Up+Enter+Enter unlock" >> "$INSTALL_DIR/store/channels-failures.log"
+      $TMUX send-keys -t "$SESSION" Up
+      sleep 1
+      $TMUX send-keys -t "$SESSION" Enter
+      sleep 2
+      $TMUX send-keys -t "$SESSION" Enter
+      sleep 4
+      $TMUX send-keys -t "$SESSION" Escape
+      ;;
+    *)
+      # Plugin is connected/enabled/not-listed, or we couldn't capture. Bail
+      # out safely. If the plugin row literally doesn't appear in the /mcp
+      # listing (truly unreachable), the dashboard's channel-monitor will
+      # detect down and run its own recovery ladder; we don't second-guess.
+      echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh post-init: no Failed plugin row in /mcp pane, skipping unlock (bun child absent but plugin not failed - check manually)" >> "$INSTALL_DIR/store/channels-failures.log"
+      $TMUX send-keys -t "$SESSION" Escape
+      ;;
+  esac
+) &
 
 # Bot menu setup (Telegram only; Slack uses App Manifest)
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then

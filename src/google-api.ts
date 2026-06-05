@@ -1,5 +1,5 @@
 import https from 'node:https'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { logger } from './logger.js'
@@ -38,19 +38,36 @@ interface CalendarListResponse {
   items?: CalendarEvent[]
 }
 
-let cachedTokens: { normal: TokenData } | null = null
+// Token cache + mtime-invalidation. The cache spares us a JSON parse on
+// every getCalendarEvents call, but a stale cache kills the heartbeat after
+// an out-of-process re-auth (the OAuth-mcp `auth` subcommand writes a fresh
+// tokens.json from a separate process, our cache never re-reads it). Track
+// the file's mtime alongside the parsed payload; re-read whenever the mtime
+// advances. 2026-06-02 14:30 incident: after Szabi re-authed at 16:26 the
+// dashboard kept dropping `Google token refresh failed` until a manual
+// process restart, because cachedTokens held the pre-re-auth (88-day-old,
+// already-revoked) refresh_token.
+let cachedTokens: { normal: TokenData; mtimeMs: number } | null = null
 let cachedClient: ClientCredentials | null = null
 
 function loadTokens(): TokenData {
-  if (!cachedTokens) {
-    cachedTokens = JSON.parse(readFileSync(TOKENS_PATH, 'utf-8'))
+  let currentMtime = 0
+  try { currentMtime = statSync(TOKENS_PATH).mtimeMs } catch { /* file missing -- fall through to readFileSync error */ }
+  if (!cachedTokens || cachedTokens.mtimeMs !== currentMtime) {
+    const parsed = JSON.parse(readFileSync(TOKENS_PATH, 'utf-8'))
+    cachedTokens = { normal: parsed.normal, mtimeMs: currentMtime }
   }
-  return cachedTokens!.normal
+  return cachedTokens.normal
 }
 
 function saveTokens(tokens: TokenData): void {
-  cachedTokens = { normal: tokens }
-  writeFileSync(TOKENS_PATH, JSON.stringify(cachedTokens, null, 2))
+  writeFileSync(TOKENS_PATH, JSON.stringify({ normal: tokens }, null, 2))
+  // Re-stat AFTER write so the next loadTokens() sees the matching mtime
+  // and uses the freshly-written content from cache rather than triggering
+  // an extra re-read on the very next call.
+  let mtimeMs = 0
+  try { mtimeMs = statSync(TOKENS_PATH).mtimeMs } catch { /* unlikely right after writeFileSync */ }
+  cachedTokens = { normal: tokens, mtimeMs }
 }
 
 function loadClientCredentials(): ClientCredentials {

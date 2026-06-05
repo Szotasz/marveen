@@ -99,8 +99,18 @@ INSTALL_STEP="prerequisites"
 # ─────────────────────────────────────────────
 echo -e "${BOLD}[1/7] Elofeltetelek ellenorzese...${NC}"
 
-if ! command -v apt-get &>/dev/null; then
-  fail "Ez a telepito csak Ubuntu/Debian rendszeren fut (apt-get szukseges)"
+# Csomagkezelo detektalas: apt-get (Debian/Ubuntu) vagy dnf (Fedora/Nobara/RHEL).
+# A kesobbi telepito agak PKG_MANAGER alapjan valasztanak parancsot es csomagnevet.
+PKG_MANAGER=""
+if command -v apt-get &>/dev/null; then
+  PKG_MANAGER="apt"
+elif command -v dnf &>/dev/null; then
+  PKG_MANAGER="dnf"
+elif command -v yum &>/dev/null; then
+  PKG_MANAGER="yum"
+fi
+if [ -z "$PKG_MANAGER" ]; then
+  fail "Nem tamogatott csomagkezelo. Ez a telepito apt-get (Debian/Ubuntu) vagy dnf/yum (Fedora/Nobara/RHEL) rendszert var."
 fi
 
 # RAM check: npm build can fail on low-memory instances (e.g. t3.micro)
@@ -152,22 +162,39 @@ $NODE_OK || MISSING_PKGS="$MISSING_PKGS nodejs"
 
 if [ -n "$MISSING_PKGS" ]; then
   warn "Hianyzo csomagok:$MISSING_PKGS"
-  echo -e "  Telepites sudo-val..."
-  if echo "$MISSING_PKGS" | grep -q nodejs; then
-    echo -e "  Node.js v22 repo hozzaadasa (nodesource)..."
-    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - >/dev/null 2>&1
+  echo -e "  Telepites sudo-val ($PKG_MANAGER)..."
+  if [ "$PKG_MANAGER" = "apt" ]; then
+    if echo "$MISSING_PKGS" | grep -q nodejs; then
+      echo -e "  Node.js v22 repo hozzaadasa (nodesource)..."
+      curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - >/dev/null 2>&1
+    else
+      sudo apt-get update -qq
+    fi
+    # shellcheck disable=SC2086
+    sudo apt-get install -y $MISSING_PKGS -qq
   else
-    sudo apt-get update -qq
+    # dnf/yum (Fedora/Nobara/RHEL). A disztro nodejs csomagja v20+ az aktualis
+    # kiadasokon, es az npm-et is tartalmazza -- nincs szukseg kulso repora.
+    # Csomagnevek megegyeznek a Debian-belivel (ffmpeg/git/tmux/lsof/curl/
+    # python3/pipx/unzip/nodejs). Az ffmpeg-hez Fedoran az RPM Fusion repo
+    # kellhet; ha mar engedelyezve van, a csomag elerheto.
+    # shellcheck disable=SC2086
+    sudo "$PKG_MANAGER" install -y $MISSING_PKGS
   fi
-  # shellcheck disable=SC2086
-  sudo apt-get install -y $MISSING_PKGS -qq
 fi
 
 hash -r
 
 # Ellenorzes: node es npm tenyleg elerheto-e
-command -v node &>/dev/null || fail "Node.js telepitese sikertelen. Ellenorizd: sudo apt-get install nodejs"
-command -v npm &>/dev/null || fail "npm nem talalhato a nodejs csomag utan sem. Ellenorizd: dpkg -l nodejs"
+if [ "$PKG_MANAGER" = "apt" ]; then
+  NODE_FIX_HINT="sudo apt-get install nodejs"
+  NPM_FIX_HINT="dpkg -l nodejs"
+else
+  NODE_FIX_HINT="sudo $PKG_MANAGER install nodejs"
+  NPM_FIX_HINT="sudo $PKG_MANAGER install nodejs npm"
+fi
+command -v node &>/dev/null || fail "Node.js telepitese sikertelen. Ellenorizd: $NODE_FIX_HINT"
+command -v npm &>/dev/null || fail "npm nem talalhato a nodejs csomag utan sem. Ellenorizd: $NPM_FIX_HINT"
 
 ok "ffmpeg $(ffmpeg -version | awk 'NR==1 {print $3}')"
 ok "git $(git --version | awk '{print $3}')"
@@ -437,11 +464,14 @@ echo -e "${BOLD}  Csatorna beallitas${NC}"
 echo -e "${DIM}  Melyik csatornan kommunikaljon az AI asszisztensed?${NC}"
 echo -e "  ${BOLD}1.${NC} Telegram (alapertelmezett)"
 echo -e "  ${BOLD}2.${NC} Slack"
+echo -e "  ${BOLD}3.${NC} Discord"
 echo ""
-read -p "  Valassz (1/2) [1]: " PROVIDER_CHOICE
+read -p "  Valassz (1/2/3) [1]: " PROVIDER_CHOICE
 PROVIDER_CHOICE=${PROVIDER_CHOICE:-1}
 if [ "$PROVIDER_CHOICE" = "2" ]; then
   CHANNEL_PROVIDER="slack"
+elif [ "$PROVIDER_CHOICE" = "3" ]; then
+  CHANNEL_PROVIDER="discord"
 else
   CHANNEL_PROVIDER="telegram"
 fi
@@ -450,6 +480,9 @@ ok "Csatorna: $CHANNEL_PROVIDER"
 BOT_TOKEN=""
 SLACK_BOT_TOKEN=""
 SLACK_APP_TOKEN=""
+DISCORD_BOT_TOKEN=""
+DISCORD_CHANNEL_ID=""
+OPERATOR_DISCORD_USER_ID=""
 
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   echo ""
@@ -460,6 +493,22 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   echo -e "${DIM}  4. Masold ide a kapott tokent:${NC}"
   echo ""
   read -p "  Telegram bot token (vagy hagyd uresen, kesobb is beallithatod): " BOT_TOKEN
+elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
+  echo ""
+  echo -e "${DIM}  Az AI asszisztensed Discordon kommunikal veled.${NC}"
+  echo -e "${DIM}  1. Hozz letre egy alkalmazast: discord.com/developers/applications${NC}"
+  echo -e "${DIM}  2. Bot fulon: Add Bot, majd masold ki a Tokent${NC}"
+  echo -e "${DIM}  3. Privileged Gateway Intents: kapcsold be a MESSAGE CONTENT INTENT-et${NC}"
+  echo -e "${DIM}  4. OAuth2 > URL Generator: bot scope, majd hivd meg a szerveredre${NC}"
+  echo -e "${DIM}  5. Masold ki a csatorna ID-jet (Developer Mode > jobb klikk > Copy Channel ID)${NC}"
+  echo -e "${DIM}  6. Sajat (operator) user ID: jobb klikk a nevedre > Copy User ID${NC}"
+  echo ""
+  read -p "  Discord bot token (vagy hagyd uresen, kesobb is beallithatod): " DISCORD_BOT_TOKEN
+  read -p "  Discord channel ID: " DISCORD_CHANNEL_ID
+  echo ""
+  echo -e "${DIM}  Az operator user ID-re a parositashoz kell: amikor egy uj felhasznalo${NC}"
+  echo -e "${DIM}  DM-et ir a botnak, a bot ezen az ID-n ertesit teged jovahagyasert.${NC}"
+  read -p "  A Te Discord user ID-d (operator): " OPERATOR_DISCORD_USER_ID
 else
   echo ""
   echo -e "${DIM}  Az AI asszisztensed Slack-en kommunikal veled.${NC}"
@@ -537,6 +586,10 @@ ENVEOF
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   echo "TELEGRAM_BOT_TOKEN=${BOT_TOKEN}" >> "$INSTALL_DIR/.env"
   echo "ALLOWED_CHAT_ID=${CHAT_ID}" >> "$INSTALL_DIR/.env"
+elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
+  echo "DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}" >> "$INSTALL_DIR/.env"
+  echo "DISCORD_CHANNEL_ID=${DISCORD_CHANNEL_ID}" >> "$INSTALL_DIR/.env"
+  echo "OPERATOR_DISCORD_USER_ID=${OPERATOR_DISCORD_USER_ID}" >> "$INSTALL_DIR/.env"
 else
   echo "SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}" >> "$INSTALL_DIR/.env"
   echo "SLACK_APP_TOKEN=${SLACK_APP_TOKEN}" >> "$INSTALL_DIR/.env"
@@ -695,6 +748,22 @@ SLACKENVEOF
 }
 ACCESSEOF
   ok "Slack csatorna konfigurálva"
+elif [ "$CHANNEL_PROVIDER" = "discord" ] && [ -n "$DISCORD_BOT_TOKEN" ]; then
+  (umask 077 && cat >"$CHANNEL_DIR/.env" <<DISCORDENVEOF
+DISCORD_BOT_TOKEN=$DISCORD_BOT_TOKEN
+DISCORD_CHANNEL_ID=$DISCORD_CHANNEL_ID
+DISCORDENVEOF
+  )
+  chmod 600 "$CHANNEL_DIR/.env"
+  cat >"$CHANNEL_DIR/access.json" <<ACCESSEOF
+{
+  "dmPolicy": "pairing",
+  "allowFrom": [],
+  "channels": {},
+  "pending": {}
+}
+ACCESSEOF
+  ok "Discord csatorna konfigurálva"
 fi
 
 # Channel plugin install
@@ -702,6 +771,10 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   PLUGIN_MARKETPLACE="anthropics/claude-plugins-official"
   PLUGIN_ID="telegram@claude-plugins-official"
   PLUGIN_SHORT="telegram"
+elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
+  PLUGIN_MARKETPLACE="anthropics/claude-plugins-official"
+  PLUGIN_ID="discord@claude-plugins-official"
+  PLUGIN_SHORT="discord"
 else
   PLUGIN_MARKETPLACE="Szotasz/marveen-marketplace"
   PLUGIN_ID="slack-channel@marveen-marketplace"

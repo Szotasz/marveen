@@ -2,7 +2,7 @@ import http from 'node:http'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { execSync, execFileSync } from 'node:child_process'
-import { PROJECT_ROOT, WEB_HOST } from './config.js'
+import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL } from './config.js'
 import { loadOrCreateDashboardToken, checkBearerToken } from './web/dashboard-auth.js'
 import { json } from './web/http-helpers.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
@@ -13,15 +13,19 @@ import { startUpdateChecker } from './web/update-checker.js'
 import { startMcpListChecker } from './web/mcp-list.js'
 import { startScheduleRunner } from './web/schedule-runner.js'
 import { startChannelPluginMonitor } from './web/channel-monitor.js'
+import { startInboundProber } from './web/inbound-probe.js'
 import { startChannelHealthMonitor } from './web/channel-health-monitor.js'
+import { startStuckInputWatcher } from './web/stuck-input-watcher.js'
+import { startStuckToolCallWatcher } from './web/stuck-tool-call-watcher.js'
+import { startAutoRestartRunner } from './web/auto-restart-runner.js'
 import { logger } from './logger.js'
 import { tryHandleProfiles } from './web/routes/profiles.js'
 import { tryHandleMessages } from './web/routes/messages.js'
+import { tryHandleAgentTerminal } from './web/routes/agent-terminal.js'
 import { tryHandleDailyLog } from './web/routes/daily-log.js'
 import { tryHandleMemories } from './web/routes/memories.js'
 import { tryHandleMigrate } from './web/routes/migrate.js'
 import { tryHandleKanban } from './web/routes/kanban.js'
-import { tryHandleTasks } from './web/routes/tasks.js'
 import { tryHandleSchedules } from './web/routes/schedules.js'
 import { tryHandleConnectors } from './web/routes/connectors.js'
 import { tryHandleConnectorsHu } from './web/routes/connectors-hu.js'
@@ -36,6 +40,8 @@ import { tryHandleUpdates } from './web/routes/updates.js'
 import { tryHandleStatus } from './web/routes/status.js'
 import { tryHandleAutonomy } from './web/routes/autonomy.js'
 import { tryHandleTokenUsage } from './web/routes/token-usage.js'
+import { tryHandleIdeas } from './web/routes/ideas.js'
+import { tryHandleToolLog } from './web/routes/tool-log.js'
 import { tryHandleStatic } from './web/routes/static.js'
 import type { RouteContext } from './web/routes/types.js'
 
@@ -56,6 +62,7 @@ export function startWebServer(port = 3420): http.Server {
     `http://localhost:${port}`,
     `http://127.0.0.1:${port}`,
     ...( WEB_HOST !== 'localhost' && WEB_HOST !== '127.0.0.1' ? [`http://${WEB_HOST}:${port}`] : []),
+    ...(DASHBOARD_PUBLIC_URL ? [DASHBOARD_PUBLIC_URL.replace(/\/$/, '')] : []),
   ])
   const isSafeMethod = (m: string) => m === 'GET' || m === 'HEAD' || m === 'OPTIONS'
 
@@ -97,8 +104,15 @@ export function startWebServer(port = 3420): http.Server {
       const ok = checkBearerToken(req.headers.authorization, DASHBOARD_TOKEN)
       return json(res, { authenticated: ok })
     }
+    // The live pane SSE stream is consumed via EventSource, which cannot set an
+    // Authorization header -- accept the token via ?token= for this one GET
+    // path, validated with the same constant-time check. Everything else stays
+    // header-only.
+    const isSseStream = method === 'GET' && /^\/api\/agents\/[^/]+\/pane\/stream$/.test(path)
     if (path.startsWith('/api/') && !isPublicApi) {
-      if (!checkBearerToken(req.headers.authorization, DASHBOARD_TOKEN)) {
+      const headerOk = checkBearerToken(req.headers.authorization, DASHBOARD_TOKEN)
+      const queryOk = isSseStream && checkBearerToken(`Bearer ${url.searchParams.get('token') ?? ''}`, DASHBOARD_TOKEN)
+      if (!headerOk && !queryOk) {
         res.writeHead(401, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'Unauthorized' }))
         return
@@ -114,12 +128,12 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleMemories(routeCtx)) return
       if (await tryHandleMigrate(routeCtx)) return
       if (await tryHandleKanban(routeCtx)) return
-      if (await tryHandleTasks(routeCtx)) return
       if (await tryHandleSchedules(routeCtx)) return
       if (await tryHandleConnectorsHu(routeCtx)) return
       if (await tryHandleConnectors(routeCtx)) return
       if (await tryHandleAgentsSkills(routeCtx)) return
       if (await tryHandleSkills(routeCtx)) return
+      if (await tryHandleAgentTerminal(routeCtx)) return
       if (await tryHandleAgents(routeCtx, WEB_DIR)) return
       if (await tryHandleMarveen(routeCtx, WEB_DIR)) return
       if (await tryHandleBackgroundTasks(routeCtx)) return
@@ -129,6 +143,8 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleStatus(routeCtx)) return
       if (await tryHandleAutonomy(routeCtx)) return
       if (await tryHandleTokenUsage(routeCtx)) return
+      if (await tryHandleIdeas(routeCtx)) return
+      if (await tryHandleToolLog(routeCtx)) return
       if (await tryHandleStatic(routeCtx, WEB_DIR)) return
 
       res.writeHead(404)
@@ -215,8 +231,26 @@ export function startWebServer(port = 3420): http.Server {
   const pluginMonitorInterval = startChannelPluginMonitor()
   logger.info('Channel plugin health monitor started (60s poll)')
 
+  // Userbot inbound-probe (gold-standard deafness detector). Safe no-op until
+  // the prober session file + allowlist are configured. Wrapped so a failure
+  // never crashes server startup.
+  try {
+    startInboundProber()
+  } catch (err) {
+    logger.warn({ err }, 'Inbound prober failed to start')
+  }
+
   const channelHealthInterval = startChannelHealthMonitor()
   logger.info('Channel MCP health monitor started (60s poll, 45s offset)')
+
+  const stuckInputInterval = startStuckInputWatcher()
+  logger.info('Stuck-input watcher started (15s poll, 20s offset)')
+
+  const stuckToolCallInterval = startStuckToolCallWatcher()
+  logger.info('Stuck-tool-call watcher started (30s poll, 35s offset)')
+
+  const autoRestartInterval = startAutoRestartRunner()
+  logger.info('Auto-restart runner started (60s poll, 40s offset)')
 
   const updateCheckerInterval = startUpdateChecker()
   logger.info('Update checker started (15min poll)')
@@ -262,8 +296,11 @@ export function startWebServer(port = 3420): http.Server {
   server.close = (cb?: (err?: Error) => void) => {
     clearInterval(routerInterval)
     clearInterval(scheduleInterval)
-    clearInterval(pluginMonitorInterval)
+    if (pluginMonitorInterval) clearInterval(pluginMonitorInterval)
     clearInterval(channelHealthInterval)
+    clearInterval(stuckInputInterval)
+    clearInterval(stuckToolCallInterval)
+    clearInterval(autoRestartInterval)
     clearInterval(updateCheckerInterval)
     return origClose(cb)
   }

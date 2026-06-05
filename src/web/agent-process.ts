@@ -17,6 +17,7 @@ import { CHANNEL_PROVIDER } from '../config.js'
 import { loadProfileTemplate } from './profiles.js'
 import { writeAgentSettingsFromProfile } from './agent-scaffold.js'
 import { getSecret } from './vault.js'
+import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
 
 const TMUX = resolveFromPath('tmux')
 const CLAUDE = resolveFromPath('claude')
@@ -54,6 +55,7 @@ export function getAgentRunningSince(name: string): number | null {
   }
 }
 
+
 export function agentHasChannel(name: string): boolean {
   const agentProvider = resolveAgentProvider(name)
   const dir = agentDir(name)
@@ -64,7 +66,7 @@ export function agentHasChannel(name: string): boolean {
   return false
 }
 
-export function startAgentProcess(name: string): { ok: boolean; pid?: number; error?: string } {
+export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): { ok: boolean; pid?: number; error?: string } {
   if (isAgentRunning(name)) return { ok: false, error: 'Agent is already running' }
 
   const dir = agentDir(name)
@@ -89,6 +91,32 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
       execSync(`${TMUX} kill-session -t ${session} 2>/dev/null`, { timeout: 3000 })
       execSync('sleep 3', { timeout: 5000 })
     } catch { /* ok */ }
+
+    // Reap any orphan poller (bun/node) left over from a previous run BEFORE
+    // we spawn the new tmux session. The plugin process is a grandchild of
+    // the tmux server, so a tmux kill-session does not always tear it down -
+    // it can be orphaned and keep polling getUpdates with the agent's bot
+    // token, racing the freshly-spawned poller and producing 409 Conflict on
+    // a roughly hourly cadence. See channel-poller-reap.ts.
+    try {
+      const agentProvider = resolveAgentProvider(name)
+      const dir = agentDir(name)
+      reapChannelOrphans(agentProvider, dir)
+    } catch (err) {
+      logger.warn({ err, name }, 'pre-launch channel-poller reap failed (continuing)')
+    }
+
+    // Also reap DETACHED channel claudes (the parent-process leak): a prior
+    // --continue session that survived kill-session keeps a poller 409-racing
+    // this agent's bot token, which the health monitor reads as "down" and
+    // restarts -- a self-feeding thrash loop (zara, 2026-06-03). We just killed
+    // this agent's tmux session above, so its leftover claude is now detached;
+    // pane attribution spares every live sibling and the main session.
+    try {
+      reapDetachedChannelClaudes({ tmuxPath: TMUX })
+    } catch (err) {
+      logger.warn({ err, name }, 'pre-launch detached-claude reap failed (continuing)')
+    }
 
     const model = readAgentModel(name)
     const authMode = readAgentAuthMode(name)
@@ -151,7 +179,10 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
       : join(homedir(), '.claude', 'projects')
     const encodedProject = dir.replace(/\//g, '-')
     const hasPriorSession = existsSync(join(projectsRoot, encodedProject))
-    const continueFlag = hasPriorSession ? '--continue ' : ''
+    // opts.fresh forces a brand-new conversation (auto-restart 'fresh' mode):
+    // omit --continue so the heavy accumulated context is dropped. Without it
+    // we resume the prior session (the 'continue' mode / normal restart).
+    const continueFlag = (hasPriorSession && !opts.fresh) ? '--continue ' : ''
     const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : agentProvider === 'discord' ? 'DISCORD_STATE_DIR' : 'TELEGRAM_STATE_DIR'
     const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN'
     // Slack plugin is third-party; its "not on approved allowlist" check is
@@ -185,29 +216,7 @@ export function startAgentProcess(name: string): { ok: boolean; pid?: number; er
     // typically appears within 4-6s). Survey-rating modals from prior
     // sessions can also be present, so dismiss both. Errors are swallowed
     // -- the outbound pre-flight remains the safety net if this misses.
-    setTimeout(() => {
-      try {
-        dismissSurveyModalIfPresent(session)
-        dismissResumeSummaryModalIfPresent(session)
-      } catch (err) {
-        logger.warn({ err, name, session }, 'Post-restart modal dismiss failed')
-      }
-      // Set /name so the agent is identifiable. Sub-agents deliberately do
-      // NOT get /remote-control: enabling it makes Claude Code pop a blocking
-      // "Remote Control / Continue" modal on every inbound inter-agent message,
-      // which swallows the injected prompt so the agent never processes it.
-      // Phone remote control is only needed on the main Boss session (set in
-      // scripts/channels.sh), not on the inter-agent-only sub-agents.
-      setTimeout(() => {
-        try {
-          const displayName = readAgentDisplayName(name)
-          execFileSync(TMUX, ['send-keys', '-t', session, `/name ${displayName}`, 'Enter'], { timeout: 5000 })
-          logger.info({ name, session, displayName }, 'Set agent /name')
-        } catch (err) {
-          logger.warn({ err, name, session }, 'Failed to set agent /name' )
-        }
-      }, 5000)
-    }, 8000)
+    scheduleIdentitySetup(session, readAgentDisplayName(name))
 
     return { ok: true }
   } catch (err) {
@@ -223,23 +232,16 @@ export function stopAgentProcess(name: string): { ok: boolean; error?: string } 
   try {
     execSync(`${TMUX} kill-session -t ${session}`, { timeout: 5000 })
     execSync('sleep 2', { timeout: 4000 })
-    // Reap any orphaned plugin grandchildren that tmux didn't get.
-    // The plugin writes its pid to the agent's channel state dir;
-    // prefer that, fall back to a env-var-scoped pkill.
+    // Reap any orphaned plugin grandchild that tmux did not tear down.
+    // See channel-poller-reap.ts - the old pkill-by-env-var-on-cmdline did
+    // not work because the env vars are not part of argv on macOS.
     try {
       const agentProvider = resolveAgentProvider(name)
       const dir = agentDir(name)
-      const chanDir = channelStateDir(agentProvider, dir)
-      const pidPath = join(chanDir, 'bot.pid')
-      if (existsSync(pidPath)) {
-        const pid = parseInt(readFileSync(pidPath, 'utf-8').trim(), 10)
-        if (pid > 1) {
-          try { process.kill(pid, 'SIGTERM') } catch { /* already gone */ }
-        }
-      }
-      const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : agentProvider === 'discord' ? 'DISCORD_STATE_DIR' : 'TELEGRAM_STATE_DIR'
-      execFileSync('/usr/bin/pkill', ['-f', `${stateEnvVar}=${chanDir}`], { timeout: 3000 })
-    } catch { /* pkill returns non-zero if no match -- fine */ }
+      reapChannelOrphans(agentProvider, dir)
+    } catch (err) {
+      logger.warn({ err, name }, 'post-stop channel-poller reap failed')
+    }
     logger.info({ name, session }, 'Agent tmux session stopped')
     return { ok: true }
   } catch (err) {
@@ -257,12 +259,12 @@ export function getAgentProcessInfo(name: string): { running: boolean; session?:
   }
 }
 
-export function restartAgentProcess(name: string): { ok: boolean; pid?: number; error?: string } {
+export function restartAgentProcess(name: string, opts: { fresh?: boolean } = {}): { ok: boolean; pid?: number; error?: string } {
   if (isAgentRunning(name)) {
     const stopResult = stopAgentProcess(name)
     if (!stopResult.ok) return { ok: false, error: stopResult.error || 'Failed to stop running agent before restart' }
   }
-  return startAgentProcess(name)
+  return startAgentProcess(name, opts)
 }
 
 // Claude Code occasionally pops a "How is Claude doing this session? (optional)"
@@ -296,7 +298,7 @@ function dismissSurveyModalIfPresent(session: string): void {
 // pick option 1 (Resume from summary, recommended) and Enter to confirm.
 const RESUME_SUMMARY_MODAL_RX = /Resume from summary/
 
-function dismissResumeSummaryModalIfPresent(session: string): void {
+export function dismissResumeSummaryModalIfPresent(session: string): void {
   try {
     const pane = execSync(`${TMUX} capture-pane -t ${session} -p`, { timeout: 3000, encoding: 'utf-8' })
     if (!RESUME_SUMMARY_MODAL_RX.test(pane)) return
@@ -310,6 +312,49 @@ function dismissResumeSummaryModalIfPresent(session: string): void {
   } catch (err) {
     logger.warn({ err, session }, 'Failed to probe/dismiss resume-from-summary modal')
   }
+}
+
+// Post-(re)start identity setup. Every freshly spawned Claude Code session is
+// given `/name` so it is identifiable. (`/remote-control` was dropped: the
+// operator no longer uses Remote Control, and the agent's inference-only OAuth
+// token can't satisfy it anyway.) Pure helper for the exact slash commands so
+// they are unit-tested; scheduleIdentitySetup wires them to tmux after a wait.
+export function identitySlashCommands(displayName: string): string[] {
+  return [`/name ${displayName}`]
+}
+
+// Delays mirror the observed Claude Code first-render timing: the first-run /
+// resume modals appear within ~4-6s, so dismiss at 8s; the prompt input is
+// reliably ready ~5s after that.
+const MODAL_DISMISS_DELAY_MS = 8000
+const IDENTITY_SEND_DELAY_MS = 5000
+
+// Schedule the identity setup for a freshly (re)spawned session: once it has
+// had time to render, dismiss any first-run/resume modals, then send `/name`.
+// Shared by startAgentProcess and the channel-monitor recovery respawns
+// (resumeMarveenSession / respawnMarveenSessionFresh), which previously left the
+// main session without its identity after auto-recovery. Fire-and-forget; all
+// errors are swallowed/logged so a missed setup never tears down the caller.
+export function scheduleIdentitySetup(session: string, displayName: string): void {
+  setTimeout(() => {
+    try {
+      dismissSurveyModalIfPresent(session)
+      dismissResumeSummaryModalIfPresent(session)
+    } catch (err) {
+      logger.warn({ err, session }, 'Post-restart modal dismiss failed')
+    }
+    setTimeout(() => {
+      try {
+        for (const cmd of identitySlashCommands(displayName)) {
+          execFileSync(TMUX, ['send-keys', '-t', session, cmd, 'Enter'], { timeout: 5000 })
+          execFileSync('/bin/sleep', ['1'], { timeout: 2000 })
+        }
+        logger.info({ session, displayName }, 'Set session /name')
+      } catch (err) {
+        logger.warn({ err, session, displayName }, 'Failed to set session /name')
+      }
+    }, IDENTITY_SEND_DELAY_MS)
+  }, MODAL_DISMISS_DELAY_MS)
 }
 
 // How many follow-up Enters sendPromptToSession() is willing to fire
@@ -430,6 +475,21 @@ export function sendPromptToSession(session: string, text: string): void {
 // to interrupt`" line for ~1 frame after a turn submits before the
 // spinner lands; a quarter-second settle window is well past that.
 const PANE_READY_CONFIRM_DELAY_S = '0.25'
+
+// Send a bare Enter to a session. Used by the stuck-input watcher to
+// re-submit a prompt whose trailing Enter was swallowed on the channel-
+// notification path (where the plugin, not sendPromptToSession, delivered
+// the text, so the post-send retry budget never ran). Best-effort: a
+// tmux failure is logged and swallowed so the watcher loop keeps going.
+export function sendEnterToSession(session: string): boolean {
+  try {
+    execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+    return true
+  } catch (err) {
+    logger.warn({ err, session }, 'sendEnterToSession: failed to send recovery Enter')
+    return false
+  }
+}
 
 // Capture a pane snapshot with an execSync timeout. Null on any error so
 // the caller can treat "capture failed" as "not ready".

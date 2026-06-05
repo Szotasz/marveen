@@ -73,6 +73,66 @@ body {
   padding: 20px 14px;
   z-index: 90;
 }
+
+/* === Mobile shell (hamburger + off-canvas sidebar) === */
+/* On desktop the top bar and backdrop are hidden; the sidebar lives in the
+ * body grid. On narrow screens the body collapses to one column, the sidebar
+ * slides in off-canvas over a backdrop, and a fixed top bar carries the
+ * hamburger -- without this the fixed 220px sidebar column pushed the content
+ * off the right edge of a phone viewport. */
+.mobile-topbar { display: none; }
+.sidebar-backdrop { display: none; }
+@media (max-width: 768px) {
+  body { grid-template-columns: 1fr; }
+  .mobile-topbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    position: sticky;
+    top: 0;
+    z-index: 80;
+    height: 52px;
+    padding: 0 14px;
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+  }
+  .mobile-topbar-title { font-weight: 600; font-size: 15px; }
+  .mobile-menu-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--text);
+    cursor: pointer;
+  }
+  .sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 240px;
+    max-width: 82vw;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    box-shadow: var(--shadow-lg);
+  }
+  .sidebar.open { transform: translateX(0); }
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 85;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s ease;
+  }
+  .sidebar-backdrop.open { opacity: 1; pointer-events: auto; }
+  main { max-width: 100%; padding: 16px 14px 48px; overflow-x: hidden; }
+}
 .sidebar-brand {
   display: flex;
   align-items: center;
@@ -642,6 +702,7 @@ main {
 .assignee-dot.owner { background: var(--accent); }
 .assignee-dot.bot { background: var(--info); }
 .assignee-dot.agent { background: var(--success); }
+.assignee-dot.unknown { background: var(--text-muted); }
 
 .kanban-card-due {
   font-size: 10px;
@@ -1354,6 +1415,19 @@ main {
 .skill-item-name {
   font-size: 14px;
   font-weight: 500;
+}
+.skill-item-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+  background: var(--info-soft);
+  color: var(--info);
 }
 .skill-item-desc {
   font-size: 12px;
@@ -3713,6 +3787,7 @@ main {
   flex-shrink: 0;
 }
 .connector-status-dot.connected { background: var(--success); box-shadow: 0 0 6px rgba(120,140,93,0.4); }
+.connector-status-dot.configured { background: var(--info); }
 .connector-status-dot.needs_auth { background: var(--accent); }
 .connector-status-dot.failed { background: var(--danger); }
 .connector-status-dot.unknown { background: var(--text-muted); }
@@ -4907,3 +4982,271 @@ main {
   .auth-mode-cards { gap: 6px; }
   .auth-mode-card { padding: 10px 12px; gap: 10px; }
 }
+
+/* === Activity (live agent status) === */
+.activity-meta { display: flex; align-items: center; }
+.activity-updated { font-size: 12px; color: var(--text-muted); }
+.activity-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+.activity-empty { color: var(--text-muted); font-size: 14px; }
+.activity-card {
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  padding: 14px 16px;
+}
+.activity-card.act-working { border-left-color: #22c55e; }
+.activity-card.act-idle    { border-left-color: #9ca3af; }
+.activity-card.act-error   { border-left-color: #ef4444; }
+.activity-card.act-unknown { border-left-color: #eab308; }
+.activity-card.act-stopped { border-left-color: #6b7280; opacity: 0.7; }
+.activity-card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.activity-name { font-weight: 600; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+.act-main-badge {
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+  background: var(--border); color: var(--text-muted); border-radius: 4px; padding: 1px 6px;
+}
+.activity-badge { font-size: 12px; font-weight: 600; border-radius: 999px; padding: 2px 10px; }
+.activity-badge.act-working {
+  background: rgba(34,197,94,0.15); color: #16a34a;
+  /* "Breathing" pulse so the live "dolgozik" badge reads as active, mirroring
+     the .process-dot.running pulse (same 2s ease-in-out cadence). */
+  animation: badge-breathe 2s ease-in-out infinite;
+}
+.activity-badge.act-idle    { background: rgba(156,163,175,0.18); color: #6b7280; }
+.activity-badge.act-error   { background: rgba(239,68,68,0.15); color: #dc2626; }
+.activity-badge.act-unknown { background: rgba(234,179,8,0.18); color: #ca8a04; }
+.activity-badge.act-stopped { background: rgba(107,114,128,0.15); color: #6b7280; }
+
+/* Green "breathing" glow for the working badge: saturates the pill and pulses a
+   soft halo at peak, then settles. */
+@keyframes badge-breathe {
+  0%, 100% { background: rgba(34,197,94,0.12); box-shadow: 0 0 0 0 rgba(34,197,94,0); }
+  50%      { background: rgba(34,197,94,0.32); box-shadow: 0 0 8px 1px rgba(34,197,94,0.40); }
+}
+.activity-tail {
+  margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
+  line-height: 1.45; color: var(--text-muted); white-space: pre-wrap; word-break: break-word;
+  max-height: 160px; overflow: auto; background: var(--bg-subtle, rgba(127,127,127,0.06));
+  border-radius: 6px; padding: 8px 10px;
+}
+.activity-tail-empty { margin: 0; font-size: 12px; color: var(--text-muted); font-style: italic; }
+
+/* === Messages / Chat page === */
+.chat-layout {
+  display: flex;
+  gap: 0;
+  flex: 1;
+  min-height: 0;
+  height: calc(100vh - 160px);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  margin-top: 16px;
+}
+.chat-sidebar {
+  width: 240px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  background: var(--bg-card);
+  display: flex;
+  flex-direction: column;
+}
+.chat-sidebar-loading, .chat-sidebar-empty {
+  padding: 20px 16px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.chat-agent-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.15s;
+}
+.chat-agent-item:hover { background: var(--bg-hover); }
+.chat-agent-item.selected { background: color-mix(in srgb, var(--accent) 12%, transparent); border-left: 3px solid var(--accent); }
+.chat-agent-avatar { flex-shrink: 0; }
+.chat-avatar { border-radius: 50%; display: block; object-fit: cover; }
+.chat-avatar-mono { border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; color: #fff; flex-shrink: 0; }
+.chat-agent-info { flex: 1; min-width: 0; }
+.chat-agent-name { font-size: 13px; font-weight: 600; }
+.chat-agent-preview { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+.chat-agent-time { font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
+.chat-thread-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--bg-main);
+}
+.chat-thread-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+.chat-thread-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-card);
+  flex-shrink: 0;
+}
+.chat-thread-title { font-size: 15px; font-weight: 700; }
+.chat-bubbles {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.chat-bubble-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+.chat-bubble-row.outgoing { flex-direction: row-reverse; }
+.chat-bubble-avatar { flex-shrink: 0; }
+.chat-bubble { max-width: 72%; display: flex; flex-direction: column; gap: 4px; }
+.bubble-out {
+  background: var(--accent);
+  color: #fff;
+  border-radius: 16px 4px 16px 16px;
+  padding: 10px 14px;
+  align-self: flex-end;
+}
+.bubble-in {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px 16px 16px 16px;
+  padding: 10px 14px;
+  align-self: flex-start;
+}
+.bubble-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+.bubble-sender { font-size: 11px; font-weight: 600; opacity: 0.7; }
+.bubble-id-chip {
+  font-size: 10px;
+  font-weight: 700;
+  background: rgba(255,255,255,0.2);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: monospace;
+}
+.bubble-out .bubble-id-chip { background: rgba(255,255,255,0.25); color: #fff; }
+.bubble-in .bubble-id-chip { background: var(--bg-hover); color: var(--text-muted); }
+.bubble-text { font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.bubble-out .bubble-text { color: #fff; }
+.bubble-time { font-size: 10px; opacity: 0.55; text-align: right; margin-top: 2px; }
+.chat-compose {
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-card);
+  flex-shrink: 0;
+}
+.chat-compose-row { display: flex; gap: 8px; align-items: flex-end; }
+.chat-compose-input {
+  flex: 1;
+  resize: none;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  min-height: 62px;
+  max-height: 120px;
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+}
+.chat-compose-input:focus { outline: none; border-color: var(--accent); }
+.chat-send-btn {
+  height: 38px !important;
+  width: auto !important;
+  min-width: 72px;
+  max-width: 90px;
+  white-space: nowrap;
+  padding: 0 14px !important;
+  flex-shrink: 0;
+  font-size: 13px !important;
+  align-self: flex-end;
+}
+
+/* Unread badge */
+.chat-agent-item.unread .chat-agent-name { font-weight: 700; }
+.chat-unread-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-left: 6px;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+.unread-preview { font-weight: 600; color: var(--text) !important; }
+
+/* === Agent reauth + terminal === */
+.agent-reauth-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: color-mix(in srgb, #ef4444 12%, transparent);
+  border: 1px solid #ef4444;
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin: 8px 0 0;
+}
+.agent-reauth-reason { font-size: 11px; color: #ef4444; font-weight: 600; flex: 1; }
+.btn-danger {
+  background: #ef4444;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.btn-danger:hover { background: #dc2626; }
+.btn-danger:disabled { opacity: 0.6; cursor: not-allowed; }
+.agent-card-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.agent-terminal-btn { font-size: 11px; display: flex; align-items: center; gap: 4px; }
+
+/* Terminal modal */
+.terminal-modal {
+  max-width: 1100px;
+  width: 98vw;
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+}
+.terminal-modal .modal-header { flex-shrink: 0; }
+#terminalContainer { flex: 1; min-height: 360px; }
+.xterm { height: 100% !important; }

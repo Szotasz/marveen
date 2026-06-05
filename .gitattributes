@@ -1,0 +1,8 @@
+# Force PowerShell scripts to keep CRLF line endings + UTF-8 BOM on checkout.
+# Windows PowerShell 5.1 fails to parse here-strings (@"..."@) and Hungarian
+# UTF-8 characters in .ps1 files that have LF-only line endings or no BOM.
+*.ps1 text eol=crlf working-tree-encoding=UTF-8
+
+# Other shell scripts stay LF — they run on bash.
+*.sh   text eol=lf
+*.bash text eol=lf

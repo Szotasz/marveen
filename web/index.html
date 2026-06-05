@@ -5,8 +5,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ClaudeClaw</title>
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/css/xterm.css">
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10/lib/addon-fit.js"></script>
 </head>
 <body>
+  <div class="mobile-topbar">
+    <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Menü" aria-expanded="false">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
+    <span class="mobile-topbar-title">Marveen</span>
+  </div>
+  <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
   <aside class="sidebar">
     <div class="sidebar-brand">
       <div class="sidebar-brand-mark" id="sidebarBrandMark">M</div>
@@ -28,9 +38,17 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
         <span class="sb-label">Ügynökök</span>
       </a>
+      <a href="#" class="sb-link" data-page="activity">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>
+        <span class="sb-label">Aktivitás</span>
+      </a>
       <a href="#" class="sb-link" data-page="team">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"/><path d="M12 8v4"/><circle cx="5" cy="18" r="3"/><circle cx="19" cy="18" r="3"/><path d="M12 12l-7 6M12 12l7 6"/></svg>
         <span class="sb-label">Csapat</span>
+      </a>
+      <a href="#" class="sb-link" data-page="messages">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        <span class="sb-label">Üzenetek</span>
       </a>
       <a href="#" class="sb-link" data-page="tasks">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
@@ -75,6 +93,10 @@
       <a href="#" class="sb-link" data-page="tokenUsage">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>
         <span class="sb-label">Token Monitor</span>
+      </a>
+      <a href="#" class="sb-link" data-page="ideas">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+        <span class="sb-label">Ötletláda</span>
       </a>
       <a href="#" class="sb-link" data-page="updates" id="updatesNavLink">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
@@ -132,6 +154,13 @@
             <h3>Aktivitás</h3>
           </div>
           <div class="overview-activity" id="overviewActivity"></div>
+        </div>
+        <div class="overview-card">
+          <div class="overview-card-head">
+            <h3>Ügynök aktivitás</h3>
+            <span class="overview-card-meta">mai üzenetek</span>
+          </div>
+          <div id="agentActivityWidget"></div>
         </div>
       </div>
     </div>
@@ -198,6 +227,22 @@
           </div>
           <span>Új ügynök</span>
         </button>
+      </div>
+    </div>
+
+    <!-- === Activity (live agent status) Page === -->
+    <div class="page" id="activityPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1>Aktivitás</h1>
+            <p class="subtitle">Mit csinál épp minden ügynök — élő nézet, 3 mp-enként frissül</p>
+          </div>
+          <div class="activity-meta"><span id="activityUpdated" class="activity-updated"></span></div>
+        </div>
+      </div>
+      <div class="activity-list" id="activityList">
+        <p class="activity-empty">Betöltés…</p>
       </div>
     </div>
 
@@ -505,6 +550,10 @@
               <span class="cxhu-state-label">Telepítés folyamatban...</span>
             </div>
             <div class="cxhu-state cxhu-state--token" id="cxhuStateToken" hidden>
+              <span class="cxhu-done-badge">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                CLI telepítve
+              </span>
               <input class="cxhu-token-input" id="cxhuTokenInput" type="password" placeholder="connectors.hu token (dashboardról)" autocomplete="off" spellcheck="false">
               <button class="cxhu-banner-cta" id="cxhuConfigureBtn">Mentés és szinkron</button>
             </div>
@@ -629,17 +678,9 @@
         <div class="migrate-step" id="migrateStep1">
           <h3>1. Forrás megadása</h3>
           <div class="form-row">
-            <div class="form-group" style="flex:2">
+            <div class="form-group" style="flex:1">
               <label for="migratePath">Workspace / mappa útvonala</label>
               <input type="text" id="migratePath" placeholder="/Users/username/.openclaw/workspace">
-            </div>
-            <div class="form-group" style="flex:1">
-              <label for="migrateType">Típus</label>
-              <select id="migrateType">
-                <option value="openclaw">OpenClaw</option>
-                <option value="custom">Egyéni Claude bot</option>
-                <option value="general">Általános mappa</option>
-              </select>
             </div>
           </div>
           <div class="form-group">
@@ -726,6 +767,34 @@
       <p style="color:var(--text-muted);font-size:12px;margin-top:16px">
         A szerep és a beosztott/vezető kapcsolatok az ügynök részletek &gt; Csapat fülén szerkeszthetők.
       </p>
+
+    </div>
+
+    <!-- === Messages Page === -->
+    <div class="page" id="messagesPage" hidden>
+      <div class="page-header" style="margin-bottom:0">
+        <div class="page-header-row">
+          <div>
+            <h1>Üzenetek</h1>
+            <p class="subtitle">Inter-agent kommunikáció</p>
+          </div>
+          <button class="btn-secondary btn-compact" id="chatRefreshBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            Frissítés
+          </button>
+        </div>
+      </div>
+      <div class="chat-layout">
+        <div class="chat-sidebar" id="chatAgentList">
+          <div class="chat-sidebar-loading">Betöltés...</div>
+        </div>
+        <div class="chat-thread-panel" id="chatThreadPanel">
+          <div class="chat-thread-empty">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:0.3"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            <p>Válassz ügynököt</p>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- === Autonomy Page === -->
@@ -762,6 +831,67 @@
 
       <div class="autonomy-grid" id="autonomyGrid"></div>
       <p class="autonomy-footer" id="autonomyUpdatedAt"></p>
+    </div>
+
+    <!-- === Ötletláda Page === -->
+    <div class="page" id="ideasPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1>Ötletláda</h1>
+            <p class="subtitle">Fejlesztési ötletek és javaslatok</p>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="ideaCategoryFilter" class="input" style="width:160px;font-size:13px">
+              <option value="">Összes kategória</option>
+            </select>
+            <select id="ideaStatusFilter" class="input" style="width:130px;font-size:13px">
+              <option value="">Összes státusz</option>
+              <option value="new">Új</option>
+              <option value="reviewed">Átnézve</option>
+              <option value="kanban">Kanbanban</option>
+              <option value="rejected">Elutasítva</option>
+            </select>
+            <button class="btn-primary btn-compact" id="ideaNewBtn">+ Új ötlet</button>
+          </div>
+        </div>
+      </div>
+      <div class="ideas-stats" id="ideasStats" style="display:flex;gap:16px;margin-bottom:16px;flex-wrap:wrap"></div>
+      <div id="ideasList" style="display:flex;flex-direction:column;gap:8px"></div>
+      <div class="modal-overlay" id="ideaModalOverlay">
+        <div class="modal" style="max-width:540px">
+          <div class="modal-header">
+            <h2 id="ideaModalTitle">Új ötlet</h2>
+            <button class="modal-close" id="ideaModalClose">&times;</button>
+          </div>
+          <div class="modal-body" style="display:flex;flex-direction:column;gap:12px">
+            <div class="form-group"><label class="form-label">Cím *</label><input type="text" id="ideaTitleInput" class="input" placeholder="Rövid, egyértelmű cím"></div>
+            <div class="form-group"><label class="form-label">Leírás</label><textarea id="ideaDescInput" class="input" rows="4" placeholder="Részletes leírás..."></textarea></div>
+            <div style="display:flex;gap:8px">
+              <div class="form-group" style="flex:1"><label class="form-label">Kategória</label>
+                <select id="ideaCategoryInput" class="input"><option>Sales</option><option>Oktatás</option><option>Automatizálás</option><option>Integráció</option><option>Rendszer</option><option>Egyéb</option></select>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer" style="display:flex;gap:8px;justify-content:flex-end">
+            <button class="btn-secondary" id="ideaModalCancel">Mégse</button>
+            <button class="btn-primary btn-compact" id="ideaModalSave">Mentés</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-overlay" id="ideaPromoteOverlay">
+        <div class="modal" style="max-width:400px">
+          <div class="modal-header"><h2>Kanbanba küldés</h2><button class="modal-close" id="ideaPromoteClose">&times;</button></div>
+          <div class="modal-body">
+            <p style="margin-bottom:16px;font-size:14px">Melyik fázisban?</p>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <button class="btn-secondary" id="ideaPromoteDetail" style="text-align:left;padding:12px 16px"><strong>Részlet kidolgozás (Várakozik)</strong></button>
+              <button class="btn-primary btn-compact" id="ideaPromotePlan" style="text-align:left;padding:12px 16px"><strong>Terv (Tervezett)</strong></button>
+            </div>
+          </div>
+          <div class="modal-footer" style="justify-content:flex-end"><button class="btn-secondary" id="ideaPromoteCancel">Mégse</button></div>
+        </div>
+      </div>
     </div>
 
     <!-- === Vault Page === -->
@@ -1261,6 +1391,10 @@
               <span class="meta-label">Skillek</span>
               <span class="meta-value" id="agentDetailSkillCount">0</span>
             </div>
+            <div class="agent-overview-item">
+              <span class="meta-label">Kontextus</span>
+              <span class="meta-value" id="agentDetailContext">-</span>
+            </div>
           </div>
           <div class="agent-process-control" id="agentProcessControl">
             <div class="process-status" id="processStatus">
@@ -1318,6 +1452,47 @@
             <small id="deepseekHint" style="display:none;margin-top:6px;color:var(--text-muted);font-size:12px;line-height:1.4">
               DeepSeek-V4-Pro nincs konfigurálva. <a href="#" id="deepseekConfigLink">API kulcs hozzáadása</a> a Vault oldalon.
             </small>
+          </div>
+          <div class="form-group" id="autoRestartGroup">
+            <label>Automatikus újraindítás</label>
+            <p style="margin:4px 0 10px;font-size:12.5px;line-height:1.5;color:var(--text-muted)">
+              A hosszú sessionök lelassulnak: a teljes kontextust minden válasznál újra fel kell dolgozni,
+              ezért a nagyobb kontextus lassabb és drágább, és hamarabb eléri a limitet. Érdemes időnként
+              újraindítani, hogy a session friss és lendületes maradjon. Alapértelmezetten az éjszakai
+              konszolidáció (DREAM) után fut, mint az alvás: az agy éjjel rendet rak, és reggel frissen ébredsz.
+            </p>
+            <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:10px;cursor:pointer">
+              <input type="checkbox" id="arEnabled"> Bekapcsolva
+            </label>
+            <div class="form-row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+              <div class="form-group" style="flex:1;min-width:200px;margin-bottom:0">
+                <label for="arMode" style="font-size:12px;color:var(--text-muted)">Mód</label>
+                <select id="arMode">
+                  <option value="continue">Folytatás — kontextus megmarad, tier/limit frissül</option>
+                  <option value="fresh">Friss — kontextus eldobása (ez gyorsít)</option>
+                </select>
+              </div>
+              <div class="form-group" style="margin-bottom:0">
+                <label for="arSchedKind" style="font-size:12px;color:var(--text-muted)">Ütemezés</label>
+                <select id="arSchedKind">
+                  <option value="daily">Napi időpont</option>
+                  <option value="interval">Óránként</option>
+                </select>
+              </div>
+              <div class="form-group" id="arDailyWrap" style="margin-bottom:0">
+                <label for="arDailyTime" style="font-size:12px;color:var(--text-muted)">Időpont</label>
+                <input type="time" id="arDailyTime" value="03:00">
+              </div>
+              <div class="form-group" id="arIntervalWrap" hidden style="margin-bottom:0">
+                <label for="arIntervalHours" style="font-size:12px;color:var(--text-muted)">Óránként</label>
+                <input type="number" id="arIntervalHours" min="1" max="168" value="12" style="width:80px">
+              </div>
+            </div>
+            <small style="display:block;margin-top:8px;color:var(--text-muted);font-size:12px;line-height:1.5">
+              A fő channels-session mindig friss indul (a Folytatás mód rá nem vonatkozik).
+              Soha nem szakít meg futó munkát: csak üresjáratban (idle) indít újra, különben a következő körre halaszt.
+            </small>
+            <button class="btn-secondary btn-compact agent-save-section" id="saveAutoRestartBtn" style="margin-top:10px">Mentés</button>
           </div>
           <div class="form-group" id="authModeGroup">
             <label>Hitelesítési mód</label>
@@ -1451,6 +1626,11 @@
               <label for="chSlackAppToken">App-Level Token (xapp-...)</label>
               <input type="text" id="chSlackAppToken" placeholder="xapp-1-...">
             </div>
+            <div class="form-group" id="chDiscordChannelIdGroup" hidden>
+              <label for="chDiscordChannelId">Discord Channel ID</label>
+              <input type="text" id="chDiscordChannelId" placeholder="1234567890123456789">
+              <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">Annak a server-csatornának az ID-je, amelyikbe a bot alapból ír. Discord &rarr; jobbklikk a csatornán &rarr; "Copy Channel ID" (Developer Mode kell hozzá).</small>
+            </div>
             <button class="btn-primary" id="chConnectBtn">
               <span class="btn-text">Összekapcsolás</span>
               <span class="btn-loading" hidden><span class="spinner"></span> Csatlakozas...</span>
@@ -1499,7 +1679,7 @@
               <h4>Új ember vagy csoport hozzáadása</h4>
               <details class="tg-howto" style="margin-bottom:12px;">
                 <summary style="cursor:pointer; font-weight:600;">Hogyan adj hozzá több embert vagy csoportot? &#9660;</summary>
-                <div style="padding:10px 0 0 0; font-size:13px; line-height:1.5;">
+                <div id="chHowtoContent" style="padding:10px 0 0 0; font-size:13px; line-height:1.5;">
                   <p style="margin-top:0;"><strong>1. Új ember (privát chat) hozzáadása:</strong></p>
                   <ol style="padding-left:20px; margin-top:4px;">
                     <li>Add meg az illetőnek a bot felhasználónevét (lent látható).</li>
@@ -1517,7 +1697,7 @@
                   <p style="margin-top:10px; color:var(--muted-foreground);"><em>Eltávolításhoz használd a Bekötött chat-ek listájában az X gombot.</em></p>
                 </div>
               </details>
-              <p class="tg-pairing-info">Ha valaki ír a botnak, a plugin egy kódot küld neki. Ide írd be a kódot a jóváhagyáshoz.</p>
+              <p class="tg-pairing-info" id="chPairingInfo">Ha valaki ír a botnak, a plugin egy kódot küld neki. Ide írd be a kódot a jóváhagyáshoz.</p>
               <div class="tg-pending-list" id="chPendingList"></div>
               <div class="form-row" style="gap:8px; align-items:flex-end; margin-top: 12px;">
                 <div class="form-group" style="flex:1; margin-bottom:0">
@@ -1733,6 +1913,16 @@
         <div class="form-group" id="customScheduleGroup" hidden>
           <label for="scheduleCustomCron">Cron kifejezés <span class="hint">(perc óra nap hónap hétnap)</span></label>
           <input type="text" id="scheduleCustomCron" placeholder="0 12 * * *">
+        </div>
+        <div class="form-group">
+          <label>Haladó beállítások</label>
+          <label style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:4px">
+            <input type="checkbox" id="scheduleSkipIfBusy"> Kihagyás, ha az ügynök foglalt
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:4px">
+            <input type="checkbox" id="scheduleForceSend"> Mindig küldje (a foglaltság ellenére is)
+          </label>
+          <input type="text" id="scheduleTargetSession" placeholder="Cél tmux session (opcionális, felülírja az alapértelmezettet)" style="margin-top:8px">
         </div>
         <input type="hidden" id="scheduleEditName">
         <button class="btn-primary" id="saveScheduleBtn">
@@ -1991,6 +2181,16 @@
 
   <div class="toast" id="toast"></div>
 
+  <!-- Terminal modal -->
+  <div class="modal-overlay" id="terminalOverlay">
+    <div class="modal terminal-modal">
+      <div class="modal-header">
+        <h2 id="terminalModalTitle">Terminal</h2>
+        <button class="modal-close" id="terminalClose">&times;</button>
+      </div>
+      <div id="terminalContainer" style="background:#1a1a1a;padding:8px;border-radius:0 0 8px 8px;flex:1;min-height:360px;"></div>
+    </div>
+  </div>
   <script src="/app.js"></script>
 </body>
 </html>

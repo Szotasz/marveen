@@ -6,6 +6,7 @@ import { PROJECT_ROOT, OLLAMA_URL } from '../../config.js'
 import { logger } from '../../logger.js'
 import {
   slugify as slugifyMcp,
+  catalogMatchesConfigured,
   type McpListEntry,
 } from '../../mcp-list-parser.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
@@ -20,6 +21,80 @@ import {
   syncSecret, syncAllBindings, scanMcpConfigs, unsyncBinding,
 } from '../vault-bindings.js'
 import type { RouteContext } from './types.js'
+
+// The catalog is the union of the committed mcp-catalog.json (the MCPs the
+// central devs ship) and an optional, gitignored mcp-catalog.local.json where
+// a user keeps their own dev-only MCPs. This way a user's private MCP list
+// never lands in git and other users don't inherit it. Entries from the local
+// file override committed ones with the same id. A broken local file is
+// non-fatal (logged + ignored) so it can't take down the whole catalog.
+function localCatalogPath(): string {
+  return join(PROJECT_ROOT, 'mcp-catalog.local.json')
+}
+
+function readLocalCatalog(): any[] {
+  const localPath = localCatalogPath()
+  if (!existsSync(localPath)) return []
+  try {
+    const parsed = JSON.parse(readFileSync(localPath, 'utf-8'))
+    if (Array.isArray(parsed)) return parsed
+    logger.warn({ localPath }, 'mcp-catalog.local.json is not a JSON array, ignoring')
+  } catch (err) {
+    logger.error({ err }, 'Failed to parse mcp-catalog.local.json, ignoring')
+  }
+  return []
+}
+
+function loadMcpCatalog(): any[] {
+  const central = JSON.parse(readFileSync(join(PROJECT_ROOT, 'mcp-catalog.json'), 'utf-8')) as any[]
+  const byId = new Map<string, any>()
+  for (const item of central) byId.set(String(item.id), item)
+  for (const item of readLocalCatalog()) byId.set(String(item.id), item)
+  return [...byId.values()]
+}
+
+// Slugs of every MCP server declared in a .mcp.json / .claude.json the fleet
+// can see. The mcp-list cache (`claude mcp list`) only reflects servers Claude
+// Code has actually spawned this run, and a catalog id ("gmail") rarely equals
+// the server name a user chose ("gmail-egov", "gmail-personal"). Collecting the
+// configured names lets the catalog mark an entry installed by exact id or the
+// "<id>-<variant>" naming convention, so a working, configured connector stops
+// showing as "telepítésre vár".
+function collectConfiguredServerSlugs(): Set<string> {
+  const slugs = new Set<string>()
+  const files = [
+    join(PROJECT_ROOT, '.mcp.json'),
+    join(homedir(), '.claude.json'),
+  ]
+  for (const agentName of listAgentNames()) {
+    files.push(join(AGENTS_BASE_DIR, agentName, '.mcp.json'))
+  }
+  for (const extPath of getExternalProjectPaths()) {
+    files.push(join(extPath, '.mcp.json'))
+  }
+  for (const f of files) {
+    try {
+      const parsed = JSON.parse(readFileOr(f, '{}'))
+      for (const name of Object.keys(parsed.mcpServers || {})) {
+        const s = slugifyMcp(name)
+        if (s) slugs.add(s)
+      }
+    } catch { /* ignore unreadable / malformed config */ }
+  }
+  return slugs
+}
+
+// Persist a user-installed MCP into the gitignored local catalog so it shows up
+// in the dashboard catalog as a user-local entry (and can be re-installed). Env
+// values are stored blank -- only the variable names are kept, mirroring the
+// committed catalog -- so secrets never land in this file. Upserts by id.
+function upsertLocalCatalogEntry(entry: any): void {
+  const local = readLocalCatalog()
+  const idx = local.findIndex(e => String(e.id) === String(entry.id))
+  if (idx >= 0) local[idx] = { ...local[idx], ...entry }
+  else local.push(entry)
+  atomicWriteFileSync(localCatalogPath(), JSON.stringify(local, null, 2) + '\n')
+}
 
 export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
@@ -309,16 +384,41 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     try {
       const scopeFlag = data.scope === 'project' ? '-s project' : '-s user'
 
+      const catalogEntry: any = {
+        id: sanitizedName,
+        name: rawName,
+        description: 'Felhasználó által telepített MCP',
+        category: 'custom',
+        icon: '🔌',
+        authType: data.env && Object.keys(data.env).length ? 'apikey' : 'none',
+      }
+
       if ((data.type === 'http' || data.type === 'sse') && data.url) {
         const transport = data.type === 'sse' ? 'sse' : 'http'
         execSync(`claude mcp add --transport ${transport} ${scopeFlag} ${shellEscape(sanitizedName)} ${shellEscape(data.url)} 2>&1`, { timeout: 15000, encoding: 'utf-8' })
+        catalogEntry.type = 'remote'
+        catalogEntry.url = data.url
+        catalogEntry.transport = transport
       } else if (data.type === 'stdio' && data.command) {
         const envFlags = data.env ? Object.entries(data.env).map(([k, v]) => `-e ${shellEscape(k)}=${shellEscape(v)}`).join(' ') : ''
         const argsStr = data.args ? data.args.split(/\s+/).filter(Boolean).map(a => shellEscape(a)).join(' ') : ''
         execSync(`claude mcp add ${scopeFlag} ${shellEscape(sanitizedName)} ${envFlags} -- ${shellEscape(data.command)} ${argsStr} 2>&1`, { timeout: 15000, encoding: 'utf-8' })
+        catalogEntry.type = 'local'
+        catalogEntry.command = data.command
+        catalogEntry.args = data.args ? data.args.split(/\s+/).filter(Boolean) : []
+        // Store only env var names with blank values -- never the secrets.
+        catalogEntry.env = Object.fromEntries(Object.keys(data.env || {}).map(k => [k, '']))
       } else {
         json(res, { error: 'URL (http/sse) or command (stdio) required' }, 400)
         return true
+      }
+
+      try {
+        upsertLocalCatalogEntry(catalogEntry)
+      } catch (err) {
+        // The MCP is already installed via `claude mcp add`; a catalog-write
+        // failure shouldn't fail the request -- just log and move on.
+        logger.error({ err }, 'Failed to persist MCP into mcp-catalog.local.json')
       }
 
       json(res, { ok: true, name: sanitizedName, nameChanged })
@@ -446,8 +546,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   // === MCP Catalog ===
   if (path === '/api/mcp-catalog' && method === 'GET') {
     try {
-      const catalogPath = join(PROJECT_ROOT, 'mcp-catalog.json')
-      const catalog = JSON.parse(readFileSync(catalogPath, 'utf-8')) as any[]
+      const catalog = loadMcpCatalog()
 
       const installedSource = new Map<string, McpListEntry['source']>()
       for (const entry of getMcpListCache().entries) {
@@ -455,15 +554,29 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
           installedSource.set(entry.normalizedId, entry.source)
         }
       }
+      // Servers configured in .mcp.json files count as installed too, even when
+      // the mcp-list cache misses them or names them differently from the
+      // catalog id (e.g. "gmail-egov" / "gmail-personal" for catalog id "gmail").
+      const configuredSlugs = collectConfiguredServerSlugs()
 
       const result = catalog.map(item => {
         const itemId = slugifyMcp(String(item.id ?? ''))
         const itemNameSlug = slugifyMcp(String(item.name ?? ''))
-        const source = installedSource.get(itemId) || installedSource.get(itemNameSlug)
+        let source = installedSource.get(itemId) || installedSource.get(itemNameSlug)
+        // configMatch flags entries detected only via .mcp.json. They are
+        // installed under a custom server name, so the catalog's generic-id
+        // uninstall (`claude mcp remove <id>`) would not target them -- the
+        // frontend hides the uninstall link and points at the Connectors list.
+        let configMatch = false
+        if (source === undefined && catalogMatchesConfigured(itemId, itemNameSlug, configuredSlugs)) {
+          source = 'local'
+          configMatch = true
+        }
         return {
           ...item,
           installed: source !== undefined,
           installedSource: source,
+          configMatch,
         }
       })
 
@@ -479,8 +592,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   if (catalogInstallMatch && method === 'POST') {
     const id = decodeURIComponent(catalogInstallMatch[1])
     try {
-      const catalogPath = join(PROJECT_ROOT, 'mcp-catalog.json')
-      const catalog = JSON.parse(readFileSync(catalogPath, 'utf-8')) as any[]
+      const catalog = loadMcpCatalog()
       const item = catalog.find(c => c.id === id)
       if (!item) { json(res, { error: 'Item not found in catalog' }, 404); return true }
 
@@ -526,8 +638,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   if (catalogUninstallMatch && method === 'DELETE') {
     const id = decodeURIComponent(catalogUninstallMatch[1])
     try {
-      const catalogPath = join(PROJECT_ROOT, 'mcp-catalog.json')
-      const catalog = JSON.parse(readFileSync(catalogPath, 'utf-8')) as any[]
+      const catalog = loadMcpCatalog()
       const item = catalog.find(c => c.id === id)
       if (!item) { json(res, { error: 'Item not found in catalog' }, 404); return true }
 

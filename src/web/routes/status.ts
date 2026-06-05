@@ -36,10 +36,30 @@ export async function tryHandleStatus(ctx: RouteContext): Promise<boolean> {
       const activeIncidents = items.filter(i => i.status !== 'resolved')
       if (activeIncidents.length > 0) overall = 'degraded'
 
-      json(res, { overall, incidents: items.slice(0, 15), fetchedAt: Date.now() })
+      // Real per-service status from the Statuspage components API. The RSS feed
+      // only carries incident history (no per-service state), so the dashboard
+      // used to invent a hardcoded service list and substring-match incident
+      // titles -- which left every tile permanently "operational". Fetch the
+      // actual components so the grid reflects reality; on failure we return an
+      // empty array and the UI shows an honest "no per-service data" note rather
+      // than a fake green grid.
+      let components: Array<{ name: string; status: string }> = []
+      try {
+        const compResp = await fetch('https://status.claude.com/api/v2/components.json', { signal: AbortSignal.timeout(10000) })
+        if (compResp.ok) {
+          const compData = await compResp.json() as { components?: Array<{ name: string; status: string; group?: boolean }> }
+          components = (compData.components || [])
+            .filter(c => !c.group) // drop group containers, keep leaf services
+            .map(c => ({ name: c.name, status: c.status }))
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Failed to fetch Claude status components')
+      }
+
+      json(res, { overall, components, incidents: items.slice(0, 15), fetchedAt: Date.now() })
     } catch (err) {
       logger.warn({ err }, 'Failed to fetch Claude status')
-      json(res, { overall: 'unknown', incidents: [], fetchedAt: Date.now(), error: 'Failed to fetch status' })
+      json(res, { overall: 'unknown', components: [], incidents: [], fetchedAt: Date.now(), error: 'Failed to fetch status' })
     }
     return true
   }

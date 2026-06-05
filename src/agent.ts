@@ -16,6 +16,55 @@ const AGENT_TIMEOUT_MS = Number(process.env.MARVEEN_AGENT_TIMEOUT_MS) || 20 * 60
 // corrupting the target file the caller goes on to write.
 const DEFAULT_DISALLOWED_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash', 'Task']
 
+// Result-event classification (issue #209). A usage-policy (AUP) block, an API
+// error, or a max-turns/budget abort must NOT be propagated as if it were the
+// generated content: the SDK can surface the block message in `result`, and a
+// caller (generateClaudeMd / generateSoulMd / categorizeMemory, ...) would then
+// write that block text straight into CLAUDE.md / SOUL.md, silently corrupting
+// the file. We treat a result as USABLE only when it is a clean success
+// (subtype 'success', is_error false, no api_error_status); anything else
+// returns text=null -- so the callers' existing `if (!text) throw` guard fires
+// -- plus a reason string for logging and an explicit caller signal.
+//
+// Scope note: we deliberately do NOT text-match soft model refusals ("I can't
+// help with that") -- that is fragile and would false-positive on legitimate
+// generated content. Hard safety/AUP blocks surface structurally via is_error /
+// api_error_status / a non-success subtype, which is what we key on.
+export interface AgentResultClassification {
+  text: string | null
+  blocked: boolean
+  reason?: string
+}
+
+export function classifyAgentResult(event: {
+  subtype?: string
+  is_error?: boolean
+  api_error_status?: number | null
+  result?: unknown
+  errors?: string[]
+  stop_reason?: string | null
+}): AgentResultClassification {
+  const subtype = event.subtype
+  const apiErr = event.api_error_status ?? null
+  const isError = event.is_error === true
+  if (subtype === 'success' && !isError && apiErr == null) {
+    return { text: typeof event.result === 'string' ? event.result : null, blocked: false }
+  }
+  const bits: string[] = []
+  if (subtype && subtype !== 'success') bits.push(`subtype=${subtype}`)
+  if (isError) bits.push('is_error=true')
+  if (apiErr != null) bits.push(`api_error_status=${apiErr}`)
+  if (event.stop_reason) bits.push(`stop_reason=${event.stop_reason}`)
+  if (Array.isArray(event.errors) && event.errors.length) {
+    bits.push(`errors=${event.errors.slice(0, 3).join('; ').slice(0, 300)}`)
+  }
+  // A snippet of any policy/refusal text -- for the LOG only, never returned as content.
+  if (typeof event.result === 'string' && event.result.trim()) {
+    bits.push(`resultSnippet=${event.result.trim().slice(0, 200)}`)
+  }
+  return { text: null, blocked: true, reason: bits.join(' ') || 'unknown error result' }
+}
+
 // The bundled SDK's runtime libc detection picks the linux-x64-musl variant
 // even on glibc Ubuntu/Debian/RHEL hosts, so its native binary fails to
 // spawn ("ld-musl-* not found"). We pick the right subpackage ourselves and
@@ -62,9 +111,10 @@ export async function runAgent(
   allowTools = false,
   cwd: string = PROJECT_ROOT,
   env?: Record<string, string | undefined>,
-): Promise<{ text: string | null; newSessionId?: string }> {
+): Promise<{ text: string | null; newSessionId?: string; error?: string }> {
   let newSessionId: string | undefined
   let resultText: string | null = null
+  let blockedReason: string | undefined
 
   const typingInterval = onTyping ? setInterval(onTyping, TYPING_REFRESH_MS) : undefined
   const abortController = new AbortController()
@@ -94,7 +144,16 @@ export async function runAgent(
         newSessionId = (event as any).sessionId as string
       }
       if (event.type === 'result') {
-        resultText = (event as any).result as string ?? null
+        const c = classifyAgentResult(event as any)
+        if (c.blocked) {
+          // AUP block / API error / max-turns: do NOT propagate as content
+          // (issue #209). text=null trips the caller's `if (!text) throw`.
+          blockedReason = c.reason
+          resultText = null
+          logger.error({ reason: c.reason }, 'runAgent: result blocked/errored -- not propagated as content (possible AUP block, issue #209)')
+        } else {
+          resultText = c.text
+        }
       }
     }
   } catch (err: any) {
@@ -111,5 +170,5 @@ export async function runAgent(
     if (typingInterval) clearInterval(typingInterval)
   }
 
-  return { text: resultText, newSessionId }
+  return { text: resultText, newSessionId, error: blockedReason }
 }

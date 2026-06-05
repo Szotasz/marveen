@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   shouldSendAlert,
   toPendingRetryView,
+  classifyTelegramSendError,
   ALERT_THRESHOLD_MS,
 } from '../pending-retries.js'
 
@@ -101,5 +102,31 @@ describe('toPendingRetryView', () => {
     expect(view.alertDue).toBe(true)
     const viewUnder = toPendingRetryView(baseRow, 1_000_100, 200)
     expect(viewUnder.alertDue).toBe(false)
+  })
+})
+
+describe('classifyTelegramSendError', () => {
+  it('treats a bare network error (no HTTP status) as transient', () => {
+    expect(classifyTelegramSendError('fetch failed')).toBe('transient')
+    expect(classifyTelegramSendError('TypeError: fetch failed')).toBe('transient')
+  })
+
+  it('treats 429 (rate limited) as transient', () => {
+    expect(classifyTelegramSendError('Telegram API 429: Too Many Requests')).toBe('transient')
+  })
+
+  it('treats 5xx as transient', () => {
+    expect(classifyTelegramSendError('Telegram API 500: Internal Server Error')).toBe('transient')
+    expect(classifyTelegramSendError('Telegram API 502: Bad Gateway')).toBe('transient')
+  })
+
+  it('treats 400 (bad chat_id) as permanent', () => {
+    expect(classifyTelegramSendError('Telegram API 400: Bad Request: chat not found')).toBe('permanent')
+  })
+
+  it('treats 401/403/404 (bad or blocked token) as permanent', () => {
+    expect(classifyTelegramSendError('Telegram API 401: Unauthorized')).toBe('permanent')
+    expect(classifyTelegramSendError('Telegram API 403: Forbidden: bot was blocked by the user')).toBe('permanent')
+    expect(classifyTelegramSendError('Telegram API 404: Not Found')).toBe('permanent')
   })
 })
