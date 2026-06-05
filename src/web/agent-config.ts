@@ -189,6 +189,101 @@ export function readAgentClaudeConfigDir(name: string): string | null {
   return resolveClaudeConfigDir(readFileOr(configPath, '{}'), homedir())
 }
 
+// --- Remote agent config (remoteHost + remoteWorkdir) ---
+//
+// When BOTH a valid host and a valid absolute workdir are present, the agent's
+// tmux session runs on a remote machine over ssh instead of locally. Validation
+// mirrors resolveClaudeConfigDir's whitelist-not-blacklist philosophy: the host
+// is passed as a raw ssh-destination argv element (never shell-interpolated), so
+// the charset is defense-in-depth, but the workdir IS inlined into the remote
+// launch command (shQuoted), so it is validated strictly too.
+
+// ssh alias or user@host. NO ':' -- `ssh host:port` is not valid syntax; the
+// port belongs in the ~/.ssh/config `Port` directive.
+const REMOTE_HOST_ALLOWED = /^[A-Za-z0-9_.@-]+$/
+// Absolute path only. Tilde is rejected: a `~/proj` workdir would encode to
+// `~-proj` for the --continue probe but Claude Code stores the tilde-EXPANDED
+// path as `-home-user-proj`, so the probe would never match and --continue would
+// be silently dropped. Requiring an absolute path makes the encoding
+// deterministic.
+const REMOTE_WORKDIR_ALLOWED = /^\/[A-Za-z0-9_./@+-]*$/
+
+export interface RemoteAgentConfig {
+  host: string | null
+  workdir: string | null
+}
+
+// Pure resolver: takes the raw agent-config.json text and returns the remote
+// {host, workdir}. An agent is "remote" only when BOTH validate; a
+// half-configured agent (host set but workdir invalid, or vice-versa) is
+// treated as local (both null) so it never launches into an undefined dir.
+export function resolveRemoteConfig(rawConfigJson: string): RemoteAgentConfig {
+  const NONE: RemoteAgentConfig = { host: null, workdir: null }
+  let config: unknown
+  try { config = JSON.parse(rawConfigJson) } catch { return NONE }
+  if (!config || typeof config !== 'object') return NONE
+  const rawHost = (config as Record<string, unknown>).remoteHost
+  const rawWorkdir = (config as Record<string, unknown>).remoteWorkdir
+  if (typeof rawHost !== 'string' || typeof rawWorkdir !== 'string') return NONE
+  const host = rawHost.trim()
+  const workdir = rawWorkdir.trim()
+  if (!host || !workdir) return NONE
+  if (!REMOTE_HOST_ALLOWED.test(host)) return NONE
+  if (!REMOTE_WORKDIR_ALLOWED.test(workdir)) return NONE
+  if (hasParentTraversal(workdir)) return NONE
+  return { host, workdir }
+}
+
+export function readAgentRemoteConfig(name: string): RemoteAgentConfig {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  return resolveRemoteConfig(readFileOr(configPath, '{}'))
+}
+
+// Convenience for the many callers that only need the host to decide whether a
+// session is remote. Returns null for local agents.
+export function readAgentRemoteHost(name: string): string | null {
+  return readAgentRemoteConfig(name).host
+}
+
+// Validate-and-persist the remote config. Empty strings clear the fields
+// (revert the agent to local). Returns the resolved config on success, or an
+// error string when a non-empty value fails validation.
+export function writeAgentRemoteConfig(
+  name: string,
+  host: string,
+  workdir: string,
+): { ok: true; remote: RemoteAgentConfig } | { ok: false; error: string } {
+  const h = host.trim()
+  const w = workdir.trim()
+  const configPath = join(agentDir(name), 'agent-config.json')
+  let config: Record<string, unknown> = {}
+  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+
+  // Clearing: both empty -> remove the fields, agent becomes local.
+  if (!h && !w) {
+    delete config.remoteHost
+    delete config.remoteWorkdir
+    atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+    return { ok: true, remote: { host: null, workdir: null } }
+  }
+
+  // Setting: both required and both must validate together.
+  if (!h || !w) {
+    return { ok: false, error: 'Both remoteHost and remoteWorkdir are required (or both empty to clear).' }
+  }
+  const probe = resolveRemoteConfig(JSON.stringify({ remoteHost: h, remoteWorkdir: w }))
+  if (!probe.host || !probe.workdir) {
+    return {
+      ok: false,
+      error: 'Invalid remoteHost (alias or user@host, no port/metachars) or remoteWorkdir (must be an absolute path without `..`).',
+    }
+  }
+  config.remoteHost = probe.host
+  config.remoteWorkdir = probe.workdir
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+  return { ok: true, remote: probe }
+}
+
 export function readAgentChannelProvider(name: string): string | null {
   const configPath = join(agentDir(name), 'agent-config.json')
   try {

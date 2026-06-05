@@ -10,7 +10,19 @@ import {
   decideSubmitFollowup,
   shouldClearTruncatedPreamble,
 } from '../pane-state.js'
-import { agentDir, readAgentModel, readAgentSecurityProfile, readAgentClaudeConfigDir, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName } from './agent-config.js'
+import { agentDir, readAgentModel, readAgentSecurityProfile, readAgentClaudeConfigDir, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost } from './agent-config.js'
+import {
+  buildTmuxInvocation,
+  buildSshExec,
+  buildRemoteLaunchCommand,
+  buildContinueProbeCommand,
+  classifyRunState,
+  classifyRunStateFromExit,
+  sessionInList,
+  ensureControlDir,
+  cleanStaleSshSockets,
+  type AgentRunState,
+} from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { CHANNEL_PROVIDER } from '../config.js'
@@ -32,10 +44,58 @@ export function agentSessionName(name: string): string {
   return `agent-${name}`
 }
 
-export function isAgentRunning(name: string): boolean {
+// All tmux operations route through these two wrappers so the local-vs-remote
+// (ssh) decision and the quoting live in ONE place (ssh-tmux.ts). host=null is
+// byte-identical to the prior direct local tmux call. Remote calls get a larger
+// default timeout because an ssh round-trip (handshake + remote exec) is slower
+// than a local fork; ServerAlive/ConnectTimeout in SSH_OPTS bound a dead host.
+function runTmux(host: string | null, tmuxArgs: string[], opts: { timeout?: number } = {}): void {
+  // Ensure the private ControlMaster socket dir exists before ANY remote ssh
+  // call (idempotent, ~free). Without this a watcher-first remote call after a
+  // marveen restart would lose connection multiplexing and re-handshake each tick.
+  if (host) ensureControlDir()
+  const inv = buildTmuxInvocation(host, TMUX, tmuxArgs)
+  execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000) })
+}
+
+function captureTmux(host: string | null, tmuxArgs: string[], opts: { timeout?: number } = {}): string {
+  if (host) ensureControlDir()
+  const inv = buildTmuxInvocation(host, TMUX, tmuxArgs)
+  return execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8' })
+}
+
+// Tri-state run state. For a remote agent a failed list-sessions query is
+// 'unreachable' (the session is almost certainly still alive on the laptop --
+// an SSH drop must never read as 'stopped', which would trigger a wrong
+// auto-restart or a duplicate start). See classifyRunState.
+export function agentRunState(name: string): AgentRunState {
+  const host = readAgentRemoteHost(name)
   try {
-    const output = execSync(`${TMUX} list-sessions -F "#{session_name}"`, { timeout: 3000, encoding: 'utf-8' })
-    return output.split('\n').some(line => line.trim() === agentSessionName(name))
+    const out = captureTmux(host, ['list-sessions', '-F', '#{session_name}'])
+    return classifyRunState(out, agentSessionName(name), host != null)
+  } catch (err) {
+    // tmux list-sessions exits non-zero ("no server running") when there are
+    // zero sessions -- on a REACHABLE remote that means 'stopped', not
+    // 'unreachable'. Only a true ssh transport failure (exit 255 / killed)
+    // is unreachable. The exit status carries that distinction.
+    const status = (err && typeof err === 'object' && 'status' in err)
+      ? (err as { status?: number | null }).status
+      : undefined
+    return classifyRunStateFromExit(status, host != null)
+  }
+}
+
+export function isAgentRunning(name: string): boolean {
+  return agentRunState(name) === 'running'
+}
+
+// Host-aware "does this tmux session exist" check, shared by the message router
+// and schedule runner. For a remote agent the list-sessions query runs on the
+// laptop over ssh; an ssh failure returns false (the loop retries next tick),
+// matching the local "session not found" semantics.
+export function sessionExistsOnHost(host: string | null, session: string): boolean {
+  try {
+    return sessionInList(captureTmux(host, ['list-sessions', '-F', '#{session_name}']), session)
   } catch {
     return false
   }
@@ -43,11 +103,8 @@ export function isAgentRunning(name: string): boolean {
 
 export function getAgentRunningSince(name: string): number | null {
   try {
-    const out = execFileSync(
-      TMUX,
-      ['display-message', '-p', '-t', agentSessionName(name), '#{session_created}'],
-      { timeout: 3000, encoding: 'utf-8' },
-    ).trim()
+    const host = readAgentRemoteHost(name)
+    const out = captureTmux(host, ['display-message', '-p', '-t', agentSessionName(name), '#{session_created}']).trim()
     const ts = parseInt(out, 10)
     return Number.isFinite(ts) ? ts : null
   } catch {
@@ -66,11 +123,80 @@ export function agentHasChannel(name: string): boolean {
   return false
 }
 
-export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): { ok: boolean; pid?: number; error?: string } {
-  if (isAgentRunning(name)) return { ok: false, error: 'Agent is already running' }
+// Remote agent launch (ssh). Starts a DETACHED tmux session on the laptop so
+// the claude process is a child of the laptop's tmux server -- NOT of sshd --
+// and therefore survives any ssh disconnect; an outage only pauses the orchestrator's
+// ability to message/observe it. Launch-only + channel-less: the laptop's own
+// ~/.claude login and the remote workdir's CLAUDE.md drive behaviour, so none of
+// the local channel/token/vault/settings scaffolding applies. Has its own
+// tri-state start guard: it refuses on 'unreachable' so a brief outage never
+// spawns a duplicate session.
+function startRemoteAgentProcess(
+  name: string,
+  host: string,
+  workdir: string,
+  opts: { fresh?: boolean },
+): { ok: boolean; error?: string } {
+  const state = agentRunState(name)
+  if (state === 'running') return { ok: false, error: 'Agent is already running' }
+  if (state === 'unreachable') {
+    return { ok: false, error: `Remote host '${host}' unreachable -- refusing to start (cannot confirm state)` }
+  }
 
+  ensureControlDir()
+  cleanStaleSshSockets(host)
+
+  const session = agentSessionName(name)
+
+  // Pre-flight: claude must be on PATH on the laptop, else the session starts
+  // and instantly dies with a silent "command not found".
+  try {
+    const probe = buildSshExec(host, 'which claude')
+    execFileSync(probe.file, probe.args, { timeout: 8000, stdio: 'ignore' })
+  } catch {
+    return { ok: false, error: `claude not found on PATH on '${host}' (or host unreachable)` }
+  }
+
+  // --continue only when the remote session dir already exists. workdir is an
+  // absolute path (validated), so the `/`->`-` encoding matches Claude Code's
+  // own leading-'-' scheme. A probe failure defaults to a fresh launch (safe).
+  let hasPriorSession = false
+  if (!opts.fresh) {
+    try {
+      const probe = buildSshExec(host, buildContinueProbeCommand(workdir))
+      execFileSync(probe.file, probe.args, { timeout: 8000, stdio: 'ignore' })
+      hasPriorSession = true
+    } catch {
+      hasPriorSession = false
+    }
+  }
+
+  const model = readAgentModel(name)
+  const cmd = buildRemoteLaunchCommand({ workdir, model, continue: hasPriorSession })
+
+  try {
+    runTmux(host, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
+    logger.info({ name, session, host, workdir }, 'Remote agent tmux session started')
+    scheduleIdentitySetup(session, readAgentDisplayName(name), host)
+    return { ok: true }
+  } catch (err) {
+    logger.error({ err, name, host }, 'Failed to start remote agent tmux session')
+    return { ok: false, error: 'Failed to start remote tmux session' }
+  }
+}
+
+export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): { ok: boolean; pid?: number; error?: string } {
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
+
+  // Remote agents are handled entirely by the ssh path above (with its own
+  // start guard), before any local already-running check / scaffolding.
+  const remote = readAgentRemoteConfig(name)
+  if (remote.host && remote.workdir) {
+    return startRemoteAgentProcess(name, remote.host, remote.workdir, opts)
+  }
+
+  if (isAgentRunning(name)) return { ok: false, error: 'Agent is already running' }
 
   const agentProvider = resolveAgentProvider(name)
   const provider = getProvider(agentProvider)
@@ -88,7 +214,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
 
   try {
     try {
-      execSync(`${TMUX} kill-session -t ${session} 2>/dev/null`, { timeout: 3000 })
+      runTmux(null, ['kill-session', '-t', session])
       execSync('sleep 3', { timeout: 5000 })
     } catch { /* ok */ }
 
@@ -195,10 +321,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // Single-quote `${model}` so values like `claude-opus-4-8[1m]` (1M-context
     // suffix) are not glob-expanded by the shell that tmux spawns the command in.
     const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${channelSetup}${apiKeyEnv}${claudeConfigEnv}${ollamaEnv}${deepseekEnv}cd "${dir}" && ${CLAUDE} ${continueFlag}${skipFlag}--model '${model}' ${channelFlag}`.trimEnd()
-    execSync(
-      `${TMUX} new-session -d -s ${session} "${cmd}"`,
-      { timeout: 10000 }
-    )
+    runTmux(null, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir }, 'Agent tmux session started')
 
@@ -229,23 +352,28 @@ export function stopAgentProcess(name: string): { ok: boolean; error?: string } 
   const session = agentSessionName(name)
   if (!isAgentRunning(name)) return { ok: false, error: 'Agent is not running' }
 
+  const host = readAgentRemoteHost(name)
+
   try {
-    execSync(`${TMUX} kill-session -t ${session}`, { timeout: 5000 })
+    runTmux(host, ['kill-session', '-t', session], { timeout: 5000 })
     execSync('sleep 2', { timeout: 4000 })
-    // Reap any orphaned plugin grandchild that tmux did not tear down.
-    // See channel-poller-reap.ts - the old pkill-by-env-var-on-cmdline did
-    // not work because the env vars are not part of argv on macOS.
-    try {
-      const agentProvider = resolveAgentProvider(name)
-      const dir = agentDir(name)
-      reapChannelOrphans(agentProvider, dir)
-    } catch (err) {
-      logger.warn({ err, name }, 'post-stop channel-poller reap failed')
+    // Reap any orphaned plugin grandchild that tmux did not tear down. This is
+    // a LOCAL pkill against this host's process table, so it only makes sense
+    // for local agents; a remote agent is channel-less and its processes live
+    // on the laptop, so skip it.
+    if (!host) {
+      try {
+        const agentProvider = resolveAgentProvider(name)
+        const dir = agentDir(name)
+        reapChannelOrphans(agentProvider, dir)
+      } catch (err) {
+        logger.warn({ err, name }, 'post-stop channel-poller reap failed')
+      }
     }
-    logger.info({ name, session }, 'Agent tmux session stopped')
+    logger.info({ name, session, host }, 'Agent tmux session stopped')
     return { ok: true }
   } catch (err) {
-    logger.error({ err, name, session }, 'Failed to stop agent tmux session')
+    logger.error({ err, name, session, host }, 'Failed to stop agent tmux session')
     return { ok: false, error: 'Failed to stop tmux session' }
   }
 }
@@ -276,11 +404,11 @@ export function restartAgentProcess(name: string, opts: { fresh?: boolean } = {}
 // caller writing a prompt has a clear input field.
 const SURVEY_MODAL_RX = /How is Claude doing this session/
 
-function dismissSurveyModalIfPresent(session: string): void {
+function dismissSurveyModalIfPresent(session: string, host: string | null = null): void {
   try {
-    const pane = execSync(`${TMUX} capture-pane -t ${session} -p`, { timeout: 3000, encoding: 'utf-8' })
+    const pane = captureTmux(host, ['capture-pane', '-t', session, '-p'])
     if (!SURVEY_MODAL_RX.test(pane)) return
-    execFileSync(TMUX, ['send-keys', '-t', session, '0'], { timeout: 5000 })
+    runTmux(host, ['send-keys', '-t', session, '0'], { timeout: 5000 })
     // Modal close is one frame; settle window so the next send-keys lands in
     // the prompt input, not the now-stale modal handler.
     execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 })
@@ -298,13 +426,13 @@ function dismissSurveyModalIfPresent(session: string): void {
 // pick option 1 (Resume from summary, recommended) and Enter to confirm.
 const RESUME_SUMMARY_MODAL_RX = /Resume from summary/
 
-export function dismissResumeSummaryModalIfPresent(session: string): void {
+export function dismissResumeSummaryModalIfPresent(session: string, host: string | null = null): void {
   try {
-    const pane = execSync(`${TMUX} capture-pane -t ${session} -p`, { timeout: 3000, encoding: 'utf-8' })
+    const pane = captureTmux(host, ['capture-pane', '-t', session, '-p'])
     if (!RESUME_SUMMARY_MODAL_RX.test(pane)) return
-    execFileSync(TMUX, ['send-keys', '-t', session, '1'], { timeout: 5000 })
+    runTmux(host, ['send-keys', '-t', session, '1'], { timeout: 5000 })
     execFileSync('/bin/sleep', ['0.1'], { timeout: 2000 })
-    execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+    runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
     // /compact starts immediately and can run for minutes; we only need to
     // unblock the modal so detectPaneState can transition off 'unknown'.
     execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 })
@@ -335,18 +463,18 @@ const IDENTITY_SEND_DELAY_MS = 5000
 // (resumeMarveenSession / respawnMarveenSessionFresh), which previously left the
 // main session without its identity after auto-recovery. Fire-and-forget; all
 // errors are swallowed/logged so a missed setup never tears down the caller.
-export function scheduleIdentitySetup(session: string, displayName: string): void {
+export function scheduleIdentitySetup(session: string, displayName: string, host: string | null = null): void {
   setTimeout(() => {
     try {
-      dismissSurveyModalIfPresent(session)
-      dismissResumeSummaryModalIfPresent(session)
+      dismissSurveyModalIfPresent(session, host)
+      dismissResumeSummaryModalIfPresent(session, host)
     } catch (err) {
       logger.warn({ err, session }, 'Post-restart modal dismiss failed')
     }
     setTimeout(() => {
       try {
         for (const cmd of identitySlashCommands(displayName)) {
-          execFileSync(TMUX, ['send-keys', '-t', session, cmd, 'Enter'], { timeout: 5000 })
+          runTmux(host, ['send-keys', '-t', session, cmd, 'Enter'], { timeout: 5000 })
           execFileSync('/bin/sleep', ['1'], { timeout: 2000 })
         }
         logger.info({ session, displayName }, 'Set session /name')
@@ -374,9 +502,9 @@ const SUBMIT_RETRY_POLL_MS = '0.3'
 // Buffer-clear (Ctrl-U) used pre-flight when shouldClearTruncatedPreamble
 // flags a stale preamble. Sent as a single key name (no `-l` literal
 // flag) so tmux interprets it as the control sequence.
-export function clearInputBuffer(session: string): void {
+export function clearInputBuffer(session: string, host: string | null = null): void {
   try {
-    execFileSync(TMUX, ['send-keys', '-t', session, 'C-u'], { timeout: 5000 })
+    runTmux(host, ['send-keys', '-t', session, 'C-u'], { timeout: 5000 })
     // Settle briefly so the next send-keys lands in the freshly cleared
     // buffer rather than racing the Ctrl-U.
     execFileSync('/bin/sleep', ['0.1'], { timeout: 2000 })
@@ -404,19 +532,19 @@ export function clearInputBuffer(session: string): void {
 // still reports stuck, send up to SUBMIT_RETRY_MAX_ATTEMPTS extra
 // Enters. The retry budget bounds the loop so a pathologically stuck
 // pane gives up rather than spinning.
-export function sendPromptToSession(session: string, text: string): void {
-  dismissSurveyModalIfPresent(session)
-  dismissResumeSummaryModalIfPresent(session)
+export function sendPromptToSession(session: string, text: string, host: string | null = null): void {
+  dismissSurveyModalIfPresent(session, host)
+  dismissResumeSummaryModalIfPresent(session, host)
 
   // Pre-flight buffer-clear when a stale preamble is detected. Reading
   // the pane is best-effort: a capture failure here means we cannot
   // prove the buffer is clean, but proceeding without the clear is no
   // worse than the pre-fix status quo.
   try {
-    const preCapture = execSync(`${TMUX} capture-pane -t ${session} -p`, { timeout: 3000, encoding: 'utf-8' })
+    const preCapture = captureTmux(host, ['capture-pane', '-t', session, '-p'])
     if (shouldClearTruncatedPreamble(preCapture)) {
       logger.info({ session }, 'Cleared stale preamble from input buffer before sending prompt')
-      clearInputBuffer(session)
+      clearInputBuffer(session, host)
     }
   } catch (err) {
     logger.warn({ err, session }, 'Pre-send capture-pane failed; skipping truncated-preamble check')
@@ -440,11 +568,11 @@ export function sendPromptToSession(session: string, text: string): void {
     }
     let chunk = oneLine.slice(i, end)
     if (chunk.startsWith('-')) chunk = ' ' + chunk
-    execFileSync(TMUX, ['send-keys', '-t', session, '-l', chunk], { timeout: 5000 })
+    runTmux(host, ['send-keys', '-t', session, '-l', chunk], { timeout: 5000 })
     i = end
     if (i < oneLine.length) execFileSync('/bin/sleep', ['0.03'], { timeout: 1000 })
   }
-  execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+  runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
 
   // Post-send retry loop. The payload hint is the first chunk of oneLine
   // (truncated to a safe length) so the verbatim-stuck path has something
@@ -453,7 +581,7 @@ export function sendPromptToSession(session: string, text: string): void {
   const payloadHint = oneLine.slice(0, Math.min(oneLine.length, 96))
   for (let attempt = 0; ; attempt++) {
     try { execFileSync('/bin/sleep', [SUBMIT_RETRY_POLL_MS], { timeout: 2000 }) } catch { /* best effort */ }
-    const pane = capturePane(session)
+    const pane = capturePane(session, host)
     const action = decideSubmitFollowup(pane, payloadHint, attempt, SUBMIT_RETRY_MAX_ATTEMPTS)
     if (action === 'done') break
     if (action === 'give-up') {
@@ -462,7 +590,7 @@ export function sendPromptToSession(session: string, text: string): void {
     }
     // action === 'retry-enter'
     try {
-      execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+      runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
     } catch (err) {
       logger.warn({ err, session, attempt }, 'Retry-Enter send failed')
       break
@@ -481,9 +609,9 @@ const PANE_READY_CONFIRM_DELAY_S = '0.25'
 // notification path (where the plugin, not sendPromptToSession, delivered
 // the text, so the post-send retry budget never ran). Best-effort: a
 // tmux failure is logged and swallowed so the watcher loop keeps going.
-export function sendEnterToSession(session: string): boolean {
+export function sendEnterToSession(session: string, host: string | null = null): boolean {
   try {
-    execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+    runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
     return true
   } catch (err) {
     logger.warn({ err, session }, 'sendEnterToSession: failed to send recovery Enter')
@@ -493,9 +621,9 @@ export function sendEnterToSession(session: string): boolean {
 
 // Capture a pane snapshot with an execSync timeout. Null on any error so
 // the caller can treat "capture failed" as "not ready".
-export function capturePane(session: string): string | null {
+export function capturePane(session: string, host: string | null = null): string | null {
   try {
-    return execSync(`${TMUX} capture-pane -t ${session} -p`, { timeout: 3000, encoding: 'utf-8' })
+    return captureTmux(host, ['capture-pane', '-t', session, '-p'])
   } catch {
     return null
   }
@@ -519,14 +647,14 @@ export function capturePane(session: string): string | null {
 //      returns true. Cost on the ready path: ~250ms sleep plus a second
 //      tmux capture-pane round-trip (typically tens of ms). Busy pass
 //      through layer 1 and return immediately without the delay.
-export function isSessionReadyForPrompt(session: string): boolean {
-  const first = capturePane(session)
+export function isSessionReadyForPrompt(session: string, host: string | null = null): boolean {
+  const first = capturePane(session, host)
   if (first == null) return false
   if (detectPaneState(first) !== 'idle') return false
 
   try { execFileSync('/bin/sleep', [PANE_READY_CONFIRM_DELAY_S], { timeout: 2000 }) } catch { /* best effort */ }
 
-  const second = capturePane(session)
+  const second = capturePane(session, host)
   if (second == null) return false
   return detectPaneState(second) === 'idle'
 }

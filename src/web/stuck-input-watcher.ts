@@ -1,6 +1,6 @@
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
-import { listAgentNames } from './agent-config.js'
+import { listAgentNames, readAgentRemoteHost } from './agent-config.js'
 import { isAgentRunning, capturePane, sendEnterToSession } from './agent-process.js'
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
@@ -48,8 +48,8 @@ const NO_STATE: StuckInputState = { parkedSig: null, firstSeenAt: null, lastReco
 
 const watchState = new Map<string, StuckInputState>()
 
-function checkSession(label: string, session: string): void {
-  const pane = capturePane(session)
+function checkSession(label: string, session: string, host: string | null = null): void {
+  const pane = capturePane(session, host)
   // A failed capture is treated as "nothing parked" -- it ends any active
   // spell rather than holding stale state across a transient tmux miss.
   const sig = pane == null ? null : stuckInputSignature(pane)
@@ -68,7 +68,7 @@ function checkSession(label: string, session: string): void {
       { label, session, attempt: next.attempts },
       'stuck-input-watcher: parked input persisted past confirm window, sending recovery Enter',
     )
-    sendEnterToSession(session)
+    sendEnterToSession(session, host)
   } else if (next.parkedSig !== null && next.attempts >= THRESHOLDS.maxAttempts) {
     // Logged at most once per spell: the give-up is recorded on the tick
     // that spent the last attempt (attempts hits maxAttempts there), not
@@ -97,7 +97,7 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
         continue
       }
       try {
-        checkSession(name, resolveAgentSession(name))
+        checkSession(name, resolveAgentSession(name), readAgentRemoteHost(name))
       } catch (err) {
         logger.debug({ err, agent: name }, 'stuck-input-watcher: agent check error')
       }
