@@ -542,7 +542,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   if (avatarUploadMatch && method === 'GET') {
     const name = decodeURIComponent(avatarUploadMatch[1])
     const avatarPath = findAvatarForAgent(name)
-    if (avatarPath) { serveFile(res, avatarPath); return true }
+    if (avatarPath) { serveFile(req, res, avatarPath); return true }
     res.writeHead(404); res.end()
     return true
   }

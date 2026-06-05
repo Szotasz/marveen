@@ -83,10 +83,10 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
   if (path === '/api/marveen/avatar' && method === 'GET') {
     for (const ext of ['.png', '.jpg', '.jpeg', '.webp']) {
       const p = join(PROJECT_ROOT, 'store', `marveen-avatar${ext}`)
-      if (existsSync(p)) { serveFile(res, p); return true }
+      if (existsSync(p)) { serveFile(req, res, p); return true }
     }
     const fallback = join(webDir, 'avatars', '01_robot.png')
-    if (existsSync(fallback)) { serveFile(res, fallback); return true }
+    if (existsSync(fallback)) { serveFile(req, res, fallback); return true }
     res.writeHead(404); res.end()
     return true
   }
