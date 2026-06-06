@@ -4994,6 +4994,10 @@ main {
 .activity-card.act-error   { border-left-color: #ef4444; }
 .activity-card.act-unknown { border-left-color: #eab308; }
 .activity-card.act-stopped { border-left-color: #6b7280; opacity: 0.7; }
+.activity-card.act-clickable { cursor: pointer; transition: background 0.15s, box-shadow 0.15s; }
+.activity-card.act-clickable:hover { background: var(--bg-card-hover, var(--bg-card)); box-shadow: 0 0 0 2px var(--accent); }
+.act-term-icon { color: var(--text-muted); flex-shrink: 0; opacity: 0.6; }
+.activity-card.act-clickable:hover .act-term-icon { opacity: 1; color: var(--accent); }
 .activity-card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .activity-name { font-weight: 600; font-size: 15px; display: flex; align-items: center; gap: 8px; }
 .act-main-badge {

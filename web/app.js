@@ -181,11 +181,18 @@ function renderActivity(entries) {
     const meta = ACTIVITY_STATE_META[a.state] || ACTIVITY_STATE_META.unknown
     const tail = (a.tail || []).map((l) => escapeHtml(l)).join('\n')
     const mainBadge = a.isMain ? '<span class="act-main-badge">fő</span>' : ''
+    const canOpen = !!a.running
+    const termIcon = canOpen
+      ? '<svg class="act-term-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" title="Terminal megnyitása"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>'
+      : ''
     return (
-      '<div class="activity-card ' + meta.cls + '">' +
+      '<div class="activity-card ' + meta.cls + (canOpen ? ' act-clickable' : '') + '" data-agent="' + escapeHtml(a.name) + '">' +
         '<div class="activity-card-head">' +
           '<span class="activity-name">' + escapeHtml(a.name) + mainBadge + '</span>' +
-          '<span class="activity-badge ' + meta.cls + '" title="' + escapeHtml(meta.tip || '') + '">' + meta.label + '</span>' +
+          '<span style="display:flex;align-items:center;gap:8px">' +
+            termIcon +
+            '<span class="activity-badge ' + meta.cls + '" title="' + escapeHtml(meta.tip || '') + '">' + meta.label + '</span>' +
+          '</span>' +
         '</div>' +
         (tail
           ? '<pre class="activity-tail">' + tail + '</pre>'
@@ -194,6 +201,17 @@ function renderActivity(entries) {
     )
   }).join('')
 }
+
+// Event delegation: clicking a running activity-card opens the terminal modal
+;(() => {
+  const actList = document.getElementById('activityList')
+  if (actList) {
+    actList.addEventListener('click', (e) => {
+      const card = e.target.closest('.activity-card.act-clickable[data-agent]')
+      if (card) openTerminalModal(card.dataset.agent)
+    })
+  }
+})()
 
 
 // ============================================================
