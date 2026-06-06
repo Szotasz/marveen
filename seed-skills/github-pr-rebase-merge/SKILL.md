@@ -16,7 +16,7 @@ description: Merge a stack of GitHub PRs sequentially when they share files and 
 
 Ha két PR (`A`, `B`) ugyanazt a fájlt módosítja, az egyik merge után a másik CONFLICTING lesz a GitHub UI-ban, és `gh pr merge B` elbukik. Külső forkhoz nem tudsz force-pusholni egy rebaselt változatot, szóval két opció marad:
 
-1. Koorbela/szerző rebaselje manuálisan és pusholja (lassú, emberfüggő)
+1. A szerző rebaselje manuálisan és pusholja (lassú, emberfüggő)
 2. **Lokálisan rebaseled, majd squash-mergeled main-be, és a PR-t manuálisan close-olod** -- ez a skill
 
 ## Eljárás

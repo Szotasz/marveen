@@ -93,7 +93,7 @@ mkdir -p ~/.claude/skills/$SKILL_NAME/references
 ### Step 5: Update Skill Index
 
 ```bash
-bash ~/ClaudeClaw/scripts/skill-index.sh
+bash scripts/skill-index.sh
 ```
 
 ### Step 6: Validate

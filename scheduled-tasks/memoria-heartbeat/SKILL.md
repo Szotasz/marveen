@@ -63,7 +63,7 @@ Lépések:
    - ...
    EOF
    ```
-4. Index regen: `bash ~/ClaudeClaw/scripts/skill-index.sh`
+4. Index regen: `bash {{INSTALL_DIR}}/scripts/skill-index.sh`
 
 **Ha kihagytad a skill akciót, pedig A/B/C valamelyike IGEN volt:** kötelezően írj `hot` tier memóriát "skip-skill: <konkrét ok>" tartalommal, hogy később lássuk miért. Ne csendben hagyd ki.
 

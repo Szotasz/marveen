@@ -18,12 +18,12 @@ description: Generate a HANDOFF.md context transfer document for session continu
 | Argument | Required | Description |
 |----------|----------|-------------|
 | `purpose` | YES | What the next session should do with this context |
-| `target` | no | Agent name (e.g. `target=samu`) -- sends via inter-agent message instead of writing file |
+| `target` | no | Agent name (e.g. `target=dev2`) -- sends via inter-agent message instead of writing file |
 | `output` | no | File path override (default: project root `HANDOFF.md`) |
 
 Examples:
 - `/handoff purpose="Continue the Pipedrive connector PR review and address CI failures"`
-- `/handoff purpose="Finish the scheduler forceSend implementation" target=samu`
+- `/handoff purpose="Finish the scheduler forceSend implementation" target=dev2`
 - `/handoff purpose="Debug the auth redirect loop" output=/tmp/handoff-auth.md`
 
 ## Procedure

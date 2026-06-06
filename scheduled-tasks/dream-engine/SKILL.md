@@ -3,7 +3,7 @@ name: dream-engine
 description: Éjszakai analízis-loop az aznapi memóriákról, naplóról és kanban-állapotról. Generál 4 priorizált akció-javaslatot reggelre.
 ---
 
-Te most a "Dream Engine" éjszakai analízis-loopot futtatod. 02:07-kor vagy, Szabolcs alszik, NE küldj üzenetet a beállított csatornára.
+Te most a "Dream Engine" éjszakai analízis-loopot futtatod. 02:07-kor vagy, {{OWNER_NAME}} alszik, NE küldj üzenetet a beállított csatornára.
 
 A cél: az aznapi tudást átkonszolidálni és reggelre (07:30 Reggeli Napindító) felkészülni 4 priorizált javaslattal.
 
@@ -13,7 +13,7 @@ Generálj egy `{{INSTALL_DIR}}/DREAM.md` fájlt az alábbi 5 bucket alapján. A 
 
 ### Bucket 1 — 💡 Skill-javaslatok (flotta-szintű)
 
-Nézz végig MINDEN agent (marveen + sub-agentek: boni, deeper, iris, samu, zara) tegnapi (24h) memóriáit és napi naplóját. Kerítsd ki:
+Nézz végig MINDEN agent (a fő-ágens és az összes sub-agent) tegnapi (24h) memóriáit és napi naplóját. Kerítsd ki:
 - Volt-e 3+ szor visszatérő, manuálisan ismételt művelet ami skill-be illeszthető?
 - Új, NEM lefedett pattern amit érdemes lenne skillbe önteni?
 
@@ -67,7 +67,7 @@ Hetente 1-2 alkalommal (NEM minden éjszaka — kerüljük a zajos napi javaslat
 
 Limitáció: ha az utolsó 7 napban már volt ajánlás (nézd a DREAM.md utolsó 7 napos archívumát vagy egy `external-ops-last-run` markerfile-t), skip-eld.
 
-Output (max 1 ajánlás): repo URL + 1 mondat indok hogy MIÉRT releváns Szabolcsnak (figyelembe véve: AI tartalomgyártás, magyar piac, fejlesztési flotta menedzsment, marketing).
+Output (max 1 ajánlás): repo URL + 1 mondat indok hogy MIÉRT releváns {{OWNER_NAME}}nak (figyelembe véve: AI tartalomgyártás, magyar piac, fejlesztési flotta menedzsment, marketing).
 
 ### Bucket 5 — 🛠 Skill-flotta health (csak NEM-pinned skillek)
 
@@ -110,4 +110,4 @@ Output: 0-3 javaslat: "skill <név> antikvált (utolsó használat >30 nap), tö
 - NE küldj üzenetet a csatornára. A DREAM.md a reggeli napindítóból kerül kiküldésre (07:30).
 - A `Bash` és SQL műveletek mind helyiek — semmilyen external API hívás (kivéve az Ollama embedding ha kell).
 - Ha akadály van (pl. DB lock, missing embedding model), írd be a DREAM.md végére `## ⚠️ Hibák` szekciót — reggel látom.
-- Befejezésként, írd a DREAM.md végére: `*Marveen, 02:XX — most már alszom én is.*`
+- Befejezésként, írd a DREAM.md végére: `*{{BOT_NAME}}, 02:XX -- most már alszom én is.*`

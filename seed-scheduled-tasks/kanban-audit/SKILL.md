@@ -14,7 +14,7 @@ Olvasd be: `jq -r '.categories[]|select(.key=="kanban_archive_done" or .key=="ka
 
 A két kategória szintje szabályozza a 2. és 4. lépést:
 - **`kanban_archive_done`** (2. lépés): level 3 → archiváld magától (alapért). level 2 → NE archiválj, Telegramon javasold ("X db 7+ napos done archiválásra vár, mehet?") és várj jóváhagyást. level 1 → csak jelezd a számot.
-- **`kanban_stuck_nudge`** (4. lépés): level 3 → pingeld az assignee-t magától, és CSAK 2 eredménytelen audit-kör után eszkalálj Szabihoz (a komment-történetből látod hányszor pingelted). level 2 → ne pingelj magadtól, Telegramon javasold Szabinak. level 1 → csak listázd a beakadt taskokat.
+- **`kanban_stuck_nudge`** (4. lépés): level 3 → pingeld az assignee-t magától, és CSAK 2 eredménytelen audit-kör után eszkalálj a tulajdonoshoz ({{OWNER_NAME}}) (a komment-történetből látod hányszor pingelted). level 2 → ne pingelj magadtól, Telegramon javasold a tulajdonosnak ({{OWNER_NAME}}). level 1 → csak listázd a beakadt taskokat.
 
 Ha a config hiányzik vagy a kulcs nincs benne → default level 3 (régi viselkedés).
 
