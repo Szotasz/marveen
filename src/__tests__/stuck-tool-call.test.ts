@@ -5,7 +5,7 @@ import {
   type StuckToolCallState,
   type StuckToolCallThresholds,
 } from '../pane-state.js'
-import { shouldDeferForRecentRespawn } from '../web/stuck-tool-call-watcher.js'
+import { shouldDeferForRecentRespawn, confirmsWedgeProfile } from '../web/stuck-tool-call-watcher.js'
 
 // Thresholds matching the production defaults in stuck-tool-call-watcher.ts.
 // Repeated here so the tests pin the contract independently of the wrapper
@@ -254,11 +254,19 @@ describe('stuck-tool-call-watcher wiring contract', () => {
     expect(parseInt(m![1]!, 10)).toBeGreaterThanOrEqual(2)
   })
 
-  it('the watcher hard-restarts only via hardRestartMarveenChannels', () => {
-    expect(watcherSrc).toMatch(/hardRestartMarveenChannels\(\)/)
-    // Defensive: must NOT call respawn-pane directly or kill processes.
-    expect(watcherSrc).not.toMatch(/respawn-pane/)
-    expect(watcherSrc).not.toMatch(/kill\(/)
+  it('recovers via the respawn-pane path (resumeMarveenSession), NOT the launchctl hard-restart (#248)', () => {
+    // #248: the launchctl hard-restart -> channels.sh -> `tmux kill-session`
+    // kicked the attached client ([exited]). Recovery now delegates to
+    // resumeMarveenSession (respawn-pane -k + pane-attribution reap), which
+    // replaces only the pane's claude and never kills the session.
+    expect(watcherSrc).toMatch(/resumeMarveenSession\(\)/)
+    // Import-level (comment-proof): the launchctl hard-restart is no longer
+    // wired into the watcher, so it cannot kick an attached client.
+    expect(watcherSrc).not.toMatch(/import[^\n]*hardRestartMarveenChannels/)
+  })
+
+  it('confirms the idle wedge profile before recovering (CPU-load false-positive guard, #248)', () => {
+    expect(watcherSrc).toMatch(/confirmsWedgeProfile\(/)
   })
 
   it('the watcher logs an audit line when it acts', () => {
@@ -303,5 +311,24 @@ describe('shouldDeferForRecentRespawn', () => {
     // 359s defers, 361s does not, with the default arg.
     expect(shouldDeferForRecentRespawn(now - 359_000, now)).toBe(true)
     expect(shouldDeferForRecentRespawn(now - 361_000, now)).toBe(false)
+  })
+})
+
+describe('confirmsWedgeProfile (#248 CPU-profile guard)', () => {
+  const MAX = 30
+
+  it('confirms the idle stdio-wedge profile (CPU ~0.3%, IO-wait)', () => {
+    expect(confirmsWedgeProfile(0.3, MAX)).toBe(true)
+    expect(confirmsWedgeProfile(0, MAX)).toBe(true)
+    expect(confirmsWedgeProfile(MAX, MAX)).toBe(true) // boundary inclusive
+  })
+
+  it('does NOT confirm when the process is still burning CPU (heavy work / starvation, not a wedge)', () => {
+    expect(confirmsWedgeProfile(31, MAX)).toBe(false)
+    expect(confirmsWedgeProfile(95.5, MAX)).toBe(false)
+  })
+
+  it('fails OPEN on a null sample (ps failed) -- never blocks recovery on a missing reading', () => {
+    expect(confirmsWedgeProfile(null, MAX)).toBe(true)
   })
 })

@@ -198,7 +198,14 @@ export function buildMainSessionRespawnCmd(opts: {
   ].join(' ')
 }
 
-function resumeMarveenSession(): boolean {
+// Exported so the stuck-tool-call-watcher recovers a wedged main session via
+// this respawn-pane path (reap + `tmux respawn-pane -k --continue`) INSTEAD of
+// the launchctl hard-restart. respawn-pane replaces only the claude process in
+// the pane: it does NOT `tmux kill-session`, so an attached client is never
+// kicked ([exited]) -- the #248 user-visible crash. It also runs the
+// pane-attribution detached-claude reap first, breaking the orphan->409->freeze
+// doom-loop that the launchctl path (channels.sh env-grep reap) never cleaned.
+export function resumeMarveenSession(): boolean {
   const provider = getProvider(getMainAgentProvider())
   try {
     // Reap any orphan bun/node poller BEFORE we respawn. tmux respawn-pane -k

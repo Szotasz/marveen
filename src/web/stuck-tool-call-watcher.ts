@@ -12,9 +12,14 @@
 //
 // Detection: parse the TUI's "<verb> for Ns" progress line; if the same
 // tag+seconds is observed across multiple polls AND the seconds value has
-// reached freezeSeconds, the tool-call is wedged. Recovery is a fresh
-// respawn (hardRestartMarveenChannels), which goes through channels.sh and
-// hence picks up all the existing safety nets (#231, #232, #234, #236).
+// reached freezeSeconds, the tool-call is wedged. Recovery (#248 fix) is the
+// respawn-pane path resumeMarveenSession() -- NOT the launchctl hard-restart.
+// `tmux respawn-pane -k` replaces only the pane's claude process: it does NOT
+// `tmux kill-session`, so an attached client is never kicked ([exited], the
+// #248 user-visible crash), and it runs the pane-attribution detached-claude
+// reap first (breaking the orphan->409->freeze doom-loop the env-grep reap on
+// the launchctl/channels.sh path never cleaned). A CPU-profile guard skips the
+// recovery unless the process matches the idle stdio-wedge profile.
 //
 // Critical guard (Marveen 2026-06-02 review): a legitimate long-running
 // tool-call (slow Anthropic inference, multi-stage research agent) MUST
@@ -32,16 +37,53 @@
 // and the respawn path (stopAgentProcess + startAgentProcess) is different.
 // Extend if a sub-agent case ever materialises.
 
+import { execFileSync } from 'node:child_process'
 import { logger } from '../logger.js'
+import { resolveFromPath } from '../platform.js'
 import { capturePane } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
-import { hardRestartMarveenChannels, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS } from './channel-monitor.js'
+import { resumeMarveenSession, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS } from './channel-monitor.js'
 import {
   stuckToolCallSignature,
   decideStuckToolCallRecovery,
   type StuckToolCallState,
   type StuckToolCallThresholds,
 } from '../pane-state.js'
+
+const TMUX = resolveFromPath('tmux')
+
+// CPU-profile guard (#248): the genuine wedge is a render loop blocked on stdio
+// -- CPU collapses to ~0.3% (IO-wait). A frozen "Worked for Ns" counter on a
+// process that is STILL BURNING CPU is not that wedge: it is a session doing
+// heavy synchronous work that just hasn't yielded to a TUI redraw. Only recover
+// when the process matches the idle wedge profile (CPU <= maxCpuPercent).
+// Fail-open: a null sample (ps failed) does NOT block recovery -- the
+// counter-stagnation signal stands on its own.
+const WEDGE_MAX_CPU_PERCENT = 30
+
+// Pure: does the sampled CPU% match the idle stdio-wedge profile? null (sample
+// failed) -> true (fail-open; do not block recovery on a missing sample).
+export function confirmsWedgeProfile(cpuPercent: number | null, maxCpuPercent: number): boolean {
+  if (cpuPercent === null) return true
+  return cpuPercent <= maxCpuPercent
+}
+
+// Recent CPU% of the main session's pane-leader claude (claudePid == panePid for
+// the main channels session). null on any failure (fail-open). `ps -o %cpu=` is
+// a recent decaying average on macOS/Linux -- enough to tell a 0.3% IO-wait
+// wedge from a process actively burning CPU.
+function sampleMainClaudeCpuPercent(session: string): number | null {
+  try {
+    const panePid = execFileSync(TMUX, ['list-panes', '-t', session, '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf-8' })
+      .split('\n')[0]?.trim()
+    if (!panePid || !/^\d+$/.test(panePid)) return null
+    const out = execFileSync('/bin/ps', ['-o', '%cpu=', '-p', panePid], { timeout: 3000, encoding: 'utf-8' }).trim()
+    const cpu = parseFloat(out)
+    return Number.isFinite(cpu) ? cpu : null
+  } catch {
+    return null
+  }
+}
 
 // Defaults chosen against the 2026-06-02 incident profile.
 //   - freezeSeconds = 180: long enough that a real slow Anthropic call
@@ -118,7 +160,20 @@ function checkSession(label: string, session: string): void {
     if (shouldDeferForRecentRespawn(lastRespawn, Date.now())) {
       logger.info(
         { label, session, sinceRespawnMs: lastRespawn ? Date.now() - lastRespawn : null, graceMs: MARVEEN_POST_RESPAWN_GRACE_MS },
-        'stuck-tool-call-watcher: recent respawn within grace, deferring hard-restart (avoid double-respawn / boot churn)',
+        'stuck-tool-call-watcher: recent respawn within grace, deferring recovery (avoid double-respawn / boot churn)',
+      )
+      return
+    }
+    // CPU-profile guard (#248): the genuine wedge is a render loop blocked on
+    // stdio (CPU ~0.3%, IO-wait). A counter that froze while the claude is still
+    // burning CPU is heavy synchronous work / render starvation, not the wedge
+    // -- respawning it is churn. Skip unless the process matches the idle
+    // profile. Fail-open on a null sample.
+    const cpuPercent = sampleMainClaudeCpuPercent(session)
+    if (!confirmsWedgeProfile(cpuPercent, WEDGE_MAX_CPU_PERCENT)) {
+      logger.info(
+        { label, session, cpuPercent, maxCpuPercent: WEDGE_MAX_CPU_PERCENT, seconds: next.lastSeconds },
+        'stuck-tool-call-watcher: counter stagnant but claude is CPU-active (not the idle wedge profile) -- deferring recovery',
       )
       return
     }
@@ -132,13 +187,21 @@ function checkSession(label: string, session: string): void {
         tag: next.tag,
         seconds: next.lastSeconds,
         stagnantPolls: next.stagnantPolls,
+        cpuPercent,
         thresholds: THRESHOLDS,
       },
-      'stuck-tool-call-watcher: TUI counter stagnant past freeze threshold, hard-restarting main channels session',
+      'stuck-tool-call-watcher: TUI counter stagnant past freeze threshold + idle wedge profile -- recovering main channels session (respawn-pane, no client-kick)',
     )
-    const result = hardRestartMarveenChannels()
-    if (!result.ok) {
-      logger.error({ label, session, error: result.error }, 'stuck-tool-call-watcher: hard restart failed')
+    // Recover via the respawn-pane path (resumeMarveenSession), NOT the launchctl
+    // hard-restart. respawn-pane -k replaces only the pane's claude process: no
+    // `tmux kill-session`, so an attached client is never kicked ([exited], the
+    // #248 user-visible crash). resumeMarveenSession also runs the
+    // pane-attribution detached-claude reap FIRST, breaking the
+    // orphan->409->freeze doom-loop that the launchctl/channels.sh env-grep reap
+    // never cleaned (the loop's launchctl path never reaped the main orphans).
+    const ok = resumeMarveenSession()
+    if (!ok) {
+      logger.error({ label, session }, 'stuck-tool-call-watcher: respawn-pane recovery failed')
     }
   }
 }
