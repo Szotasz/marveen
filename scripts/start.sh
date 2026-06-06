@@ -9,6 +9,8 @@ INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 if [ -f "$INSTALL_DIR/.env" ]; then
   SLUG="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
   BOT_NAME="$(grep -E '^BOT_NAME=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
+  GOOGLE_CLIENT_ID="$(grep -E '^GOOGLE_CLIENT_ID=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
+  GOOGLE_CLIENT_SECRET="$(grep -E '^GOOGLE_CLIENT_SECRET=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
 fi
 SLUG="${SLUG:-marveen}"
 
@@ -48,8 +50,15 @@ elif [ "$OS" = "Linux" ]; then
     echo $! > "$INSTALL_DIR/store/dashboard.pid"
     nohup bash "$INSTALL_DIR/scripts/channels.sh" > "$INSTALL_DIR/store/channels.log" 2>&1 &
     echo $! > "$INSTALL_DIR/store/channels.pid"
+    if [ -n "$GOOGLE_CLIENT_ID" ] && [ -n "$GOOGLE_CLIENT_SECRET" ]; then
+      GOOGLE_CLIENT_ID="$GOOGLE_CLIENT_ID" GOOGLE_CLIENT_SECRET="$GOOGLE_CLIENT_SECRET" \
+        MCP_TRANSPORT=http nohup /home/jocoo/.npm-global/bin/google-sheets-mcp \
+        > "$INSTALL_DIR/store/gsheets-mcp.log" 2>&1 &
+      echo $! > "$INSTALL_DIR/store/gsheets-mcp.pid"
+    fi
   fi
 fi
 
 echo "✓ Dashboard: http://localhost:3420"
 echo "✓ Csatorna inditva"
+[ -n "$GOOGLE_CLIENT_ID" ] && echo "✓ Google Sheets MCP: http://localhost:3000/mcp"
