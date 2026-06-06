@@ -9,22 +9,34 @@ import {
 
 // Helper: build a GitRunner from plain strings. Covers the common
 // "return this exact branch / status" fixtures without dragging in a
-// real git invocation.
-function makeGit(branch: string, porcelain = ''): GitRunner {
+// real git invocation. Upstream defaults to "origin/<branch>" so the
+// common case (a branch that tracks its remote) is the zero-config
+// fixture; pass an explicit '' to model a local-only branch.
+function makeGit(
+  branch: string,
+  porcelain = '',
+  upstream: string = branch.trim() && branch.trim() !== 'HEAD' ? `origin/${branch.trim()}` : '',
+): GitRunner {
   return {
     currentBranch: () => branch,
+    upstreamBranch: () => upstream,
     porcelainStatus: () => porcelain,
   }
 }
 
 describe('checkUpdatePreflight --happy path', () => {
-  it('returns ok when on main with a clean tree', () => {
+  it('returns ok on the deployment branch (develop) with a clean tree', () => {
+    const result = checkUpdatePreflight(makeGit('develop', ''))
+    expect(result.ok).toBe(true)
+  })
+
+  it('returns ok on main too (installations that track main)', () => {
     const result = checkUpdatePreflight(makeGit('main', ''))
     expect(result.ok).toBe(true)
   })
 
   it('ignores whitespace-only branch output', () => {
-    const result = checkUpdatePreflight(makeGit('  main  ', '   '))
+    const result = checkUpdatePreflight(makeGit('  develop  ', '   ', 'origin/develop'))
     expect(result.ok).toBe(true)
   })
 })
@@ -47,7 +59,7 @@ describe('checkUpdatePreflight --detached HEAD', () => {
 
   it('prioritises detached-HEAD over dirty-tree when both apply', () => {
     // If we are detached we do not want a "commit your changes" message,
-    // because the right next step is checkout main first.
+    // because the right next step is to check out a tracking branch.
     const result = checkUpdatePreflight(makeGit('HEAD', ' M src/web.ts\n'))
     expect(result.ok).toBe(false)
     if (result.ok) return
@@ -55,34 +67,33 @@ describe('checkUpdatePreflight --detached HEAD', () => {
   })
 })
 
-describe('checkUpdatePreflight --feature branch', () => {
-  it('rejects any branch name other than main', () => {
-    const result = checkUpdatePreflight(makeGit('v3-05-ui-trustfrom-picker'))
+describe('checkUpdatePreflight --no upstream', () => {
+  it('rejects a local-only branch with no upstream tracking ref', () => {
+    const result = checkUpdatePreflight(makeGit('v3-05-ui-trustfrom-picker', '', ''))
     expect(result.ok).toBe(false)
-    if (result.ok || result.reason !== 'not-on-main') {
-      throw new Error('expected not-on-main result')
+    if (result.ok || result.reason !== 'no-upstream') {
+      throw new Error('expected no-upstream result')
     }
     expect(result.branch).toBe('v3-05-ui-trustfrom-picker')
     expect(result.message).toContain("'v3-05-ui-trustfrom-picker'")
-    expect(result.message).toMatch(/git checkout main/)
+    expect(result.message).toMatch(/set-upstream-to=origin\/v3-05-ui-trustfrom-picker/)
   })
 
-  it('rejects "master" (a common misconfiguration)', () => {
-    const result = checkUpdatePreflight(makeGit('master'))
-    expect(result.ok).toBe(false)
-    if (result.ok) return
-    expect(result.reason).toBe('not-on-main')
+  it('accepts a feature branch that DOES track an upstream', () => {
+    // The guard is about "is there something to fast-forward from", not
+    // about the branch name. A branch tracking origin/feat-x updates from
+    // that ref; --ff-only is the final safety net if it cannot advance.
+    const result = checkUpdatePreflight(makeGit('feat-x', '', 'origin/feat-x'))
+    expect(result.ok).toBe(true)
   })
 
-  it('prioritises not-on-main over dirty-tree when both apply', () => {
-    // Switching to main first invalidates the dirty-tree check anyway
-    // (the modifications may or may not carry across branches), so the
-    // useful error message for the user is "switch branches", not
-    // "commit your changes on this branch".
-    const result = checkUpdatePreflight(makeGit('feature-x', ' M src/web.ts\n'))
+  it('prioritises no-upstream over dirty-tree when both apply', () => {
+    // With no upstream there is nothing to pull regardless of tree state,
+    // so the actionable message is "set an upstream", not "commit first".
+    const result = checkUpdatePreflight(makeGit('feature-x', ' M src/web.ts\n', ''))
     expect(result.ok).toBe(false)
     if (result.ok) return
-    expect(result.reason).toBe('not-on-main')
+    expect(result.reason).toBe('no-upstream')
   })
 })
 
@@ -127,15 +138,15 @@ describe('checkUpdatePreflight -- result shape', () => {
     expect(Object.hasOwn(result, 'branch')).toBe(false)
   })
 
-  it('only emits a branch field on the not-on-main path', () => {
+  it('only emits a branch field on the no-upstream path', () => {
     const detached = checkUpdatePreflight(makeGit(''))
     expect(Object.hasOwn(detached, 'branch')).toBe(false)
 
     const dirty = checkUpdatePreflight(makeGit('main', ' M x'))
     expect(Object.hasOwn(dirty, 'branch')).toBe(false)
 
-    const feature = checkUpdatePreflight(makeGit('feature-x'))
-    expect(Object.hasOwn(feature, 'branch')).toBe(true)
+    const noUpstream = checkUpdatePreflight(makeGit('feature-x', '', ''))
+    expect(Object.hasOwn(noUpstream, 'branch')).toBe(true)
   })
 })
 

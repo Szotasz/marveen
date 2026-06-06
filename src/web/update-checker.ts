@@ -50,6 +50,26 @@ export function parseGitHubRemote(): string {
   return 'Szotasz/marveen'
 }
 
+// Remote branch this checkout tracks, e.g. "develop" for an upstream of
+// "origin/develop". The dashboard polls GitHub for this branch's HEAD so
+// the "behind" count matches what update.sh would actually pull. Falls
+// back to "main" when there is no upstream (detached / local-only branch),
+// which keeps the badge working on a fresh clone before tracking is set.
+export function currentTrackingBranch(): string {
+  try {
+    const upstream = execFileSync(
+      '/usr/bin/git',
+      ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'],
+      { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' },
+    ).trim()
+    // "origin/develop" -> "develop"; keep slashes in branch names like
+    // "origin/feat/foo" -> "feat/foo" by dropping only the first segment.
+    const slash = upstream.indexOf('/')
+    if (slash >= 0 && slash < upstream.length - 1) return upstream.slice(slash + 1)
+  } catch { /* fall through */ }
+  return 'main'
+}
+
 export async function refreshUpdateStatus(): Promise<UpdateStatus> {
   const current = currentGitHead()
   const remote = parseGitHubRemote()
@@ -67,13 +87,15 @@ export async function refreshUpdateStatus(): Promise<UpdateStatus> {
     return status
   }
   try {
-    // 1) find HEAD of default branch (main) via the commits endpoint
-    const latestRes = await fetch(`https://api.github.com/repos/${remote}/commits/main`, {
+    // 1) find HEAD of the tracked branch via the commits endpoint. This
+    // is the branch update.sh fast-forwards from, not a hardcoded 'main'.
+    const branch = currentTrackingBranch()
+    const latestRes = await fetch(`https://api.github.com/repos/${remote}/commits/${encodeURIComponent(branch)}`, {
       headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'marveen-update-check' },
     })
-    if (!latestRes.ok) throw new Error(`GitHub /commits/main -> ${latestRes.status}`)
+    if (!latestRes.ok) throw new Error(`GitHub /commits/${branch} -> ${latestRes.status}`)
     const latestJson = await latestRes.json() as { sha?: string }
-    if (!latestJson.sha) throw new Error('No sha on commits/main response')
+    if (!latestJson.sha) throw new Error(`No sha on commits/${branch} response`)
     status.latest = latestJson.sha
 
     if (status.latest === current) {
@@ -111,8 +133,8 @@ export async function refreshUpdateStatus(): Promise<UpdateStatus> {
   return status
 }
 
-// Polls the GitHub repo's main branch for new commits and compares to the
-// local HEAD. Lets the dashboard show a "new version available" badge
+// Polls the GitHub repo's tracked branch for new commits and compares to
+// the local HEAD. Lets the dashboard show a "new version available" badge
 // without anyone having to SSH in and run update.sh.
 export function startUpdateChecker(): NodeJS.Timeout {
   // First check shortly after startup; then every 15 minutes.

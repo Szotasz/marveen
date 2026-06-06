@@ -86,27 +86,30 @@ echo ""
 echo -e "${BOLD}Marveen frissites...${NC} [$(date -u +%Y-%m-%dT%H:%M:%SZ)]"
 echo ""
 
-# Guard 1: refuse to run from a non-main branch.
-# 'git pull --ff-only origin main' below would exit non-zero on any
-# branch whose tip is not an ancestor of origin/main -- for example
-# every feature branch whose PR was squash-merged upstream. Because
-# the dashboard launches this script detached with stdio: 'ignore',
-# that exit is invisible to the operator: the UI silently reloads on
-# the same pending-commit list. Same guard also exists server-side
-# in /api/updates/apply as a 409 pre-check; this is defense-in-depth
-# for manual invocations.
+# Guard 1: refuse to run without an upstream tracking branch.
+# The pull below is a bare 'git pull --ff-only', which fast-forwards the
+# current branch from its configured upstream (@{u}). A detached HEAD or a
+# local-only branch with no upstream has nothing to pull, and the pull
+# would exit non-zero. Because the dashboard launches this script detached
+# with stdio: 'ignore', that exit is invisible to the operator: the UI
+# silently reloads on the same pending-commit list. The same guard exists
+# server-side in /api/updates/apply as a 409 pre-check; this is
+# defense-in-depth for manual invocations.
+#
+# Note: this deliberately does NOT require the branch be named 'main'. The
+# deployment tracks whatever release branch it was installed from (here
+# 'develop'); the update follows that branch's upstream.
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 if [ "$CURRENT_BRANCH" = "HEAD" ] || [ -z "$CURRENT_BRANCH" ]; then
   echo -e "${RED}HIBA:${NC} A repo detached-HEAD allapotban van."
-  echo "       Allj at a main branchre, majd indithatod ujra a frissitest:"
-  echo "         git checkout main"
+  echo "       Allj at egy kovetett branchre, majd indithatod ujra a frissitest."
   exit 2
 fi
-if [ "$CURRENT_BRANCH" != "main" ]; then
-  echo -e "${RED}HIBA:${NC} A jelenlegi branch '${CURRENT_BRANCH}', nem 'main'."
-  echo "       A 'git pull --ff-only origin main' csak a main branchrol fut tisztan."
-  echo "       Allj at elobb a main branchre:"
-  echo "         git checkout main"
+UPSTREAM_BRANCH=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || echo "")
+if [ -z "$UPSTREAM_BRANCH" ]; then
+  echo -e "${RED}HIBA:${NC} A '${CURRENT_BRANCH}' branchnek nincs upstream kovetett branche."
+  echo "       Nincs honnan fast-forwardolni. Allitsd be:"
+  echo "         git branch --set-upstream-to=origin/${CURRENT_BRANCH}"
   exit 2
 fi
 
@@ -146,9 +149,10 @@ fi
 # Save current version
 OLD_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
-# Pull latest
-echo -e "  Letoltes..."
-git pull --ff-only origin main
+# Pull latest. Bare --ff-only follows the current branch's upstream
+# (@{u} = ${UPSTREAM_BRANCH}), so no remote/branch is hardcoded here.
+echo -e "  Letoltes (${UPSTREAM_BRANCH})..."
+git pull --ff-only
 NEW_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
 if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then

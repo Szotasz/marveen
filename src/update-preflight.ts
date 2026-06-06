@@ -24,6 +24,13 @@
 export interface GitRunner {
   // Current branch name. "HEAD" (or empty) signals a detached checkout.
   currentBranch(): string
+  // Upstream tracking ref of the current branch, e.g. "origin/develop".
+  // Empty when the branch has no configured upstream (a local-only,
+  // ad-hoc branch). This is what `git pull --ff-only` follows, so it is
+  // the authoritative signal for "is this checkout safe to fast-forward".
+  // Implementations return '' on the `git rev-parse @{u}` error path
+  // rather than throwing.
+  upstreamBranch(): string
   // Porcelain status excluding untracked files. Non-empty = dirty tree.
   // Untracked files are excluded because the repo legitimately carries
   // ad-hoc backup files (CLAUDE.md.backup-*, SOUL.md mid-edit, etc.)
@@ -33,7 +40,7 @@ export interface GitRunner {
 
 export type PreflightResult =
   | { ok: true }
-  | { ok: false; reason: 'not-on-main'; branch: string; message: string }
+  | { ok: false; reason: 'no-upstream'; branch: string; message: string }
   | { ok: false; reason: 'dirty-tree'; message: string }
   | { ok: false; reason: 'detached-head'; message: string }
 
@@ -115,8 +122,6 @@ export function checkNoConcurrentUpdate(pf: PidfileRunner): ConcurrencyResult {
   }
 }
 
-const EXPECTED_BRANCH = 'main'
-
 export function checkUpdatePreflight(git: GitRunner): PreflightResult {
   const branch = git.currentBranch().trim()
 
@@ -128,19 +133,27 @@ export function checkUpdatePreflight(git: GitRunner): PreflightResult {
       ok: false,
       reason: 'detached-head',
       message:
-        'Repository is in a detached-HEAD state. Check out main before updating: git checkout main',
+        'Repository is in a detached-HEAD state. Check out a tracking branch before updating.',
     }
   }
 
-  if (branch !== EXPECTED_BRANCH) {
+  // The update follows the branch's upstream tracking ref (update.sh runs
+  // a bare `git pull --ff-only`, which pulls from @{u}). A branch with no
+  // upstream -- a local-only, ad-hoc feature branch -- has nothing to
+  // fast-forward from, so refuse rather than let update.sh fail invisibly.
+  // This deliberately does NOT hardcode 'main': the deployment branch is
+  // whatever the checkout tracks (here 'develop'), and any installation
+  // that tracks its own release branch is updated from that branch.
+  const upstream = git.upstreamBranch().trim()
+  if (!upstream) {
     return {
       ok: false,
-      reason: 'not-on-main',
+      reason: 'no-upstream',
       branch,
       message:
-        `Cannot update from branch '${branch}'. ` +
-        `'git pull --ff-only origin main' cannot fast-forward a feature branch. ` +
-        `Switch to main first: git checkout main`,
+        `Branch '${branch}' has no upstream tracking branch, so there is ` +
+        `nothing to fast-forward from. Set one with: ` +
+        `git branch --set-upstream-to=origin/${branch}`,
     }
   }
 

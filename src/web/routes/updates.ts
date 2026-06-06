@@ -124,6 +124,20 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
         ['rev-parse', '--abbrev-ref', 'HEAD'],
         { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' },
       ),
+      // Returns '' when the branch has no upstream: `git rev-parse @{u}`
+      // exits non-zero in that case, which execFileSync throws on. The
+      // preflight treats an empty upstream as the no-upstream block.
+      upstreamBranch: () => {
+        try {
+          return execFileSync(
+            '/usr/bin/git',
+            ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'],
+            { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' },
+          )
+        } catch {
+          return ''
+        }
+      },
       porcelainStatus: () => execFileSync(
         '/usr/bin/git',
         ['status', '--porcelain', '--untracked-files=no'],
@@ -144,7 +158,7 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
     if (!preflight.ok) {
       // dirty-tree + autoStash=true: skip the dashboard-side block and let
       // update.sh handle the stash+pop. Other failure reasons (detached HEAD,
-      // not-on-main, …) still hard-block since stash cannot rescue them.
+      // no-upstream, …) still hard-block since stash cannot rescue them.
       const skipForAutoStash = preflight.reason === 'dirty-tree' && autoStash
       if (!skipForAutoStash) {
         releaseLock()
@@ -152,7 +166,7 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
           error: preflight.message,
           reason: preflight.reason,
         }
-        if (preflight.reason === 'not-on-main') body.branch = preflight.branch
+        if (preflight.reason === 'no-upstream') body.branch = preflight.branch
         json(res, body, 409)
         return true
       }
