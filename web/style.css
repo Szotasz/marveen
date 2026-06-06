@@ -132,6 +132,8 @@ body {
   }
   .sidebar-backdrop.open { opacity: 1; pointer-events: auto; }
   main { max-width: 100%; padding: 16px 14px 48px; overflow-x: hidden; }
+  .activity-list { grid-template-columns: 1fr; }
+  .activity-tail { max-height: clamp(140px, 35vh, 320px); }
 }
 .sidebar-brand {
   display: flex;
@@ -4980,7 +4982,12 @@ main {
 /* === Activity (live agent status) === */
 .activity-meta { display: flex; align-items: center; }
 .activity-updated { font-size: 12px; color: var(--text-muted); }
-.activity-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+.activity-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 400px), 1fr));
+  gap: 16px;
+  align-items: start;
+}
 .activity-empty { color: var(--text-muted); font-size: 14px; }
 .activity-card {
   border: 1px solid var(--border);
@@ -5021,7 +5028,8 @@ main {
 .activity-tail {
   margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
   line-height: 1.45; color: var(--text-muted); white-space: pre-wrap; word-break: break-word;
-  max-height: 160px; overflow: auto; background: var(--bg-subtle, rgba(127,127,127,0.06));
+  max-height: clamp(200px, 28vh, 480px); overflow: auto;
+  background: var(--bg-subtle, rgba(127,127,127,0.06));
   border-radius: 6px; padding: 8px 10px;
 }
 .activity-tail-empty { margin: 0; font-size: 12px; color: var(--text-muted); font-style: italic; }
