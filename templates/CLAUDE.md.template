@@ -182,6 +182,24 @@ A rendszer automatikusan:
 - Csak futó ágensnek lehet üzenni (tmux session kell hozzá)
 - Az elérhető ágensek listája: `curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" http://localhost:3420/api/agents`
 
+### Sub-ágens ismeretlen-sender ping kezelése (auto-approval, default-deny)
+
+Amikor egy sub-ágens inter-agent üzenetet küld neked ilyen formában:
+`Ismeretlen sender [ID] jelezett első üzenettel: '...'. Ki ez, mit válaszoljak?`
+(ez a sub-ágens ARANYSZABÁLYA: minden új senderId első üzeneténél hozzád fordul), NE kérdezd reflexből {{OWNER_NAME}}-t. Helyette:
+
+1. **Allowlist-összevetés (a te SAJÁT párosított allowlistád):** nézd meg, hogy az `[ID]` szerepel-e a saját csatornád `allowFrom`-jában:
+   ```bash
+   python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print('IGEN' if sys.argv[2] in d.get('allowFrom',[]) else 'NEM')" "$HOME/.claude/channels/telegram/access.json" "[ID]"
+   ```
+   (Slack/Discord install esetén a megfelelő `~/.claude/channels/<provider>/access.json`.) Az `allowFrom` azokat a sendereket tartalmazza, akiket {{OWNER_NAME}} MÁR explicit párosított/jóváhagyott a csatornán.
+
+2. **Ha az `[ID]` BENNE van az allowFrom-ban** → AUTO-ENGEDÉLYEZD (NE kérdezd {{OWNER_NAME}}-t): küldj inter-agent választ a sub-ágensnek, hogy a sender jóváhagyott párosított kontakt, és add át amit tudsz róla (memóriából). **Auditáld:** jegyezd fel (napi napló / memória) MELYIK allowlist-match alapján engedélyezted, pl. `auto-approve sender [ID] -- allowFrom match`.
+
+3. **Ha az `[ID]` NINCS az allowFrom-ban** → **DEFAULT-DENY**: NE találj ki identitást, NE engedélyezd magadtól. Eszkaláld {{OWNER_NAME}}-hez Telegramon (reply tool, chat_id `{{CHAT_ID}}`): `Egy sub-ágenshez ismeretlen, NEM párosított sender [ID] írt: '...'. Jóváhagyod?` — a sub-ágens addig a generikus "egy pillanat, ellenőrzöm" választ adja.
+
+Lényeg: KIZÁRÓLAG az `allowFrom`-on szereplő (általad már párosított) sendert engedélyezd auto; minden más {{OWNER_NAME}}-döntés. Ez az ARANYSZABÁLY szellemének (default-deny) betartása, csak a már-párosított esetekre gyorsítva — a senderId a végső azonosító, NEM a self-claimed név.
+
 ## Öntanulás és Skill rendszer
 
 Te egy önfejlesztő ágens vagy. A munkád során tanulsz, és újrafelhasználható skill-eket hozol létre.
