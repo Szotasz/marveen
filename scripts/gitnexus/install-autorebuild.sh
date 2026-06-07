@@ -59,14 +59,30 @@ $END"
 
 mkdir -p "$REPO/.git/hooks"
 
+# Pure-shell in-place replace of the managed block (no awk -- BSD/macOS awk
+# rejects a multi-line value passed via -v). Emits the fresh BLOCK at the old
+# block's position and preserves everything outside the markers.
+replace_managed_block() {  # reads $HOOK on stdin -> stdout
+  in_block=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$line" = "$BEGIN" ]; then
+      printf '%s\n' "$BLOCK"
+      in_block=1
+      continue
+    fi
+    if [ "$line" = "$END" ]; then
+      in_block=0
+      continue
+    fi
+    [ "$in_block" = 1 ] && continue
+    printf '%s\n' "$line"
+  done
+}
+
 if [ -f "$HOOK" ] && grep -qF "$BEGIN" "$HOOK"; then
   # Replace the existing managed block in place (preserve surrounding content).
   tmp="$(mktemp)"
-  awk -v b="$BEGIN" -v e="$END" -v repl="$BLOCK" '
-    $0==b {print repl; skip=1; next}
-    $0==e {skip=0; next}
-    skip!=1 {print}
-  ' "$HOOK" >"$tmp"
+  replace_managed_block < "$HOOK" >"$tmp"
   mv "$tmp" "$HOOK"
   echo "Updated gitnexus-autorebuild block in $HOOK"
 elif [ -f "$HOOK" ]; then
