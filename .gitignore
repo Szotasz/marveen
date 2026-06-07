@@ -52,3 +52,6 @@ claudeclaw.log
 
 # Local backup archives from scripts/backup.sh
 backups/
+
+# GitNexus knowledge-graph index (local, per-clone; auto-rebuilt by the post-commit hook)
+.gitnexus/
