@@ -61,3 +61,7 @@ backups/
 DREAM.md
 .external-ops-last-run
 REBUILD_PROMPT_V3.1.md
+
+# Python bytecode cache
+__pycache__/
+*.pyc
