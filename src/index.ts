@@ -475,7 +475,7 @@ async function main(): Promise<void> {
   // Web dashboard
   webServer = startWebServer(WEB_PORT)
 
-  logger.info(`ClaudeClaw Lite fut! Dashboard: http://localhost:${WEB_PORT}`)
+  logger.info(`Marveen fut! Dashboard: http://localhost:${WEB_PORT}`)
   logger.info('Telegram kommunikacio: Claude Code Channels kezeli')
 }
 

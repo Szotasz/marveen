@@ -20,7 +20,7 @@ const warn = (label: string, detail?: string) =>
 const fail = (label: string, detail?: string) =>
   console.log(`  ${RED}✗${RESET} ${label}${detail ? ` — ${detail}` : ''}`)
 
-console.log(`\n${BOLD}ClaudeClaw Allapot${RESET}\n`)
+console.log(`\n${BOLD}Marveen Allapot${RESET}\n`)
 
 // Node.js
 const nodeVersion = process.version

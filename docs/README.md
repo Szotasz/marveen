@@ -1,4 +1,4 @@
-# Marveen / ClaudeClaw — Funkció-dokumentáció
+# Marveen — Funkció-dokumentáció
 
 Marveen egy önfejlesztő, proaktív AI-asszisztens rendszer Claude Code alapokon. Nem chatbot: ügynök-flotta, amely magától észreveszi a tennivalót, emlékszik, tanul, és a háttérben dolgozik.
 

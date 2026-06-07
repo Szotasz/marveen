@@ -1,5 +1,5 @@
 #!/bin/bash
-# ClaudeClaw - Ertesites kuldes Telegram-ra
+# Marveen - Ertesites kuldes Telegram-ra
 # Hasznalat: ./scripts/notify.sh "Uzenet szovege"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

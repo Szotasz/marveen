@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ClaudeClaw backup.
+# Marveen backup.
 #
 # The archive has two top-level groups so a restore is unambiguous about
 # where each file belongs (see docs/MIGRATION.md):
@@ -112,7 +112,7 @@ fi
 
 # --- Manifest (stored at the archive root for self-description). -----------
 {
-  echo "ClaudeClaw backup ${STAMP}"
+  echo "Marveen backup ${STAMP}"
   echo "host: $(hostname 2>/dev/null || echo '?')   user: ${USER:-?}   home: ${HOME}"
   echo "repo root: ${REPO_ROOT}"
   echo "Restore: tar -xpzf <archive> -C <tmp>; copy repo/* -> project root, home/* -> \$HOME."

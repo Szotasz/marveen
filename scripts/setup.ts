@@ -43,7 +43,7 @@ const BANNER = `
 
 async function main() {
   console.log(BANNER)
-  header('Udvozol a ClaudeClaw telepito!')
+  header('Udvozol a Marveen telepito!')
   console.log('Ez a varazslo vegigvezet a beallitasokon.\n')
 
   // --- Kovetelmeny ellenorzes ---
@@ -164,7 +164,7 @@ async function main() {
 
   // .env iras
   header('4. .env fajl irasa')
-  let envContent = '# ClaudeClaw konfiguracio\n'
+  let envContent = '# Marveen konfiguracio\n'
   for (const [key, value] of Object.entries(config)) {
     envContent += `${key}=${value}\n`
   }
@@ -248,7 +248,7 @@ async function main() {
       const servicePath = join(serviceDir, 'claudeclaw.service')
 
       const service = `[Unit]
-Description=ClaudeClaw AI Asszisztens
+Description=Marveen AI Asszisztens
 After=network.target
 
 [Service]
@@ -298,7 +298,7 @@ WantedBy=default.target`
 
   // Kész
   header('Kesz!')
-  ok('ClaudeClaw sikeresen telepitve!')
+  ok('Marveen sikeresen telepitve!')
   console.log('')
   console.log('Kovetkezo lepesek:')
   console.log(`  1. Ha nem adtad meg a chat ID-t: kuldj /chatid-t a botnak`)

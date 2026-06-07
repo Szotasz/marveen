@@ -141,7 +141,7 @@ function triggerMarveenMemorySave(): void {
   const prompt = [
     '[SYSTEM: channels recovery] A csatorna plugin nem reagal, kb 60 masodperc',
     `mulva hard restart lesz a ${MAIN_CHANNELS_SESSION} session-on (a beszelgetes elveszik).`,
-    'MOST mentsd el a ClaudeClaw memoriaba amit a kovetkezo sessionnek tudnia kell:',
+    'MOST mentsd el a Marveen memoriaba amit a kovetkezo sessionnek tudnia kell:',
     'aktiv feladatok (category hot), friss dontesek/preferenciak (warm), tanulsagok (cold).',
     'Hasznald: curl -s -X POST http://localhost:3420/api/memories ... (lasd CLAUDE.md).',
     'Ha kesz vagy, irj egy rovid napi naplo bejegyzest is a /api/daily-log-ra. Utana eleg.',

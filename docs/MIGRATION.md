@@ -1,6 +1,6 @@
 # Migration runbook — moving the fleet to a new machine
 
-Goal: move the whole ClaudeClaw / Marveen fleet to a stronger host with **zero
+Goal: move the whole Marveen fleet to a stronger host with **zero
 data loss** and minimal downtime. Read this end to end before starting.
 
 The single most important rule: **ONE BOT = ONE POLLER.** A Telegram/Slack bot
