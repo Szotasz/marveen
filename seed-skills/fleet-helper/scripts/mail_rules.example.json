@@ -1,0 +1,14 @@
+{
+  "_comment": "Copy to mail_rules.json (keep it OUT of version control) and fill with YOUR real values. All matching is case-insensitive substring (senders/important) or word-boundary (spam).",
+  "important_senders": [
+    "boss@work.example",
+    "school@kids.example",
+    "billing@bank.example"
+  ],
+  "important_keywords": [
+    "invoice", "deadline", "payment", "tax", "school", "appointment"
+  ],
+  "spam_keywords": [
+    "newsletter", "unsubscribe", "promo", "sale", "discount", "marketing"
+  ]
+}

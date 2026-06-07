@@ -1,0 +1,7 @@
+# Local secrets / personal data - never commit
+mail_rules.json
+.dashboard-token
+
+# Python
+__pycache__/
+*.pyc
