@@ -12,7 +12,8 @@ After each commit it runs an **incremental** `gitnexus analyze --skip-agents-md`
 - it runs in the **background** → the commit returns instantly,
 - a **single-flight lock** (`.gitnexus/.autorebuild.lock`) prevents rapid commits
   from piling up (if a rebuild is running, the commit is skipped and the next
-  incremental pass catches up),
+  incremental pass catches up); a **stale-lock guard** reclaims the lock if it is
+  older than 15 min, so a `kill -9` mid-rebuild can't permanently disable rebuilds,
 - `--skip-agents-md` keeps the working tree clean (only the gitignored
   `.gitnexus/` graph changes; `AGENTS.md` / `CLAUDE.md` are not touched).
 

@@ -41,6 +41,11 @@ BLOCK="$BEGIN
   mkdir -p \"\$ROOT/.gitnexus\" 2>/dev/null || exit 0
   LOCK=\"\$ROOT/.gitnexus/.autorebuild.lock\"
   LOG=\"\$ROOT/.gitnexus/autorebuild.log\"
+  # Stale-lock guard: a kill -9 mid-rebuild can orphan the lock dir, which would
+  # then skip every future rebuild. If the lock is older than 15 min, reclaim it.
+  if [ -d \"\$LOCK\" ] && [ -n \"\$(find \"\$LOCK\" -maxdepth 0 -mmin +15 2>/dev/null)\" ]; then
+    rmdir \"\$LOCK\" 2>/dev/null || true
+  fi
   # Single-flight: if a rebuild is already running, skip -- the next commit's
   # incremental pass catches up. mkdir is atomic across processes.
   mkdir \"\$LOCK\" 2>/dev/null || exit 0
