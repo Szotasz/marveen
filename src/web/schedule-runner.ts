@@ -37,6 +37,7 @@ import {
 } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { sendTelegramMessage } from './telegram.js'
+import { runCommandTask } from './command-task.js'
 
 const TMUX = resolveFromPath('tmux')
 
@@ -318,6 +319,17 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // Prevent double-firing: skip if already ran within the catch-up window
       const lastRun = scheduleLastRun.get(task.name) || 0
       if (now - lastRun < catchUp) continue
+
+      // type='command' tasks run a raw shell command directly -- no LLM, no
+      // tmux, no target agent. They self-manage failure streaks + Telegram
+      // alerts. Record the run time like a fired task so the catch-up window
+      // does not double-run them on a dashboard restart.
+      if (task.type === 'command') {
+        runCommandTask(task, now)
+        scheduleLastRun.set(task.name, now)
+        persistScheduleLastRun()
+        continue
+      }
 
       let targetAgents: string[]
 
