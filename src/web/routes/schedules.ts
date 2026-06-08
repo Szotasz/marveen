@@ -17,6 +17,7 @@ import {
   SCHEDULED_TASKS_DIR, MAX_SCHEDULED_TASK_PROMPT_LEN,
   listScheduledTasks, writeScheduledTask,
 } from '../scheduled-tasks-io.js'
+import { runScheduledTaskNow } from '../schedule-runner.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleSchedules(ctx: RouteContext): Promise<boolean> {
@@ -202,6 +203,20 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
     logger.info({ name, enabled: newEnabled }, 'Scheduled task toggled')
     json(res, { ok: true, enabled: newEnabled })
+    return true
+  }
+
+  // Fire a scheduled task immediately, regardless of its cron schedule. The
+  // runner auto-starts the target agent if it is down and queues delivery.
+  const scheduleRunMatch = path.match(/^\/api\/schedules\/([^/]+)\/run$/)
+  if (scheduleRunMatch && method === 'POST') {
+    const name = decodeURIComponent(scheduleRunMatch[1])
+    const dir = join(SCHEDULED_TASKS_DIR, name)
+    if (!existsSync(dir)) { json(res, { error: 'Schedule not found' }, 404); return true }
+    const result = runScheduledTaskNow(name)
+    if (!result.ok) { json(res, { error: result.error }, 400); return true }
+    logger.info({ name, result: result.result }, 'Scheduled task run-now fired')
+    json(res, { ok: true, result: result.result })
     return true
   }
 

@@ -3598,6 +3598,9 @@ function renderScheduleList(tasks) {
         </div>
       </div>
       <div class="schedule-actions">
+        <button class="btn-icon" data-action="run" title="Futtatás most">
+          ${playIcon()}
+        </button>
         <button class="btn-icon" data-action="toggle" title="${task.enabled ? 'Szüneteltetés' : 'Folytatás'}">
           ${task.enabled ? pauseIcon() : playIcon()}
         </button>
@@ -3614,6 +3617,15 @@ function renderScheduleList(tasks) {
     })
 
     // Action buttons
+    // Run now: fire the task immediately regardless of its cron schedule.
+    row.querySelector('[data-action="run"]').addEventListener('click', async (e) => {
+      e.stopPropagation()
+      try {
+        const res = await fetch(`/api/schedules/${encodeURIComponent(task.name)}/run`, { method: 'POST' })
+        showToast(res.ok ? 'Feladat elindítva' : 'Nem sikerült elindítani')
+      } catch { showToast('Hiba történt') }
+    })
+
     row.querySelector('[data-action="toggle"]').addEventListener('click', async (e) => {
       e.stopPropagation()
       try {

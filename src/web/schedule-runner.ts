@@ -35,6 +35,7 @@ import {
   isAgentRunning,
   isSessionReadyForPrompt,
   sendPromptToSession,
+  startAgentProcess,
 } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { sendTelegramMessage } from './telegram.js'
@@ -83,10 +84,20 @@ function persistScheduleLastRun(): void {
   }
 }
 
+// Bound runaway retries so a permanently-busy task -- or one whose agent is
+// auto-started but never reaches a ready state -- cannot spin (and relaunch
+// its agent) forever. After this many attempts the pending retry is dropped.
+const MAX_RETRY_ATTEMPTS = 15
+
 // Try to fire a task at a single target agent. Returns the outcome so the
 // caller can decide whether to queue a retry. Splitting this out means the
 // pendingTaskRetries loop and the normal cron loop share one code path.
-function attemptFireTask(task: ScheduledTask, agentName: string, now: number): 'fired' | 'busy' | 'missing' | 'error' {
+//   fired    -> prompt delivered
+//   busy     -> session up but not ready; retry later
+//   starting -> session was down, agent auto-started; deliver on a later retry
+//   missing  -> session down and auto-start failed; skip this tick
+//   error    -> unexpected failure
+function attemptFireTask(task: ScheduledTask, agentName: string, now: number): 'fired' | 'busy' | 'missing' | 'starting' | 'error' {
   const isMainAgent = agentName === MAIN_AGENT_ID
   // Allow per-task session override via targetSession config field.
   // Falls back to the standard agent session name derivation.
@@ -101,8 +112,20 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number): '
   } catch { /* no tmux */ }
 
   if (!sessionExists) {
-    logger.warn({ task: task.name, agent: agentName, session }, 'Schedule target session not running, skipping')
-    return 'missing'
+    // Auto-start the agent so a scheduled run is not silently skipped just
+    // because the agent happened to be down. The tmux session is created
+    // synchronously, but the LLM inside needs a few seconds to boot -- so we
+    // return 'starting' and the caller queues a pending retry that delivers
+    // the prompt once the session is ready. startAgentProcess no-ops when the
+    // agent is already running, so retries cannot double-launch it. A failed
+    // start falls back to 'missing' (skip this tick).
+    logger.info({ task: task.name, agent: agentName, session }, 'Schedule target session not running, auto-starting agent')
+    const start = startAgentProcess(agentName)
+    if (!start.ok) {
+      logger.warn({ task: task.name, agent: agentName, session, error: start.error }, 'Schedule auto-start failed, skipping tick')
+      return 'missing'
+    }
+    return 'starting'
   }
 
   // When forceSend is true, skip the busy-state check entirely and inject
@@ -255,6 +278,46 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
   })()
 }
 
+// Fire a scheduled task immediately, ignoring its cron schedule -- the engine
+// behind the dashboard "Run now" button and POST /api/schedules/:name/run.
+// command tasks run inline; LLM tasks go through attemptFireTask, so a stopped
+// agent is auto-started and the delivery is queued as a pending retry. Unlike
+// the cron loop, a manual run ALWAYS wants delivery, so we do NOT consult
+// skipIfBusy here -- an explicit run must not be silently dropped.
+export function runScheduledTaskNow(taskName: string): { ok: boolean; result?: string; error?: string } {
+  const task = listScheduledTasks().find(t => t.name === taskName)
+  if (!task) return { ok: false, error: 'Schedule not found' }
+  if (!task.enabled) return { ok: false, error: 'Schedule is disabled' }
+
+  const now = Date.now()
+  if (task.type === 'command') {
+    try {
+      runCommandTask(task, now)
+      scheduleLastRun.set(task.name, now)
+      persistScheduleLastRun()
+      return { ok: true, result: 'command task executed' }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  const targets = task.agent === 'all'
+    ? [MAIN_AGENT_ID, ...listAgentNames().filter(a => isAgentRunning(a))]
+    : [task.agent || MAIN_AGENT_ID]
+
+  const summary: string[] = []
+  for (const agentName of targets) {
+    const result = attemptFireTask(task, agentName, now)
+    // An auto-started ('starting') or busy session both get a queued retry
+    // that lands once the session is ready.
+    if (result === 'starting' || result === 'busy') {
+      insertPendingTaskRetryIfNew(task.name, agentName, now, result)
+    }
+    summary.push(`${agentName}: ${result}`)
+  }
+  return { ok: true, result: summary.join(', ') }
+}
+
 export function startScheduleRunner(): NodeJS.Timeout {
   // Reload the persisted last-run times so a restart inside a task's catch-up
   // window does not re-fire an already-run task.
@@ -288,6 +351,13 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // while the retry sat in the queue, drop the retry so a long-stuck
       // task doesn't surprise-fire the moment the session frees up.
       if (!taskDef.enabled) {
+        deletePendingTaskRetry(row.task_name, row.agent_name)
+        continue
+      }
+      // Bound runaway retries so a permanently-busy task cannot spin forever
+      // (nor, via the 'starting' auto-start, perpetually relaunch its agent).
+      if (row.attempt_count >= MAX_RETRY_ATTEMPTS) {
+        logger.warn({ task: row.task_name, agent: row.agent_name, attempts: row.attempt_count }, 'Scheduled task retry gave up after max attempts')
         deletePendingTaskRetry(row.task_name, row.agent_name)
         continue
       }
@@ -347,7 +417,13 @@ export function startScheduleRunner(): NodeJS.Timeout {
         // the retry handler -- don't re-queue or double-fire.
         if (pendingKeys.has(key)) continue
         const result = attemptFireTask(task, agentName, now)
-        if (result === 'busy') {
+        if (result === 'starting') {
+          // Agent was auto-started this tick. ALWAYS enqueue the retry that
+          // delivers the prompt once the session is ready -- skipIfBusy must
+          // NOT drop it (that flag is for genuinely-busy short-cadence tasks;
+          // here we deliberately woke the agent for its scheduled run).
+          insertPendingTaskRetryIfNew(task.name, agentName, now, 'starting')
+        } else if (result === 'busy') {
           if (task.skipIfBusy) {
             // Opt-in skip for short-cadence tasks (e.g. 30-min heartbeats):
             // a single missed tick is harmless because the next one is
