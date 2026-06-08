@@ -1,0 +1,8 @@
+{
+  "schedule": "0 0 30 2 *",
+  "enabled": false,
+  "type": "task",
+  "skipIfBusy": false,
+  "createdAt": 0,
+  "_comment": "Trigger-only AI review. Fired by the email-watch task via run-now (POST /api/schedules/email-ai-review/run) when a new ai_analysis mail arrives -- not on a clock. The Feb-30 cron never matches, so there is no time-based run. `agent` is omitted, so it targets the main agent; set it to a specific agent if you prefer. Note: enabled must be true for run-now to deliver, so flip this to true when you opt into the email feature."
+}

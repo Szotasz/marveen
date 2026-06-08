@@ -1,0 +1,10 @@
+{
+  "schedule": "* * * * *",
+  "agent": "system",
+  "type": "command",
+  "enabled": false,
+  "command": "python3 scripts/email-digest/digest.py --mode watch",
+  "timeoutMs": 60000,
+  "failThreshold": 5,
+  "description": "Email watch: move archive/route-rule senders out of the inbox, ping each new important unread once, and trigger the AI review per new ai_analysis mail. Address-based, store/email-rules.json. Disabled until you create the rules + vault password; then enable all three email tasks."
+}

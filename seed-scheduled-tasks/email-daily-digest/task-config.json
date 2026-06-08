@@ -1,0 +1,10 @@
+{
+  "schedule": "0 8 * * *",
+  "agent": "system",
+  "type": "command",
+  "enabled": false,
+  "command": "python3 scripts/email-digest/digest.py --mode daily",
+  "timeoutMs": 120000,
+  "failThreshold": 3,
+  "description": "Daily email digest: numeric archive summary per domain to Telegram, then reset the tally. Address-based, store/email-rules.json."
+}

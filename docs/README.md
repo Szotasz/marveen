@@ -23,5 +23,6 @@ Minden lap két szemszögből mutatja be a funkciót:
 | [Dream-engine](dream-engine.md) | Éjszakai tudás-konszolidáció + reggeli prioritás-javaslatok |
 | [Háttér-feladatok](background-tasks.md) | Leválasztott, hosszú feladatok futtatása + értesítés |
 | [Command-feladatok](command-tasks.md) | Shell-ütemezés LLM nélkül: health-check / karbantartó-szkript + hiba-riasztás |
+| [Email-digest](email-digest.md) | Cím-alapú postafiók-triage: archív/fontos/AI-review, privacy-first |
 
 *A dokumentáció él; javításokat/bővítéseket szívesen fogadunk.*

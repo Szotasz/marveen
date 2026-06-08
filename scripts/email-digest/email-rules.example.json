@@ -1,0 +1,32 @@
+{
+  "_format": "Copy this file to store/email-rules.json and edit it (store/ is gitignored, so your real sender lists stay private). A list entry is either '@domain.com' (the whole domain AND its subdomains) or 'someone@company.com' (exact sender). SPECIFICITY: an exact address always beats a domain rule, in either list -- so a domain can go to archive while a few addresses from it stay important. important -> Telegram ping (once per mail, deduped) + stays in inbox. archive -> moved to the Archive folder (never deleted) + counted in the daily numeric report. ai_analysis -> left for the AI review task (the watch triggers it via run-now); this is the ONLY content that reaches an LLM. routes -> sender (+ optional subject_contains keyword) moves the mail to a custom folder, and pings if notify=true; the subject is matched LOCALLY, nothing is sent anywhere. A mail flagged '\\Flagged' (the IMAP important/star flag) is NEVER moved -- it stays in the inbox. The IMAP password is NOT here: store it in the vault under vault_key and the script fetches it at runtime.",
+  "accounts": [
+    {
+      "email": "you@example.com",
+      "vault_key": "you@example.com",
+      "imap_host": "mail.example.com",
+      "imap_port": 993,
+      "archive_folder": "Archive"
+    }
+  ],
+  "important": [
+    "@bank.example",
+    "boss@work.example"
+  ],
+  "archive": [
+    "@newsletter.example",
+    "@promo.example",
+    "notifications-noreply@social.example"
+  ],
+  "ai_analysis": [
+    "alerts@monitoring.example"
+  ],
+  "routes": [
+    {
+      "from": "@shop.example",
+      "subject_contains": ["order", "shipped", "tracking", "delivery"],
+      "folder": "Orders",
+      "notify": true
+    }
+  ]
+}
