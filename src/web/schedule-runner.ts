@@ -4,6 +4,7 @@ import { execSync, execFileSync } from 'node:child_process'
 import { resolveFromPath } from '../platform.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { logger } from '../logger.js'
+import { runCommandTask } from './command-task.js'
 import {
   PROJECT_ROOT,
   MAIN_AGENT_ID,
@@ -318,6 +319,17 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // Prevent double-firing: skip if already ran within the catch-up window
       const lastRun = scheduleLastRun.get(task.name) || 0
       if (now - lastRun < catchUp) continue
+
+      // type='command' tasks run a raw shell command directly -- no LLM, no
+      // tmux, no target agent. They self-manage failure streaks + Telegram
+      // alerts (see command-task.ts). Record the run time like a fired task so
+      // the catch-up window does not double-run them on a dashboard restart.
+      if (task.type === 'command') {
+        runCommandTask(task, now)
+        scheduleLastRun.set(task.name, now)
+        persistScheduleLastRun()
+        continue
+      }
 
       let targetAgents: string[]
 

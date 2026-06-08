@@ -21,7 +21,11 @@ export interface ScheduledTask {
   agent: string
   enabled: boolean
   createdAt: number
-  type?: 'task' | 'heartbeat'  // heartbeat = silent unless important
+  // task = wake an LLM agent with the SKILL.md prompt; heartbeat = same but
+  // silent unless important; command = run a raw shell command, no LLM/tmux
+  // (see command-task.ts). A `command` task is defined entirely by the
+  // command/timeoutMs/failThreshold fields below -- it has no SKILL.md.
+  type?: 'task' | 'heartbeat' | 'command'
   // When true, a tick whose target session is busy is dropped silently
   // instead of queued. Use ONLY for cron schedules that fire often enough
   // (every 30-60 min) that losing a single tick is harmless because the
@@ -40,6 +44,15 @@ export interface ScheduledTask {
   // `agent-<name>` or MAIN_CHANNELS_SESSION. Enables dedicated
   // scheduler-only sessions in the future.
   targetSession?: string
+  // command-type only: the raw shell command, run via `bash -lc`. No LLM,
+  // no tmux, no target agent.
+  command?: string
+  // command-type only: hard timeout in ms (default 10000). A timeout counts
+  // as a failure.
+  timeoutMs?: number
+  // command-type only: consecutive failures before a Telegram alert fires
+  // (default 2). One alert per outage, one recovery when it clears.
+  failThreshold?: number
 }
 
 function readFileOr(path: string, fallback: string): string {
@@ -64,15 +77,17 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
   const dir = join(SCHEDULED_TASKS_DIR, taskName)
   const skillPath = join(dir, 'SKILL.md')
   const configPath = join(dir, 'task-config.json')
-  if (!existsSync(skillPath)) return null
-
-  const skillContent = readFileOr(skillPath, '')
-  const { name, description, body } = parseSkillMdFrontmatter(skillContent)
-
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string } = {}
+  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number } = {}
   try {
     config = JSON.parse(readFileOr(configPath, '{}'))
   } catch { /* use defaults */ }
+
+  // command-type tasks are defined entirely by task-config.json (no prompt,
+  // no agent) and therefore have no SKILL.md. Every other type requires one.
+  if (!existsSync(skillPath) && config.type !== 'command') return null
+
+  const skillContent = readFileOr(skillPath, '')
+  const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
   return {
     name: name || taskName,
@@ -82,10 +97,13 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     agent: config.agent || MAIN_AGENT_ID,
     enabled: config.enabled !== false,
     createdAt: config.createdAt || 0,
-    type: (config.type as 'task' | 'heartbeat') || 'task',
+    type: (config.type as 'task' | 'heartbeat' | 'command') || 'task',
     skipIfBusy: config.skipIfBusy === true,
     forceSend: config.forceSend === true,
     targetSession: config.targetSession || undefined,
+    command: config.command,
+    timeoutMs: config.timeoutMs,
+    failThreshold: config.failThreshold,
   }
 }
 
@@ -104,7 +122,7 @@ export function listScheduledTasks(): ScheduledTask[] {
 
 export function writeScheduledTask(
   taskName: string,
-  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string },
+  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number },
 ): void {
   const dir = join(SCHEDULED_TASKS_DIR, taskName)
   mkdirSync(dir, { recursive: true })
@@ -114,12 +132,16 @@ export function writeScheduledTask(
 
   // Read existing if updating
   const existing = readScheduledTask(taskName)
+  const type = data.type ?? existing?.type ?? 'task'
 
-  // Write SKILL.md
-  const desc = data.description ?? existing?.description ?? ''
-  const prompt = data.prompt ?? existing?.prompt ?? ''
-  const skillContent = `---\nname: ${taskName}\ndescription: ${desc}\n---\n\n${prompt}\n`
-  atomicWriteFileSync(skillPath, skillContent)
+  // Write SKILL.md -- but command-type tasks have no prompt/agent, so they get
+  // no SKILL.md (they are defined entirely by task-config.json).
+  if (type !== 'command') {
+    const desc = data.description ?? existing?.description ?? ''
+    const prompt = data.prompt ?? existing?.prompt ?? ''
+    const skillContent = `---\nname: ${taskName}\ndescription: ${desc}\n---\n\n${prompt}\n`
+    atomicWriteFileSync(skillPath, skillContent)
+  }
 
   // Write/update config
   let config: Record<string, unknown> = {}
@@ -131,6 +153,9 @@ export function writeScheduledTask(
   if (data.skipIfBusy !== undefined) config.skipIfBusy = data.skipIfBusy
   if (data.forceSend !== undefined) config.forceSend = data.forceSend
   if (data.targetSession !== undefined) config.targetSession = data.targetSession
+  if (data.command !== undefined) config.command = data.command
+  if (data.timeoutMs !== undefined) config.timeoutMs = data.timeoutMs
+  if (data.failThreshold !== undefined) config.failThreshold = data.failThreshold
   if (!config.createdAt) config.createdAt = Math.floor(Date.now() / 1000)
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }

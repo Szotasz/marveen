@@ -22,5 +22,6 @@ Minden lap két szemszögből mutatja be a funkciót:
 | [Vault & titkosítás](vault.md) | Titkosított titok-tár (AES-256-GCM) OS-kulcstárral |
 | [Dream-engine](dream-engine.md) | Éjszakai tudás-konszolidáció + reggeli prioritás-javaslatok |
 | [Háttér-feladatok](background-tasks.md) | Leválasztott, hosszú feladatok futtatása + értesítés |
+| [Command-feladatok](command-tasks.md) | Shell-ütemezés LLM nélkül: health-check / karbantartó-szkript + hiba-riasztás |
 
 *A dokumentáció él; javításokat/bővítéseket szívesen fogadunk.*
