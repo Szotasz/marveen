@@ -94,6 +94,7 @@ import {
 import { sanitizeAgentName } from '../sanitize.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json, serveFile } from '../http-helpers.js'
+import { issueTicket, checkRateLimit, TICKET_TTL_S } from '../pty-ticket.js'
 import type { RouteContext } from './types.js'
 
 const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'discord'])
@@ -1282,6 +1283,25 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     rmSync(dir, { recursive: true, force: true })
     cleanupTeamReferences(name)
     json(res, { ok: true })
+    return true
+  }
+
+  const agentPtyTicketMatch = path.match(/^\/api\/agents\/([^/]+)\/pty-ticket$/)
+  if (agentPtyTicketMatch && method === 'POST') {
+    const name = decodeURIComponent(agentPtyTicketMatch[1])
+    // The dashboard binds to 127.0.0.1, so the socket address is the real
+    // client. X-Forwarded-For is intentionally NOT trusted here: without a
+    // configured reverse proxy a browser could spoof it to bypass the limit.
+    const ip = req.socket.remoteAddress ?? 'unknown'
+    const rl = checkRateLimit(ip, Math.floor(Date.now() / 1000))
+    if (!rl.ok) {
+      json(res, { error: 'rate limited', retry_after_s: rl.retry_after_s }, 429)
+      return true
+    }
+    if (!isKnownAgent(name)) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!isAgentRunning(name)) { json(res, { error: 'agent not running' }, 409); return true }
+    const ticket = issueTicket(name, Math.floor(Date.now() / 1000))
+    json(res, { ticket, ttl_s: TICKET_TTL_S })
     return true
   }
 

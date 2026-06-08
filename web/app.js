@@ -9462,90 +9462,135 @@ let terminalInstance = null
 let terminalSSE = null
 let terminalFit = null
 
+// Interactive PTY-backed terminal. Streams the agent's real tmux session over
+// a WebSocket (xterm.js <-> node-pty), so keystrokes, scrollback and redraws
+// are bidirectional and char-by-char in real time. A short-lived, single-use
+// ticket (POST /pty-ticket) authorizes the WS upgrade.
+function openAgentPty(agentName, mountEl) {
+  var DEFAULT_COLS = 120, DEFAULT_ROWS = 30
+  var term = new window.Terminal({
+    cols: DEFAULT_COLS, rows: DEFAULT_ROWS,
+    fontSize: 12, scrollback: 3000,
+    fontFamily: 'JetBrains Mono, Menlo, monospace',
+    theme: { background: '#1a1a1a', foreground: '#e8e4da' },
+    allowProposedApi: true,
+  })
+  var fitAddon = new window.FitAddon.FitAddon()
+  term.loadAddon(fitAddon)
+  term.open(mountEl)
+  // Fit safely: the container only has its final width on the next layout
+  // frame (it was just un-hidden), so fitting synchronously here keeps the
+  // terminal at DEFAULT_COLS and clips on the right. Defer to rAF.
+  function safeFit() { try { fitAddon.fit() } catch (e) { /* not laid out yet */ } }
+  var wsScheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
+  var result = { close: function() { if (ws) ws.close() } }
+  var ws
+
+  // OS-level dictation / paste tools copy to the clipboard and send a plain
+  // Ctrl+V. xterm treats Ctrl+V as a literal ^V and only pastes on
+  // Ctrl+Shift+V, so dictated/pasted text never reaches the PTY. Make plain
+  // Ctrl+V paste too, via the bracketed-paste-aware term.paste.
+  term.attachCustomKeyEventHandler(function(e) {
+    if (e.type === 'keydown' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey
+        && (e.key === 'v' || e.key === 'V')) {
+      e.preventDefault()
+      if (ws && ws.readyState === WebSocket.OPEN
+          && navigator.clipboard && navigator.clipboard.readText) {
+        navigator.clipboard.readText().then(function(t) {
+          if (t) term.paste(t)
+        }).catch(function() { /* clipboard read denied -- skip */ })
+      }
+      return false
+    }
+    return true
+  })
+
+  // Coalesce resize bursts into one fit per frame and only notify the PTY when
+  // the grid actually changes. Without the dimension guard the ResizeObserver
+  // re-fires on every fit() (fit changes layout -> observer -> fit ...), a
+  // feedback loop that makes tmux redraw constantly = visible vibration.
+  var lastCols = 0, lastRows = 0, fitScheduled = false
+  function applyFit() {
+    fitScheduled = false
+    safeFit()
+    if (term.cols === lastCols && term.rows === lastRows) return
+    lastCols = term.cols; lastRows = term.rows
+    if (ws && ws.readyState === WebSocket.OPEN)
+      ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+  }
+  function scheduleFit() {
+    if (fitScheduled) return
+    fitScheduled = true
+    requestAnimationFrame(applyFit)
+  }
+
+  fetch('/api/agents/' + encodeURIComponent(agentName) + '/pty-ticket', { method: 'POST' })
+    .then(function(r) { return r.json() })
+    .then(function(data) {
+      if (!data.ticket) { term.write('\r\n\x1b[31m\u274C Could not obtain a ticket\x1b[0m\r\n'); return }
+      // Fit against the now-laid-out container before reading cols/rows so the
+      // initial PTY size matches what the user actually sees.
+      requestAnimationFrame(function() { requestAnimationFrame(function() {
+        safeFit()
+        lastCols = term.cols; lastRows = term.rows
+        var cols = term.cols, rows = term.rows
+        var wsUrl = wsScheme + '//' + location.host + '/ws/agent-pty?ticket='
+          + encodeURIComponent(data.ticket) + '&cols=' + cols + '&rows=' + rows
+        ws = new WebSocket(wsUrl)
+        ws.binaryType = 'arraybuffer'
+        result.close = function() { ws.close() }
+
+        ws.onopen = function() {
+          term.write('\r\n\x1b[32m\u2713 Connected\x1b[0m\r\n')
+          scheduleFit()
+          try { term.focus() } catch (e) { /* not laid out */ }
+          var resizeObs = new ResizeObserver(function() { scheduleFit() })
+          resizeObs.observe(mountEl)
+          ws._resizeObs = resizeObs
+        }
+        ws.onmessage = function(e) {
+          if (e.data instanceof ArrayBuffer) term.write(new Uint8Array(e.data))
+          else term.write(e.data)
+        }
+        ws.onclose = function(e) {
+          var msgs = { 4401: '\u274C Expired or invalid ticket',
+                       4404: '\u274C Agent is not running',
+                       4429: '\u274C Too many concurrent viewers' }
+          var msg = msgs[e.code] || ('\u274C Connection closed (code: ' + e.code + ')')
+          term.write('\r\n\x1b[31m' + msg + '\x1b[0m\r\n')
+          if (ws._resizeObs) ws._resizeObs.disconnect()
+        }
+        term.onData(function(d) { if (ws.readyState === WebSocket.OPEN) ws.send(d) })
+      }) })
+    })
+    .catch(function() { term.write('\r\n\x1b[31m\u274C Network error\x1b[0m\r\n') })
+
+  return result
+}
+
+let modalPty = null
 function openTerminalModal(agentName) {
   const overlay = document.getElementById('terminalOverlay')
   const container = document.getElementById('terminalContainer')
   const title = document.getElementById('terminalModalTitle')
   if (!overlay || !container) return
 
-  title.textContent = agentName + ' — Terminal'
+  title.textContent = agentName + ' \u2014 Terminal'
 
-  // Cleanup previous
-  if (terminalSSE) { terminalSSE.close(); terminalSSE = null }
-  if (terminalInstance) { terminalInstance.dispose(); terminalInstance = null }
-  container.innerHTML = ''
-
-  // Init xterm — fontSize 12 + wider modal fits ~140 chars of tmux output
-  const term = new window.Terminal({
-    theme: { background: '#1a1a1a', foreground: '#e8e4da' },
-    fontFamily: 'JetBrains Mono, Menlo, monospace',
-    fontSize: 12,
-    cursorBlink: false,
-    disableStdin: false,
-    scrollback: 500,
-    convertEol: true,
-    allowProposedApi: true,
-  })
-  const fitAddon = new window.FitAddon.FitAddon()
-  term.loadAddon(fitAddon)
-  term.open(container)
-  fitAddon.fit()
-  terminalInstance = term
-  terminalFit = fitAddon
+  // Tear down any previous session before opening a new one.
+  if (modalPty) { modalPty.close(); modalPty = null }
+  container.textContent = ''
 
   openModal(overlay)
-  setTimeout(() => term.focus(), 50)
-
-  // SSE pane stream
-  const token = localStorage.getItem('marveen-dashboard-token') || ''
-  const sse = new EventSource(`/api/agents/${encodeURIComponent(agentName)}/pane/stream?token=${encodeURIComponent(token)}`)
-  sse.onmessage = (e) => {
-    try {
-      const msg = JSON.parse(e.data)
-      if (msg.pane !== undefined) {
-        const clean = msg.pane.replace(/\x1b]8;[^\x1b]*\x1b\\/g, '')
-        term.write('\x1b[2J\x1b[H' + clean)
-      }
-    } catch {}
-  }
-  sse.onerror = () => term.write('\r\n[stream hiba vagy leállva]\r\n')
-  terminalSSE = sse
-
-  // Single onData handler — maps escape sequences to {special}, plain chars to {keys}
-  // Using onData only (no onKey) avoids double-firing on arrow/Enter keys
-  const ESC_TO_SPECIAL = {
-    '\r': 'Enter', '\x1b': 'Escape',
-    '\x1b[A': 'Up', '\x1b[B': 'Down', '\x1b[C': 'Right', '\x1b[D': 'Left',
-    '\x7f': 'BSpace', '\t': 'Tab', '\x1b[Z': 'S-Tab',
-    '\x03': 'C-c', '\x04': 'C-d', '\x15': 'C-u', '\x0c': 'C-l',
-    '\x1b[5~': 'PageUp', '\x1b[6~': 'PageDown',
-  }
-  term.onData(data => {
-    const special = ESC_TO_SPECIAL[data]
-    const body = special ? { special } : { keys: data }
-    fetch(`/api/agents/${encodeURIComponent(agentName)}/keys`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    }).catch(() => {})
-  })
-
-  // Resize fit on modal resize — observe the modal wrapper (not the xterm container
-  // itself) to avoid a ResizeObserver->fit->resize->ResizeObserver infinite loop
-  let fitTimer = null
-  const ro = new ResizeObserver(() => {
-    clearTimeout(fitTimer)
-    fitTimer = setTimeout(() => { try { fitAddon.fit() } catch {} }, 50)
-  })
-  const modalEl = container.closest('.terminal-modal') || container.parentElement
-  if (modalEl) ro.observe(modalEl)
+  modalPty = openAgentPty(agentName, container)
 }
 
-document.getElementById('terminalClose')?.addEventListener('click', () => {
+function closeTerminalModal() {
   const overlay = document.getElementById('terminalOverlay')
   if (overlay) closeModal(overlay)
-  if (terminalSSE) { terminalSSE.close(); terminalSSE = null }
-  if (terminalInstance) { terminalInstance.dispose(); terminalInstance = null }
-})
+  if (modalPty) { modalPty.close(); modalPty = null }
+}
+document.getElementById('terminalClose')?.addEventListener('click', closeTerminalModal)
 ;(() => {
   function routeFromHash() {
     let pageId = decodeURIComponent((location.hash || '').replace(/^#/, ''))

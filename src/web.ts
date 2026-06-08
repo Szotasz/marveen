@@ -22,6 +22,9 @@ import { logger } from './logger.js'
 import { tryHandleProfiles } from './web/routes/profiles.js'
 import { tryHandleMessages } from './web/routes/messages.js'
 import { tryHandleAgentTerminal } from './web/routes/agent-terminal.js'
+import { attachWsUpgradeHandler } from './web/agent-pty-bridge.js'
+import { consumeTicket } from './web/pty-ticket.js'
+import { agentSessionName } from './web/agent-process.js'
 import { tryHandleAgentTaskState } from './web/routes/agent-taskstate.js'
 import { sweepOrphanTaskStates } from './web/agent-taskstate.js'
 import { tryHandleDailyLog } from './web/routes/daily-log.js'
@@ -212,6 +215,10 @@ export function startWebServer(port = 3420): http.Server {
       logger.error({ err }, 'Web szerver hiba')
     }
   })
+
+  // Interactive PTY terminal: attach the WebSocket upgrade handler before
+  // listen so /ws/agent-pty is served. resolveHost defaults to local-only.
+  attachWsUpgradeHandler(server, consumeTicket, agentSessionName, { allowedOrigins })
 
   server.listen(port, WEB_HOST, () => {
     logger.info({ port }, `Web dashboard: http://localhost:${port}`)
