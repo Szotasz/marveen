@@ -34,6 +34,7 @@ import {
   isAgentRunning,
   isSessionReadyForPrompt,
   sendPromptToSession,
+  startAgentProcess,
 } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { sendTelegramMessage } from './telegram.js'
@@ -85,7 +86,7 @@ function persistScheduleLastRun(): void {
 // Try to fire a task at a single target agent. Returns the outcome so the
 // caller can decide whether to queue a retry. Splitting this out means the
 // pendingTaskRetries loop and the normal cron loop share one code path.
-function attemptFireTask(task: ScheduledTask, agentName: string, now: number): 'fired' | 'busy' | 'missing' | 'error' {
+function attemptFireTask(task: ScheduledTask, agentName: string, now: number): 'fired' | 'busy' | 'missing' | 'starting' | 'error' {
   const isMainAgent = agentName === MAIN_AGENT_ID
   // Allow per-task session override via targetSession config field.
   // Falls back to the standard agent session name derivation.
@@ -100,8 +101,24 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number): '
   } catch { /* no tmux */ }
 
   if (!sessionExists) {
-    logger.warn({ task: task.name, agent: agentName, session }, 'Schedule target session not running, skipping')
-    return 'missing'
+    // Auto-start the agent, then deliver on a later tick. A daily batch agent
+    // (e.g. a `0 2 * * *` digest) has no 24/7 session, so a cron fire used to
+    // just skip here -- the task never ran. Launch the session now and return
+    // 'starting'; the caller enqueues a retry that bypasses skipIfBusy (waking
+    // the agent for its scheduled run is the whole point, so a skipIfBusy=true
+    // task must NOT drop the delivery). The next tick finds the session up and
+    // sends once Claude has booted (isSessionReadyForPrompt).
+    const start = startAgentProcess(agentName)
+    if (!start.ok) {
+      // "already running" means it raced up between the check and here -- treat
+      // as busy so the normal retry path delivers. Any other failure (config
+      // error, launch failure) is a real miss: log and skip this tick.
+      if (/already running/i.test(start.error ?? '')) return 'busy'
+      logger.warn({ task: task.name, agent: agentName, session, error: start.error }, 'Schedule target session missing, auto-start failed')
+      return 'missing'
+    }
+    logger.info({ task: task.name, agent: agentName, session }, 'Schedule target session missing, auto-started agent; will deliver on retry')
+    return 'starting'
   }
 
   // When forceSend is true, skip the busy-state check entirely and inject
@@ -187,6 +204,36 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number): '
     logger.warn({ err, task: task.name }, 'Failed to fire scheduled task')
     return 'error'
   }
+}
+
+// Manual "Run now": fire a scheduled task immediately, bypassing the cron
+// match + lastRun catch-up + skipIfBusy guards (the operator explicitly asked
+// for it). Reuses attemptFireTask, so a stopped agent is auto-started and the
+// prompt is queued for delivery exactly like a real cron fire. Returns a
+// per-target summary string for the API/UI.
+export function runScheduledTaskNow(taskName: string): { ok: boolean; result?: string; error?: string } {
+  const task = listScheduledTasks().find(t => t.name === taskName)
+  if (!task) return { ok: false, error: 'Schedule not found' }
+  if (!task.enabled) return { ok: false, error: 'Schedule is disabled' }
+
+  const now = Date.now()
+  const targets = task.agent === 'all'
+    ? [MAIN_AGENT_ID, ...listAgentNames().filter(a => isAgentRunning(a))]
+    : [task.agent || MAIN_AGENT_ID]
+
+  const summary: string[] = []
+  for (const agentName of targets) {
+    const result = attemptFireTask(task, agentName, now)
+    // A manual run ALWAYS wants delivery: an auto-started ('starting') or a
+    // busy session both get a queued retry that lands once the session is
+    // ready. We deliberately do NOT consult skipIfBusy here -- that flag trims
+    // redundant cron ticks, but an explicit run-now must not be dropped.
+    if (result === 'starting' || result === 'busy') {
+      insertPendingTaskRetryIfNew(task.name, agentName, now, result)
+    }
+    summary.push(`${agentName}: ${result}`)
+  }
+  return { ok: true, result: summary.join(', ') }
 }
 
 // Fire a Telegram alert when a pending retry has been stuck past the
@@ -335,7 +382,14 @@ export function startScheduleRunner(): NodeJS.Timeout {
         // the retry handler -- don't re-queue or double-fire.
         if (pendingKeys.has(key)) continue
         const result = attemptFireTask(task, agentName, now)
-        if (result === 'busy') {
+        if (result === 'starting') {
+          // Agent was auto-started this tick. ALWAYS enqueue the retry that
+          // delivers the prompt once the session is ready -- skipIfBusy must
+          // NOT drop it (that flag is for genuinely-busy short-cadence tasks;
+          // here we deliberately woke the agent for its scheduled run). The
+          // pending-retry loop then sends as soon as Claude has booted.
+          insertPendingTaskRetryIfNew(task.name, agentName, now, 'starting')
+        } else if (result === 'busy') {
           if (task.skipIfBusy) {
             // Opt-in skip for short-cadence tasks (e.g. 30-min heartbeats):
             // a single missed tick is harmless because the next one is

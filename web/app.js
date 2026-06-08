@@ -3598,6 +3598,9 @@ function renderScheduleList(tasks) {
         </div>
       </div>
       <div class="schedule-actions">
+        <button class="btn-icon" data-action="run" title="Futtatás most">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+        </button>
         <button class="btn-icon" data-action="toggle" title="${task.enabled ? 'Szüneteltetés' : 'Folytatás'}">
           ${task.enabled ? pauseIcon() : playIcon()}
         </button>
@@ -3614,6 +3617,17 @@ function renderScheduleList(tasks) {
     })
 
     // Action buttons
+    row.querySelector('[data-action="run"]').addEventListener('click', async (e) => {
+      e.stopPropagation()
+      try {
+        const r = await fetch(`/api/schedules/${encodeURIComponent(task.name)}/run`, { method: 'POST' })
+        const data = await r.json().catch(() => ({}))
+        if (r.ok) showToast('Feladat elindítva' + (data.result ? ': ' + data.result : ''))
+        else showToast('Hiba: ' + (data.error || r.status))
+        loadSchedules()
+      } catch { showToast('Hiba a futtatáskor') }
+    })
+
     row.querySelector('[data-action="toggle"]').addEventListener('click', async (e) => {
       e.stopPropagation()
       try {
