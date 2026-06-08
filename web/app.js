@@ -9461,12 +9461,28 @@ async function handleAgentLogin(agentName, btn) {
 let terminalInstance = null
 let terminalSSE = null
 let terminalFit = null
+let currentTerminalAgent = null
 
-function openTerminalModal(agentName) {
+// Parse the location hash into a page id + optional terminal deep-link.
+// Format: "#<page>" or "#<page>/term/<agent>" -- the open terminal lives in the
+// URL, so a terminal can be opened per browser tab and survives a reload.
+function parseHashRoute() {
+  const raw = decodeURIComponent((location.hash || '').replace(/^#/, ''))
+  const parts = raw.split('/')
+  const page = parts[0] || ''
+  const termAgent = (parts[1] === 'term' && parts[2]) ? parts[2] : null
+  return { page, termAgent }
+}
+
+function openTerminalModal(agentName, fromRoute) {
   const overlay = document.getElementById('terminalOverlay')
   const container = document.getElementById('terminalContainer')
   const title = document.getElementById('terminalModalTitle')
   if (!overlay || !container) return
+
+  // Already showing this agent's terminal? Avoid a reconnect loop on re-entry
+  // from the hash router.
+  if (currentTerminalAgent === agentName && terminalInstance) return
 
   title.textContent = agentName + ' — Terminal'
 
@@ -9494,6 +9510,7 @@ function openTerminalModal(agentName) {
   terminalFit = fitAddon
 
   openModal(overlay)
+  currentTerminalAgent = agentName
   setTimeout(() => term.focus(), 50)
 
   // SSE pane stream
@@ -9538,19 +9555,38 @@ function openTerminalModal(agentName) {
   })
   const modalEl = container.closest('.terminal-modal') || container.parentElement
   if (modalEl) ro.observe(modalEl)
+
+  // Reflect the open terminal in the URL so it is deep-linkable and survives a
+  // reload. Skip when we got here *from* the router (hash already matches).
+  if (!fromRoute) {
+    const page = parseHashRoute().page || 'agents'
+    location.hash = page + '/term/' + encodeURIComponent(agentName)
+  }
 }
 
-document.getElementById('terminalClose')?.addEventListener('click', () => {
+function closeTerminalModal(fromRoute) {
   const overlay = document.getElementById('terminalOverlay')
   if (overlay) closeModal(overlay)
   if (terminalSSE) { terminalSSE.close(); terminalSSE = null }
   if (terminalInstance) { terminalInstance.dispose(); terminalInstance = null }
-})
+  currentTerminalAgent = null
+  // Drop the /term/<agent> part of the hash (keep the page).
+  if (!fromRoute) {
+    const page = parseHashRoute().page || 'agents'
+    location.hash = page
+  }
+}
+document.getElementById('terminalClose')?.addEventListener('click', () => closeTerminalModal())
 ;(() => {
   function routeFromHash() {
-    let pageId = decodeURIComponent((location.hash || '').replace(/^#/, ''))
+    const { page, termAgent } = parseHashRoute()
+    let pageId = page
     if (!pageId) pageId = new URLSearchParams(window.location.search).get('page') || ''
     if (pageId && document.getElementById(pageId + 'Page')) switchPage(pageId)
+    // Sync the terminal to the URL: open the deep-linked one, or close it if the
+    // hash no longer carries a terminal (e.g. navigated to another page).
+    if (termAgent) openTerminalModal(termAgent, true)
+    else if (currentTerminalAgent) closeTerminalModal(true)
   }
   window.addEventListener('hashchange', routeFromHash)
   routeFromHash()
