@@ -9496,6 +9496,24 @@ function openTerminalModal(agentName) {
   openModal(overlay)
   setTimeout(() => term.focus(), 50)
 
+  // Plain Ctrl+V paste. xterm treats Ctrl+V as a literal ^V and only pastes on
+  // Ctrl+Shift+V, which surprises most users -- and breaks OS-level dictation /
+  // paste tools that emit a plain Ctrl+V. Map plain Ctrl/Cmd+V to a clipboard
+  // paste; term.paste routes the text through the onData handler above, so it
+  // reaches the PTY exactly like typed input. Ctrl+Shift+V still works as
+  // xterm's native paste.
+  term.attachCustomKeyEventHandler(function (e) {
+    if (e.type === 'keydown' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey
+        && (e.key === 'v' || e.key === 'V')) {
+      e.preventDefault()
+      if (navigator.clipboard && navigator.clipboard.readText) {
+        navigator.clipboard.readText().then(function (t) { if (t) term.paste(t) }).catch(function () {})
+      }
+      return false
+    }
+    return true
+  })
+
   // SSE pane stream
   const token = localStorage.getItem('marveen-dashboard-token') || ''
   const sse = new EventSource(`/api/agents/${encodeURIComponent(agentName)}/pane/stream?token=${encodeURIComponent(token)}`)
