@@ -9475,11 +9475,11 @@ function openTerminalModal(agentName) {
   if (terminalInstance) { terminalInstance.dispose(); terminalInstance = null }
   container.innerHTML = ''
 
-  // Init xterm — fontSize 12 + wider modal fits ~140 chars of tmux output
+  // Init xterm — fontSize 14 + wider modal fits ~140 chars of tmux output
   const term = new window.Terminal({
     theme: { background: '#1a1a1a', foreground: '#e8e4da' },
     fontFamily: 'JetBrains Mono, Menlo, monospace',
-    fontSize: 12,
+    fontSize: 14,
     cursorBlink: false,
     disableStdin: false,
     scrollback: 500,
