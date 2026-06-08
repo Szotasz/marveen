@@ -52,16 +52,6 @@ claudeclaw.log
 
 # Local backup archives from scripts/backup.sh
 backups/
-
-# GitNexus knowledge-graph index (local, per-clone; auto-rebuilt by the post-commit hook)
-.gitnexus/
-
-# Local one-off artifacts (brainstorm docs, runtime state, rebuild prompts) --
-# never committed; ignored to prevent accidental `git add -A` bloat.
-DREAM.md
-.external-ops-last-run
-REBUILD_PROMPT_V3.1.md
-
-# Python bytecode cache
-__pycache__/
-*.pyc
+store/.owncloud-creds
+store/.email-creds
+store/.trello-creds
