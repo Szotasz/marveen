@@ -28,6 +28,9 @@ import {
   readAgentAuthMode,
   writeAgentAuthMode,
   readAgentClaudeConfigDir,
+  readAgentRemoteConfig,
+  readAgentRemoteHost,
+  writeAgentRemoteConfig,
   type AuthMode,
 } from '../agent-config.js'
 import {
@@ -70,6 +73,7 @@ import {
 } from '../agent-scaffold.js'
 import {
   isAgentRunning,
+  agentRunState,
   startAgentProcess,
   stopAgentProcess,
   restartAgentProcess,
@@ -80,6 +84,8 @@ import {
   capturePane,
 } from '../agent-process.js'
 import { addDesiredAgent, removeDesiredAgent } from '../agent-desired-state.js'
+import { RemoteStatusCache } from '../remote-status-cache.js'
+import type { AgentRunState } from '../ssh-tmux.js'
 import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
 import { detectPaneState } from '../../pane-state.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
@@ -97,6 +103,20 @@ import { readBody, json, serveFile } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
 const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'discord'])
+
+// Short-TTL caches so the synchronous, frequently-polled status endpoints
+// (`/api/agents` on load, `/api/agents/activity` every 3s) don't issue a fresh
+// blocking ssh call per remote agent per request. Only remote agents are cached;
+// local agents fetch fresh (sub-ms tmux). See remote-status-cache.ts.
+const remoteRunStateCache = new RemoteStatusCache<AgentRunState>(5000)
+const remotePaneCache = new RemoteStatusCache<string | null>(3000)
+
+// Resolve an agent's run state, cached for remote agents to avoid blocking on
+// ssh. `isRemote` is passed by the caller (it already read the remote config).
+function agentRunStateCached(name: string, isRemote: boolean): AgentRunState {
+  if (!isRemote) return agentRunState(name)
+  return remoteRunStateCache.getOrRefresh(name, Date.now(), () => agentRunState(name), 'unreachable')
+}
 
 // Discord channel ids are snowflakes — base-10 numeric ids, 17 to 20 digits
 // long in practice (current Discord scheme is 64-bit, with the leading bit
@@ -280,6 +300,11 @@ interface AgentSummary {
   hasDiscord: boolean
   status: 'configured' | 'draft'
   running: boolean
+  /** Tri-state: 'running' | 'stopped' | 'unreachable' (remote ssh failure). */
+  runState: AgentRunState
+  /** Remote ssh destination + workdir, or null for a local agent. */
+  remoteHost: string | null
+  remoteWorkdir: string | null
   session?: string
   hasAvatar: boolean
   autoRestart: AutoRestartConfig
@@ -311,19 +336,26 @@ function getAgentSummary(name: string): AgentSummary {
   const hasClaudeMd = claudeMd.trim().length > 0
   const hasSoulMd = soulMd.trim().length > 0
 
-  const proc = getAgentProcessInfo(name)
-  const runningSince = proc.running ? getAgentRunningSince(name) : null
+  // Resolve run state through the cache (remote agents) so listing the fleet
+  // never blocks on a sleeping laptop's ssh timeout. `running` is derived from
+  // it; `unreachable` reads as not-running but is surfaced distinctly so the UI
+  // does not show a still-alive remote agent as "stopped".
+  const remote = readAgentRemoteConfig(name)
+  const runState = agentRunStateCached(name, remote.host != null)
+  const running = runState === 'running'
+  const session = running ? agentSessionName(name) : undefined
+  const runningSince = running ? getAgentRunningSince(name) : null
 
   // Reauth badge: only meaningful for a running session (a stopped agent has
   // no pane to inspect). One capture-pane per running agent on the list poll.
-  const reauth = proc.running ? detectReauthNeeded(capturePane(agentSessionName(name))) : { needsReauth: false }
+  const reauth = running ? detectReauthNeeded(capturePane(agentSessionName(name))) : { needsReauth: false }
 
   return {
     name,
     displayName: readAgentDisplayName(name),
     description: extractDescriptionFromClaudeMd(claudeMd),
     model: readAgentModel(name),
-    activeModel: proc.running ? readActiveModelFromProjectDir(dir, runningSince ?? undefined, readAgentClaudeConfigDir(name) ?? undefined) : null,
+    activeModel: running ? readActiveModelFromProjectDir(dir, runningSince ?? undefined, readAgentClaudeConfigDir(name) ?? undefined) : null,
     runningSince,
     authMode: readAgentAuthMode(name),
     securityProfile: readAgentSecurityProfile(name),
@@ -332,11 +364,14 @@ function getAgentSummary(name: string): AgentSummary {
     telegramBotUsername: tg.botUsername,
     hasDiscord: dc.hasDiscord,
     status: hasClaudeMd && hasSoulMd ? 'configured' : 'draft',
-    running: proc.running,
-    session: proc.session,
+    running,
+    runState,
+    remoteHost: remote.host,
+    remoteWorkdir: remote.workdir,
+    session,
     hasAvatar: findAvatarForAgent(name) !== null,
     autoRestart: readAutoRestartConfig(name),
-    contextTokens: proc.running ? readContextTokensFromProjectDir(dir, readAgentClaudeConfigDir(name) ?? undefined) : null,
+    contextTokens: running ? readContextTokensFromProjectDir(dir, readAgentClaudeConfigDir(name) ?? undefined) : null,
     needsReauth: reauth.needsReauth,
     reauthReason: reauth.reason,
   }
@@ -453,9 +488,19 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }
 
     for (const name of listAgentNames()) {
-      const running = isAgentRunning(name)
-      const pane = running ? capturePane(agentSessionName(name)) : null
-      entries.push({ name, isMain: false, running, state: label(running, pane), tail: tailOf(pane) })
+      // Remote agents: resolve run state + pane through the short-TTL caches so
+      // this 3s-polled endpoint never blocks the event loop on an ssh timeout.
+      const host = readAgentRemoteHost(name)
+      const runState = agentRunStateCached(name, host != null)
+      const running = runState === 'running'
+      let pane: string | null = null
+      if (running) {
+        pane = host
+          ? remotePaneCache.getOrRefresh(name, Date.now(), () => capturePane(agentSessionName(name), host), null)
+          : capturePane(agentSessionName(name))
+      }
+      const state = runState === 'unreachable' ? 'unreachable' : label(running, pane)
+      entries.push({ name, isMain: false, running, state, tail: tailOf(pane) })
     }
 
     json(res, entries)
@@ -800,6 +845,26 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'invalid JSON' }, 400); return true }
     const saved = writeAutoRestartConfig(name, data)
     json(res, { ok: true, autoRestart: saved })
+    return true
+  }
+
+  // PUT /api/agents/:name/remote -- set or clear the remote host + workdir that
+  // makes this agent's tmux session run on another machine over ssh. Empty
+  // strings clear the fields (revert to local). The main agent is always local.
+  const remoteCfgMatch = path.match(/^\/api\/agents\/([^/]+)\/remote$/)
+  if (remoteCfgMatch && method === 'PUT') {
+    const name = decodeURIComponent(remoteCfgMatch[1])
+    if (name === MAIN_AGENT_ID) { json(res, { error: 'Main agent is always local' }, 400); return true }
+    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    const body = await readBody(req)
+    let data: { host?: string; workdir?: string }
+    try { data = JSON.parse(body.toString() || '{}') } catch { json(res, { error: 'invalid JSON' }, 400); return true }
+    const result = writeAgentRemoteConfig(name, data.host ?? '', data.workdir ?? '')
+    if (!result.ok) { json(res, { error: result.error }, 400); return true }
+    // Config changed -> drop any cached status so the next poll reflects it.
+    remoteRunStateCache.invalidate(name)
+    remotePaneCache.invalidate(name)
+    json(res, { ok: true, remoteHost: result.remote.host, remoteWorkdir: result.remote.workdir })
     return true
   }
 
@@ -1172,13 +1237,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
     if (!isAgentRunning(name)) { json(res, { error: 'Agent is not running' }, 400); return true }
     const session = agentSessionName(name)
+    const host = readAgentRemoteHost(name)
     try {
-      sendPromptToSession(session, '/login')
+      sendPromptToSession(session, '/login', host)
       // Wait for Claude Code to render the auth URL (typically 3-6s)
       let authUrl: string | null = null
       for (let i = 0; i < 12; i++) {
         execSync('sleep 1', { timeout: 3000 })
-        const pane = capturePane(session)
+        const pane = capturePane(session, host)
         if (!pane) continue
         const urlMatch = pane.match(/https:\/\/console\.anthropic\.com\/[^\s"']+/)
           || pane.match(/https:\/\/auth\.anthropic\.com\/[^\s"']+/)

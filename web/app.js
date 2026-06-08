@@ -1490,6 +1490,42 @@ function channelTip(isConnected) {
     : 'Offline: nincs csatorna bekötve (channel-less, csak inter-agent ágens).'
 }
 
+// Build the copy-paste tmux attach command for an agent live session. A local
+// agent session runs on the orchestrator host (a direct `tmux attach`); a remote
+// agent session runs on its configured remoteHost, reached over ssh. Only
+// meaningful for running agents.
+function tmuxAttachCommand(agent) {
+  const session = agent.session || ('agent-' + agent.name)
+  const direct = 'tmux attach -t ' + session
+  const remoteHost = agent.remoteHost || null
+  return remoteHost ? 'ssh ' + remoteHost + " -t '" + direct + "'" : direct
+}
+
+// Append a single "copy tmux attach command" button to a running agent card.
+// Clicks copy to clipboard and never bubble to the card open-detail handler.
+function attachTmuxCopyButtons(card, agent) {
+  const cmd = tmuxAttachCommand(agent)
+  const row = document.createElement('div')
+  row.className = 'agent-tmux-cmds'
+  const btn = document.createElement('button')
+  btn.type = 'button'
+  btn.className = 'tmux-copy-btn'
+  btn.setAttribute('aria-label', 'tmux attach parancs masolasa')
+  btn.title = cmd
+  btn.innerHTML = '<span class="tmux-copy-ico">⧉</span>tmux'
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation()
+    navigator.clipboard.writeText(cmd).then(() => {
+      const orig = btn.innerHTML
+      btn.classList.add('copied')
+      btn.innerHTML = '<span class="tmux-copy-ico">✓</span>masolva'
+      setTimeout(() => { btn.innerHTML = orig; btn.classList.remove('copied') }, 1400)
+    }).catch(() => showToast('Masolas sikertelen'))
+  })
+  row.appendChild(btn)
+  card.appendChild(row)
+}
+
 function renderAgents() {
   agentsGrid.querySelectorAll('.agent-card:not(.add-card)').forEach((el) => el.remove())
 
@@ -1582,6 +1618,9 @@ function renderAgents() {
       e.stopPropagation(); openTerminalModal(agent.name)
     })
     card.addEventListener('click', () => openAgentDetail(agent.name))
+    // Only running agents have a live session to look at, so only they get the
+    // copy-the-tmux-command buttons.
+    if (isRunning) attachTmuxCopyButtons(card, agent)
     agentsGrid.insertBefore(card, addBtn)
   }
 }

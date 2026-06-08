@@ -1,5 +1,3 @@
-import { execSync } from 'node:child_process'
-import { resolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import {
@@ -18,16 +16,15 @@ import {
 } from '../prompt-safety.js'
 import { isTrustedPeer } from '../team-trust.js'
 import { COORDINATOR_AGENT_ID } from '../channel-coordinator/ingest.js'
-import { isKnownAgent } from './agent-config.js'
+import { isKnownAgent, readAgentRemoteHost } from './agent-config.js'
 import { readAgentTeam } from './agent-team.js'
 import {
   agentSessionName,
   isSessionReadyForPrompt,
   sendPromptToSession,
+  sessionExistsOnHost,
 } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
-
-const TMUX = resolveFromPath('tmux')
 
 // Channel-coordinator sources whose messages are real inbound user messages
 // (relayed during a native-channel disconnect window), NOT inter-agent data.
@@ -82,12 +79,12 @@ export function startMessageRouter(): NodeJS.Timeout {
       // message as pending forever. Mirror the scheduler's session resolution.
       const isMainAgent = msg.to_agent === MAIN_AGENT_ID
       const session = isMainAgent ? MAIN_CHANNELS_SESSION : agentSessionName(msg.to_agent)
+      // Remote sub-agents run their tmux session on the laptop; resolve the host
+      // so the existence/readiness checks and the send all cross the ssh
+      // boundary. Local agents (and the main channels agent) stay host=null.
+      const host = isMainAgent ? null : readAgentRemoteHost(msg.to_agent)
 
-      let sessionExists = false
-      try {
-        const sessions = execSync(`${TMUX} list-sessions -F "#{session_name}"`, { timeout: 3000, encoding: 'utf-8' })
-        sessionExists = sessions.split('\n').some(s => s.trim() === session)
-      } catch { /* no tmux */ }
+      const sessionExists = sessionExistsOnHost(host, session)
 
       if (shouldAbandon(sessionExists, ageMs, MESSAGE_ABANDON_WINDOW_MS)) {
         logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent, ageMs }, 'Agent message abandoned: target session absent for full retry window')
@@ -106,7 +103,7 @@ export function startMessageRouter(): NodeJS.Timeout {
         continue
       }
 
-      if (!isSessionReadyForPrompt(session)) {
+      if (!isSessionReadyForPrompt(session, host)) {
         if (!routerLoggedMisses.has(msg.id)) {
           logger.warn({ id: msg.id, to: msg.to_agent, session }, 'Agent message target session busy, will retry')
           routerLoggedMisses.add(msg.id)
@@ -161,7 +158,7 @@ export function startMessageRouter(): NodeJS.Timeout {
         }
         // Inline preamble so a fresh session (post hard-restart) doesn't miss
         // the context that explains the tag semantics.
-        sendPromptToSession(session, prefix + wrapped)
+        sendPromptToSession(session, prefix + wrapped, host)
         if (!markMessageDelivered(msg.id)) {
           logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
         }

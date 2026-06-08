@@ -1,9 +1,9 @@
 import { execFileSync } from 'node:child_process'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
-import { listAgentNames } from './agent-config.js'
+import { listAgentNames, readAgentRemoteHost } from './agent-config.js'
 import {
-  isAgentRunning,
+  agentRunState,
   agentSessionName,
   restartAgentProcess,
   capturePane,
@@ -56,8 +56,8 @@ function sessionFor(name: string): string {
   return name === MAIN_AGENT_ID ? MAIN_CHANNELS_SESSION : agentSessionName(name)
 }
 
-function paneIsIdle(session: string): boolean {
-  const pane = capturePane(session)
+function paneIsIdle(session: string, host: string | null): boolean {
+  const pane = capturePane(session, host)
   if (pane == null) return false
   return detectPaneState(pane) === 'idle'
 }
@@ -81,8 +81,14 @@ function checkAgent(name: string, nowMs: number): void {
     return
   }
   // Sub-agents must be up to be restarted; the main session is launchd-managed
-  // (always considered present).
-  if (name !== MAIN_AGENT_ID && !isAgentRunning(name)) return
+  // (always considered present). Branch explicitly on the tri-state run state:
+  // ONLY 'running' is eligible. 'unreachable' (remote laptop briefly out of
+  // reach) is never auto-restarted -- the agent is almost certainly still alive
+  // on the laptop, and restarting would be wrong AND risk a duplicate session
+  // (the core SSH-independence invariant). 'stopped' is also left alone (auto-
+  // restart cycles running sessions on a schedule; it does not resurrect dead
+  // ones, matching the prior local behavior).
+  if (name !== MAIN_AGENT_ID && agentRunState(name) !== 'running') return
 
   // Seed on first sight so a daily slot that already elapsed before boot does
   // not fire now.
@@ -96,7 +102,8 @@ function checkAgent(name: string, nowMs: number): void {
   if (!restartDue(lastRestart.get(name) ?? null, nowMs, dueAt)) return
 
   const session = sessionFor(name)
-  if (!paneIsIdle(session)) {
+  const host = name === MAIN_AGENT_ID ? null : readAgentRemoteHost(name)
+  if (!paneIsIdle(session, host)) {
     logger.info({ name, session }, 'auto-restart: due but pane is busy, deferring to next tick')
     return
   }

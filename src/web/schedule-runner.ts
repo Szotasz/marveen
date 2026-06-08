@@ -1,7 +1,5 @@
 import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
-import { execSync, execFileSync } from 'node:child_process'
-import { resolveFromPath } from '../platform.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { logger } from '../logger.js'
 import {
@@ -28,19 +26,20 @@ import {
   listScheduledTasks,
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
-import { listAgentNames, readFileOr } from './agent-config.js'
+import { listAgentNames, readFileOr, readAgentRemoteHost } from './agent-config.js'
 import {
   agentSessionName,
   isAgentRunning,
   isSessionReadyForPrompt,
   sendPromptToSession,
   startAgentProcess,
+  sessionExistsOnHost,
+  capturePane,
+  sendEnterToSession,
 } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { sendTelegramMessage } from './telegram.js'
 import { runCommandTask } from './command-task.js'
-
-const TMUX = resolveFromPath('tmux')
 
 // --- Schedule Runner ---
 // Checks every minute if any scheduled task is due and injects the prompt
@@ -95,20 +94,21 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number): '
     ? task.targetSession
     : isMainAgent ? MAIN_CHANNELS_SESSION : agentSessionName(agentName)
 
-  let sessionExists = false
-  try {
-    const sessions = execSync(`${TMUX} list-sessions -F "#{session_name}"`, { timeout: 3000, encoding: 'utf-8' })
-    sessionExists = sessions.split('\n').some(s => s.trim() === session)
-  } catch { /* no tmux */ }
+  // A remote sub-agent's session lives on the laptop -- resolve its host so the
+  // existence/readiness checks and the send cross the ssh boundary. A custom
+  // targetSession override and the main channels agent stay local (host=null).
+  const host = (task.targetSession || isMainAgent) ? null : readAgentRemoteHost(agentName)
 
-  if (!sessionExists) {
+  if (!sessionExistsOnHost(host, session)) {
     // Auto-start the agent, then deliver on a later tick. A daily batch agent
     // (e.g. a `0 2 * * *` digest) has no 24/7 session, so a cron fire used to
     // just skip here -- the task never ran. Launch the session now and return
     // 'starting'; the caller enqueues a retry that bypasses skipIfBusy (waking
     // the agent for its scheduled run is the whole point, so a skipIfBusy=true
     // task must NOT drop the delivery). The next tick finds the session up and
-    // sends once Claude has booted (isSessionReadyForPrompt).
+    // sends once Claude has booted (isSessionReadyForPrompt). host-aware:
+    // startAgentProcess is itself remote-aware and launches over ssh when the
+    // target agent is remote, so a missing remote session is auto-started too.
     const start = startAgentProcess(agentName)
     if (!start.ok) {
       // "already running" means it raced up between the check and here -- treat
@@ -127,7 +127,7 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number): '
   // will process it at the next idle slot. This prevents the infinite
   // retry loop observed when the target session stays busy for hours
   // (275 retries overnight in production).
-  if (!task.forceSend && !isSessionReadyForPrompt(session)) {
+  if (!task.forceSend && !isSessionReadyForPrompt(session, host)) {
     logger.warn({ task: task.name, agent: agentName, session }, 'Schedule target session busy or has pending input, will retry')
     return 'busy'
   }
@@ -169,7 +169,7 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number): '
       UNTRUSTED_PREAMBLE + '\n' +
       prefix.trimEnd() + '\n\n' +
       wrapUntrusted(`scheduled-task:${task.name}`, task.prompt)
-    sendPromptToSession(session, fullPrompt)
+    sendPromptToSession(session, fullPrompt, host)
     scheduleLastRun.set(task.name, now)
     persistScheduleLastRun()
     appendTaskRun(task.name, agentName)
@@ -186,14 +186,16 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number): '
       : `[Utemezett feladat: ${task.name}]`
     const resubmit = (attempt: number) => {
       try {
-        const pane = execFileSync(TMUX, ['capture-pane', '-t', session, '-p'], { timeout: 3000, encoding: 'utf-8' })
-        const stuck = /❯\s+\S/.test(pane) && pane.includes(marker)
+        // Host-aware so a remote agent's post-send stuck-check + recovery Enter
+        // hit the laptop session, not a (nonexistent) local one.
+        const pane = capturePane(session, host)
+        const stuck = pane != null && /❯\s+\S/.test(pane) && pane.includes(marker)
         if (!stuck) return
         if (attempt >= 5) {
           logger.warn({ task: task.name, session }, 'Scheduled prompt still stuck after 5 Enter retries -- giving up')
           return
         }
-        execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 3000 })
+        sendEnterToSession(session, host)
         setTimeout(() => resubmit(attempt + 1), 3000)
       } catch (err) {
         logger.warn({ err, task: task.name }, 'Post-send resubmit failed')
