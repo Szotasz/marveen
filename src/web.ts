@@ -231,6 +231,16 @@ export function startWebServer(port = 3420): http.Server {
   const scheduleInterval = startScheduleRunner()
   logger.info('Schedule runner started (60s poll)')
 
+  // Pre-start the interactive agent worker (subscription backend) so the first
+  // heartbeat / scheduled generation after boot does not pay the cold-boot
+  // latency. runViaWorker still lazy-starts + restarts it on demand, so this is
+  // a warm-up, not a hard dependency. Skipped on the SDK rollback backend.
+  if ((process.env.MARVEEN_AGENT_BACKEND || 'worker').toLowerCase() !== 'sdk') {
+    import('./web/agent-worker.js')
+      .then(m => { m.startWorkerSession(); logger.info('Interactive agent worker pre-started') })
+      .catch(err => logger.warn({ err }, 'Failed to pre-start agent worker (will lazy-start on first use)'))
+  }
+
   const pluginMonitorInterval = startChannelPluginMonitor()
   logger.info('Channel plugin health monitor started (60s poll)')
 

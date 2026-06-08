@@ -1,7 +1,6 @@
-import { execFile } from 'node:child_process'
 import { logger } from '../logger.js'
 import { listAgentNames } from './agent-config.js'
-import { resolveFromPath } from '../platform.js'
+import { runAgent } from '../agent.js'
 
 export interface SubtaskSuggestion {
   title: string
@@ -13,8 +12,6 @@ export interface SubtaskSuggestion {
 export interface BreakdownResult {
   subtasks: SubtaskSuggestion[]
 }
-
-const TIMEOUT_MS = 60_000
 
 const SYSTEM_PROMPT = `You are a project management assistant that breaks down kanban cards into actionable subtasks.
 
@@ -52,41 +49,31 @@ function getValidAssignees(): Set<string> {
   return new Set(['Szabolcs', 'Marveen', ...agents])
 }
 
-function resolveClaudeBinary(): string {
-  return resolveFromPath('claude')
+// Strip a leading/trailing ```json ... ``` fence if the model added one despite
+// the "no markdown fences" instruction.
+function stripCodeFences(s: string): string {
+  const m = s.trim().match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/)
+  return m ? m[1].trim() : s.trim()
 }
 
-async function callClaudeP(userPrompt: string): Promise<SubtaskSuggestion[]> {
-  const claude = resolveClaudeBinary()
+// Generate the subtask JSON via runAgent -> the interactive worker (subscription
+// login, no `claude -p` / SDK -- jun.15 billing migration). The worker writes
+// its response (the JSON array, per SYSTEM_PROMPT) to a scratch file that
+// runAgent returns as `text`.
+async function callBreakdownAgent(userPrompt: string): Promise<SubtaskSuggestion[]> {
   const fullPrompt = `${SYSTEM_PROMPT}\n\n${userPrompt}`
-
-  return new Promise((resolve, reject) => {
-    const child = execFile(
-      claude,
-      ['-p', '--model', 'claude-sonnet-4-6', '--output-format', 'json'],
-      { timeout: TIMEOUT_MS, maxBuffer: 1024 * 1024 },
-      (err, stdout, stderr) => {
-        if (err) {
-          if ((err as any).killed || err.message.includes('TIMEOUT') || err.message.includes('timed out')) {
-            return reject(new Error('claude -p timed out after 60s'))
-          }
-          logger.warn({ err, stderr: stderr?.slice(0, 300) }, 'claude -p failed')
-          return reject(new Error(`claude -p failed: ${err.message}`))
-        }
-        try {
-          const parsed = JSON.parse(stdout)
-          const text = parsed?.result ?? stdout
-          const subtasks = typeof text === 'string' ? JSON.parse(text) : text
-          resolve(Array.isArray(subtasks) ? subtasks : [])
-        } catch (parseErr) {
-          logger.warn({ stdout: stdout?.slice(0, 500) }, 'claude -p output parse failed')
-          reject(new Error('Failed to parse claude -p output as JSON'))
-        }
-      },
-    )
-    child.stdin?.write(fullPrompt)
-    child.stdin?.end()
-  })
+  const { text, error } = await runAgent(fullPrompt)
+  if (!text || !text.trim()) {
+    throw new Error(`breakdown agent returned no content${error ? `: ${error}` : ''}`)
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(stripCodeFences(text))
+  } catch {
+    logger.warn({ output: text.slice(0, 500) }, 'breakdown agent output parse failed')
+    throw new Error('Failed to parse breakdown output as JSON')
+  }
+  return Array.isArray(parsed) ? (parsed as SubtaskSuggestion[]) : []
 }
 
 export function validateSubtasks(raw: unknown, validAssignees?: Set<string>): SubtaskSuggestion[] {
@@ -112,14 +99,6 @@ export async function generateBreakdown(title: string, description: string | nul
   const agents = [...validAssignees]
   const userPrompt = buildUserPrompt(title, description, agents)
 
-  try {
-    const raw = await callClaudeP(userPrompt)
-    return { subtasks: validateSubtasks(raw, validAssignees) }
-  } catch (err) {
-    const msg = (err as Error).message
-    if (msg.includes('not found on PATH')) {
-      throw new Error('claude CLI not available on this system')
-    }
-    throw err
-  }
+  const raw = await callBreakdownAgent(userPrompt)
+  return { subtasks: validateSubtasks(raw, validAssignees) }
 }

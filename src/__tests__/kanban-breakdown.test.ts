@@ -7,6 +7,11 @@ vi.mock('node:child_process', () => ({
   execSync: vi.fn(() => '/usr/local/bin/claude'),
 }))
 
+// generateBreakdown now routes through runAgent (the interactive worker), not
+// `claude -p`. Mock the agent module so the breakdown tests exercise the
+// parse/validate path without a live session.
+vi.mock('../agent.js', () => ({ runAgent: vi.fn() }))
+
 describe('kanban parent_id schema and subtask queries', () => {
   let db: ReturnType<typeof Database>
 
@@ -188,25 +193,21 @@ describe('validateSubtasks (from llm-breakdown)', () => {
   })
 })
 
-describe('generateBreakdown with claude -p', () => {
-  let mockedExecFile: ReturnType<typeof vi.fn>
+describe('generateBreakdown via worker (runAgent)', () => {
+  let mockedRunAgent: ReturnType<typeof vi.fn>
 
   beforeEach(async () => {
     vi.clearAllMocks()
-    vi.resetModules()
-    const cp = await import('node:child_process')
-    mockedExecFile = vi.mocked(cp.execFile)
+    const agent = await import('../agent.js')
+    mockedRunAgent = vi.mocked(agent.runAgent)
   })
 
-  it('parses claude -p JSON result output', async () => {
+  it('parses the worker JSON array output', async () => {
     const subtasks = [
       { title: 'Step 1', description: 'Do first thing', assignee: null, priority: 'normal' },
       { title: 'Step 2', description: 'Do second thing', assignee: null, priority: 'high' },
     ]
-    mockedExecFile.mockImplementation((_cmd: any, _args: any, _opts: any, cb: any) => {
-      cb(null, JSON.stringify({ result: JSON.stringify(subtasks) }), '')
-      return { stdin: { write: () => {}, end: () => {} } } as any
-    })
+    mockedRunAgent.mockResolvedValue({ text: JSON.stringify(subtasks) })
 
     const { generateBreakdown } = await import('../web/llm-breakdown.js')
     const result = await generateBreakdown('Test card', 'Some description')
@@ -215,46 +216,38 @@ describe('generateBreakdown with claude -p', () => {
     expect(result.subtasks[1].priority).toBe('high')
   })
 
-  it('handles timeout error', async () => {
-    mockedExecFile.mockImplementation((_cmd: any, _args: any, _opts: any, cb: any) => {
-      const err = new Error('timed out') as any
-      err.killed = true
-      cb(err, '', '')
-      return { stdin: { write: () => {}, end: () => {} } } as any
-    })
+  it('strips a ```json fence the model may add despite instructions', async () => {
+    const subtasks = [{ title: 'T', description: 'D', assignee: null, priority: 'normal' }]
+    mockedRunAgent.mockResolvedValue({ text: '```json\n' + JSON.stringify(subtasks) + '\n```' })
 
     const { generateBreakdown } = await import('../web/llm-breakdown.js')
-    await expect(generateBreakdown('Test', null)).rejects.toThrow('timed out after 60s')
+    const result = await generateBreakdown('T', null)
+    expect(result.subtasks).toHaveLength(1)
   })
 
-  it('handles non-JSON output', async () => {
-    mockedExecFile.mockImplementation((_cmd: any, _args: any, _opts: any, cb: any) => {
-      cb(null, 'This is not JSON at all', '')
-      return { stdin: { write: () => {}, end: () => {} } } as any
-    })
+  it('throws when the worker returns no content (timeout / blocked)', async () => {
+    mockedRunAgent.mockResolvedValue({ text: null, error: 'worker timeout after 1200s' })
+
+    const { generateBreakdown } = await import('../web/llm-breakdown.js')
+    await expect(generateBreakdown('Test', null)).rejects.toThrow('no content')
+  })
+
+  it('throws on non-JSON output', async () => {
+    mockedRunAgent.mockResolvedValue({ text: 'This is not JSON at all' })
 
     const { generateBreakdown } = await import('../web/llm-breakdown.js')
     await expect(generateBreakdown('Test', null)).rejects.toThrow('parse')
   })
 
-  it('passes prompt via stdin (not in args)', async () => {
+  it('passes the full system+card prompt to runAgent', async () => {
     const subtasks = [{ title: 'T', description: 'D', assignee: null, priority: 'normal' }]
-    let stdinData = ''
-    mockedExecFile.mockImplementation((_cmd: any, args: any, _opts: any, cb: any) => {
-      expect(args).not.toContain(expect.stringContaining('card_title'))
-      cb(null, JSON.stringify({ result: JSON.stringify(subtasks) }), '')
-      return {
-        stdin: {
-          write: (data: string) => { stdinData = data },
-          end: () => {},
-        },
-      } as any
-    })
+    mockedRunAgent.mockResolvedValue({ text: JSON.stringify(subtasks) })
 
     const { generateBreakdown } = await import('../web/llm-breakdown.js')
     await generateBreakdown('My card', 'Description')
-    expect(stdinData).toContain('card_title')
-    expect(stdinData).toContain('My card')
+    const promptArg = mockedRunAgent.mock.calls[0][0] as string
+    expect(promptArg).toContain('card_title')
+    expect(promptArg).toContain('My card')
   })
 })
 
