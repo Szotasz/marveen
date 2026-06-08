@@ -75,10 +75,10 @@ describe('getManagedSettingsSudoCommand merge logic', () => {
     const pipeIdx = cmd.indexOf('|')
     const echoAndPayload = cmd.slice(0, pipeIdx).trim()
     const pythonPart = cmd.slice(pipeIdx + 1).trim()
-    const innerMatch = pythonPart.match(/python3 -c '(.+?)' \|/)
+    const innerMatch = pythonPart.match(/python3 -c '([\s\S]+?)' \|/)
     if (!innerMatch) throw new Error('Could not parse python script from command')
     const script = innerMatch[1]
-      .replace(new RegExp('/Library/Application Support/ClaudeCode/managed-settings\\.json', 'g'), targetPath)
+      .replace(new RegExp('/Library/Application Support/ClaudeCode/managed-settings\\.json|/etc/claude-code/managed-settings\\.json', 'g'), targetPath)
       .replace(/; /g, '\n')
 
     if (existingContent !== null) writeFileSync(targetPath, existingContent)

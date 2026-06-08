@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, mkdirSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync, copyFileSync, renameSync } from 'node:fs'
-import { join, extname } from 'node:path'
+import { join, extname, dirname } from 'node:path'
 import { homedir, platform } from 'node:os'
 import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
@@ -131,9 +131,17 @@ function matchChannelRoute(path: string, suffix: string): [string, ChannelProvid
   return null
 }
 
-const MANAGED_SETTINGS_PATH = platform() === 'darwin'
-  ? '/Library/Application Support/ClaudeCode/managed-settings.json'
-  : '/etc/claude-code/managed-settings.json'
+function managedSettingsPath(): string {
+  switch (platform()) {
+    case 'darwin':
+      return '/Library/Application Support/ClaudeCode/managed-settings.json'
+    case 'win32':
+      return join(process.env.ProgramData || 'C:\\ProgramData', 'ClaudeCode', 'managed-settings.json')
+    default:
+      return '/etc/claude-code/managed-settings.json'
+  }
+}
+const MANAGED_SETTINGS_PATH = managedSettingsPath()
 const SLACK_ALLOWLIST_ENTRY = { plugin: 'slack-channel', marketplace: 'marveen-marketplace' }
 
 export function isManagedSettingsReady(): boolean {
@@ -157,7 +165,7 @@ export function getManagedSettingsSudoCommand(): string {
   const mergeScript = [
     'import json, sys',
     'new_data = json.loads(sys.stdin.read())',
-    'try:\n  with open("' + MANAGED_SETTINGS_PATH + '") as f: data = json.load(f)',
+    'try:\n  with open(' + JSON.stringify(MANAGED_SETTINGS_PATH) + ') as f: data = json.load(f)',
     'except:\n  data = {}',
     'data["channelsEnabled"] = True',
     'existing = data.get("allowedChannelPlugins", [])',
@@ -171,6 +179,10 @@ export function getManagedSettingsSudoCommand(): string {
       { plugin: 'telegram', marketplace: 'claude-plugins-official' },
     ],
   })
+  if (platform() === 'win32') {
+    const dir = dirname(MANAGED_SETTINGS_PATH)
+    return `New-Item -ItemType Directory -Force -Path '${dir}' | Out-Null; '${payload}' | python -c '${mergeScript}' | Set-Content -LiteralPath '${MANAGED_SETTINGS_PATH}' -Encoding utf8`
+  }
   const escapedScript = mergeScript.replace(/'/g, "'\\''")
   return `echo '${payload}' | sudo python3 -c '${escapedScript}' | sudo tee "${MANAGED_SETTINGS_PATH}" > /dev/null`
 }
