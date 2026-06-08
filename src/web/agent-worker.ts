@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync, readdirSync, lstatSync, symlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync, readdirSync, lstatSync, symlinkSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { resolveFromPath } from '../platform.js'
@@ -181,7 +181,10 @@ export function ensureWorkerCwd(): void {
   }
   const enabledPlugins: Record<string, boolean> = { ...(current.enabledPlugins ?? {}) }
   for (const p of WORKER_DISABLED_PLUGINS) enabledPlugins[p] = false
-  writeFileSync(settingsPath, JSON.stringify({ ...current, enabledPlugins }, null, 2) + '\n')
+  // skipDangerousModePermissionPrompt: suppress the "Bypass Permissions mode"
+  // first-run warning so the headless worker (launched with
+  // --dangerously-skip-permissions) reaches its prompt without a blocking modal.
+  writeFileSync(settingsPath, JSON.stringify({ ...current, enabledPlugins, skipDangerousModePermissionPrompt: true }, null, 2) + '\n')
 
   // Subscription auth: materialise the host login JSON as .credentials.json.
   const credentialsJson = readClaudeCodeOauthJson()
@@ -189,19 +192,29 @@ export function ensureWorkerCwd(): void {
     writeFileSync(join(WORKER_CONFIG_DIR, '.credentials.json'), credentialsJson, { mode: 0o600 })
   }
 
-  // Inherit project-scoped MCP servers under the worker's own cwd key.
+  // Inherit project-scoped MCP servers under the worker's own cwd key, AND
+  // pre-accept the first-run dialogs so the headless interactive session never
+  // parks on a modal (Trust folder / project onboarding). hasCompletedOnboarding
+  // (global) suppresses the theme picker + login onboarding. We stamp the trust
+  // flags on BOTH WORKER_HOME and its realpath (macOS /var, symlinked $HOME
+  // edge-cases) since Claude Code keys trust by the resolved workspace path.
   try {
     const homeClaudeJson = join(homedir(), '.claude.json')
-    if (existsSync(homeClaudeJson)) {
-      const parsed = JSON.parse(readFileSync(homeClaudeJson, 'utf-8')) as { projects?: Record<string, unknown> }
-      const projects = parsed.projects
-      if (projects && typeof projects === 'object' && projects[PROJECT_ROOT] && !projects[WORKER_HOME]) {
-        projects[WORKER_HOME] = projects[PROJECT_ROOT]
-      }
-      writeFileSync(join(WORKER_CONFIG_DIR, '.claude.json'), JSON.stringify(parsed, null, 2) + '\n', { mode: 0o600 })
-    }
+    const parsed: { projects?: Record<string, unknown>; hasCompletedOnboarding?: boolean; [k: string]: unknown } =
+      existsSync(homeClaudeJson) ? JSON.parse(readFileSync(homeClaudeJson, 'utf-8')) : {}
+    parsed.hasCompletedOnboarding = true
+    const projects: Record<string, unknown> = (parsed.projects && typeof parsed.projects === 'object') ? parsed.projects : {}
+    const base = (projects[PROJECT_ROOT] && typeof projects[PROJECT_ROOT] === 'object')
+      ? projects[PROJECT_ROOT] as Record<string, unknown>
+      : {}
+    const trusted = { ...base, hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true, projectOnboardingSeenCount: 1 }
+    const keys = new Set<string>([WORKER_HOME])
+    try { keys.add(realpathSync(WORKER_HOME)) } catch { /* dir may not resolve yet */ }
+    for (const k of keys) projects[k] = { ...trusted }
+    parsed.projects = projects
+    writeFileSync(join(WORKER_CONFIG_DIR, '.claude.json'), JSON.stringify(parsed, null, 2) + '\n', { mode: 0o600 })
   } catch (err) {
-    logger.warn({ err }, 'worker: failed to materialise .claude.json (worker will lack project MCPs)')
+    logger.warn({ err }, 'worker: failed to materialise .claude.json (worker may park on a first-run modal)')
   }
 }
 
