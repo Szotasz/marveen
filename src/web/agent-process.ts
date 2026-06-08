@@ -18,6 +18,7 @@ import { loadProfileTemplate } from './profiles.js'
 import { writeAgentSettingsFromProfile } from './agent-scaffold.js'
 import { getSecret } from './vault.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
+import { recordSessionStartCard, closeSessionStartCard } from './agent-session-card.js'
 
 const TMUX = resolveFromPath('tmux')
 const CLAUDE = resolveFromPath('claude')
@@ -218,6 +219,8 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // -- the outbound pre-flight remains the safety net if this misses.
     scheduleIdentitySetup(session, readAgentDisplayName(name))
 
+    recordSessionStartCard(name, null)
+
     return { ok: true }
   } catch (err) {
     logger.error({ err, name }, 'Failed to start agent tmux session')
@@ -243,6 +246,7 @@ export function stopAgentProcess(name: string): { ok: boolean; error?: string } 
       logger.warn({ err, name }, 'post-stop channel-poller reap failed')
     }
     logger.info({ name, session }, 'Agent tmux session stopped')
+    closeSessionStartCard(name)
     return { ok: true }
   } catch (err) {
     logger.error({ err, name, session }, 'Failed to stop agent tmux session')
