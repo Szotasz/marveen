@@ -348,6 +348,20 @@ nav { display: flex; gap: 4px; }
   height: 16px;
   background: var(--border);
 }
+/* Nested tree: a subtree is a column (manager on top, its reports beneath),
+   so reports always sit directly under their own manager. */
+.team-subtree {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.team-children {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: flex-start;
+}
 .team-empty {
   color: var(--text-muted);
   font-size: 13px;

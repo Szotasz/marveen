@@ -7257,37 +7257,63 @@ function renderTeamGraph(container, data) {
     }
     return div
   }
-  // BFS levels starting from main
-  const levels = [[mainAgentId]]
+  // Render as a nested tree so each report sits directly under its own
+  // manager. A flat BFS-by-row layout made a leader's reports look like they
+  // belonged to whichever node happened to be above them in the row.
   const seen = new Set([mainAgentId])
-  while (levels[levels.length - 1].length) {
-    const nextIds = []
-    for (const id of levels[levels.length - 1]) {
-      for (const child of childrenOf.get(id) || []) {
-        if (!seen.has(child)) { seen.add(child); nextIds.push(child) }
-      }
-    }
-    if (nextIds.length === 0) break
-    levels.push(nextIds)
-  }
-  // Orphans (nodes not reachable from main, shouldn't happen with the auto
-  // fallback on the backend but guard just in case) go to a trailing level.
-  const orphans = nodes.filter(n => !seen.has(n.id))
-  if (orphans.length) levels.push(orphans.map(n => n.id))
-  for (let i = 0; i < levels.length; i++) {
-    const level = document.createElement('div')
-    level.className = 'team-level'
-    for (const id of levels[i]) {
-      const node = byId.get(id)
-      if (!node) continue
-      level.appendChild(renderNode(node))
-    }
-    container.appendChild(level)
-    if (i < levels.length - 1) {
+  const renderSubtree = (id) => {
+    const node = byId.get(id)
+    if (!node) return null
+    const col = document.createElement('div')
+    col.className = 'team-subtree'
+    col.appendChild(renderNode(node))
+    const kids = (childrenOf.get(id) || []).filter(c => !seen.has(c) && byId.has(c))
+    for (const c of kids) seen.add(c)
+    if (kids.length) {
       const conn = document.createElement('div')
       conn.className = 'team-connector'
-      container.appendChild(conn)
+      col.appendChild(conn)
+      const row = document.createElement('div')
+      row.className = 'team-children'
+      for (const c of kids) {
+        const sub = renderSubtree(c)
+        if (sub) row.appendChild(sub)
+      }
+      col.appendChild(row)
     }
+    return col
+  }
+  // Main on top, then a row of its direct reports (each carrying its own
+  // subtree beneath it).
+  const mainNode = byId.get(mainAgentId)
+  if (mainNode) {
+    const mainRow = document.createElement('div')
+    mainRow.className = 'team-level'
+    mainRow.appendChild(renderNode(mainNode))
+    container.appendChild(mainRow)
+  }
+  const directs = (childrenOf.get(mainAgentId) || []).filter(c => !seen.has(c) && byId.has(c))
+  for (const c of directs) seen.add(c)
+  if (directs.length) {
+    const conn = document.createElement('div')
+    conn.className = 'team-connector'
+    container.appendChild(conn)
+    const row = document.createElement('div')
+    row.className = 'team-children team-roots'
+    for (const c of directs) {
+      const sub = renderSubtree(c)
+      if (sub) row.appendChild(sub)
+    }
+    container.appendChild(row)
+  }
+  // Orphans (nodes not reachable from main, shouldn't happen with the auto
+  // fallback on the backend but guard just in case) go to a trailing row.
+  const orphans = nodes.filter(n => !seen.has(n.id))
+  if (orphans.length) {
+    const row = document.createElement('div')
+    row.className = 'team-level'
+    for (const n of orphans) row.appendChild(renderNode(n))
+    container.appendChild(row)
   }
   if (nodes.length === 1) {
     const empty = document.createElement('div')
