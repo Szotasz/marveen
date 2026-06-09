@@ -30,6 +30,7 @@ import { tryHandleMigrate } from './web/routes/migrate.js'
 import { tryHandleKanban } from './web/routes/kanban.js'
 import { tryHandleSchedules } from './web/routes/schedules.js'
 import { tryHandleConnectors } from './web/routes/connectors.js'
+import { tryHandleDocs } from './web/routes/docs.js'
 import { tryHandleConnectorsHu } from './web/routes/connectors-hu.js'
 import { tryHandleAgentsSkills } from './web/routes/agents-skills.js'
 import { tryHandleSkills } from './web/routes/skills.js'
@@ -133,6 +134,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleSchedules(routeCtx)) return
       if (await tryHandleConnectorsHu(routeCtx)) return
       if (await tryHandleConnectors(routeCtx)) return
+      if (await tryHandleDocs(routeCtx)) return
       if (await tryHandleAgentsSkills(routeCtx)) return
       if (await tryHandleSkills(routeCtx)) return
       if (await tryHandleAgentTerminal(routeCtx)) return

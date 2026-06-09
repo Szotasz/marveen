@@ -80,6 +80,10 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/><polyline points="7 10 12 5 17 10"/><line x1="12" y1="5" x2="12" y2="17"/></svg>
         <span class="sb-label">Költöztetés</span>
       </a>
+      <a href="#" class="sb-link" data-page="docs">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        <span class="sb-label">Dokumentáció</span>
+      </a>
       <a href="#" class="sb-link" data-page="status">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
         <span class="sb-label">Státusz</span>
@@ -715,6 +719,22 @@
           <div class="migrate-result" id="migrateResult"></div>
           <button class="btn-secondary btn-compact" id="migrateNewBtn" style="margin-top:16px">Új költöztetés</button>
         </div>
+      </div>
+    </div>
+
+    <!-- === Docs Page === -->
+    <div class="page" id="docsPage" hidden>
+      <div class="page-header">
+        <h1>Dokumentáció</h1>
+        <p class="subtitle">A projekt docs/ mappája, olvasható formában</p>
+      </div>
+      <div class="docs-layout">
+        <aside class="docs-list" id="docsList">
+          <p class="muted">Betöltés...</p>
+        </aside>
+        <article class="docs-content markdown-body" id="docsContent">
+          <p class="muted">Válassz egy dokumentumot a bal oldali listából.</p>
+        </article>
       </div>
     </div>
 
