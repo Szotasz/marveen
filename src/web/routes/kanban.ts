@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import {
   listKanbanCards, createKanbanCard, updateKanbanCard,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard,
@@ -6,7 +7,7 @@ import {
   getKanbanCard, getChildCards, getDb,
   createAgentMessage, markKanbanCardDispatched,
 } from '../../db.js'
-import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID } from '../../config.js'
+import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT } from '../../config.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
 import { resolveKanbanDispatchTarget } from '../../kanban-dispatch.js'
@@ -14,6 +15,39 @@ import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
+
+// A headless agent cannot "drag" a card to done, so the dispatch hands it the
+// exact curl commands to (1) post a short, human-readable result summary as a
+// comment -- so the finished task's result lands on its OWN card, visible in the
+// dashboard UI -- and (2) mark the card done. This is the lightweight
+// alternative to spawning a separate per-session card for every agent run: the
+// result goes where the work was asked for, with zero extra board clutter. The
+// token is read from the store at call time (never embedded in the message).
+export function kanbanMoveInstructions(id: string, target: string): string {
+  const tokenPath = join(STORE_DIR, '.dashboard-token')
+  const base = `http://${WEB_HOST}:${WEB_PORT}`
+  const auth = `-H "Authorization: Bearer $(cat ${tokenPath})"`
+  const moveUrl = `${base}/api/kanban/${id}/move`
+  const commentUrl = `${base}/api/kanban/${id}/comments`
+  return [
+    'A kártyát in_progress-re húzták. Amikor VÉGEZTÉL, két lépés (mindkettő a kártyára kerül, a web UI-ban látszik):',
+    '',
+    '1) Írj egy rövid eredmény-összefoglalót kommentként (1-2 mondat: mi lett a vége):',
+    `  curl -s -X POST ${commentUrl} \\`,
+    `    ${auth} \\`,
+    `    -H 'Content-Type: application/json' \\`,
+    `    -d '{"author":"${target}","content":"AZ EREDMENY ROVIDEN"}'`,
+    '',
+    '2) Állítsd a kártyát done-ra:',
+    `  curl -s -X POST ${moveUrl} \\`,
+    `    ${auth} \\`,
+    `    -H 'Content-Type: application/json' \\`,
+    `    -d '{"status":"done"}'`,
+    '',
+    'Ha elakadtál / inputra vársz: a 2) helyett status="waiting".',
+    'A "done"-t mindenképp te jelezd — a dashboard csak az in_progress/waiting állapotot követi automatikusan a session aktivitásából. Az eredmény-kommentet (1) ne hagyd ki: az a kártyán a látható eredmény.',
+  ].join('\n')
+}
 
 // Option D: kanban -> agent dispatch. When a card moves to in_progress, wake the
 // assigned agent once via the inter-agent message router (createAgentMessage),
@@ -32,7 +66,7 @@ function fireKanbanDispatch(id: string): void {
     })
     if (!target) return
     const desc = (card.description ?? '').trim()
-    const content = `[Kanban feladat #${id}]: ${card.title}${desc ? ' — ' + desc : ''}\n\nA kártyát in_progress-re húzták. Ha kész vagy, húzd "done"-ra.`
+    const content = `[Kanban feladat #${id}]: ${card.title}${desc ? ' — ' + desc : ''}\n\n${kanbanMoveInstructions(id, target)}`
     createAgentMessage(MAIN_AGENT_ID, target, content)
     markKanbanCardDispatched(id)
     logger.info({ id, target, assignee: card.assignee }, 'Kanban in_progress dispatch fired')
