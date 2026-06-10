@@ -659,6 +659,24 @@ export function parkedChannelInput(pane: string): ParkedChannelInput | null {
   return { complete: true, block, chatId: cm[1] }
 }
 
+// The whitespace-collapsed text currently parked in the live input box when
+// the pane is 'typing', or null when nothing is parked. Used by SUB-AGENT
+// stuck-input recovery to re-inject a delivered message that the TUI failed to
+// submit and that is NOT a <channel> block (e.g. an inter-agent notification).
+// A sub-agent's input box never holds a human-typed draft -- only router- or
+// plugin-delivered messages -- so re-injecting its parked text is safe there.
+// The collapse mirrors parkedChannelInput(): terminal wrap is folded into
+// single spaces, yielding a single-line, reliably submittable message.
+export function parkedInputText(pane: string): string | null {
+  if (detectPaneState(pane) !== 'typing') return null
+  const box = liveInputBox(pane)
+  if (box == null) return null
+  // Collapse terminal wrap, then strip the leading ❯ prompt marker so the
+  // re-injected text is the message itself, not the prompt glyph.
+  const flat = box.replace(/\s+/g, ' ').trim().replace(/^❯\s*/, '').trim()
+  return flat.length > 0 ? flat : null
+}
+
 // Per-session bookkeeping for the stuck-input recovery watcher. A "spell"
 // is one continuous stretch of the SAME text parked in the input box.
 export interface StuckInputState {

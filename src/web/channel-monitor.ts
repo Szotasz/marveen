@@ -24,6 +24,7 @@ import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import {
   detectPaneState, decidePaneErrorAlert, type PaneErrorAlertState, type PaneState,
   stuckInputSignature, decideStuckInputRecovery, parkedChannelInput,
+  parkedInputText, shouldClearTruncatedPreamble,
   type StuckInputState, type StuckInputThresholds,
 } from '../pane-state.js'
 import { MAIN_CHANNELS_SESSION, MAIN_CHANNELS_PLIST } from './main-agent.js'
@@ -106,31 +107,63 @@ const MAIN_STUCK_THRESHOLDS: StuckInputThresholds = {
 // clear + verbatim re-inject of the COMPLETE block). The gate fires ONLY for a
 // parked <channel> block, so a human's own draft is never touched. Returns the
 // next StuckInputState. Used for the main session AND every sub-agent session.
+// Recover a channel/inter-agent message stranded at the ❯ prompt by getting it
+// SUBMITTED. Tracks ANY parked input (stuckInputSignature), Enter-first, then
+// escalates after MAIN_STUCK_ENTER_ATTEMPTS. Escalation has three safe paths:
+//   1. a COMPLETE <channel> block -> clear + verbatim re-inject (chat_id-safe);
+//   2. a truncated/stale safety preamble (no real opening tag) -> clear only,
+//      NEVER re-inject (re-injecting it could let a later payload inherit a
+//      stale trust preamble -- see shouldClearTruncatedPreamble);
+//   3. SUB-AGENTS ONLY (allowPlainReinject): any other complete parked text
+//      (e.g. an inter-agent notification) -> clear + re-inject the collapsed
+//      text. A sub-agent's input box never holds a human draft, so this is
+//      safe; the main session stays conservative (Enter / <channel>-only).
 function recoverStuckInputForSession(
   session: string,
   prev: StuckInputState,
   thresholds: StuckInputThresholds,
+  allowPlainReinject: boolean,
 ): StuckInputState {
   const pane = capturePane(session)
-  const parked = pane != null ? parkedChannelInput(pane) : null
-  const sig = parked != null && pane != null ? stuckInputSignature(pane) : null
+  const sig = pane != null ? stuckInputSignature(pane) : null
   const decision = decideStuckInputRecovery(sig, prev, Date.now(), thresholds)
-  if (decision.recover && parked != null) {
+  if (decision.recover && pane != null) {
     const attempt = decision.next.attempts
-    const reinject = attempt > MAIN_STUCK_ENTER_ATTEMPTS && parked.complete && parked.block != null
-    if (reinject) {
-      logger.warn({ session, chatId: parked.chatId, attempt }, 'Stuck channel input -- escalating to clear + verbatim re-inject')
+    const escalate = attempt > MAIN_STUCK_ENTER_ATTEMPTS
+    const block = parkedChannelInput(pane)
+    if (escalate && block != null && block.complete && block.block != null) {
+      logger.warn({ session, chatId: block.chatId, attempt }, 'Stuck channel input -- escalating to clear + verbatim re-inject')
       try {
         clearInputBuffer(session)
-        sendPromptToSession(session, parked.block!)
+        sendPromptToSession(session, block.block)
       } catch (err) {
         logger.warn({ err, session }, 'Stuck-input re-inject failed')
       }
+    } else if (escalate && shouldClearTruncatedPreamble(pane)) {
+      logger.warn({ session, attempt }, 'Stuck input -- truncated safety preamble, clearing buffer (no re-inject)')
+      try {
+        clearInputBuffer(session)
+      } catch (err) {
+        logger.warn({ err, session }, 'Stuck-input preamble clear failed')
+      }
+    } else if (escalate && allowPlainReinject && block == null) {
+      const text = parkedInputText(pane)
+      if (text != null) {
+        logger.warn({ session, attempt }, 'Stuck input (non-channel) -- escalating to clear + re-inject parked text')
+        try {
+          clearInputBuffer(session)
+          sendPromptToSession(session, text)
+        } catch (err) {
+          logger.warn({ err, session }, 'Stuck-input plain re-inject failed')
+        }
+      } else {
+        try { execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 }) } catch { /* no-op */ }
+      }
     } else {
       // Enter-first, and the truncation-guard fallback: if escalation was due
-      // but the block looks incomplete, hold on Enter instead.
-      const heldForTruncation = attempt > MAIN_STUCK_ENTER_ATTEMPTS && !parked.complete
-      logger.warn({ session, attempt, heldForTruncation }, 'Stuck channel input -- recovery Enter')
+      // but the <channel> block looks incomplete, hold on Enter instead.
+      const heldForTruncation = escalate && block != null && !block.complete
+      logger.warn({ session, attempt, heldForTruncation }, 'Stuck input -- recovery Enter')
       try {
         execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
       } catch (err) {
@@ -861,7 +894,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
     // escalate to clear+re-inject only after MAIN_STUCK_ENTER_ATTEMPTS, and
     // only when the captured block looks COMPLETE -- a truncated capture stays
     // on Enter rather than risk a partial re-inject to the wrong chat_id.
-    mainStuckInput = recoverStuckInputForSession(MAIN_CHANNELS_SESSION, mainStuckInput, MAIN_STUCK_THRESHOLDS)
+    mainStuckInput = recoverStuckInputForSession(MAIN_CHANNELS_SESSION, mainStuckInput, MAIN_STUCK_THRESHOLDS, false)
     // Same recovery for every running sub-agent session: a parked channel
     // message wedges a sub-agent ("nem válaszol") exactly as it would the main
     // session. Per-session state lives in agentStuckInput; drop it once the
@@ -869,7 +902,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
     for (const t of targets) {
       if (t.isMarveen) continue
       const prev = agentStuckInput.get(t.session) ?? { parkedSig: null, firstSeenAt: null, lastRecoverAt: null, attempts: 0 }
-      const next = recoverStuckInputForSession(t.session, prev, MAIN_STUCK_THRESHOLDS)
+      const next = recoverStuckInputForSession(t.session, prev, MAIN_STUCK_THRESHOLDS, true)
       if (next.parkedSig === null) agentStuckInput.delete(t.session)
       else agentStuckInput.set(t.session, next)
     }

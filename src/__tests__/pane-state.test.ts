@@ -10,6 +10,7 @@ import {
   stuckInputSignature,
   decideStuckInputRecovery,
   parkedChannelInput,
+  parkedInputText,
 } from '../pane-state.js'
 
 // Realistic pane fixtures modelled on actual `tmux capture-pane -p`
@@ -1392,5 +1393,47 @@ describe('detectPaneState: esc-to-interrupt scoped to live footer region', () =>
       '  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt',
     ].join('\n')
     expect(detectPaneState(pane)).toBe('busy')
+  })
+})
+
+describe('parkedInputText', () => {
+  const SEP2 = '─'.repeat(80)
+  const TYPING_PARKED2 = [
+    '', SEP2,
+    '❯ Valami amit a felhasznalo elkezdett geppelni, meg nem kuldte el',
+    SEP2,
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+  ].join('\n')
+  const IDLE_EMPTY = [
+    '', SEP2, '❯ ', SEP2,
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+  ].join('\n')
+  // A long inter-agent message wrapped across two input-box lines by the TUI.
+  const WRAPPED_PARKED = [
+    '', SEP2,
+    '❯ [Uzenet @system-tol]: Uj csapattag erkezett: balazsmarveenja. Udv',
+    '  neki ha legkozelebb beszeltek!',
+    SEP2,
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+  ].join('\n')
+
+  it('returns the parked input text when typing', () => {
+    expect(parkedInputText(TYPING_PARKED2)).toBe(
+      'Valami amit a felhasznalo elkezdett geppelni, meg nem kuldte el',
+    )
+  })
+
+  it('returns null for an empty (idle) input box', () => {
+    expect(parkedInputText(IDLE_EMPTY)).toBe(null)
+  })
+
+  it('returns null when the pane is not Claude Code', () => {
+    expect(parkedInputText('user@host ~ $ ls\nREADME.md')).toBe(null)
+  })
+
+  it('collapses terminal-wrapped lines into a single submittable line', () => {
+    expect(parkedInputText(WRAPPED_PARKED)).toBe(
+      '[Uzenet @system-tol]: Uj csapattag erkezett: balazsmarveenja. Udv neki ha legkozelebb beszeltek!',
+    )
   })
 })
