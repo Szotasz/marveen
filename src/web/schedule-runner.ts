@@ -18,8 +18,8 @@ import {
 } from '../db.js'
 import { toPendingRetryView, classifyTelegramSendError, type PendingRetryView } from '../pending-retries.js'
 import {
-  UNTRUSTED_PREAMBLE,
-  wrapUntrusted,
+  SCHEDULED_TASK_PREAMBLE,
+  wrapScheduledTask,
 } from '../prompt-safety.js'
 import { cronMatchesNow } from './cron.js'
 import {
@@ -161,14 +161,19 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number): '
     } else {
       prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el Telegramon (chat_id: ${ALLOWED_CHAT_ID}, reply tool). `
     }
-    // Task prompts are editable via /api/schedules (bearer-gated), which means
-    // they can carry injection payloads just like inter-agent messages. Wrap
-    // the user-editable part and prepend the preamble so the receiving agent
-    // treats it as data, not an instruction override.
+    // A scheduled task body is the agent's OWN task, authored by the operator
+    // (SKILL.md on disk, or the bearer-gated /api/schedules editor -- both
+    // inside the local trust boundary). Framing it with UNTRUSTED_PREAMBLE +
+    // wrapUntrusted was self-defeating: that preamble tells the agent to IGNORE
+    // instructions inside <untrusted> tags, so a security-correct agent refused
+    // to run its own heartbeat/audit and every scheduled task silently no-opped.
+    // Use the scheduled-task framing instead: tags are still scrubbed (so a
+    // poisoned body cannot smuggle a fake security tag) but the preamble marks
+    // it as a task-to-execute with the standard escalate-if-dangerous guard.
     const fullPrompt =
-      UNTRUSTED_PREAMBLE + '\n' +
+      SCHEDULED_TASK_PREAMBLE + '\n' +
       prefix.trimEnd() + '\n\n' +
-      wrapUntrusted(`scheduled-task:${task.name}`, task.prompt)
+      wrapScheduledTask(`scheduled-task:${task.name}`, task.prompt)
     // forceSend skips the busy-state check above; it must also skip the
     // pre-flight wait-until-idle gate inside sendPromptToSession, otherwise a
     // task aimed at a long-busy session would block on the 12s idle wait every
