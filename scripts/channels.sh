@@ -127,6 +127,21 @@ if [ -n "$ORPHAN_PIDS" ]; then
   /bin/kill -KILL $ORPHAN_PIDS 2>/dev/null || true
 fi
 
+# Second reap pass for plugin builds that DON'T set *_STATE_DIR in the poller
+# env (e.g. telegram@0.0.1). Those pollers carry CLAUDE_PLUGIN_ROOT=.../<provider>
+# instead, so the STATE_DIR grep above never matches and orphans accumulate
+# across restarts -> multiple getUpdates long-polls -> 409 Conflict -> the bot
+# goes silent/flaky. This runs BEFORE the fresh session is spawned, so every
+# matching poller is by definition a stale orphan and safe to kill.
+ORPHAN_PIDS2="$(/bin/ps eww -e 2>/dev/null | awk -v needle="CLAUDE_PLUGIN_ROOT=" -v prov="/${CHANNEL_PROVIDER}" '$0 ~ needle && $0 ~ prov { print $1 }')"
+if [ -n "$ORPHAN_PIDS2" ]; then
+  # shellcheck disable=SC2086
+  /bin/kill -TERM $ORPHAN_PIDS2 2>/dev/null || true
+  /bin/sleep 0.3
+  # shellcheck disable=SC2086
+  /bin/kill -KILL $ORPHAN_PIDS2 2>/dev/null || true
+fi
+
 # P1 FIX: put the Claude auth token into the tmux SERVER global env BEFORE
 # new-session. A new session inherits the tmux SERVER's global environment, not
 # this shell's. The tmux server is SHARED across every agent, so if a sub-agent
@@ -337,6 +352,17 @@ while $TMUX has-session -t "$SESSION" 2>/dev/null; do
     fi
   fi
   unset _bot_pid
+  # Fallback for plugin builds that never write bot.pid (e.g. telegram@0.0.1):
+  # treat a running plugin poller as alive. The poller is a bun process whose
+  # env CLAUDE_PLUGIN_ROOT points at the <provider> plugin dir. `ps eww -e`
+  # surfaces each process environment on macOS BSD ps (same technique the
+  # orphan-reaper above uses). Without this the watchdog false-restarts every
+  # ~10 min on plugin versions that don't emit a bot.pid.
+  if [ "$_plugin_alive" != "true" ]; then
+    if /bin/ps eww -e 2>/dev/null | grep -qE "CLAUDE_PLUGIN_ROOT=[^ ]*/${CHANNEL_PROVIDER}(/|@| |$)"; then
+      _plugin_alive=true
+    fi
+  fi
 
   if [ "$_plugin_alive" = "true" ]; then
     PLUGIN_SEEN_ONCE=true
