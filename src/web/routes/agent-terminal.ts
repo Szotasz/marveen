@@ -89,8 +89,11 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
       // block the WHOLE dashboard event loop for up to the tmux timeout on every
       // tick, freezing all other HTTP requests. The arg array also avoids shell
       // interpolation of `session`. -e keeps ANSI so xterm renders faithfully;
-      // -p prints; the frontend repaints (clear+home) each frame (full snapshot).
-      execFile(TMUX, ['capture-pane', '-t', session, '-e', '-p'], { timeout: 3000, encoding: 'utf-8', maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+      // -p prints. `-S -2000` includes 2000 lines of scrollback history (not just
+      // the visible pane) so the frontend can offer scroll-back; the frontend
+      // repaints the full snapshot (clear-scrollback + clear + home) each changed
+      // frame and only when the user is at the bottom, so scrolling up is stable.
+      execFile(TMUX, ['capture-pane', '-t', session, '-S', '-2000', '-e', '-p'], { timeout: 3000, encoding: 'utf-8', maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
         inFlight = false
         if (closed) return
         const pane = err ? '' : (stdout ?? '')
