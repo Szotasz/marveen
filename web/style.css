@@ -1767,6 +1767,17 @@ main {
   transition: all var(--transition);
   outline: none;
 }
+/* Checkbox/radio inputs must not inherit the width:100% + padding meant for
+   text fields -- inside a flex label that stretches the box to full width and
+   shoves the adjacent label text out past the modal's right edge ("content
+   sticking out of the modal" bug, e.g. the agent-detail Csapat tab). */
+.form-group input[type="checkbox"],
+.form-group input[type="radio"] {
+  width: auto;
+  flex: 0 0 auto;
+  padding: 0;
+  margin: 0;
+}
 .form-group input:focus,
 .form-group textarea:focus,
 .form-group select:focus {
@@ -5303,10 +5314,17 @@ main {
   width: 98vw;
   display: flex;
   flex-direction: column;
-  max-height: 90vh;
+  /* Fixed height (not max-height): with a content-driven height the xterm
+     FitAddon grows the modal as the pane repaints, which re-runs fit() and
+     makes the modal oscillate ("vibrating terminal"). A fixed height gives the
+     flex:1 container a stable size, so fit() settles and xterm scrolls
+     internally instead of resizing the modal. */
+  height: 90vh;
 }
 .terminal-modal .modal-header { flex-shrink: 0; }
-#terminalContainer { flex: 1; min-height: 360px; }
+/* min-height:0 lets the flex child actually shrink to the container; overflow
+   hidden stops the xterm screen from pushing the modal taller. */
+#terminalContainer { flex: 1; min-height: 0; overflow: hidden; }
 .xterm { height: 100% !important; }
 
 /* === Docs viewer === */
