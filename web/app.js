@@ -82,8 +82,10 @@ function switchPage(pageId) {
   // Activity page runs a live poll; stop it whenever we navigate away.
   if (pageId !== 'activity') stopActivityPoll()
   if (pageId === 'activity') startActivityPoll()
+  // Kanban auto-refresh: start on enter, stop on leave.
+  if (pageId !== 'kanban') stopKanbanRefresh()
   if (pageId === 'overview') loadOverview()
-  if (pageId === 'kanban') loadKanban()
+  if (pageId === 'kanban') { loadKanban(); startKanbanRefresh() }
   if (pageId === 'tasks') loadSchedules()
   if (pageId === 'agents') loadAgents()
   if (pageId === 'memories') { loadMemAgents(); loadMemStats(); loadMemories() }
@@ -143,6 +145,30 @@ const ACTIVITY_STATE_META = {
   error: { label: 'hiba', cls: 'act-error', tip: 'Élő állapot: hiba látszik az ágens session paneljén.' },
   stopped: { label: 'leállt', cls: 'act-stopped', tip: 'Élő állapot: az ágens session nem fut.' },
 }
+
+// === Kanban auto-refresh ===
+let kanbanRefreshTimer = null
+
+function startKanbanRefresh() {
+  if (kanbanRefreshTimer) clearInterval(kanbanRefreshTimer)
+  kanbanRefreshTimer = setInterval(loadKanban, 30000)
+}
+
+function stopKanbanRefresh() {
+  if (kanbanRefreshTimer) {
+    clearInterval(kanbanRefreshTimer)
+    kanbanRefreshTimer = null
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    stopKanbanRefresh()
+  } else if (!document.getElementById('kanbanPage').hidden) {
+    loadKanban()
+    startKanbanRefresh()
+  }
+})
 
 function startActivityPoll() {
   loadActivity()
