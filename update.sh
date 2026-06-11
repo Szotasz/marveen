@@ -189,6 +189,10 @@ if git diff "$OLD_VERSION" "$NEW_VERSION" --name-only | grep -qE "^package(-lock
   fi
 fi
 
+# Native module rebuild for current Node ABI (critical when Node version changes;
+# better-sqlite3 NODE_MODULE_VERSION must match the running node binary).
+npm rebuild better-sqlite3 --build-from-source --silent
+
 # Rebuild
 echo -e "  Forditas..."
 npm run build --silent
