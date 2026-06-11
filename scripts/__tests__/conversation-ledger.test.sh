@@ -33,7 +33,7 @@ run_hook() {
     local hook="$1"
     local db="$2"
     shift 2
-    LEDGER_DB_PATH="$db" LEDGER_OWNER_CHAT="8517922966" MAIN_AGENT_ID="marveen" \
+    LEDGER_DB_PATH="$db" LEDGER_OWNER_CHAT="8517922966" MAIN_AGENT_ID="marveen" OWNER_NAME="Gyula" \
         python3 "$HOOKS_DIR/$hook" "$@"
 }
 
@@ -42,7 +42,7 @@ run_hook() {
 # the DB (dirname of LEDGER_DB_PATH), so per-case subdirs keep it isolated.
 run_drain() { # db
     ( cd "$INSTALL_DIR" && LEDGER_DB_PATH="$1" LEDGER_OWNER_CHAT="8517922966" \
-        MAIN_AGENT_ID="marveen" python3 "$HOOKS_DIR/ledger-live-drain.py" )
+        MAIN_AGENT_ID="marveen" OWNER_NAME="Gyula" python3 "$HOOKS_DIR/ledger-live-drain.py" )
 }
 
 # Age every row in a ledger DB backwards so an open question clears the grace window.
