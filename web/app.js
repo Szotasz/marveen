@@ -8138,6 +8138,7 @@ document.getElementById('chSlackManifestBtn').addEventListener('click', async ()
 // ============================================================
 
 let recallInitialized = false
+let recallSortDesc = true
 
 async function loadRecallPage() {
   if (!recallInitialized) {
@@ -8146,14 +8147,15 @@ async function loadRecallPage() {
     document.getElementById('recallDate').value = today
 
     try {
-      const res = await fetch('/api/agents')
+      // /api/schedules/agents includes the main agent (jarvis); /api/agents lists sub-agents only
+      const res = await fetch('/api/schedules/agents')
       if (res.ok) {
         const agents = await res.json()
         const sel = document.getElementById('recallAgent')
         agents.forEach(a => {
           const opt = document.createElement('option')
           opt.value = a.name
-          opt.textContent = a.name
+          opt.textContent = a.label || a.name
           sel.appendChild(opt)
         })
       }
@@ -8165,6 +8167,14 @@ async function loadRecallPage() {
     // Re-fetch per-agent log dates when the agent filter changes; without this
     // the date hint stayed stuck on the agent active at first page load.
     document.getElementById('recallAgent').addEventListener('change', loadRecallDates)
+    // #53: sort order toggle
+    document.getElementById('recallSortToggle').addEventListener('click', () => {
+      recallSortDesc = !recallSortDesc
+      const btn = document.getElementById('recallSortToggle')
+      btn.textContent = recallSortDesc ? '↓' : '↑'
+      btn.title = recallSortDesc ? 'Csökkenő sorrend (legújabb elöl)' : 'Növekvő sorrend (legrégebbi elöl)'
+      doRecall()
+    })
 
     loadRecallDates()
   }
@@ -8245,7 +8255,8 @@ function renderRecallTimeline(el, data) {
   const items = []
   logs.forEach(l => items.push({ type: 'log', ts: l.created_at, agent: l.agent_id, date: l.date, content: l.content, label: l.created_label }))
   memories.forEach(m => items.push({ type: 'memory', ts: m.created_at, agent: m.agent_id, category: m.category, content: m.content, keywords: m.keywords, label: m.created_label }))
-  items.sort((a, b) => a.ts - b.ts)
+  // #52/#53: apply sort order (desc = newest first, default)
+  items.sort((a, b) => recallSortDesc ? b.ts - a.ts : a.ts - b.ts)
 
   let currentDate = ''
   let html = ''
