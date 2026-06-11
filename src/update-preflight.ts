@@ -7,10 +7,16 @@
 //   4. after 30s the page reloads and shows the same pending commits
 //
 // The silent failure mode is update.sh hitting `git pull --ff-only origin
-// main` while the local checkout is on a feature branch (or has local
-// modifications that would make a fast-forward impossible). set -e in
+// <branch>` while the local checkout is detached, or has local
+// modifications that would make a fast-forward impossible. set -e in
 // update.sh makes it exit before the stop.sh / start.sh step, but the
 // frontend has no way to know because it only watched spawn() success.
+//
+// The update is branch-agnostic: update.sh derives the branch from the
+// current checkout and pulls origin/<that-branch>, so an install that
+// tracks any release branch (main, develop, …) self-updates. The only
+// branch state this preflight rejects is a detached HEAD, which has no
+// branch to pull.
 //
 // Running the preflight checks server-side means the apply endpoint can
 // refuse with a 409 and a readable reason, the user sees an actionable
@@ -33,7 +39,6 @@ export interface GitRunner {
 
 export type PreflightResult =
   | { ok: true }
-  | { ok: false; reason: 'not-on-main'; branch: string; message: string }
   | { ok: false; reason: 'dirty-tree'; message: string }
   | { ok: false; reason: 'detached-head'; message: string }
 
@@ -115,32 +120,20 @@ export function checkNoConcurrentUpdate(pf: PidfileRunner): ConcurrencyResult {
   }
 }
 
-const EXPECTED_BRANCH = 'main'
-
 export function checkUpdatePreflight(git: GitRunner): PreflightResult {
   const branch = git.currentBranch().trim()
 
   // `git rev-parse --abbrev-ref HEAD` prints "HEAD" on a detached
-  // checkout. Treat that separately so the error message can explain
-  // it instead of claiming the branch is called "HEAD".
+  // checkout. A detached HEAD has no branch to pull from, so it is the
+  // one branch state the update cannot proceed from. Any named branch
+  // is fine: update.sh pulls origin/<that-branch>.
   if (!branch || branch === 'HEAD') {
     return {
       ok: false,
       reason: 'detached-head',
       message:
-        'Repository is in a detached-HEAD state. Check out main before updating: git checkout main',
-    }
-  }
-
-  if (branch !== EXPECTED_BRANCH) {
-    return {
-      ok: false,
-      reason: 'not-on-main',
-      branch,
-      message:
-        `Cannot update from branch '${branch}'. ` +
-        `'git pull --ff-only origin main' cannot fast-forward a feature branch. ` +
-        `Switch to main first: git checkout main`,
+        'Repository is in a detached-HEAD state. ' +
+        'Check out a release branch before updating, e.g.: git checkout main',
     }
   }
 

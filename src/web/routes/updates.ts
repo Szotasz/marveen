@@ -143,8 +143,8 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
     }
     if (!preflight.ok) {
       // dirty-tree + autoStash=true: skip the dashboard-side block and let
-      // update.sh handle the stash+pop. Other failure reasons (detached HEAD,
-      // not-on-main, …) still hard-block since stash cannot rescue them.
+      // update.sh handle the stash+pop. The other failure reason (detached
+      // HEAD) still hard-blocks since stash cannot rescue it.
       const skipForAutoStash = preflight.reason === 'dirty-tree' && autoStash
       if (!skipForAutoStash) {
         releaseLock()
@@ -152,7 +152,6 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
           error: preflight.message,
           reason: preflight.reason,
         }
-        if (preflight.reason === 'not-on-main') body.branch = preflight.branch
         json(res, body, 409)
         return true
       }

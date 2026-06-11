@@ -86,26 +86,30 @@ echo ""
 echo -e "${BOLD}Marveen frissites...${NC} [$(date -u +%Y-%m-%dT%H:%M:%SZ)]"
 echo ""
 
-# Guard 1: refuse to run from a non-main branch.
-# 'git pull --ff-only origin main' below would exit non-zero on any
-# branch whose tip is not an ancestor of origin/main -- for example
-# every feature branch whose PR was squash-merged upstream. Because
-# the dashboard launches this script detached with stdio: 'ignore',
-# that exit is invisible to the operator: the UI silently reloads on
-# the same pending-commit list. Same guard also exists server-side
-# in /api/updates/apply as a 409 pre-check; this is defense-in-depth
-# for manual invocations.
+# Guard 1: derive the release branch from the current checkout and refuse
+# only a detached HEAD. The pull below targets origin/<CURRENT_BRANCH>, so
+# an install tracking any release branch (main, develop, ...) self-updates
+# instead of being hardcoded to main. A detached HEAD is the one state with
+# no branch to pull, so it is still rejected. Because the dashboard launches
+# this script detached with stdio: 'ignore', a silent non-zero exit would be
+# invisible to the operator (the UI just reloads on the same pending-commit
+# list), so the guards exit with a readable message. The same detached-HEAD
+# pre-check also exists server-side in /api/updates/apply as a 409;
+# this is defense-in-depth for manual invocations.
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 if [ "$CURRENT_BRANCH" = "HEAD" ] || [ -z "$CURRENT_BRANCH" ]; then
   echo -e "${RED}HIBA:${NC} A repo detached-HEAD allapotban van."
-  echo "       Allj at a main branchre, majd indithatod ujra a frissitest:"
+  echo "       Allj at egy release branchre, majd indithatod ujra a frissitest, pl.:"
   echo "         git checkout main"
   exit 2
 fi
-if [ "$CURRENT_BRANCH" != "main" ]; then
-  echo -e "${RED}HIBA:${NC} A jelenlegi branch '${CURRENT_BRANCH}', nem 'main'."
-  echo "       A 'git pull --ff-only origin main' csak a main branchrol fut tisztan."
-  echo "       Allj at elobb a main branchre:"
+# The branch must exist on origin, otherwise 'git pull' below cannot find a
+# ref to fast-forward to (e.g. a local-only feature branch). Fail early with
+# a clear message instead of letting set -e abort mid-run.
+if ! git ls-remote --exit-code --heads origin "$CURRENT_BRANCH" >/dev/null 2>&1; then
+  echo -e "${RED}HIBA:${NC} A '${CURRENT_BRANCH}' branch nem letezik az origin-on."
+  echo "       Csak az origin-on is meglevo (kovetett) branchrol lehet frissiteni."
+  echo "       Allj at egy release branchre, pl.:"
   echo "         git checkout main"
   exit 2
 fi
@@ -146,9 +150,9 @@ fi
 # Save current version
 OLD_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
-# Pull latest
-echo -e "  Letoltes..."
-git pull --ff-only origin main
+# Pull latest from the current branch's origin counterpart.
+echo -e "  Letoltes (origin/${CURRENT_BRANCH})..."
+git pull --ff-only origin "$CURRENT_BRANCH"
 NEW_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
 if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
