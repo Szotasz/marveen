@@ -12,6 +12,16 @@ NC='\033[0m'
 INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$INSTALL_DIR"
 
+# Pin Node to the version the dashboard service runs on. The global brew node
+# (26.x) cannot compile better-sqlite3 11.x (removed V8 APIs), which corrupts
+# node_modules on npm ci. Use the nvm-managed node that the launchd plist uses.
+# See marveen-dashboard-recovery skill for the full story.
+NODE_PIN="$HOME/.nvm/versions/node/v24.16.0/bin"
+if [ -x "$NODE_PIN/node" ]; then
+  export PATH="$NODE_PIN:$PATH"
+  echo -e "  ${DIM}Node pin: $(node -v) (better-sqlite3 ABI)${NC}"
+fi
+
 # Pidfile gate. The dashboard's /api/updates/apply creates
 # store/update.pid atomically with O_EXCL before spawning this script,
 # so a concurrent second click cannot race past the gate. Here we just
