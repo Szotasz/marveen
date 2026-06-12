@@ -248,3 +248,53 @@ body {
   #sidebar-open, #sidebar-close { display: inline-block; }
   .bubble { max-width: 86%; }
 }
+
+/* --- Per-thread ⋯ menu + inline rename (ChatGPT-style) --- */
+.thread-item .t-menu {
+  display: none;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.thread-item:hover .t-menu, .thread-item.active .t-menu { display: inline-block; }
+.thread-item .t-menu:hover { background: var(--border); color: var(--text); }
+
+.thread-menu {
+  position: fixed;
+  z-index: 30;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  min-width: 150px;
+}
+.thread-menu button {
+  background: none;
+  border: none;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--text);
+}
+.thread-menu button:hover { background: var(--bg); }
+.thread-menu button.danger { color: var(--danger); }
+
+.thread-item .t-edit {
+  flex: 1;
+  font: inherit;
+  font-size: 14px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 4px 6px;
+  min-width: 0;
+}

@@ -77,11 +77,13 @@ async function refreshThreads() {
 }
 
 function renderThreadList(meta) {
+  closeThreadMenu()
   const list = $('thread-list')
   list.innerHTML = ''
   for (const t of state.threads) {
-    const btn = document.createElement('button')
-    btn.className = 'thread-item' + (t.id === state.currentId ? ' active' : '')
+    const item = document.createElement('div')
+    item.className = 'thread-item' + (t.id === state.currentId ? ' active' : '')
+    item.dataset.threadId = t.id
     const title = document.createElement('span')
     title.className = 't-title'
     title.textContent = t.title || 'Névtelen szál'
@@ -89,13 +91,91 @@ function renderThreadList(meta) {
     stateTag.className = 't-state'
     stateTag.textContent = t.status === 'open' ? (t.running ? '●' : '…') : '⏸'
     stateTag.title = t.status === 'open' ? (t.running ? 'fut' : 'indul') : 'felfüggesztve'
-    btn.append(title, stateTag)
-    btn.onclick = () => { selectThread(t.id); closeSidebar() }
-    list.appendChild(btn)
+    const menuBtn = document.createElement('button')
+    menuBtn.className = 't-menu'
+    menuBtn.textContent = '⋯'
+    menuBtn.title = 'Műveletek'
+    menuBtn.onclick = (e) => { e.stopPropagation(); openThreadMenu(t, menuBtn) }
+    item.append(title, stateTag, menuBtn)
+    item.onclick = () => { selectThread(t.id); closeSidebar() }
+    list.appendChild(item)
   }
   if (meta && meta.open_count >= meta.max_open) {
     setStatus(`Elérted a nyitott szálak felső határát (${meta.max_open}). Zárj le egyet újabb nyitásához.`)
   }
+}
+
+// --- ChatGPT-style per-thread menu (hover ⋯ -> rename/close) ---
+
+function closeThreadMenu() {
+  document.querySelector('.thread-menu')?.remove()
+}
+
+function openThreadMenu(t, anchor) {
+  closeThreadMenu()
+  const menu = document.createElement('div')
+  menu.className = 'thread-menu'
+  const rename = document.createElement('button')
+  rename.textContent = '✎ Átnevezés'
+  rename.onclick = (e) => { e.stopPropagation(); closeThreadMenu(); startInlineRename(t) }
+  const close = document.createElement('button')
+  close.className = 'danger'
+  close.textContent = '🗑 Lezárás'
+  close.onclick = async (e) => {
+    e.stopPropagation(); closeThreadMenu()
+    if (!confirm('Lezárod ezt a szálat? (Később újranyitható.)')) return
+    await api(`/chat-api/threads/${t.id}`, { method: 'DELETE' })
+    if (t.id === state.currentId) clearCurrentThreadView()
+    await refreshThreads()
+  }
+  menu.append(rename, close)
+  const r = anchor.getBoundingClientRect()
+  menu.style.top = `${r.bottom + 4}px`
+  menu.style.left = `${Math.max(8, r.right - 150)}px`
+  document.body.appendChild(menu)
+  setTimeout(() => document.addEventListener('click', closeThreadMenu, { once: true }), 0)
+}
+
+// Inline rename: the title swaps to an input in place. Enter/blur saves,
+// Esc cancels — the ChatGPT pattern.
+function startInlineRename(t) {
+  const item = document.querySelector(`.thread-item[data-thread-id="${t.id}"]`)
+  const title = item?.querySelector('.t-title')
+  if (!item || !title) return
+  const input = document.createElement('input')
+  input.className = 't-edit'
+  input.value = t.title || ''
+  input.maxLength = 120
+  input.onclick = (e) => e.stopPropagation()
+  let finished = false
+  const finish = async (save) => {
+    if (finished) return
+    finished = true
+    const value = input.value.trim()
+    if (save && value && value !== t.title) {
+      await api(`/chat-api/threads/${t.id}`, { method: 'PATCH', body: JSON.stringify({ title: value }) })
+    }
+    await refreshThreads()
+    if (t.id === state.currentId) $('thread-title').textContent = currentThread()?.title || 'Névtelen szál'
+  }
+  input.onkeydown = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true) }
+    else if (e.key === 'Escape') finish(false)
+  }
+  input.onblur = () => finish(true)
+  title.replaceWith(input)
+  input.focus()
+  input.select()
+}
+
+function clearCurrentThreadView() {
+  state.currentId = null
+  $('thread-title').textContent = 'Marveen'
+  $('messages').innerHTML = '<div id="empty-state" class="empty-state">Válassz egy szálat, vagy indíts újat.</div>'
+  $('rename-thread').classList.add('hidden')
+  $('close-thread').classList.add('hidden')
+  $('input').disabled = true
+  $('send').disabled = true
 }
 
 function currentThread() {
@@ -127,14 +207,10 @@ async function newThread() {
   selectThread(data.thread.id)
 }
 
-async function renameCurrent() {
+function renameCurrent() {
   const t = currentThread()
   if (!t) return
-  const title = prompt('Szál neve:', t.title || '')
-  if (title === null || !title.trim()) return
-  await api(`/chat-api/threads/${t.id}`, { method: 'PATCH', body: JSON.stringify({ title: title.trim() }) })
-  await refreshThreads()
-  $('thread-title').textContent = currentThread()?.title || 'Névtelen szál'
+  startInlineRename(t)
 }
 
 async function closeCurrent() {
@@ -142,13 +218,7 @@ async function closeCurrent() {
   if (!t) return
   if (!confirm('Lezárod ezt a szálat? (Később újranyitható.)')) return
   await api(`/chat-api/threads/${t.id}`, { method: 'DELETE' })
-  state.currentId = null
-  $('thread-title').textContent = 'Marveen'
-  $('messages').innerHTML = '<div id="empty-state" class="empty-state">Válassz egy szálat, vagy indíts újat.</div>'
-  $('rename-thread').classList.add('hidden')
-  $('close-thread').classList.add('hidden')
-  $('input').disabled = true
-  $('send').disabled = true
+  clearCurrentThreadView()
   await refreshThreads()
 }
 
