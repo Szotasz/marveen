@@ -30,22 +30,28 @@ export async function tryHandleDocs(ctx: RouteContext): Promise<boolean> {
     } catch {
       files = []
     }
-    const docs = files.sort().map(name => {
-      let title = name
-      let created: string | null = null
-      try {
-        const file = join(DOCS_DIR, name)
-        title = titleOf(readFileSync(file, 'utf-8'), name)
-        const s = statSync(file)
-        // birthtime is the file's creation time; on filesystems that don't track
-        // it (returns 0) fall back to the last-modified time.
-        const ms = s.birthtimeMs && s.birthtimeMs > 0 ? s.birthtimeMs : s.mtimeMs
-        created = new Date(ms).toISOString().slice(0, 10)
-      } catch {
-        /* keep filename as title, created stays null */
-      }
-      return { name, title, created }
-    })
+    const docs = files
+      .map(name => {
+        let title = name
+        let created: string | null = null
+        let ms = 0
+        try {
+          const file = join(DOCS_DIR, name)
+          title = titleOf(readFileSync(file, 'utf-8'), name)
+          const s = statSync(file)
+          // birthtime is the file's creation time; on filesystems that don't track
+          // it (returns 0) fall back to the last-modified time.
+          ms = s.birthtimeMs && s.birthtimeMs > 0 ? s.birthtimeMs : s.mtimeMs
+          created = new Date(ms).toISOString().slice(0, 10)
+        } catch {
+          /* keep filename as title, created stays null */
+        }
+        return { name, title, created, ms }
+      })
+      // Newest first: sort by the file's creation/modification time descending,
+      // tie-break by name. The `ms` field is internal -- strip it before sending.
+      .sort((a, b) => (b.ms - a.ms) || a.name.localeCompare(b.name))
+      .map(({ name, title, created }) => ({ name, title, created }))
     json(res, docs)
     return true
   }

@@ -10003,9 +10003,34 @@ async function openDoc(name) {
     const res = await fetch('/api/docs/' + encodeURIComponent(name))
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const doc = await res.json()
-    contentEl.innerHTML = renderMarkdown(doc.content || '')
+    const content = doc.content || ''
+    // Toolbar with a raw-.md download, then the rendered markdown.
+    contentEl.innerHTML =
+      '<div class="docs-content-toolbar">' +
+        '<button class="btn-secondary btn-compact" id="docsDownloadBtn">⬇ .md letöltés</button>' +
+      '</div>' +
+      '<div class="docs-rendered markdown-body">' + renderMarkdown(content) + '</div>'
+    const dl = document.getElementById('docsDownloadBtn')
+    if (dl) dl.addEventListener('click', () => downloadMarkdown(name, content))
   } catch (e) {
     contentEl.innerHTML = '<p class="muted">Nem sikerült megnyitni: ' + escapeHtml(String(e.message || e)) + '</p>'
+  }
+}
+
+// Download a doc's raw markdown as a .md file (client-side Blob, no server).
+function downloadMarkdown(name, content) {
+  try {
+    const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = /\.md$/.test(name) ? name : (name + '.md')
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } catch (e) {
+    showToast('Nem sikerült a letöltés: ' + String(e && e.message || e))
   }
 }
 

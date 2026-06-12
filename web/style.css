@@ -5455,3 +5455,7 @@ main {
   margin: 0;
   line-height: 1.4;
 }
+
+/* === Docs viewer: content toolbar (.md download) === */
+.docs-content-toolbar { display: flex; justify-content: flex-end; margin: 0 0 12px; }
+.docs-content-toolbar .btn-compact { font-size: 12px; }
