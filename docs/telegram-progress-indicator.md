@@ -34,7 +34,7 @@ piece stays correct per-agent even with different bots.
 |-------|---------|-----|
 | `telegram_progress.py` | `UserPromptSubmit` hook | If the prompt contains a Telegram `<channel … chat_id … message_id>` block, post the placeholder and record its message id in a per-session state file. |
 | `telegram_progress_reply_clear.py` | `PostToolUse` hook (matcher `telegram.*reply`) | Delete the placeholder(s) for the replied chat the instant a reply is sent. **Primary clear path.** |
-| `telegram_progress_clear.py` | `Stop` hook | Delete any placeholder still recorded at turn end (fallback for turns that finish without replying). |
+| `telegram_progress_clear.py` | `Stop` hook | Delete any placeholder still recorded at turn end, **and enforce delivery** (see below). |
 | `telegram_progress_watchdog.py` | launchd / systemd, ~60s | Scan every agent's per-agent state dir; for an orphan (the agent's `agent-<name>` tmux session is gone + older than a short grace, OR older than a generous "wedged" threshold) rewrite the placeholder via `editMessageText` into the error text. The only layer that can speak when the agent itself is down. |
 
 ### Why both PostToolUse and Stop
@@ -45,6 +45,26 @@ original `Dolgozom rajta…` lingers for the whole (possibly very long) turn eve
 though the user already has an answer — it *looks* stuck. Clearing on the
 `reply` tool (PostToolUse) makes the placeholder vanish exactly when the answer
 appears; `Stop` is kept as a fallback and the watchdog as the crash backstop.
+
+### Reply enforcement (the "answered only in the CLI" bug)
+
+Goal #3 above — *the user always gets either an answer or an explicit failure* —
+has one more failure mode the watchdog can't catch: the agent finishes normally
+(so `Stop` fires) but never actually called the `reply` tool, so its answer lives
+only in the CLI/transcript and the Telegram user sees nothing. The `Stop` hook
+closes this: if a placeholder is still pending at turn end (= a Telegram turn
+with no reply sent to that chat) it
+
+1. **blocks the stop once** and instructs the agent to send its answer via the
+   `reply` tool (the agent re-enters and replies properly, with its own
+   formatting), and
+2. if it *still* didn't reply after that single nudge, **delivers the agent's
+   final answer** (last assistant message from the transcript) to the chat as a
+   guaranteed fallback.
+
+Loop-safe: a per-session `enforce-<sid>.marker` guarantees at most one block, and
+`stop_hook_active` is honored. Turns that never had a Telegram placeholder
+(plain CLI sessions, silent heartbeats) are untouched.
 
 ### Hardening
 
