@@ -304,7 +304,9 @@ async function send() {
     })
     if (status === 200) {
       input.value = ''
-      autoGrow(input)
+      programmaticResize = true
+      const baseH = parseInt(localStorage.getItem('marveen_chat_composer_h') || '', 10)
+      input.style.height = Number.isFinite(baseH) ? baseH + 'px' : ''
       setStatus(null)
       await refreshThreads()
       await pollMessages(true)
@@ -341,9 +343,63 @@ function schedulePoll() {
 }
 
 function autoGrow(el) {
-  el.style.height = 'auto'
-  // never shrink below the 3-row resting height (matches the CSS min-height)
-  el.style.height = Math.max(Math.min(el.scrollHeight, 200), 72) + 'px'
+  // Grow-only: expand while typing past the visible box, but never shrink a
+  // height the user set by dragging the native resize handle. Send resets
+  // to the user's preferred base height.
+  if (el.scrollHeight > el.clientHeight) {
+    programmaticResize = true
+    el.style.height = Math.min(el.scrollHeight, Math.floor(innerHeight / 2)) + 'px'
+  }
+}
+
+// --- Layout: collapsible + resizable sidebar, resizable composer ---
+
+let programmaticResize = false
+
+function isMobile() { return matchMedia('(max-width: 720px)').matches }
+
+function initLayout() {
+  const sidebarW = parseInt(localStorage.getItem('marveen_chat_sidebar_w') || '', 10)
+  if (Number.isFinite(sidebarW)) $('sidebar').style.width = Math.min(Math.max(sidebarW, 200), 480) + 'px'
+  if (localStorage.getItem('marveen_chat_sidebar_collapsed') === '1' && !isMobile()) {
+    document.querySelector('.app').classList.add('sidebar-collapsed')
+  }
+  const composerH = parseInt(localStorage.getItem('marveen_chat_composer_h') || '', 10)
+  if (Number.isFinite(composerH)) $('input').style.height = composerH + 'px'
+
+  // Sidebar drag-resize
+  const resizer = $('sidebar-resizer')
+  resizer.addEventListener('pointerdown', (e) => {
+    e.preventDefault()
+    resizer.classList.add('dragging')
+    resizer.setPointerCapture(e.pointerId)
+    const move = (ev) => {
+      const w = Math.min(Math.max(ev.clientX, 200), 480)
+      $('sidebar').style.width = w + 'px'
+    }
+    const up = () => {
+      resizer.classList.remove('dragging')
+      resizer.removeEventListener('pointermove', move)
+      resizer.removeEventListener('pointerup', up)
+      localStorage.setItem('marveen_chat_sidebar_w', parseInt($('sidebar').style.width, 10))
+    }
+    resizer.addEventListener('pointermove', move)
+    resizer.addEventListener('pointerup', up)
+  })
+
+  // Composer: remember the height the user sets with the native resize handle
+  new ResizeObserver(() => {
+    if (programmaticResize) { programmaticResize = false; return }
+    const h = $('input').offsetHeight
+    if (h > 0) localStorage.setItem('marveen_chat_composer_h', h)
+  }).observe($('input'))
+}
+
+function toggleSidebar() {
+  if (isMobile()) { openSidebar(); return }
+  const app = document.querySelector('.app')
+  app.classList.toggle('sidebar-collapsed')
+  localStorage.setItem('marveen_chat_sidebar_collapsed', app.classList.contains('sidebar-collapsed') ? '1' : '0')
 }
 
 function openSidebar() { $('sidebar').classList.add('open'); $('backdrop').classList.remove('hidden') }
@@ -354,7 +410,7 @@ $('rename-thread').onclick = renameCurrent
 $('close-thread').onclick = closeCurrent
 $('logout').onclick = async () => { await api('/chat-api/auth/logout', { method: 'POST' }); location.reload() }
 $('send').onclick = send
-$('sidebar-open').onclick = openSidebar
+$('sidebar-open').onclick = toggleSidebar
 $('sidebar-close').onclick = closeSidebar
 $('backdrop').onclick = closeSidebar
 $('input').addEventListener('input', (e) => autoGrow(e.target))
@@ -364,5 +420,6 @@ $('input').addEventListener('keydown', (e) => {
 document.addEventListener('visibilitychange', schedulePoll)
 $('theme-toggle').onclick = toggleTheme
 applyTheme(localStorage.getItem('marveen_chat_theme'))
+initLayout()
 
 init()
