@@ -5413,3 +5413,25 @@ main {
   .docs-layout { flex-direction: column; }
   .docs-list { flex-basis: auto; width: 100%; position: static; }
 }
+
+/* === Mobile login QR modal === */
+.mobile-login-qr {
+  width: 240px;
+  height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fff;
+  border-radius: 10px;
+  padding: 10px;
+  box-sizing: border-box;
+}
+.mobile-login-qr svg { width: 100%; height: 100%; display: block; }
+.mobile-login-qr .muted { color: var(--muted, #888); text-align: center; font-size: 13px; }
+.mobile-login-warn {
+  font-size: 12px;
+  color: var(--muted, #888);
+  text-align: center;
+  margin: 0;
+  line-height: 1.4;
+}

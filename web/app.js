@@ -9831,3 +9831,40 @@ async function openDoc(name) {
     contentEl.innerHTML = '<p class="muted">Nem sikerült megnyitni: ' + escapeHtml(String(e.message || e)) + '</p>'
   }
 }
+
+// === Mobile login (QR of the ?token= bootstrap URL) ===
+// The desktop is already authenticated, so the token lives in localStorage.
+// We render it as a QR purely client-side and show it in a modal; the phone
+// scans it and stores the token locally. The token never travels through chat.
+(function setupMobileLogin() {
+  const btn = document.getElementById('mobileLoginBtn')
+  const overlay = document.getElementById('mobileLoginOverlay')
+  if (!btn || !overlay) return
+  const qrBox = document.getElementById('mobileLoginQr')
+  const closeBtn = document.getElementById('mobileLoginClose')
+
+  function render() {
+    const token = localStorage.getItem('marveen-dashboard-token')
+    if (!token) {
+      qrBox.innerHTML = '<p class="muted">Nincs eltárolt token ebben a böngészőben — előbb itt lépj be.</p>'
+      return
+    }
+    const url = window.location.origin + '/?token=' + token
+    if (typeof qrcode !== 'function') {
+      qrBox.innerHTML = '<p class="muted">A QR-generátor nem töltött be (CDN). Hálózat?</p>'
+      return
+    }
+    try {
+      const qr = qrcode(0, 'M') // typeNumber 0 = auto-fit, ECC level M
+      qr.addData(url)
+      qr.make()
+      qrBox.innerHTML = qr.createSvgTag({ cellSize: 6, margin: 4, scalable: true })
+    } catch (e) {
+      qrBox.innerHTML = '<p class="muted">Nem sikerült QR-t generálni: ' + escapeHtml(String(e && e.message || e)) + '</p>'
+    }
+  }
+
+  btn.addEventListener('click', () => { render(); openModal(overlay) })
+  if (closeBtn) closeBtn.addEventListener('click', () => closeModal(overlay))
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(overlay) })
+})()

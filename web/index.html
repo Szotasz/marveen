@@ -8,6 +8,10 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/css/xterm.css">
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/lib/xterm.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10/lib/addon-fit.js"></script>
+  <!-- QR generator for the mobile-login button (renders a scannable QR of the
+       ?token= bootstrap URL on the already-authenticated desktop -- the token
+       never travels through chat). MIT, dependency-free, same CDN as xterm. -->
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@2.0.4/dist/qrcode.js"></script>
   <link rel="icon" href="/api/marveen/avatar">
   <link rel="apple-touch-icon" href="/api/marveen/avatar">
 </head>
@@ -111,6 +115,9 @@
       </a>
     </nav>
     <div class="sidebar-footer">
+      <button class="theme-toggle" id="mobileLoginBtn" title="Mobil belépés (QR)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><line x1="14" y1="14" x2="14" y2="14.01"/><line x1="21" y1="14" x2="21" y2="21"/><line x1="14" y1="21" x2="17" y2="21"/></svg>
+      </button>
       <button class="theme-toggle" id="themeToggle" title="Témaváltás">
         <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
@@ -2216,6 +2223,24 @@
       <div id="terminalContainer" style="background:#1a1a1a;padding:8px;border-radius:0 0 8px 8px;flex:1;min-height:360px;"></div>
     </div>
   </div>
+
+  <!-- Mobile login: QR of the ?token= bootstrap URL, shown only on an
+       already-authenticated desktop. The phone scans it and stores the token
+       locally -- the token is never sent through chat. -->
+  <div class="modal-overlay" id="mobileLoginOverlay">
+    <div class="modal" style="max-width:420px">
+      <div class="modal-header">
+        <h2>Mobil belépés</h2>
+        <button class="modal-close" id="mobileLoginClose">&times;</button>
+      </div>
+      <div class="modal-body" style="display:flex;flex-direction:column;align-items:center;gap:14px">
+        <p class="modal-desc" style="text-align:center">Olvasd be a kódot a telefonod kamerájával. A dashboard megnyílik és bejelentkezve marad — újra belépni nem kell.</p>
+        <div id="mobileLoginQr" class="mobile-login-qr"></div>
+        <p class="mobile-login-warn">A kód a hozzáférési tokent tartalmazza. Csak a saját eszközöddel olvasd be, ne oszd meg és ne fotózd le másnak.</p>
+      </div>
+    </div>
+  </div>
+
   <script src="/app.js"></script>
 </body>
 </html>
