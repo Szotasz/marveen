@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { shouldAutoRestartDownAgent, parseEtimeToSeconds } from '../web/agent-restart-policy.js'
+import { shouldAutoRestartDownAgent, effectiveRestartGraceMs, parseEtimeToSeconds } from '../web/agent-restart-policy.js'
 
 const STARTUP = 180_000
 const RESTART = 90_000
@@ -185,5 +185,85 @@ describe('parseEtimeToSeconds', () => {
 
   it('returns -1 for the DD-MM:SS shape ps never emits (days require hours)', () => {
     expect(parseEtimeToSeconds('5-23:59')).toBe(-1)
+  })
+})
+
+describe('effectiveRestartGraceMs (exponential back-off)', () => {
+  it('returns the base grace with zero failures', () => {
+    expect(effectiveRestartGraceMs(RESTART, 0)).toBe(RESTART)
+  })
+
+  it('doubles per consecutive failure', () => {
+    expect(effectiveRestartGraceMs(RESTART, 1)).toBe(RESTART * 2)
+    expect(effectiveRestartGraceMs(RESTART, 2)).toBe(RESTART * 4)
+    expect(effectiveRestartGraceMs(RESTART, 3)).toBe(RESTART * 8)
+  })
+
+  it('caps at maxRestartGraceMs once the back-off would exceed it', () => {
+    const cap = 60 * 60 * 1000 // 1h
+    // RESTART(90s) * 2^5 = 48min < cap; * 2^6 = 96min -> capped to 1h
+    expect(effectiveRestartGraceMs(RESTART, 6, cap)).toBe(cap)
+    expect(effectiveRestartGraceMs(RESTART, 20, cap)).toBe(cap)
+  })
+
+  it('treats negative / non-finite failure counts as zero', () => {
+    expect(effectiveRestartGraceMs(RESTART, -3)).toBe(RESTART)
+    expect(effectiveRestartGraceMs(RESTART, Number.NaN)).toBe(RESTART)
+  })
+})
+
+describe('shouldAutoRestartDownAgent with back-off', () => {
+  it('defers a restart that would fire under base grace but not under the backed-off grace', () => {
+    // 100s since last restart: past the 90s base grace, but with 1 prior
+    // failure the grace is 180s -> still deferred.
+    expect(shouldAutoRestartDownAgent({
+      processAgeMs: 10 * 60_000,
+      msSinceLastRestart: 100_000,
+      startupGraceMs: STARTUP,
+      restartGraceMs: RESTART,
+      consecutiveFailures: 1,
+    })).toBe(false)
+  })
+
+  it('restarts once the backed-off grace has elapsed', () => {
+    expect(shouldAutoRestartDownAgent({
+      processAgeMs: 10 * 60_000,
+      msSinceLastRestart: RESTART * 2 + 1, // past the 1-failure (180s) grace
+      startupGraceMs: STARTUP,
+      restartGraceMs: RESTART,
+      consecutiveFailures: 1,
+    })).toBe(true)
+  })
+
+  it('a perpetually-failing plugin is retried at most at the cap, not the base grace', () => {
+    const cap = 60 * 60 * 1000
+    // 10 failures would be 90s*2^10 ~ 25h without a cap; capped to 1h.
+    // 50min since last restart -> still within the 1h cap -> deferred.
+    expect(shouldAutoRestartDownAgent({
+      processAgeMs: 30 * 60_000,
+      msSinceLastRestart: 50 * 60_000,
+      startupGraceMs: STARTUP,
+      restartGraceMs: RESTART,
+      consecutiveFailures: 10,
+      maxRestartGraceMs: cap,
+    })).toBe(false)
+    // 61min since last restart -> past the cap -> retried.
+    expect(shouldAutoRestartDownAgent({
+      processAgeMs: 30 * 60_000,
+      msSinceLastRestart: 61 * 60_000,
+      startupGraceMs: STARTUP,
+      restartGraceMs: RESTART,
+      consecutiveFailures: 10,
+      maxRestartGraceMs: cap,
+    })).toBe(true)
+  })
+
+  it('preserves the original behaviour when consecutiveFailures is omitted', () => {
+    expect(shouldAutoRestartDownAgent({
+      processAgeMs: 10 * 60_000,
+      msSinceLastRestart: RESTART + 1,
+      startupGraceMs: STARTUP,
+      restartGraceMs: RESTART,
+    })).toBe(true)
   })
 })

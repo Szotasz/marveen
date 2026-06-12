@@ -67,7 +67,16 @@ function resolveAgentProvider(name: string): ChannelProviderType {
 
 const agentDownSince: Map<string, number> = new Map()
 const agentLastRestart: Map<string, number> = new Map()
+// Consecutive watchdog restarts (keyed by agent name) that did NOT bring the
+// plugin back up. Drives exponential back-off so a plugin that crashes on every
+// launch (e.g. a broken third-party channel plugin) is not restarted on a fixed
+// short cadence forever -- which restarts the WHOLE agent every few minutes and
+// renders it unusable. Reset to 0 the moment the plugin is seen alive again.
+const agentRestartFailures: Map<string, number> = new Map()
 const AGENT_RESTART_GRACE_MS = 90_000
+// Floor frequency for the backed-off restart: even a long-down plugin is still
+// retried at least this often, in case an external fix brings it back.
+const AGENT_MAX_RESTART_GRACE_MS = 60 * 60 * 1000 // 1h
 // A freshly started agent can take well over the first-probe window to bring
 // its channel plugin up (a large-context model launched with --continue spawns
 // the plugin only after a slow session load). Never restart a process younger
@@ -967,9 +976,14 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // Process-alive does NOT prove the inbound MCP pipe is healthy (the
           // deafness blind spot). Cross-check the keep-alive freshness.
           checkMainKeepaliveStaleness()
-        } else if (agentDownSince.has(t.session)) {
-          logger.info({ session: t.session, provider: t.provider }, 'Agent channel plugin recovered')
-          agentDownSince.delete(t.session)
+        } else {
+          if (agentDownSince.has(t.session)) {
+            logger.info({ session: t.session, provider: t.provider }, 'Agent channel plugin recovered')
+            agentDownSince.delete(t.session)
+          }
+          // Healthy observation clears the exponential back-off so the next
+          // down-spell starts again at the base grace.
+          agentRestartFailures.delete(t.agentName!)
         }
         continue
       }
@@ -978,14 +992,17 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
       } else {
         if (!agentDownSince.has(t.session)) agentDownSince.set(t.session, Date.now())
         const lastRestart = agentLastRestart.get(t.agentName!)
+        const failures = agentRestartFailures.get(t.agentName!) ?? 0
         const restart = shouldAutoRestartDownAgent({
           processAgeMs: getProcessAgeMs(claudePid),
           msSinceLastRestart: lastRestart != null ? Date.now() - lastRestart : null,
           startupGraceMs: AGENT_STARTUP_GRACE_MS,
           restartGraceMs: AGENT_RESTART_GRACE_MS,
+          consecutiveFailures: failures,
+          maxRestartGraceMs: AGENT_MAX_RESTART_GRACE_MS,
         })
         if (!restart) {
-          logger.debug({ agent: t.agentName, provider: t.provider }, 'Channel plugin probe reports down but agent is within startup/restart grace -- deferring')
+          logger.debug({ agent: t.agentName, provider: t.provider, failures }, 'Channel plugin probe reports down but agent is within startup/restart back-off -- deferring')
           continue
         }
         const agentProvider = resolveAgentProvider(t.agentName!)
@@ -995,13 +1012,17 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           logger.warn({ agent: t.agentName, provider: agentProvider }, 'Agent has no channel token in state dir -- skipping restart to avoid token conflict')
           continue
         }
-        logger.warn({ agent: t.agentName, provider: t.provider }, 'Agent channel plugin down -- auto-restarting')
+        logger.warn({ agent: t.agentName, provider: t.provider, failures }, 'Agent channel plugin down -- auto-restarting')
         try {
           stopAgentProcess(t.agentName!)
           execSync('sleep 2', { timeout: 4000 })
           startAgentProcess(t.agentName!)
           agentLastRestart.set(t.agentName!, Date.now())
           agentDownSince.delete(t.session)
+          // Count this restart as failed until a later sweep sees the plugin
+          // alive (which resets the counter). Repeated failures back off the
+          // next restart exponentially instead of churning every base-grace.
+          agentRestartFailures.set(t.agentName!, failures + 1)
         } catch (err) {
           logger.error({ err, agent: t.agentName }, 'Failed to auto-restart agent after channel plugin down')
         }
