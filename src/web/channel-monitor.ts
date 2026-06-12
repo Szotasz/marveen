@@ -118,7 +118,7 @@ const MAIN_STUCK_THRESHOLDS: StuckInputThresholds = {
 //      (e.g. an inter-agent notification) -> clear + re-inject the collapsed
 //      text. A sub-agent's input box never holds a human draft, so this is
 //      safe; the main session stays conservative (Enter / <channel>-only).
-function recoverStuckInputForSession(
+export function recoverStuckInputForSession(
   session: string,
   prev: StuckInputState,
   thresholds: StuckInputThresholds,
@@ -732,7 +732,7 @@ function checkMainKeepaliveStaleness(): void {
   }
 }
 
-function sendAlert(text: string): void {
+export function sendAlert(text: string): void {
   notifyChannel(text).catch(() => {})
 }
 
