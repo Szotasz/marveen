@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   detectPaneState,
   detectsThinkingBlockError,
+  detectsBlockingMenu,
   isReadyForPrompt,
   shouldRetrySubmit,
   shouldClearTruncatedPreamble,
@@ -1435,5 +1436,66 @@ describe('parkedInputText', () => {
     expect(parkedInputText(WRAPPED_PARKED)).toBe(
       '[Uzenet @system-tol]: Uj csapattag erkezett: balazsmarveenja. Udv neki ha legkozelebb beszeltek!',
     )
+  })
+})
+
+describe('detectsBlockingMenu', () => {
+  // The real /mcp "Manage MCP servers" modal that wedged the main channels
+  // session for ~6h (2026-06-12). The input box is gone; the footer shows the
+  // navigate/confirm/cancel hints instead of the permission footer.
+  const MCP_MENU = [
+    '   Manage MCP servers',
+    '   5 servers',
+    '',
+    '     claude.ai',
+    '   ❯ claude.ai Canva · ✔ connected · 39 tools',
+    '     claude.ai Google Calendar · ✔ connected · 8 tools',
+    '     claude.ai MailerLite · △ needs authentication',
+    '',
+    '   https://code.claude.com/docs/en/mcp for help',
+    '   ↑/↓ to navigate · Enter to confirm · Esc to cancel',
+  ].join('\n')
+
+  // A single-screen modal that only offers Esc to exit (no navigation row).
+  const ESC_ONLY_MODAL = [
+    '   Some dialog title',
+    '   body text here',
+    '',
+    '   Press Esc to exit',
+  ].join('\n')
+
+  it('detects the /mcp server-manager modal', () => {
+    expect(detectsBlockingMenu(MCP_MENU)).toBe(true)
+  })
+
+  it('detects an esc-only modal with no navigation row', () => {
+    expect(detectsBlockingMenu(ESC_ONLY_MODAL)).toBe(true)
+  })
+
+  it('is false for a normal idle prompt (bypass/strict)', () => {
+    expect(detectsBlockingMenu(IDLE_BYPASS)).toBe(false)
+    expect(detectsBlockingMenu(IDLE_STRICT)).toBe(false)
+  })
+
+  it('is false for a busy turn even if it renders esc-to-interrupt', () => {
+    expect(detectsBlockingMenu(BUSY_FULL_FOOTER)).toBe(false)
+    expect(detectsBlockingMenu(BUSY_TOKENS_ONLY)).toBe(false)
+  })
+
+  it('is false for an empty pane', () => {
+    expect(detectsBlockingMenu('')).toBe(false)
+    expect(detectsBlockingMenu('   \n  ')).toBe(false)
+  })
+
+  it('does not trigger on a reply that merely quotes menu chrome above a live prompt', () => {
+    const quoted = [
+      '  Tipp: a /mcp menuben az "Esc to cancel" sorral lepsz ki.',
+      '',
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(detectsBlockingMenu(quoted)).toBe(false)
   })
 })

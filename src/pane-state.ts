@@ -199,6 +199,54 @@ export function detectsThinkingBlockError(pane: string): boolean {
   return false
 }
 
+// Claude Code modal/overlay surfaces -- the /mcp server manager, the model/
+// config/theme pickers, and permission dialogs -- replace the input box with a
+// navigable list whose footer reads e.g.
+//   "↑/↓ to navigate · Enter to confirm · Esc to cancel".
+// A headless service session (the main --channels session, a sub-agent) parked
+// in such a modal silently stops processing inbound work: it is not 'busy' (no
+// spinner / token counter) and not 'idle' (the input box is gone), so
+// detectPaneState classifies it 'unknown' and the scheduler/router just skip
+// it. Observed 2026-06-12: the main channels session sat in /mcp for ~6h, deaf
+// on Telegram, with nothing alerting. detectsBlockingMenu recognises the modal
+// so the monitor can pop back to the prompt with a single Escape.
+//
+// Guards against a healthy session that merely quotes menu chrome in a reply
+// or a log line:
+//   (a) Not busy: a live turn (spinner / token counter / esc-to-interrupt) is
+//       never a parked menu.
+//   (b) No idle footer: a real modal hides the permission/shortcuts footer.
+//       capturePane uses `capture-pane -p` (visible screen only, no
+//       scrollback), so a quoted footer cannot linger from a past turn -- an
+//       idle footer present means the normal prompt is live, not a menu.
+//   (c) The dismiss/navigation hint must sit in the live footer region (the
+//       bottom few lines), not anywhere in the pane, so a message body that
+//       quotes "Esc to cancel" does not trigger it.
+// `esc to interrupt` (the busy footer) is deliberately excluded from
+// MENU_ESC_RX, and guard (a) rejects it anyway.
+const MENU_NAV_RX = /(?:↑\/↓|↑↓)\s+to\s+(?:navigate|select|choose)/
+const MENU_ESC_RX = /\besc to (?:cancel|exit|close|go back|quit)\b/i
+const MENU_FOOTER_REGION_LINES = 8
+
+/**
+ * True when the pane is parked in a blocking Claude Code interactive menu /
+ * modal (not busy, not at the idle prompt). Pure + dependency-free for unit
+ * testing. The monitor uses this to send a recovery Escape; detectPaneState
+ * intentionally still returns 'unknown' for these panes so the hot-path
+ * scheduler/router behaviour is unchanged.
+ */
+export function detectsBlockingMenu(pane: string): boolean {
+  if (!pane || !pane.trim()) return false
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(pane)) return false
+  }
+  const lines = pane.split('\n')
+  const footerRegion = lines.slice(-MENU_FOOTER_REGION_LINES).join('\n')
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
+  if (IDLE_FOOTER_RX.test(pane)) return false
+  return MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion)
+}
+
 export interface DetectPaneStateOptions {
   /** If true, the 'typing' state (text parked in input box) is
    * merged into 'busy'. Default false -- callers that care about

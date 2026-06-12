@@ -22,7 +22,7 @@ import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller
 import { probeTelegramConflict } from './channel-conflict-probe.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import {
-  detectPaneState, decidePaneErrorAlert, type PaneErrorAlertState, type PaneState,
+  detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, type PaneErrorAlertState, type PaneState,
   stuckInputSignature, decideStuckInputRecovery, parkedChannelInput,
   parkedInputText, shouldClearTruncatedPreamble,
   type StuckInputState, type StuckInputThresholds,
@@ -208,6 +208,19 @@ const paneErrorState: Map<string, PaneErrorAlertState> = new Map()
 const PANE_ERROR_CONFIRM_MS = 120_000
 const PANE_ERROR_DEDUP_MS = 30 * 60 * 1000
 const PANE_ERROR_CLEAR_MS = 5 * 60 * 1000
+
+// Per-session tracking for a session parked in a blocking interactive menu
+// (the /mcp manager, a model/config picker, a permission dialog). Unlike the
+// thinking-block error this IS auto-recovered: a single Escape pops the modal
+// without touching the conversation, so it is non-destructive. Reuses the
+// decidePaneErrorAlert state machine (treat its `alert` as "recover now") so a
+// one-tick transient never fires and the Escape is not re-sent every tick.
+// confirmMs keeps it to ~2 ticks (~1-2 min) before recovering; dedupMs throttles
+// retries if the Escape did not take; clearMs survives brief capture blips.
+const paneMenuState: Map<string, PaneErrorAlertState> = new Map()
+const MENU_RECOVER_CONFIRM_MS = 45_000
+const MENU_RECOVER_DEDUP_MS = 5 * 60 * 1000
+const MENU_RECOVER_CLEAR_MS = 2 * 60 * 1000
 
 type MarveenRecoveryStage = 'soft' | 'save' | 'resume' | 'hard' | 'gave_up'
 interface MarveenDownState {
@@ -910,6 +923,41 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
         const label = t.isMarveen ? BOT_NAME : (t.agentName ?? t.session)
         logger.error({ session: t.session, agent: label }, 'Agent wedged on thinking-block API error -- manual reset needed')
         sendAlert(`🚨 A(z) ${label} agens elakadt egy thinking-block API hibaban (a session-history korrupt, minden uj prompt ugyanazt a 400-at adja). Kezi reset kell: allitsd le es inditsd ujra, friss session indul. Reszletek: tmux attach -t ${t.session}`)
+      }
+    }
+
+    // Blocking-menu recovery (main + sub-agents). A session parked in an
+    // interactive modal (/mcp manager, model/config picker, permission dialog)
+    // is neither busy nor idle, so detectPaneState reads 'unknown' and the
+    // scheduler/router silently skip it -- the session goes deaf with nothing
+    // alerting (observed: main session sat in /mcp ~6h). A single Escape pops
+    // the modal back to the prompt without touching the conversation, so unlike
+    // the thinking-block error this is safe to auto-recover. Same debounce
+    // machine as the error pass (alert == "recover now") so a one-tick frame
+    // never fires and the Escape is not re-sent every tick.
+    for (const t of targets) {
+      const pane = capturePane(t.session)
+      const inMenu = pane != null && detectsBlockingMenu(pane)
+      const prev = paneMenuState.get(t.session) ?? { firstSeenAt: null, lastAlertAt: null, lastErrorAt: null }
+      const decision = decidePaneErrorAlert(inMenu, prev, Date.now(), {
+        confirmMs: MENU_RECOVER_CONFIRM_MS,
+        dedupMs: MENU_RECOVER_DEDUP_MS,
+        clearMs: MENU_RECOVER_CLEAR_MS,
+      })
+      if (decision.next.firstSeenAt === null) {
+        paneMenuState.delete(t.session)
+      } else {
+        paneMenuState.set(t.session, decision.next)
+      }
+      if (decision.alert) {
+        const label = t.isMarveen ? BOT_NAME : (t.agentName ?? t.session)
+        logger.warn({ session: t.session, agent: label }, 'Session parked in a blocking interactive menu -- sending Escape to recover')
+        try {
+          execFileSync(TMUX, ['send-keys', '-t', t.session, 'Escape'], { timeout: 5000 })
+        } catch (err) {
+          logger.warn({ err, session: t.session }, 'Menu-recovery Escape failed')
+        }
+        sendAlert(`⌨️ A(z) ${label} session beragadt egy interaktiv menube (pl. /mcp) es nem dolgozott fel uzeneteket. Kikuldtem egy Escape-et, visszateritettem a prompthoz. Ha ismetlodik: tmux attach -t ${t.session}`)
       }
     }
 
