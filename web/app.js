@@ -1576,6 +1576,10 @@ function renderAgents() {
         <span class="tg-status" title="Online: a fő asszisztens csatornáját a --channels session kezeli, ezért fixen online (nincs külön token-ellenőrzés)."><span class="tg-dot connected"></span>Online</span>
       </div>
       <div class="agent-card-actions">
+        <button class="btn-secondary btn-compact agent-conversation-btn" title="Beszélgetés">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          Beszélgetés
+        </button>
         <button class="btn-secondary btn-compact agent-terminal-btn" title="Terminal">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
           Terminal
@@ -1584,6 +1588,9 @@ function renderAgents() {
     `
     mCard.querySelector('.agent-terminal-btn')?.addEventListener('click', (e) => {
       e.stopPropagation(); openTerminalModal(mainAgentId())
+    })
+    mCard.querySelector('.agent-conversation-btn')?.addEventListener('click', (e) => {
+      e.stopPropagation(); openConversationModal(mainAgentId(), 'Marveen Főnök')
     })
     mCard.addEventListener('click', () => openMarveenDetail())
     agentsGrid.insertBefore(mCard, addBtn)
@@ -1630,6 +1637,10 @@ function renderAgents() {
           <button class="btn-danger btn-compact agent-login-btn" data-phase="start">Bejelentkezés</button>
         </div>` : ''}
       <div class="agent-card-actions">
+        <button class="btn-secondary btn-compact agent-conversation-btn" title="Beszélgetés">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          Beszélgetés
+        </button>
         <button class="btn-secondary btn-compact agent-terminal-btn" title="Terminal">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
           Terminal
@@ -1643,6 +1654,10 @@ function renderAgents() {
     // Terminal button
     card.querySelector('.agent-terminal-btn')?.addEventListener('click', (e) => {
       e.stopPropagation(); openTerminalModal(agent.name)
+    })
+    // Conversation (readable transcript) button
+    card.querySelector('.agent-conversation-btn')?.addEventListener('click', (e) => {
+      e.stopPropagation(); openConversationModal(agent.name, label)
     })
     card.addEventListener('click', () => openAgentDetail(agent.name))
     // Only running agents have a live session to look at, so only they get the
@@ -9687,6 +9702,85 @@ document.getElementById('terminalClose')?.addEventListener('click', () => {
   if (terminalSSE) { terminalSSE.close(); terminalSSE = null }
   if (terminalInstance) { terminalInstance.dispose(); terminalInstance = null }
 })
+
+// === Agent conversation (readable transcript) modal ===
+// Renders the agent's Claude Code transcript as a chat-style timeline: inbound
+// Telegram messages, the agent's replies, and (optionally) its notes/actions.
+// Solves what the raw terminal can't: a readable, searchable review of what
+// actually happened -- also the support view for customer-hosted Marveens.
+let conversationEntries = []
+let conversationAgentName = null
+
+async function openConversationModal(agentName, displayName) {
+  const overlay = document.getElementById('conversationOverlay')
+  const container = document.getElementById('conversationContainer')
+  const title = document.getElementById('conversationModalTitle')
+  if (!overlay || !container) return
+  conversationAgentName = agentName
+  title.textContent = (displayName || agentName) + ' — Beszélgetés'
+  container.innerHTML = '<div class="conversation-empty">Betöltés…</div>'
+  openModal(overlay)
+  await loadConversation()
+}
+
+async function loadConversation() {
+  const container = document.getElementById('conversationContainer')
+  const token = localStorage.getItem('marveen-dashboard-token') || ''
+  try {
+    const r = await fetch(`/api/agents/${encodeURIComponent(conversationAgentName)}/conversation?limit=600`, {
+      headers: { 'Authorization': 'Bearer ' + token },
+    })
+    const d = await r.json()
+    conversationEntries = Array.isArray(d.entries) ? d.entries : []
+    renderConversation()
+  } catch {
+    if (container) container.innerHTML = '<div class="conversation-empty">Nem sikerült betölteni a beszélgetést.</div>'
+  }
+}
+
+function fmtConvTs(ts) {
+  if (!ts) return ''
+  try {
+    return new Date(ts).toLocaleString('hu-HU', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+  } catch { return '' }
+}
+
+function renderConversation() {
+  const container = document.getElementById('conversationContainer')
+  if (!container) return
+  const q = (document.getElementById('conversationSearch')?.value || '').toLowerCase().trim()
+  const showActions = document.getElementById('conversationShowActions')?.checked
+  let list = conversationEntries
+  if (!showActions) list = list.filter(e => e.kind === 'in' || e.kind === 'out')
+  if (q) list = list.filter(e => (e.text || '').toLowerCase().includes(q))
+  if (!list.length) { container.innerHTML = '<div class="conversation-empty">Nincs megjeleníthető üzenet.</div>'; return }
+  container.innerHTML = list.map(renderConvEntry).join('')
+  container.scrollTop = container.scrollHeight
+}
+
+function renderConvEntry(e) {
+  const ts = fmtConvTs(e.ts)
+  const txt = escapeHtml(e.text || '').replace(/\n/g, '<br>')
+  if (e.kind === 'in') {
+    return `<div class="conv-row conv-in"><div class="conv-bubble"><div class="conv-meta">Telegram be · ${ts}</div><div class="conv-text">${txt}</div></div></div>`
+  }
+  if (e.kind === 'out') {
+    const lbl = escapeHtml(e.label || 'válasz')
+    return `<div class="conv-row conv-out"><div class="conv-bubble"><div class="conv-meta">${lbl} · ${ts}</div><div class="conv-text">${txt}</div></div></div>`
+  }
+  if (e.kind === 'note') {
+    return `<div class="conv-row conv-note"><div class="conv-note-text">📝 ${txt}</div></div>`
+  }
+  return `<div class="conv-row conv-action"><div class="conv-action-text">⚙ ${txt}<span class="conv-action-ts">${ts}</span></div></div>`
+}
+
+document.getElementById('conversationClose')?.addEventListener('click', () => {
+  const overlay = document.getElementById('conversationOverlay')
+  if (overlay) closeModal(overlay)
+})
+document.getElementById('conversationSearch')?.addEventListener('input', () => renderConversation())
+document.getElementById('conversationShowActions')?.addEventListener('change', () => renderConversation())
+document.getElementById('conversationRefresh')?.addEventListener('click', () => loadConversation())
 ;(() => {
   function routeFromHash() {
     let pageId = decodeURIComponent((location.hash || '').replace(/^#/, ''))

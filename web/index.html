@@ -2216,6 +2216,22 @@
       <div id="terminalContainer" style="background:#1a1a1a;padding:8px;border-radius:0 0 8px 8px;flex:1;min-height:360px;"></div>
     </div>
   </div>
+
+  <!-- Conversation (readable transcript) modal -->
+  <div class="modal-overlay" id="conversationOverlay">
+    <div class="modal conversation-modal">
+      <div class="modal-header">
+        <h2 id="conversationModalTitle">Beszélgetés</h2>
+        <button class="modal-close" id="conversationClose">&times;</button>
+      </div>
+      <div class="conversation-toolbar">
+        <input type="text" id="conversationSearch" placeholder="Keresés a beszélgetésben…" autocomplete="off">
+        <label class="conversation-filter"><input type="checkbox" id="conversationShowActions"> Műveletek/jegyzetek mutatása</label>
+        <button class="btn-secondary btn-compact" id="conversationRefresh">Frissítés</button>
+      </div>
+      <div id="conversationContainer" class="conversation-container"></div>
+    </div>
+  </div>
   <script src="/app.js"></script>
 </body>
 </html>
