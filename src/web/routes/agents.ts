@@ -3,8 +3,8 @@ import { join, extname, dirname } from 'node:path'
 import { homedir, platform } from 'node:os'
 import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
-import { MAIN_AGENT_ID, BOT_NAME } from '../../config.js'
-import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus } from '../../db.js'
+import { MAIN_AGENT_ID, BOT_NAME, PROJECT_ROOT } from '../../config.js'
+import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb } from '../../db.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
 import {
@@ -101,6 +101,9 @@ import { sanitizeAgentName } from '../sanitize.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json, serveFile } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
+import { suggestForAgent, type AgentSignals } from '../model-suggest.js'
+import { getTokenSummary } from '../token-usage.js'
+import { listScheduledTasks } from '../scheduled-tasks-io.js'
 
 const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'discord'])
 
@@ -503,6 +506,95 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }
 
     json(res, entries)
+    return true
+  }
+
+  if (path === '/api/agents/model-suggest' && method === 'POST') {
+    // Collect runtime signals once, then classify per agent.
+    // I/O is centralised here; the classifier (model-suggest.ts) stays pure.
+
+    // Token usage: per-agent average input tokens/call over the last 30 days
+    const thirtyDaysAgo = Math.floor(Date.now() / 1000) - 30 * 24 * 3600
+    const tokenSummaries = getTokenSummary(thirtyDaysAgo)
+    const tokenMap = new Map(
+      tokenSummaries.map(s => [s.agent, s.totalCalls > 0 ? s.totalInput / s.totalCalls : 0])
+    )
+
+    // Kanban: open and urgent/high card counts per assignee
+    const db = getDb()
+    type KanbanRow = { assignee: string | null; priority: string; cnt: number }
+    const kanbanRows = db.prepare(
+      `SELECT assignee, priority, COUNT(*) as cnt
+       FROM kanban_cards
+       WHERE archived_at IS NULL AND assignee IS NOT NULL
+       GROUP BY assignee, priority`
+    ).all() as KanbanRow[]
+    const kanbanMap = new Map<string, { open: number; urgent: number }>()
+    for (const row of kanbanRows) {
+      if (!row.assignee) continue
+      const cur = kanbanMap.get(row.assignee) ?? { open: 0, urgent: 0 }
+      cur.open += row.cnt
+      if (row.priority === 'urgent' || row.priority === 'high') cur.urgent += row.cnt
+      kanbanMap.set(row.assignee, cur)
+    }
+
+    // Scheduled-task frequency: total estimated runs/day per agent (cron-derived)
+    function cronFreqPerDay(cron: string): number {
+      const parts = cron.trim().split(/\s+/)
+      if (parts.length < 5) return 1
+      const [min, hour] = parts
+      if (min.startsWith('*/')) {
+        const n = parseInt(min.slice(2), 10)
+        if (!isNaN(n) && n > 0) return Math.round((60 / n) * 24)
+      }
+      if (hour === '*') return 24
+      if (hour.startsWith('*/')) {
+        const n = parseInt(hour.slice(2), 10)
+        if (!isNaN(n) && n > 0) return Math.round(24 / n)
+      }
+      return 1
+    }
+    const schedFreqMap = new Map<string, number>()
+    try {
+      for (const task of listScheduledTasks()) {
+        if (!task.enabled) continue
+        const freq = cronFreqPerDay(task.schedule)
+        schedFreqMap.set(task.agent, (schedFreqMap.get(task.agent) ?? 0) + freq)
+      }
+    } catch { /* scheduled-tasks dir may not exist yet */ }
+
+    // MCP server count: read agents/<name>/.mcp.json
+    function mcpServerCount(agentName: string): number {
+      const mcpPath = join(agentDir(agentName), '.mcp.json')
+      if (!existsSync(mcpPath)) return 0
+      try {
+        const cfg = JSON.parse(readFileSync(mcpPath, 'utf-8')) as { mcpServers?: Record<string, unknown> }
+        return Object.keys(cfg.mcpServers ?? {}).length
+      } catch { return 0 }
+    }
+
+    const names = listAgentNames()
+    const results = [MAIN_AGENT_ID, ...names].map(name => {
+      const dir = agentDir(name)
+      const claudeMd = readFileOr(join(dir, 'CLAUDE.md'), '')
+      const personaPath = join(PROJECT_ROOT, 'personas', `${name}.md`)
+      const personaMd = existsSync(personaPath) ? readFileSync(personaPath, 'utf-8') : ''
+      const personaText = [claudeMd, personaMd].filter(Boolean).join('\n')
+      const currentModel = readAgentModel(name)
+      const contextTokens = readContextTokensFromProjectDir(dir) ?? 0
+
+      const kanban = kanbanMap.get(name)
+      const signals: AgentSignals = {
+        tokenAvgInputPerCall: tokenMap.has(name) ? tokenMap.get(name) : undefined,
+        kanbanOpenCount: kanban?.open,
+        kanbanUrgentCount: kanban?.urgent,
+        scheduledFreqPerDay: schedFreqMap.has(name) ? schedFreqMap.get(name) : undefined,
+        mcpServerCount: mcpServerCount(name),
+      }
+
+      return suggestForAgent(name, currentModel, personaText, contextTokens, signals)
+    })
+    json(res, { results })
     return true
   }
 

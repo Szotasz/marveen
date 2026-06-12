@@ -109,3 +109,68 @@ Ha azt akarod, hogy a távoli ügynök a flotta personáját vigye, tedd azokat 
 ### Delegálási elv
 
 Egyértelmű szerep-feladatnál az orchestrator magától delegál (nem kérdez minden lépésnél). A feladat kanban-kártyán fut (lásd [kanban](kanban.md)), az `assignee` a felelős ügynök. Az asset-előállító ügynökök (pl. videó) a végeredményt közvetlenül a felhasználó csatornájára küldik.
+
+---
+
+## 🔍 Persona-modell megfelelőség elemzés
+
+> Minden ügynökhöz hozzárendelt modell **elemzésre és optimalizálásra alkalmas** a tényleges terhelési jelek alapján.
+
+### Mi ez?
+
+Az Ügynökök képernyőn elérhető **"Model javaslat"** gomb kiértékeli, hogy az egyes agensekhez rendelt Claude-modell összhangban van-e a persona szerepével és a mért terhelési mutatókkal. Az elemzés eredménye:
+
+- Megerősítés ("a jelenlegi modell megfelelő"), vagy
+- Modellváltási javaslat indoklással (pl. "ez az ágens egyszerű, rövid feladatokat végez -- Haiku elegendő és olcsóbb")
+
+Ha van olyan ágens, amelynél váltás javasolt, a rendszer rákérdez: kerüljön-e kanban-kártya a változtatáshoz.
+
+### Mikor érdemes futtatni?
+
+- Új ágens létrehozásakor (az alapértelmezett modell általános, nem persona-specifikus)
+- A flotta bővítése vagy átszervezése után
+- Ha a token-fogyasztás (lásd [Token Usage](token-usage.md)) meglepően magas egy ágenseknél
+
+### Mért jelek (AgentSignals)
+
+Az elemzés öt TIER-1 jelzőből dolgozik -- ezeket a rendszer az ügynök tényleges tevékenységéből gyűjti:
+
+| Mező | Leírás |
+|------|--------|
+| `tokenAvgInputPerCall` | Átlagos bemeneti token/hívás |
+| `kanbanOpenCount` | Nyitott kanban-kártyák száma |
+| `kanbanUrgentCount` | Urgent prioritású kártyák száma |
+| `scheduledFreqPerDay` | Ütemezett feladatok napi gyakorisága |
+| `mcpServerCount` | Bekötött MCP-szerverek száma |
+
+### Küszöbök és hatásuk
+
+| Feltétel | Hatás |
+|----------|-------|
+| `tokenAvgInputPerCall > 10 000` | +1 pont Opus irányba (nagy kontextus-igény) |
+| `mcpServerCount >= 4` | +1 pont Opus irányba (mély integráció) |
+| `kanbanUrgentCount >= 2` | +1 pont Opus irányba (magas terhelés, üzleti kritikus) |
+| `scheduledFreqPerDay >= 10` | +1 pont Haiku irányba (ismétlődő, egyszerű feladatok) |
+
+### Javaslat-szöveg struktúrája
+
+Minden ágenshez generált szöveg hat szekcióból áll:
+
+1. **Jelenlegi modell** -- az aktuálisan beállított modell neve
+2. **Megfigyelt használat** -- token-fogyasztás, kanban-terhelés, ütemezési frekvencia, integráció-mélység
+3. **Szempont-értékelés** -- ✅ / ⚠️ / ❌ jelölésekkel az egyes jelek értékelése
+4. **Ajánlás** -- javasolt modell + a két legmeghatározóbb szempont kiemelve
+5. **Becsült költséghatás** -- a modellváltás várható token-költség-változása
+6. **Bizonytalanság** -- adathiány vagy alacsony mintaszám esetén jelzés
+
+### API
+
+```
+POST /api/agents/model-suggest     # összes agensre lefuttatja az elemzést
+```
+
+Válasz: ágensenként `{ agent, currentModel, suggestedModel, reason, changeAdvised }`.
+
+### Kanban integráció
+
+Ha `changeAdvised: true` bármely agensnél, és a felhasználó megerősíti, a rendszer automatikusan kanban-kártyát hoz létre az érintett ügynökhöz (`assignee: marveen`, státusz: `planned`).

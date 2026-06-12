@@ -2226,6 +2226,89 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
   } catch { showToast('Hiba a mentés során') }
 })
 
+document.getElementById('modelSuggestBtn').addEventListener('click', async () => {
+  if (!currentAgent) return
+  const resultDiv = document.getElementById('modelSuggestionResult')
+  resultDiv.style.display = 'block'
+  resultDiv.textContent = 'Elemzés...'
+  try {
+    const res = await fetch('/api/agents/model-suggest', { method: 'POST' })
+    if (!res.ok) throw new Error()
+    const { results } = await res.json()
+    const entry = results.find(r => r.agent === currentAgent.name)
+    if (!entry) {
+      resultDiv.textContent = 'Nincs adat ehhez az ágenshez.'
+      return
+    }
+    resultDiv.style.color = entry.changeAdvised ? 'var(--warning, #e6a817)' : 'var(--success)'
+    resultDiv.style.whiteSpace = 'pre-wrap'
+    resultDiv.style.fontFamily = 'monospace'
+    resultDiv.style.fontSize = '12px'
+    resultDiv.textContent = entry.reason
+  } catch { resultDiv.textContent = 'Hiba az elemzés során.' }
+})
+
+document.getElementById('analyzeAllModelsBtn').addEventListener('click', async () => {
+  const panel = document.getElementById('agentsModelAnalysis')
+  panel.style.display = 'block'
+  panel.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Elemzés folyamatban...</p>'
+  try {
+    const res = await fetch('/api/agents/model-suggest', { method: 'POST' })
+    if (!res.ok) throw new Error()
+    const { results } = await res.json()
+    const changes = results.filter(r => r.changeAdvised)
+    const ok = results.filter(r => !r.changeAdvised)
+    let html = '<div style="font-size:13px;padding:12px 14px;background:var(--surface-hover);border-radius:8px;border:1px solid var(--border)">'
+    html += `<p style="margin:0 0 8px;font-weight:600">Modell elemzés -- ${results.length} ágens</p>`
+    if (changes.length === 0) {
+      html += '<p style="color:var(--success);margin:0">Minden ágenshez megfelelő modell van beállítva.</p>'
+    } else {
+      html += `<p style="color:var(--warning, #e6a817);margin:0 0 8px">${changes.length} változtatás javasolt:</p>`
+      html += '<ul style="margin:0 0 10px;padding-left:18px">'
+      for (const r of changes) {
+        const safeReason = r.reason.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+        html += `<li style="margin-bottom:6px"><strong>${r.agent}</strong>: ${r.currentModel} &rarr; ${r.suggestedModel}`
+        html += ` <details style="display:inline-block;vertical-align:top;margin-left:4px"><summary style="cursor:pointer;font-size:11px;color:var(--text-muted)">részletek</summary>`
+        html += `<pre style="white-space:pre-wrap;font-size:11px;margin:4px 0 0;background:var(--surface);padding:6px 8px;border-radius:4px;color:var(--text-muted)">${safeReason}</pre></details></li>`
+      }
+      html += '</ul>'
+      if (ok.length > 0) {
+        html += `<p style="color:var(--text-muted);margin:0;font-size:12px">Megfelelő: ${ok.map(r => r.agent).join(', ')}</p>`
+      }
+      html += `<button class="btn-secondary btn-compact" id="createModelChangeCardsBtn" style="margin-top:10px">Kanban kártyák létrehozása</button>`
+    }
+    html += '</div>'
+    panel.innerHTML = html
+    const createBtn = document.getElementById('createModelChangeCardsBtn')
+    if (createBtn) {
+      createBtn.addEventListener('click', async () => {
+        if (!confirm(`${changes.length} kanban kártya létrehozása a modell-változtatásokhoz?`)) return
+        createBtn.disabled = true
+        createBtn.textContent = 'Létrehozás...'
+        let created = 0
+        for (const r of changes) {
+          try {
+            await fetch('/api/kanban', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                title: `Modell-váltás: ${r.agent}`,
+                description: `Jelenlegi: ${r.currentModel}\nJavasolt: ${r.suggestedModel}\n\nIndoklás: ${r.reason}`,
+                assignee: 'marveen',
+                priority: 'normal',
+                status: 'planned',
+              }),
+            })
+            created++
+          } catch { /* skip failed card */ }
+        }
+        showToast(`${created} kanban kártya létrehozva.`)
+        createBtn.textContent = `${created} kártya létrehozva`
+      })
+    }
+  } catch { panel.innerHTML = '<p style="color:var(--error);font-size:13px">Hiba az elemzés során.</p>' }
+})
+
 document.getElementById('saveAutoRestartBtn').addEventListener('click', async () => {
   if (!currentAgent) return
   // Auto-restart applies to the main session too, so (unlike model/profile) we

@@ -222,8 +222,12 @@
             <h1>Csapat</h1>
             <p class="subtitle">AI csapattagok kezelése</p>
           </div>
+          <div class="header-actions">
+            <button class="btn-secondary btn-compact" id="analyzeAllModelsBtn">Modell elemzés</button>
+          </div>
         </div>
       </div>
+      <div id="agentsModelAnalysis" style="display:none;margin:0 0 16px"></div>
       <div class="agents-grid" id="agentsGrid">
         <button class="agent-card add-card" id="addAgentBtn">
           <div class="add-icon">
@@ -1474,9 +1478,11 @@
               </optgroup>
             </select>
             <button class="btn-secondary btn-compact agent-save-section" id="saveModelBtn">Mentés</button>
+            <button class="btn-secondary btn-compact" id="modelSuggestBtn" style="margin-left:6px">Javaslat</button>
             <small id="deepseekHint" style="display:none;margin-top:6px;color:var(--text-muted);font-size:12px;line-height:1.4">
               DeepSeek-V4-Pro nincs konfigurálva. <a href="#" id="deepseekConfigLink">API kulcs hozzáadása</a> a Vault oldalon.
             </small>
+            <div id="modelSuggestionResult" style="display:none;margin-top:8px;font-size:12.5px;padding:8px 10px;border-radius:6px;background:var(--surface-hover);color:var(--text-muted)"></div>
           </div>
           <div class="form-group" id="autoRestartGroup">
             <label>Automatikus újraindítás</label>
