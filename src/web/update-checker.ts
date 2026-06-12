@@ -17,6 +17,9 @@ export interface UpdateStatus {
   remote: string
   lastChecked: number
   error?: string
+  /** True when the local HEAD is not on the GitHub remote (a customised fork);
+   * `behind`/`commits` are then computed from the upstream merge-base. */
+  fork?: boolean
 }
 
 let updateStatusCache: UpdateStatus = {
@@ -50,6 +53,51 @@ export function parseGitHubRemote(): string {
   return 'Szotasz/marveen'
 }
 
+type GhCompare = {
+  ahead_by?: number
+  commits?: { sha: string; commit: { message: string; author: { name: string; date: string } } }[]
+}
+
+const GH_HEADERS = { 'Accept': 'application/vnd.github+json', 'User-Agent': 'marveen-update-check' }
+
+// Fetch the GitHub compare of base...head. Returns the parsed body, the
+// sentinel { notFound: true } on a 404 (base or head not on the remote), or
+// null on any other failure.
+async function fetchCompare(remote: string, base: string, head: string): Promise<GhCompare | { notFound: true } | null> {
+  const res = await fetch(`https://api.github.com/repos/${remote}/compare/${base}...${head}`, { headers: GH_HEADERS })
+  if (res.ok) return await res.json() as GhCompare
+  if (res.status === 404) return { notFound: true }
+  return null
+}
+
+// Map a GitHub compare body onto the status (behind count + newest-first commit
+// list).
+function applyCompare(status: UpdateStatus, cmp: GhCompare): void {
+  status.behind = cmp.ahead_by ?? 0
+  // GitHub returns commits oldest-first; flip to newest-first for the UI.
+  const raw = (cmp.commits ?? []).slice().reverse()
+  status.commits = raw.map(c => ({
+    sha: c.sha,
+    short: c.sha.slice(0, 7),
+    message: (c.commit.message || '').split('\n')[0],
+    author: c.commit.author?.name || '',
+    date: c.commit.author?.date || '',
+  }))
+}
+
+// Merge-base of local HEAD with the upstream tracking ref (origin/main, which
+// parseGitHubRemote maps to the GitHub remote). For a customised fork this is
+// the fork point -- an actual upstream commit -- so it can be compared on
+// GitHub even though the local HEAD itself never landed there. Empty string
+// when there is no local upstream ref.
+function upstreamMergeBase(): string {
+  try {
+    return execFileSync('/usr/bin/git', ['merge-base', 'HEAD', 'origin/main'], { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' }).trim()
+  } catch {
+    return ''
+  }
+}
+
 export async function refreshUpdateStatus(): Promise<UpdateStatus> {
   const current = currentGitHead()
   const remote = parseGitHubRemote()
@@ -81,28 +129,32 @@ export async function refreshUpdateStatus(): Promise<UpdateStatus> {
       return status
     }
 
-    // 2) list commits between current and latest via the compare endpoint
-    const cmpRes = await fetch(`https://api.github.com/repos/${remote}/compare/${current}...${status.latest}`, {
-      headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'marveen-update-check' },
-    })
-    if (cmpRes.ok) {
-      const cmp = await cmpRes.json() as {
-        ahead_by?: number
-        commits?: { sha: string; commit: { message: string; author: { name: string; date: string } } }[]
+    // 2) list commits between local HEAD and the remote latest via compare.
+    const cmp = await fetchCompare(remote, current, status.latest)
+    if (cmp && !('notFound' in cmp)) {
+      applyCompare(status, cmp)
+    } else if (cmp && 'notFound' in cmp) {
+      // Local HEAD is not a commit on the GitHub remote -- the normal state of a
+      // customised fork carrying local commits on top of upstream. Comparing the
+      // raw HEAD 404s forever, surfacing as a permanent scary error. Fall back to
+      // the upstream merge-base (our fork point, which IS an upstream commit) so
+      // `behind`/`commits` reflect genuinely new upstream commits rather than the
+      // fork divergence.
+      status.fork = true
+      const base = upstreamMergeBase()
+      if (!base || base === status.latest) {
+        // No local upstream ref, or the fork point already is the upstream tip:
+        // nothing new upstream. A fork being ahead of upstream is expected, not
+        // an error.
+        status.behind = 0
+      } else {
+        const baseCmp = await fetchCompare(remote, base, status.latest)
+        if (baseCmp && !('notFound' in baseCmp)) {
+          applyCompare(status, baseCmp)
+        } else {
+          status.error = 'Local HEAD not found on GitHub -- different fork or unpushed commits?'
+        }
       }
-      status.behind = cmp.ahead_by ?? 0
-      // GitHub returns commits oldest-first; flip to newest-first for the UI.
-      const raw = (cmp.commits ?? []).slice().reverse()
-      status.commits = raw.map(c => ({
-        sha: c.sha,
-        short: c.sha.slice(0, 7),
-        message: (c.commit.message || '').split('\n')[0],
-        author: c.commit.author?.name || '',
-        date: c.commit.author?.date || '',
-      }))
-    } else if (cmpRes.status === 404) {
-      // Local HEAD not on the remote (detached local commit / different base).
-      status.error = 'Local HEAD not found on GitHub -- different fork or unpushed commits?'
     }
   } catch (err) {
     status.error = err instanceof Error ? err.message : String(err)
