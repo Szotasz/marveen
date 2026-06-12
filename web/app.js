@@ -9937,17 +9937,41 @@ async function openDoc(name) {
   const qrBox = document.getElementById('mobileLoginQr')
   const closeBtn = document.getElementById('mobileLoginClose')
 
-  function render() {
+  async function render() {
     const token = localStorage.getItem('marveen-dashboard-token')
     if (!token) {
-      qrBox.innerHTML = '<p class="muted">Nincs eltárolt token ebben a böngészőben — előbb itt lépj be.</p>'
+      qrBox.innerHTML = '<p class="muted">Nincs eltárolt token ebben a böngészőben, előbb itt lépj be.</p>'
       return
     }
-    const url = window.location.origin + '/?token=' + token
     if (typeof qrcode !== 'function') {
       qrBox.innerHTML = '<p class="muted">A QR-generátor nem töltött be (CDN). Hálózat?</p>'
       return
     }
+    // The QR must encode a URL the phone can reach. If the desktop opened the
+    // dashboard on localhost/127.0.0.1, window.location.origin would put
+    // "localhost" in the QR and the phone would hit its OWN localhost. In that
+    // case ask the server for its LAN IP and build the QR from that. If the
+    // dashboard is already open on a LAN IP or a tunnel host, the origin works
+    // as-is.
+    let base = window.location.origin
+    const host = window.location.hostname
+    if (host === 'localhost' || host === '127.0.0.1') {
+      qrBox.innerHTML = '<p class="muted">QR készítése…</p>'
+      try {
+        const r = await fetch('/api/network-info', { headers: { 'Authorization': 'Bearer ' + token } })
+        const info = r.ok ? await r.json() : {}
+        if (info.lan_ip) {
+          base = 'http://' + info.lan_ip + ':' + (info.port || window.location.port || '3420')
+        } else {
+          qrBox.innerHTML = '<p class="mobile-login-warn">A mobil-belépés a géped helyi hálózati (LAN) IP-jén működik. Most localhoston nyitottad meg a dashboardot, és nem találtam használható LAN-címet. Nyisd meg a dashboardot a géped LAN-IP-jén (pl. http://192.168.x.x:3420), és onnan próbáld a mobil-belépést.</p>'
+          return
+        }
+      } catch (e) {
+        qrBox.innerHTML = '<p class="mobile-login-warn">Nem sikerült lekérdezni a gép LAN-IP-jét a mobil-belépéshez. Nyisd meg a dashboardot a géped helyi (LAN) IP-jén, és onnan próbáld.</p>'
+        return
+      }
+    }
+    const url = base + '/?token=' + token
     try {
       const qr = qrcode(0, 'M') // typeNumber 0 = auto-fit, ECC level M
       qr.addData(url)
