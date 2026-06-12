@@ -387,12 +387,28 @@ function initLayout() {
     resizer.addEventListener('pointerup', up)
   })
 
-  // Composer: remember the height the user sets with the native resize handle
-  new ResizeObserver(() => {
-    if (programmaticResize) { programmaticResize = false; return }
-    const h = $('input').offsetHeight
-    if (h > 0) localStorage.setItem('marveen_chat_composer_h', h)
-  }).observe($('input'))
+  // Composer drag-resize via the divider above it: dragging up grows the
+  // input. The chosen height is persisted and survives sends/reloads.
+  const cResizer = $('composer-resizer')
+  cResizer.addEventListener('pointerdown', (e) => {
+    e.preventDefault()
+    cResizer.classList.add('dragging')
+    cResizer.setPointerCapture(e.pointerId)
+    const startY = e.clientY
+    const startH = $('input').offsetHeight
+    const move = (ev) => {
+      const h = Math.min(Math.max(startH + (startY - ev.clientY), 72), Math.floor(innerHeight * 0.6))
+      $('input').style.height = h + 'px'
+    }
+    const up = () => {
+      cResizer.classList.remove('dragging')
+      cResizer.removeEventListener('pointermove', move)
+      cResizer.removeEventListener('pointerup', up)
+      localStorage.setItem('marveen_chat_composer_h', $('input').offsetHeight)
+    }
+    cResizer.addEventListener('pointermove', move)
+    cResizer.addEventListener('pointerup', up)
+  })
 }
 
 function toggleSidebar() {

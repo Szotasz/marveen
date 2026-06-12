@@ -230,7 +230,7 @@ body {
 }
 .composer textarea {
   flex: 1;
-  resize: vertical;
+  resize: none;
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px 12px;
@@ -378,3 +378,15 @@ body {
 @media (max-width: 720px) {
   #sidebar-resizer { display: none; }
 }
+
+/* --- Composer resize via the top divider --- */
+#composer-resizer {
+  height: 6px;
+  flex-shrink: 0;
+  cursor: row-resize;
+  background: transparent;
+  border-top: 1px solid var(--border);
+  transition: background 0.15s;
+}
+#composer-resizer:hover, #composer-resizer.dragging { background: var(--accent); opacity: 0.5; }
+.composer { border-top: none; }
