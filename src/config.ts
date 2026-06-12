@@ -73,6 +73,13 @@ export const CHAT_GOOGLE_CLIENT_SECRET = (env['CHAT_GOOGLE_CLIENT_SECRET'] ?? ''
 export const CHAT_ALLOWED_DOMAIN = (env['CHAT_ALLOWED_DOMAIN'] ?? '').trim().toLowerCase()
 export const CHAT_PUBLIC_URL = (env['CHAT_PUBLIC_URL'] ?? '').trim().replace(/\/$/, '')
 export const CHAT_SESSION_TTL_HOURS = parseInt(env['CHAT_SESSION_TTL_HOURS'] ?? '24', 10)
+// Thread lifecycle. Users open/close threads themselves (ChatGPT-style); the
+// idle auto-suspend is a backstop against forgotten threads, not the primary
+// mechanism, and a suspended thread reopens losslessly via --resume. The
+// open-thread cap is a soft server guard: every open thread is a live
+// tmux+claude process (~hundreds of MB RSS each).
+export const CHAT_THREAD_IDLE_MINUTES = parseInt(env['CHAT_THREAD_IDLE_MINUTES'] ?? '45', 10)
+export const CHAT_MAX_OPEN_THREADS_PER_AGENT = parseInt(env['CHAT_MAX_OPEN_THREADS_PER_AGENT'] ?? '10', 10)
 
 // Heartbeat
 export const HEARTBEAT_INTERVAL_MS = 60 * 60 * 1000 // 1 hour

@@ -50,6 +50,8 @@ import { tryHandleToolLog } from './web/routes/tool-log.js'
 import { tryHandleStatic } from './web/routes/static.js'
 import { tryHandleChatAuth } from './web/routes/chat-auth.js'
 import { pruneExpiredChatWebSessions } from './db.js'
+import { sweepIdleThreads } from './web/chat/thread-process.js'
+import { CHAT_THREAD_IDLE_MINUTES } from './config.js'
 import type { RouteContext } from './web/routes/types.js'
 
 const WEB_DIR = join(PROJECT_ROOT, 'web')
@@ -296,11 +298,18 @@ export function startWebServer(port = 3420): http.Server {
   // Expired chat sessions are also dropped lazily on lookup; this sweep just
   // keeps the table from accumulating rows for users who never come back.
   let chatSessionPruneInterval: NodeJS.Timeout | null = null
+  let threadIdleSweepInterval: NodeJS.Timeout | null = null
   if (CHAT_APP_ENABLED) {
     chatSessionPruneInterval = setInterval(() => {
       try { pruneExpiredChatWebSessions() } catch { /* table missing only before initDatabase */ }
     }, 60 * 60 * 1000)
-    logger.info('Chat app enabled: /chat-api namespace active, session prune started (1h)')
+    // Idle backstop for forgotten threads. 5-min cadence is plenty: the idle
+    // threshold is tens of minutes, and a sweep only costs a DB query when
+    // nothing qualifies.
+    threadIdleSweepInterval = setInterval(() => {
+      try { sweepIdleThreads(CHAT_THREAD_IDLE_MINUTES) } catch (err) { logger.warn({ err }, 'Thread idle sweep failed') }
+    }, 5 * 60 * 1000)
+    logger.info({ idleMinutes: CHAT_THREAD_IDLE_MINUTES }, 'Chat app enabled: /chat-api namespace active, session prune (1h) + thread idle sweep (5min) started')
   }
 
   // NOTE: startMcpListChecker() is intentionally NOT called here.
@@ -368,6 +377,7 @@ export function startWebServer(port = 3420): http.Server {
     clearInterval(autoRestartInterval)
     clearInterval(updateCheckerInterval)
     if (chatSessionPruneInterval) clearInterval(chatSessionPruneInterval)
+    if (threadIdleSweepInterval) clearInterval(threadIdleSweepInterval)
     return origClose(cb)
   }
 

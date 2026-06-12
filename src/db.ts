@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3'
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync } from 'node:fs'
 import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL } from './config.js'
@@ -497,6 +498,25 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_chat_web_sessions_expiry ON chat_web_sessions(expires_at)`)
+
+  // --- Chat app threads (one thread = one Claude Code session per agent) ---
+  // claude_session_id is assigned at creation (claude --session-id) so the
+  // thread <-> transcript mapping is deterministic: the transcript file is
+  // <claude_session_id>.jsonl in the agent's projects dir, and a suspended
+  // thread reopens with --resume <claude_session_id>. The main agent session
+  // (agent-<name>) is NOT tracked here -- it stays untouched.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chat_threads (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      title TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','suspended','closed')),
+      claude_session_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      last_activity_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_chat_threads_agent ON chat_threads(agent_id, status)`)
 
   // One-shot migration from the old JSON file (which had a read-modify-write
   // race). Import rows if they exist, then rename the file so we don't keep
@@ -1729,4 +1749,60 @@ export function deleteChatWebSession(sidHash: string): void {
 
 export function pruneExpiredChatWebSessions(): number {
   return db.prepare('DELETE FROM chat_web_sessions WHERE expires_at <= ?').run(Date.now()).changes
+}
+
+// --- Chat app threads ---
+
+export interface ChatThread {
+  id: string
+  agent_id: string
+  title: string
+  status: 'open' | 'suspended' | 'closed'
+  claude_session_id: string
+  created_at: number
+  last_activity_at: number
+}
+
+export function createChatThread(agentId: string, claudeSessionId: string, title = ''): ChatThread {
+  const id = randomUUID()
+  const now = Date.now()
+  db.prepare(
+    `INSERT INTO chat_threads (id, agent_id, title, status, claude_session_id, created_at, last_activity_at)
+     VALUES (?, ?, ?, 'open', ?, ?, ?)`,
+  ).run(id, agentId, title, claudeSessionId, now, now)
+  return { id, agent_id: agentId, title, status: 'open', claude_session_id: claudeSessionId, created_at: now, last_activity_at: now }
+}
+
+export function getChatThread(id: string): ChatThread | undefined {
+  return db.prepare('SELECT * FROM chat_threads WHERE id = ?').get(id) as ChatThread | undefined
+}
+
+// Closed threads stay listed (reopenable history) unless the caller filters.
+export function listChatThreads(agentId: string, opts: { includeClosed?: boolean } = {}): ChatThread[] {
+  const where = opts.includeClosed ? '' : " AND status != 'closed'"
+  return db.prepare(
+    `SELECT * FROM chat_threads WHERE agent_id = ?${where} ORDER BY last_activity_at DESC`,
+  ).all(agentId) as ChatThread[]
+}
+
+export function listOpenChatThreads(): ChatThread[] {
+  return db.prepare("SELECT * FROM chat_threads WHERE status = 'open'").all() as ChatThread[]
+}
+
+export function countOpenChatThreads(agentId: string): number {
+  return (db.prepare("SELECT COUNT(*) AS c FROM chat_threads WHERE agent_id = ? AND status = 'open'")
+    .get(agentId) as { c: number }).c
+}
+
+export function setChatThreadStatus(id: string, status: ChatThread['status']): boolean {
+  return db.prepare('UPDATE chat_threads SET status = ?, last_activity_at = ? WHERE id = ?')
+    .run(status, Date.now(), id).changes > 0
+}
+
+export function renameChatThread(id: string, title: string): boolean {
+  return db.prepare('UPDATE chat_threads SET title = ? WHERE id = ?').run(title, id).changes > 0
+}
+
+export function touchChatThread(id: string): void {
+  db.prepare('UPDATE chat_threads SET last_activity_at = ? WHERE id = ?').run(Date.now(), id)
 }
