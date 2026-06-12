@@ -49,6 +49,7 @@ import { tryHandleIdeas } from './web/routes/ideas.js'
 import { tryHandleToolLog } from './web/routes/tool-log.js'
 import { tryHandleStatic } from './web/routes/static.js'
 import { tryHandleChatAuth } from './web/routes/chat-auth.js'
+import { tryHandleChatApi } from './web/routes/chat-api.js'
 import { pruneExpiredChatWebSessions } from './db.js'
 import { sweepIdleThreads } from './web/chat/thread-process.js'
 import { CHAT_THREAD_IDLE_MINUTES } from './config.js'
@@ -145,6 +146,7 @@ export function startWebServer(port = 3420): http.Server {
       // from the /api/* bearer gate above. The handler self-gates on
       // CHAT_APP_ENABLED (404 when off).
       if (await tryHandleChatAuth(routeCtx)) return
+      if (await tryHandleChatApi(routeCtx)) return
 
       if (await tryHandleProfiles(routeCtx)) return
       if (await tryHandleMessages(routeCtx)) return
