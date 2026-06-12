@@ -60,7 +60,7 @@ function clearedFlowCookie(): string {
 // (the future chat UI shows the message); they carry no session cookie.
 function failRedirect(res: RouteContext['res'], code: string): void {
   res.writeHead(302, {
-    Location: `${publicBaseUrl()}/?login_error=${encodeURIComponent(code)}`,
+    Location: `${publicBaseUrl()}/chat/?login_error=${encodeURIComponent(code)}`,
     'Set-Cookie': clearedFlowCookie(),
     'Cache-Control': 'private, no-store',
   })
@@ -148,7 +148,7 @@ export async function tryHandleChatAuth(ctx: RouteContext): Promise<boolean> {
     const { sid, maxAgeSeconds } = createSession(email, agentId)
     logger.info({ email, agentId }, 'Chat login successful')
     res.writeHead(302, {
-      Location: `${publicBaseUrl()}/`,
+      Location: `${publicBaseUrl()}/chat/`,
       'Set-Cookie': [buildSessionCookie(sid, maxAgeSeconds), clearedFlowCookie()],
       'Cache-Control': 'private, no-store',
     })

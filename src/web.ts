@@ -50,12 +50,14 @@ import { tryHandleToolLog } from './web/routes/tool-log.js'
 import { tryHandleStatic } from './web/routes/static.js'
 import { tryHandleChatAuth } from './web/routes/chat-auth.js'
 import { tryHandleChatApi } from './web/routes/chat-api.js'
+import { tryHandleChatStatic } from './web/routes/chat-static.js'
 import { pruneExpiredChatWebSessions } from './db.js'
 import { sweepIdleThreads } from './web/chat/thread-process.js'
 import { CHAT_THREAD_IDLE_MINUTES } from './config.js'
 import type { RouteContext } from './web/routes/types.js'
 
 const WEB_DIR = join(PROJECT_ROOT, 'web')
+const CHAT_WEB_DIR = join(PROJECT_ROOT, 'web-chat')
 
 function ensureDirs() {
   mkdirSync(AGENTS_BASE_DIR, { recursive: true })
@@ -147,6 +149,7 @@ export function startWebServer(port = 3420): http.Server {
       // CHAT_APP_ENABLED (404 when off).
       if (await tryHandleChatAuth(routeCtx)) return
       if (await tryHandleChatApi(routeCtx)) return
+      if (await tryHandleChatStatic(routeCtx, CHAT_WEB_DIR)) return
 
       if (await tryHandleProfiles(routeCtx)) return
       if (await tryHandleMessages(routeCtx)) return

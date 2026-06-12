@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="hu">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Marveen Chat</title>
+  <link rel="stylesheet" href="/chat/style.css">
+</head>
+<body>
+  <!-- Login screen (shown while /chat-api/auth/me is 401) -->
+  <div id="login" class="login hidden">
+    <div class="login-card">
+      <h1>Marveen Chat</h1>
+      <p>Jelentkezz be a céges Google-fiókoddal.</p>
+      <p id="login-error" class="login-error hidden"></p>
+      <a class="login-btn" href="/chat-api/auth/login">Belépés Google-lel</a>
+    </div>
+  </div>
+
+  <!-- App shell -->
+  <div id="app" class="app hidden">
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-head">
+        <button id="new-thread" class="primary">+ Új beszélgetés</button>
+        <button id="sidebar-close" class="icon-btn" title="Bezárás">×</button>
+      </div>
+      <nav id="thread-list" class="thread-list"></nav>
+      <div class="sidebar-foot">
+        <span id="me-email" class="me-email"></span>
+        <button id="logout" class="link-btn">Kilépés</button>
+      </div>
+    </aside>
+    <div id="backdrop" class="backdrop hidden"></div>
+    <main class="main">
+      <header class="topbar">
+        <button id="sidebar-open" class="icon-btn" title="Szálak">☰</button>
+        <h2 id="thread-title">Marveen</h2>
+        <div class="topbar-actions">
+          <button id="rename-thread" class="icon-btn hidden" title="Átnevezés">✎</button>
+          <button id="close-thread" class="icon-btn hidden" title="Szál lezárása">🗑</button>
+        </div>
+      </header>
+      <div id="messages" class="messages">
+        <div id="empty-state" class="empty-state">Válassz egy szálat, vagy indíts újat.</div>
+      </div>
+      <div id="status-bar" class="status-bar hidden"></div>
+      <footer class="composer">
+        <textarea id="input" rows="1" placeholder="Írj üzenetet…" disabled></textarea>
+        <button id="send" class="primary" disabled>Küldés</button>
+      </footer>
+    </main>
+  </div>
+
+  <script src="/chat/app.js"></script>
+</body>
+</html>
