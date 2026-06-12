@@ -235,7 +235,8 @@ body {
   border-radius: 10px;
   padding: 10px 12px;
   font: inherit;
-  max-height: 160px;
+  min-height: 72px;
+  max-height: 200px;
   background: var(--bg);
   color: var(--text);
 }
