@@ -139,25 +139,25 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number): '
   try {
     let prefix: string
     if (task.type === 'heartbeat') {
-      // Channel-less heartbeat agents (today: only `heartbeat`) MUST NOT
-      // receive the Telegram-keepalive directive -- their CLAUDE.md is
-      // explicit that all output goes to Marveen via inter-agent message
-      // (Marveen 2026-06-02 PR #257 review block). The historical prefix
-      // was Marveen-specific scaffolding ("keep the bun-poller stdio
-      // alive, only Telegram-reply if urgent") and would create a direct
-      // contradiction with the agent's own contract; worse, if the
-      // channel-plugin disable ever leaks through from the user-scope
-      // settings (which it has done before in this fleet -- the very
-      // motivation for this whole rearchitecture), the leftover Telegram
-      // tool would receive an explicit instruction to use chat_id
-      // ALLOWED_CHAT_ID. So: emit a minimal heartbeat tag for the
-      // resubmit-marker code below to match, and let the agent's own
-      // CLAUDE.md + SKILL.md drive behaviour.
-      if (agentName === 'heartbeat') {
-        prefix = `[Heartbeat: ${task.name}] `
-      } else {
-        prefix = `[Heartbeat: ${task.name}] *** KOTELEZO ELSO TEENDO MIELOTT BARMIT IRSZ: hivj meg pontosan EGY local-only tool-t (peldaul Bash 'echo keepalive >> /tmp/marveen-keepalive.log' VAGY Read tool egy meglevo fajlra mint ${join(PROJECT_ROOT, 'HEARTBEAT.md')}). NE Telegram-tool-t -- az zajt eredmenyezne. Ezt a Telegram-bun MCP-stdio-pipe keep-alive-ehez kell, ha kihagyod, a Telegram-conn 30 percen belul disconnect-el. *** Aztan: ez egy csendes ellenorzes. CSAK AKKOR irj Telegramon (chat_id: ${ALLOWED_CHAT_ID}), ha tenyleg fontos/surgos dolgot talalsz. Ha minden rendben, NE kuldj Telegram uzenetet -- a kotelezo no-op tool-call mar megfelelo aktivitas. Egy rovid 'csendes heartbeat' sor a transzkriptbe + a tool-call elég. `
-      }
+      // Heartbeat prompts get ONLY a minimal tag. The agent's CLAUDE.md and
+      // the task SKILL.md drive behaviour -- the runner MUST NOT prepend any
+      // operational directive here.
+      //
+      // SECURITY (removed 2026-06-08): the previous `agentName !== 'heartbeat'`
+      // branch injected a coercive "call exactly one local tool before you
+      // write anything, do NOT use Telegram" keep-alive preamble. That text sat
+      // OUTSIDE the wrapUntrusted() envelope, so the receiving agent -- told to
+      // trust everything outside the untrusted tags -- was instructed to perform
+      // a mandatory no-op tool call and to suppress the very channel the user
+      // sees. The runner was poisoning its own trusted channel: a prompt
+      // injection we shipped ourselves. It also contradicted the agent contract
+      // and, if the channel-plugin disable leaked through user-scope settings,
+      // told the leftover Telegram tool to message ALLOWED_CHAT_ID. Removed
+      // entirely; ALL heartbeat agents now get the clean tag. Channel liveness
+      // is handled separately by the channels TUI keepalive
+      // (channel-coordinator/liveness.ts), never by injecting instructions into
+      // heartbeat prompts.
+      prefix = `[Heartbeat: ${task.name}] `
     } else {
       prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el Telegramon (chat_id: ${ALLOWED_CHAT_ID}, reply tool). `
     }
