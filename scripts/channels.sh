@@ -131,9 +131,21 @@ fi
 # env (e.g. telegram@0.0.1). Those pollers carry CLAUDE_PLUGIN_ROOT=.../<provider>
 # instead, so the STATE_DIR grep above never matches and orphans accumulate
 # across restarts -> multiple getUpdates long-polls -> 409 Conflict -> the bot
-# goes silent/flaky. This runs BEFORE the fresh session is spawned, so every
-# matching poller is by definition a stale orphan and safe to kill.
-ORPHAN_PIDS2="$(/bin/ps eww -e 2>/dev/null | awk -v needle="CLAUDE_PLUGIN_ROOT=" -v prov="/${CHANNEL_PROVIDER}" '$0 ~ needle && $0 ~ prov { print $1 }')"
+# goes silent/flaky.
+#
+# Scope to THIS (main) agent only. The tmux server is SHARED across the fleet,
+# and every sub-agent runs its OWN provider poller out of
+# $INSTALL_DIR/agents/<name>/. Those processes carry that agent dir in their
+# environment; the main agent's pollers do not. CLAUDE_PLUGIN_ROOT points at the
+# shared user-level plugin cache for every agent, so it cannot tell main from
+# sub on its own -- without the agents/ exclusion this pass SIGKILLs every live
+# sub-agent poller on a main restart (they would only recover on each
+# sub-agent's own next restart). A main orphan from an old build has no agent
+# dir, so it is still reaped. index() is a literal (non-regex) substring test so
+# an install path with regex metacharacters can't break the exclusion. The var
+# is named `subdir` (not `sub`) because `sub` is a reserved awk function name and
+# BSD/macOS awk syntax-errors on it.
+ORPHAN_PIDS2="$(/bin/ps eww -e 2>/dev/null | awk -v needle="CLAUDE_PLUGIN_ROOT=" -v prov="/${CHANNEL_PROVIDER}" -v subdir="${INSTALL_DIR}/agents/" '$0 ~ needle && $0 ~ prov && index($0, subdir) == 0 { print $1 }')"
 if [ -n "$ORPHAN_PIDS2" ]; then
   # shellcheck disable=SC2086
   /bin/kill -TERM $ORPHAN_PIDS2 2>/dev/null || true
