@@ -60,6 +60,20 @@ export const RESPAWN_ENABLED =
         ? hostname().toLowerCase().includes(RESPAWN_HOST)
         : true
 
+// Chat app (per-user web chat, Google Workspace login). OFF by default: the
+// feature exposes a cookie-authenticated API namespace (/chat-api/*) next to
+// the bearer-gated admin /api/*, so an install must opt in explicitly and
+// provide its own OAuth client. CHAT_PUBLIC_URL is the browser-facing origin
+// (behind the reverse proxy) used for the OAuth redirect URI and the cookie
+// Secure flag.
+export const CHAT_APP_ENABLED =
+  ['1', 'true', 'yes', 'on'].includes((env['CHAT_APP_ENABLED'] ?? '').trim().toLowerCase())
+export const CHAT_GOOGLE_CLIENT_ID = (env['CHAT_GOOGLE_CLIENT_ID'] ?? '').trim()
+export const CHAT_GOOGLE_CLIENT_SECRET = (env['CHAT_GOOGLE_CLIENT_SECRET'] ?? '').trim()
+export const CHAT_ALLOWED_DOMAIN = (env['CHAT_ALLOWED_DOMAIN'] ?? '').trim().toLowerCase()
+export const CHAT_PUBLIC_URL = (env['CHAT_PUBLIC_URL'] ?? '').trim().replace(/\/$/, '')
+export const CHAT_SESSION_TTL_HOURS = parseInt(env['CHAT_SESSION_TTL_HOURS'] ?? '24', 10)
+
 // Heartbeat
 export const HEARTBEAT_INTERVAL_MS = 60 * 60 * 1000 // 1 hour
 export const HEARTBEAT_START_HOUR = 9

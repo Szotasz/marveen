@@ -484,6 +484,20 @@ export function initDatabase(dbPathOverride?: string): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tool_log_session ON tool_call_log(session_id, created_at)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tool_log_ts ON tool_call_log(created_at)`)
 
+  // --- Chat app web sessions (per-user Google login) ---
+  // Only the SHA-256 hash of the session id is stored: a leaked DB file (or a
+  // sub-agent reading store/) must not yield usable login cookies.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chat_web_sessions (
+      sid_hash TEXT PRIMARY KEY,
+      email TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_chat_web_sessions_expiry ON chat_web_sessions(expires_at)`)
+
   // One-shot migration from the old JSON file (which had a read-modify-write
   // race). Import rows if they exist, then rename the file so we don't keep
   // re-importing. Wrapped in a transaction so a crash mid-import is safe.
@@ -1681,3 +1695,38 @@ export function pruneToolCallLog(olderThanSecs = 86400): void {
   db.prepare('DELETE FROM tool_call_log WHERE created_at < ?').run(cutoff)
 }
 
+
+// --- Chat app web sessions ---
+
+export interface ChatWebSession {
+  email: string
+  agentId: string
+  expiresAt: number
+}
+
+export function createChatWebSession(sidHash: string, email: string, agentId: string, ttlMs: number): void {
+  const now = Date.now()
+  db.prepare(
+    'INSERT INTO chat_web_sessions (sid_hash, email, agent_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?)',
+  ).run(sidHash, email, agentId, now, now + ttlMs)
+}
+
+export function getChatWebSession(sidHash: string): ChatWebSession | undefined {
+  const row = db.prepare(
+    'SELECT email, agent_id, expires_at FROM chat_web_sessions WHERE sid_hash = ?',
+  ).get(sidHash) as { email: string; agent_id: string; expires_at: number } | undefined
+  if (!row) return undefined
+  if (row.expires_at <= Date.now()) {
+    db.prepare('DELETE FROM chat_web_sessions WHERE sid_hash = ?').run(sidHash)
+    return undefined
+  }
+  return { email: row.email, agentId: row.agent_id, expiresAt: row.expires_at }
+}
+
+export function deleteChatWebSession(sidHash: string): void {
+  db.prepare('DELETE FROM chat_web_sessions WHERE sid_hash = ?').run(sidHash)
+}
+
+export function pruneExpiredChatWebSessions(): number {
+  return db.prepare('DELETE FROM chat_web_sessions WHERE expires_at <= ?').run(Date.now()).changes
+}

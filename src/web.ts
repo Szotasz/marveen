@@ -2,7 +2,7 @@ import http from 'node:http'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { execSync, execFileSync } from 'node:child_process'
-import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL } from './config.js'
+import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, CHAT_APP_ENABLED, CHAT_PUBLIC_URL } from './config.js'
 import { loadOrCreateDashboardToken, checkBearerToken } from './web/dashboard-auth.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
@@ -48,6 +48,8 @@ import { tryHandleTokenUsage } from './web/routes/token-usage.js'
 import { tryHandleIdeas } from './web/routes/ideas.js'
 import { tryHandleToolLog } from './web/routes/tool-log.js'
 import { tryHandleStatic } from './web/routes/static.js'
+import { tryHandleChatAuth } from './web/routes/chat-auth.js'
+import { pruneExpiredChatWebSessions } from './db.js'
 import type { RouteContext } from './web/routes/types.js'
 
 const WEB_DIR = join(PROJECT_ROOT, 'web')
@@ -68,6 +70,7 @@ export function startWebServer(port = 3420): http.Server {
     `http://127.0.0.1:${port}`,
     ...( WEB_HOST !== 'localhost' && WEB_HOST !== '127.0.0.1' ? [`http://${WEB_HOST}:${port}`] : []),
     ...(DASHBOARD_PUBLIC_URL ? [DASHBOARD_PUBLIC_URL.replace(/\/$/, '')] : []),
+    ...(CHAT_APP_ENABLED && CHAT_PUBLIC_URL ? [CHAT_PUBLIC_URL] : []),
   ])
   const isSafeMethod = (m: string) => m === 'GET' || m === 'HEAD' || m === 'OPTIONS'
 
@@ -135,6 +138,11 @@ export function startWebServer(port = 3420): http.Server {
 
     try {
       const routeCtx: RouteContext = { req, res, path, method, url }
+
+      // Chat app namespace (/chat-api/*): cookie-session auth, fully separate
+      // from the /api/* bearer gate above. The handler self-gates on
+      // CHAT_APP_ENABLED (404 when off).
+      if (await tryHandleChatAuth(routeCtx)) return
 
       if (await tryHandleProfiles(routeCtx)) return
       if (await tryHandleMessages(routeCtx)) return
@@ -285,6 +293,16 @@ export function startWebServer(port = 3420): http.Server {
   const updateCheckerInterval = startUpdateChecker()
   logger.info('Update checker started (15min poll)')
 
+  // Expired chat sessions are also dropped lazily on lookup; this sweep just
+  // keeps the table from accumulating rows for users who never come back.
+  let chatSessionPruneInterval: NodeJS.Timeout | null = null
+  if (CHAT_APP_ENABLED) {
+    chatSessionPruneInterval = setInterval(() => {
+      try { pruneExpiredChatWebSessions() } catch { /* table missing only before initDatabase */ }
+    }, 60 * 60 * 1000)
+    logger.info('Chat app enabled: /chat-api namespace active, session prune started (1h)')
+  }
+
   // NOTE: startMcpListChecker() is intentionally NOT called here.
   //
   // Root cause: calling `claude mcp list` at boot time (30s delay) spawns the
@@ -349,6 +367,7 @@ export function startWebServer(port = 3420): http.Server {
     if (reauthHealerInterval) clearInterval(reauthHealerInterval)
     clearInterval(autoRestartInterval)
     clearInterval(updateCheckerInterval)
+    if (chatSessionPruneInterval) clearInterval(chatSessionPruneInterval)
     return origClose(cb)
   }
 
