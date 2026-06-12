@@ -10,6 +10,48 @@
   --user-text: #ffffff;
   --assistant-bubble: #ffffff;
   --danger: #b91c1c;
+  --status-bg: #fef9c3;
+  --status-text: #6b7280;
+  --error-bg: #fee2e2;
+  --shadow: rgba(0, 0, 0, 0.12);
+  --active-item: #e8effd;
+}
+
+/* Dark theme: explicit user choice via data-theme, otherwise follows the OS. */
+[data-theme="dark"] {
+  --bg: #101418;
+  --panel: #1a1f26;
+  --border: #2b323b;
+  --text: #e7eaee;
+  --muted: #98a2ae;
+  --accent: #3b82f6;
+  --accent-dark: #2563eb;
+  --assistant-bubble: #222932;
+  --danger: #f87171;
+  --status-bg: #2e2a18;
+  --status-text: #d6cf9a;
+  --error-bg: #3a2222;
+  --shadow: rgba(0, 0, 0, 0.5);
+  --active-item: #263244;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #101418;
+    --panel: #1a1f26;
+    --border: #2b323b;
+    --text: #e7eaee;
+    --muted: #98a2ae;
+    --accent: #3b82f6;
+    --accent-dark: #2563eb;
+    --assistant-bubble: #222932;
+    --danger: #f87171;
+    --status-bg: #2e2a18;
+    --status-text: #d6cf9a;
+    --error-bg: #3a2222;
+    --shadow: rgba(0, 0, 0, 0.5);
+    --active-item: #263244;
+  }
 }
 
 * { box-sizing: border-box; }
@@ -40,7 +82,7 @@ body {
 .login-card p { color: var(--muted); margin: 0 0 24px; }
 .login-error {
   color: var(--danger);
-  background: #fee2e2;
+  background: var(--error-bg);
   border-radius: 8px;
   padding: 8px 12px;
   font-size: 14px;
@@ -92,7 +134,7 @@ body {
   font-size: 14px;
 }
 .thread-item:hover { background: var(--bg); }
-.thread-item.active { background: #e8effd; }
+.thread-item.active { background: var(--active-item); }
 .thread-item .t-title {
   flex: 1;
   overflow: hidden;
@@ -174,8 +216,8 @@ body {
 .status-bar {
   padding: 6px 16px;
   font-size: 13px;
-  color: var(--muted);
-  background: #fef9c3;
+  color: var(--status-text);
+  background: var(--status-bg);
   border-top: 1px solid var(--border);
 }
 
@@ -194,6 +236,8 @@ body {
   padding: 10px 12px;
   font: inherit;
   max-height: 160px;
+  background: var(--bg);
+  color: var(--text);
 }
 .composer textarea:focus { outline: 2px solid var(--accent); border-color: transparent; }
 
@@ -270,7 +314,7 @@ body {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+  box-shadow: 0 8px 24px var(--shadow);
   padding: 6px;
   display: flex;
   flex-direction: column;
@@ -297,4 +341,25 @@ body {
   border-radius: 6px;
   padding: 4px 6px;
   min-width: 0;
+  background: var(--bg);
+  color: var(--text);
 }
+
+/* --- Inline SVG icons --- */
+.icon-btn svg, .thread-menu button svg, .t-menu svg, .link-btn svg {
+  width: 18px;
+  height: 18px;
+  vertical-align: -3px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.thread-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.thread-menu button svg { width: 16px; height: 16px; }
+#theme-toggle svg { width: 16px; height: 16px; }
