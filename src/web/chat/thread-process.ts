@@ -30,7 +30,7 @@ import {
 } from '../agent-config.js'
 import { loadProfileTemplate } from '../profiles.js'
 import { getSecret } from '../vault.js'
-import { sessionExistsOnHost, sendPromptToSession, isSessionReadyForPrompt } from '../agent-process.js'
+import { sessionExistsOnHost, sendPromptToSession, isSessionReadyForPrompt, scheduleIdentitySetup } from '../agent-process.js'
 import { projectsDirFor } from '../active-model.js'
 import { buildTmuxInvocation } from '../ssh-tmux.js'
 import {
@@ -133,6 +133,11 @@ export function startThreadSession(agentName: string, thread: ChatThread): { ok:
   try {
     runLocalTmux(['new-session', '-d', '-s', session, cmd])
     setChatThreadStatus(thread.id, 'open')
+    // Same post-spawn care as startAgentProcess: dismiss first-run/resume
+    // modals once the TUI has rendered and set the session /name -- without
+    // this a resumed thread can sit behind a "Resume from summary" modal and
+    // every message bounces with "Thread is busy".
+    scheduleIdentitySetup(session, thread.title || 'Chat szál')
     logger.info({ agentName, threadId: thread.id, session, resume }, 'Chat thread session started')
     return { ok: true }
   } catch (err) {

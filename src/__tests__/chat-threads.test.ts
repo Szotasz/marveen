@@ -153,3 +153,11 @@ describe('pickIdleThreads (idle backstop decision)', () => {
     expect(pickIdleThreads([t], NOW, IDLE)).toHaveLength(1)
   })
 })
+
+describe('projectsDirFor encoding (transcript lookup)', () => {
+  it('encodes every non-alphanumeric char as dash, matching Claude Code', async () => {
+    const { projectsDirFor } = await import('../web/active-model.js')
+    const dir = projectsDirFor('/Users/x/code/is_backend_system/agents/demo.v2', undefined, '/home/u')
+    expect(dir).toBe('/home/u/.claude/projects/-Users-x-code-is-backend-system-agents-demo-v2')
+  })
+})

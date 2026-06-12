@@ -24,7 +24,13 @@ const TTL_MS = 3000
 // so we read the right project dir for agents on a non-default config.
 export function projectsDirFor(workingDir: string, configDir?: string, homeDirOverride?: string): string {
   const base = configDir ?? join(homeDirOverride ?? homedir(), '.claude')
-  const encoded = workingDir.replace(/[/.]/g, '-')
+  // Claude Code's own encoding replaces EVERY non-alphanumeric character with
+  // '-', not just '/' and '.' (verified against real ~/.claude/projects dirs:
+  // /Users/x/code/is_backend_system -> -Users-x-code-is-backend-system). The
+  // previous [/.]-only variant silently missed the project dir for any
+  // working dir containing '_' or other specials, so the model/context/
+  // conversation readers came back empty there.
+  const encoded = workingDir.replace(/[^a-zA-Z0-9]/g, '-')
   return join(base, 'projects', encoded)
 }
 
