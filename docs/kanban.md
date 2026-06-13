@@ -301,3 +301,10 @@ KANBAN_LABEL_COLORS=#3b82f6,#0ea5e9,#10b981,#14b8a6,#8b5cf6,#64748b  # választh
 ```
 
 Adatfolyam: `src/config.ts` → `/api/marveen` (`kanbanLabels.colors` kulcs) → `window._marveen.kanbanLabels` (frontend).
+---
+
+## Kapcsolódó dokumentumok
+
+- [Ötletbox](ideas.md) -- ötletektől a kanban-kártyákig (AI-bontással)
+- [Ügynök-flotta](agent-fleet.md) -- assignee ügynökök, delegálás
+- [Heartbeat autonómia](heartbeat-autonomy.md) -- kanban-audit autonómia szintje

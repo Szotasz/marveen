@@ -257,7 +257,7 @@ function switchPage(pageId) {
   if (pageId === 'skills') loadGlobalSkills()
   if (pageId === 'connectors') loadConnectors()
   if (pageId === 'migrate') loadMigrateAgents()
-  if (pageId === 'docs') loadDocs()
+  if (pageId === 'docs') { setupDocsLangToggle(); loadDocs() }
   if (pageId === 'status') loadStatus()
   if (pageId === 'recall') loadRecallPage()
   if (pageId === 'bgTasks') loadBgTasksPage()
@@ -11450,8 +11450,13 @@ function mdInline(text) {
   s = s.replace(/`([^`]+)`/g, (m, c) => '<code>' + c + '</code>')
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
   s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>')
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, txt, url) =>
-    '<a href="' + escapeAttr(url) + '" target="_blank" rel="noopener noreferrer">' + txt + '</a>')
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, txt, url) => {
+    if (!url.startsWith('http') && url.endsWith('.md')) {
+      const docName = url.split('/').pop()
+      return '<a href="#" class="docs-internal-link" data-doc="' + escapeAttr(docName) + '">' + txt + '</a>'
+    }
+    return '<a href="' + escapeAttr(url) + '" target="_blank" rel="noopener noreferrer">' + txt + '</a>'
+  })
   return s
 }
 
@@ -11516,14 +11521,29 @@ function renderMarkdown(md) {
   return out.join('\n')
 }
 
-async function loadDocs() {
+function setupDocsLangToggle() {
+  const toggle = document.getElementById('docsLangToggle')
+  if (!toggle || toggle.dataset.langSetup) return
+  toggle.dataset.langSetup = '1'
+  toggle.querySelectorAll('.docs-lang-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.dataset.lang === docsLang) return
+      docsLang = btn.dataset.lang
+      toggle.querySelectorAll('.docs-lang-btn').forEach(b => b.classList.remove('active'))
+      btn.classList.add('active')
+      loadDocs(docsCurrentDoc)
+    })
+  })
+}
+
+async function loadDocs(preferDoc) {
   const listEl = document.getElementById('docsList')
   const contentEl = document.getElementById('docsContent')
   if (!listEl) return
   listEl.innerHTML = '<p class="muted">' + t('docs.loading') + '</p>'
   let docs = []
   try {
-    const res = await fetch('/api/docs')
+    const res = await fetch('/api/docs' + (docsLang === 'en' ? '?lang=en' : ''))
     docs = await res.json()
     if (!Array.isArray(docs)) docs = []
   } catch (e) {
@@ -11549,16 +11569,19 @@ async function loadDocs() {
       openDoc(a.dataset.doc)
     })
   })
-  const first = listEl.querySelector('.docs-list-item')
-  if (first) { first.classList.add('active'); openDoc(first.dataset.doc) }
+  const target = preferDoc
+    ? (listEl.querySelector('[data-doc="' + escapeAttr(preferDoc) + '"]') || listEl.querySelector('.docs-list-item'))
+    : listEl.querySelector('.docs-list-item')
+  if (target) { target.classList.add('active'); openDoc(target.dataset.doc) }
 }
 
 async function openDoc(name) {
+  docsCurrentDoc = name
   const contentEl = document.getElementById('docsContent')
   if (!contentEl) return
   contentEl.innerHTML = '<p class="muted">' + t('docs.loading') + '</p>'
   try {
-    const res = await fetch('/api/docs/' + encodeURIComponent(name))
+    const res = await fetch('/api/docs/' + encodeURIComponent(name) + (docsLang === 'en' ? '?lang=en' : ''))
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const doc = await res.json()
     const content = doc.content || ''
@@ -11570,6 +11593,19 @@ async function openDoc(name) {
       '<div class="docs-rendered markdown-body">' + renderMarkdown(content) + '</div>'
     const dl = document.getElementById('docsDownloadBtn')
     if (dl) dl.addEventListener('click', () => downloadMarkdown(name, content))
+    contentEl.querySelectorAll('.docs-internal-link').forEach(a => {
+      a.addEventListener('click', (e) => {
+        e.preventDefault()
+        const target = a.dataset.doc
+        const listEl = document.getElementById('docsList')
+        if (listEl) {
+          listEl.querySelectorAll('.docs-list-item').forEach(x => x.classList.remove('active'))
+          const item = listEl.querySelector('[data-doc="' + target + '"]')
+          if (item) item.classList.add('active')
+        }
+        openDoc(target)
+      })
+    })
   } catch (e) {
     contentEl.innerHTML = '<p class="muted">' + t('docs.open_error') + ': ' + escapeHtml(String(e.message || e)) + '</p>'
   }

@@ -1,75 +1,34 @@
-# Deterministic conversation continuity (rolling-transcript ledger)
+# Determinisztikus beszélgetés-folytonosság (gördülő átirat főkönyv)
 
-**Problem.** The channel-watchdog respawns the channels session as a *fresh* claude
-(`channels.sh`, no `--continue` — because `--continue` breaks `--channels`
-activation). A fresh session has **zero memory** of the live conversation, so if
-Gyula is mid-conversation when a respawn happens, both his last unanswered question
-**and the context it refers to** are lost. This must be impossible to miss —
-guaranteed by a **deterministic harness** (hooks + a durable ledger), never by
-agent behaviour (which can fail or restart).
+**Probléma.** A channel-watchdog friss `claude`-ként indítja újra a channels session-t (`channels.sh`, nincs `--continue` -- mert a `--continue` törné a `--channels` aktiválást). Egy friss session-nek **nulla emlékezete** van az élő beszélgetésről, így ha egy felhasználó félúton van egy kérdésnél az újraindításkor, mind az utolsó megválaszolatlan kérdése, **mind az arra utaló kontextus** elvész. Ezt lehetetlenné kell tenni -- **determinisztikus hámozó** (hook-ok + tartós főkönyv) garantálja, soha nem az ágens viselkedése (ami meghibásodhat vagy újraindulhat).
 
-**Mechanism (zero agent discretion).**
+**Mechanizmus (nulla ágensi mérlegelés).**
 
-1. **Durable rolling transcript** — `store/claudeclaw.db` → table `conversation_log`
+1. **Tartós gördülő átirat** -- `store/claudeclaw.db` → `conversation_log` tábla
    (`id, agent_id, chat_id, direction('in'|'out'), message_id, text, ts, created_at`,
-   `UNIQUE(agent_id, chat_id, direction, message_id)`). Every channel turn — inbound
-   user messages AND outbound replies — is appended here. Created by the `db.ts`
-   `initDatabase()` migration; `scripts/hooks/ledger_lib.py` re-creates it defensively
-   too (a hook may run before the dashboard migration on a fresh boot).
-2. **Inbound capture** — `UserPromptSubmit` hook `scripts/hooks/ledger-capture.py`
-   parses every inbound `<channel source="plugin:telegram:telegram" …>` block from
-   the prompt and `INSERT OR IGNORE`s it as `direction='in'`, **before** the agent
-   acts. The `UNIQUE` constraint makes re-capture idempotent.
-3. **Outbound capture** — `PostToolUse` hook `scripts/hooks/ledger-outbound.py` on the
-   telegram reply tool records the reply text as `direction='out'` (resolves the
-   `chat_id=0` shorthand to the owner chat). Outbound rows carry `message_id=NULL`, so
-   they are never deduped against each other.
-4. **Startup replay** — `SessionStart` hook `scripts/hooks/ledger-replay.py` injects
-   hidden `additionalContext` at the top of the fresh session's context:
-   - the **last N turns** of the transcript in chronological order, each prefixed
-     `Gyula:` (inbound) / `Te:` (outbound), so the fresh session knows *what the
-     conversation was about*;
-   - a highlighted **OPEN QUESTION** — the most recent inbound with no later outbound
-     ("NYITOTT KÉRDÉS … válaszolj rá MOST") — with its `chat_id` so the reply goes to
-     the right chat.
+   `UNIQUE(agent_id, chat_id, direction, message_id)`). Minden csatorna-forduló -- mind a bejövő felhasználói üzenetek, mind a kimenő válaszok -- ide kerül. A `db.ts` `initDatabase()` migrációja hozza létre; a `scripts/hooks/ledger_lib.py` is védelmi céllal újra létrehozza (egy hook lefuthat a dashboard-migráció előtt friss indításnál).
+2. **Bejövő rögzítés** -- a `UserPromptSubmit` hook `scripts/hooks/ledger-capture.py` elemzi az összes bejövő `<channel source="plugin:telegram:telegram" …>` blokkot a promptból és `INSERT OR IGNORE`-ral `direction='in'`-ként menti el, **mielőtt** az ágens cselekszik. A `UNIQUE` megszorítás idempotensé teszi az újrarögzítést.
+3. **Kimenő rögzítés** -- a `PostToolUse` hook `scripts/hooks/ledger-outbound.py` a Telegram reply eszközre feliratkozva a válasz szövegét `direction='out'`-ként rögzíti (a `chat_id=0` gyorsírást a tulajdonos chat-jára oldja fel). A kimenő sorok `message_id=NULL`-t kapnak, így soha nem kerülnek deduplikálásra egymással szemben.
+4. **Indításkori visszajátszás** -- a `SessionStart` hook `scripts/hooks/ledger-replay.py` rejtett `additionalContext`-et injektál a friss session kontextusának tetejére:
+   - az átirat **utolsó N fordulója** időrendben, mindegyik `Felhasználó:` (bejövő) / `Te:` (kimenő) előtaggal, hogy a friss session tudja *miről szólt a beszélgetés*;
+   - egy kiemelten jelzett **NYITOTT KÉRDÉS** -- a legutóbbi bejövő, amelynek nincs utána kimenő ("NYITOTT KÉRDÉS … válaszolj rá MOST") -- a `chat_id`-jával, hogy a válasz a megfelelő chatbe kerüljön.
 
-   The agent does not need to *remember* to look — the context and the open question
-   are already in front of it.
-5. **Live-session drain** — `SessionStart` replay only fires on a *respawn*, but a
-   message can also be lost in an **already-running** session (a mid-session
-   deafness gap): capture still records it, yet the live session never sees it
-   until the next respawn. `scripts/hooks/ledger-live-drain.py` (run every ~2 min
-   by the `ledger-live-drain` scheduled task in the live session) re-surfaces the
-   still-unanswered inbound — `OPEN_QUESTION chat_id=… message_id=…\n<text>` on
-   stdout — so the running agent answers it without waiting for a respawn. Two
-   safety rails: a **grace window** (`GRACE_SECONDS = 60` — never fight an in-flight
-   reply) and a **dedup statefile** (`store/.ledger-drain-<agent_id>` — a missed
-   question is surfaced once, not every tick). Never blocks (any error → exit 0,
-   silent). NOT a settings.json hook — it is a heartbeat scheduled task whose
-   prompt answers via the telegram reply tool only when a block is printed.
+   Az ágensnek nem kell *emlékeznie*, hogy utánanézzen -- a kontextus és a nyitott kérdés már előtte van.
+5. **Élő session ürítés** -- a `SessionStart` visszajátszás csak *újraindításnál* fut, de egy üzenet egy **már-futó** session-ben is elveszhet (a session közepén keletkező süketség): a rögzítés felveszi, de az élő session sosem látja az újraindításig. A `scripts/hooks/ledger-live-drain.py` (kb. 2 percenként futtatja a `ledger-live-drain` ütemezett feladat az élő session-ben) újra felszínre hozza a még megválaszolatlan bejövőt -- `OPEN_QUESTION chat_id=… message_id=…\n<szöveg>` formában a stdout-ra -- így a futó ágens újraindítás nélkül válaszol. Két biztonsági korlát: **türelmi ablak** (`GRACE_SECONDS = 60` -- nem versenyez egy folyamatban lévő válasszal) és **deduplikációs állapotfájl** (`store/.ledger-drain-<agent_id>` -- egy kihagyott kérdés egyszer jelenik meg, nem minden ticknél). Soha nem blokkol (bármilyen hiba → exit 0, csendes). NEM settings.json hook -- ez egy szívverés ütemezett feladat, amelynek promptja csak akkor válaszol a Telegram reply eszközzel, ha blokk kerül a kimenetre.
 
-**Multi-agent scope.** The hooks are **generic across all channel agents**
-(marveen / dia / erno-ba): `agent_id` is derived from the session's cwd
-(`<install>/agents/<id>` → `<id>`; `<install>` → `MAIN_AGENT_ID`). Every read and
-write is scoped by `agent_id`, so a session only ever replays its **own** chat and
-agents never cross-contaminate.
+**Több-ágenses hatókör.** A hook-ok **generikusak az összes channel ágens számára**
+(marveen / dia / erno-ba): az `agent_id` a session cwd-jéből következik
+(`<install>/agents/<id>` → `<id>`; `<install>` → `MAIN_AGENT_ID`). Minden olvasás és írás `agent_id` szerint van szűrve, így egy session csak a **saját** chatjét játssza vissza, és az ágensek soha nem szennyezik egymást.
 
-**Tuning (env).**
+**Hangolás (env).**
 
-- `LEDGER_CONTEXT_WINDOW` — number of recent turns to replay (default `20`). If the
-  rendered window exceeds ~4000 tokens (`CONTEXT_CHAR_BUDGET = 16000` chars in
-  `ledger-replay.py`), the **oldest** turns are dropped so injected context stays
-  bounded.
-- `LEDGER_OWNER_CHAT` / `ALLOWED_CHAT_ID` — resolves the reply tool's `chat_id=0`
-  shorthand to the owner chat in `ledger-outbound.py`.
-- `LEDGER_DB_PATH` — test-only DB path override.
+- `LEDGER_CONTEXT_WINDOW` -- a visszajátszott utolsó fordulók száma (alapértelmezett `20`). Ha a renderelt ablak meghaladja a ~4000 tokent (`CONTEXT_CHAR_BUDGET = 16000` karakter a `ledger-replay.py`-ban), a **legrégebbi** fordulók kikerülnek, hogy az injektált kontextus korlátozott maradjon.
+- `LEDGER_OWNER_CHAT` / `ALLOWED_CHAT_ID` -- a reply eszköz `chat_id=0` gyorsírását a tulajdonos chatjára oldja fel a `ledger-outbound.py`-ban.
+- `LEDGER_DB_PATH` -- csak teszteléshez, DB útvonal felülbírálása.
 
-## settings.json block to add (`/home/marveen/marveen/.claude/settings.json`)
+## settings.json blokk hozzáadása
 
-Wire the hooks in the **project** settings (NOT user scope). The main channels
-session runs with cwd `/home/marveen/marveen`, so it picks these up. The hooks
-self-scope by cwd, so they are safe even if inherited. Merge this `hooks` object
-(`$CLAUDE_PROJECT_DIR` → `/home/marveen/marveen` for the main session).
+A hook-okat a **projekt** settings.json-ban kell bekötni (NEM felhasználói scope-ban). A fő channels session cwd-je a projekt gyökere, tehát ezeket veszi fel. A hook-ok cwd alapján scopeolják magukat, így öröklésnél is biztonságosak.
 
 ```json
 {
@@ -87,27 +46,13 @@ self-scope by cwd, so they are safe even if inherited. Merge this `hooks` object
 }
 ```
 
-- `UserPromptSubmit` takes no matcher (fires on every prompt).
-- `PostToolUse` matcher `mcp__plugin.telegram.telegram__reply`: the `.` are regex
-  wildcards that match the sanitized tool name `mcp__plugin_telegram_telegram__reply`
-  (the hook also double-checks `tool_name` contains `telegram`+`reply`).
-- `SessionStart` matcher `startup|resume|clear`: the matcher is a **regex over the
-  `source` field**, whose only values are `startup` / `resume` / `clear` / `compact`.
-  There is no `auto` source — an `"auto"` matcher silently matches nothing, so the
-  replay never fires (this was the 2026-06-02 deafness-replay bug). `compact` is
-  intentionally excluded: the compaction summary already preserves live context.
-  The replay is a no-op when the transcript is empty.
+- `UserPromptSubmit` nem kap matchert (minden promptnál lefut).
+- `PostToolUse` matcher `mcp__plugin.telegram.telegram__reply`: a `.` karakterek regex wildcardok, amelyek illeszkednek a szanitizált eszköznévre `mcp__plugin_telegram_telegram__reply` (a hook ezenkívül ellenőrzi, hogy a `tool_name` tartalmazza a `telegram`+`reply` szót).
+- `SessionStart` matcher `startup|resume|clear`: a matcher a **`source` mező felett alkalmazott regex** -- az egyetlen lehetséges értékek: `startup` / `resume` / `clear` / `compact`. Nincs `auto` forrás -- egy `"auto"` matcher csendesen semmire nem illeszkedik, így a visszajátszás soha nem fut le (ez volt a 2026-06-02-es siketség-visszajátszás hiba). A `compact` szándékosan ki van zárva: a tömörítési összefoglaló már megőrzi az élő kontextust. A visszajátszás no-op, ha az átirat üres.
 
-**No systemd needed** — these are event-driven Claude Code hooks, not timers. The
-hooks read `store/claudeclaw.db` via `python3` stdlib `sqlite3` (no node startup,
-no `jq`). Take effect on the next session start after the settings change.
+**Nincs szükség systemd-re** -- ezek eseményvezérelt Claude Code hook-ok, nem időzítők. A hook-ok a `store/claudeclaw.db`-t olvassák a `python3` stdlib `sqlite3`-on keresztül (nincs node indítás, nincs `jq`). A beállítás módosítása után a következő session indításnál lépnek életbe.
 
-## Tests
+## Tesztek
 
-- `bash scripts/__tests__/conversation-ledger.test.sh` — 34 cases (inbound/outbound
-  capture / replay context window / N-limit / chronological order + prefixes /
-  open-question / answered-no-block / idempotency / multi-agent scope / live-drain
-  grace + dedup + answered / edges) against the real hooks, isolated via
-  `LEDGER_DB_PATH` + `LEDGER_OWNER_CHAT`.
-- `npx vitest run src/__tests__/conversation-ledger-schema.test.ts` — schema-drift
-  guard (db.ts migration == ledger_lib.py).
+- `bash scripts/__tests__/conversation-ledger.test.sh` -- 34 eset (bejövő/kimenő rögzítés / visszajátszási kontextus ablak / N-korlát / időrend + előtagok / nyitott kérdés / megválaszolt-nincs-blokk / idempotencia / több-ágenses scope / élő-ürítés türelem + dedup + megválaszolt / szélső esetek) a valódi hook-ok ellen, `LEDGER_DB_PATH` + `LEDGER_OWNER_CHAT` általi izolációban.
+- `npx vitest run src/__tests__/conversation-ledger-schema.test.ts` -- séma-drift guard (db.ts migráció == ledger_lib.py).

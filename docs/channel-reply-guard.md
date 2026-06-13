@@ -1,34 +1,24 @@
-# channel-reply-guard — Stop hook
+# channel-reply-guard -- Stop hook
 
-## Problem
+## Probléma
 
-A Marveen agent that talks to a user over a channel (Telegram / Slack / Discord)
-sometimes *generates* its reply as plain text but forgets to call the channel
-send-tool. When that happens the answer only lands in the CLI transcript and
-**never reaches the user** — the user is left waiting, with no idea whether the
-agent is working or stuck.
+Egy Marveen ágens, amely csatornán (Telegram / Slack / Discord) kommunikál a felhasználóval, néha *generálja* a választ egyszerű szövegként, de elfelejti meghívni a csatorna küldő-eszközét. Amikor ez megtörténik, a válasz csak a CLI átiratban jelenik meg, és **soha nem jut el a felhasználóhoz** -- a felhasználó vár, fogalma sincs arról, hogy az ágens dolgozik-e vagy elakadt.
 
-## What the hook does
+## Mit csinál a hook
 
-`scripts/channel-reply-guard.sh` runs on the `Stop` event. At the end of every
-turn it checks:
+A `scripts/channel-reply-guard.sh` a `Stop` eseményre fut. Minden forduló végén ellenőrzi:
 
-1. Did the **last user message come from a channel**? (It looks for the
-   `<channel source="plugin:telegram...">` / `← telegram` markers.)
-2. If so, was there a **channel send-tool call** after that message?
-   (Any tool whose name contains `telegram`, `reply`, `slack`, or `discord`.)
+1. Az **utolsó felhasználói üzenet csatornáról érkezett-e**? (Keresi a `<channel source="plugin:telegram...">` / `← telegram` jelölőket.)
+2. Ha igen, volt-e **csatorna küldő-eszköz hívás** az üzenet után?
+   (Bármely eszköz, amelynek neve tartalmazza a `telegram`, `reply`, `slack` vagy `discord` szót.)
 
-If the message was from a channel but **no send-tool was called**, the hook
-returns `{"decision":"block"}` with a reminder, so the model sends the reply
-before the turn ends.
+Ha az üzenet csatornáról érkezett, de **nem hívtak küldő-eszközt**, a hook `{"decision":"block"}` döntést ad vissza egy emlékeztetővel, így a modell elküldi a választ, mielőtt a forduló véget ér.
 
-Heartbeat / scheduled-task prompts (where staying silent is correct) are
-explicitly skipped — they may end without a send.
+A szívverés / ütemezett feladat promptok (ahol a csend helyes válasz) kifejezetten ki vannak zárva -- ezek küldés nélkül is befejeződhetnek.
 
-## How to enable it
+## Hogyan engedélyezd
 
-Add it to the `Stop` hooks in your `.claude/settings.json` (alongside any
-existing Stop hooks):
+Add hozzá a `Stop` hook-okhoz a `.claude/settings.json`-ban (a meglévő Stop hook-ok mellé):
 
 ```json
 {
@@ -48,14 +38,10 @@ existing Stop hooks):
 }
 ```
 
-(Use an absolute path if `${CLAUDE_PROJECT_DIR}` is not available in your setup.)
+(Abszolút útvonalat használj, ha a `${CLAUDE_PROJECT_DIR}` nem elérhető a te beállításodban.)
 
-After editing `settings.json`, open the `/hooks` menu once (or restart the
-session) so the hook is picked up.
+A `settings.json` szerkesztése után nyisd meg egyszer a `/hooks` menüt (vagy indítsd újra a session-t), hogy a hook betöltődjön.
 
-## Relation to #210
+## Kapcsolat a #210-es PR-rel
 
-PR #210 stops sub-agents from stealing the Telegram poller and lets heartbeats
-answer direct messages — it protects the *inbound* path. This hook protects the
-*outbound* path: it guarantees the agent's reply actually leaves through the
-channel. The two are complementary.
+A #210-es PR megakadályozza, hogy a sub-ágensek elloponják a Telegram pollert, és lehetővé teszi a szívveréseknek a közvetlen üzenetek megválaszolását -- ez a *bejövő* utat védi. Ez a hook a *kimenő* utat védi: garantálja, hogy az ágens válasza ténylegesen eljut a csatornán. A kettő egymást kiegészíti.

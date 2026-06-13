@@ -76,3 +76,17 @@ POST /api/memories/backfill               # embedding backfill
 ```
 
 Zero-config: az SQLite automatikusan létrejön, az embedding mentéskor generálódik.
+
+```bash
+# Visszakeresés dátum szerint (ld. recall.md)
+GET /api/recall?date=tegnap&agent=jarvis
+GET /api/recall/dates?agent=jarvis
+```
+
+---
+
+## Kapcsolódó dokumentumok
+
+- [Visszakeresés (Recall)](recall.md) -- naplóbejegyzések dátum-alapú visszakeresése
+- [Dream Engine](dream-engine.md) -- éjszakai memória-karbantartás és reorganizáció
+- [Ügynök-flotta](agent-fleet.md) -- agent_id-k listája

@@ -8,10 +8,15 @@ import type { RouteContext } from './types.js'
 // /api/* so the dashboard's bearer-token gate already protects them -- no extra
 // auth wiring here. Nothing is writable; this only ever reads .md files that
 // already live in the repo.
-const DOCS_DIR = join(PROJECT_ROOT, 'docs')
+const DOCS_DIR_HU = join(PROJECT_ROOT, 'docs')
+const DOCS_DIR_EN = join(PROJECT_ROOT, 'docs', 'en')
 // Allowlist: a bare markdown filename. Combined with the basename() check below
 // this blocks path traversal (../, absolute paths, nested segments).
 const NAME_RE = /^[A-Za-z0-9._-]+\.md$/
+
+function docsDir(lang: string | null): string {
+  return lang === 'en' ? DOCS_DIR_EN : DOCS_DIR_HU
+}
 
 function titleOf(content: string, fallback: string): string {
   const m = content.match(/^#\s+(.+)$/m)
@@ -19,13 +24,15 @@ function titleOf(content: string, fallback: string): string {
 }
 
 export async function tryHandleDocs(ctx: RouteContext): Promise<boolean> {
-  const { res, path, method } = ctx
+  const { res, path, method, url } = ctx
+  const lang = url?.searchParams.get('lang') ?? null
 
   if (path === '/api/docs' && method === 'GET') {
+    const dir = docsDir(lang)
     let files: string[] = []
     try {
-      files = readdirSync(DOCS_DIR).filter(
-        f => NAME_RE.test(f) && statSync(join(DOCS_DIR, f)).isFile(),
+      files = readdirSync(dir).filter(
+        f => NAME_RE.test(f) && statSync(join(dir, f)).isFile(),
       )
     } catch {
       files = []
@@ -63,7 +70,8 @@ export async function tryHandleDocs(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'Invalid doc name' }, 400)
       return true
     }
-    const file = join(DOCS_DIR, name)
+    const dir = docsDir(lang)
+    const file = join(dir, name)
     if (!existsSync(file) || !statSync(file).isFile()) {
       json(res, { error: 'Not found' }, 404)
       return true
