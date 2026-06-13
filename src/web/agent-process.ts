@@ -622,7 +622,12 @@ function discardPlaceholderBuffer(session: string, host: string | null = null): 
 // still reports stuck, send up to SUBMIT_RETRY_MAX_ATTEMPTS extra
 // Enters. The retry budget bounds the loop so a pathologically stuck
 // pane gives up rather than spinning.
-export function sendPromptToSession(session: string, text: string, host: string | null = null): void {
+export function sendPromptToSession(
+  session: string,
+  text: string,
+  host: string | null = null,
+  opts: { waitForIdle?: boolean } = {},
+): void {
   dismissSurveyModalIfPresent(session, host)
   dismissResumeSummaryModalIfPresent(session, host)
 
@@ -630,11 +635,20 @@ export function sendPromptToSession(session: string, text: string, host: string 
   // sendPromptToSession, AFTER the modal dismissals (a modal keeps the pane
   // non-idle, so we must clear it first or the wait would always time out) and
   // BEFORE the truncated-preamble check + chunk-send -- so EVERY caller is
-  // protected and the live input box we inspect/clear below reflects a settled,
-  // idle pane. On timeout we fall through and send anyway: a session that never
-  // idles must still receive its prompt, and the post-send retry loop is the
-  // backstop. host is threaded so a remote agent's pane is polled over ssh.
-  if (!waitForPaneIdle(session, host)) {
+  // protected by default and the live input box we inspect/clear below reflects
+  // a settled, idle pane. On timeout we fall through and send anyway: a session
+  // that never idles must still receive its prompt, and the post-send retry
+  // loop is the backstop. host is threaded so a remote agent's pane is polled
+  // over ssh.
+  //
+  // opts.waitForIdle defaults to true (the gate is ON for every caller). The
+  // forceSend scheduled-task path opts OUT (waitForIdle:false): forceSend is
+  // documented to skip the busy-state check so a task does NOT pile up retries
+  // against a session that stays busy for hours (the overnight 275-retry loop).
+  // Eating the 12s idle wait here would defeat that contract -- the whole point
+  // of forceSend is to inject regardless and let Claude Code queue it.
+  const waitForIdle = opts.waitForIdle !== false
+  if (waitForIdle && !waitForPaneIdle(session, host)) {
     logger.warn({ session }, 'sendPromptToSession: pane still busy after wait-until-idle budget; sending best-effort')
   }
 

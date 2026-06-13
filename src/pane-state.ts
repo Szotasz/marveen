@@ -104,26 +104,70 @@ const LIVE_FOOTER_REGION_LINES = 5
 // Pasted-text placeholder. Claude Code lifts a single large input write
 // (empirically a tmux send-keys -l of more than ~700 chars) into a
 // `[Pasted text #N]` / `[Pasted text #N +X chars]` stub that sits in the
-// input buffer and never auto-submits. Treat as busy so the scheduler
-// doesn't pile a second prompt on top. The version-stable opening
-// `[Pasted text #<digits>` covers both the bare and the `+X chars` shapes.
-const PENDING_PASTE_RX = /\[Pasted text #\d+/
+// LIVE INPUT BOX and never auto-submits. Treat as busy so the scheduler
+// doesn't pile a second prompt on top.
+//
+// Wrap tolerance (real-capture finding): when the input is long the stub
+// renders wrapped across a terminal line break -- `...[Pasted text` at the
+// end of one line and `  #3]...` at the start of the next (the digits
+// themselves can also straddle the break). The opening token, the `#`, and
+// the digit are therefore separated by `\s*` (which includes newlines and
+// the leading indent of the wrapped continuation) rather than a single
+// literal space. This still matches the unwrapped `[Pasted text #N` and
+// `[Pasted text #N +X chars]` shapes.
+const PENDING_PASTE_RX = /\[Pasted text\s*#\s*\d/
 
-// A placeholder pane is identified SOLELY by the `[Pasted text #N]` stub.
-// The accompanying `paste again to expand` footer hint is deliberately NOT
-// used: empirically it LINGERS for a beat after the message submits (the box
-// is already empty, the stub gone, yet the hint line is still rendered), so
-// keying on it would false-positive a freshly-submitted pane as still stuck
-// and trigger a needless clear-and-resend. The stub itself appears iff a real
-// placeholder is parked (verified: present in every placeholder render, absent
-// the instant it submits). Pure + dependency-free so callers (detectPaneState,
-// shouldRetrySubmit, the recovery decision) share ONE definition instead of
-// re-inlining the regex. capturePane uses `capture-pane -p` (visible screen
-// only, no scrollback), so a `[Pasted text` echo from a past turn cannot
-// linger here.
+// How many trailing lines to inspect for the stub when no input-box
+// separators are visible (a malformed / partial capture, or the older
+// `paste again to expand` render with separators scrolled off). Kept tight
+// so a stub quoted higher up in scrollback cannot reach the bottom region.
+const PASTE_REGION_FALLBACK_LINES = 8
+
+// Scope the placeholder match to the live input box, not the whole pane.
+// The box is the region between the two most recent U+2500 separators found
+// from the BOTTOM of the pane -- footer-INDEPENDENT, because the placeholder
+// render is version-dependent: the current build keeps the normal
+// `bypass permissions ...` idle footer below the box, while an older build
+// replaced it with a `paste again to expand` hint. Anchoring on the
+// separators (always present around the box) covers both. When two
+// separators are not found we fall back to the last few lines.
+//
+// Whole-pane matching was a confirmed false-POSITIVE source: these agents
+// routinely quote tmux captures and discuss this very bug, so a literal
+// `[Pasted text #N` in a reply line or deep scrollback would trigger a
+// destructive Ctrl-C + resend on a perfectly healthy session. Scoping to
+// the box (same discipline as BUSY_ESC_TO_INTERRUPT_RX / the footer checks)
+// confines the match to where a genuine parked stub actually lives.
+function pastePlaceholderRegion(pane: string): string {
+  const lines = pane.split('\n')
+  let bottomSep = -1
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (BOX_SEP_RX.test(lines[i])) { bottomSep = i; break }
+  }
+  if (bottomSep > 0) {
+    let topSep = -1
+    for (let i = bottomSep - 1; i >= 0; i--) {
+      if (BOX_SEP_RX.test(lines[i])) { topSep = i; break }
+    }
+    if (topSep >= 0) return lines.slice(topSep + 1, bottomSep).join('\n')
+  }
+  return lines.slice(-PASTE_REGION_FALLBACK_LINES).join('\n')
+}
+
+// A placeholder pane is identified by the `[Pasted text #N]` stub IN THE LIVE
+// INPUT BOX. The accompanying `paste again to expand` footer hint is
+// deliberately NOT used: it is version-dependent (the current build keeps the
+// normal idle footer instead) AND it empirically LINGERS for a beat after the
+// message submits (the box is already empty, the stub gone, yet the hint line
+// is still rendered), so keying on it would false-positive a freshly-submitted
+// pane as still stuck and trigger a needless clear-and-resend. The stub itself
+// appears iff a real placeholder is parked (verified across real captures:
+// present in every placeholder render, absent the instant it submits). Pure +
+// dependency-free so callers (detectPaneState, shouldRetrySubmit, the recovery
+// decision) share ONE definition instead of re-inlining the regex.
 export function detectsPastePlaceholder(pane: string): boolean {
   if (!pane) return false
-  return PENDING_PASTE_RX.test(pane)
+  return PENDING_PASTE_RX.test(pastePlaceholderRegion(pane))
 }
 
 // Input-box separator lines are made of U+2500 BOX DRAWINGS LIGHT
@@ -308,13 +352,15 @@ export function detectPaneState(
   const footerRegion = paneLines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return 'busy'
 
-  // Pending-paste placeholder check runs BEFORE the idle-footer gate: a
-  // placeholder pane REPLACES the idle footer with `paste again to expand`,
-  // so it does not satisfy IDLE_FOOTER_RX and was previously mis-classified
-  // 'unknown' (and the old line-296 paste check below was unreachable). A
-  // placeholder must read 'busy' so the scheduler/router/keepalive defer
-  // rather than pile a second prompt on, exactly as the (now corrected)
-  // comment on PENDING_PASTE_RX intends.
+  // Pending-paste placeholder check runs BEFORE the idle-footer gate. The
+  // stub sits in the live input box; the footer below it is version-dependent
+  // (the current build keeps the normal `bypass permissions ...` idle footer,
+  // an older build showed `paste again to expand` instead and so failed
+  // IDLE_FOOTER_RX). Running the box-scoped placeholder check first classifies
+  // BOTH shapes as 'busy' -- and on the older `paste again to expand` shape it
+  // also rescues the pane from being mis-read 'unknown' at the idle-footer gate
+  // below. A placeholder must read 'busy' so the scheduler/router/keepalive
+  // defer rather than pile a second prompt on.
   if (detectsPastePlaceholder(pane)) return 'busy'
 
   if (!IDLE_FOOTER_RX.test(pane)) return 'unknown'
@@ -481,12 +527,13 @@ export function shouldRetrySubmit(
   if (BUSY_ESC_TO_INTERRUPT_RX.test(retryFooterRegion)) return false
 
   // Path 1: placeholder is unambiguous, retry regardless of hint -- and it is
-  // checked BEFORE the idle-footer gate below. A placeholder pane replaces the
-  // idle footer with `paste again to expand`, so it fails IDLE_FOOTER_RX; the
-  // old ordering (footer gate first, then a placeholder check scoped to the
-  // input box) therefore returned false on the very state the recovery exists
-  // to catch. The whole-pane check is safe because capture-pane -p shows only
-  // the visible screen (no scrollback echo of a past `[Pasted text]`).
+  // checked BEFORE the idle-footer gate below. The footer beneath a placeholder
+  // is version-dependent: the current build keeps the normal idle footer, an
+  // older build showed `paste again to expand` (failing IDLE_FOOTER_RX). The
+  // old ordering (footer gate first) therefore returned false on the older
+  // shape -- the very state the recovery exists to catch. detectsPastePlaceholder
+  // scopes the match to the live input box, so a `[Pasted text #N]` quoted in a
+  // reply line or scrollback cannot trigger a spurious clear-and-resend.
   if (detectsPastePlaceholder(pane)) return true
 
   // Without an idle footer the pane is either not Claude Code or in an

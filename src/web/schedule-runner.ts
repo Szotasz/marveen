@@ -169,7 +169,12 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number): '
       UNTRUSTED_PREAMBLE + '\n' +
       prefix.trimEnd() + '\n\n' +
       wrapUntrusted(`scheduled-task:${task.name}`, task.prompt)
-    sendPromptToSession(session, fullPrompt, host)
+    // forceSend skips the busy-state check above; it must also skip the
+    // pre-flight wait-until-idle gate inside sendPromptToSession, otherwise a
+    // task aimed at a long-busy session would block on the 12s idle wait every
+    // tick -- defeating the very purpose of forceSend (inject regardless, let
+    // Claude Code queue it). All non-forceSend tasks keep the gate ON.
+    sendPromptToSession(session, fullPrompt, host, { waitForIdle: !task.forceSend })
     scheduleLastRun.set(task.name, now)
     persistScheduleLastRun()
     appendTaskRun(task.name, agentName)

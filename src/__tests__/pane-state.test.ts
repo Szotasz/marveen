@@ -110,14 +110,14 @@ const PENDING_PASTE = [
   '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
 ].join('\n')
 
-// REALISTIC placeholder render, captured from a live Claude Code v2.1.x build:
-// a single large send-keys write trips the bracketed-paste detector, which
-// REPLACES the idle footer (`bypass permissions on ...`) with the
-// `paste again to expand` hint. The pane therefore does NOT satisfy
-// IDLE_FOOTER_RX, which is exactly why the placeholder previously slipped
-// through every guard (detectPaneState -> 'unknown', shouldRetrySubmit ->
-// false). The `[Pasted text #N]` stub here has no `+X chars` suffix, the
-// other shape the same build emits.
+// Placeholder render from an OLDER Claude Code build: the bracketed-paste
+// detector REPLACES the idle footer (`bypass permissions on ...`) with a
+// `paste again to expand` hint, so the pane does NOT satisfy IDLE_FOOTER_RX.
+// The detector must NOT depend on this footer being present or absent -- the
+// footer shape is version-dependent. Kept as a regression case so the
+// box-scoped, footer-independent detector still classifies this shape.
+// The `[Pasted text #N]` stub here has no `+X chars` suffix, the other shape
+// the same build emits. The stub sits on the FIRST line of the live input box.
 const PENDING_PASTE_REALISTIC = [
   '',
   SEP,
@@ -126,6 +126,55 @@ const PENDING_PASTE_REALISTIC = [
   '  the lazy dog the quick brown fox jumps over the lazy dog',
   SEP,
   '  paste again to expand',
+].join('\n')
+
+// SANITIZED reproduction of the REAL production render shape (derived from the
+// 6 captured incident panes, NOT copied verbatim -- the captures contain agent
+// names / real messages). Ground truth from the captures:
+//   - The long input WRAPS, so the stub straddles a line break: `...[Pasted
+//     text` at the end of one line and `  #N]...` at the start of the next.
+//     The single-space regex `[Pasted text #\d` MISSED this (false negative on
+//     2 of 3 real incidents).
+//   - The stub sits inside the LIVE INPUT BOX (the wrapped `❯` prompt line).
+//   - The footer is the NORMAL `bypass permissions on (shift+tab to cycle)`
+//     idle footer -- there is NO `paste again to expand` line. The detector
+//     must therefore not rely on that hint.
+// Benign filler stands in for the real (sensitive) message body.
+const PENDING_PASTE_WRAPPED_REAL_SHAPE = [
+  '',
+  SEP,
+  '❯ TEAM MEMBER NOTICE filler filler filler filler filler filler filler b[Pasted text',
+  '  #3]filler continuation of the wrapped message body in the live input box here',
+  '  more benign filler text continuing inside the same wrapped input box region',
+  SEP,
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+].join('\n')
+
+// Same wrapped-stub real shape but with the DIGITS themselves straddling the
+// break: `#` at the end of one line, the digit at the start of the next. The
+// `\s*` between `#` and the digit must tolerate this too.
+const PENDING_PASTE_WRAPPED_DIGIT_SPLIT = [
+  '',
+  SEP,
+  '❯ filler filler filler filler filler filler filler filler filler [Pasted text #',
+  '  12]filler continuation of the parked message body inside the live input box',
+  SEP,
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+].join('\n')
+
+// FALSE-POSITIVE guard: a `[Pasted text #N +X chars]` literal sits ONLY in an
+// upper reply line (these agents routinely quote tmux captures and discuss this
+// very bug), while the live input box at the bottom is EMPTY. A whole-pane
+// match would fire a destructive Ctrl-C + resend on a healthy, idle agent. The
+// box-scoped detector must return false here.
+const PASTE_ECHO_IN_SCROLLBACK_ONLY = [
+  '  Quoting a capture in a reply: [Pasted text #1 +900 chars] -- discussed in',
+  '  the stuck-input bug thread, just prose about the placeholder behaviour',
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
 ].join('\n')
 
 // Historical ❯ above the separators (scrollback). Must NOT count as
@@ -491,12 +540,26 @@ describe('detectPaneState', () => {
     expect(detectPaneState(PENDING_PASTE)).toBe('busy')
   })
 
-  it('treats the REALISTIC placeholder (no idle footer) as busy, not unknown', () => {
-    // Regression for the root-cause gap: the real placeholder render replaces
+  it('treats the older-build placeholder (paste-again footer) as busy, not unknown', () => {
+    // Regression for the root-cause gap: the older placeholder render replaces
     // the idle footer with `paste again to expand`, so it failed IDLE_FOOTER_RX
     // and was mis-classified 'unknown' (slipping past the readiness/retry
     // guards). The paste check now runs BEFORE the idle-footer gate.
     expect(detectPaneState(PENDING_PASTE_REALISTIC)).toBe('busy')
+  })
+
+  it('treats the WRAPPED real-shape placeholder (normal idle footer) as busy', () => {
+    // The primary real-incident shape: wrapped stub inside the input box with
+    // the NORMAL idle footer below it. Must read 'busy' so the scheduler/router
+    // defer rather than pile a second prompt onto the parked placeholder.
+    expect(detectPaneState(PENDING_PASTE_WRAPPED_REAL_SHAPE)).toBe('busy')
+    expect(detectPaneState(PENDING_PASTE_WRAPPED_DIGIT_SPLIT)).toBe('busy')
+  })
+
+  it('stays idle when a stub is only quoted in scrollback and the box is empty', () => {
+    // False-positive guard: a `[Pasted text #N]` quoted in a reply line must
+    // not flip an idle, empty-box pane to 'busy'.
+    expect(detectPaneState(PASTE_ECHO_IN_SCROLLBACK_ONLY)).toBe('idle')
   })
 
   it('does NOT confuse a historical ❯ in scrollback for a parked input', () => {
@@ -795,12 +858,27 @@ describe('shouldRetrySubmit', () => {
     expect(shouldRetrySubmit(STUCK_MULTI_PLACEHOLDER_MIX, PAYLOAD_HINT)).toBe(true)
   })
 
-  it('detects the REALISTIC placeholder (no idle footer) as stuck', () => {
-    // Regression: the real placeholder render has the `paste again to expand`
+  it('detects the older-build placeholder (paste-again footer) as stuck', () => {
+    // Regression: the older placeholder render has the `paste again to expand`
     // footer, not the idle footer, so the old footer-gate ordering returned
     // false here. The placeholder check now precedes the idle-footer gate.
     expect(shouldRetrySubmit(PENDING_PASTE_REALISTIC, '')).toBe(true)
     expect(shouldRetrySubmit(PENDING_PASTE_REALISTIC, PAYLOAD_HINT)).toBe(true)
+  })
+
+  it('detects the WRAPPED real-shape placeholder (normal idle footer) as stuck', () => {
+    // The primary real-incident shape: wrapped stub + normal idle footer. The
+    // single-space regex missed the wrap; the wrap-tolerant box-scoped check
+    // now catches it so the recovery fires.
+    expect(shouldRetrySubmit(PENDING_PASTE_WRAPPED_REAL_SHAPE, '')).toBe(true)
+    expect(shouldRetrySubmit(PENDING_PASTE_WRAPPED_DIGIT_SPLIT, '')).toBe(true)
+  })
+
+  it('returns false when a stub is only quoted in scrollback (empty box)', () => {
+    // False-positive guard: must not fire a clear-and-resend when the stub is
+    // merely quoted above an empty input box.
+    expect(shouldRetrySubmit(PASTE_ECHO_IN_SCROLLBACK_ONLY, PAYLOAD_HINT)).toBe(false)
+    expect(shouldRetrySubmit(PASTE_ECHO_IN_SCROLLBACK_ONLY, '')).toBe(false)
   })
 
   it('detects verbatim parked payload (footer idle, no spinner) as stuck', () => {
@@ -1054,9 +1132,17 @@ describe('decideSubmitFollowup', () => {
   it('returns "clear-and-resend" for a paste placeholder while below the cap', () => {
     // A `[Pasted text #N]` placeholder is PROVEN not to submit on a plain
     // Enter (Enter only expands it to still-parked verbatim text), so it must
-    // route to the clear-and-resend recovery, NOT retry-enter.
+    // route to the clear-and-resend recovery, NOT retry-enter. Covers the
+    // single-line, older-build, and wrapped real-shape placeholders.
     expect(decideSubmitFollowup(PENDING_PASTE, '', 0, 2)).toBe('clear-and-resend')
     expect(decideSubmitFollowup(PENDING_PASTE_REALISTIC, '', 0, 2)).toBe('clear-and-resend')
+    expect(decideSubmitFollowup(PENDING_PASTE_WRAPPED_REAL_SHAPE, '', 0, 2)).toBe('clear-and-resend')
+  })
+
+  it('returns "done" when a stub is only quoted in scrollback (empty box)', () => {
+    // False-positive guard at the decision layer: a quoted stub above an empty
+    // box is not stuck, so no follow-up action fires.
+    expect(decideSubmitFollowup(PASTE_ECHO_IN_SCROLLBACK_ONLY, PAYLOAD_HINT, 0, 2)).toBe('done')
   })
 
   it('returns "give-up" once attempts reach the cap', () => {
@@ -1557,8 +1643,28 @@ describe('detectsPastePlaceholder', () => {
   })
 
   it('detects the bare `[Pasted text #N]` stub (no +X chars suffix)', () => {
-    // The live v2.1.x build emits the bare shape; both must match.
+    // The older build emits the bare shape (with `paste again to expand`
+    // footer); both stub shapes must match regardless of the footer.
     expect(detectsPastePlaceholder(PENDING_PASTE_REALISTIC)).toBe(true)
+  })
+
+  it('detects the WRAPPED stub (real shape: line break between `[Pasted text` and `#N`)', () => {
+    // The primary real-incident case: a long input wraps so the stub straddles
+    // a line break, and the footer is the NORMAL idle footer (no `paste again
+    // to expand`). The single-space regex missed this on 2 of 3 real incidents.
+    expect(detectsPastePlaceholder(PENDING_PASTE_WRAPPED_REAL_SHAPE)).toBe(true)
+  })
+
+  it('detects the wrapped stub when the DIGITS straddle the line break', () => {
+    // `#` at the end of one line, the digit at the start of the next.
+    expect(detectsPastePlaceholder(PENDING_PASTE_WRAPPED_DIGIT_SPLIT)).toBe(true)
+  })
+
+  it('is false when a stub appears ONLY in an upper reply line (scoped to the box)', () => {
+    // False-positive guard (the confirmed bug): a `[Pasted text #N]` quoted in
+    // scrollback / a reply while the live input box is empty must NOT trigger a
+    // destructive clear-and-resend on a healthy idle agent.
+    expect(detectsPastePlaceholder(PASTE_ECHO_IN_SCROLLBACK_ONLY)).toBe(false)
   })
 
   it('detects a multi-stub mixed buffer', () => {
@@ -1600,14 +1706,17 @@ describe('detectsPastePlaceholder', () => {
     expect(detectsPastePlaceholder(submittedButHintLingers)).toBe(false)
   })
 
-  it('matches the stub anywhere in the visible pane', () => {
-    const wrappedStub = [
+  it('matches the stub when it sits inside the live input box', () => {
+    // Scoped to the box: a stub on the prompt line (between the separators) is
+    // a genuine parked placeholder and must match, regardless of whether the
+    // footer is the normal idle footer or `paste again to expand`.
+    const stubInBox = [
       'some preceding line',
       SEP,
       '❯ leading text [Pasted text #7] trailing text',
       SEP,
       '  paste again to expand',
     ].join('\n')
-    expect(detectsPastePlaceholder(wrappedStub)).toBe(true)
+    expect(detectsPastePlaceholder(stubInBox)).toBe(true)
   })
 })
