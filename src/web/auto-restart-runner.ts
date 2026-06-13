@@ -9,7 +9,7 @@ import {
   capturePane,
 } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
-import { detectPaneState } from '../pane-state.js'
+import { paneLooksIdle } from '../pane-state.js'
 import { readAutoRestartConfig } from './auto-restart-store.js'
 import { restartDue, dailyDueAtMs, parseHHMM, type AutoRestartConfig } from '../auto-restart.js'
 
@@ -59,7 +59,7 @@ function sessionFor(name: string): string {
 function paneIsIdle(session: string, host: string | null): boolean {
   const pane = capturePane(session, host)
   if (pane == null) return false
-  return detectPaneState(pane) === 'idle'
+  return paneLooksIdle(pane)
 }
 
 function performRestart(name: string, cfg: AutoRestartConfig): void {

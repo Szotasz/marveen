@@ -6,7 +6,7 @@ import { OLLAMA_URL } from '../config.js'
 import { resolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
 import {
-  detectPaneState,
+  paneLooksIdle,
   decideSubmitFollowup,
   shouldClearTruncatedPreamble,
 } from '../pane-state.js'
@@ -499,6 +499,53 @@ const SUBMIT_RETRY_MAX_ATTEMPTS = 2
 // frame-render gap detectPaneState already guards against.
 const SUBMIT_RETRY_POLL_MS = '0.3'
 
+// Pre-flight wait-until-idle gate (root-cause fix for the busy-stuck class).
+// Before streaming chunks we poll the pane and wait for it to return to the
+// 'idle' state. Sending while the target is mid-turn (footer `esc to
+// interrupt`) is the condition the stuck-input incidents correlated with: the
+// typed text + trailing Enter can be parked in the input box (verbatim or as a
+// `[Pasted text #N]` stub) and only "land" much later, so a delegated prompt
+// sits unsubmitted until a human presses Enter. Waiting for idle removes that
+// condition for EVERY caller of sendPromptToSession (router, scheduler,
+// channel-monitor, /login, worker) rather than relying on each caller to gate
+// itself -- and it closes the check->send TOCTOU gap where a caller's own
+// readiness check passed but the agent started a turn before the bytes landed.
+//
+// Budget: poll every PANE_IDLE_POLL_MS up to PANE_IDLE_WAIT_TIMEOUT_MS total.
+// The timeout is generous on purpose -- it must NOT truncate a legitimately
+// long turn into a premature "give up and send anyway". 12s comfortably spans
+// the inter-turn gaps and short tool-calls we observe between a turn's visible
+// completion and the input box settling, while still bounding the wait so a
+// genuinely long-running turn does not block the 5s router / 60s scheduler tick
+// indefinitely. On timeout we proceed best-effort: the existing post-send
+// retry loop (decideSubmitFollowup) remains the backstop, and a hard-busy
+// session that never idles must still receive its prompt eventually.
+const PANE_IDLE_WAIT_TIMEOUT_MS = 12_000
+const PANE_IDLE_POLL_MS = 300
+// String form for /bin/sleep (seconds), kept in sync with PANE_IDLE_POLL_MS.
+const PANE_IDLE_POLL_S = (PANE_IDLE_POLL_MS / 1000).toFixed(3)
+
+// Block until the session's pane looks idle, or the budget elapses. Returns
+// true if idle was observed, false on timeout-still-busy (caller proceeds
+// best-effort). Reuses the shared paneLooksIdle predicate -- the SAME rule the
+// readiness check and the auto-restart idle-guard use -- so the busy regex is
+// never re-inlined here. A capture failure is treated as "not yet idle" and we
+// keep polling within the budget (a transient tmux hiccup should not be read as
+// idle and let us blast a prompt into a busy pane).
+export function waitForPaneIdle(
+  session: string,
+  host: string | null = null,
+  timeoutMs: number = PANE_IDLE_WAIT_TIMEOUT_MS,
+): boolean {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const pane = capturePane(session, host)
+    if (pane != null && paneLooksIdle(pane)) return true
+    if (Date.now() >= deadline) return false
+    try { execFileSync('/bin/sleep', [PANE_IDLE_POLL_S], { timeout: 2000 }) } catch { /* best effort */ }
+  }
+}
+
 // Buffer-clear (Ctrl-U) used pre-flight when shouldClearTruncatedPreamble
 // flags a stale preamble. Sent as a single key name (no `-l` literal
 // flag) so tmux interprets it as the control sequence.
@@ -535,6 +582,18 @@ export function clearInputBuffer(session: string, host: string | null = null): v
 export function sendPromptToSession(session: string, text: string, host: string | null = null): void {
   dismissSurveyModalIfPresent(session, host)
   dismissResumeSummaryModalIfPresent(session, host)
+
+  // Pre-flight wait-until-idle (root-cause gate). Placed here -- inside
+  // sendPromptToSession, AFTER the modal dismissals (a modal keeps the pane
+  // non-idle, so we must clear it first or the wait would always time out) and
+  // BEFORE the truncated-preamble check + chunk-send -- so EVERY caller is
+  // protected and the live input box we inspect/clear below reflects a settled,
+  // idle pane. On timeout we fall through and send anyway: a session that never
+  // idles must still receive its prompt, and the post-send retry loop is the
+  // backstop. host is threaded so a remote agent's pane is polled over ssh.
+  if (!waitForPaneIdle(session, host)) {
+    logger.warn({ session }, 'sendPromptToSession: pane still busy after wait-until-idle budget; sending best-effort')
+  }
 
   // Pre-flight buffer-clear when a stale preamble is detected. Reading
   // the pane is best-effort: a capture failure here means we cannot
@@ -650,12 +709,12 @@ export function capturePane(session: string, host: string | null = null): string
 export function isSessionReadyForPrompt(session: string, host: string | null = null): boolean {
   const first = capturePane(session, host)
   if (first == null) return false
-  if (detectPaneState(first) !== 'idle') return false
+  if (!paneLooksIdle(first)) return false
 
   try { execFileSync('/bin/sleep', [PANE_READY_CONFIRM_DELAY_S], { timeout: 2000 }) } catch { /* best effort */ }
 
   const second = capturePane(session, host)
   if (second == null) return false
-  return detectPaneState(second) === 'idle'
+  return paneLooksIdle(second)
 }
 

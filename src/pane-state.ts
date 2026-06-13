@@ -323,12 +323,27 @@ export function detectPaneState(
 }
 
 /**
+ * Canonical pure idle predicate: true iff the capture classifies as the
+ * 'idle' pane state (input box live and empty, not busy / typing / menu /
+ * error / unknown). This is the SINGLE place the "is this pane idle" rule
+ * lives, so every caller -- the readiness check (isReadyForPrompt), the
+ * auto-restart idle-guard (auto-restart-runner.paneIsIdle) and the
+ * sendPromptToSession pre-flight wait-until-idle gate -- shares one
+ * definition rather than re-inlining `detectPaneState(...) === 'idle'`
+ * (and, worse, the busy regex) in several files.
+ */
+export function paneLooksIdle(capture: string): boolean {
+  return detectPaneState(capture) === 'idle'
+}
+
+/**
  * True when the pane is in the specific "accepting a new prompt" state.
  * 'typing' counts as not-ready because the user has unsubmitted text
- * in the input box and a new prompt would concatenate into it.
+ * in the input box and a new prompt would concatenate into it. Thin alias
+ * over paneLooksIdle kept for its existing call sites / tests.
  */
 export function isReadyForPrompt(pane: string): boolean {
-  return detectPaneState(pane) === 'idle'
+  return paneLooksIdle(pane)
 }
 
 // Locate the live Claude Code input box and return its inner content as
