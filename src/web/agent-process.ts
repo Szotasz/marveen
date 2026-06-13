@@ -26,7 +26,7 @@ import {
 } from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
-import { CHANNEL_PROVIDER } from '../config.js'
+import { CHANNEL_PROVIDER, MAIN_AGENT_ID } from '../config.js'
 import { loadProfileTemplate } from './profiles.js'
 import { writeAgentSettingsFromProfile } from './agent-scaffold.js'
 import { getSecret } from './vault.js'
@@ -34,6 +34,41 @@ import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller
 
 const TMUX = resolveFromPath('tmux')
 const CLAUDE = resolveFromPath('claude')
+
+// The fleet's channel plugins keyed by provider. A sub-agent must enable ONLY
+// its own provider's plugin; the others are forced off so it cannot spawn a
+// competing poller against the main agent's bot token (the dup-poller / 409
+// Conflict class). Keep in sync with the user-scope enabledPlugins ids.
+export const CHANNEL_PLUGIN_IDS: Record<string, string> = {
+  telegram: 'telegram@claude-plugins-official',
+  slack: 'slack-channel@marveen-marketplace',
+  discord: 'discord@claude-plugins-official',
+}
+
+// Pure: compute the enabledPlugins map for a sub-agent so that exactly its own
+// channel plugin is enabled and every other channel plugin is disabled.
+// Non-channel plugins in `existing` are preserved untouched.
+//
+// `explicitProvider` MUST be the agent's EXPLICIT per-agent channelProvider
+// (readAgentChannelProvider), or null when unset -- NOT the resolved provider.
+// resolveAgentProvider() defaults an agent with no channelProvider to the global
+// CHANNEL_PROVIDER (telegram), and a legacy-token fallback then marks it
+// hasChannel -- so EVERY channel-less sub-agent (boni/deeper/iris/zara/samu) is
+// launched with --channels plugin:telegram and would keep the dup poller. Keying
+// on the EXPLICIT provider means a channel-less agent (null) disables all three;
+// only an agent that genuinely declares its channel (e.g. slacker=slack) keeps
+// its own plugin.
+export function scopeChannelPlugins(
+  explicitProvider: string | null,
+  existing?: Record<string, boolean>,
+): Record<string, boolean> {
+  const out: Record<string, boolean> = { ...(existing ?? {}) }
+  const ownPlugin = explicitProvider ? CHANNEL_PLUGIN_IDS[explicitProvider] : undefined
+  for (const pid of Object.values(CHANNEL_PLUGIN_IDS)) {
+    out[pid] = pid === ownPlugin
+  }
+  return out
+}
 
 function resolveAgentProvider(name: string): ChannelProviderType {
   const perAgent = readAgentChannelProvider(name)
@@ -269,23 +304,39 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // Claude Code enforces the list rather than bypassing it.
     const profile = loadProfileTemplate(readAgentSecurityProfile(name))
     writeAgentSettingsFromProfile(name, profile)
-    // Channel-less agents must not load the global channel plugins from
-    // enabledPlugins. Without this, they fall back to the main agent's
-    // token and two instances fight over the same getUpdates slot (409
-    // Conflict / orphan watchdog loop causing recurring MCP disconnects).
-    if (!hasChannel) {
+    // A sub-agent must load ONLY its own channel plugin. The user-scope
+    // enabledPlugins would otherwise make EVERY sub-agent spawn a telegram
+    // (and slack/discord) poller that falls back to the main agent's bot
+    // token and fights it over the same getUpdates slot (409 Conflict /
+    // orphan-poller churn / recurring MCP disconnects). Scope the agent's
+    // settings.json so exactly its configured provider stays enabled and the
+    // other channel plugins are forced off; a channel-less agent disables all
+    // three. Applies to channel-HAVING sub-agents too (e.g. a slack agent must
+    // not also run a telegram poller). Re-applied on EVERY spawn because
+    // writeAgentSettingsFromProfile() above regenerates settings.json from the
+    // profile template -- so this survives respawns, unlike a one-off manual
+    // per-agent override (which a respawn silently wiped). The main agent runs
+    // via channels.sh, not this path, so it remains the sole telegram poller.
+    //
+    // CATASTROPHE GUARD: never scope the MAIN agent's plugins here. marveen is
+    // not in agents/ (so listAgentNames never spawns it through this path) and
+    // its channel comes up via channels.sh -- but if a future caller ever passed
+    // MAIN_AGENT_ID in, scopeChannelPlugins(null) would DISABLE the owner's
+    // telegram channel (Szabi's primary line). Refuse outright.
+    if (name !== MAIN_AGENT_ID) {
       const settingsPath = join(agentDir(name), '.claude', 'settings.json')
       try {
         const s = JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown>
-        s.enabledPlugins = {
-          ...(s.enabledPlugins as Record<string, boolean> | undefined ?? {}),
-          'telegram@claude-plugins-official': false,
-          'slack-channel@marveen-marketplace': false,
-          'discord@claude-plugins-official': false,
-        }
+        // Key on the EXPLICIT per-agent channelProvider (null when unset), NOT
+        // the resolved/defaulted agentProvider -- a channel-less sub-agent must
+        // disable telegram even though resolveAgentProvider defaulted it to it.
+        s.enabledPlugins = scopeChannelPlugins(
+          readAgentChannelProvider(name),
+          s.enabledPlugins as Record<string, boolean> | undefined,
+        )
         writeFileSync(settingsPath, JSON.stringify(s, null, 2))
       } catch (err) {
-        logger.warn({ err, name }, 'Could not disable channel plugins for channel-less agent')
+        logger.warn({ err, name }, 'Could not scope channel plugins for sub-agent')
       }
     }
     const skipFlag = profile.permissionMode === 'strict' ? '' : '--dangerously-skip-permissions '
