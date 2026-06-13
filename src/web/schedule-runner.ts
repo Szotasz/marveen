@@ -177,7 +177,7 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number): '
     sendPromptToSession(session, fullPrompt, host, { waitForIdle: !task.forceSend })
     scheduleLastRun.set(task.name, now)
     persistScheduleLastRun()
-    appendTaskRun(task.name, agentName)
+    appendTaskRun(task.name, agentName, 'fired')
     logger.info({ task: task.name, agent: agentName, session }, 'Scheduled task fired')
 
     // Post-send verify: if the agent started a new turn during our chunk
@@ -210,6 +210,7 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number): '
     return 'fired'
   } catch (err) {
     logger.warn({ err, task: task.name }, 'Failed to fire scheduled task')
+    appendTaskRun(task.name, agentName, 'error')
     return 'error'
   }
 }
@@ -418,6 +419,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
             // Daily/weekly schedules keep skipIfBusy=false so the queue
             // + alert path catches a long-running busy state.
             logger.info({ task: task.name, agent: agentName }, 'Schedule busy, skipIfBusy=true: dropping tick silently')
+            appendTaskRun(task.name, agentName, 'skipped')
             continue
           }
           // First encounter -- insert a new pending row. If somehow a

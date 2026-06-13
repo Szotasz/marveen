@@ -3768,6 +3768,9 @@ function renderScheduleList(tasks) {
         <button class="btn-icon" data-action="toggle" title="${task.enabled ? 'Szüneteltetés' : 'Folytatás'}">
           ${task.enabled ? pauseIcon() : playIcon()}
         </button>
+        <button class="btn-icon" data-action="history" title="Futtatási előzmények">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+        </button>
         <button class="btn-icon btn-icon-danger" data-action="delete" title="Törlés">
           ${trashIcon()}
         </button>
@@ -3811,8 +3814,67 @@ function renderScheduleList(tasks) {
       } catch { showToast('Hiba a törlés során') }
     })
 
+    row.querySelector('[data-action="history"]').addEventListener('click', async (e) => {
+      e.stopPropagation()
+      openScheduleRunHistory(task.name)
+    })
+
     scheduleList.appendChild(row)
   }
+}
+
+const scheduleRunHistoryOverlay = document.getElementById('scheduleRunHistoryOverlay')
+document.getElementById('scheduleRunHistoryClose').addEventListener('click', () => closeModal(scheduleRunHistoryOverlay))
+scheduleRunHistoryOverlay.addEventListener('click', (e) => { if (e.target === scheduleRunHistoryOverlay) closeModal(scheduleRunHistoryOverlay) })
+
+const RUN_STATUS_LABEL = {
+  fired: 'Rendben',
+  error: 'Hiba',
+  skipped: 'Kihagyva',
+}
+const RUN_STATUS_CLASS = {
+  fired: 'badge-active',
+  error: 'badge-danger',
+  skipped: 'badge-paused',
+}
+
+async function openScheduleRunHistory(taskName) {
+  document.getElementById('scheduleRunHistoryTitle').textContent = `Előzmények: ${taskName}`
+  const body = document.getElementById('scheduleRunHistoryBody')
+  body.innerHTML = '<p>Betöltés...</p>'
+  openModal(scheduleRunHistoryOverlay)
+  try {
+    const r = await fetch(`/api/schedules/${encodeURIComponent(taskName)}/runs`)
+    const runs = await r.json()
+    if (!Array.isArray(runs) || runs.length === 0) {
+      body.innerHTML = '<p class="hint">Még nincs rögzített futtatás.</p>'
+      return
+    }
+    const rows = runs.map(run => {
+      const d = new Date(run.ts)
+      const date = d.toLocaleDateString('hu-HU', { month: 'short', day: 'numeric' })
+      const time = d.toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      const label = RUN_STATUS_LABEL[run.status] || run.status
+      const cls = RUN_STATUS_CLASS[run.status] || 'badge-paused'
+      const tokens = run.tokens_est !== null ? `~${run.tokens_est.toLocaleString()}` : '-'
+      return `<tr>
+        <td style="white-space:nowrap">${date} ${time}</td>
+        <td><span class="badge ${cls}">${escapeHtml(label)}</span></td>
+        <td style="text-align:right;font-variant-numeric:tabular-nums">${tokens}</td>
+      </tr>`
+    }).join('')
+    body.innerHTML = `<table style="width:100%;border-collapse:collapse">
+      <thead><tr>
+        <th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border)">Időpont</th>
+        <th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border)">Állapot</th>
+        <th style="text-align:right;padding:4px 8px;border-bottom:1px solid var(--border)">Token (kb.)</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`
+    body.querySelectorAll('tbody tr').forEach(tr => {
+      tr.querySelectorAll('td').forEach(td => { td.style.padding = '5px 8px'; td.style.borderBottom = '1px solid var(--border-light, #eee)' })
+    })
+  } catch { body.innerHTML = '<p class="hint">Hiba az előzmények betöltésekor.</p>' }
 }
 
 function renderTimeline(tasks) {

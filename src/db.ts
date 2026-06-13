@@ -371,6 +371,8 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_task_runs_ts ON task_runs(ts)`)
+  // Migration: add status column to task_runs (introduced 2026-06-13)
+  try { db.exec(`ALTER TABLE task_runs ADD COLUMN status TEXT NOT NULL DEFAULT 'fired'`) } catch { /* already present */ }
 
   // --- Pending Scheduled Task Retries ---
   // Busy-skipped scheduled tasks used to live in an in-memory Map. On a
@@ -1249,15 +1251,37 @@ export function getAgentConversationThreads(): AgentThread[] {
 
 // --- Task Run History ---
 
-export interface TaskRunEntry { name: string; agent: string; ts: number }
+export interface TaskRunEntry { name: string; agent: string; ts: number; status: string }
+
+export interface TaskRunHistoryEntry { ts: number; status: string; tokens_est: number | null }
 
 const TASK_RUN_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
-export function appendTaskRun(name: string, agent: string): void {
+export function appendTaskRun(name: string, agent: string, status = 'fired'): void {
   const now = Date.now()
-  db.prepare('INSERT INTO task_runs (name, agent, ts) VALUES (?, ?, ?)').run(name, agent, now)
+  db.prepare('INSERT INTO task_runs (name, agent, ts, status) VALUES (?, ?, ?, ?)').run(name, agent, now, status)
   // Opportunistic TTL prune: cheap indexed DELETE, keeps the table bounded.
   db.prepare('DELETE FROM task_runs WHERE ts < ?').run(now - TASK_RUN_TTL_MS)
+}
+
+export function listTaskRunHistory(name: string, limit: number): TaskRunHistoryEntry[] {
+  const rows = db.prepare(
+    'SELECT ts, status, agent FROM task_runs WHERE name = ? ORDER BY ts DESC LIMIT ?'
+  ).all(name, limit) as { ts: number; status: string; agent: string }[]
+
+  const tokenStmt = db.prepare(
+    `SELECT COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens), 0) as total
+     FROM token_usage WHERE agent = ? AND timestamp >= ? AND timestamp < ?`
+  )
+
+  // Rows are DESC (newest first). For each run, approximate token usage as
+  // the sum for that agent in the window [ts, next_newer_ts) capped at 1 hour.
+  return rows.map((row, i) => {
+    const newerTs = i > 0 ? rows[i - 1].ts : undefined
+    const windowEnd = newerTs !== undefined ? Math.min(row.ts + 3600000, newerTs) : row.ts + 3600000
+    const tokenRow = tokenStmt.get(row.agent, row.ts, windowEnd) as { total: number }
+    return { ts: row.ts, status: row.status, tokens_est: tokenRow.total > 0 ? tokenRow.total : null }
+  })
 }
 
 export function countTaskRunsBetween(fromTs: number, toTs?: number): number {

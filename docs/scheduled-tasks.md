@@ -236,8 +236,29 @@ Az ütemezett feladatok vizuálisan is kezelhetők a dashboardon: http://localho
 - Feladatok listája (név, ágens, cron, típus, enabled állapot)
 - Enable/disable toggle
 - Run Now gomb (azonnali futtatás teszteléshez)
+- **Futtatási előzmények (ℹ gomb)**: az utolsó 10 futtatás adatai -- pontos időpont, állapot, és közelítő tokenfogyasztás
 - Új feladat varázsló: rövid leírásból AI-val kibővített promptot generál, interaktív cron-szerkesztővel
 - Pending retries panel: a retry queue-ban várakozó feladatok, manuális törlési lehetőséggel
+
+### Futtatási állapotok
+
+| Állapot | Jelentés |
+|---------|----------|
+| `fired` / Rendben | A prompt sikeresen kézbesült az ágens session-jébe |
+| `error` / Hiba | Kivétel keletkezett a kézbesítés során |
+| `skipped` / Kihagyva | `skipIfBusy=true` és a session foglalt volt -- a tick szándékosan kihagyva |
+
+Az előzmények az utolsó 30 napot tartalmazzák; régebbi sorok automatikusan törlődnek.
+
+Az állapotok lekérdezhetők az API-n is:
+
+```bash
+TOKEN=$(cat store/.dashboard-token)
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:3420/api/schedules/reggeli-napindito/runs" | jq .
+```
+
+A tokenszám közelítő: az ágens teljes tokenforgalmát összesíti a futtatás pillanatától a következő futtatás kezdetéig (max. 1 óra). Ha az ágens ebben az ablakban más feladatot is végzett, az is beleszámít.
 
 ---
 

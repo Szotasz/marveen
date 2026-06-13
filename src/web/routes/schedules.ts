@@ -1,7 +1,7 @@
 import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import {
-  listPendingTaskRetries, deletePendingTaskRetryById,
+  listPendingTaskRetries, deletePendingTaskRetryById, listTaskRunHistory,
 } from '../../db.js'
 import { MAIN_AGENT_ID, BOT_NAME } from '../../config.js'
 import { runAgent } from '../../agent.js'
@@ -222,6 +222,16 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     const now = Date.now()
     const rows = listPendingTaskRetries().map(r => toPendingRetryView(r, now))
     json(res, rows)
+    return true
+  }
+
+  const scheduleRunsMatch = path.match(/^\/api\/schedules\/([^/]+)\/runs$/)
+  if (scheduleRunsMatch && method === 'GET') {
+    const name = decodeURIComponent(scheduleRunsMatch[1])
+    const dir = join(SCHEDULED_TASKS_DIR, name)
+    if (!existsSync(dir)) { json(res, { error: 'Schedule not found' }, 404); return true }
+    const runs = listTaskRunHistory(name, 10)
+    json(res, runs)
     return true
   }
 
