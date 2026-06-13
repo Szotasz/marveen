@@ -101,11 +101,30 @@ const BUSY_INDICATORS: RegExp[] = [
 const BUSY_ESC_TO_INTERRUPT_RX = /\besc to interrupt\b/
 const LIVE_FOOTER_REGION_LINES = 5
 
-// Pasted-text placeholder. Claude Code lifts bursts of input keys into
-// `[Pasted text #N +X chars]` stubs, which sit in the input buffer and
-// never auto-submit on Enter. Treat as busy so the scheduler doesn't pile
-// a second prompt on top.
+// Pasted-text placeholder. Claude Code lifts a single large input write
+// (empirically a tmux send-keys -l of more than ~700 chars) into a
+// `[Pasted text #N]` / `[Pasted text #N +X chars]` stub that sits in the
+// input buffer and never auto-submits. Treat as busy so the scheduler
+// doesn't pile a second prompt on top. The version-stable opening
+// `[Pasted text #<digits>` covers both the bare and the `+X chars` shapes.
 const PENDING_PASTE_RX = /\[Pasted text #\d+/
+
+// A placeholder pane is identified SOLELY by the `[Pasted text #N]` stub.
+// The accompanying `paste again to expand` footer hint is deliberately NOT
+// used: empirically it LINGERS for a beat after the message submits (the box
+// is already empty, the stub gone, yet the hint line is still rendered), so
+// keying on it would false-positive a freshly-submitted pane as still stuck
+// and trigger a needless clear-and-resend. The stub itself appears iff a real
+// placeholder is parked (verified: present in every placeholder render, absent
+// the instant it submits). Pure + dependency-free so callers (detectPaneState,
+// shouldRetrySubmit, the recovery decision) share ONE definition instead of
+// re-inlining the regex. capturePane uses `capture-pane -p` (visible screen
+// only, no scrollback), so a `[Pasted text` echo from a past turn cannot
+// linger here.
+export function detectsPastePlaceholder(pane: string): boolean {
+  if (!pane) return false
+  return PENDING_PASTE_RX.test(pane)
+}
 
 // Input-box separator lines are made of U+2500 BOX DRAWINGS LIGHT
 // HORIZONTAL. At least 10 in a run to ignore stray `-` glyphs.
@@ -289,11 +308,18 @@ export function detectPaneState(
   const footerRegion = paneLines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return 'busy'
 
+  // Pending-paste placeholder check runs BEFORE the idle-footer gate: a
+  // placeholder pane REPLACES the idle footer with `paste again to expand`,
+  // so it does not satisfy IDLE_FOOTER_RX and was previously mis-classified
+  // 'unknown' (and the old line-296 paste check below was unreachable). A
+  // placeholder must read 'busy' so the scheduler/router/keepalive defer
+  // rather than pile a second prompt on, exactly as the (now corrected)
+  // comment on PENDING_PASTE_RX intends.
+  if (detectsPastePlaceholder(pane)) return 'busy'
+
   if (!IDLE_FOOTER_RX.test(pane)) return 'unknown'
 
   if (detectsThinkingBlockError(pane)) return 'error'
-
-  if (PENDING_PASTE_RX.test(pane)) return 'busy'
 
   // Find the input box: two BOX_SEP_RX lines framing the current prompt.
   // Scan UPWARDS from the footer so we stay inside the live box and
@@ -453,15 +479,22 @@ export function shouldRetrySubmit(
   const retryPaneLines = pane.split('\n')
   const retryFooterRegion = retryPaneLines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
   if (BUSY_ESC_TO_INTERRUPT_RX.test(retryFooterRegion)) return false
+
+  // Path 1: placeholder is unambiguous, retry regardless of hint -- and it is
+  // checked BEFORE the idle-footer gate below. A placeholder pane replaces the
+  // idle footer with `paste again to expand`, so it fails IDLE_FOOTER_RX; the
+  // old ordering (footer gate first, then a placeholder check scoped to the
+  // input box) therefore returned false on the very state the recovery exists
+  // to catch. The whole-pane check is safe because capture-pane -p shows only
+  // the visible screen (no scrollback echo of a past `[Pasted text]`).
+  if (detectsPastePlaceholder(pane)) return true
+
   // Without an idle footer the pane is either not Claude Code or in an
   // unknown render state. Be conservative and skip.
   if (!IDLE_FOOTER_RX.test(pane)) return false
 
   const inputBox = liveInputBox(pane)
   if (inputBox == null) return false
-
-  // Path 1: placeholder is unambiguous, retry regardless of hint.
-  if (PENDING_PASTE_RX.test(inputBox)) return true
 
   // Path 2: verbatim payload parked in the input box.
   // Clamp the minimum hint length to >= 1. minHintChars=0 paired with
@@ -520,7 +553,7 @@ export function shouldClearTruncatedPreamble(pane: string): boolean {
   return true
 }
 
-export type SubmitFollowupAction = 'retry-enter' | 'done' | 'give-up'
+export type SubmitFollowupAction = 'retry-enter' | 'clear-and-resend' | 'done' | 'give-up'
 
 /**
  * Decide what the post-send-keys loop should do next, given the
@@ -528,13 +561,20 @@ export type SubmitFollowupAction = 'retry-enter' | 'done' | 'give-up'
  * been made. Returns one of three discrete actions so the caller can
  * branch without re-running the detection logic itself.
  *
- *   - 'done'        -- the prompt landed (or the pane is busy
- *                      processing); no further action.
- *   - 'retry-enter' -- the pane shows a stuck send; send another Enter
- *                      and re-sample.
- *   - 'give-up'     -- the retry budget is spent, or the capture failed
- *                      and we cannot tell whether retry would help.
- *                      Caller should log a warning and move on.
+ *   - 'done'             -- the prompt landed (or the pane is busy
+ *                           processing); no further action.
+ *   - 'retry-enter'      -- the pane shows a VERBATIM stuck send; send
+ *                           another Enter and re-sample. (A plain Enter
+ *                           submits verbatim parked text.)
+ *   - 'clear-and-resend' -- the pane shows a `[Pasted text #N]`
+ *                           placeholder. A plain Enter is PROVEN not to
+ *                           submit it (it merely expands the stub to
+ *                           parked verbatim text, still unsubmitted), so
+ *                           the caller must clear the buffer and re-send
+ *                           the payload defensively instead.
+ *   - 'give-up'          -- the retry budget is spent, or the capture
+ *                           failed and we cannot tell whether retry would
+ *                           help. Caller should log a warning and move on.
  *
  * Splitting the decision out as pure logic keeps the I/O-bound loop in
  * src/web/agent-process.ts trivially testable without mocking tmux or
@@ -562,6 +602,10 @@ export function decideSubmitFollowup(
   if (pane == null) return 'give-up'
   if (!shouldRetrySubmit(pane, payloadHint)) return 'done'
   if (attempt >= maxAttempts) return 'give-up'
+  // A placeholder will NOT submit on a plain Enter (proven empirically: Enter
+  // only expands the stub to still-parked verbatim text). Route it to the
+  // clear-and-resend recovery instead of wasting a retry-Enter on it.
+  if (detectsPastePlaceholder(pane)) return 'clear-and-resend'
   return 'retry-enter'
 }
 

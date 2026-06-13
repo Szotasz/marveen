@@ -3,6 +3,7 @@ import {
   detectPaneState,
   detectsThinkingBlockError,
   detectsBlockingMenu,
+  detectsPastePlaceholder,
   isReadyForPrompt,
   shouldRetrySubmit,
   shouldClearTruncatedPreamble,
@@ -107,6 +108,24 @@ const PENDING_PASTE = [
   '❯ [Pasted text #1 +234 chars]',
   SEP,
   '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+].join('\n')
+
+// REALISTIC placeholder render, captured from a live Claude Code v2.1.x build:
+// a single large send-keys write trips the bracketed-paste detector, which
+// REPLACES the idle footer (`bypass permissions on ...`) with the
+// `paste again to expand` hint. The pane therefore does NOT satisfy
+// IDLE_FOOTER_RX, which is exactly why the placeholder previously slipped
+// through every guard (detectPaneState -> 'unknown', shouldRetrySubmit ->
+// false). The `[Pasted text #N]` stub here has no `+X chars` suffix, the
+// other shape the same build emits.
+const PENDING_PASTE_REALISTIC = [
+  '',
+  SEP,
+  '❯ [Pasted text #38]the quick brown fox jumps over the lazy dog the quick brown',
+  '  brown fox jumps over the lazy dog the quick brown fox jumps over the lazy dog',
+  '  the lazy dog the quick brown fox jumps over the lazy dog',
+  SEP,
+  '  paste again to expand',
 ].join('\n')
 
 // Historical ❯ above the separators (scrollback). Must NOT count as
@@ -472,6 +491,14 @@ describe('detectPaneState', () => {
     expect(detectPaneState(PENDING_PASTE)).toBe('busy')
   })
 
+  it('treats the REALISTIC placeholder (no idle footer) as busy, not unknown', () => {
+    // Regression for the root-cause gap: the real placeholder render replaces
+    // the idle footer with `paste again to expand`, so it failed IDLE_FOOTER_RX
+    // and was mis-classified 'unknown' (slipping past the readiness/retry
+    // guards). The paste check now runs BEFORE the idle-footer gate.
+    expect(detectPaneState(PENDING_PASTE_REALISTIC)).toBe('busy')
+  })
+
   it('does NOT confuse a historical ❯ in scrollback for a parked input', () => {
     expect(detectPaneState(IDLE_WITH_SCROLLBACK_CARET)).toBe('idle')
   })
@@ -768,6 +795,14 @@ describe('shouldRetrySubmit', () => {
     expect(shouldRetrySubmit(STUCK_MULTI_PLACEHOLDER_MIX, PAYLOAD_HINT)).toBe(true)
   })
 
+  it('detects the REALISTIC placeholder (no idle footer) as stuck', () => {
+    // Regression: the real placeholder render has the `paste again to expand`
+    // footer, not the idle footer, so the old footer-gate ordering returned
+    // false here. The placeholder check now precedes the idle-footer gate.
+    expect(shouldRetrySubmit(PENDING_PASTE_REALISTIC, '')).toBe(true)
+    expect(shouldRetrySubmit(PENDING_PASTE_REALISTIC, PAYLOAD_HINT)).toBe(true)
+  })
+
   it('detects verbatim parked payload (footer idle, no spinner) as stuck', () => {
     // The payload substring sits in the live input box and the footer
     // shows bypass idle without any busy markers. Classic Incidens 2/5
@@ -1009,10 +1044,19 @@ describe('decideSubmitFollowup', () => {
     expect(decideSubmitFollowup(TYPING_PARKED, PAYLOAD_HINT, 0, 2)).toBe('done')
   })
 
-  it('returns "retry-enter" while attempts are below the cap', () => {
+  it('returns "retry-enter" for VERBATIM stuck text while below the cap', () => {
+    // Verbatim parked text (trailing Enter swallowed) submits on a plain
+    // Enter, so the verbatim path still routes to retry-enter.
     expect(decideSubmitFollowup(STUCK_VERBATIM, PAYLOAD_HINT, 0, 2)).toBe('retry-enter')
     expect(decideSubmitFollowup(STUCK_VERBATIM, PAYLOAD_HINT, 1, 2)).toBe('retry-enter')
-    expect(decideSubmitFollowup(PENDING_PASTE, '', 0, 2)).toBe('retry-enter')
+  })
+
+  it('returns "clear-and-resend" for a paste placeholder while below the cap', () => {
+    // A `[Pasted text #N]` placeholder is PROVEN not to submit on a plain
+    // Enter (Enter only expands it to still-parked verbatim text), so it must
+    // route to the clear-and-resend recovery, NOT retry-enter.
+    expect(decideSubmitFollowup(PENDING_PASTE, '', 0, 2)).toBe('clear-and-resend')
+    expect(decideSubmitFollowup(PENDING_PASTE_REALISTIC, '', 0, 2)).toBe('clear-and-resend')
   })
 
   it('returns "give-up" once attempts reach the cap', () => {
@@ -1021,6 +1065,13 @@ describe('decideSubmitFollowup', () => {
     // burning more retries on a pane that refuses to flush.
     expect(decideSubmitFollowup(STUCK_VERBATIM, PAYLOAD_HINT, 2, 2)).toBe('give-up')
     expect(decideSubmitFollowup(STUCK_VERBATIM, PAYLOAD_HINT, 5, 2)).toBe('give-up')
+  })
+
+  it('returns "give-up" for a placeholder once attempts reach the cap', () => {
+    // A placeholder that survived the clear-and-resend budget must bail too,
+    // not loop forever clearing and re-sending.
+    expect(decideSubmitFollowup(PENDING_PASTE_REALISTIC, '', 4, 4)).toBe('give-up')
+    expect(decideSubmitFollowup(PENDING_PASTE, '', 2, 2)).toBe('give-up')
   })
 
   it('treats maxAttempts === 0 as "give-up on first stuck observation"', () => {
@@ -1497,5 +1548,66 @@ describe('detectsBlockingMenu', () => {
       '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
     ].join('\n')
     expect(detectsBlockingMenu(quoted)).toBe(false)
+  })
+})
+
+describe('detectsPastePlaceholder', () => {
+  it('detects the `[Pasted text #N +X chars]` stub', () => {
+    expect(detectsPastePlaceholder(PENDING_PASTE)).toBe(true)
+  })
+
+  it('detects the bare `[Pasted text #N]` stub (no +X chars suffix)', () => {
+    // The live v2.1.x build emits the bare shape; both must match.
+    expect(detectsPastePlaceholder(PENDING_PASTE_REALISTIC)).toBe(true)
+  })
+
+  it('detects a multi-stub mixed buffer', () => {
+    expect(detectsPastePlaceholder(STUCK_MULTI_PLACEHOLDER_MIX)).toBe(true)
+  })
+
+  it('is false on a clean idle pane', () => {
+    expect(detectsPastePlaceholder(IDLE_BYPASS)).toBe(false)
+    expect(detectsPastePlaceholder(IDLE_STRICT)).toBe(false)
+  })
+
+  it('is false on a busy pane', () => {
+    expect(detectsPastePlaceholder(BUSY_FULL_FOOTER)).toBe(false)
+    expect(detectsPastePlaceholder(BUSY_TOKENS_ONLY)).toBe(false)
+  })
+
+  it('is false on verbatim parked text (no stub)', () => {
+    expect(detectsPastePlaceholder(STUCK_VERBATIM)).toBe(false)
+    expect(detectsPastePlaceholder(TYPING_PARKED)).toBe(false)
+  })
+
+  it('is false on an empty / whitespace pane', () => {
+    expect(detectsPastePlaceholder('')).toBe(false)
+    expect(detectsPastePlaceholder('   \n  ')).toBe(false)
+  })
+
+  it('does NOT key on the `paste again to expand` hint alone', () => {
+    // The hint LINGERS for a frame after the message submits (box already
+    // empty, stub gone). Keying on it would false-positive a freshly-
+    // submitted pane as still stuck. Only the `[Pasted text #N]` stub counts.
+    const submittedButHintLingers = [
+      '  ⏺ Done.',
+      '',
+      SEP,
+      '❯ ',
+      SEP,
+      '  paste again to expand',
+    ].join('\n')
+    expect(detectsPastePlaceholder(submittedButHintLingers)).toBe(false)
+  })
+
+  it('matches the stub anywhere in the visible pane', () => {
+    const wrappedStub = [
+      'some preceding line',
+      SEP,
+      '❯ leading text [Pasted text #7] trailing text',
+      SEP,
+      '  paste again to expand',
+    ].join('\n')
+    expect(detectsPastePlaceholder(wrappedStub)).toBe(true)
   })
 })
