@@ -44,3 +44,12 @@ Minden projekt-feladat kártyán fut: az orchestrator kártyaként rögzíti, on
 ### Hozzáférés
 
 Közvetlen SQLite, vagy a dashboard kanban-felülete. A kártya-állapot minden ügynök kontextusába automatikusan bekerül.
+
+### Dashboard kanban felület
+
+A webes dashboard (`http://localhost:3420`) kártyaszerkesztőjének főbb viselkedései:
+
+- **Komment-szerző default:** az új komment szerzőjeként az elsődleges humán felelős jelenik meg előre kiválasztva (az `owner` típusú assignee), nem a bot.
+- **Alfeladat hozzáadás:** szülő-kártyánál (nem alfeladatnál) „Új alfeladat" form jelenik meg. Az új alfeladat a szülő aktuális státuszát örökli. `done` státuszú szülőhöz nem lehet alfeladatot hozzáadni.
+- **Alfeladat törlés:** alfeladatok soránál Törlés gomb jelenik meg, megerősítő párbeszéddel. `done` státuszú szülőnél a gomb nem jelenik meg.
+- **Szülő-feladat szerkesztése:** alfeladat részletező nézetében (`planned` és `waiting` státusznál) legördülő menüből a szülő-hozzárendelés módosítható vagy leválasztható. A menü a szülőt a kártya-tulajdonságok sorában mutatja, teljes szélességben.
