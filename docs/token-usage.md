@@ -95,6 +95,8 @@ CREATE TABLE token_usage_cursors (
 
 - **Summary cards**: Ágensenként teljes fogyasztás (input/output/cache), hívásszám, utolsó aktivitás
 - **Timeline chart**: Canvas-alapú oszlopdiagram, dinamikus bucket mérettel (1h period = 5 perces bucketek, egyébként 1 órás)
+- **Fogyasztási korlátok (progressbar blokk)**: Az Idővonal alatt 2 progressbar: "Aktuális session" (az elmúlt 5 órás ablak tokenszáma / beállított korlát) és "Heti limit / összes modell" (7 napos összesítés / beállított korlát). Jobb felső sarokban visszaszámláló: mikor áll vissza az aktuális 5h ablak. A korlátokat a felhasználó szabja be (kattintás az értékre): `localStorage`-ban tárolódnak (`tu_limit_5h`, `tu_limit_weekly`). Alapértelmezés: 5M / 100M token.
+- **Sidebar widget**: Ugyanez a progressbar-pár kompakt formában a navigációs sáv alján jelenik meg (amint van adat), 10 másodpercenként frissülő visszaszámlálóval.
 - **Detail table**: Egyedi API-hívások listája, idő, ágens, tool, token breakdown, content preview
 - **Szűrők**: Időszak (1h/24h/7d/30d), ágens kártya kattintás
 - **Collect gomb**: Kézi adatgyűjtés indítása
