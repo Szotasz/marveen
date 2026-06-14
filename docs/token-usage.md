@@ -91,11 +91,43 @@ CREATE TABLE token_usage_cursors (
 
 ---
 
+## claude.ai fogyasztás-scraper
+
+A dashboard **valós fogyasztási százalékokat** kér le a claude.ai/settings/usage oldalról egy Playwright alapú headless scraper segítségével (`src/web/claude-usage-scraper.ts`). Ugyanazokat a session és heti százalékokat mutatja, amelyek a claude.ai beállítások oldalán is láthatók - nem lokális tokenszámlálást.
+
+### Beállítás (egyszeri)
+
+1. Telepítsd a Playwright Chromium böngészőt (az npm csomag nem tartalmazza):
+   ```bash
+   npx playwright install chromium
+   ```
+
+2. Az első használatkor futtasd headed módban, hogy be tudj jelentkezni a claude.ai-ba:
+   ```bash
+   CLAUDE_USAGE_HEADED=1 node -e "import('./dist/web/claude-usage-scraper.js').then(m => m.scrapeClaudeUsage(true))"
+   ```
+   Megnyílik egy böngésző ablak. Jelentkezz be a claude.ai-ra. A session elmentődik a `~/.claude/claude-usage-profile/` mappába (gitignored), és ezután minden scrape headless módban fut.
+
+### Működés
+
+- A scraper **15 percenként** fut háttér pollerként a `src/web.ts`-ben, és indításkor is (10 másodperces késleltetéssel).
+- Az eredmény cache-elve van a `store/claude-usage.json` fájlban (gitignored, 14 perces TTL).
+- A `/api/claude-usage` végpont a cache-elt adatot adja vissza; a `/api/claude-usage/refresh` egyszeri háttér újralekérést indít.
+- Ha nincs bejelentkezve (headless), a scraper `null`-t ad vissza, a dashboard "adat nem elérhető" állapotot mutat.
+
+### Biztonság
+
+- Hitelesítő adatok, sütik és session tokenek nem kerülnek kódba, logba vagy gitbe.
+- A Playwright profil a `~/.claude/claude-usage-profile/` mappában él (a projekt mappáján kívül, gitignored).
+- A `store/claude-usage.json` szintén gitignored.
+
+---
+
 ## Dashboard UI (`web/app.js` + `web/index.html`)
 
 - **Summary cards**: Ágensenként teljes fogyasztás (input/output/cache), hívásszám, utolsó aktivitás
 - **Timeline chart**: Canvas-alapú oszlopdiagram, dinamikus bucket mérettel (1h period = 5 perces bucketek, egyébként 1 órás)
-- **Fogyasztási korlátok (progressbar blokk)**: Az Idővonal alatt 2 progressbar: "Aktuális session" (az elmúlt 5 órás ablak tokenszáma / beállított korlát) és "Heti limit / összes modell" (7 napos összesítés / beállított korlát). Jobb felső sarokban visszaszámláló: mikor áll vissza az aktuális 5h ablak. A korlátokat a felhasználó szabja be (kattintás az értékre): `localStorage`-ban tárolódnak (`tu_limit_5h`, `tu_limit_weekly`). Alapértelmezés: 5M / 100M token.
+- **Fogyasztási korlátok (progressbar blokk)**: Az Idővonal alatt 2 progressbar a **valós claude.ai százalékokkal** -- "Aktuális session" és "Heti / összes modell". Visszaszámlálók mutatják mikor áll vissza mindkettő. Az adat a fenti claude.ai scrapertől jön; ha nem elérhető, a kártya "adat nem elérhető" állapotot mutat beállítási útmutatóval.
 - **Sidebar widget**: Ugyanez a progressbar-pár kompakt formában a navigációs sáv alján jelenik meg (amint van adat), 10 másodpercenként frissülő visszaszámlálóval.
 - **Detail table**: Egyedi API-hívások listája, idő, ágens, tool, token breakdown, content preview
 - **Szűrők**: Időszak (1h/24h/7d/30d), ágens kártya kattintás

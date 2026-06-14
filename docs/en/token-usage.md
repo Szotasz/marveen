@@ -91,11 +91,43 @@ CREATE TABLE token_usage_cursors (
 
 ---
 
+## claude.ai usage scraper
+
+The dashboard fetches **real usage percentages** from claude.ai/settings/usage via a Playwright-based headless scraper (`src/web/claude-usage-scraper.ts`). This shows the same session and weekly percentages you see on the claude.ai settings page — not local token estimates.
+
+### Setup (one-time)
+
+1. Install the Playwright Chromium browser binary (not included in the npm package):
+   ```bash
+   npx playwright install chromium
+   ```
+
+2. On first use, run a headed scrape so you can log in to claude.ai:
+   ```bash
+   CLAUDE_USAGE_HEADED=1 node -e "import('./dist/web/claude-usage-scraper.js').then(m => m.scrapeClaudeUsage(true))"
+   ```
+   A browser window opens. Sign in to claude.ai. The session is saved to `~/.claude/claude-usage-profile/` (gitignored) and all future scrapes run headless.
+
+### How it works
+
+- The scraper runs **every 15 minutes** as a background poller inside `src/web.ts` and on startup (10-second delay).
+- Results are cached in `store/claude-usage.json` (gitignored, 14-min TTL).
+- The dashboard `/api/claude-usage` endpoint serves the cached data; `/api/claude-usage/refresh` triggers a one-off background rescrape.
+- If not logged in (headless), the scraper returns `null` and the dashboard shows "data not available."
+
+### Security
+
+- No credentials, cookies, or session tokens are written to code, logs, or git.
+- The persistent Playwright profile lives at `~/.claude/claude-usage-profile/` (outside the project root, gitignored by pattern).
+- `store/claude-usage.json` is also gitignored.
+
+---
+
 ## Dashboard UI (`web/app.js` + `web/index.html`)
 
 - **Summary cards**: per-agent total consumption (input/output/cache), call count, last activity
 - **Timeline chart**: Canvas-based bar chart with dynamic bucket size (1h period = 5-min buckets, otherwise 1-hour)
-- **Usage limit progress bars**: below the Timeline, two progress bars — "Current session" (tokens in the last 5-hour window / configured limit) and "Weekly limit / all models" (7-day total / configured limit). Top-right shows a countdown to when the current 5h window resets. Limits are user-configurable by clicking the value; stored in `localStorage` (`tu_limit_5h`, `tu_limit_weekly`). Defaults: 5 M / 100 M tokens.
+- **Usage limit progress bars**: below the Timeline, two progress bars showing **real claude.ai percentages** — "Current session" and "Weekly / all models". Countdowns show when each resets. Data comes from the claude.ai scraper above; if unavailable, the card shows an "adat nem elérhető" state with setup instructions.
 - **Sidebar widget**: the same progress bar pair in compact form at the bottom of the navigation sidebar (appears once data is loaded), with a countdown refreshed every 10 seconds.
 - **Detail table**: individual API calls, time, agent, tool, token breakdown, content preview
 - **Filters**: time period (1h/24h/7d/30d), agent card click

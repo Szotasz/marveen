@@ -82,14 +82,28 @@ export async function scrapeClaudeUsage(headed = false): Promise<ClaudeUsageData
     const page = browser.pages()[0] ?? await browser.newPage()
 
     await page.goto(USAGE_URL, { waitUntil: 'domcontentloaded', timeout: 30000 })
-    // Allow JS to render the usage data
-    await page.waitForTimeout(3000)
 
-    // Redirect to login page → not authenticated
-    if (page.url().includes('/login') || page.url().includes('/auth')) {
-      logger.info('claude-usage: not logged in, headed=%s', headed)
-      return null
+    const onLoginPage = () => page.url().includes('/login') || page.url().includes('/auth')
+
+    if (onLoginPage()) {
+      if (!headed) {
+        // Headless: no user present to log in — bail immediately.
+        logger.info('claude-usage: not logged in (headless), skipping')
+        return null
+      }
+      // Headed: wait up to 5 minutes for the user to complete login and land
+      // on the usage page. The browser window stays open so they can sign in.
+      logger.info('claude-usage: not logged in — waiting for user to sign in (headed, up to 5 min)')
+      try {
+        await page.waitForURL('**/settings/usage**', { timeout: 5 * 60 * 1000 })
+      } catch {
+        logger.warn('claude-usage: login wait timed out after 5 minutes')
+        return null
+      }
     }
+
+    // Allow JS to render the usage data after navigation settles
+    await page.waitForTimeout(3000)
 
     // --- Strategy 1: aria progressbar values ---
     const result = await page.evaluate(() => {
