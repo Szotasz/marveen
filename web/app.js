@@ -79,6 +79,8 @@ const pages = document.querySelectorAll('.page')
 function switchPage(pageId) {
   pages.forEach((p) => (p.hidden = p.id !== pageId + 'Page'))
   navLinks.forEach((l) => l.classList.toggle('active', l.dataset.page === pageId))
+  // Kanban needs full-width layout (overrides main's max-width: 1200px)
+  document.querySelector('main').classList.toggle('kanban-active', pageId === 'kanban')
   // Activity page runs a live poll; stop it whenever we navigate away.
   if (pageId !== 'activity') stopActivityPoll()
   if (pageId === 'activity') startActivityPoll()
@@ -413,12 +415,33 @@ function setupAssigneeFilter() {
 }
 
 function renderKanban() {
-  const grouped = { planned: [], in_progress: [], waiting: [], done: [] }
+  const cardById = new Map(kanbanCards.map(c => [c.id, c]))
   const assigneeFilter = kanbanAssigneeFilter.toLowerCase()
+
+  // Determine which top-level cards are visible under current filters.
+  const visibleCardIds = new Set()
   for (const card of kanbanCards) {
     if (kanbanProjectFilter && (card.project || '') !== kanbanProjectFilter) continue
-    // Assignee filter (case-insensitive). Empty = no filter.
     if (assigneeFilter && String(card.assignee || '').trim().toLowerCase() !== assigneeFilter) continue
+    visibleCardIds.add(card.id)
+  }
+
+  // A subtask is "embedded" when its parent is visible AND both share the same
+  // column. Embedded subtasks are hidden as standalone cards and rendered
+  // inside the parent card instead. Filter state of the subtask itself is
+  // intentionally ignored so it always shows under its visible parent.
+  const embeddedSubtaskIds = new Set()
+  for (const card of kanbanCards) {
+    if (!card.parent_id) continue
+    const parent = cardById.get(card.parent_id)
+    if (!parent || !visibleCardIds.has(parent.id)) continue
+    if (parent.status === card.status) embeddedSubtaskIds.add(card.id)
+  }
+
+  const grouped = { planned: [], in_progress: [], waiting: [], done: [] }
+  for (const card of kanbanCards) {
+    if (embeddedSubtaskIds.has(card.id)) continue
+    if (!visibleCardIds.has(card.id)) continue
     if (grouped[card.status]) grouped[card.status].push(card)
   }
 
@@ -428,46 +451,44 @@ function renderKanban() {
     cards.sort((a, b) => a.sort_order - b.sort_order)
 
     for (const card of cards) {
-      col.appendChild(createCardEl(card))
+      const embeddedChildren = kanbanCards
+        .filter(c => c.parent_id === card.id && embeddedSubtaskIds.has(c.id))
+        .sort((a, b) => a.sort_order - b.sort_order)
+      col.appendChild(createCardEl(card, embeddedChildren))
     }
   }
 
-  // Update counts
+  // Update counts (embedded subtasks don't count as separate cards)
   document.getElementById('countPlanned').textContent = grouped.planned.length
   document.getElementById('countInProgress').textContent = grouped.in_progress.length
   document.getElementById('countWaiting').textContent = grouped.waiting.length
   document.getElementById('countDone').textContent = grouped.done.length
 
-  // Async parent-badge: fetch children count per card, show badge if any
-  loadSubtaskBadges()
+  // Badge: only count subtasks that are in a different column (not embedded here)
+  updateSubtaskBadges(embeddedSubtaskIds)
 }
 
-async function loadSubtaskBadges() {
-  const cardEls = document.querySelectorAll('.kanban-card[data-id]')
-  await Promise.all([...cardEls].map(async (el) => {
+function updateSubtaskBadges(embeddedSubtaskIds) {
+  for (const el of document.querySelectorAll('.kanban-card[data-id]')) {
     const id = el.dataset.id
-    try {
-      const res = await fetch(`/api/kanban/${encodeURIComponent(id)}/children`)
-      if (!res.ok) return
-      const children = await res.json()
-      const badge = el.querySelector('.kanban-subtask-badge')
-      if (!badge) return
-      if (children.length > 0) {
-        badge.textContent = `${children.length} subtask`
-        badge.style.display = ''
-        badge.onclick = (e) => {
-          e.stopPropagation()
-          const card = kanbanCards.find((c) => c.id === id)
-          if (card) showCardDetail(card)
-        }
-      } else {
-        badge.style.display = 'none'
+    const badge = el.querySelector('.kanban-subtask-badge')
+    if (!badge) continue
+    const nonEmbedded = kanbanCards.filter(c => c.parent_id === id && !embeddedSubtaskIds.has(c.id))
+    if (nonEmbedded.length > 0) {
+      badge.textContent = `${nonEmbedded.length} subtask`
+      badge.style.display = ''
+      badge.onclick = (e) => {
+        e.stopPropagation()
+        const card = kanbanCards.find(c => c.id === id)
+        if (card) showCardDetail(card)
       }
-    } catch { /* ignore */ }
-  }))
+    } else {
+      badge.style.display = 'none'
+    }
+  }
 }
 
-function createCardEl(card) {
+function createCardEl(card, embeddedChildren = []) {
   const el = document.createElement('div')
   el.className = 'kanban-card'
   el.dataset.id = card.id
@@ -509,6 +530,21 @@ function createCardEl(card) {
     ? `<span class="kanban-card-seq" style="font-family:monospace;font-size:11px;color:var(--muted);margin-right:5px">#${card.seq}</span>`
     : ''
 
+  // Embedded subtasks: rendered as mini-cards below a divider when the subtask
+  // shares the same column as this parent card.
+  let embeddedHtml = ''
+  if (embeddedChildren.length > 0) {
+    const items = embeddedChildren.map(c => {
+      const rawCa = c.assignee ? String(c.assignee).trim() : ''
+      const ca = rawCa ? kanbanAssignees.find(a => a.name.toLowerCase() === rawCa.toLowerCase()) : null
+      const caLabel = ca ? (ca.displayName || ca.name) : rawCa
+      const caHtml = caLabel ? `<span class="kanban-embedded-assignee">${escapeHtml(caLabel)}</span>` : ''
+      const cSeq = c.seq != null ? `<span class="kanban-embedded-seq">#${c.seq}</span> ` : ''
+      return `<div class="kanban-embedded-subtask" data-id="${escapeHtml(c.id)}">${cSeq}${escapeHtml(c.title)}${caHtml}</div>`
+    }).join('')
+    embeddedHtml = `<div class="kanban-embedded-subtasks">${items}</div>`
+  }
+
   el.innerHTML = `
     ${projectHtml}
     <div class="kanban-card-title">${seqHtml}${escapeHtml(card.title)}</div>
@@ -517,12 +553,22 @@ function createCardEl(card) {
       <button class="card-breakdown-btn" title="AI szétbont" aria-label="AI szétbont">⚡</button>
     </div>
     <div class="kanban-subtask-badge" style="display:none"></div>
+    ${embeddedHtml}
   `
 
   // "AI szétbont" gomb – ne nyissa meg a detail modalt
   el.querySelector('.card-breakdown-btn').addEventListener('click', (e) => {
     e.stopPropagation()
     triggerBreakdown(card)
+  })
+
+  // Click on embedded subtask -> open that subtask's detail (don't bubble to parent)
+  el.querySelectorAll('.kanban-embedded-subtask').forEach(subEl => {
+    subEl.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const child = kanbanCards.find(c => c.id === subEl.dataset.id)
+      if (child) showCardDetail(child)
+    })
   })
 
   // Drag events
