@@ -1243,15 +1243,27 @@
             </div>
           </div>
         </div>
+        <div id="cardParentSection" style="display:none; margin-top:12px">
+          <h4>Szülő feladat</h4>
+          <div id="cardParentInfo" class="comment-item" style="cursor:pointer"></div>
+        </div>
         <div id="cardChildrenSection" style="display:none; margin-top:12px">
           <h4>Subtask-ok</h4>
           <div id="cardChildrenList" class="comments-list"></div>
+          <div id="cardAddSubtaskSection" style="display:none; margin-top:8px">
+            <div class="form-row" style="gap:8px; align-items:center">
+              <input type="text" id="newSubtaskTitle" placeholder="Új alfeladat neve..." style="flex:1; padding:6px 10px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px">
+              <button class="btn-primary btn-compact" id="addSubtaskBtn">Hozzáadás</button>
+            </div>
+          </div>
         </div>
         <div class="detail-actions" style="gap:8px">
           <button class="btn-secondary" id="cardBreakdownBtn">⚡ AI szétbont</button>
           <button class="btn-secondary" id="cardEditBtn">Szerkesztés</button>
           <button class="btn-secondary" id="cardArchiveBtn">Archiválás</button>
           <button class="btn-danger" id="cardDeleteBtn">Törlés</button>
+          <button class="btn-secondary" id="removeParentBtn" style="display:none">Szülő leválasztása</button>
+          <button class="btn-secondary" id="changeParentBtn" style="display:none">Szülő módosítása</button>
         </div>
       </div>
     </div>
