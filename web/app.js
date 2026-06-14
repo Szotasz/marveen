@@ -814,11 +814,10 @@ async function showCardDetail(card) {
 
   document.getElementById('cardDetailDesc').textContent = card.description || ''
 
-  // #115: Parent section — shown for subtasks; modify/remove only in planned/waiting state
+  // #115: Parent section — shown for subtasks; dropdown to reparent/detach only in planned/waiting
   const parentSection = document.getElementById('cardParentSection')
   const parentInfoEl = document.getElementById('cardParentInfo')
-  const removeParentBtn = document.getElementById('removeParentBtn')
-  const changeParentBtn = document.getElementById('changeParentBtn')
+  const parentSelect = document.getElementById('parentSelect')
   const canModifyParent = card.status === 'planned' || card.status === 'waiting'
   if (card.parent_id) {
     const parentCard = kanbanCards.find(c => c.id === card.parent_id)
@@ -827,56 +826,33 @@ async function showCardDetail(card) {
     parentInfoEl.onclick = () => { if (parentCard) { closeModal(cardDetailOverlay); showCardDetail(parentCard) } }
     parentSection.style.display = ''
     if (canModifyParent) {
-      removeParentBtn.style.display = ''
-      removeParentBtn.onclick = async () => {
-        if (!confirm('Leválasztod az alfeladatot a szülőjéről? (Önálló feladattá válik)')) return
+      // Build the parent-select dropdown: null option + all top-level tasks
+      parentSelect.innerHTML = '<option value="">Üres (nincs szülő)</option>'
+      const availableParents = kanbanCards.filter(c => !c.parent_id && c.id !== card.id && !c.archived_at)
+      for (const p of availableParents) {
+        const opt = document.createElement('option')
+        opt.value = p.id
+        opt.textContent = (p.seq != null ? `#${p.seq} ` : '') + p.title
+        if (p.id === card.parent_id) opt.selected = true
+        parentSelect.appendChild(opt)
+      }
+      parentSelect.style.display = ''
+      parentSelect.onchange = async () => {
+        const newParentId = parentSelect.value || null
+        const label = newParentId ? 'Szülő módosítva' : 'Szülő leválasztva'
         const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}`, {
           method: 'PUT', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...card, parent_id: null }),
+          body: JSON.stringify({ ...card, parent_id: newParentId }),
         })
-        if (r.ok) { card.parent_id = null; showToast('Szülő leválasztva'); loadKanban(); showCardDetail(card) }
+        if (r.ok) { card.parent_id = newParentId; showToast(label); loadKanban(); showCardDetail(card) }
         else showToast('Hiba a mentésnél')
       }
-      changeParentBtn.style.display = ''
-      changeParentBtn.onclick = () => {
-        const availableParents = kanbanCards.filter(c => !c.parent_id && c.id !== card.id && !c.archived_at)
-        if (!availableParents.length) { showToast('Nincs elérhető szülő feladat'); return }
-        const sel = document.createElement('select')
-        sel.style.cssText = 'padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;margin-left:8px'
-        sel.innerHTML = '<option value="">-- Válassz szülőt --</option>'
-        for (const p of availableParents) {
-          const opt = document.createElement('option')
-          opt.value = p.id
-          opt.textContent = (p.seq != null ? `#${p.seq} ` : '') + p.title
-          if (p.id === card.parent_id) opt.selected = true
-          sel.appendChild(opt)
-        }
-        const confirmBtn = document.createElement('button')
-        confirmBtn.className = 'btn-primary btn-compact'
-        confirmBtn.style.marginLeft = '6px'
-        confirmBtn.textContent = 'Mentés'
-        parentInfoEl.appendChild(sel)
-        parentInfoEl.appendChild(confirmBtn)
-        changeParentBtn.style.display = 'none'
-        confirmBtn.onclick = async () => {
-          const newParentId = sel.value
-          if (!newParentId) return
-          const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}`, {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...card, parent_id: newParentId }),
-          })
-          if (r.ok) { card.parent_id = newParentId; showToast('Szülő módosítva'); loadKanban(); showCardDetail(card) }
-          else showToast('Hiba a mentésnél')
-        }
-      }
     } else {
-      removeParentBtn.style.display = 'none'
-      changeParentBtn.style.display = 'none'
+      parentSelect.style.display = 'none'
     }
   } else {
     parentSection.style.display = 'none'
-    removeParentBtn.style.display = 'none'
-    changeParentBtn.style.display = 'none'
+    parentSelect.style.display = 'none'
   }
 
   // Load comments
