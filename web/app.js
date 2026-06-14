@@ -957,8 +957,8 @@ async function showCardDetail(card) {
     const addSubtaskSection = document.getElementById('cardAddSubtaskSection')
     const isTask = !card.parent_id
 
-    // #113: Show add-subtask form only for top-level tasks (not for subtasks themselves)
-    if (isTask) {
+    // #113: Show add-subtask form only for top-level tasks that are not done
+    if (isTask && card.status !== 'done') {
       addSubtaskSection.style.display = ''
       const titleInput = document.getElementById('newSubtaskTitle')
       titleInput.value = ''
@@ -968,7 +968,7 @@ async function showCardDetail(card) {
         try {
           const r = await fetch('/api/kanban', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title, parent_id: card.id, status: 'planned', priority: card.priority, project: card.project || null, assignee: null }),
+            body: JSON.stringify({ title, parent_id: card.id, status: card.status, priority: card.priority, project: card.project || null, assignee: null }),
           })
           if (!r.ok) { showToast('Hiba az alfeladat létrehozásakor'); return }
           showToast('Alfeladat létrehozva')
