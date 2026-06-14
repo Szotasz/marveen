@@ -345,6 +345,36 @@ if [ "$MAIN_AGENT_ID" != "marveen" ]; then
   echo -e "  ${DIM}Ügynök belső azonosító: ${MAIN_AGENT_ID}${NC}"
 fi
 
+# Product / system brand. Separate from BOT_NAME (the main agent's display
+# name): an operator may want the product called one thing and the agent
+# another. Defaults to BOT_NAME, so an operator who just presses Enter gets
+# today's behaviour with no brand divergence.
+read -p "  Mi a termék/márka neve? [${BOT_NAME}]: " BRAND_NAME
+BRAND_NAME=${BRAND_NAME:-"$BOT_NAME"}
+
+# Slug for service labels (launchd) derived from BRAND_NAME with the SAME NFKD
+# rule as MAIN_AGENT_ID. DEFAULT-SAFE: when BRAND_NAME equals BOT_NAME (the
+# default), this slug equals MAIN_AGENT_ID, so the launchd labels below are
+# byte-identical to a brand-unaware install. Only an operator who types a
+# DIFFERENT brand gets brand-based labels -- in-place upgrades that keep the
+# default are untouched.
+BRAND_SLUG=$(python3 - "$BRAND_NAME" <<'PYEOF'
+import sys, unicodedata, re
+s = sys.argv[1].strip()
+s = unicodedata.normalize('NFKD', s).encode('ASCII', 'ignore').decode()
+s = re.sub(r'[^a-zA-Z0-9]+', '-', s).strip('-').lower()
+print(s or 'marveen')
+PYEOF
+)
+# The id used for launchd service labels: brand slug when the operator chose a
+# brand distinct from the agent id, otherwise the agent id (unchanged default).
+if [ "$BRAND_SLUG" != "$MAIN_AGENT_ID" ]; then
+  SERVICE_ID="$BRAND_SLUG"
+  echo -e "  ${DIM}Szolgáltatás-azonosító (launchd): ${SERVICE_ID}${NC}"
+else
+  SERVICE_ID="$MAIN_AGENT_ID"
+fi
+
 # Step 5: Install dependencies
 INSTALL_STEP="npm-install"
 echo ""
@@ -374,7 +404,9 @@ echo -e "${BOLD}[6/7] Konfiguráció létrehozása...${NC}"
 CHANNEL_PROVIDER=${CHANNEL_PROVIDER}
 OWNER_NAME=${OWNER_NAME}
 BOT_NAME=${BOT_NAME}
+BRAND_NAME=${BRAND_NAME}
 MAIN_AGENT_ID=${MAIN_AGENT_ID}
+SERVICE_ID=${SERVICE_ID}
 ENVEOF
 )
 # Append provider-specific tokens
@@ -679,8 +711,11 @@ PLIST_DIR="$HOME/Library/LaunchAgents"
 mkdir -p "$PLIST_DIR"
 
 NODE_PATH="$(which node)"
-DASHBOARD_PLIST="com.${MAIN_AGENT_ID}.dashboard"
-CHANNELS_PLIST="com.${MAIN_AGENT_ID}.channels"
+# Launchd labels key off SERVICE_ID. SERVICE_ID == MAIN_AGENT_ID for a
+# brand-unaware (default) install, so these labels are unchanged unless the
+# operator picked a distinct brand above.
+DASHBOARD_PLIST="com.${SERVICE_ID}.dashboard"
+CHANNELS_PLIST="com.${SERVICE_ID}.channels"
 
 # Dashboard service
 cat > "$PLIST_DIR/${DASHBOARD_PLIST}.plist" << PLISTEOF

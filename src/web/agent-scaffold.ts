@@ -8,18 +8,41 @@ import { atomicWriteFileSync } from './atomic-write.js'
 import { agentDir } from './agent-config.js'
 import { resolveProfilePlaceholders, type ProfileTemplate } from './profiles.js'
 
-export function resolveTemplatePlaceholders(content: string): string {
-  // Identity placeholders, kept in sync with the install scripts'
-  // (install-macos.sh / install-linux.sh) sed substitutions, so a shipped
-  // template never seeds a foreign absolute path or name into a user's tree.
-  // {{INSTALL_DIR}} and {{PROJECT_ROOT}} both denote this install location.
+// Identity values the template substitution injects. Pulled out so the
+// substitution is a pure, parameterizable function (the runtime binds these to
+// config; tests can prove a non-default identity substitutes with no literal
+// brand leak).
+export interface TemplateIdentity {
+  projectRoot: string
+  mainAgentId: string
+  botName: string
+  ownerName: string
+  webPort: number | string
+}
+
+// Pure substitution of the identity placeholders into a template body. Kept in
+// sync with the install scripts' (install-macos.sh / install-linux.sh) sed
+// substitutions, so a shipped template never seeds a foreign absolute path or
+// name into a user's tree. {{INSTALL_DIR}} and {{PROJECT_ROOT}} both denote the
+// install location.
+export function substituteTemplatePlaceholders(content: string, id: TemplateIdentity): string {
   return content
-    .replaceAll('{{PROJECT_ROOT}}', PROJECT_ROOT)
-    .replaceAll('{{INSTALL_DIR}}', PROJECT_ROOT)
-    .replaceAll('{{MAIN_AGENT_ID}}', MAIN_AGENT_ID)
-    .replaceAll('{{BOT_NAME}}', BOT_NAME)
-    .replaceAll('{{OWNER_NAME}}', OWNER_NAME)
-    .replaceAll('{{WEB_PORT}}', String(WEB_PORT))
+    .replaceAll('{{PROJECT_ROOT}}', id.projectRoot)
+    .replaceAll('{{INSTALL_DIR}}', id.projectRoot)
+    .replaceAll('{{MAIN_AGENT_ID}}', id.mainAgentId)
+    .replaceAll('{{BOT_NAME}}', id.botName)
+    .replaceAll('{{OWNER_NAME}}', id.ownerName)
+    .replaceAll('{{WEB_PORT}}', String(id.webPort))
+}
+
+export function resolveTemplatePlaceholders(content: string): string {
+  return substituteTemplatePlaceholders(content, {
+    projectRoot: PROJECT_ROOT,
+    mainAgentId: MAIN_AGENT_ID,
+    botName: BOT_NAME,
+    ownerName: OWNER_NAME,
+    webPort: WEB_PORT,
+  })
 }
 
 // Idempotent migration: every agent's settings.json should carry the

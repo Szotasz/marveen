@@ -93,8 +93,36 @@ A telepítő végigvezet a beállításokon:
 1. Függőségek ellenőrzése és telepítése
 2. Claude Code bejelentkezés
 3. Telegram bot létrehozása
-4. Személyes beállítások
+4. Személyes beállítások (a bot neve és a termék/márka neve)
 5. Szolgáltatások indítása
+
+### Branding (saját márkanév)
+
+A platform szabadon márkázható telepítéskor. Két, egymástól **független** beállítás:
+
+| Beállítás | Mi ez | Default |
+|-----------|-------|---------|
+| `BOT_NAME` | A fő ágens megjelenített neve (pl. `MyAssistant`) | `Marveen` |
+| `BRAND_NAME` | A termék / rendszer neve a dashboard fejlécében (böngésző-cím, oldalsáv, mobil topbar) | `BOT_NAME` |
+
+A telepítő mindkettőt megkérdezi. Ha csak Entert nyomsz, minden marad `Marveen` (a viselkedés változatlan a meglévő telepítésekhez képest). Ha külön márkanevet adsz meg, a teljes felület és az OS szolgáltatás-azonosítók is azzal jönnek létre:
+
+```bash
+# Példa: az ágens neve "MyAssistant", a terméké "AcmeAI"
+#   Mi legyen a botod neve? [Marveen]: MyAssistant
+#   Mi a termék/márka neve? [MyAssistant]: AcmeAI
+```
+
+A `.env`-ben ezek a kulcsok jelennek meg (lásd `.env.example`):
+
+```env
+BOT_NAME=MyAssistant
+BRAND_NAME=AcmeAI
+MAIN_AGENT_ID=myassistant   # belső ágens-azonosító (a BOT_NAME ASCII slug-ja)
+SERVICE_ID=acmeai           # OS szolgáltatás-azonosító (a BRAND_NAME ASCII slug-ja)
+```
+
+A `MAIN_AGENT_ID` és `SERVICE_ID` értékeket a telepítő automatikusan származtatja; ritkán kell kézzel szerkeszteni. Ha a `BRAND_NAME` megegyezik a `BOT_NAME`-mel (a default), a `SERVICE_ID` megegyezik a `MAIN_AGENT_ID`-vel, így a launchd/systemd unit-nevek byte-azonosak a márkázatlan telepítéssel: a helyben történő frissítés nem törik el.
 
 ## Használat
 

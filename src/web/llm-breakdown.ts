@@ -1,6 +1,7 @@
 import { logger } from '../logger.js'
 import { listAgentNames } from './agent-config.js'
 import { runAgent } from '../agent.js'
+import { OWNER_NAME, BOT_NAME } from '../config.js'
 
 export interface SubtaskSuggestion {
   title: string
@@ -46,7 +47,10 @@ function buildUserPrompt(title: string, description: string | null, agents: stri
 
 function getValidAssignees(): Set<string> {
   const agents = listAgentNames()
-  return new Set(['Szabolcs', 'Marveen', ...agents])
+  // OWNER_NAME (the operator) and BOT_NAME (the main agent display name) are
+  // valid assignees alongside the sub-agents. Derive both from config so a
+  // non-default install does not drop its own owner / main agent from the set.
+  return new Set([OWNER_NAME, BOT_NAME, ...agents])
 }
 
 // Strip a leading/trailing ```json ... ``` fence if the model added one despite

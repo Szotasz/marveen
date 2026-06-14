@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { MAIN_AGENT_ID } from '../../config.js'
 import { listIdeas, createIdea, updateIdea, deleteIdea, listIdeaCategories, createKanbanCard, getDb } from '../../db.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
@@ -89,7 +90,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       description: idea.description ?? '',
       status,
       priority: 'normal',
-      assignee: 'marveen',
+      assignee: MAIN_AGENT_ID,
       project: 'Fejlesztési ötletek',
     })
     updateIdea(ideaId, { status: 'kanban', kanban_id: cardId })
@@ -136,7 +137,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       description: idea.description ?? '',
       status: 'planned',
       priority: 'normal',
-      assignee: 'marveen',
+      assignee: MAIN_AGENT_ID,
       project: 'Fejlesztési ötletek',
     })
     const childIds: string[] = []
@@ -149,7 +150,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
         description: (st.description ?? '').slice(0, 500),
         status: 'planned',
         priority: (st.priority && VALID_PRIORITIES.has(st.priority) ? st.priority : 'normal') as 'low' | 'normal' | 'high' | 'urgent',
-        assignee: st.assignee || 'marveen',
+        assignee: st.assignee || MAIN_AGENT_ID,
         project: 'Fejlesztési ötletek',
         parent_id: parentId,
       })

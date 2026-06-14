@@ -573,6 +573,36 @@ if [ "$MAIN_AGENT_ID" != "marveen" ]; then
   echo -e "  ${DIM}Ügynök belső azonosító: ${MAIN_AGENT_ID}${NC}"
 fi
 
+# Product / system brand. Separate from BOT_NAME (the main agent's display
+# name): an operator may want the product called one thing and the agent
+# another. Defaults to BOT_NAME, so an operator who just presses Enter gets
+# today's behaviour with no brand divergence.
+read -p "  Mi a termék/márka neve? [${BOT_NAME}]: " BRAND_NAME
+BRAND_NAME=${BRAND_NAME:-"$BOT_NAME"}
+
+# Slug for service labels (systemd units) derived from BRAND_NAME with the SAME
+# NFKD rule as MAIN_AGENT_ID. DEFAULT-SAFE: when BRAND_NAME equals BOT_NAME (the
+# default), this slug equals MAIN_AGENT_ID, so the systemd unit names below are
+# byte-identical to a brand-unaware install. Only an operator who types a
+# DIFFERENT brand gets brand-based unit names -- in-place upgrades that keep the
+# default are untouched.
+BRAND_SLUG=$(python3 - "$BRAND_NAME" <<'PYEOF'
+import sys, unicodedata, re
+s = sys.argv[1].strip()
+s = unicodedata.normalize('NFKD', s).encode('ASCII', 'ignore').decode()
+s = re.sub(r'[^a-zA-Z0-9]+', '-', s).strip('-').lower()
+print(s or 'marveen')
+PYEOF
+)
+# The id used for systemd unit names: brand slug when the operator chose a brand
+# distinct from the agent id, otherwise the agent id (unchanged default).
+if [ "$BRAND_SLUG" != "$MAIN_AGENT_ID" ]; then
+  SERVICE_ID="$BRAND_SLUG"
+  echo -e "  ${DIM}Szolgáltatás-azonosító (systemd): ${SERVICE_ID}${NC}"
+else
+  SERVICE_ID="$MAIN_AGENT_ID"
+fi
+
 INSTALL_STEP="npm-install"
 # ─────────────────────────────────────────────
 # [5/7] Fuggosegek telepitese + konfiguracic
@@ -609,7 +639,9 @@ echo -e "${BOLD}  Konfiguracio letrehozasa...${NC}"
 CHANNEL_PROVIDER=${CHANNEL_PROVIDER}
 OWNER_NAME=${OWNER_NAME}
 BOT_NAME=${BOT_NAME}
+BRAND_NAME=${BRAND_NAME}
 MAIN_AGENT_ID=${MAIN_AGENT_ID}
+SERVICE_ID=${SERVICE_ID}
 ENVEOF
 )
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
@@ -956,9 +988,14 @@ SYSTEMD_DIR="$HOME/.config/systemd/user"
 mkdir -p "$SYSTEMD_DIR"
 
 NODE_PATH="$(which node)"
-DASH_UNIT="${MAIN_AGENT_ID}-dashboard"
-CHAN_UNIT="${MAIN_AGENT_ID}-channels"
-MORN_UNIT="${MAIN_AGENT_ID}-morning"
+# Unit names key off SERVICE_ID. SERVICE_ID == MAIN_AGENT_ID for a brand-unaware
+# (default) install, so these unit names are unchanged unless the operator chose
+# a distinct brand above. The channels unit still runs channels.sh, which names
+# its tmux session ${MAIN_AGENT_ID}-channels (the session id the backend uses);
+# the unit name and the session name are independent.
+DASH_UNIT="${SERVICE_ID}-dashboard"
+CHAN_UNIT="${SERVICE_ID}-channels"
+MORN_UNIT="${SERVICE_ID}-morning"
 
 # Detect the host timezone so the scheduled-task runner (which reads
 # cron expressions in Node's local TZ) fires at the operator's wall

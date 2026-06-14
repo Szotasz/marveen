@@ -1,6 +1,6 @@
 import { existsSync, unlinkSync, copyFileSync, writeFileSync } from 'node:fs'
 import { join, extname } from 'node:path'
-import { PROJECT_ROOT, OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, CHANNEL_PROVIDER } from '../../config.js'
+import { PROJECT_ROOT, OWNER_NAME, BOT_NAME, BRAND_NAME, MAIN_AGENT_ID, CHANNEL_PROVIDER } from '../../config.js'
 import { readMarveenTelegramConfig, readMarveenDiscordConfig, readMarveenSlackConfig, sendMarveenAvatarChange } from '../telegram.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
 import { readFileOr } from '../agent-config.js'
@@ -13,6 +13,31 @@ import type { RouteContext } from './types.js'
 
 function getActiveMarveenModel(): string {
   return readActiveModelFromProjectDir(PROJECT_ROOT) ?? 'unknown'
+}
+
+// Pure identity-core of the /api/marveen payload: the brand-relevant fields the
+// dashboard chrome + agent routing depend on. Extracted so the mapping (display
+// name -> name, product brand -> brandName, canonical id -> agentId) is provable
+// for any non-default identity, independent of the route's file I/O.
+export interface MarveenIdentityCore {
+  name: string
+  brandName: string
+  agentId: string
+  autoRestartId: string
+  role: 'main'
+}
+export function buildMarveenIdentityCore(
+  botName: string,
+  brandName: string,
+  mainAgentId: string,
+): MarveenIdentityCore {
+  return {
+    name: botName,
+    brandName,
+    agentId: mainAgentId,
+    autoRestartId: mainAgentId,
+    role: 'main',
+  }
 }
 
 export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promise<boolean> {
@@ -31,26 +56,27 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
     const tg = readMarveenTelegramConfig()
     const dc = readMarveenDiscordConfig()
     const sl = readMarveenSlackConfig()
+    // Brand-relevant identity core. `name` = main agent display name (BOT_NAME),
+    // `brandName` = product brand for the dashboard chrome (defaults to BOT_NAME;
+    // the client falls back to its own HTML default "Marveen" if absent on a
+    // legacy backend), `agentId` = canonical MAIN_AGENT_ID so the dashboard can
+    // hit /api/agents/<id>/skills for the main agent.
+    const idCore = buildMarveenIdentityCore(BOT_NAME, BRAND_NAME, MAIN_AGENT_ID)
     json(res, {
-      name: BOT_NAME,
-      // Canonical agent id (MAIN_AGENT_ID, e.g. "gorcsevivan") so the dashboard
-      // can hit /api/agents/<id>/skills for the main agent -- the display name
-      // (BOT_NAME) is not a valid agent-dir id.
-      agentId: MAIN_AGENT_ID,
+      ...idCore,
       description,
       model: getActiveMarveenModel(),
       tmuxSession: MAIN_CHANNELS_SESSION,
       running: true,
       // Auto-restart applies to the main channels session too; key it by the
-      // orchestrator id (autoRestartId) so the UI PUTs to the right store entry.
+      // orchestrator id (autoRestartId, part of idCore) so the UI PUTs to the
+      // right store entry.
       autoRestart: readAutoRestartConfig(MAIN_AGENT_ID),
-      autoRestartId: MAIN_AGENT_ID,
       contextTokens: readContextTokensFromProjectDir(PROJECT_ROOT),
       hasTelegram: tg.hasTelegram,
       hasDiscord: dc.hasDiscord,
       hasSlack: sl.hasSlack,
       telegramBotUsername: tg.botUsername,
-      role: 'main',
       personality: soulSection,
       claudeMd,
       soulMd,

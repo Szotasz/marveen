@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { execSync, execFileSync, spawn } from 'node:child_process'
 import { resolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, PROJECT_ROOT, RESPAWN_ENABLED } from '../config.js'
+import { MAIN_AGENT_ID, SERVICE_ID, BOT_NAME, CHANNEL_PROVIDER, PROJECT_ROOT, RESPAWN_ENABLED } from '../config.js'
 import { agentDir, listAgentNames, readAgentChannelProvider } from './agent-config.js'
 import {
   agentHasChannel,
@@ -570,7 +570,7 @@ export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
       execFileSync('/bin/launchctl', ['unload', MAIN_CHANNELS_PLIST], { timeout: 5000 })
       execFileSync('/bin/sleep', ['2'], { timeout: 4000 })
       execFileSync('/bin/launchctl', ['load', MAIN_CHANNELS_PLIST], { timeout: 5000 })
-      logger.warn(`Hard restart: launchctl reload of com.${MAIN_AGENT_ID}.channels`)
+      logger.warn(`Hard restart: launchctl reload of com.${SERVICE_ID}.channels`)
       marveenLastHardRestart = Date.now()
       writeRespawnStamp() // coordinate with the systemd-timer watchdog
       return { ok: true }
@@ -847,8 +847,8 @@ function handleMarveenDown(): void {
     marveenDownState.lastAlertAt = now
     logger.error({ provider: providerLabel }, 'Marveen channel plugin still down after hard restart -- giving up auto-recovery')
     const serviceCmd = process.platform === 'linux'
-      ? `\`systemctl --user status ${MAIN_AGENT_ID}-channels\``
-      : `\`launchctl list | grep ${MAIN_AGENT_ID}\``
+      ? `\`systemctl --user status ${SERVICE_ID}-channels\``
+      : `\`launchctl list | grep ${SERVICE_ID}\``
     // Issue #189: a plain `tmux attach -t ...` may itself fail with "Permission
     // denied" when the operator is running it from another tmux session. Prefix
     // with `unset TMUX` so the hint works in both nested and non-nested cases.

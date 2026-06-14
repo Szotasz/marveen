@@ -8027,7 +8027,12 @@ async function loadOverview() {
   }
 }
 
-// Brand mark: use main agent's avatar if available
+// Brand mark + product-brand chrome: pull the configured brand from
+// /api/marveen and apply it to the dashboard chrome (tab title, mobile topbar,
+// sidebar name, updates subtitle). brandName is the product/system name and is
+// distinct from the main agent's display name; the backend defaults brandName to
+// BOT_NAME, so a brand-unaware install keeps showing the agent name. If the
+// field is absent (legacy backend) the existing HTML default text is kept.
 async function initSidebarBrand() {
   try {
     const img = document.createElement('img')
@@ -8039,8 +8044,16 @@ async function initSidebarBrand() {
     const res = await fetch('/api/marveen')
     if (res.ok) {
       const m = await res.json()
-      const name = document.getElementById('sidebarBrandName')
-      if (name && m.name) name.textContent = m.name
+      const brand = m.brandName || m.name
+      if (brand) {
+        document.title = brand
+        const topbar = document.getElementById('mobileTopbarTitle')
+        if (topbar) topbar.textContent = brand
+        const name = document.getElementById('sidebarBrandName')
+        if (name) name.textContent = brand
+        const subtitle = document.getElementById('updatesSubtitle')
+        if (subtitle) subtitle.textContent = `${brand} verzió ellenőrzés`
+      }
     }
   } catch {}
 }
