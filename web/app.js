@@ -8905,6 +8905,7 @@ populateAvatarGrid()
 loadMemAgents()
 loadOverview()
 loadAvailableModels()
+renderTuLimitBars()  // populate the sidebar token widget on startup (not only after visiting Token Monitor)
 
 // "DeepSeek API kulcs hozzáadása" link az agent edit panel-en --
 // a Vault page-re visz, ahol a felhasználó egy DEEPSEEK_API_KEY
