@@ -828,11 +828,16 @@ async function showCardDetail(card) {
     if (canModifyParent) {
       // Build the parent-select dropdown: null option + all top-level tasks
       parentSelect.innerHTML = '<option value="">Üres (nincs szülő)</option>'
-      const availableParents = kanbanCards.filter(c => !c.parent_id && c.id !== card.id && !c.archived_at)
+      const availableParents = kanbanCards.filter(c =>
+        !c.parent_id && c.id !== card.id && !c.archived_at &&
+        (c.status === 'planned' || c.status === 'in_progress' || c.status === 'waiting')
+      )
       for (const p of availableParents) {
         const opt = document.createElement('option')
         opt.value = p.id
-        opt.textContent = (p.seq != null ? `#${p.seq} ` : '') + p.title
+        const fullLabel = (p.seq != null ? `#${p.seq} ` : '') + p.title
+        opt.title = fullLabel
+        opt.textContent = fullLabel.length > 33 ? fullLabel.slice(0, 32) + '…' : fullLabel
         if (p.id === card.parent_id) opt.selected = true
         parentSelect.appendChild(opt)
       }
