@@ -93,33 +93,35 @@ CREATE TABLE token_usage_cursors (
 
 ## claude.ai usage scraper
 
-The dashboard fetches **real usage percentages** from claude.ai/settings/usage via a Playwright-based headless scraper (`src/web/claude-usage-scraper.ts`). This shows the same session and weekly percentages you see on the claude.ai settings page — not local token estimates.
+The dashboard fetches **real usage percentages** from claude.ai/settings/usage by connecting to an already-running Chrome instance via the Chrome DevTools Protocol (CDP). This bypasses bot-detection because we drive the user's own Chrome (already logged in) rather than launching a separate browser.
 
 ### Setup (one-time)
 
-1. Install the Playwright Chromium browser binary (not included in the npm package):
-   ```bash
-   npx playwright install chromium
-   ```
+Start Chrome with the remote debugging port enabled. The easiest way on macOS:
 
-2. On first use, run a headed scrape so you can log in to claude.ai:
-   ```bash
-   CLAUDE_USAGE_HEADED=1 node -e "import('./dist/web/claude-usage-scraper.js').then(m => m.scrapeClaudeUsage(true))"
-   ```
-   A browser window opens. Sign in to claude.ai. The session is saved to `~/.claude/claude-usage-profile/` (gitignored) and all future scrapes run headless.
+```bash
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --remote-debugging-port=9222 \
+  --profile-directory="Default"
+```
+
+You can leave this running as a background instance. Chrome must be open and logged in to claude.ai for the scraper to work.
+
+Optional: override the default endpoint with `CLAUDE_USAGE_CDP_URL` (default: `http://127.0.0.1:9222`).
 
 ### How it works
 
-- The scraper runs **every 15 minutes** as a background poller inside `src/web.ts` and on startup (10-second delay).
-- Results are cached in `store/claude-usage.json` (gitignored, 14-min TTL).
-- The dashboard `/api/claude-usage` endpoint serves the cached data; `/api/claude-usage/refresh` triggers a one-off background rescrape.
-- If not logged in (headless), the scraper returns `null` and the dashboard shows "data not available."
+- The scraper connects to Chrome via CDP, finds or opens a tab at `/settings/usage`, waits for the `[role="progressbar"]` elements (this also covers any Cloudflare challenge that may run first), then extracts the two percentages and reset times.
+- It runs **every 15 minutes** as a background poller in `src/web.ts`, plus once at startup (10-second delay).
+- Results are cached in `store/claude-usage.json` (gitignored, 14-min TTL) so a dashboard restart does not trigger an immediate rescrape.
+- `/api/claude-usage` serves cached data; `/api/claude-usage/refresh` triggers a one-off rescrape.
+- If Chrome is not reachable at the CDP endpoint, the scraper logs an info message and returns null — no crash, no error shown to users.
 
 ### Security
 
 - No credentials, cookies, or session tokens are written to code, logs, or git.
-- The persistent Playwright profile lives at `~/.claude/claude-usage-profile/` (outside the project root, gitignored by pattern).
-- `store/claude-usage.json` is also gitignored.
+- The scraper only reads the usage page; it never modifies Chrome's profile.
+- `store/claude-usage.json` is gitignored.
 
 ---
 

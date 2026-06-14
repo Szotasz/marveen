@@ -303,15 +303,15 @@ export function startWebServer(port = 3420): http.Server {
   collectTokenUsage().catch(err => logger.warn({ err }, 'Startup token usage collection failed'))
   logger.info('Token usage auto-collect started (1h poll + startup)')
 
-  // Poll claude.ai/settings/usage every 15 minutes for real-time usage %.
-  // headless=false would require an interactive session; we always run headless
-  // here. If not logged in the scraper returns null and the cache stays empty.
+  // Poll claude.ai/settings/usage every 15 minutes via CDP.
+  // If Chrome isn't running with --remote-debugging-port=9222 the scraper
+  // returns null silently and the cache stays empty.
   setInterval(() => {
-    scrapeClaudeUsage(false).catch(err => logger.warn({ err }, 'claude-usage poll failed'))
+    scrapeClaudeUsage().catch(err => logger.warn({ err }, 'claude-usage poll failed'))
   }, 15 * 60 * 1000)
-  // Stagger startup scrape by 10s so the server is fully up before Playwright launches.
+  // Stagger startup scrape by 10s so the server is fully up before connecting.
   setTimeout(() => {
-    scrapeClaudeUsage(false).catch(err => logger.warn({ err }, 'claude-usage startup scrape failed'))
+    scrapeClaudeUsage().catch(err => logger.warn({ err }, 'claude-usage startup scrape failed'))
   }, 10000)
 
   // NOTE: startMcpListChecker() is intentionally NOT called here.

@@ -1,27 +1,31 @@
 /**
- * Headless Playwright scraper for claude.ai/settings/usage.
+ * CDP-based scraper for claude.ai/settings/usage.
  *
- * Uses a persistent browser profile so the user only has to sign in once
- * (headed mode). Subsequent calls run headless against the stored session.
+ * Connects to an already-running Chrome instance via the Chrome DevTools
+ * Protocol (CDP) instead of launching a separate browser. This bypasses
+ * Cloudflare bot-detection because we drive the user's own, already-logged-in
+ * Chrome profile.
+ *
+ * Prerequisites:
+ *   1. npx playwright install chromium   (only needed for other Playwright use;
+ *      the CDP path uses the user's real Chrome, not Playwright's Chromium)
+ *   2. Start Chrome with --remote-debugging-port=9222
  *
  * SECURITY: no credentials, cookies, or session tokens are written to this
- * file or to any log. The persistent profile directory is gitignored and
- * lives outside the project root.
+ * file or to any log. The user's Chrome profile is never touched by this code.
  */
 
 import { chromium } from 'playwright'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import type { Page } from 'playwright'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
 
 const USAGE_URL = 'https://claude.ai/settings/usage'
 
-// Profile dir: env override or ~/.claude/claude-usage-profile (gitignored)
-function profileDir(): string {
-  return process.env.CLAUDE_USAGE_PROFILE_DIR ?? join(homedir(), '.claude', 'claude-usage-profile')
-}
+// CDP endpoint: env override or default debug port
+const cdpUrl = (): string => process.env.CLAUDE_USAGE_CDP_URL ?? 'http://127.0.0.1:9222'
 
 const CACHE_PATH = join(STORE_DIR, 'claude-usage.json')
 const CACHE_TTL_MS = 14 * 60 * 1000  // 14 minutes — just under the 15-min poll interval
@@ -54,56 +58,61 @@ function writeUsageCache(data: ClaudeUsageData): void {
   }
 }
 
-/** Parse a percentage string like "35%" → 35. Returns null if unparseable. */
-function parsePct(s: string | null | undefined): number | null {
-  if (!s) return null
-  const m = s.match(/(\d+(?:\.\d+)?)/)
-  if (!m) return null
-  const v = parseFloat(m[1])
-  return isNaN(v) ? null : Math.min(100, Math.max(0, v))
-}
-
 /**
- * Scrape usage percentages and reset times from claude.ai/settings/usage.
- * Returns null if not logged in or page structure has changed.
+ * Scrape usage percentages and reset times from claude.ai/settings/usage
+ * by connecting to an already-running Chrome via CDP.
  *
- * headed=true opens a visible browser window (for first-time login).
+ * Returns null if Chrome is not running on the debug port, if the page
+ * structure has changed, or if any other error occurs.
  */
-export async function scrapeClaudeUsage(headed = false): Promise<ClaudeUsageData | null> {
-  const dir = profileDir()
-  mkdirSync(dir, { recursive: true })
+export async function scrapeClaudeUsage(): Promise<ClaudeUsageData | null> {
+  const endpoint = cdpUrl()
 
-  const browser = await chromium.launchPersistentContext(dir, {
-    headless: !headed,
-    args: ['--no-sandbox', '--disable-blink-features=AutomationControlled'],
-  })
+  // Try to connect — fail gracefully if Chrome isn't running with --remote-debugging-port
+  let browser: Awaited<ReturnType<typeof chromium.connectOverCDP>>
+  try {
+    browser = await chromium.connectOverCDP(endpoint)
+  } catch {
+    logger.info(
+      `claude-usage: Chrome not reachable at ${endpoint} — ` +
+      'start Chrome with --remote-debugging-port=9222 (or set CLAUDE_USAGE_CDP_URL)',
+    )
+    return null
+  }
+
+  let ownedPage = false
+  let page: Page | null = null
 
   try {
-    const page = browser.pages()[0] ?? await browser.newPage()
+    const contexts = browser.contexts()
+    if (!contexts.length) {
+      logger.warn('claude-usage: no browser context available via CDP')
+      return null
+    }
+    const ctx = contexts[0]
 
-    await page.goto(USAGE_URL, { waitUntil: 'domcontentloaded', timeout: 30000 })
-
-    const onLoginPage = () => page.url().includes('/login') || page.url().includes('/auth')
-
-    if (onLoginPage()) {
-      if (!headed) {
-        // Headless: no user present to log in — bail immediately.
-        logger.info('claude-usage: not logged in (headless), skipping')
-        return null
-      }
-      // Headed: wait up to 5 minutes for the user to complete login and land
-      // on the usage page. The browser window stays open so they can sign in.
-      logger.info('claude-usage: not logged in — waiting for user to sign in (headed, up to 5 min)')
-      try {
-        await page.waitForURL('**/settings/usage**', { timeout: 5 * 60 * 1000 })
-      } catch {
-        logger.warn('claude-usage: login wait timed out after 5 minutes')
-        return null
+    // Reuse an existing /settings/usage tab if one is already open
+    for (const p of ctx.pages()) {
+      if (p.url().includes('/settings/usage')) {
+        page = p
+        break
       }
     }
 
-    // Allow JS to render the usage data after navigation settles
-    await page.waitForTimeout(3000)
+    // Otherwise open a new tab in the user's existing context
+    if (!page) {
+      page = await ctx.newPage()
+      ownedPage = true
+    }
+
+    // Navigate to usage page if not already there
+    if (!page.url().includes('/settings/usage')) {
+      await page.goto(USAGE_URL, { waitUntil: 'domcontentloaded', timeout: 30000 })
+    }
+
+    // Wait for the progress bars — this also covers any transient Cloudflare
+    // interstitial that runs before the real page content renders.
+    await page.waitForSelector('[role="progressbar"]', { timeout: 30000 })
 
     // --- Strategy 1: aria progressbar values ---
     const result = await page.evaluate(() => {
@@ -114,7 +123,7 @@ export async function scrapeClaudeUsage(headed = false): Promise<ClaudeUsageData
         return Math.round((parseFloat(now) / parseFloat(max)) * 100)
       }
 
-      function nearbyText(el: Element, radius = 200): string {
+      function nearbyText(el: Element): string {
         const parent = el.closest('[class]') ?? el.parentElement
         return parent?.textContent ?? ''
       }
@@ -133,10 +142,9 @@ export async function scrapeClaudeUsage(headed = false): Promise<ClaudeUsageData
         else if (weeklyPct == null) weeklyPct = pct
       }
 
-      // --- Strategy 2: text extraction ---
+      // --- Strategy 2: text extraction fallback ---
       if (sessionPct == null || weeklyPct == null) {
         const body = document.body.innerText
-        // Look for "X% used" or "X%" near section headings
         const sessionM = body.match(/current session[^0-9]*(\d+(?:\.\d+)?)\s*%/i)
           ?? body.match(/(\d+(?:\.\d+)?)\s*%[^]*?current session/i)
         const weeklyM = body.match(/weekly[^0-9]*(\d+(?:\.\d+)?)\s*%/i)
@@ -147,10 +155,9 @@ export async function scrapeClaudeUsage(headed = false): Promise<ClaudeUsageData
         if (weeklyPct == null && weeklyM) weeklyPct = parseFloat(weeklyM[1])
       }
 
-      // --- Reset times: look for countdown/reset text ---
+      // --- Reset times: parse countdown / "resets at HH:MM" text ---
       function parseResetMs(keyword: string): number {
         const body = document.body.innerText
-        // "Resets in 2h 15m" / "resets at HH:MM" / ISO date strings
         const re = new RegExp(keyword + '[^\\n]{0,120}reset[s]?[^\\n]{0,80}', 'i')
         const m = re.exec(body)
         const ctx = m ? m[0] : body
@@ -203,6 +210,10 @@ export async function scrapeClaudeUsage(headed = false): Promise<ClaudeUsageData
     logger.warn({ err }, 'claude-usage: scrape failed')
     return null
   } finally {
+    // Close only the page we opened; never close the user's browser.
+    if (page && ownedPage) await page.close().catch(() => {})
+    // On CDP connections Playwright's browser.close() only disconnects the
+    // session — it does NOT shut down the user's Chrome process.
     await browser.close()
   }
 }

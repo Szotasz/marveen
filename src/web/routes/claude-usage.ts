@@ -19,7 +19,7 @@ export async function tryHandleClaudeUsage(ctx: RouteContext): Promise<boolean> 
   if (path === '/api/claude-usage/refresh' && method === 'POST') {
     // Trigger a background scrape; respond immediately so the caller isn't blocked
     // on a 10+ second Playwright launch.
-    scrapeClaudeUsage(false).catch(err => logger.warn({ err }, 'claude-usage refresh failed'))
+    scrapeClaudeUsage().catch(err => logger.warn({ err }, 'claude-usage refresh failed'))
     json(res, { ok: true, message: 'refresh triggered' })
     return true
   }

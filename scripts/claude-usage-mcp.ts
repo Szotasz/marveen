@@ -4,20 +4,20 @@
  *
  * Exposes one tool: get_usage
  *   Returns: { sessionPct, weeklyPct, sessionResetAt, weeklyResetAt, fetchedAt }
- *   scraped from claude.ai/settings/usage using a persistent Playwright profile.
+ *   scraped from claude.ai/settings/usage via CDP (Chrome DevTools Protocol).
  *
  * Register in an agent's .mcp.json:
  *   "claude-usage": {
  *     "command": "node",
  *     "args": ["/abs/path/to/marveen/dist/scripts/claude-usage-mcp.js"],
- *     "env": { "CLAUDE_USAGE_PROFILE_DIR": "/abs/path/to/profile" }
+ *     "env": { "CLAUDE_USAGE_CDP_URL": "http://127.0.0.1:9222" }
  *   }
  *
- * First-time login: run with CLAUDE_USAGE_HEADED=1 to open a visible browser,
- * sign in once, then subsequent calls run headless.
+ * Prerequisites: Chrome must be running with --remote-debugging-port=9222.
+ * See docs/token-usage.md for setup instructions.
  *
  * SECURITY: no credentials, tokens or cookies are written to this file or
- * to any log output. The profile directory is gitignored.
+ * to any log output. The user's Chrome profile is never written to.
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
@@ -57,18 +57,20 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
 
   const forceRefresh = (req.params.arguments as Record<string, unknown>)?.force_refresh === true
-  const headed = process.env.CLAUDE_USAGE_HEADED === '1'
 
   let data = forceRefresh ? null : readUsageCache()
   if (!data) {
-    data = await scrapeClaudeUsage(headed)
+    data = await scrapeClaudeUsage()
   }
 
   if (!data) {
     return {
       content: [{
         type: 'text',
-        text: JSON.stringify({ error: 'not_available', message: 'claude.ai usage data unavailable — run with CLAUDE_USAGE_HEADED=1 to sign in' }),
+        text: JSON.stringify({
+          error: 'not_available',
+          message: 'claude.ai usage data unavailable — start Chrome with --remote-debugging-port=9222 (see docs/token-usage.md)',
+        }),
       }],
     }
   }

@@ -93,33 +93,35 @@ CREATE TABLE token_usage_cursors (
 
 ## claude.ai fogyasztás-scraper
 
-A dashboard **valós fogyasztási százalékokat** kér le a claude.ai/settings/usage oldalról egy Playwright alapú headless scraper segítségével (`src/web/claude-usage-scraper.ts`). Ugyanazokat a session és heti százalékokat mutatja, amelyek a claude.ai beállítások oldalán is láthatók - nem lokális tokenszámlálást.
+A dashboard **valós fogyasztási százalékokat** kér le a claude.ai/settings/usage oldalról a Chrome DevTools Protocol (CDP) segítségével, egy már futó Chrome példányhoz csatlakozva. Ez megkerüli a bot-védelmet, mivel a felhasználó saját, már bejelentkezett Chrome-ját vezérli ahelyett, hogy külön böngészőt indítana.
 
 ### Beállítás (egyszeri)
 
-1. Telepítsd a Playwright Chromium böngészőt (az npm csomag nem tartalmazza):
-   ```bash
-   npx playwright install chromium
-   ```
+Indítsd el a Chrome-ot remote debugging porttal. macOS-en a legegyszerűbb módja:
 
-2. Az első használatkor futtasd headed módban, hogy be tudj jelentkezni a claude.ai-ba:
-   ```bash
-   CLAUDE_USAGE_HEADED=1 node -e "import('./dist/web/claude-usage-scraper.js').then(m => m.scrapeClaudeUsage(true))"
-   ```
-   Megnyílik egy böngésző ablak. Jelentkezz be a claude.ai-ra. A session elmentődik a `~/.claude/claude-usage-profile/` mappába (gitignored), és ezután minden scrape headless módban fut.
+```bash
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --remote-debugging-port=9222 \
+  --profile-directory="Default"
+```
+
+Ezt háttérben futva hagyhatod. A Chrome-nak nyitva kell lennie és be kell lenni jelentkezve a claude.ai-ra.
+
+Opcionális: az alapértelmezett végpont (`http://127.0.0.1:9222`) felülírható a `CLAUDE_USAGE_CDP_URL` env változóval.
 
 ### Működés
 
-- A scraper **15 percenként** fut háttér pollerként a `src/web.ts`-ben, és indításkor is (10 másodperces késleltetéssel).
-- Az eredmény cache-elve van a `store/claude-usage.json` fájlban (gitignored, 14 perces TTL).
+- A scraper CDP-vel csatlakozik a Chrome-hoz, megkeresi vagy megnyitja a `/settings/usage` tabot, megvárja a `[role="progressbar"]` elemeket (ez a Cloudflare challenge-t is lefedi), majd kinyeri a két százalékot és a visszaállítási időket.
+- **15 percenként** fut háttér pollerként a `src/web.ts`-ben, indításkor is (10 másodperces késleltetéssel).
+- Az eredmény cache-elve van a `store/claude-usage.json` fájlban (gitignored, 14 perces TTL), így egy dashboard újraindítás nem vált ki azonnali újralekérést.
 - A `/api/claude-usage` végpont a cache-elt adatot adja vissza; a `/api/claude-usage/refresh` egyszeri háttér újralekérést indít.
-- Ha nincs bejelentkezve (headless), a scraper `null`-t ad vissza, a dashboard "adat nem elérhető" állapotot mutat.
+- Ha a Chrome nem érhető el a CDP végponton, a scraper info üzenetet logol és null-t ad vissza -- nem crashel, a felhasználónak nem jelez hibát.
 
 ### Biztonság
 
 - Hitelesítő adatok, sütik és session tokenek nem kerülnek kódba, logba vagy gitbe.
-- A Playwright profil a `~/.claude/claude-usage-profile/` mappában él (a projekt mappáján kívül, gitignored).
-- A `store/claude-usage.json` szintén gitignored.
+- A scraper csak olvas a usage oldalról, a Chrome profilját soha nem módosítja.
+- A `store/claude-usage.json` gitignored.
 
 ---
 
