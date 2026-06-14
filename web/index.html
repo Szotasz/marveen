@@ -1226,6 +1226,10 @@
       </div>
       <div class="modal-body">
         <div class="card-detail-meta" id="cardDetailMeta"></div>
+        <div class="meta-item" id="parentMetaItem" style="display:none">
+          <span class="meta-label">Szülő</span>
+          <select id="parentSelect" style="flex:1; width:100%; padding:5px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px" title="Szülő feladat módosítása"></select>
+        </div>
         <div class="card-detail-desc" id="cardDetailDesc"></div>
         <div class="card-detail-comments">
           <h4>Megjegyzések</h4>
@@ -1243,10 +1247,7 @@
             </div>
           </div>
         </div>
-        <div id="cardParentSection" style="display:none; margin-top:12px">
-          <h4>Szülő feladat</h4>
-          <div id="cardParentInfo" class="comment-item" style="cursor:pointer"></div>
-        </div>
+
         <div id="cardChildrenSection" style="display:none; margin-top:12px">
           <h4>Subtask-ok</h4>
           <div id="cardChildrenList" class="comments-list"></div>
@@ -1262,7 +1263,6 @@
           <button class="btn-secondary" id="cardEditBtn">Szerkesztés</button>
           <button class="btn-secondary" id="cardArchiveBtn">Archiválás</button>
           <button class="btn-danger" id="cardDeleteBtn">Törlés</button>
-          <select id="parentSelect" style="display:none; padding:5px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px" title="Szülő feladat módosítása"></select>
         </div>
       </div>
     </div>

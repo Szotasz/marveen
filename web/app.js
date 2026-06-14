@@ -814,50 +814,39 @@ async function showCardDetail(card) {
 
   document.getElementById('cardDetailDesc').textContent = card.description || ''
 
-  // #115: Parent section — shown for subtasks; dropdown to reparent/detach only in planned/waiting
-  const parentSection = document.getElementById('cardParentSection')
-  const parentInfoEl = document.getElementById('cardParentInfo')
+  // #115: Parent meta row — dropdown replaces the old read-only display; shown only when editable
+  const parentMetaItem = document.getElementById('parentMetaItem')
   const parentSelect = document.getElementById('parentSelect')
   const canModifyParent = card.status === 'planned' || card.status === 'waiting'
-  if (card.parent_id) {
-    const parentCard = kanbanCards.find(c => c.id === card.parent_id)
-    const parentSeq = parentCard?.seq != null ? `#${parentCard.seq} ` : ''
-    parentInfoEl.innerHTML = `<span>${parentSeq}${escapeHtml(parentCard?.title || card.parent_id)}</span>`
-    parentInfoEl.onclick = () => { if (parentCard) { closeModal(cardDetailOverlay); showCardDetail(parentCard) } }
-    parentSection.style.display = ''
-    if (canModifyParent) {
-      // Build the parent-select dropdown: null option + all top-level tasks
-      parentSelect.innerHTML = '<option value="">Üres (nincs szülő)</option>'
-      const availableParents = kanbanCards.filter(c =>
-        !c.parent_id && c.id !== card.id && !c.archived_at &&
-        (c.status === 'planned' || c.status === 'in_progress' || c.status === 'waiting')
-      )
-      for (const p of availableParents) {
-        const opt = document.createElement('option')
-        opt.value = p.id
-        const fullLabel = (p.seq != null ? `#${p.seq} ` : '') + p.title
-        opt.title = fullLabel
-        opt.textContent = fullLabel.length > 33 ? fullLabel.slice(0, 32) + '…' : fullLabel
-        if (p.id === card.parent_id) opt.selected = true
-        parentSelect.appendChild(opt)
-      }
-      parentSelect.style.display = ''
-      parentSelect.onchange = async () => {
-        const newParentId = parentSelect.value || null
-        const label = newParentId ? 'Szülő módosítva' : 'Szülő leválasztva'
-        const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}`, {
-          method: 'PUT', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...card, parent_id: newParentId }),
-        })
-        if (r.ok) { card.parent_id = newParentId; showToast(label); loadKanban(); showCardDetail(card) }
-        else showToast('Hiba a mentésnél')
-      }
-    } else {
-      parentSelect.style.display = 'none'
+  if (card.parent_id && canModifyParent) {
+    // Build the parent-select dropdown: null option + all top-level non-done tasks
+    parentSelect.innerHTML = '<option value="">Üres (nincs szülő)</option>'
+    const availableParents = kanbanCards.filter(c =>
+      !c.parent_id && c.id !== card.id && !c.archived_at &&
+      (c.status === 'planned' || c.status === 'in_progress' || c.status === 'waiting')
+    )
+    for (const p of availableParents) {
+      const opt = document.createElement('option')
+      opt.value = p.id
+      const fullLabel = (p.seq != null ? `#${p.seq} ` : '') + p.title
+      opt.title = fullLabel
+      opt.textContent = fullLabel.length > 33 ? fullLabel.slice(0, 32) + '…' : fullLabel
+      if (p.id === card.parent_id) opt.selected = true
+      parentSelect.appendChild(opt)
     }
+    parentSelect.onchange = async () => {
+      const newParentId = parentSelect.value || null
+      const label = newParentId ? 'Szülő módosítva' : 'Szülő leválasztva'
+      const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...card, parent_id: newParentId }),
+      })
+      if (r.ok) { card.parent_id = newParentId; showToast(label); loadKanban(); showCardDetail(card) }
+      else showToast('Hiba a mentésnél')
+    }
+    parentMetaItem.style.display = ''
   } else {
-    parentSection.style.display = 'none'
-    parentSelect.style.display = 'none'
+    parentMetaItem.style.display = 'none'
   }
 
   // Load comments
