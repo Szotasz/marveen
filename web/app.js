@@ -10383,9 +10383,8 @@ function renderTokenLimitBarsInto(innerEl, compact) {
 
   if (compact) {
     innerEl.innerHTML = `
-      <div style="font-size:11px;color:var(--text-secondary);margin-bottom:6px;display:flex;justify-content:space-between">
+      <div style="font-size:11px;color:var(--text-secondary);margin-bottom:6px">
         <span>claude.ai korlátok</span>
-        <span style="color:${color5h}">↻ ${sessionCountdown}</span>
       </div>
       <div style="margin-bottom:5px">
         <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px">
@@ -10395,6 +10394,7 @@ function renderTokenLimitBarsInto(innerEl, compact) {
         <div style="height:5px;border-radius:3px;background:var(--border);overflow:hidden">
           <div style="height:100%;width:${Math.min(100,sessionPct)}%;background:${color5h};border-radius:3px;transition:width .3s"></div>
         </div>
+        <div style="font-size:10px;color:var(--text-secondary);margin-top:1px">↻ ${sessionCountdown}</div>
       </div>
       <div>
         <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px">
@@ -10404,6 +10404,7 @@ function renderTokenLimitBarsInto(innerEl, compact) {
         <div style="height:5px;border-radius:3px;background:var(--border);overflow:hidden">
           <div style="height:100%;width:${Math.min(100,weeklyPct)}%;background:${colorW};border-radius:3px;transition:width .3s"></div>
         </div>
+        <div style="font-size:10px;color:var(--text-secondary);margin-top:1px">↻ ${weeklyCountdown}</div>
       </div>`
   } else {
     innerEl.innerHTML = `
