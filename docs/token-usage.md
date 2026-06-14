@@ -97,15 +97,16 @@ A dashboard **valós fogyasztási százalékokat** kér le a claude.ai/settings/
 
 ### Beállítás (egyszeri)
 
-Indítsd el a Chrome-ot remote debugging porttal. macOS-en a legegyszerűbb módja:
+Indítsd el a Chrome-ot **dedikált profillal** és remote debugging porttal. A Chrome 149+ biztonsági okokból figyelmen kívül hagyja a `--remote-debugging-port` flag-et az alapértelmezett profilon, ezért külön `--user-data-dir` szükséges.
 
 ```bash
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --remote-debugging-port=9222 \
-  --profile-directory="Default"
+  --user-data-dir="$HOME/.claude/chrome-cdp-profile" \
+  --no-first-run
 ```
 
-Ezt háttérben futva hagyhatod. A Chrome-nak nyitva kell lennie és be kell lenni jelentkezve a claude.ai-ra.
+Jelentkezz be a claude.ai-ra a megnyíló ablakban. A session a `~/.claude/chrome-cdp-profile/` mappában tárolódik és minden következő scrape felhasználja. Ezt a Chrome példányt háttérben futva hagyhatod.
 
 Opcionális: az alapértelmezett végpont (`http://127.0.0.1:9222`) felülírható a `CLAUDE_USAGE_CDP_URL` env változóval.
 

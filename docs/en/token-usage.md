@@ -97,15 +97,16 @@ The dashboard fetches **real usage percentages** from claude.ai/settings/usage b
 
 ### Setup (one-time)
 
-Start Chrome with the remote debugging port enabled. The easiest way on macOS:
+Start Chrome with a **dedicated profile** and the remote debugging port. Chrome 149+ ignores `--remote-debugging-port` on the default profile (security restriction), so a separate `--user-data-dir` is required.
 
 ```bash
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --remote-debugging-port=9222 \
-  --profile-directory="Default"
+  --user-data-dir="$HOME/.claude/chrome-cdp-profile" \
+  --no-first-run
 ```
 
-You can leave this running as a background instance. Chrome must be open and logged in to claude.ai for the scraper to work.
+Sign in to claude.ai in the window that opens. The session is stored in `~/.claude/chrome-cdp-profile/` and reused on every subsequent scrape. You can leave this Chrome instance running in the background.
 
 Optional: override the default endpoint with `CLAUDE_USAGE_CDP_URL` (default: `http://127.0.0.1:9222`).
 
