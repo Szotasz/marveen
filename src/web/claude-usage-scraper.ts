@@ -128,61 +128,36 @@ export async function scrapeClaudeUsage(): Promise<ClaudeUsageData | null> {
         return Math.round((parseFloat(now) / parseFloat(max)) * 100)
       }
 
-      // Walk up from a progressbar to find the section container that includes
-      // reset-time text. Scoping to each section's subtree is essential to avoid
-      // both sections matching the same "in Xh Ym" text from the body.
-      function getSectionText(el: Element): string {
-        let cur: Element | null = el
-        for (let i = 0; i < 8; i++) {
-          cur = cur?.parentElement ?? null
-          if (!cur) break
-          const txt = cur.textContent ?? ''
-          if (txt.length > 80 && /reset|session|week/i.test(txt)) return txt
-        }
-        return el.closest('[class]')?.textContent ?? document.body.innerText
+      // The reset-time strings live in a separate DOM branch from the
+      // progressbars (the section headers), so per-bar subtree walking is
+      // unreliable. Instead parse the two DISTINCT formats from the full body
+      // and assign by format type — they are mutually exclusive:
+      //   session: "Resets in 4 hr 41 min" (relative countdown)
+      //   weekly:  "Resets Tue 3:59 PM"   (weekday + clock time)
+      function parseSessionReset(text: string): number {
+        // tolerate h / hr / hour(s) and m / min / minute(s)
+        const m = text.match(/in\s+(\d+)\s*(?:h|hr|hours?)\b\s*(?:(\d+)\s*(?:m|min|minutes?)\b)?/i)
+        if (!m) return 0
+        const h = parseInt(m[1] || '0')
+        const min = parseInt(m[2] || '0')
+        return Date.now() + (h * 3600 + min * 60) * 1000
       }
-
-      // Parse a reset timestamp from a section's text.
-      // Session format: "Resets in 2h 15m"
-      // Weekly format:  "Resets Tue 3:59 PM"
-      function parseResetMs(text: string): number {
-        // "in Xh Ym" — relative countdown (session)
-        const inM = text.match(/in\s+(\d+)\s*h(?:ours?)?\s*(?:(\d+)\s*m(?:in)?)?/i)
-        if (inM) {
-          const h = parseInt(inM[1] || '0')
-          const min = parseInt(inM[2] || '0')
-          return Date.now() + (h * 3600 + min * 60) * 1000
-        }
-        // "Resets Mon 3:59 PM" — day-of-week + time (weekly)
+      function parseWeeklyReset(text: string): number {
         const dayNames = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
-        const dayM = text.match(/resets?\s+(sun|mon|tue|wed|thu|fri|sat)\w*\s+(\d{1,2}):(\d{2})\s*(AM|PM)?/i)
-        if (dayM) {
-          const targetDay = dayNames.indexOf(dayM[1].toLowerCase().slice(0, 3))
-          let h = parseInt(dayM[2])
-          const min = parseInt(dayM[3])
-          if (dayM[4]?.toUpperCase() === 'PM' && h < 12) h += 12
-          if (dayM[4]?.toUpperCase() === 'AM' && h === 12) h = 0
-          const now = new Date()
-          const t = new Date(now)
-          t.setHours(h, min, 0, 0)
-          let daysUntil = (targetDay - now.getDay() + 7) % 7
-          if (daysUntil === 0 && t.getTime() <= now.getTime()) daysUntil = 7
-          t.setDate(t.getDate() + daysUntil)
-          return t.getTime()
-        }
-        // "at HH:MM" fallback (today/tomorrow)
-        const atM = text.match(/at\s+(\d{1,2}):(\d{2})\s*(AM|PM)?/i)
-        if (atM) {
-          const now = new Date()
-          let h = parseInt(atM[1])
-          const min = parseInt(atM[2])
-          if (atM[3]?.toUpperCase() === 'PM' && h < 12) h += 12
-          if (atM[3]?.toUpperCase() === 'AM' && h === 12) h = 0
-          const t = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, min)
-          if (t.getTime() < now.getTime()) t.setDate(t.getDate() + 1)
-          return t.getTime()
-        }
-        return 0
+        const m = text.match(/resets?\s+(sun|mon|tue|wed|thu|fri|sat)\w*\s+(\d{1,2}):(\d{2})\s*(am|pm)?/i)
+        if (!m) return 0
+        const targetDay = dayNames.indexOf(m[1].toLowerCase().slice(0, 3))
+        let h = parseInt(m[2])
+        const min = parseInt(m[3])
+        if (m[4]?.toUpperCase() === 'PM' && h < 12) h += 12
+        if (m[4]?.toUpperCase() === 'AM' && h === 12) h = 0
+        const now = new Date()
+        const t = new Date(now)
+        t.setHours(h, min, 0, 0)
+        let daysUntil = (targetDay - now.getDay() + 7) % 7
+        if (daysUntil === 0 && t.getTime() <= now.getTime()) daysUntil = 7
+        t.setDate(t.getDate() + daysUntil)
+        return t.getTime()
       }
 
       const bars = Array.from(document.querySelectorAll('[role="progressbar"]'))
@@ -213,13 +188,12 @@ export async function scrapeClaudeUsage(): Promise<ClaudeUsageData | null> {
         if (weeklyPct == null && weeklyM) weeklyPct = parseFloat(weeklyM[1])
       }
 
-      // Parse reset times from each section's own DOM subtree, NOT from the
-      // full body, to prevent the session "in Xh Ym" from bleeding into the
-      // weekly parse (which uses a different format: "Resets Tue 3:59 PM").
-      const sessionText = sessionBar ? getSectionText(sessionBar) : document.body.innerText
-      const weeklyText = weeklyBar ? getSectionText(weeklyBar) : document.body.innerText
-      const sessionResetAt = parseResetMs(sessionText) || (Date.now() + 5 * 3600 * 1000)
-      const weeklyResetAt = parseResetMs(weeklyText) || (Date.now() + 7 * 24 * 3600 * 1000)
+      // Reset times: parse each distinct format from the full body. The
+      // formats don't collide, so no DOM scoping is needed (and the reset
+      // text isn't inside the progressbar's subtree anyway).
+      const body2 = document.body.innerText
+      const sessionResetAt = parseSessionReset(body2) || (Date.now() + 5 * 3600 * 1000)
+      const weeklyResetAt = parseWeeklyReset(body2) || (Date.now() + 7 * 24 * 3600 * 1000)
 
       return { sessionPct, weeklyPct, sessionResetAt, weeklyResetAt }
     })
