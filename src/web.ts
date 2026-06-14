@@ -21,6 +21,7 @@ import { startStuckToolCallWatcher } from './web/stuck-tool-call-watcher.js'
 import { startReauthHealer } from './web/reauth-healer.js'
 import { startAutoRestartRunner } from './web/auto-restart-runner.js'
 import { collectTokenUsage } from './web/token-usage.js'
+import { scrapeClaudeUsage } from './web/claude-usage-scraper.js'
 import { logger } from './logger.js'
 import { tryHandleProfiles } from './web/routes/profiles.js'
 import { tryHandleMessages } from './web/routes/messages.js'
@@ -51,6 +52,7 @@ import { tryHandleIdeas } from './web/routes/ideas.js'
 import { tryHandleToolLog } from './web/routes/tool-log.js'
 import { tryHandleSettings } from './web/routes/settings.js'
 import { tryHandleAuditLog } from './web/routes/audit-log.js'
+import { tryHandleClaudeUsage } from './web/routes/claude-usage.js'
 import { tryHandleStatic } from './web/routes/static.js'
 import type { RouteContext } from './web/routes/types.js'
 
@@ -165,6 +167,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleStatus(routeCtx)) return
       if (await tryHandleAutonomy(routeCtx)) return
       if (await tryHandleTokenUsage(routeCtx)) return
+      if (await tryHandleClaudeUsage(routeCtx)) return
       if (await tryHandleIdeas(routeCtx)) return
       if (await tryHandleToolLog(routeCtx)) return
       if (await tryHandleSettings(routeCtx)) return
@@ -299,6 +302,17 @@ export function startWebServer(port = 3420): http.Server {
   }, 60 * 60 * 1000)
   collectTokenUsage().catch(err => logger.warn({ err }, 'Startup token usage collection failed'))
   logger.info('Token usage auto-collect started (1h poll + startup)')
+
+  // Poll claude.ai/settings/usage every 15 minutes for real-time usage %.
+  // headless=false would require an interactive session; we always run headless
+  // here. If not logged in the scraper returns null and the cache stays empty.
+  setInterval(() => {
+    scrapeClaudeUsage(false).catch(err => logger.warn({ err }, 'claude-usage poll failed'))
+  }, 15 * 60 * 1000)
+  // Stagger startup scrape by 10s so the server is fully up before Playwright launches.
+  setTimeout(() => {
+    scrapeClaudeUsage(false).catch(err => logger.warn({ err }, 'claude-usage startup scrape failed'))
+  }, 10000)
 
   // NOTE: startMcpListChecker() is intentionally NOT called here.
   //

@@ -70,3 +70,8 @@ scripts/support-mail/no-support-reply.html
 # Python bytecode cache
 __pycache__/
 *.pyc
+
+# claude.ai usage scraper: persistent browser profile and usage cache
+# These contain session cookies and real-time usage data — never commit.
+store/claude-usage.json
+claude-usage-profile/

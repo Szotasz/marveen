@@ -9852,7 +9852,7 @@ async function loadTokenUsage() {
   const timeline = await tlRes.json()
   renderTuTimeline(timeline, agent)
   renderTuBudgetCards()
-  renderTuLimitBars()
+  renderTuLimitBars()  // async, non-blocking
 
   tuDetailSearch = ''
   const searchEl = document.getElementById('tuSearchInput')
@@ -10328,125 +10328,153 @@ function renderTuBudgetCards() {
 }
 
 // --- Token limit progress bars (shared component: #tuLimitBarsInner + #sidebarTokenWidget) ---
-// Limits are persisted in localStorage so the user can tune them to match their subscription.
-const TU_LIMIT_5H_DEFAULT = 5_000_000
-const TU_LIMIT_WEEKLY_DEFAULT = 100_000_000
+// Real usage data comes from /api/claude-usage (scrapes claude.ai/settings/usage via Playwright).
+// If data is unavailable (not logged in / scrape failed) we show an explicit "not available" state
+// instead of a potentially misleading local estimate.
 
-function tuGetLimits() {
-  return {
-    limit5h: parseInt(localStorage.getItem('tu_limit_5h') || '') || TU_LIMIT_5H_DEFAULT,
-    limitWeekly: parseInt(localStorage.getItem('tu_limit_weekly') || '') || TU_LIMIT_WEEKLY_DEFAULT,
-  }
+let tuUsageData = null  // { sessionPct, weeklyPct, sessionResetAt, weeklyResetAt } or null
+
+async function tuFetchUsageData() {
+  try {
+    const r = await fetch('/api/claude-usage')
+    if (!r.ok) return
+    const d = await r.json()
+    tuUsageData = d.available ? d : null
+  } catch { /* ignore */ }
 }
 
-function tuFormat5hCountdown() {
-  const now = Date.now()
-  const windowMs = 5 * 3600 * 1000
-  const windowEnd = Math.ceil(now / windowMs) * windowMs
-  const msLeft = windowEnd - now
+function tuFormatCountdown(resetAtMs) {
+  if (!resetAtMs) return '--'
+  const msLeft = Math.max(0, resetAtMs - Date.now())
   const h = Math.floor(msLeft / 3600000)
   const m = Math.floor((msLeft % 3600000) / 60000)
-  const s = Math.floor((msLeft % 60000) / 1000)
-  return h > 0 ? `${h} ó ${m.toString().padStart(2,'0')} p` : `${m} p ${s.toString().padStart(2,'0')} mp`
+  return h > 0 ? `${h} ó ${m.toString().padStart(2, '0')} p` : `${m} p`
 }
 
 // Renders the content of a token-limit bar block into `innerEl`.
 // compact=true → sidebar mini version; compact=false → full card version.
 function renderTokenLimitBarsInto(innerEl, compact) {
-  const cur5h = tuChartState?.win5h?.length
-    ? tuChartState.win5h[tuChartState.win5h.length - 1].cumulative : 0
-  const curWeekly = tuChartState?.winWeekly?.length
-    ? tuChartState.winWeekly[tuChartState.winWeekly.length - 1].cumulative : 0
-  const { limit5h, limitWeekly } = tuGetLimits()
-  const pct5h = Math.min(100, limit5h > 0 ? Math.round(cur5h / limit5h * 100) : 0)
-  const pctWeekly = Math.min(100, limitWeekly > 0 ? Math.round(curWeekly / limitWeekly * 100) : 0)
-  const countdown = tuFormat5hCountdown()
-  const color5h = pct5h >= 90 ? '#ef4444' : pct5h >= 70 ? '#f59e0b' : '#06b6d4'
-  const colorW = pctWeekly >= 90 ? '#ef4444' : pctWeekly >= 70 ? '#f59e0b' : '#8b5cf6'
+  if (!tuUsageData) {
+    if (compact) {
+      innerEl.innerHTML = `<div style="font-size:11px;color:var(--text-secondary);text-align:center;padding:4px 0">
+        Token limit adat nem elérhető.<br>
+        <button class="btn-link" id="tuUsageLoginBtn" style="font-size:11px">Bejelentkezés →</button>
+      </div>`
+      innerEl.querySelector('#tuUsageLoginBtn')?.addEventListener('click', triggerUsageLogin)
+    } else {
+      innerEl.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <h3 style="margin:0">Fogyasztási korlátok</h3>
+        </div>
+        <div style="color:var(--text-secondary);font-size:13px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <span>Adat nem elérhető — a claude.ai session nincs bejelentkezve.</span>
+          <button class="btn-secondary btn-compact" id="tuUsageLoginBtnFull">Bejelentkezés (headed)</button>
+        </div>`
+      innerEl.querySelector('#tuUsageLoginBtnFull')?.addEventListener('click', triggerUsageLogin)
+    }
+    return
+  }
+
+  const { sessionPct, weeklyPct, sessionResetAt, weeklyResetAt } = tuUsageData
+  const sessionCountdown = tuFormatCountdown(sessionResetAt)
+  const weeklyCountdown = tuFormatCountdown(weeklyResetAt)
+  const color5h = sessionPct >= 90 ? '#ef4444' : sessionPct >= 70 ? '#f59e0b' : '#06b6d4'
+  const colorW = weeklyPct >= 90 ? '#ef4444' : weeklyPct >= 70 ? '#f59e0b' : '#8b5cf6'
 
   if (compact) {
     innerEl.innerHTML = `
       <div style="font-size:11px;color:var(--text-secondary);margin-bottom:6px;display:flex;justify-content:space-between">
-        <span>Token korlátok</span>
-        <span style="color:${color5h}">↻ ${countdown}</span>
+        <span>claude.ai korlátok</span>
+        <span style="color:${color5h}">↻ ${sessionCountdown}</span>
       </div>
       <div style="margin-bottom:5px">
         <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px">
           <span style="color:var(--text-secondary)">Aktuális session</span>
-          <span style="color:${color5h};font-weight:600">${pct5h}%</span>
+          <span style="color:${color5h};font-weight:600">${sessionPct}%</span>
         </div>
         <div style="height:5px;border-radius:3px;background:var(--border);overflow:hidden">
-          <div style="height:100%;width:${pct5h}%;background:${color5h};border-radius:3px;transition:width .3s"></div>
+          <div style="height:100%;width:${Math.min(100,sessionPct)}%;background:${color5h};border-radius:3px;transition:width .3s"></div>
         </div>
-        <div style="font-size:10px;color:var(--text-secondary);margin-top:1px">${tuFormatTokens(cur5h)} / ${tuFormatTokens(limit5h)}</div>
       </div>
       <div>
         <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px">
-          <span style="color:var(--text-secondary)">Heti limit / összes modell</span>
-          <span style="color:${colorW};font-weight:600">${pctWeekly}%</span>
+          <span style="color:var(--text-secondary)">Heti / összes modell</span>
+          <span style="color:${colorW};font-weight:600">${weeklyPct}%</span>
         </div>
         <div style="height:5px;border-radius:3px;background:var(--border);overflow:hidden">
-          <div style="height:100%;width:${pctWeekly}%;background:${colorW};border-radius:3px;transition:width .3s"></div>
+          <div style="height:100%;width:${Math.min(100,weeklyPct)}%;background:${colorW};border-radius:3px;transition:width .3s"></div>
         </div>
-        <div style="font-size:10px;color:var(--text-secondary);margin-top:1px">${tuFormatTokens(curWeekly)} / ${tuFormatTokens(limitWeekly)}</div>
       </div>`
   } else {
     innerEl.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
         <h3 style="margin:0">Fogyasztási korlátok</h3>
-        <span style="font-size:13px;color:var(--text-secondary)">5h ablak visszaáll: <strong style="color:${color5h}">${countdown}</strong></span>
+        <button class="btn-secondary btn-compact" id="tuUsageRefreshBtn">↻ Frissítés</button>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
         <div>
           <div style="display:flex;justify-content:space-between;margin-bottom:4px">
             <span style="font-size:13px;font-weight:600">Aktuális session</span>
-            <span style="font-size:13px;color:${color5h};font-weight:700">${pct5h}%</span>
+            <span style="font-size:13px;color:${color5h};font-weight:700">${sessionPct}%</span>
           </div>
           <div style="height:10px;border-radius:5px;background:var(--border);overflow:hidden;margin-bottom:4px">
-            <div style="height:100%;width:${pct5h}%;background:${color5h};border-radius:5px;transition:width .4s ease"></div>
+            <div style="height:100%;width:${Math.min(100,sessionPct)}%;background:${color5h};border-radius:5px;transition:width .4s ease"></div>
           </div>
-          <div style="font-size:12px;color:var(--text-secondary)">${tuFormatTokens(cur5h)} / <button class="btn-link tu-edit-limit" data-key="tu_limit_5h" data-cur="${limit5h}" title="Korlát szerkesztése" style="font-size:12px">${tuFormatTokens(limit5h)}</button></div>
+          <div style="font-size:12px;color:var(--text-secondary)">Visszaáll: ${sessionCountdown}</div>
         </div>
         <div>
           <div style="display:flex;justify-content:space-between;margin-bottom:4px">
             <span style="font-size:13px;font-weight:600">Heti limit / összes modell</span>
-            <span style="font-size:13px;color:${colorW};font-weight:700">${pctWeekly}%</span>
+            <span style="font-size:13px;color:${colorW};font-weight:700">${weeklyPct}%</span>
           </div>
           <div style="height:10px;border-radius:5px;background:var(--border);overflow:hidden;margin-bottom:4px">
-            <div style="height:100%;width:${pctWeekly}%;background:${colorW};border-radius:5px;transition:width .4s ease"></div>
+            <div style="height:100%;width:${Math.min(100,weeklyPct)}%;background:${colorW};border-radius:5px;transition:width .4s ease"></div>
           </div>
-          <div style="font-size:12px;color:var(--text-secondary)">${tuFormatTokens(curWeekly)} / <button class="btn-link tu-edit-limit" data-key="tu_limit_weekly" data-cur="${limitWeekly}" title="Korlát szerkesztése" style="font-size:12px">${tuFormatTokens(limitWeekly)}</button></div>
+          <div style="font-size:12px;color:var(--text-secondary)">Visszaáll: ${weeklyCountdown}</div>
         </div>
       </div>`
 
-    innerEl.querySelectorAll('.tu-edit-limit').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const raw = prompt('Új korlát (tokenek száma):', btn.dataset.cur)
-        if (!raw) return
-        const v = parseInt(raw.replace(/[^0-9]/g, ''))
-        if (!Number.isFinite(v) || v <= 0) { showToast('Érvénytelen érték'); return }
-        localStorage.setItem(btn.dataset.key, String(v))
-        renderTuLimitBars()
-      })
+    innerEl.querySelector('#tuUsageRefreshBtn')?.addEventListener('click', async () => {
+      const btn = innerEl.querySelector('#tuUsageRefreshBtn')
+      if (btn) btn.textContent = '...'
+      await fetch('/api/claude-usage/refresh', { method: 'POST' })
+      await new Promise(r => setTimeout(r, 12000))  // wait for Playwright scrape
+      await tuFetchUsageData()
+      renderTuLimitBars()
     })
   }
 }
 
-function renderTuLimitBars() {
+async function triggerUsageLogin() {
+  const ok = confirm('Headless bejelentkezéshez nyiss egy terminált és futtasd:\n\nCLAUDE_USAGE_HEADED=1 node dist/scripts/claude-usage-mcp.js\n\nEz megnyitja a böngészőt, ahol bejelentkezhetsz.')
+  if (!ok) return
+  showToast('Futtasd a terminálban: CLAUDE_USAGE_HEADED=1 node dist/scripts/claude-usage-mcp.js')
+}
+
+async function renderTuLimitBars() {
+  await tuFetchUsageData()
+
   const cardInner = document.getElementById('tuLimitBarsInner')
   if (cardInner) renderTokenLimitBarsInto(cardInner, false)
 
   const sidebarEl = document.getElementById('sidebarTokenWidget')
   if (sidebarEl) {
-    if (!tuChartState) { sidebarEl.style.display = 'none'; return }
     sidebarEl.style.display = 'block'
     renderTokenLimitBarsInto(sidebarEl, true)
   }
 }
 
-// Refresh the countdown every 10 seconds while the page is visible.
-setInterval(() => {
-  if (tuChartState) renderTuLimitBars()
+// Refresh countdown text every 10 seconds; re-fetch data every 5 minutes.
+let tuLimitTickCount = 0
+setInterval(async () => {
+  tuLimitTickCount++
+  if (tuLimitTickCount % 30 === 0) await tuFetchUsageData()  // full fetch every 5 min
+  const cardInner = document.getElementById('tuLimitBarsInner')
+  if (cardInner && document.getElementById('tokenUsagePage') && !document.getElementById('tokenUsagePage').hidden) {
+    renderTokenLimitBarsInto(cardInner, false)
+  }
+  const sidebarEl = document.getElementById('sidebarTokenWidget')
+  if (sidebarEl && sidebarEl.style.display !== 'none') renderTokenLimitBarsInto(sidebarEl, true)
 }, 10000)
 
 let tuDetailData = []
