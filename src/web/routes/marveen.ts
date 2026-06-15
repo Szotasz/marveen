@@ -1,6 +1,10 @@
 import { existsSync, unlinkSync, copyFileSync, writeFileSync } from 'node:fs'
 import { join, extname } from 'node:path'
-import { PROJECT_ROOT, OWNER_NAME, BOT_NAME, BRAND_NAME, MAIN_AGENT_ID, CHANNEL_PROVIDER } from '../../config.js'
+import {
+  PROJECT_ROOT, OWNER_NAME, BOT_NAME, BRAND_NAME, MAIN_AGENT_ID, CHANNEL_PROVIDER,
+  KANBAN_AGING_WARN_H, KANBAN_AGING_CAUTION_H, KANBAN_AGING_CRITICAL_H,
+  KANBAN_AGING_WARN_COLOR, KANBAN_AGING_CAUTION_COLOR, KANBAN_AGING_CRITICAL_COLOR,
+} from '../../config.js'
 import { readMarveenTelegramConfig, readMarveenDiscordConfig, readMarveenSlackConfig, sendMarveenAvatarChange } from '../telegram.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
 import { readFileOr } from '../agent-config.js'
@@ -86,6 +90,14 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
       // CHANNEL_PROVIDER env-jébe pinneljük, hogy a UI ne hardcode-olt
       // 'telegram'-mal induljon.
       channelProvider: CHANNEL_PROVIDER,
+      kanbanAging: {
+        warnH: KANBAN_AGING_WARN_H,
+        cautionH: KANBAN_AGING_CAUTION_H,
+        criticalH: KANBAN_AGING_CRITICAL_H,
+        warnColor: KANBAN_AGING_WARN_COLOR,
+        cautionColor: KANBAN_AGING_CAUTION_COLOR,
+        criticalColor: KANBAN_AGING_CRITICAL_COLOR,
+      },
     })
     return true
   }

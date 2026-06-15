@@ -83,6 +83,15 @@ export const SERVICE_ID = env['SERVICE_ID'] ?? MAIN_AGENT_ID
 export const WEB_PORT = parseInt(env['WEB_PORT'] ?? '3420', 10)
 
 export const WEB_HOST = env['WEB_HOST'] ?? '127.0.0.1'
+
+// Kanban card aging visual thresholds (hours since last update) and colours.
+// Override per-install via .env; defaults match the design spec (24/72/168h).
+export const KANBAN_AGING_WARN_H = parseInt(env['KANBAN_AGING_WARN_H'] ?? '24', 10)
+export const KANBAN_AGING_CAUTION_H = parseInt(env['KANBAN_AGING_CAUTION_H'] ?? '72', 10)
+export const KANBAN_AGING_CRITICAL_H = parseInt(env['KANBAN_AGING_CRITICAL_H'] ?? '168', 10)
+export const KANBAN_AGING_WARN_COLOR = env['KANBAN_AGING_WARN_COLOR'] ?? '#c9a000'
+export const KANBAN_AGING_CAUTION_COLOR = env['KANBAN_AGING_CAUTION_COLOR'] ?? '#d46b00'
+export const KANBAN_AGING_CRITICAL_COLOR = env['KANBAN_AGING_CRITICAL_COLOR'] ?? '#c53030'
 export const DASHBOARD_PUBLIC_URL = env['DASHBOARD_PUBLIC_URL'] ?? ''
 export const OLLAMA_URL = env['OLLAMA_URL'] ?? 'http://localhost:11434'
 

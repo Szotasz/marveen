@@ -530,6 +530,31 @@ function createCardEl(card, embeddedChildren = []) {
     ? `<span class="kanban-card-seq" style="font-family:monospace;font-size:11px;color:var(--muted);margin-right:5px">#${card.seq}</span>`
     : ''
 
+  // Card aging: left stripe + top-right badge based on hours since last update.
+  // Skipped for done cards. Config thresholds and colours come from window._marveen.kanbanAging.
+  let agingBadgeHtml = ''
+  const agingCfg = window._marveen?.kanbanAging
+  if (agingCfg && card.updated_at && card.status !== 'done') {
+    const hoursOld = (Date.now() / 1000 - card.updated_at) / 3600
+    let agingLevel = null
+    let agingColor = null
+    if (hoursOld >= agingCfg.criticalH) {
+      agingLevel = 'critical'; agingColor = agingCfg.criticalColor
+    } else if (hoursOld >= agingCfg.cautionH) {
+      agingLevel = 'caution'; agingColor = agingCfg.cautionColor
+    } else if (hoursOld >= agingCfg.warnH) {
+      agingLevel = 'warn'; agingColor = agingCfg.warnColor
+    }
+    if (agingLevel) {
+      const days = Math.floor(hoursOld / 24)
+      const ageLabel = days >= 1 ? `${days}d` : `${Math.floor(hoursOld)}h`
+      const exact = new Date(card.updated_at * 1000).toLocaleString('hu-HU')
+      agingBadgeHtml = `<span class="kanban-card-aging-badge kanban-card-aging-${agingLevel}" style="color:${agingColor}" title="Utoljára módosítva: ${exact}">⏳ ${ageLabel}</span>`
+      el.dataset.aging = agingLevel
+      el.style.setProperty('--card-aging-color', agingColor)
+    }
+  }
+
   // Embedded subtasks: rendered as mini-cards below a divider when the subtask
   // shares the same column as this parent card.
   let embeddedHtml = ''
@@ -552,6 +577,7 @@ function createCardEl(card, embeddedChildren = []) {
     <div class="kanban-card-actions">
       <button class="card-breakdown-btn" title="AI szétbont" aria-label="AI szétbont">⚡</button>
     </div>
+    ${agingBadgeHtml}
     <div class="kanban-subtask-badge" style="display:none"></div>
     ${embeddedHtml}
   `

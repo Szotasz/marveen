@@ -772,6 +772,30 @@ main {
 .kanban-card[data-priority="normal"] { border-left: 3px solid transparent; }
 .kanban-card[data-priority="low"] { border-left: 3px solid var(--border); }
 
+/* Card aging: left stripe overrides priority border when card is stale.
+   Colour is set as --card-aging-color via inline style by JS. */
+.kanban-card[data-aging] { border-left: 3px solid var(--card-aging-color); }
+
+/* Aging badge: hourglass + day/hour counter, top-right (left of the ⚡ action) */
+.kanban-card-aging-badge {
+  position: absolute;
+  top: 6px;
+  right: 28px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+@keyframes aging-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.kanban-card-aging-badge.kanban-card-aging-critical {
+  animation: aging-pulse 2.2s ease-in-out infinite;
+}
+
 /* === Card detail === */
 .card-detail-meta {
   display: flex;
