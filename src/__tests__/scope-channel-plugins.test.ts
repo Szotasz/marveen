@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { scopeChannelPlugins, CHANNEL_PLUGIN_IDS } from '../web/agent-process.js'
+import { scopeChannelPlugins, ownChannelProviderForScope, CHANNEL_PLUGIN_IDS } from '../web/agent-process.js'
 
 const TG = CHANNEL_PLUGIN_IDS.telegram     // telegram@claude-plugins-official
 const SL = CHANNEL_PLUGIN_IDS.slack        // slack-channel@marveen-marketplace
@@ -76,12 +76,82 @@ describe('main-agent telegram channel is protected from spawn-time scoping', () 
     // The scopeChannelPlugins call must sit inside an `if (name !== MAIN_AGENT_ID)`.
     const callIdx = SRC.indexOf('s.enabledPlugins = scopeChannelPlugins(')
     expect(callIdx).toBeGreaterThan(0)
-    const before = SRC.slice(Math.max(0, callIdx - 700), callIdx)
+    // Window spans the guard-open `if`, the settings read, and the explanatory
+    // comment block that precedes the call (~600 chars), so keep it generous.
+    const before = SRC.slice(Math.max(0, callIdx - 1500), callIdx)
     expect(before).toMatch(/if \(name !== MAIN_AGENT_ID\) \{/)
   })
 
   it('an explicit telegram provider KEEPS telegram enabled (so a telegram main/agent is never disabled)', () => {
     const out = scopeChannelPlugins('telegram')
     expect(out[TG]).toBe(true)
+  })
+})
+
+// The spawn-time enable decision must match the --channels launch gate: the
+// presence of a REAL own bot token in the agent's own channel .env -- NOT the
+// explicit channelProvider config field (null for every sub-agent). This fixes
+// the regression that left a legitimately-channelled sub-agent's plugin "truly
+// unreachable" (loaded by --channels but disabled in settings -> no bun poller,
+// no bot.pid) after any respawn.
+describe('ownChannelProviderForScope', () => {
+  it('own token + telegram provider -> telegram (plugin stays enabled)', () => {
+    expect(ownChannelProviderForScope(true, 'telegram')).toBe('telegram')
+  })
+
+  it('own token + slack provider -> slack', () => {
+    expect(ownChannelProviderForScope(true, 'slack')).toBe('slack')
+  })
+
+  it('NO own token (channel-less / legacy-fallback only) + telegram -> null', () => {
+    // A channel-less agent is defaulted to telegram and a legacy token marks
+    // hasChannel, but it has no OWN token -> must stay channel-less (dup-poller fix).
+    expect(ownChannelProviderForScope(false, 'telegram')).toBeNull()
+  })
+
+  it('no own token + null provider -> null', () => {
+    expect(ownChannelProviderForScope(false, null)).toBeNull()
+  })
+
+  it('own token but null resolved provider -> null (nothing to enable)', () => {
+    expect(ownChannelProviderForScope(true, null)).toBeNull()
+  })
+})
+
+// End-to-end of the spawn-time decision: the own-token gate feeds scopeChannelPlugins.
+describe('spawn-time enable decision (ownChannelProviderForScope + scopeChannelPlugins)', () => {
+  it('own-token telegram sub-agent KEEPS its plugin enabled (regression fix)', () => {
+    const out = scopeChannelPlugins(ownChannelProviderForScope(true, 'telegram'), { [TG]: true })
+    expect(out[TG]).toBe(true)
+    expect(out[SL]).toBe(false)
+    expect(out[DI]).toBe(false)
+  })
+
+  it('a stale telegram:true on a token-less agent is still forced OFF', () => {
+    const out = scopeChannelPlugins(ownChannelProviderForScope(false, 'telegram'), { [TG]: true })
+    expect(out[TG]).toBe(false)
+  })
+
+  it('own-token slack sub-agent enables ONLY slack', () => {
+    const out = scopeChannelPlugins(ownChannelProviderForScope(true, 'slack'), { [TG]: true })
+    expect(out[SL]).toBe(true)
+    expect(out[TG]).toBe(false)
+    expect(out[DI]).toBe(false)
+  })
+})
+
+// REGRESSION LOCK: the spawn-time scoping must feed scopeChannelPlugins from the
+// own-token gate (ownChannelProviderForScope), NOT from readAgentChannelProvider
+// (the explicit channelProvider field, null for every sub-agent), which disabled
+// the plugin for legitimately-channelled sub-agents.
+describe('spawn-time scoping is gated on the own token, not the explicit provider field', () => {
+  const SRC = readFileSync(join(__dirname, '../web/agent-process.ts'), 'utf-8')
+
+  it('the scopeChannelPlugins call argument is ownChannelProviderForScope(...)', () => {
+    const callIdx = SRC.indexOf('s.enabledPlugins = scopeChannelPlugins(')
+    expect(callIdx).toBeGreaterThan(0)
+    const arg = SRC.slice(callIdx, callIdx + 120)
+    expect(arg).toMatch(/ownChannelProviderForScope\(/)
+    expect(arg).not.toMatch(/readAgentChannelProvider\(/)
   })
 })

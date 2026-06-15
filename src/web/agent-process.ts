@@ -70,6 +70,25 @@ export function scopeChannelPlugins(
   return out
 }
 
+// Pure: which channel provider a sub-agent should ENABLE the plugin for at spawn.
+// The enable decision MUST match the --channels launch gate, which is the
+// presence of a REAL own bot token in the agent's own channel .env (hasOwnToken).
+// Spawn-time scoping originally keyed enabledPlugins on the EXPLICIT channelProvider
+// config field, but that field is null for every sub-agent (none set it) -- so a
+// sub-agent with a genuine own token still got its plugin forced off: --channels
+// loaded it, yet enabledPlugins:false made Claude Code refuse to register it (no
+// MCP entry, no bun poller, no bot.pid -> dead bot after any respawn). Gating on
+// the own token keeps the dup-poller intent: a channel-less agent (no own token,
+// only the legacy/global-token fallback that still marks hasChannel) returns null,
+// so scopeChannelPlugins(null) disables all three and it never fights the main
+// agent over the shared getUpdates slot.
+export function ownChannelProviderForScope(
+  hasOwnToken: boolean,
+  resolvedProvider: string | null,
+): string | null {
+  return hasOwnToken && resolvedProvider ? resolvedProvider : null
+}
+
 function resolveAgentProvider(name: string): ChannelProviderType {
   const perAgent = readAgentChannelProvider(name)
   if (perAgent === 'slack' || perAgent === 'telegram' || perAgent === 'discord') return perAgent
@@ -327,11 +346,17 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
       const settingsPath = join(agentDir(name), '.claude', 'settings.json')
       try {
         const s = JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown>
-        // Key on the EXPLICIT per-agent channelProvider (null when unset), NOT
-        // the resolved/defaulted agentProvider -- a channel-less sub-agent must
-        // disable telegram even though resolveAgentProvider defaulted it to it.
+        // Gate the enable decision on the SAME signal as the --channels launch
+        // flag: a real own bot token in this agent's channel .env (token, above).
+        // A genuine own-token agent enables its own provider's plugin; a channel-
+        // less agent (no own token, only the legacy/global fallback that still
+        // marks hasChannel) yields null -> all three disabled, so it never fights
+        // the main agent over the shared getUpdates slot. Keying on the explicit
+        // channelProvider config field instead (always null for sub-agents) was
+        // the regression that disabled the plugin for every legitimately-channelled
+        // sub-agent after a respawn (truly-unreachable plugin, no bun poller).
         s.enabledPlugins = scopeChannelPlugins(
-          readAgentChannelProvider(name),
+          ownChannelProviderForScope(!!token, agentProvider),
           s.enabledPlugins as Record<string, boolean> | undefined,
         )
         writeFileSync(settingsPath, JSON.stringify(s, null, 2))
