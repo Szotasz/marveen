@@ -53,6 +53,25 @@ A webes dashboard (`http://localhost:3420`) kártyaszerkesztőjének főbb visel
 - **Alfeladat hozzáadás:** szülő-kártyánál (nem alfeladatnál) „Új alfeladat" form jelenik meg. Az új alfeladat a szülő aktuális státuszát örökli. `done` státuszú szülőhöz nem lehet alfeladatot hozzáadni.
 - **Alfeladat törlés:** alfeladatok soránál Törlés gomb jelenik meg, megerősítő párbeszéddel. `done` státuszú szülőnél a gomb nem jelenik meg.
 - **Szülő-feladat szerkesztése:** alfeladat részletező nézetében (`planned` és `waiting` státusznál) legördülő menüből a szülő-hozzárendelés módosítható vagy leválasztható. A menü a szülőt a kártya-tulajdonságok sorában mutatja, teljes szélességben.
+
+### Beakadt kártyák vizuális jelzése
+
+Minden nem lezárt kártyán automatikusan megjelenik, ha a kártya régóta nem mozdult:
+
+**Bal oldali színes csík** -- az első ránézésre feltűnik:
+
+| Szín | Mit jelent |
+|------|-----------|
+| Sárga | 1 napja nem változott -- érdemes szemmel tartani |
+| Narancs | 3 napja nem változott -- hamarosan beavatkozást igényel |
+| Piros (villog) | 1 hete nem változott -- beakadt, azonnali figyelem kell |
+
+**Homokóra + napszámláló** (jobb felső sarok) -- pl. `⏳ 4d` = 4 napja nem mozdult. Hover-re megjelenik a pontos időpont, amikor utoljára változott.
+
+A `done` státuszú kártyákon nem jelenik meg semmilyen jelzés -- csak az aktív feladatok öregszenek.
+
+**Mire figyelj?** Ha a kanban táblán sok piros vagy narancs kártyát látsz, azokat érdemes sorban megnézni: vagy beakadt a feladat (az ügynök nem kapta meg, vagy elakadt), vagy le kell zárni, vagy törölni.
+
 ### Kártya-öregedés -- technikai részletek
 
 A dashboard minden nem-lezárt (`done` kivételével) kártyán kiszámítja az öregedési szintet a `updated_at` unix timestamp alapján.

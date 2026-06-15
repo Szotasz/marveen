@@ -53,6 +53,25 @@ Key behaviours in the card editor on the web dashboard (`http://localhost:3420`)
 - **Add subtask:** parent cards (not subtasks themselves) show a "New subtask" form. The new subtask inherits the parent's current status. Adding a subtask to a `done` parent is not allowed.
 - **Delete subtask:** each subtask row shows a Delete button with a confirmation dialog. The button is hidden when the parent is `done`.
 - **Parent assignment editing:** in the subtask detail view (`planned` and `waiting` status only), a dropdown lets you change or detach the parent task. It appears in the card properties row, full-width.
+
+### Stuck cards -- visual indicators
+
+Every non-done card automatically shows a visual warning when it hasn't moved for a while:
+
+**Left-side coloured stripe** -- visible at a glance:
+
+| Colour | What it means |
+|--------|--------------|
+| Yellow | Unchanged for 1 day -- worth keeping an eye on |
+| Orange | Unchanged for 3 days -- will soon need attention |
+| Red (pulsing) | Unchanged for 1 week -- stuck, needs immediate attention |
+
+**Hourglass + day counter** (top-right corner) -- e.g. `⏳ 4d` = hasn't moved in 4 days. Hover to see the exact timestamp of the last change.
+
+Cards in `done` status show no indicators -- only active tasks age.
+
+**What to watch for:** if you see many red or orange cards on the board, check them in order: either the task is stuck (the agent didn't receive it or got blocked), or it should be closed or deleted.
+
 ### Card aging -- technical details
 
 The dashboard computes an aging level for every non-done card based on the `updated_at` unix timestamp.
