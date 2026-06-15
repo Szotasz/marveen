@@ -4110,11 +4110,21 @@ function renderPendingRetries(container, rows) {
   })
 }
 
-function renderScheduleList(tasks) {
-  scheduleList.innerHTML = ''
-  scheduleEmpty.hidden = tasks.length > 0
+// Classify a cron expression into a cadence bucket for grouping the list.
+function cronCadence(cron) {
+  const p = (cron || '').trim().split(/\s+/)
+  if (p.length < 5) return { order: 5, label: 'Egyéb / egyedi' }
+  const [min, hour, , mon, dow] = p
+  const dom = p[2]
+  if (mon !== '*' || dom !== '*') return { order: 3, label: 'Havonta vagy ritkábban' }
+  if (dow !== '*' && dow !== '1-5') return { order: 2, label: 'Hetente' }
+  const multiDaily = /[\/,\-]/.test(min) || /[\/,\-]/.test(hour)
+  if (multiDaily) return { order: 0, label: 'Óránként vagy sűrűbben' }
+  return { order: 1, label: 'Naponta' }
+}
+const CADENCE_ICON = { 0: '⚡', 1: '☀️', 2: '📅', 3: '🗓️', 5: '•' }
 
-  for (const task of tasks) {
+function makeScheduleRow(task) {
     const row = document.createElement('div')
     row.className = 'schedule-row'
     const agent = scheduleAgents.find(a => a.name === task.agent) || { name: task.agent || mainAgentId(), avatar: '/api/marveen/avatar', label: task.agent || mainAgentId() }
@@ -4193,7 +4203,26 @@ function renderScheduleList(tasks) {
       openScheduleRunHistory(task.name)
     })
 
-    scheduleList.appendChild(row)
+    return row
+}
+
+function renderScheduleList(tasks) {
+  scheduleList.innerHTML = ''
+  scheduleEmpty.hidden = tasks.length > 0
+  const groups = new Map()
+  for (const task of tasks) {
+    const c = cronCadence(task.schedule)
+    if (!groups.has(c.order)) groups.set(c.order, { label: c.label, tasks: [] })
+    groups.get(c.order).tasks.push(task)
+  }
+  for (const o of [0, 1, 2, 3, 5]) {
+    const g = groups.get(o)
+    if (!g) continue
+    const header = document.createElement('div')
+    header.className = 'schedule-section'
+    header.innerHTML = `<span class="schedule-section-icon">${CADENCE_ICON[o] || ''}</span><span class="schedule-section-label">${escapeHtml(g.label)}</span><span class="schedule-section-count">${g.tasks.length}</span>`
+    scheduleList.appendChild(header)
+    for (const task of g.tasks) scheduleList.appendChild(makeScheduleRow(task))
   }
 }
 
