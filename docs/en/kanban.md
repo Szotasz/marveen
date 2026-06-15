@@ -125,6 +125,35 @@ If a column is flashing a red badge, don't push new work into it. Close or move 
 
 WIP limits are set per column in the `.env` file (see the technical documentation for details). If no limit is configured for a column, the badge doesn't appear.
 
+### Column WIP limits -- technical details
+
+Each kanban column accepts an optional card-count ceiling. When set, the existing count badge in the column header switches to `count/limit` format and changes colour based on utilisation:
+
+| State | Condition | Appearance |
+|-------|-----------|------------|
+| ok | < `WARN_PCT`% | dark grey, no animation |
+| warn | >= `WARN_PCT`% (default 80%) | yellow |
+| full | exactly at limit (100%) | orange + mild pulse |
+| over | exceeds limit | red + stronger pulse + 10% scale |
+
+The badge is implemented by updating the existing `kanban-col-count` span -- no additional HTML element is added.
+
+**Configuration keys (`.env`):**
+
+```
+KANBAN_WIP_PLANNED=0        # 0 = unlimited
+KANBAN_WIP_IN_PROGRESS=0
+KANBAN_WIP_WAITING=0
+KANBAN_WIP_DONE=0
+KANBAN_WIP_WARN_PCT=80      # % threshold for yellow tier
+KANBAN_WIP_OK_COLOR=#6b7280
+KANBAN_WIP_WARN_COLOR=#c9a000
+KANBAN_WIP_FULL_COLOR=#d46b00
+KANBAN_WIP_OVER_COLOR=#c53030
+```
+
+Data flow: `src/config.ts` → `/api/marveen` (`kanbanWip` key) → `window._marveen.kanbanWip` (frontend). The frontend is static -- a server HUP is sufficient to apply limit changes.
+
 ---
 
 ## Related documents

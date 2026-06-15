@@ -45,6 +45,35 @@ Minden projekt-feladat kártyán fut: az orchestrator kártyaként rögzíti, on
 
 Közvetlen SQLite, vagy a dashboard kanban-felülete. A kártya-állapot minden ügynök kontextusába automatikusan bekerül.
 
+### WIP-limit (folyamatban lévő kártyák korlátja) -- technikai részletek
+
+Minden kanban-oszlophoz beállítható egy maximális kártyaszám (Work In Progress limit). Ha a limit be van állítva, az oszlopfejlécben lévő kártyaszámláló `count/limit` formátumra vált, és a kihasználtság alapján változtatja a színét:
+
+| Szint | Feltétel | Megjelenés |
+|-------|---------|-----------|
+| ok | < `WARN_PCT`% | sötétszürke, animáció nélkül |
+| warn | >= `WARN_PCT`% (alapért. 80%) | sárga |
+| full | pontosan 100% | narancs + enyhe pulzálás |
+| over | > limit | piros + erős pulzálás + 10% méretnövekedés |
+
+A badge az oszlopfejlécben lévő meglévő kártyaszámlálóba épül bele -- nincs külön HTML-elem.
+
+**Konfigurációs kulcsok (`.env`):**
+
+```
+KANBAN_WIP_PLANNED=0        # 0 = korlát nélkül
+KANBAN_WIP_IN_PROGRESS=0
+KANBAN_WIP_WAITING=0
+KANBAN_WIP_DONE=0
+KANBAN_WIP_WARN_PCT=80      # %-os küszöb a sárga szinthez
+KANBAN_WIP_OK_COLOR=#6b7280
+KANBAN_WIP_WARN_COLOR=#c9a000
+KANBAN_WIP_FULL_COLOR=#d46b00
+KANBAN_WIP_OVER_COLOR=#c53030
+```
+
+Adatfolyam: `src/config.ts` → `/api/marveen` (`kanbanWip` kulcs) → `window._marveen.kanbanWip` (frontend). A frontend statikus, nincs build lépés -- szerver HUP elegendő a limitek megváltoztatásához.
+
 ### Dashboard kanban felület
 
 A webes dashboard (`http://localhost:3420`) kártyaszerkesztőjének főbb viselkedései:
