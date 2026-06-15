@@ -280,6 +280,14 @@ document.querySelectorAll('.kanban-add-btn').forEach((btn) => {
 
 async function loadKanban() {
   try {
+    // Ensure the card-aging config (window._marveen.kanbanAging) is loaded even
+    // if the user opens the Kanban page first, before the Agents page populated it.
+    if (!window._marveen?.kanbanAging) {
+      try {
+        const mr = await fetch('/api/marveen')
+        if (mr.ok) window._marveen = { ...(window._marveen || {}), ...(await mr.json()) }
+      } catch { /* ignore -- aging just won't render until _marveen loads */ }
+    }
     const [cardsRes, assigneesRes, projectsRes] = await Promise.all([
       fetch('/api/kanban'),
       fetch('/api/kanban/assignees'),
