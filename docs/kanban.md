@@ -102,3 +102,26 @@ KANBAN_AGING_CRITICAL_COLOR=#c53030
 ```
 
 Értékek forrása: `src/config.ts` → `/api/marveen` (`kanbanAging` kulcs) → `window._marveen.kanbanAging` (frontend). A frontend statikus (`web/app.js`), nincs build lépés a küszöb-értékek frissítésekor -- szerver HUP elegendő.
+
+### Oszloponkénti WIP-limit
+
+A WIP-limit (Work In Progress limit) megmutatja, ha egy oszlop túlterhelt -- azaz több aktív feladat van benne, mint amennyit célszerű egyszerre kezelni.
+
+**Mit látsz az oszlopfejlécben?**
+
+Minden oszlop tetején egy kerek badge jelzi az aktuális állapotot, pl. `4/5` (4 kártya van, a limit 5). A badge színe a kihasználtság szerint változik:
+
+| Badge | Mit jelent |
+|-------|-----------|
+| Szürke | Bőven van hely, minden rendben |
+| Sárga | Közeledik a limit -- érdemes figyelni |
+| Narancs | Egy lépésre a limittől -- új kártyát ne tegyél ide |
+| Piros, villog | Túllépve -- az oszlop túlterhelt, oldj meg valamit mielőtt újat veszel fel |
+
+**Mire figyelj?**
+
+Ha egy oszlop piros badge-dzsel villog, ne vegyél fel oda új feladatot. Először zárj le vagy helyezz át egy meglévőt. A limit nem tiltja meg az új kártyák felvételét -- figyelmeztetés, nem zár.
+
+**Hogyan állítható a limit?**
+
+A WIP-limit oszloponként konfigurálható a `.env` fájlban (részletek a technikai dokumentációban). Ha az oszlopnak nincs beállított limitje, a badge nem jelenik meg.
