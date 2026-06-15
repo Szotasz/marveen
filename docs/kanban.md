@@ -53,3 +53,33 @@ A webes dashboard (`http://localhost:3420`) kártyaszerkesztőjének főbb visel
 - **Alfeladat hozzáadás:** szülő-kártyánál (nem alfeladatnál) „Új alfeladat" form jelenik meg. Az új alfeladat a szülő aktuális státuszát örökli. `done` státuszú szülőhöz nem lehet alfeladatot hozzáadni.
 - **Alfeladat törlés:** alfeladatok soránál Törlés gomb jelenik meg, megerősítő párbeszéddel. `done` státuszú szülőnél a gomb nem jelenik meg.
 - **Szülő-feladat szerkesztése:** alfeladat részletező nézetében (`planned` és `waiting` státusznál) legördülő menüből a szülő-hozzárendelés módosítható vagy leválasztható. A menü a szülőt a kártya-tulajdonságok sorában mutatja, teljes szélességben.
+### Kártya-öregedés -- technikai részletek
+
+A dashboard minden nem-lezárt (`done` kivételével) kártyán kiszámítja az öregedési szintet a `updated_at` unix timestamp alapján.
+
+**Három szint, mindkettő egyszerre jelenik meg:**
+
+| Szint | Default küszöb | Bal csík + jelvény |
+|-------|---------------|-------------------|
+| `warn` | 24 h | sárga |
+| `caution` | 72 h | narancs |
+| `critical` | 168 h (7 nap) | piros, pulzál |
+
+**Megjelenítés:**
+- Bal 3px csík (`border-left`) -- felülírja a prioritás-csíkot, `--card-aging-color` CSS custom property-vel.
+- Jobb felső `⏳ Xd` / `⏳ Xh` jelvény -- hover tooltip pontosan mikor módosult.
+- Kritikus szintnél enyhe CSS `animation: aging-pulse` a jelvényen.
+- `done` kártyákon nem jelenik meg semmilyen jelző.
+
+**Konfiguráció (`.env`):**
+
+```
+KANBAN_AGING_WARN_H=24
+KANBAN_AGING_CAUTION_H=72
+KANBAN_AGING_CRITICAL_H=168
+KANBAN_AGING_WARN_COLOR=#c9a000
+KANBAN_AGING_CAUTION_COLOR=#d46b00
+KANBAN_AGING_CRITICAL_COLOR=#c53030
+```
+
+Értékek forrása: `src/config.ts` → `/api/marveen` (`kanbanAging` kulcs) → `window._marveen.kanbanAging` (frontend). A frontend statikus (`web/app.js`), nincs build lépés a küszöb-értékek frissítésekor -- szerver HUP elegendő.
