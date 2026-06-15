@@ -474,6 +474,49 @@ function renderKanban() {
 
   // Badge: only count subtasks that are in a different column (not embedded here)
   updateSubtaskBadges(embeddedSubtaskIds)
+
+  // WIP limit badges: update column-header count spans with "count/limit" when configured
+  updateWipBadges(grouped)
+}
+
+// Map column status keys to their count-span IDs
+const WIP_COUNT_IDS = {
+  planned: 'countPlanned',
+  in_progress: 'countInProgress',
+  waiting: 'countWaiting',
+  done: 'countDone',
+}
+
+function updateWipBadges(grouped) {
+  const cfg = window._marveen?.kanbanWip
+  for (const [status, cards] of Object.entries(grouped)) {
+    const el = document.getElementById(WIP_COUNT_IDS[status])
+    if (!el) continue
+    const limit = cfg?.limits?.[status] || 0
+    if (!limit) {
+      // No limit configured: restore plain count and clear WIP styling
+      el.textContent = cards.length
+      delete el.dataset.wip
+      el.style.color = ''
+      el.style.borderColor = ''
+      continue
+    }
+    const count = cards.length
+    el.textContent = `${count}/${limit}`
+    let state, color
+    if (count > limit) {
+      state = 'over'; color = cfg.overColor
+    } else if (count === limit) {
+      state = 'full'; color = cfg.fullColor
+    } else if ((count / limit) * 100 >= cfg.warnPct) {
+      state = 'warn'; color = cfg.warnColor
+    } else {
+      state = 'ok'; color = cfg.okColor
+    }
+    el.dataset.wip = state
+    el.style.color = color
+    el.style.borderColor = color
+  }
 }
 
 function updateSubtaskBadges(embeddedSubtaskIds) {

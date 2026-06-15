@@ -92,6 +92,18 @@ export const KANBAN_AGING_CRITICAL_H = parseInt(env['KANBAN_AGING_CRITICAL_H'] ?
 export const KANBAN_AGING_WARN_COLOR = env['KANBAN_AGING_WARN_COLOR'] ?? '#c9a000'
 export const KANBAN_AGING_CAUTION_COLOR = env['KANBAN_AGING_CAUTION_COLOR'] ?? '#d46b00'
 export const KANBAN_AGING_CRITICAL_COLOR = env['KANBAN_AGING_CRITICAL_COLOR'] ?? '#c53030'
+// Kanban WIP limits per column (0 = unlimited). Override via .env.
+export const KANBAN_WIP_PLANNED = parseInt(env['KANBAN_WIP_PLANNED'] ?? '0', 10)
+export const KANBAN_WIP_IN_PROGRESS = parseInt(env['KANBAN_WIP_IN_PROGRESS'] ?? '0', 10)
+export const KANBAN_WIP_WAITING = parseInt(env['KANBAN_WIP_WAITING'] ?? '0', 10)
+export const KANBAN_WIP_DONE = parseInt(env['KANBAN_WIP_DONE'] ?? '0', 10)
+// Utilisation % at which the badge turns yellow (default 80)
+export const KANBAN_WIP_WARN_PCT = parseInt(env['KANBAN_WIP_WARN_PCT'] ?? '80', 10)
+// Badge colours for each utilisation tier
+export const KANBAN_WIP_OK_COLOR = env['KANBAN_WIP_OK_COLOR'] ?? '#6b7280'
+export const KANBAN_WIP_WARN_COLOR = env['KANBAN_WIP_WARN_COLOR'] ?? '#c9a000'
+export const KANBAN_WIP_FULL_COLOR = env['KANBAN_WIP_FULL_COLOR'] ?? '#d46b00'
+export const KANBAN_WIP_OVER_COLOR = env['KANBAN_WIP_OVER_COLOR'] ?? '#c53030'
 export const DASHBOARD_PUBLIC_URL = env['DASHBOARD_PUBLIC_URL'] ?? ''
 export const OLLAMA_URL = env['OLLAMA_URL'] ?? 'http://localhost:11434'
 

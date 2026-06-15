@@ -565,6 +565,22 @@ main {
   padding: 1px 7px;
   min-width: 20px;
   text-align: center;
+  border: 1px solid transparent;
+  transition: color 0.2s, border-color 0.2s, transform 0.2s;
+}
+
+/* WIP limit badge states — colour applied via inline style from JS */
+.kanban-col-count[data-wip="warn"] { background: color-mix(in oklch, currentColor 10%, var(--bg-card)); }
+.kanban-col-count[data-wip="full"] { background: color-mix(in oklch, currentColor 10%, var(--bg-card)); animation: wip-pulse-mild 2.4s ease-in-out infinite; }
+.kanban-col-count[data-wip="over"] { background: color-mix(in oklch, currentColor 12%, var(--bg-card)); animation: wip-pulse-strong 1.6s ease-in-out infinite; transform: scale(1.1); }
+
+@keyframes wip-pulse-mild {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+@keyframes wip-pulse-strong {
+  0%, 100% { opacity: 1; transform: scale(1.1); }
+  50% { opacity: 0.4; transform: scale(1.1); }
 }
 .kanban-add-btn {
   margin-left: auto;
