@@ -182,3 +182,40 @@ Ha egy sáv jelenleg nem érdekes (pl. egy felelős minden kártyája lezárva),
 **Mire jó?**
 
 Nagy, sok kártyás táblánál a sima oszlopnézet könnyen átláthatatlanná válik. A swimlane nézet azonnal megmutatja a terheléseloszlást -- ha egy felelősnél (vagy egy prioritási szinten) feltorlódnak a kártyák, az első pillantásra látszik, mielőtt bele kellene olvasni mindegyikbe.
+
+### Swimlane-ek -- technikai részletek
+
+A kanban-tábla opcionálisan vízszintes sávokra (swimlane) bontható, két csoportosító mező közül választva: felelős (assignee) vagy prioritás. Alapállapotban (nincs csoportosítás) a tábla a megszokott 4 oszlopos elrendezést használja, változás nélkül.
+
+**Felépítés csoportosított nézetben:**
+
+Minden swimlane egy teljes szélességű sáv, amely a tábla mind a 4 státusz-oszlopát (tervezett/folyamatban/várakozik/kész) tartalmazza, de csak az adott csoportba tartozó kártyákkal. A swimlane előtt egy 44px magas fejléc-sáv jelenik meg:
+
+- **Bal oldal:** 28px kör alakú avatar (a felelős típusa szerinti szín + kezdőbetű, vagy prioritás-szín jelölő, szöveg nélkül), majd a félkövér név/prioritás-címke.
+- **Jobb oldal:** kártyaszám-badge (a swimlane összes kártyájának száma, az összes státuszban összesítve), majd egy chevron gomb (▼/▶) a sáv összecsukásához.
+
+A fejléc `position: sticky` (top és left egyaránt), így vízszintes és függőleges görgetésnél is a látható területen marad. A swimlane-ek között 2px szaggatott elválasztó vonal van.
+
+**Csoportosítás kulcsa:**
+
+- **Felelős szerint:** a kártya `assignee` mezője alapján, a `/api/kanban/assignees` listával egyezés (kis- és nagybetű-érzéketlen), nem egyező vagy hiányzó felelős esetén "Nincs hozzárendelve" gyűjtő-sáv.
+- **Prioritás szerint:** a kártya `priority` mezője alapján (`urgent` > `high` > `normal` > `low` sorrendben).
+
+Az üres (kártya nélküli) swimlane-ek nem jelennek meg.
+
+**Perzisztencia:**
+
+A csoportosítás-választás `localStorage`-ban (`marveen.kanbanGroupBy` kulcs) tárolódik, így a felhasználó utolsó választása böngészőnkénti újratöltés után is megmarad, és felülírja a `.env`-ben konfigurált alapértéket. A sáv-összecsukás állapota viszont csak a böngészőlap memóriájában él (oldal-frissítésnél törlődik), a táblafrissítések (pl. kártya mozgatás, 30 másodperces auto-refresh) azonban nem törlik.
+
+**Drag & drop:**
+
+A meglévő kártyamozgatás logika (státusz + sorrend) swimlane-nézetben is működik, oszloponként -- a kártya az adott swimlane adott státusz-oszlopába húzható. Más swimlane-be húzás nem módosítja a kártya felelősét/prioritását, csak a státuszát.
+
+**Konfigurációs kulcsok (`.env`):**
+
+```
+KANBAN_SWIMLANE_DEFAULT_GROUP=none         # none (alapért.) | assignee | priority
+KANBAN_SWIMLANE_SEPARATOR_COLOR=           # üres = CSS alapszín (var(--border))
+```
+
+Adatfolyam: `src/config.ts` → `/api/marveen` (`kanbanSwimlanes` kulcs) → `window._marveen.kanbanSwimlanes` (frontend). A frontend statikus, nincs build lépés -- szerver HUP elegendő a beállítások megváltoztatásához.

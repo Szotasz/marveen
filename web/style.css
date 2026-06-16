@@ -532,6 +532,11 @@ main {
   gap: 12px;
   min-height: calc(100vh - 160px);
 }
+/* Both the flat board and the swimlane board carry .kanban-board; an
+   explicit [hidden] override is required because the unconditional
+   `display: grid` above otherwise wins the cascade over the UA [hidden]
+   default (equal specificity, later source order). */
+.kanban-board[hidden] { display: none; }
 
 .kanban-col {
   background: var(--bg-input);
@@ -810,6 +815,112 @@ main {
 }
 .kanban-card-aging-badge.kanban-card-aging-critical {
   animation: aging-pulse 2.2s ease-in-out infinite;
+}
+
+/* === Kanban Swimlanes === */
+.kanban-swimlane-board {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.kanban-swimlane {
+  border-bottom: 2px dashed var(--border);
+  padding-bottom: 16px;
+  margin-bottom: 16px;
+}
+.kanban-swimlane:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+  margin-bottom: 0;
+}
+.kanban-swimlane-header {
+  position: sticky;
+  top: 0;
+  left: 0;
+  z-index: 5;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 4px;
+  background: var(--bg);
+}
+.kanban-swimlane-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+}
+.kanban-swimlane-avatar.owner { background: var(--accent); }
+.kanban-swimlane-avatar.bot { background: var(--info); }
+.kanban-swimlane-avatar.agent { background: var(--success); }
+.kanban-swimlane-avatar.unknown { background: var(--text-muted); }
+.kanban-swimlane-avatar.priority-urgent { background: var(--danger); }
+.kanban-swimlane-avatar.priority-high { background: var(--accent); }
+.kanban-swimlane-avatar.priority-normal { background: var(--text-muted); }
+.kanban-swimlane-avatar.priority-low { background: var(--border); }
+.kanban-swimlane-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+  margin-right: auto;
+}
+.kanban-swimlane-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-card);
+  border-radius: 10px;
+  padding: 1px 7px;
+  min-width: 20px;
+  text-align: center;
+}
+.kanban-swimlane-toggle {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition);
+}
+.kanban-swimlane-toggle:hover { background: var(--accent-soft); color: var(--accent); }
+.kanban-swimlane-body {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-top: 4px;
+}
+.kanban-swimlane.collapsed .kanban-swimlane-body { display: none; }
+.kanban-swimlane-col {
+  background: var(--bg-input);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  min-height: 60px;
+}
+.kanban-swimlane-col-header {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+  padding: 8px 12px 4px;
+}
+.kanban-swimlane-col-body {
+  flex: 1;
+  min-height: 40px;
 }
 
 /* === Card detail === */
@@ -4729,6 +4840,10 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
     gap: 16px;
   }
   .kanban-col { min-height: auto; }
+  .kanban-swimlane-body {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
 }
 
 @media (max-width: 640px) {

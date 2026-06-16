@@ -107,6 +107,16 @@ export const KANBAN_WIP_OVER_COLOR = env['KANBAN_WIP_OVER_COLOR'] ?? '#c53030'
 export const DASHBOARD_PUBLIC_URL = env['DASHBOARD_PUBLIC_URL'] ?? ''
 export const OLLAMA_URL = env['OLLAMA_URL'] ?? 'http://localhost:11434'
 
+// Kanban swimlanes: which field the board groups by on first load. Invalid
+// values silently fall back to 'none' (flat board) rather than breaking the
+// grouping logic on the frontend.
+const rawKanbanSwimlaneDefaultGroup = env['KANBAN_SWIMLANE_DEFAULT_GROUP'] ?? 'none'
+export const KANBAN_SWIMLANE_DEFAULT_GROUP =
+  rawKanbanSwimlaneDefaultGroup === 'assignee' || rawKanbanSwimlaneDefaultGroup === 'priority'
+    ? rawKanbanSwimlaneDefaultGroup
+    : 'none'
+export const KANBAN_SWIMLANE_SEPARATOR_COLOR = env['KANBAN_SWIMLANE_SEPARATOR_COLOR'] ?? ''
+
 export const CHANNEL_PROVIDER: ChannelProviderType = getProviderType(env['CHANNEL_PROVIDER'])
 export const CHANNEL_TOKEN = getChannelToken(CHANNEL_PROVIDER, env)
 export const CHANNEL_CHAT_ID = getChannelChatId(CHANNEL_PROVIDER, env)

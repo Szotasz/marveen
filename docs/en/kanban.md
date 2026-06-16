@@ -182,6 +182,43 @@ If a lane isn't relevant right now (e.g. an assignee with everything closed out)
 
 On a large board with lots of cards, the plain column view gets hard to scan. The swimlane view immediately shows the load distribution -- if cards are piling up for one owner (or at one priority level), you see it at a glance, before reading through each one.
 
+### Swimlanes -- technical details
+
+The kanban board can optionally split into horizontal lanes (swimlanes), grouped by one of two fields: assignee or priority. By default (no grouping) the board uses the usual 4-column layout, unchanged.
+
+**Layout in grouped view:**
+
+Each swimlane is a full-width band containing all 4 status columns (planned/in_progress/waiting/done), but only with cards belonging to that group. A 44px header bar precedes each lane:
+
+- **Left side:** a 28px round avatar (assignee-type color + initial, or a priority-color marker with no text), followed by the bold name/priority label.
+- **Right side:** a card-count badge (total cards in the lane across all statuses), followed by a chevron button (▼/▶) to collapse the lane.
+
+The header uses `position: sticky` (both top and left), so it stays in view during both horizontal and vertical scrolling. A 2px dashed separator runs between lanes.
+
+**Grouping key:**
+
+- **By assignee:** based on the card's `assignee` field, matched case-insensitively against the `/api/kanban/assignees` list; unmatched or missing assignees fall into an "Unassigned" catch-all lane.
+- **By priority:** based on the card's `priority` field (`urgent` > `high` > `normal` > `low` order).
+
+Empty (cardless) swimlanes are not rendered.
+
+**Persistence:**
+
+The grouping choice is stored in `localStorage` (key `marveen.kanbanGroupBy`), so the user's last choice survives a page reload in that browser and overrides the `.env`-configured default. Lane-collapse state, by contrast, only lives in the page's in-memory state (cleared on reload), though it survives board refreshes (e.g. card moves, the 30-second auto-refresh).
+
+**Drag and drop:**
+
+The existing card-move logic (status + order) works in swimlane view too, per column -- a card can be dragged into a different status column within its own lane. Dragging into a different lane does not change the card's assignee/priority, only its status.
+
+**Configuration keys (`.env`):**
+
+```
+KANBAN_SWIMLANE_DEFAULT_GROUP=none         # none (default) | assignee | priority
+KANBAN_SWIMLANE_SEPARATOR_COLOR=           # empty = CSS default (var(--border))
+```
+
+Data flow: `src/config.ts` → `/api/marveen` (`kanbanSwimlanes` key) → `window._marveen.kanbanSwimlanes` (frontend). The frontend is static, no build step -- a server restart is enough to pick up config changes.
+
 ---
 
 ## Related documents

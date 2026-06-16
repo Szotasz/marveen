@@ -256,6 +256,15 @@ let kanbanProjectFilter = ''
 // Matched case-insensitively against card.assignee so a casing mismatch
 // (e.g. card "gorcsevivan" vs list "GorcsevIvan") still filters correctly.
 let kanbanAssigneeFilter = ''
+// Swimlane grouping: 'none' (flat board, default) | 'assignee' | 'priority'.
+// The initial value is pulled from window._marveen.kanbanSwimlanes.defaultGroup
+// the first time loadKanban() runs (see kanbanGroupByInitialized below), then
+// fully user-controlled via the toolbar dropdown.
+let kanbanGroupBy = 'none'
+let kanbanGroupByInitialized = false
+// Which swimlane keys (assignee name or priority value) are collapsed. Lives
+// for the page session only -- intentionally not persisted across reloads.
+const kanbanCollapsedLanes = new Set()
 
 const cardModalOverlay = document.getElementById('cardModalOverlay')
 const cardDetailOverlay = document.getElementById('cardDetailOverlay')
@@ -280,13 +289,30 @@ document.querySelectorAll('.kanban-add-btn').forEach((btn) => {
 
 async function loadKanban() {
   try {
-    // Ensure the marveen config (kanbanAging + kanbanWip) is loaded even if the
-    // user opens the Kanban page first, before the Agents page populated it.
-    if (!window._marveen?.kanbanAging || !window._marveen?.kanbanWip) {
+    // Ensure the marveen config (kanbanAging + kanbanWip + kanbanSwimlanes) is
+    // loaded even if the user opens the Kanban page first, before the Agents
+    // page populated it.
+    if (!window._marveen?.kanbanAging || !window._marveen?.kanbanWip || !window._marveen?.kanbanSwimlanes) {
       try {
         const mr = await fetch('/api/marveen')
         if (mr.ok) window._marveen = { ...(window._marveen || {}), ...(await mr.json()) }
-      } catch { /* ignore -- aging/WIP just won't render until _marveen loads */ }
+      } catch { /* ignore -- aging/WIP/swimlanes just won't render until _marveen loads */ }
+    }
+    if (!kanbanGroupByInitialized) {
+      kanbanGroupByInitialized = true
+      // A user's own past choice (saved to localStorage) wins over the
+      // server-configured default, so switching the grouping sticks across
+      // page reloads instead of resetting every time.
+      const stored = localStorage.getItem('marveen.kanbanGroupBy')
+      const defaultGroup = window._marveen?.kanbanSwimlanes?.defaultGroup
+      const initialGroup = (stored === 'assignee' || stored === 'priority' || stored === 'none')
+        ? stored
+        : (defaultGroup === 'assignee' || defaultGroup === 'priority' ? defaultGroup : 'none')
+      if (initialGroup !== 'none') {
+        kanbanGroupBy = initialGroup
+        const sel = document.getElementById('kanbanGroupBy')
+        if (sel) sel.value = initialGroup
+      }
     }
     const [cardsRes, assigneesRes, projectsRes] = await Promise.all([
       fetch('/api/kanban'),
@@ -304,6 +330,12 @@ async function loadKanban() {
     console.error('Kanban betöltés hiba:', err)
   }
 }
+
+document.getElementById('kanbanGroupBy').addEventListener('change', (e) => {
+  kanbanGroupBy = e.target.value
+  localStorage.setItem('marveen.kanbanGroupBy', kanbanGroupBy)
+  renderKanban()
+})
 
 function populateProjectFilter() {
   const sel = document.getElementById('kanbanProjectFilter')
@@ -453,26 +485,153 @@ function renderKanban() {
     if (grouped[card.status]) grouped[card.status].push(card)
   }
 
-  for (const [status, cards] of Object.entries(grouped)) {
-    const col = document.querySelector(`.kanban-col-body[data-status="${status}"]`)
-    col.innerHTML = ''
-    cards.sort((a, b) => a.sort_order - b.sort_order)
-
-    for (const card of cards) {
-      const embeddedChildren = kanbanCards
-        .filter(c => c.parent_id === card.id && embeddedSubtaskIds.has(c.id))
-        .sort((a, b) => a.sort_order - b.sort_order)
-      col.appendChild(createCardEl(card, embeddedChildren))
-    }
-  }
-
   // Update counts (embedded subtasks don't count as separate cards)
   document.getElementById('countPlanned').textContent = grouped.planned.length
   document.getElementById('countInProgress').textContent = grouped.in_progress.length
   document.getElementById('countWaiting').textContent = grouped.waiting.length
   document.getElementById('countDone').textContent = grouped.done.length
 
-  // Badge: only count subtasks that are in a different column (not embedded here)
+  const flatBoard = document.getElementById('kanbanBoard')
+  const swimlaneBoard = document.getElementById('kanbanSwimlaneBoard')
+
+  if (kanbanGroupBy === 'none') {
+    swimlaneBoard.hidden = true
+    flatBoard.hidden = false
+    for (const [status, cards] of Object.entries(grouped)) {
+      const col = document.querySelector(`#kanbanBoard .kanban-col-body[data-status="${status}"]`)
+      col.innerHTML = ''
+      cards.sort((a, b) => a.sort_order - b.sort_order)
+
+      for (const card of cards) {
+        const embeddedChildren = kanbanCards
+          .filter(c => c.parent_id === card.id && embeddedSubtaskIds.has(c.id))
+          .sort((a, b) => a.sort_order - b.sort_order)
+        col.appendChild(createCardEl(card, embeddedChildren))
+      }
+    }
+    // Badge: only count subtasks that are in a different column (not embedded here)
+    updateSubtaskBadges(embeddedSubtaskIds)
+  } else {
+    flatBoard.hidden = true
+    swimlaneBoard.hidden = false
+    renderSwimlaneBoard(grouped, embeddedSubtaskIds)
+  }
+}
+
+const KANBAN_STATUS_DEFS = [
+  { status: 'planned', title: 'Tervezett' },
+  { status: 'in_progress', title: 'Folyamatban' },
+  { status: 'waiting', title: 'Várakozik' },
+  { status: 'done', title: 'Kész' },
+]
+const KANBAN_PRIORITY_LABELS = { urgent: 'Sürgős', high: 'Magas', normal: 'Normál', low: 'Alacsony' }
+const KANBAN_PRIORITY_ORDER = ['urgent', 'high', 'normal', 'low']
+
+// Which swimlane a card belongs to under the current grouping. Returns a
+// stable string key: the matched assignee's canonical name, '__unassigned__'
+// for cards with no/unmatched assignee, or the priority value.
+function kanbanSwimlaneKeyFor(card) {
+  if (kanbanGroupBy === 'priority') return card.priority || 'normal'
+  const raw = card.assignee ? String(card.assignee).trim() : ''
+  if (!raw) return '__unassigned__'
+  const match = kanbanAssignees.find(a => a.name.toLowerCase() === raw.toLowerCase())
+  return match ? match.name : raw
+}
+
+// Display metadata (label + avatar styling) for a swimlane key.
+function kanbanSwimlaneMeta(key) {
+  if (kanbanGroupBy === 'priority') {
+    const label = KANBAN_PRIORITY_LABELS[key] || key
+    return { label, avatarClass: `priority-${key}`, avatarChar: '' }
+  }
+  if (key === '__unassigned__') return { label: 'Nincs hozzárendelve', avatarClass: 'unknown', avatarChar: '?' }
+  const match = kanbanAssignees.find(a => a.name === key)
+  const label = match ? (match.displayName || match.name) : key
+  return { label, avatarClass: match ? match.type : 'unknown', avatarChar: (label[0] || '?').toUpperCase() }
+}
+
+function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {
+  const board = document.getElementById('kanbanSwimlaneBoard')
+  board.innerHTML = ''
+
+  const presentKeys = new Set()
+  for (const cards of Object.values(grouped)) {
+    for (const c of cards) presentKeys.add(kanbanSwimlaneKeyFor(c))
+  }
+
+  const canonicalOrder = kanbanGroupBy === 'priority'
+    ? KANBAN_PRIORITY_ORDER
+    : [...kanbanAssignees.map(a => a.name), '__unassigned__']
+  const orderedKeys = canonicalOrder.filter(k => presentKeys.has(k))
+  const leftoverKeys = [...presentKeys].filter(k => !orderedKeys.includes(k)).sort((a, b) => a.localeCompare(b))
+  const keys = [...orderedKeys, ...leftoverKeys]
+
+  const separatorColor = window._marveen?.kanbanSwimlanes?.separatorColor
+
+  for (const key of keys) {
+    const meta = kanbanSwimlaneMeta(key)
+    const collapsed = kanbanCollapsedLanes.has(key)
+
+    const laneCardsByStatus = {}
+    let totalCount = 0
+    for (const def of KANBAN_STATUS_DEFS) {
+      const cards = grouped[def.status].filter(c => kanbanSwimlaneKeyFor(c) === key)
+      laneCardsByStatus[def.status] = cards
+      totalCount += cards.length
+    }
+
+    const lane = document.createElement('div')
+    lane.className = 'kanban-swimlane' + (collapsed ? ' collapsed' : '')
+    lane.dataset.group = key
+    if (separatorColor) lane.style.borderBottomColor = separatorColor
+
+    const header = document.createElement('div')
+    header.className = 'kanban-swimlane-header'
+    header.innerHTML = `
+      <span class="kanban-swimlane-avatar ${meta.avatarClass}">${escapeHtml(meta.avatarChar)}</span>
+      <span class="kanban-swimlane-name">${escapeHtml(meta.label)}</span>
+      <span class="kanban-swimlane-count">${totalCount}</span>
+      <button class="kanban-swimlane-toggle" type="button" aria-expanded="${!collapsed}" title="${collapsed ? 'Kibontás' : 'Összecsukás'}">${collapsed ? '▶' : '▼'}</button>
+    `
+    header.querySelector('.kanban-swimlane-toggle').addEventListener('click', (e) => {
+      e.stopPropagation()
+      if (kanbanCollapsedLanes.has(key)) kanbanCollapsedLanes.delete(key)
+      else kanbanCollapsedLanes.add(key)
+      renderKanban()
+    })
+    lane.appendChild(header)
+
+    const body = document.createElement('div')
+    body.className = 'kanban-swimlane-body'
+    for (const def of KANBAN_STATUS_DEFS) {
+      const col = document.createElement('div')
+      col.className = 'kanban-swimlane-col'
+
+      const colHeader = document.createElement('div')
+      colHeader.className = 'kanban-swimlane-col-header'
+      colHeader.textContent = def.title
+
+      const colBody = document.createElement('div')
+      colBody.className = 'kanban-col-body kanban-swimlane-col-body'
+      colBody.dataset.status = def.status
+
+      const cards = laneCardsByStatus[def.status].sort((a, b) => a.sort_order - b.sort_order)
+      for (const card of cards) {
+        const embeddedChildren = kanbanCards
+          .filter(c => c.parent_id === card.id && embeddedSubtaskIds.has(c.id))
+          .sort((a, b) => a.sort_order - b.sort_order)
+        colBody.appendChild(createCardEl(card, embeddedChildren))
+      }
+      wireKanbanColumnDnD(colBody)
+
+      col.appendChild(colHeader)
+      col.appendChild(colBody)
+      body.appendChild(col)
+    }
+    lane.appendChild(body)
+    board.appendChild(lane)
+  }
+
   updateSubtaskBadges(embeddedSubtaskIds)
 
   // WIP limit badges: update column-header count spans with "count/limit" when configured
@@ -663,7 +822,11 @@ function createCardEl(card, embeddedChildren = []) {
 }
 
 // === Drag & Drop ===
-columns.forEach((col) => {
+// Wires the drag/drop handlers for one column-body element. Used for the
+// 4 static flat-board columns at load time, and again for every swimlane
+// column-body created dynamically in renderSwimlaneBoard (those elements
+// don't exist yet when this module first runs).
+function wireKanbanColumnDnD(col) {
   col.addEventListener('dragover', (e) => {
     e.preventDefault()
     e.dataTransfer.dropEffect = 'move'
@@ -706,7 +869,8 @@ columns.forEach((col) => {
       showToast('Hiba az áthelyezés során')
     }
   })
-})
+}
+columns.forEach(wireKanbanColumnDnD)
 
 function getDragAfterElement(col, y) {
   const els = [...col.querySelectorAll('.kanban-card:not(.dragging)')]
