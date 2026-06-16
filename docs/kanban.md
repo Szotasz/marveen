@@ -219,3 +219,59 @@ KANBAN_SWIMLANE_SEPARATOR_COLOR=           # üres = CSS alapszín (var(--border
 ```
 
 Adatfolyam: `src/config.ts` → `/api/marveen` (`kanbanSwimlanes` kulcs) → `window._marveen.kanbanSwimlanes` (frontend). A frontend statikus, nincs build lépés -- szerver HUP elegendő a beállítások megváltoztatásához.
+
+### Gyors-szűrők és címkék -- technikai részletek
+
+**Adatmodell:**
+
+A címkék külön regiszterben élnek (`labels` tábla: `id`, `name`, `color`, `created_at`), és egy join táblán (`kanban_card_labels`: `card_id`, `label_id`, `created_at`) keresztül kapcsolódnak a kártyákhoz. Ez lehetővé teszi, hogy ugyanaz a címke több kártyán is szerepeljen, és egy helyen átszínezhető/átnevezhető legyen. Kártya vagy címke törlésekor a kapcsoló sorok tranzakcióban törlődnek, így nem marad árva join-bejegyzés.
+
+A címke színe nem szabad szöveg: a `KANBAN_LABEL_COLORS` konfigurációs paletta egyik eleme lehet csak (szerver-oldali validáció, érvénytelen vagy hiányzó érték esetén a paletta első színére esik vissza). Ez biztosítja, hogy a szín-hozzárendelés egyetlen konfigurálható forrásból ered, nem egy kódba ágyazott leképezésből.
+
+**API végpontok:**
+
+```
+GET    /api/kanban/labels              -- összes címke
+POST   /api/kanban/labels              -- új címke ({ name, color })
+PUT    /api/kanban/labels/:id          -- címke átnevezése/átszínezése
+DELETE /api/kanban/labels/:id          -- címke törlése (+ minden kártya-kapcsolat)
+GET    /api/kanban/:id/labels          -- egy kártya címkéi
+POST   /api/kanban/:id/labels          -- címke hozzáadása a kártyához ({ labelId })
+DELETE /api/kanban/:id/labels/:labelId -- címke levétele a kártyáról
+```
+
+A tábla-listázó `GET /api/kanban` minden kártyához becsomagolja a `labels` tömböt is, egyetlen bulk JOIN lekérdezéssel (nem N+1 kártyánkénti hívással), így a footer-pillek egyetlen körútból megkapják az adatot.
+
+**Kártya-szerkesztő (CRUD UI):**
+
+A kártya-részletező nézet "Címkék" szekciójában a hozzárendelt címkék eltávolítható pillékként jelennek meg, egy legördülő menü meglévő címkét ad hozzá, egy beágyazott form pedig új címkét hoz létre (név + paletta-színválasztó). A létrehozott címke azonnal hozzá is rendelődik a megnyitott kártyához.
+
+**Gyors-szűrő (prioritás) chip-sor:**
+
+A tábla feletti vezérlősorban, a projekt-szűrő mellett jobbra igazítva 4 pill jelenik meg, egy a `low`/`normal`/`high`/`urgent` prioritás-értékek mindegyikéhez, a kártya-prioritás már meglévő szín-asszociációját felhasználva (sürgős=piros, magas=accent, normál=zöld, alacsony=szürke). Kattintásra a chip aktívvá válik (kitöltött szín + × ikon), és VAGY-kapcsolatban kombinálódik a többi aktív prioritás-chippel (több is kiválasztható egyszerre). Minden chip mellett egy darabszám látható: hány kártya felelne meg ennek a prioritásnak a JELENLEG aktív egyéb szűrők (projekt, felelős, címke) mellett -- ez a szám független attól, hogy a chip maga aktív-e, így mindig informatív marad.
+
+**Címke footer-pillek (kártyán):**
+
+Minden kártya lábsorában megjelenik legfeljebb 3 hozzárendelt címke hideg-tónusú pilleként (`#címke-név` formátumban, a címke saját színével), a maradékot egy "+N" jelvény jelzi (nem kattintható). Egy konkrét pillére kattintás hozzáadja/leveszi az adott címkét az aktív címke-szűrőhöz -- a kiválasztott címkék egymással VAGY-kapcsolatban vannak (a kártya megfelel, ha BÁRMELYIK aktív címkével rendelkezik).
+
+**Szűrő-kombináció szemantikája:**
+
+Az összes szűrési dimenzió ÉS-kapcsolatban kombinálódik:
+
+```
+látható = projekt-szűrő ÉS felelős-szűrő ÉS (prioritás1 VAGY prioritás2 VAGY ...) ÉS (címke1 VAGY címke2 VAGY ...)
+```
+
+Egy dimenzió üres halmaza (nincs aktív prioritás vagy címke) nem szűkít -- minden kártya megfelel arra a dimenzióra. A swimlane-csoportosítás a már megszűrt kártyahalmazból dolgozik, így a gyors-szűrők és a swimlane-nézet automatikusan együttműködnek, külön integrációs kód nélkül. A vezérlősorban megjelenő "Szűrők törlése" gomb (csak akkor látható, ha legalább egy prioritás- vagy címke-szűrő aktív) egyszerre üríti mindkét halmazt.
+
+**Perzisztencia:**
+
+A prioritás-szűrő és a címke-szűrő is `localStorage`-ban tárolódik (`marveen.kanbanPriorityFilter`, `marveen.kanbanLabelFilter` kulcsok, JSON-tömbként), ugyanazzal a mintával mint a swimlane-csoportosítás választása -- böngészőnkénti újratöltés után is megmaradnak.
+
+**Konfigurációs kulcsok (`.env`):**
+
+```
+KANBAN_LABEL_COLORS=#3b82f6,#0ea5e9,#10b981,#14b8a6,#8b5cf6,#64748b  # választható paletta (hideg tónusok)
+```
+
+Adatfolyam: `src/config.ts` → `/api/marveen` (`kanbanLabels.colors` kulcs) → `window._marveen.kanbanLabels` (frontend).
