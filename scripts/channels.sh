@@ -40,6 +40,7 @@ SESSION="${MAIN_AGENT_ID:-marveen}-channels"
 # Resolve plugin ID from provider
 case "$CHANNEL_PROVIDER" in
   slack)    PLUGIN_ID="slack-channel@marveen-marketplace" ;;
+  whatsapp) PLUGIN_ID="whatsapp@marveen-marketplace" ;;
   discord)  PLUGIN_ID="discord@claude-plugins-official" ;;
   *)        PLUGIN_ID="telegram@claude-plugins-official" ;;
 esac
@@ -115,6 +116,7 @@ $TMUX kill-session -t "$SESSION" 2>/dev/null
 MAIN_CHAN_DIR="$INSTALL_DIR/.claude/channels/$CHANNEL_PROVIDER"
 case "$CHANNEL_PROVIDER" in
   slack)    STATE_ENV_VAR="SLACK_STATE_DIR" ;;
+  whatsapp) STATE_ENV_VAR="WHATSAPP_STATE_DIR" ;;
   discord)  STATE_ENV_VAR="DISCORD_STATE_DIR" ;;
   *)        STATE_ENV_VAR="TELEGRAM_STATE_DIR" ;;
 esac
