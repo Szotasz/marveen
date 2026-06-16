@@ -1858,6 +1858,8 @@ export interface ConfigChangeLogRow {
 }
 
 export function getRecentConfigChanges(limit = 200): ConfigChangeLogRow[] {
-  return db.prepare('SELECT * FROM config_change_log ORDER BY created_at DESC LIMIT ?').all(limit) as ConfigChangeLogRow[]
+  // id DESC as a tiebreaker: created_at has 1-second resolution, so two
+  // saves in the same second would otherwise sort arbitrarily.
+  return db.prepare('SELECT * FROM config_change_log ORDER BY created_at DESC, id DESC LIMIT ?').all(limit) as ConfigChangeLogRow[]
 }
 
