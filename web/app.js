@@ -253,11 +253,11 @@ let kanbanProjects = []
 // Label registry (id/name/color), independent of which cards currently carry
 // which labels -- card.labels (embedded by GET /api/kanban) holds that link.
 let kanbanAllLabels = []
-// Active quick-filter (priority) values and active label-filter ids. Both
-// OR-combined within their own dimension, AND-combined across dimensions
-// together with the existing project/assignee filters. Persisted in
+// Active label-filter ids -- the quick-filter chip row AND the per-card
+// footer label pills both toggle this same set (two entry points, one
+// filter dimension). OR-combined within itself (any active label matches),
+// AND-combined with the existing project/assignee filters. Persisted in
 // localStorage alongside the swimlane groupBy choice.
-let kanbanPriorityFilter = new Set()
 let kanbanLabelFilter = new Set()
 let kanbanProjectFilter = ''
 // Assignee filter for the kanban board. '' = show all. Set via the
@@ -322,13 +322,8 @@ async function loadKanban() {
         const sel = document.getElementById('kanbanGroupBy')
         if (sel) sel.value = initialGroup
       }
-      // Active quick-filter (priority) + label-filter selections, restored the
-      // same way as the groupBy choice -- a fresh page load should not lose
-      // the filters the user had set up.
-      try {
-        const storedPriority = JSON.parse(localStorage.getItem('marveen.kanbanPriorityFilter') || '[]')
-        if (Array.isArray(storedPriority)) kanbanPriorityFilter = new Set(storedPriority)
-      } catch { /* ignore malformed storage */ }
+      // Active label-filter selection, restored the same way as the groupBy
+      // choice -- a fresh page load should not lose the filters set up.
       try {
         const storedLabels = JSON.parse(localStorage.getItem('marveen.kanbanLabelFilter') || '[]')
         if (Array.isArray(storedLabels)) kanbanLabelFilter = new Set(storedLabels)
@@ -477,27 +472,28 @@ function setupAssigneeFilter() {
 }
 
 // Project + assignee + label filters, independent of the priority quick-filter
-// dimension -- shared by the board visibility pass and by the quick-filter
-// chip counts (each chip shows how many cards match under every OTHER active
-// filter, so the count stays meaningful whether the chip itself is on or off).
-function kanbanCardMatchesNonPriorityFilters(card) {
+// Project + assignee filters only -- the baseline the label quick-filter
+// chip counts are computed against, independent of which labels are
+// currently active, so a chip's count stays meaningful whether it's the one
+// being toggled or not.
+function kanbanCardMatchesBaseFilters(card) {
   if (kanbanProjectFilter && (card.project || '') !== kanbanProjectFilter) return false
   const assigneeFilter = kanbanAssigneeFilter.toLowerCase()
   if (assigneeFilter && String(card.assignee || '').trim().toLowerCase() !== assigneeFilter) return false
-  if (kanbanLabelFilter.size > 0) {
-    const cardLabelIds = (card.labels || []).map((l) => l.id)
-    if (!cardLabelIds.some((id) => kanbanLabelFilter.has(id))) return false
-  }
   return true
 }
 
-function toggleKanbanPriorityFilter(priority) {
-  if (kanbanPriorityFilter.has(priority)) kanbanPriorityFilter.delete(priority)
-  else kanbanPriorityFilter.add(priority)
-  persistKanbanFilters()
-  renderKanban()
+// The label-filter dimension itself: a card matches when no label filter is
+// active, or when it carries at least one of the active labels (OR within
+// the dimension).
+function kanbanCardMatchesLabelFilter(card) {
+  if (kanbanLabelFilter.size === 0) return true
+  const cardLabelIds = (card.labels || []).map((l) => l.id)
+  return cardLabelIds.some((id) => kanbanLabelFilter.has(id))
 }
 
+// Shared by both the header quick-filter chips and the per-card footer label
+// pills -- one filter dimension, two entry points into the same toggle.
 function toggleKanbanLabelFilter(labelId) {
   if (kanbanLabelFilter.has(labelId)) kanbanLabelFilter.delete(labelId)
   else kanbanLabelFilter.add(labelId)
@@ -506,33 +502,36 @@ function toggleKanbanLabelFilter(labelId) {
 }
 
 function clearKanbanQuickFilters() {
-  kanbanPriorityFilter.clear()
   kanbanLabelFilter.clear()
   persistKanbanFilters()
   renderKanban()
 }
 
 function persistKanbanFilters() {
-  localStorage.setItem('marveen.kanbanPriorityFilter', JSON.stringify([...kanbanPriorityFilter]))
   localStorage.setItem('marveen.kanbanLabelFilter', JSON.stringify([...kanbanLabelFilter]))
 }
 
+// Quick-filter chip row: one chip per defined label (not per priority), tinted
+// with that label's own colour. Clicking toggles the same kanbanLabelFilter
+// set the footer pills use.
 function renderKanbanQuickFilters() {
   const row = document.getElementById('kanbanQuickFilters')
   if (!row) return
   row.innerHTML = ''
-  for (const priority of KANBAN_PRIORITY_ORDER) {
-    const count = kanbanCards.filter((c) => c.priority === priority && kanbanCardMatchesNonPriorityFilters(c)).length
-    const active = kanbanPriorityFilter.has(priority)
+  for (const label of kanbanAllLabels) {
+    const count = kanbanCards.filter((c) =>
+      kanbanCardMatchesBaseFilters(c) && (c.labels || []).some((l) => l.id === label.id)
+    ).length
+    const active = kanbanLabelFilter.has(label.id)
     const chip = document.createElement('span')
     chip.className = 'kanban-quick-filter-chip' + (active ? ' active' : '')
-    chip.dataset.priority = priority
-    chip.style.setProperty('--chip-color', `var(${KANBAN_PRIORITY_CHIP_VAR[priority]})`)
-    chip.innerHTML = `${escapeHtml(KANBAN_PRIORITY_LABELS[priority])} <span class="kanban-quick-filter-count">${count}</span>${active ? '<span class="kanban-quick-filter-clear">&times;</span>' : ''}`
-    chip.addEventListener('click', () => toggleKanbanPriorityFilter(priority))
+    chip.dataset.labelId = label.id
+    chip.style.setProperty('--chip-color', label.color)
+    chip.innerHTML = `#${escapeHtml(label.name)} <span class="kanban-quick-filter-count">${count}</span>${active ? '<span class="kanban-quick-filter-clear">&times;</span>' : ''}`
+    chip.addEventListener('click', () => toggleKanbanLabelFilter(label.id))
     row.appendChild(chip)
   }
-  if (kanbanPriorityFilter.size > 0 || kanbanLabelFilter.size > 0) {
+  if (kanbanLabelFilter.size > 0) {
     const clearAll = document.createElement('button')
     clearAll.className = 'kanban-quick-filter-clear-all'
     clearAll.textContent = 'Szűrők törlése'
@@ -549,8 +548,8 @@ function renderKanban() {
   // Determine which top-level cards are visible under current filters.
   const visibleCardIds = new Set()
   for (const card of kanbanCards) {
-    if (!kanbanCardMatchesNonPriorityFilters(card)) continue
-    if (kanbanPriorityFilter.size > 0 && !kanbanPriorityFilter.has(card.priority)) continue
+    if (!kanbanCardMatchesBaseFilters(card)) continue
+    if (!kanbanCardMatchesLabelFilter(card)) continue
     visibleCardIds.add(card.id)
   }
 
@@ -614,10 +613,6 @@ const KANBAN_STATUS_DEFS = [
 ]
 const KANBAN_PRIORITY_LABELS = { urgent: 'Sürgős', high: 'Magas', normal: 'Normál', low: 'Alacsony' }
 const KANBAN_PRIORITY_ORDER = ['urgent', 'high', 'normal', 'low']
-// Quick-filter chip tone per priority, reusing the existing theme palette
-// (no new colour constants) -- same association a reader already knows from
-// the card priority border.
-const KANBAN_PRIORITY_CHIP_VAR = { urgent: '--danger', high: '--accent', normal: '--success', low: '--text-muted' }
 
 // Which swimlane a card belongs to under the current grouping. Returns a
 // stable string key: the matched assignee's canonical name, '__unassigned__'
