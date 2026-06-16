@@ -600,6 +600,10 @@ function renderKanban() {
     }
     // Badge: only count subtasks that are in a different column (not embedded here)
     updateSubtaskBadges(embeddedSubtaskIds)
+    // WIP limit badges (count/limit + colour) on the flat board too -- previously
+    // only the swimlane view updated these, so a configured limit never showed
+    // on the default flat board.
+    updateWipBadges(grouped)
   } else {
     flatBoard.hidden = true
     swimlaneBoard.hidden = false
