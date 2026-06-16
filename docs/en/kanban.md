@@ -219,6 +219,32 @@ KANBAN_SWIMLANE_SEPARATOR_COLOR=           # empty = CSS default (var(--border))
 
 Data flow: `src/config.ts` → `/api/marveen` (`kanbanSwimlanes` key) → `window._marveen.kanbanSwimlanes` (frontend). The frontend is static, no build step -- a server restart is enough to pick up config changes.
 
+### Quick filters and labels
+
+Cards can carry coloured labels, which both visually group the board and let you filter with a single click.
+
+**Adding/removing a label**
+
+Open a card, and in the detail view's "Labels" section:
+
+- pick an existing label from the dropdown to attach it to the card,
+- or create a new label (name + a colour from the offered palette),
+- next to each attached label there's a button to remove it from the card.
+
+**What do the pills at the bottom of a card mean?**
+
+Each card shows up to 3 attached labels at the bottom as cool-toned "pills" (in `#label-name` form, in the label's own colour). If a card has more than 3 labels, the rest are shown as a "+N" badge. Clicking a pill immediately filters by it -- every other card carrying that same label also shows up in the filtered view.
+
+**Filtering with the header chip row**
+
+A chip appears in the toolbar above the board for every existing label, in its own colour, with a count (how many cards match the label given the other currently active filters). Clicking a chip activates it, narrowing the board to cards carrying that label. Multiple chips can be selected at once -- they combine with OR logic (a card matching any of the selected labels shows up). The × icon on an active chip removes that filter; the "Clear filters" button empties all active label filters at once.
+
+**How does it combine with other filters?**
+
+The label filter combines with the project and assignee filters using AND logic: a visible card must match the project filter, the assignee filter, AND at least one active label filter (if any are active). In swimlane view, lanes are built from the already-filtered card set, so the two features work together seamlessly.
+
+Your chosen label filters persist in the browser, so you don't have to re-select them every time you open the board.
+
 ### Quick filters and labels -- technical details
 
 **Data model:**

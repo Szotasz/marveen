@@ -220,6 +220,32 @@ KANBAN_SWIMLANE_SEPARATOR_COLOR=           # üres = CSS alapszín (var(--border
 
 Adatfolyam: `src/config.ts` → `/api/marveen` (`kanbanSwimlanes` kulcs) → `window._marveen.kanbanSwimlanes` (frontend). A frontend statikus, nincs build lépés -- szerver HUP elegendő a beállítások megváltoztatásához.
 
+### Gyors-szűrők és címkék
+
+A kártyák elláthatók színes címkékkel, amik egyrészt vizuálisan csoportosítják a táblát, másrészt egy kattintással szűrhetők.
+
+**Címke hozzáadása/levétele**
+
+Nyiss meg egy kártyát, és a részletező nézet "Címkék" szekciójában:
+
+- a legördülő menüből válassz egy meglévő címkét a kártyához rendeléshez,
+- vagy hozz létre új címkét (név + szín a felkínált palettából),
+- a hozzárendelt címkék mellett egy gombbal bármelyik levehető a kártyáról.
+
+**Mit jelentenek a kártyák alján a pillék?**
+
+Minden kártya alján legfeljebb 3 hozzárendelt címke jelenik meg hideg-tónusú "pilleként" (`#cimke-nev` formában, a címke saját színével). Ha egy kártyához 3-nál több címke van rendelve, a maradékot egy "+N" jelvény jelzi. Egy pillére kattintva azonnal rá is szűrhetsz -- a kártya összes többi, ugyanazzal a címkével ellátott kártyája is megjelenik a szűrt nézetben.
+
+**Szűrés a fejléc chip-sorával**
+
+A tábla feletti vezérlősorban minden létező címkéhez megjelenik egy chip, a saját színével és egy darabszámmal (hány kártyára illik a címke a jelenleg aktív többi szűrő mellett). Kattintásra a chip aktívvá válik, és csak az adott címkével ellátott kártyák látszanak. Több chip is kiválasztható egyszerre -- ezek "VAGY" kapcsolatban kombinálódnak (bármelyik kiválasztott címkével ellátott kártya megjelenik). Az × ikon egy aktív chipen levonja az adott szűrést, a "Szűrők törlése" gomb az összes aktív címke-szűrőt egyszerre üríti.
+
+**Hogyan kombinálódik a többi szűrővel?**
+
+A címke-szűrő a projekt- és felelős-szűrővel "ÉS" kapcsolatban van: a látható kártyáknak egyszerre meg kell felelniük a projekt-szűrőnek, a felelős-szűrőnek, ÉS legalább egy aktív címke-szűrőnek (ha van ilyen). Swimlane-nézetben a sávok már a megszűrt kártyahalmazból épülnek fel, így a két funkció zökkenőmentesen együttműködik.
+
+A választott címke-szűrők a böngésződben megmaradnak, nem kell minden megnyitásnál újra beállítani.
+
 ### Gyors-szűrők és címkék -- technikai részletek
 
 **Adatmodell:**
