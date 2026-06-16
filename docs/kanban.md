@@ -246,27 +246,27 @@ A tábla-listázó `GET /api/kanban` minden kártyához becsomagolja a `labels` 
 
 A kártya-részletező nézet "Címkék" szekciójában a hozzárendelt címkék eltávolítható pillékként jelennek meg, egy legördülő menü meglévő címkét ad hozzá, egy beágyazott form pedig új címkét hoz létre (név + paletta-színválasztó). A létrehozott címke azonnal hozzá is rendelődik a megnyitott kártyához.
 
-**Gyors-szűrő (prioritás) chip-sor:**
+**Gyors-szűrő (címke) chip-sor:**
 
-A tábla feletti vezérlősorban, a projekt-szűrő mellett jobbra igazítva 4 pill jelenik meg, egy a `low`/`normal`/`high`/`urgent` prioritás-értékek mindegyikéhez, a kártya-prioritás már meglévő szín-asszociációját felhasználva (sürgős=piros, magas=accent, normál=zöld, alacsony=szürke). Kattintásra a chip aktívvá válik (kitöltött szín + × ikon), és VAGY-kapcsolatban kombinálódik a többi aktív prioritás-chippel (több is kiválasztható egyszerre). Minden chip mellett egy darabszám látható: hány kártya felelne meg ennek a prioritásnak a JELENLEG aktív egyéb szűrők (projekt, felelős, címke) mellett -- ez a szám független attól, hogy a chip maga aktív-e, így mindig informatív marad.
+A tábla feletti vezérlősorban, a projekt-szűrő mellett jobbra igazítva egy pill jelenik meg minden definiált címkéhez (`/api/kanban/labels` listából), a címke saját színével. Kattintásra a chip aktívvá válik (kitöltött szín + × ikon), és VAGY-kapcsolatban kombinálódik a többi aktív címke-chippel (több is kiválasztható egyszerre) -- ugyanaz a `kanbanLabelFilter` halmaz, amit a kártyák footer-pilljei is vezérelnek, csak két belépési ponttal. Minden chip mellett egy darabszám látható: hány kártya felelne meg ennek a címkének a JELENLEG aktív projekt/felelős szűrők mellett -- ez a szám független attól, hogy a chip maga aktív-e, így mindig informatív marad.
 
 **Címke footer-pillek (kártyán):**
 
-Minden kártya lábsorában megjelenik legfeljebb 3 hozzárendelt címke hideg-tónusú pilleként (`#címke-név` formátumban, a címke saját színével), a maradékot egy "+N" jelvény jelzi (nem kattintható). Egy konkrét pillére kattintás hozzáadja/leveszi az adott címkét az aktív címke-szűrőhöz -- a kiválasztott címkék egymással VAGY-kapcsolatban vannak (a kártya megfelel, ha BÁRMELYIK aktív címkével rendelkezik).
+Minden kártya lábsorában megjelenik legfeljebb 3 hozzárendelt címke hideg-tónusú pilleként (`#címke-név` formátumban, a címke saját színével), a maradékot egy "+N" jelvény jelzi (nem kattintható). Egy konkrét pillére kattintás hozzáadja/leveszi az adott címkét az aktív címke-szűrőhöz -- ugyanazt a halmazt módosítva, amit a fejléc gyors-szűrő chip-sora is használ.
 
 **Szűrő-kombináció szemantikája:**
 
 Az összes szűrési dimenzió ÉS-kapcsolatban kombinálódik:
 
 ```
-látható = projekt-szűrő ÉS felelős-szűrő ÉS (prioritás1 VAGY prioritás2 VAGY ...) ÉS (címke1 VAGY címke2 VAGY ...)
+látható = projekt-szűrő ÉS felelős-szűrő ÉS (címke1 VAGY címke2 VAGY ...)
 ```
 
-Egy dimenzió üres halmaza (nincs aktív prioritás vagy címke) nem szűkít -- minden kártya megfelel arra a dimenzióra. A swimlane-csoportosítás a már megszűrt kártyahalmazból dolgozik, így a gyors-szűrők és a swimlane-nézet automatikusan együttműködnek, külön integrációs kód nélkül. A vezérlősorban megjelenő "Szűrők törlése" gomb (csak akkor látható, ha legalább egy prioritás- vagy címke-szűrő aktív) egyszerre üríti mindkét halmazt.
+Egy üres címke-szűrő (nincs aktív címke kiválasztva) nem szűkít -- minden kártya megfelel ennek a dimenziónak. A swimlane-csoportosítás a már megszűrt kártyahalmazból dolgozik, így a gyors-szűrő és a swimlane-nézet automatikusan együttműködnek, külön integrációs kód nélkül. A vezérlősorban megjelenő "Szűrők törlése" gomb (csak akkor látható, ha legalább egy címke-szűrő aktív) üríti a halmazt.
 
 **Perzisztencia:**
 
-A prioritás-szűrő és a címke-szűrő is `localStorage`-ban tárolódik (`marveen.kanbanPriorityFilter`, `marveen.kanbanLabelFilter` kulcsok, JSON-tömbként), ugyanazzal a mintával mint a swimlane-csoportosítás választása -- böngészőnkénti újratöltés után is megmaradnak.
+A címke-szűrő `localStorage`-ban tárolódik (`marveen.kanbanLabelFilter` kulcs, JSON-tömbként), ugyanazzal a mintával mint a swimlane-csoportosítás választása -- böngészőnkénti újratöltés után is megmarad.
 
 **Konfigurációs kulcsok (`.env`):**
 

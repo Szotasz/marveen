@@ -245,27 +245,27 @@ The board list endpoint (`GET /api/kanban`) embeds each card's `labels` array us
 
 The card detail view's "Labels" section shows attached labels as removable pills, a dropdown adds an existing label, and an inline form creates a new one (name + palette swatch picker). A newly created label is attached to the open card immediately.
 
-**Priority quick-filter chip row:**
+**Label quick-filter chip row:**
 
-The toolbar above the board, right-aligned next to the project filter, shows 4 pills -- one per priority value (`low`/`normal`/`high`/`urgent`) -- reusing the colour association already established for card priority (urgent=red, high=accent, normal=green, low=grey). Clicking a chip activates it (filled colour + × icon); multiple active chips combine with OR semantics. Each chip also shows a count: how many cards would match that priority under the currently active project/assignee/label filters -- independent of whether the chip itself is active, so the number stays meaningful either way.
+The toolbar above the board, right-aligned next to the project filter, shows one pill per defined label (from `/api/kanban/labels`), tinted in the label's own colour. Clicking a chip activates it (filled colour + × icon); multiple active chips combine with OR semantics -- this is the same `kanbanLabelFilter` set that the card footer pills also drive, just a second entry point into it. Each chip also shows a count: how many cards would match that label under the currently active project/assignee filters -- independent of whether the chip itself is active, so the number stays meaningful either way.
 
 **Label footer pills (on the card):**
 
-Each card's footer shows up to 3 of its attached labels as cold-toned pills (`#label-name`, in the label's own colour), with a non-clickable "+N" badge for the rest. Clicking a pill toggles that label into the active label filter -- selected labels combine with OR semantics (a card matches if it carries ANY of the active labels).
+Each card's footer shows up to 3 of its attached labels as cold-toned pills (`#label-name`, in the label's own colour), with a non-clickable "+N" badge for the rest. Clicking a pill toggles that label into the same active label filter the header chip row uses.
 
 **Filter-combination semantics:**
 
 All filter dimensions combine with AND:
 
 ```
-visible = project filter AND assignee filter AND (priority1 OR priority2 OR ...) AND (label1 OR label2 OR ...)
+visible = project filter AND assignee filter AND (label1 OR label2 OR ...)
 ```
 
-An empty dimension (no active priority or label selected) doesn't narrow anything -- every card matches that dimension. The swimlane grouping renders from the already-filtered card set, so quick filters and the swimlane view work together automatically, with no extra integration code. The "Clear filters" link in the toolbar (shown only when at least one priority or label filter is active) empties both sets at once.
+An empty label filter (no active label selected) doesn't narrow anything -- every card matches that dimension. The swimlane grouping renders from the already-filtered card set, so the quick filter and the swimlane view work together automatically, with no extra integration code. The "Clear filters" link in the toolbar (shown only when at least one label filter is active) empties the set.
 
 **Persistence:**
 
-Both the priority filter and the label filter are stored in `localStorage` (keys `marveen.kanbanPriorityFilter` and `marveen.kanbanLabelFilter`, as JSON arrays), the same way the swimlane grouping choice is -- they survive a page reload in that browser.
+The label filter is stored in `localStorage` (key `marveen.kanbanLabelFilter`, as a JSON array), the same way the swimlane grouping choice is -- it survives a page reload in that browser.
 
 **Configuration keys (`.env`):**
 
