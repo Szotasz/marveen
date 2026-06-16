@@ -21,6 +21,7 @@ Marveen egy AI asszisztens keretrendszer, ami Claude Code-ra épül. Saját AI c
 - **Mission Control**: Web dashboard (http://localhost:3420) a csapat kezeléséhez
 - **Inter-agent kommunikáció**: Az ágensek delegálhatnak egymásnak feladatokat
 - **Ütemezések**: Cron-alapú feladatok automatikus futtatása
+- **Kanban**: Feladattábla AI auto-bontással; Jira-szerű nézetek — swimlane (csoportosítás felelős vagy prioritás szerint), oszloponkénti WIP-limit, beakadt-kártya jelzés (card-aging), alfeladat-beágyazás és kártya-szerkesztő
 - **Heartbeat**: Csendes háttér-monitorozás, csak fontosnál szól (naptár, email, kanban)
 - **Memória**: Hot/Warm/Cold tier rendszer, hibrid kereséssel (FTS5 + vektor) és gráf nézettel
 - **MCP Connectorok**: Gmail, Calendar, Drive, Notion, Slack és más szolgáltatások
@@ -35,7 +36,7 @@ Részletes, funkciónkénti leírások a [`docs/`](docs/README.md) mappában —
 |---------|-----|
 | Heartbeat + fokozatos autonómia | [docs/heartbeat-autonomy.md](docs/heartbeat-autonomy.md) |
 | Memória-rendszer (FTS5 + vektor + RRF) | [docs/memory-system.md](docs/memory-system.md) |
-| Kanban + auto-breakdown | [docs/kanban.md](docs/kanban.md) |
+| Kanban (auto-breakdown, swimlane, WIP-limit, card-aging) | [docs/kanban.md](docs/kanban.md) |
 | Ügynök-flotta + inter-agent | [docs/agent-fleet.md](docs/agent-fleet.md) |
 | Skill-factory (öntanulás) | [docs/skill-factory.md](docs/skill-factory.md) |
 | Channels (Telegram / Slack) | [docs/channels.md](docs/channels.md) |
@@ -45,6 +46,12 @@ Részletes, funkciónkénti leírások a [`docs/`](docs/README.md) mappában —
 | Vault & titkosítás | [docs/vault.md](docs/vault.md) |
 | Dream-engine | [docs/dream-engine.md](docs/dream-engine.md) |
 | Háttér-feladatok | [docs/background-tasks.md](docs/background-tasks.md) |
+| Ütemezett feladatok | [docs/scheduled-tasks.md](docs/scheduled-tasks.md) |
+| Költöztetés (másik gépre) | [docs/MIGRATION.md](docs/MIGRATION.md) |
+| Beszélgetés-folytonosság | [docs/conversation-continuity.md](docs/conversation-continuity.md) |
+| Channel reply-guard | [docs/channel-reply-guard.md](docs/channel-reply-guard.md) |
+| Telegram haladásjelző | [docs/telegram-progress-indicator.md](docs/telegram-progress-indicator.md) |
+| Új asszisztens onboarding | [docs/onboarding-uj-asszisztens.md](docs/onboarding-uj-asszisztens.md) |
 
 ## Öntanulás & Seed-ek
 
