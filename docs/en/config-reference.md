@@ -23,6 +23,29 @@ These files are managed by the dashboard and change at runtime. They are not che
 | `store/config-overrides.json` | dashboard UI | Settings-page overrides (plain values only, never contains secrets) |
 | `store/update.pid` | automatic | Update process PID file (concurrency lock) |
 
+### Settings page
+
+The "Settings" entry in the dashboard's left-hand navigation opens the configuration UI, where env-backed parameters can be viewed and changed directly in the browser -- no `.env` editing or server access required.
+
+**How to change a value**
+
+Settings are grouped by module (e.g. "kanban"). Each row shows:
+- the key name and its description,
+- the current value in an editable input (number fields show the valid range; colour fields show a colour picker with a preview swatch),
+- a "Save" button.
+
+Click "Save" -- the change takes effect immediately, leaving all other settings untouched. The next time you open the Kanban board it will reflect the new values.
+
+**What does a validation error mean?**
+
+If you enter an invalid value (e.g. 150 where the maximum is 100, or a colour that isn't in `#rrggbb` format), an error message appears directly below the row after you press Save. Other rows are unaffected. Fix the value and try again.
+
+**When is a restart required?**
+
+Some rows carry a "Requires restart" badge -- changes to those settings only take effect after the next server restart. The v1 kanban settings (WIP limits and badge colours) all apply immediately, no restart needed.
+
+---
+
 ### Settings System
 
 The dashboard Settings page manages a three-layer configuration system.

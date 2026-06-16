@@ -23,6 +23,29 @@ Ezek a fájlok a dashboard által kezelt, futásidőben módosuló konfiguráci�
 | `store/config-overrides.json` | dashboard UI | Beállítások-oldal által mentett felülbírálatok (plain értékek, sosem tartalmaz titkokat) |
 | `store/update.pid` | automatikus | Frissítési folyamat PID fájl (concurrency lock) |
 
+### Beállítások oldal
+
+A dashboard bal oldali navigációjában a "Beállítások" menüpont megnyitja a konfigurációs felületet, ahol az env-alapú paramétereket közvetlenül a böngészőből lehet megtekinteni és módosítani -- `.env` szerkesztés vagy szerver-hozzáférés nélkül.
+
+**Hogyan módosíts egy értéket?**
+
+A beállítások modul-csoportokba rendezve jelennek meg (pl. "kanban"). Minden sor tartalmaz:
+- a kulcs nevét és leírását,
+- a jelenlegi értéket egy szerkeszthető inputban (egész számoknál beviteli mező az érvényes tartomány jelzésével, színeknél színválasztó az aktuális szín előnézetével),
+- egy "Mentés" gombot.
+
+Kattints a "Mentés" gombra -- a változás azonnal életbe lép, a szerver többi beállítása érintetlen marad. Ha a kanban tábla oldalát ezután megnyitod, már az új értékeket mutatja.
+
+**Mit jelent a validációs hiba?**
+
+Ha érvénytelen értéket adsz meg (pl. 150-et, ahol a maximum 100, vagy nem `#rrggbb` formátumú szín), a hibaüzenet közvetlenül a sor alatt jelenik meg mentés gomb megnyomása után. Más sorok érintetlenek maradnak. Javítsd az értéket és próbáld újra.
+
+**Mikor kell újraindítás?**
+
+Egyes beállítások mellett "Újraindítást igényel" feliratú badge látható -- ha ilyen értéket módosítasz, a változás csak a szerver következő újraindítása után lép életbe. A v1-es kanban beállítások (WIP-limitek és badge-színek) mind azonnal hatnak, újraindítás nélkül.
+
+---
+
 ### Beállítások rendszer (Settings)
 
 A dashboard Beállítások oldala egy háromrétegű konfigurációs rendszert kezel.
