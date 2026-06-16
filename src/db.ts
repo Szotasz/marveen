@@ -509,6 +509,22 @@ export function initDatabase(dbPathOverride?: string): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tool_log_session ON tool_call_log(session_id, created_at)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tool_log_ts ON tool_call_log(created_at)`)
 
+  // --- Config Change Log (audit trail for /api/settings writes) ---
+  // Background-only: no UI surfaces this table yet (product decision). For
+  // secret settings, callers must pass null for old_value/new_value -- this
+  // table only ever holds plaintext for non-secret registry entries.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS config_change_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      key TEXT NOT NULL,
+      old_value TEXT,
+      new_value TEXT,
+      actor TEXT NOT NULL DEFAULT 'unknown',
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_config_change_log_key ON config_change_log(key, created_at)`)
+
   // One-shot migration from the old JSON file (which had a read-modify-write
   // race). Import rows if they exist, then rename the file so we don't keep
   // re-importing. Wrapped in a transaction so a crash mid-import is safe.
@@ -1814,5 +1830,34 @@ export function analyzeWorkflowCandidates(sinceSecs = 3600, minToolCalls = 5, ga
 export function pruneToolCallLog(olderThanSecs = 86400): void {
   const cutoff = Math.floor(Date.now() / 1000) - olderThanSecs
   db.prepare('DELETE FROM tool_call_log WHERE created_at < ?').run(cutoff)
+}
+
+// --- Config Change Log ---
+// Pass null for oldValue/newValue when the registry entry is secret:true --
+// this keeps secret values out of the audit trail entirely rather than
+// relying on a UI to not display them.
+export function logConfigChange(
+  key: string,
+  oldValue: string | number | null,
+  newValue: string | number | null,
+  actor: string,
+): void {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(
+    'INSERT INTO config_change_log (key, old_value, new_value, actor, created_at) VALUES (?, ?, ?, ?, ?)',
+  ).run(key, oldValue === null ? null : String(oldValue), newValue === null ? null : String(newValue), actor, now)
+}
+
+export interface ConfigChangeLogRow {
+  id: number
+  key: string
+  old_value: string | null
+  new_value: string | null
+  actor: string
+  created_at: number
+}
+
+export function getRecentConfigChanges(limit = 200): ConfigChangeLogRow[] {
+  return db.prepare('SELECT * FROM config_change_log ORDER BY created_at DESC LIMIT ?').all(limit) as ConfigChangeLogRow[]
 }
 
