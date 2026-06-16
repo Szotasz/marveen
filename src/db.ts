@@ -326,6 +326,29 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_comments_card ON kanban_comments(card_id)`)
 
+  // --- Kanban labels (tags) -----------------------------------------------
+  // Labels are a separate registry (not hardcoded per-card strings) so the
+  // same label can be reused across many cards and recolored in one place.
+  // The colour itself is validated against the configured palette
+  // (KANBAN_LABEL_COLORS) at the route layer, not hardcoded here.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS labels (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      color TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS kanban_card_labels (
+      card_id TEXT NOT NULL,
+      label_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (card_id, label_id)
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_card_labels_label ON kanban_card_labels(label_id)`)
+
   // --- Agent Messages ---
   db.exec(`
     CREATE TABLE IF NOT EXISTS agent_messages (
@@ -1075,19 +1098,22 @@ export function listKanbanProjects(): string[] {
 }
 
 export function deleteKanbanCard(id: string): boolean {
-  // Wrapped in a transaction to ensure atomicity: all three mutations
-  // succeed together or none of them do. Steps in FK-safe order:
+  // Wrapped in a transaction to ensure atomicity: all mutations succeed
+  // together or none of them do. Steps in FK-safe order:
   //   1. Delete comments that reference this card (FK: kanban_comments.card_id).
-  //   2. Null-out child cards that reference this card as their parent
+  //   2. Delete this card's label associations (FK: kanban_card_labels.card_id)
+  //      -- the labels themselves stay in the registry, only the link goes.
+  //   3. Null-out child cards that reference this card as their parent
   //      (FK: kanban_cards.parent_id). Setting parent_id = NULL keeps the
   //      children alive as root-level cards rather than leaving them with a
   //      dangling reference. FK enforcement is currently OFF by default
   //      (better-sqlite3 default), but the dangling parent_id is still a
   //      data bug -- orphaned children do not appear under any parent and
   //      are invisible in hierarchy views.
-  //   3. Delete the card itself.
+  //   4. Delete the card itself.
   return db.transaction((cardId: string) => {
     db.prepare('DELETE FROM kanban_comments WHERE card_id = ?').run(cardId)
+    db.prepare('DELETE FROM kanban_card_labels WHERE card_id = ?').run(cardId)
     db.prepare('UPDATE kanban_cards SET parent_id = NULL WHERE parent_id = ?').run(cardId)
     return db.prepare('DELETE FROM kanban_cards WHERE id = ?').run(cardId).changes > 0
   })(id) as boolean
@@ -1104,6 +1130,90 @@ export function addKanbanComment(cardId: string, author: string, content: string
   ).run(cardId, author, content, now)
   db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?').run(now, cardId)
   return { id: Number(info.lastInsertRowid), card_id: cardId, author, content, created_at: now }
+}
+
+// --- Kanban labels (tags) ---
+
+export interface Label {
+  id: string
+  name: string
+  color: string
+  created_at: number
+}
+
+export function listLabels(): Label[] {
+  return db.prepare('SELECT * FROM labels ORDER BY name ASC').all() as Label[]
+}
+
+export function getLabel(id: string): Label | undefined {
+  return db.prepare('SELECT * FROM labels WHERE id = ?').get(id) as Label | undefined
+}
+
+export function createLabel(label: { id: string; name: string; color: string }): Label {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(
+    'INSERT INTO labels (id, name, color, created_at) VALUES (?, ?, ?, ?)'
+  ).run(label.id, label.name, label.color, now)
+  return { ...label, created_at: now }
+}
+
+export function updateLabel(id: string, fields: Partial<Pick<Label, 'name' | 'color'>>): boolean {
+  const label = getLabel(id)
+  if (!label) return false
+  const f = { ...label, ...fields }
+  return db.prepare('UPDATE labels SET name=?, color=? WHERE id=?').run(f.name, f.color, id).changes > 0
+}
+
+export function deleteLabel(id: string): boolean {
+  // Transaction: drop every card<->label link before the label row itself,
+  // otherwise the join table keeps dangling references to a label that no
+  // longer exists (FK enforcement is off by default, but the orphan rows
+  // would still silently resurrect a "deleted" label in card detail views).
+  return db.transaction((labelId: string) => {
+    db.prepare('DELETE FROM kanban_card_labels WHERE label_id = ?').run(labelId)
+    return db.prepare('DELETE FROM labels WHERE id = ?').run(labelId).changes > 0
+  })(id) as boolean
+}
+
+export function addLabelToCard(cardId: string, labelId: string): void {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(
+    'INSERT OR IGNORE INTO kanban_card_labels (card_id, label_id, created_at) VALUES (?, ?, ?)'
+  ).run(cardId, labelId, now)
+}
+
+export function removeLabelFromCard(cardId: string, labelId: string): boolean {
+  return db.prepare(
+    'DELETE FROM kanban_card_labels WHERE card_id = ? AND label_id = ?'
+  ).run(cardId, labelId).changes > 0
+}
+
+export function getLabelsForCard(cardId: string): Label[] {
+  return db.prepare(`
+    SELECT l.* FROM labels l
+    JOIN kanban_card_labels cl ON cl.label_id = l.id
+    WHERE cl.card_id = ?
+    ORDER BY l.name ASC
+  `).all(cardId) as Label[]
+}
+
+// Bulk variant for the board list view -- one JOIN query instead of an N+1
+// per-card lookup when rendering footer pills for every card at once.
+export function getLabelsForAllCards(): Map<string, Label[]> {
+  const rows = db.prepare(`
+    SELECT cl.card_id AS card_id, l.id AS id, l.name AS name, l.color AS color, l.created_at AS created_at
+    FROM kanban_card_labels cl
+    JOIN labels l ON l.id = cl.label_id
+    ORDER BY l.name ASC
+  `).all() as Array<Label & { card_id: string }>
+  const map = new Map<string, Label[]>()
+  for (const row of rows) {
+    const { card_id, ...label } = row
+    const list = map.get(card_id)
+    if (list) list.push(label)
+    else map.set(card_id, [label])
+  }
+  return map
 }
 
 // --- Heartbeat helpers ---

@@ -117,6 +117,16 @@ export const KANBAN_SWIMLANE_DEFAULT_GROUP =
     : 'none'
 export const KANBAN_SWIMLANE_SEPARATOR_COLOR = env['KANBAN_SWIMLANE_SEPARATOR_COLOR'] ?? ''
 
+// Kanban label colour palette (cold tones by default). The label CRUD UI
+// offers these as swatches instead of a free-text colour input, so every
+// label's colour traces back to this single configurable list rather than
+// a hardcoded per-label mapping in the frontend.
+const rawKanbanLabelColors = (env['KANBAN_LABEL_COLORS'] ?? '#3b82f6,#0ea5e9,#10b981,#14b8a6,#8b5cf6,#64748b')
+  .split(',')
+  .map((c) => c.trim())
+  .filter(Boolean)
+export const KANBAN_LABEL_COLORS = rawKanbanLabelColors.length > 0 ? rawKanbanLabelColors : ['#64748b']
+
 export const CHANNEL_PROVIDER: ChannelProviderType = getProviderType(env['CHANNEL_PROVIDER'])
 export const CHANNEL_TOKEN = getChannelToken(CHANNEL_PROVIDER, env)
 export const CHANNEL_CHAT_ID = getChannelChatId(CHANNEL_PROVIDER, env)

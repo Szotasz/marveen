@@ -1238,6 +1238,21 @@
           <select id="parentSelect" style="flex:1; width:100%; padding:5px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px" title="Szülő feladat módosítása"></select>
         </div>
         <div class="card-detail-desc" id="cardDetailDesc"></div>
+        <div class="card-detail-labels">
+          <h4>Címkék</h4>
+          <div class="label-pill-list" id="cardLabelList"></div>
+          <div class="form-row" style="gap:8px; align-items:center; margin-top:6px">
+            <select id="cardLabelAdd" style="flex:1; padding:5px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px">
+              <option value="">-- Meglévő címke hozzáadása --</option>
+            </select>
+            <button class="btn-secondary btn-compact" id="cardLabelNewBtn">+ Új címke</button>
+          </div>
+          <div class="form-row" id="cardLabelNewForm" style="display:none; gap:8px; align-items:center; margin-top:6px">
+            <input type="text" id="cardLabelNewName" placeholder="Címke neve (pl. bug)" style="flex:1; padding:5px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px">
+            <div class="label-color-swatches" id="cardLabelNewColors"></div>
+            <button class="btn-primary btn-compact" id="cardLabelNewSaveBtn">Mentés</button>
+          </div>
+        </div>
         <div class="card-detail-comments">
           <h4>Megjegyzések</h4>
           <div class="comments-list" id="commentsList"></div>

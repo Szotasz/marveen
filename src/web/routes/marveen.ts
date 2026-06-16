@@ -7,6 +7,7 @@ import {
   KANBAN_WIP_PLANNED, KANBAN_WIP_IN_PROGRESS, KANBAN_WIP_WAITING, KANBAN_WIP_DONE,
   KANBAN_WIP_WARN_PCT, KANBAN_WIP_OK_COLOR, KANBAN_WIP_WARN_COLOR, KANBAN_WIP_FULL_COLOR, KANBAN_WIP_OVER_COLOR,
   KANBAN_SWIMLANE_DEFAULT_GROUP, KANBAN_SWIMLANE_SEPARATOR_COLOR,
+  KANBAN_LABEL_COLORS,
 } from '../../config.js'
 import { readMarveenTelegramConfig, readMarveenDiscordConfig, readMarveenSlackConfig, sendMarveenAvatarChange } from '../telegram.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
@@ -117,6 +118,9 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
       kanbanSwimlanes: {
         defaultGroup: KANBAN_SWIMLANE_DEFAULT_GROUP,
         separatorColor: KANBAN_SWIMLANE_SEPARATOR_COLOR || null,
+      },
+      kanbanLabels: {
+        colors: KANBAN_LABEL_COLORS,
       },
     })
     return true

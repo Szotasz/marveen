@@ -939,6 +939,54 @@ main {
 }
 .card-detail-desc:empty { display: none; }
 
+.card-detail-labels { margin-bottom: 20px; }
+.card-detail-labels h4 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 10px;
+}
+.label-pill-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 22px;
+}
+.label-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--label-color);
+  background: color-mix(in srgb, var(--label-color) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--label-color) 40%, transparent);
+}
+.label-pill-remove {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+  opacity: 0.7;
+}
+.label-pill-remove:hover { opacity: 1; }
+.label-color-swatches { display: flex; gap: 4px; }
+.label-color-swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid transparent;
+}
+.label-color-swatch.selected { border-color: var(--text); }
+
 .card-detail-comments { margin-bottom: 20px; }
 .card-detail-comments h4 {
   font-size: 12px;

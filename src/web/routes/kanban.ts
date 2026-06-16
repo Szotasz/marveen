@@ -6,8 +6,10 @@ import {
   getKanbanComments, addKanbanComment, listKanbanProjects,
   getKanbanCard, getChildCards, getDb,
   createAgentMessage, markKanbanCardDispatched,
+  listLabels, getLabel, createLabel, updateLabel, deleteLabel,
+  addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
 } from '../../db.js'
-import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT } from '../../config.js'
+import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
 import { resolveKanbanDispatchTarget } from '../../kanban-dispatch.js'
@@ -79,7 +81,81 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
   if (path === '/api/kanban' && method === 'GET') {
-    json(res, listKanbanCards())
+    // Embed each card's labels in one extra JOIN query (getLabelsForAllCards)
+    // instead of an N+1 per-card lookup, so the footer-pill UI gets
+    // everything it needs in a single round trip.
+    const labelsByCard = getLabelsForAllCards()
+    const cards = listKanbanCards().map((card) => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))
+    json(res, cards)
+    return true
+  }
+
+  if (path === '/api/kanban/labels' && method === 'GET') {
+    json(res, listLabels())
+    return true
+  }
+
+  if (path === '/api/kanban/labels' && method === 'POST') {
+    const body = await readBody(req)
+    const { name, color } = JSON.parse(body.toString()) as { name?: string; color?: string }
+    if (!name || !name.trim()) { json(res, { error: 'Címke neve kötelező' }, 400); return true }
+    // Colour is validated against the configured palette (KANBAN_LABEL_COLORS)
+    // rather than accepted as free-text, so every label's colour traces back
+    // to the single configurable source instead of an arbitrary per-request value.
+    const resolvedColor = color && KANBAN_LABEL_COLORS.includes(color) ? color : KANBAN_LABEL_COLORS[0]
+    const id = randomUUID().slice(0, 8)
+    const label = createLabel({ id, name: name.trim(), color: resolvedColor })
+    json(res, label)
+    return true
+  }
+
+  const labelMatch = path.match(/^\/api\/kanban\/labels\/([^/]+)$/)
+  if (labelMatch && method === 'PUT') {
+    const id = decodeURIComponent(labelMatch[1])
+    const body = await readBody(req)
+    const { name, color } = JSON.parse(body.toString()) as { name?: string; color?: string }
+    const fields: { name?: string; color?: string } = {}
+    if (name !== undefined) {
+      if (!name.trim()) { json(res, { error: 'Címke neve kötelező' }, 400); return true }
+      fields.name = name.trim()
+    }
+    if (color !== undefined) {
+      fields.color = KANBAN_LABEL_COLORS.includes(color) ? color : KANBAN_LABEL_COLORS[0]
+    }
+    if (updateLabel(id, fields)) { json(res, { ok: true }); return true }
+    json(res, { error: 'Címke nem található' }, 404)
+    return true
+  }
+  if (labelMatch && method === 'DELETE') {
+    const id = decodeURIComponent(labelMatch[1])
+    if (deleteLabel(id)) { json(res, { ok: true }); return true }
+    json(res, { error: 'Címke nem található' }, 404)
+    return true
+  }
+
+  const cardLabelsMatch = path.match(/^\/api\/kanban\/([^/]+)\/labels$/)
+  if (cardLabelsMatch && method === 'GET') {
+    const cardId = decodeURIComponent(cardLabelsMatch[1])
+    json(res, getLabelsForCard(cardId))
+    return true
+  }
+  if (cardLabelsMatch && method === 'POST') {
+    const cardId = decodeURIComponent(cardLabelsMatch[1])
+    if (!getKanbanCard(cardId)) { json(res, { error: 'Kártya nem található' }, 404); return true }
+    const body = await readBody(req)
+    const { labelId } = JSON.parse(body.toString()) as { labelId?: string }
+    if (!labelId || !getLabel(labelId)) { json(res, { error: 'Címke nem található' }, 404); return true }
+    addLabelToCard(cardId, labelId)
+    json(res, { ok: true })
+    return true
+  }
+
+  const cardLabelDeleteMatch = path.match(/^\/api\/kanban\/([^/]+)\/labels\/([^/]+)$/)
+  if (cardLabelDeleteMatch && method === 'DELETE') {
+    const cardId = decodeURIComponent(cardLabelDeleteMatch[1])
+    const labelId = decodeURIComponent(cardLabelDeleteMatch[2])
+    if (removeLabelFromCard(cardId, labelId)) { json(res, { ok: true }); return true }
+    json(res, { error: 'A kártyán nincs ilyen címke' }, 404)
     return true
   }
 
