@@ -153,6 +153,34 @@ KANBAN_WIP_OVER_COLOR=#c53030
 ```
 
 Data flow: `src/config.ts` → `/api/marveen` (`kanbanWip` key) → `window._marveen.kanbanWip` (frontend). The frontend is static -- a server HUP is sufficient to apply limit changes.
+### Swimlane view
+
+The swimlane view splits the board into horizontal lanes, so instead of one big column you immediately see where cards are piling up -- by owner or by priority.
+
+**What you see**
+
+When grouping is turned on, cards are arranged into horizontal lanes instead of (or within) columns. Each lane starts with a sticky header (always visible while scrolling) showing:
+
+- the assignee's avatar and name (when grouping by owner), or the priority label (when grouping by priority),
+- the number of cards in the lane,
+- a small chevron icon to collapse the lane.
+
+**Switching the grouping**
+
+A control above the board lets you choose how cards are split into lanes:
+
+- **By owner** -- one lane per assignee, so you can tell at a glance who has how much in flight.
+- **By priority** -- cards land in `low`/`normal`/`high`/`urgent` lanes, so urgent work doesn't get lost in the crowd.
+
+Your choice is remembered in the browser, so you don't have to re-select it every time you open the board.
+
+**Collapsing a lane**
+
+If a lane isn't relevant right now (e.g. an assignee with everything closed out), click the chevron in its header -- the lane collapses to just the header (with the card count). Click again to reopen it.
+
+**What it's for**
+
+On a large board with lots of cards, the plain column view gets hard to scan. The swimlane view immediately shows the load distribution -- if cards are piling up for one owner (or at one priority level), you see it at a glance, before reading through each one.
 
 ---
 

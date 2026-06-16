@@ -154,3 +154,31 @@ Ha egy oszlop piros badge-dzsel villog, ne vegyél fel oda új feladatot. Elősz
 **Hogyan állítható a limit?**
 
 A WIP-limit oszloponként konfigurálható a `.env` fájlban (részletek a technikai dokumentációban). Ha az oszlopnak nincs beállított limitje, a badge nem jelenik meg.
+### Sávos nézet (Swimlane)
+
+A swimlane nézet vízszintes sávokra bontja a táblát, hogy egy nagy oszlop helyett azonnal lásd, kinél vagy milyen prioritású kártyák torlódnak.
+
+**Mit látsz?**
+
+Csoportosítás bekapcsolásakor a kártyák oszlopok helyett (vagy azokon belül) vízszintes sávokba rendeződnek. Minden sáv elején egy "ragadó" (a görgetésnél mindig látható) fejléc áll:
+
+- a felelős avatarja és neve (ha felelős szerint csoportosítasz), vagy a prioritás címkéje (ha prioritás szerint),
+- a sávban lévő kártyák száma,
+- egy kis nyíl (chevron) ikon, amivel a sáv összecsukható.
+
+**Csoportosítás váltása**
+
+A tábla feletti vezérlőben választhatsz, mi szerint bontsa sávokra a rendszer a kártyákat:
+
+- **Felelős szerint** -- minden felelőshöz egy sáv, így egy pillantással látod, kinél mennyi van folyamatban.
+- **Prioritás szerint** -- a kártyák `low`/`normal`/`high`/`urgent` sávokba kerülnek, így a sürgős feladatok nem tűnnek el a tömegben.
+
+A választás a böngésződben megmarad, nem kell minden megnyitásnál újra beállítani.
+
+**Sáv összecsukása**
+
+Ha egy sáv jelenleg nem érdekes (pl. egy felelős minden kártyája lezárva), kattints a fejléc chevronjára -- a sáv összecsukódik, csak a fejléc (létszámmal) marad látható. Ugyanígy nyitható vissza.
+
+**Mire jó?**
+
+Nagy, sok kártyás táblánál a sima oszlopnézet könnyen átláthatatlanná válik. A swimlane nézet azonnal megmutatja a terheléseloszlást -- ha egy felelősnél (vagy egy prioritási szinten) feltorlódnak a kártyák, az első pillantásra látszik, mielőtt bele kellene olvasni mindegyikbe.
