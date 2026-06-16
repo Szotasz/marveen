@@ -5200,6 +5200,8 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
 .settings-row-editor {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
   flex-shrink: 0;
 }
@@ -5208,7 +5210,7 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   font-size: 13px;
 }
 .settings-color-input {
-  width: 44px;
+  width: 72px;
   height: 32px;
   padding: 2px;
   border: 1px solid var(--border);

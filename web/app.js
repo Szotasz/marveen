@@ -299,15 +299,16 @@ document.querySelectorAll('.kanban-add-btn').forEach((btn) => {
 
 async function loadKanban() {
   try {
-    // Ensure the marveen config (kanbanAging + kanbanWip + kanbanSwimlanes) is
-    // loaded even if the user opens the Kanban page first, before the Agents
-    // page populated it.
-    if (!window._marveen?.kanbanAging || !window._marveen?.kanbanWip || !window._marveen?.kanbanSwimlanes || !window._marveen?.kanbanLabels) {
-      try {
-        const mr = await fetch('/api/marveen')
-        if (mr.ok) window._marveen = { ...(window._marveen || {}), ...(await mr.json()) }
-      } catch { /* ignore -- aging/WIP/swimlanes just won't render until _marveen loads */ }
-    }
+    // Always refresh the marveen config so values changed on the Settings page
+    // (e.g. WIP limits) show up on the board on the next Kanban open, without a
+    // hard reload. The full /api/marveen payload includes kanbanAging, kanbanWip,
+    // kanbanSwimlanes and kanbanLabels, so the labels (from the labels feature)
+    // stay populated too. Also covers opening the Kanban page first, before the
+    // Agents page populated window._marveen.
+    try {
+      const mr = await fetch('/api/marveen')
+      if (mr.ok) window._marveen = { ...(window._marveen || {}), ...(await mr.json()) }
+    } catch { /* ignore -- aging/WIP/swimlanes/labels just won't render until _marveen loads */ }
     if (!kanbanGroupByInitialized) {
       kanbanGroupByInitialized = true
       // A user's own past choice (saved to localStorage) wins over the
