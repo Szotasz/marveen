@@ -476,15 +476,81 @@ function setupAssigneeFilter() {
   syncOwnerFilterBtn()
 }
 
+// Project + assignee + label filters, independent of the priority quick-filter
+// dimension -- shared by the board visibility pass and by the quick-filter
+// chip counts (each chip shows how many cards match under every OTHER active
+// filter, so the count stays meaningful whether the chip itself is on or off).
+function kanbanCardMatchesNonPriorityFilters(card) {
+  if (kanbanProjectFilter && (card.project || '') !== kanbanProjectFilter) return false
+  const assigneeFilter = kanbanAssigneeFilter.toLowerCase()
+  if (assigneeFilter && String(card.assignee || '').trim().toLowerCase() !== assigneeFilter) return false
+  if (kanbanLabelFilter.size > 0) {
+    const cardLabelIds = (card.labels || []).map((l) => l.id)
+    if (!cardLabelIds.some((id) => kanbanLabelFilter.has(id))) return false
+  }
+  return true
+}
+
+function toggleKanbanPriorityFilter(priority) {
+  if (kanbanPriorityFilter.has(priority)) kanbanPriorityFilter.delete(priority)
+  else kanbanPriorityFilter.add(priority)
+  persistKanbanFilters()
+  renderKanban()
+}
+
+function toggleKanbanLabelFilter(labelId) {
+  if (kanbanLabelFilter.has(labelId)) kanbanLabelFilter.delete(labelId)
+  else kanbanLabelFilter.add(labelId)
+  persistKanbanFilters()
+  renderKanban()
+}
+
+function clearKanbanQuickFilters() {
+  kanbanPriorityFilter.clear()
+  kanbanLabelFilter.clear()
+  persistKanbanFilters()
+  renderKanban()
+}
+
+function persistKanbanFilters() {
+  localStorage.setItem('marveen.kanbanPriorityFilter', JSON.stringify([...kanbanPriorityFilter]))
+  localStorage.setItem('marveen.kanbanLabelFilter', JSON.stringify([...kanbanLabelFilter]))
+}
+
+function renderKanbanQuickFilters() {
+  const row = document.getElementById('kanbanQuickFilters')
+  if (!row) return
+  row.innerHTML = ''
+  for (const priority of KANBAN_PRIORITY_ORDER) {
+    const count = kanbanCards.filter((c) => c.priority === priority && kanbanCardMatchesNonPriorityFilters(c)).length
+    const active = kanbanPriorityFilter.has(priority)
+    const chip = document.createElement('span')
+    chip.className = 'kanban-quick-filter-chip' + (active ? ' active' : '')
+    chip.dataset.priority = priority
+    chip.style.setProperty('--chip-color', `var(${KANBAN_PRIORITY_CHIP_VAR[priority]})`)
+    chip.innerHTML = `${escapeHtml(KANBAN_PRIORITY_LABELS[priority])} <span class="kanban-quick-filter-count">${count}</span>${active ? '<span class="kanban-quick-filter-clear">&times;</span>' : ''}`
+    chip.addEventListener('click', () => toggleKanbanPriorityFilter(priority))
+    row.appendChild(chip)
+  }
+  if (kanbanPriorityFilter.size > 0 || kanbanLabelFilter.size > 0) {
+    const clearAll = document.createElement('button')
+    clearAll.className = 'kanban-quick-filter-clear-all'
+    clearAll.textContent = 'Szűrők törlése'
+    clearAll.addEventListener('click', clearKanbanQuickFilters)
+    row.appendChild(clearAll)
+  }
+}
+
 function renderKanban() {
   const cardById = new Map(kanbanCards.map(c => [c.id, c]))
-  const assigneeFilter = kanbanAssigneeFilter.toLowerCase()
+
+  renderKanbanQuickFilters()
 
   // Determine which top-level cards are visible under current filters.
   const visibleCardIds = new Set()
   for (const card of kanbanCards) {
-    if (kanbanProjectFilter && (card.project || '') !== kanbanProjectFilter) continue
-    if (assigneeFilter && String(card.assignee || '').trim().toLowerCase() !== assigneeFilter) continue
+    if (!kanbanCardMatchesNonPriorityFilters(card)) continue
+    if (kanbanPriorityFilter.size > 0 && !kanbanPriorityFilter.has(card.priority)) continue
     visibleCardIds.add(card.id)
   }
 
@@ -548,6 +614,10 @@ const KANBAN_STATUS_DEFS = [
 ]
 const KANBAN_PRIORITY_LABELS = { urgent: 'Sürgős', high: 'Magas', normal: 'Normál', low: 'Alacsony' }
 const KANBAN_PRIORITY_ORDER = ['urgent', 'high', 'normal', 'low']
+// Quick-filter chip tone per priority, reusing the existing theme palette
+// (no new colour constants) -- same association a reader already knows from
+// the card priority border.
+const KANBAN_PRIORITY_CHIP_VAR = { urgent: '--danger', high: '--accent', normal: '--success', low: '--text-muted' }
 
 // Which swimlane a card belongs to under the current grouping. Returns a
 // stable string key: the matched assignee's canonical name, '__unassigned__'
@@ -758,6 +828,22 @@ function createCardEl(card, embeddedChildren = []) {
     ? `<span class="kanban-card-project">${escapeHtml(card.project)}</span>`
     : ''
 
+  // Label footer pills: at most 3 shown + a "+N" overflow indicator. Each pill
+  // (except the overflow one) toggles that label into the active label-filter
+  // when clicked, mirroring the priority quick-filter chips above the board.
+  let labelsHtml = ''
+  if (Array.isArray(card.labels) && card.labels.length > 0) {
+    const shown = card.labels.slice(0, 3)
+    const overflow = card.labels.length - shown.length
+    const pills = shown.map((l) =>
+      `<span class="kanban-card-label-pill" data-label-id="${escapeHtml(l.id)}" style="--label-color:${escapeHtml(l.color)}" title="Szűrés: #${escapeHtml(l.name)}">#${escapeHtml(l.name)}</span>`
+    ).join('')
+    const overflowHtml = overflow > 0
+      ? `<span class="kanban-card-label-pill kanban-card-label-overflow" title="${overflow} további címke">+${overflow}</span>`
+      : ''
+    labelsHtml = `<div class="kanban-card-labels">${pills}${overflowHtml}</div>`
+  }
+
   const seqHtml = card.seq != null
     ? `<span class="kanban-card-seq" style="font-family:monospace;font-size:11px;color:var(--muted);margin-right:5px">#${card.seq}</span>`
     : ''
@@ -806,6 +892,7 @@ function createCardEl(card, embeddedChildren = []) {
     ${projectHtml}
     <div class="kanban-card-title">${seqHtml}${escapeHtml(card.title)}</div>
     <div class="kanban-card-footer">${assigneeHtml}${dueHtml}</div>
+    ${labelsHtml}
     <div class="kanban-card-actions">
       <button class="card-breakdown-btn" title="AI szétbont" aria-label="AI szétbont">⚡</button>
     </div>
@@ -818,6 +905,14 @@ function createCardEl(card, embeddedChildren = []) {
   el.querySelector('.card-breakdown-btn').addEventListener('click', (e) => {
     e.stopPropagation()
     triggerBreakdown(card)
+  })
+
+  // Label pills -> toggle that label into the active filter (don't open detail)
+  el.querySelectorAll('.kanban-card-label-pill[data-label-id]').forEach((pillEl) => {
+    pillEl.addEventListener('click', (e) => {
+      e.stopPropagation()
+      toggleKanbanLabelFilter(pillEl.dataset.labelId)
+    })
   })
 
   // Click on embedded subtask -> open that subtask's detail (don't bubble to parent)
