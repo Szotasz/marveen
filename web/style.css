@@ -807,9 +807,12 @@ main {
   font-size: 12px;
   padding: 3px 9px;
   border-radius: 12px;
-  border: 1px solid var(--border);
-  color: var(--text-secondary);
-  background: var(--bg-card);
+  /* Inactive chips already carry their label's own colour (border + text +
+     faint tint), so the header filter row visually matches the per-card label
+     pills on the board; the active state below fills solid. */
+  border: 1px solid var(--chip-color);
+  color: var(--chip-color);
+  background: color-mix(in srgb, var(--chip-color) 12%, var(--bg-card));
   cursor: pointer;
   user-select: none;
 }
