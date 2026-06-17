@@ -5869,3 +5869,8 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
 /* === Docs viewer: content toolbar (.md download) === */
 .docs-content-toolbar { display: flex; justify-content: flex-end; margin: 0 0 12px; }
 .docs-content-toolbar .btn-compact { font-size: 12px; }
+
+/* === Idea box: score chip + clickable title === */
+.idea-score-chip { font-size: 11px; padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px; color: var(--text-muted); white-space: nowrap; }
+.idea-title-link { color: inherit; text-decoration: none; cursor: pointer; }
+.idea-title-link:hover { text-decoration: underline; }

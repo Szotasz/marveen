@@ -931,12 +931,13 @@
             <select id="ideaCategoryFilter" class="input" style="width:160px;font-size:13px">
               <option value="">Összes kategória</option>
             </select>
-            <select id="ideaStatusFilter" class="input" style="width:130px;font-size:13px">
-              <option value="">Összes státusz</option>
+            <select id="ideaStatusFilter" class="input" style="width:165px;font-size:13px">
+              <option value="active" selected>Aktív (új + átnézett)</option>
               <option value="new">Új</option>
               <option value="reviewed">Átnézve</option>
               <option value="kanban">Kanbanban</option>
               <option value="rejected">Elutasítva</option>
+              <option value="">Mind</option>
             </select>
             <button class="btn-primary btn-compact" id="ideaNewBtn">+ Új ötlet</button>
           </div>
@@ -958,6 +959,28 @@
                 <select id="ideaCategoryInput" class="input"><option>Sales</option><option>Oktatás</option><option>Automatizálás</option><option>Integráció</option><option>Rendszer</option><option>Egyéb</option></select>
               </div>
             </div>
+            <div style="display:flex;gap:8px">
+              <div class="form-group" style="flex:1"><label class="form-label">Hatás (Impact) 1-5</label>
+                <select id="ideaImpactInput" class="input">
+                  <option value="">-</option>
+                  <option value="1">1 - Minimális</option>
+                  <option value="2">2 - Kis</option>
+                  <option value="3">3 - Közepes</option>
+                  <option value="4">4 - Nagy</option>
+                  <option value="5">5 - Maximális</option>
+                </select>
+              </div>
+              <div class="form-group" style="flex:1"><label class="form-label">Befektetés (Effort) 1-5</label>
+                <select id="ideaEffortInput" class="input">
+                  <option value="">-</option>
+                  <option value="1">1 - Minimális</option>
+                  <option value="2">2 - Kis</option>
+                  <option value="3">3 - Közepes</option>
+                  <option value="4">4 - Nagy</option>
+                  <option value="5">5 - Maximális</option>
+                </select>
+              </div>
+            </div>
           </div>
           <div class="modal-footer" style="display:flex;gap:8px;justify-content:flex-end">
             <button class="btn-secondary" id="ideaModalCancel">Mégse</button>
@@ -976,6 +999,36 @@
             </div>
           </div>
           <div class="modal-footer" style="justify-content:flex-end"><button class="btn-secondary" id="ideaPromoteCancel">Mégse</button></div>
+        </div>
+      </div>
+      <!-- Idea detail modal: comments + impact/effort display -->
+      <div class="modal-overlay" id="ideaDetailOverlay">
+        <div class="modal" style="max-width:600px">
+          <div class="modal-header">
+            <div style="flex:1;min-width:0">
+              <h2 id="ideaDetailTitle" style="margin:0;font-size:16px;word-break:break-word"></h2>
+              <div id="ideaDetailMeta" style="font-size:12px;color:var(--text-muted);margin-top:2px"></div>
+            </div>
+            <button class="modal-close" id="ideaDetailClose">&times;</button>
+          </div>
+          <div class="modal-body" style="display:flex;flex-direction:column;gap:12px">
+            <div id="ideaDetailDesc" style="font-size:14px;color:var(--text);white-space:pre-wrap"></div>
+            <div id="ideaDetailScore" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+            <div class="card-detail-comments">
+              <h4 style="margin:0 0 8px;font-size:13px;font-weight:600">Megjegyzések</h4>
+              <div class="comments-list" id="ideaCommentsList"></div>
+              <div class="comment-form" style="margin-top:8px">
+                <textarea id="ideaCommentContent" class="input" rows="2" placeholder="Megjegyzés írása..." style="width:100%;resize:vertical"></textarea>
+                <div style="display:flex;justify-content:flex-end;margin-top:6px">
+                  <button class="btn-primary btn-compact" id="ideaCommentSubmit">Küldés</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer" style="justify-content:space-between">
+            <button class="btn-secondary btn-compact" id="ideaDetailEditBtn">Szerkeszt</button>
+            <button class="btn-secondary btn-compact" id="ideaDetailCloseBtn">Bezár</button>
+          </div>
         </div>
       </div>
     </div>

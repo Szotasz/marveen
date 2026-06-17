@@ -10397,17 +10397,20 @@ window.addEventListener('resize', () => {
 let ideas = []
 let ideasPromoteId = null
 let ideaEditId = null
+let ideaDetailId = null
 const STATUS_COLORS = { new: 'var(--accent)', reviewed: '#f59e0b', kanban: '#22c55e', rejected: '#ef4444' }
 const STATUS_LABELS = { new: 'Új', reviewed: 'Átnézve', kanban: 'Kanbanban', rejected: 'Elutasítva' }
 
 async function loadIdeasPage() {
-  const statusFilter = document.getElementById('ideaStatusFilter')?.value || ''
+  const statusFilter = document.getElementById('ideaStatusFilter')?.value ?? 'active'
   const categoryFilter = document.getElementById('ideaCategoryFilter')?.value || ''
   const params = new URLSearchParams()
-  if (statusFilter) params.set('status', statusFilter)
+  // 'active' = new+reviewed, fetched unfiltered then narrowed client-side
+  if (statusFilter && statusFilter !== 'active') params.set('status', statusFilter)
   if (categoryFilter) params.set('category', categoryFilter)
   const [ideasRes, catsRes] = await Promise.all([fetch('/api/ideas?' + params), fetch('/api/ideas/categories')])
   ideas = await ideasRes.json()
+  if (statusFilter === 'active') ideas = ideas.filter(i => i.status === 'new' || i.status === 'reviewed')
   const cats = await catsRes.json()
   const catSel = document.getElementById('ideaCategoryFilter')
   if (catSel) {
@@ -10447,16 +10450,24 @@ function renderIdeasList() {
     </div>`).join('')
 }
 
+function ideaScoreBadge(idea) {
+  if (!idea.impact || !idea.effort) return ''
+  const score = idea.impact - idea.effort
+  const color = score > 0 ? '#22c55e' : score < 0 ? '#ef4444' : 'var(--text-muted)'
+  return `<span style="font-size:11px;color:${color};border:1px solid ${color};border-radius:4px;padding:2px 5px" title="Impact ${idea.impact} - Effort ${idea.effort}">I${idea.impact}·E${idea.effort}</span>`
+}
+
 function renderIdeaCard(idea) {
   const statusColor = STATUS_COLORS[idea.status] || 'var(--text-muted)'
   const statusLabel = STATUS_LABELS[idea.status] || idea.status
-  const desc = idea.description ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">${escapeHtml(idea.description)}</div>` : ''
+  const desc = idea.description ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">${escapeHtml(idea.description.slice(0, 120))}${idea.description.length > 120 ? '…' : ''}</div>` : ''
   return `<div class="card" style="padding:12px 16px;margin-bottom:4px">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
-      <div style="flex:1">
-        <div style="display:flex;align-items:center;gap:8px">
-          <span style="font-weight:600;font-size:14px">${escapeHtml(idea.title)}</span>
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span class="idea-title-link" style="font-weight:600;font-size:14px;cursor:pointer" onclick="openIdeaDetail('${idea.id}')">${escapeHtml(idea.title)}</span>
           <span style="font-size:11px;color:${statusColor};padding:2px 6px;border:1px solid ${statusColor};border-radius:4px">${statusLabel}</span>
+          ${ideaScoreBadge(idea)}
         </div>
         ${desc}
       </div>
@@ -10488,13 +10499,24 @@ function openIdeaEdit(id) {
   document.getElementById('ideaTitleInput').value = idea.title
   document.getElementById('ideaDescInput').value = idea.description || ''
   document.getElementById('ideaCategoryInput').value = idea.category
+  document.getElementById('ideaImpactInput').value = idea.impact ?? ''
+  document.getElementById('ideaEffortInput').value = idea.effort ?? ''
   openModal(document.getElementById('ideaModalOverlay'))
 }
 
 async function saveIdea() {
   const title = document.getElementById('ideaTitleInput').value.trim()
   if (!title) { showToast('Cím kötelező', 'error'); return }
-  const body = { title, description: document.getElementById('ideaDescInput').value.trim() || undefined, category: document.getElementById('ideaCategoryInput').value, source: 'manual' }
+  const impactRaw = document.getElementById('ideaImpactInput').value
+  const effortRaw = document.getElementById('ideaEffortInput').value
+  const body = {
+    title,
+    description: document.getElementById('ideaDescInput').value.trim() || undefined,
+    category: document.getElementById('ideaCategoryInput').value,
+    source: 'manual',
+    impact: impactRaw ? parseInt(impactRaw) : null,
+    effort: effortRaw ? parseInt(effortRaw) : null,
+  }
   if (ideaEditId) {
     await fetch(`/api/ideas/${ideaEditId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
   } else {
@@ -10509,6 +10531,83 @@ async function deleteIdeaItem(id) {
   await fetch(`/api/ideas/${id}`, { method: 'DELETE' })
   loadIdeasPage()
 }
+
+// --- Idea detail modal (comments + impact/effort view) ---
+
+async function openIdeaDetail(id) {
+  const idea = ideas.find(i => i.id === id)
+  if (!idea) return
+  ideaDetailId = id
+  const statusLabel = STATUS_LABELS[idea.status] || idea.status
+  document.getElementById('ideaDetailTitle').textContent = idea.title
+  document.getElementById('ideaDetailMeta').textContent = `${idea.category} · ${statusLabel}`
+  document.getElementById('ideaDetailDesc').textContent = idea.description || '(nincs leírás)'
+  renderIdeaDetailScore(idea)
+  document.getElementById('ideaCommentsList').innerHTML = ''
+  document.getElementById('ideaCommentContent').value = ''
+  openModal(document.getElementById('ideaDetailOverlay'))
+  await loadIdeaComments(id)
+}
+
+function renderIdeaDetailScore(idea) {
+  const el = document.getElementById('ideaDetailScore')
+  if (!el) return
+  if (!idea.impact && !idea.effort) { el.innerHTML = '<span style="font-size:12px;color:var(--text-muted)">Pontozás még nincs megadva.</span>'; return }
+  const score = (idea.impact || 0) - (idea.effort || 0)
+  const scoreColor = score > 0 ? '#22c55e' : score < 0 ? '#ef4444' : 'var(--text-muted)'
+  const chips = [
+    idea.impact ? `<span class="idea-score-chip">Impact: <strong>${idea.impact}/5</strong></span>` : '',
+    idea.effort ? `<span class="idea-score-chip">Effort: <strong>${idea.effort}/5</strong></span>` : '',
+    (idea.impact && idea.effort) ? `<span class="idea-score-chip" style="border-color:${scoreColor};color:${scoreColor}">Pont: <strong>${score >= 0 ? '+' : ''}${score}</strong></span>` : '',
+  ]
+  el.innerHTML = chips.filter(Boolean).join('')
+}
+
+async function loadIdeaComments(id) {
+  const list = document.getElementById('ideaCommentsList')
+  try {
+    const res = await fetch(`/api/ideas/${encodeURIComponent(id)}/comments`)
+    const data = await res.json()
+    if (!data.comments || !data.comments.length) {
+      list.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:6px 0">Nincs megjegyzés</div>'
+      return
+    }
+    list.innerHTML = ''
+    for (const c of data.comments) {
+      const date = new Date(c.created_at * 1000).toLocaleString('hu-HU', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+      const div = document.createElement('div')
+      div.className = 'comment-item'
+      div.innerHTML = `<div><span class="comment-author">${escapeHtml(c.author)}</span><span class="comment-date">${date}</span></div><div class="comment-body">${escapeHtml(c.content)}</div>`
+      list.appendChild(div)
+    }
+  } catch {
+    list.innerHTML = '<div style="color:var(--danger);font-size:12px">Hiba a megjegyzések betöltésekor</div>'
+  }
+}
+
+document.getElementById('ideaCommentSubmit')?.addEventListener('click', async () => {
+  if (!ideaDetailId) return
+  const content = document.getElementById('ideaCommentContent').value.trim()
+  if (!content) { document.getElementById('ideaCommentContent').focus(); return }
+  try {
+    const res = await fetch(`/api/ideas/${encodeURIComponent(ideaDetailId)}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    })
+    if (!res.ok) { showToast('Megjegyzés mentés hiba', 'error'); return }
+    document.getElementById('ideaCommentContent').value = ''
+    await loadIdeaComments(ideaDetailId)
+  } catch { showToast('Megjegyzés mentés hiba', 'error') }
+})
+
+document.getElementById('ideaDetailClose')?.addEventListener('click', () => closeModal(document.getElementById('ideaDetailOverlay')))
+document.getElementById('ideaDetailCloseBtn')?.addEventListener('click', () => closeModal(document.getElementById('ideaDetailOverlay')))
+document.getElementById('ideaDetailEditBtn')?.addEventListener('click', () => {
+  if (!ideaDetailId) return
+  closeModal(document.getElementById('ideaDetailOverlay'))
+  openIdeaEdit(ideaDetailId)
+})
 
 function openIdeaPromote(id) {
   ideasPromoteId = id
