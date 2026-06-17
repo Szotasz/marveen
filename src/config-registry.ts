@@ -120,6 +120,18 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  // --- Kanban archiving (hot-reload via settings-store) ---
+  {
+    key: 'KANBAN_ARCHIVE_DONE_DAYS',
+    type: 'int',
+    default: 30,
+    min: 1,
+    max: 365,
+    description: 'Ennyi napnál régebbi "done" kártyák automatikusan archiválódnak a listKanbanCards() hívásakor.',
+    module: 'kanban',
+    secret: false,
+    requiresRestart: false,
+  },
   // --- Kanban aging thresholds and colours (hot-reload via settings-store) ---
   {
     key: 'KANBAN_AGING_WARN_H',

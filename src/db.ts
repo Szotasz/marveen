@@ -2,6 +2,7 @@ import Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync } from 'node:fs'
 import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL } from './config.js'
+import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 
 let db: Database.Database
@@ -1024,11 +1025,12 @@ export interface KanbanComment {
 }
 
 export function listKanbanCards(): KanbanCard[] {
-  const thirtyDaysAgo = Math.floor(Date.now() / 1000) - 30 * 86400
-  // Auto-archive done cards older than 30 days
+  const archiveDays = Number(getEffectiveSettingValue('KANBAN_ARCHIVE_DONE_DAYS'))
+  const archiveCutoff = Math.floor(Date.now() / 1000) - archiveDays * 86400
+  // Auto-archive done cards older than KANBAN_ARCHIVE_DONE_DAYS days
   db.prepare(
     "UPDATE kanban_cards SET archived_at = ? WHERE status = 'done' AND archived_at IS NULL AND updated_at < ?"
-  ).run(Math.floor(Date.now() / 1000), thirtyDaysAgo)
+  ).run(Math.floor(Date.now() / 1000), archiveCutoff)
   return db
     .prepare('SELECT rowid AS seq, * FROM kanban_cards WHERE archived_at IS NULL ORDER BY sort_order ASC')
     .all() as KanbanCard[]
