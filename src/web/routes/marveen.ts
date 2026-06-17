@@ -2,9 +2,6 @@ import { existsSync, unlinkSync, copyFileSync, writeFileSync } from 'node:fs'
 import { join, extname } from 'node:path'
 import {
   PROJECT_ROOT, OWNER_NAME, BOT_NAME, BRAND_NAME, MAIN_AGENT_ID, CHANNEL_PROVIDER,
-  KANBAN_AGING_WARN_H, KANBAN_AGING_CAUTION_H, KANBAN_AGING_CRITICAL_H,
-  KANBAN_AGING_WARN_COLOR, KANBAN_AGING_CAUTION_COLOR, KANBAN_AGING_CRITICAL_COLOR,
-  KANBAN_SWIMLANE_DEFAULT_GROUP, KANBAN_SWIMLANE_SEPARATOR_COLOR,
   KANBAN_LABEL_COLORS,
 } from '../../config.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
@@ -93,13 +90,14 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
       // CHANNEL_PROVIDER env-jébe pinneljük, hogy a UI ne hardcode-olt
       // 'telegram'-mal induljon.
       channelProvider: CHANNEL_PROVIDER,
+      // Resolved through the settings overrides layer so the UI hot-reloads.
       kanbanAging: {
-        warnH: KANBAN_AGING_WARN_H,
-        cautionH: KANBAN_AGING_CAUTION_H,
-        criticalH: KANBAN_AGING_CRITICAL_H,
-        warnColor: KANBAN_AGING_WARN_COLOR,
-        cautionColor: KANBAN_AGING_CAUTION_COLOR,
-        criticalColor: KANBAN_AGING_CRITICAL_COLOR,
+        warnH: getEffectiveSettingValue('KANBAN_AGING_WARN_H'),
+        cautionH: getEffectiveSettingValue('KANBAN_AGING_CAUTION_H'),
+        criticalH: getEffectiveSettingValue('KANBAN_AGING_CRITICAL_H'),
+        warnColor: getEffectiveSettingValue('KANBAN_AGING_WARN_COLOR'),
+        cautionColor: getEffectiveSettingValue('KANBAN_AGING_CAUTION_COLOR'),
+        criticalColor: getEffectiveSettingValue('KANBAN_AGING_CRITICAL_COLOR'),
       },
       // Resolved through the settings overrides layer (override > .env >
       // registry default) instead of the boot-time config.ts constants, so a
@@ -119,8 +117,8 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
         overColor: getEffectiveSettingValue('KANBAN_WIP_OVER_COLOR'),
       },
       kanbanSwimlanes: {
-        defaultGroup: KANBAN_SWIMLANE_DEFAULT_GROUP,
-        separatorColor: KANBAN_SWIMLANE_SEPARATOR_COLOR || null,
+        defaultGroup: getEffectiveSettingValue('KANBAN_SWIMLANE_DEFAULT_GROUP'),
+        separatorColor: getEffectiveSettingValue('KANBAN_SWIMLANE_SEPARATOR_COLOR') || null,
       },
       kanbanLabels: {
         colors: KANBAN_LABEL_COLORS,
