@@ -29,20 +29,25 @@ A dashboard bal oldali navigációjában a "Beállítások" menüpont megnyitja 
 
 **Hogyan módosíts egy értéket?**
 
-A beállítások modul-csoportokba rendezve jelennek meg (pl. "kanban"). Minden sor tartalmaz:
+A beállítások modul-csoportokba rendezve jelennek meg (Kanban, Rendszer, Heartbeat). Minden sor tartalmaz:
 - a kulcs nevét és leírását,
-- a jelenlegi értéket egy szerkeszthető inputban (egész számoknál beviteli mező az érvényes tartomány jelzésével, színeknél színválasztó az aktuális szín előnézetével),
-- egy "Mentés" gombot.
+- a jelenlegi értéket egy szerkeszthető inputban (egész számoknál beviteli mező az érvényes tartomány jelzésével, színeknél színválasztó az aktuális szín előnézetével, enum-jellegü kulcsoknál legördülő lista).
 
-Kattints a "Mentés" gombra -- a változás azonnal életbe lép, a szerver többi beállítása érintetlen marad. Ha a kanban tábla oldalát ezután megnyitod, már az új értékeket mutatja.
+Az input módosítása megjelöli a sort piszkosként (dirty). Az oldal alján egy rögzített mentési sáv jelenik meg, amely mutatja a módosított sorok számát, és két gombot kínál:
+- **Mentés** -- az összes piszkos sort egyszerre menti. A sikertelen sorok (validációs hiba) jelzést kapnak, a többi elmentődik.
+- **Visszaállítás** -- minden módosítást visszaállít az utoljára betöltött értékre, a mentési sáv eltűnik.
 
 **Mit jelent a validációs hiba?**
 
-Ha érvénytelen értéket adsz meg (pl. 150-et, ahol a maximum 100, vagy nem `#rrggbb` formátumú szín), a hibaüzenet közvetlenül a sor alatt jelenik meg mentés gomb megnyomása után. Más sorok érintetlenek maradnak. Javítsd az értéket és próbáld újra.
+Ha érvénytelen értéket adsz meg (pl. 150-et, ahol a maximum 100, vagy nem `#rrggbb` formátumú szín), a hibaüzenet közvetlenül a sor alatt jelenik meg mentés után. A többi sor elmentődik, csak a hibás sor marad piszkosként. Javítsd az értéket és kattints Mentés-re újra.
+
+**Elhagyási figyelmeztetés**
+
+Ha el szeretnéd hagyni a Beállítások oldalt (másik menüpontra kattintasz, vagy bezárod a böngésző fület) miközben van mentetlen módosítás, a böngésző megerősítési ablakot jelenít meg. Ha visszautasítod a navigációt, az oldal és a piszkos értékek megmaradnak.
 
 **Mikor kell újraindítás?**
 
-Egyes beállítások mellett "Újraindítást igényel" feliratú badge látható -- ha ilyen értéket módosítasz, a változás csak a szerver következő újraindítása után lép életbe. A v1-es kanban beállítások (WIP-limitek és badge-színek) mind azonnal hatnak, újraindítás nélkül.
+Egyes beállítások mellett "Újraindítást igényel" feliratú badge látható -- ha ilyen értéket módosítasz (pl. `DASHBOARD_PUBLIC_URL`, `OLLAMA_URL`, `HEARTBEAT_AGENT_ENABLED`), a változás csak a szerver következő újraindítása után lép életbe. A kanban és heartbeat időablak-beállítások (pl. `KANBAN_WIP_*`, `KANBAN_AGING_*`, `HEARTBEAT_START_HOUR`) azonnal hatnak, újraindítás nélkül.
 
 ---
 
@@ -83,19 +88,43 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 | `min` / `max` | number? | Int típusnál határértékek |
 | `valueSet` | string[]? | Ha megadott: csak ezek közül lehet választani (select widget) |
 
-**v1 registry (9 kanban WIP kulcs):**
+**Registry -- Kanban modul:**
 
-| Kulcs | Típus | Alapérték | Korlát |
-|-------|-------|-----------|--------|
-| `KANBAN_WIP_PLANNED` | int | 0 (korlátlan) | max 100 |
-| `KANBAN_WIP_IN_PROGRESS` | int | 0 | max 100 |
-| `KANBAN_WIP_WAITING` | int | 0 | max 100 |
-| `KANBAN_WIP_DONE` | int | 0 | max 100 |
-| `KANBAN_WIP_WARN_PCT` | int | 80 | min 1, max 100 |
-| `KANBAN_WIP_OK_COLOR` | color | `#6b7280` | #rrggbb |
-| `KANBAN_WIP_WARN_COLOR` | color | `#c9a000` | #rrggbb |
-| `KANBAN_WIP_FULL_COLOR` | color | `#d46b00` | #rrggbb |
-| `KANBAN_WIP_OVER_COLOR` | color | `#c53030` | #rrggbb |
+| Kulcs | Típus | Alapérték | Korlát | Újraindítás |
+|-------|-------|-----------|--------|-------------|
+| `KANBAN_WIP_PLANNED` | int | 0 (korlátlan) | max 100 | nem |
+| `KANBAN_WIP_IN_PROGRESS` | int | 0 | max 100 | nem |
+| `KANBAN_WIP_WAITING` | int | 0 | max 100 | nem |
+| `KANBAN_WIP_DONE` | int | 0 | max 100 | nem |
+| `KANBAN_WIP_WARN_PCT` | int | 80 | min 1, max 100 | nem |
+| `KANBAN_WIP_OK_COLOR` | color | `#6b7280` | #rrggbb | nem |
+| `KANBAN_WIP_WARN_COLOR` | color | `#c9a000` | #rrggbb | nem |
+| `KANBAN_WIP_FULL_COLOR` | color | `#d46b00` | #rrggbb | nem |
+| `KANBAN_WIP_OVER_COLOR` | color | `#c53030` | #rrggbb | nem |
+| `KANBAN_ARCHIVE_DONE_DAYS` | int | 30 | min 1, max 365 | nem |
+| `KANBAN_AGING_WARN_H` | int | 24 | min 1, max 8760 | nem |
+| `KANBAN_AGING_CAUTION_H` | int | 72 | min 1, max 8760 | nem |
+| `KANBAN_AGING_CRITICAL_H` | int | 168 | min 1, max 8760 | nem |
+| `KANBAN_AGING_WARN_COLOR` | color | `#c9a000` | #rrggbb | nem |
+| `KANBAN_AGING_CAUTION_COLOR` | color | `#d46b00` | #rrggbb | nem |
+| `KANBAN_AGING_CRITICAL_COLOR` | color | `#c53030` | #rrggbb | nem |
+| `KANBAN_SWIMLANE_DEFAULT_GROUP` | string | `none` | `none`, `assignee`, `priority` | nem |
+| `KANBAN_SWIMLANE_SEPARATOR_COLOR` | color | `#374151` | #rrggbb | nem |
+
+**Registry -- Rendszer modul:**
+
+| Kulcs | Típus | Alapérték | Leírás | Újraindítás |
+|-------|-------|-----------|--------|-------------|
+| `DASHBOARD_PUBLIC_URL` | string | (üres) | A dashboard nyilvánosan elérhető URL-je | igen |
+| `OLLAMA_URL` | string | `http://localhost:11434` | Ollama API alap-URL | igen |
+
+**Registry -- Heartbeat modul:**
+
+| Kulcs | Típus | Alapérték | Korlát | Újraindítás |
+|-------|-------|-----------|--------|-------------|
+| `HEARTBEAT_START_HOUR` | int | 9 | min 0, max 22 | nem |
+| `HEARTBEAT_END_HOUR` | int | 23 | min 1, max 24 | nem |
+| `HEARTBEAT_AGENT_ENABLED` | string | `1` | `0` vagy `1` | igen |
 
 **API végpontok:**
 
