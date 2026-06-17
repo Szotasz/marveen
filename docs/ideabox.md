@@ -31,6 +31,20 @@ A **score** = Impact - Effort. Pozitív szám: nagy érték, kevés munkával. A
 
 Ha egy ötlet elég konkrét, a "Lebont" gombbal AI-segítséggel alfeladatokra bonthatod. Az AI javaslatait szerkesztheted és jóváhagyhatod -- ezután egyetlen kattintással kanban-kártyák jönnek létre belőlük. Ha az ötlet annyira egyértelmű, hogy nincs szükség bontásra, a "Promótálás" gombbal közvetlenül kártyává alakítható.
 
+**Siker-kritérium megadása:** AI-bontásnál a jóváhagyás előtt megadhatsz egy rövid siker-kritériumot ("mikor tekintjük késznek?"). Ez automatikusan bekerül a létrehozott szülő kanban-kártya leírásába, hogy a végrehajtás során mindenki tudja, mi a "kész" definíciója.
+
+### Elavult ötletek
+
+Ha egy ötlet sokáig (alapértelmezetten 7 napig) nem változott és még nincs értékelve, az ötletkártyán narancssárga bal szegély és "Elavult" felirat jelenik meg. Ez nem tilt semmit -- csak emlékeztet, hogy érdemes dönteni róla: értékelni, elutasítani, vagy ha már nem aktuális, törölni.
+
+### Mi történik, ha egy promótált ötlet kártyája elhal?
+
+Ha egy korábban promótált ötlet kanban-kártyáját törlik vagy archiválják, az ötlet automatikusan visszakerül "reviewed" státuszba -- mintha újra az értékelt, de még nem futó ötletek közé kerülne. Így az ötlet nem vész el: újra megfontolható más időpontban, más kontextusban. A visszavonás manuálisan is elvégezhető az ötlet részlet nézetéből.
+
+### Státusz-előzmény
+
+Az ötlet részlet nézetében megtekinthető az összes státuszváltás naplója: ki változtatta, mikor, és melyik állapotból melyikbe. Ha egy döntés indoklása kimaradt a komment-szálból, a napló legalább rögzíti, hogy mikor és ki változtatta az állapotot.
+
 ---
 
 ## Státusz-életciklus

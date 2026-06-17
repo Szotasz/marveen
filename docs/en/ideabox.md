@@ -31,6 +31,20 @@ In the detail view, fill in two fields:
 
 When an idea is concrete enough, use the "Breakdown" button to let the AI propose subtasks. You can edit and approve the suggestions, then create kanban cards for all of them in one click. If the idea is clear enough to skip the breakdown, "Promote" turns it directly into a card.
 
+**Definition of done:** during an AI breakdown, before you approve the subtasks you can enter a short success criterion ("what does done look like?"). It is automatically appended to the parent kanban card's description so everyone working on the task knows what the finish line is.
+
+### Stale ideas
+
+If an idea hasn't changed for a while (7 days by default) and is still unevaluated, its card gets an orange left border and a "Stale" badge. Nothing is blocked -- it's a reminder to make a decision: evaluate it, reject it, or delete it if it's no longer relevant.
+
+### What happens when a promoted idea's card dies?
+
+If a previously promoted idea's kanban card is deleted or archived, the idea automatically reverts to "reviewed" status -- as if it had returned to the evaluated-but-not-yet-running pile. The idea isn't lost: it can be reconsidered at a later point or in a different context. The reversal can also be triggered manually from the idea's detail view.
+
+### Status history
+
+The idea's detail view shows a full log of every status change: who made it, when, and from which state to which. If the reasoning behind a decision wasn't captured in the comment thread, the log at least records who changed it and when.
+
 ---
 
 ## Status lifecycle
