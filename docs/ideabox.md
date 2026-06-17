@@ -77,12 +77,14 @@ Minden ötlethez kommentek fűzhetők az ötlet-részlet nézetből (cím kattin
 
 ## AI-lebontás (breakdown)
 
-A "Lebont" gomb meghívja `POST /api/ideas/:id/breakdown`-t, amely AI-segítséggel 3-N alfeladatot generál (alapértelmezett N=5). A max. alfeladatok száma konfigurálható:
+A "Lebont" gomb meghívja `POST /api/ideas/:id/breakdown`-t, amely AI-segítséggel 3-N alfeladatot generál (alapértelmezett N=10). A max. alfeladatok száma (2-20) konfigurálható:
 
 ```bash
 # .env-be, vagy a launchd plist-be:
 IDEA_BREAKDOWN_MAX_SUBTASKS=8
 ```
+
+Ez a kulcs a dashboard **Beállítások** felületén (Ötletláda szekció) is szerkeszthető; a config-réteg élőben olvassa, így a módosítás újraindítás nélkül érvényesül.
 
 Az ötlet-nézet jóváhagyás után `POST /api/ideas/:id/promote-breakdown` hív, amely létrehozza a szülő kanban-kártyát és az alfeladat-kártyákat.
 
@@ -94,6 +96,8 @@ Ha egy `new` státuszú ötlet `updated_at` mezője régebbi, mint `IDEA_STALE_D
 # .env-be, vagy a launchd plist-be:
 IDEA_STALE_DAYS=14
 ```
+
+Ez a kulcs a dashboard **Beállítások** felületén (Ötletláda szekció) is szerkeszthető; a config-réteg élőben olvassa, így a módosítás újraindítás nélkül érvényesül.
 
 ## Audit trail (státusz-napló)
 

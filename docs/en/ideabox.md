@@ -77,12 +77,14 @@ Comments can be added to any idea via the detail view (opens by clicking the tit
 
 ## AI breakdown
 
-The "Breakdown" button calls `POST /api/ideas/:id/breakdown`, which generates 3-N subtasks with AI assistance (default N=5). The max subtask count is configurable:
+The "Breakdown" button calls `POST /api/ideas/:id/breakdown`, which generates 3-N subtasks with AI assistance (default N=10). The max subtask count (2-20) is configurable:
 
 ```bash
 # In .env or the launchd plist:
 IDEA_BREAKDOWN_MAX_SUBTASKS=8
 ```
+
+This key is also editable on the dashboard **Settings** page (Ötletláda section); the config layer reads it live, so a change takes effect without a restart.
 
 After user approval in the UI, `POST /api/ideas/:id/promote-breakdown` creates the parent kanban card and one child card per approved subtask.
 
@@ -94,6 +96,8 @@ If a `new` idea's `updated_at` is older than `IDEA_STALE_DAYS` days (default 7),
 # In .env or the launchd plist:
 IDEA_STALE_DAYS=14
 ```
+
+This key is also editable on the dashboard **Settings** page (Ötletláda section); the config layer reads it live, so a change takes effect without a restart.
 
 ## Audit trail (status log)
 
