@@ -10,10 +10,14 @@ import { logger } from './logger.js'
 // hint at secret values.
 const SENSITIVE_NAMES = new Set(['.dashboard-token', 'vault.json', '.vault-key'])
 
-// Atomic-write temp files (our own tmp-file+rename pattern) and migration
-// artefacts: ignore them so the audit log doesn't double-count every settings
-// save as both a `.tmp.<hex>` write and a final rename.
-const IGNORE_RE = /\.tmp\.[a-f0-9]+$|\.migrated$|\.bak$/
+// Atomic-write temp files (our own tmp-file+rename pattern,
+// `<name>.<pid>.<ts>.<hex>.tmp`, see atomic-write.ts) and migration artefacts:
+// ignore them so the audit log doesn't double-count every settings save as
+// both a temp write and a final rename. Ignoring the temp event also matters
+// for attribution: the watch callback consumes the actor slot on the first
+// non-ignored event, so if the temp event were logged it would steal the
+// actor and leave the real (renamed) file with a null agent.
+const IGNORE_RE = /\.tmp$|\.tmp\.[a-f0-9]+$|\.migrated$|\.bak$/
 
 // --- Agent attribution slot ---
 // Node.js is single-threaded; the HTTP request handler sets this before
@@ -34,6 +38,14 @@ export function clearStoreWriteActor(): void {
 
 let watcher: ReturnType<typeof watch> | null = null
 
+// fs.watch fires the same (eventType, filename) several times for a single
+// logical write (especially the rename half of an atomic write), which would
+// otherwise produce duplicate audit rows -- and since the first event consumes
+// the actor slot, the duplicates would be logged with a null agent. Collapse
+// repeats of the same path+event within a short window into one entry.
+const DEDUP_MS = 1000
+const recentEvents = new Map<string, number>()
+
 export function startStoreWatcher(): void {
   if (watcher) return
   try {
@@ -41,6 +53,15 @@ export function startStoreWatcher(): void {
       if (!filename) return
       if (IGNORE_RE.test(filename)) return
       const rel = filename.replace(/\\/g, '/')
+      const now = Date.now()
+      const dedupKey = `${eventType}:${rel}`
+      const last = recentEvents.get(dedupKey)
+      if (last !== undefined && now - last < DEDUP_MS) return
+      recentEvents.set(dedupKey, now)
+      // Prune stale dedup entries so the map cannot grow without bound.
+      if (recentEvents.size > 200) {
+        for (const [k, t] of recentEvents) if (now - t >= DEDUP_MS) recentEvents.delete(k)
+      }
       const isSensitive = SENSITIVE_NAMES.has(basename(rel)) ? 1 : 0
       // Consume the actor slot: the caller set it just before writing.
       const agent = currentWriteActor
