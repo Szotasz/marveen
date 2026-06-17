@@ -2078,11 +2078,12 @@ export function queryAuditLog(opts: {
   }
 
   if (active.includes('store')) {
-    let sql = 'SELECT id, rel_path, event_type, is_sensitive, file_size, created_at FROM store_file_audit WHERE 1=1'
+    let sql = 'SELECT id, rel_path, event_type, is_sensitive, file_size, agent, created_at FROM store_file_audit WHERE 1=1'
     const params: unknown[] = []
     if (from) { sql += ' AND created_at >= ?'; params.push(from) }
     if (to)   { sql += ' AND created_at <= ?'; params.push(to) }
-    if (q)    { sql += ' AND rel_path LIKE ?'; const p = `%${q}%`; params.push(p) }
+    if (agent) { sql += ' AND agent = ?'; params.push(agent) }
+    if (q)    { sql += ' AND (rel_path LIKE ? OR agent LIKE ?)'; const p = `%${q}%`; params.push(p, p) }
     sql += ' ORDER BY created_at DESC, id DESC LIMIT ?'; params.push(limit)
     const rows = db.prepare(sql).all(...params) as StoreFileAuditRow[]
     for (const r of rows) parts.push({ ...r, source: 'store' })
