@@ -49,6 +49,7 @@ import { tryHandleTokenUsage } from './web/routes/token-usage.js'
 import { tryHandleIdeas } from './web/routes/ideas.js'
 import { tryHandleToolLog } from './web/routes/tool-log.js'
 import { tryHandleSettings } from './web/routes/settings.js'
+import { tryHandleAuditLog } from './web/routes/audit-log.js'
 import { tryHandleStatic } from './web/routes/static.js'
 import type { RouteContext } from './web/routes/types.js'
 
@@ -166,6 +167,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleIdeas(routeCtx)) return
       if (await tryHandleToolLog(routeCtx)) return
       if (await tryHandleSettings(routeCtx)) return
+      if (await tryHandleAuditLog(routeCtx)) return
       if (await tryHandleStatic(routeCtx, WEB_DIR)) return
 
       res.writeHead(404)

@@ -2081,3 +2081,13 @@ export function queryAuditLog(opts: {
   return parts.slice(0, limit)
 }
 
+// Prune all three audit tables to AUDIT_LOG_RETENTION_DAYS. Called from the
+// daily decay sweep so old entries do not accumulate indefinitely.
+export function pruneAuditLogs(): void {
+  const retentionDays = Number(getEffectiveSettingValue('AUDIT_LOG_RETENTION_DAYS'))
+  const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400
+  db.prepare('DELETE FROM config_change_log WHERE created_at < ?').run(cutoff)
+  db.prepare('DELETE FROM idea_status_log WHERE created_at < ?').run(cutoff)
+  db.prepare('DELETE FROM store_file_audit WHERE created_at < ?').run(cutoff)
+}
+

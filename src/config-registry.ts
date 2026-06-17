@@ -287,6 +287,29 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  // --- Audit log module ---
+  {
+    key: 'AUDIT_LOG_RETENTION_DAYS',
+    type: 'int',
+    default: 90,
+    min: 1,
+    max: 3650,
+    description: 'Az audit napló (config-változások, ötletláda-audit, store-fájl események) megőrzési ideje napokban. Régebbi bejegyzések a napi sweepkor törlődnek.',
+    module: 'audit',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'AUDIT_LOG_MAX_ENTRIES',
+    type: 'int',
+    default: 10000,
+    min: 100,
+    max: 1000000,
+    description: 'Az audit napló összes forrásra vetített maximális bejegyzésszáma. Az API lekérések ennél soha nem adnak vissza többet (forrásanként egyéni limit: AUDIT_LOG_MAX_ENTRIES / 3).',
+    module: 'audit',
+    secret: false,
+    requiresRestart: false,
+  },
 ]
 
 export function getSettingDefinition(key: string): SettingDefinition | undefined {
