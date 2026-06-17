@@ -8,6 +8,7 @@ import {
   createAgentMessage, markKanbanCardDispatched,
   listLabels, getLabel, createLabel, updateLabel, deleteLabel,
   addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
+  revertIdeaFromKanban,
 } from '../../db.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
@@ -195,6 +196,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
 
   if (kanbanCardMatch && method === 'DELETE') {
     const id = decodeURIComponent(kanbanCardMatch[1])
+    revertIdeaFromKanban(id)
     if (deleteKanbanCard(id)) { json(res, { ok: true }); return true }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
@@ -218,6 +220,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const kanbanArchiveMatch = path.match(/^\/api\/kanban\/([^/]+)\/archive$/)
   if (kanbanArchiveMatch && method === 'POST') {
     const id = decodeURIComponent(kanbanArchiveMatch[1])
+    revertIdeaFromKanban(id)
     if (archiveKanbanCard(id)) { json(res, { ok: true }); return true }
     json(res, { error: 'Kártya nem található' }, 404)
     return true

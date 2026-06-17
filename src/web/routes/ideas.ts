@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { MAIN_AGENT_ID, BOT_NAME } from '../../config.js'
-import { listIdeas, createIdea, updateIdea, deleteIdea, listIdeaCategories, createKanbanCard, getDb, getIdeaComments, addIdeaComment } from '../../db.js'
+import { listIdeas, createIdea, updateIdea, deleteIdea, listIdeaCategories, createKanbanCard, getDb, getIdeaComments, addIdeaComment, logIdeaStatusChange, getIdeaStatusLog } from '../../db.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
@@ -17,10 +17,16 @@ const VALID_PRIORITIES = new Set(['low', 'normal', 'high', 'urgent'])
 export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
+  // Configurable stale threshold -- ideas with status 'new' older than this many days
+  // are flagged with stale:true in the list response.
+  const IDEA_STALE_DAYS = Math.max(1, Number(process.env.IDEA_STALE_DAYS) || 7)
+
   if (path === '/api/ideas' && method === 'GET') {
     const status = url.searchParams.get('status') || undefined
     const category = url.searchParams.get('category') || undefined
-    json(res, listIdeas({ status, category }))
+    const ideas = listIdeas({ status, category })
+    const staleCutoff = Math.floor(Date.now() / 1000) - IDEA_STALE_DAYS * 86400
+    json(res, ideas.map(i => ({ ...i, stale: i.status === 'new' && i.updated_at < staleCutoff })))
     return true
   }
 
@@ -79,7 +85,15 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       if (!Number.isFinite(v) || v < 1 || v > 5) { json(res, { error: 'effort must be 1-5 or null' }, 400); return true }
       data.effort = v
     }
-    if (updateIdea(id, data)) { json(res, { ok: true }); return true }
+    const current = getIdea(id)
+    if (!current) { json(res, { error: 'Ötlet nem található' }, 404); return true }
+    if (updateIdea(id, data)) {
+      if (data.status && data.status !== current.status) {
+        logIdeaStatusChange(id, current.status, data.status, MAIN_AGENT_ID)
+      }
+      json(res, { ok: true })
+      return true
+    }
     json(res, { error: 'Ötlet nem található' }, 404)
     return true
   }
@@ -135,6 +149,7 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       assignee: BOT_NAME,
       project: 'Fejlesztési ötletek',
     })
+    logIdeaStatusChange(ideaId, idea.status, 'kanban', MAIN_AGENT_ID, `promote:${phase}`)
     updateIdea(ideaId, { status: 'kanban', kanban_id: cardId })
     json(res, { ok: true, kanban_id: cardId })
     return true
@@ -165,18 +180,23 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
     const idea = getIdea(ideaId)
     if (!idea) { json(res, { error: 'Ötlet nem található' }, 404); return true }
     const body = await readBody(req)
-    const { subtasks } = JSON.parse(body.toString()) as {
+    const { subtasks, success_criteria } = JSON.parse(body.toString()) as {
       subtasks: Array<{ title: string; description?: string; assignee?: string | null; priority?: string }>
+      success_criteria?: string
     }
     if (!Array.isArray(subtasks) || subtasks.length === 0) {
       json(res, { error: 'Legalább egy jóváhagyott alfeladat kötelező' }, 400)
       return true
     }
+    const baseDesc = idea.description ?? ''
+    const parentDesc = success_criteria?.trim()
+      ? `${baseDesc}\n\n## Siker-kritérium\n${success_criteria.trim()}`.trimStart()
+      : baseDesc
     const parentId = randomUUID().slice(0, 8)
     createKanbanCard({
       id: parentId,
       title: idea.title,
-      description: idea.description ?? '',
+      description: parentDesc,
       status: 'planned',
       priority: 'normal',
       assignee: BOT_NAME,
@@ -198,8 +218,30 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       })
       childIds.push(childId)
     }
+    logIdeaStatusChange(ideaId, idea.status, 'kanban', MAIN_AGENT_ID, `promote-breakdown:${childIds.length} subtasks`)
     updateIdea(ideaId, { status: 'kanban', kanban_id: parentId })
     json(res, { ok: true, parent_id: parentId, child_count: childIds.length })
+    return true
+  }
+
+  // Manual revert: kanban -> reviewed (clears kanban_id)
+  const revertMatch = path.match(/^\/api\/ideas\/([^/]+)\/revert$/)
+  if (revertMatch && method === 'POST') {
+    const id = decodeURIComponent(revertMatch[1])
+    const idea = getIdea(id)
+    if (!idea) { json(res, { error: 'Ötlet nem található' }, 404); return true }
+    if (idea.status !== 'kanban') { json(res, { error: 'Csak kanban státuszú ötlet vonható vissza' }, 400); return true }
+    updateIdea(id, { status: 'reviewed', kanban_id: null })
+    logIdeaStatusChange(id, 'kanban', 'reviewed', MAIN_AGENT_ID, 'Manuális visszavonás')
+    json(res, { ok: true })
+    return true
+  }
+
+  // Status audit log for an idea
+  const statusLogMatch = path.match(/^\/api\/ideas\/([^/]+)\/status-log$/)
+  if (statusLogMatch && method === 'GET') {
+    const ideaId = decodeURIComponent(statusLogMatch[1])
+    json(res, { log: getIdeaStatusLog(ideaId) })
     return true
   }
 

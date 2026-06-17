@@ -1505,6 +1505,8 @@ async function showCardDetail(card) {
       breakdownCardId = card.id
       breakdownSubtasks = data.subtasks
       showBreakdownModal(data.subtasks, card)
+      const dodSec = document.getElementById('breakdownDoDSection')
+      if (dodSec) dodSec.style.display = 'none'
     } catch (err) {
       showToast('Breakdown hiba')
     } finally {
@@ -1590,10 +1592,11 @@ document.getElementById('breakdownAcceptBtn').addEventListener('click', async ()
   if (accepted.length === 0) { showToast('Válassz legalább egy alfeladatot'); return }
   try {
     if (breakdownMode === 'idea') {
+      const successCriteria = document.getElementById('breakdownSuccessCriteria')?.value.trim() || undefined
       const res = await fetch(`/api/ideas/${encodeURIComponent(breakdownIdeaId)}/promote-breakdown`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subtasks: accepted }),
+        body: JSON.stringify({ subtasks: accepted, success_criteria: successCriteria }),
       })
       const data = await res.json()
       if (!res.ok) { showToast(data.error || 'Hiba'); return }
@@ -10461,13 +10464,15 @@ function renderIdeaCard(idea) {
   const statusColor = STATUS_COLORS[idea.status] || 'var(--text-muted)'
   const statusLabel = STATUS_LABELS[idea.status] || idea.status
   const desc = idea.description ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">${escapeHtml(idea.description.slice(0, 120))}${idea.description.length > 120 ? '…' : ''}</div>` : ''
-  return `<div class="card" style="padding:12px 16px;margin-bottom:4px">
+  const staleBadge = idea.stale ? `<span style="font-size:11px;background:#92400e22;color:#d97706;border:1px solid #d97706;border-radius:4px;padding:2px 5px" title="Régi ötlet, nézd át!">⏰ Elavult</span>` : ''
+  return `<div class="card" style="padding:12px 16px;margin-bottom:4px${idea.stale ? ';border-left:3px solid #d97706' : ''}">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
       <div style="flex:1;min-width:0">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <span class="idea-title-link" style="font-weight:600;font-size:14px;cursor:pointer" onclick="openIdeaDetail('${idea.id}')">${escapeHtml(idea.title)}</span>
           <span style="font-size:11px;color:${statusColor};padding:2px 6px;border:1px solid ${statusColor};border-radius:4px">${statusLabel}</span>
           ${ideaScoreBadge(idea)}
+          ${staleBadge}
         </div>
         ${desc}
       </div>
@@ -10682,6 +10687,9 @@ async function openIdeaBreakdown(id) {
     breakdownIdeaId = id
     breakdownSubtasks = data.subtasks
     showBreakdownModal(data.subtasks, { title: idea.title })
+    // Show DoD field only in idea mode
+    const dodSection = document.getElementById('breakdownDoDSection')
+    if (dodSection) { dodSection.style.display = ''; document.getElementById('breakdownSuccessCriteria').value = '' }
   } catch {
     showToast('Breakdown hiba')
   }

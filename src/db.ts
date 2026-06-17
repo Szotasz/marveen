@@ -511,6 +511,20 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_idea_comments_idea ON idea_comments(idea_id)`)
 
+  // --- Idea Status Log ---
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS idea_status_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      idea_id TEXT NOT NULL,
+      from_status TEXT,
+      to_status TEXT NOT NULL,
+      actor TEXT NOT NULL DEFAULT 'system',
+      note TEXT,
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_idea_status_log_idea ON idea_status_log(idea_id, created_at)`)
+
   // --- Tool Call Log (auto-recorder) ---
   db.exec(`
     CREATE TABLE IF NOT EXISTS tool_call_log (
@@ -1799,6 +1813,46 @@ export function addIdeaComment(ideaId: string, author: string, content: string):
   ).run(ideaId, author, content, now)
   db.prepare('UPDATE idea_box SET updated_at = ? WHERE id = ?').run(now, ideaId)
   return { id: Number(info.lastInsertRowid), idea_id: ideaId, author, content, created_at: now }
+}
+
+// --- Idea Status Log ---
+
+export interface IdeaStatusLogRow {
+  id: number
+  idea_id: string
+  from_status: string | null
+  to_status: string
+  actor: string
+  note: string | null
+  created_at: number
+}
+
+export function logIdeaStatusChange(
+  ideaId: string,
+  fromStatus: string | null,
+  toStatus: string,
+  actor: string,
+  note?: string,
+): void {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(
+    'INSERT INTO idea_status_log (idea_id, from_status, to_status, actor, note, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+  ).run(ideaId, fromStatus ?? null, toStatus, actor, note ?? null, now)
+}
+
+export function getIdeaStatusLog(ideaId: string): IdeaStatusLogRow[] {
+  return db.prepare('SELECT * FROM idea_status_log WHERE idea_id = ? ORDER BY created_at ASC').all(ideaId) as IdeaStatusLogRow[]
+}
+
+// Revert a promoted idea back to 'reviewed' when its kanban card is deleted or archived.
+// Returns the idea id if a matching idea was found and reverted, null otherwise.
+export function revertIdeaFromKanban(kanbanId: string): string | null {
+  const idea = db.prepare("SELECT id, status FROM idea_box WHERE kanban_id = ? AND status = 'kanban'").get(kanbanId) as { id: string; status: string } | undefined
+  if (!idea) return null
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare("UPDATE idea_box SET status = 'reviewed', kanban_id = NULL, updated_at = ? WHERE id = ?").run(now, idea.id)
+  logIdeaStatusChange(idea.id, 'kanban', 'reviewed', 'system', `Kanban card removed: ${kanbanId}`)
+  return idea.id
 }
 
 // --- Tool Call Log ---
