@@ -4,6 +4,41 @@ A dashboard "Napló" oldala egységes, csak-olvasható nézetben jeleníti meg a
 
 ---
 
+## Használat
+
+A bal oldali navigációban a "Napló" menüpont nyitja meg az oldalt.
+
+**Forrás-fülek**
+
+Az oldal tetején négy fül szűri az eseményeket:
+
+- Összes -- minden forrás egységes időrendben
+- Config -- a Beállítások oldalon eszközölt módosítások (pl. `KANBAN_WIP_IN_PROGRESS` 5-ről 8-ra, ki változtatta, mikor)
+- Ötletláda -- ötlet-státuszváltások (pl. `new` -> `kanban` promóció, vagy visszavonás); titkos értékek sosem jelennek meg
+- Store-fájlok -- a `store/` könyvtárban bekövetkező fájlírások, átnevezések, törlések; az érzékeny fájlok (pl. `vault.json`, `.dashboard-token`) "sensitív" felirattal vannak jelölve
+
+A fülre kattintva az oldal azonnal az adott forrás eseményeit mutatja.
+
+**Dátumszűrő**
+
+Az "Ettől" és "Eddig" mezőkkel szűkítheted az időablakot. Mindkettő opcionális: ha üresen hagyod, az összes elérhető bejegyzés megjelenik (a retention-határig). A mezők bármelyikét kitöltve a másik irányban nyitott szűrés érvényesül.
+
+**Keresés**
+
+A keresőmezőbe begépelt szöveg a bejegyzések kulcs-, útvonal-, megjegyzés- és actor-mezőiben keres egyszerre. Például rákereshetsz egy konkrét beállítás-kulcsra (`KANBAN_WIP_PLANNED`), egy ötlet azonosítójára, vagy egy fájlnévre (`config-overrides.json`).
+
+**Frissítés**
+
+A "Frissítés" gombra kattintva az oldal az aktuális szűrési feltételekkel újratölti az adatokat -- hasznos, ha élőben figyeled a rendszer aktivitását.
+
+**Fontos tudnivalók**
+
+- Az oldal csak-olvasható: bejegyzést szerkeszteni vagy manuálisan törölni nem lehet
+- A bejegyzések automatikusan törlődnek az `AUDIT_LOG_RETENTION_DAYS` küszöb (alapértelmezés: 90 nap) elérésekor -- ez a Beállítások oldalon módosítható
+- Titkos beállítások (pl. API tokenek) értéke soha nem kerül a naplóba, csak a módosítás ténye
+
+---
+
 ## Adatforrások
 
 ### Config change-log (`config_change_log`)
