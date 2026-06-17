@@ -1064,7 +1064,7 @@ main {
 .comments-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   margin-bottom: 12px;
   max-height: 300px;
   overflow-y: auto;
@@ -1074,6 +1074,7 @@ main {
   padding: 10px 12px;
   background: var(--bg-input);
   border-radius: var(--radius-sm);
+  border-left: 3px solid var(--accent-soft, #3b82f633);
 }
 .comment-author {
   font-size: 12px;

@@ -10542,26 +10542,55 @@ async function openIdeaDetail(id) {
   document.getElementById('ideaDetailTitle').textContent = idea.title
   document.getElementById('ideaDetailMeta').textContent = `${idea.category} · ${statusLabel}`
   document.getElementById('ideaDetailDesc').textContent = idea.description || '(nincs leírás)'
-  renderIdeaDetailScore(idea)
+  document.getElementById('ideaDetailImpact').value = idea.impact ?? ''
+  document.getElementById('ideaDetailEffort').value = idea.effort ?? ''
+  updateDetailScoreChip()
   document.getElementById('ideaCommentsList').innerHTML = ''
   document.getElementById('ideaCommentContent').value = ''
   openModal(document.getElementById('ideaDetailOverlay'))
   await loadIdeaComments(id)
 }
 
-function renderIdeaDetailScore(idea) {
-  const el = document.getElementById('ideaDetailScore')
-  if (!el) return
-  if (!idea.impact && !idea.effort) { el.innerHTML = '<span style="font-size:12px;color:var(--text-muted)">Pontozás még nincs megadva.</span>'; return }
-  const score = (idea.impact || 0) - (idea.effort || 0)
-  const scoreColor = score > 0 ? '#22c55e' : score < 0 ? '#ef4444' : 'var(--text-muted)'
-  const chips = [
-    idea.impact ? `<span class="idea-score-chip">Impact: <strong>${idea.impact}/5</strong></span>` : '',
-    idea.effort ? `<span class="idea-score-chip">Effort: <strong>${idea.effort}/5</strong></span>` : '',
-    (idea.impact && idea.effort) ? `<span class="idea-score-chip" style="border-color:${scoreColor};color:${scoreColor}">Pont: <strong>${score >= 0 ? '+' : ''}${score}</strong></span>` : '',
-  ]
-  el.innerHTML = chips.filter(Boolean).join('')
+function updateDetailScoreChip() {
+  const chip = document.getElementById('ideaDetailScoreChip')
+  if (!chip) return
+  const impact = Number(document.getElementById('ideaDetailImpact').value) || 0
+  const effort = Number(document.getElementById('ideaDetailEffort').value) || 0
+  if (!impact && !effort) { chip.textContent = ''; return }
+  if (!impact || !effort) { chip.textContent = ''; return }
+  const score = impact - effort
+  const color = score > 0 ? '#22c55e' : score < 0 ? '#ef4444' : 'var(--text-muted)'
+  chip.innerHTML = `<span class="idea-score-chip" style="border-color:${color};color:${color}">Pont: <strong>${score >= 0 ? '+' : ''}${score}</strong></span>`
 }
+
+document.getElementById('ideaDetailImpact')?.addEventListener('change', updateDetailScoreChip)
+document.getElementById('ideaDetailEffort')?.addEventListener('change', updateDetailScoreChip)
+
+document.getElementById('ideaDetailScoreSave')?.addEventListener('click', async () => {
+  if (!ideaDetailId) return
+  const impact = document.getElementById('ideaDetailImpact').value
+  const effort = document.getElementById('ideaDetailEffort').value
+  try {
+    const res = await fetch(`/api/ideas/${encodeURIComponent(ideaDetailId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        impact: impact ? Number(impact) : null,
+        effort: effort ? Number(effort) : null,
+      }),
+    })
+    if (!res.ok) { showToast('Mentés hiba', 'error'); return }
+    // update local cache so card chip refreshes on close
+    const idea = ideas.find(i => i.id === ideaDetailId)
+    if (idea) {
+      idea.impact = impact ? Number(impact) : null
+      idea.effort = effort ? Number(effort) : null
+    }
+    updateDetailScoreChip()
+    showToast('Pontozás mentve')
+    renderIdeasList()
+  } catch { showToast('Mentés hiba', 'error') }
+})
 
 async function loadIdeaComments(id) {
   const list = document.getElementById('ideaCommentsList')
@@ -10577,7 +10606,7 @@ async function loadIdeaComments(id) {
       const date = new Date(c.created_at * 1000).toLocaleString('hu-HU', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
       const div = document.createElement('div')
       div.className = 'comment-item'
-      div.innerHTML = `<div><span class="comment-author">${escapeHtml(c.author)}</span><span class="comment-date">${date}</span></div><div class="comment-body">${escapeHtml(c.content)}</div>`
+      div.innerHTML = `<div style="display:flex;align-items:baseline;gap:6px;margin-bottom:4px"><span class="comment-author">${escapeHtml(c.author)}</span><span class="comment-date">${date}</span></div><div class="comment-body">${escapeHtml(c.content)}</div>`
       list.appendChild(div)
     }
   } catch {
