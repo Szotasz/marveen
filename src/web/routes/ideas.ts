@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { MAIN_AGENT_ID, BOT_NAME } from '../../config.js'
-import { listIdeas, createIdea, updateIdea, deleteIdea, listIdeaCategories, createKanbanCard, getDb } from '../../db.js'
+import { listIdeas, createIdea, updateIdea, deleteIdea, listIdeaCategories, createKanbanCard, getDb, getIdeaComments, addIdeaComment } from '../../db.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
@@ -47,6 +47,8 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       status: 'new',
       source: data.source ?? 'manual',
       kanban_id: null,
+      impact: null,
+      effort: null,
     })
     json(res, { ok: true, id })
     return true
@@ -57,7 +59,26 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
   if (ideaMatch && method === 'PUT') {
     const id = decodeURIComponent(ideaMatch[1])
     const body = await readBody(req)
-    const data = JSON.parse(body.toString())
+    const data = JSON.parse(body.toString()) as {
+      title?: string
+      description?: string
+      category?: string
+      status?: IdeaRow['status']
+      kanban_id?: string
+      impact?: number | null
+      effort?: number | null
+    }
+    // Coerce impact/effort to int or null -- reject values outside 1-5
+    if (data.impact !== undefined && data.impact !== null) {
+      const v = Math.round(Number(data.impact))
+      if (!Number.isFinite(v) || v < 1 || v > 5) { json(res, { error: 'impact must be 1-5 or null' }, 400); return true }
+      data.impact = v
+    }
+    if (data.effort !== undefined && data.effort !== null) {
+      const v = Math.round(Number(data.effort))
+      if (!Number.isFinite(v) || v < 1 || v > 5) { json(res, { error: 'effort must be 1-5 or null' }, 400); return true }
+      data.effort = v
+    }
     if (updateIdea(id, data)) { json(res, { ok: true }); return true }
     json(res, { error: 'Ötlet nem található' }, 404)
     return true
@@ -67,6 +88,27 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(ideaMatch[1])
     if (deleteIdea(id)) { json(res, { ok: true }); return true }
     json(res, { error: 'Ötlet nem található' }, 404)
+    return true
+  }
+
+  // Idea comments
+  const commentsMatch = path.match(/^\/api\/ideas\/([^/]+)\/comments$/)
+
+  if (commentsMatch && method === 'GET') {
+    const ideaId = decodeURIComponent(commentsMatch[1])
+    json(res, { comments: getIdeaComments(ideaId) })
+    return true
+  }
+
+  if (commentsMatch && method === 'POST') {
+    const ideaId = decodeURIComponent(commentsMatch[1])
+    const body = await readBody(req)
+    const { author, content } = JSON.parse(body.toString()) as { author?: string; content?: string }
+    if (!content || typeof content !== 'string' || !content.trim()) {
+      json(res, { error: 'content required' }, 400); return true
+    }
+    const comment = addIdeaComment(ideaId, author?.trim() || MAIN_AGENT_ID, content.trim())
+    json(res, { ok: true, comment })
     return true
   }
 

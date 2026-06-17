@@ -495,6 +495,21 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_idea_box_status ON idea_box(status)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_idea_box_category ON idea_box(category)`)
+  // impact/effort scoring -- added after initial release; safe ALTER on existing DBs
+  try { db.exec('ALTER TABLE idea_box ADD COLUMN impact INTEGER') } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE idea_box ADD COLUMN effort INTEGER') } catch { /* already exists */ }
+
+  // --- Idea Comments ---
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS idea_comments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      idea_id TEXT NOT NULL,
+      author TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_idea_comments_idea ON idea_comments(idea_id)`)
 
   // --- Tool Call Log (auto-recorder) ---
   db.exec(`
@@ -1717,6 +1732,8 @@ export interface IdeaBoxRow {
   status: 'new' | 'reviewed' | 'kanban' | 'rejected'
   source: string
   kanban_id: string | null
+  impact: number | null
+  effort: number | null
   created_at: number
   updated_at: number
 }
@@ -1733,12 +1750,12 @@ export function listIdeas(opts?: { status?: string; category?: string }): IdeaBo
 export function createIdea(idea: Omit<IdeaBoxRow, 'created_at' | 'updated_at'>): void {
   const now = Math.floor(Date.now() / 1000)
   db.prepare(
-    `INSERT INTO idea_box (id, title, description, category, status, source, kanban_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(idea.id, idea.title, idea.description ?? null, idea.category, idea.status, idea.source, idea.kanban_id ?? null, now, now)
+    `INSERT INTO idea_box (id, title, description, category, status, source, kanban_id, impact, effort, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(idea.id, idea.title, idea.description ?? null, idea.category, idea.status, idea.source, idea.kanban_id ?? null, idea.impact ?? null, idea.effort ?? null, now, now)
 }
 
-export function updateIdea(id: string, patch: Partial<Pick<IdeaBoxRow, 'title' | 'description' | 'category' | 'status' | 'kanban_id'>>): boolean {
+export function updateIdea(id: string, patch: Partial<Pick<IdeaBoxRow, 'title' | 'description' | 'category' | 'status' | 'kanban_id' | 'impact' | 'effort'>>): boolean {
   const now = Math.floor(Date.now() / 1000)
   const sets: string[] = ['updated_at = ?']
   const params: unknown[] = [now]
@@ -1747,6 +1764,8 @@ export function updateIdea(id: string, patch: Partial<Pick<IdeaBoxRow, 'title' |
   if (patch.category !== undefined) { sets.push('category = ?'); params.push(patch.category) }
   if (patch.status !== undefined) { sets.push('status = ?'); params.push(patch.status) }
   if (patch.kanban_id !== undefined) { sets.push('kanban_id = ?'); params.push(patch.kanban_id) }
+  if (patch.impact !== undefined) { sets.push('impact = ?'); params.push(patch.impact) }
+  if (patch.effort !== undefined) { sets.push('effort = ?'); params.push(patch.effort) }
   params.push(id)
   return db.prepare(`UPDATE idea_box SET ${sets.join(', ')} WHERE id = ?`).run(...params).changes > 0
 }
@@ -1757,6 +1776,29 @@ export function deleteIdea(id: string): boolean {
 
 export function listIdeaCategories(): string[] {
   return (db.prepare('SELECT DISTINCT category FROM idea_box ORDER BY category').all() as { category: string }[]).map(r => r.category)
+}
+
+// --- Idea Comments ---
+
+export interface IdeaComment {
+  id: number
+  idea_id: string
+  author: string
+  content: string
+  created_at: number
+}
+
+export function getIdeaComments(ideaId: string): IdeaComment[] {
+  return db.prepare('SELECT * FROM idea_comments WHERE idea_id = ? ORDER BY created_at ASC').all(ideaId) as IdeaComment[]
+}
+
+export function addIdeaComment(ideaId: string, author: string, content: string): IdeaComment {
+  const now = Math.floor(Date.now() / 1000)
+  const info = db.prepare(
+    'INSERT INTO idea_comments (idea_id, author, content, created_at) VALUES (?, ?, ?, ?)'
+  ).run(ideaId, author, content, now)
+  db.prepare('UPDATE idea_box SET updated_at = ? WHERE id = ?').run(now, ideaId)
+  return { id: Number(info.lastInsertRowid), idea_id: ideaId, author, content, created_at: now }
 }
 
 // --- Tool Call Log ---
