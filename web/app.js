@@ -113,6 +113,7 @@ function switchPage(pageId) {
   if (pageId === 'messages') loadMessagesPage()
   if (pageId === 'tokenUsage') loadTokenUsage()
   if (pageId === 'ideas') loadIdeasPage()
+  if (pageId === 'naplo') loadNaplo()
 }
 
 // Mobile off-canvas sidebar toggle. No-op visual effect on desktop (the
@@ -11159,4 +11160,87 @@ function downloadMarkdown(name, content) {
   btn.addEventListener('click', () => { render(); openModal(overlay) })
   if (closeBtn) closeBtn.addEventListener('click', () => closeModal(overlay))
   overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(overlay) })
+})()
+
+// === Naplo (Audit Timeline) ===
+;(() => {
+  let naploInitialized = false
+  let naploActiveSource = ''
+
+  const SOURCE_LABELS = { config: 'Config', idea: 'Ötletláda', store: 'Store' }
+  const SOURCE_COLORS = { config: '#3b82f6', idea: '#10b981', store: '#f59e0b' }
+
+  function fmtTs(unix) {
+    return new Date(unix * 1000).toLocaleString('hu-HU', { dateStyle: 'short', timeStyle: 'short' })
+  }
+
+  function renderEntry(e) {
+    const badge = `<span class="naplo-badge" style="background:${SOURCE_COLORS[e.source] || '#6b7280'}">${SOURCE_LABELS[e.source] || e.source}</span>`
+    const ts = `<span class="naplo-ts">${fmtTs(e.created_at)}</span>`
+    let detail = ''
+    if (e.source === 'config') {
+      const oldV = e.old_value != null ? `<code>${e.old_value}</code>` : '<em>–</em>'
+      const newV = e.new_value != null ? `<code>${e.new_value}</code>` : '<em>–</em>'
+      detail = `<strong>${e.key}</strong> ${oldV} &rarr; ${newV} <span class="naplo-actor">${e.actor || ''}</span>`
+    } else if (e.source === 'idea') {
+      const from = e.from_status ? `<code>${e.from_status}</code> &rarr; ` : ''
+      detail = `<strong>${e.idea_id}</strong> ${from}<code>${e.to_status}</code>`
+      if (e.note) detail += ` <span class="naplo-note">${e.note}</span>`
+      if (e.actor) detail += ` <span class="naplo-actor">${e.actor}</span>`
+    } else if (e.source === 'store') {
+      const sizeStr = e.file_size != null ? ` (${(e.file_size / 1024).toFixed(1)} KB)` : ''
+      const sens = e.is_sensitive ? ' <span class="naplo-sensitive">sensitív</span>' : ''
+      detail = `<code>${e.rel_path}</code> <span class="naplo-event-type">${e.event_type}</span>${sizeStr}${sens}`
+    }
+    return `<div class="naplo-entry"><div class="naplo-entry-meta">${ts}${badge}</div><div class="naplo-entry-detail">${detail}</div></div>`
+  }
+
+  async function doNaplo() {
+    const timeline = document.getElementById('naplo-timeline')
+    const summary = document.getElementById('naplo-summary')
+    timeline.innerHTML = '<p class="naplo-empty">Betöltés...</p>'
+    summary.textContent = ''
+
+    const params = new URLSearchParams()
+    if (naploActiveSource) params.set('source', naploActiveSource)
+    const from = document.getElementById('naplo-from').value
+    const to = document.getElementById('naplo-to').value
+    const q = document.getElementById('naplo-q').value.trim()
+    if (from) params.set('from', Math.floor(new Date(from).getTime() / 1000))
+    if (to)   params.set('to', Math.floor(new Date(to + 'T23:59:59').getTime() / 1000))
+    if (q)    params.set('q', q)
+    params.set('limit', '200')
+
+    try {
+      const res = await fetch('/api/audit-log?' + params.toString())
+      if (!res.ok) { timeline.innerHTML = `<p class="naplo-empty error">Hiba: ${res.status}</p>`; return }
+      const data = await res.json()
+      const entries = data.entries || []
+      summary.textContent = `${entries.length} bejegyzés`
+      if (entries.length === 0) { timeline.innerHTML = '<p class="naplo-empty">Nincs találat.</p>'; return }
+      timeline.innerHTML = entries.map(renderEntry).join('')
+    } catch (err) {
+      timeline.innerHTML = `<p class="naplo-empty error">Hálózati hiba: ${err.message}</p>`
+    }
+  }
+
+  function loadNaplo() {
+    if (!naploInitialized) {
+      naploInitialized = true
+      document.querySelectorAll('#naplo-source-tabs .naplo-tab').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('#naplo-source-tabs .naplo-tab').forEach((b) => b.classList.remove('active'))
+          btn.classList.add('active')
+          naploActiveSource = btn.dataset.source
+          doNaplo()
+        })
+      })
+      document.getElementById('naplo-search-btn').addEventListener('click', doNaplo)
+      document.getElementById('naplo-q').addEventListener('keydown', (e) => { if (e.key === 'Enter') doNaplo() })
+      document.getElementById('naplo-refresh-btn').addEventListener('click', doNaplo)
+    }
+    doNaplo()
+  }
+
+  window.loadNaplo = loadNaplo
 })()
