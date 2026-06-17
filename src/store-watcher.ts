@@ -1,0 +1,51 @@
+import { watch, statSync } from 'node:fs'
+import { basename } from 'node:path'
+import { STORE_DIR } from './config.js'
+import { logStoreFileEvent } from './db.js'
+import { logger } from './logger.js'
+
+// Files whose presence we record but whose content must never be logged.
+// Even the audit entry for these is flagged is_sensitive=1 so the UI can
+// render a sanitised label rather than showing path components that might
+// hint at secret values.
+const SENSITIVE_NAMES = new Set(['.dashboard-token', 'vault.json', '.vault-key'])
+
+// Atomic-write temp files (our own tmp-file+rename pattern) and migration
+// artefacts: ignore them so the audit log doesn't double-count every settings
+// save as both a `.tmp.<hex>` write and a final rename.
+const IGNORE_RE = /\.tmp\.[a-f0-9]+$|\.migrated$|\.bak$/
+
+let watcher: ReturnType<typeof watch> | null = null
+
+export function startStoreWatcher(): void {
+  if (watcher) return
+  try {
+    watcher = watch(STORE_DIR, { recursive: true }, (eventType, filename) => {
+      if (!filename) return
+      if (IGNORE_RE.test(filename)) return
+      const rel = filename.replace(/\\/g, '/')
+      const isSensitive = SENSITIVE_NAMES.has(basename(rel)) ? 1 : 0
+      let fileSize: number | null = null
+      if (eventType === 'change') {
+        try {
+          fileSize = statSync(`${STORE_DIR}/${rel}`).size
+        } catch { /* file may have been deleted by the time we stat */ }
+      }
+      try {
+        logStoreFileEvent(rel, eventType, isSensitive, fileSize)
+      } catch (err) {
+        logger.warn({ err, rel }, 'store-watcher: failed to log event')
+      }
+    })
+    logger.info({ dir: STORE_DIR }, 'Store file watcher started')
+  } catch (err) {
+    // Non-fatal: the rest of the dashboard works fine without store auditing.
+    logger.warn({ err }, 'Store file watcher failed to start')
+  }
+}
+
+export function stopStoreWatcher(): void {
+  if (!watcher) return
+  try { watcher.close() } catch { /* best-effort */ }
+  watcher = null
+}

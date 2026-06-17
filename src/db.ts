@@ -555,6 +555,23 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_config_change_log_key ON config_change_log(key, created_at)`)
 
+  // --- Store File Audit (fs-watch events on store/) ---
+  // Records every write/rename in the store/ directory. Content is NEVER
+  // stored -- only path, event type and file size. Sensitive files
+  // (.dashboard-token, vault.json, .vault-key) are flagged so the UI can
+  // render them without leaking values.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS store_file_audit (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      rel_path TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      is_sensitive INTEGER NOT NULL DEFAULT 0,
+      file_size INTEGER,
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_store_file_audit_ts ON store_file_audit(created_at)`)
+
   // One-shot migration from the old JSON file (which had a read-modify-write
   // race). Import rows if they exist, then rename the file so we don't keep
   // re-importing. Wrapped in a transaction so a crash mid-import is safe.
@@ -1959,5 +1976,108 @@ export function getRecentConfigChanges(limit = 200): ConfigChangeLogRow[] {
   // id DESC as a tiebreaker: created_at has 1-second resolution, so two
   // saves in the same second would otherwise sort arbitrarily.
   return db.prepare('SELECT * FROM config_change_log ORDER BY created_at DESC, id DESC LIMIT ?').all(limit) as ConfigChangeLogRow[]
+}
+
+// --- Store File Audit ---
+
+export interface StoreFileAuditRow {
+  id: number
+  rel_path: string
+  event_type: string
+  is_sensitive: number
+  file_size: number | null
+  created_at: number
+}
+
+export function logStoreFileEvent(
+  relPath: string,
+  eventType: string,
+  isSensitive: number,
+  fileSize: number | null,
+): void {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(
+    'INSERT INTO store_file_audit (rel_path, event_type, is_sensitive, file_size, created_at) VALUES (?, ?, ?, ?, ?)',
+  ).run(relPath, eventType, isSensitive, fileSize, now)
+}
+
+export function getRecentStoreFileEvents(limit = 200): StoreFileAuditRow[] {
+  return db.prepare('SELECT * FROM store_file_audit ORDER BY created_at DESC, id DESC LIMIT ?').all(limit) as StoreFileAuditRow[]
+}
+
+// --- Unified Audit Log Query ---
+
+export type AuditSource = 'config' | 'idea' | 'store'
+
+export interface AuditLogEntry {
+  id: number
+  source: AuditSource
+  created_at: number
+  actor?: string
+  // config
+  key?: string
+  old_value?: string | null
+  new_value?: string | null
+  // idea
+  idea_id?: string
+  from_status?: string | null
+  to_status?: string
+  note?: string | null
+  // store
+  rel_path?: string
+  event_type?: string
+  is_sensitive?: number
+  file_size?: number | null
+}
+
+export function queryAuditLog(opts: {
+  sources: AuditSource[]
+  from?: number
+  to?: number
+  q?: string
+  limit: number
+}): AuditLogEntry[] {
+  const { sources, from, to, q, limit } = opts
+  const all: AuditSource[] = ['config', 'idea', 'store']
+  const active = sources.length > 0 ? sources : all
+
+  const parts: AuditLogEntry[] = []
+
+  if (active.includes('config')) {
+    let sql = 'SELECT id, key, old_value, new_value, actor, created_at FROM config_change_log WHERE 1=1'
+    const params: unknown[] = []
+    if (from) { sql += ' AND created_at >= ?'; params.push(from) }
+    if (to)   { sql += ' AND created_at <= ?'; params.push(to) }
+    if (q)    { sql += ' AND (key LIKE ? OR old_value LIKE ? OR new_value LIKE ? OR actor LIKE ?)'; const p = `%${q}%`; params.push(p, p, p, p) }
+    sql += ' ORDER BY created_at DESC, id DESC LIMIT ?'; params.push(limit)
+    const rows = db.prepare(sql).all(...params) as ConfigChangeLogRow[]
+    for (const r of rows) parts.push({ ...r, source: 'config' })
+  }
+
+  if (active.includes('idea')) {
+    let sql = 'SELECT id, idea_id, from_status, to_status, actor, note, created_at FROM idea_status_log WHERE 1=1'
+    const params: unknown[] = []
+    if (from) { sql += ' AND created_at >= ?'; params.push(from) }
+    if (to)   { sql += ' AND created_at <= ?'; params.push(to) }
+    if (q)    { sql += ' AND (idea_id LIKE ? OR to_status LIKE ? OR note LIKE ? OR actor LIKE ?)'; const p = `%${q}%`; params.push(p, p, p, p) }
+    sql += ' ORDER BY created_at DESC, id DESC LIMIT ?'; params.push(limit)
+    const rows = db.prepare(sql).all(...params) as Array<{ id: number; idea_id: string; from_status: string | null; to_status: string; actor: string; note: string | null; created_at: number }>
+    for (const r of rows) parts.push({ ...r, source: 'idea' })
+  }
+
+  if (active.includes('store')) {
+    let sql = 'SELECT id, rel_path, event_type, is_sensitive, file_size, created_at FROM store_file_audit WHERE 1=1'
+    const params: unknown[] = []
+    if (from) { sql += ' AND created_at >= ?'; params.push(from) }
+    if (to)   { sql += ' AND created_at <= ?'; params.push(to) }
+    if (q)    { sql += ' AND rel_path LIKE ?'; const p = `%${q}%`; params.push(p) }
+    sql += ' ORDER BY created_at DESC, id DESC LIMIT ?'; params.push(limit)
+    const rows = db.prepare(sql).all(...params) as StoreFileAuditRow[]
+    for (const r of rows) parts.push({ ...r, source: 'store' })
+  }
+
+  // Merge and sort by created_at DESC, then id DESC as tiebreaker
+  parts.sort((a, b) => b.created_at - a.created_at || (b.id ?? 0) - (a.id ?? 0))
+  return parts.slice(0, limit)
 }
 
