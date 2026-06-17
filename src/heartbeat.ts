@@ -2,9 +2,8 @@ import { statSync, mkdirSync, writeFileSync, existsSync, readFileSync, symlinkSy
 import { join } from 'node:path'
 import { homedir, userInfo } from 'node:os'
 import { execFileSync } from 'node:child_process'
+import { getEffectiveSettingValue } from './settings-store.js'
 import {
-  HEARTBEAT_START_HOUR,
-  HEARTBEAT_END_HOUR,
   HEARTBEAT_CALENDAR_ID,
   STORE_DIR,
   DB_FILENAME,
@@ -440,23 +439,25 @@ function buildAgentPrompt(data: HeartbeatData): string {
 function msUntilNextHeartbeat(): number {
   const now = new Date()
   const currentHour = now.getHours()
+  const startH = Number(getEffectiveSettingValue('HEARTBEAT_START_HOUR'))
+  const endH = Number(getEffectiveSettingValue('HEARTBEAT_END_HOUR'))
 
   let targetHour: number
 
-  if (currentHour < HEARTBEAT_START_HOUR) {
-    targetHour = HEARTBEAT_START_HOUR
-  } else if (currentHour >= HEARTBEAT_END_HOUR) {
+  if (currentHour < startH) {
+    targetHour = startH
+  } else if (currentHour >= endH) {
     const tomorrow = new Date(now)
     tomorrow.setDate(tomorrow.getDate() + 1)
-    tomorrow.setHours(HEARTBEAT_START_HOUR, 0, 0, 0)
+    tomorrow.setHours(startH, 0, 0, 0)
     return tomorrow.getTime() - now.getTime()
   } else {
     targetHour = currentHour + 1
-    if (targetHour === 8) targetHour = HEARTBEAT_START_HOUR
-    if (targetHour >= HEARTBEAT_END_HOUR) {
+    if (targetHour === 8) targetHour = startH
+    if (targetHour >= endH) {
       const tomorrow = new Date(now)
       tomorrow.setDate(tomorrow.getDate() + 1)
-      tomorrow.setHours(HEARTBEAT_START_HOUR, 0, 0, 0)
+      tomorrow.setHours(startH, 0, 0, 0)
       return tomorrow.getTime() - now.getTime()
     }
   }
@@ -469,7 +470,9 @@ function msUntilNextHeartbeat(): number {
 
 async function executeHeartbeat(): Promise<void> {
   const hour = new Date().getHours()
-  if (hour < HEARTBEAT_START_HOUR || hour >= HEARTBEAT_END_HOUR) {
+  const startH = Number(getEffectiveSettingValue('HEARTBEAT_START_HOUR'))
+  const endH = Number(getEffectiveSettingValue('HEARTBEAT_END_HOUR'))
+  if (hour < startH || hour >= endH) {
     logger.debug('Heartbeat: outside active window, skipping')
     return
   }

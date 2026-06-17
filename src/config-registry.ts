@@ -213,6 +213,58 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  // --- System module (requiresRestart -- read at process init) ---
+  {
+    key: 'DASHBOARD_PUBLIC_URL',
+    type: 'string',
+    default: '',
+    description: 'A dashboard nyilvánosan elérhető URL-je (pl. https://marveen.example.com). Üres = nincs CORS whitelist bővítés.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'OLLAMA_URL',
+    type: 'string',
+    default: 'http://localhost:11434',
+    description: 'Az Ollama API alap-URL-je. Memória-embedding és modell-javaslat ezt használja.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  // --- Heartbeat module (hot-reload via settings-store) ---
+  {
+    key: 'HEARTBEAT_START_HOUR',
+    type: 'int',
+    default: 9,
+    min: 0,
+    max: 22,
+    description: 'A heartbeat aktív időablakának kezdete (helyi idő, 0-22). Előtte nem küld értesítést.',
+    module: 'heartbeat',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'HEARTBEAT_END_HOUR',
+    type: 'int',
+    default: 23,
+    min: 1,
+    max: 24,
+    description: 'A heartbeat aktív időablakának vége (helyi idő, 1-24). Ettől nem küld értesítést.',
+    module: 'heartbeat',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'HEARTBEAT_AGENT_ENABLED',
+    type: 'string',
+    default: '1',
+    valueSet: ['0', '1'],
+    description: 'Heartbeat sub-ágens engedélyezése. 1 = bekapcsolva (újraindítás után lép életbe).',
+    module: 'heartbeat',
+    secret: false,
+    requiresRestart: true,
+  },
 ]
 
 export function getSettingDefinition(key: string): SettingDefinition | undefined {

@@ -166,7 +166,7 @@ export const RESPAWN_ENABLED =
 
 // Heartbeat
 export const HEARTBEAT_INTERVAL_MS = 60 * 60 * 1000 // 1 hour
-export const HEARTBEAT_START_HOUR = 9
+export const HEARTBEAT_START_HOUR = parseInt(env['HEARTBEAT_START_HOUR'] ?? '9', 10)
 
 // Dedicated channel-less `heartbeat` sub-agent (hourly summary worker).
 // OFF by default: a fresh or upgrading install must NOT silently spawn a
@@ -181,5 +181,5 @@ export const HEARTBEAT_AGENT_ENABLED =
 // authenticated as, so no personal address is baked into the shipped
 // scaffold.
 export const HEARTBEAT_CALENDAR_ACCOUNT = (env['HEARTBEAT_CALENDAR_ACCOUNT'] ?? '').trim()
-export const HEARTBEAT_END_HOUR = 23
+export const HEARTBEAT_END_HOUR = parseInt(env['HEARTBEAT_END_HOUR'] ?? '23', 10)
 export const HEARTBEAT_CALENDAR_ID = env['HEARTBEAT_CALENDAR_ID'] ?? ''
