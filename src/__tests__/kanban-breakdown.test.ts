@@ -135,7 +135,9 @@ describe('validateSubtasks (from llm-breakdown)', () => {
   })
 
   it('rejects empty array', () => {
-    expect(() => validateSubtasks([], validAssignees)).toThrow('Expected 1-10 subtasks')
+    // The upper bound is configurable (IDEA_BREAKDOWN_MAX_SUBTASKS * 2), so match
+    // the rejection by the empty-count rather than a hard-coded ceiling.
+    expect(() => validateSubtasks([], validAssignees)).toThrow(/Expected 1-\d+ subtasks, got 0/)
   })
 
   it('defaults invalid priority to normal', () => {
