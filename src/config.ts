@@ -1,4 +1,5 @@
 import { hostname } from 'node:os'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readEnvFile } from './env.js'
@@ -12,6 +13,32 @@ export const DB_FILENAME = 'claudeclaw.db'
 export const PID_FILENAME = 'claudeclaw.pid'
 
 const env = readEnvFile()
+
+// Boot-time settings-override layer. The dashboard Settings page persists
+// changes to store/config-overrides.json. config.ts is imported too early to
+// use settings-store.ts (that module imports config.ts -> circular), so for
+// the boot-consumed registry keys we read that file directly here and layer it
+// over .env, matching the settings-store resolution order
+// (config-overrides.json > .env > registry default). This is what makes a
+// `requiresRestart` registry key (DASHBOARD_PUBLIC_URL, OLLAMA_URL,
+// HEARTBEAT_AGENT_ENABLED) actually take effect after a restart -- without it
+// the saved override would never be read by the boot-time consumers.
+function readConfigOverrides(): Record<string, unknown> {
+  try {
+    const p = join(STORE_DIR, 'config-overrides.json')
+    return existsSync(p) ? (JSON.parse(readFileSync(p, 'utf8')) as Record<string, unknown>) : {}
+  } catch {
+    return {}
+  }
+}
+const overrides = readConfigOverrides()
+// Effective raw value for a registry-backed key consumed at boot:
+// config-overrides.json wins, then .env. Callers apply their own default.
+function cfg(key: string): string | undefined {
+  const ov = overrides[key]
+  if (ov !== undefined && ov !== null && String(ov).length > 0) return String(ov)
+  return env[key]
+}
 
 export const TELEGRAM_BOT_TOKEN = env['TELEGRAM_BOT_TOKEN'] ?? ''
 export const ALLOWED_CHAT_ID = env['ALLOWED_CHAT_ID'] ?? ''
@@ -111,13 +138,16 @@ export const KANBAN_WIP_OK_COLOR = env['KANBAN_WIP_OK_COLOR'] ?? '#6b7280'
 export const KANBAN_WIP_WARN_COLOR = env['KANBAN_WIP_WARN_COLOR'] ?? '#c9a000'
 export const KANBAN_WIP_FULL_COLOR = env['KANBAN_WIP_FULL_COLOR'] ?? '#d46b00'
 export const KANBAN_WIP_OVER_COLOR = env['KANBAN_WIP_OVER_COLOR'] ?? '#c53030'
-export const DASHBOARD_PUBLIC_URL = env['DASHBOARD_PUBLIC_URL'] ?? ''
+// requiresRestart registry keys: read through the override layer so a value
+// saved on the Settings page takes effect on the next restart.
+export const DASHBOARD_PUBLIC_URL = cfg('DASHBOARD_PUBLIC_URL') ?? ''
 // Extra browser origins allowed to make state-changing dashboard requests
 // (CORS + CSRF allowlist), comma-separated, e.g. for VPN/LAN addresses that
 // aren't covered by WEB_HOST or DASHBOARD_PUBLIC_URL. Empty by default so
-// existing installs keep the same allowlist as before.
+// existing installs keep the same allowlist as before. Not a Settings-page
+// key, so it stays a plain env read (not routed through the override layer).
 export const DASHBOARD_ALLOWED_ORIGINS = env['DASHBOARD_ALLOWED_ORIGINS'] ?? ''
-export const OLLAMA_URL = env['OLLAMA_URL'] ?? 'http://localhost:11434'
+export const OLLAMA_URL = cfg('OLLAMA_URL') ?? 'http://localhost:11434'
 
 // Kanban swimlanes: which field the board groups by on first load. Invalid
 // values silently fall back to 'none' (flat board) rather than breaking the
@@ -174,7 +204,7 @@ export const HEARTBEAT_START_HOUR = parseInt(env['HEARTBEAT_START_HOUR'] ?? '9',
 // HEARTBEAT_AGENT_ENABLED=1 (it additionally requires the respawn gate
 // above, since the heartbeat has to run on exactly one host).
 export const HEARTBEAT_AGENT_ENABLED =
-  ['1', 'true', 'yes', 'on'].includes((env['HEARTBEAT_AGENT_ENABLED'] ?? '').trim().toLowerCase())
+  ['1', 'true', 'yes', 'on'].includes((cfg('HEARTBEAT_AGENT_ENABLED') ?? '').trim().toLowerCase())
 
 // Google Calendar account the heartbeat summarises (next 2h). Empty (the
 // default) means the agent uses whatever calendar its MCP server is
