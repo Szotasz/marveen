@@ -2,6 +2,37 @@
 
 Az ötletláda egy könnyű ötletgyűjtő és -priorizáló rendszer, amely a Marveen dashboardon él. Az ötletek kanban-kártyává válhatnak, AI-segítséggel alfeladatokra bonthatók, és impact×effort pontozással rangsorolhatók.
 
+## Használat
+
+### Státuszok és szűrés
+
+Az ötletek négy állapot egyikében lehetnek: **new** (beérkezett), **reviewed** (értékelt, de még nem futó feladat), **kanban** (promótálva, már kanban-kártya), **rejected** (elutasítva). Az ötletláda alapértelmezetten az aktív nézetet mutatja (new + reviewed egyszerre). A szűrő-füllel válthatod a nézetet:
+
+- **Aktív** -- new + reviewed, ezeken dolgozol
+- **Kanbanon** -- promótált ötletek, ahol már fut a feladat
+- **Elutasítva** -- nem tűnnek el; visszakeresheted, miért döntöttetek nemmel
+
+### Komment-szál
+
+Kattints az ötlet nevére a részlet nézet megnyitásához. Az oldal alján megjelenik a komment-szál, ahol megjegyzéseket, döntési indoklásokat fűzhetsz az ötlethez. A review-vita így az ötletnél marad, nem szóródik szét a chat-előzményekben.
+
+### Impact×Effort pontozás
+
+Az ötlet részlet nézetében két mezőt tölthetsz ki:
+
+- **Impact** (1-5): mekkora értéket teremt az ötlet megvalósítása -- 5 a legnagyobb
+- **Effort** (1-5): mennyi munkát igényel -- 5 a legtöbb
+
+A **score** = Impact - Effort. Pozitív szám: nagy érték, kevés munkával. Az ötletkártyán megjelenik az `I{n}·E{n}` badge a score-ral. Ha nem töltöd ki, az ötlet pontozatlan marad és nem kerül be a napi javaslatba.
+
+**Mire jó a pontozás?** A rendszer naponta összeállít egy top-3 javaslatot a nyitott feladatokból és ötletekből. Ha egy ötlet score-ja eléri a 2-t, bekerülhet ebbe a listába -- így az értékes, de még nem indított ötletek nem merülnek el a backlogban.
+
+### AI-bontás és promóció
+
+Ha egy ötlet elég konkrét, a "Lebont" gombbal AI-segítséggel alfeladatokra bonthatod. Az AI javaslatait szerkesztheted és jóváhagyhatod -- ezután egyetlen kattintással kanban-kártyák jönnek létre belőlük. Ha az ötlet annyira egyértelmű, hogy nincs szükség bontásra, a "Promótálás" gombbal közvetlenül kártyává alakítható.
+
+---
+
 ## Státusz-életciklus
 
 ```

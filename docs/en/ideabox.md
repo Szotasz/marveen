@@ -2,6 +2,37 @@
 
 The idea box is a lightweight idea-capture and prioritisation system built into the Marveen dashboard. Ideas can be promoted to kanban cards, broken down into subtasks with AI assistance, and ranked by impact×effort scoring.
 
+## Using the idea box
+
+### Statuses and filtering
+
+Each idea is in one of four states: **new** (just captured), **reviewed** (evaluated, not yet a running task), **kanban** (promoted, now a kanban card), **rejected** (discarded). The idea box defaults to the active view (new + reviewed combined). Switch the view with the filter tabs:
+
+- **Active** -- new + reviewed; what you're working from
+- **On kanban** -- promoted ideas where a task is already running
+- **Rejected** -- ideas don't disappear; you can look back at why you said no
+
+### Comment thread
+
+Click an idea's title to open its detail view. A comment thread appears at the bottom where you can attach notes, review decisions, or reasoning to the idea. This keeps the discussion on the idea itself instead of scattering it across chat history.
+
+### Impact×Effort scoring
+
+In the detail view, fill in two fields:
+
+- **Impact** (1-5): how much value the idea delivers -- 5 is the highest
+- **Effort** (1-5): how much work it takes -- 5 is the most
+
+**Score** = Impact - Effort. A positive score means high value for relatively low work. The idea card shows an `I{n}·E{n}` badge with the score. Leave both fields empty to keep the idea unscored -- unscored ideas are not included in the daily recommendations.
+
+**Why score?** Each day the system builds a top-3 list of open tasks and ideas worth picking up next. An idea with a score of 2 or more is eligible to appear in that list -- so high-value ideas don't get buried in a growing backlog.
+
+### AI breakdown and promotion
+
+When an idea is concrete enough, use the "Breakdown" button to let the AI propose subtasks. You can edit and approve the suggestions, then create kanban cards for all of them in one click. If the idea is clear enough to skip the breakdown, "Promote" turns it directly into a card.
+
+---
+
 ## Status lifecycle
 
 ```
