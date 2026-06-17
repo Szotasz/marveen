@@ -3,7 +3,7 @@ import { queryAuditLog, type AuditSource } from '../../db.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import type { RouteContext } from './types.js'
 
-const VALID_SOURCES = new Set<AuditSource>(['config', 'idea', 'store'])
+const VALID_SOURCES = new Set<AuditSource>(['config', 'idea', 'store', 'diary'])
 
 export async function tryHandleAuditLog(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
@@ -38,6 +38,9 @@ export async function tryHandleAuditLog(ctx: RouteContext): Promise<boolean> {
   // Free-text search.
   const q = (params.get('q') ?? '').trim() || undefined
 
+  // Agent filter (meaningful for diary source; silently ignored for others).
+  const agent = (params.get('agent') ?? '').trim() || undefined
+
   // Per-request limit, capped at registry max.
   const maxEntries = Number(getEffectiveSettingValue('AUDIT_LOG_MAX_ENTRIES'))
   const limitParam = params.get('limit')
@@ -48,7 +51,7 @@ export async function tryHandleAuditLog(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  const entries = queryAuditLog({ sources, from, to, q, limit })
+  const entries = queryAuditLog({ sources, from, to, q, agent, limit })
   json(res, { entries, total: entries.length })
   return true
 }

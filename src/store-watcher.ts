@@ -15,6 +15,23 @@ const SENSITIVE_NAMES = new Set(['.dashboard-token', 'vault.json', '.vault-key']
 // save as both a `.tmp.<hex>` write and a final rename.
 const IGNORE_RE = /\.tmp\.[a-f0-9]+$|\.migrated$|\.bak$/
 
+// --- Agent attribution slot ---
+// Node.js is single-threaded; the HTTP request handler sets this before
+// the file write, and the fs.watch callback (which fires in the next
+// event-loop tick) reads and clears it. Because requests are serialised
+// on the event loop, there is no race between two concurrent writes in
+// practice. For writes that originate outside the process (e.g. external
+// tools writing to store/), the slot stays null -> stored as null.
+let currentWriteActor: string | null = null
+
+export function setStoreWriteActor(actor: string): void {
+  currentWriteActor = actor
+}
+
+export function clearStoreWriteActor(): void {
+  currentWriteActor = null
+}
+
 let watcher: ReturnType<typeof watch> | null = null
 
 export function startStoreWatcher(): void {
@@ -25,6 +42,9 @@ export function startStoreWatcher(): void {
       if (IGNORE_RE.test(filename)) return
       const rel = filename.replace(/\\/g, '/')
       const isSensitive = SENSITIVE_NAMES.has(basename(rel)) ? 1 : 0
+      // Consume the actor slot: the caller set it just before writing.
+      const agent = currentWriteActor
+      currentWriteActor = null
       let fileSize: number | null = null
       if (eventType === 'change') {
         try {
@@ -32,7 +52,7 @@ export function startStoreWatcher(): void {
         } catch { /* file may have been deleted by the time we stat */ }
       }
       try {
-        logStoreFileEvent(rel, eventType, isSensitive, fileSize)
+        logStoreFileEvent(rel, eventType, isSensitive, fileSize, agent)
       } catch (err) {
         logger.warn({ err, rel }, 'store-watcher: failed to log event')
       }

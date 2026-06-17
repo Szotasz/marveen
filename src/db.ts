@@ -567,10 +567,13 @@ export function initDatabase(dbPathOverride?: string): void {
       event_type TEXT NOT NULL,
       is_sensitive INTEGER NOT NULL DEFAULT 0,
       file_size INTEGER,
+      agent TEXT,
       created_at INTEGER NOT NULL
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_store_file_audit_ts ON store_file_audit(created_at)`)
+  // Migration: add agent column to installs that created the table before this column existed.
+  try { db.exec(`ALTER TABLE store_file_audit ADD COLUMN agent TEXT`) } catch { /* column already exists */ }
 
   // One-shot migration from the old JSON file (which had a read-modify-write
   // race). Import rows if they exist, then rename the file so we don't keep
@@ -1986,6 +1989,7 @@ export interface StoreFileAuditRow {
   event_type: string
   is_sensitive: number
   file_size: number | null
+  agent: string | null
   created_at: number
 }
 
@@ -1994,11 +1998,12 @@ export function logStoreFileEvent(
   eventType: string,
   isSensitive: number,
   fileSize: number | null,
+  agent: string | null = null,
 ): void {
   const now = Math.floor(Date.now() / 1000)
   db.prepare(
-    'INSERT INTO store_file_audit (rel_path, event_type, is_sensitive, file_size, created_at) VALUES (?, ?, ?, ?, ?)',
-  ).run(relPath, eventType, isSensitive, fileSize, now)
+    'INSERT INTO store_file_audit (rel_path, event_type, is_sensitive, file_size, agent, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+  ).run(relPath, eventType, isSensitive, fileSize, agent, now)
 }
 
 export function getRecentStoreFileEvents(limit = 200): StoreFileAuditRow[] {
@@ -2007,7 +2012,7 @@ export function getRecentStoreFileEvents(limit = 200): StoreFileAuditRow[] {
 
 // --- Unified Audit Log Query ---
 
-export type AuditSource = 'config' | 'idea' | 'store'
+export type AuditSource = 'config' | 'idea' | 'store' | 'diary'
 
 export interface AuditLogEntry {
   id: number
@@ -2028,6 +2033,12 @@ export interface AuditLogEntry {
   event_type?: string
   is_sensitive?: number
   file_size?: number | null
+  // diary (daily_logs + memories)
+  agent_id?: string
+  content?: string
+  category?: string
+  keywords?: string
+  entry_type?: 'log' | 'memory'
 }
 
 export function queryAuditLog(opts: {
@@ -2035,10 +2046,11 @@ export function queryAuditLog(opts: {
   from?: number
   to?: number
   q?: string
+  agent?: string
   limit: number
 }): AuditLogEntry[] {
-  const { sources, from, to, q, limit } = opts
-  const all: AuditSource[] = ['config', 'idea', 'store']
+  const { sources, from, to, q, agent, limit } = opts
+  const all: AuditSource[] = ['config', 'idea', 'store', 'diary']
   const active = sources.length > 0 ? sources : all
 
   const parts: AuditLogEntry[] = []
@@ -2074,6 +2086,30 @@ export function queryAuditLog(opts: {
     sql += ' ORDER BY created_at DESC, id DESC LIMIT ?'; params.push(limit)
     const rows = db.prepare(sql).all(...params) as StoreFileAuditRow[]
     for (const r of rows) parts.push({ ...r, source: 'store' })
+  }
+
+  if (active.includes('diary')) {
+    // daily_logs
+    let logSql = 'SELECT id, agent_id, content, created_at FROM daily_logs WHERE 1=1'
+    const logParams: unknown[] = []
+    if (from)  { logSql += ' AND created_at >= ?'; logParams.push(from) }
+    if (to)    { logSql += ' AND created_at <= ?'; logParams.push(to) }
+    if (agent) { logSql += ' AND agent_id = ?'; logParams.push(agent) }
+    if (q)     { logSql += ' AND content LIKE ?'; logParams.push(`%${q}%`) }
+    logSql += ' ORDER BY created_at DESC, id DESC LIMIT ?'; logParams.push(limit)
+    const logRows = db.prepare(logSql).all(...logParams) as Array<{ id: number; agent_id: string; content: string; created_at: number }>
+    for (const r of logRows) parts.push({ id: r.id, source: 'diary', created_at: r.created_at, agent_id: r.agent_id, content: r.content, entry_type: 'log' })
+
+    // memories
+    let memSql = 'SELECT id, agent_id, content, category, keywords, created_at FROM memories WHERE 1=1'
+    const memParams: unknown[] = []
+    if (from)  { memSql += ' AND created_at >= ?'; memParams.push(from) }
+    if (to)    { memSql += ' AND created_at <= ?'; memParams.push(to) }
+    if (agent) { memSql += ' AND agent_id = ?'; memParams.push(agent) }
+    if (q)     { memSql += ' AND (content LIKE ? OR keywords LIKE ?)'; memParams.push(`%${q}%`, `%${q}%`) }
+    memSql += ' ORDER BY created_at DESC, id DESC LIMIT ?'; memParams.push(limit)
+    const memRows = db.prepare(memSql).all(...memParams) as Array<{ id: number; agent_id: string; content: string; category: string; keywords: string | null; created_at: number }>
+    for (const r of memRows) parts.push({ id: r.id, source: 'diary', created_at: r.created_at, agent_id: r.agent_id, content: r.content, category: r.category, keywords: r.keywords ?? undefined, entry_type: 'memory' })
   }
 
   // Merge and sort by created_at DESC, then id DESC as tiebreaker
