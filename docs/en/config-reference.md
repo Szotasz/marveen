@@ -143,6 +143,12 @@ Every dashboard-editable setting is a registry entry with the following fields:
 | `HEARTBEAT_START_HOUR` | int | 9 | min 0, max 22 | no |
 | `HEARTBEAT_END_HOUR` | int | 23 | min 1, max 24 | no |
 | `HEARTBEAT_AGENT_ENABLED` | string | `1` | `0` or `1` | yes |
+**Registry -- Idea-box module:**
+
+| Key | Type | Default | Constraint | Restart |
+|-----|------|---------|------------|---------|
+| `IDEA_BREAKDOWN_MAX_SUBTASKS` | int | 10 | min 2, max 20 | no |
+| `IDEA_STALE_DAYS` | int | 7 | min 1, max 365 | no |
 
 **API endpoints:**
 

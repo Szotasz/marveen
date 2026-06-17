@@ -143,6 +143,12 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 | `HEARTBEAT_START_HOUR` | int | 9 | min 0, max 22 | nem |
 | `HEARTBEAT_END_HOUR` | int | 23 | min 1, max 24 | nem |
 | `HEARTBEAT_AGENT_ENABLED` | string | `1` | `0` vagy `1` | igen |
+**Registry -- Ötletláda modul:**
+
+| Kulcs | Típus | Alapérték | Korlát | Újraindítás |
+|-------|-------|-----------|--------|-------------|
+| `IDEA_BREAKDOWN_MAX_SUBTASKS` | int | 10 | min 2, max 20 | nem |
+| `IDEA_STALE_DAYS` | int | 7 | min 1, max 365 | nem |
 
 **API végpontok:**
 
