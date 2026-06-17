@@ -5832,6 +5832,19 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
 .conversation-filter { display: flex; align-items: center; gap: 5px; font-size: 12px; opacity: .85; white-space: nowrap; }
 .conversation-container { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 8px; background: #141414; border-radius: 0 0 8px 8px; min-height: 320px; }
 .conversation-empty { opacity: .6; text-align: center; padding: 30px; }
+.conv-load-older {
+  display: block;
+  margin: 0 auto 10px;
+  padding: 6px 16px;
+  background: var(--bg);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.conv-load-older:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+.conv-load-older:disabled { opacity: .5; cursor: default; }
 .conv-row { display: flex; }
 .conv-row.conv-in { justify-content: flex-start; }
 .conv-row.conv-out { justify-content: flex-end; }
