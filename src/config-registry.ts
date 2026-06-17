@@ -265,6 +265,28 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: true,
   },
+  {
+    key: 'IDEA_BREAKDOWN_MAX_SUBTASKS',
+    type: 'int',
+    default: 10,
+    min: 2,
+    max: 20,
+    description: 'Az "Kanbanra (AI)" ötlet-bontás során generált részfeladatok maximális száma.',
+    module: 'ideabox',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'IDEA_STALE_DAYS',
+    type: 'int',
+    default: 7,
+    min: 1,
+    max: 365,
+    description: 'Ennyi napnyi mozdulatlanság után kap "Elavult" jelzést egy "új" státuszú ötlet.',
+    module: 'ideabox',
+    secret: false,
+    requiresRestart: false,
+  },
 ]
 
 export function getSettingDefinition(key: string): SettingDefinition | undefined {

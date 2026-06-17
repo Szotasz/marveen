@@ -9383,7 +9383,7 @@ window.addEventListener('beforeunload', (e) => {
 // Human label for a registry "module" -- falls back to a capitalised key for
 // any future module the UI doesn't know about yet, so adding a registry
 // entry never requires a frontend change just to render a sane heading.
-const SETTINGS_MODULE_LABELS = { kanban: 'Kanban', system: 'Rendszer', heartbeat: 'Heartbeat' }
+const SETTINGS_MODULE_LABELS = { kanban: 'Kanban', system: 'Rendszer', heartbeat: 'Heartbeat', ideabox: 'Ötletláda' }
 function settingsModuleLabel(mod) {
   return SETTINGS_MODULE_LABELS[mod] || (mod.charAt(0).toUpperCase() + mod.slice(1))
 }

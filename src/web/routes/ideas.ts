@@ -4,6 +4,7 @@ import { listIdeas, createIdea, updateIdea, deleteIdea, listIdeaCategories, crea
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
+import { getEffectiveSettingValue } from '../../settings-store.js'
 import type { RouteContext } from './types.js'
 
 type IdeaRow = import('../../db.js').IdeaBoxRow
@@ -18,8 +19,10 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
   // Configurable stale threshold -- ideas with status 'new' older than this many days
-  // are flagged with stale:true in the list response.
-  const IDEA_STALE_DAYS = Math.max(1, Number(process.env.IDEA_STALE_DAYS) || 7)
+  // are flagged with stale:true in the list response. Read live through the settings
+  // layer (config-overrides.json > .env > default) so a Settings-page change applies
+  // without a restart.
+  const IDEA_STALE_DAYS = Math.max(1, Number(getEffectiveSettingValue('IDEA_STALE_DAYS')) || 7)
 
   if (path === '/api/ideas' && method === 'GET') {
     const status = url.searchParams.get('status') || undefined
