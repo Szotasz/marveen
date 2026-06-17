@@ -6,9 +6,38 @@ import { readAgentChannelProvider } from './agent-config.js'
 import { agentSessionName, capturePane } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { getProvider, type ChannelProviderType } from '../channel-provider.js'
+import { detectsBlockingMenu } from '../pane-state.js'
 
 const TMUX = resolveFromPath('tmux')
 const MAX_UP_ATTEMPTS = 8
+
+/**
+ * Fully dismiss the /mcp modal before returning.
+ *
+ * The /mcp menu is TWO levels deep (plugin LIST -> per-plugin action submenu).
+ * A single Escape from inside the submenu only pops back to the LIST -- the
+ * modal stays open. A reconnect that bails mid-navigation (e.g. "could not
+ * place cursor on target option") then leaves the session parked in /mcp:
+ * detectPaneState reads 'unknown', the scheduler skips it, and the session
+ * goes deaf for up to an hour until the separate blocking-menu safety net
+ * (Escape + respawn) fires. Root cause of the 2026-06-17 ~06:14 incident where
+ * duolingo-esti-ellenorzes / kanban-audit / dream-engine waited 60+ min.
+ *
+ * Press Escape until the blocking menu is gone (bounded). Extra Escapes at the
+ * normal prompt are harmless no-ops, so over-pressing is safe.
+ */
+function dismissMcpMenu(session: string): void {
+  for (let i = 0; i < 4; i++) {
+    try {
+      execFileSync(TMUX, ['send-keys', '-t', session, 'Escape'], { timeout: 3000 })
+      execFileSync('/bin/sleep', ['0.4'], { timeout: 1000 })
+    } catch {
+      return
+    }
+    const pane = capturePane(session) ?? ''
+    if (!pane || !detectsBlockingMenu(pane)) return
+  }
+}
 
 export interface ReconnectResult {
   ok: boolean
@@ -131,7 +160,7 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
     const pane1 = capturePane(session)
     if (!pane1) {
       logger.warn({ agentName, session }, 'channel-mcp-reconnect: capture failed after /mcp')
-      execFileSync(TMUX, ['send-keys', '-t', session, 'Escape'], { timeout: 3000 })
+      dismissMcpMenu(session)
       return { ok: false, message: 'Failed to capture pane after /mcp' }
     }
 
@@ -156,7 +185,7 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
         { agentName, session, maxUpAttempts: MAX_UP_ATTEMPTS, pluginPattern: pluginPattern.source },
         'channel-mcp-reconnect: plugin submenu not found',
       )
-      execFileSync(TMUX, ['send-keys', '-t', session, 'Escape'], { timeout: 3000 })
+      dismissMcpMenu(session)
       return { ok: false, message: `Plugin not found within ${MAX_UP_ATTEMPTS} Up attempts` }
     }
 
@@ -166,14 +195,14 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
     let submenu = capturePane(session)
     if (!submenu) {
       logger.warn({ agentName, session }, 'channel-mcp-reconnect: capture failed in submenu')
-      execFileSync(TMUX, ['send-keys', '-t', session, 'Escape'], { timeout: 3000 })
+      dismissMcpMenu(session)
       return { ok: false, message: 'Failed to capture submenu pane' }
     }
 
     const target = chooseSubmenuTarget(submenu)
     if (!target) {
       logger.warn({ agentName, session }, 'channel-mcp-reconnect: no Reconnect/Enable option in submenu')
-      execFileSync(TMUX, ['send-keys', '-t', session, 'Escape'], { timeout: 3000 })
+      dismissMcpMenu(session)
       return { ok: false, message: 'No Reconnect/Enable option in submenu' }
     }
 
@@ -194,20 +223,20 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
         { agentName, session, target: target.source, maxSteps: SUBMENU_MAX_STEPS },
         'channel-mcp-reconnect: could not place cursor on target option',
       )
-      execFileSync(TMUX, ['send-keys', '-t', session, 'Escape'], { timeout: 3000 })
+      dismissMcpMenu(session)
       return { ok: false, message: `Could not select ${target.source} within ${SUBMENU_MAX_STEPS} steps` }
     }
 
     execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 3000 })
     execFileSync('/bin/sleep', ['2'], { timeout: 4000 })
-    execFileSync(TMUX, ['send-keys', '-t', session, 'Escape'], { timeout: 3000 })
+    dismissMcpMenu(session)
 
     const action = target === RECONNECT_RX ? 'Reconnect' : 'Enable'
     logger.info({ agentName, session, matchedAt, action, provider: providerType }, 'channel-mcp-reconnect: completed')
     return { ok: true, message: `Activated ${action} via /mcp (Up x${matchedAt})` }
   } catch (err) {
     logger.warn({ err, agentName, session }, 'channel-mcp-reconnect failed')
-    try { execFileSync(TMUX, ['send-keys', '-t', session, 'Escape'], { timeout: 3000 }) } catch { /* best effort */ }
+    try { dismissMcpMenu(session) } catch { /* best effort */ }
     return { ok: false, message: err instanceof Error ? err.message : String(err) }
   }
 }
