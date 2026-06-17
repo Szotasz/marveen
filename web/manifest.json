@@ -1,0 +1,24 @@
+{
+  "name": "Marveen Dashboard",
+  "short_name": "Marveen",
+  "description": "AI fleet management dashboard",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#1a1917",
+  "background_color": "#faf9f5",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
