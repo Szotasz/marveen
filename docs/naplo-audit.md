@@ -6,16 +6,17 @@ A dashboard "Napló" oldala egységes, csak-olvasható nézetben jeleníti meg a
 
 ## Használat
 
-A bal oldali navigációban a "Napló" menüpont nyitja meg az oldalt.
+A bal oldali navigációban a "Napló" menüpont nyitja meg az oldalt. Ez az egyetlen Napló oldal -- a korábbi különálló Recall nézet beolvadt ide.
 
 **Forrás-fülek**
 
-Az oldal tetején négy fül szűri az eseményeket:
+Az oldal tetején öt fül szűri az eseményeket:
 
 - Összes -- minden forrás egységes időrendben
-- Config -- a Beállítások oldalon eszközölt módosítások (pl. `KANBAN_WIP_IN_PROGRESS` 5-ről 8-ra, ki változtatta, mikor)
-- Ötletláda -- ötlet-státuszváltások (pl. `new` -> `kanban` promóció, vagy visszavonás); titkos értékek sosem jelennek meg
-- Store-fájlok -- a `store/` könyvtárban bekövetkező fájlírások, átnevezések, törlések; az érzékeny fájlok (pl. `vault.json`, `.dashboard-token`) "sensitív" felirattal vannak jelölve
+- Eseménynapló -- az ágensek és a rendszer által naplózott általános események
+- Config -- a Beállítások oldalon eszközölt módosítások (pl. `KANBAN_WIP_IN_PROGRESS` 5-ről 8-ra, ki változtatta, mikor); titkos értékek sosem jelennek meg
+- Ötletláda -- ötlet-státuszváltások (pl. `new` -> `kanban` promóció, vagy visszavonás)
+- Store-fájlok -- az ágensek által létrehozott fájlok létrejöttének eseményei; a Marveen saját rendszerfájljai nem szerepelnek itt; ahol meghatározható, a fájlt létrehozó ágens neve is megjelenik (közvetlen tool-írásnál ez üres lehet)
 
 A fülre kattintva az oldal azonnal az adott forrás eseményeit mutatja.
 
@@ -137,7 +138,7 @@ A törlés a `runDecaySweep()` függvényből hívott `pruneAuditLogs()` függv�
 
 A bal oldali navigációban a "Napló" menüpont nyitja meg az oldalt.
 
-**Forrás-fülek**: Összes / Config / Ötletláda / Store-fájlok -- a kiválasztott fülre kattintva azonnal szűr.
+**Forrás-fülek**: Összes / Eseménynapló / Config / Ötletláda / Store-fájlok -- a kiválasztott fülre kattintva azonnal szűr.
 
 **Dátumszűrő**: "Ettől" -- "Eddig" dátummező; mindkettő opcionális. Ha mindkettő üres, az összes bejegyzés megjelenik (a `limit` értékéig).
 

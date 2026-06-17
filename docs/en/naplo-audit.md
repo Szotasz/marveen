@@ -6,16 +6,17 @@ The dashboard "Napló" (Audit Log) page provides a unified, read-only view of sy
 
 ## Using the audit log
 
-Open the page from the "Napló" entry in the left-hand navigation.
+Open the page from the "Napló" entry in the left-hand navigation. This is the single Napló page -- the former separate Recall view has been merged into it.
 
 **Source tabs**
 
-Four tabs at the top of the page filter the event stream:
+Five tabs at the top of the page filter the event stream:
 
 - All -- all sources merged in a single chronological timeline
+- Event log -- general events logged by agents and the system
 - Config -- changes made through the Settings page (e.g. `KANBAN_WIP_IN_PROGRESS` changed from 5 to 8, who changed it, when); secret values are never recorded
 - Ideas -- idea-box status transitions (e.g. `new` -> `kanban` on promotion, or reversal back to `new`); the note field shows the promotion path or reversal reason
-- Store files -- file writes, renames, and deletes inside the `store/` directory; sensitive files (e.g. `vault.json`, `.dashboard-token`) are labelled "sensitív"
+- Store files -- file creation events for files created by agents; Marveen's own system files are excluded; where determinable, the creating agent's name is shown (may be empty for direct tool writes)
 
 Clicking a tab filters the list immediately -- no page reload needed.
 
@@ -137,7 +138,7 @@ Deletion is performed by `pruneAuditLogs()`, called from `runDecaySweep()` which
 
 The "Napló" entry in the left-hand navigation opens the page.
 
-**Source tabs**: Összes (All) / Config / Ötletláda (Ideas) / Store-fájlok (Store Files) -- clicking a tab filters immediately.
+**Source tabs**: All / Event log / Config / Ideas / Store files -- clicking a tab filters immediately.
 
 **Date range**: "From" / "To" date inputs; both optional. When both are empty, all entries up to `limit` are returned.
 
