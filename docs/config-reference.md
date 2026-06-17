@@ -49,6 +49,24 @@ Ha el szeretnéd hagyni a Beállítások oldalt (másik menüpontra kattintasz, 
 
 Egyes beállítások mellett "Újraindítást igényel" feliratú badge látható -- ha ilyen értéket módosítasz (pl. `DASHBOARD_PUBLIC_URL`, `OLLAMA_URL`, `HEARTBEAT_AGENT_ENABLED`), a változás csak a szerver következő újraindítása után lép életbe. A kanban és heartbeat időablak-beállítások (pl. `KANBAN_WIP_*`, `KANBAN_AGING_*`, `HEARTBEAT_START_HOUR`) azonnal hatnak, újraindítás nélkül.
 
+**Mit állíthatsz be?**
+
+A beállítások három modulba vannak csoportosítva:
+
+*Kanban* -- a kanban-tábla viselkedése:
+- WIP-limitek és badge-színek: melyik oszlop hány kártyáig zöld/sárga/piros (v1 óta elérhető)
+- Kártya-öregedés: hány óra után jelenik meg a sárga/narancs/piros öregedési jelzés, és milyen színnel -- ha a csapat ritka iterációkban dolgozik, az alapértelmezett 24h/72h/168h küszöbök felfelé állíthatók
+- Archiválás: hány nappal a lezárás után kerüljenek a "done" kártyák automatikusan az archívumba (alapértelmezett 30 nap)
+- Swimlane alapértelmezés: a kanban tábla milyen csoportosításban nyíljon meg ("nincs", "felelős szerint", "prioritás szerint")
+
+*Rendszer* -- infrastruktúra paraméterek (újraindítás szükséges):
+- A dashboard nyilvánosan elérhető URL-je (webhookoknál és külső hivatkozásoknál használja a rendszer)
+- Az Ollama embedding szerver URL-je (memória-kereséshez)
+
+*Heartbeat* -- a háttér összefoglaló ügynök:
+- Be/kikapcsolás: "1" = aktív, "0" = leállítva (újraindítás szükséges)
+- Aktív időablak: melyik óráktól meddig futhasson (pl. 9-23 = csak napközben)
+
 ---
 
 ### Beállítások rendszer (Settings)

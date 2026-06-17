@@ -49,6 +49,24 @@ If you try to leave the Settings page (by clicking another menu entry or closing
 
 Some rows carry a "Requires restart" badge -- changes to those settings (e.g. `DASHBOARD_PUBLIC_URL`, `OLLAMA_URL`, `HEARTBEAT_AGENT_ENABLED`) only take effect after the next server restart. Kanban and heartbeat window settings (e.g. `KANBAN_WIP_*`, `KANBAN_AGING_*`, `HEARTBEAT_START_HOUR`) apply immediately, no restart needed.
 
+**What can you configure?**
+
+Settings are organised into three modules:
+
+*Kanban* -- how the kanban board behaves:
+- WIP limits and badge colours: how many cards per column before the badge turns yellow or red (available since v1)
+- Card aging: after how many hours a stale-card indicator appears in yellow, orange, or red -- if your team works in longer cycles, raise the default 24h/72h/168h thresholds accordingly
+- Archiving: how many days after a card is closed before it moves to the archive automatically (default: 30 days)
+- Swimlane default: which grouping the kanban board opens in ("none", "by assignee", "by priority")
+
+*System* -- infrastructure parameters (restart required):
+- The publicly accessible URL of the dashboard (used by webhooks and external links)
+- The Ollama embedding server URL (used for memory search)
+
+*Heartbeat* -- the background summary agent:
+- On/off toggle: "1" = active, "0" = stopped (restart required)
+- Active window: which hours of the day the agent is allowed to run (e.g. 9-23 = daytime only)
+
 ---
 
 ### Settings System
