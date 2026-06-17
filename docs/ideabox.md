@@ -72,19 +72,60 @@ IDEA_BREAKDOWN_MAX_SUBTASKS=8
 
 Az ötlet-nézet jóváhagyás után `POST /api/ideas/:id/promote-breakdown` hív, amely létrehozza a szülő kanban-kártyát és az alfeladat-kártyákat.
 
+## Elavult (stale) ötletek
+
+Ha egy `new` státuszú ötlet `updated_at` mezője régebbi, mint `IDEA_STALE_DAYS` napja (alapértelmezett 7), az API `stale: true` jelzőt ad vissza, és az ötletkártyán narancssárga bal szegély + "Elavult" badge jelenik meg.
+
+```bash
+# .env-be, vagy a launchd plist-be:
+IDEA_STALE_DAYS=14
+```
+
+## Audit trail (státusz-napló)
+
+Minden státuszváltás rögzítve van az `idea_status_log` táblában: ki változtatta (actor), mikor, milyen állapotból és mibe, és opcionálisan egy rövid megjegyzés. Az API-n keresztül lekérdezhető:
+
+```bash
+GET /api/ideas/:id/status-log
+# Válasz: { log: [{ id, idea_id, from_status, to_status, actor, note, created_at }, ...] }
+```
+
+## Promóció-körfolyamat (visszaút)
+
+Ha egy `kanban` státuszú ötlet kanban-kártyáját törölik vagy archiválják, a rendszer automatikusan visszaállítja az ötletet `reviewed` állapotba (`kanban_id` törlödik, a váltás naplózódik). Manuálisan is visszavonható:
+
+```bash
+POST /api/ideas/:id/revert
+# Csak 'kanban' státuszú ötleten működik; visszaállítja 'reviewed'-re és törli a kanban_id-t.
+```
+
+## Definition of Done (siker-kritérium)
+
+A breakdown promóciónál megadható egy opcionális siker-kritérium szöveg. Ez a szülő kanban-kártya leírásának végéhez kerül `## Siker-kritérium` fejléccel. API-n keresztül:
+
+```bash
+POST /api/ideas/:id/promote-breakdown
+{
+  "subtasks": [...],
+  "success_criteria": "A funkció tesztelve, dokkumentálva, és a staging-en fut."
+}
+```
+
 ## API-végpontok
 
 | Módszer | Útvonal | Leírás |
 |---------|---------|--------|
-| GET | `/api/ideas` | Ötletek listázása (`?status=`, `?category=` szűrők) |
+| GET | `/api/ideas` | Ötletek listázása (`?status=`, `?category=` szűrők; `stale` mező is megjelenik) |
 | POST | `/api/ideas` | Új ötlet létrehozása |
 | PUT | `/api/ideas/:id` | Frissítés (title, description, category, status, impact, effort) |
 | DELETE | `/api/ideas/:id` | Törlés |
 | GET | `/api/ideas/:id/comments` | Kommentek listázása |
 | POST | `/api/ideas/:id/comments` | Komment hozzáadása |
+| GET | `/api/ideas/:id/status-log` | Státusz-napló lekérdezése |
+| POST | `/api/ideas/:id/revert` | Kanban -> reviewed visszavonás |
 | POST | `/api/ideas/:id/promote` | Promóció kanban-kártyává (phase: `detail` vagy `plan`) |
 | POST | `/api/ideas/:id/breakdown` | AI-lebontás generálása |
-| POST | `/api/ideas/:id/promote-breakdown` | Kanban-kártyák létrehozása jóváhagyott alfeladatokból |
+| POST | `/api/ideas/:id/promote-breakdown` | Kanban-kártyák létrehozása; fogadja `success_criteria` mezőt |
 
 ### Impact/effort validáció
 
@@ -106,11 +147,20 @@ effort INTEGER                       -- 1-5, lehet NULL
 created_at INTEGER NOT NULL
 updated_at INTEGER NOT NULL
 
--- idea_comments (új tábla)
+-- idea_comments (Fázis 1)
 id INTEGER PRIMARY KEY AUTOINCREMENT
-idea_id TEXT NOT NULL REFERENCES idea_box(id)
+idea_id TEXT NOT NULL
 author TEXT NOT NULL
 content TEXT NOT NULL
+created_at INTEGER NOT NULL
+
+-- idea_status_log (Fázis 2 -- audit trail)
+id INTEGER PRIMARY KEY AUTOINCREMENT
+idea_id TEXT NOT NULL
+from_status TEXT              -- NULL ha ez a létrehozás
+to_status TEXT NOT NULL
+actor TEXT NOT NULL DEFAULT 'system'
+note TEXT
 created_at INTEGER NOT NULL
 ```
 

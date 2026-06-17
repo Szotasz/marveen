@@ -72,19 +72,60 @@ IDEA_BREAKDOWN_MAX_SUBTASKS=8
 
 After user approval in the UI, `POST /api/ideas/:id/promote-breakdown` creates the parent kanban card and one child card per approved subtask.
 
+## Stale ideas
+
+If a `new` idea's `updated_at` is older than `IDEA_STALE_DAYS` days (default 7), the API returns `stale: true` on that idea. Stale cards show an amber left border and an "Elavult" (stale) badge in the UI.
+
+```bash
+# In .env or the launchd plist:
+IDEA_STALE_DAYS=14
+```
+
+## Audit trail (status log)
+
+Every status change is recorded in `idea_status_log`: who changed it, when, from which status, to which status, and an optional note. Queried via API:
+
+```bash
+GET /api/ideas/:id/status-log
+# Response: { log: [{ id, idea_id, from_status, to_status, actor, note, created_at }, ...] }
+```
+
+## Promotion loop (reversal)
+
+When a `kanban`-status idea's kanban card is deleted or archived, the idea is automatically reverted to `reviewed` (`kanban_id` is cleared and the transition is logged as `actor: 'system'`). Manual reversal is also available:
+
+```bash
+POST /api/ideas/:id/revert
+# Only works on ideas with status 'kanban'; reverts to 'reviewed' and clears kanban_id.
+```
+
+## Definition of Done
+
+When using breakdown promotion, an optional success criteria string can be submitted. It is appended to the parent kanban card's description under a `## Siker-kritérium` (Definition of Done) heading.
+
+```bash
+POST /api/ideas/:id/promote-breakdown
+{
+  "subtasks": [...],
+  "success_criteria": "Feature tested, documented, and running on staging."
+}
+```
+
 ## API endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/ideas` | List ideas (`?status=`, `?category=` filters) |
+| GET | `/api/ideas` | List ideas (`?status=`, `?category=` filters; includes `stale` field) |
 | POST | `/api/ideas` | Create idea |
 | PUT | `/api/ideas/:id` | Update (title, description, category, status, impact, effort) |
 | DELETE | `/api/ideas/:id` | Delete |
 | GET | `/api/ideas/:id/comments` | List comments |
 | POST | `/api/ideas/:id/comments` | Add comment |
+| GET | `/api/ideas/:id/status-log` | Get status audit log |
+| POST | `/api/ideas/:id/revert` | Revert kanban idea back to reviewed |
 | POST | `/api/ideas/:id/promote` | Promote to kanban card (phase: `detail` or `plan`) |
 | POST | `/api/ideas/:id/breakdown` | Generate AI breakdown |
-| POST | `/api/ideas/:id/promote-breakdown` | Create kanban cards from approved subtasks |
+| POST | `/api/ideas/:id/promote-breakdown` | Create kanban cards; accepts optional `success_criteria` |
 
 ### Impact/effort validation
 
@@ -106,11 +147,20 @@ effort INTEGER                       -- 1-5, nullable
 created_at INTEGER NOT NULL
 updated_at INTEGER NOT NULL
 
--- idea_comments (new table)
+-- idea_comments (Phase 1)
 id INTEGER PRIMARY KEY AUTOINCREMENT
-idea_id TEXT NOT NULL REFERENCES idea_box(id)
+idea_id TEXT NOT NULL
 author TEXT NOT NULL
 content TEXT NOT NULL
+created_at INTEGER NOT NULL
+
+-- idea_status_log (Phase 2 -- audit trail)
+id INTEGER PRIMARY KEY AUTOINCREMENT
+idea_id TEXT NOT NULL
+from_status TEXT              -- NULL for creation
+to_status TEXT NOT NULL
+actor TEXT NOT NULL DEFAULT 'system'
+note TEXT
 created_at INTEGER NOT NULL
 ```
 
