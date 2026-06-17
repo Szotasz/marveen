@@ -76,7 +76,14 @@ themeToggle.addEventListener('click', () => {
 const navLinks = document.querySelectorAll('.sb-link[data-page], .nav-link[data-page]')
 const pages = document.querySelectorAll('.page')
 
+function confirmSettingsLeave() {
+  if (settingsDirty.size === 0) return true
+  return window.confirm('Nem mentett beállítások maradnak. Biztosan el akarsz navigálni?')
+}
+
 function switchPage(pageId) {
+  // Guard unsaved settings before leaving the settings page
+  if (!document.getElementById('settingsPage').hidden && pageId !== 'settings' && !confirmSettingsLeave()) return
   pages.forEach((p) => (p.hidden = p.id !== pageId + 'Page'))
   navLinks.forEach((l) => l.classList.toggle('active', l.dataset.page === pageId))
   // Kanban needs full-width layout (overrides main's max-width: 1200px)
@@ -9366,18 +9373,45 @@ async function setAutonomyLevel(key, level) {
 // ============================================================
 
 document.getElementById('refreshSettingsBtn').addEventListener('click', loadSettings)
+window.addEventListener('beforeunload', (e) => {
+  if (settingsDirty.size > 0) { e.preventDefault(); e.returnValue = '' }
+})
 
 // Human label for a registry "module" -- falls back to a capitalised key for
 // any future module the UI doesn't know about yet, so adding a registry
 // entry never requires a frontend change just to render a sane heading.
-const SETTINGS_MODULE_LABELS = { kanban: 'Kanban' }
+const SETTINGS_MODULE_LABELS = { kanban: 'Kanban', system: 'Rendszer', heartbeat: 'Heartbeat' }
 function settingsModuleLabel(mod) {
   return SETTINGS_MODULE_LABELS[mod] || (mod.charAt(0).toUpperCase() + mod.slice(1))
+}
+
+// Track dirty state: key -> { input, originalValue, type, errorEl }
+const settingsDirty = new Map()
+
+function updateSettingsSaveBar() {
+  const bar = document.getElementById('settingsSaveBar')
+  const countEl = document.getElementById('settingsDirtyCount')
+  if (!bar) return
+  const n = settingsDirty.size
+  bar.style.display = n > 0 ? 'flex' : 'none'
+  if (countEl) countEl.textContent = n === 1 ? '1 módosított beállítás' : `${n} módosított beállítás`
+}
+
+function markSettingDirty(key, input, originalValue, type, errorEl) {
+  const currentVal = type === 'color' ? input.value : input.value
+  if (currentVal === String(originalValue)) {
+    settingsDirty.delete(key)
+  } else {
+    settingsDirty.set(key, { input, originalValue, type, errorEl })
+  }
+  updateSettingsSaveBar()
 }
 
 async function loadSettings() {
   const container = document.getElementById('settingsGroups')
   container.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Betöltés...</p>'
+  settingsDirty.clear()
+  updateSettingsSaveBar()
 
   try {
     const res = await fetch('/api/settings')
@@ -9455,6 +9489,7 @@ function buildSettingRow(def) {
   const editor = document.createElement('div')
   editor.className = 'settings-row-editor'
 
+  const originalValue = String(def.value)
   let valueInput
   if (Array.isArray(def.valueSet) && def.valueSet.length) {
     valueInput = document.createElement('select')
@@ -9465,7 +9500,7 @@ function buildSettingRow(def) {
       o.textContent = opt
       valueInput.appendChild(o)
     }
-    valueInput.value = String(def.value)
+    valueInput.value = originalValue
   } else if (def.type === 'color') {
     valueInput = document.createElement('input')
     valueInput.type = 'color'
@@ -9484,42 +9519,79 @@ function buildSettingRow(def) {
     valueInput.className = 'input'
     valueInput.value = def.value
   }
+  valueInput.dataset.settingKey = def.key
+  valueInput.dataset.settingType = def.type
+  valueInput.dataset.originalValue = originalValue
   editor.appendChild(valueInput)
-
-  const saveBtn = document.createElement('button')
-  saveBtn.className = 'btn-primary btn-compact'
-  saveBtn.textContent = 'Mentés'
-  editor.appendChild(saveBtn)
 
   const errorEl = document.createElement('div')
   errorEl.className = 'settings-row-error'
   editor.appendChild(errorEl)
 
-  saveBtn.addEventListener('click', () => saveSetting(def.key, valueInput, errorEl, def.type))
+  valueInput.addEventListener('input', () => markSettingDirty(def.key, valueInput, originalValue, def.type, errorEl))
+  valueInput.addEventListener('change', () => markSettingDirty(def.key, valueInput, originalValue, def.type, errorEl))
 
   row.appendChild(editor)
   return row
 }
 
-async function saveSetting(key, inputEl, errorEl, type) {
-  errorEl.textContent = ''
-  const raw = type === 'int' ? Number(inputEl.value) : inputEl.value
-  try {
-    const res = await fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key, value: raw }),
-    })
-    const data = await res.json().catch(() => ({}))
-    if (!res.ok) {
-      errorEl.textContent = data.error || 'Hiba a mentésnél'
-      return
+async function saveAllSettings() {
+  if (settingsDirty.size === 0) return
+  const btn = document.getElementById('settingsSaveAllBtn')
+  if (btn) { btn.disabled = true; btn.textContent = 'Mentés...' }
+
+  const errors = []
+  let needsRestart = false
+
+  for (const [key, { input, type, errorEl }] of settingsDirty) {
+    errorEl.textContent = ''
+    const raw = type === 'int' ? Number(input.value) : input.value
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key, value: raw }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        errorEl.textContent = data.error || 'Hiba'
+        errors.push(`${key}: ${data.error || 'hiba'}`)
+      } else {
+        input.dataset.originalValue = String(raw)
+        if (data.requiresRestart) needsRestart = true
+      }
+    } catch {
+      errorEl.textContent = 'Kapcsolati hiba'
+      errors.push(`${key}: kapcsolati hiba`)
     }
-    showToast(data.requiresRestart ? 'Mentve -- újraindítás szükséges az életbe lépéshez' : 'Mentve')
-  } catch {
-    errorEl.textContent = 'Hiba a mentésnél (kapcsolat)'
+  }
+
+  // Remove successfully saved keys from dirty map
+  for (const [key, { input }] of settingsDirty) {
+    if (String(input.value) === input.dataset.originalValue) settingsDirty.delete(key)
+  }
+  updateSettingsSaveBar()
+
+  if (btn) { btn.disabled = false; btn.textContent = 'Mentés' }
+  if (errors.length) {
+    showToast('Néhány beállítás nem mentődött el', 'error')
+  } else {
+    showToast(needsRestart ? 'Mentve -- újraindítás szükséges az életbe lépéshez' : 'Mentve')
   }
 }
+
+function resetAllSettings() {
+  for (const [key, { input, originalValue }] of settingsDirty) {
+    input.value = originalValue
+    const errorEl = document.querySelector(`[data-setting-key="${key}"]`)?.closest('.settings-row')?.querySelector('.settings-row-error')
+    if (errorEl) errorEl.textContent = ''
+  }
+  settingsDirty.clear()
+  updateSettingsSaveBar()
+}
+
+document.getElementById('settingsSaveAllBtn')?.addEventListener('click', saveAllSettings)
+document.getElementById('settingsResetBtn')?.addEventListener('click', resetAllSettings)
 
 // === connectors.hu install banner ===
 ;(function () {
