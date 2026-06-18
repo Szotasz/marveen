@@ -301,6 +301,16 @@ window._i18n.en = {
   'connectors.error_catalog':    'Error loading catalog',
   'connectors.error_list':       'Error loading',
   'connectors.error_status':     'Error: {msg}',
+  'connectors.stat.active':       'Active',
+  'connectors.stat.configured':   'Configured',
+  'connectors.stat.needs_auth':   'Auth required',
+  'connectors.stat.failed':       'Failed',
+  'connectors.no_mcps':           'No MCP connectors',
+  'connectors.mcp_load_failed':   'MCP list unavailable: {msg}',
+  'connectors.stale_banner':      'Refresh failed: {msg} -- claude.ai connectors may be stale.',
+  'connectors.heading.projects':  'Projects',
+  'connectors.builtin.details':   'Details',
+
 
   // --- Migrate ---
   'migrate.page_title':          'Migrate',
@@ -387,6 +397,13 @@ window._i18n.en = {
   'vault.toast.save_error':      'Error saving',
   'vault.toast.delete_error':    'Error deleting',
   'vault.confirm.delete':        'Delete this secret?',
+  'vault.btn.show':              'Show',
+  'vault.btn.hide':              'Hide',
+  'vault.btn.edit':              'Edit',
+  'vault.btn.delete':            'Delete',
+  'vault.btn.save':              'Save',
+  'vault.btn.cancel':            'Cancel',
+
 
   // --- Token Usage ---
   'tokenUsage.page_title':       'Token Monitor',

@@ -436,6 +436,16 @@ window._i18n.hu = {
   'connectors.error_catalog':    'Hiba a katalógus betöltésekor',
   'connectors.error_list':       'Hiba a betöltés során',
   'connectors.error_status':     'Hiba: {msg}',
+  'connectors.stat.active':       'Aktív',
+  'connectors.stat.configured':   'Konfigurálva',
+  'connectors.stat.needs_auth':   'Auth szükséges',
+  'connectors.stat.failed':       'Hibás',
+  'connectors.no_mcps':           'Nincsenek MCP connectorok',
+  'connectors.mcp_load_failed':   'MCP lista nem tölthető be: {msg}',
+  'connectors.stale_banner':      'Frissítés sikertelen: {msg} -- a claude.ai connectorok elavultak lehetnek.',
+  'connectors.heading.projects':  'Projektek',
+  'connectors.builtin.details':   'Részletek',
+
 
   // --- Migrate ---
   'migrate.page_title':          'Költöztetés',
@@ -585,6 +595,13 @@ window._i18n.hu = {
   'vault.toast.save_error':      'Hiba a mentés során',
   'vault.toast.delete_error':    'Hiba a törlés során',
   'vault.confirm.delete':        'Törlöd ezt a titkos kulcsot?',
+  'vault.btn.show':              'Mutat',
+  'vault.btn.hide':              'Elrejt',
+  'vault.btn.edit':              'Módosít',
+  'vault.btn.delete':            'Törlés',
+  'vault.btn.save':              'Mentés',
+  'vault.btn.cancel':            'Mégse',
+
 
   // --- Token Usage ---
   'tokenUsage.page_title':       'Token Monitor',

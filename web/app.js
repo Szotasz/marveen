@@ -6470,7 +6470,7 @@ let connectorCacheWarming = true
 let connectorCacheError = ''
 
 async function loadConnectors() {
-  connectorGrid.innerHTML = '<div class="connector-loading"><span class="spinner"></span> Connectorok betoltese...</div>'
+  connectorGrid.innerHTML = `<div class="connector-loading"><span class="spinner"></span> ${t('connectors.loading')}</div>`
   connectorStats.innerHTML = ''
   // Reset pessimistic state at the top of every load. Only an authoritative
   // positive signal (status endpoint reports cacheLastRefreshed > 0) flips
@@ -6500,7 +6500,7 @@ async function loadConnectors() {
     loadVault()
   } catch (err) {
     console.error('Connector betöltés hiba:', err)
-    connectorGrid.innerHTML = '<div class="connector-loading">Hiba a betöltés során</div>'
+    connectorGrid.innerHTML = `<div class="connector-loading">${t('connectors.load_error')}</div>`
   }
 }
 
@@ -6593,11 +6593,11 @@ function renderConnectors() {
     const needsAuth = connectors.filter(c => c.status === 'needs_auth').length
     const failed = connectors.filter(c => c.status === 'failed').length
     connectorStats.innerHTML = `
-      <div class="stat-card"><div class="stat-value">${connectors.length}</div><div class="stat-label">Összes</div></div>
-      <div class="stat-card"><div class="stat-value" style="color:var(--success)">${connected}</div><div class="stat-label">Aktív</div></div>
-      ${configured ? `<div class="stat-card"><div class="stat-value" style="color:var(--info)">${configured}</div><div class="stat-label">Konfigurálva</div></div>` : ''}
-      ${needsAuth ? `<div class="stat-card"><div class="stat-value" style="color:var(--accent)">${needsAuth}</div><div class="stat-label">Auth szükséges</div></div>` : ''}
-      ${failed ? `<div class="stat-card"><div class="stat-value" style="color:var(--danger)">${failed}</div><div class="stat-label">Hibás</div></div>` : ''}
+      <div class="stat-card"><div class="stat-value">${connectors.length}</div><div class="stat-label">${t('connectors.stat.total')}</div></div>
+      <div class="stat-card"><div class="stat-value" style="color:var(--success)">${connected}</div><div class="stat-label">${t('connectors.stat.active')}</div></div>
+      ${configured ? `<div class="stat-card"><div class="stat-value" style="color:var(--info)">${configured}</div><div class="stat-label">${t('connectors.stat.configured')}</div></div>` : ''}
+      ${needsAuth ? `<div class="stat-card"><div class="stat-value" style="color:var(--accent)">${needsAuth}</div><div class="stat-label">${t('connectors.stat.needs_auth')}</div></div>` : ''}
+      ${failed ? `<div class="stat-card"><div class="stat-value" style="color:var(--danger)">${failed}</div><div class="stat-label">${t('connectors.stat.failed')}</div></div>` : ''}
     `
   }
 
@@ -6606,16 +6606,16 @@ function renderConnectors() {
   if (connectors.length > 0 && !connectorCacheWarming && connectorCacheError && hasClaudeAiEntries) {
     const banner = document.createElement('div')
     banner.className = 'connector-stale-banner'
-    banner.innerHTML = `Frissítés sikertelen: ${escapeHtml(connectorCacheError)} -- a claude.ai connectorok elavultak lehetnek.`
+    banner.innerHTML = t('connectors.stale_banner', { msg: escapeHtml(connectorCacheError) })
     connectorGrid.appendChild(banner)
   }
   if (connectors.length === 0 && !BUILTIN_MCPS.length) {
     if (connectorCacheWarming && connectorCacheError) {
-      connectorGrid.innerHTML = `<div class="connector-loading">MCP lista nem tölthető be: ${escapeHtml(connectorCacheError)}</div>`
+      connectorGrid.innerHTML = `<div class="connector-loading">${t('connectors.mcp_load_failed', { msg: escapeHtml(connectorCacheError) })}</div>`
     } else if (connectorCacheWarming) {
-      connectorGrid.innerHTML = '<div class="connector-loading">MCP lista még nem töltődött be. Kattints a Frissítés gombra, vagy várj egy percet a dashboard indulása után.</div>'
+      connectorGrid.innerHTML = `<div class="connector-loading">${t('connectors.mcp_not_loaded')}</div>`
     } else {
-      connectorGrid.innerHTML = '<div class="connector-loading">Nincsenek MCP connectorok</div>'
+      connectorGrid.innerHTML = `<div class="connector-loading">${t('connectors.no_mcps')}</div>`
     }
     return
   }
@@ -6697,7 +6697,7 @@ function renderConnectors() {
   // === Claude globális ===
   const globalHeading = document.createElement('div')
   globalHeading.className = 'connector-group-heading'
-  globalHeading.textContent = 'Claude globális'
+  globalHeading.textContent = t('connectors.heading.global')
   connectorGrid.appendChild(globalHeading)
 
   const builtinGrid = document.createElement('div')
@@ -6708,7 +6708,7 @@ function renderConnectors() {
     div.innerHTML = `
       <div class="connector-status-dot unknown" title="A dashboard nem tudja automatikusan detektálni ezt a képességet"></div>
       <div class="connector-builtin-name">${escapeHtml(b.label)}<br><span style="font-size:11px;color:var(--text-muted);font-weight:400">${escapeHtml(b.desc)}</span></div>
-      <button type="button" class="connector-builtin-action btn-link" data-builtin="${escapeHtml(b.name)}">Részletek</button>
+      <button type="button" class="connector-builtin-action btn-link" data-builtin="${escapeHtml(b.name)}">${t('connectors.builtin.details')}</button>
     `
     const btn = div.querySelector('button[data-builtin]')
     if (btn) btn.addEventListener('click', () => openBuiltinDetail(b))
@@ -6727,7 +6727,7 @@ function renderConnectors() {
   if (agentScopes.length > 0) {
     const agentHeading = document.createElement('div')
     agentHeading.className = 'connector-group-heading'
-    agentHeading.textContent = 'Ügynökök'
+    agentHeading.textContent = t('connectors.heading.agents')
     connectorGrid.appendChild(agentHeading)
 
     for (const ag of agentScopes) {
@@ -6740,7 +6740,7 @@ function renderConnectors() {
   if (internalProjectScopes.length > 0) {
     const projectHeading = document.createElement('div')
     projectHeading.className = 'connector-group-heading'
-    projectHeading.textContent = 'Projektek'
+    projectHeading.textContent = t('connectors.heading.projects')
     connectorGrid.appendChild(projectHeading)
 
     for (const ps of internalProjectScopes) {
@@ -6754,7 +6754,7 @@ function renderConnectors() {
   if (externalProjectScopes.length > 0 || _extPathsPanel) {
     const extHeading = document.createElement('div')
     extHeading.className = 'connector-group-heading'
-    extHeading.textContent = 'Külső projektek'
+    extHeading.textContent = t('connectors.heading.external')
     connectorGrid.appendChild(extHeading)
 
     if (_extPathsPanel) connectorGrid.appendChild(_extPathsPanel)
@@ -7001,7 +7001,7 @@ function renderVaultGrid(secrets) {
     const date = new Date(s.updatedAt).toLocaleDateString('hu-HU')
     const bindingCount = _vaultBindings.filter(b => b.vaultSecretId === s.id).length
     const bindingBadge = bindingCount > 0 ? `<span class="vault-binding-badge" title="${bindingCount} kotes">${bindingCount} kotes</span>` : ''
-    card.innerHTML = `<div class="vault-card-header"><div class="vault-card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><div class="vault-card-title"><div class="vault-card-id">${escapeHtml(s.id)} ${bindingBadge}</div>${s.label !== s.id ? `<div class="vault-card-label">${escapeHtml(s.label)}</div>` : ''}</div><div class="vault-card-meta">${date}</div></div><div class="vault-card-actions"><button class="btn-secondary btn-compact vault-card-reveal" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> Mutat</button><button class="btn-secondary btn-compact vault-card-edit" data-id="${escapeHtml(s.id)}" data-label="${escapeHtml(s.label)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg> Modosit</button><button class="btn-secondary btn-compact vault-card-delete" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg> Torles</button></div>`
+    card.innerHTML = `<div class="vault-card-header"><div class="vault-card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><div class="vault-card-title"><div class="vault-card-id">${escapeHtml(s.id)} ${bindingBadge}</div>${s.label !== s.id ? `<div class="vault-card-label">${escapeHtml(s.label)}</div>` : ''}</div><div class="vault-card-meta">${date}</div></div><div class="vault-card-actions"><button class="btn-secondary btn-compact vault-card-reveal" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>${t('vault.btn.show')}</button><button class="btn-secondary btn-compact vault-card-edit" data-id="${escapeHtml(s.id)}" data-label="${escapeHtml(s.label)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>${t('vault.btn.edit')}</button><button class="btn-secondary btn-compact vault-card-delete" data-id="${escapeHtml(s.id)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>${t('vault.btn.delete')}</button></div>`
     list.appendChild(card)
   }
   list.querySelectorAll('.vault-card-reveal').forEach(btn => {
@@ -7009,7 +7009,7 @@ function renderVaultGrid(secrets) {
       const id = btn.getAttribute('data-id')
       const card = btn.closest('.vault-card')
       const existing = card.querySelector('.vault-card-value')
-      if (existing) { existing.remove(); btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> Mutat'; return }
+      if (existing) { existing.remove(); btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> ${t('vault.btn.show')}'; return }
       const res = await fetch(`/api/vault/${encodeURIComponent(id)}`)
       const data = await res.json()
       if (data.value) {
@@ -7017,7 +7017,7 @@ function renderVaultGrid(secrets) {
         valEl.className = 'vault-card-value'
         valEl.textContent = data.value
         card.appendChild(valEl)
-        btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg> Elrejt'
+        btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg> ${t('vault.btn.hide')}`
       }
     })
   })
@@ -7034,7 +7034,7 @@ function renderVaultGrid(secrets) {
       if (!data.value) return
       const form = document.createElement('div')
       form.className = 'vault-card-edit-form'
-      form.innerHTML = `<input type="password" class="input vault-edit-value" value="${escapeHtml(data.value)}" style="font-size:13px;margin-bottom:6px"><button class="btn-primary btn-compact vault-edit-save">Mentés</button> <button class="btn-secondary btn-compact vault-edit-cancel">Mégse</button>`
+      form.innerHTML = `<input type="password" class="input vault-edit-value" value="${escapeHtml(data.value)}" style="font-size:13px;margin-bottom:6px"><button class="btn-primary btn-compact vault-edit-save">${t('vault.btn.save')}</button> <button class="btn-secondary btn-compact vault-edit-cancel">${t('vault.btn.cancel')}</button>`
       card.appendChild(form)
       const input = form.querySelector('.vault-edit-value')
       input.focus()
@@ -7666,7 +7666,7 @@ async function loadStatus() {
   const listEl = document.getElementById('statusIncidentList')
 
   overallEl.className = 'status-overall unknown'
-  overallEl.textContent = 'Betöltés...'
+  overallEl.textContent = t('status.loading')
   gridEl.innerHTML = ''
   listEl.innerHTML = ''
 
@@ -7676,12 +7676,13 @@ async function loadStatus() {
 
     // Overall status
     const overallLabels = {
-      operational: 'Minden szolgáltatás működik',
-      degraded: 'Aktiv incidens',
-      unknown: 'Státusz nem elérhető',
+      operational: () => t('status.overall.operational'),
+      degraded: () => t('status.overall.degraded'),
+      unknown: () => t('status.overall.unknown'),
     }
     overallEl.className = `status-overall ${data.overall}`
-    overallEl.textContent = overallLabels[data.overall] || data.overall
+    const overallLabelRaw = overallLabels[data.overall]
+    overallEl.textContent = overallLabelRaw ? (typeof overallLabelRaw === 'function' ? overallLabelRaw() : overallLabelRaw) : data.overall
 
     // Services grid: real per-service status from the Statuspage components API
     // (data.components). No more inventing a service list and substring-matching
@@ -7689,7 +7690,7 @@ async function loadStatus() {
     // instead of rendering a fake all-green grid.
     const components = Array.isArray(data.components) ? data.components : []
     if (components.length === 0) {
-      gridEl.innerHTML = '<div class="status-service-empty" style="color:var(--text-muted);font-size:13px">Nincs per-szolgáltatás adat (a komponens-státusz nem elérhető).</div>'
+      gridEl.innerHTML = `<div class="status-service-empty" style="color:var(--text-muted);font-size:13px">${t('status.no_components')}</div>`
     } else {
       for (const c of components) {
         const ok = c.status === 'operational'
@@ -7706,14 +7707,14 @@ async function loadStatus() {
 
     // Incidents
     if (data.incidents.length === 0) {
-      listEl.innerHTML = '<div class="status-loading">Nincs korabbi incidens</div>'
+      listEl.innerHTML = `<div class="status-loading">${t('status.no_incidents')}</div>`
     } else {
       for (const inc of data.incidents) {
         const statusLabels = {
-          resolved: 'Megoldva',
-          monitoring: 'Figyeles',
-          identified: 'Azonositva',
-          investigating: 'Vizsgalat',
+          resolved: () => t('status.incident.resolved'),
+          monitoring: () => t('status.incident.monitoring'),
+          identified: () => t('status.incident.identified'),
+          investigating: () => t('status.incident.investigating'),
         }
         const div = document.createElement('div')
         div.className = `status-incident ${inc.status}`
@@ -7721,7 +7722,7 @@ async function loadStatus() {
         div.innerHTML = `
           <div class="status-incident-header">
             <span class="status-incident-title">${escapeHtml(inc.title)}</span>
-            <span class="status-incident-badge ${inc.status}">${statusLabels[inc.status] || inc.status}</span>
+            <span class="status-incident-badge ${inc.status}">${(typeof statusLabels[inc.status] === 'function' ? statusLabels[inc.status]() : statusLabels[inc.status]) || inc.status}</span>
           </div>
           <div class="status-incident-desc">${escapeHtml(inc.description.slice(0, 300))}</div>
           <div class="status-incident-date">${date}</div>
@@ -7966,16 +7967,16 @@ function renderMigrateFindings(data) {
     'schedule': '\u23F0',
   }
   const typeLabels = {
-    'personality': 'Személyiség',
-    'profile': 'Felhasználói profil',
-    'memory': 'Memória',
-    'memory-hot': 'Hot memória',
-    'memory-warm': 'Warm memória',
-    'memory-cold': 'Cold memória',
-    'heartbeat': 'Heartbeat konfig',
-    'config': 'Konfiguráció',
-    'daily-log': 'Napi napló',
-    'schedule': 'Ütemezés',
+    'personality': () => t('migrate.type.personality'),
+    'profile': () => t('migrate.type.profile'),
+    'memory': () => t('migrate.type.memory'),
+    'memory-hot': () => t('migrate.type.memory_hot'),
+    'memory-warm': () => t('migrate.type.memory_warm'),
+    'memory-cold': () => t('migrate.type.memory_cold'),
+    'heartbeat': () => t('migrate.type.heartbeat'),
+    'config': () => t('migrate.type.config'),
+    'daily-log': () => t('migrate.type.daily_log'),
+    'schedule': () => t('migrate.type.schedule'),
   }
 
   findingsEl.innerHTML = ''
@@ -7987,7 +7988,7 @@ function renderMigrateFindings(data) {
       <span class="migrate-finding-icon">${typeIcons[f.type] || '\uD83D\uDCC4'}</span>
       <div class="migrate-finding-info">
         <div class="migrate-finding-name">${escapeHtml(f.name)}</div>
-        <div class="migrate-finding-type">${typeLabels[f.type] || f.type}</div>
+        <div class="migrate-finding-type">${(typeof typeLabels[f.type] === 'function' ? typeLabels[f.type]() : typeLabels[f.type]) || f.type}</div>
       </div>
       <span class="migrate-finding-size">${sizeKB} KB</span>
     `
@@ -7995,15 +7996,15 @@ function renderMigrateFindings(data) {
   }
 
   if (data.findings.length === 0) {
-    findingsEl.innerHTML = '<div style="color:var(--text-muted);padding:20px;text-align:center">Nem található migrálható tartalom</div>'
+    findingsEl.innerHTML = `<div style="color:var(--text-muted);padding:20px;text-align:center">${t('migrate.empty')}</div>`
   }
 
   const s = data.summary
   summaryEl.innerHTML = `
-    <div class="stat-card"><div class="stat-value">${s.total}</div><div class="stat-label">Összesen</div></div>
-    <div class="stat-card"><div class="stat-value">${s.memory}</div><div class="stat-label">Memória</div></div>
-    <div class="stat-card"><div class="stat-value">${s.personality + s.profile}</div><div class="stat-label">Profil</div></div>
-    <div class="stat-card"><div class="stat-value">${s.config + s.heartbeat}</div><div class="stat-label">Konfig</div></div>
+    <div class="stat-card"><div class="stat-value">${s.total}</div><div class="stat-label">${t('migrate.stat.total')}</div></div>
+    <div class="stat-card"><div class="stat-value">${s.memory}</div><div class="stat-label">${t('migrate.stat.memory')}</div></div>
+    <div class="stat-card"><div class="stat-value">${s.personality + s.profile}</div><div class="stat-label">${t('migrate.stat.profile')}</div></div>
+    <div class="stat-card"><div class="stat-value">${s.config + s.heartbeat}</div><div class="stat-label">${t('migrate.stat.config')}</div></div>
   `
 }
 
@@ -8036,9 +8037,9 @@ document.getElementById('migrateRunBtn').addEventListener('click', async () => {
 
     const resultEl = document.getElementById('migrateResult')
     resultEl.innerHTML = `
-      <h4>Költöztetés kész!</h4>
+      <h4>${t('migrate.result.title')}</h4>
       <div class="migrate-result-stats">
-        <div class="migrate-result-stat"><div class="migrate-result-stat-value">${data.imported}</div><div class="migrate-result-stat-label">Importálva</div></div>
+        <div class="migrate-result-stat"><div class="migrate-result-stat-value">${data.imported}</div><div class="migrate-result-stat-label">${t('migrate.result.imported')}</div></div>
         <div class="migrate-result-stat"><div class="migrate-result-stat-value" style="color:#dc3c3c">${data.stats.hot}</div><div class="migrate-result-stat-label">Hot</div></div>
         <div class="migrate-result-stat"><div class="migrate-result-stat-value" style="color:#d97757">${data.stats.warm}</div><div class="migrate-result-stat-label">Warm</div></div>
         <div class="migrate-result-stat"><div class="migrate-result-stat-value" style="color:#6a9bcc">${data.stats.cold}</div><div class="migrate-result-stat-label">Cold</div></div>
@@ -9476,7 +9477,7 @@ document.getElementById('refreshAutonomyBtn').addEventListener('click', loadAuto
 async function loadAutonomy() {
   const grid = document.getElementById('autonomyGrid')
   const footer = document.getElementById('autonomyUpdatedAt')
-  grid.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Betöltés...</p>'
+  grid.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${t('autonomy.loading')}</p>`
 
   try {
     const res = await fetch('/api/autonomy')
@@ -9513,12 +9514,12 @@ async function loadAutonomy() {
       if (cat.locked) {
         const lock = document.createElement('div')
         lock.className = 'autonomy-row-lock'
-        lock.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> Biztonsági zár'
+        lock.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> ${t('autonomy.lock_label')}`
         row.appendChild(lock)
       } else if (isCapped) {
         const cap = document.createElement('div')
         cap.className = 'autonomy-row-cap'
-        cap.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> Max ' + cat.maxLevel + '. szint'
+        cap.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> ${t('autonomy.cap_label', { n: cat.maxLevel })}`
         row.appendChild(cap)
       }
       row.appendChild(levels)
@@ -9527,12 +9528,12 @@ async function loadAutonomy() {
 
     if (config.updated_at > 0) {
       const d = new Date(config.updated_at * 1000)
-      footer.textContent = 'Utolsó módosítás: ' + d.toLocaleString('hu-HU')
+      footer.textContent = t('autonomy.last_modified', { date: d.toLocaleString('hu-HU') })
     } else {
-      footer.textContent = 'Még nem módosított'
+      footer.textContent = t('autonomy.not_modified')
     }
   } catch (err) {
-    grid.innerHTML = '<p style="color:var(--danger)">Nem sikerült betölteni az autonómia konfigot.</p>'
+    grid.innerHTML = `<p style="color:var(--danger)">${t('autonomy.error')}</p>`
     footer.textContent = ''
   }
 }
@@ -9596,7 +9597,7 @@ function markSettingDirty(key, input, originalValue, type, errorEl) {
 
 async function loadSettings() {
   const container = document.getElementById('settingsGroups')
-  container.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Betöltés...</p>'
+  container.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${t('settings.loading')}</p>`
   settingsDirty.clear()
   updateSettingsSaveBar()
 
@@ -9613,7 +9614,7 @@ async function loadSettings() {
 
     container.innerHTML = ''
     if (byModule.size === 0) {
-      container.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Nincs regisztrált beállítás.</p>'
+      container.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${t('settings.empty')}</p>`
       return
     }
 
@@ -9632,7 +9633,7 @@ async function loadSettings() {
       container.appendChild(group)
     }
   } catch (err) {
-    container.innerHTML = '<p style="color:var(--danger)">Nem sikerült betölteni a beállításokat.</p>'
+    container.innerHTML = `<p style="color:var(--danger)">${t('settings.error')}</p>`
   }
 }
 
@@ -9649,7 +9650,7 @@ function buildSettingRow(def) {
   if (def.requiresRestart) {
     const badge = document.createElement('span')
     badge.className = 'settings-restart-badge'
-    badge.textContent = 'Újraindítást igényel'
+    badge.textContent = t('settings.restart_badge')
     title.appendChild(badge)
   }
   info.appendChild(title)
@@ -9725,7 +9726,7 @@ function buildSettingRow(def) {
 async function saveAllSettings() {
   if (settingsDirty.size === 0) return
   const btn = document.getElementById('settingsSaveAllBtn')
-  if (btn) { btn.disabled = true; btn.textContent = 'Mentés...' }
+  if (btn) { btn.disabled = true; btn.textContent = t('settings.save_btn.saving') }
 
   const errors = []
   let needsRestart = false
