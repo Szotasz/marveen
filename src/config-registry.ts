@@ -232,6 +232,16 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: true,
   },
+  {
+    key: 'DASHBOARD_LANG',
+    type: 'string',
+    default: 'hu',
+    valueSet: ['hu', 'en'],
+    description: 'A dashboard alapértelmezett megjelenítési nyelve (hu = magyar, en = angol). A böngészőben mentett preferencia (localStorage) felülírja.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+  },
   // --- Heartbeat module (hot-reload via settings-store) ---
   {
     key: 'HEARTBEAT_START_HOUR',
