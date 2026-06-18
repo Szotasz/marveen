@@ -8905,7 +8905,7 @@ async function loadUpdates() {
   const summary = document.getElementById('updatesSummary')
   const list = document.getElementById('updatesCommitList')
   const applyBtn = document.getElementById('updatesApplyBtn')
-  summary.textContent = 'Ellenőrzés...'
+  summary.textContent = t('updates.checking')
   summary.className = 'updates-summary'
   list.innerHTML = ''
   try {
@@ -9230,21 +9230,21 @@ async function doRecall() {
 
   const timeline = document.getElementById('recallTimeline')
   const summary = document.getElementById('recallSummary')
-  timeline.innerHTML = '<p class="recall-loading">Betöltés...</p>'
+  timeline.innerHTML = `<p class="recall-loading">${t('recall.loading')}</p>`
   summary.innerHTML = ''
 
   try {
     const res = await fetch('/api/recall?' + params.toString())
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
-      timeline.innerHTML = `<p class="recall-error">${esc(err.error || 'Hiba történt')}</p>`
+      timeline.innerHTML = `<p class="recall-error">${esc(err.error || t('recall.error'))}</p>`
       return
     }
     const data = await res.json()
     renderRecallSummary(summary, data)
     renderRecallTimeline(timeline, data)
   } catch (err) {
-    timeline.innerHTML = '<p style="color:var(--danger)">Nem sikerült betölteni</p>'
+    timeline.innerHTML = `<p style="color:var(--danger)">${t('recall.load_error')}</p>`
   }
 }
 
@@ -9358,8 +9358,8 @@ async function loadBgTasksPage() {
 async function startBgTask() {
   const agent = document.getElementById('bgAgent').value
   const prompt = document.getElementById('bgPrompt').value.trim()
-  if (!agent) { showToast('Válassz ágenst'); return }
-  if (!prompt) { showToast('Add meg a feladatot'); return }
+  if (!agent) { showToast(t('bgTasks.select_agent')); return }
+  if (!prompt) { showToast(t('bgTasks.enter_task')); return }
 
   const btn = document.getElementById('bgStartBtn')
   btn.disabled = true
@@ -9371,14 +9371,14 @@ async function startBgTask() {
     })
     const data = await res.json()
     if (!res.ok) {
-      showToast(data.error || 'Hiba történt')
+      showToast(data.error || t('common.error'))
       return
     }
     document.getElementById('bgPrompt').value = ''
-    showToast('Háttérfeladat elindítva')
+    showToast(t('bgTasks.toast.started'))
     loadBgTasks()
   } catch {
-    showToast('Nem sikerült elindítani')
+    showToast(t('bgTasks.toast.start_error'))
   } finally {
     btn.disabled = false
   }
@@ -9394,19 +9394,19 @@ async function loadBgTasks() {
     if (agentVal) params.set('agent', agentVal)
     if (showAll) params.set('all', 'true')
     const res = await fetch('/api/background-tasks?' + params.toString())
-    if (!res.ok) { list.innerHTML = '<p style="color:var(--danger)">Hiba a betöltésnél</p>'; return }
+    if (!res.ok) { list.innerHTML = `<p style="color:var(--danger)">${t('bgTasks.error')}</p>`; return }
     const tasks = await res.json()
 
     if (!tasks.length) {
-      list.innerHTML = '<p style="color:var(--text-muted)">Nincs háttérfeladat.</p>'
+      list.innerHTML = `<p style="color:var(--text-muted)">${t('bgTasks.empty')}</p>`
       return
     }
 
     list.innerHTML = tasks.map(t => {
       const statusColors = { running: '#f59e0b', done: '#22c55e', failed: '#ef4444', timeout: '#6b7280' }
-      const statusLabels = { running: 'Fut', done: 'Kész', failed: 'Hiba', timeout: 'Időtúllépés' }
+      const statusLabels = { running: () => t('bgTasks.status.running'), done: () => t('bgTasks.status.done'), failed: () => t('bgTasks.status.failed'), timeout: () => t('bgTasks.status.timeout') }
       const color = statusColors[t.status] || '#6b7280'
-      const label = statusLabels[t.status] || t.status
+      const labelRaw = statusLabels[t.status]; const label = labelRaw ? (typeof labelRaw === 'function' ? labelRaw() : labelRaw) : t.status
       const output = t.output ? `<pre style="margin-top:8px;padding:8px;background:var(--bg);border-radius:6px;font-size:12px;max-height:200px;overflow:auto;white-space:pre-wrap;">${esc(t.output.slice(-2000))}</pre>` : ''
       return `<div style="margin-bottom:12px;padding:12px 16px;border-radius:8px;background:var(--surface);border:1px solid var(--border);border-left:3px solid ${color};">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
@@ -9417,31 +9417,31 @@ async function loadBgTasks() {
           </div>
           <div style="display:flex;gap:8px;align-items:center;">
             <span style="font-size:12px;color:var(--text-muted)">${esc(t.started_label)}</span>
-            ${t.status === 'running' ? `<button class="btn btn-sm" onclick="viewBgTask('${esc(t.id)}')" style="font-size:11px;padding:2px 8px;">Kimenet</button><button class="btn btn-sm" onclick="cancelBgTask('${esc(t.id)}')" style="font-size:11px;padding:2px 8px;color:var(--danger)">Leállítás</button>` : ''}
+            ${t.status === 'running' ? `<button class="btn btn-sm" onclick="viewBgTask('${esc(t.id)}')" style="font-size:11px;padding:2px 8px;">${t('bgTasks.output_btn')}</button><button class="btn btn-sm" onclick="cancelBgTask('${esc(t.id)}')" style="font-size:11px;padding:2px 8px;color:var(--danger)">${t('bgTasks.stop_btn')}</button>` : ''}
           </div>
         </div>
         <div style="font-size:13px;color:var(--text-primary);margin-bottom:4px;">${esc(t.prompt)}</div>
-        ${t.finished_label ? `<div style="font-size:12px;color:var(--text-muted);">Befejezve: ${esc(t.finished_label)}</div>` : ''}
+        ${t.finished_label ? `<div style="font-size:12px;color:var(--text-muted);">${t('bgTasks.finished_label')} ${esc(t.finished_label)}</div>` : ''}
         ${output}
       </div>`
     }).join('')
   } catch {
-    list.innerHTML = '<p style="color:var(--danger)">Nem sikerült betölteni</p>'
+    list.innerHTML = `<p style="color:var(--danger)">${t('bgTasks.load_error')}</p>`
   }
 }
 
 async function viewBgTask(id) {
   try {
     const res = await fetch(`/api/background-tasks/${id}`)
-    if (!res.ok) { showToast('Nem sikerült betölteni'); return }
+    if (!res.ok) { showToast(t('bgTasks.load_error')); return }
     const task = await res.json()
-    const output = task.liveOutput || task.output || '(nincs kimenet)'
+    const output = task.liveOutput || task.output || t('bgTasks.no_output')
     const modal = document.createElement('div')
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center;'
     modal.innerHTML = `<div style="background:var(--surface);border-radius:12px;padding:20px;max-width:800px;width:90%;max-height:80vh;overflow:auto;">
       <div style="display:flex;justify-content:space-between;margin-bottom:12px;">
-        <h3 style="margin:0;">Háttérfeladat ${esc(id)}</h3>
-        <button class="btn btn-sm" id="bgModalClose" style="font-size:13px;">Bezárás</button>
+        <h3 style="margin:0;">${t('bgTasks.modal.title', { id: esc(id) })}</h3>
+        <button class="btn btn-sm" id="bgModalClose" style="font-size:13px;">${t('bgTasks.modal.close_btn')}</button>
       </div>
       <pre style="white-space:pre-wrap;font-size:12px;line-height:1.4;">${esc(output)}</pre>
     </div>`
@@ -9454,14 +9454,14 @@ async function viewBgTask(id) {
 }
 
 async function cancelBgTask(id) {
-  if (!confirm('Biztosan leállítod?')) return
+  if (!confirm(t('bgTasks.cancel.confirm'))) return
   try {
     const res = await fetch(`/api/background-tasks/${id}`, { method: 'DELETE' })
     if (res.ok) {
-      showToast('Leállítva')
+      showToast(t('bgTasks.toast.stopped'))
       loadBgTasks()
     } else {
-      showToast('Nem sikerült leállítani')
+      showToast(t('bgTasks.toast.stop_error'))
     }
   } catch {
     showToast('Hiba')
@@ -9969,7 +9969,7 @@ function renderTuSummary(summary) {
   const el = document.getElementById('tuSummaryCards')
   if (!el) return
   if (!summary.length) {
-    el.innerHTML = '<div class="overview-stat"><div class="overview-stat-label">Nincs adat</div><div class="overview-stat-value">0</div><div class="overview-stat-sub">Kattints a "Gyűjtés" gombra</div></div>'
+    el.innerHTML = `<div class="overview-stat"><div class="overview-stat-label">${t('tokenUsage.no_data')}</div><div class="overview-stat-value">0</div><div class="overview-stat-sub">${t('tokenUsage.collect_hint')}</div></div>`
     return
   }
   el.innerHTML = summary.map(s => {
@@ -10111,7 +10111,7 @@ function renderTuTimeline(data, filterAgent) {
     ctx.fillStyle = textSecondary
     ctx.font = '14px sans-serif'
     ctx.textAlign = 'center'
-    ctx.fillText('Nincs adat a kiválasztott időszakra', cssW / 2, 160)
+    ctx.fillText(t('tokenUsage.no_period_data'), cssW / 2, 160)
     tuChartState = null
     return
   }
@@ -10587,7 +10587,7 @@ let ideasPromoteId = null
 let ideaEditId = null
 let ideaDetailId = null
 const STATUS_COLORS = { new: 'var(--accent)', reviewed: '#f59e0b', kanban: '#22c55e', rejected: '#ef4444' }
-const STATUS_LABELS = { new: 'Új', reviewed: 'Átnézve', kanban: 'Kanbanban', rejected: 'Elutasítva' }
+const STATUS_LABELS = { new: () => t('ideas.status.new'), reviewed: () => t('ideas.status.reviewed'), kanban: () => t('ideas.status.kanban'), rejected: () => t('ideas.status.rejected') }
 
 async function loadIdeasPage() {
   const statusFilter = document.getElementById('ideaStatusFilter')?.value ?? 'active'
@@ -10617,7 +10617,7 @@ function renderIdeasStats() {
   el.innerHTML = Object.entries(counts).map(([s, n]) =>
     `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 16px;min-width:90px">
       <div style="font-size:22px;font-weight:700;color:${STATUS_COLORS[s]}">${n}</div>
-      <div style="font-size:12px;color:var(--text-muted)">${STATUS_LABELS[s]}</div>
+      <div style="font-size:12px;color:var(--text-muted)">${typeof STATUS_LABELS[s] === 'function' ? STATUS_LABELS[s]() : STATUS_LABELS[s]}</div>
     </div>`
   ).join('')
 }
@@ -10625,7 +10625,7 @@ function renderIdeasStats() {
 function renderIdeasList() {
   const el = document.getElementById('ideasList')
   if (!el) return
-  if (!ideas.length) { el.innerHTML = '<div style="color:var(--text-muted);padding:32px;text-align:center">Nincs ötlet</div>'; return }
+  if (!ideas.length) { el.innerHTML = `<div style="color:var(--text-muted);padding:32px;text-align:center">${t('ideas.empty')}</div>`; return }
   const byCategory = {}
   for (const idea of ideas) {
     if (!byCategory[idea.category]) byCategory[idea.category] = []
@@ -10647,9 +10647,9 @@ function ideaScoreBadge(idea) {
 
 function renderIdeaCard(idea) {
   const statusColor = STATUS_COLORS[idea.status] || 'var(--text-muted)'
-  const statusLabel = STATUS_LABELS[idea.status] || idea.status
+  const statusLabelRaw = STATUS_LABELS[idea.status]; const statusLabel = statusLabelRaw ? (typeof statusLabelRaw === 'function' ? statusLabelRaw() : statusLabelRaw) : idea.status
   const desc = idea.description ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">${escapeHtml(idea.description.slice(0, 120))}${idea.description.length > 120 ? '…' : ''}</div>` : ''
-  const staleBadge = idea.stale ? `<span style="font-size:11px;background:#92400e22;color:#d97706;border:1px solid #d97706;border-radius:4px;padding:2px 5px" title="Régi ötlet, nézd át!">⏰ Elavult</span>` : ''
+  const staleBadge = idea.stale ? `<span style="font-size:11px;background:#92400e22;color:#d97706;border:1px solid #d97706;border-radius:4px;padding:2px 5px" title="Régi ötlet, nézd át!">${t('ideas.stale_badge')}</span>` : ''
   return `<div class="card" style="padding:12px 16px;margin-bottom:4px${idea.stale ? ';border-left:3px solid #d97706' : ''}">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
       <div style="flex:1;min-width:0">
@@ -10662,12 +10662,12 @@ function renderIdeaCard(idea) {
         ${desc}
       </div>
       <div style="display:flex;gap:4px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end">
-        ${idea.status !== 'reviewed' && idea.status !== 'kanban' ? `<button class="btn-secondary btn-compact" onclick="setIdeaStatus('${idea.id}','reviewed')" style="font-size:11px">Átnézve</button>` : ''}
-        ${idea.status !== 'rejected' ? `<button class="btn-secondary btn-compact" onclick="setIdeaStatus('${idea.id}','rejected')" style="font-size:11px;color:#ef4444">Elutasít</button>` : ''}
-        ${idea.status === 'reviewed' || idea.status === 'rejected' ? `<button class="btn-secondary btn-compact" onclick="setIdeaStatus('${idea.id}','new')" style="font-size:11px">Újra</button>` : ''}
-        <button class="btn-secondary btn-compact" onclick="openIdeaEdit('${idea.id}')" style="font-size:11px">Szerkeszt</button>
-        ${idea.status !== 'kanban' && idea.status !== 'rejected' ? `<button class="btn-primary btn-compact" onclick="openIdeaBreakdown('${idea.id}')" style="font-size:11px">Kanbanra (AI)</button>` : ''}
-        <button class="btn-secondary btn-compact" onclick="deleteIdeaItem('${idea.id}')" style="font-size:11px;color:#ef4444">Töröl</button>
+        ${idea.status !== 'reviewed' && idea.status !== 'kanban' ? `<button class="btn-secondary btn-compact" onclick="setIdeaStatus('${idea.id}','reviewed')" style="font-size:11px">${t('ideas.btn.reviewed')}</button>` : ''}
+        ${idea.status !== 'rejected' ? `<button class="btn-secondary btn-compact" onclick="setIdeaStatus('${idea.id}','rejected')" style="font-size:11px;color:#ef4444">${t('ideas.btn.rejected')}</button>` : ''}
+        ${idea.status === 'reviewed' || idea.status === 'rejected' ? `<button class="btn-secondary btn-compact" onclick="setIdeaStatus('${idea.id}','new')" style="font-size:11px">${t('ideas.btn.reopen')}</button>` : ''}
+        <button class="btn-secondary btn-compact" onclick="openIdeaEdit('${idea.id}')" style="font-size:11px">${t('ideas.btn.edit')}</button>
+        ${idea.status !== 'kanban' && idea.status !== 'rejected' ? `<button class="btn-primary btn-compact" onclick="openIdeaBreakdown('${idea.id}')" style="font-size:11px">${t('ideas.btn.kanban_ai')}</button>` : ''}
+        <button class="btn-secondary btn-compact" onclick="deleteIdeaItem('${idea.id}')" style="font-size:11px;color:#ef4444">${t('ideas.btn.delete')}</button>
       </div>
     </div>
   </div>`
@@ -10742,7 +10742,7 @@ async function openIdeaDetail(id) {
   const statusLabel = STATUS_LABELS[idea.status] || idea.status
   document.getElementById('ideaDetailTitle').textContent = idea.title
   document.getElementById('ideaDetailMeta').textContent = `${idea.category} · ${statusLabel}`
-  document.getElementById('ideaDetailDesc').textContent = idea.description || '(nincs leírás)'
+  document.getElementById('ideaDetailDesc').textContent = idea.description || t('ideas.no_description')
   document.getElementById('ideaDetailImpact').value = idea.impact ?? ''
   document.getElementById('ideaDetailEffort').value = idea.effort ?? ''
   updateDetailScoreChip()
@@ -10799,7 +10799,7 @@ async function loadIdeaComments(id) {
     const res = await fetch(`/api/ideas/${encodeURIComponent(id)}/comments`)
     const data = await res.json()
     if (!data.comments || !data.comments.length) {
-      list.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:6px 0">Nincs megjegyzés</div>'
+      list.innerHTML = `<div style="color:var(--text-muted);font-size:12px;padding:6px 0">${t('ideas.comments.empty')}</div>`
       return
     }
     list.innerHTML = ''
@@ -10811,7 +10811,7 @@ async function loadIdeaComments(id) {
       list.appendChild(div)
     }
   } catch {
-    list.innerHTML = '<div style="color:var(--danger);font-size:12px">Hiba a megjegyzések betöltésekor</div>'
+    list.innerHTML = `<div style="color:var(--danger);font-size:12px">${t('ideas.comments.error')}</div>`
   }
 }
 
@@ -11065,8 +11065,8 @@ async function openConversationModal(agentName, displayName) {
   const title = document.getElementById('conversationModalTitle')
   if (!overlay || !container) return
   conversationAgentName = agentName
-  title.textContent = (displayName || agentName) + ' — Beszélgetés'
-  container.innerHTML = '<div class="conversation-empty">Betöltés…</div>'
+  title.textContent = t('conversation.title', { name: displayName || agentName })
+  container.innerHTML = `<div class="conversation-empty">${t('conversation.loading')}</div>`
   openModal(overlay)
   await loadConversation()
 }
@@ -11084,7 +11084,7 @@ async function loadConversation() {
     conversationHasOlder = !!d.hasOlder
     renderConversation()
   } catch {
-    if (container) container.innerHTML = '<div class="conversation-empty">Nem sikerült betölteni a beszélgetést.</div>'
+    if (container) container.innerHTML = `<div class="conversation-empty">${t('conversation.error')}</div>`
   }
 }
 
@@ -11096,7 +11096,7 @@ async function loadOlderConversation() {
   if (conversationLoadingOlder || !conversationHasOlder) return
   conversationLoadingOlder = true
   const btn = document.getElementById('conversationLoadOlder')
-  if (btn) { btn.disabled = true; btn.textContent = 'Betöltés…' }
+  if (btn) { btn.disabled = true; btn.textContent = t('conversation.loading') }
   const token = localStorage.getItem('marveen-dashboard-token') || ''
   try {
     const offset = conversationEntries.length
@@ -11113,7 +11113,7 @@ async function loadOlderConversation() {
       renderConversation()
     }
   } catch {
-    if (btn) { btn.disabled = false; btn.textContent = 'Korábbiak betöltése' }
+    if (btn) { btn.disabled = false; btn.textContent = t('conversation.load_more') }
   } finally {
     conversationLoadingOlder = false
   }
@@ -11139,10 +11139,10 @@ function renderConversation(opts = {}) {
   // "Korábbiak betöltése" sits at the top so the operator can page further back;
   // shown whenever the server still has older entries beyond the loaded window.
   const olderBtn = conversationHasOlder
-    ? '<button id="conversationLoadOlder" class="conv-load-older">Korábbiak betöltése</button>'
+    ? `<button id="conversationLoadOlder" class="conv-load-older">${t('conversation.load_more')}</button>`
     : ''
   if (!list.length) {
-    container.innerHTML = olderBtn || '<div class="conversation-empty">Nincs megjeleníthető üzenet.</div>'
+    container.innerHTML = olderBtn || `<div class="conversation-empty">${t('conversation.empty')}</div>`
   } else {
     container.innerHTML = olderBtn + list.map(renderConvEntry).join('')
   }
@@ -11389,7 +11389,7 @@ function downloadMarkdown(name, content) {
           return
         }
       } catch (e) {
-        qrBox.innerHTML = '<p class="mobile-login-warn">Nem sikerült lekérdezni a gép LAN-IP-jét a mobil-belépéshez. Nyisd meg a dashboardot a géped helyi (LAN) IP-jén, és onnan próbáld.</p>'
+        qrBox.innerHTML = `<p class="mobile-login-warn">${t('mobile_login.lan_error')}</p>`
         return
       }
     }
@@ -11400,7 +11400,7 @@ function downloadMarkdown(name, content) {
       qr.make()
       qrBox.innerHTML = qr.createSvgTag({ cellSize: 6, margin: 4, scalable: true })
     } catch (e) {
-      qrBox.innerHTML = '<p class="muted">Nem sikerült QR-t generálni: ' + escapeHtml(String(e && e.message || e)) + '</p>'
+      qrBox.innerHTML = `<p class="muted">${t('mobile_login.qr_error', { msg: escapeHtml(String(e && e.message || e)) })}</p>`
     }
   }
 
@@ -11460,7 +11460,7 @@ function downloadMarkdown(name, content) {
   async function doNaplo() {
     const timeline = document.getElementById('naplo-timeline')
     const summary = document.getElementById('naplo-summary')
-    timeline.innerHTML = '<p class="naplo-empty">Betöltés...</p>'
+    timeline.innerHTML = `<p class="naplo-empty">${t('naplo.loading')}</p>`
     summary.textContent = ''
 
     const params = new URLSearchParams()
