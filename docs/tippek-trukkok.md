@@ -83,4 +83,8 @@ Konkrét példa: az eszter-done-ertesito feladat 10 percenkéntiről (`*/10 * * 
 
 Az ütemezés a dashboard Ütemezés oldalán vagy az API-n keresztül módosítható; a futási előzmények alapján ítélhető meg, hogy melyik feladat érdemes a ritkításra.
 
-**Elért hatás:** token- és erőforrás-megtakarítás a felesleges no-op LLM-futások kiszűrésével; kisebb zajszint a naplókban.
+Ritkítás előtt mérd fel az időkritikusságot: ha egy feladat eredménye perceken belül hatással van valamire (pl. azonnali riasztás, SLA-küszöb, üzleti folyamat blocker), ne ritkítsd -- ott a futási sűrűség indokolt. A ritkítás csak ott előnyös, ahol az eredmény késleltetése semmit sem ront az értéken.
+
+A felülvizsgálatot tedd rendszeressé (pl. havi egyszer): egy feladat fontossága változhat, és ami ma még szükséges volt, két hónap múlva már no-op-nak számít.
+
+**Elért hatás:** token- és erőforrás-megtakarítás a felesleges no-op LLM-futások kiszűrésével; kisebb zajszint a naplókban -- anélkül, hogy az időkritikus figyelések sérülnének.

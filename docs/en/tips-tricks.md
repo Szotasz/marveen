@@ -83,4 +83,8 @@ Concrete example: the eszter-done-ertesito task changed from every 10 minutes (`
 
 Schedules can be adjusted on the dashboard Schedules page or via the API; run history is the best guide for identifying which tasks are candidates for rate reduction.
 
-**Effect achieved:** token and resource savings by eliminating unnecessary no-op LLM runs; reduced noise in the logs.
+Before reducing frequency, assess time-criticality: if a task's result has an immediate impact within minutes -- instant alerting, SLA threshold, business process blocker -- do not reduce its frequency. Rate reduction only makes sense where a delayed result does not reduce the value delivered.
+
+Make the review a recurring habit (e.g. monthly): a task's importance can change, and what was essential two months ago may now be a consistent no-op.
+
+**Effect achieved:** token and resource savings by eliminating unnecessary no-op LLM runs; reduced noise in the logs -- without compromising time-critical monitoring.
