@@ -212,6 +212,25 @@ window._i18n.hu = {
   'agents.toast.stop_error':     'Leállítási hiba',
   'agents.toast.save_error':     'Hiba a mentés során',
   'agents.toast.avatar_error':   'Hiba az avatar mentése során',
+  'agents.status.online':          'Online',
+  'agents.status.offline':         'Offline',
+  'agents.marveen_process_tip':    'Fut: a fő asszisztens mindig a --channels session-ben fut. Ez a kártya fixen Fut állapotot mutat, nincs per-ágens tmux-ellenőrzés.',
+  'agents.marveen_channel_tip':    'Online: a fő asszisztens csatornáját a --channels session kezeli, ezért fixen online (nincs külön token-ellenőrzés).',
+  'agents.running_tip':            'Fut: él az ágens tmux session-je (a Claude Code folyamat fut). Forrás: tmux list-sessions.',
+  'agents.stopped_tip':            'Leállva: nincs élő tmux session az ágensnek. Forrás: tmux list-sessions.',
+  'agents.online_tip':             'Online: van bekonfigurált csatorna-token (saját bot). Figyelem: ez nem élő kapcsolat, csak a token meglétét jelzi.',
+  'agents.offline_tip':            'Offline: nincs csatorna bekötve (channel-less, csak inter-agent ágens).',
+  'agents.tmux_copy_aria':         'tmux attach parancs másolása',
+  'agents.tmux_copied':            'másolva',
+  'agents.tmux_copy_failed':       'Másolás sikertelen',
+  'agents.model.title':            'Modell elemzés -- {n} ágens',
+  'agents.model.cards_confirm':    '{n} kanban kártya létrehozása a modell-változtatásokhoz?',
+  'agents.model.creating_cards':   'Létrehozás...',
+  'agents.model.cards_done':       '{n} kártya létrehozva',
+  'agents.claude_md_saved':        'CLAUDE.md mentve',
+  'agents.soul_md_saved':          'SOUL.md mentve',
+  'agents.restart_failed':         'Az újraindítás indítása sikertelen',
+
 
   // --- Activity ---
   'activity.page_title':         'Aktivitás',
@@ -481,6 +500,14 @@ window._i18n.hu = {
   'team.error':                  'Hiba: {msg}',
   'team.btn.refresh':            'Frissítés',
   'team.hint':                   'A szerep és a beosztott/vezető kapcsolatok az ügynök részletek > Csapat fülén szerkeszthetők.',
+  'team.save_saving':            'Mentés...',
+  'team.save_done':              '✓ Mentve',
+  'team.save_ok':                'Csapat mentve',
+  'team.save_warning':           'Csapat mentve (kivett: {detail})',
+  'team.save_error':             'Hiba a csapat mentésekor',
+  'team.dropped_self':           'önreferenciák',
+  'team.dropped_unknown':        'ismeretlen nevek',
+
 
   // --- Messages ---
   'messages.page_title':         'Üzenetek',
@@ -498,6 +525,10 @@ window._i18n.hu = {
   'messages.btn.refresh':        'Frissítés',
   'messages.loading':            'Betöltés...',
   'messages.select_agent':       'Válassz ügynököt',
+  'messages.error_send':         'Hiba: {msg}',
+  'messages.loading_indicator':  'Betöltés...',
+  'messages.sidebar_error':      'Hiba: {msg}',
+
 
   // --- Autonomy ---
   'autonomy.page_title':         'Autonómia',

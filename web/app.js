@@ -611,7 +611,7 @@ function setupAssigneeFilter() {
   if (!sel) {
     const label = document.createElement('label')
     label.setAttribute('for', 'kanbanAssigneeFilter')
-    label.textContent = 'Felelős:'
+    label.textContent = t('kanban.filter.assignee_label')
     label.style.cssText = 'font-size:13px;color:var(--muted);white-space:nowrap;margin-left:8px;'
 
     sel = document.createElement('select')
@@ -626,7 +626,7 @@ function setupAssigneeFilter() {
     const ownerBtn = document.createElement('button')
     ownerBtn.id = 'kanbanOwnerBtn'
     ownerBtn.type = 'button'
-    ownerBtn.textContent = '👤 Rám vár'
+    ownerBtn.textContent = t('kanban.filter.owner_btn')
     ownerBtn.title = 'Csak a rám (a board felelőse) váró kártyák'
     ownerBtn.style.cssText = 'font-size:13px;padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);cursor:pointer;'
     ownerBtn.addEventListener('click', () => {
@@ -725,7 +725,7 @@ function renderKanbanQuickFilters() {
   if (kanbanLabelFilter.size > 0) {
     const clearAll = document.createElement('button')
     clearAll.className = 'kanban-quick-filter-clear-all'
-    clearAll.textContent = 'Szűrők törlése'
+    clearAll.textContent = t('kanban.filter.clear')
     clearAll.addEventListener('click', clearKanbanQuickFilters)
     row.appendChild(clearAll)
   }
@@ -1303,7 +1303,7 @@ async function renderCardLabelsSection(card) {
   }
 
   const attachedIds = new Set(attached.map((l) => l.id))
-  addSelect.innerHTML = '<option value="">-- Meglévő címke hozzáadása --</option>'
+  addSelect.innerHTML = `<option value="">-- ${t('kanban.label.add_placeholder')} --</option>`
   for (const label of kanbanAllLabels) {
     if (attachedIds.has(label.id)) continue
     const opt = document.createElement('option')
@@ -1470,7 +1470,7 @@ async function showCardDetail(card) {
   const canModifyParent = card.status === 'planned' || card.status === 'waiting'
   if (card.parent_id && canModifyParent) {
     // Build the parent-select dropdown: null option + all top-level non-done tasks
-    parentSelect.innerHTML = '<option value="">Üres (nincs szülő)</option>'
+    parentSelect.innerHTML = `<option value="">${t('kanban.parent.empty')}</option>`
     const availableParents = kanbanCards.filter(c =>
       !c.parent_id && c.id !== card.id && !c.archived_at &&
       (c.status === 'planned' || c.status === 'in_progress' || c.status === 'waiting')
@@ -1983,7 +1983,7 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
   updateWizardUI()
 
   const statusEl = document.getElementById('wizardGenStatus')
-  statusEl.textContent = 'CLAUDE.md generálás...'
+  statusEl.textContent = t('agents.claude_md_generating')
 
   try {
     // Create agent via API (returns generated content)
@@ -2009,7 +2009,7 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
     // like "étrendíró" still resolves to the real agent dir "etrendiro".
     const createdName = result.name || name
     wizardCreatedName = createdName
-    statusEl.textContent = 'SOUL.md generálás...'
+    statusEl.textContent = t('agents.soul_md_generating')
 
     // Fetch full agent details to get generated content
     const detailRes = await fetch(`/api/agents/${encodeURIComponent(createdName)}`)
@@ -2205,7 +2205,7 @@ async function openMarveenDetail() {
 
   // Process control for Marveen - always running, no start/stop
   document.getElementById('processDot').className = 'process-dot running'
-  document.getElementById('processLabel').textContent = 'Fut'
+  document.getElementById('processLabel').textContent = t('agents.status.running')
   document.getElementById('processUptime').textContent = `tmux: ${m.tmuxSession || '-'}`
   document.getElementById('agentStartBtn').hidden = true
   document.getElementById('agentStopBtn').hidden = true
@@ -2292,15 +2292,15 @@ function getAvatarGradient(name) {
 // Tooltip text for the "Fut" / "Leállva" footer indicator (process state).
 function processTip(isRunning) {
   return isRunning
-    ? 'Fut: él az ágens tmux session-je (a Claude Code folyamat fut). Forrás: tmux list-sessions.'
-    : 'Leállva: nincs élő tmux session az ágensnek. Forrás: tmux list-sessions.'
+    ? t('agents.running_tip')
+    : t('agents.stopped_tip')
 }
 
 // Tooltip text for the "Online" / "Offline" footer indicator (channel state).
 function channelTip(isConnected) {
   return isConnected
-    ? 'Online: van bekonfigurált csatorna-token (saját bot). Figyelem: ez nem élő kapcsolat, csak a token meglétét jelzi.'
-    : 'Offline: nincs csatorna bekötve (channel-less, csak inter-agent ágens).'
+    ? t('agents.online_tip')
+    : t('agents.offline_tip')
 }
 
 // Build the copy-paste tmux attach command for an agent live session. A local
@@ -2323,7 +2323,7 @@ function attachTmuxCopyButtons(card, agent) {
   const btn = document.createElement('button')
   btn.type = 'button'
   btn.className = 'tmux-copy-btn'
-  btn.setAttribute('aria-label', 'tmux attach parancs masolasa')
+  btn.setAttribute('aria-label', t('agents.tmux_copy_aria'))
   btn.title = cmd
   btn.innerHTML = '<span class="tmux-copy-ico">⧉</span>tmux'
   btn.addEventListener('click', (e) => {
@@ -2331,9 +2331,9 @@ function attachTmuxCopyButtons(card, agent) {
     navigator.clipboard.writeText(cmd).then(() => {
       const orig = btn.innerHTML
       btn.classList.add('copied')
-      btn.innerHTML = '<span class="tmux-copy-ico">✓</span>masolva'
+      btn.innerHTML = '<span class="tmux-copy-ico">✓</span>' + t('agents.tmux_copied')
       setTimeout(() => { btn.innerHTML = orig; btn.classList.remove('copied') }, 1400)
-    }).catch(() => showToast('Masolas sikertelen'))
+    }).catch(() => showToast(t('agents.tmux_copy_failed')))
   })
   row.appendChild(btn)
   card.appendChild(row)
@@ -2352,19 +2352,19 @@ function renderAgents() {
       <div class="agent-card-top">
         <div class="agent-avatar gradient-1"><img src="/api/marveen/avatar?t=${Date.now()}" alt="${escapeHtml(displayName)}"></div>
         <div class="agent-card-info">
-          <div class="agent-name">${escapeHtml(displayName)} <span class="marveen-badge">fo asszisztens</span></div>
+          <div class="agent-name">${escapeHtml(displayName)} <span class="marveen-badge">${t('agents.main_badge')}</span></div>
           <div class="agent-desc">${escapeHtml(m.description || '')}</div>
         </div>
       </div>
       <div class="agent-card-footer">
         <span class="agent-model-badge opus">opus</span>
-        <span class="process-indicator" title="Fut: a fő asszisztens mindig a --channels session-ben fut. Ez a kártya fixen Fut állapotot mutat, nincs per-ágens tmux-ellenőrzés."><span class="process-dot running"></span>Fut</span>
-        <span class="tg-status" title="Online: a fő asszisztens csatornáját a --channels session kezeli, ezért fixen online (nincs külön token-ellenőrzés)."><span class="tg-dot connected"></span>Online</span>
+        <span class="process-indicator" title="${t('agents.marveen_process_tip')}"><span class="process-dot running"></span>${t('agents.status.running')}</span>
+        <span class="tg-status" title="${t('agents.marveen_channel_tip')}"><span class="tg-dot connected"></span>${t('agents.status.online')}</span>
       </div>
       <div class="agent-card-actions">
         <button class="btn-secondary btn-compact agent-conversation-btn" title="Beszélgetés">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-          Beszélgetés
+          ${t('agents.btn.conversation')}
         </button>
         <button class="btn-secondary btn-compact agent-terminal-btn" title="Terminal">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
@@ -2399,10 +2399,10 @@ function renderAgents() {
     const modelLabel = agent.model || 'inherit'
     const chConnected = agentIsConnected(agent)
     const chDotClass = chConnected ? 'connected' : 'disconnected'
-    const chLabel = chConnected ? 'Online' : 'Offline'
+    const chLabel = chConnected ? t('agents.status.online') : t('agents.status.offline')
     const isRunning = agent.running || false
     const runDotClass = isRunning ? 'running' : 'stopped'
-    const runLabel = isRunning ? 'Fut' : 'Leállva'
+    const runLabel = isRunning ? t('agents.status.running') : t('agents.status.stopped')
 
     card.innerHTML = `
       <div class="agent-card-top">
@@ -2419,13 +2419,13 @@ function renderAgents() {
       </div>
       ${agent.needsReauth ? `
         <div class="agent-reauth-banner">
-          <span class="agent-reauth-reason">${escapeHtml(agent.reauthReason || 'Újrabejelentkezés szükséges')}</span>
+          <span class="agent-reauth-reason">${escapeHtml(agent.reauthReason || t('agents.reauth.reason'))}</span>
           <button class="btn-danger btn-compact agent-login-btn" data-phase="start">Bejelentkezés</button>
         </div>` : ''}
       <div class="agent-card-actions">
         <button class="btn-secondary btn-compact agent-conversation-btn" title="Beszélgetés">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-          Beszélgetés
+          ${t('agents.btn.conversation')}
         </button>
         <button class="btn-secondary btn-compact agent-terminal-btn" title="Terminal">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
@@ -2753,7 +2753,7 @@ function updateProcessControl(agent) {
   const stopBtn = document.getElementById('agentStopBtn')
 
   dot.className = 'process-dot ' + (running ? 'running' : 'stopped')
-  label.textContent = running ? 'Fut' : 'Leállva'
+  label.textContent = running ? t('agents.status.running') : t('agents.status.stopped')
   startBtn.hidden = running
   stopBtn.hidden = !running
 
@@ -2987,7 +2987,7 @@ function startModelRestartPolling(name, expectedModel, triggeredAt) {
         }
         badge.hidden = true
         processDot.className = 'process-dot running'
-        processLabel.textContent = 'Fut'
+        processLabel.textContent = t('agents.status.running')
         stopModelRestartPolling()
         const liveMatched = data.activeModel === expectedModel
         showToast(liveMatched
@@ -3020,7 +3020,7 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
     if (!restartRes.ok) {
       document.getElementById('agentDetailModelRestarting').hidden = true
       if (currentAgent) updateProcessControl(currentAgent)
-      showToast('Az újraindítás indítása sikertelen')
+      showToast(t('agents.restart_failed'))
       return
     }
     startModelRestartPolling(name, newModel, triggeredAt)
@@ -3031,14 +3031,14 @@ document.getElementById('modelSuggestBtn').addEventListener('click', async () =>
   if (!currentAgent) return
   const resultDiv = document.getElementById('modelSuggestionResult')
   resultDiv.style.display = 'block'
-  resultDiv.textContent = 'Elemzés...'
+  resultDiv.textContent = t('agents.model.analyzing')
   try {
     const res = await fetch('/api/agents/model-suggest', { method: 'POST' })
     if (!res.ok) throw new Error()
     const { results } = await res.json()
     const entry = results.find(r => r.agent === currentAgent.name)
     if (!entry) {
-      resultDiv.textContent = 'Nincs adat ehhez az ágenshez.'
+      resultDiv.textContent = t('agents.model.no_data')
       return
     }
     resultDiv.style.color = entry.changeAdvised ? 'var(--warning, #e6a817)' : 'var(--success)'
@@ -3046,13 +3046,13 @@ document.getElementById('modelSuggestBtn').addEventListener('click', async () =>
     resultDiv.style.fontFamily = 'monospace'
     resultDiv.style.fontSize = '12px'
     resultDiv.textContent = entry.reason
-  } catch { resultDiv.textContent = 'Hiba az elemzés során.' }
+  } catch { resultDiv.textContent = t('agents.model.error') }
 })
 
 document.getElementById('analyzeAllModelsBtn').addEventListener('click', async () => {
   const panel = document.getElementById('agentsModelAnalysis')
   panel.style.display = 'block'
-  panel.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Elemzés folyamatban...</p>'
+  panel.innerHTML = '<p style="color:var(--text-muted);font-size:13px">' + t('agents.model.analyzing_all') + '</p>'
   try {
     const res = await fetch('/api/agents/model-suggest', { method: 'POST' })
     if (!res.ok) throw new Error()
@@ -3060,32 +3060,32 @@ document.getElementById('analyzeAllModelsBtn').addEventListener('click', async (
     const changes = results.filter(r => r.changeAdvised)
     const ok = results.filter(r => !r.changeAdvised)
     let html = '<div style="font-size:13px;padding:12px 14px;background:var(--surface-hover);border-radius:8px;border:1px solid var(--border)">'
-    html += `<p style="margin:0 0 8px;font-weight:600">Modell elemzés -- ${results.length} ágens</p>`
+    html += `<p style="margin:0 0 8px;font-weight:600">${t('agents.model.title', { n: results.length })}</p>`
     if (changes.length === 0) {
-      html += '<p style="color:var(--success);margin:0">Minden ágenshez megfelelő modell van beállítva.</p>'
+      html += '<p style="color:var(--success);margin:0">' + t('agents.model.all_ok') + '</p>'
     } else {
-      html += `<p style="color:var(--warning, #e6a817);margin:0 0 8px">${changes.length} változtatás javasolt:</p>`
+      html += `<p style="color:var(--warning, #e6a817);margin:0 0 8px">${t('agents.model.changes_n', { n: changes.length })}</p>`
       html += '<ul style="margin:0 0 10px;padding-left:18px">'
       for (const r of changes) {
         const safeReason = r.reason.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
         html += `<li style="margin-bottom:6px"><strong>${r.agent}</strong>: ${r.currentModel} &rarr; ${r.suggestedModel}`
-        html += ` <details style="display:inline-block;vertical-align:top;margin-left:4px"><summary style="cursor:pointer;font-size:11px;color:var(--text-muted)">részletek</summary>`
+        html += ` <details style="display:inline-block;vertical-align:top;margin-left:4px"><summary style="cursor:pointer;font-size:11px;color:var(--text-muted)">${t('agents.model.details')}</summary>`
         html += `<pre style="white-space:pre-wrap;font-size:11px;margin:4px 0 0;background:var(--surface);padding:6px 8px;border-radius:4px;color:var(--text-muted)">${safeReason}</pre></details></li>`
       }
       html += '</ul>'
       if (ok.length > 0) {
-        html += `<p style="color:var(--text-muted);margin:0;font-size:12px">Megfelelő: ${ok.map(r => r.agent).join(', ')}</p>`
+        html += `<p style="color:var(--text-muted);margin:0;font-size:12px">${t('agents.model.ok_agents', { list: ok.map(r => r.agent).join(', ') })}</p>`
       }
-      html += `<button class="btn-secondary btn-compact" id="createModelChangeCardsBtn" style="margin-top:10px">Kanban kártyák létrehozása</button>`
+      html += `<button class="btn-secondary btn-compact" id="createModelChangeCardsBtn" style="margin-top:10px">${t('agents.model.create_cards_btn')}</button>`
     }
     html += '</div>'
     panel.innerHTML = html
     const createBtn = document.getElementById('createModelChangeCardsBtn')
     if (createBtn) {
       createBtn.addEventListener('click', async () => {
-        if (!confirm(`${changes.length} kanban kártya létrehozása a modell-változtatásokhoz?`)) return
+        if (!confirm(t('agents.model.cards_confirm', { n: changes.length }))) return
         createBtn.disabled = true
-        createBtn.textContent = 'Létrehozás...'
+        createBtn.textContent = t('agents.model.creating_cards')
         let created = 0
         for (const r of changes) {
           try {
@@ -3103,11 +3103,11 @@ document.getElementById('analyzeAllModelsBtn').addEventListener('click', async (
             created++
           } catch { /* skip failed card */ }
         }
-        showToast(`${created} kanban kártya létrehozva.`)
-        createBtn.textContent = `${created} kártya létrehozva`
+        showToast(t('agents.model.cards_created', { n: created }))
+        createBtn.textContent = t('agents.model.cards_created', { n: created })
       })
     }
-  } catch { panel.innerHTML = '<p style="color:var(--error);font-size:13px">Hiba az elemzés során.</p>' }
+  } catch { panel.innerHTML = '<p style="color:var(--error);font-size:13px">' + t('agents.model.error') + '</p>' }
 })
 
 document.getElementById('saveAutoRestartBtn').addEventListener('click', async () => {
@@ -3174,7 +3174,7 @@ function updateAuthModeUI(mode, hasApiKey) {
   keyInput.value = ''
   if (mode === 'api') {
     const statusEl = document.getElementById('authModeApiKeyStatus')
-    statusEl.textContent = hasApiKey ? 'API kulcs konfigurálva a vault-ban' : 'Nincs API kulcs beállítva'
+    statusEl.textContent = hasApiKey ? t('agents.api_key.ok') : t('agents.api_key.missing')
     statusEl.style.color = hasApiKey ? 'var(--success)' : 'var(--warning)'
   }
 }
@@ -3309,7 +3309,7 @@ document.getElementById('saveClaudeMdBtn').addEventListener('click', async () =>
       body: JSON.stringify({ claudeMd: document.getElementById('editClaudeMd').value }),
     })
     if (!res.ok) throw new Error()
-    showToast('CLAUDE.md mentve')
+    showToast(t('agents.claude_md_saved'))
   } catch { showToast(t('common.error_save')) }
 })
 
@@ -3322,7 +3322,7 @@ document.getElementById('saveSoulMdBtn').addEventListener('click', async () => {
       body: JSON.stringify({ soulMd: document.getElementById('editSoulMd').value }),
     })
     if (!res.ok) throw new Error()
-    showToast('SOUL.md mentve')
+    showToast(t('agents.soul_md_saved'))
   } catch { showToast(t('common.error_save')) }
 })
 
@@ -8218,14 +8218,14 @@ async function openSkillDetail(skillName, displayLabel) {
 async function loadTeamGraph() {
   const container = document.getElementById('teamGraph')
   if (!container) return
-  container.innerHTML = '<div class="team-empty">Betöltés...</div>'
+  container.innerHTML = '<div class="team-empty">' + t('team.loading') + '</div>'
   try {
     const res = await fetch('/api/team/graph')
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const data = await res.json()
     renderTeamGraph(container, data)
   } catch (err) {
-    container.innerHTML = `<div class="team-empty">Hiba: ${err.message || err}</div>`
+    container.innerHTML = `<div class="team-empty">${t('team.error', { msg: err.message || err })}</div>`
   }
 }
 
@@ -8243,8 +8243,8 @@ function renderTeamGraph(container, data) {
     div.className = 'team-node'
     if (node.role === 'main') div.classList.add('main')
     else if (node.role === 'leader') div.classList.add('leader')
-    const roleLabel = node.role === 'main' ? 'főügynök' : (node.role === 'leader' ? 'csapatvezető' : 'beosztott')
-    const running = node.running ? '● Fut' : '○ Leállva'
+    const roleLabel = node.role === 'main' ? t('team.role.main') : (node.role === 'leader' ? t('team.role.leader') : t('team.role.member'))
+    const running = node.running ? t('team.running') : t('team.stopped')
     const avatarUrl = node.id === mainAgentId
       ? `/api/marveen/avatar?t=${Date.now()}`
       : `/api/agents/${encodeURIComponent(node.id)}/avatar?t=${Date.now()}`
@@ -8320,7 +8320,7 @@ function renderTeamGraph(container, data) {
   if (nodes.length === 1) {
     const empty = document.createElement('div')
     empty.className = 'team-empty'
-    empty.textContent = 'Nincs sub-agent létrehozva.'
+    empty.textContent = t('team.empty')
     container.appendChild(empty)
   }
 }
@@ -8336,10 +8336,10 @@ if (refreshTeamBtn) refreshTeamBtn.addEventListener('click', loadTeamGraph)
 // sees a message from Gábor, not a spoofable string. /api/messages sits behind
 // the dashboard bearer token + Cloudflare Access.
 const MSG_STATUS_META = {
-  pending: { label: 'függőben', cls: 'badge-warm' },
-  delivered: { label: 'kézbesítve', cls: 'badge-active' },
-  done: { label: 'kész', cls: 'badge-active' },
-  failed: { label: 'hibás', cls: 'badge-paused' },
+  pending: { label: () => t('messages.status.pending'), cls: 'badge-warm' },
+  delivered: { label: () => t('messages.status.delivered'), cls: 'badge-active' },
+  done: { label: () => t('messages.status.done'), cls: 'badge-active' },
+  failed: { label: () => t('messages.status.failed'), cls: 'badge-paused' },
 }
 async function resolveOwnerName() {
   try {
@@ -8462,7 +8462,7 @@ async function loadChatAgentList() {
       const info = threadIndex.get(name)
       const lm = info?.lastMsg
       const when = lm?.created_at ? new Date(lm.created_at * 1000).toLocaleTimeString('hu-HU', {hour:'2-digit',minute:'2-digit'}) : ''
-      const preview = lm ? (lm.content || '').replace(/\n/g,' ').slice(0, 60) : 'Nincs üzenet'
+      const preview = lm ? (lm.content || '').replace(/\n/g,' ').slice(0, 60) : t('messages.empty')
       const isSelected = name === chatSelectedAgent ? ' selected' : ''
       const dimmed = info ? '' : ' style="opacity:0.5"'
       const unread = chatIsUnread(name, info)
@@ -8491,7 +8491,7 @@ async function loadChatAgentList() {
       if (first) first.click()
     }
   } catch (e) {
-    sidebar.innerHTML = `<div class="chat-sidebar-empty">Hiba: ${escapeHtml(String(e.message||e))}</div>`
+    sidebar.innerHTML = `<div class="chat-sidebar-empty">${t('messages.sidebar_error', { msg: escapeHtml(String(e.message||e)) })}</div>`
   }
 }
 
@@ -8519,11 +8519,11 @@ async function loadChatThread(agentName) {
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
       </button>
     </div>
-    <div class="chat-bubbles" id="chatBubbles"><div class="chat-loading-indicator" id="chatLoadingTop" style="display:none;text-align:center;padding:8px;font-size:11px;color:var(--text-muted)">Betöltés...</div></div>
+    <div class="chat-bubbles" id="chatBubbles"><div class="chat-loading-indicator" id="chatLoadingTop" style="display:none;text-align:center;padding:8px;font-size:11px;color:var(--text-muted)">${t('messages.loading')}</div></div>
     <div class="chat-compose">
       <div class="chat-compose-row">
-        <textarea id="chatComposeText" class="chat-compose-input" rows="2" placeholder="Üzenet ${escapeHtml(agentName)}-nek..."></textarea>
-        <button class="btn-primary btn-compact chat-send-btn" id="chatSendBtn">Küldés</button>
+        <textarea id="chatComposeText" class="chat-compose-input" rows="2" placeholder="${t('messages.placeholder', { agent: escapeHtml(agentName) })}"></textarea>
+        <button class="btn-primary btn-compact chat-send-btn" id="chatSendBtn">${t('messages.send_btn')}</button>
       </div>
     </div>
   `
@@ -8564,7 +8564,8 @@ function buildBubbleHtml(m) {
   const isOutgoing = m.from_agent === mainAgentId()
   const senderName = isOutgoing ? mainAgentId() : m.from_agent
   const when = m.created_at ? new Date(m.created_at * 1000).toLocaleString('hu-HU', {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : ''
-  const statusMeta = MSG_STATUS_META[m.status] || { label: m.status || '', cls: 'badge' }
+  const statusMetaRaw = MSG_STATUS_META[m.status] || { label: m.status || '', cls: 'badge' }
+  const statusMeta = { ...statusMetaRaw, label: typeof statusMetaRaw.label === 'function' ? statusMetaRaw.label() : statusMetaRaw.label }
   return `<div class="chat-bubble-row ${isOutgoing ? 'outgoing' : 'incoming'}" data-msg-id="${m.id}">
     ${!isOutgoing ? `<div class="chat-bubble-avatar">${chatAvatarHtml(senderName, 28)}</div>` : ''}
     <div class="chat-bubble ${isOutgoing ? 'bubble-out' : 'bubble-in'}">
@@ -8597,9 +8598,9 @@ async function fetchChatPage(agentName, beforeId, limit, mode) {
 
     if (mode === 'replace') {
       if (sorted.length === 0) {
-        container.innerHTML = '<p class="activity-empty">Nincs üzenet ebben a szálban.</p>'
+        container.innerHTML = '<p class="activity-empty">' + t('messages.empty_thread') + '</p>'
       } else {
-        container.innerHTML = '<div class="chat-loading-indicator" id="chatLoadingTop" style="display:none;text-align:center;padding:8px;font-size:11px;color:var(--text-muted)">Betöltés...</div>'
+        container.innerHTML = '<div class="chat-loading-indicator" id="chatLoadingTop" style="display:none;text-align:center;padding:8px;font-size:11px;color:var(--text-muted)">' + t('messages.loading') + '</div>'
         container.insertAdjacentHTML('beforeend', sorted.map(buildBubbleHtml).join(''))
         container.scrollTop = container.scrollHeight
       }
@@ -8640,7 +8641,7 @@ function renderChatBubbles(msgs, agentName) {
   const container = document.getElementById('chatBubbles')
   if (!container) return
   if (!msgs || msgs.length === 0) {
-    container.innerHTML = '<p class="activity-empty">Nincs üzenet ebben a szálban.</p>'
+    container.innerHTML = '<p class="activity-empty">' + t('messages.empty_thread') + '</p>'
     return
   }
   const sorted = [...msgs].sort((a,b) => (a.created_at||0) - (b.created_at||0))
@@ -8663,11 +8664,11 @@ async function sendChatMessage(toAgent) {
     })
     if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Hiba') }
     if (textarea) textarea.value = ''
-    showToast('Üzenet elküldve')
+    showToast(t('messages.sent'))
     await loadChatThread(toAgent)
     await loadChatAgentList()
   } catch (e) {
-    showToast('Hiba: ' + (e.message || e))
+    showToast(t('messages.error_send', { msg: e.message || e }))
   } finally {
     if (btn) btn.disabled = false
   }
@@ -8685,7 +8686,7 @@ function renderTeamEditor(agent, allAgents) {
   reportsSel.innerHTML = ''
   const emptyOpt = document.createElement('option')
   emptyOpt.value = ''
-  emptyOpt.textContent = '(főügynök)'
+  emptyOpt.textContent = t('team.reports_to_empty')
   reportsSel.appendChild(emptyOpt)
   for (const other of allAgents) {
     if (other.name === agent.name) continue
@@ -8736,7 +8737,7 @@ document.getElementById('saveTeamBtn').addEventListener('click', async () => {
   const autoDelegation = document.getElementById('editTeamAutoDelegation').checked
   const originalText = btn.textContent
   btn.disabled = true
-  btn.textContent = 'Mentés...'
+  btn.textContent = t('team.save_saving')
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/team`, {
       method: 'PUT',
@@ -8760,20 +8761,20 @@ document.getElementById('saveTeamBtn').addEventListener('click', async () => {
       if (w) {
         const parts = []
         if (Array.isArray(w.droppedSelf) && w.droppedSelf.length) {
-          parts.push(`önreferenciák: ${w.droppedSelf.join(', ')}`)
+          parts.push(`${t('team.dropped_self')}: ${w.droppedSelf.join(', ')}`)
         }
         if (Array.isArray(w.droppedUnknown) && w.droppedUnknown.length) {
-          parts.push(`ismeretlen nevek: ${w.droppedUnknown.join(', ')}`)
+          parts.push(`${t('team.dropped_unknown')}: ${w.droppedUnknown.join(', ')}`)
         }
         if (parts.length) warningMsg = parts.join(' · ')
       }
     } catch { /* body already consumed or not JSON -- OK, no warnings to show */ }
-    showToast(warningMsg ? `Csapat mentve (kivett: ${warningMsg})` : 'Csapat mentve')
-    btn.textContent = '✓ Mentve'
+    showToast(warningMsg ? t('team.save_warning', { detail: warningMsg }) : t('team.save_ok'))
+    btn.textContent = t('team.save_done')
     setTimeout(() => { btn.textContent = originalText; btn.disabled = false }, 1800)
     loadAgents()
   } catch {
-    showToast('Hiba a csapat mentésekor')
+    showToast(t('team.save_error'))
     btn.textContent = originalText
     btn.disabled = false
   }
