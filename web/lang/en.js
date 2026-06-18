@@ -203,6 +203,11 @@ window._i18n.en = {
   'tasks.toast.run_error':       'Error running task',
   'tasks.toast.delete_error':    'Error deleting',
   'tasks.toast.save_error':      'Error saving',
+  'tasks.expand.need_answer':    'Answer at least one question',
+  'tasks.expand.done':           'Prompt expanded!',
+  'tasks.expand.error':          'Error expanding prompt',
+  'memories.stat.vectors_pct':   'Vectors ({pct}%)',
+
   'tasks.confirm.delete':        'Delete this schedule?',
   'tasks.empty':                 'No scheduled tasks',
 

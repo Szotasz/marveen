@@ -276,6 +276,11 @@ window._i18n.hu = {
   'tasks.toast.run_error':       'Hiba a futtatáskor',
   'tasks.toast.delete_error':    'Hiba a törlés során',
   'tasks.toast.save_error':      'Hiba a mentés során',
+  'tasks.expand.need_answer':    'Válaszolj legalább egy kérdésre',
+  'tasks.expand.done':           'Prompt kibővítve!',
+  'tasks.expand.error':          'Hiba a kibővítés során',
+  'memories.stat.vectors_pct':   'Vektorok ({pct}%)',
+
   'tasks.confirm.delete':        'Törlöd ezt az ütemezést?',
   'tasks.empty':                 'Nincs ütemezett feladat',
 

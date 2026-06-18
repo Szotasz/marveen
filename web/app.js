@@ -4200,7 +4200,7 @@ let currentScheduleView = 'list'
 // Modal wiring
 document.getElementById('addScheduleBtn').addEventListener('click', () => {
   resetScheduleForm()
-  document.getElementById('scheduleModalTitle').textContent = 'Új ütemezett feladat'
+  document.getElementById('scheduleModalTitle').textContent = t('tasks.modal.new_title')
   document.getElementById('scheduleName').disabled = false
   openModal(scheduleModalOverlay)
   loadScheduleAgents().then(() => {
@@ -4643,9 +4643,9 @@ document.getElementById('scheduleRunHistoryClose').addEventListener('click', () 
 scheduleRunHistoryOverlay.addEventListener('click', (e) => { if (e.target === scheduleRunHistoryOverlay) closeModal(scheduleRunHistoryOverlay) })
 
 const RUN_STATUS_LABEL = {
-  fired: 'Rendben',
-  error: 'Hiba',
-  skipped: 'Kihagyva',
+  fired: () => t('tasks.run_status.fired'),
+  error: () => t('tasks.run_status.error'),
+  skipped: () => t('tasks.run_status.skipped'),
 }
 const RUN_STATUS_CLASS = {
   fired: 'badge-active',
@@ -4662,14 +4662,15 @@ async function openScheduleRunHistory(taskName) {
     const r = await fetch(`/api/schedules/${encodeURIComponent(taskName)}/runs`)
     const runs = await r.json()
     if (!Array.isArray(runs) || runs.length === 0) {
-      body.innerHTML = '<p class="hint">Még nincs rögzített futtatás.</p>'
+      body.innerHTML = '<p class="hint">' + t('tasks.history.empty') + '</p>'
       return
     }
     const rows = runs.map(run => {
       const d = new Date(run.ts)
       const date = d.toLocaleDateString('hu-HU', { month: 'short', day: 'numeric' })
       const time = d.toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-      const label = RUN_STATUS_LABEL[run.status] || run.status
+      const labelRaw = RUN_STATUS_LABEL[run.status]
+      const label = labelRaw ? (typeof labelRaw === 'function' ? labelRaw() : labelRaw) : run.status
       const cls = RUN_STATUS_CLASS[run.status] || 'badge-paused'
       const tokens = run.tokens_est !== null ? `~${run.tokens_est.toLocaleString()}` : '-'
       return `<tr>
@@ -4680,16 +4681,16 @@ async function openScheduleRunHistory(taskName) {
     }).join('')
     body.innerHTML = `<table style="width:100%;border-collapse:collapse">
       <thead><tr>
-        <th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border)">Időpont</th>
-        <th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border)">Állapot</th>
-        <th style="text-align:right;padding:4px 8px;border-bottom:1px solid var(--border)">Token (kb.)</th>
+        <th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border)">${t('tasks.history.time')}</th>
+        <th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border)">${t('tasks.history.status')}</th>
+        <th style="text-align:right;padding:4px 8px;border-bottom:1px solid var(--border)">${t('tasks.history.tokens')}</th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>`
     body.querySelectorAll('tbody tr').forEach(tr => {
       tr.querySelectorAll('td').forEach(td => { td.style.padding = '5px 8px'; td.style.borderBottom = '1px solid var(--border-light, #eee)' })
     })
-  } catch { body.innerHTML = '<p class="hint">Hiba az előzmények betöltésekor.</p>' }
+  } catch { body.innerHTML = '<p class="hint">' + t('tasks.history.error') + '</p>' }
 }
 
 function renderTimeline(tasks) {
@@ -4913,7 +4914,7 @@ function renderWeekView(data) {
 function openEditSchedule(task) {
   loadScheduleAgents().then(() => {
     resetScheduleForm()
-    document.getElementById('scheduleModalTitle').textContent = 'Feladat szerkesztése'
+    document.getElementById('scheduleModalTitle').textContent = t('tasks.modal.edit_title')
     document.getElementById('scheduleName').value = task.name
     document.getElementById('scheduleName').disabled = true
     document.getElementById('scheduleDesc').value = task.description || ''
@@ -4954,7 +4955,7 @@ document.getElementById('expandPromptBtn').addEventListener('click', async () =>
   const btn = document.getElementById('expandPromptBtn')
 
   btn.disabled = true
-  statusEl.textContent = 'Kérdések generálása...'
+  statusEl.textContent = t('tasks.expand.generating')
   expandAnswers = []
 
   try {
@@ -5007,9 +5008,9 @@ document.getElementById('expandPromptBtn').addEventListener('click', async () =>
     const applyBtn = document.createElement('button')
     applyBtn.type = 'button'
     applyBtn.className = 'btn-primary btn-compact'
-    applyBtn.innerHTML = '<span class="btn-text">Prompt kibővítése</span><span class="btn-loading" hidden><span class="spinner"></span></span>'
+    applyBtn.innerHTML = `<span class="btn-text">${t('tasks.expand.apply_btn')}</span><span class="btn-loading" hidden><span class="spinner"></span></span>`
     applyBtn.addEventListener('click', async () => {
-      if (expandAnswers.length === 0) { showToast('Válaszolj legalább egy kérdésre'); return }
+      if (expandAnswers.length === 0) { showToast(t('tasks.expand.need_answer')); return }
       applyBtn.disabled = true
       applyBtn.querySelector('.btn-text').hidden = true
       applyBtn.querySelector('.btn-loading').hidden = false
@@ -5023,9 +5024,9 @@ document.getElementById('expandPromptBtn').addEventListener('click', async () =>
         const { prompt: expanded } = await res2.json()
         document.getElementById('schedulePrompt').value = expanded
         questionsEl.hidden = true
-        showToast('Prompt kibővítve!')
+        showToast(t('tasks.expand.done'))
       } catch {
-        showToast('Hiba a kibővítés során')
+        showToast(t('tasks.expand.error'))
       } finally {
         applyBtn.disabled = false
         applyBtn.querySelector('.btn-text').hidden = false
@@ -5126,7 +5127,7 @@ async function loadMemAgents() {
     const agents = await res.json()
     const sel = document.getElementById('memAgentFilter')
     const memSel = document.getElementById('memAgent')
-    sel.innerHTML = '<option value="">Minden ügynök</option>'
+    sel.innerHTML = `<option value="">${t('memories.agent_all')}</option>`
     memSel.innerHTML = ''
     for (const a of agents) {
       sel.innerHTML += `<option value="${a.name}">${a.label}</option>`
@@ -5239,20 +5240,20 @@ async function loadMemStats() {
     const embCount = stats.withEmbedding || 0
     const embPct = stats.total > 0 ? Math.round(embCount / stats.total * 100) : 0
     memStats.innerHTML = `
-      <div class="stat-card"><div class="stat-value">${stats.total}</div><div class="stat-label">Osszes</div></div>
+      <div class="stat-card"><div class="stat-value">${stats.total}</div><div class="stat-label">${t('memories.stat.total')}</div></div>
       ${Object.entries(stats.byTier || {}).map(([tier, count]) =>
         `<div class="stat-card"><div class="stat-value" style="color:${tierColors[tier] || 'var(--accent)'}">${count}</div><div class="stat-label">${tierLabels[tier] || tier}</div></div>`
       ).join('')}
-      <div class="stat-card"><div class="stat-value">${embCount}</div><div class="stat-label">Vektorok (${embPct}%)</div></div>
-      <button class="btn-secondary btn-compact" id="memBackfillBtn" style="margin-left:auto;font-size:11px;padding:6px 12px;align-self:center">Vektorok generalasa</button>
+      <div class="stat-card"><div class="stat-value">${embCount}</div><div class="stat-label">${t('memories.stat.vectors_pct', { pct: embPct })}</div></div>
+      <button class="btn-secondary btn-compact" id="memBackfillBtn" style="margin-left:auto;font-size:11px;padding:6px 12px;align-self:center">${t('memories.stat.vectors_btn')}</button>
     `
     document.getElementById('memBackfillBtn')?.addEventListener('click', async () => {
       const btn = document.getElementById('memBackfillBtn')
-      if (btn) { btn.textContent = 'Generálás...'; btn.disabled = true }
+      if (btn) { btn.textContent = t('memories.stat.vectors_gen'); btn.disabled = true }
       try {
         const r = await fetch('/api/memories/backfill', { method: 'POST' })
         const data = await r.json()
-        showToast(`${data.count} emlekhez vektor generalva`)
+        showToast(t('memories.toast.vector_count', { count: data.count }))
         loadMemStats()
       } catch { showToast(t('memories.toast.vector_error')) }
     })
@@ -8102,7 +8103,7 @@ if (skillsPageNewBtn) {
 }
 
 async function loadGlobalSkills() {
-  skillsGrid.innerHTML = '<div class="connector-loading"><span class="spinner"></span> Skillek betoltese...</div>'
+  skillsGrid.innerHTML = `<div class="connector-loading"><span class="spinner"></span> ${t('skills.loading')}</div>`
   skillsStats.innerHTML = ''
   try {
     const res = await fetch('/api/skills')
@@ -8110,7 +8111,7 @@ async function loadGlobalSkills() {
     renderGlobalSkills()
   } catch (err) {
     console.error('Skills betoltes hiba:', err)
-    skillsGrid.innerHTML = '<div class="connector-loading">Hiba a betoltes soran</div>'
+    skillsGrid.innerHTML = `<div class="connector-loading">${t('skills.error')}</div>`
   }
 }
 
@@ -8134,10 +8135,10 @@ function renderGlobalSkills() {
   const pluginCount = globalSkills.filter(s => s.source === 'plugin').length
 
   skillsStats.innerHTML = `
-    <div class="stat-card"><div class="stat-value">${globalSkills.length}</div><div class="stat-label">Összes</div></div>
-    <div class="stat-card"><div class="stat-value" style="color:var(--info)">${userCount}</div><div class="stat-label">User (saját)</div></div>
-    ${pluginCount ? `<div class="stat-card"><div class="stat-value" style="color:var(--accent)">${pluginCount}</div><div class="stat-label">Plugin</div></div>` : ''}
-    <div class="stat-card"><div class="stat-value" style="color:var(--success)">${withSkillMd.length}</div><div class="stat-label">Dokumentált</div></div>
+    <div class="stat-card"><div class="stat-value">${globalSkills.length}</div><div class="stat-label">${t('skills.stat.total')}</div></div>
+    <div class="stat-card"><div class="stat-value" style="color:var(--info)">${userCount}</div><div class="stat-label">${t('skills.stat.user')}</div></div>
+    ${pluginCount ? `<div class="stat-card"><div class="stat-value" style="color:var(--accent)">${pluginCount}</div><div class="stat-label">${t('skills.stat.plugin')}</div></div>` : ''}
+    <div class="stat-card"><div class="stat-value" style="color:var(--success)">${withSkillMd.length}</div><div class="stat-label">${t('skills.stat.documented')}</div></div>
   `
 
   if (globalSkills.length === 0) {
@@ -8162,7 +8163,7 @@ function renderGlobalSkills() {
         <div class="skills-card-icon">${icon}</div>
         <div class="skills-card-info">
           <div class="skills-card-name">${escapeHtml(displayName)} ${sourceBadge}</div>
-          <div class="skills-card-desc">${escapeHtml(skill.description || 'Nincs leírás')}</div>
+          <div class="skills-card-desc">${escapeHtml(skill.description || t('skills.no_description'))}</div>
         </div>
       </div>
     `
@@ -8181,7 +8182,7 @@ async function openSkillDetail(skillName, displayLabel) {
 
     // Description
     const descEl = document.getElementById('skillDetailDesc')
-    descEl.textContent = detail.description || 'Nincs leírás'
+    descEl.textContent = detail.description || t('skills.no_description')
 
     // Meta line: source + path. Replaces the old per-agent assignment
     // UI -- sub-agents share the caller's HOME, so the skill is already
@@ -8191,17 +8192,17 @@ async function openSkillDetail(skillName, displayLabel) {
       const sourceLabel = detail.source === 'plugin'
         ? `plugin${detail.pluginPackage ? ' (' + escapeHtml(detail.pluginPackage) + ')' : ''}`
         : detail.source === 'user'
-        ? 'user (saját fájl)'
-        : 'ismeretlen'
+        ? t('skills.source.user')
+        : t('skills.source.unknown')
       metaEl.innerHTML = `
-        <div class="skill-detail-source">Forrás: <strong>${sourceLabel}</strong></div>
-        <div class="skill-detail-note">Automatikusan elérhető minden sub-agent számára (közös HOME).</div>
+        <div class="skill-detail-source">${t('skills.detail.source_label')} <strong>${sourceLabel}</strong></div>
+        <div class="skill-detail-note">${t('skills.detail.auto_available')}</div>
       `
     }
 
     // Content
     const contentEl = document.getElementById('skillDetailContent')
-    contentEl.textContent = detail.content || '(SKILL.md nem található)'
+    contentEl.textContent = detail.content || t('skills.content_not_found')
 
   } catch (err) {
     console.error('Skill detail hiba:', err)
