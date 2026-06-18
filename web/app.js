@@ -130,7 +130,7 @@ const pages = document.querySelectorAll('.page')
 
 function confirmSettingsLeave() {
   if (settingsDirty.size === 0) return true
-  return window.confirm('Nem mentett beállítások maradnak. Biztosan el akarsz navigálni?')
+  return window.confirm(t('settings.unsaved_warning'))
 }
 
 function switchPage(pageId) {
@@ -1117,7 +1117,7 @@ function wireKanbanColumnDnD(col) {
       })
       loadKanban()
     } catch {
-      showToast('Hiba az áthelyezés során')
+      showToast(t('kanban.toast.move_error'))
     }
   })
 }
@@ -1141,7 +1141,7 @@ function getDragAfterElement(col, y) {
 
 // === New card modal ===
 function openNewCardModal(status) {
-  document.getElementById('cardModalTitle').textContent = 'Új kártya'
+  document.getElementById('cardModalTitle').textContent = t('kanban.modal.title_new')
   document.getElementById('cardTitle').value = ''
   document.getElementById('cardDesc').value = ''
   document.getElementById('cardPriority').value = 'normal'
@@ -1241,7 +1241,7 @@ async function renderCardLabelsSection(card) {
         await fetch(`/api/kanban/${encodeURIComponent(card.id)}/labels/${encodeURIComponent(label.id)}`, { method: 'DELETE' })
         renderCardLabelsSection(card)
         loadKanban()
-      } catch { showToast('Hiba a címke eltávolításakor') }
+      } catch { showToast(t('kanban.toast.label_remove_error')) }
     })
     listEl.appendChild(pill)
   }
@@ -1265,7 +1265,7 @@ async function renderCardLabelsSection(card) {
       })
       renderCardLabelsSection(card)
       loadKanban()
-    } catch { showToast('Hiba a címke hozzáadásakor') }
+    } catch { showToast(t('kanban.toast.label_add_error')) }
   }
 
   newForm.style.display = 'none'
@@ -1297,7 +1297,7 @@ async function renderCardLabelsSection(card) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, color: selectedColor }),
       })
-      if (!r.ok) { showToast('Hiba a címke létrehozásakor'); return }
+      if (!r.ok) { showToast(t('kanban.toast.label_create_error')); return }
       const newLabel = await r.json()
       kanbanAllLabels.push(newLabel)
       await fetch(`/api/kanban/${encodeURIComponent(card.id)}/labels`, {
@@ -1307,7 +1307,7 @@ async function renderCardLabelsSection(card) {
       newForm.style.display = 'none'
       renderCardLabelsSection(card)
       loadKanban()
-    } catch { showToast('Hiba a címke létrehozásakor') }
+    } catch { showToast(t('kanban.toast.label_create_error')) }
   }
 }
 
@@ -1393,7 +1393,7 @@ async function showCardDetail(card) {
         loadKanban && loadKanban()
       } catch {
         assigneeValueEl.textContent = current ? current : '-- nincs --'
-        showToast('Hiba a mentésnél')
+        showToast(t('kanban.toast.save_error'))
       }
     }
     sel.addEventListener('change', save)
@@ -1436,7 +1436,7 @@ async function showCardDetail(card) {
         body: JSON.stringify({ ...card, parent_id: newParentId }),
       })
       if (r.ok) { card.parent_id = newParentId; showToast(label); loadKanban(); showCardDetail(card) }
-      else showToast('Hiba a mentésnél')
+      else showToast(t('kanban.toast.save_error'))
     }
     parentMetaItem.style.display = ''
   } else {
@@ -1495,14 +1495,14 @@ async function showCardDetail(card) {
       document.getElementById('commentContent').value = ''
       showCardDetail(card) // refresh
     } catch {
-      showToast('Hiba a megjegyzés mentése során')
+      showToast(t('kanban.toast.comment_error'))
     }
   }
 
   // Edit button
   document.getElementById('cardEditBtn').onclick = () => {
     closeModal(cardDetailOverlay)
-    document.getElementById('cardModalTitle').textContent = 'Kártya szerkesztése'
+    document.getElementById('cardModalTitle').textContent = t('kanban.modal.title_edit')
     document.getElementById('cardTitle').value = card.title
     document.getElementById('cardDesc').value = card.description || ''
     document.getElementById('cardPriority').value = card.priority
@@ -1525,7 +1525,7 @@ async function showCardDetail(card) {
       showToast('Kártya archiválva')
       loadKanban()
     } catch {
-      showToast('Hiba az archiválás során')
+      showToast(t('kanban.toast.archive_error'))
     }
   }
 
@@ -1538,7 +1538,7 @@ async function showCardDetail(card) {
       showToast('Kártya törölve')
       loadKanban()
     } catch {
-      showToast('Hiba a törlés során')
+      showToast(t('common.error_delete'))
     }
   }
 
@@ -1564,11 +1564,11 @@ async function showCardDetail(card) {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ title, parent_id: card.id, status: card.status, priority: card.priority, project: card.project || null, assignee: null }),
           })
-          if (!r.ok) { showToast('Hiba az alfeladat létrehozásakor'); return }
+          if (!r.ok) { showToast(t('kanban.toast.subtask_error')); return }
           showToast('Alfeladat létrehozva')
           loadKanban()
           showCardDetail(card)
-        } catch { showToast('Hiba az alfeladat létrehozásakor') }
+        } catch { showToast(t('kanban.toast.subtask_error')) }
       }
     } else {
       addSubtaskSection.style.display = 'none'
@@ -1600,11 +1600,11 @@ async function showCardDetail(card) {
             if (!confirm(`Biztosan törlöd az alfeladatot: "${ch.title}"?`)) return
             try {
               const r = await fetch(`/api/kanban/${encodeURIComponent(ch.id)}`, { method: 'DELETE' })
-              if (!r.ok) { showToast('Hiba a törlés során'); return }
+              if (!r.ok) { showToast(t('common.error_delete')); return }
               showToast('Alfeladat törölve')
               loadKanban()
               showCardDetail(card)
-            } catch { showToast('Hiba a törlés során') }
+            } catch { showToast(t('common.error_delete')) }
           }
           div.appendChild(delBtn)
         }
@@ -1743,7 +1743,7 @@ document.getElementById('breakdownAcceptBtn').addEventListener('click', async ()
     showToast(`${data.created.length} subtask létrehozva`)
     loadKanban()
   } catch {
-    showToast('Hiba a subtask-ok mentése során')
+    showToast(t('common.error_save'))
   }
 })
 
@@ -1963,7 +1963,7 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
       generatedSoulMd = detail.soulMd || ''
     }
 
-    statusEl.textContent = 'Kész!'
+    statusEl.textContent = t('kanban.breakdown.running')
 
     // Apply the chosen avatar. Custom upload wins over a gallery pick; both go
     // to the same endpoint (FormData for a file, JSON for a gallery name).
@@ -2473,7 +2473,7 @@ async function openAgentDetail(agentName) {
       showToast('Ügynök törölve')
       loadAgents()
     } catch (err) {
-      showToast('Hiba a törlés során')
+      showToast(t('common.error_delete'))
     }
   }
 
@@ -2509,7 +2509,7 @@ function populateDetailAvatarGrid() {
         document.getElementById('detailAvatarGallery').hidden = true
         loadAgents()
       } catch {
-        showToast('Hiba az avatar mentése során')
+        showToast(t('agents.toast.avatar_error'))
       }
     })
     grid.appendChild(item)
@@ -2543,7 +2543,7 @@ document.getElementById('avatarChangeBtn').addEventListener('click', () => {
           gallery.hidden = true
           loadAgents()
         } catch {
-          showToast('Hiba az avatar mentése során')
+          showToast(t('agents.toast.avatar_error'))
         }
       })
       grid.appendChild(item)
@@ -2618,7 +2618,7 @@ document.getElementById('avatarChangeBtn').addEventListener('click', () => {
       resetAvatarUpload()
       loadAgents()
     } catch {
-      showToast('Hiba a feltöltés során')
+      showToast(t('common.error_save'))
       resetAvatarUpload()
     }
   }
@@ -2968,7 +2968,7 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
       return
     }
     startModelRestartPolling(name, newModel, triggeredAt)
-  } catch { showToast('Hiba a mentés során') }
+  } catch { showToast(t('common.error_save')) }
 })
 
 document.getElementById('modelSuggestBtn').addEventListener('click', async () => {
@@ -3078,7 +3078,7 @@ document.getElementById('saveAutoRestartBtn').addEventListener('click', async ()
     const body = await res.json()
     if (currentAgent) currentAgent.autoRestart = body.autoRestart
     showToast('Auto-restart beállítás mentve')
-  } catch { showToast('Hiba a mentés során') }
+  } catch { showToast(t('common.error_save')) }
 })
 
 document.getElementById('saveProfileBtn').addEventListener('click', async () => {
@@ -3241,7 +3241,7 @@ document.getElementById('saveAuthModeBtn').addEventListener('click', async () =>
       currentAgent = updated
       updateAuthModeUI(updated.authMode || 'shared', updated.hasApiKey || false)
     }
-  } catch { showToast('Hiba a mentes soran') }
+  } catch { showToast(t('common.error_save')) }
 })
 
 document.getElementById('saveClaudeMdBtn').addEventListener('click', async () => {
@@ -3254,7 +3254,7 @@ document.getElementById('saveClaudeMdBtn').addEventListener('click', async () =>
     })
     if (!res.ok) throw new Error()
     showToast('CLAUDE.md mentve')
-  } catch { showToast('Hiba a mentés során') }
+  } catch { showToast(t('common.error_save')) }
 })
 
 document.getElementById('saveSoulMdBtn').addEventListener('click', async () => {
@@ -3267,7 +3267,7 @@ document.getElementById('saveSoulMdBtn').addEventListener('click', async () => {
     })
     if (!res.ok) throw new Error()
     showToast('SOUL.md mentve')
-  } catch { showToast('Hiba a mentés során') }
+  } catch { showToast(t('common.error_save')) }
 })
 
 document.getElementById('saveMcpJsonBtn').addEventListener('click', async () => {
@@ -3280,7 +3280,7 @@ document.getElementById('saveMcpJsonBtn').addEventListener('click', async () => 
     })
     if (!res.ok) throw new Error()
     showToast('.mcp.json mentve')
-  } catch { showToast('Hiba a mentés során') }
+  } catch { showToast(t('common.error_save')) }
 })
 
 // === Channel tab ===
@@ -3981,7 +3981,7 @@ async function loadSkills(agentName) {
             showToast('Skill törölve')
             loadSkills(agentName)
           } catch {
-            showToast('Hiba a törlés során')
+            showToast(t('common.error_delete'))
           }
         })
       }
@@ -4532,7 +4532,7 @@ function makeScheduleRow(task) {
         if (r.ok) showToast('Feladat elindítva' + (data.result ? ': ' + data.result : ''))
         else showToast('Hiba: ' + (data.error || r.status))
         loadSchedules()
-      } catch { showToast('Hiba a futtatáskor') }
+      } catch { showToast(t('tasks.toast.run_error')) }
     })
 
     row.querySelector('[data-action="toggle"]').addEventListener('click', async (e) => {
@@ -4541,7 +4541,7 @@ function makeScheduleRow(task) {
         await fetch(`/api/schedules/${encodeURIComponent(task.name)}/toggle`, { method: 'POST' })
         showToast(task.enabled ? 'Feladat szüneteltetve' : 'Feladat újraindult')
         loadSchedules()
-      } catch { showToast('Hiba történt') }
+      } catch { showToast(t('common.error')) }
     })
 
     row.querySelector('[data-action="delete"]').addEventListener('click', async (e) => {
@@ -4551,7 +4551,7 @@ function makeScheduleRow(task) {
         await fetch(`/api/schedules/${encodeURIComponent(task.name)}`, { method: 'DELETE' })
         showToast('Feladat törölve')
         loadSchedules()
-      } catch { showToast('Hiba a törlés során') }
+      } catch { showToast(t('common.error_delete')) }
     })
 
     row.querySelector('[data-action="history"]').addEventListener('click', async (e) => {
@@ -4600,7 +4600,7 @@ const RUN_STATUS_CLASS = {
 async function openScheduleRunHistory(taskName) {
   document.getElementById('scheduleRunHistoryTitle').textContent = `Előzmények: ${taskName}`
   const body = document.getElementById('scheduleRunHistoryBody')
-  body.innerHTML = '<p>Betöltés...</p>'
+  body.innerHTML = '<p>' + t('common.loading') + '</p>'
   openModal(scheduleRunHistoryOverlay)
   try {
     const r = await fetch(`/api/schedules/${encodeURIComponent(taskName)}/runs`)
@@ -4979,7 +4979,7 @@ document.getElementById('expandPromptBtn').addEventListener('click', async () =>
     applyRow.appendChild(applyBtn)
     questionsEl.appendChild(applyRow)
   } catch {
-    statusEl.textContent = 'Hiba a kérdések generálásakor'
+    statusEl.textContent = t('kanban.breakdown.error')
   } finally {
     btn.disabled = false
   }
@@ -5129,7 +5129,7 @@ document.getElementById('memTabs').addEventListener('click', (e) => {
 
 // Add memory button
 document.getElementById('memAddBtn').addEventListener('click', () => {
-  document.getElementById('memModalTitle').textContent = 'Uj emlek'
+  document.getElementById('memModalTitle').textContent = t('memories.modal.title_new')
   document.getElementById('memContent').value = ''
   document.getElementById('memTier').value = (currentMemTier === 'log' || currentMemTier === 'graph') ? 'warm' : currentMemTier
   document.getElementById('memKeywords').value = ''
@@ -5172,7 +5172,7 @@ document.getElementById('saveMemBtn').addEventListener('click', async () => {
     loadMemories()
     loadMemStats()
   } catch {
-    showToast('Hiba a mentes soran')
+    showToast(t('common.error_save'))
   }
 })
 
@@ -5198,7 +5198,7 @@ async function loadMemStats() {
         const data = await r.json()
         showToast(`${data.count} emlekhez vektor generalva`)
         loadMemStats()
-      } catch { showToast('Hiba a vektor generálás során') }
+      } catch { showToast(t('memories.toast.vector_error')) }
     })
   } catch (err) {
     console.error('Stats hiba:', err)
@@ -5277,7 +5277,7 @@ function renderMemories(memories) {
     const editBtn = item.querySelector('[data-edit-memid]')
     editBtn.addEventListener('click', (e) => {
       e.stopPropagation()
-      document.getElementById('memModalTitle').textContent = 'Emlék szerkesztése'
+      document.getElementById('memModalTitle').textContent = t('memories.modal.title_edit')
       document.getElementById('memContent').value = mem.content
       document.getElementById('memTier').value = tier
       document.getElementById('memKeywords').value = mem.keywords || ''
@@ -5297,7 +5297,7 @@ function renderMemories(memories) {
         loadMemories()
         loadMemStats()
       } catch {
-        showToast('Hiba a törlés során')
+        showToast(t('common.error_delete'))
       }
     })
 
@@ -5862,7 +5862,7 @@ function hideGraphPanel() {
 }
 
 function openEditMemory(mem) {
-  document.getElementById('memModalTitle').textContent = 'Emlék szerkesztése'
+  document.getElementById('memModalTitle').textContent = t('memories.modal.title_edit')
   document.getElementById('memAgent').value = mem.agent_id || mainAgentId()
   document.getElementById('memTier').value = mem.tier || mem.category || 'warm'
   document.getElementById('memContent').value = mem.content || ''
@@ -6176,7 +6176,7 @@ document.getElementById('connectorRefreshBtn').addEventListener('click', async (
     const res = await fetch('/api/connectors/refresh', { method: 'POST' })
     const data = await res.json().catch(() => ({}))
     if (!res.ok || !data.ok) {
-      showToast('Frissítés sikertelen: ' + (data.error || 'HTTP ' + res.status))
+      showToast(t('updates.error', {msg: data.error || 'HTTP ' + res.status}))
     } else {
       showToast('MCP lista frissítve (' + (data.count || 0) + ' globális connector)')
     }
@@ -6187,7 +6187,7 @@ document.getElementById('connectorRefreshBtn').addEventListener('click', async (
       await loadCatalog()
     }
   } catch (err) {
-    showToast('Hiba: ' + (err.message || err))
+    showToast(t('updates.toast.error', {msg: err.message || err}))
   } finally {
     btn.disabled = false
   }
@@ -7451,7 +7451,7 @@ async function openConnectorDetail(connector) {
       showToast('Connector törölve')
       loadConnectors()
     } catch {
-      showToast('Hiba a törlés során')
+      showToast(t('common.error_delete'))
     }
   }
 
@@ -8149,7 +8149,7 @@ async function openSkillDetail(skillName, displayLabel) {
 
   } catch (err) {
     console.error('Skill detail hiba:', err)
-    document.getElementById('skillDetailDesc').textContent = 'Hiba a betöltés során'
+    document.getElementById('skillDetailDesc').textContent = t('connectors.error_list')
     document.getElementById('skillDetailContent').textContent = ''
     const metaEl = document.getElementById('skillDetailMeta')
     if (metaEl) metaEl.innerHTML = ''
@@ -8933,7 +8933,7 @@ async function runUpdate(autoStash) {
     setTimeout(() => window.location.reload(), 30000)
   } catch (err) {
     resetBtn()
-    showToast('Hiba: ' + (err.message || err))
+    showToast(t('updates.toast.error', {msg: err.message || err}))
   }
 }
 
@@ -9493,7 +9493,7 @@ async function setAutonomyLevel(key, level) {
     }
     loadAutonomy()
   } catch {
-    showToast('Hiba a mentésnél')
+    showToast(t('kanban.toast.save_error'))
   }
 }
 
@@ -9523,7 +9523,7 @@ function updateSettingsSaveBar() {
   if (!bar) return
   const n = settingsDirty.size
   bar.style.display = n > 0 ? 'flex' : 'none'
-  if (countEl) countEl.textContent = n === 1 ? '1 módosított beállítás' : `${n} módosított beállítás`
+  if (countEl) countEl.textContent = t('settings.dirty_count', {n})
 }
 
 function markSettingDirty(key, input, originalValue, type, errorEl) {
@@ -10614,11 +10614,22 @@ function renderIdeaCard(idea) {
   </div>`
 }
 
+function applyIdeaModalI18n() {
+  const labels = document.querySelectorAll('#ideaModalOverlay .form-label')
+  const keys = ['ideas.modal.title_label', 'ideas.modal.desc_label', 'ideas.modal.category_label', 'ideas.modal.impact_label', 'ideas.modal.effort_label']
+  labels.forEach((el, i) => { if (keys[i]) el.textContent = t(keys[i]) })
+  const saveBtn = document.getElementById('ideaModalSave')
+  const cancelBtn = document.getElementById('ideaModalCancel')
+  if (saveBtn) saveBtn.textContent = t('ideas.modal.save_btn')
+  if (cancelBtn) cancelBtn.textContent = t('ideas.modal.cancel_btn')
+}
+
 function openIdeaNew() {
   ideaEditId = null
-  document.getElementById('ideaModalTitle').textContent = 'Új ötlet'
+  document.getElementById('ideaModalTitle').textContent = t('ideas.modal.title_new')
   document.getElementById('ideaTitleInput').value = ''
   document.getElementById('ideaDescInput').value = ''
+  applyIdeaModalI18n()
   openModal(document.getElementById('ideaModalOverlay'))
 }
 
@@ -10626,7 +10637,7 @@ function openIdeaEdit(id) {
   const idea = ideas.find(i => i.id === id)
   if (!idea) return
   ideaEditId = id
-  document.getElementById('ideaModalTitle').textContent = 'Ötlet szerkesztése'
+  document.getElementById('ideaModalTitle').textContent = t('ideas.modal.title_edit')
   document.getElementById('ideaTitleInput').value = idea.title
   document.getElementById('ideaDescInput').value = idea.description || ''
   document.getElementById('ideaCategoryInput').value = idea.category
@@ -10637,7 +10648,7 @@ function openIdeaEdit(id) {
 
 async function saveIdea() {
   const title = document.getElementById('ideaTitleInput').value.trim()
-  if (!title) { showToast('Cím kötelező', 'error'); return }
+  if (!title) { showToast(t('common.title') + ' ' + t('common.error'), 'error'); return }
   const impactRaw = document.getElementById('ideaImpactInput').value
   const effortRaw = document.getElementById('ideaEffortInput').value
   const body = {
@@ -10658,7 +10669,7 @@ async function saveIdea() {
 }
 
 async function deleteIdeaItem(id) {
-  if (!confirm('Biztosan törlöd?')) return
+  if (!confirm(t('kanban.confirm.delete'))) return
   await fetch(`/api/ideas/${id}`, { method: 'DELETE' })
   loadIdeasPage()
 }
