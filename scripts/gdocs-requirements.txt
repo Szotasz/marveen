@@ -1,0 +1,6 @@
+# Dependencies for the Google Docs helper (scripts/gdocs.py).
+# Install into a dedicated venv:
+#   python3 -m venv .venv-gdocs
+#   .venv-gdocs/bin/pip install -r scripts/gdocs-requirements.txt
+google-api-python-client==2.197.0
+google-auth==2.55.0
