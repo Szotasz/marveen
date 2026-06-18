@@ -11176,31 +11176,108 @@ function downloadMarkdown(name, content) {
     return new Date(unix * 1000).toLocaleString('hu-HU', { dateStyle: 'short', timeStyle: 'short' })
   }
 
+  // Render an archived card with the same visual language as the live board:
+  // project pill + #seq title + colored rounded priority/label chips, wrapped in
+  // the .kanban-card frame. The whole card opens a read-only detail modal on
+  // click; the restore button stops propagation so it doesn't also open it.
   function renderArchivedCard(card) {
-    const statusColor = STATUS_COLORS[card.status] || '#6b7280'
-    const statusLabel = STATUS_LABELS[card.status] || card.status
     const prioColor = PRIORITY_COLORS[card.priority] || '#6b7280'
     const prioLabel = PRIORITY_LABELS[card.priority] || card.priority
-    const projectBadge = card.project
-      ? `<span class="naplo-badge" style="background:#4b5563;font-size:11px">${esc(card.project)}</span>`
+    const seqHtml = card.seq != null
+      ? `<span class="kanban-card-seq" style="font-family:monospace;font-size:11px;color:var(--text-muted);margin-right:5px">#${card.seq}</span>`
       : ''
-    const statusBadge = `<span class="naplo-badge" style="background:${statusColor};font-size:11px">${statusLabel}</span>`
-    const prioBadge = `<span class="naplo-badge" style="background:${prioColor};font-size:11px">${prioLabel}</span>`
-    const labelBadges = (card.labels || [])
-      .map(l => `<span class="naplo-badge" style="background:${esc(l.color)};font-size:11px">${esc(l.name)}</span>`)
-      .join(' ')
-    const assigneeStr = card.assignee ? `<span style="font-size:12px;color:var(--muted)">@${esc(card.assignee)}</span>` : ''
-    const archivedStr = `<span style="font-size:12px;color:var(--muted)">Archiválva: ${fmtDate(card.archived_at)}</span>`
-    return `<div class="naplo-entry" style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
-      <div style="flex:1;min-width:0;">
-        <div style="font-weight:500;margin-bottom:4px;">${esc(card.title)}</div>
-        <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
-          ${statusBadge}${prioBadge}${projectBadge}${labelBadges}${assigneeStr}
-        </div>
-        <div style="margin-top:4px;">${archivedStr}</div>
+    const projectHtml = card.project
+      ? `<span class="kanban-card-project">${esc(card.project)}</span>`
+      : ''
+    let labelsHtml = ''
+    if (Array.isArray(card.labels) && card.labels.length > 0) {
+      const pills = card.labels
+        .map(l => `<span class="kanban-card-label-pill" style="--label-color:${esc(l.color)}">#${esc(l.name)}</span>`)
+        .join('')
+      labelsHtml = `<div class="kanban-card-labels">${pills}</div>`
+    }
+    const prioPill = `<span class="archived-prio-pill" style="--prio-color:${prioColor}">${prioLabel}</span>`
+    return `<div class="kanban-card archived-card" data-id="${esc(card.id)}" data-priority="${esc(card.priority)}">
+      ${projectHtml}
+      <div class="kanban-card-title">${seqHtml}${esc(card.title)}</div>
+      <div class="kanban-card-footer">${prioPill}</div>
+      ${labelsHtml}
+      <div class="archived-card-foot">
+        <span class="archived-date">Archiválva: ${fmtDate(card.archived_at)}</span>
+        <button class="btn-secondary btn-compact archived-restore-btn" data-id="${esc(card.id)}" title="Visszaállítás a táblára" style="white-space:nowrap;flex-shrink:0;">Visszaállítás</button>
       </div>
-      <button class="btn-secondary btn-compact archived-restore-btn" data-id="${esc(card.id)}" title="Visszaállítás a táblára" style="white-space:nowrap;flex-shrink:0;">Visszaállítás</button>
     </div>`
+  }
+
+  // Read-only detail modal for an archived card: meta grid, labels, description,
+  // comments -- no editing affordances. Restore button mirrors the card button.
+  async function showArchivedDetail(card) {
+    const seqPrefix = card.seq != null ? `#${card.seq} ` : ''
+    document.getElementById('archivedDetailTitle').textContent = `${seqPrefix}${card.title}`
+    const meta = document.getElementById('archivedDetailMeta')
+    const idLabel = (card.seq != null ? `#${card.seq} · ` : '') + card.id
+    meta.innerHTML = `
+      <div class="meta-item"><span class="meta-label">Azonosító</span><span class="meta-value" style="font-family:monospace">${esc(idLabel)}</span></div>
+      <div class="meta-item"><span class="meta-label">Állapot</span><span class="meta-value">${STATUS_LABELS[card.status] || card.status}</span></div>
+      <div class="meta-item"><span class="meta-label">Felelős</span><span class="meta-value">${card.assignee ? esc(card.assignee) : '-- nincs --'}</span></div>
+      <div class="meta-item"><span class="meta-label">Prioritás</span><span class="meta-value">${PRIORITY_LABELS[card.priority] || card.priority}</span></div>
+      <div class="meta-item"><span class="meta-label">Projekt</span><span class="meta-value">${card.project ? esc(card.project) : '-- nincs --'}</span></div>
+      <div class="meta-item"><span class="meta-label">Archiválva</span><span class="meta-value">${fmtDate(card.archived_at)}</span></div>
+    `
+    const labelsWrap = document.getElementById('archivedDetailLabelsWrap')
+    const labelsBox = document.getElementById('archivedDetailLabels')
+    if (Array.isArray(card.labels) && card.labels.length > 0) {
+      labelsBox.innerHTML = card.labels
+        .map(l => `<span class="kanban-card-label-pill" style="--label-color:${esc(l.color)}">#${esc(l.name)}</span>`)
+        .join('')
+      labelsWrap.style.display = ''
+    } else {
+      labelsWrap.style.display = 'none'
+    }
+    document.getElementById('archivedDetailDesc').textContent = card.description || ''
+
+    const commentsWrap = document.getElementById('archivedDetailCommentsWrap')
+    const commentsBox = document.getElementById('archivedDetailComments')
+    commentsBox.innerHTML = ''
+    try {
+      const res = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/comments`)
+      const comments = res.ok ? await res.json() : []
+      if (Array.isArray(comments) && comments.length > 0) {
+        for (const c of comments) {
+          const date = new Date(c.created_at * 1000).toLocaleString('hu-HU')
+          const div = document.createElement('div')
+          div.className = 'comment-item'
+          div.innerHTML = `<div><span class="comment-author">${esc(c.author)}</span><span class="comment-date">${date}</span></div><div class="comment-body">${esc(c.content)}</div>`
+          commentsBox.appendChild(div)
+        }
+        commentsWrap.style.display = ''
+      } else {
+        commentsWrap.style.display = 'none'
+      }
+    } catch { commentsWrap.style.display = 'none' }
+
+    const restoreBtn = document.getElementById('archivedDetailRestoreBtn')
+    restoreBtn.disabled = false
+    restoreBtn.textContent = 'Visszaállítás a táblára'
+    restoreBtn.onclick = async () => {
+      restoreBtn.disabled = true
+      restoreBtn.textContent = '...'
+      try {
+        const resp = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/unarchive`, { method: 'POST' })
+        if (resp.ok) {
+          closeModal(document.getElementById('archivedDetailOverlay'))
+          doArchivedSearch()
+        } else {
+          restoreBtn.disabled = false
+          restoreBtn.textContent = 'Visszaállítás a táblára'
+          showToast('Hiba a visszaállításnál.')
+        }
+      } catch {
+        restoreBtn.disabled = false
+        restoreBtn.textContent = 'Visszaállítás a táblára'
+      }
+    }
+    openModal(document.getElementById('archivedDetailOverlay'))
   }
 
   async function populateArchivedProjects() {
@@ -11224,6 +11301,7 @@ function downloadMarkdown(name, content) {
   async function doArchivedSearch() {
     const list = document.getElementById('archivedList')
     const summary = document.getElementById('archivedSummary')
+    list.className = ''
     list.innerHTML = '<p class="naplo-empty">Betöltés...</p>'
     summary.textContent = ''
 
@@ -11244,21 +11322,32 @@ function downloadMarkdown(name, content) {
       const cards = data.cards || []
       summary.textContent = `${cards.length} kártya (max ${data.limit})`
       if (cards.length === 0) { list.innerHTML = '<p class="naplo-empty">Nincs archivált kártya.</p>'; return }
+      list.className = 'archived-grid'
       list.innerHTML = cards.map(renderArchivedCard).join('')
+      const byId = new Map(cards.map(c => [c.id, c]))
+      // Whole card opens the read-only detail; restore button acts on its own.
+      list.querySelectorAll('.archived-card').forEach(el => {
+        el.addEventListener('click', () => {
+          const card = byId.get(el.dataset.id)
+          if (card) showArchivedDetail(card)
+        })
+      })
       list.querySelectorAll('.archived-restore-btn').forEach(btn => {
-        btn.addEventListener('click', async () => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation()
           const id = btn.dataset.id
           btn.disabled = true
           btn.textContent = '...'
           try {
             const resp = await fetch(`/api/kanban/${id}/unarchive`, { method: 'POST' })
             if (resp.ok) {
-              btn.closest('.naplo-entry').style.opacity = '0.4'
+              const cardEl = btn.closest('.archived-card')
+              if (cardEl) cardEl.style.opacity = '0.4'
               btn.textContent = 'Visszaállítva'
             } else {
               btn.disabled = false
               btn.textContent = 'Visszaállítás'
-              alert('Hiba a visszaállításnál.')
+              showToast('Hiba a visszaállításnál.')
             }
           } catch {
             btn.disabled = false
@@ -11277,6 +11366,9 @@ function downloadMarkdown(name, content) {
       document.getElementById('archivedSearchBtn').addEventListener('click', doArchivedSearch)
       document.getElementById('archivedRefreshBtn').addEventListener('click', doArchivedSearch)
       document.getElementById('archivedQ').addEventListener('keydown', e => { if (e.key === 'Enter') doArchivedSearch() })
+      const adOverlay = document.getElementById('archivedDetailOverlay')
+      document.getElementById('archivedDetailClose').addEventListener('click', () => closeModal(adOverlay))
+      adOverlay.addEventListener('click', e => { if (e.target === adOverlay) closeModal(adOverlay) })
     }
     populateArchivedProjects()
     doArchivedSearch()

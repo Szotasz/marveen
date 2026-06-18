@@ -800,6 +800,39 @@ main {
 }
 .kanban-card-label-overflow:hover { filter: none; }
 
+/* Archived cards: same card look as the board, laid out in a responsive grid */
+.archived-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+.archived-card {
+  cursor: pointer;
+}
+.archived-card:active { cursor: pointer; }
+.archived-prio-pill {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 8px;
+  color: var(--prio-color);
+  background: color-mix(in srgb, var(--prio-color) 16%, transparent);
+  line-height: 1.5;
+}
+.archived-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.archived-date {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 .kanban-quick-filter-chip {
   display: inline-flex;
   align-items: center;

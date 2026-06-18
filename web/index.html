@@ -1433,6 +1433,31 @@
     </div>
   </div>
 
+  <!-- Modal: Archived card detail (read-only) -->
+  <div class="modal-overlay" id="archivedDetailOverlay">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <h2 id="archivedDetailTitle">Archivált kártya</h2>
+        <button class="modal-close" id="archivedDetailClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="card-detail-meta" id="archivedDetailMeta"></div>
+        <div class="card-detail-labels" id="archivedDetailLabelsWrap" style="display:none">
+          <h4>Címkék</h4>
+          <div class="kanban-card-labels" id="archivedDetailLabels"></div>
+        </div>
+        <div class="card-detail-desc" id="archivedDetailDesc"></div>
+        <div class="card-detail-comments" id="archivedDetailCommentsWrap" style="display:none">
+          <h4>Megjegyzések</h4>
+          <div class="comments-list" id="archivedDetailComments"></div>
+        </div>
+        <div class="detail-actions" style="gap:8px">
+          <button class="btn-secondary" id="archivedDetailRestoreBtn">Visszaállítás a táblára</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Modal: Breakdown accept/reject -->
   <div class="modal-overlay" id="breakdownOverlay">
     <div class="modal modal-wide">
