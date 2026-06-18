@@ -12,6 +12,17 @@ export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promis
   if (path === '/manifest.json') { serveFile(req, res, join(webDir, 'manifest.json')); return true }
   if (path === '/sw.js') { serveFile(req, res, join(webDir, 'sw.js')); return true }
 
+  if (path.startsWith('/lang/')) {
+    const langFile = path.replace('/lang/', '')
+    // Allowlist: only the two known language files (no path traversal).
+    if (langFile === 'hu.js' || langFile === 'en.js') {
+      serveFile(req, res, join(webDir, 'lang', langFile))
+      return true
+    }
+    res.writeHead(404); res.end()
+    return true
+  }
+
   if (path.startsWith('/avatars/')) {
     const avatarFile = path.replace('/avatars/', '')
     const avatarPath = join(webDir, 'avatars', avatarFile)

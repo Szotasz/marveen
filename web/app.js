@@ -1,3 +1,55 @@
+// === i18n runtime ===
+// Priority: localStorage['marveen.lang'] > DASHBOARD_LANG (server default, read
+// from /api/settings on init) > 'hu' (hardcoded fallback).
+// Rick's spec (kanban card 209696a9): t(key,params), window._i18n={hu,en},
+// window._lang; {name} interpolation; EN-fallback then key; dev-mode warning.
+;(() => {
+  const LS_KEY = 'marveen.lang'
+  const VALID = new Set(['hu', 'en'])
+
+  window.t = function t(key, params = {}) {
+    const lang = window._lang || 'hu'
+    const str =
+      window._i18n?.[lang]?.[key] ??
+      window._i18n?.['en']?.[key] ??
+      key
+    if (str === key && localStorage.getItem('marveen.dev') === '1') {
+      console.warn('[i18n] missing key:', key)
+    }
+    return str.replace(/\{(\w+)\}/g, (_, k) => (params[k] != null ? params[k] : `{${k}}`))
+  }
+
+  function applyLang(lang) {
+    window._lang = VALID.has(lang) ? lang : 'hu'
+  }
+
+  // Initialise from localStorage; server default fetched async below.
+  applyLang(localStorage.getItem(LS_KEY) || 'hu')
+
+  // Fetch server default (DASHBOARD_LANG) and apply only if localStorage not set.
+  fetch('/api/settings')
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (!data || localStorage.getItem(LS_KEY)) return
+      const entry = (data.settings || []).find(s => s.key === 'DASHBOARD_LANG')
+      if (entry && VALID.has(entry.value)) applyLang(entry.value)
+    })
+    .catch(() => {})
+
+  window.setLang = function setLang(lang) {
+    if (!VALID.has(lang)) return
+    window._lang = lang
+    localStorage.setItem(LS_KEY, lang)
+    renderNav()
+    // Re-render the active page by re-triggering the switchPage handler.
+    const activeLink = document.querySelector('.sb-link.active[data-page]')
+    if (activeLink) {
+      const pageId = activeLink.dataset.page
+      if (typeof switchPage === 'function') switchPage(pageId)
+    }
+  }
+})()
+
 // === Dashboard auth bootstrap ===
 // The server prints an URL like http://127.0.0.1:3420/?token=XXX on startup.
 // On first visit we pluck the token out of the URL, store it in localStorage,
@@ -142,6 +194,79 @@ navLinks.forEach((link) => {
   })
 })
 
+
+// ============================================================
+// === i18n nav + static element rendering ===
+// ============================================================
+
+// Map: data-page value -> nav i18n key.
+const NAV_I18N = {
+  overview: 'nav.overview', kanban: 'nav.kanban', archived: 'nav.archived',
+  agents: 'nav.agents', activity: 'nav.activity', team: 'nav.team',
+  messages: 'nav.messages', tasks: 'nav.tasks', memories: 'nav.memories',
+  recall: 'nav.recall', naplo: 'nav.recall', bgTasks: 'nav.bgTasks',
+  skills: 'nav.skills', connectors: 'nav.connectors', migrate: 'nav.migrate',
+  docs: 'nav.docs', status: 'nav.status', autonomy: 'nav.autonomy',
+  settings: 'nav.settings', vault: 'nav.vault', tokenUsage: 'nav.tokenUsage',
+  ideas: 'nav.ideas', updates: 'nav.updates',
+}
+
+function renderNav() {
+  document.querySelectorAll('.sb-link[data-page] .sb-label').forEach((span) => {
+    const page = span.closest('[data-page]')?.dataset?.page
+    if (page && NAV_I18N[page]) span.textContent = t(NAV_I18N[page])
+  })
+}
+
+// Map: element ID -> i18n key, for static HTML elements not handled by page render fns.
+const STATIC_I18N_MAP = {
+  // Kanban column headers
+  'countPlanned':   null,  // dynamic count, skip
+  // Overview
+  'overviewTeamMeta': 'overview.card.team_meta',
+  // Docs
+  'docsContent': null,  // rendered by JS
+}
+
+// Simpler approach: update known static text nodes directly by selector.
+function renderStaticI18n() {
+  // Kanban column titles
+  const colTitles = document.querySelectorAll('.kanban-col-title')
+  const statusKeys = ['kanban.col.planned', 'kanban.col.in_progress', 'kanban.col.waiting', 'kanban.col.done']
+  const statuses = ['planned', 'in_progress', 'waiting', 'done']
+  colTitles.forEach((el) => {
+    const status = el.closest('[data-status]')?.dataset?.status
+    if (status) {
+      const idx = statuses.indexOf(status)
+      if (idx !== -1) el.textContent = t(statusKeys[idx])
+    }
+  })
+  // Activity empty state
+  const actEmpty = document.querySelector('.activity-empty')
+  if (actEmpty) actEmpty.textContent = t('common.loading')
+  // Docs hints
+  const docsHint = document.getElementById('docsContent')
+  if (docsHint && docsHint.querySelector('p.muted')) {
+    docsHint.querySelector('p.muted').textContent = t('docs.select_hint')
+  }
+  // Messages empty state
+  const chatEmpty = document.querySelector('.chat-thread-empty p')
+  if (chatEmpty) chatEmpty.textContent = t('messages.select_agent')
+  // Team hint
+  const teamHint = document.querySelector('#teamPage > p')
+  if (teamHint) teamHint.textContent = t('team.hint')
+}
+
+// Initial render on page load.
+document.addEventListener('DOMContentLoaded', () => {
+  renderNav()
+  renderStaticI18n()
+}, { once: true })
+// Fallback if DOMContentLoaded already fired (scripts deferred).
+if (document.readyState !== 'loading') {
+  renderNav()
+  renderStaticI18n()
+}
 
 // ============================================================
 // === Activity (live agent status) ===
