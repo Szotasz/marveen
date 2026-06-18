@@ -330,11 +330,11 @@ if (document.readyState !== 'loading') {
 let activityTimer = null
 
 const ACTIVITY_STATE_META = {
-  working: { label: 'dolgozik', cls: 'act-working', tip: 'Élő állapot (a tmux pane tartalmából, 3 másodpercenként): éppen dolgozik / gondolkodik.' },
-  idle: { label: 'várakozik', cls: 'act-idle', tip: 'Élő állapot (3 másodpercenként): fut, de épp nem csinál semmit.' },
-  unknown: { label: 'ismeretlen', cls: 'act-unknown', tip: 'Élő állapot: nem sikerült megállapítani a session pane tartalmából.' },
-  error: { label: 'hiba', cls: 'act-error', tip: 'Élő állapot: hiba látszik az ágens session paneljén.' },
-  stopped: { label: 'leállt', cls: 'act-stopped', tip: 'Élő állapot: az ágens session nem fut.' },
+  working: { label: () => t('activity.state.working'), cls: 'act-working', tip: 'Élő állapot (a tmux pane tartalmából, 3 másodpercenként): éppen dolgozik / gondolkodik.' },
+  idle: { label: () => t('activity.state.idle'), cls: 'act-idle', tip: 'Élő állapot (3 másodpercenként): fut, de épp nem csinál semmit.' },
+  unknown: { label: () => t('activity.state.unknown'), cls: 'act-unknown', tip: 'Élő állapot: nem sikerült megállapítani a session pane tartalmából.' },
+  error: { label: () => t('activity.state.error'), cls: 'act-error', tip: 'Élő állapot: hiba látszik az ágens session paneljén.' },
+  stopped: { label: () => t('activity.state.stopped'), cls: 'act-stopped', tip: 'Élő állapot: az ágens session nem fut.' },
 }
 
 // === Kanban auto-refresh ===
@@ -381,10 +381,10 @@ async function loadActivity() {
     const entries = await res.json()
     renderActivity(entries)
     const upd = document.getElementById('activityUpdated')
-    if (upd) upd.textContent = 'Frissítve: ' + new Date().toLocaleTimeString('hu-HU')
+    if (upd) upd.textContent = t('activity.updated', { time: new Date().toLocaleTimeString('hu-HU') })
   } catch (e) {
     const list = document.getElementById('activityList')
-    if (list) list.innerHTML = '<p class="activity-empty">Nem sikerült lekérni az aktivitást: ' + escapeHtml(String(e.message || e)) + '</p>'
+    if (list) list.innerHTML = '<p class="activity-empty">' + t('activity.error_load') + ': ' + escapeHtml(String(e.message || e)) + '</p>'
   }
 }
 
@@ -392,13 +392,14 @@ function renderActivity(entries) {
   const list = document.getElementById('activityList')
   if (!list) return
   if (!Array.isArray(entries) || entries.length === 0) {
-    list.innerHTML = '<p class="activity-empty">Nincs ügynök.</p>'
+    list.innerHTML = '<p class="activity-empty">' + t('activity.empty') + '</p>'
     return
   }
   list.innerHTML = entries.map((a) => {
-    const meta = ACTIVITY_STATE_META[a.state] || ACTIVITY_STATE_META.unknown
+    const metaRaw = ACTIVITY_STATE_META[a.state] || ACTIVITY_STATE_META.unknown
+    const meta = { ...metaRaw, label: typeof metaRaw.label === 'function' ? metaRaw.label() : metaRaw.label }
     const tail = (a.tail || []).map((l) => escapeHtml(l)).join('\n')
-    const mainBadge = a.isMain ? '<span class="act-main-badge">fő</span>' : ''
+    const mainBadge = a.isMain ? '<span class="act-main-badge">' + t('activity.badge.main') + '</span>' : ''
     const canOpen = !!a.running
     const termIcon = canOpen
       ? '<svg class="act-term-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" title="Terminal megnyitása"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>'
@@ -8797,14 +8798,14 @@ async function loadOverview() {
     const d = await res.json()
     // Stats
     document.getElementById('statAgents').textContent = d.agents.running
-    document.getElementById('statAgentsSub').textContent = `${d.agents.total} összesen`
+    document.getElementById('statAgentsSub').textContent = t('overview.stat.agents_sub', { n: d.agents.total })
     document.getElementById('statTasks').textContent = d.tasksToday
     const taskDiff = d.tasksToday - d.tasksYesterday
-    document.getElementById('statTasksSub').textContent = taskDiff === 0 ? 'ugyanaz mint tegnap' : (taskDiff > 0 ? `+${taskDiff} a tegnapihoz` : `${taskDiff} a tegnapihoz`)
+    document.getElementById('statTasksSub').textContent = taskDiff === 0 ? t('overview.stat.same_as_yesterday') : (taskDiff > 0 ? '+' + taskDiff + ' ' + t('overview.stat.change', { n: '' }).trim() : taskDiff + ' ' + t('overview.stat.change', { n: '' }).trim())
     document.getElementById('statMemories').textContent = d.memories.count.toLocaleString('hu-HU').replace(/,/g, ' ')
     document.getElementById('statMemoriesSub').textContent = `bejegyzés · ${d.memories.categories} category`
     document.getElementById('statSkills').textContent = d.skills.count
-    document.getElementById('statSkillsSub').textContent = d.skills.today > 0 ? `ebből ${d.skills.today} ma` : ''
+    document.getElementById('statSkillsSub').textContent = d.skills.today > 0 ? t('overview.stat.skills_today', { n: d.skills.today }) : ''
     // Team: reuse the hierarchy graph renderer so the overview card shows
     // exactly what the Csapat page does (avatars + reports-to tree).
     try {
@@ -8818,7 +8819,7 @@ async function loadOverview() {
     const act = document.getElementById('overviewActivity')
     act.innerHTML = ''
     if (!d.activity || d.activity.length === 0) {
-      act.innerHTML = '<div style="color:var(--text-muted);font-size:13px">Nincs friss esemény.</div>'
+      act.innerHTML = '<div style="color:var(--text-muted);font-size:13px">' + t('overview.no_activity') + '</div>'
     } else {
       for (const a of d.activity) {
         const icon = a.icon === 'delegate'
@@ -8837,7 +8838,7 @@ async function loadOverview() {
       }
     }
   } catch (err) {
-    document.getElementById('overviewActivity').innerHTML = `<div style="color:var(--text-muted);font-size:13px">Hiba: ${err.message || err}</div>`
+    document.getElementById('overviewActivity').innerHTML = '<div style="color:var(--text-muted);font-size:13px">' + t('overview.error', { msg: escapeHtml(String(err.message || err)) }) + '</div>'
   }
 }
 
@@ -8866,7 +8867,7 @@ async function initSidebarBrand() {
         const name = document.getElementById('sidebarBrandName')
         if (name) name.textContent = brand
         const subtitle = document.getElementById('updatesSubtitle')
-        if (subtitle) subtitle.textContent = `${brand} verzió ellenőrzés`
+        if (subtitle) subtitle.textContent = `${brand} ` + t('overview.updates_subtitle')
       }
     }
   } catch {}
