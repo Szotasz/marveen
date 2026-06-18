@@ -43,6 +43,7 @@ export const CHANNEL_PLUGIN_IDS: Record<string, string> = {
   telegram: 'telegram@claude-plugins-official',
   slack: 'slack-channel@marveen-marketplace',
   discord: 'discord@claude-plugins-official',
+  googlechat: 'googlechat@claude-channel-googlechat',
 }
 
 // Pure: compute the enabledPlugins map for a sub-agent so that exactly its own
@@ -91,7 +92,7 @@ export function ownChannelProviderForScope(
 
 function resolveAgentProvider(name: string): ChannelProviderType {
   const perAgent = readAgentChannelProvider(name)
-  if (perAgent === 'slack' || perAgent === 'telegram' || perAgent === 'discord') return perAgent
+  if (perAgent === 'slack' || perAgent === 'telegram' || perAgent === 'discord' || perAgent === 'googlechat') return perAgent
   return CHANNEL_PROVIDER
 }
 
@@ -350,11 +351,11 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
         // flag: a real own bot token in this agent's channel .env (token, above).
         // A genuine own-token agent enables its own provider's plugin; a channel-
         // less agent (no own token, only the legacy/global fallback that still
-        // marks hasChannel) yields null -> all three disabled, so it never fights
-        // the main agent over the shared getUpdates slot. Keying on the explicit
-        // channelProvider config field instead (always null for sub-agents) was
-        // the regression that disabled the plugin for every legitimately-channelled
-        // sub-agent after a respawn (truly-unreachable plugin, no bun poller).
+        // marks hasChannel) yields null -> all providers disabled, so it never
+        // fights the main agent over the shared getUpdates slot. Keying on the
+        // explicit channelProvider config field instead (always null for sub-agents)
+        // was the regression that disabled the plugin for every legitimately-
+        // channelled sub-agent after a respawn (truly-unreachable plugin, no poller).
         s.enabledPlugins = scopeChannelPlugins(
           ownChannelProviderForScope(!!token, agentProvider),
           s.enabledPlugins as Record<string, boolean> | undefined,
@@ -386,7 +387,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // omit --continue so the heavy accumulated context is dropped. Without it
     // we resume the prior session (the 'continue' mode / normal restart).
     const continueFlag = (hasPriorSession && !opts.fresh) ? '--continue ' : ''
-    const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : agentProvider === 'discord' ? 'DISCORD_STATE_DIR' : 'TELEGRAM_STATE_DIR'
+    const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : agentProvider === 'discord' ? 'DISCORD_STATE_DIR' : agentProvider === 'googlechat' ? 'GOOGLECHAT_STATE_DIR' : 'TELEGRAM_STATE_DIR'
     const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN'
     // Slack plugin is third-party; its "not on approved allowlist" check is
     // bypassed via `allowedChannelPlugins` in /Library/Application Support/ClaudeCode/managed-settings.json.

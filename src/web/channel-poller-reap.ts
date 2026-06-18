@@ -33,6 +33,7 @@ const STATE_ENV_VAR: Record<ChannelProviderType, string> = {
   telegram: 'TELEGRAM_STATE_DIR',
   slack: 'SLACK_STATE_DIR',
   discord: 'DISCORD_STATE_DIR',
+  googlechat: 'GOOGLECHAT_STATE_DIR',
 }
 
 // Parse `ps eww -e` output and return every PID whose process environment

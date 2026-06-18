@@ -50,6 +50,7 @@ const SLUG_RX: Record<ChannelProviderType, RegExp> = {
   telegram: /\/telegram(?:\/|\s|$)/,
   slack: /\/slack(?:-channel)?(?:\/|\s|$)/,
   discord: /\/discord(?:\/|\s|$)/,
+  googlechat: /\/googlechat(?:\/|\s|$)/,
 }
 
 // Slack-specific behavior-preserving fallback. The pre-fix cross-tree scan
