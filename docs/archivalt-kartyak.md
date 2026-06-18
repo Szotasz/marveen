@@ -4,14 +4,31 @@
 
 ---
 
-## Mit tud / miért érdekes
+## Használat
 
-A kanban tábla automatikusan archiválja a `done` állapotú kártyákat, ha azok `KANBAN_ARCHIVE_DONE_DAYS` napnál régebbiek (alapértelmezés: 30 nap). Ezek az "Archivált" nézetben megmaradnak és kereshetők, de nem zsúfolják a táblát.
+A bal oldali navigációban a "Archivált" menüpont nyitja meg a nézetet. A kanban tábla automatikusan archiválja a lezárt (`done`) kártyákat, ha azok a megadott napszámnál (alapértelmezés: 30 nap) régebben kerültek done állapotba -- ezek eltűnnek a táblából, de az Archivált nézetben megmaradnak és visszakereshetők.
 
-Az archivált nézet:
-- Teljes szöveges keresés (cím, projekt, felelős).
-- Szűrés projekt, dátumtartomány szerint.
-- Visszaállítás gombbal kártyanként (a kártya visszakerül a táblára).
+**Keresés**
+
+A keresőmezőbe begépelt szöveg a kártya címe, projektje és felelőse között keres egyszerre. A találatok azonnal szűkülnek gépelés közben.
+
+**Szűrés**
+
+A keresőmező mellett három szűrő érhető el:
+
+- Projekt -- legördülő vagy szöveges szűrő a projekt neve alapján (pontos egyezés)
+- Cimke -- egy konkrét cimke szerint szűr
+- Dátumtartomány ("Ettől" / "Eddig") -- az archiválás időpontja alapján szűkíti a listát; mindkét mező opcionális
+
+**Kártya visszaállítása**
+
+Minden kártya sorában egy "Visszaállítás" gomb jelenik meg. Rákattintva a kártya visszakerül a kanban táblára (done státuszban), és ismét megjelenik a szokásos nézeten -- utána szerkeszthető, státusza változtatható.
+
+**Fontos tudnivalók**
+
+- Az archivált nézet csak-olvasható: szerkesztés és státuszváltás visszaállítás után lehetséges a rendes kanban táblán
+- Alapértelmezés szerint legfeljebb 500 kártya jelenik meg egyszerre -- ez a Beállítások oldalon módosítható (`KANBAN_ARCHIVED_MAX_ROWS`)
+- Az archivált kártyák nem szerepelnek a szokásos kanban táblán és nem kerülnek be a heartbeat-összefoglalókba
 
 ---
 

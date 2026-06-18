@@ -4,14 +4,31 @@
 
 ---
 
-## Overview
+## Using the archive
 
-The kanban board auto-archives `done` cards older than `KANBAN_ARCHIVE_DONE_DAYS` days (default: 30) during the next `listKanbanCards()` call. The Archived view lets you browse and search those cards without cluttering the board, and restore any card back to active status.
+Open the view from the "Archivált" entry in the left-hand navigation. The kanban board automatically archives closed (`done`) cards once they have been in that state longer than the configured threshold (default: 30 days) -- they disappear from the board but remain searchable in the Archived view.
 
-Features:
-- Full-text search (title, project, assignee).
-- Filter by project and date range.
-- Per-card restore button (sets `archived_at = NULL`).
+**Search**
+
+Text typed in the search field matches across card title, project, and assignee simultaneously. Results narrow as you type.
+
+**Filters**
+
+Three filters sit alongside the search field:
+
+- Project -- filter by exact project name
+- Label -- filter by a single label
+- Date range ("From" / "To") -- narrows by the time the card was archived; both inputs are optional
+
+**Restoring a card**
+
+Each row has a Restore button. Clicking it moves the card back to the active kanban board (in `done` status), where it reappears in the normal view and can be edited or moved to a different status.
+
+**Key things to know**
+
+- The archived view is read-only: editing and status changes are only possible after restoring the card to the active board
+- Up to 500 cards are shown at once by default -- adjustable on the Settings page (`KANBAN_ARCHIVED_MAX_ROWS`)
+- Archived cards do not appear on the kanban board and are excluded from heartbeat summaries
 
 ---
 
