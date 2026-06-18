@@ -11183,8 +11183,8 @@ function downloadMarkdown(name, content) {
     const ts = `<span class="naplo-ts">${fmtTs(e.created_at)}</span>`
     let detail = ''
     if (e.source === 'config') {
-      const oldV = e.old_value != null ? `<code>${esc(e.old_value)}</code>` : '<em>–</em>'
-      const newV = e.new_value != null ? `<code>${esc(e.new_value)}</code>` : '<em>–</em>'
+      const oldV = e.old_value != null ? `<code>${esc(e.old_value)}</code>` : '<em>nincs</em>'
+      const newV = e.new_value != null ? `<code>${esc(e.new_value)}</code>` : '<em>nincs</em>'
       detail = `<strong>${esc(e.key)}</strong> ${oldV} &rarr; ${newV} <span class="naplo-actor">${esc(e.actor || '')}</span>`
     } else if (e.source === 'idea') {
       const from = e.from_status ? `<code>${esc(e.from_status)}</code> &rarr; ` : ''
