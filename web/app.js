@@ -254,7 +254,40 @@ const STATIC_I18N_MAP = {
 }
 
 // Simpler approach: update known static text nodes directly by selector.
+// Page id -> { title key, subtitle key (or null) }
+const PAGE_HEADER_I18N = {
+  agentsPage:     { title: 'agents.page_title',     sub: 'agents.page_subtitle' },
+  activityPage:   { title: 'activity.page_title',   sub: 'activity.page_subtitle' },
+  tasksPage:      { title: 'tasks.page_title',       sub: 'tasks.page_subtitle' },
+  skillsPage:     { title: 'skills.page_title',      sub: 'skills.page_subtitle' },
+  memoriesPage:   { title: 'memories.page_title',    sub: 'memories.page_subtitle' },
+  recallPage:     { title: 'recall.page_title',      sub: 'recall.page_subtitle' },
+  bgTasksPage:    { title: 'bgTasks.page_title',     sub: 'bgTasks.page_subtitle' },
+  connectorsPage: { title: 'connectors.page_title',  sub: 'connectors.page_subtitle' },
+  migratePage:    { title: 'migrate.page_title',     sub: 'migrate.page_subtitle' },
+  docsPage:       { title: 'docs.page_title',        sub: 'docs.page_subtitle' },
+  statusPage:     { title: 'status.page_title',      sub: 'status.page_subtitle' },
+  teamPage:       { title: 'team.page_title',        sub: 'team.page_subtitle' },
+  messagesPage:   { title: 'messages.page_title',    sub: 'messages.page_subtitle' },
+  autonomyPage:   { title: 'autonomy.page_title',    sub: 'autonomy.page_subtitle' },
+  settingsPage:   { title: 'settings.page_title',    sub: 'settings.page_subtitle' },
+  ideasPage:      { title: 'ideas.page_title',       sub: 'ideas.page_subtitle' },
+  vaultPage:      { title: 'vault.page_title',       sub: 'vault.page_subtitle' },
+  tokenUsagePage: { title: 'tokenUsage.page_title',  sub: 'tokenUsage.page_subtitle' },
+  updatesPage:    { title: 'updates.page_title',     sub: null },
+  naploPage:      { title: 'naplo.page_title',       sub: 'naplo.page_subtitle' },
+}
+
 function renderStaticI18n() {
+  // Page headers + subtitles
+  for (const [pageId, keys] of Object.entries(PAGE_HEADER_I18N)) {
+    const pageEl = document.getElementById(pageId)
+    if (!pageEl) continue
+    const h1 = pageEl.querySelector('.page-header h1')
+    if (h1 && keys.title) h1.textContent = t(keys.title)
+    const sub = pageEl.querySelector('.page-header .subtitle')
+    if (sub && keys.sub) sub.textContent = t(keys.sub)
+  }
   // Kanban column titles
   const colTitles = document.querySelectorAll('.kanban-col-title')
   const statusKeys = ['kanban.col.planned', 'kanban.col.in_progress', 'kanban.col.waiting', 'kanban.col.done']
@@ -266,9 +299,6 @@ function renderStaticI18n() {
       if (idx !== -1) el.textContent = t(statusKeys[idx])
     }
   })
-  // Activity empty state
-  const actEmpty = document.querySelector('.activity-empty')
-  if (actEmpty) actEmpty.textContent = t('common.loading')
   // Docs hints
   const docsHint = document.getElementById('docsContent')
   if (docsHint && docsHint.querySelector('p.muted')) {
