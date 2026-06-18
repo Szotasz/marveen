@@ -68,5 +68,7 @@ A rendszeres felülvizsgálat hozadékai:
 - Alacsonyabb költség és kisebb késleltetés ott, ahol elegendő: a rutin szerepköröknél a könnyebb modell is teljesít
 - A flotta naprakészen marad a modell-fejlődéssel -- egy ma gyengébb modell fél év múlva már elég lehet egy szerepkörhöz
 - Tudatos erőforrás-gazdálkodás: nem minden ügynök igényli a legsúlyosabb modellt
+- Dokumentált döntés: minden modellváltást jegyezz fel (commitüzenet, napi napló) -- miért váltottál és mikor; néhány hónap múlva elvész a kontextus, ha csak az agent-config.json-ban van nyoma
+- Kockázatkezelés: kritikus szerepkörű ügynöknél (architektúra-tervezés, összetett elemzés) legyen tesztelési periódus az új modellel, mielőtt véglegesen átállsz; egy gyorsabb-olcsóbb modell tűnhet elégnek, amíg éles terhelés alatt nem derül ki a minőségromlás
 
 **Elért hatás:** optimális minőség/költség/sebesség-arány az egész flottában; kisebb számlák a rutin szerepköröknél, nagyobb teljesítmény ott, ahol szükséges.

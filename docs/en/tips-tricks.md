@@ -68,5 +68,7 @@ Why periodic review pays off:
 - Lower cost and latency where it is sufficient: routine roles run on lighter models
 - The fleet stays current with model progress -- a model that is less capable today may be adequate for a role in six months
 - Deliberate resource management: not every agent needs the heaviest model
+- Documented decisions: record the reason and date for every model change (commit message, daily log) -- context is easily lost over months if the only trace is a changed value in agent-config.json
+- Risk management: for agents in critical roles (architecture design, complex analysis) allow a testing period before making the new model permanent; a faster or cheaper model may seem sufficient until quality degradation shows under real load
 
 **Effect achieved:** optimal quality/cost/speed balance across the fleet; lower bills for routine roles, higher performance where it counts.
