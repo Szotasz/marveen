@@ -41,6 +41,10 @@
     window._lang = lang
     localStorage.setItem(LS_KEY, lang)
     renderNav()
+    // Static elements (kanban column titles, hints, empty states) are otherwise
+    // only translated at DOMContentLoaded -- re-apply them on every switch so the
+    // currently-open page updates live, not just after a manual reload.
+    if (typeof renderStaticI18n === 'function') renderStaticI18n()
     // Re-render the active page by re-triggering the switchPage handler.
     const activeLink = document.querySelector('.sb-link.active[data-page]')
     if (activeLink) {
