@@ -806,7 +806,7 @@ const KANBAN_STATUS_DEFS = [
   { status: 'waiting', title: 'Várakozik' },
   { status: 'done', title: 'Kész' },
 ]
-const KANBAN_PRIORITY_LABELS = { urgent: 'Sürgős', high: 'Magas', normal: 'Normál', low: 'Alacsony' }
+const KANBAN_PRIORITY_LABELS = { urgent: () => t('kanban.priority.urgent'), high: () => t('kanban.priority.high'), normal: () => t('kanban.priority.normal'), low: () => t('kanban.priority.low') }
 const KANBAN_PRIORITY_ORDER = ['urgent', 'high', 'normal', 'low']
 
 // Which swimlane a card belongs to under the current grouping. Returns a
@@ -823,10 +823,10 @@ function kanbanSwimlaneKeyFor(card) {
 // Display metadata (label + avatar styling) for a swimlane key.
 function kanbanSwimlaneMeta(key) {
   if (kanbanGroupBy === 'priority') {
-    const label = KANBAN_PRIORITY_LABELS[key] || key
+    const _rawPL = KANBAN_PRIORITY_LABELS[key]; const label = _rawPL ? (typeof _rawPL === 'function' ? _rawPL() : _rawPL) : key
     return { label, avatarClass: `priority-${key}`, avatarChar: '' }
   }
-  if (key === '__unassigned__') return { label: 'Nincs hozzárendelve', avatarClass: 'unknown', avatarChar: '?' }
+  if (key === '__unassigned__') return { label: t('kanban.unassigned'), avatarClass: 'unknown', avatarChar: '?' }
   const match = kanbanAssignees.find(a => a.name === key)
   const label = match ? (match.displayName || match.name) : key
   return { label, avatarClass: match ? match.type : 'unknown', avatarChar: (label[0] || '?').toUpperCase() }
@@ -873,7 +873,7 @@ function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {
       <span class="kanban-swimlane-avatar ${meta.avatarClass}">${escapeHtml(meta.avatarChar)}</span>
       <span class="kanban-swimlane-name">${escapeHtml(meta.label)}</span>
       <span class="kanban-swimlane-count">${totalCount}</span>
-      <button class="kanban-swimlane-toggle" type="button" aria-expanded="${!collapsed}" title="${collapsed ? 'Kibontás' : 'Összecsukás'}">${collapsed ? '▶' : '▼'}</button>
+      <button class="kanban-swimlane-toggle" type="button" aria-expanded="${!collapsed}" title="${collapsed ? t('kanban.swimlane.expand') : t('kanban.swimlane.collapse')}">${collapsed ? '▶' : '▼'}</button>
     `
     header.querySelector('.kanban-swimlane-toggle').addEventListener('click', (e) => {
       e.stopPropagation()
@@ -1249,7 +1249,7 @@ document.getElementById('saveCardBtn').addEventListener('click', async () => {
         body: JSON.stringify(data),
       })
       if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || res.status) }
-      showToast('Kártya frissítve')
+      showToast(t('kanban.toast.card_updated'))
     } else {
       data.status = document.getElementById('cardEditStatus').value
       const res = await fetch('/api/kanban', {
@@ -1258,12 +1258,12 @@ document.getElementById('saveCardBtn').addEventListener('click', async () => {
         body: JSON.stringify(data),
       })
       if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || res.status) }
-      showToast('Kártya létrehozva')
+      showToast(t('kanban.toast.card_created'))
     }
     closeModal(cardModalOverlay)
     loadKanban()
   } catch (err) {
-    showToast(`Hiba a mentés során: ${err.message}`)
+    showToast(t('kanban.toast.save_error_msg', { msg: err.message }))
   }
 })
 
@@ -1380,8 +1380,8 @@ async function showCardDetail(card) {
     ? kanbanAssignees.find((a) => a.name.toLowerCase() === rawDetailAssignee.toLowerCase())
     : null
   const assigneeDisplay = assignee ? (assignee.displayName || assignee.name) : (rawDetailAssignee || '-- nincs --')
-  const priorityLabels = { low: 'Alacsony', normal: 'Normál', high: 'Magas', urgent: 'Sürgős' }
-  const statusLabels = { planned: 'Tervezett', in_progress: 'Folyamatban', waiting: 'Várakozik', done: 'Kész' }
+  const priorityLabels = { low: t('kanban.priority.low'), normal: t('kanban.priority.normal'), high: t('kanban.priority.high'), urgent: t('kanban.priority.urgent') }
+  const statusLabels = { planned: t('kanban.status.planned'), in_progress: t('kanban.status.in_progress'), waiting: t('kanban.status.waiting'), done: t('kanban.status.done') }
 
   const meta = document.getElementById('cardDetailMeta')
   const idLabel = (card.seq != null ? `#${card.seq} · ` : '') + card.id
@@ -1445,7 +1445,7 @@ async function showCardDetail(card) {
         if (!r.ok) throw new Error('PUT failed')
         card.assignee = newVal
         assigneeValueEl.textContent = newVal ? newVal : '-- nincs --'
-        showToast('Felelős frissítve')
+        showToast(t('kanban.toast.assignee_updated'))
         loadKanban && loadKanban()
       } catch {
         assigneeValueEl.textContent = current ? current : '-- nincs --'
@@ -1486,7 +1486,7 @@ async function showCardDetail(card) {
     }
     parentSelect.onchange = async () => {
       const newParentId = parentSelect.value || null
-      const label = newParentId ? 'Szülő módosítva' : 'Szülő leválasztva'
+      const label = newParentId ? t('kanban.toast.parent_updated') : t('kanban.toast.parent_unset')
       const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...card, parent_id: newParentId }),
@@ -1533,7 +1533,7 @@ async function showCardDetail(card) {
     const content = document.getElementById('commentContent').value.trim()
     const author = document.getElementById('commentAuthor').value
     if (!content) { document.getElementById('commentContent').focus(); return }
-    if (!author) { showToast('Válassz szerzőt a megjegyzéshez'); return }
+    if (!author) { showToast(t('kanban.toast.comment_no_author')); return }
     try {
       const res = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/comments`, {
         method: 'POST',
@@ -1545,7 +1545,7 @@ async function showCardDetail(card) {
       if (!res.ok) {
         let msg = `HTTP ${res.status}`
         try { msg = (await res.json()).error || msg } catch {}
-        showToast('Megjegyzés nem mentődött: ' + msg)
+        showToast(t('kanban.toast.comment_failed', { msg }))
         return
       }
       document.getElementById('commentContent').value = ''
@@ -1578,7 +1578,7 @@ async function showCardDetail(card) {
     try {
       await fetch(`/api/kanban/${encodeURIComponent(card.id)}/archive`, { method: 'POST' })
       closeModal(cardDetailOverlay)
-      showToast('Kártya archiválva')
+      showToast(t('kanban.toast.card_archived'))
       loadKanban()
     } catch {
       showToast(t('kanban.toast.archive_error'))
@@ -1587,11 +1587,11 @@ async function showCardDetail(card) {
 
   // Delete
   document.getElementById('cardDeleteBtn').onclick = async () => {
-    if (!confirm('Biztosan törlöd ezt a kártyát?')) return
+    if (!confirm(t('kanban.confirm.delete'))) return
     try {
       await fetch(`/api/kanban/${encodeURIComponent(card.id)}`, { method: 'DELETE' })
       closeModal(cardDetailOverlay)
-      showToast('Kártya törölve')
+      showToast(t('kanban.toast.card_deleted'))
       loadKanban()
     } catch {
       showToast(t('common.error_delete'))
@@ -1621,7 +1621,7 @@ async function showCardDetail(card) {
             body: JSON.stringify({ title, parent_id: card.id, status: card.status, priority: card.priority, project: card.project || null, assignee: null }),
           })
           if (!r.ok) { showToast(t('kanban.toast.subtask_error')); return }
-          showToast('Alfeladat létrehozva')
+          showToast(t('kanban.toast.subtask_created'))
           loadKanban()
           showCardDetail(card)
         } catch { showToast(t('kanban.toast.subtask_error')) }
@@ -1630,7 +1630,7 @@ async function showCardDetail(card) {
       addSubtaskSection.style.display = 'none'
     }
 
-    const statusLabelsShort = { planned: 'Tervezett', in_progress: 'Folyamatban', waiting: 'Vár', done: 'Kész' }
+    const statusLabelsShort = { planned: t('kanban.status.planned'), in_progress: t('kanban.status.in_progress'), waiting: t('kanban.status.waiting_short'), done: t('kanban.status.done') }
     if (children.length > 0 || isTask) {
       section.style.display = ''
       list.innerHTML = ''
@@ -1650,14 +1650,14 @@ async function showCardDetail(card) {
           const delBtn = document.createElement('button')
           delBtn.className = 'btn-danger btn-compact'
           delBtn.style.flexShrink = '0'
-          delBtn.textContent = 'Törlés'
+          delBtn.textContent = t('kanban.modal.delete_btn')
           delBtn.onclick = async (e) => {
             e.stopPropagation()
-            if (!confirm(`Biztosan törlöd az alfeladatot: "${ch.title}"?`)) return
+            if (!confirm(t('kanban.confirm.delete_subtask', { title: ch.title }))) return
             try {
               const r = await fetch(`/api/kanban/${encodeURIComponent(ch.id)}`, { method: 'DELETE' })
               if (!r.ok) { showToast(t('common.error_delete')); return }
-              showToast('Alfeladat törölve')
+              showToast(t('kanban.toast.subtask_deleted'))
               loadKanban()
               showCardDetail(card)
             } catch { showToast(t('common.error_delete')) }
@@ -1678,7 +1678,7 @@ async function showCardDetail(card) {
   document.getElementById('cardBreakdownBtn').onclick = async () => {
     const btn = document.getElementById('cardBreakdownBtn')
     btn.disabled = true
-    btn.textContent = 'Generálás...'
+    btn.textContent = t('kanban.breakdown.generating')
     try {
       const res = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/breakdown`, { method: 'POST' })
       const data = await res.json()
@@ -1719,11 +1719,11 @@ async function triggerBreakdown(card) {
 }
 
 function showBreakdownModal(subtasks, parentCard) {
-  document.getElementById('breakdownProvider').textContent = `Szülő: ${escapeHtml(parentCard.title)}`
+  document.getElementById('breakdownProvider').textContent = t('kanban.breakdown.parent_label', { title: escapeHtml(parentCard.title) })
   const list = document.getElementById('breakdownList')
   list.innerHTML = ''
 
-  const priorityLabels = { low: 'Alacsony', normal: 'Normál', high: 'Magas', urgent: 'Sürgős' }
+  const priorityLabels = { low: t('kanban.priority.low'), normal: t('kanban.priority.normal'), high: t('kanban.priority.high'), urgent: t('kanban.priority.urgent') }
   const assigneeOptions = kanbanAssignees
     .map((a) => `<option value="${escapeHtml(a.name)}">${escapeHtml(a.displayName || a.name)}</option>`)
     .join('')
@@ -1771,7 +1771,7 @@ document.getElementById('breakdownAcceptBtn').addEventListener('click', async ()
     const description = breakdownSubtasks[idx]?.description || ''
     accepted.push({ title, assignee, priority, description })
   })
-  if (accepted.length === 0) { showToast('Válassz legalább egy alfeladatot'); return }
+  if (accepted.length === 0) { showToast(t('kanban.breakdown.select_one')); return }
   try {
     if (breakdownMode === 'idea') {
       const successCriteria = document.getElementById('breakdownSuccessCriteria')?.value.trim() || undefined
@@ -1783,7 +1783,7 @@ document.getElementById('breakdownAcceptBtn').addEventListener('click', async ()
       const data = await res.json()
       if (!res.ok) { showToast(data.error || 'Hiba'); return }
       closeModal(breakdownOverlay)
-      showToast(`Kanbanra emelve: ${data.child_count} alfeladat + szülő kártya`)
+      showToast(t('kanban.breakdown.promoted', { count: data.child_count }))
       loadIdeasPage()
       return
     }
@@ -1796,7 +1796,7 @@ document.getElementById('breakdownAcceptBtn').addEventListener('click', async ()
     if (!res.ok) { showToast(data.error || 'Hiba'); return }
     closeModal(breakdownOverlay)
     closeModal(cardDetailOverlay)
-    showToast(`${data.created.length} subtask létrehozva`)
+    showToast(t('kanban.breakdown.created_count', { count: data.created.length }))
     loadKanban()
   } catch {
     showToast(t('common.error_save'))
@@ -1805,7 +1805,7 @@ document.getElementById('breakdownAcceptBtn').addEventListener('click', async ()
 
 document.getElementById('breakdownRejectBtn').addEventListener('click', () => {
   closeModal(breakdownOverlay)
-  showToast('Breakdown elvetve')
+  showToast(t('kanban.toast.breakdown_rejected'))
 })
 
 document.getElementById('breakdownClose').addEventListener('click', () => closeModal(breakdownOverlay))
@@ -2522,7 +2522,7 @@ async function openAgentDetail(agentName) {
   // Delete button (restore visibility for normal agents)
   document.getElementById('deleteAgentBtn').style.display = ''
   document.getElementById('deleteAgentBtn').onclick = async () => {
-    if (!confirm(`Biztosan törlöd: ${currentAgent.name}?`)) return
+    if (!confirm(t('agents.confirm.delete', { name: currentAgent.name }))) return
     try {
       await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`, { method: 'DELETE' })
       closeModal(agentDetailOverlay)
@@ -2765,16 +2765,16 @@ function updateProcessControl(agent) {
 }
 
 document.getElementById('marveenRestartBtn').addEventListener('click', async () => {
-  if (!confirm('Hard restart a marveen-channels session-ön. A folyamatban lévő Marveen beszélgetés elveszik (memória megmarad). Folytatod?')) return
+  if (!confirm(t('agents.confirm.hard_restart'))) return
   const btn = document.getElementById('marveenRestartBtn')
   btn.disabled = true
   try {
     const res = await fetch('/api/marveen/restart', { method: 'POST' })
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
-      throw new Error(err.error || 'Restart sikertelen')
+      throw new Error(err.error || t('agents.toast.restart_failed'))
     }
-    showToast('Marveen channels újraindítva')
+    showToast(t('agents.toast.marveen_restarted'))
   } catch (err) {
     showToast(`Hiba: ${err.message}`)
   } finally {
@@ -2793,7 +2793,7 @@ document.getElementById('agentStartBtn').addEventListener('click', async () => {
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/start`, { method: 'POST' })
     if (!res.ok) {
       const err = await res.json()
-      throw new Error(err.error || 'Indítási hiba')
+      throw new Error(err.error || t('agents.toast.start_failed'))
     }
     showToast('Ügynök elindítva!')
     // Refresh
@@ -2814,13 +2814,13 @@ document.getElementById('agentStartBtn').addEventListener('click', async () => {
 
 document.getElementById('agentStopBtn').addEventListener('click', async () => {
   if (!currentAgent) return
-  if (!confirm('Biztosan leállítod az ügynököt?')) return
+  if (!confirm(t('agents.confirm.stop'))) return
 
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/stop`, { method: 'POST' })
     if (!res.ok) {
       const err = await res.json()
-      throw new Error(err.error || 'Leállítási hiba')
+      throw new Error(err.error || t('agents.toast.stop_failed'))
     }
     showToast('Ügynök leállítva')
     const detailRes = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`)
@@ -3148,9 +3148,9 @@ document.getElementById('saveProfileBtn').addEventListener('click', async () => 
     })
     if (!res.ok) throw new Error()
     const body = await res.json()
-    showToast(body.requiresRestart ? 'Profil mentve (újraindítás szükséges)' : 'Profil mentve')
+    showToast(body.requiresRestart ? t('agents.toast.profile_saved_restart') : t('agents.toast.profile_saved'))
     loadAgents()
-  } catch { showToast('Hiba a profil mentésekor') }
+  } catch { showToast(t('agents.toast.profile_error')) }
 })
 
 // === Auth Mode ===
@@ -3587,7 +3587,7 @@ document.getElementById('chReconnectBtn').addEventListener('click', async () => 
   const btn = document.getElementById('chReconnectBtn')
   const origText = btn.textContent
   btn.disabled = true
-  btn.textContent = 'Újracsatlakozás...'
+  btn.textContent = t('agents.btn.reconnect')
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/channel/reconnect`, { method: 'POST' })
     const data = await res.json()
@@ -3610,7 +3610,7 @@ document.getElementById('chSmokeTestBtn').addEventListener('click', async () => 
   const btn = document.getElementById('chSmokeTestBtn')
   const origText = btn.textContent
   btn.disabled = true
-  btn.textContent = 'Futtatás...'
+  btn.textContent = t('agents.btn.running')
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent)}/channels/slack/smoke-test`, { method: 'POST' })
     const data = await res.json()
@@ -3653,7 +3653,7 @@ async function refreshPendingPairings() {
     const pending = await res.json()
     listEl.innerHTML = ''
     if (pending.length === 0) {
-      listEl.innerHTML = '<div style="font-size:12px; color:var(--text-muted); padding:6px 0;">Nincs várakozó párosítás</div>'
+      listEl.innerHTML = `<div style="font-size:12px; color:var(--text-muted); padding:6px 0;">${t('channel.pending.empty')}</div>`
       return
     }
     for (const p of pending) {
@@ -3685,7 +3685,7 @@ async function approvePairing(code) {
     })
     if (!res.ok) {
       const err = await res.json()
-      throw new Error(err.error || 'Jóváhagyási hiba')
+      throw new Error(err.error || t('channel.toast.approve_error'))
     }
     showToast('Párosítás jóváhagyva!')
     refreshPendingPairings()
@@ -3707,7 +3707,7 @@ async function refreshAllowedList() {
     const users = data.users || []
     const groups = data.groups || []
     if (users.length === 0 && groups.length === 0) {
-      listEl.innerHTML = '<div class="tg-allowed-empty">Még nincs bekötött chat. Lent add hozzá az elsőt.</div>'
+      listEl.innerHTML = `<div class="tg-allowed-empty">${t('channel.allowed.empty')}</div>`
       return
     }
     listEl.innerHTML = ''
@@ -3742,13 +3742,13 @@ async function refreshAllowedList() {
 
 async function removeAllowed(kind, id) {
   if (!currentAgent) return
-  const label = kind === 'user' ? 'felhasználót' : 'csoportot'
-  if (!confirm(`Biztosan eltávolítod ezt a ${label} (${id})?`)) return
+  const label = kind === 'user' ? t('channel.kind.user') : t('channel.kind.group')
+  if (!confirm(t('channel.confirm.remove', { label, id }))) return
   try {
     const res = await fetch(`${channelApiBase()}/allowed/${kind}/${encodeURIComponent(id)}`, { method: 'DELETE' })
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
-      throw new Error(err.error || 'Eltávolítási hiba')
+      throw new Error(err.error || t('channel.toast.remove_error'))
     }
     showToast('Eltávolítva')
     refreshAllowedList()
@@ -3767,7 +3767,7 @@ async function refreshInvites() {
     if (!res.ok) return
     const items = await res.json()
     if (!items.length) {
-      listEl.innerHTML = '<div class="tg-allowed-empty">Nincs aktív meghívó link.</div>'
+      listEl.innerHTML = `<div class="tg-allowed-empty">${t('channel.invite.empty')}</div>`
       return
     }
     listEl.innerHTML = ''
@@ -3776,8 +3776,8 @@ async function refreshInvites() {
       item.className = 'tg-allowed-item'
       const expiresIn = Math.max(0, Math.floor((inv.expiresAt - Date.now()) / 60000))
       const status = inv.used
-        ? `<span class="tg-allowed-kind" style="background:rgba(180,180,180,0.15); color:var(--text-muted);">FELHASZNÁLT</span>`
-        : `<span class="tg-allowed-kind tg-allowed-kind-group">AKTÍV (${expiresIn}p)</span>`
+        ? `<span class="tg-allowed-kind" style="background:rgba(180,180,180,0.15); color:var(--text-muted);">${t('channel.invite.used_badge')}</span>`
+        : `<span class="tg-allowed-kind tg-allowed-kind-group">${t('channel.invite.active_badge', { min: expiresIn })}</span>`
       const linkHtml = inv.deepLink
         ? `<a href="${escapeHtml(inv.deepLink)}" target="_blank" class="tg-allowed-id" style="text-decoration:underline;">${escapeHtml(inv.deepLink)}</a>`
         : `<span class="tg-allowed-id">(bot username nélkül)</span>`
@@ -3812,7 +3812,7 @@ async function generateInvite() {
   if (!currentAgent) return
   const btn = document.getElementById('chGenerateInviteBtn')
   btn.disabled = true
-  btn.textContent = 'Generálás...'
+  btn.textContent = t('channel.btn.invite_gen')
   try {
     const res = await fetch(`${channelApiBase()}/invites`, { method: 'POST' })
     if (!res.ok) {
@@ -3831,13 +3831,13 @@ async function generateInvite() {
     showToast(`Hiba: ${err.message}`)
   } finally {
     btn.disabled = false
-    btn.textContent = 'Új meghívó link'
+    btn.textContent = t('channel.btn.invite_new')
   }
 }
 
 async function revokeInviteToken(token) {
   if (!currentAgent) return
-  if (!confirm('Biztosan visszavonod ezt a meghívó linket?')) return
+  if (!confirm(t('channel.confirm.revoke'))) return
   try {
     const res = await fetch(`${channelApiBase()}/invites/${encodeURIComponent(token)}`, { method: 'DELETE' })
     if (!res.ok) {
@@ -4016,7 +4016,7 @@ async function loadSkills(agentName) {
       // agent's own local skills are deletable from this view.
       const isGlobal = skill.source === 'global'
       const badge = isGlobal
-        ? '<span class="skill-item-badge" title="Globális skill, minden agent örökli">globális</span>'
+        ? `<span class="skill-item-badge" title="${t('skills.badge.global')}">${t('skills.badge.global')}</span>`
         : ''
       const deletable = skill.deletable !== false
       item.innerHTML = `
@@ -4025,16 +4025,16 @@ async function loadSkills(agentName) {
           ${skill.description ? `<div class="skill-item-desc">${escapeHtml(skill.description)}</div>` : ''}
         </div>
         <div class="skill-item-actions">
-          ${deletable ? `<button class="btn-icon btn-icon-danger" title="Törlés">${trashIcon()}</button>` : ''}
+          ${deletable ? `<button class="btn-icon btn-icon-danger" title="${t('skills.btn.delete')}">${trashIcon()}</button>` : ''}
         </div>
       `
       const delBtn = item.querySelector('.btn-icon-danger')
       if (delBtn) {
         delBtn.addEventListener('click', async () => {
-          if (!confirm(`Skill törlése: ${skill.name}?`)) return
+          if (!confirm(t('skills.confirm.delete', { name: skill.name }))) return
           try {
             await fetch(`/api/agents/${encodeURIComponent(agentName)}/skills/${encodeURIComponent(skill.name)}`, { method: 'DELETE' })
-            showToast('Skill törölve')
+            showToast(t('skills.toast.deleted'))
             loadSkills(agentName)
           } catch {
             showToast(t('common.error_delete'))
@@ -4164,7 +4164,7 @@ document.getElementById('importSkillBtn').addEventListener('click', async () => 
     const result = await res.json()
     closeModal(skillModalOverlay)
     const importedList = Array.isArray(result.imported) ? result.imported : []
-    showToast(`Skill importálva: ${importedList.join(', ')}`)
+    showToast(t('skills.toast.imported', { list: importedList.join(', ') }))
     skillFile = null
     document.getElementById('skillFileName').textContent = ''
     if (isGlobal) {
@@ -4510,7 +4510,7 @@ function renderPendingRetries(container, rows) {
       const row = e.currentTarget.closest('.pending-retry-row')
       const id = row?.dataset.id
       if (!id) return
-      if (!confirm('Biztosan visszavonod ezt a várakozó ütemezett feladatot?')) return
+      if (!confirm(t('tasks.confirm.cancel_pending'))) return
       try {
         const res = await fetch(`/api/schedules/pending/${encodeURIComponent(id)}`, { method: 'DELETE' })
         if (!res.ok) throw new Error('cancel failed')
@@ -4549,7 +4549,7 @@ function makeScheduleRow(task) {
         <div class="schedule-title">
           ${escapeHtml(task.description || task.name)}
           ${task.type === 'heartbeat' ? '<span class="badge badge-heartbeat">💓 heartbeat</span>' : ''}
-          <span class="badge ${task.enabled ? 'badge-active' : 'badge-paused'}">${task.enabled ? 'aktív' : 'szünet'}</span>
+          <span class="badge ${task.enabled ? 'badge-active' : 'badge-paused'}">${task.enabled ? t('tasks.status.active') : t('tasks.status.paused')}</span>
         </div>
         <div class="schedule-meta">
           <span class="schedule-cron">${escapeHtml(task.schedule)}</span>
@@ -4558,16 +4558,16 @@ function makeScheduleRow(task) {
         </div>
       </div>
       <div class="schedule-actions">
-        <button class="btn-icon" data-action="run" title="Futtatás most">
+        <button class="btn-icon" data-action="run" title="${t('tasks.btn.run_now')}">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
         </button>
-        <button class="btn-icon" data-action="toggle" title="${task.enabled ? 'Szüneteltetés' : 'Folytatás'}">
+        <button class="btn-icon" data-action="toggle" title="${task.enabled ? t('tasks.btn.toggle_pause') : t('tasks.btn.toggle_resume')}">
           ${task.enabled ? pauseIcon() : playIcon()}
         </button>
-        <button class="btn-icon" data-action="history" title="Futtatási előzmények">
+        <button class="btn-icon" data-action="history" title="${t('tasks.btn.history')}">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
         </button>
-        <button class="btn-icon btn-icon-danger" data-action="delete" title="Törlés">
+        <button class="btn-icon btn-icon-danger" data-action="delete" title="${t('tasks.btn.delete')}">
           ${trashIcon()}
         </button>
       </div>
@@ -4585,7 +4585,7 @@ function makeScheduleRow(task) {
       try {
         const r = await fetch(`/api/schedules/${encodeURIComponent(task.name)}/run`, { method: 'POST' })
         const data = await r.json().catch(() => ({}))
-        if (r.ok) showToast('Feladat elindítva' + (data.result ? ': ' + data.result : ''))
+        if (r.ok) showToast(t('tasks.toast.run_started') + (data.result ? ': ' + data.result : ''))
         else showToast('Hiba: ' + (data.error || r.status))
         loadSchedules()
       } catch { showToast(t('tasks.toast.run_error')) }
@@ -4595,17 +4595,17 @@ function makeScheduleRow(task) {
       e.stopPropagation()
       try {
         await fetch(`/api/schedules/${encodeURIComponent(task.name)}/toggle`, { method: 'POST' })
-        showToast(task.enabled ? 'Feladat szüneteltetve' : 'Feladat újraindult')
+        showToast(task.enabled ? t('tasks.toast.toggled_paused') : t('tasks.toast.toggled_resumed'))
         loadSchedules()
       } catch { showToast(t('common.error')) }
     })
 
     row.querySelector('[data-action="delete"]').addEventListener('click', async (e) => {
       e.stopPropagation()
-      if (!confirm('Biztosan törlöd ezt a feladatot?')) return
+      if (!confirm(t('tasks.confirm.task_delete'))) return
       try {
         await fetch(`/api/schedules/${encodeURIComponent(task.name)}`, { method: 'DELETE' })
-        showToast('Feladat törölve')
+        showToast(t('tasks.toast.deleted'))
         loadSchedules()
       } catch { showToast(t('common.error_delete')) }
     })
@@ -4654,7 +4654,7 @@ const RUN_STATUS_CLASS = {
 }
 
 async function openScheduleRunHistory(taskName) {
-  document.getElementById('scheduleRunHistoryTitle').textContent = `Előzmények: ${taskName}`
+  document.getElementById('scheduleRunHistoryTitle').textContent = t('tasks.history.title', { name: taskName })
   const body = document.getElementById('scheduleRunHistoryBody')
   body.innerHTML = '<p>' + t('common.loading') + '</p>'
   openModal(scheduleRunHistoryOverlay)
@@ -4717,7 +4717,7 @@ function renderTimeline(tasks) {
 
   // If no tasks, show empty state
   if (Object.keys(agentTasks).length === 0) {
-    bodyEl.innerHTML = '<div class="schedule-empty" style="padding:40px;text-align:center;color:var(--text-muted)">Nincsenek ütemezett feladatok</div>'
+    bodyEl.innerHTML = `<div class="schedule-empty" style="padding:40px;text-align:center;color:var(--text-muted)">${t('tasks.schedule_empty')}</div>`
     return
   }
 
@@ -6266,14 +6266,14 @@ catalogInstallOverlay.addEventListener('click', (e) => { if (e.target === catalo
 
 async function loadCatalog() {
   const grid = document.getElementById('catalogGrid')
-  grid.innerHTML = '<div class="connector-loading"><span class="spinner"></span> Katalógus betöltése...</div>'
+  grid.innerHTML = `<div class="connector-loading"><span class="spinner"></span> ${t('connectors.catalog_loading')}</div>`
   try {
     const res = await fetch('/api/mcp-catalog')
     catalogItems = await res.json()
     renderCatalog()
   } catch (err) {
     console.error('Catalog load error:', err)
-    grid.innerHTML = '<div class="connector-loading">Hiba a katalógus betöltésekor</div>'
+    grid.innerHTML = `<div class="connector-loading">${t('connectors.catalog_error')}</div>`
   }
 }
 
@@ -6282,7 +6282,7 @@ function renderCatalog() {
   grid.innerHTML = ''
   const filtered = catalogFilter === 'all' ? catalogItems : catalogItems.filter(i => i.category === catalogFilter)
   if (filtered.length === 0) {
-    grid.innerHTML = '<div class="connector-loading">Nincs találat ebben a kategóriában</div>'
+    grid.innerHTML = `<div class="connector-loading">${t('connectors.catalog_empty')}</div>`
     return
   }
   for (const item of filtered) {
@@ -6378,7 +6378,7 @@ document.getElementById('catalogInstallBtn').addEventListener('click', async () 
     const val = input.value.trim()
     if (!val) {
       input.focus()
-      showToast(`${key} megadása kötelező`)
+      showToast(t('connectors.toast.required_field', { key }))
       return
     }
     envData[key] = val
@@ -6397,7 +6397,7 @@ document.getElementById('catalogInstallBtn').addEventListener('click', async () 
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || 'Hiba')
     closeModal(catalogInstallOverlay)
-    showToast(data.message || 'Telepítve!')
+    showToast(data.message || t('connectors.toast.installed'))
     // Reload both views
     loadCatalog()
     loadConnectors()
@@ -6411,12 +6411,12 @@ document.getElementById('catalogInstallBtn').addEventListener('click', async () 
 })
 
 async function catalogUninstall(item) {
-  if (!confirm(`Biztosan eltávolítod: ${item.name}?`)) return
+  if (!confirm(t('connectors.confirm.remove', { name: item.name }))) return
   try {
     const res = await fetch(`/api/mcp-catalog/${encodeURIComponent(item.id)}/uninstall`, { method: 'DELETE' })
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || 'Hiba')
-    showToast(data.message || 'Eltávolítva')
+    showToast(data.message || t('connectors.toast.removed'))
     loadCatalog()
     loadConnectors()
   } catch (err) {
@@ -6822,7 +6822,7 @@ async function loadGitHubRepos() {
     addBtn.textContent = 'Telepites...'
     status.hidden = false
     status.className = 'github-repo-status loading'
-    status.textContent = 'Klónozás és telepítés...'
+    status.textContent = t('connectors.cloning')
     try {
       const res = await fetch('/api/connectors/github-repos', {
         method: 'POST',
@@ -6837,7 +6837,7 @@ async function loadGitHubRepos() {
       }
       if (data.requiredEnvVars && data.requiredEnvVars.length > 0) {
         status.className = 'github-repo-status loading'
-        status.textContent = 'API kulcsok megadása szükséges...'
+        status.textContent = t('connectors.api_keys_needed')
         const envValues = await showEnvVarModal(data.requiredEnvVars)
         if (envValues && Object.keys(envValues).length > 0) {
           for (const [key, value] of Object.entries(envValues)) {
@@ -7435,7 +7435,7 @@ async function openConnectorDetail(connector) {
     const res = await fetch(`/api/connectors/${encodeURIComponent(connector.name)}`)
     const detail = await res.json()
 
-    const statusLabels = { connected: 'Csatlakozva', needs_auth: 'Auth szükséges', failed: 'Hiba', unknown: 'Ismeretlen' }
+    const statusLabels = { connected: t('connectors.status.connected'), needs_auth: t('connectors.status.needs_auth'), failed: t('connectors.status.failed'), unknown: t('connectors.status.unknown') }
     const statusColors = { connected: 'var(--success)', needs_auth: 'var(--accent)', failed: 'var(--danger)', unknown: 'var(--text-muted)' }
 
     document.getElementById('connectorDetailInfo').innerHTML = `
@@ -7452,7 +7452,7 @@ async function openConnectorDetail(connector) {
       ${Object.keys(detail.env || {}).length ? `<div class="connector-detail-row"><span class="meta-label">Env</span><span class="meta-value" style="font-family:monospace;font-size:11px">${Object.entries(detail.env).map(([k,v]) => `${k}=${v}`).join(', ')}</span></div>` : ''}
     `
   } catch {
-    document.getElementById('connectorDetailInfo').innerHTML = '<p>Részletek betöltése sikertelen</p>'
+    document.getElementById('connectorDetailInfo').innerHTML = `<p>${t('connectors.detail_error')}</p>`
   }
 
   try {
@@ -7493,7 +7493,7 @@ async function openConnectorDetail(connector) {
       listEl.appendChild(item)
     }
     if (subAgents.length === 0 && !mainAgent) {
-      listEl.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Nincsenek hozzarendelheto ügynökök</p>'
+      listEl.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${t('connectors.no_agents')}</p>`
     }
   } catch {
     document.getElementById('connectorAgentList').innerHTML = ''
@@ -7624,7 +7624,7 @@ document.getElementById('saveConnectorBtn').addEventListener('click', async () =
 
     closeModal(connectorModalOverlay)
     if (result.nameChanged) {
-      showToast(`Connector hozzáadva "${savedName}" néven (szóköz/speciális karakter nem engedélyezett)`)
+      showToast(t('connectors.toast.added', { name: savedName }))
     } else {
       showToast('Connector hozzáadva!')
     }
@@ -9265,7 +9265,7 @@ function renderRecallSummary(el, data) {
 function renderRecallTimeline(el, data) {
   const { logs, memories } = data
   if (!logs.length && !memories.length) {
-    el.innerHTML = '<p class="recall-empty">Nincs találat erre az időszakra.</p>'
+    el.innerHTML = `<p class="recall-empty">${t('recall.empty_period')}</p>`
     return
   }
 
@@ -9760,11 +9760,11 @@ async function saveAllSettings() {
   }
   updateSettingsSaveBar()
 
-  if (btn) { btn.disabled = false; btn.textContent = 'Mentés' }
+  if (btn) { btn.disabled = false; btn.textContent = t('settings.btn.save') }
   if (errors.length) {
-    showToast('Néhány beállítás nem mentődött el', 'error')
+    showToast(t('settings.toast.partial_error'), 'error')
   } else {
-    showToast(needsRestart ? 'Mentve -- újraindítás szükséges az életbe lépéshez' : 'Mentve')
+    showToast(needsRestart ? t('settings.toast.saved_restart') : t('settings.toast.saved'))
   }
 }
 
@@ -10850,7 +10850,7 @@ async function promoteIdea(phase) {
   const data = await res.json()
   ideasPromoteId = null
   closeModal(document.getElementById('ideaPromoteOverlay'))
-  if (data.ok) showToast(`Kanban kártya létrehozva: ${data.kanban_id}`)
+  if (data.ok) showToast(t('kanban.toast.card_created') + ': ' + data.kanban_id)
   loadIdeasPage()
 }
 
@@ -11362,11 +11362,11 @@ function downloadMarkdown(name, content) {
   async function render() {
     const token = localStorage.getItem('marveen-dashboard-token')
     if (!token) {
-      qrBox.innerHTML = '<p class="muted">Nincs eltárolt token ebben a böngészőben, előbb itt lépj be.</p>'
+      qrBox.innerHTML = `<p class="muted">${t('mobile_login.no_token')}</p>`
       return
     }
     if (typeof qrcode !== 'function') {
-      qrBox.innerHTML = '<p class="muted">A QR-generátor nem töltött be (CDN). Hálózat?</p>'
+      qrBox.innerHTML = `<p class="muted">${t('mobile_login.cdn_error')}</p>`
       return
     }
     // The QR must encode a URL the phone can reach. If the desktop opened the
@@ -11378,7 +11378,7 @@ function downloadMarkdown(name, content) {
     let base = window.location.origin
     const host = window.location.hostname
     if (host === 'localhost' || host === '127.0.0.1') {
-      qrBox.innerHTML = '<p class="muted">QR készítése…</p>'
+      qrBox.innerHTML = `<p class="muted">${t('mobile_login.generating')}</p>`
       try {
         const r = await fetch('/api/network-info', { headers: { 'Authorization': 'Bearer ' + token } })
         const info = r.ok ? await r.json() : {}
@@ -11414,9 +11414,9 @@ function downloadMarkdown(name, content) {
   let naploInitialized = false
   let naploActiveSource = ''
 
-  const SOURCE_LABELS = { config: 'Config', idea: 'Ötletláda', store: 'Store', diary: 'Eseménynapló' }
+  const SOURCE_LABELS = { config: () => t('naplo.source.config'), idea: () => t('naplo.source.idea'), store: () => t('naplo.source.store'), diary: () => t('naplo.source.diary') }
   const SOURCE_COLORS = { config: '#3b82f6', idea: '#10b981', store: '#f59e0b', diary: '#8b5cf6' }
-  const DIARY_ENTRY_LABELS = { log: 'Napló', memory: 'Emlék' }
+  const DIARY_ENTRY_LABELS = { log: () => t('naplo.diary.log_badge'), memory: () => t('naplo.diary.memory_badge') }
   const DIARY_ENTRY_COLORS = { log: '#6b7280', memory: '#a78bfa' }
 
   function fmtTs(unix) {
@@ -11425,7 +11425,7 @@ function downloadMarkdown(name, content) {
 
   function renderEntry(e) {
     const sourceColor = SOURCE_COLORS[e.source] || '#6b7280'
-    const sourceLabel = SOURCE_LABELS[e.source] || e.source
+    const sourceLabelRaw = SOURCE_LABELS[e.source]; const sourceLabel = sourceLabelRaw ? (typeof sourceLabelRaw === 'function' ? sourceLabelRaw() : sourceLabelRaw) : e.source
     const badge = `<span class="naplo-badge" style="background:${sourceColor}">${sourceLabel}</span>`
     const ts = `<span class="naplo-ts">${fmtTs(e.created_at)}</span>`
     let detail = ''
@@ -11441,11 +11441,11 @@ function downloadMarkdown(name, content) {
     } else if (e.source === 'store') {
       const sizeStr = e.file_size != null ? ` (${(e.file_size / 1024).toFixed(1)} KB)` : ''
       const agentStr = e.agent ? ` <span class="naplo-actor">${esc(e.agent)}</span>` : ''
-      const sens = e.is_sensitive ? ' <span class="naplo-sensitive">sensitív</span>' : ''
+      const sens = e.is_sensitive ? ` <span class="naplo-sensitive">${t('naplo.entry.sensitive')}</span>` : ''
       detail = `<code>${esc(e.rel_path)}</code> <span class="naplo-event-type">${esc(e.event_type)}</span>${sizeStr}${agentStr}${sens}`
     } else if (e.source === 'diary') {
       const entryColor = DIARY_ENTRY_COLORS[e.entry_type] || '#6b7280'
-      const entryLabel = DIARY_ENTRY_LABELS[e.entry_type] || e.entry_type
+      const entryLabelRaw = DIARY_ENTRY_LABELS[e.entry_type]; const entryLabel = entryLabelRaw ? (typeof entryLabelRaw === 'function' ? entryLabelRaw() : entryLabelRaw) : e.entry_type
       const entryBadge = `<span class="naplo-badge" style="background:${entryColor};font-size:10px">${entryLabel}</span>`
       const agentStr = e.agent_id ? ` <span class="naplo-actor">${esc(e.agent_id)}</span>` : ''
       let contentSnippet = esc(e.content || '').replace(/\n/g, ' ').slice(0, 200)
@@ -11482,7 +11482,7 @@ function downloadMarkdown(name, content) {
       const data = await res.json()
       const entries = data.entries || []
       summary.textContent = `${entries.length} bejegyzés`
-      if (entries.length === 0) { timeline.innerHTML = '<p class="naplo-empty">Nincs találat.</p>'; return }
+      if (entries.length === 0) { timeline.innerHTML = `<p class="naplo-empty">${t('naplo.empty')}</p>`; return }
       timeline.innerHTML = entries.map(renderEntry).join('')
     } catch (err) {
       timeline.innerHTML = `<p class="naplo-empty error">Hálózati hiba: ${err.message}</p>`
