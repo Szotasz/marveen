@@ -23,6 +23,16 @@ These files are managed by the dashboard and change at runtime. They are not che
 | `store/config-overrides.json` | dashboard UI | Settings-page overrides (plain values only, never contains secrets) |
 | `store/update.pid` | automatic | Update process PID file (concurrency lock) |
 
+### Dashboard language
+
+A `HU / EN` button appears in the bottom-left corner of the sidebar. Clicking it switches the entire interface immediately -- navigation labels, buttons, messages, and the Documentation page all re-render in the newly selected language. The choice persists within the browser session.
+
+To make a particular language the default for every new visit, set `DASHBOARD_LANG` to `hu` or `en` on the Settings page (System module). The sidebar button overrides the server default; if no client-side choice has been stored, `DASHBOARD_LANG` takes effect.
+
+The Documentation page follows the global language setting -- there is no separate docs language selector.
+
+---
+
 ### Settings page
 
 The "Settings" entry in the dashboard's left-hand navigation opens the configuration UI, where env-backed parameters can be viewed and changed directly in the browser -- no `.env` editing or server access required.
@@ -59,9 +69,10 @@ Settings are organised into three modules:
 - Archiving: how many days after a card is closed before it moves to the archive automatically (default: 30 days)
 - Swimlane default: which grouping the kanban board opens in ("none", "by assignee", "by priority")
 
-*System* -- infrastructure parameters (restart required):
-- The publicly accessible URL of the dashboard (used by webhooks and external links)
-- The Ollama embedding server URL (used for memory search)
+*System* -- infrastructure parameters:
+- The publicly accessible URL of the dashboard (used by webhooks and external links; restart required)
+- The Ollama embedding server URL (used for memory search; restart required)
+- Default UI language (`DASHBOARD_LANG`): `hu` or `en` -- the sidebar button overrides this per-session, but when no client-side choice is stored this value applies on every new visit (no restart needed)
 
 *Heartbeat* -- the background summary agent:
 - On/off toggle: "1" = active, "0" = stopped (restart required)
