@@ -755,4 +755,57 @@ window._i18n.hu = {
   'updates.up_to_date':          'Naprakész',
   'updates.error':               'Frissítés sikertelen: {msg}',
   'updates.toast.error':         'Hiba: {msg}',
+  'updates.check_failed':        'Nem sikerült ellenőrizni',
+  'updates.current_label':       'Jelenlegi:',
+  'updates.up_to_date_html':     'A legfrissebb verzión vagy',
+  'updates.no_changes':          'Nincs változás.',
+  'updates.behind':              '{n} új commit elérhető',
+  'updates.available_on':        'a {remote} repón.',
+  'updates.latest_label':        'Legfrissebb:',
+  'updates.confirm.stash':       'A working tree-ben lokális változtatások vannak. Stash-eljem őket automatikusan, frissítsek, majd visszaállítsam?',
+  'updates.confirm.apply':       'Frissítés most. A szolgáltatások újraindulnak, a dashboard ~30 másodpercig nem érhető el. Folytatod?',
+  'updates.install_failed':      'Telepítés sikertelen',
+  'updates.config_failed':       'Konfiguráció sikertelen',
+
+  // --- Common copy buttons ---
+  'common.copy':                 'Másolás',
+  'common.copied':               'Másolva!',
+
+  // --- Memory import ---
+  'memories.import.processing':  'Fájlok feldolgozása...',
+  'memories.import.importing':   '{n} chunk kategorizálása és importálása...',
+  'memories.toast.imported':     '{n} emlék importálva',
+
+  // --- Token usage extra ---
+  'tokenUsage.collect_done':     'Kész ({n} új)',
+
+  // --- Agents auth flow ---
+  'agents.auth.btn_starting':    'Indítás...',
+  'agents.auth.btn_confirming':  'Megerősítés...',
+  'agents.auth.btn_confirm':     'Auth kész → Megerősít',
+  'agents.not_found':            'Nem található',
+
+  // --- Mobile login localhost warning ---
+  'mobile_login.localhost_warn': 'A mobil-belépés a géped helyi hálózati (LAN) IP-jén működik. Most localhoston nyitottad meg a dashboardot, és nem találtam használható LAN-címet. Nyisd meg a dashboardot a géped LAN-IP-jén (pl. http://192.168.x.x:3420), és onnan próbáld a mobil-belépést.',
+
+  // --- Catalog ---
+  'connectors.catalog.install_title': '{icon} {name} telepítése',
+
+  // --- Kanban label ---
+  'kanban.label.remove_btn':     'Címke eltávolítása',
+
+  // --- Channel setup wizard (static texts) ---
+  'agents.process_label':        'Újraindítás',
+
+  // --- Agent model save + host oauth toasts ---
+  'agents.toast.model_save_restart': 'Modell mentve, agent újraindítása...',
+  'agents.toast.host_oauth_restart': 'Agent újraindítva host OAuth-tal',
+
+  // --- Agent auth flow extra ---
+  'agents.auth.btn_logged_in':   'Bejelentkezve',
+  'agents.auth.toast_started':   'Auth folyamat elindítva - engedélyezd a böngészőben, majd kattints Megerősít',
+  'agents.auth.toast_success':   'Bejelentkezés sikeres',
+
+  // --- Token collect error ---
+  'tokenUsage.collect_error':    'Hiba!',
 }

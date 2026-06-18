@@ -756,4 +756,59 @@ window._i18n.en = {
   'team.dropped_self':           'self-references',
   'team.dropped_unknown':        'unknown names',
 
+  // --- Updates extra ---
+  'updates.check_failed':        'Could not check for updates',
+  'updates.current_label':       'Current:',
+  'updates.up_to_date_html':     'You are on the latest version',
+  'updates.no_changes':          'No changes.',
+  'updates.behind':              '{n} new commits available',
+  'updates.available_on':        'on {remote}.',
+  'updates.latest_label':        'Latest:',
+  'updates.confirm.stash':       'There are local changes in the working tree. Stash them automatically, update, then restore?',
+  'updates.confirm.apply':       'Update now. Services will restart; dashboard will be unavailable for ~30 seconds. Continue?',
+  'updates.install_failed':      'Install failed',
+  'updates.config_failed':       'Config failed',
+
+  // --- Common copy buttons ---
+  'common.copy':                 'Copy',
+  'common.copied':               'Copied!',
+
+  // --- Memory import ---
+  'memories.import.processing':  'Processing files...',
+  'memories.import.importing':   'Categorising and importing {n} chunks...',
+  'memories.toast.imported':     '{n} memories imported',
+
+  // --- Token usage extra ---
+  'tokenUsage.collect_done':     'Done ({n} new)',
+
+  // --- Agents auth flow ---
+  'agents.auth.btn_starting':    'Starting...',
+  'agents.auth.btn_confirming':  'Confirming...',
+  'agents.auth.btn_confirm':     'Auth done → Confirm',
+  'agents.not_found':            'Not found',
+
+  // --- Mobile login localhost warning ---
+  'mobile_login.localhost_warn': "Mobile login works over your machine's local network (LAN) IP. You opened the dashboard on localhost and no usable LAN address was found. Open the dashboard on your machine's LAN IP (e.g. http://192.168.x.x:3420) and try mobile login from there.",
+
+  // --- Catalog ---
+  'connectors.catalog.install_title': '{icon} {name} installation',
+
+  // --- Kanban label ---
+  'kanban.label.remove_btn':     'Remove label',
+
+  // --- Agent process label ---
+  'agents.process_label':        'Restarting',
+
+  // --- Agent model save + host oauth toasts ---
+  'agents.toast.model_save_restart': 'Model saved, restarting agent...',
+  'agents.toast.host_oauth_restart': 'Agent restarted with host OAuth',
+
+  // --- Agent auth flow extra ---
+  'agents.auth.btn_logged_in':   'Logged in',
+  'agents.auth.toast_started':   'Auth flow started - allow in browser, then click Confirm',
+  'agents.auth.toast_success':   'Login successful',
+
+  // --- Token collect error ---
+  'tokenUsage.collect_error':    'Error!',
+
 }

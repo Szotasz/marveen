@@ -1291,7 +1291,7 @@ async function renderCardLabelsSection(card) {
     const pill = document.createElement('span')
     pill.className = 'label-pill'
     pill.style.setProperty('--label-color', label.color)
-    pill.innerHTML = `#${escapeHtml(label.name)} <button class="label-pill-remove" title="Címke eltávolítása" aria-label="Címke eltávolítása">&times;</button>`
+    pill.innerHTML = `#${escapeHtml(label.name)} <button class="label-pill-remove" title="${t('kanban.label.remove_btn')}" aria-label="${t('kanban.label.remove_btn')}">&times;</button>`
     pill.querySelector('.label-pill-remove').addEventListener('click', async () => {
       try {
         await fetch(`/api/kanban/${encodeURIComponent(card.id)}/labels/${encodeURIComponent(label.id)}`, { method: 'DELETE' })
@@ -3012,9 +3012,9 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
     currentAgent.model = newModel
     const triggeredAt = Math.floor(Date.now() / 1000)
     document.getElementById('agentDetailModelRestarting').hidden = false
-    document.getElementById('processLabel').textContent = 'Újraindítás'
+    document.getElementById('processLabel').textContent = t('agents.process_label')
     document.getElementById('processDot').className = 'process-dot restarting'
-    showToast('Modell mentve, agent újraindítása...')
+    showToast(t('agents.toast.model_save_restart'))
     loadAgents()
     const restartRes = await fetch(`/api/agents/${encodeURIComponent(name)}/restart`, { method: 'POST' })
     if (!restartRes.ok) {
@@ -3209,12 +3209,12 @@ document.getElementById('authSharedApplyBtn').addEventListener('click', async ()
       const startRes = await fetch(`${base}/start`, { method: 'POST' })
       const startData = await startRes.json()
       if (!startRes.ok) {
-        errorDiv.textContent = startData.error || 'Agent újraindítása sikertelen'
+        errorDiv.textContent = startData.error || t('agents.error.restart')
         errorDiv.hidden = false
         return
       }
     }
-    showToast('Agent újraindítva host OAuth-tal')
+    showToast(t('agents.toast.host_oauth_restart'))
     loadAgents()
     const detailRes = await fetch(base)
     if (detailRes.ok) {
@@ -3223,7 +3223,7 @@ document.getElementById('authSharedApplyBtn').addEventListener('click', async ()
       updateProcessControl(currentAgent)
     }
   } catch {
-    errorDiv.textContent = 'Hiba az alkalmazás során'
+    errorDiv.textContent = t('agents.error.apply')
     errorDiv.hidden = false
   } finally {
     btnText.hidden = false
@@ -3260,7 +3260,7 @@ document.getElementById('authFlowInitBtn').addEventListener('click', async () =>
       errorDiv.hidden = false
     }
   } catch {
-    errorDiv.textContent = 'Hálózati hiba az auth-flow indításakor'
+    errorDiv.textContent = t('agents.error.auth_network')
     errorDiv.hidden = false
   } finally {
     btnText.hidden = false
@@ -6330,7 +6330,7 @@ function renderCatalog() {
 
 function openCatalogInstall(item) {
   catalogInstallTarget = item
-  document.getElementById('catalogInstallTitle').textContent = `${item.icon} ${item.name} telepítése`
+  document.getElementById('catalogInstallTitle').textContent = t('connectors.catalog.install_title', { icon: item.icon, name: item.name })
   document.getElementById('catalogInstallDesc').textContent = item.description
 
   const envContainer = document.getElementById('catalogInstallEnvFields')
@@ -7189,7 +7189,7 @@ function renderVaultGrid(secrets) {
     }
 
     saveBtn.disabled = true
-    saveBtn.textContent = 'Mentés...'
+    saveBtn.textContent = t('connectors.save_btn')
     try {
       const res = await fetch('/api/vault/bindings', {
         method: 'POST',
@@ -7839,7 +7839,7 @@ memImportSaveBtn.addEventListener('click', async () => {
   memImportSaveBtn.disabled = true
   memImportProgress.hidden = false
   memImportResult.hidden = true
-  memImportStatus.textContent = 'Fájlok feldolgozása...'
+  memImportStatus.textContent = t('memories.import.processing')
 
   try {
     // Parse all files into chunks
@@ -7858,7 +7858,7 @@ memImportSaveBtn.addEventListener('click', async () => {
       return
     }
 
-    memImportStatus.textContent = `${allChunks.length} chunk kategorizálása és importálása...`
+    memImportStatus.textContent = t('memories.import.importing', { n: allChunks.length })
 
     const agentId = document.getElementById('memImportAgent').value || mainAgentId()
     const resp = await fetch('/api/memories/import', {
@@ -7880,7 +7880,7 @@ memImportSaveBtn.addEventListener('click', async () => {
           Hot: ${s.hot || 0} | Warm: ${s.warm || 0} | Cold: ${s.cold || 0} | Shared: ${s.shared || 0}
         </div>
       `
-      showToast(`${data.imported} emlék importálva`)
+      showToast(t('memories.toast.imported', { n: data.imported }))
       loadMemories()
       loadMemStats()
     } else {
@@ -8917,15 +8917,15 @@ async function loadUpdates() {
     const lat = (data.latest || '').slice(0, 7) || '–'
     if (data.error) {
       summary.className = 'updates-summary error'
-      summary.innerHTML = `<strong>Nem sikerült ellenőrizni:</strong> ${escapeHtmlUpdates(data.error)}<br>Jelenlegi: <code>${cur}</code>`
+      summary.innerHTML = `<strong>${t('updates.check_failed')}:</strong> ${escapeHtmlUpdates(data.error)}<br>${t('updates.current_label')} <code>${cur}</code>`
       applyBtn.hidden = true
     } else if (data.behind === 0) {
       summary.className = 'updates-summary up-to-date'
-      summary.innerHTML = `<strong>A legfrissebb verzión vagy</strong> (<code>${cur}</code>). Nincs teendő.`
+      summary.innerHTML = `<strong>${t('updates.up_to_date_html')}</strong> (<code>${cur}</code>). ${t('updates.no_changes')}`
       applyBtn.hidden = true
     } else {
       summary.className = 'updates-summary behind'
-      summary.innerHTML = `<strong>${data.behind} új commit elérhető</strong> a <code>${escapeHtmlUpdates(data.remote)}</code> repón.<br>Jelenlegi: <code>${cur}</code> → Legfrissebb: <code>${lat}</code>`
+      summary.innerHTML = `<strong>${t('updates.behind', { n: data.behind })}</strong> ${t('updates.available_on', { remote: `<code>${escapeHtmlUpdates(data.remote)}</code>` })}<br>${t('updates.current_label')} <code>${cur}</code> → ${t('updates.latest_label')} <code>${lat}</code>`
       applyBtn.hidden = false
     }
     if (data.commits && data.commits.length) {
@@ -8939,7 +8939,7 @@ async function loadUpdates() {
         </div>
       `).join('')
     } else if (data.behind === 0) {
-      list.innerHTML = `<p style="color:var(--text-muted);font-size:13px">Nincs változás.</p>`
+      list.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${t('updates.no_changes')}</p>`
     }
   } catch (err) {
     summary.className = 'updates-summary error'
@@ -8980,7 +8980,7 @@ async function runUpdate(autoStash) {
       resetBtn()
       // dirty-tree without autoStash: offer the auto-stash retry inline.
       if (data.reason === 'dirty-tree' && !autoStash) {
-        if (confirm('A working tree-ben lokális változtatások vannak. Stash-eljem őket automatikusan, frissítsek, majd visszaállítsam?')) {
+        if (confirm(t('updates.confirm.stash'))) {
           await runUpdate(true)
         }
         return
@@ -8997,7 +8997,7 @@ async function runUpdate(autoStash) {
 }
 
 document.getElementById('updatesApplyBtn').addEventListener('click', async () => {
-  if (!confirm('Frissítés most. A szolgáltatások újraindulnak, a dashboard ~30 másodpercig nem érhető el. Folytatod?')) return
+  if (!confirm(t('updates.confirm.apply'))) return
   await runUpdate(false)
 })
 
@@ -9049,8 +9049,8 @@ function showSudoModal(sudoCommand) {
 
   document.getElementById('sudoCopyBtn').addEventListener('click', () => {
     navigator.clipboard.writeText(sudoCommand).then(() => {
-      document.getElementById('sudoCopyBtn').textContent = 'Másolva!'
-      setTimeout(() => { document.getElementById('sudoCopyBtn').textContent = 'Másolás' }, 1500)
+      document.getElementById('sudoCopyBtn').textContent = t('common.copied')
+      setTimeout(() => { document.getElementById('sudoCopyBtn').textContent = t('common.copy') }, 1500)
     })
   })
   document.getElementById('sudoCancelBtn').addEventListener('click', () => overlay.remove())
@@ -9071,8 +9071,8 @@ function fallbackCopyToClipboard(text, btn) {
   try {
     const ok = document.execCommand('copy')
     if (ok) {
-      btn.textContent = 'Másolva!'
-      setTimeout(() => { btn.textContent = 'Másolás' }, 1500)
+      btn.textContent = t('common.copied')
+      setTimeout(() => { btn.textContent = t('common.copy') }, 1500)
     } else {
       showToast('A vágólapra másolás nem sikerült')
     }
@@ -9102,7 +9102,7 @@ function showSlackManifestModal(manifest, instructions) {
     </p>
     <div style="position:relative;margin-bottom:16px">
       <pre id="slackManifestPre" style="background:var(--bg-main);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px;overflow-x:auto;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto">${escapeHtml(manifest)}</pre>
-      <button id="slackManifestCopyBtn" style="position:absolute;top:6px;right:6px;padding:4px 10px;font-size:11px;border-radius:6px;border:1px solid var(--border);background:var(--bg-card);cursor:pointer">Másolás</button>
+      <button id="slackManifestCopyBtn" style="position:absolute;top:6px;right:6px;padding:4px 10px;font-size:11px;border-radius:6px;border:1px solid var(--border);background:var(--bg-card);cursor:pointer">${t('common.copy')}</button>
     </div>
     <h4 style="margin:0 0 8px;font-size:14px">Lépések</h4>
     <ol style="font-size:13px;padding-left:20px;margin:0 0 16px">${stepsHtml}</ol>
@@ -9121,8 +9121,8 @@ function showSlackManifestModal(manifest, instructions) {
     const copyBtn = document.getElementById('slackManifestCopyBtn')
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(manifest).then(() => {
-        copyBtn.textContent = 'Másolva!'
-        setTimeout(() => { copyBtn.textContent = 'Másolás' }, 1500)
+        copyBtn.textContent = t('common.copied')
+        setTimeout(() => { copyBtn.textContent = t('common.copy') }, 1500)
       }).catch(() => {
         fallbackCopyToClipboard(manifest, copyBtn)
       })
@@ -10465,7 +10465,7 @@ function renderTuDetailsTable() {
   if (countEl) countEl.textContent = `${sorted.length} sor`
 
   if (!sorted.length) {
-    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-secondary);font-size:13px;text-align:center;padding:16px">Nincs ilyen hívás a szűrt időszakban</td></tr>'
+    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--text-secondary);font-size:13px;text-align:center;padding:16px">${t('tokenUsage.no_calls')}</td></tr>`
     return
   }
 
@@ -10557,15 +10557,15 @@ async function tuFetchDetails() {
 document.getElementById('tuCollectBtn')?.addEventListener('click', async () => {
   const btn = document.getElementById('tuCollectBtn')
   btn.disabled = true
-  btn.textContent = 'Gyűjtés...'
+  btn.textContent = t('tokenUsage.collect_btn.collecting')
   try {
     const res = await fetch('/api/token-usage/collect', { method: 'POST' }).then(r => r.json())
-    btn.textContent = `Kész (${res.inserted || 0} új)`
-    setTimeout(() => { btn.textContent = 'Gyűjtés'; btn.disabled = false }, 2000)
+    btn.textContent = t('tokenUsage.collect_done', { n: res.inserted || 0 })
+    setTimeout(() => { btn.textContent = t('tokenUsage.collect_btn.collect'); btn.disabled = false }, 2000)
     loadTokenUsage()
   } catch {
-    btn.textContent = 'Hiba!'
-    setTimeout(() => { btn.textContent = 'Gyűjtés'; btn.disabled = false }, 2000)
+    btn.textContent = t('tokenUsage.collect_error')
+    setTimeout(() => { btn.textContent = t('tokenUsage.collect_btn.collect'); btn.disabled = false }, 2000)
   }
 })
 
@@ -10603,7 +10603,7 @@ async function loadIdeasPage() {
   const catSel = document.getElementById('ideaCategoryFilter')
   if (catSel) {
     const prev = catSel.value
-    catSel.innerHTML = '<option value="">Összes kategória</option>' + cats.map(c => `<option value="${escapeHtml(c)}" ${c === prev ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')
+    catSel.innerHTML = `<option value="">${t('ideas.filter.all_categories')}</option>` + cats.map(c => `<option value="${escapeHtml(c)}" ${c === prev ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')
   }
   renderIdeasStats()
   renderIdeasList()
@@ -10908,7 +10908,7 @@ async function handleAgentLogin(agentName, btn) {
   const phase = btn.dataset.phase || 'start'
   btn.disabled = true
   const origText = btn.textContent
-  btn.textContent = phase === 'start' ? 'Indítás...' : 'Megerősítés...'
+  btn.textContent = phase === 'start' ? t('agents.auth.btn_starting') : t('agents.auth.btn_confirming')
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(agentName)}/login`, {
       method: 'POST',
@@ -10918,12 +10918,12 @@ async function handleAgentLogin(agentName, btn) {
     if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'HTTP ' + res.status) }
     if (phase === 'start') {
       btn.dataset.phase = 'confirm'
-      btn.textContent = 'Auth kész → Megerősít'
+      btn.textContent = t('agents.auth.btn_confirm')
       btn.disabled = false
-      showToast('Auth folyamat elindítva — engedélyezd a böngészőben, majd kattints Megerősít')
+      showToast(t('agents.auth.toast_started'))
     } else {
-      btn.textContent = 'Bejelentkezve'
-      showToast('Bejelentkezés sikeres')
+      btn.textContent = t('agents.auth.btn_logged_in')
+      showToast(t('agents.auth.toast_success'))
       setTimeout(() => loadAgents(), 1500)
     }
   } catch (e) {
@@ -11385,7 +11385,7 @@ function downloadMarkdown(name, content) {
         if (info.lan_ip) {
           base = 'http://' + info.lan_ip + ':' + (info.port || window.location.port || '3420')
         } else {
-          qrBox.innerHTML = '<p class="mobile-login-warn">A mobil-belépés a géped helyi hálózati (LAN) IP-jén működik. Most localhoston nyitottad meg a dashboardot, és nem találtam használható LAN-címet. Nyisd meg a dashboardot a géped LAN-IP-jén (pl. http://192.168.x.x:3420), és onnan próbáld a mobil-belépést.</p>'
+          qrBox.innerHTML = `<p class="mobile-login-warn">${t('mobile_login.localhost_warn')}</p>`
           return
         }
       } catch (e) {
@@ -11481,11 +11481,11 @@ function downloadMarkdown(name, content) {
       if (!res.ok) { timeline.innerHTML = `<p class="naplo-empty error">Hiba: ${res.status}</p>`; return }
       const data = await res.json()
       const entries = data.entries || []
-      summary.textContent = `${entries.length} bejegyzés`
+      summary.textContent = t('naplo.summary', { n: entries.length })
       if (entries.length === 0) { timeline.innerHTML = `<p class="naplo-empty">${t('naplo.empty')}</p>`; return }
       timeline.innerHTML = entries.map(renderEntry).join('')
     } catch (err) {
-      timeline.innerHTML = `<p class="naplo-empty error">Hálózati hiba: ${err.message}</p>`
+      timeline.innerHTML = `<p class="naplo-empty error">${t('naplo.error', { msg: err.message })}</p>`
     }
   }
 
