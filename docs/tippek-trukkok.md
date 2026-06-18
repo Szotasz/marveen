@@ -8,6 +8,8 @@
 
 Az ügynökök CLAUDE.md leírói időszakosan felülvizsgálhatják önmagukat: ami procedurális és ismétlődő (API-receptek, lépéssorok), az kerüljön skillbe (recall-on-demand formában). A viselkedési és biztonsági mag maradjon a leíróban. A folyamat maga is delegálható -- kérd meg az ügynököt, hogy tekintse át saját leíróját, és amit skillbe tud szervezni, azt tegye meg.
 
+Példa prompt: "Vizsgáld meg az ügynökök CLAUDE.md leíróit: mi emelhető át belőlük (a viselkedési és biztonsági magot meghagyva) közös skillbe, hogy csökkenjen a leíró mérete és a tokenhasználat?"
+
 **Elért hatás:** 6 sub-ügynök CLAUDE.md-je 103-ról 54 sorra csökkent; a fő CLAUDE.md 292-ről 194 sorra; a duplikált API-receptek egyetlen közös skillbe kerültek. Minden session indításakor kevesebb token töltődik be -- kisebb kontextus, gyorsabb válasz.
 
 ---

@@ -8,6 +8,8 @@
 
 Agent CLAUDE.md descriptors can periodically review themselves: anything procedural and repetitive -- API recipes, step sequences -- should be moved into a skill (recall-on-demand). The behavioural and safety core stays in the descriptor. The process itself is delegable: ask the agent to review its own descriptor and extract what it can into skills.
 
+Example prompt: "Review the agents' CLAUDE.md descriptors: what can be extracted into a shared skill (keeping the behavioural and safety core in place) to reduce descriptor size and token usage?"
+
 **Effect achieved:** Six sub-agent CLAUDE.md files shrank from 103 to 54 lines; the main CLAUDE.md from 292 to 194 lines; duplicated API recipes were consolidated into a single shared skill. Every session now loads fewer tokens -- smaller context, faster responses.
 
 ---
