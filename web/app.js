@@ -113,6 +113,7 @@ function switchPage(pageId) {
   if (pageId === 'messages') loadMessagesPage()
   if (pageId === 'tokenUsage') loadTokenUsage()
   if (pageId === 'ideas') loadIdeasPage()
+  if (pageId === 'archived') loadArchivedPage()
 }
 
 // Mobile off-canvas sidebar toggle. No-op visual effect on desktop (the
@@ -11159,4 +11160,127 @@ function downloadMarkdown(name, content) {
   btn.addEventListener('click', () => { render(); openModal(overlay) })
   if (closeBtn) closeBtn.addEventListener('click', () => closeModal(overlay))
   overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(overlay) })
+})()
+
+// === Archivalt kartyak ===
+;(() => {
+  let archivedInit = false
+
+  const STATUS_LABELS = { planned: 'Tervezett', in_progress: 'Folyamatban', waiting: 'Várakozik', done: 'Kész' }
+  const STATUS_COLORS = { planned: '#6b7280', in_progress: '#3b82f6', waiting: '#f59e0b', done: '#10b981' }
+  const PRIORITY_LABELS = { low: 'Alacsony', normal: 'Normál', high: 'Magas', urgent: 'Sürgős' }
+  const PRIORITY_COLORS = { low: '#9ca3af', normal: '#6b7280', high: '#f59e0b', urgent: '#ef4444' }
+
+  function fmtDate(unix) {
+    if (!unix) return ''
+    return new Date(unix * 1000).toLocaleString('hu-HU', { dateStyle: 'short', timeStyle: 'short' })
+  }
+
+  function renderArchivedCard(card) {
+    const statusColor = STATUS_COLORS[card.status] || '#6b7280'
+    const statusLabel = STATUS_LABELS[card.status] || card.status
+    const prioColor = PRIORITY_COLORS[card.priority] || '#6b7280'
+    const prioLabel = PRIORITY_LABELS[card.priority] || card.priority
+    const projectBadge = card.project
+      ? `<span class="naplo-badge" style="background:#4b5563;font-size:11px">${esc(card.project)}</span>`
+      : ''
+    const statusBadge = `<span class="naplo-badge" style="background:${statusColor};font-size:11px">${statusLabel}</span>`
+    const prioBadge = `<span class="naplo-badge" style="background:${prioColor};font-size:11px">${prioLabel}</span>`
+    const labelBadges = (card.labels || [])
+      .map(l => `<span class="naplo-badge" style="background:${esc(l.color)};font-size:11px">${esc(l.name)}</span>`)
+      .join(' ')
+    const assigneeStr = card.assignee ? `<span style="font-size:12px;color:var(--muted)">@${esc(card.assignee)}</span>` : ''
+    const archivedStr = `<span style="font-size:12px;color:var(--muted)">Archiválva: ${fmtDate(card.archived_at)}</span>`
+    return `<div class="naplo-entry" style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:500;margin-bottom:4px;">${esc(card.title)}</div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
+          ${statusBadge}${prioBadge}${projectBadge}${labelBadges}${assigneeStr}
+        </div>
+        <div style="margin-top:4px;">${archivedStr}</div>
+      </div>
+      <button class="btn-secondary btn-compact archived-restore-btn" data-id="${esc(card.id)}" title="Visszaállítás a táblára" style="white-space:nowrap;flex-shrink:0;">Visszaállítás</button>
+    </div>`
+  }
+
+  async function populateArchivedProjects() {
+    try {
+      const r = await fetch('/api/kanban-projects')
+      if (!r.ok) return
+      const projects = await r.json()
+      const sel = document.getElementById('archivedProject')
+      const cur = sel.value
+      sel.innerHTML = '<option value="">Minden projekt</option>'
+      for (const p of projects) {
+        const opt = document.createElement('option')
+        opt.value = p
+        opt.textContent = p
+        if (p === cur) opt.selected = true
+        sel.appendChild(opt)
+      }
+    } catch { /* best-effort */ }
+  }
+
+  async function doArchivedSearch() {
+    const list = document.getElementById('archivedList')
+    const summary = document.getElementById('archivedSummary')
+    list.innerHTML = '<p class="naplo-empty">Betöltés...</p>'
+    summary.textContent = ''
+
+    const params = new URLSearchParams()
+    const q = document.getElementById('archivedQ').value.trim()
+    const project = document.getElementById('archivedProject').value
+    const from = document.getElementById('archivedFrom').value
+    const to = document.getElementById('archivedTo').value
+    if (q) params.set('q', q)
+    if (project) params.set('project', project)
+    if (from) params.set('from', Math.floor(new Date(from).getTime() / 1000))
+    if (to) params.set('to', Math.floor(new Date(to + 'T23:59:59').getTime() / 1000))
+
+    try {
+      const r = await fetch('/api/kanban/archived?' + params.toString())
+      if (!r.ok) { list.innerHTML = `<p class="naplo-empty error">Hiba: ${r.status}</p>`; return }
+      const data = await r.json()
+      const cards = data.cards || []
+      summary.textContent = `${cards.length} kártya (max ${data.limit})`
+      if (cards.length === 0) { list.innerHTML = '<p class="naplo-empty">Nincs archivált kártya.</p>'; return }
+      list.innerHTML = cards.map(renderArchivedCard).join('')
+      list.querySelectorAll('.archived-restore-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const id = btn.dataset.id
+          btn.disabled = true
+          btn.textContent = '...'
+          try {
+            const resp = await fetch(`/api/kanban/${id}/unarchive`, { method: 'POST' })
+            if (resp.ok) {
+              btn.closest('.naplo-entry').style.opacity = '0.4'
+              btn.textContent = 'Visszaállítva'
+            } else {
+              btn.disabled = false
+              btn.textContent = 'Visszaállítás'
+              alert('Hiba a visszaállításnál.')
+            }
+          } catch {
+            btn.disabled = false
+            btn.textContent = 'Visszaállítás'
+          }
+        })
+      })
+    } catch (err) {
+      list.innerHTML = `<p class="naplo-empty error">Hálózati hiba: ${err.message}</p>`
+    }
+  }
+
+  function loadArchivedPage() {
+    if (!archivedInit) {
+      archivedInit = true
+      document.getElementById('archivedSearchBtn').addEventListener('click', doArchivedSearch)
+      document.getElementById('archivedRefreshBtn').addEventListener('click', doArchivedSearch)
+      document.getElementById('archivedQ').addEventListener('keydown', e => { if (e.key === 'Enter') doArchivedSearch() })
+    }
+    populateArchivedProjects()
+    doArchivedSearch()
+  }
+
+  window.loadArchivedPage = loadArchivedPage
 })()
