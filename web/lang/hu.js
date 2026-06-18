@@ -278,6 +278,11 @@ window._i18n.hu = {
   'docs.loading':                'Betöltés...',
   'docs.select_hint':            'Válassz egy dokumentumot a bal oldali listából.',
   'docs.error':                  'Hiba a dokumentum betöltésekor',
+  'docs.list_load_error':        'Nem sikerült betölteni a listát',
+  'docs.empty_list':             'Nincs dokumentum a docs/ mappában.',
+  'docs.empty_content':          'Nincs megjeleníthető dokumentum.',
+  'docs.download_btn':           '⬇ .md letöltés',
+  'docs.open_error':             'Nem sikerült megnyitni',
 
   // --- Status ---
   'status.page_title':           'Státusz',

@@ -278,6 +278,11 @@ window._i18n.en = {
   'docs.loading':                'Loading...',
   'docs.select_hint':            'Select a document from the list on the left.',
   'docs.error':                  'Error loading document',
+  'docs.list_load_error':        'Failed to load the list',
+  'docs.empty_list':             'No documents found in docs/ folder.',
+  'docs.empty_content':          'No documents to display.',
+  'docs.download_btn':           '⬇ Download .md',
+  'docs.open_error':             'Failed to open',
 
   // --- Status ---
   'status.page_title':           'Status',

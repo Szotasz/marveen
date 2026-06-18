@@ -124,6 +124,27 @@ themeToggle.addEventListener('click', () => {
   localStorage.setItem('cc-theme', next)
 })
 
+// === Language toggle ===
+;(() => {
+  const btn = document.getElementById('langToggle')
+  if (!btn) return
+  function syncLangBtn() {
+    btn.textContent = (window._lang || 'hu').toUpperCase()
+  }
+  syncLangBtn()
+  btn.addEventListener('click', () => {
+    const next = (window._lang || 'hu') === 'hu' ? 'en' : 'hu'
+    window.setLang(next)
+    syncLangBtn()
+  })
+  // Keep button in sync when setLang is called from elsewhere (e.g. /api/settings async load).
+  const _origSetLang = window.setLang
+  window.setLang = function setLang(lang) {
+    _origSetLang(lang)
+    syncLangBtn()
+  }
+})()
+
 // === Page switching ===
 const navLinks = document.querySelectorAll('.sb-link[data-page], .nav-link[data-page]')
 const pages = document.querySelectorAll('.page')
@@ -11217,19 +11238,19 @@ async function loadDocs() {
   const listEl = document.getElementById('docsList')
   const contentEl = document.getElementById('docsContent')
   if (!listEl) return
-  listEl.innerHTML = '<p class="muted">Betöltés...</p>'
+  listEl.innerHTML = '<p class="muted">' + t('docs.loading') + '</p>'
   let docs = []
   try {
     const res = await fetch('/api/docs')
     docs = await res.json()
     if (!Array.isArray(docs)) docs = []
   } catch (e) {
-    listEl.innerHTML = '<p class="muted">Nem sikerült betölteni a listát: ' + escapeHtml(String(e.message || e)) + '</p>'
+    listEl.innerHTML = '<p class="muted">' + t('docs.list_load_error') + ': ' + escapeHtml(String(e.message || e)) + '</p>'
     return
   }
   if (!docs.length) {
-    listEl.innerHTML = '<p class="muted">Nincs dokumentum a docs/ mappában.</p>'
-    if (contentEl) contentEl.innerHTML = '<p class="muted">Nincs megjeleníthető dokumentum.</p>'
+    listEl.innerHTML = '<p class="muted">' + t('docs.empty_list') + '</p>'
+    if (contentEl) contentEl.innerHTML = '<p class="muted">' + t('docs.empty_content') + '</p>'
     return
   }
   listEl.innerHTML = docs.map(d =>
@@ -11253,7 +11274,7 @@ async function loadDocs() {
 async function openDoc(name) {
   const contentEl = document.getElementById('docsContent')
   if (!contentEl) return
-  contentEl.innerHTML = '<p class="muted">Betöltés...</p>'
+  contentEl.innerHTML = '<p class="muted">' + t('docs.loading') + '</p>'
   try {
     const res = await fetch('/api/docs/' + encodeURIComponent(name))
     if (!res.ok) throw new Error('HTTP ' + res.status)
@@ -11262,13 +11283,13 @@ async function openDoc(name) {
     // Toolbar with a raw-.md download, then the rendered markdown.
     contentEl.innerHTML =
       '<div class="docs-content-toolbar">' +
-        '<button class="btn-secondary btn-compact" id="docsDownloadBtn">⬇ .md letöltés</button>' +
+        '<button class="btn-secondary btn-compact" id="docsDownloadBtn">' + t('docs.download_btn') + '</button>' +
       '</div>' +
       '<div class="docs-rendered markdown-body">' + renderMarkdown(content) + '</div>'
     const dl = document.getElementById('docsDownloadBtn')
     if (dl) dl.addEventListener('click', () => downloadMarkdown(name, content))
   } catch (e) {
-    contentEl.innerHTML = '<p class="muted">Nem sikerült megnyitni: ' + escapeHtml(String(e.message || e)) + '</p>'
+    contentEl.innerHTML = '<p class="muted">' + t('docs.open_error') + ': ' + escapeHtml(String(e.message || e)) + '</p>'
   }
 }
 
