@@ -2,12 +2,13 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import {
   listKanbanCards, createKanbanCard, updateKanbanCard,
-  deleteKanbanCard, moveKanbanCard, archiveKanbanCard,
+  deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
   getKanbanComments, addKanbanComment, listKanbanProjects,
   getKanbanCard, getChildCards, getDb,
   createAgentMessage, markKanbanCardDispatched,
   listLabels, getLabel, createLabel, updateLabel, deleteLabel,
   addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
+  listArchivedKanbanCards,
   revertIdeaFromKanban,
 } from '../../db.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
@@ -17,6 +18,7 @@ import { resolveKanbanDispatchTarget } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
+import { getEffectiveSettingValue } from '../../settings-store.js'
 import type { RouteContext } from './types.js'
 
 // A headless agent cannot "drag" a card to done, so the dispatch hands it the
@@ -223,6 +225,29 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     revertIdeaFromKanban(id)
     if (archiveKanbanCard(id)) { json(res, { ok: true }); return true }
     json(res, { error: 'Kártya nem található' }, 404)
+    return true
+  }
+
+  if (path === '/api/kanban/archived' && method === 'GET') {
+    const sp      = ctx.url.searchParams
+    const q       = sp.get('q')?.trim() || undefined
+    const project = sp.get('project')?.trim() || undefined
+    const label   = sp.get('label')?.trim() || undefined
+    const from    = sp.get('from')  ? Number(sp.get('from'))  : undefined
+    const to      = sp.get('to')    ? Number(sp.get('to'))    : undefined
+    const limit   = Math.min(Number(sp.get('limit') ?? 0) || Number(getEffectiveSettingValue('KANBAN_ARCHIVED_MAX_ROWS')), 5000)
+    const labelsByCard = getLabelsForAllCards()
+    const cards = listArchivedKanbanCards({ q, project, label, from, to, limit })
+      .map(card => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))
+    json(res, { cards, total: cards.length, limit })
+    return true
+  }
+
+  const kanbanUnarchiveMatch = path.match(/^\/api\/kanban\/([^/]+)\/unarchive$/)
+  if (kanbanUnarchiveMatch && method === 'POST') {
+    const id = decodeURIComponent(kanbanUnarchiveMatch[1])
+    if (unarchiveKanbanCard(id)) { json(res, { ok: true }); return true }
+    json(res, { error: 'Kártya nem található vagy nincs archiválva' }, 404)
     return true
   }
 
