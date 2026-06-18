@@ -114,6 +114,7 @@ function switchPage(pageId) {
   if (pageId === 'tokenUsage') loadTokenUsage()
   if (pageId === 'ideas') loadIdeasPage()
   if (pageId === 'archived') loadArchivedPage()
+  if (pageId === 'naplo') loadNaplo()
 }
 
 // Mobile off-canvas sidebar toggle. No-op visual effect on desktop (the
@@ -10858,8 +10859,11 @@ document.getElementById('terminalClose')?.addEventListener('click', () => {
 // Telegram messages, the agent's replies, and (optionally) its notes/actions.
 // Solves what the raw terminal can't: a readable, searchable review of what
 // actually happened -- also the support view for customer-hosted Marveens.
+const CONVERSATION_PAGE_SIZE = 400
 let conversationEntries = []
 let conversationAgentName = null
+let conversationHasOlder = false
+let conversationLoadingOlder = false
 
 async function openConversationModal(agentName, displayName) {
   const overlay = document.getElementById('conversationOverlay')
@@ -10873,18 +10877,51 @@ async function openConversationModal(agentName, displayName) {
   await loadConversation()
 }
 
+// Latest page (offset=0); resets the loaded window.
 async function loadConversation() {
   const container = document.getElementById('conversationContainer')
   const token = localStorage.getItem('marveen-dashboard-token') || ''
   try {
-    const r = await fetch(`/api/agents/${encodeURIComponent(conversationAgentName)}/conversation?limit=600`, {
+    const r = await fetch(`/api/agents/${encodeURIComponent(conversationAgentName)}/conversation?limit=${CONVERSATION_PAGE_SIZE}&offset=0`, {
       headers: { 'Authorization': 'Bearer ' + token },
     })
     const d = await r.json()
     conversationEntries = Array.isArray(d.entries) ? d.entries : []
+    conversationHasOlder = !!d.hasOlder
     renderConversation()
   } catch {
     if (container) container.innerHTML = '<div class="conversation-empty">Nem sikerült betölteni a beszélgetést.</div>'
+  }
+}
+
+// Page further back: fetch the window of entries immediately before the oldest
+// loaded one and PREPEND it, keeping the scroll position so the view does not
+// jump. Lets the operator read history beyond the on-screen window (and beyond
+// the old fixed cap).
+async function loadOlderConversation() {
+  if (conversationLoadingOlder || !conversationHasOlder) return
+  conversationLoadingOlder = true
+  const btn = document.getElementById('conversationLoadOlder')
+  if (btn) { btn.disabled = true; btn.textContent = 'Betöltés…' }
+  const token = localStorage.getItem('marveen-dashboard-token') || ''
+  try {
+    const offset = conversationEntries.length
+    const r = await fetch(`/api/agents/${encodeURIComponent(conversationAgentName)}/conversation?limit=${CONVERSATION_PAGE_SIZE}&offset=${offset}`, {
+      headers: { 'Authorization': 'Bearer ' + token },
+    })
+    const d = await r.json()
+    const older = Array.isArray(d.entries) ? d.entries : []
+    conversationHasOlder = !!d.hasOlder
+    if (older.length) {
+      conversationEntries = older.concat(conversationEntries)
+      renderConversation({ preserveScroll: true })
+    } else {
+      renderConversation()
+    }
+  } catch {
+    if (btn) { btn.disabled = false; btn.textContent = 'Korábbiak betöltése' }
+  } finally {
+    conversationLoadingOlder = false
   }
 }
 
@@ -10895,17 +10932,33 @@ function fmtConvTs(ts) {
   } catch { return '' }
 }
 
-function renderConversation() {
+function renderConversation(opts = {}) {
   const container = document.getElementById('conversationContainer')
   if (!container) return
+  const prevH = container.scrollHeight
+  const prevTop = container.scrollTop
   const q = (document.getElementById('conversationSearch')?.value || '').toLowerCase().trim()
   const showActions = document.getElementById('conversationShowActions')?.checked
   let list = conversationEntries
   if (!showActions) list = list.filter(e => e.kind === 'in' || e.kind === 'out')
   if (q) list = list.filter(e => (e.text || '').toLowerCase().includes(q))
-  if (!list.length) { container.innerHTML = '<div class="conversation-empty">Nincs megjeleníthető üzenet.</div>'; return }
-  container.innerHTML = list.map(renderConvEntry).join('')
-  container.scrollTop = container.scrollHeight
+  // "Korábbiak betöltése" sits at the top so the operator can page further back;
+  // shown whenever the server still has older entries beyond the loaded window.
+  const olderBtn = conversationHasOlder
+    ? '<button id="conversationLoadOlder" class="conv-load-older">Korábbiak betöltése</button>'
+    : ''
+  if (!list.length) {
+    container.innerHTML = olderBtn || '<div class="conversation-empty">Nincs megjeleníthető üzenet.</div>'
+  } else {
+    container.innerHTML = olderBtn + list.map(renderConvEntry).join('')
+  }
+  document.getElementById('conversationLoadOlder')?.addEventListener('click', loadOlderConversation)
+  if (opts.preserveScroll) {
+    // After prepending older messages, keep the previously-visible ones in place.
+    container.scrollTop = prevTop + (container.scrollHeight - prevH)
+  } else {
+    container.scrollTop = container.scrollHeight
+  }
 }
 
 function renderConvEntry(e) {
@@ -11375,4 +11428,107 @@ function downloadMarkdown(name, content) {
   }
 
   window.loadArchivedPage = loadArchivedPage
+})()
+
+// === Naplo (Audit Timeline) ===
+;(() => {
+  let naploInitialized = false
+  let naploActiveSource = ''
+
+  const SOURCE_LABELS = { config: 'Config', idea: 'Ötletláda', store: 'Store', diary: 'Eseménynapló' }
+  const SOURCE_COLORS = { config: '#3b82f6', idea: '#10b981', store: '#f59e0b', diary: '#8b5cf6' }
+  const DIARY_ENTRY_LABELS = { log: 'Napló', memory: 'Emlék' }
+  const DIARY_ENTRY_COLORS = { log: '#6b7280', memory: '#a78bfa' }
+
+  function fmtTs(unix) {
+    return new Date(unix * 1000).toLocaleString('hu-HU', { dateStyle: 'short', timeStyle: 'short' })
+  }
+
+  function renderEntry(e) {
+    const sourceColor = SOURCE_COLORS[e.source] || '#6b7280'
+    const sourceLabel = SOURCE_LABELS[e.source] || e.source
+    const badge = `<span class="naplo-badge" style="background:${sourceColor}">${sourceLabel}</span>`
+    const ts = `<span class="naplo-ts">${fmtTs(e.created_at)}</span>`
+    let detail = ''
+    if (e.source === 'config') {
+      const oldV = e.old_value != null ? `<code>${esc(e.old_value)}</code>` : '<em>nincs</em>'
+      const newV = e.new_value != null ? `<code>${esc(e.new_value)}</code>` : '<em>nincs</em>'
+      detail = `<strong>${esc(e.key)}</strong> ${oldV} &rarr; ${newV} <span class="naplo-actor">${esc(e.actor || '')}</span>`
+    } else if (e.source === 'idea') {
+      const from = e.from_status ? `<code>${esc(e.from_status)}</code> &rarr; ` : ''
+      detail = `<strong>${esc(e.idea_id)}</strong> ${from}<code>${esc(e.to_status)}</code>`
+      if (e.note) detail += ` <span class="naplo-note">${esc(e.note)}</span>`
+      if (e.actor) detail += ` <span class="naplo-actor">${esc(e.actor)}</span>`
+    } else if (e.source === 'store') {
+      const sizeStr = e.file_size != null ? ` (${(e.file_size / 1024).toFixed(1)} KB)` : ''
+      const agentStr = e.agent ? ` <span class="naplo-actor">${esc(e.agent)}</span>` : ''
+      const sens = e.is_sensitive ? ' <span class="naplo-sensitive">sensitív</span>' : ''
+      detail = `<code>${esc(e.rel_path)}</code> <span class="naplo-event-type">${esc(e.event_type)}</span>${sizeStr}${agentStr}${sens}`
+    } else if (e.source === 'diary') {
+      const entryColor = DIARY_ENTRY_COLORS[e.entry_type] || '#6b7280'
+      const entryLabel = DIARY_ENTRY_LABELS[e.entry_type] || e.entry_type
+      const entryBadge = `<span class="naplo-badge" style="background:${entryColor};font-size:10px">${entryLabel}</span>`
+      const agentStr = e.agent_id ? ` <span class="naplo-actor">${esc(e.agent_id)}</span>` : ''
+      let contentSnippet = esc(e.content || '').replace(/\n/g, ' ').slice(0, 200)
+      if ((e.content || '').length > 200) contentSnippet += '…'
+      const keywordsStr = e.keywords ? `<div class="naplo-note" style="margin-top:2px">Kulcsszavak: ${esc(e.keywords)}</div>` : ''
+      const catStr = e.category ? ` <span class="naplo-event-type">${esc(e.category)}</span>` : ''
+      detail = `${entryBadge}${catStr}${agentStr}<div class="naplo-diary-content">${contentSnippet}</div>${keywordsStr}`
+    }
+    return `<div class="naplo-entry"><div class="naplo-entry-meta">${ts}${badge}</div><div class="naplo-entry-detail">${detail}</div></div>`
+  }
+
+  async function doNaplo() {
+    const timeline = document.getElementById('naplo-timeline')
+    const summary = document.getElementById('naplo-summary')
+    timeline.innerHTML = '<p class="naplo-empty">Betöltés...</p>'
+    summary.textContent = ''
+
+    const params = new URLSearchParams()
+    if (naploActiveSource) params.set('source', naploActiveSource)
+    const from = document.getElementById('naplo-from').value
+    const to = document.getElementById('naplo-to').value
+    const q = document.getElementById('naplo-q').value.trim()
+    const agentEl = document.getElementById('naplo-agent')
+    const agentVal = agentEl ? agentEl.value.trim() : ''
+    if (from) params.set('from', Math.floor(new Date(from).getTime() / 1000))
+    if (to)   params.set('to', Math.floor(new Date(to + 'T23:59:59').getTime() / 1000))
+    if (q)    params.set('q', q)
+    if (agentVal) params.set('agent', agentVal)
+    params.set('limit', '200')
+
+    try {
+      const res = await fetch('/api/audit-log?' + params.toString())
+      if (!res.ok) { timeline.innerHTML = `<p class="naplo-empty error">Hiba: ${res.status}</p>`; return }
+      const data = await res.json()
+      const entries = data.entries || []
+      summary.textContent = `${entries.length} bejegyzés`
+      if (entries.length === 0) { timeline.innerHTML = '<p class="naplo-empty">Nincs találat.</p>'; return }
+      timeline.innerHTML = entries.map(renderEntry).join('')
+    } catch (err) {
+      timeline.innerHTML = `<p class="naplo-empty error">Hálózati hiba: ${err.message}</p>`
+    }
+  }
+
+  function loadNaplo() {
+    if (!naploInitialized) {
+      naploInitialized = true
+      document.querySelectorAll('#naplo-source-tabs .naplo-tab').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('#naplo-source-tabs .naplo-tab').forEach((b) => b.classList.remove('active'))
+          btn.classList.add('active')
+          naploActiveSource = btn.dataset.source
+          const agentFilter = document.getElementById('naplo-agent-wrap')
+          if (agentFilter) agentFilter.style.display = naploActiveSource === 'diary' ? '' : 'none'
+          doNaplo()
+        })
+      })
+      document.getElementById('naplo-search-btn').addEventListener('click', doNaplo)
+      document.getElementById('naplo-q').addEventListener('keydown', (e) => { if (e.key === 'Enter') doNaplo() })
+      document.getElementById('naplo-refresh-btn').addEventListener('click', doNaplo)
+    }
+    doNaplo()
+  }
+
+  window.loadNaplo = loadNaplo
 })()

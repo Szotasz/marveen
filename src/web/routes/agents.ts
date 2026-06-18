@@ -43,6 +43,7 @@ import {
 import {
   readAgentTelegramConfig,
   readAgentDiscordConfig,
+  readAgentGooglechatConfig,
   readMarveenTelegramConfig,
   sendAvatarChangeMessage,
   sendWelcomeMessage,
@@ -91,6 +92,7 @@ import { detectPaneState } from '../../pane-state.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
 import type { AutoRestartConfig } from '../../auto-restart.js'
+import { setStoreWriteActor } from '../../store-watcher.js'
 import { attemptChannelMcpReconnect } from '../channel-mcp-reconnect.js'
 import { getChannelHealth } from '../channel-health-monitor.js'
 import {
@@ -105,7 +107,7 @@ import { suggestForAgent, type AgentSignals } from '../model-suggest.js'
 import { getTokenSummary } from '../token-usage.js'
 import { listScheduledTasks } from '../scheduled-tasks-io.js'
 
-const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'discord'])
+const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'discord', 'googlechat'])
 
 // Short-TTL caches so the synchronous, frequently-polled status endpoints
 // (`/api/agents` on load, `/api/agents/activity` every 3s) don't issue a fresh
@@ -142,7 +144,7 @@ function parseChannelProvider(raw: string): ChannelProviderType | null {
 // Match both new /channels/:provider/ and legacy /telegram/ URL patterns.
 // Returns [agentName, provider] or null. Legacy routes always resolve to 'telegram'.
 function matchChannelRoute(path: string, suffix: string): [string, ChannelProviderType] | null {
-  const newPattern = new RegExp(`^/api/agents/([^/]+)/channels/(telegram|slack|discord)${suffix}$`)
+  const newPattern = new RegExp(`^/api/agents/([^/]+)/channels/(telegram|slack|discord|googlechat)${suffix}$`)
   const newMatch = path.match(newPattern)
   if (newMatch) {
     const provider = parseChannelProvider(newMatch[2])
@@ -223,6 +225,7 @@ export function setAgentEnabledPlugins(name: string, provider: ChannelProviderTy
     telegram: 'telegram@claude-plugins-official',
     slack: 'slack-channel@marveen-marketplace',
     discord: 'discord@claude-plugins-official',
+    googlechat: 'googlechat@claude-channel-googlechat',
   }
   for (const [p, pluginKey] of Object.entries(allPlugins)) {
     plugins[pluginKey] = p === provider
@@ -301,6 +304,7 @@ interface AgentSummary {
   hasTelegram: boolean
   telegramBotUsername?: string
   hasDiscord: boolean
+  hasGooglechat: boolean
   status: 'configured' | 'draft'
   running: boolean
   /** Tri-state: 'running' | 'stopped' | 'unreachable' (remote ssh failure). */
@@ -336,6 +340,7 @@ function getAgentSummary(name: string): AgentSummary {
   const soulMd = readFileOr(join(dir, 'SOUL.md'), '')
   const tg = readAgentTelegramConfig(name)
   const dc = readAgentDiscordConfig(name)
+  const gc = readAgentGooglechatConfig(name)
   const hasClaudeMd = claudeMd.trim().length > 0
   const hasSoulMd = soulMd.trim().length > 0
 
@@ -366,6 +371,7 @@ function getAgentSummary(name: string): AgentSummary {
     hasTelegram: tg.hasTelegram,
     telegramBotUsername: tg.botUsername,
     hasDiscord: dc.hasDiscord,
+    hasGooglechat: gc.hasGooglechat,
     status: hasClaudeMd && hasSoulMd ? 'configured' : 'draft',
     running,
     runState,
@@ -790,6 +796,54 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (!isMain && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
 
     const body = await readBody(req)
+
+    // Google Chat is creds-based (service-account key + Pub/Sub), not a bot
+    // token. Handle it on its own path: write the channel .env + identity
+    // access.json, enable the plugin, and restart.
+    if (provider === 'googlechat') {
+      const { saKeyPath, projectId, subscription, owner, allowDomain } =
+        JSON.parse(body.toString()) as { saKeyPath?: string; projectId?: string; subscription?: string; owner?: string; allowDomain?: string }
+      if (!saKeyPath?.trim() || !projectId?.trim() || !subscription?.trim() || !owner?.trim()) {
+        json(res, { error: 'Google Chat: saKeyPath, projectId, subscription és owner kötelező' }, 400); return true
+      }
+      const gcDir = isMain ? channelStateDir(provider) : channelStateDir(provider, agentDir(name))
+      mkdirSync(gcDir, { recursive: true })
+      const gcEnv =
+        `GOOGLE_APPLICATION_CREDENTIALS=${saKeyPath.trim()}\n` +
+        `GOOGLECHAT_PROJECT_ID=${projectId.trim()}\n` +
+        `GOOGLECHAT_SUBSCRIPTION=${subscription.trim()}\n`
+      atomicWriteFileSync(join(gcDir, '.env'), gcEnv, { mode: 0o600 })
+      atomicWriteFileSync(join(gcDir, 'access.json'), JSON.stringify({
+        policy: allowDomain?.trim() ? 'domain' : 'allowlist',
+        owner: owner.trim(),
+        allowFrom: [],
+        allowDomains: allowDomain?.trim() ? [allowDomain.trim()] : [],
+        roles: {},
+        spaces: {},
+        flatReplies: true,
+      }, null, 2))
+      let gcRestarted = false
+      let gcWasRunning = false
+      if (isMain) {
+        const r = hardRestartMarveenChannels()
+        gcRestarted = r.ok
+        gcWasRunning = true
+      } else {
+        writeAgentChannelProvider(name, provider)
+        setAgentEnabledPlugins(name, provider)
+        gcWasRunning = isAgentRunning(name)
+        if (gcWasRunning) {
+          const stopRes = stopAgentProcess(name)
+          if (stopRes.ok) {
+            try { execSync('sleep 2', { timeout: 4000 }) } catch {}
+            gcRestarted = startAgentProcess(name).ok
+          }
+        }
+      }
+      json(res, { ok: true, botName: 'Google Chat', restarted: gcRestarted, wasRunning: gcWasRunning })
+      return true
+    }
+
     const { botToken, appToken, channelId } = JSON.parse(body.toString()) as { botToken: string; appToken?: string; channelId?: string }
     if (!botToken?.trim()) { json(res, { error: 'botToken is required' }, 400); return true }
 
@@ -934,6 +988,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const body = await readBody(req)
     let data: unknown
     try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'invalid JSON' }, 400); return true }
+    setStoreWriteActor('dashboard')
     const saved = writeAutoRestartConfig(name, data)
     json(res, { ok: true, autoRestart: saved })
     return true

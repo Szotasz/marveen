@@ -48,6 +48,11 @@ export const SLACK_APP_TOKEN = env['SLACK_APP_TOKEN'] ?? ''
 export const SLACK_CHANNEL_ID = env['SLACK_CHANNEL_ID'] ?? ''
 
 export const OWNER_NAME = env['OWNER_NAME'] ?? 'Szabolcs'
+// Shared Google Drive folder ID the fleet writes deliverables into. Empty by
+// default (distribution-safe: no owner-specific folder is baked into a fresh
+// install's generated agent CLAUDE.md); set OWNER_DRIVE_FOLDER in .env to wire
+// the default shared drive for this install.
+export const OWNER_DRIVE_FOLDER = env['OWNER_DRIVE_FOLDER'] ?? ''
 export const BOT_NAME = env['BOT_NAME'] ?? 'Marveen'
 
 // Product / system brand shown in the dashboard chrome (browser tab title,

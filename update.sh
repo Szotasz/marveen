@@ -6,11 +6,36 @@ set -e
 BOLD='\033[1m'
 GREEN='\033[0;32m'
 RED='\033[0;31m'
+ORANGE='\033[0;33m'
 DIM='\033[2m'
 NC='\033[0m'
 
 INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$INSTALL_DIR"
+
+# --- Optional modes (CLI flags or env vars) ---------------------------------
+# The default run is unchanged: it pulls, installs deps, and seeds only the
+# fleet skills/tasks that are MISSING (skip-if-exists), never touching copies
+# the operator already has.
+#
+#   --reseed-fleet  (RESEED_FLEET=1)   Force-refresh the fleet-canonical seeds
+#       (seed-skills/ + seed-scheduled-tasks/) to the repo's current version,
+#       overwriting the already-installed copies. This is how a corrected
+#       canonical seed -- e.g. a security/identity cleanup -- reaches installs
+#       that already seeded the old one. User-authored skills/tasks (anything
+#       NOT present under seed-*) are never touched. Runs even when the code is
+#       already up to date.
+#   --regen-claudemd  (REGEN_CLAUDEMD=1)   Re-render the main CLAUDE.md from
+#       templates/CLAUDE.md.template using this install's .env identity. Opt-in
+#       and backed up first, because the operator may have hand-edited it.
+RESEED_FLEET="${RESEED_FLEET:-0}"
+REGEN_CLAUDEMD="${REGEN_CLAUDEMD:-0}"
+for arg in "$@"; do
+  case "$arg" in
+    --reseed-fleet|--security-reseed) RESEED_FLEET=1 ;;
+    --regen-claudemd) REGEN_CLAUDEMD=1 ;;
+  esac
+done
 
 # Pin Node to the version the dashboard service runs on. The global brew node
 # (26.x) cannot compile better-sqlite3 11.x (removed V8 APIs), which corrupts
@@ -166,8 +191,15 @@ git pull --ff-only origin "$CURRENT_BRANCH"
 NEW_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
 if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
-  echo -e "  ${GREEN}✓${NC} Mar a legfrissebb verzion vagy ($NEW_VERSION)"
-  exit 0
+  if [ "$RESEED_FLEET" != "1" ] && [ "$REGEN_CLAUDEMD" != "1" ]; then
+    echo -e "  ${GREEN}✓${NC} Mar a legfrissebb verzion vagy ($NEW_VERSION)"
+    exit 0
+  fi
+  # --reseed-fleet / --regen-claudemd are explicit refresh requests, so they
+  # run even when the code is already current. Skip the dep-install + build
+  # below (nothing changed there) and jump to the seed/identity refresh.
+  echo -e "  ${GREEN}✓${NC} Mar a legfrissebb verzion ($NEW_VERSION) -- folytatas a kert fleet-reseed/regen miatt"
+  SKIP_BUILD=1
 fi
 
 # Install deps if package.json OR package-lock.json changed. Use `npm ci`
@@ -201,11 +233,15 @@ fi
 
 # Native module rebuild for current Node ABI (critical when Node version changes;
 # better-sqlite3 NODE_MODULE_VERSION must match the running node binary).
-npm rebuild better-sqlite3 --build-from-source --silent
+# Skipped on an already-up-to-date --reseed-fleet/--regen-claudemd run: the
+# compiled tree did not change, only the seeded skills/tasks need refreshing.
+if [ "${SKIP_BUILD:-0}" != "1" ]; then
+  npm rebuild better-sqlite3 --build-from-source --silent
 
-# Rebuild
-echo -e "  Forditas..."
-npm run build --silent
+  # Rebuild
+  echo -e "  Forditas..."
+  npm run build --silent
+fi
 
 # Hook-ok szinkronizálása (~/.claude/hooks/ + ~/.claude/settings.json).
 # Minden scripts/install-*-hook.sh idempotens. Új hook-féle védelmet
@@ -228,28 +264,40 @@ fi
 SKILLS_DIR="$HOME/.claude/skills"
 SCHED_TARGET_DIR="$HOME/.claude/scheduled-tasks"
 
-# Seed skills (no template vars needed, safe without .env)
+# Seed skills (no template vars needed, safe without .env).
+# Default: only seed MISSING skills (skip-if-exists), never clobbering the
+# operator's copies. With --reseed-fleet: force-refresh the canonical copy of
+# every skill that ships under seed-skills/. The loop only ever iterates the
+# seed-skills/ source, so a user-authored skill that has no seed-skills/
+# counterpart is never visited -- it stays untouched either way.
 SEED_SKILLS_DIR="$INSTALL_DIR/seed-skills"
 if [ -d "$SEED_SKILLS_DIR" ]; then
   SEED_NEW=0
   SEED_SKIP=0
+  SEED_FORCED=0
   for skill_dir in "$SEED_SKILLS_DIR"/*/; do
     [ -d "$skill_dir" ] || continue
     skill_name=$(basename "$skill_dir")
     target="$SKILLS_DIR/$skill_name"
+    forced=0
     if [ -d "$target" ]; then
-      SEED_SKIP=$((SEED_SKIP + 1))
-      continue
+      if [ "$RESEED_FLEET" = "1" ]; then
+        rm -rf "$target"
+        forced=1
+      else
+        SEED_SKIP=$((SEED_SKIP + 1))
+        continue
+      fi
     fi
     mkdir -p "$target"
     for f in "$skill_dir"*; do
       [ -f "$f" ] || continue
       cp "$f" "$target/$(basename "$f")"
     done
-    SEED_NEW=$((SEED_NEW + 1))
+    if [ "$forced" = "1" ]; then SEED_FORCED=$((SEED_FORCED + 1)); else SEED_NEW=$((SEED_NEW + 1)); fi
   done
-  if [ "$SEED_NEW" -gt 0 ] || [ "$SEED_SKIP" -gt 0 ]; then
-    echo -e "  ${GREEN}✓${NC} Seed skills: ${SEED_NEW} új, ${SEED_SKIP} kihagyva"
+  if [ "$SEED_NEW" -gt 0 ] || [ "$SEED_SKIP" -gt 0 ] || [ "$SEED_FORCED" -gt 0 ]; then
+    echo -e "  ${GREEN}✓${NC} Seed skills: ${SEED_NEW} új, ${SEED_FORCED} frissítve, ${SEED_SKIP} kihagyva"
   fi
 fi
 
@@ -262,13 +310,24 @@ if [ -d "$SEED_SCHED_DIR" ]; then
     mkdir -p "$SCHED_TARGET_DIR"
     SCHED_NEW=0
     SCHED_SKIP=0
+    SCHED_FORCED=0
+    # Default skip-if-exists; --reseed-fleet force-refreshes the canonical task
+    # content (SKILL.md + task-config.json). Task RUN-STATE lives in store/ (not
+    # in the task dir), so it is preserved across a force-reseed. Tasks the user
+    # authored themselves have no seed-scheduled-tasks/ source -> never visited.
     for tpl in "$SEED_SCHED_DIR"/*/; do
       [ -d "$tpl" ] || continue
       task_name=$(basename "$tpl")
       target="$SCHED_TARGET_DIR/$task_name"
+      forced=0
       if [ -d "$target" ]; then
-        SCHED_SKIP=$((SCHED_SKIP + 1))
-        continue
+        if [ "$RESEED_FLEET" = "1" ]; then
+          rm -rf "$target"
+          forced=1
+        else
+          SCHED_SKIP=$((SCHED_SKIP + 1))
+          continue
+        fi
       fi
       mkdir -p "$target"
       for f in "$tpl"*; do
@@ -279,10 +338,10 @@ if [ -d "$SEED_SCHED_DIR" ]; then
             -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
             "$f" > "$target/$(basename "$f")"
       done
-      SCHED_NEW=$((SCHED_NEW + 1))
+      if [ "$forced" = "1" ]; then SCHED_FORCED=$((SCHED_FORCED + 1)); else SCHED_NEW=$((SCHED_NEW + 1)); fi
     done
-    if [ "$SCHED_NEW" -gt 0 ] || [ "$SCHED_SKIP" -gt 0 ]; then
-      echo -e "  ${GREEN}✓${NC} Seed scheduled tasks: ${SCHED_NEW} új, ${SCHED_SKIP} kihagyva"
+    if [ "$SCHED_NEW" -gt 0 ] || [ "$SCHED_SKIP" -gt 0 ] || [ "$SCHED_FORCED" -gt 0 ]; then
+      echo -e "  ${GREEN}✓${NC} Seed scheduled tasks: ${SCHED_NEW} új, ${SCHED_FORCED} frissítve, ${SCHED_SKIP} kihagyva"
     fi
     # Init state files for new seeded tasks
     if [ "$SCHED_NEW" -gt 0 ]; then
@@ -299,6 +358,52 @@ if [ -d "$SEED_SCHED_DIR" ]; then
       mkdir -p "$BB_TARGET_TI"
       cp "$BB_SEED_TI"/*.json "$BB_TARGET_TI/" 2>/dev/null
       echo -e "  ${GREEN}✓${NC} Bumblebee threat-intel katalógusok telepítve"
+    fi
+  fi
+fi
+
+# --- Main CLAUDE.md identity check / optional regen (fleet-reseed only) ------
+# A stale install can carry hardcoded references to agents that do not exist
+# here (the origin fleet's roster baked into an old template). We never know
+# those names statically -- and must not bake them into the shipped updater --
+# so we detect the SYMPTOM generically: inter-agent delegation targets in the
+# main CLAUDE.md that are neither this install's main agent nor a real local
+# sub-agent under agents/. Warn only; the operator decides (or opts into regen).
+if [ "$RESEED_FLEET" = "1" ] || [ "$REGEN_CLAUDEMD" = "1" ]; then
+  CLAUDE_MD="$INSTALL_DIR/CLAUDE.md"
+  if [ "$REGEN_CLAUDEMD" = "1" ] && [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
+    # Opt-in: re-render from the canonical template with this install's identity.
+    # Back up first -- the operator may have hand-edited CLAUDE.md.
+    [ -f "$CLAUDE_MD" ] && cp "$CLAUDE_MD" "$CLAUDE_MD.backup-$(date +%Y%m%d-%H%M%S)"
+    REGEN_CHAT_ID=""
+    [ -f "$INSTALL_DIR/.env" ] && REGEN_CHAT_ID=$(grep '^CHAT_ID=' "$INSTALL_DIR/.env" | cut -d= -f2-)
+    sed -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
+        -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+        -e "s/{{CHAT_ID}}/$REGEN_CHAT_ID/g" \
+        -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
+        -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
+        "$INSTALL_DIR/templates/CLAUDE.md.template" > "$CLAUDE_MD"
+    echo -e "  ${GREEN}✓${NC} CLAUDE.md újrarenderelve a sablonból (előző verzió mentve: CLAUDE.md.backup-*)"
+  elif [ -f "$CLAUDE_MD" ]; then
+    KNOWN_IDS=" ${MAIN_AGENT_ID} ${BOT_NAME} "
+    if [ -d "$INSTALL_DIR/agents" ]; then
+      for d in "$INSTALL_DIR"/agents/*/; do
+        [ -d "$d" ] && KNOWN_IDS="${KNOWN_IDS}$(basename "$d") "
+      done
+    fi
+    UNKNOWN=""
+    while IFS= read -r tgt; do
+      [ -z "$tgt" ] && continue
+      case "$tgt" in *[A-Z]*) continue ;; esac           # UPPERCASE placeholder, not an id
+      case "$KNOWN_IDS" in *" $tgt "*) continue ;; esac   # a real local agent
+      case " $UNKNOWN " in *" $tgt "*) continue ;; esac   # dedupe
+      UNKNOWN="$UNKNOWN $tgt"
+    done <<INNER_EOF
+$(grep -oE '"to"[[:space:]]*:[[:space:]]*"[a-z][a-z0-9_-]*"' "$CLAUDE_MD" 2>/dev/null | sed -E 's/.*"([a-z][a-z0-9_-]*)".*/\1/')
+INNER_EOF
+    if [ -n "$UNKNOWN" ]; then
+      echo -e "  ${ORANGE}⚠${NC} A fő CLAUDE.md olyan inter-agent címzett(ek)re hivatkozik ami NEM létezik ezen az installon:${UNKNOWN}"
+      echo -e "     Ez tipikusan egy régi sablon maradéka. Tisztítsd kézzel, vagy futtasd: ./update.sh --regen-claudemd"
     fi
   fi
 fi

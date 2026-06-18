@@ -3,6 +3,7 @@ import { logger } from '../../logger.js'
 import { SETTINGS_REGISTRY, validateSettingValue } from '../../config-registry.js'
 import { getEffectiveSettingValue, setOverride } from '../../settings-store.js'
 import { logConfigChange } from '../../db.js'
+import { setStoreWriteActor } from '../../store-watcher.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
@@ -59,6 +60,8 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
         return true
       }
 
+      const resolvedActor = typeof actor === 'string' && actor ? actor : 'dashboard'
+      setStoreWriteActor(resolvedActor)
       const oldValue = getEffectiveSettingValue(key)
       const result = setOverride(key, value)
       if (!result.ok) {
@@ -66,7 +69,7 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
         return true
       }
 
-      logConfigChange(key, oldValue, validation.value!, typeof actor === 'string' && actor ? actor : 'dashboard')
+      logConfigChange(key, oldValue, validation.value!, resolvedActor)
       logger.info({ key, oldValue, newValue: validation.value }, 'Setting updated')
       json(res, { ok: true, key, value: validation.value, requiresRestart: def.requiresRestart })
     } catch (err) {

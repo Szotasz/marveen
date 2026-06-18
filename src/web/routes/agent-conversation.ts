@@ -74,7 +74,7 @@ function actionLabel(name: string, input: Record<string, unknown>): string {
 }
 
 // Turn the newest transcript into a flat, chronological, readable timeline.
-function buildTimeline(file: string, limit: number): Entry[] {
+function buildTimeline(file: string): Entry[] {
   const entries: Entry[] = []
   const raw = readFileSync(file, 'utf-8').split('\n')
   for (const line of raw) {
@@ -131,8 +131,8 @@ function buildTimeline(file: string, limit: number): Entry[] {
       continue
     }
   }
-  // Keep the most recent `limit` entries, oldest-first.
-  return entries.length > limit ? entries.slice(entries.length - limit) : entries
+  // The full timeline, oldest-first; the route windows it for pagination.
+  return entries
 }
 
 export async function tryHandleAgentConversation(ctx: RouteContext): Promise<boolean> {
@@ -140,14 +140,32 @@ export async function tryHandleAgentConversation(ctx: RouteContext): Promise<boo
   const match = path.match(/^\/api\/agents\/([^/]+)\/conversation$/)
   if (!match || method !== 'GET') return false
   const name = decodeURIComponent(match[1])
+  // Pagination: `limit` is the page size, `offset` is how many of the NEWEST
+  // entries to skip. offset=0 is the latest page; the UI pages further back
+  // (offset += limit) to load older history beyond the on-screen window -- and
+  // beyond the old fixed cap, since the whole transcript is now reachable.
   const limitRaw = Number(url.searchParams.get('limit'))
   const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 2000) : DEFAULT_LIMIT
+  const offsetRaw = Number(url.searchParams.get('offset'))
+  const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? Math.floor(offsetRaw) : 0
 
   const file = newestTranscript(name)
-  if (!file) { json(res, { agent: name, entries: [], note: 'Nincs még beszélgetés-előzmény ehhez az agenthez.' }); return true }
+  if (!file) { json(res, { agent: name, entries: [], total: 0, offset: 0, hasOlder: false, note: 'Nincs még beszélgetés-előzmény ehhez az agenthez.' }); return true }
   try {
-    const entries = buildTimeline(file, limit)
-    json(res, { agent: name, sessionId: file.split('/').pop()?.replace('.jsonl', '') ?? null, count: entries.length, entries })
+    const all = buildTimeline(file)
+    const total = all.length
+    const end = Math.max(0, total - offset)
+    const start = Math.max(0, end - limit)
+    const entries = all.slice(start, end)
+    json(res, {
+      agent: name,
+      sessionId: file.split('/').pop()?.replace('.jsonl', '') ?? null,
+      total,
+      offset,
+      hasOlder: start > 0,
+      count: entries.length,
+      entries,
+    })
   } catch {
     json(res, { error: 'A beszélgetés feldolgozása nem sikerült' }, 500)
   }

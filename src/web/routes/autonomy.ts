@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { PROJECT_ROOT } from '../../config.js'
 import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
+import { setStoreWriteActor } from '../../store-watcher.js'
 import type { RouteContext } from './types.js'
 
 const CONFIG_PATH = join(PROJECT_ROOT, 'store', 'autonomy-config.json')
@@ -76,6 +77,7 @@ export async function tryHandleAutonomy(ctx: RouteContext): Promise<boolean> {
       }
 
       cat.level = level
+      setStoreWriteActor('dashboard')
       saveConfig(config)
       logger.info({ key, level }, 'Autonomy level updated')
       json(res, { ok: true, key, level, updated_at: config.updated_at })

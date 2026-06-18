@@ -164,4 +164,26 @@ describe('runtime-seeded placeholders are all substituted', () => {
       `Placeholders used in scheduled-tasks/ that the seed does not substitute: ${unknown.join(', ')}`,
     ).toEqual([])
   })
+
+  // The distributed updater (update.sh) ships to every install. Its
+  // --reseed-fleet CLAUDE.md identity check detects stale-roster delegation
+  // targets by comparing against the LOCAL agents/ dir at runtime, so the
+  // script itself must never hard-code the origin fleet's roster names (or an
+  // operator's identity) -- otherwise the shipped updater would re-introduce
+  // exactly the leak it is meant to guard against. (The roster list lives here
+  // in the test, never in shipped code.)
+  it('update.sh stays host-agnostic (no hardcoded roster or operator identity)', () => {
+    const updateSh = readFileSync(join(REPO_ROOT, 'update.sh'), 'utf8')
+    for (const name of ['samu', 'zara', 'boni', 'iris', 'deeper', 'slacker']) {
+      expect(
+        new RegExp(`\\b${name}\\b`, 'i').test(updateSh),
+        `update.sh hard-codes fleet roster name "${name}" -- it must compare against agents/ at runtime instead`,
+      ).toBe(false)
+    }
+    for (const line of updateSh.split('\n')) {
+      if (/https?:\/\//.test(line)) continue
+      expect(HOME_PATH_RX.test(line), `update.sh embeds an absolute home path: ${line.trim()}`).toBe(false)
+      expect(PERSONAL_EMAIL_RX.test(line), `update.sh embeds a personal email: ${line.trim()}`).toBe(false)
+    }
+  })
 })

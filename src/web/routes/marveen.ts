@@ -5,7 +5,7 @@ import {
   KANBAN_LABEL_COLORS,
 } from '../../config.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
-import { readMarveenTelegramConfig, readMarveenDiscordConfig, readMarveenSlackConfig, sendMarveenAvatarChange } from '../telegram.js'
+import { readMarveenTelegramConfig, readMarveenDiscordConfig, readMarveenSlackConfig, readMarveenGooglechatConfig, sendMarveenAvatarChange } from '../telegram.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
 import { readFileOr } from '../agent-config.js'
 import { parseMultipart } from '../multipart.js'
@@ -60,6 +60,7 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
     const tg = readMarveenTelegramConfig()
     const dc = readMarveenDiscordConfig()
     const sl = readMarveenSlackConfig()
+    const gc = readMarveenGooglechatConfig()
     // Brand-relevant identity core. `name` = main agent display name (BOT_NAME),
     // `brandName` = product brand for the dashboard chrome (defaults to BOT_NAME;
     // the client falls back to its own HTML default "Marveen" if absent on a
@@ -80,6 +81,7 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
       hasTelegram: tg.hasTelegram,
       hasDiscord: dc.hasDiscord,
       hasSlack: sl.hasSlack,
+      hasGooglechat: gc.hasGooglechat,
       telegramBotUsername: tg.botUsername,
       personality: soulSection,
       claudeMd,
