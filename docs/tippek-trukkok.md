@@ -72,3 +72,15 @@ A rendszeres felülvizsgálat hozadékai:
 - Kockázatkezelés: kritikus szerepkörű ügynöknél (architektúra-tervezés, összetett elemzés) legyen tesztelési periódus az új modellel, mielőtt véglegesen átállsz; egy gyorsabb-olcsóbb modell tűnhet elégnek, amíg éles terhelés alatt nem derül ki a minőségromlás
 
 **Elért hatás:** optimális minőség/költség/sebesség-arány az egész flottában; kisebb számlák a rutin szerepköröknél, nagyobb teljesítmény ott, ahol szükséges.
+
+---
+
+## 8. Heartbeat-ek időszakos felülvizsgálata és ütemezésük ritkítása
+
+Az ütemezett heartbeat-feladatok könnyen szaporodnak, és az eredetileg indokolt futási sűrűség idővel feleslegessé válhat. Rendszeresen nézd át, melyek azok, amelyek tipikusan semmit sem találnak (no-op futások), és ritkítsd az ütemezésüket. A legtöbb értesítő-típusú feladatnál az óránkénti futás éppoly időben szállítja az eredményt, mint a 10 percenkénti -- de 6-szor kevesebb LLM-hívással jár.
+
+Konkrét példa: az eszter-done-ertesito feladat 10 percenkéntiről (`*/10 * * * *`) óránkéntire (`0 * * * *`) állítva -- napi 144 helyett 24 futás, az értesítés továbbra is perceken belül megérkezik.
+
+Az ütemezés a dashboard Ütemezés oldalán vagy az API-n keresztül módosítható; a futási előzmények alapján ítélhető meg, hogy melyik feladat érdemes a ritkításra.
+
+**Elért hatás:** token- és erőforrás-megtakarítás a felesleges no-op LLM-futások kiszűrésével; kisebb zajszint a naplókban.

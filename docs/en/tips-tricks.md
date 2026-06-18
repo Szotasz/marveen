@@ -72,3 +72,15 @@ Why periodic review pays off:
 - Risk management: for agents in critical roles (architecture design, complex analysis) allow a testing period before making the new model permanent; a faster or cheaper model may seem sufficient until quality degradation shows under real load
 
 **Effect achieved:** optimal quality/cost/speed balance across the fleet; lower bills for routine roles, higher performance where it counts.
+
+---
+
+## 8. Periodic review and rate-reduction of low-yield heartbeat tasks
+
+Scheduled heartbeat tasks accumulate easily, and a run frequency that was justified at setup can become unnecessary over time. Periodically review which tasks typically find nothing (no-op runs) and reduce their schedule. For most notification-type tasks, hourly runs deliver results just as promptly as every-10-minutes -- but with 6x fewer LLM calls.
+
+Concrete example: the eszter-done-ertesito task changed from every 10 minutes (`*/10 * * * *`) to hourly (`0 * * * *`) -- 144 runs per day down to 24, and notifications still arrive within minutes.
+
+Schedules can be adjusted on the dashboard Schedules page or via the API; run history is the best guide for identifying which tasks are candidates for rate reduction.
+
+**Effect achieved:** token and resource savings by eliminating unnecessary no-op LLM runs; reduced noise in the logs.
