@@ -201,6 +201,10 @@ window._i18n.hu = {
   'archived.empty':              'Nincs archivált kártya.',
   'archived.label.archived_at':  'Archiválva: {date}',
   'archived.restore_error':      'Hiba a visszaállításnál.',
+  'archived.modal.title':        'Archivált kártya',
+  'archived.meta.archived_at':   'Archiválva',
+  'archived.btn.restore_to_board': 'Visszaállítás a táblára',
+  'archived.error.http':         'Hiba: {status}',
 
   // --- Agents ---
   'agents.page_title':           'Csapat',

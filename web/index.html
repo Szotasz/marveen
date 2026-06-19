@@ -255,18 +255,18 @@
     <!-- === Archived Cards Page === -->
     <div class="page" id="archivedPage" hidden>
       <div class="page-header" style="margin-bottom:16px;">
-        <h2 style="margin:0;font-size:18px;">Archivált kártyák</h2>
+        <h2 style="margin:0;font-size:18px;" data-i18n="archived.page_title">Archivált kártyák</h2>
       </div>
       <div class="archived-toolbar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px;">
-        <input type="text" id="archivedQ" class="naplo-search" placeholder="Keresés (cím, projekt, felelős)..." style="min-width:220px;">
+        <input type="text" id="archivedQ" class="naplo-search" data-i18n-placeholder="archived.search_placeholder" placeholder="Keresés (cím, projekt, felelős)..." style="min-width:220px;">
         <select id="archivedProject" style="font-size:13px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);min-width:140px;">
-          <option value="">Minden projekt</option>
+          <option value="" data-i18n="archived.filter.all_projects">Minden projekt</option>
         </select>
-        <input type="date" id="archivedFrom" class="naplo-date" title="Archiválástól">
+        <input type="date" id="archivedFrom" class="naplo-date" data-i18n-title="archived.filter.date_from">
         <span style="color:var(--muted);font-size:13px;">-</span>
-        <input type="date" id="archivedTo" class="naplo-date" title="Archiválásig">
-        <button class="btn-primary btn-compact" id="archivedSearchBtn">Keresés</button>
-        <button class="btn-secondary btn-compact" id="archivedRefreshBtn">Frissítés</button>
+        <input type="date" id="archivedTo" class="naplo-date" data-i18n-title="archived.filter.date_to">
+        <button class="btn-primary btn-compact" id="archivedSearchBtn" data-i18n="archived.btn.search">Keresés</button>
+        <button class="btn-secondary btn-compact" id="archivedRefreshBtn" data-i18n="archived.btn.refresh">Frissítés</button>
       </div>
       <div class="naplo-summary" id="archivedSummary" style="margin-bottom:8px;"></div>
       <div id="archivedList"></div>
@@ -1481,22 +1481,22 @@
   <div class="modal-overlay" id="archivedDetailOverlay">
     <div class="modal modal-wide">
       <div class="modal-header">
-        <h2 id="archivedDetailTitle">Archivált kártya</h2>
+        <h2 id="archivedDetailTitle" data-i18n="archived.modal.title">Archivált kártya</h2>
         <button class="modal-close" id="archivedDetailClose">&times;</button>
       </div>
       <div class="modal-body">
         <div class="card-detail-meta" id="archivedDetailMeta"></div>
         <div class="card-detail-labels" id="archivedDetailLabelsWrap" style="display:none">
-          <h4>Címkék</h4>
+          <h4 data-i18n="kanban.modal.labels_title">Címkék</h4>
           <div class="kanban-card-labels" id="archivedDetailLabels"></div>
         </div>
         <div class="card-detail-desc" id="archivedDetailDesc"></div>
         <div class="card-detail-comments" id="archivedDetailCommentsWrap" style="display:none">
-          <h4>Megjegyzések</h4>
+          <h4 data-i18n="kanban.modal.comments_title">Megjegyzések</h4>
           <div class="comments-list" id="archivedDetailComments"></div>
         </div>
         <div class="detail-actions" style="gap:8px">
-          <button class="btn-secondary" id="archivedDetailRestoreBtn">Visszaállítás a táblára</button>
+          <button class="btn-secondary" id="archivedDetailRestoreBtn" data-i18n="archived.btn.restore_to_board">Visszaállítás a táblára</button>
         </div>
       </div>
     </div>

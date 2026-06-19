@@ -11515,9 +11515,19 @@ function downloadMarkdown(name, content) {
 ;(() => {
   let archivedInit = false
 
-  const STATUS_LABELS = { planned: 'Tervezett', in_progress: 'Folyamatban', waiting: 'Várakozik', done: 'Kész' }
+  const STATUS_LABELS = {
+    planned:     () => t('kanban.status.planned'),
+    in_progress: () => t('kanban.status.in_progress'),
+    waiting:     () => t('kanban.status.waiting'),
+    done:        () => t('kanban.status.done')
+  }
   const STATUS_COLORS = { planned: '#6b7280', in_progress: '#3b82f6', waiting: '#f59e0b', done: '#10b981' }
-  const PRIORITY_LABELS = { low: 'Alacsony', normal: 'Normál', high: 'Magas', urgent: 'Sürgős' }
+  const PRIORITY_LABELS = {
+    low:    () => t('kanban.priority.low'),
+    normal: () => t('kanban.priority.normal'),
+    high:   () => t('kanban.priority.high'),
+    urgent: () => t('kanban.priority.urgent')
+  }
   const PRIORITY_COLORS = { low: '#9ca3af', normal: '#6b7280', high: '#f59e0b', urgent: '#ef4444' }
 
   function fmtDate(unix) {
@@ -11531,7 +11541,7 @@ function downloadMarkdown(name, content) {
   // click; the restore button stops propagation so it doesn't also open it.
   function renderArchivedCard(card) {
     const prioColor = PRIORITY_COLORS[card.priority] || '#6b7280'
-    const prioLabel = PRIORITY_LABELS[card.priority] || card.priority
+    const prioLabel = PRIORITY_LABELS[card.priority]?.() ?? card.priority
     const seqHtml = card.seq != null
       ? `<span class="kanban-card-seq" style="font-family:monospace;font-size:11px;color:var(--text-muted);margin-right:5px">#${card.seq}</span>`
       : ''
@@ -11552,8 +11562,8 @@ function downloadMarkdown(name, content) {
       <div class="kanban-card-footer">${prioPill}</div>
       ${labelsHtml}
       <div class="archived-card-foot">
-        <span class="archived-date">Archiválva: ${fmtDate(card.archived_at)}</span>
-        <button class="btn-secondary btn-compact archived-restore-btn" data-id="${esc(card.id)}" title="Visszaállítás a táblára" style="white-space:nowrap;flex-shrink:0;">Visszaállítás</button>
+        <span class="archived-date">${t('archived.label.archived_at', {date: fmtDate(card.archived_at)})}</span>
+        <button class="btn-secondary btn-compact archived-restore-btn" data-id="${esc(card.id)}" title="${t('archived.btn.restore_to_board')}" style="white-space:nowrap;flex-shrink:0;">${t('archived.btn.restore')}</button>
       </div>
     </div>`
   }
@@ -11566,12 +11576,12 @@ function downloadMarkdown(name, content) {
     const meta = document.getElementById('archivedDetailMeta')
     const idLabel = (card.seq != null ? `#${card.seq} · ` : '') + card.id
     meta.innerHTML = `
-      <div class="meta-item"><span class="meta-label">Azonosító</span><span class="meta-value" style="font-family:monospace">${esc(idLabel)}</span></div>
-      <div class="meta-item"><span class="meta-label">Állapot</span><span class="meta-value">${STATUS_LABELS[card.status] || card.status}</span></div>
-      <div class="meta-item"><span class="meta-label">Felelős</span><span class="meta-value">${card.assignee ? esc(card.assignee) : '-- nincs --'}</span></div>
-      <div class="meta-item"><span class="meta-label">Prioritás</span><span class="meta-value">${PRIORITY_LABELS[card.priority] || card.priority}</span></div>
-      <div class="meta-item"><span class="meta-label">Projekt</span><span class="meta-value">${card.project ? esc(card.project) : '-- nincs --'}</span></div>
-      <div class="meta-item"><span class="meta-label">Archiválva</span><span class="meta-value">${fmtDate(card.archived_at)}</span></div>
+      <div class="meta-item"><span class="meta-label">${t('kanban.meta.id')}</span><span class="meta-value" style="font-family:monospace">${esc(idLabel)}</span></div>
+      <div class="meta-item"><span class="meta-label">${t('kanban.meta.status')}</span><span class="meta-value">${STATUS_LABELS[card.status]?.() ?? card.status}</span></div>
+      <div class="meta-item"><span class="meta-label">${t('kanban.meta.assignee')}</span><span class="meta-value">${card.assignee ? esc(card.assignee) : t('kanban.meta.none')}</span></div>
+      <div class="meta-item"><span class="meta-label">${t('kanban.meta.priority')}</span><span class="meta-value">${PRIORITY_LABELS[card.priority]?.() ?? card.priority}</span></div>
+      <div class="meta-item"><span class="meta-label">${t('kanban.meta.project')}</span><span class="meta-value">${card.project ? esc(card.project) : t('kanban.meta.none')}</span></div>
+      <div class="meta-item"><span class="meta-label">${t('archived.meta.archived_at')}</span><span class="meta-value">${fmtDate(card.archived_at)}</span></div>
     `
     const labelsWrap = document.getElementById('archivedDetailLabelsWrap')
     const labelsBox = document.getElementById('archivedDetailLabels')
@@ -11607,10 +11617,10 @@ function downloadMarkdown(name, content) {
 
     const restoreBtn = document.getElementById('archivedDetailRestoreBtn')
     restoreBtn.disabled = false
-    restoreBtn.textContent = 'Visszaállítás a táblára'
+    restoreBtn.textContent = t('archived.btn.restore_to_board')
     restoreBtn.onclick = async () => {
       restoreBtn.disabled = true
-      restoreBtn.textContent = '...'
+      restoreBtn.textContent = t('archived.btn.restoring')
       try {
         const resp = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/unarchive`, { method: 'POST' })
         if (resp.ok) {
@@ -11618,12 +11628,12 @@ function downloadMarkdown(name, content) {
           doArchivedSearch()
         } else {
           restoreBtn.disabled = false
-          restoreBtn.textContent = 'Visszaállítás a táblára'
-          showToast('Hiba a visszaállításnál.')
+          restoreBtn.textContent = t('archived.btn.restore_to_board')
+          showToast(t('archived.restore_error'))
         }
       } catch {
         restoreBtn.disabled = false
-        restoreBtn.textContent = 'Visszaállítás a táblára'
+        restoreBtn.textContent = t('archived.btn.restore_to_board')
       }
     }
     openModal(document.getElementById('archivedDetailOverlay'))
@@ -11636,7 +11646,7 @@ function downloadMarkdown(name, content) {
       const projects = await r.json()
       const sel = document.getElementById('archivedProject')
       const cur = sel.value
-      sel.innerHTML = '<option value="">Minden projekt</option>'
+      sel.innerHTML = '<option value="">' + t('archived.filter.all_projects') + '</option>'
       for (const p of projects) {
         const opt = document.createElement('option')
         opt.value = p
@@ -11651,7 +11661,7 @@ function downloadMarkdown(name, content) {
     const list = document.getElementById('archivedList')
     const summary = document.getElementById('archivedSummary')
     list.className = ''
-    list.innerHTML = '<p class="naplo-empty">Betöltés...</p>'
+    list.innerHTML = '<p class="naplo-empty">' + t('common.loading') + '</p>'
     summary.textContent = ''
 
     const params = new URLSearchParams()
@@ -11666,11 +11676,11 @@ function downloadMarkdown(name, content) {
 
     try {
       const r = await fetch('/api/kanban/archived?' + params.toString())
-      if (!r.ok) { list.innerHTML = `<p class="naplo-empty error">Hiba: ${r.status}</p>`; return }
+      if (!r.ok) { list.innerHTML = '<p class="naplo-empty error">' + t('archived.error.http', {status: r.status}) + '</p>'; return }
       const data = await r.json()
       const cards = data.cards || []
-      summary.textContent = `${cards.length} kártya (max ${data.limit})`
-      if (cards.length === 0) { list.innerHTML = '<p class="naplo-empty">Nincs archivált kártya.</p>'; return }
+      summary.textContent = t('archived.summary', {count: cards.length, limit: data.limit})
+      if (cards.length === 0) { list.innerHTML = '<p class="naplo-empty">' + t('archived.empty') + '</p>'; return }
       list.className = 'archived-grid'
       list.innerHTML = cards.map(renderArchivedCard).join('')
       const byId = new Map(cards.map(c => [c.id, c]))
@@ -11692,20 +11702,20 @@ function downloadMarkdown(name, content) {
             if (resp.ok) {
               const cardEl = btn.closest('.archived-card')
               if (cardEl) cardEl.style.opacity = '0.4'
-              btn.textContent = 'Visszaállítva'
+              btn.textContent = t('archived.btn.restored')
             } else {
               btn.disabled = false
-              btn.textContent = 'Visszaállítás'
-              showToast('Hiba a visszaállításnál.')
+              btn.textContent = t('archived.btn.restore')
+              showToast(t('archived.restore_error'))
             }
           } catch {
             btn.disabled = false
-            btn.textContent = 'Visszaállítás'
+            btn.textContent = t('archived.btn.restore')
           }
         })
       })
     } catch (err) {
-      list.innerHTML = `<p class="naplo-empty error">Hálózati hiba: ${err.message}</p>`
+      list.innerHTML = '<p class="naplo-empty error">' + t('common.error_network', {msg: err.message}) + '</p>'
     }
   }
 

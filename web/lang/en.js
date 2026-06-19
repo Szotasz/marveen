@@ -201,6 +201,10 @@ window._i18n.en = {
   'archived.empty':              'No archived cards.',
   'archived.label.archived_at':  'Archived: {date}',
   'archived.restore_error':      'Error restoring card.',
+  'archived.modal.title':        'Archived card',
+  'archived.meta.archived_at':   'Archived',
+  'archived.btn.restore_to_board': 'Restore to board',
+  'archived.error.http':         'Error: {status}',
 
   // --- Agents ---
   'agents.page_title':           'Team',
