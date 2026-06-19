@@ -1,0 +1,16 @@
+# NOTE: replace /path/to/marveen (install dir) and /home/USER (home) with your values.
+[Unit]
+Description=Marveen stuck-modal guard (close a wedged /mcp modal in the main channels session)
+After=marveen-dashboard.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/path/to/marveen/scripts/stuck-modal-guard.sh
+Environment=PATH=/home/USER/.local/bin:/home/USER/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/USER
+Environment=TZ=Europe/Budapest
+# journal, NOT append:file -- a missing store/ or full disk must not stop the
+# guard from starting (opening an append fd would fail before ExecStart).
+StandardOutput=journal
+StandardError=journal

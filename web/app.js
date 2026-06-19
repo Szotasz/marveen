@@ -103,13 +103,77 @@ function mainAgentId() {
       localStorage.removeItem(TOKEN_KEY)
       if (!window.__marveenAuthPrompted) {
         window.__marveenAuthPrompted = true
-        alert(
-          'Dashboard authentication failed. Check the server log for the access URL ' +
-          '(look for "Dashboard access URL" with ?token=...), then reopen it in your browser.'
-        )
+        // An installed (home-screen) PWA has its own localStorage, separate from
+        // Safari's, and the manifest start_url has no ?token=, so the very first
+        // standalone launch is token-less and 401s. There is no address bar to
+        // paste a ?token= URL into either. Offer an in-app paste field that
+        // writes the token to the app's own storage, then reload.
+        const isStandalone = window.navigator.standalone === true ||
+          (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
+        if (isStandalone) {
+          showStandaloneTokenPrompt(TOKEN_KEY)
+        } else {
+          alert(
+            'Dashboard authentication failed. Check the server log for the access URL ' +
+            '(look for "Dashboard access URL" with ?token=...), then reopen it in your browser.'
+          )
+        }
       }
     }
     return res
+  }
+
+  // Full-screen, one-time token paste for installed PWAs (see the 401 handler).
+  // The user pastes the access token (the value after ?token= in the server's
+  // startup URL, or from the dashboard Settings / mobile-login QR); it is saved
+  // to this app instance's localStorage and the page reloads authenticated.
+  function showStandaloneTokenPrompt(tokenKey) {
+    if (document.getElementById('mv-token-overlay')) return
+    const overlay = document.createElement('div')
+    overlay.id = 'mv-token-overlay'
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#1a1917;color:#faf9f5;' +
+      'display:flex;align-items:center;justify-content:center;padding:24px;' +
+      'font-family:system-ui,-apple-system,sans-serif'
+    overlay.innerHTML =
+      '<div style="max-width:420px;width:100%;display:flex;flex-direction:column;gap:14px">' +
+        '<h2 style="margin:0;font-size:18px;text-align:center">Hozzáférés szükséges</h2>' +
+        '<p style="margin:0;font-size:14px;opacity:0.8;line-height:1.5;text-align:center">' +
+          'A home-screen app saját tárhelye még üres. Illeszd be a dashboard access tokent ' +
+          '(a szerver indítási URL-jében a ?token= utáni rész, vagy a Beállítások / mobil-login QR), ' +
+          'és elmentődik ehhez az apphoz.</p>' +
+        '<textarea id="mv-token-input" rows="3" autocapitalize="off" autocorrect="off" spellcheck="false" ' +
+          'style="width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid #555;' +
+          'background:#0f0e0d;color:#faf9f5;font-size:14px;font-family:monospace" placeholder="token..."></textarea>' +
+        '<button id="mv-token-save" style="padding:12px;border:0;border-radius:8px;background:#10b981;' +
+          'color:#fff;font-size:15px;font-weight:600">Mentés és újratöltés</button>' +
+        '<div id="mv-token-err" style="color:#f87171;font-size:13px;min-height:16px;text-align:center"></div>' +
+      '</div>'
+    document.body.appendChild(overlay)
+    const input = overlay.querySelector('#mv-token-input')
+    const errEl = overlay.querySelector('#mv-token-err')
+    const submit = () => {
+      const raw = (input.value || '').trim()
+      if (!raw) { errEl.textContent = 'Üres token.'; return }
+      // Accept either a bare token or the whole startup URL (the user often
+      // pastes the full https://host/?token=... link). Pull just the token out.
+      let token = raw
+      if (raw.includes('token=')) {
+        let extracted = null
+        try { extracted = new URL(raw).searchParams.get('token') } catch { /* not a full URL */ }
+        if (!extracted) {
+          // covers ?token=, &token=, and the hash form (/#...?token=...)
+          const m = raw.match(/[?&#]token=([^&#\s]+)/)
+          if (m) extracted = m[1]
+        }
+        if (extracted) { try { token = decodeURIComponent(extracted) } catch { token = extracted } }
+      }
+      token = token.trim()
+      if (!token) { errEl.textContent = 'Üres token.'; return }
+      localStorage.setItem(tokenKey, token)
+      window.location.reload()
+    }
+    overlay.querySelector('#mv-token-save').addEventListener('click', submit)
+    setTimeout(() => input.focus(), 50)
   }
 })()
 
@@ -190,6 +254,7 @@ function switchPage(pageId) {
   if (pageId === 'messages') loadMessagesPage()
   if (pageId === 'tokenUsage') loadTokenUsage()
   if (pageId === 'ideas') loadIdeasPage()
+  if (pageId === 'archived') loadArchivedPage()
   if (pageId === 'naplo') loadNaplo()
 }
 
@@ -2417,6 +2482,12 @@ function renderAgents() {
   if (window._marveen) {
     const m = window._marveen
     const displayName = m.name || 'Marveen'
+    // The model is no longer hardcoded: /api/marveen reports the configured
+    // model (readActiveModelFromProjectDir). Mirror the sub-agent card, which
+    // uses the model value as both the badge label and class. Fall back to
+    // 'opus' only before /api/marveen has resolved (or on a legacy backend).
+    const mainModelLabel = m.model || 'opus'
+    const mainModelClass = m.model || 'opus'
     const mCard = document.createElement('div')
     mCard.className = 'agent-card marveen-card'
     mCard.innerHTML = `
@@ -2428,7 +2499,7 @@ function renderAgents() {
         </div>
       </div>
       <div class="agent-card-footer">
-        <span class="agent-model-badge opus">opus</span>
+        <span class="agent-model-badge ${escapeHtml(mainModelClass)}">${escapeHtml(mainModelLabel)}</span>
         <span class="process-indicator" title="${t('agents.marveen_process_tip')}"><span class="process-dot running"></span>${t('agents.status.running')}</span>
         <span class="tg-status" title="${t('agents.marveen_channel_tip')}"><span class="tg-dot connected"></span>${t('agents.status.online')}</span>
       </div>
@@ -8410,7 +8481,11 @@ async function loadMessagesPage() {
 }
 
 const CHAT_SYSTEM_AGENTS = new Set(['heartbeat','telegram-coordinator','channel-coordinator'])
-const CHAT_OWNER_AGENT = 'Szabolcs' // pinned to top; display label overridden
+// The owner's own message thread is pinned to the top and labelled "<name> (te)".
+// The owner display name comes from the backend (OWNER_NAME via /api/marveen ->
+// window._marveen.ownerName), not a hardcoded literal, so a renamed install
+// recognizes its real owner. Empty until _marveen resolves (no false match).
+function chatOwnerName() { return window._marveen?.ownerName || '' }
 
 function chatLastSeenKey(agentName) { return 'chat_last_seen_' + agentName }
 function chatGetLastSeen(agentName) { return parseInt(localStorage.getItem(chatLastSeenKey(agentName)) || '0', 10) }
@@ -8418,7 +8493,8 @@ function chatMarkSeen(agentName, maxId) {
   if (maxId > chatGetLastSeen(agentName)) localStorage.setItem(chatLastSeenKey(agentName), String(maxId))
 }
 function chatIsUnread(agentName, threadInfo) {
-  if (agentName !== CHAT_OWNER_AGENT) return false
+  const owner = chatOwnerName()
+  if (!owner || agentName !== owner) return false
   if (!threadInfo?.lastMsg) return false
   return threadInfo.lastMsg.id > chatGetLastSeen(agentName)
 }
@@ -8452,7 +8528,7 @@ async function loadChatAgentList() {
     for (const t of threads) {
       if (t.agent) threadIndex.set(t.agent, { lastMsg: t.lastMessage, count: t.count || 0 })
     }
-    // Also include thread agents not in fleet (e.g. Szabolcs/owner direct msgs)
+    // Also include thread agents not in fleet (e.g. the owner's own direct msgs)
     for (const t of threads) {
       if (t.agent && !fleetNames.includes(t.agent) && !CHAT_SYSTEM_AGENTS.has(t.agent)) {
         fleetNames.push(t.agent)
@@ -8460,9 +8536,10 @@ async function loadChatAgentList() {
     }
 
     // Sort: owner pinned first, then agents with messages by recency, rest alphabetical
+    const owner = chatOwnerName()
     const sorted = [...fleetNames].sort((a, b) => {
-      if (a === CHAT_OWNER_AGENT) return -1
-      if (b === CHAT_OWNER_AGENT) return 1
+      if (owner && a === owner) return -1
+      if (owner && b === owner) return 1
       const aHas = threadIndex.has(a), bHas = threadIndex.has(b)
       if (aHas && !bHas) return -1
       if (!aHas && bHas) return 1
@@ -8482,7 +8559,7 @@ async function loadChatAgentList() {
       const isSelected = name === chatSelectedAgent ? ' selected' : ''
       const dimmed = info ? '' : ' style="opacity:0.5"'
       const unread = chatIsUnread(name, info)
-      const displayName = name === CHAT_OWNER_AGENT ? 'Szabolcs (te)' : name
+      const displayName = owner && name === owner ? owner + ' (te)' : name
       return `<div class="chat-agent-item${isSelected}${unread ? ' unread' : ''}" data-agent="${escapeHtml(name)}"${dimmed}>
         <div class="chat-agent-avatar">${chatAvatarHtml(name, 40)}</div>
         <div class="chat-agent-info">
@@ -8525,7 +8602,8 @@ async function loadChatThread(agentName) {
   chatThreadState.hasMore = true
   chatThreadState.loading = false
 
-  const threadDisplayName = agentName === CHAT_OWNER_AGENT ? 'Szabolcs (te)' : agentName
+  const owner = chatOwnerName()
+  const threadDisplayName = owner && agentName === owner ? owner + ' (te)' : agentName
 
   panel.innerHTML = `
     <div class="chat-thread-header">
@@ -11416,6 +11494,221 @@ function downloadMarkdown(name, content) {
   btn.addEventListener('click', () => { render(); openModal(overlay) })
   if (closeBtn) closeBtn.addEventListener('click', () => closeModal(overlay))
   overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(overlay) })
+})()
+
+// === Archivalt kartyak ===
+;(() => {
+  let archivedInit = false
+
+  const STATUS_LABELS = { planned: 'Tervezett', in_progress: 'Folyamatban', waiting: 'Várakozik', done: 'Kész' }
+  const STATUS_COLORS = { planned: '#6b7280', in_progress: '#3b82f6', waiting: '#f59e0b', done: '#10b981' }
+  const PRIORITY_LABELS = { low: 'Alacsony', normal: 'Normál', high: 'Magas', urgent: 'Sürgős' }
+  const PRIORITY_COLORS = { low: '#9ca3af', normal: '#6b7280', high: '#f59e0b', urgent: '#ef4444' }
+
+  function fmtDate(unix) {
+    if (!unix) return ''
+    return new Date(unix * 1000).toLocaleString('hu-HU', { dateStyle: 'short', timeStyle: 'short' })
+  }
+
+  // Render an archived card with the same visual language as the live board:
+  // project pill + #seq title + colored rounded priority/label chips, wrapped in
+  // the .kanban-card frame. The whole card opens a read-only detail modal on
+  // click; the restore button stops propagation so it doesn't also open it.
+  function renderArchivedCard(card) {
+    const prioColor = PRIORITY_COLORS[card.priority] || '#6b7280'
+    const prioLabel = PRIORITY_LABELS[card.priority] || card.priority
+    const seqHtml = card.seq != null
+      ? `<span class="kanban-card-seq" style="font-family:monospace;font-size:11px;color:var(--text-muted);margin-right:5px">#${card.seq}</span>`
+      : ''
+    const projectHtml = card.project
+      ? `<span class="kanban-card-project">${esc(card.project)}</span>`
+      : ''
+    let labelsHtml = ''
+    if (Array.isArray(card.labels) && card.labels.length > 0) {
+      const pills = card.labels
+        .map(l => `<span class="kanban-card-label-pill" style="--label-color:${esc(l.color)}">#${esc(l.name)}</span>`)
+        .join('')
+      labelsHtml = `<div class="kanban-card-labels">${pills}</div>`
+    }
+    const prioPill = `<span class="archived-prio-pill" style="--prio-color:${prioColor}">${prioLabel}</span>`
+    return `<div class="kanban-card archived-card" data-id="${esc(card.id)}" data-priority="${esc(card.priority)}">
+      ${projectHtml}
+      <div class="kanban-card-title">${seqHtml}${esc(card.title)}</div>
+      <div class="kanban-card-footer">${prioPill}</div>
+      ${labelsHtml}
+      <div class="archived-card-foot">
+        <span class="archived-date">Archiválva: ${fmtDate(card.archived_at)}</span>
+        <button class="btn-secondary btn-compact archived-restore-btn" data-id="${esc(card.id)}" title="Visszaállítás a táblára" style="white-space:nowrap;flex-shrink:0;">Visszaállítás</button>
+      </div>
+    </div>`
+  }
+
+  // Read-only detail modal for an archived card: meta grid, labels, description,
+  // comments -- no editing affordances. Restore button mirrors the card button.
+  async function showArchivedDetail(card) {
+    const seqPrefix = card.seq != null ? `#${card.seq} ` : ''
+    document.getElementById('archivedDetailTitle').textContent = `${seqPrefix}${card.title}`
+    const meta = document.getElementById('archivedDetailMeta')
+    const idLabel = (card.seq != null ? `#${card.seq} · ` : '') + card.id
+    meta.innerHTML = `
+      <div class="meta-item"><span class="meta-label">Azonosító</span><span class="meta-value" style="font-family:monospace">${esc(idLabel)}</span></div>
+      <div class="meta-item"><span class="meta-label">Állapot</span><span class="meta-value">${STATUS_LABELS[card.status] || card.status}</span></div>
+      <div class="meta-item"><span class="meta-label">Felelős</span><span class="meta-value">${card.assignee ? esc(card.assignee) : '-- nincs --'}</span></div>
+      <div class="meta-item"><span class="meta-label">Prioritás</span><span class="meta-value">${PRIORITY_LABELS[card.priority] || card.priority}</span></div>
+      <div class="meta-item"><span class="meta-label">Projekt</span><span class="meta-value">${card.project ? esc(card.project) : '-- nincs --'}</span></div>
+      <div class="meta-item"><span class="meta-label">Archiválva</span><span class="meta-value">${fmtDate(card.archived_at)}</span></div>
+    `
+    const labelsWrap = document.getElementById('archivedDetailLabelsWrap')
+    const labelsBox = document.getElementById('archivedDetailLabels')
+    if (Array.isArray(card.labels) && card.labels.length > 0) {
+      labelsBox.innerHTML = card.labels
+        .map(l => `<span class="kanban-card-label-pill" style="--label-color:${esc(l.color)}">#${esc(l.name)}</span>`)
+        .join('')
+      labelsWrap.style.display = ''
+    } else {
+      labelsWrap.style.display = 'none'
+    }
+    document.getElementById('archivedDetailDesc').textContent = card.description || ''
+
+    const commentsWrap = document.getElementById('archivedDetailCommentsWrap')
+    const commentsBox = document.getElementById('archivedDetailComments')
+    commentsBox.innerHTML = ''
+    try {
+      const res = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/comments`)
+      const comments = res.ok ? await res.json() : []
+      if (Array.isArray(comments) && comments.length > 0) {
+        for (const c of comments) {
+          const date = new Date(c.created_at * 1000).toLocaleString('hu-HU')
+          const div = document.createElement('div')
+          div.className = 'comment-item'
+          div.innerHTML = `<div><span class="comment-author">${esc(c.author)}</span><span class="comment-date">${date}</span></div><div class="comment-body">${esc(c.content)}</div>`
+          commentsBox.appendChild(div)
+        }
+        commentsWrap.style.display = ''
+      } else {
+        commentsWrap.style.display = 'none'
+      }
+    } catch { commentsWrap.style.display = 'none' }
+
+    const restoreBtn = document.getElementById('archivedDetailRestoreBtn')
+    restoreBtn.disabled = false
+    restoreBtn.textContent = 'Visszaállítás a táblára'
+    restoreBtn.onclick = async () => {
+      restoreBtn.disabled = true
+      restoreBtn.textContent = '...'
+      try {
+        const resp = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/unarchive`, { method: 'POST' })
+        if (resp.ok) {
+          closeModal(document.getElementById('archivedDetailOverlay'))
+          doArchivedSearch()
+        } else {
+          restoreBtn.disabled = false
+          restoreBtn.textContent = 'Visszaállítás a táblára'
+          showToast('Hiba a visszaállításnál.')
+        }
+      } catch {
+        restoreBtn.disabled = false
+        restoreBtn.textContent = 'Visszaállítás a táblára'
+      }
+    }
+    openModal(document.getElementById('archivedDetailOverlay'))
+  }
+
+  async function populateArchivedProjects() {
+    try {
+      const r = await fetch('/api/kanban-projects')
+      if (!r.ok) return
+      const projects = await r.json()
+      const sel = document.getElementById('archivedProject')
+      const cur = sel.value
+      sel.innerHTML = '<option value="">Minden projekt</option>'
+      for (const p of projects) {
+        const opt = document.createElement('option')
+        opt.value = p
+        opt.textContent = p
+        if (p === cur) opt.selected = true
+        sel.appendChild(opt)
+      }
+    } catch { /* best-effort */ }
+  }
+
+  async function doArchivedSearch() {
+    const list = document.getElementById('archivedList')
+    const summary = document.getElementById('archivedSummary')
+    list.className = ''
+    list.innerHTML = '<p class="naplo-empty">Betöltés...</p>'
+    summary.textContent = ''
+
+    const params = new URLSearchParams()
+    const q = document.getElementById('archivedQ').value.trim()
+    const project = document.getElementById('archivedProject').value
+    const from = document.getElementById('archivedFrom').value
+    const to = document.getElementById('archivedTo').value
+    if (q) params.set('q', q)
+    if (project) params.set('project', project)
+    if (from) params.set('from', Math.floor(new Date(from).getTime() / 1000))
+    if (to) params.set('to', Math.floor(new Date(to + 'T23:59:59').getTime() / 1000))
+
+    try {
+      const r = await fetch('/api/kanban/archived?' + params.toString())
+      if (!r.ok) { list.innerHTML = `<p class="naplo-empty error">Hiba: ${r.status}</p>`; return }
+      const data = await r.json()
+      const cards = data.cards || []
+      summary.textContent = `${cards.length} kártya (max ${data.limit})`
+      if (cards.length === 0) { list.innerHTML = '<p class="naplo-empty">Nincs archivált kártya.</p>'; return }
+      list.className = 'archived-grid'
+      list.innerHTML = cards.map(renderArchivedCard).join('')
+      const byId = new Map(cards.map(c => [c.id, c]))
+      // Whole card opens the read-only detail; restore button acts on its own.
+      list.querySelectorAll('.archived-card').forEach(el => {
+        el.addEventListener('click', () => {
+          const card = byId.get(el.dataset.id)
+          if (card) showArchivedDetail(card)
+        })
+      })
+      list.querySelectorAll('.archived-restore-btn').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation()
+          const id = btn.dataset.id
+          btn.disabled = true
+          btn.textContent = '...'
+          try {
+            const resp = await fetch(`/api/kanban/${id}/unarchive`, { method: 'POST' })
+            if (resp.ok) {
+              const cardEl = btn.closest('.archived-card')
+              if (cardEl) cardEl.style.opacity = '0.4'
+              btn.textContent = 'Visszaállítva'
+            } else {
+              btn.disabled = false
+              btn.textContent = 'Visszaállítás'
+              showToast('Hiba a visszaállításnál.')
+            }
+          } catch {
+            btn.disabled = false
+            btn.textContent = 'Visszaállítás'
+          }
+        })
+      })
+    } catch (err) {
+      list.innerHTML = `<p class="naplo-empty error">Hálózati hiba: ${err.message}</p>`
+    }
+  }
+
+  function loadArchivedPage() {
+    if (!archivedInit) {
+      archivedInit = true
+      document.getElementById('archivedSearchBtn').addEventListener('click', doArchivedSearch)
+      document.getElementById('archivedRefreshBtn').addEventListener('click', doArchivedSearch)
+      document.getElementById('archivedQ').addEventListener('keydown', e => { if (e.key === 'Enter') doArchivedSearch() })
+      const adOverlay = document.getElementById('archivedDetailOverlay')
+      document.getElementById('archivedDetailClose').addEventListener('click', () => closeModal(adOverlay))
+      adOverlay.addEventListener('click', e => { if (e.target === adOverlay) closeModal(adOverlay) })
+    }
+    populateArchivedProjects()
+    doArchivedSearch()
+  }
+
+  window.loadArchivedPage = loadArchivedPage
 })()
 
 // === Naplo (Audit Timeline) ===

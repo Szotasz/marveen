@@ -2,7 +2,7 @@
 <html lang="hu" data-theme="light">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Marveen</title>
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/css/xterm.css">
@@ -53,6 +53,10 @@
       <a href="#" class="sb-link" data-page="kanban">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="10" rx="1"/><rect x="17" y="4" width="4" height="13" rx="1"/></svg>
         <span class="sb-label">Kanban</span>
+      </a>
+      <a href="#" class="sb-link" data-page="archived">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5" rx="1"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+        <span class="sb-label">Archivált</span>
       </a>
       <a href="#" class="sb-link" data-page="agents">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
@@ -246,6 +250,26 @@
         </div>
       </div>
       <div class="kanban-board kanban-swimlane-board" id="kanbanSwimlaneBoard" hidden></div>
+    </div>
+
+    <!-- === Archived Cards Page === -->
+    <div class="page" id="archivedPage" hidden>
+      <div class="page-header" style="margin-bottom:16px;">
+        <h2 style="margin:0;font-size:18px;">Archivált kártyák</h2>
+      </div>
+      <div class="archived-toolbar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px;">
+        <input type="text" id="archivedQ" class="naplo-search" placeholder="Keresés (cím, projekt, felelős)..." style="min-width:220px;">
+        <select id="archivedProject" style="font-size:13px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);min-width:140px;">
+          <option value="">Minden projekt</option>
+        </select>
+        <input type="date" id="archivedFrom" class="naplo-date" title="Archiválástól">
+        <span style="color:var(--muted);font-size:13px;">-</span>
+        <input type="date" id="archivedTo" class="naplo-date" title="Archiválásig">
+        <button class="btn-primary btn-compact" id="archivedSearchBtn">Keresés</button>
+        <button class="btn-secondary btn-compact" id="archivedRefreshBtn">Frissítés</button>
+      </div>
+      <div class="naplo-summary" id="archivedSummary" style="margin-bottom:8px;"></div>
+      <div id="archivedList"></div>
     </div>
 
     <!-- === Agents Page === -->
@@ -1448,6 +1472,31 @@
           <button class="btn-secondary" id="cardEditBtn" data-i18n="common.btn.edit">Szerkesztés</button>
           <button class="btn-secondary" id="cardArchiveBtn" data-i18n="kanban.btn.archive">Archiválás</button>
           <button class="btn-danger" id="cardDeleteBtn" data-i18n="common.btn.delete">Törlés</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Archived card detail (read-only) -->
+  <div class="modal-overlay" id="archivedDetailOverlay">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <h2 id="archivedDetailTitle">Archivált kártya</h2>
+        <button class="modal-close" id="archivedDetailClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="card-detail-meta" id="archivedDetailMeta"></div>
+        <div class="card-detail-labels" id="archivedDetailLabelsWrap" style="display:none">
+          <h4>Címkék</h4>
+          <div class="kanban-card-labels" id="archivedDetailLabels"></div>
+        </div>
+        <div class="card-detail-desc" id="archivedDetailDesc"></div>
+        <div class="card-detail-comments" id="archivedDetailCommentsWrap" style="display:none">
+          <h4>Megjegyzések</h4>
+          <div class="comments-list" id="archivedDetailComments"></div>
+        </div>
+        <div class="detail-actions" style="gap:8px">
+          <button class="btn-secondary" id="archivedDetailRestoreBtn">Visszaállítás a táblára</button>
         </div>
       </div>
     </div>

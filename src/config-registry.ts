@@ -132,6 +132,17 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  {
+    key: 'KANBAN_ARCHIVED_MAX_ROWS',
+    type: 'int',
+    default: 500,
+    min: 10,
+    max: 5000,
+    description: 'Az archivált kártya-nézetben egyszerre megjelenített kártyák maximális száma.',
+    module: 'kanban',
+    secret: false,
+    requiresRestart: false,
+  },
   // --- Kanban aging thresholds and colours (hot-reload via settings-store) ---
   {
     key: 'KANBAN_AGING_WARN_H',

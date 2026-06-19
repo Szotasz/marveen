@@ -1157,6 +1157,57 @@ export function archiveKanbanCard(id: string): boolean {
   return db.prepare('UPDATE kanban_cards SET archived_at=?, updated_at=? WHERE id=?').run(now, now, id).changes > 0
 }
 
+export function unarchiveKanbanCard(id: string): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  return db.prepare('UPDATE kanban_cards SET archived_at=NULL, updated_at=? WHERE id=? AND archived_at IS NOT NULL').run(now, id).changes > 0
+}
+
+export interface ArchivedKanbanCard {
+  id: string
+  title: string
+  status: string
+  project: string | null
+  priority: string
+  assignee: string | null
+  archived_at: number
+  updated_at: number
+}
+
+export function listArchivedKanbanCards(opts: {
+  q?: string
+  project?: string
+  label?: string
+  from?: number
+  to?: number
+  limit: number
+}): ArchivedKanbanCard[] {
+  const { q, project, label, from, to, limit } = opts
+  let sql = `
+    SELECT DISTINCT kc.id, kc.title, kc.status, kc.project, kc.priority, kc.assignee, kc.archived_at, kc.updated_at
+    FROM kanban_cards kc
+  `
+  const params: unknown[] = []
+  if (label) {
+    sql += `
+      JOIN kanban_card_labels kcl ON kcl.card_id = kc.id
+      JOIN labels l ON l.id = kcl.label_id AND l.name = ?
+    `
+    params.push(label)
+  }
+  sql += ' WHERE kc.archived_at IS NOT NULL'
+  if (project) { sql += ' AND kc.project = ?'; params.push(project) }
+  if (from)    { sql += ' AND kc.archived_at >= ?'; params.push(from) }
+  if (to)      { sql += ' AND kc.archived_at <= ?'; params.push(to) }
+  if (q) {
+    sql += ' AND (kc.title LIKE ? OR kc.project LIKE ? OR kc.assignee LIKE ?)'
+    const like = `%${q}%`
+    params.push(like, like, like)
+  }
+  sql += ' ORDER BY kc.archived_at DESC LIMIT ?'
+  params.push(limit)
+  return db.prepare(sql).all(...params) as ArchivedKanbanCard[]
+}
+
 export function listKanbanProjects(): string[] {
   const rows = db.prepare(
     "SELECT DISTINCT project FROM kanban_cards WHERE project IS NOT NULL AND project != '' AND archived_at IS NULL ORDER BY project"

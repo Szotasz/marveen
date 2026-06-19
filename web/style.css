@@ -48,6 +48,15 @@
 
 /* === Reset === */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* Page-level horizontal clip. `overflow-x: clip` (not `hidden`) is deliberate:
+   `hidden` would compute overflow-y to `auto` and make body a scroll container,
+   which breaks the dashboard's many `position: sticky` elements. `clip` clips
+   without establishing a scroll container, so sticky keeps working. This stops
+   an installed (standalone) PWA from being draggable sideways when something
+   overflows by a hair: Safari's rubber-band hides it, standalone does not. */
+html, body { max-width: 100%; overflow-x: clip; }
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
   background: var(--bg);
@@ -799,6 +808,39 @@ main {
   cursor: default;
 }
 .kanban-card-label-overflow:hover { filter: none; }
+
+/* Archived cards: same card look as the board, laid out in a responsive grid */
+.archived-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+.archived-card {
+  cursor: pointer;
+}
+.archived-card:active { cursor: pointer; }
+.archived-prio-pill {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 8px;
+  color: var(--prio-color);
+  background: color-mix(in srgb, var(--prio-color) 16%, transparent);
+  line-height: 1.5;
+}
+.archived-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.archived-date {
+  font-size: 11px;
+  color: var(--text-muted);
+}
 
 .kanban-quick-filter-chip {
   display: inline-flex;
