@@ -315,7 +315,7 @@
                 <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
               </svg>
             </button>
-            <button class="btn-primary btn-compact" id="addScheduleBtn">
+            <button class="btn-primary btn-compact" id="addScheduleBtn" data-i18n="tasks.btn.new_task">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                 <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
               </svg>
@@ -337,7 +337,7 @@
           <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
             <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
           </svg>
-          <p>Nincsenek ütemezett feladatok</p>
+          <p data-i18n="tasks.schedule_empty">Nincsenek ütemezett feladatok</p>
         </div>
       </div>
 
@@ -363,7 +363,7 @@
             <h1>Skillek</h1>
             <p class="subtitle">A Claude Code által látott skillek (user mappa + plugin cache)</p>
           </div>
-          <button class="btn-primary btn-compact" id="skillsPageNewBtn">
+          <button class="btn-primary btn-compact" id="skillsPageNewBtn" data-i18n="skills.btn.new_skill">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
               <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
             </svg>
@@ -383,7 +383,7 @@
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/>
         </svg>
-        <p>Nincsenek skillek</p>
+        <p data-i18n="skills.empty">Nincsenek skillek</p>
       </div>
     </div>
 
@@ -398,13 +398,13 @@
             <p class="subtitle">AI csapat tudásbázisa</p>
           </div>
           <div style="display:flex;gap:8px">
-            <button class="btn-primary btn-compact" id="memAddBtn">
+            <button class="btn-primary btn-compact" id="memAddBtn" data-i18n="memories.btn.new">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                 <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
               </svg>
               Új emlék
             </button>
-            <button class="btn-secondary btn-compact" id="memImportOpenBtn">
+            <button class="btn-secondary btn-compact" id="memImportOpenBtn" data-i18n="memories.btn.import">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
               </svg>
@@ -421,14 +421,14 @@
           <svg class="mem-search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
           </svg>
-          <input type="text" id="memSearchInput" class="mem-search" placeholder="Keresés az emlékekben...">
+          <input type="text" id="memSearchInput" class="mem-search" placeholder="Keresés az emlékekben..." data-i18n-placeholder="memories.search_placeholder">
         </div>
         <select class="mem-search-mode" id="memSearchMode">
-          <option value="hybrid">Hibrid kereses</option>
-          <option value="fts">Kulcsszavas</option>
+          <option value="hybrid" data-i18n="memories.filter.hybrid">Hibrid kereses</option>
+          <option value="fts" data-i18n="memories.filter.fts">Kulcsszavas</option>
         </select>
         <select class="mem-agent-filter" id="memAgentFilter">
-          <option value="">Minden ügynök</option>
+          <option value="" data-i18n="memories.filter.all_agents">Minden ügynök</option>
         </select>
       </div>
 
@@ -445,7 +445,7 @@
       <div class="mem-tier-view" id="memTierView">
         <div class="mem-list" id="memList"></div>
         <div class="mem-empty" id="memEmpty" hidden>
-          <p>Nincs emlék ebben a kategóriában</p>
+          <p data-i18n="memories.empty">Nincs emlék ebben a kategóriában</p>
         </div>
       </div>
 
@@ -453,7 +453,7 @@
       <div class="mem-graph-view" id="memGraphView" hidden>
         <canvas id="memGraphCanvas"></canvas>
         <div class="graph-empty" id="graphEmpty" hidden>
-          <p>Nincs elég emlék a gráf megjelenítéshez</p>
+          <p data-i18n="memories.graph_empty">Nincs elég emlék a gráf megjelenítéshez</p>
         </div>
       </div>
 
@@ -466,7 +466,7 @@
         </div>
         <div class="log-entries" id="logEntries"></div>
         <div class="log-empty" id="logEmpty" hidden>
-          <p>Nincs naplobejegyzes ezen a napon</p>
+          <p data-i18n="memories.log_empty">Nincs naplobejegyzes ezen a napon</p>
         </div>
       </div>
     </div>
@@ -486,7 +486,7 @@
           <svg class="recall-search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
           </svg>
-          <input type="text" id="recallSearch" class="recall-search" placeholder="Keresés a napló szövegében...">
+          <input type="text" id="recallSearch" class="recall-search" placeholder="Keresés a napló szövegében..." data-i18n-placeholder="recall.search_placeholder">
         </div>
         <div class="recall-date-wrap">
           <svg class="recall-date-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -494,12 +494,12 @@
           </svg>
           <input type="date" id="recallDate" class="recall-date">
         </div>
-        <input type="text" id="recallExpr" class="recall-expr" placeholder="pl. tegnap, múlt héten...">
+        <input type="text" id="recallExpr" class="recall-expr" placeholder="pl. tegnap, múlt héten..." data-i18n-placeholder="recall.expr_placeholder">
         <select id="recallAgent" class="recall-agent-filter">
-          <option value="">Minden ágens</option>
+          <option value="" data-i18n="recall.filter.all_agents">Minden ágens</option>
         </select>
-        <button class="btn-icon" id="recallSortToggle" title="Csökkeno sorrend (legujabb elol)">&#8595;</button>
-        <button class="btn-primary btn-compact" id="recallBtn">Keresés</button>
+        <button class="btn-icon" id="recallSortToggle" title="Csökkeno sorrend (legujabb elol)" data-i18n-title="recall.sort.desc">&#8595;</button>
+        <button class="btn-primary btn-compact" id="recallBtn" data-i18n="recall.btn.search">Keresés</button>
       </div>
       <div class="recall-summary" id="recallSummary"></div>
       <div class="recall-timeline" id="recallTimeline"></div>
@@ -517,12 +517,12 @@
       </div>
       <div style="display:flex;gap:12px;margin-bottom:16px;align-items:center;flex-wrap:wrap;">
         <select id="bgAgent" class="input" style="width:150px;">
-          <option value="">Ágens</option>
+          <option value="" data-i18n="bgTasks.agent_placeholder">Ágens</option>
         </select>
-        <input type="text" id="bgPrompt" class="input" placeholder="Feladat leírása..." style="flex:1;min-width:300px;">
-        <button class="btn btn-primary" id="bgStartBtn">Indítás</button>
+        <input type="text" id="bgPrompt" class="input" placeholder="Feladat leírása..." data-i18n-placeholder="bgTasks.prompt_placeholder" style="flex:1;min-width:300px;">
+        <button class="btn btn-primary" id="bgStartBtn" data-i18n="bgTasks.btn.start">Indítás</button>
         <label style="font-size:13px;color:var(--text-muted);display:flex;align-items:center;gap:4px;">
-          <input type="checkbox" id="bgShowAll"> Befejezettek is
+          <input type="checkbox" id="bgShowAll"> <span data-i18n="bgTasks.show_finished">Befejezettek is</span>
         </label>
       </div>
       <div id="bgTasksList"></div>
@@ -537,13 +537,13 @@
             <p class="subtitle">MCP szerverek kezelése</p>
           </div>
           <div style="display:flex;gap:8px">
-            <button class="btn-secondary btn-compact" id="connectorRefreshBtn" title="Claude MCP lista frissítése">
+            <button class="btn-secondary btn-compact" id="connectorRefreshBtn" title="Claude MCP lista frissítése" data-i18n="connectors.btn.refresh">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
               </svg>
               Frissítés
             </button>
-            <button class="btn-primary btn-compact" id="addConnectorBtn">
+            <button class="btn-primary btn-compact" id="addConnectorBtn" data-i18n="connectors.btn.new">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                 <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
               </svg>
@@ -587,7 +587,7 @@
               </span>
             </div>
             <div class="cxhu-state" id="cxhuStateInstall" hidden>
-              <button class="cxhu-banner-cta" id="cxhuInstallBtn">Telepítés</button>
+              <button class="cxhu-banner-cta" id="cxhuInstallBtn" data-i18n="connectors.cxhu.install">Telepítés</button>
               <a class="cxhu-link-sm" href="https://connectors.hu" target="_blank" rel="noopener noreferrer">Mi ez?</a>
             </div>
             <div class="cxhu-state" id="cxhuStateInstalling" hidden>
@@ -600,7 +600,7 @@
                 CLI telepítve
               </span>
               <input class="cxhu-token-input" id="cxhuTokenInput" type="password" placeholder="connectors.hu token (dashboardról)" autocomplete="off" spellcheck="false">
-              <button class="cxhu-banner-cta" id="cxhuConfigureBtn">Mentés és szinkron</button>
+              <button class="cxhu-banner-cta" id="cxhuConfigureBtn" data-i18n="connectors.cxhu.save_sync">Mentés és szinkron</button>
             </div>
             <div class="cxhu-state" id="cxhuStateConfiguring" hidden>
               <span class="cxhu-spinner"></span>
@@ -608,7 +608,7 @@
             </div>
             <div class="cxhu-state" id="cxhuStateError" hidden>
               <span class="cxhu-error-msg" id="cxhuErrorMsg"></span>
-              <button class="cxhu-banner-cta cxhu-retry-btn" id="cxhuRetryBtn">Újra</button>
+              <button class="cxhu-banner-cta cxhu-retry-btn" id="cxhuRetryBtn" data-i18n="connectors.cxhu.retry">Újra</button>
             </div>
           </div>
           <button class="cxhu-banner-close" id="cxhuBannerClose" aria-label="Bezárás" title="Bezárás">
@@ -621,8 +621,8 @@
 
       <!-- Connector tabs -->
       <div class="connector-tabs">
-        <button class="connector-tab active" data-ctab="installed">Telepített</button>
-        <button class="connector-tab" data-ctab="gallery">Galéria</button>
+        <button class="connector-tab active" data-ctab="installed" data-i18n="connectors.tab.installed">Telepített</button>
+        <button class="connector-tab" data-ctab="gallery" data-i18n="connectors.tab.gallery">Galéria</button>
       </div>
 
       <!-- Installed tab -->
@@ -699,14 +699,14 @@
       <!-- Gallery tab -->
       <div class="connector-tab-content" id="connectorGalleryTab" hidden>
         <div class="catalog-filters" id="catalogFilters">
-          <button class="catalog-filter-btn active" data-cat="all">Összes</button>
-          <button class="catalog-filter-btn" data-cat="productivity">Produktivitás</button>
-          <button class="catalog-filter-btn" data-cat="communication">Kommunikáció</button>
-          <button class="catalog-filter-btn" data-cat="search">Keresés</button>
-          <button class="catalog-filter-btn" data-cat="development">Fejlesztés</button>
+          <button class="catalog-filter-btn active" data-cat="all" data-i18n="connectors.catalog.filter.all">Összes</button>
+          <button class="catalog-filter-btn" data-cat="productivity" data-i18n="connectors.catalog.filter.productivity">Produktivitás</button>
+          <button class="catalog-filter-btn" data-cat="communication" data-i18n="connectors.catalog.filter.communication">Kommunikáció</button>
+          <button class="catalog-filter-btn" data-cat="search" data-i18n="connectors.catalog.filter.search">Keresés</button>
+          <button class="catalog-filter-btn" data-cat="development" data-i18n="connectors.catalog.filter.development">Fejlesztés</button>
           <button class="catalog-filter-btn" data-cat="ai">AI</button>
-          <button class="catalog-filter-btn" data-cat="finance">Pénzügy</button>
-          <button class="catalog-filter-btn" data-cat="system">Rendszer</button>
+          <button class="catalog-filter-btn" data-cat="finance" data-i18n="connectors.catalog.filter.finance">Pénzügy</button>
+          <button class="catalog-filter-btn" data-cat="system" data-i18n="connectors.catalog.filter.system">Rendszer</button>
         </div>
         <div class="catalog-grid" id="catalogGrid"></div>
       </div>
@@ -916,8 +916,8 @@
       <div id="settingsSaveBar" style="display:none;position:sticky;bottom:0;background:var(--bg-card);border-top:1px solid var(--border);padding:12px 24px;display:none;align-items:center;justify-content:space-between;gap:12px;z-index:10">
         <span id="settingsDirtyCount" style="font-size:13px;color:var(--text-muted)"></span>
         <div style="display:flex;gap:8px">
-          <button class="btn-secondary btn-compact" id="settingsResetBtn">Visszaállítás</button>
-          <button class="btn-primary" id="settingsSaveAllBtn">Mentés</button>
+          <button class="btn-secondary btn-compact" id="settingsResetBtn" data-i18n="settings.btn.reset">Visszaállítás</button>
+          <button class="btn-primary" id="settingsSaveAllBtn" data-i18n="settings.btn.save">Mentés</button>
         </div>
       </div>
     </div>
@@ -1221,15 +1221,15 @@
           </div>
           <div class="tu-header-controls" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <select id="tuPeriod" class="input-compact" style="width:auto">
-              <option value="1h">1 óra</option>
-              <option value="24h">24 óra</option>
-              <option value="7d" selected>7 nap</option>
-              <option value="30d">30 nap</option>
+              <option value="1h" data-i18n="tokenUsage.period.1h">1 óra</option>
+              <option value="24h" data-i18n="tokenUsage.period.24h">24 óra</option>
+              <option value="7d" selected data-i18n="tokenUsage.period.7d">7 nap</option>
+              <option value="30d" data-i18n="tokenUsage.period.30d">30 nap</option>
             </select>
             <select id="tuAgent" class="input-compact" style="width:auto">
               <option value="">Mind</option>
             </select>
-            <button class="btn-secondary btn-compact" id="tuCollectBtn">
+            <button class="btn-secondary btn-compact" id="tuCollectBtn" data-i18n="tokenUsage.collect_btn.collect">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
               </svg>
@@ -1270,14 +1270,14 @@
             <p class="subtitle" id="updatesSubtitle">Marveen verzió ellenőrzés</p>
           </div>
           <div style="display:flex;gap:8px">
-            <button class="btn-secondary btn-compact" id="updatesCheckBtn">
+            <button class="btn-secondary btn-compact" id="updatesCheckBtn" data-i18n="updates.btn.check">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
               </svg>
               Ellenőrzés
             </button>
             <button class="btn-primary btn-compact" id="updatesApplyBtn" hidden>
-              <span class="btn-text">Frissítés most</span>
+              <span class="btn-text" data-i18n="updates.btn.update_now">Frissítés most</span>
               <span class="btn-loading" hidden><span class="spinner"></span></span>
             </button>
           </div>
@@ -1300,7 +1300,7 @@
             <h1>Napló</h1>
             <p class="subtitle">Audit idővonal: konfig-változások, ötletláda-állapotváltások, store-fájl események</p>
           </div>
-          <button class="btn-secondary btn-compact" id="naplo-refresh-btn">
+          <button class="btn-secondary btn-compact" id="naplo-refresh-btn" data-i18n="naplo.btn.refresh">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
             </svg>
@@ -1311,25 +1311,25 @@
 
       <div class="naplo-toolbar">
         <div class="naplo-source-tabs" id="naplo-source-tabs">
-          <button class="naplo-tab active" data-source="">Összes</button>
-          <button class="naplo-tab" data-source="diary">Eseménynapló</button>
+          <button class="naplo-tab active" data-source="" data-i18n="naplo.source.all">Összes</button>
+          <button class="naplo-tab" data-source="diary" data-i18n="naplo.source.diary">Eseménynapló</button>
           <button class="naplo-tab" data-source="config">Config</button>
-          <button class="naplo-tab" data-source="idea">Ötletláda</button>
-          <button class="naplo-tab" data-source="store">Store-fájlok</button>
+          <button class="naplo-tab" data-source="idea" data-i18n="naplo.source.idea">Ötletláda</button>
+          <button class="naplo-tab" data-source="store" data-i18n="naplo.source.store">Store-fájlok</button>
         </div>
         <div class="naplo-filters">
           <input type="date" id="naplo-from" class="naplo-date" title="Ettől">
           <span class="naplo-date-sep">-</span>
           <input type="date" id="naplo-to" class="naplo-date" title="Eddig">
-          <input type="text" id="naplo-q" class="naplo-search" placeholder="Keresés...">
+          <input type="text" id="naplo-q" class="naplo-search" placeholder="Keresés..." data-i18n-placeholder="naplo.search_placeholder">
           <span id="naplo-agent-wrap" style="display:none"><input type="text" id="naplo-agent" class="naplo-search" placeholder="Ágens (pl. jarvis)" style="width:130px"></span>
-          <button class="btn-primary btn-compact" id="naplo-search-btn">Keresés</button>
+          <button class="btn-primary btn-compact" id="naplo-search-btn" data-i18n="naplo.btn.search">Keresés</button>
         </div>
       </div>
 
       <div class="naplo-summary" id="naplo-summary"></div>
       <div class="naplo-timeline" id="naplo-timeline">
-        <p class="naplo-empty">Válassz szűrőt és kattints Keresés-re.</p>
+        <p class="naplo-empty" data-i18n="naplo.empty_hint">Válassz szűrőt és kattints Keresés-re.</p>
       </div>
     </div>
 
@@ -1359,10 +1359,10 @@
           <div class="form-group form-half">
             <label for="cardPriority">Prioritás</label>
             <select id="cardPriority">
-              <option value="low">Alacsony</option>
-              <option value="normal" selected>Normál</option>
-              <option value="high">Magas</option>
-              <option value="urgent">Sürgős</option>
+              <option value="low" data-i18n="kanban.priority.low">Alacsony</option>
+              <option value="normal" selected data-i18n="kanban.priority.normal">Normál</option>
+              <option value="high" data-i18n="kanban.priority.high">Magas</option>
+              <option value="urgent" data-i18n="kanban.priority.urgent">Sürgős</option>
             </select>
           </div>
         </div>
@@ -1380,7 +1380,7 @@
         <input type="hidden" id="cardEditId">
         <input type="hidden" id="cardEditStatus">
         <button class="btn-primary" id="saveCardBtn">
-          <span class="btn-text">Mentés</span>
+          <span class="btn-text" data-i18n="common.btn.save">Mentés</span>
           <span class="btn-loading" hidden><span class="spinner"></span> Mentés...</span>
         </button>
       </div>
@@ -1408,12 +1408,12 @@
             <select id="cardLabelAdd" style="flex:1; padding:5px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px">
               <option value="">-- Meglévő címke hozzáadása --</option>
             </select>
-            <button class="btn-secondary btn-compact" id="cardLabelNewBtn">+ Új címke</button>
+            <button class="btn-secondary btn-compact" id="cardLabelNewBtn" data-i18n="kanban.detail.new_label">+ Új címke</button>
           </div>
           <div class="form-row" id="cardLabelNewForm" style="display:none; gap:8px; align-items:center; margin-top:6px">
             <input type="text" id="cardLabelNewName" placeholder="Címke neve (pl. bug)" style="flex:1; padding:5px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px">
             <div class="label-color-swatches" id="cardLabelNewColors"></div>
-            <button class="btn-primary btn-compact" id="cardLabelNewSaveBtn">Mentés</button>
+            <button class="btn-primary btn-compact" id="cardLabelNewSaveBtn" data-i18n="common.btn.save">Mentés</button>
           </div>
         </div>
         <div class="card-detail-comments">
@@ -1428,7 +1428,7 @@
             <div class="form-row" style="gap:8px; align-items:center">
               <label for="commentAuthor" style="font-size:0.85em; color:var(--text-muted)">Komment szerzője:</label>
               <select id="commentAuthor" class="comment-author-select" title="A komment szerzője. A kártya felelőse fent, a Felelős mezőre kattintva állítható."></select>
-              <button class="btn-primary btn-compact" id="addCommentBtn">Küldés</button>
+              <button class="btn-primary btn-compact" id="addCommentBtn" data-i18n="common.btn.send">Küldés</button>
             </div>
           </div>
         </div>
@@ -1438,16 +1438,16 @@
           <div id="cardChildrenList" class="comments-list"></div>
           <div id="cardAddSubtaskSection" style="display:none; margin-top:8px">
             <div class="form-row" style="gap:8px; align-items:center">
-              <input type="text" id="newSubtaskTitle" placeholder="Új alfeladat neve..." style="flex:1; padding:6px 10px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px">
-              <button class="btn-primary btn-compact" id="addSubtaskBtn">Hozzáadás</button>
+              <input type="text" id="newSubtaskTitle" placeholder="Új alfeladat neve..." data-i18n-placeholder="kanban.detail.subtask_placeholder" style="flex:1; padding:6px 10px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px">
+              <button class="btn-primary btn-compact" id="addSubtaskBtn" data-i18n="common.btn.add">Hozzáadás</button>
             </div>
           </div>
         </div>
         <div class="detail-actions" style="gap:8px">
           <button class="btn-secondary" id="cardBreakdownBtn">⚡ AI szétbont</button>
-          <button class="btn-secondary" id="cardEditBtn">Szerkesztés</button>
-          <button class="btn-secondary" id="cardArchiveBtn">Archiválás</button>
-          <button class="btn-danger" id="cardDeleteBtn">Törlés</button>
+          <button class="btn-secondary" id="cardEditBtn" data-i18n="common.btn.edit">Szerkesztés</button>
+          <button class="btn-secondary" id="cardArchiveBtn" data-i18n="kanban.btn.archive">Archiválás</button>
+          <button class="btn-danger" id="cardDeleteBtn" data-i18n="common.btn.delete">Törlés</button>
         </div>
       </div>
     </div>
@@ -1468,8 +1468,8 @@
           <textarea id="breakdownSuccessCriteria" class="input" rows="2" placeholder="Mikor tekinthető sikeresnek a feladat?" style="width:100%;resize:vertical;font-size:13px"></textarea>
         </div>
         <div class="detail-actions" style="gap:8px; margin-top:16px">
-          <button class="btn-primary" id="breakdownAcceptBtn">Subtask-ok létrehozása</button>
-          <button class="btn-secondary" id="breakdownRejectBtn">Mégse</button>
+          <button class="btn-primary" id="breakdownAcceptBtn" data-i18n="kanban.breakdown.accept_btn">Subtask-ok létrehozása</button>
+          <button class="btn-secondary" id="breakdownRejectBtn" data-i18n="common.btn.cancel">Mégse</button>
         </div>
       </div>
     </div>
@@ -1492,7 +1492,7 @@
         <!-- Step 1: Description -->
         <div class="wizard-panel" id="wizardStep1">
           <div class="avatar-gallery" id="avatarGallery">
-            <label class="form-label-sm">Válassz avatart</label>
+            <label class="form-label-sm" data-i18n="agents.wizard.choose_avatar">Válassz avatart</label>
             <div class="avatar-grid" id="avatarGrid"></div>
             <div class="avatar-upload-divider"><span>vagy</span></div>
             <div class="avatar-upload-zone" id="createAvatarUploadZone">
@@ -1561,9 +1561,9 @@
             <textarea id="wizardSoulMd" class="code-textarea" rows="8"></textarea>
           </div>
           <div class="wizard-actions">
-            <button class="btn-secondary" id="wizardBackBtn">Vissza</button>
+            <button class="btn-secondary" id="wizardBackBtn" data-i18n="common.btn.back">Vissza</button>
             <button class="btn-primary btn-compact" id="wizardCreateBtn">
-              <span class="btn-text">Létrehozás</span>
+              <span class="btn-text" data-i18n="agents.wizard.create_btn">Létrehozás</span>
               <span class="btn-loading" hidden><span class="spinner"></span> Létrehozás...</span>
             </button>
           </div>
@@ -1581,11 +1581,11 @@
       </div>
       <div class="modal-body" style="padding-top: 0;">
         <div class="tab-nav" id="agentTabNav">
-          <button class="tab-btn active" data-tab="overview">Áttekintés</button>
-          <button class="tab-btn" data-tab="settings">Beállítások</button>
-          <button class="tab-btn" data-tab="channel">Csatorna</button>
-          <button class="tab-btn" data-tab="skills">Skillek</button>
-          <button class="tab-btn" data-tab="team">Csapat</button>
+          <button class="tab-btn active" data-tab="overview" data-i18n="agents.tab.overview">Áttekintés</button>
+          <button class="tab-btn" data-tab="settings" data-i18n="agents.tab.settings">Beállítások</button>
+          <button class="tab-btn" data-tab="channel" data-i18n="agents.tab.channel">Csatorna</button>
+          <button class="tab-btn" data-tab="skills" data-i18n="agents.tab.skills">Skillek</button>
+          <button class="tab-btn" data-tab="team" data-i18n="agents.tab.team">Csapat</button>
         </div>
 
         <!-- Tab: Overview -->
@@ -1622,22 +1622,22 @@
           </div>
           <div class="agent-overview-grid">
             <div class="agent-overview-item">
-              <span class="meta-label">Modell</span>
+              <span class="meta-label" data-i18n="agents.detail.model_label">Modell</span>
               <div class="meta-value-row">
                 <span class="meta-value" id="agentDetailModel"></span>
                 <span class="meta-badge" id="agentDetailModelRestarting" hidden>újraindítás alatt</span>
               </div>
             </div>
             <div class="agent-overview-item">
-              <span class="meta-label">Csatorna</span>
+              <span class="meta-label" data-i18n="agents.detail.channel_label">Csatorna</span>
               <span class="meta-value" id="agentDetailChStatus"></span>
             </div>
             <div class="agent-overview-item">
-              <span class="meta-label">Skillek</span>
+              <span class="meta-label" data-i18n="agents.detail.skills_label">Skillek</span>
               <span class="meta-value" id="agentDetailSkillCount">0</span>
             </div>
             <div class="agent-overview-item">
-              <span class="meta-label">Kontextus</span>
+              <span class="meta-label" data-i18n="agents.detail.context_label">Kontextus</span>
               <span class="meta-value" id="agentDetailContext">-</span>
             </div>
           </div>
@@ -1649,10 +1649,10 @@
             </div>
             <div class="process-actions">
               <button class="btn-primary btn-compact" id="agentStartBtn">
-                <span class="btn-text">Indítás</span>
+                <span class="btn-text" data-i18n="agents.process.start_btn">Indítás</span>
                 <span class="btn-loading" hidden><span class="spinner"></span></span>
               </button>
-              <button class="btn-danger btn-compact" id="agentStopBtn" hidden>Leállítás</button>
+              <button class="btn-danger btn-compact" id="agentStopBtn" hidden data-i18n="agents.process.stop_btn">Leállítás</button>
               <button class="btn-danger btn-compact" id="marveenRestartBtn" hidden>Channels restart</button>
             </div>
           </div>
@@ -1870,7 +1870,7 @@
               <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">Annak a server-csatornának az ID-je, amelyikbe a bot alapból ír. Discord &rarr; jobbklikk a csatornán &rarr; "Copy Channel ID" (Developer Mode kell hozzá).</small>
             </div>
             <button class="btn-primary" id="chConnectBtn">
-              <span class="btn-text">Összekapcsolás</span>
+              <span class="btn-text" data-i18n="channel.connect_btn">Összekapcsolás</span>
               <span class="btn-loading" hidden><span class="spinner"></span> Csatlakozas...</span>
             </button>
           </div>
@@ -1879,7 +1879,7 @@
               <div class="tg-bot-badge">
                 <span class="tg-dot connected"></span>
                 <span id="chBotUsername">@bot</span>
-                <span class="badge badge-active">Token beállítva</span>
+                <span class="badge badge-active" data-i18n="channel.token_badge">Token beállítva</span>
               </div>
               <div class="tg-notice" id="chRunNotice">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1900,7 +1900,7 @@
               <div class="tg-allowed-list" id="chAllowedList">
                 <div class="tg-allowed-empty">Még nincs bekötött chat. Lent add hozzá az elsőt.</div>
               </div>
-              <button class="btn-secondary btn-compact" id="chRefreshAllowedBtn" style="margin-top:8px; font-size:12px;">Lista frissítése</button>
+              <button class="btn-secondary btn-compact" id="chRefreshAllowedBtn" style="margin-top:8px; font-size:12px;" data-i18n="channel.refresh_list_btn">Lista frissítése</button>
             </div>
             <div class="tg-invite-section" id="chInviteSection">
               <h4>Meghívó link (egy kattintásos hozzáadás)</h4>
@@ -1909,8 +1909,8 @@
                 <div class="tg-allowed-empty">Nincs aktív meghívó link.</div>
               </div>
               <div class="form-row" style="gap:8px; align-items:center; margin-top:10px;">
-                <button class="btn-primary btn-compact" id="chGenerateInviteBtn" style="margin-top:0">Új meghívó link</button>
-                <button class="btn-secondary btn-compact" id="chRefreshInvitesBtn" style="margin-top:0; font-size:12px;">Frissítés</button>
+                <button class="btn-primary btn-compact" id="chGenerateInviteBtn" style="margin-top:0" data-i18n="channel.btn.invite_new">Új meghívó link</button>
+                <button class="btn-secondary btn-compact" id="chRefreshInvitesBtn" style="margin-top:0; font-size:12px;" data-i18n="common.btn.refresh">Frissítés</button>
               </div>
             </div>
             <div class="tg-pairing-section" id="chPairingSection">
@@ -1942,9 +1942,9 @@
                   <label for="chPairCode">Párosítási kód</label>
                   <input type="text" id="chPairCode" placeholder="pl. a1b2c3">
                 </div>
-                <button class="btn-primary btn-compact" id="chApproveBtn" style="margin-top:0">Jóváhagyás</button>
+                <button class="btn-primary btn-compact" id="chApproveBtn" style="margin-top:0" data-i18n="common.btn.approve">Jóváhagyás</button>
               </div>
-              <button class="btn-secondary btn-compact" id="chRefreshPendingBtn" style="margin-top:10px; font-size:12px;">Várakozók frissítése</button>
+              <button class="btn-secondary btn-compact" id="chRefreshPendingBtn" style="margin-top:10px; font-size:12px;" data-i18n="channel.refresh_pending_btn">Várakozók frissítése</button>
             </div>
             <div class="tg-allowed-section" id="chRequestSection" hidden>
               <h4>Csatorna-kérések <span class="badge badge-warn" id="chRequestBadge" hidden>0</span></h4>
@@ -1958,10 +1958,10 @@
               <span>Csatorna leszakadt. Automatikus újracsatlakozás folyamatban, vagy használd a gombot lent.</span>
             </div>
             <div class="tg-connected-actions">
-              <button class="btn-secondary" id="chTestBtn">Kapcsolat tesztelése</button>
+              <button class="btn-secondary" id="chTestBtn" data-i18n="channel.test_btn">Kapcsolat tesztelése</button>
               <button class="btn-secondary" id="chReconnectBtn" hidden>Channel-MCP reconnect</button>
               <button class="btn-secondary" id="chSmokeTestBtn" hidden>Slack csatorna smoke-test</button>
-              <button class="btn-danger" id="chDisconnectBtn">Leválasztás</button>
+              <button class="btn-danger" id="chDisconnectBtn" data-i18n="channel.disconnect_btn">Leválasztás</button>
             </div>
           </div>
         </div>
@@ -1970,7 +1970,7 @@
         <div class="tab-panel" id="tabSkills" hidden>
           <div class="skill-header">
             <h4>Ügynök skilljei</h4>
-            <button class="btn-secondary btn-compact" id="addSkillBtn">
+            <button class="btn-secondary btn-compact" id="addSkillBtn" data-i18n="skills.btn.new_skill">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                 <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
               </svg>
@@ -1979,7 +1979,7 @@
           </div>
           <div class="skill-list" id="skillList"></div>
           <div class="skill-empty" id="skillEmpty">
-            <p>Nincsenek skillek hozzáadva</p>
+            <p data-i18n="agents.skills.empty">Nincsenek skillek hozzáadva</p>
           </div>
         </div>
 
@@ -2013,12 +2013,12 @@
             <div id="editTeamTrustFromList" style="display:flex;flex-direction:column;gap:6px"></div>
             <small style="display:block;margin-top:6px;color:var(--text-muted);font-size:12px">A router alapból a jelent-kapcsolat és a delegálási lista alapján dönti el, hogy egy üzenet megbízható csapattárstól jön-e. Itt további ügynököket jelölhetsz kézzel &mdash; pl. egy cross-team együttműködő partner, akivel nincs hierarchikus kapcsolat, de a levelezése mégis csapattársi.</small>
           </div>
-          <button class="btn-secondary btn-compact agent-save-section" id="saveTeamBtn">Mentés</button>
+          <button class="btn-secondary btn-compact agent-save-section" id="saveTeamBtn" data-i18n="common.btn.save">Mentés</button>
         </div>
 
         <!-- Bottom actions -->
         <div class="detail-actions agent-detail-bottom" id="agentDetailActions">
-          <button class="btn-danger" id="deleteAgentBtn">Törlés</button>
+          <button class="btn-danger" id="deleteAgentBtn" data-i18n="common.btn.delete">Törlés</button>
         </div>
       </div>
     </div>
@@ -2033,8 +2033,8 @@
       </div>
       <div class="modal-body">
         <div class="skill-create-tabs">
-          <button class="skill-tab-btn active" data-skill-tab="create">Létrehozás</button>
-          <button class="skill-tab-btn" data-skill-tab="import">Importálás</button>
+          <button class="skill-tab-btn active" data-skill-tab="create" data-i18n="skills.modal.tab_create">Létrehozás</button>
+          <button class="skill-tab-btn" data-skill-tab="import" data-i18n="skills.modal.tab_import">Importálás</button>
         </div>
 
         <div class="skill-tab-panel" id="skillTabCreate">
@@ -2047,7 +2047,7 @@
             <textarea id="skillDescription" rows="5" placeholder="pl. Piackutatási riportokat készít: versenytárs elemzés, piaci trendek, SWOT analízis. A riportot strukturáltan, táblázatokkal adja vissza magyarul."></textarea>
           </div>
           <button class="btn-primary" id="saveSkillBtn">
-            <span class="btn-text">Skill generálás</span>
+            <span class="btn-text" data-i18n="skills.modal.generate_btn">Skill generálás</span>
             <span class="btn-loading" hidden><span class="spinner"></span> Generálás...</span>
           </button>
         </div>
@@ -2065,7 +2065,7 @@
             </div>
           </div>
           <button class="btn-primary" id="importSkillBtn">
-            <span class="btn-text">Importálás</span>
+            <span class="btn-text" data-i18n="skills.modal.import_btn">Importálás</span>
             <span class="btn-loading" hidden><span class="spinner"></span> Importálás...</span>
           </button>
         </div>
@@ -2178,7 +2178,7 @@
         </div>
         <input type="hidden" id="scheduleEditName">
         <button class="btn-primary" id="saveScheduleBtn">
-          <span class="btn-text">Mentés</span>
+          <span class="btn-text" data-i18n="common.btn.save">Mentés</span>
           <span class="btn-loading" hidden><span class="spinner"></span> Mentés...</span>
         </button>
       </div>
@@ -2217,7 +2217,7 @@
           <input type="text" id="memKeywords" placeholder="pl. marketing, kampany, ROI">
         </div>
         <input type="hidden" id="memEditId">
-        <button class="btn-primary" id="saveMemBtn">Mentés</button>
+        <button class="btn-primary" id="saveMemBtn" data-i18n="common.btn.save">Mentés</button>
       </div>
     </div>
   </div>
@@ -2256,7 +2256,7 @@
         </div>
         <div id="memImportResult" hidden style="padding:12px;background:var(--bg-input);border-radius:var(--radius-sm);margin-bottom:12px"></div>
         <button class="btn-primary" id="memImportSaveBtn">
-          <span class="btn-text">Költöztetés</span>
+          <span class="btn-text" data-i18n="memories.import.migrate_btn">Költöztetés</span>
           <span class="btn-loading" hidden><span class="spinner"></span> Költöztetés...</span>
         </button>
       </div>
@@ -2314,7 +2314,7 @@
           <div id="connectorNewAssignList"></div>
         </div>
         <button class="btn-primary" id="saveConnectorBtn">
-          <span class="btn-text">Hozzáadás</span>
+          <span class="btn-text" data-i18n="common.btn.add">Hozzáadás</span>
           <span class="btn-loading" hidden><span class="spinner"></span> Hozzáadás...</span>
         </button>
       </div>
@@ -2333,10 +2333,10 @@
         <div class="form-group" style="margin-top:20px">
           <label>Hozzárendelés ügynökökhöz</label>
           <div class="connector-agent-list" id="connectorAgentList"></div>
-          <button class="btn-secondary btn-compact" id="connectorAssignBtn" style="margin-top:8px">Mentés</button>
+          <button class="btn-secondary btn-compact" id="connectorAssignBtn" style="margin-top:8px" data-i18n="common.btn.save">Mentés</button>
         </div>
         <div class="detail-actions" style="margin-top:20px">
-          <button class="btn-danger" id="connectorDeleteBtn">Törlés</button>
+          <button class="btn-danger" id="connectorDeleteBtn" data-i18n="common.btn.delete">Törlés</button>
         </div>
       </div>
     </div>
@@ -2354,7 +2354,7 @@
         <div id="catalogInstallEnvFields"></div>
         <p id="catalogInstallNote" style="color:var(--text-muted);font-size:13px;margin-bottom:16px" hidden></p>
         <button class="btn-primary" id="catalogInstallBtn" style="width:100%">
-          <span class="btn-text">Telepítés</span>
+          <span class="btn-text" data-i18n="connectors.catalog.install_btn">Telepítés</span>
           <span class="btn-loading" hidden><span class="spinner"></span> Telepítés...</span>
         </button>
       </div>
@@ -2422,9 +2422,9 @@
         </div>
       </div>
       <div class="modal-footer" style="display:flex;gap:8px;justify-content:flex-end;">
-        <button class="btn-secondary" id="chApproveModalCancel">Mégse</button>
+        <button class="btn-secondary" id="chApproveModalCancel" data-i18n="common.btn.cancel">Mégse</button>
         <button class="btn-primary btn-compact" id="chApproveModalConfirm">
-          <span class="btn-text">Jóváhagyás</span>
+          <span class="btn-text" data-i18n="common.btn.approve">Jóváhagyás</span>
           <span class="btn-loading" hidden><span class="spinner"></span></span>
         </button>
       </div>
@@ -2452,9 +2452,9 @@
         <button class="modal-close" id="conversationClose">&times;</button>
       </div>
       <div class="conversation-toolbar">
-        <input type="text" id="conversationSearch" placeholder="Keresés a beszélgetésben…" autocomplete="off">
+        <input type="text" id="conversationSearch" placeholder="Keresés a beszélgetésben…" data-i18n-placeholder="messages.conv.search_placeholder" autocomplete="off">
         <label class="conversation-filter"><input type="checkbox" id="conversationShowActions"> Műveletek/jegyzetek mutatása</label>
-        <button class="btn-secondary btn-compact" id="conversationRefresh">Frissítés</button>
+        <button class="btn-secondary btn-compact" id="conversationRefresh" data-i18n="common.btn.refresh">Frissítés</button>
       </div>
       <div id="conversationContainer" class="conversation-container"></div>
     </div>

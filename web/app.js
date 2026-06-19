@@ -352,6 +352,31 @@ function renderStaticI18n() {
     if (opts[1]) opts[1].text = t('kanban.filter.group_assignee')
     if (opts[2]) opts[2].text = t('kanban.filter.group_priority')
   }
+
+  // Generic data-i18n sweep for static HTML elements
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const val = t(el.dataset.i18n)
+    if (el.children.length === 0) {
+      el.textContent = val
+    } else {
+      const nodes = [...el.childNodes]
+      for (let i = nodes.length - 1; i >= 0; i--) {
+        if (nodes[i].nodeType === 3 && nodes[i].textContent.trim()) {
+          nodes[i].textContent = ' ' + val
+          break
+        }
+      }
+    }
+  })
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+    el.placeholder = t(el.dataset.i18nPlaceholder)
+  })
+  document.querySelectorAll('[data-i18n-title]').forEach(el => {
+    el.title = t(el.dataset.i18nTitle)
+  })
+  document.querySelectorAll('[data-i18n-aria-label]').forEach(el => {
+    el.setAttribute('aria-label', t(el.dataset.i18nAriaLabel))
+  })
 }
 
 // Initial render on page load.
