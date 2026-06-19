@@ -6,7 +6,7 @@ import { readAgentChannelProvider } from './agent-config.js'
 import { agentSessionName, capturePane } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { getProvider, type ChannelProviderType } from '../channel-provider.js'
-import { detectsBlockingMenu } from '../pane-state.js'
+import { paneLooksIdle } from '../pane-state.js'
 
 const TMUX = resolveFromPath('tmux')
 const MAX_UP_ATTEMPTS = 8
@@ -23,8 +23,13 @@ const MAX_UP_ATTEMPTS = 8
  * (Escape + respawn) fires. Root cause of the 2026-06-17 ~06:14 incident where
  * duolingo-esti-ellenorzes / kanban-audit / dream-engine waited 60+ min.
  *
- * Press Escape until the blocking menu is gone (bounded). Extra Escapes at the
- * normal prompt are harmless no-ops, so over-pressing is safe.
+ * Press Escape until the pane is confirmed back at the idle prompt (bounded).
+ * We assert the POSITIVE idle state (paneLooksIdle) rather than the negative
+ * "no blocking menu" (!detectsBlockingMenu): the incident failure mode is the
+ * pane parked in the 'unknown' state, and 'unknown' is NOT a blocking menu, so a
+ * negative check would return success while the pane is in exactly the deaf-
+ * causing state. paneLooksIdle returns only when the input box is live and empty.
+ * Extra Escapes at the normal prompt are harmless no-ops, so over-pressing is safe.
  */
 function dismissMcpMenu(session: string): void {
   for (let i = 0; i < 4; i++) {
@@ -35,7 +40,14 @@ function dismissMcpMenu(session: string): void {
       return
     }
     const pane = capturePane(session) ?? ''
-    if (!pane || !detectsBlockingMenu(pane)) return
+    if (pane && paneLooksIdle(pane)) return
+  }
+  // Budget exhausted without confirming idle: the modal may still be open (the
+  // exact deaf-but-alive condition). Log loudly so the separate blocking-menu
+  // safety net / operator can intervene instead of failing silently.
+  const pane = capturePane(session) ?? ''
+  if (!pane || !paneLooksIdle(pane)) {
+    logger.warn({ session }, 'channel-mcp-reconnect: pane NOT confirmed idle after dismissMcpMenu escapes -- possible stuck /mcp modal')
   }
 }
 
