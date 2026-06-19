@@ -83,14 +83,7 @@ window._i18n.en = {
   'nav.updates':      'Updates',
 
   // --- Overview ---
-  'overview.stat.agents':        'Active agents',
-  'overview.stat.tasks':         'Tasks run today',
-  'overview.stat.memories':      'Memories',
-  'overview.stat.skills':        'Generated skills',
-  'overview.card.team':          'Team',
   'overview.card.team_meta':     'live status',
-  'overview.card.activity':      'Activity',
-  'overview.card.agent_activity': 'Agent activity',
   'overview.card.agent_messages': 'messages today',
 
   // --- Kanban ---
@@ -99,11 +92,7 @@ window._i18n.en = {
   'kanban.col.waiting':          'Waiting',
   'kanban.col.done':             'Done',
   'kanban.filter.project':       'Project:',
-  'kanban.filter.all_projects':  'All',
   'kanban.filter.group_by':      'Group by:',
-  'kanban.filter.group_none':    'None',
-  'kanban.filter.group_assignee': 'By assignee',
-  'kanban.filter.group_priority': 'By priority',
   'kanban.btn.new_card':         'New card',
   'kanban.card.no_description':  '(no description)',
   'kanban.card.subtasks':        '{done}/{total} subtasks',
@@ -248,6 +237,32 @@ window._i18n.en = {
   'tasks.btn.delete':            'Delete',
   'tasks.schedule_empty':        'No scheduled tasks',
   'tasks.empty':                 'No scheduled tasks',
+  'tasks.cron.every_n_min':      'Every {n} min',
+  'tasks.cron.every_n_hour':     'Every {n} hours',
+  'tasks.cron.every_hour':       'Every hour',
+  'tasks.cron.weekdays':         'Weekdays at {time}',
+  'tasks.cron.weekends':         'Weekends at {time}',
+  'tasks.cron.daily':            'Daily at {time}',
+  'tasks.cron.monthly':          'Monthly on {dom}. at {time}',
+  'tasks.cron.dow.1':            'Monday',
+  'tasks.cron.dow.2':            'Tuesday',
+  'tasks.cron.dow.3':            'Wednesday',
+  'tasks.cron.dow.4':            'Thursday',
+  'tasks.cron.dow.5':            'Friday',
+  'tasks.cron.dow.6':            'Saturday',
+  'tasks.cron.dow.0':            'Sunday',
+  'tasks.cron.dow.7':            'Sunday',
+  'tasks.cadence.sub_hourly':    'Hourly or more',
+  'tasks.cadence.daily':         'Daily',
+  'tasks.cadence.weekly':        'Weekly',
+  'tasks.cadence.monthly':       'Monthly or less',
+  'tasks.cadence.other':         'Other / custom',
+  'kanban.owner_filter':         'Only cards assigned to me (board owner)',
+  'settings.module.ideabox':     'Idea Box',
+  'overview.stat.sub.memories':  'entries',
+  'recall.sort.tooltip.desc':    'Descending order (newest first)',
+  'recall.sort.tooltip.asc':     'Ascending order (oldest first)',
+  'recall.date.n_days':          '{n} days with logs',
 
   // --- Memories ---
   'memories.page_title':         'Memory',
@@ -415,6 +430,20 @@ window._i18n.en = {
   'status.btn.refresh':          'Refresh',
   'status.services_title':       'Services',
   'status.incidents_title':      'Incidents',
+  'status.comp.operational':     'operational',
+  'status.comp.degraded':        'degraded',
+  'status.comp.partial_outage':  'partial outage',
+  'status.comp.major_outage':    'major outage',
+  'status.comp.maintenance':     'under maintenance',
+  'tokenUsage.col.time':         'Time',
+  'tokenUsage.col.agent':        'Agent',
+  'tokenUsage.col.content':      'Content',
+  'tokenUsage.chart.day':        'day',
+  'tokenUsage.chart.week':       'week',
+  'tokenUsage.chart.window_5h':  '5h window',
+  'tokenUsage.chart.window_weekly': 'weekly window',
+  'tokenUsage.chart.peak':       'PEAK',
+  'connectors.readonly_hint':    'Managed by: claude.ai',
 
   // --- Team ---
   'team.page_title':             'Team',
@@ -448,6 +477,19 @@ window._i18n.en = {
   'settings.toast.save_ok':      'Setting saved',
   'settings.toast.save_error':   'Error saving setting',
   'settings.toast.saved':        'Saved',
+  'settings.meta.values':        'Possible values',
+  'settings.meta.range':         'Range',
+  'settings.meta.format':        'Format',
+  'settings.meta.default':       'Default',
+  'status.error.fetch':          'Failed to load status',
+  'recall.summary.agents':       'Agents',
+  'terminal.stream_error':       '[stream error or stopped]',
+  'tasks.heartbeat.tpl.calendar': 'Calendar watcher',
+  'tasks.heartbeat.tpl.email':    'Email watcher',
+  'tasks.heartbeat.tpl.kanban':   'Kanban deadline watcher',
+  'tasks.heartbeat.tpl.full':     'Full check',
+  'connectors.builtin.computer_use': 'Screen control, click, type',
+  'connectors.builtin.chrome':       'Browser automation',
   'settings.toast.saved_restart': 'Saved -- restart required to take effect',
   'settings.toast.partial_error': 'Some settings could not be saved',
   'settings.module.kanban':      'Kanban',
@@ -538,6 +580,7 @@ window._i18n.en = {
   'ideas.btn.kanban_ai':         'To Kanban (AI)',
   'ideas.btn.delete':            'Delete',
   'ideas.stale_badge':           '⏰ Stale',
+  'ideas.stale_tooltip':         'Old idea, review it!',
   'ideas.no_description':        '(no description)',
   'ideas.comments.empty':        'No comments',
   'ideas.comments.error':        'Error loading comments',
@@ -563,7 +606,6 @@ window._i18n.en = {
   'agents.api_key.missing':			'No API key configured',
   'agents.api_key.ok':			'API key configured in vault',
   'agents.btn.conversation':			'Conversation',
-  'agents.btn.login':			'Sign in',
   'agents.claude_md_generating':			'Generating CLAUDE.md...',
   'agents.error.apply':			'Error applying changes',
   'agents.error.auth_network':			'Network error starting auth flow',
@@ -810,5 +852,179 @@ window._i18n.en = {
 
   // --- Token collect error ---
   'tokenUsage.collect_error':    'Error!',
+
+  // === BATCH 7: Toasts, tooltips, labels, howto texts ===
+
+  // --- Agent toasts ---
+  'agents.toast.load_failed':    'Failed to load agent',
+  'agents.toast.deleted':        'Agent deleted',
+  'agents.toast.avatar_updated': 'Avatar updated',
+  'agents.toast.avatar_format':  'Only png/jpg/webp format',
+  'agents.toast.avatar_size':    'Max 1 MB image size',
+  'agents.toast.avatar_uploaded':'Avatar uploaded, image sent on Telegram',
+  'agents.toast.started':        'Agent started!',
+  'agents.toast.stopped':        'Agent stopped',
+  'agents.toast.restart_state_error': 'Could not read restart state, check the session',
+  'agents.toast.auto_restart_saved': 'Auto-restart setting saved',
+  'agents.toast.auth_mode_saved':'Auth mode saved (restart required)',
+
+  // --- Agent status/labels ---
+  'agents.channel.connected':    'Connected',
+  'agents.channel.disconnected': 'Not connected',
+  'agents.strict_mode':          ' (strict)',
+  'agents.marveen_boss':         'Marveen Boss',
+  'agents.btn.login':            'Login',
+
+  // --- Agent model switch card ---
+  'agents.model.card_title':     'Model switch: {agent}',
+  'agents.model.card_desc':      'Current: {current}\nSuggested: {suggested}\n\nReason: {reason}',
+  'agents.model.toast_active':   'New model active: {model}',
+  'agents.model.toast_restarted':'Restarted: {model}',
+
+  // --- Channel toasts ---
+  'channel.toast.smoke_failed':  'Connection test failed',
+  'channel.toast.pairing_approved': 'Pairing approved!',
+  'channel.toast.invite_copied': 'Invite link created and copied to clipboard',
+  'channel.toast.invite_created':'Invite link created - click the Copy button',
+  'channel.toast.invite_pending':'Invite created (bot username pending - refresh)',
+  'channel.toast.invite_revoked':'Invite revoked',
+  'channel.toast.approved':      'Channel approved',
+  'channel.toast.denied':        'Request denied',
+  'channel.toast.disconnect_error': 'Error disconnecting',
+  'channel.toast.manifest_failed':  'Could not load manifest',
+  'channel.btn.deny':            'Deny',
+  'channel.badge.group':         'GROUP',
+  'channel.invite.no_username':  '(no bot username)',
+
+  // --- Channel setup wizard ---
+  'channel.setup.tg_title':      'Connect Telegram bot',
+  'channel.setup.tg_steps':      '<li>Open <strong>@BotFather</strong> on Telegram</li><li>Create a new bot with the <code>/newbot</code> command</li><li>Paste the API token here</li>',
+  'channel.setup.tg_pairing':    'When someone messages the bot, the plugin sends them a code. Enter the code here to approve.',
+  'channel.setup.discord_title': 'Connect Discord bot',
+  'channel.setup.discord_steps': '<li>Go to the <strong>Discord Developer Portal</strong> (discord.com/developers)</li><li>Create a new Application and Bot</li><li>Paste the Bot Token here</li><li>Paste the desired server channel ID below</li>',
+  'channel.setup.discord_pairing': 'When someone DMs the bot, they get a pairing code in reply. Enter the code to approve (or in terminal /discord:access pair <code>).',
+  'channel.setup.slack_title':   'Connect Slack app',
+  'channel.setup.slack_steps':   '<li>Create a Slack App, or use the manifest button below</li><li>Paste the Bot Token (xoxb-...) and App Token (xapp-...)</li>',
+  'channel.setup.slack_pairing': 'Slack channel requests appear in the Channel Requests list above.',
+
+  // --- Slack manifest modal ---
+  'channel.slack_manifest.title':      'Create Slack App',
+  'channel.slack_manifest.desc':       'Paste the YAML manifest below when creating the Slack App. This automatically sets up all required scopes, events, and Socket Mode.',
+  'channel.slack_manifest.steps_title':'Steps',
+  'channel.slack_manifest.open_btn':   'Open (api.slack.com)',
+
+  // --- Smoke test modal ---
+  'channel.smoke_test.title':    'Slack smoke test result',
+
+  // --- Sudo modal ---
+  'channel.sudo_modal.title':    'System-level configuration required',
+  'channel.sudo_modal.desc':     'Claude Code requires the Slack channel plugin to be enabled in the system-level managed-settings.json file. Run the following command in Terminal:',
+  'channel.sudo_modal.cancel':   'Cancel',
+  'channel.sudo_modal.retry':    'Done, retry',
+
+  // --- Channel howto blocks (HTML) ---
+  'channel.howto.discord':       '<p style="margin-top:0;"><strong>1. Add a person (DM):</strong></p><ol style="padding-left:20px; margin-top:4px;"><li>Share the bot Discord handle, or send them the bot invite link.</li><li>They DM the bot with a message.</li><li>The bot replies with a 6-digit pairing code.</li><li>They send you the code; enter it here and approve (or in terminal <code>/discord:access pair &lt;code&gt;</code>).</li></ol><p style="margin-top:10px;"><strong>2. Add a Discord server channel:</strong></p><ol style="padding-left:20px; margin-top:4px;"><li>Invite the bot to your Discord server (Discord Developer Portal &rarr; OAuth2 &rarr; URL Generator &rarr; <code>bot</code> scope).</li><li>Mention the bot in the desired channel (<code>@bot</code>).</li><li>Right-click the channel &rarr; "Copy Channel ID" to get the ID.</li><li>In terminal: <code>/discord:access group add &lt;channelId&gt;</code>.</li></ol><p style="margin-top:10px; color:var(--muted-foreground);"><em>To remove, use the X button in the Connected chats list.</em></p>',
+  'channel.howto.slack':         '<p style="margin-top:0;"><strong>1. Add a Slack channel:</strong></p><ol style="padding-left:20px; margin-top:4px;"><li>Add the bot to the desired channel: type <code>/invite @botname</code> in the channel.</li><li>Mention the bot in a message (<code>@botname help</code>).</li><li>The request appears in the "Channel Requests" list; approve it.</li></ol><p style="margin-top:10px; color:var(--muted-foreground);"><em>You can also DM the bot directly - no separate pairing needed.</em></p>',
+  'channel.howto.telegram':      '<p style="margin-top:0;"><strong>1. Add a person (private chat):</strong></p><ol style="padding-left:20px; margin-top:4px;"><li>Share the bot username (visible below).</li><li>They start the bot on Telegram (<code>/start</code>) and send a message.</li><li>The bot replies with a 6-digit pairing code.</li><li>They send you the code; enter it here and approve.</li></ol><p style="margin-top:10px;"><strong>2. Add a Telegram group:</strong></p><ol style="padding-left:20px; margin-top:4px;"><li>Invite the bot to an existing Telegram group (group settings &rarr; Members &rarr; Add).</li><li>Type <code>/pair</code> in the group (or the command the bot specifies).</li><li>A pairing code appears in the group.</li><li>Enter it here and approve. The agent can then write to and read from the group.</li></ol><p style="margin-top:10px; color:var(--muted-foreground);"><em>To remove, use the X button in the Connected chats list.</em></p>',
+
+  // --- Common buttons ---
+  'common.btn.close':            'Close',
+  'common.btn.approve':          'Approve',
+  'common.btn.copy_btn':         'Copy',
+  'common.btn.cancel':           'Cancel',
+  'common.btn.remove':           'Remove',
+  'common.btn.retry_done':       'Done, retry',
+
+  // --- Common toasts ---
+  'common.toast.removed':        'Removed',
+  'common.toast.copied':         'Copied to clipboard',
+  'common.toast.copy_failed':    'Copy failed',
+  'common.toast.download_failed':'Download failed: {msg}',
+
+  // --- Skills toasts ---
+  'skills.toast.added':          'Skill added',
+  'skills.toast.select_file':    'Select a .skill file',
+
+  // --- Tasks toasts ---
+  'tasks.toast.select_schedule': 'Select a schedule',
+  'tasks.toast.updated':         'Task updated',
+  'tasks.toast.created':         'Task created!',
+
+  // --- Memory toasts ---
+  'memories.toast.updated':      'Memory updated',
+  'memories.toast.created':      'Memory created',
+  'memories.toast.deleted':      'Memory deleted',
+  'memories.toast.select_files': 'Select at least one file',
+  'memories.toast.no_content':   'No importable content in files',
+  'memories.toast.import_error': 'Import error',
+  'memories.import.done_title':  'Migration complete!',
+
+  // --- Connector toasts ---
+  'connectors.toast.mcp_refreshed': 'MCP list refreshed ({n} global connectors)',
+  'connectors.toast.deleted':    'Connector deleted',
+  'connectors.toast.assignment_updated': 'Agent assignment updated',
+  'connectors.toast.assignment_error': 'Assignment error',
+  'connectors.toast.created':    'Connector added!',
+  'connectors.catalog.env_placeholder': 'Enter the {key} value',
+
+  // --- Updates toasts ---
+  'updates.toast.not_started':   'Update not started: {msg}',
+  'updates.toast.started':       'Update started, dashboard reloading...',
+
+  // --- Ideas toasts ---
+  'ideas.toast.score_saved':     'Score saved',
+  'ideas.toast.comment_error':   'Comment save error',
+  'ideas.toast.status_error':    'Status save error',
+  'ideas.toast.ai_elaborating':  'AI is elaborating the idea...',
+  'ideas.toast.breakdown_error': 'Breakdown error',
+  'ideas.toast.no_subtasks':     'AI returned no subtasks',
+
+  // --- Kanban card detail meta labels ---
+  'kanban.meta.id':              'ID',
+  'kanban.meta.status':          'Status',
+  'kanban.meta.assignee':        'Assignee',
+  'kanban.meta.priority':        'Priority',
+  'kanban.meta.project':         'Project',
+  'kanban.meta.deadline':        'Deadline',
+  'kanban.meta.none':            '-- none --',
+  'kanban.meta.id_tooltip':      'Sequential number · hex identifier',
+  'kanban.meta.edit_tooltip':    'Click to edit',
+  'kanban.btn.breakdown':        'AI breakdown',
+  'kanban.label.filter_tooltip': 'Filter: #{name}',
+  'kanban.label.overflow_tooltip': '{n} more labels',
+  'kanban.aging.tooltip':        'Last modified: {date}',
+  'kanban.filter.owner_tooltip': 'Only cards waiting for me (board owner)',
+  'kanban.filter.project_label': 'Project:',
+  'kanban.filter.group_label':   'Group by:',
+  'kanban.filter.all_projects':  'All',
+  'kanban.filter.group_none':    'None',
+  'kanban.filter.group_assignee':'By assignee',
+  'kanban.filter.group_priority':'By priority',
+
+  // --- Activity tooltip ---
+  'activity.tooltip.terminal':   'Open terminal',
+
+  // --- Connectors tooltips ---
+  'connectors.tooltip.installed_mcp': 'Wired in .mcp.json (manageable in Connectors list)',
+  'connectors.tooltip.installed_src': 'Source: {src}',
+  'connectors.tooltip.auto_detect':   'The dashboard cannot automatically detect this capability',
+  'connectors.tooltip.global':        'Globally available to the main agent - no separate assignment needed',
+
+  // --- Tasks heartbeat badges ---
+  'tasks.heartbeat.alert_sent':  'Telegram alert sent',
+  'tasks.heartbeat.alert_pending': 'Alert pending, next tick will send it',
+  'tasks.heartbeat.alert_badge_sent': '⚠️ alert sent',
+  'tasks.heartbeat.alert_badge_pending': '⏳ alert pending',
+
+  // --- Overview stats labels (index.html static) ---
+  'overview.stat.agents':        'Active agents',
+  'overview.stat.tasks':         'Tasks run today',
+  'overview.stat.memories':      'Memory',
+  'overview.stat.skills':        'Generated skills',
+  'overview.card.team':          'Team',
+  'overview.card.activity':      'Activity',
+  'overview.card.agent_activity':'Agent activity',
+  'overview.meta.live':          'live status',
+  'overview.meta.messages':      "today's messages",
 
 }

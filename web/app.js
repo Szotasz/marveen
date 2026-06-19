@@ -310,6 +310,48 @@ function renderStaticI18n() {
   // Team hint
   const teamHint = document.querySelector('#teamPage > p')
   if (teamHint) teamHint.textContent = t('team.hint')
+
+  // Overview stat labels (siblings of statAgents, statTasks, statMemories, statSkills)
+  const statLabelKeys = ['overview.stat.agents', 'overview.stat.tasks', 'overview.stat.memories', 'overview.stat.skills']
+  const statValueIds = ['statAgents', 'statTasks', 'statMemories', 'statSkills']
+  statValueIds.forEach((id, i) => {
+    const valEl = document.getElementById(id)
+    if (valEl) {
+      const labelEl = valEl.parentElement?.querySelector('.overview-stat-label')
+      if (labelEl) labelEl.textContent = t(statLabelKeys[i])
+    }
+  })
+
+  // Overview card headers
+  const overviewTeamH3 = document.querySelector('#overviewPage .overview-grid .overview-card:nth-child(1) h3')
+  if (overviewTeamH3) overviewTeamH3.textContent = t('overview.card.team')
+  const overviewTeamMeta = document.getElementById('overviewTeamMeta')
+  if (overviewTeamMeta) overviewTeamMeta.textContent = t('overview.meta.live')
+  const overviewActivityH3 = document.querySelector('#overviewPage .overview-grid .overview-card:nth-child(2) h3')
+  if (overviewActivityH3) overviewActivityH3.textContent = t('overview.card.activity')
+  const overviewAgentH3 = document.querySelector('#overviewPage .overview-grid .overview-card:nth-child(3) h3')
+  if (overviewAgentH3) overviewAgentH3.textContent = t('overview.card.agent_activity')
+  const overviewAgentMeta = document.querySelector('#overviewPage .overview-grid .overview-card:nth-child(3) .overview-card-meta')
+  if (overviewAgentMeta) overviewAgentMeta.textContent = t('overview.meta.messages')
+
+  // Kanban filter labels
+  const kanbanProjectLabel = document.querySelector('label[for="kanbanProjectFilter"]')
+  if (kanbanProjectLabel) kanbanProjectLabel.textContent = t('kanban.filter.project_label')
+  const kanbanGroupLabel = document.querySelector('label[for="kanbanGroupBy"]')
+  if (kanbanGroupLabel) kanbanGroupLabel.textContent = t('kanban.filter.group_label')
+
+  // Kanban project filter "Mind" option (first option)
+  const kanbanProjectFilter = document.getElementById('kanbanProjectFilter')
+  if (kanbanProjectFilter?.options[0]) kanbanProjectFilter.options[0].text = t('kanban.filter.all_projects')
+
+  // Kanban group-by options
+  const kanbanGroupBy = document.getElementById('kanbanGroupBy')
+  if (kanbanGroupBy) {
+    const opts = kanbanGroupBy.options
+    if (opts[0]) opts[0].text = t('kanban.filter.group_none')
+    if (opts[1]) opts[1].text = t('kanban.filter.group_assignee')
+    if (opts[2]) opts[2].text = t('kanban.filter.group_priority')
+  }
 }
 
 // Initial render on page load.
@@ -402,7 +444,7 @@ function renderActivity(entries) {
     const mainBadge = a.isMain ? '<span class="act-main-badge">' + t('activity.badge.main') + '</span>' : ''
     const canOpen = !!a.running
     const termIcon = canOpen
-      ? '<svg class="act-term-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" title="Terminal megnyitása"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>'
+      ? '<svg class="act-term-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" title="${t('activity.tooltip.terminal')}"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>'
       : ''
     return (
       '<div class="activity-card ' + meta.cls + (canOpen ? ' act-clickable' : '') + '" data-agent="' + escapeHtml(a.name) + '">' +
@@ -627,7 +669,7 @@ function setupAssigneeFilter() {
     ownerBtn.id = 'kanbanOwnerBtn'
     ownerBtn.type = 'button'
     ownerBtn.textContent = t('kanban.filter.owner_btn')
-    ownerBtn.title = 'Csak a rám (a board felelőse) váró kártyák'
+    ownerBtn.title = t('kanban.owner_filter')
     ownerBtn.style.cssText = 'font-size:13px;padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);cursor:pointer;'
     ownerBtn.addEventListener('click', () => {
       const owner = ownerAssigneeName()
@@ -801,10 +843,10 @@ function renderKanban() {
 }
 
 const KANBAN_STATUS_DEFS = [
-  { status: 'planned', title: 'Tervezett' },
-  { status: 'in_progress', title: 'Folyamatban' },
-  { status: 'waiting', title: 'Várakozik' },
-  { status: 'done', title: 'Kész' },
+  { status: 'planned', title: () => t('kanban.col.planned') },
+  { status: 'in_progress', title: () => t('kanban.col.in_progress') },
+  { status: 'waiting', title: () => t('kanban.col.waiting') },
+  { status: 'done', title: () => t('kanban.col.done') },
 ]
 const KANBAN_PRIORITY_LABELS = { urgent: () => t('kanban.priority.urgent'), high: () => t('kanban.priority.high'), normal: () => t('kanban.priority.normal'), low: () => t('kanban.priority.low') }
 const KANBAN_PRIORITY_ORDER = ['urgent', 'high', 'normal', 'low']
@@ -891,7 +933,7 @@ function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {
 
       const colHeader = document.createElement('div')
       colHeader.className = 'kanban-swimlane-col-header'
-      colHeader.textContent = def.title
+      colHeader.textContent = typeof def.title === 'function' ? def.title() : def.title
 
       const colBody = document.createElement('div')
       colBody.className = 'kanban-col-body kanban-swimlane-col-body'
@@ -1026,10 +1068,10 @@ function createCardEl(card, embeddedChildren = []) {
     const shown = card.labels.slice(0, 3)
     const overflow = card.labels.length - shown.length
     const pills = shown.map((l) =>
-      `<span class="kanban-card-label-pill" data-label-id="${escapeHtml(l.id)}" style="--label-color:${escapeHtml(l.color)}" title="Szűrés: #${escapeHtml(l.name)}">#${escapeHtml(l.name)}</span>`
+      `<span class="kanban-card-label-pill" data-label-id="${escapeHtml(l.id)}" style="--label-color:${escapeHtml(l.color)}" title="${t('kanban.label.filter_tooltip', { name: escapeHtml(l.name) })}">#${escapeHtml(l.name)}</span>`
     ).join('')
     const overflowHtml = overflow > 0
-      ? `<span class="kanban-card-label-pill kanban-card-label-overflow" title="${overflow} további címke">+${overflow}</span>`
+      ? `<span class="kanban-card-label-pill kanban-card-label-overflow" title="${t('kanban.label.overflow_tooltip', { n: overflow })}">+${overflow}</span>`
       : ''
     labelsHtml = `<div class="kanban-card-labels">${pills}${overflowHtml}</div>`
   }
@@ -1057,7 +1099,7 @@ function createCardEl(card, embeddedChildren = []) {
       const days = Math.floor(hoursOld / 24)
       const ageLabel = days >= 1 ? `${days}d` : `${Math.floor(hoursOld)}h`
       const exact = new Date(card.updated_at * 1000).toLocaleString('hu-HU')
-      agingBadgeHtml = `<span class="kanban-card-aging-badge kanban-card-aging-${agingLevel}" style="color:${agingColor}" title="Utoljára módosítva: ${exact}">⏳ ${ageLabel}</span>`
+      agingBadgeHtml = `<span class="kanban-card-aging-badge kanban-card-aging-${agingLevel}" style="color:${agingColor}" title="${t('kanban.aging.tooltip', { exact })}">⏳ ${ageLabel}</span>`
       el.dataset.aging = agingLevel
       el.style.setProperty('--card-aging-color', agingColor)
     }
@@ -1084,7 +1126,7 @@ function createCardEl(card, embeddedChildren = []) {
     <div class="kanban-card-footer">${assigneeHtml}${dueHtml}</div>
     ${labelsHtml}
     <div class="kanban-card-actions">
-      <button class="card-breakdown-btn" title="AI szétbont" aria-label="AI szétbont">⚡</button>
+      <button class="card-breakdown-btn" title="${t('kanban.btn.breakdown')}" aria-label="${t('kanban.btn.breakdown')}">⚡</button>
     </div>
     ${agingBadgeHtml}
     <div class="kanban-subtask-badge" style="display:none"></div>
@@ -1387,28 +1429,28 @@ async function showCardDetail(card) {
   const idLabel = (card.seq != null ? `#${card.seq} · ` : '') + card.id
   meta.innerHTML = `
     <div class="meta-item">
-      <span class="meta-label">Azonosító</span>
-      <span class="meta-value" style="font-family:monospace" title="Futó sorszám · hex azonosító">${escapeHtml(idLabel)}</span>
+      <span class="meta-label">${t('kanban.meta.id')}</span>
+      <span class="meta-value" style="font-family:monospace" title="${t('kanban.meta.id_tooltip')}">${escapeHtml(idLabel)}</span>
     </div>
     <div class="meta-item">
-      <span class="meta-label">Állapot</span>
+      <span class="meta-label">${t('kanban.meta.status')}</span>
       <span class="meta-value">${statusLabels[card.status] || card.status}</span>
     </div>
     <div class="meta-item">
-      <span class="meta-label">Felelős</span>
-      <span class="meta-value meta-value-editable" id="metaAssigneeValue" data-card-id="${card.id}" title="Kattints a módosításhoz">${escapeHtml(assigneeDisplay)}</span>
+      <span class="meta-label">${t('kanban.meta.assignee')}</span>
+      <span class="meta-value meta-value-editable" id="metaAssigneeValue" data-card-id="${card.id}" title="${t('kanban.meta.edit_tooltip')}">${escapeHtml(assigneeDisplay)}</span>
     </div>
     <div class="meta-item">
-      <span class="meta-label">Prioritás</span>
+      <span class="meta-label">${t('kanban.meta.priority')}</span>
       <span class="meta-value">${priorityLabels[card.priority]}</span>
     </div>
     <div class="meta-item">
-      <span class="meta-label">Projekt</span>
-      <span class="meta-value">${card.project ? escapeHtml(card.project) : '-- nincs --'}</span>
+      <span class="meta-label">${t('kanban.meta.project')}</span>
+      <span class="meta-value">${card.project ? escapeHtml(card.project) : t('kanban.meta.none')}</span>
     </div>
     <div class="meta-item">
-      <span class="meta-label">Határidő</span>
-      <span class="meta-value">${card.due_date ? new Date(card.due_date * 1000).toLocaleDateString('hu-HU') : '-- nincs --'}</span>
+      <span class="meta-label">${t('kanban.meta.deadline')}</span>
+      <span class="meta-value">${card.due_date ? new Date(card.due_date * 1000).toLocaleDateString(_lang === 'en' ? 'en-US' : 'hu-HU') : t('kanban.meta.none')}</span>
     </div>
   `
 
@@ -1922,7 +1964,7 @@ function populateProfileSelect(selectEl, descEl, selected) {
     for (const p of profiles) {
       const opt = document.createElement('option')
       opt.value = p.id
-      const tag = p.permissionMode === 'strict' ? ' (szigorú)' : ''
+      const tag = p.permissionMode === 'strict' ? ` (${t('agents.strict_mode')})` : ''
       opt.textContent = `${p.label}${tag}`
       if (p.id === selected) opt.selected = true
       selectEl.appendChild(opt)
@@ -2196,7 +2238,7 @@ async function openMarveenDetail() {
   document.getElementById('agentDetailName').textContent = displayName
   document.getElementById('agentDetailDesc').textContent = m.description || ''
   document.getElementById('agentDetailModel').textContent = m.model || '-'
-  document.getElementById('agentDetailChStatus').innerHTML = '<span class="tg-status"><span class="tg-dot connected"></span>Csatlakozva</span>'
+  document.getElementById('agentDetailChStatus').innerHTML = `<span class="tg-status"><span class="tg-dot connected"></span>${t('agents.channel.connected')}</span>`
   // Populate the Skills tab for the main agent too: the endpoint returns the
   // global ~/.claude/skills under its real id (agentId), which every agent
   // inherits. Previously this was hard-set to '-' and loadSkills was never
@@ -2362,7 +2404,7 @@ function renderAgents() {
         <span class="tg-status" title="${t('agents.marveen_channel_tip')}"><span class="tg-dot connected"></span>${t('agents.status.online')}</span>
       </div>
       <div class="agent-card-actions">
-        <button class="btn-secondary btn-compact agent-conversation-btn" title="Beszélgetés">
+        <button class="btn-secondary btn-compact agent-conversation-btn" title="${t('agents.btn.conversation')}">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
           ${t('agents.btn.conversation')}
         </button>
@@ -2376,7 +2418,7 @@ function renderAgents() {
       e.stopPropagation(); openTerminalModal(mainAgentId())
     })
     mCard.querySelector('.agent-conversation-btn')?.addEventListener('click', (e) => {
-      e.stopPropagation(); openConversationModal(mainAgentId(), 'Marveen Főnök')
+      e.stopPropagation(); openConversationModal(mainAgentId(), t('agents.marveen_boss'))
     })
     mCard.addEventListener('click', () => openMarveenDetail())
     agentsGrid.insertBefore(mCard, addBtn)
@@ -2420,10 +2462,10 @@ function renderAgents() {
       ${agent.needsReauth ? `
         <div class="agent-reauth-banner">
           <span class="agent-reauth-reason">${escapeHtml(agent.reauthReason || t('agents.reauth.reason'))}</span>
-          <button class="btn-danger btn-compact agent-login-btn" data-phase="start">Bejelentkezés</button>
+          <button class="btn-danger btn-compact agent-login-btn" data-phase="start">${t('agents.btn.login')}</button>
         </div>` : ''}
       <div class="agent-card-actions">
-        <button class="btn-secondary btn-compact agent-conversation-btn" title="Beszélgetés">
+        <button class="btn-secondary btn-compact agent-conversation-btn" title="${t('agents.btn.conversation')}">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
           ${t('agents.btn.conversation')}
         </button>
@@ -2460,7 +2502,7 @@ async function openAgentDetail(agentName) {
     if (!res.ok) throw new Error('Nem található')
     currentAgent = await res.json()
   } catch (err) {
-    showToast('Ügynök betöltése sikertelen')
+    showToast(t('agents.toast.load_failed'))
     return
   }
 
@@ -2483,7 +2525,7 @@ async function openAgentDetail(agentName) {
   document.getElementById('agentDetailModelRestarting').hidden = true
 
   const chConnected = agentIsConnected(currentAgent)
-  document.getElementById('agentDetailChStatus').innerHTML = `<span class="tg-status"><span class="tg-dot ${chConnected ? 'connected' : 'disconnected'}"></span>${chConnected ? 'Csatlakozva' : 'Nincs bekötve'}</span>`
+  document.getElementById('agentDetailChStatus').innerHTML = `<span class="tg-status"><span class="tg-dot ${chConnected ? 'connected' : 'disconnected'}"></span>${chConnected ? t('agents.channel.connected') : t('agents.channel.disconnected')}</span>`
 
   // Settings tab - load Ollama + DeepSeek models then set value
   loadAvailableModels()
@@ -2526,7 +2568,7 @@ async function openAgentDetail(agentName) {
     try {
       await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`, { method: 'DELETE' })
       closeModal(agentDetailOverlay)
-      showToast('Ügynök törölve')
+      showToast(t('agents.toast.deleted'))
       loadAgents()
     } catch (err) {
       showToast(t('common.error_delete'))
@@ -2559,7 +2601,7 @@ function populateDetailAvatarGrid() {
           body: JSON.stringify({ galleryAvatar: avatar }),
         })
         if (!res.ok) throw new Error()
-        showToast('Avatar frissítve')
+        showToast(t('agents.toast.avatar_updated'))
         // Update the detail avatar display
         document.getElementById('agentDetailAvatar').innerHTML = `<img src="/api/agents/${encodeURIComponent(currentAgent.name)}/avatar?t=${Date.now()}" alt="">`
         document.getElementById('detailAvatarGallery').hidden = true
@@ -2593,7 +2635,7 @@ document.getElementById('avatarChangeBtn').addEventListener('click', () => {
             body: JSON.stringify({ galleryAvatar: avatar }),
           })
           if (!res.ok) throw new Error()
-          showToast('Avatar frissítve')
+          showToast(t('agents.toast.avatar_updated'))
           const imgUrl = isMarveen ? `/api/marveen/avatar?t=${Date.now()}` : `/api/agents/${encodeURIComponent(currentAgent.name)}/avatar?t=${Date.now()}`
           document.getElementById('agentDetailAvatar').innerHTML = `<img src="${imgUrl}" alt="">`
           gallery.hidden = true
@@ -2645,11 +2687,11 @@ document.getElementById('avatarChangeBtn').addEventListener('click', () => {
 
   async function handleAvatarFile(file) {
     if (!file.type.match(/^image\/(png|jpe?g|webp)$/)) {
-      showToast('Csak png/jpg/webp formátum')
+      showToast(t('agents.toast.avatar_format'))
       return
     }
     if (file.size > MAX_SIZE) {
-      showToast('Max 1 MB méretű kép')
+      showToast(t('agents.toast.avatar_size'))
       return
     }
     previewImg.src = URL.createObjectURL(file)
@@ -2667,7 +2709,7 @@ document.getElementById('avatarChangeBtn').addEventListener('click', () => {
     try {
       const res = await fetch(endpoint, { method: 'POST', body: form })
       if (!res.ok) throw new Error()
-      showToast('Avatar feltöltve, kép elküldve Telegramon')
+      showToast(t('agents.toast.avatar_uploaded'))
       const imgUrl = isMarveen ? `/api/marveen/avatar?t=${Date.now()}` : `/api/agents/${encodeURIComponent(currentAgent.name)}/avatar?t=${Date.now()}`
       document.getElementById('agentDetailAvatar').innerHTML = `<img src="${imgUrl}" alt="">`
       document.getElementById('detailAvatarGallery').hidden = true
@@ -2726,11 +2768,11 @@ function resetCreateAvatarUpload() {
 
   function handleCreateAvatarFile(file) {
     if (!file.type.match(/^image\/(png|jpe?g|webp)$/)) {
-      showToast('Csak png/jpg/webp formátum')
+      showToast(t('agents.toast.avatar_format'))
       return
     }
     if (file.size > MAX_SIZE) {
-      showToast('Max 1 MB méretű kép')
+      showToast(t('agents.toast.avatar_size'))
       return
     }
     // Custom upload and gallery pick are mutually exclusive.
@@ -2795,7 +2837,7 @@ document.getElementById('agentStartBtn').addEventListener('click', async () => {
       const err = await res.json()
       throw new Error(err.error || t('agents.toast.start_failed'))
     }
-    showToast('Ügynök elindítva!')
+    showToast(t('agents.toast.started'))
     // Refresh
     const detailRes = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`)
     if (detailRes.ok) {
@@ -2822,7 +2864,7 @@ document.getElementById('agentStopBtn').addEventListener('click', async () => {
       const err = await res.json()
       throw new Error(err.error || t('agents.toast.stop_failed'))
     }
-    showToast('Ügynök leállítva')
+    showToast(t('agents.toast.stopped'))
     const detailRes = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`)
     if (detailRes.ok) {
       currentAgent = await detailRes.json()
@@ -2961,7 +3003,7 @@ function startModelRestartPolling(name, expectedModel, triggeredAt) {
       stopModelRestartPolling()
       badge.hidden = true
       if (currentAgent) updateProcessControl(currentAgent)
-      showToast('Az újraindítás állapotát nem tudtam visszaolvasni, ellenőrizd a sessiont')
+      showToast(t('agents.toast.restart_state_error'))
       return
     }
     try {
@@ -3133,7 +3175,7 @@ document.getElementById('saveAutoRestartBtn').addEventListener('click', async ()
     if (!res.ok) throw new Error()
     const body = await res.json()
     if (currentAgent) currentAgent.autoRestart = body.autoRestart
-    showToast('Auto-restart beállítás mentve')
+    showToast(t('agents.toast.auto_restart_saved'))
   } catch { showToast(t('common.error_save')) }
 })
 
@@ -3289,7 +3331,7 @@ document.getElementById('saveAuthModeBtn').addEventListener('click', async () =>
       body: JSON.stringify(payload),
     })
     if (!res.ok) throw new Error()
-    showToast('Hitelesítési mód mentve (újraindítás szukseges)')
+    showToast(t('agents.toast.auth_mode_saved'))
     loadAgents()
     const detailRes = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`)
     if (detailRes.ok) {
@@ -3361,54 +3403,9 @@ function getProviderLabel() {
 // "Hogyan adj hozzá több embert vagy csoportot?" panel matches the active
 // channel provider.
 function buildHowtoHtml() {
-  if (currentChannelProvider === 'discord') {
-    return `
-      <p style="margin-top:0;"><strong>1. Új ember (DM) hozzáadása:</strong></p>
-      <ol style="padding-left:20px; margin-top:4px;">
-        <li>Add meg az illetőnek a bot Discord-handle-jét, vagy küldj neki a bot meghívó linkjéből.</li>
-        <li>Az illető DM-eli a botot egy üzenettel.</li>
-        <li>A bot egy 6-jegyű párosítási kódot küld a válaszban.</li>
-        <li>Az illető elküldi neked a kódot, te ide írod be és jóváhagyod (vagy a terminálban <code>/discord:access pair &lt;kód&gt;</code>).</li>
-      </ol>
-      <p style="margin-top:10px;"><strong>2. Discord szerver-csatorna hozzáadása:</strong></p>
-      <ol style="padding-left:20px; margin-top:4px;">
-        <li>Hívd meg a botot a Discord szervereadre (Discord Developer Portal &rarr; OAuth2 &rarr; URL Generator &rarr; <code>bot</code> scope).</li>
-        <li>A kívánt csatornában mention-eld a botot (<code>@bot</code>).</li>
-        <li>A csatorna jobbklikk &rarr; "Copy Channel ID"-vel másold ki az azonosítót.</li>
-        <li>Terminálban: <code>/discord:access group add &lt;channelId&gt;</code>.</li>
-      </ol>
-      <p style="margin-top:10px; color:var(--muted-foreground);"><em>Eltávolításhoz használd a Bekötött chat-ek listájában az X gombot.</em></p>
-    `
-  }
-  if (currentChannelProvider === 'slack') {
-    return `
-      <p style="margin-top:0;"><strong>1. Slack csatorna hozzáadása:</strong></p>
-      <ol style="padding-left:20px; margin-top:4px;">
-        <li>Add a botot a kívánt csatornához: a csatornában írd <code>/invite @botname</code>-t.</li>
-        <li>Mention-eld a botot egy üzenetben (<code>@botname segíts</code>).</li>
-        <li>A "Csatorna-kérések" listában jelenik meg a kérelem; hagyd jóvá.</li>
-      </ol>
-      <p style="margin-top:10px; color:var(--muted-foreground);"><em>DM-mel közvetlenül is írhatsz a botnak — nem kell külön párosítás.</em></p>
-    `
-  }
-  // telegram (default)
-  return `
-    <p style="margin-top:0;"><strong>1. Új ember (privát chat) hozzáadása:</strong></p>
-    <ol style="padding-left:20px; margin-top:4px;">
-      <li>Add meg az illetőnek a bot felhasználónevét (lent látható).</li>
-      <li>Az illető indítsa el a botot a Telegramban (<code>/start</code>) és írjon neki egy üzenetet.</li>
-      <li>A bot válaszol egy 6-jegyű párosítási kóddal.</li>
-      <li>Az illető elküldi neked a kódot, te ide írod be és jóváhagyod.</li>
-    </ol>
-    <p style="margin-top:10px;"><strong>2. Telegram csoport hozzáadása:</strong></p>
-    <ol style="padding-left:20px; margin-top:4px;">
-      <li>Hívd meg a botot egy meglévő Telegram csoportba (csoport beállítások &rarr; Tagok &rarr; Hozzáadás).</li>
-      <li>A csoportban írj <code>/pair</code>-t (vagy a bot által megadott parancsot).</li>
-      <li>Megjelenik egy párosítási kód a csoportban.</li>
-      <li>Másold be ide és hagyd jóvá. Ezután az ügynök fog tudni írni a csoportba és olvasni a tagok üzeneteit.</li>
-    </ol>
-    <p style="margin-top:10px; color:var(--muted-foreground);"><em>Eltávolításhoz használd a Bekötött chat-ek listájában az X gombot.</em></p>
-  `
+  if (currentChannelProvider === 'discord') return t('channel.howto.discord')
+  if (currentChannelProvider === 'slack') return t('channel.howto.slack')
+  return t('channel.howto.telegram')
 }
 
 function updateProviderUI() {
@@ -3426,35 +3423,35 @@ function updateProviderUI() {
   const discordChannelGroup = document.getElementById('chDiscordChannelIdGroup')
 
   if (isTg) {
-    if (title) title.textContent = 'Telegram bot bekotese'
-    if (steps) steps.innerHTML = '<li>Nyisd meg a <strong>@BotFather</strong>-t a Telegramban</li><li>Hozz letre egy uj botot a <code>/newbot</code> paranccsal</li><li>Masold be az API tokent ide</li>'
+    if (title) title.textContent = t('channel.setup.tg_title')
+    if (steps) steps.innerHTML = t('channel.setup.tg_steps')
     if (label) label.textContent = 'Bot API Token'
     if (input) input.placeholder = '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11'
     if (slackGroup) slackGroup.hidden = true
     if (manifestBtnGroup) manifestBtnGroup.hidden = true
     if (smokeTestBtn) smokeTestBtn.hidden = true
     if (discordChannelGroup) discordChannelGroup.hidden = true
-    if (pairingInfo) pairingInfo.textContent = 'Ha valaki ír a botnak, a plugin egy kódot küld neki. Ide írd be a kódot a jóváhagyáshoz.'
+    if (pairingInfo) pairingInfo.textContent = t('channel.setup.tg_pairing')
   } else if (currentChannelProvider === 'discord') {
-    if (title) title.textContent = 'Discord bot bekotese'
-    if (steps) steps.innerHTML = '<li>Menj a <strong>Discord Developer Portal</strong>-ra (discord.com/developers)</li><li>Hozz letre egy uj Application-t es Bot-ot</li><li>Masold be a Bot Token-t ide</li><li>Másold be a kívánt szerver-csatorna ID-jét lent</li>'
+    if (title) title.textContent = t('channel.setup.discord_title')
+    if (steps) steps.innerHTML = t('channel.setup.discord_steps')
     if (label) label.textContent = 'Bot Token'
     if (input) input.placeholder = 'MTIzNDU2Nzg5MDEyMzQ1Njc4OQ...'
     if (slackGroup) slackGroup.hidden = true
     if (manifestBtnGroup) manifestBtnGroup.hidden = true
     if (smokeTestBtn) smokeTestBtn.hidden = true
     if (discordChannelGroup) discordChannelGroup.hidden = false
-    if (pairingInfo) pairingInfo.textContent = 'Ha valaki DM-eli a botot, egy párosítási kódot kap válaszul. Add meg a kódot a jóváhagyáshoz (vagy terminálban /discord:access pair <kód>).'
+    if (pairingInfo) pairingInfo.textContent = t('channel.setup.discord_pairing')
   } else {
-    if (title) title.textContent = 'Slack app bekötése'
-    if (steps) steps.innerHTML = '<li>Hozz létre egy Slack App-ot, vagy használd a manifest gombot lent</li><li>Másold be a Bot Token-t (xoxb-...) és az App Token-t (xapp-...)</li>'
+    if (title) title.textContent = t('channel.setup.slack_title')
+    if (steps) steps.innerHTML = t('channel.setup.slack_steps')
     if (label) label.textContent = 'Bot Token (xoxb-...)'
     if (input) input.placeholder = 'xoxb-...'
     if (slackGroup) slackGroup.hidden = false
     if (manifestBtnGroup) manifestBtnGroup.hidden = false
     if (smokeTestBtn) smokeTestBtn.hidden = false
     if (discordChannelGroup) discordChannelGroup.hidden = true
-    if (pairingInfo) pairingInfo.textContent = 'A Slack csatorna-kérések fent a Csatorna-kérések listában jelennek meg.'
+    if (pairingInfo) pairingInfo.textContent = t('channel.setup.slack_pairing')
   }
   if (howto) howto.innerHTML = buildHowtoHtml()
   if (reconnectBtn) {
@@ -3578,7 +3575,7 @@ document.getElementById('chTestBtn').addEventListener('click', async () => {
     if (!res.ok) throw new Error()
     showToast('Kapcsolat rendben!')
   } catch {
-    showToast('Kapcsolat tesztelése sikertelen')
+    showToast(t('channel.toast.smoke_failed'))
   }
 })
 
@@ -3635,7 +3632,7 @@ function showSmokeTestResult(output) {
       <h3>Slack smoke-test eredmény</h3>
       <pre style="background:#1a1a2e;color:#e0e0e0;padding:12px;border-radius:6px;overflow-x:auto;font-size:13px;max-height:400px;white-space:pre-wrap">${output.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>
       <div style="text-align:right;margin-top:12px">
-        <button class="btn-secondary" id="smokeTestCloseBtn">Bezárás</button>
+        <button class="btn-secondary" id="smokeTestCloseBtn">${t('common.btn.close')}</button>
       </div>
     </div>`
   document.body.appendChild(overlay)
@@ -3665,7 +3662,7 @@ async function refreshPendingPairings() {
           <span class="tg-pending-code">${escapeHtml(p.code)}</span>
           <span class="tg-pending-sender">Sender: ${escapeHtml(p.senderId)}</span>
         </div>
-        <button class="btn-primary btn-compact" style="padding:5px 12px; font-size:12px; margin:0" data-code="${escapeHtml(p.code)}">Jóváhagyás</button>
+        <button class="btn-primary btn-compact" style="padding:5px 12px; font-size:12px; margin:0" data-code="${escapeHtml(p.code)}">${t('common.btn.approve')}</button>
       `
       item.querySelector('button').addEventListener('click', async () => {
         await approvePairing(p.code)
@@ -3687,7 +3684,7 @@ async function approvePairing(code) {
       const err = await res.json()
       throw new Error(err.error || t('channel.toast.approve_error'))
     }
-    showToast('Párosítás jóváhagyva!')
+    showToast(t('channel.toast.pairing_approved'))
     refreshPendingPairings()
     refreshAllowedList()
   } catch (err) {
@@ -3719,7 +3716,7 @@ async function refreshAllowedList() {
           <span class="tg-allowed-kind">DM</span>
           <span class="tg-allowed-id">${escapeHtml(id)}</span>
         </div>
-        <button class="btn-icon-danger" title="Eltávolítás" data-kind="user" data-id="${escapeHtml(id)}">&times;</button>
+        <button class="btn-icon-danger" title="${t('common.btn.remove')}" data-kind="user" data-id="${escapeHtml(id)}">&times;</button>
       `
       item.querySelector('button').addEventListener('click', () => removeAllowed('user', id))
       listEl.appendChild(item)
@@ -3729,10 +3726,10 @@ async function refreshAllowedList() {
       item.className = 'tg-allowed-item'
       item.innerHTML = `
         <div class="tg-allowed-meta">
-          <span class="tg-allowed-kind tg-allowed-kind-group">CSOPORT</span>
+          <span class="tg-allowed-kind tg-allowed-kind-group">${t('channel.badge.group')}</span>
           <span class="tg-allowed-id">${escapeHtml(g.id)}</span>
         </div>
-        <button class="btn-icon-danger" title="Eltávolítás" data-kind="group" data-id="${escapeHtml(g.id)}">&times;</button>
+        <button class="btn-icon-danger" title="${t('common.btn.remove')}" data-kind="group" data-id="${escapeHtml(g.id)}">&times;</button>
       `
       item.querySelector('button').addEventListener('click', () => removeAllowed('group', g.id))
       listEl.appendChild(item)
@@ -3750,7 +3747,7 @@ async function removeAllowed(kind, id) {
       const err = await res.json().catch(() => ({}))
       throw new Error(err.error || t('channel.toast.remove_error'))
     }
-    showToast('Eltávolítva')
+    showToast(t('common.toast.removed'))
     refreshAllowedList()
   } catch (err) {
     showToast(`Hiba: ${err.message}`)
@@ -3787,16 +3784,16 @@ async function refreshInvites() {
           ${linkHtml}
         </div>
         <div style="display:flex; gap:6px;">
-          ${inv.deepLink && !inv.used ? `<button class="btn-secondary btn-compact" data-link="${escapeHtml(inv.deepLink)}" style="padding:4px 10px; font-size:11px; margin:0;">Másol</button>` : ''}
-          <button class="btn-icon-danger" title="Visszavonás" data-token="${escapeHtml(inv.token)}">&times;</button>
+          ${inv.deepLink && !inv.used ? `<button class="btn-secondary btn-compact" data-link="${escapeHtml(inv.deepLink)}" style="padding:4px 10px; font-size:11px; margin:0;">${t('common.btn.copy_btn')}</button>` : ''}
+          <button class="btn-icon-danger" title="${t('channel.btn.revoke')}" data-token="${escapeHtml(inv.token)}">&times;</button>
         </div>
       `
       const copyBtn = item.querySelector('button[data-link]')
       if (copyBtn) {
         copyBtn.addEventListener('click', async (e) => {
           const link = e.currentTarget.getAttribute('data-link')
-          try { await navigator.clipboard.writeText(link); showToast('Vágólapra másolva') }
-          catch { showToast('Másolás sikertelen') }
+          try { await navigator.clipboard.writeText(link); showToast(t('common.toast.copied')) }
+          catch { showToast(t('common.toast.copy_failed')) }
         })
       }
       const revokeBtn = item.querySelector('button[data-token]')
@@ -3821,10 +3818,10 @@ async function generateInvite() {
     }
     const data = await res.json()
     if (data.deepLink) {
-      try { await navigator.clipboard.writeText(data.deepLink); showToast('Meghívó link létrehozva és vágólapra másolva') }
-      catch { showToast('Meghívó link létrehozva — kattints a Másol gombra') }
+      try { await navigator.clipboard.writeText(data.deepLink); showToast(t('channel.toast.invite_copied')) }
+      catch { showToast(t('channel.toast.invite_created')) }
     } else {
-      showToast('Meghívó létrejött (bot username pending — frissítés)')
+      showToast(t('channel.toast.invite_pending'))
     }
     refreshInvites()
   } catch (err) {
@@ -3844,7 +3841,7 @@ async function revokeInviteToken(token) {
       const err = await res.json().catch(() => ({}))
       throw new Error(err.error || 'Sikertelen')
     }
-    showToast('Meghívó visszavonva')
+    showToast(t('channel.toast.invite_revoked'))
     refreshInvites()
   } catch (err) {
     showToast(`Hiba: ${err.message}`)
@@ -3890,8 +3887,8 @@ async function refreshChannelRequests() {
           <span class="tg-allowed-id" style="font-size:11px;color:var(--text-muted)">${ts}</span>
         </div>
         <div style="display:flex;gap:6px">
-          <button class="btn-primary btn-compact" data-approve="${req.id}" style="padding:4px 10px;font-size:11px;margin:0">Jóváhagyás</button>
-          <button class="btn-icon-danger" data-deny="${req.id}" title="Elutasítás">&times;</button>
+          <button class="btn-primary btn-compact" data-approve="${req.id}" style="padding:4px 10px;font-size:11px;margin:0">${t('common.btn.approve')}</button>
+          <button class="btn-icon-danger" data-deny="${req.id}" title="${t('channel.btn.deny')}">&times;</button>
         </div>
       `
       item.dataset.reqId = req.id
@@ -3933,7 +3930,7 @@ async function submitApproveModal() {
     document.getElementById('chApproveModalOverlay').hidden = true
     const item = document.querySelector(`[data-req-id="${id}"]`)
     if (item) item.remove()
-    showToast('Csatorna engedélyezve')
+    showToast(t('channel.toast.approved'))
     refreshChannelRequests()
   } catch (err) {
     showToast(`Hiba: ${err.message}`)
@@ -3951,7 +3948,7 @@ async function denyChannelRequest(id, itemEl) {
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/channel-requests/${id}/deny`, { method: 'POST' })
     if (!res.ok) throw new Error('Hiba')
-    showToast('Kérés elutasítva')
+    showToast(t('channel.toast.denied'))
     refreshChannelRequests()
   } catch (err) {
     showToast(`Hiba: ${err.message}`)
@@ -3990,7 +3987,7 @@ document.getElementById('chDisconnectBtn').addEventListener('click', async () =>
     await openAgentDetail(currentAgent.name)
     loadAgents()
   } catch {
-    showToast('Hiba a leválasztás során')
+    showToast(t('channel.toast.disconnect_error'))
   }
 })
 
@@ -4121,7 +4118,7 @@ document.getElementById('saveSkillBtn').addEventListener('click', async () => {
       throw new Error(err.error || 'Hiba')
     }
     closeModal(skillModalOverlay)
-    showToast('Skill hozzáadva')
+    showToast(t('skills.toast.added'))
     if (isGlobal) {
       loadGlobalSkills()
     } else {
@@ -4139,8 +4136,8 @@ document.getElementById('saveSkillBtn').addEventListener('click', async () => {
 // Import skill
 document.getElementById('importSkillBtn').addEventListener('click', async () => {
   const isGlobal = skillModalScope === 'global'
-  if (!skillFile) { showToast('Válassz egy .skill fájlt'); return }
-  if (!isGlobal && !currentAgent) { showToast('Válassz egy .skill fájlt'); return }
+  if (!skillFile) { showToast(t('skills.toast.select_file')); return }
+  if (!isGlobal && !currentAgent) { showToast(t('skills.toast.select_file')); return }
 
   const btn = document.getElementById('importSkillBtn')
   btn.disabled = true
@@ -4227,22 +4224,22 @@ document.getElementById('scheduleType').addEventListener('change', () => {
 // Heartbeat templates
 const HEARTBEAT_TEMPLATES = {
   calendar: {
-    desc: 'Naptár figyelő',
+    desc: () => t('tasks.heartbeat.tpl.calendar'),
     prompt: 'Ellenorizd a naptaramat (list-events a mai napra). Ha van meeting 1 oran belul, szolj Telegramon es 10 perccel a meeting elott is emlekeztetess. Ha nincs kozelgo esemeny, ne irj semmit.',
     schedule: '*/15 * * * *',
   },
   email: {
-    desc: 'Email figyelő',
+    desc: () => t('tasks.heartbeat.tpl.email'),
     prompt: 'Ellenorizd az emailjeimet (search_emails newer_than:1h). Ha surgos vagy fontos levelet talalsz (pl. ugyfeltol, fonokotol, fizetessel kapcsolatos), szolj Telegramon. Ha csak promo/newsletter, ne irj semmit.',
     schedule: '*/30 * * * *',
   },
   kanban: {
-    desc: 'Kanban határidő figyelő',
+    desc: () => t('tasks.heartbeat.tpl.kanban'),
     prompt: 'Ellenorizd a kanban tablat (curl -s http://localhost:3420/api/kanban). Ha van olyan kartya aminek ma jar le a hatrideje vagy urgent prioritasu es meg nincs done, szolj Telegramon. Ha minden rendben, ne irj semmit.',
     schedule: '0 */2 * * *',
   },
   full: {
-    desc: 'Teljes ellenőrzés',
+    desc: () => t('tasks.heartbeat.tpl.full'),
     prompt: 'Ellenorizd: 1) Naptar - van-e meeting 1 oran belul? 2) Email - jott-e surgos level az elmult oraban? 3) Kanban - van-e mai hataridovel kartya? Ha BARMIT talalsz ami fontos, szolj Telegramon tomoren. Ha minden csendes, ne irj semmit.',
     schedule: '*/15 * * * *',
   },
@@ -4251,7 +4248,7 @@ const HEARTBEAT_TEMPLATES = {
 document.getElementById('heartbeatTemplate').addEventListener('change', () => {
   const tpl = HEARTBEAT_TEMPLATES[document.getElementById('heartbeatTemplate').value]
   if (!tpl) return
-  document.getElementById('scheduleDesc').value = tpl.desc
+  document.getElementById('scheduleDesc').value = typeof tpl.desc === 'function' ? tpl.desc() : tpl.desc
   document.getElementById('schedulePrompt').value = tpl.prompt
   document.getElementById('scheduleCustomCron').value = tpl.schedule
   scheduleFrequency.value = 'custom'
@@ -4364,20 +4361,19 @@ function describeCron(cron) {
   const [minute, hour, dom, month, dow] = parts
 
   // Interval patterns
-  if (minute.startsWith('*/')) return `${minute.split('/')[1]} percenként`
-  if (hour.startsWith('*/')) return `${hour.split('/')[1]} óránként`
-  if (minute === '0' && hour === '*') return 'Minden órában'
+  if (minute.startsWith('*/')) return t('tasks.cron.every_n_min', { n: minute.split('/')[1] })
+  if (hour.startsWith('*/')) return t('tasks.cron.every_n_hour', { n: hour.split('/')[1] })
+  if (minute === '0' && hour === '*') return t('tasks.cron.every_hour')
 
   // Time-based
   const h = parseInt(hour); const m = parseInt(minute)
   if (!isNaN(h) && !isNaN(m)) {
     const timeStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
-    const dowNames = { '1': 'Hétfőn', '2': 'Kedden', '3': 'Szerdán', '4': 'Csütörtökön', '5': 'Pénteken', '6': 'Szombaton', '0': 'Vasárnap', '7': 'Vasárnap' }
-    if (dow === '1-5') return `Hétköznap ${timeStr}`
-    if (dow === '0,6' || dow === '6,0') return `Hétvégén ${timeStr}`
-    if (dowNames[dow]) return `${dowNames[dow]} ${timeStr}`
-    if (dow === '*' && dom === '*') return `Naponta ${timeStr}`
-    if (dom !== '*') return `Minden hónap ${dom}. napján ${timeStr}`
+    if (dow === '1-5') return t('tasks.cron.weekdays', { time: timeStr })
+    if (dow === '0,6' || dow === '6,0') return t('tasks.cron.weekends', { time: timeStr })
+    if (t(`tasks.cron.dow.${dow}`) !== `tasks.cron.dow.${dow}`) return `${t(`tasks.cron.dow.${dow}`)} ${timeStr}`
+    if (dow === '*' && dom === '*') return t('tasks.cron.daily', { time: timeStr })
+    if (dom !== '*') return t('tasks.cron.monthly', { dom, time: timeStr })
   }
 
   return cron
@@ -4480,9 +4476,9 @@ function renderPendingRetries(container, rows) {
           ${escapeHtml(r.taskName)}
           <span class="badge badge-paused">${escapeHtml(r.agentName)}</span>
           ${r.alertSentAt
-            ? '<span class="badge badge-heartbeat" title="Telegram riasztás elküldve">⚠️ riasztás elküldve</span>'
+            ? '<span class="badge badge-heartbeat" title="${t('tasks.heartbeat.alert_badge_sent')}">⚠️ ${t('tasks.heartbeat.alert_sent')}</span>'
             : r.alertDue
-              ? '<span class="badge badge-heartbeat" title="Riasztás esedékes, a következő tick küldi">⏳ riasztás esedékes</span>'
+              ? '<span class="badge badge-heartbeat" title="${t('tasks.heartbeat.alert_badge_pending')}">⏳ ${t('tasks.heartbeat.alert_pending')}</span>'
               : ''}
         </div>
         <div class="pending-retry-meta">
@@ -4490,7 +4486,7 @@ function renderPendingRetries(container, rows) {
           ${r.lastReason ? `<span>ok: ${escapeHtml(r.lastReason)}</span>` : ''}
         </div>
       </div>
-      <button class="btn-icon btn-icon-danger" data-action="cancel-pending" title="Visszavonás">
+      <button class="btn-icon btn-icon-danger" data-action="cancel-pending" title="${t('common.btn.remove')}">
         ${trashIcon()}
       </button>
     </div>
@@ -4525,14 +4521,14 @@ function renderPendingRetries(container, rows) {
 // Classify a cron expression into a cadence bucket for grouping the list.
 function cronCadence(cron) {
   const p = (cron || '').trim().split(/\s+/)
-  if (p.length < 5) return { order: 5, label: 'Egyéb / egyedi' }
+  if (p.length < 5) return { order: 5, label: t('tasks.cadence.other') }
   const [min, hour, , mon, dow] = p
   const dom = p[2]
-  if (mon !== '*' || dom !== '*') return { order: 3, label: 'Havonta vagy ritkábban' }
-  if (dow !== '*' && dow !== '1-5') return { order: 2, label: 'Hetente' }
+  if (mon !== '*' || dom !== '*') return { order: 3, label: t('tasks.cadence.monthly') }
+  if (dow !== '*' && dow !== '1-5') return { order: 2, label: t('tasks.cadence.weekly') }
   const multiDaily = /[\/,\-]/.test(min) || /[\/,\-]/.test(hour)
-  if (multiDaily) return { order: 0, label: 'Óránként vagy sűrűbben' }
-  return { order: 1, label: 'Naponta' }
+  if (multiDaily) return { order: 0, label: t('tasks.cadence.sub_hourly') }
+  return { order: 1, label: t('tasks.cadence.daily') }
 }
 const CADENCE_ICON = { 0: '⚡', 1: '☀️', 2: '📅', 3: '🗓️', 5: '•' }
 
@@ -4790,9 +4786,11 @@ function renderWeekView(data) {
   const grid = document.getElementById('weekGrid')
   grid.innerHTML = ''
 
-  const dayNames = ['H', 'K', 'Sze', 'Cs', 'P', 'Szo', 'V']
-  const dayNamesFull = ['Hétfő', 'Kedd', 'Szerda', 'Csütörtök', 'Péntek', 'Szombat', 'Vasárnap']
+  const locale = _lang === 'en' ? 'en-US' : 'hu-HU'
   const dayNums = [1, 2, 3, 4, 5, 6, 0]
+  // Jan 6 2025 = Mon; offset by dayNums index to get each weekday
+  const dayNames = dayNums.map(dow => new Date(2025, 0, 6 + (dow === 0 ? 6 : dow - 1)).toLocaleDateString(locale, { weekday: 'narrow' }))
+  const dayNamesFull = dayNums.map(dow => new Date(2025, 0, 6 + (dow === 0 ? 6 : dow - 1)).toLocaleDateString(locale, { weekday: 'long' }))
 
   const today = new Date()
   const todayDow = today.getDay()
@@ -5059,7 +5057,7 @@ saveScheduleBtn.addEventListener('click', async () => {
 
   if (!name) { document.getElementById('scheduleName').focus(); return }
   if (!prompt) { document.getElementById('schedulePrompt').focus(); return }
-  if (!schedule) { showToast('Válassz ütemezést'); return }
+  if (!schedule) { showToast(t('tasks.toast.select_schedule')); return }
 
   saveScheduleBtn.disabled = true
   saveScheduleBtn.querySelector('.btn-text').hidden = true
@@ -5077,7 +5075,7 @@ saveScheduleBtn.addEventListener('click', async () => {
         const err = await res.json()
         throw new Error(err.error || 'Hiba')
       }
-      showToast('Feladat frissítve')
+      showToast(t('tasks.toast.updated'))
     } else {
       // Create
       const res = await fetch('/api/schedules', {
@@ -5089,7 +5087,7 @@ saveScheduleBtn.addEventListener('click', async () => {
         const err = await res.json()
         throw new Error(err.error || 'Ismeretlen hiba')
       }
-      showToast('Feladat létrehozva!')
+      showToast(t('tasks.toast.created'))
     }
     closeModal(scheduleModalOverlay)
     loadSchedules()
@@ -5216,14 +5214,14 @@ document.getElementById('saveMemBtn').addEventListener('click', async () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content, tier, agent_id: agentId, keywords }),
       })
-      showToast('Emlék frissítve')
+      showToast(t('memories.toast.updated'))
     } else {
       await fetch('/api/memories', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agent_id: agentId, content, tier, keywords }),
       })
-      showToast('Emlék létrehozva')
+      showToast(t('memories.toast.created'))
     }
     closeModal(memModalOverlay)
     loadMemories()
@@ -5350,7 +5348,7 @@ function renderMemories(memories) {
       if (!confirm('Biztosan torlod ezt az emleket?')) return
       try {
         await fetch(`/api/memories/${mem.id}`, { method: 'DELETE' })
-        showToast('Emlék törölve')
+        showToast(t('memories.toast.deleted'))
         loadMemories()
         loadMemStats()
       } catch {
@@ -6235,7 +6233,7 @@ document.getElementById('connectorRefreshBtn').addEventListener('click', async (
     if (!res.ok || !data.ok) {
       showToast(t('updates.error', {msg: data.error || 'HTTP ' + res.status}))
     } else {
-      showToast('MCP lista frissítve (' + (data.count || 0) + ' globális connector)')
+      showToast(t('connectors.toast.mcp_refreshed', { n: data.count || 0 }))
     }
     await loadConnectors()
     // Reload catalog only if the Gallery tab is currently active so we
@@ -6296,14 +6294,14 @@ function renderCatalog() {
           <div class="catalog-card-name">
             ${escapeHtml(item.name)}
             <span class="catalog-card-type ${item.type}">${item.type}</span>
-            ${item.infoUrl ? `<a href="${escapeHtml(item.infoUrl)}" target="_blank" rel="noopener" class="catalog-card-link" title="Dokumentáció megnyitása" onclick="event.stopPropagation()">&#x2197;</a>` : ''}
+            ${item.infoUrl ? `<a href="${escapeHtml(item.infoUrl)}" target="_blank" rel="noopener" class="catalog-card-link" title="${t('connectors.tooltip.docs')}" onclick="event.stopPropagation()">&#x2197;</a>` : ''}
           </div>
           <div class="catalog-card-desc">${escapeHtml(item.description)}</div>
         </div>
       </div>
       <div class="catalog-card-footer">
         ${item.installed
-          ? `<span class="catalog-install-btn installed" title="${item.configMatch ? 'Bekötve a .mcp.json-ban (a Connectors listán kezelhető)' : 'Forrás: ' + escapeHtml(item.installedSource || 'ismeretlen')}">Telepítve &#10003;${item.configMatch ? ' (.mcp.json)' : item.installedSource === 'claude.ai' ? ' (claude.ai)' : item.installedSource === 'plugin' ? ' (plugin)' : ''}</span>${(item.installedSource === 'claude.ai' || item.configMatch) ? '' : `<a class="catalog-uninstall-link" data-id="${item.id}">Eltávolítás</a>`}`
+          ? `<span class="catalog-install-btn installed" title="${item.configMatch ? t('connectors.tooltip.installed_mcp') : t('connectors.tooltip.installed_src', { src: escapeHtml(item.installedSource || '') })}">Telepítve &#10003;${item.configMatch ? ' (.mcp.json)' : item.installedSource === 'claude.ai' ? ' (claude.ai)' : item.installedSource === 'plugin' ? ' (plugin)' : ''}</span>${(item.installedSource === 'claude.ai' || item.configMatch) ? '' : `<a class="catalog-uninstall-link" data-id="${item.id}">Eltávolítás</a>`}`
           : `<button class="catalog-install-btn install" data-id="${item.id}">Telepítés</button>${authHint}`
         }
       </div>
@@ -6515,7 +6513,7 @@ const BUILTIN_MCPS = [
   {
     name: 'computer-use',
     label: 'Computer Use',
-    desc: 'Képernyő vezérlés, kattintás, gépelés',
+    desc: () => t('connectors.builtin.computer_use'),
     detailHtml: `
       <p>A Computer Use egy natív Claude képesség, amit nem a Marveen kezel, hanem maga a Claude Code CLI / Claude alkalmazás.
       Nem jelenik meg a <code>claude mcp list</code> kimenetében, ezért a dashboard sem tudja automatikusan detektálni.</p>
@@ -6528,7 +6526,7 @@ const BUILTIN_MCPS = [
   {
     name: 'chrome',
     label: 'Claude in Chrome',
-    desc: 'Böngésző automatizálás',
+    desc: () => t('connectors.builtin.chrome'),
     detailHtml: `
       <p>A Claude in Chrome egy indítás-idejű flag a Claude Code CLI-n, nem egy bekapcsolható MCP szerver.
       Ezért nem jelenik meg a <code>claude mcp list</code> kimenetében, és a dashboard sem tudja automatikusan detektálni.</p>
@@ -6543,7 +6541,7 @@ function openBuiltinDetail(item) {
   const overlay = document.getElementById('builtinDetailOverlay')
   if (!overlay) return
   document.getElementById('builtinDetailTitle').textContent = item.label
-  document.getElementById('builtinDetailDesc').textContent = item.desc
+  document.getElementById('builtinDetailDesc').textContent = typeof item.desc === 'function' ? item.desc() : item.desc
   // Static strings only. Never interpolate user or server input here
   // without passing it through escapeHtml first -- detailHtml is a
   // raw HTML sink.
@@ -6659,7 +6657,7 @@ function renderConnectors() {
     const sourceTag = c.source ? `<span class="connector-source-badge">${escapeHtml(sourceLabels[c.source] || c.source)}</span>` : ''
     const readOnly = c.source === 'claude.ai'
     if (readOnly) card.classList.add('connector-card-readonly')
-    const readonlyHint = readOnly ? '<div class="connector-readonly-hint">Kezelhető: claude.ai</div>' : ''
+    const readonlyHint = readOnly ? `<div class="connector-readonly-hint">${t('connectors.readonly_hint')}</div>` : ''
     card.innerHTML = `
       <div class="connector-status-dot ${c.status}"></div>
       <div class="connector-info">
@@ -6706,8 +6704,8 @@ function renderConnectors() {
     const div = document.createElement('div')
     div.className = 'connector-builtin'
     div.innerHTML = `
-      <div class="connector-status-dot unknown" title="A dashboard nem tudja automatikusan detektálni ezt a képességet"></div>
-      <div class="connector-builtin-name">${escapeHtml(b.label)}<br><span style="font-size:11px;color:var(--text-muted);font-weight:400">${escapeHtml(b.desc)}</span></div>
+      <div class="connector-status-dot unknown" title="${t('connectors.tooltip.auto_detect')}"></div>
+      <div class="connector-builtin-name">${escapeHtml(b.label)}<br><span style="font-size:11px;color:var(--text-muted);font-weight:400">${escapeHtml(typeof b.desc === 'function' ? b.desc() : b.desc)}</span></div>
       <button type="button" class="connector-builtin-action btn-link" data-builtin="${escapeHtml(b.name)}">${t('connectors.builtin.details')}</button>
     `
     const btn = div.querySelector('button[data-builtin]')
@@ -7477,7 +7475,7 @@ async function openConnectorDetail(connector) {
       const item = document.createElement('div')
       item.className = 'connector-agent-item connector-agent-auto'
       item.innerHTML = `
-        <input type="checkbox" checked disabled title="Globálisan elérhető a fő agentnek -- nem kell külön hozzárendelni">
+        <input type="checkbox" checked disabled title="${t('connectors.tooltip.global')}">
         <label>${escapeHtml(mainAgent.label || mainAgent.name)} <span class="tag-auto">automatikus</span></label>
       `
       listEl.appendChild(item)
@@ -7505,7 +7503,7 @@ async function openConnectorDetail(connector) {
     try {
       await fetch(`/api/connectors/${encodeURIComponent(connector.name)}`, { method: 'DELETE' })
       closeModal(connectorDetailOverlay)
-      showToast('Connector törölve')
+      showToast(t('connectors.toast.deleted'))
       loadConnectors()
     } catch {
       showToast(t('common.error_delete'))
@@ -7522,11 +7520,11 @@ async function openConnectorDetail(connector) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agents: checked, allAgents: allVisible }),
       })
-      showToast('Ügynök-hozzárendelés frissítve')
+      showToast(t('connectors.toast.assignment_updated'))
       closeModal(connectorDetailOverlay)
       loadConnectors()
     } catch {
-      showToast('Hiba a hozzárendelés során')
+      showToast(t('connectors.toast.assignment_error'))
     }
   }
 
@@ -7626,7 +7624,7 @@ document.getElementById('saveConnectorBtn').addEventListener('click', async () =
     if (result.nameChanged) {
       showToast(t('connectors.toast.added', { name: savedName }))
     } else {
-      showToast('Connector hozzáadva!')
+      showToast(t('connectors.toast.created'))
     }
     loadConnectors()
   } catch (err) {
@@ -7649,13 +7647,13 @@ function escapeHtml(str) {
 // === Status ===
 // ============================================================
 
-// Statuspage component status -> short Hungarian label for non-operational states.
+// Statuspage component status -> short label for non-operational states.
 const STATUS_COMPONENT_LABELS = {
-  operational: 'működik',
-  degraded_performance: 'lassú',
-  partial_outage: 'részleges kimaradás',
-  major_outage: 'kimaradás',
-  under_maintenance: 'karbantartás',
+  operational: () => t('status.comp.operational'),
+  degraded_performance: () => t('status.comp.degraded'),
+  partial_outage: () => t('status.comp.partial_outage'),
+  major_outage: () => t('status.comp.major_outage'),
+  under_maintenance: () => t('status.comp.maintenance'),
 }
 
 document.getElementById('refreshStatusBtn').addEventListener('click', loadStatus)
@@ -7699,7 +7697,7 @@ async function loadStatus() {
         div.innerHTML = `
           <div class="status-service-dot ${ok ? 'operational' : 'degraded'}"></div>
           <span class="status-service-name">${escapeHtml(c.name)}</span>
-          ${ok ? '' : `<span class="status-service-state" style="margin-left:auto;font-size:11px;color:var(--text-muted)">${escapeHtml(STATUS_COMPONENT_LABELS[c.status] || c.status)}</span>`}
+          ${ok ? '' : `<span class="status-service-state" style="margin-left:auto;font-size:11px;color:var(--text-muted)">${escapeHtml((typeof STATUS_COMPONENT_LABELS[c.status] === 'function' ? STATUS_COMPONENT_LABELS[c.status]() : STATUS_COMPONENT_LABELS[c.status]) || c.status)}</span>`}
         `
         gridEl.appendChild(div)
       }
@@ -7830,7 +7828,7 @@ async function parseFileToChunks(file) {
 // Import button click
 memImportSaveBtn.addEventListener('click', async () => {
   if (!memImportFiles.length) {
-    showToast('Válassz legalább egy fájlt')
+    showToast(t('memories.toast.select_files'))
     return
   }
 
@@ -7854,7 +7852,7 @@ memImportSaveBtn.addEventListener('click', async () => {
       memImportSaveBtn.querySelector('.btn-text').hidden = false
       memImportSaveBtn.querySelector('.btn-loading').hidden = true
       memImportSaveBtn.disabled = false
-      showToast('Nincs importálható tartalom a fájlokban')
+      showToast(t('memories.toast.no_content'))
       return
     }
 
@@ -7888,7 +7886,7 @@ memImportSaveBtn.addEventListener('click', async () => {
     }
   } catch (err) {
     memImportProgress.hidden = true
-    showToast('Hiba a költöztetés során')
+    showToast(t('memories.toast.import_error'))
   }
 
   memImportSaveBtn.querySelector('.btn-text').hidden = false
@@ -8806,7 +8804,7 @@ async function loadOverview() {
     const taskDiff = d.tasksToday - d.tasksYesterday
     document.getElementById('statTasksSub').textContent = taskDiff === 0 ? t('overview.stat.same_as_yesterday') : (taskDiff > 0 ? '+' + taskDiff + ' ' + t('overview.stat.change', { n: '' }).trim() : taskDiff + ' ' + t('overview.stat.change', { n: '' }).trim())
     document.getElementById('statMemories').textContent = d.memories.count.toLocaleString('hu-HU').replace(/,/g, ' ')
-    document.getElementById('statMemoriesSub').textContent = `bejegyzés · ${d.memories.categories} category`
+    document.getElementById('statMemoriesSub').textContent = `${t('overview.stat.sub.memories')} · ${d.memories.categories} category`
     document.getElementById('statSkills').textContent = d.skills.count
     document.getElementById('statSkillsSub').textContent = d.skills.today > 0 ? t('overview.stat.skills_today', { n: d.skills.today }) : ''
     // Team: reuse the hierarchy graph renderer so the overview card shows
@@ -8985,10 +8983,10 @@ async function runUpdate(autoStash) {
         }
         return
       }
-      showToast('Frissítés nem indult: ' + (data.error || ('HTTP ' + res.status)))
+      showToast(t('updates.toast.not_started', { msg: data.error || ('HTTP ' + res.status) }))
       return
     }
-    showToast('Frissítés elindult, a dashboard újratöltődik...')
+    showToast(t('updates.toast.started'))
     setTimeout(() => window.location.reload(), 30000)
   } catch (err) {
     resetBtn()
@@ -9030,18 +9028,15 @@ function showSudoModal(sudoCommand) {
   const card = document.createElement('div')
   card.style.cssText = 'background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:24px;max-width:560px;width:90%'
   card.innerHTML = `
-    <h3 style="margin:0 0 12px">Rendszerszintű beállítás szükséges</h3>
-    <p style="font-size:13px;color:var(--text-muted);margin:0 0 16px">
-      A Claude Code megköveteli, hogy a Slack channel plugin engedélyezve legyen a rendszerszintű managed-settings.json fájlban.
-      Futtasd az alábbi parancsot a Terminálban:
-    </p>
+    <h3 style="margin:0 0 12px">${t('channel.sudo_modal.title')}</h3>
+    <p style="font-size:13px;color:var(--text-muted);margin:0 0 16px">${t('channel.sudo_modal.desc')}</p>
     <div style="position:relative">
       <pre id="sudoCmdPre" style="background:var(--bg-main);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px;overflow-x:auto;white-space:pre-wrap;word-break:break-all">${escapeHtml(sudoCommand)}</pre>
-      <button id="sudoCopyBtn" style="position:absolute;top:6px;right:6px;padding:4px 10px;font-size:11px;border-radius:6px;border:1px solid var(--border);background:var(--bg-card);cursor:pointer">Másolás</button>
+      <button id="sudoCopyBtn" style="position:absolute;top:6px;right:6px;padding:4px 10px;font-size:11px;border-radius:6px;border:1px solid var(--border);background:var(--bg-card);cursor:pointer">${t('common.copy')}</button>
     </div>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
-      <button id="sudoCancelBtn" class="btn btn-secondary" style="padding:6px 16px;font-size:13px">Mégse</button>
-      <button id="sudoDoneBtn" class="btn btn-primary" style="padding:6px 16px;font-size:13px">Kész, újrapróbálom</button>
+      <button id="sudoCancelBtn" class="btn btn-secondary" style="padding:6px 16px;font-size:13px">${t('channel.sudo_modal.cancel')}</button>
+      <button id="sudoDoneBtn" class="btn btn-primary" style="padding:6px 16px;font-size:13px">${t('channel.sudo_modal.retry')}</button>
     </div>
   `
   overlay.appendChild(card)
@@ -9074,10 +9069,10 @@ function fallbackCopyToClipboard(text, btn) {
       btn.textContent = t('common.copied')
       setTimeout(() => { btn.textContent = t('common.copy') }, 1500)
     } else {
-      showToast('A vágólapra másolás nem sikerült')
+      showToast(t('common.toast.copy_failed'))
     }
   } catch {
-    showToast('A vágólapra másolás nem sikerült')
+    showToast(t('common.toast.copy_failed'))
   }
   document.body.removeChild(ta)
 }
@@ -9095,21 +9090,18 @@ function showSlackManifestModal(manifest, instructions) {
   const stepsHtml = instructions.map((s, i) => `<li style="margin-bottom:6px">${escapeHtml(s)}</li>`).join('')
 
   card.innerHTML = `
-    <h3 style="margin:0 0 16px">Slack App létrehozása</h3>
-    <p style="font-size:13px;color:var(--text-muted);margin:0 0 12px">
-      Illeszd be az alábbi YAML manifestet a Slack App létrehozásakor.
-      Ez automatikusan beállítja az összes szükséges scope-ot, eseményt és a Socket Mode-ot.
-    </p>
+    <h3 style="margin:0 0 16px">${t('channel.slack_manifest.title')}</h3>
+    <p style="font-size:13px;color:var(--text-muted);margin:0 0 12px">${t('channel.slack_manifest.desc')}</p>
     <div style="position:relative;margin-bottom:16px">
       <pre id="slackManifestPre" style="background:var(--bg-main);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px;overflow-x:auto;white-space:pre-wrap;word-break:break-all;max-height:240px;overflow-y:auto">${escapeHtml(manifest)}</pre>
       <button id="slackManifestCopyBtn" style="position:absolute;top:6px;right:6px;padding:4px 10px;font-size:11px;border-radius:6px;border:1px solid var(--border);background:var(--bg-card);cursor:pointer">${t('common.copy')}</button>
     </div>
-    <h4 style="margin:0 0 8px;font-size:14px">Lépések</h4>
+    <h4 style="margin:0 0 8px;font-size:14px">${t('channel.slack_manifest.steps_title')}</h4>
     <ol style="font-size:13px;padding-left:20px;margin:0 0 16px">${stepsHtml}</ol>
     <div style="display:flex;gap:8px;justify-content:flex-end">
-      <button id="slackManifestCloseBtn" class="btn btn-secondary" style="padding:6px 16px;font-size:13px">Bezárás</button>
+      <button id="slackManifestCloseBtn" class="btn btn-secondary" style="padding:6px 16px;font-size:13px">${t('common.btn.close')}</button>
       <a href="https://api.slack.com/apps" target="_blank" rel="noopener" class="btn btn-primary" style="padding:6px 16px;font-size:13px;text-decoration:none;display:inline-flex;align-items:center;gap:4px">
-        Megnyitás (api.slack.com)
+        ${t('channel.slack_manifest.open_btn')}
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
       </a>
     </div>
@@ -9144,7 +9136,7 @@ document.getElementById('chSlackManifestBtn').addEventListener('click', async ()
     const data = await res.json()
     showSlackManifestModal(data.manifest, data.instructions)
   } catch {
-    showToast('Nem sikerült betölteni a manifestet')
+    showToast(t('channel.toast.manifest_failed'))
   } finally {
     btn.disabled = false
   }
@@ -9189,7 +9181,7 @@ async function loadRecallPage() {
       recallSortDesc = !recallSortDesc
       const btn = document.getElementById('recallSortToggle')
       btn.textContent = recallSortDesc ? '↓' : '↑'
-      btn.title = recallSortDesc ? 'Csökkenő sorrend (legújabb elöl)' : 'Növekvő sorrend (legrégebbi elöl)'
+      btn.title = recallSortDesc ? t('recall.sort.tooltip.desc') : t('recall.sort.tooltip.asc')
       doRecall()
     })
 
@@ -9209,7 +9201,7 @@ async function loadRecallDates() {
     if (dates.length && !dateInput.value) {
       dateInput.value = dates[0]
     }
-    dateInput.setAttribute('title', `${dates.length} nap naplóval`)
+    dateInput.setAttribute('title', t('recall.date.n_days', { n: dates.length }))
   } catch {}
 }
 
@@ -9258,7 +9250,7 @@ function renderRecallSummary(el, data) {
   }
   parts.push(`${s.logCount} naplóbejegyzés`)
   parts.push(`${s.memoryCount} emlék`)
-  if (s.agents.length) parts.push(`Ágensek: ${s.agents.map(esc).join(', ')}`)
+  if (s.agents.length) parts.push(`${t('recall.summary.agents')}: ${s.agents.map(esc).join(', ')}`)
   el.innerHTML = `<div class="recall-summary-row">${parts.map(p => `<span>${p}</span>`).join('')}</div>`
 }
 
@@ -9568,9 +9560,10 @@ window.addEventListener('beforeunload', (e) => {
 // Human label for a registry "module" -- falls back to a capitalised key for
 // any future module the UI doesn't know about yet, so adding a registry
 // entry never requires a frontend change just to render a sane heading.
-const SETTINGS_MODULE_LABELS = { kanban: 'Kanban', system: 'Rendszer', heartbeat: 'Heartbeat', ideabox: 'Ötletláda' }
 function settingsModuleLabel(mod) {
-  return SETTINGS_MODULE_LABELS[mod] || (mod.charAt(0).toUpperCase() + mod.slice(1))
+  const key = `settings.module.${mod}`
+  const known = { kanban: true, system: true, heartbeat: true, audit: true, ideabox: true }
+  return known[mod] ? t(key) : (mod.charAt(0).toUpperCase() + mod.slice(1))
 }
 
 // Track dirty state: key -> { input, originalValue, type, errorEl }
@@ -9663,12 +9656,12 @@ function buildSettingRow(def) {
   const meta = document.createElement('div')
   meta.className = 'settings-row-meta'
   const metaParts = []
-  if (Array.isArray(def.valueSet) && def.valueSet.length) metaParts.push('Lehetséges értékek: ' + def.valueSet.join(', '))
+  if (Array.isArray(def.valueSet) && def.valueSet.length) metaParts.push(t('settings.meta.values') + ': ' + def.valueSet.join(', '))
   if (def.type === 'int' && (def.min !== undefined || def.max !== undefined)) {
-    metaParts.push('Tartomány: ' + (def.min ?? '–') + '–' + (def.max ?? '–'))
+    metaParts.push(t('settings.meta.range') + ': ' + (def.min ?? '–') + '–' + (def.max ?? '–'))
   }
-  if (def.type === 'color') metaParts.push('Formátum: #rrggbb')
-  metaParts.push('Alapérték: ' + def.default)
+  if (def.type === 'color') metaParts.push(t('settings.meta.format') + ': #rrggbb')
+  metaParts.push(t('settings.meta.default') + ': ' + def.default)
   meta.textContent = metaParts.join(' · ')
   info.appendChild(meta)
 
@@ -9825,7 +9818,7 @@ document.getElementById('settingsResetBtn')?.addEventListener('click', resetAllS
         showState('Install')
       }
     } catch (e) {
-      showError(e.message || 'Hiba a státusz lekérésnél', checkStatus)
+      showError(e.message || t('status.error.fetch'), checkStatus)
     }
   }
 
@@ -10017,8 +10010,8 @@ function tuGetResetLines(bucketStart, bucketEnd) {
     const ts = Math.floor(d.getTime() / 1000)
     const isMonday = d.getDay() === 1
     const near5h = lines.find(l => l.type === '5h' && Math.abs(l.ts - ts) < 1800)
-    if (!near5h) lines.push({ ts, type: isMonday ? 'weekly' : 'daily', label: isMonday ? 'hét' : 'nap' })
-    else if (isMonday) { near5h.type = 'weekly'; near5h.label = 'hét' }
+    if (!near5h) lines.push({ ts, type: isMonday ? 'weekly' : 'daily', label: isMonday ? t('tokenUsage.chart.week') : t('tokenUsage.chart.day') })
+    else if (isMonday) { near5h.type = 'weekly'; near5h.label = t('tokenUsage.chart.week') }
     d.setDate(d.getDate() + 1)
   }
   return lines
@@ -10300,11 +10293,11 @@ function renderTuTimeline(data, filterAgent) {
 
   const legendHits = []
   const lineItems = [
-    { label: '5h ablak', color: '#06b6d4', lw: 2, dash: [], id: '5h', active: is5hActive },
-    { label: 'heti ablak', color: '#8b5cf6', lw: 1.5, dash: [], id: 'weekly', active: isWeeklyActive },
+    { label: t('tokenUsage.chart.window_5h'), color: '#06b6d4', lw: 2, dash: [], id: '5h', active: is5hActive },
+    { label: t('tokenUsage.chart.window_weekly'), color: '#8b5cf6', lw: 1.5, dash: [], id: 'weekly', active: isWeeklyActive },
     { label: '5h', color: '#3b82f680', lw: 1, dash: [3, 3] },
-    { label: 'nap', color: '#f59e0b60', lw: 1, dash: [4, 4] },
-    { label: 'hét', color: '#ef444480', lw: 1.5, dash: [6, 4] },
+    { label: t('tokenUsage.chart.day'), color: '#f59e0b60', lw: 1, dash: [4, 4] },
+    { label: t('tokenUsage.chart.week'), color: '#ef444480', lw: 1.5, dash: [6, 4] },
   ]
   for (const li of lineItems) {
     const tw = ctx.measureText(li.label).width + 34
@@ -10354,7 +10347,7 @@ function renderTuTimeline(data, filterAgent) {
 
     if (hit && my >= pad.top && my <= pad.top + h) {
       const isPeak = tuIsPeakHour(hit.bucket)
-      let html = `<div style="font-weight:600;margin-bottom:4px">${tuFormatLocalShort(hit.bucket)}${isPeak ? ' <span style="color:#ef4444;font-size:10px">CSÚCSIDŐ</span>' : ''}</div>`
+      let html = `<div style="font-weight:600;margin-bottom:4px">${tuFormatLocalShort(hit.bucket)}${isPeak ? ` <span style="color:#ef4444;font-size:10px">${t('tokenUsage.chart.peak')}</span>` : ''}</div>`
       let total = 0
       for (const seg of hit.segments) {
         html += `<div><span style="color:${tuGetColor(seg.agent)}">&#9632;</span> ${seg.agent}: ${tuFormatTokens(seg.val)}</div>`
@@ -10500,11 +10493,11 @@ function renderTuDetails(data) {
     </div>
     <div style="overflow-x:auto"><table class="mem-table" style="width:100%;min-width:600px">
       <thead><tr>
-        <th style="${thStyle}" data-sort="timestamp">Idő${arrow('timestamp')}</th>
-        <th style="${thStyle}" data-sort="agent">Ágens${arrow('agent')}</th>
+        <th style="${thStyle}" data-sort="timestamp">${t('tokenUsage.col.time')}${arrow('timestamp')}</th>
+        <th style="${thStyle}" data-sort="agent">${t('tokenUsage.col.agent')}${arrow('agent')}</th>
         <th style="${thStyleR}" data-sort="input">Input${arrow('input')}</th>
         <th style="${thStyleR}" data-sort="output">Output${arrow('output')}</th>
-        <th>Tartalom</th>
+        <th>${t('tokenUsage.col.content')}</th>
       </tr></thead>
       <tbody id="tuDetailsTbody"></tbody>
     </table></div>`
@@ -10520,7 +10513,7 @@ function renderTuDetails(data) {
         th.closest('thead').querySelectorAll('th[data-sort]').forEach(h => {
           const c = h.dataset.sort
           const arrow = tuDetailSort.col === c ? (tuDetailSort.dir === 'asc' ? ' ▲' : ' ▼') : ''
-          const labels = { timestamp: 'Idő', agent: 'Ágens', input: 'Input', output: 'Output' }
+          const labels = { timestamp: t('tokenUsage.col.time'), agent: t('tokenUsage.col.agent'), input: 'Input', output: 'Output' }
           h.textContent = (labels[c] || c) + arrow
         })
         renderTuDetailsTable()
@@ -10649,7 +10642,7 @@ function renderIdeaCard(idea) {
   const statusColor = STATUS_COLORS[idea.status] || 'var(--text-muted)'
   const statusLabelRaw = STATUS_LABELS[idea.status]; const statusLabel = statusLabelRaw ? (typeof statusLabelRaw === 'function' ? statusLabelRaw() : statusLabelRaw) : idea.status
   const desc = idea.description ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">${escapeHtml(idea.description.slice(0, 120))}${idea.description.length > 120 ? '…' : ''}</div>` : ''
-  const staleBadge = idea.stale ? `<span style="font-size:11px;background:#92400e22;color:#d97706;border:1px solid #d97706;border-radius:4px;padding:2px 5px" title="Régi ötlet, nézd át!">${t('ideas.stale_badge')}</span>` : ''
+  const staleBadge = idea.stale ? `<span style="font-size:11px;background:#92400e22;color:#d97706;border:1px solid #d97706;border-radius:4px;padding:2px 5px" title="${t('ideas.stale_tooltip')}">${t('ideas.stale_badge')}</span>` : ''
   return `<div class="card" style="padding:12px 16px;margin-bottom:4px${idea.stale ? ';border-left:3px solid #d97706' : ''}">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
       <div style="flex:1;min-width:0">
@@ -10780,7 +10773,7 @@ document.getElementById('ideaDetailScoreSave')?.addEventListener('click', async 
         effort: effort ? Number(effort) : null,
       }),
     })
-    if (!res.ok) { showToast('Mentés hiba', 'error'); return }
+    if (!res.ok) { showToast(t('ideas.toast.score_saved_error'), 'error'); return }
     // update local cache so card chip refreshes on close
     const idea = ideas.find(i => i.id === ideaDetailId)
     if (idea) {
@@ -10788,9 +10781,9 @@ document.getElementById('ideaDetailScoreSave')?.addEventListener('click', async 
       idea.effort = effort ? Number(effort) : null
     }
     updateDetailScoreChip()
-    showToast('Pontozás mentve')
+    showToast(t('ideas.toast.score_saved'))
     renderIdeasList()
-  } catch { showToast('Mentés hiba', 'error') }
+  } catch { showToast(t('ideas.toast.score_saved_error'), 'error') }
 })
 
 async function loadIdeaComments(id) {
@@ -10825,10 +10818,10 @@ document.getElementById('ideaCommentSubmit')?.addEventListener('click', async ()
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content }),
     })
-    if (!res.ok) { showToast('Megjegyzés mentés hiba', 'error'); return }
+    if (!res.ok) { showToast(t('ideas.toast.comment_error'), 'error'); return }
     document.getElementById('ideaCommentContent').value = ''
     await loadIdeaComments(ideaDetailId)
-  } catch { showToast('Megjegyzés mentés hiba', 'error') }
+  } catch { showToast(t('ideas.toast.comment_error'), 'error') }
 })
 
 document.getElementById('ideaDetailClose')?.addEventListener('click', () => closeModal(document.getElementById('ideaDetailOverlay')))
@@ -10857,9 +10850,9 @@ async function promoteIdea(phase) {
 async function setIdeaStatus(id, status) {
   try {
     const res = await fetch(`/api/ideas/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) })
-    if (!res.ok) { showToast('Státusz mentés hiba'); return }
+    if (!res.ok) { showToast(t('ideas.toast.status_error')); return }
     loadIdeasPage()
-  } catch { showToast('Státusz mentés hiba') }
+  } catch { showToast(t('ideas.toast.status_error')) }
 }
 
 // Promote an idea to the board via AI breakdown + per-subtask approval.
@@ -10873,7 +10866,7 @@ async function openIdeaBreakdown(id) {
   if (!kanbanAssignees.length) {
     try { kanbanAssignees = await (await fetch('/api/kanban/assignees')).json() } catch { /* dropdown falls back to "nincs" */ }
   }
-  showToast('AI kidolgozza az ötletet...')
+  showToast(t('ideas.toast.ai_elaborating'))
   try {
     const res = await fetch(`/api/ideas/${id}/breakdown`, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
     const data = await res.json()
@@ -11004,7 +10997,7 @@ function openTerminalModal(agentName) {
       }
     } catch {}
   }
-  sse.onerror = () => term.write('\r\n[stream hiba vagy leállva]\r\n')
+  sse.onerror = () => term.write(`\r\n${t('terminal.stream_error')}\r\n`)
   terminalSSE = sse
   // When the user scrolls back down to the bottom, resume live repainting.
   term.onScroll(() => { if (isAtBottom()) repaint() })
@@ -11344,7 +11337,7 @@ function downloadMarkdown(name, content) {
     a.remove()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
   } catch (e) {
-    showToast('Nem sikerült a letöltés: ' + String(e && e.message || e))
+    showToast(t('common.toast.download_failed', { msg: String(e && e.message || e) }))
   }
 }
 

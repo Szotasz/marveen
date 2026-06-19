@@ -83,14 +83,7 @@ window._i18n.hu = {
   'nav.updates':      'Frissítések',
 
   // --- Overview ---
-  'overview.stat.agents':        'Aktív ügynökök',
-  'overview.stat.tasks':         'Ma futott feladat',
-  'overview.stat.memories':      'Memória',
-  'overview.stat.skills':        'Generált skillek',
-  'overview.card.team':          'Csapat',
   'overview.card.team_meta':     'élő állapot',
-  'overview.card.activity':      'Aktivitás',
-  'overview.card.agent_activity': 'Ügynök aktivitás',
   'overview.card.agent_messages': 'mai üzenetek',
 
   // --- Kanban ---
@@ -99,11 +92,7 @@ window._i18n.hu = {
   'kanban.col.waiting':          'Várakozik',
   'kanban.col.done':             'Kész',
   'kanban.filter.project':       'Projekt:',
-  'kanban.filter.all_projects':  'Mind',
   'kanban.filter.group_by':      'Csoportosítás:',
-  'kanban.filter.group_none':    'Nincs',
-  'kanban.filter.group_assignee': 'Felelős szerint',
-  'kanban.filter.group_priority': 'Prioritás szerint',
   'kanban.btn.new_card':         'Új kártya',
   'kanban.card.no_description':  '(nincs leírás)',
   'kanban.card.subtasks':        '{done}/{total} alfeladat',
@@ -204,7 +193,6 @@ window._i18n.hu = {
   'agents.status.disconnected':    'Nincs bekötve',
   'agents.status.restarting':      'Újraindítás',
   'agents.reauth.reason':          'Újrabejelentkezés szükséges',
-  'agents.btn.login':              'Bejelentkezés',
   'agents.btn.conversation':       'Beszélgetés',
   'agents.model.analyzing':        'Elemzés...',
   'agents.model.no_data':          'Nincs adat ehhez az ágenshez.',
@@ -330,6 +318,32 @@ window._i18n.hu = {
   'tasks.btn.delete':            'Törlés',
   'tasks.schedule_empty':        'Nincsenek ütemezett feladatok',
   'tasks.empty':                 'Nincs ütemezett feladat',
+  'tasks.cron.every_n_min':      '{n} percenként',
+  'tasks.cron.every_n_hour':     '{n} óránként',
+  'tasks.cron.every_hour':       'Minden órában',
+  'tasks.cron.weekdays':         'Hétköznap {time}',
+  'tasks.cron.weekends':         'Hétvégén {time}',
+  'tasks.cron.daily':            'Naponta {time}',
+  'tasks.cron.monthly':          'Minden hónap {dom}. napján {time}',
+  'tasks.cron.dow.1':            'Hétfőn',
+  'tasks.cron.dow.2':            'Kedden',
+  'tasks.cron.dow.3':            'Szerdán',
+  'tasks.cron.dow.4':            'Csütörtökön',
+  'tasks.cron.dow.5':            'Pénteken',
+  'tasks.cron.dow.6':            'Szombaton',
+  'tasks.cron.dow.0':            'Vasárnap',
+  'tasks.cron.dow.7':            'Vasárnap',
+  'tasks.cadence.sub_hourly':    'Óránként vagy sűrűbben',
+  'tasks.cadence.daily':         'Naponta',
+  'tasks.cadence.weekly':        'Hetente',
+  'tasks.cadence.monthly':       'Havonta vagy ritkábban',
+  'tasks.cadence.other':         'Egyéb / egyedi',
+  'kanban.owner_filter':         'Csak a rám (a board felelőse) váró kártyák',
+  'settings.module.ideabox':     'Ötletláda',
+  'overview.stat.sub.memories':  'bejegyzés',
+  'recall.sort.tooltip.desc':    'Csökkenő sorrend (legújabb elöl)',
+  'recall.sort.tooltip.asc':     'Növekvő sorrend (legrégebbi elöl)',
+  'recall.date.n_days':          '{n} nap naplóval',
 
   // --- Memories ---
   'memories.page_title':         'Memória',
@@ -576,6 +590,20 @@ window._i18n.hu = {
   'status.btn.refresh':          'Frissítés',
   'status.services_title':       'Szolgáltatások',
   'status.incidents_title':      'Incidensek',
+  'status.comp.operational':     'működik',
+  'status.comp.degraded':        'lassú',
+  'status.comp.partial_outage':  'részleges kimaradás',
+  'status.comp.major_outage':    'kimaradás',
+  'status.comp.maintenance':     'karbantartás',
+  'tokenUsage.col.time':         'Idő',
+  'tokenUsage.col.agent':        'Ágens',
+  'tokenUsage.col.content':      'Tartalom',
+  'tokenUsage.chart.day':        'nap',
+  'tokenUsage.chart.week':       'hét',
+  'tokenUsage.chart.window_5h':  '5h ablak',
+  'tokenUsage.chart.window_weekly': 'heti ablak',
+  'tokenUsage.chart.peak':       'CSÚCSIDŐ',
+  'connectors.readonly_hint':    'Kezelhető: claude.ai',
 
   // --- Team ---
   'team.page_title':             'Csapat',
@@ -651,6 +679,19 @@ window._i18n.hu = {
   'settings.toast.save_ok':      'Beállítás mentve',
   'settings.toast.save_error':   'Hiba a mentés során',
   'settings.toast.saved':        'Mentve',
+  'settings.meta.values':        'Lehetséges értékek',
+  'settings.meta.range':         'Tartomány',
+  'settings.meta.format':        'Formátum',
+  'settings.meta.default':       'Alapérték',
+  'status.error.fetch':          'Hiba a státusz lekérésnél',
+  'recall.summary.agents':       'Ágensek',
+  'terminal.stream_error':       '[stream hiba vagy leállva]',
+  'tasks.heartbeat.tpl.calendar': 'Naptár figyelő',
+  'tasks.heartbeat.tpl.email':    'Email figyelő',
+  'tasks.heartbeat.tpl.kanban':   'Kanban határidő figyelő',
+  'tasks.heartbeat.tpl.full':     'Teljes ellenőrzés',
+  'connectors.builtin.computer_use': 'Képernyő vezérlés, kattintás, gépelés',
+  'connectors.builtin.chrome':       'Böngésző automatizálás',
   'settings.toast.saved_restart': 'Mentve -- újraindítás szükséges az életbe lépéshez',
   'settings.toast.partial_error': 'Néhány beállítás nem mentődött el',
   'settings.module.kanban':      'Kanban',
@@ -741,6 +782,7 @@ window._i18n.hu = {
   'ideas.btn.kanban_ai':         'Kanbanra (AI)',
   'ideas.btn.delete':            'Töröl',
   'ideas.stale_badge':           '⏰ Elavult',
+  'ideas.stale_tooltip':         'Régi ötlet, nézd át!',
   'ideas.no_description':        '(nincs leírás)',
   'ideas.comments.empty':        'Nincs megjegyzés',
   'ideas.comments.error':        'Hiba a megjegyzések betöltésekor',
@@ -808,4 +850,178 @@ window._i18n.hu = {
 
   // --- Token collect error ---
   'tokenUsage.collect_error':    'Hiba!',
+
+  // === BATCH 7: Toasts, tooltips, labels, howto texts ===
+
+  // --- Agent toasts ---
+  'agents.toast.load_failed':    'Ügynök betöltése sikertelen',
+  'agents.toast.deleted':        'Ügynök törölve',
+  'agents.toast.avatar_updated': 'Avatar frissítve',
+  'agents.toast.avatar_format':  'Csak png/jpg/webp formátum',
+  'agents.toast.avatar_size':    'Max 1 MB méretű kép',
+  'agents.toast.avatar_uploaded':'Avatar feltöltve, kép elküldve Telegramon',
+  'agents.toast.started':        'Ügynök elindítva!',
+  'agents.toast.stopped':        'Ügynök leállítva',
+  'agents.toast.restart_state_error': 'Az újraindítás állapotát nem tudtam visszaolvasni, ellenőrizd a sessiont',
+  'agents.toast.auto_restart_saved': 'Auto-restart beállítás mentve',
+  'agents.toast.auth_mode_saved':'Hitelesítési mód mentve (újraindítás szükséges)',
+
+  // --- Agent status/labels ---
+  'agents.channel.connected':    'Csatlakozva',
+  'agents.channel.disconnected': 'Nincs bekötve',
+  'agents.strict_mode':          ' (szigorú)',
+  'agents.marveen_boss':         'Marveen Főnök',
+  'agents.btn.login':            'Bejelentkezés',
+
+  // --- Agent model switch card ---
+  'agents.model.card_title':     'Modell-váltás: {agent}',
+  'agents.model.card_desc':      'Jelenlegi: {current}\nJavasolt: {suggested}\n\nIndoklás: {reason}',
+  'agents.model.toast_active':   'Új modell aktív: {model}',
+  'agents.model.toast_restarted':'Újraindítva: {model}',
+
+  // --- Channel toasts ---
+  'channel.toast.smoke_failed':  'Kapcsolat tesztelése sikertelen',
+  'channel.toast.pairing_approved': 'Párosítás jóváhagyva!',
+  'channel.toast.invite_copied': 'Meghívó link létrehozva és vágólapra másolva',
+  'channel.toast.invite_created':'Meghívó link létrehozva - kattints a Másol gombra',
+  'channel.toast.invite_pending':'Meghívó létrejött (bot username pending - frissítés)',
+  'channel.toast.invite_revoked':'Meghívó visszavonva',
+  'channel.toast.approved':      'Csatorna engedélyezve',
+  'channel.toast.denied':        'Kérés elutasítva',
+  'channel.toast.disconnect_error': 'Hiba a leválasztás során',
+  'channel.toast.manifest_failed':  'Nem sikerült betölteni a manifestet',
+  'channel.btn.deny':            'Elutasítás',
+  'channel.badge.group':         'CSOPORT',
+  'channel.invite.no_username':  '(bot username nélkül)',
+
+  // --- Channel setup wizard ---
+  'channel.setup.tg_title':      'Telegram bot bekötése',
+  'channel.setup.tg_steps':      '<li>Nyisd meg a <strong>@BotFather</strong>-t a Telegramban</li><li>Hozz létre egy új botot a <code>/newbot</code> paranccsal</li><li>Másold be az API tokent ide</li>',
+  'channel.setup.tg_pairing':    'Ha valaki ír a botnak, a plugin egy kódot küld neki. Ide írd be a kódot a jóváhagyáshoz.',
+  'channel.setup.discord_title': 'Discord bot bekötése',
+  'channel.setup.discord_steps': '<li>Menj a <strong>Discord Developer Portal</strong>-ra (discord.com/developers)</li><li>Hozz létre egy új Application-t és Bot-ot</li><li>Másold be a Bot Token-t ide</li><li>Másold be a kívánt szerver-csatorna ID-jét lent</li>',
+  'channel.setup.discord_pairing': 'Ha valaki DM-eli a botot, egy párosítási kódot kap válaszul. Add meg a kódot a jóváhagyáshoz (vagy terminálban /discord:access pair <kód>).',
+  'channel.setup.slack_title':   'Slack app bekötése',
+  'channel.setup.slack_steps':   '<li>Hozz létre egy Slack App-ot, vagy használd a manifest gombot lent</li><li>Másold be a Bot Token-t (xoxb-...) és az App Token-t (xapp-...)</li>',
+  'channel.setup.slack_pairing': 'A Slack csatorna-kérések fent a Csatorna-kérések listában jelennek meg.',
+
+  // --- Slack manifest modal ---
+  'channel.slack_manifest.title':      'Slack App létrehozása',
+  'channel.slack_manifest.desc':       'Illeszd be az alábbi YAML manifestet a Slack App létrehozásakor. Ez automatikusan beállítja az összes szükséges scope-ot, eseményt és a Socket Mode-ot.',
+  'channel.slack_manifest.steps_title':'Lépések',
+  'channel.slack_manifest.open_btn':   'Megnyitás (api.slack.com)',
+
+  // --- Smoke test modal ---
+  'channel.smoke_test.title':    'Slack smoke-test eredmény',
+
+  // --- Sudo modal (Slack channel plugin setup) ---
+  'channel.sudo_modal.title':    'Rendszerszintű beállítás szükséges',
+  'channel.sudo_modal.desc':     'A Claude Code megköveteli, hogy a Slack channel plugin engedélyezve legyen a rendszerszintű managed-settings.json fájlban. Futtasd az alábbi parancsot a Terminálban:',
+  'channel.sudo_modal.cancel':   'Mégse',
+  'channel.sudo_modal.retry':    'Kész, újrapróbálom',
+
+  // --- Channel howto blocks (HTML) ---
+  'channel.howto.discord':       '<p style="margin-top:0;"><strong>1. Új ember (DM) hozzáadása:</strong></p><ol style="padding-left:20px; margin-top:4px;"><li>Add meg az illetőnek a bot Discord-handle-jét, vagy küldj neki a bot meghívó linkjéből.</li><li>Az illető DM-eli a botot egy üzenettel.</li><li>A bot egy 6-jegyű párosítási kódot küld a válaszban.</li><li>Az illető elküldi neked a kódot, te ide írod be és jóváhagyod (vagy a terminálban <code>/discord:access pair &lt;kód&gt;</code>).</li></ol><p style="margin-top:10px;"><strong>2. Discord szerver-csatorna hozzáadása:</strong></p><ol style="padding-left:20px; margin-top:4px;"><li>Hívd meg a botot a Discord szerveredre (Discord Developer Portal &rarr; OAuth2 &rarr; URL Generator &rarr; <code>bot</code> scope).</li><li>A kívánt csatornában mention-eld a botot (<code>@bot</code>).</li><li>A csatorna jobbklikk &rarr; "Copy Channel ID"-vel másold ki az azonosítót.</li><li>Terminálban: <code>/discord:access group add &lt;channelId&gt;</code>.</li></ol><p style="margin-top:10px; color:var(--muted-foreground);"><em>Eltávolításhoz használd a Bekötött chat-ek listájában az X gombot.</em></p>',
+  'channel.howto.slack':         '<p style="margin-top:0;"><strong>1. Slack csatorna hozzáadása:</strong></p><ol style="padding-left:20px; margin-top:4px;"><li>Add a botot a kívánt csatornához: a csatornában írd <code>/invite @botname</code>-t.</li><li>Mention-eld a botot egy üzenetben (<code>@botname segíts</code>).</li><li>A "Csatorna-kérések" listában jelenik meg a kérelem; hagyd jóvá.</li></ol><p style="margin-top:10px; color:var(--muted-foreground);"><em>DM-mel közvetlenül is írhatsz a botnak - nem kell külön párosítás.</em></p>',
+  'channel.howto.telegram':      '<p style="margin-top:0;"><strong>1. Új ember (privát chat) hozzáadása:</strong></p><ol style="padding-left:20px; margin-top:4px;"><li>Add meg az illetőnek a bot felhasználónevét (lent látható).</li><li>Az illető indítsa el a botot a Telegramban (<code>/start</code>) és írjon neki egy üzenetet.</li><li>A bot válaszol egy 6-jegyű párosítási kóddal.</li><li>Az illető elküldi neked a kódot, te ide írod be és jóváhagyod.</li></ol><p style="margin-top:10px;"><strong>2. Telegram csoport hozzáadása:</strong></p><ol style="padding-left:20px; margin-top:4px;"><li>Hívd meg a botot egy meglévő Telegram csoportba (csoport beállítások &rarr; Tagok &rarr; Hozzáadás).</li><li>A csoportban írj <code>/pair</code>-t (vagy a bot által megadott parancsot).</li><li>Megjelenik egy párosítási kód a csoportban.</li><li>Másold be ide és hagyd jóvá. Ezután az ügynök fog tudni írni a csoportba és olvasni a tagok üzeneteit.</li></ol><p style="margin-top:10px; color:var(--muted-foreground);"><em>Eltávolításhoz használd a Bekötött chat-ek listájában az X gombot.</em></p>',
+
+  // --- Common buttons ---
+  'common.btn.close':            'Bezárás',
+  'common.btn.approve':          'Jóváhagyás',
+  'common.btn.copy_btn':         'Másol',
+  'common.btn.cancel':           'Mégse',
+  'common.btn.remove':           'Eltávolítás',
+  'common.btn.retry_done':       'Kész, újrapróbálom',
+
+  // --- Common toasts ---
+  'common.toast.removed':        'Eltávolítva',
+  'common.toast.copied':         'Vágólapra másolva',
+  'common.toast.copy_failed':    'Másolás sikertelen',
+  'common.toast.download_failed':'Nem sikerült a letöltés: {msg}',
+
+  // --- Skills toasts ---
+  'skills.toast.added':          'Skill hozzáadva',
+  'skills.toast.select_file':    'Válassz egy .skill fájlt',
+
+  // --- Tasks toasts ---
+  'tasks.toast.select_schedule': 'Válassz ütemezést',
+  'tasks.toast.updated':         'Feladat frissítve',
+  'tasks.toast.created':         'Feladat létrehozva!',
+
+  // --- Memory toasts ---
+  'memories.toast.updated':      'Emlék frissítve',
+  'memories.toast.created':      'Emlék létrehozva',
+  'memories.toast.deleted':      'Emlék törölve',
+  'memories.toast.select_files': 'Válassz legalább egy fájlt',
+  'memories.toast.no_content':   'Nincs importálható tartalom a fájlokban',
+  'memories.toast.import_error': 'Hiba a költöztetés során',
+  'memories.import.done_title':  'Költöztetés kész!',
+
+  // --- Connector toasts ---
+  'connectors.toast.mcp_refreshed': 'MCP lista frissítve ({n} globális connector)',
+  'connectors.toast.deleted':    'Connector törölve',
+  'connectors.toast.assignment_updated': 'Ügynök-hozzárendelés frissítve',
+  'connectors.toast.assignment_error': 'Hiba a hozzárendelés során',
+  'connectors.toast.created':    'Connector hozzáadva!',
+  'connectors.catalog.env_placeholder': 'Illeszd be a {key} értéket',
+
+  // --- Updates toasts ---
+  'updates.toast.not_started':   'Frissítés nem indult: {msg}',
+  'updates.toast.started':       'Frissítés elindult, a dashboard újratöltődik...',
+
+  // --- Ideas toasts ---
+  'ideas.toast.score_saved':     'Pontozás mentve',
+  'ideas.toast.comment_error':   'Megjegyzés mentés hiba',
+  'ideas.toast.status_error':    'Státusz mentés hiba',
+  'ideas.toast.ai_elaborating':  'AI kidolgozza az ötletet...',
+  'ideas.toast.breakdown_error': 'Breakdown hiba',
+  'ideas.toast.no_subtasks':     'Az AI nem adott vissza alfeladatot',
+
+  // --- Kanban card detail meta labels ---
+  'kanban.meta.id':              'Azonosító',
+  'kanban.meta.status':          'Állapot',
+  'kanban.meta.assignee':        'Felelős',
+  'kanban.meta.priority':        'Prioritás',
+  'kanban.meta.project':         'Projekt',
+  'kanban.meta.deadline':        'Határidő',
+  'kanban.meta.none':            '-- nincs --',
+  'kanban.meta.id_tooltip':      'Futó sorszám · hex azonosító',
+  'kanban.meta.edit_tooltip':    'Kattints a módosításhoz',
+  'kanban.btn.breakdown':        'AI szétbont',
+  'kanban.label.filter_tooltip': 'Szűrés: #{name}',
+  'kanban.label.overflow_tooltip': '{n} további címke',
+  'kanban.aging.tooltip':        'Utoljára módosítva: {date}',
+  'kanban.filter.owner_tooltip': 'Csak a rám (a board felelőse) váró kártyák',
+  'kanban.filter.project_label': 'Projekt:',
+  'kanban.filter.group_label':   'Csoportosítás:',
+  'kanban.filter.all_projects':  'Mind',
+  'kanban.filter.group_none':    'Nincs',
+  'kanban.filter.group_assignee':'Felelős szerint',
+  'kanban.filter.group_priority':'Prioritás szerint',
+
+  // --- Activity tooltip ---
+  'activity.tooltip.terminal':   'Terminal megnyitása',
+
+  // --- Connectors tooltips ---
+  'connectors.tooltip.installed_mcp': 'Bekötve a .mcp.json-ban (a Connectors listán kezelhető)',
+  'connectors.tooltip.installed_src': 'Forrás: {src}',
+  'connectors.tooltip.auto_detect':   'A dashboard nem tudja automatikusan detektálni ezt a képességet',
+  'connectors.tooltip.global':        'Globálisan elérhető a fő agentnek - nem kell külön hozzárendelni',
+
+  // --- Tasks heartbeat badges ---
+  'tasks.heartbeat.alert_sent':  'Telegram riasztás elküldve',
+  'tasks.heartbeat.alert_pending': 'Riasztás esedékes, a következő tick küldi',
+  'tasks.heartbeat.alert_badge_sent': '⚠️ riasztás elküldve',
+  'tasks.heartbeat.alert_badge_pending': '⏳ riasztás esedékes',
+
+  // --- Overview stats labels (index.html static) ---
+  'overview.stat.agents':        'Aktív ügynökök',
+  'overview.stat.tasks':         'Ma futott feladat',
+  'overview.stat.memories':      'Memória',
+  'overview.stat.skills':        'Generált skillek',
+  'overview.card.team':          'Csapat',
+  'overview.card.activity':      'Aktivitás',
+  'overview.card.agent_activity':'Ügynök aktivitás',
+  'overview.meta.live':          'élő állapot',
+  'overview.meta.messages':      'mai üzenetek',
 }
