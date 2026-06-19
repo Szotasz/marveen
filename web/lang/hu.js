@@ -987,7 +987,7 @@ window._i18n.hu = {
   'connectors.toast.assignment_updated': 'Ügynök-hozzárendelés frissítve',
   'connectors.toast.assignment_error': 'Hiba a hozzárendelés során',
   'connectors.toast.created':    'Connector hozzáadva!',
-  'connectors.catalog.env_placeholder': 'Illeszd be a {key} értéket', amit nem a Marveen kezel, hanem maga a Claude Code CLI / Claude alkalmazás. Nem jelenik meg a <code>claude mcp list</code> kimenetében, ezért a dashboard sem tudja automatikusan detektálni.</p><p><strong>Bekapcsolás:</strong> a pontos folyamat a Claude verziójától függ és változhat verziók között. Kövesd az Anthropic hivatalos dokumentációját és a Claude Code changelogot. A fő session tmux-nevét az "Ügynökök" oldalon találod -- oda <code>tmux attach</code>-al tudsz belépni manuálisan.</p><p style="color:var(--text-muted)">Ez a képesség engedélyt ad az ügynöknek a képernyő vezérlésére és kattintásra, ezért csak megbízható környezetben használd.</p>', nem egy bekapcsolható MCP szerver. Ezért nem jelenik meg a <code>claude mcp list</code> kimenetében, és a dashboard sem tudja automatikusan detektálni.</p><p><strong>Bekapcsolás:</strong> indítsd a Claude-ot a <code>--chrome</code> flaggel:</p><pre style="background:var(--bg-input);padding:8px 12px;border-radius:4px;font-size:12px;overflow-x:auto">claude --chrome</pre><p style="color:var(--text-muted)">A Chrome integráció lehetővé teszi a böngészőautomatizálást. A Marveen sub-agentek indítása jelenleg nem adja át ezt a flaget, így csak a manuálisan indított fő session használhatja.</p>',
+  'connectors.catalog.env_placeholder': 'Illeszd be a {key} értéket',
   'connectors.catalog.install_btn':  'Telepítés',
   'connectors.env_val_placeholder':  'érték',
   'connectors.error.install':        'Telepítés sikertelen',
