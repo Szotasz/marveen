@@ -9662,7 +9662,7 @@ function buildSettingRow(def) {
 
   const desc = document.createElement('div')
   desc.className = 'settings-row-desc'
-  desc.textContent = def.description
+  desc.textContent = t('settings.desc.' + def.key) || def.description
   info.appendChild(desc)
 
   const meta = document.createElement('div')
