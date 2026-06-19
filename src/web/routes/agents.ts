@@ -1,6 +1,6 @@
-import { existsSync, readFileSync, mkdirSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync, copyFileSync, renameSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync, copyFileSync, renameSync } from 'node:fs'
 import { join, extname, dirname } from 'node:path'
-import { homedir, platform } from 'node:os'
+import { homedir, platform, tmpdir } from 'node:os'
 import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID, BOT_NAME, PROJECT_ROOT } from '../../config.js'
@@ -102,6 +102,11 @@ import {
 import { sanitizeAgentName } from '../sanitize.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json, serveFile } from '../http-helpers.js'
+import {
+  exportAgentBundle,
+  importAgentBundle,
+  bundleFilename,
+} from '../agent-bundle.js'
 import type { RouteContext } from './types.js'
 import { suggestForAgent, type AgentSignals } from '../model-suggest.js'
 import { getTokenSummary } from '../token-usage.js'
@@ -1462,6 +1467,89 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const name = decodeURIComponent(statusMatch[1])
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
     json(res, getAgentProcessInfo(name))
+    return true
+  }
+
+  // --- Per-agent export/import bundle (move an agent to another machine) ---
+  //
+  // GET  /api/agents/:name/export?secrets=1   -> downloads a .tar.gz bundle
+  // POST /api/agents/import                   -> uploads a bundle (multipart)
+  //
+  // The bundle is the portable subset of agents/<name>/ (identity + behaviour),
+  // with channel tokens included only when ?secrets=1 is set explicitly. See
+  // src/web/agent-bundle.ts. The main agent lives at PROJECT_ROOT (not under
+  // agents/) so it is not exportable this way -- use scripts/backup.sh for a
+  // whole-host move.
+  const exportMatch = path.match(/^\/api\/agents\/([^/]+)\/export$/)
+  if (exportMatch && method === 'GET') {
+    const name = decodeURIComponent(exportMatch[1])
+    if (name === MAIN_AGENT_ID) {
+      json(res, { error: 'The main agent cannot be exported as a bundle; use scripts/backup.sh for a whole-host move.' }, 400)
+      return true
+    }
+    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    const includeSecrets = /[?&]secrets=(1|true)\b/.test(req.url || '')
+    const work = mkdtempSync(join(tmpdir(), 'marveen-agent-dl-'))
+    const outPath = join(work, bundleFilename(name))
+    try {
+      exportAgentBundle(name, outPath, {
+        includeSecrets,
+        exportedBy: MAIN_AGENT_ID,
+        exportedAt: new Date().toISOString(),
+      })
+      const data = readFileSync(outPath)
+      res.writeHead(200, {
+        'Content-Type': 'application/gzip',
+        'Content-Disposition': `attachment; filename="${bundleFilename(name)}"`,
+        'Content-Length': String(data.length),
+        'Cache-Control': 'private, no-store',
+      })
+      res.end(data)
+    } catch (err) {
+      logger.error({ err, name }, 'Agent export failed')
+      json(res, { error: 'Export failed', detail: err instanceof Error ? err.message : String(err) }, 500)
+    } finally {
+      rmSync(work, { recursive: true, force: true })
+    }
+    return true
+  }
+
+  if (path === '/api/agents/import' && method === 'POST') {
+    const body = await readBody(req)
+    const contentType = req.headers['content-type'] || ''
+    let bundle: Buffer | undefined
+    let overrideName = ''
+    let overwrite = false
+    if (contentType.includes('multipart/form-data')) {
+      const { file, fields } = parseMultipart(body, contentType)
+      if (file) bundle = file.data
+      overrideName = (fields.name || '').trim()
+      overwrite = fields.overwrite === '1' || fields.overwrite === 'true'
+    } else {
+      // Raw .tar.gz body; name/overwrite from query string.
+      bundle = body
+      const url = req.url || ''
+      const nameMatch = url.match(/[?&]name=([^&]+)/)
+      if (nameMatch) overrideName = decodeURIComponent(nameMatch[1]).trim()
+      overwrite = /[?&]overwrite=(1|true)\b/.test(url)
+    }
+    if (!bundle || bundle.length === 0) { json(res, { error: 'No bundle uploaded' }, 400); return true }
+    try {
+      const result = importAgentBundle(bundle, { overrideName: overrideName || undefined, overwrite })
+      logger.info({ name: result.name, overwritten: result.overwritten, secrets: result.manifest.includesSecrets }, 'Agent imported from bundle')
+      json(res, {
+        ok: true,
+        name: result.name,
+        overwritten: result.overwritten,
+        includedSecrets: result.manifest.includesSecrets,
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      // A name collision without overwrite is a 409 the UI can offer to resolve;
+      // everything else (malformed bundle, bad name) is a 400.
+      const status = /already exists/.test(msg) ? 409 : 400
+      json(res, { error: msg }, status)
+    }
     return true
   }
 

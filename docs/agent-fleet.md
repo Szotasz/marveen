@@ -174,3 +174,56 @@ Válasz: ágensenként `{ agent, currentModel, suggestedModel, reason, changeAdv
 ### Kanban integráció
 
 Ha `changeAdvised: true` bármely agensnél, és a felhasználó megerősíti, a rendszer automatikusan kanban-kártyát hoz létre az érintett ügynökhöz (`assignee: marveen`, státusz: `planned`).
+
+---
+
+## 📦 Ügynök exportálása / importálása (gépek közötti átvitel)
+
+Egy ügynököt át lehet vinni egyik gépről a másikra egy hordozható `.tar.gz`
+bundle-ben, az egész flotta vagy a globális SQLite adatbázis mozgatása nélkül
+(az utóbbi a `scripts/backup.sh` dolga). A bundle az `agents/<név>/` mappa
+hordozható részhalmaza: identitás + viselkedés, opcionálisan a csatorna-titkokkal.
+
+### Mi kerül a bundle-be
+
+| Tartalom | Mindig | Csak `secrets=1` esetén |
+|----------|:------:|:-----------------------:|
+| `agent-config.json` (modell, displayName, profil, authMode) | ✅ | |
+| `CLAUDE.md`, `SOUL.md` (identitás) | ✅ | |
+| `.mcp.json` (MCP eszközök) | ✅ | |
+| `avatar.*` | ✅ | |
+| `.claude/settings.json`, `.claude/skills/`, `.claude/hooks/` | ✅ | |
+| `memory/` (az ügynök saját memóriája) | ✅ | |
+| `.claude/channels/*/.env` (channel bot token) | | ✅ |
+| `.claude/channels/*/access.json`, `invites.json`, `approved/` (párosítás) | | ✅ |
+
+A gép-specifikus mezők (`remoteHost`, `remoteWorkdir`, `claudeConfigDir`) importkor
+**eltávolításra kerülnek**, így az importált ügynök tiszta, helyi ügynökként indul.
+
+### Dashboard
+
+- **Exportálás**: az ügynök részleteinél az *Exportálás* gomb. Rákérdez, hogy a
+  titkokat (channel token, párosítási állapot) belevegyük-e. Titkok nélkül a
+  bundle biztonságosan megosztható; titkokkal CSAK saját gépek közötti átvitelhez.
+- **Importálás**: a Csapat oldalon az *Ügynök importálása* gomb -> válaszd ki a
+  `.tar.gz` fájlt. Névütközéskor felajánlja a felülírást.
+
+### API
+
+```
+GET  /api/agents/<név>/export            # bundle letöltése (titkok nélkül)
+GET  /api/agents/<név>/export?secrets=1  # bundle letöltése titkokkal
+POST /api/agents/import                  # bundle feltöltése (multipart: file=, name=, overwrite=1)
+```
+
+A fő ügynök (`marveen`) nem exportálható így (a PROJECT_ROOT-ban él, nem az
+`agents/` alatt) -- teljes gép-átálláshoz lásd a `scripts/backup.sh`-t és a
+[MIGRATION.md](MIGRATION.md)-t.
+
+### Biztonság
+
+A titkokat tartalmazó bundle channel bot tokeneket hordoz. Ne töltsd fel
+megosztott/publikus helyre, és ne tartsd cloud-sync mappában. Emlékeztető:
+**egy bot = egy poller** -- ha az importált ügynököt egy második gépen is
+elindítod ugyanazzal a tokennel, a Telegram/Slack 409-cel elhasítja a bejövő
+üzeneteket. Régi gép le, új gép fel -- soha ne fusson a kettő egyszerre.

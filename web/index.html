@@ -281,6 +281,8 @@
             <p class="subtitle" data-i18n="agents.page_subtitle">AI csapattagok kezelése</p>
           </div>
           <div class="header-actions">
+            <button class="btn-secondary btn-compact" id="importAgentBtn">Ügynök importálása</button>
+            <input type="file" id="importAgentFile" accept=".gz,.tgz,application/gzip" hidden>
             <button class="btn-secondary btn-compact" id="analyzeAllModelsBtn" data-i18n="agents.page.analyze_btn">Modell elemzés</button>
           </div>
         </div>
@@ -2067,6 +2069,7 @@
 
         <!-- Bottom actions -->
         <div class="detail-actions agent-detail-bottom" id="agentDetailActions">
+          <button class="btn-secondary" id="exportAgentBtn">Exportálás</button>
           <button class="btn-danger" id="deleteAgentBtn" data-i18n="common.btn.delete">Törlés</button>
         </div>
       </div>
