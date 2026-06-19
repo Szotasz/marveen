@@ -235,6 +235,9 @@ window._i18n.en = {
   'tasks.btn.toggle_resume':     'Resume',
   'tasks.btn.history':           'Run history',
   'tasks.btn.delete':            'Delete',
+  'tasks.retries.title':         'Pending scheduled tasks ({n})',
+  'tasks.retries.hint':          'Busy target session, system keeps retrying. Cancel if there is an obvious error.',
+  'tasks.retries.meta':          '{age} waiting ({n} attempts)',
   'tasks.schedule_empty':        'No scheduled tasks',
   'tasks.empty':                 'No scheduled tasks',
   'tasks.cron.every_n_min':      'Every {n} min',
@@ -483,6 +486,8 @@ window._i18n.en = {
   'settings.meta.default':       'Default',
   'status.error.fetch':          'Failed to load status',
   'recall.summary.agents':       'Agents',
+  'recall.summary.log_count':    '{n} log entries',
+  'recall.summary.memory_count': '{n} memories',
   'terminal.stream_error':       '[stream error or stopped]',
   'tasks.heartbeat.tpl.calendar': 'Calendar watcher',
   'tasks.heartbeat.tpl.email':    'Email watcher',
@@ -526,6 +531,11 @@ window._i18n.en = {
   'tokenUsage.no_data':          'No data',
   'tokenUsage.collect_hint':     'Click the "Collect" button',
   'tokenUsage.calls_sub':        '{calls} calls, out: {out}',
+  'tokenUsage.total':            'Total:',
+  'tokenUsage.window_5h_label':  '5h window',
+  'tokenUsage.window_weekly_label': 'Weekly window',
+  'tokenUsage.cumulative_sub':   'cumulative in current window',
+  'tokenUsage.search_placeholder': 'Search (agent, tool, content)...',
   'tokenUsage.no_period_data':   'No data for selected period',
   'tokenUsage.no_calls':         'No calls in filtered period',
   'tokenUsage.collect_btn.collecting':'Collecting...',
@@ -728,6 +738,7 @@ window._i18n.en = {
   'messages.error_send':         'Error: {msg}',
   'messages.loading_indicator':  'Loading...',
   'messages.sidebar_error':      'Error: {msg}',
+  'messages.conv.reply_label':   'reply',
 
   'migrate.empty':			'No migratable content found',
   'migrate.files_processing':			'Processing files...',
@@ -895,6 +906,8 @@ window._i18n.en = {
   'channel.btn.deny':            'Deny',
   'channel.badge.group':         'GROUP',
   'channel.invite.no_username':  '(no bot username)',
+  'channel.approve.desc':        '#{channel}{requester} channel approval settings:',
+  'channel.approve.requester':   ' (requested by: {user})',
 
   // --- Channel setup wizard ---
   'channel.setup.tg_title':      'Connect Telegram bot',
@@ -934,6 +947,16 @@ window._i18n.en = {
   'common.btn.cancel':           'Cancel',
   'common.btn.remove':           'Remove',
   'common.btn.retry_done':       'Done, retry',
+  'common.btn.edit':             'Edit',
+  'common.btn.delete':           'Delete',
+  'common.time.less_than_min':   'less than 1m ago',
+  'common.time.minutes':         '{n}m ago',
+  'common.time.hours_mins':      '{h}h {m}m ago',
+  'common.time.hours':           '{h}h ago',
+  'common.time.hour_abbr':       '{h}h',
+  'common.time.now_abbr':        'now',
+  'common.time.min_abbr':        '{n}m',
+  'common.time.day_abbr':        '{n}d',
 
   // --- Common toasts ---
   'common.toast.removed':        'Removed',
@@ -958,6 +981,7 @@ window._i18n.en = {
   'memories.toast.no_content':   'No importable content in files',
   'memories.toast.import_error': 'Import error',
   'memories.import.done_title':  'Migration complete!',
+  'memories.import.done_sub':    'Total: {n} memories imported',
 
   // --- Connector toasts ---
   'connectors.toast.mcp_refreshed': 'MCP list refreshed ({n} global connectors)',
@@ -966,6 +990,12 @@ window._i18n.en = {
   'connectors.toast.assignment_error': 'Assignment error',
   'connectors.toast.created':    'Connector added!',
   'connectors.catalog.env_placeholder': 'Enter the {key} value',
+  'connectors.catalog.install_btn':  'Install',
+  'connectors.env_val_placeholder':  'value',
+  'connectors.error.install':        'Installation failed',
+  'connectors.error.configure':      'Configuration failed',
+  'connectors.builtin.computer_use_html': '<p>Computer Use is a native Claude capability managed by the Claude Code CLI / Claude app itself, not by Marveen. It does not appear in <code>claude mcp list</code> output, so the dashboard cannot auto-detect it.</p><p><strong>Enable:</strong> the exact steps depend on your Claude version and may change between releases. Follow the official Anthropic documentation and Claude Code changelog. Find your main session tmux name on the Agents page and attach with <code>tmux attach</code>.</p><p style="color:var(--text-muted)">This capability grants the agent control over your screen and keyboard, so only use it in a trusted environment.</p>',
+  'connectors.builtin.chrome_html': '<p>Claude in Chrome is a launch-time flag for the Claude Code CLI, not a toggleable MCP server. It therefore does not appear in <code>claude mcp list</code> output and the dashboard cannot auto-detect it.</p><p><strong>Enable:</strong> start Claude with the <code>--chrome</code> flag:</p><pre style="background:var(--bg-input);padding:8px 12px;border-radius:4px;font-size:12px;overflow-x:auto">claude --chrome</pre><p style="color:var(--text-muted)">Chrome integration enables browser automation. Marveen sub-agent launches do not currently pass this flag, so only the manually started main session can use it.</p>',
 
   // --- Updates toasts ---
   'updates.toast.not_started':   'Update not started: {msg}',

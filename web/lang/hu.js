@@ -316,6 +316,9 @@ window._i18n.hu = {
   'tasks.btn.toggle_resume':     'Folytatás',
   'tasks.btn.history':           'Futtatási előzmények',
   'tasks.btn.delete':            'Törlés',
+  'tasks.retries.title':         'Függőben lévő ütemezett feladatok ({n})',
+  'tasks.retries.hint':          'Busy cél-session, a rendszer tovább próbálkozik. Nyilvánvaló hibánál visszavonhatod.',
+  'tasks.retries.meta':          '{age} vár ({n} próbálkozás)',
   'tasks.schedule_empty':        'Nincsenek ütemezett feladatok',
   'tasks.empty':                 'Nincs ütemezett feladat',
   'tasks.cron.every_n_min':      '{n} percenként',
@@ -646,6 +649,7 @@ window._i18n.hu = {
   'messages.error_send':         'Hiba: {msg}',
   'messages.loading_indicator':  'Betöltés...',
   'messages.sidebar_error':      'Hiba: {msg}',
+  'messages.conv.reply_label':   'válasz',
 
 
   // --- Autonomy ---
@@ -685,6 +689,8 @@ window._i18n.hu = {
   'settings.meta.default':       'Alapérték',
   'status.error.fetch':          'Hiba a státusz lekérésnél',
   'recall.summary.agents':       'Ágensek',
+  'recall.summary.log_count':    '{n} naplóbejegyzés',
+  'recall.summary.memory_count': '{n} emlék',
   'terminal.stream_error':       '[stream hiba vagy leállva]',
   'tasks.heartbeat.tpl.calendar': 'Naptár figyelő',
   'tasks.heartbeat.tpl.email':    'Email figyelő',
@@ -728,6 +734,11 @@ window._i18n.hu = {
   'tokenUsage.no_data':          'Nincs adat',
   'tokenUsage.collect_hint':     'Kattints a "Gyűjtés" gombra',
   'tokenUsage.calls_sub':        '{calls} hívás, out: {out}',
+  'tokenUsage.total':            'Összesen:',
+  'tokenUsage.window_5h_label':  '5 órás ablak',
+  'tokenUsage.window_weekly_label': 'Heti ablak',
+  'tokenUsage.cumulative_sub':   'kumulatív az aktuális ablakban',
+  'tokenUsage.search_placeholder': 'Keresés (ágens, tool, tartalom)...',
   'tokenUsage.no_period_data':   'Nincs adat a kiválasztott időszakra',
   'tokenUsage.no_calls':         'Nincs ilyen hívás a szűrt időszakban',
   'tokenUsage.collect_btn.collecting':'Gyűjtés...',
@@ -893,6 +904,8 @@ window._i18n.hu = {
   'channel.btn.deny':            'Elutasítás',
   'channel.badge.group':         'CSOPORT',
   'channel.invite.no_username':  '(bot username nélkül)',
+  'channel.approve.desc':        '#{channel}{requester} csatorna engedélyezési beállításai:',
+  'channel.approve.requester':   ' (kérő: {user})',
 
   // --- Channel setup wizard ---
   'channel.setup.tg_title':      'Telegram bot bekötése',
@@ -932,6 +945,16 @@ window._i18n.hu = {
   'common.btn.cancel':           'Mégse',
   'common.btn.remove':           'Eltávolítás',
   'common.btn.retry_done':       'Kész, újrapróbálom',
+  'common.time.less_than_min':   'kevesebb, mint 1 perce',
+  'common.time.minutes':         '{n} perce',
+  'common.time.now_abbr':        'most',
+  'common.time.min_abbr':        '{n}p',
+  'common.time.day_abbr':        '{n}n',
+  'common.btn.edit':             'Szerkesztés',
+  'common.btn.delete':           'Törlés',
+  'common.time.hours_mins':      '{h} ó {m} p-e',
+  'common.time.hours':           '{h} órája',
+  'common.time.hour_abbr':       '{h}ó',
 
   // --- Common toasts ---
   'common.toast.removed':        'Eltávolítva',
@@ -956,6 +979,7 @@ window._i18n.hu = {
   'memories.toast.no_content':   'Nincs importálható tartalom a fájlokban',
   'memories.toast.import_error': 'Hiba a költöztetés során',
   'memories.import.done_title':  'Költöztetés kész!',
+  'memories.import.done_sub':    'Összesen: {n} emlék importálva',
 
   // --- Connector toasts ---
   'connectors.toast.mcp_refreshed': 'MCP lista frissítve ({n} globális connector)',
@@ -963,7 +987,13 @@ window._i18n.hu = {
   'connectors.toast.assignment_updated': 'Ügynök-hozzárendelés frissítve',
   'connectors.toast.assignment_error': 'Hiba a hozzárendelés során',
   'connectors.toast.created':    'Connector hozzáadva!',
-  'connectors.catalog.env_placeholder': 'Illeszd be a {key} értéket',
+  'connectors.catalog.env_placeholder': 'Illeszd be a {key} értéket', amit nem a Marveen kezel, hanem maga a Claude Code CLI / Claude alkalmazás. Nem jelenik meg a <code>claude mcp list</code> kimenetében, ezért a dashboard sem tudja automatikusan detektálni.</p><p><strong>Bekapcsolás:</strong> a pontos folyamat a Claude verziójától függ és változhat verziók között. Kövesd az Anthropic hivatalos dokumentációját és a Claude Code changelogot. A fő session tmux-nevét az "Ügynökök" oldalon találod -- oda <code>tmux attach</code>-al tudsz belépni manuálisan.</p><p style="color:var(--text-muted)">Ez a képesség engedélyt ad az ügynöknek a képernyő vezérlésére és kattintásra, ezért csak megbízható környezetben használd.</p>', nem egy bekapcsolható MCP szerver. Ezért nem jelenik meg a <code>claude mcp list</code> kimenetében, és a dashboard sem tudja automatikusan detektálni.</p><p><strong>Bekapcsolás:</strong> indítsd a Claude-ot a <code>--chrome</code> flaggel:</p><pre style="background:var(--bg-input);padding:8px 12px;border-radius:4px;font-size:12px;overflow-x:auto">claude --chrome</pre><p style="color:var(--text-muted)">A Chrome integráció lehetővé teszi a böngészőautomatizálást. A Marveen sub-agentek indítása jelenleg nem adja át ezt a flaget, így csak a manuálisan indított fő session használhatja.</p>',
+  'connectors.catalog.install_btn':  'Telepítés',
+  'connectors.env_val_placeholder':  'érték',
+  'connectors.error.install':        'Telepítés sikertelen',
+  'connectors.error.configure':      'Konfiguráció sikertelen',
+  'connectors.builtin.computer_use_html': '<p>A Computer Use egy natív Claude képesség, amit nem a Marveen kezel, hanem maga a Claude Code CLI / Claude alkalmazás. Nem jelenik meg a <code>claude mcp list</code> kimenetében, ezért a dashboard sem tudja automatikusan detektálni.</p><p><strong>Bekapcsolás:</strong> a pontos folyamat a Claude verziójától függ és változhat verziók között. Kövesd az Anthropic hivatalos dokumentációját és a Claude Code changelogot. A fő session tmux-nevét az "Ügynökök" oldalon találod -- oda <code>tmux attach</code>-al tudsz belépni manuálisan.</p><p style="color:var(--text-muted)">Ez a képesség engedélyt ad az ügynöknek a képernyő vezérlésére és kattintásra, ezért csak megbízható környezetben használd.</p>',
+  'connectors.builtin.chrome_html': '<p>A Claude in Chrome egy indítás-idejű flag a Claude Code CLI-n, nem egy bekapcsolható MCP szerver. Ezért nem jelenik meg a <code>claude mcp list</code> kimenetében, és a dashboard sem tudja automatikusan detektálni.</p><p><strong>Bekapcsolás:</strong> indítsd a Claude-ot a <code>--chrome</code> flaggel:</p><pre style="background:var(--bg-input);padding:8px 12px;border-radius:4px;font-size:12px;overflow-x:auto">claude --chrome</pre><p style="color:var(--text-muted)">A Chrome integráció lehetővé teszi a böngészőautomatizálást. A Marveen sub-agentek indítása jelenleg nem adja át ezt a flaget, így csak a manuálisan indított fő session használhatja.</p>',
 
   // --- Updates toasts ---
   'updates.toast.not_started':   'Frissítés nem indult: {msg}',

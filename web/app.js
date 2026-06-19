@@ -2499,7 +2499,7 @@ function renderAgents() {
 async function openAgentDetail(agentName) {
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(agentName)}`)
-    if (!res.ok) throw new Error('Nem található')
+    if (!res.ok) throw new Error('Not found')
     currentAgent = await res.json()
   } catch (err) {
     showToast(t('agents.toast.load_failed'))
@@ -3033,8 +3033,8 @@ function startModelRestartPolling(name, expectedModel, triggeredAt) {
         stopModelRestartPolling()
         const liveMatched = data.activeModel === expectedModel
         showToast(liveMatched
-          ? `Új modell aktív: ${displayModel}`
-          : `Újraindítva: ${displayModel}`)
+          ? t('agents.model.toast_active', { model: displayModel })
+          : t('agents.model.toast_restarted', { model: displayModel }))
       }
     } catch { /* network blip, keep polling */ }
   }, 2000)
@@ -3135,8 +3135,8 @@ document.getElementById('analyzeAllModelsBtn').addEventListener('click', async (
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                title: `Modell-váltás: ${r.agent}`,
-                description: `Jelenlegi: ${r.currentModel}\nJavasolt: ${r.suggestedModel}\n\nIndoklás: ${r.reason}`,
+                title: t('agents.model.card_title', { agent: r.agent }),
+                description: t('agents.model.card_desc', { current: r.currentModel, suggested: r.suggestedModel, reason: r.reason }),
                 assignee: 'marveen',
                 priority: 'normal',
                 status: 'planned',
@@ -3629,7 +3629,7 @@ function showSmokeTestResult(output) {
   overlay.className = 'modal-overlay'
   overlay.innerHTML = `
     <div class="modal-content" style="max-width:600px">
-      <h3>Slack smoke-test eredmény</h3>
+      <h3>${t('channel.smoke_test.title')}</h3>
       <pre style="background:#1a1a2e;color:#e0e0e0;padding:12px;border-radius:6px;overflow-x:auto;font-size:13px;max-height:400px;white-space:pre-wrap">${output.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>
       <div style="text-align:right;margin-top:12px">
         <button class="btn-secondary" id="smokeTestCloseBtn">${t('common.btn.close')}</button>
@@ -3777,7 +3777,7 @@ async function refreshInvites() {
         : `<span class="tg-allowed-kind tg-allowed-kind-group">${t('channel.invite.active_badge', { min: expiresIn })}</span>`
       const linkHtml = inv.deepLink
         ? `<a href="${escapeHtml(inv.deepLink)}" target="_blank" class="tg-allowed-id" style="text-decoration:underline;">${escapeHtml(inv.deepLink)}</a>`
-        : `<span class="tg-allowed-id">(bot username nélkül)</span>`
+        : `<span class="tg-allowed-id">${t('channel.invite.no_username')}</span>`
       item.innerHTML = `
         <div class="tg-allowed-meta" style="flex-wrap:wrap; gap:6px;">
           ${status}
@@ -3904,8 +3904,8 @@ let _approveReqId = null
 function openApproveModal(id, channelName, userId) {
   _approveReqId = id
   const desc = document.getElementById('chApproveModalDesc')
-  const userNote = userId ? ` (kérő: ${escapeHtml(userId)})` : ''
-  desc.textContent = `#${escapeHtml(channelName)}${userNote} csatorna engedélyezési beállításai:`
+  const userNote = userId ? t('channel.approve.requester', { user: escapeHtml(userId) }) : ''
+  desc.textContent = t('channel.approve.desc', { channel: escapeHtml(channelName), requester: userNote })
   document.getElementById('chApproveRequireMention').checked = true
   document.getElementById('chApproveAllowFromAll').checked = false
   document.getElementById('chApproveModalOverlay').hidden = false
@@ -4455,11 +4455,11 @@ async function loadPendingRetries() {
 
 function formatPendingAge(ms) {
   const mins = Math.floor(ms / 60000)
-  if (mins < 1) return 'kevesebb, mint 1 perce'
-  if (mins < 60) return `${mins} perce`
+  if (mins < 1) return t('common.time.less_than_min')
+  if (mins < 60) return t('common.time.minutes', { n: mins })
   const hours = Math.floor(mins / 60)
   const remMins = mins % 60
-  return remMins ? `${hours} ó ${remMins} p-e` : `${hours} órája`
+  return remMins ? t('common.time.hours_mins', { h: hours, m: remMins }) : t('common.time.hours', { h: hours })
 }
 
 function renderPendingRetries(container, rows) {
@@ -4482,7 +4482,7 @@ function renderPendingRetries(container, rows) {
               : ''}
         </div>
         <div class="pending-retry-meta">
-          <span>${formatPendingAge(r.ageMs)} vár (${r.attemptCount} próbálkozás)</span>
+          <span>${t('tasks.retries.meta', { age: formatPendingAge(r.ageMs), n: r.attemptCount })}</span>
           ${r.lastReason ? `<span>ok: ${escapeHtml(r.lastReason)}</span>` : ''}
         </div>
       </div>
@@ -4494,8 +4494,8 @@ function renderPendingRetries(container, rows) {
   container.innerHTML = `
     <div class="pending-retries-banner">
       <div class="pending-retries-header">
-        <span class="pending-retries-title">Függőben lévő ütemezett feladatok (${rows.length})</span>
-        <span class="pending-retries-hint">Busy cél-session, a rendszer tovább próbálkozik. Nyilvánvaló hibánál visszavonhatod.</span>
+        <span class="pending-retries-title">${t('tasks.retries.title', { n: rows.length })}</span>
+        <span class="pending-retries-hint">${t('tasks.retries.hint')}</span>
       </div>
       <div class="pending-retries-list">${items}</div>
     </div>
@@ -5317,8 +5317,8 @@ function renderMemories(memories) {
       <div class="mem-content-full">${escapeHtml(mem.content)}</div>
       ${keywordsHtml}
       <div class="mem-item-footer">
-        <button class="btn-secondary" data-edit-memid="${mem.id}" style="padding:6px 14px; font-size:12px;">Szerkesztés</button>
-        <button class="btn-danger" data-memid="${mem.id}" style="padding:6px 14px; font-size:12px;">Törlés</button>
+        <button class="btn-secondary" data-edit-memid="${mem.id}" style="padding:6px 14px; font-size:12px;">${t('common.btn.edit')}</button>
+        <button class="btn-danger" data-memid="${mem.id}" style="padding:6px 14px; font-size:12px;">${t('common.btn.delete')}</button>
       </div>
     `
 
@@ -6302,7 +6302,7 @@ function renderCatalog() {
       <div class="catalog-card-footer">
         ${item.installed
           ? `<span class="catalog-install-btn installed" title="${item.configMatch ? t('connectors.tooltip.installed_mcp') : t('connectors.tooltip.installed_src', { src: escapeHtml(item.installedSource || '') })}">Telepítve &#10003;${item.configMatch ? ' (.mcp.json)' : item.installedSource === 'claude.ai' ? ' (claude.ai)' : item.installedSource === 'plugin' ? ' (plugin)' : ''}</span>${(item.installedSource === 'claude.ai' || item.configMatch) ? '' : `<a class="catalog-uninstall-link" data-id="${item.id}">Eltávolítás</a>`}`
-          : `<button class="catalog-install-btn install" data-id="${item.id}">Telepítés</button>${authHint}`
+          : `<button class="catalog-install-btn install" data-id="${item.id}">${t('connectors.catalog.install_btn')}</button>${authHint}`
         }
       </div>
     `
@@ -6344,7 +6344,7 @@ function openCatalogInstall(item) {
       div.className = 'catalog-env-group'
       div.innerHTML = `
         <label>${escapeHtml(key)}</label>
-        <input type="text" data-env-key="${escapeHtml(key)}" placeholder="Illeszd be a ${escapeHtml(key)} értéket">
+        <input type="text" data-env-key="${escapeHtml(key)}" placeholder="${t('connectors.catalog.env_placeholder', { key: escapeHtml(key) })}">
       `
       envContainer.appendChild(div)
     }
@@ -6514,26 +6514,13 @@ const BUILTIN_MCPS = [
     name: 'computer-use',
     label: 'Computer Use',
     desc: () => t('connectors.builtin.computer_use'),
-    detailHtml: `
-      <p>A Computer Use egy natív Claude képesség, amit nem a Marveen kezel, hanem maga a Claude Code CLI / Claude alkalmazás.
-      Nem jelenik meg a <code>claude mcp list</code> kimenetében, ezért a dashboard sem tudja automatikusan detektálni.</p>
-      <p><strong>Bekapcsolás:</strong> a pontos folyamat a Claude verziójától függ és változhat verziók között.
-      Kövesd az Anthropic hivatalos dokumentációját és a Claude Code changelogot.
-      A fő session tmux-nevét az "Ügynökök" oldalon találod -- oda <code>tmux attach</code>-al tudsz belépni manuálisan.</p>
-      <p style="color:var(--text-muted)">Ez a képesség engedélyt ad az ügynöknek a képernyő vezérlésére és kattintásra, ezért csak megbízható környezetben használd.</p>
-    `,
+    get detailHtml() { return t('connectors.builtin.computer_use_html') },
   },
   {
     name: 'chrome',
     label: 'Claude in Chrome',
     desc: () => t('connectors.builtin.chrome'),
-    detailHtml: `
-      <p>A Claude in Chrome egy indítás-idejű flag a Claude Code CLI-n, nem egy bekapcsolható MCP szerver.
-      Ezért nem jelenik meg a <code>claude mcp list</code> kimenetében, és a dashboard sem tudja automatikusan detektálni.</p>
-      <p><strong>Bekapcsolás:</strong> indítsd a Claude-ot a <code>--chrome</code> flaggel:</p>
-      <pre style="background:var(--bg-input);padding:8px 12px;border-radius:4px;font-size:12px;overflow-x:auto">claude --chrome</pre>
-      <p style="color:var(--text-muted)">A Chrome integráció lehetővé teszi a böngészőautomatizálást. A Marveen sub-agentek indítása jelenleg nem adja át ezt a flaget, így csak a manuálisan indított fő session használhatja.</p>
-    `,
+    get detailHtml() { return t('connectors.builtin.chrome_html') },
   },
 ]
 
@@ -7539,7 +7526,7 @@ document.getElementById('connectorEnvAddBtn').addEventListener('click', () => {
   row.innerHTML = `
     <input type="text" class="input env-key" placeholder="KULCS" style="flex:1">
     <span style="color:var(--text-muted)">=</span>
-    <input type="text" class="input env-val" placeholder="érték" style="flex:2">
+    <input type="text" class="input env-val" placeholder="${t('connectors.env_val_placeholder')}" style="flex:2">
     <button type="button" class="btn-link" style="color:var(--danger);padding:2px 6px">&times;</button>
   `
   row.querySelector('button').addEventListener('click', () => row.remove())
@@ -7872,9 +7859,9 @@ memImportSaveBtn.addEventListener('click', async () => {
       const s = data.stats || {}
       memImportResult.hidden = false
       memImportResult.innerHTML = `
-        <div style="color:var(--text-primary);font-weight:600;margin-bottom:8px">Költöztetés kész!</div>
+        <div style="color:var(--text-primary);font-weight:600;margin-bottom:8px">${t('memories.import.done_title')}</div>
         <div style="font-size:13px;color:var(--text-secondary)">
-          Összesen: <strong>${data.imported}</strong> emlék importálva<br>
+          ${t('memories.import.done_sub', { n: `<strong>${data.imported}</strong>` })}<br>
           Hot: ${s.hot || 0} | Warm: ${s.warm || 0} | Cold: ${s.cold || 0} | Shared: ${s.shared || 0}
         </div>
       `
@@ -8784,12 +8771,12 @@ document.getElementById('saveTeamBtn').addEventListener('click', async () => {
 function formatRelative(ts) {
   const diff = Math.max(0, Date.now() - ts)
   const min = Math.floor(diff / 60000)
-  if (min < 1) return 'most'
-  if (min < 60) return `${min}p`
+  if (min < 1) return t('common.time.now_abbr')
+  if (min < 60) return t('common.time.min_abbr', { n: min })
   const hr = Math.floor(min / 60)
-  if (hr < 24) return `${hr}ó`
+  if (hr < 24) return t('common.time.hour_abbr', { h: hr })
   const day = Math.floor(hr / 24)
-  return `${day}n`
+  return t('common.time.day_abbr', { n: day })
 }
 
 async function loadOverview() {
@@ -9248,8 +9235,8 @@ function renderRecallSummary(el, data) {
   } else if (dateRange.from && dateRange.to) {
     parts.push(`<strong>${esc(dateRange.from)}</strong> &ndash; <strong>${esc(dateRange.to)}</strong>`)
   }
-  parts.push(`${s.logCount} naplóbejegyzés`)
-  parts.push(`${s.memoryCount} emlék`)
+  parts.push(t('recall.summary.log_count', { n: s.logCount }))
+  parts.push(t('recall.summary.memory_count', { n: s.memoryCount }))
   if (s.agents.length) parts.push(`${t('recall.summary.agents')}: ${s.agents.map(esc).join(', ')}`)
   el.innerHTML = `<div class="recall-summary-row">${parts.map(p => `<span>${p}</span>`).join('')}</div>`
 }
@@ -9837,7 +9824,7 @@ document.getElementById('settingsResetBtn')?.addEventListener('click', resetAllS
       try {
         const res = await fetch('/api/connectors-hu/install', { method: 'POST' })
         const data = await res.json().catch(() => ({}))
-        if (!res.ok || !data.ok) throw new Error(data.error || 'Telepítés sikertelen')
+        if (!res.ok || !data.ok) throw new Error(data.error || t('connectors.error.install'))
         showState('Token')
       } catch (e) {
         showError(e.message, () => { showState('Install') })
@@ -9862,7 +9849,7 @@ document.getElementById('settingsResetBtn')?.addEventListener('click', resetAllS
           body: JSON.stringify({ token: token.trim() }),
         })
         const data = await res.json().catch(() => ({}))
-        if (!res.ok || !data.ok) throw new Error(data.error || 'Konfiguráció sikertelen')
+        if (!res.ok || !data.ok) throw new Error(data.error || t('connectors.error.configure'))
         showState('Done')
       } catch (e) {
         showError(e.message, () => { showState('Token') })
@@ -9974,7 +9961,7 @@ function renderTuSummary(summary) {
         style="border-left:3px solid ${tuGetColor(s.agent)};cursor:pointer;${dimmed ? 'opacity:0.4;' : ''}transition:opacity 0.2s">
         <div class="overview-stat-label">${escapeHtml(s.agent)}</div>
         <div class="overview-stat-value">${tuFormatTokens(totalIn)}</div>
-        <div class="overview-stat-sub">${(s.totalCalls || 0).toLocaleString()} hívás, out: ${tuFormatTokens(s.totalOutput)}</div>
+        <div class="overview-stat-sub">${t('tokenUsage.calls_sub', { calls: (s.totalCalls || 0).toLocaleString(), out: tuFormatTokens(s.totalOutput) })}</div>
       </div>`
   }).join('')
 
@@ -10353,7 +10340,7 @@ function renderTuTimeline(data, filterAgent) {
         html += `<div><span style="color:${tuGetColor(seg.agent)}">&#9632;</span> ${seg.agent}: ${tuFormatTokens(seg.val)}</div>`
         total += seg.val
       }
-      if (hit.segments.length > 1) html += `<div style="border-top:1px solid rgba(255,255,255,0.2);margin-top:4px;padding-top:4px;font-weight:600">Összesen: ${tuFormatTokens(total)}</div>`
+      if (hit.segments.length > 1) html += `<div style="border-top:1px solid rgba(255,255,255,0.2);margin-top:4px;padding-top:4px;font-weight:600">${t('tokenUsage.total')} ${tuFormatTokens(total)}</div>`
       if (tuChartState.win5h || tuChartState.winWeekly) {
         const idx = barRects.indexOf(hit)
         if (idx >= 0) {
@@ -10404,15 +10391,15 @@ function renderTuBudgetCards() {
   el.innerHTML = `
     <div class="overview-stat tu-budget-card${tuBudgetView === '5h' ? ' tu-active' : ''}" data-budget="5h"
       style="border-left:3px solid #06b6d4;cursor:pointer;${tuBudgetView === 'weekly' ? 'opacity:0.4;' : ''}transition:opacity 0.2s">
-      <div class="overview-stat-label">5 órás ablak</div>
+      <div class="overview-stat-label">${t('tokenUsage.window_5h_label')}</div>
       <div class="overview-stat-value" style="color:#06b6d4">${tuFormatTokens(cur5h)}</div>
-      <div class="overview-stat-sub">kumulatív az aktuális ablakban</div>
+      <div class="overview-stat-sub">${t('tokenUsage.cumulative_sub')}</div>
     </div>
     <div class="overview-stat tu-budget-card${tuBudgetView === 'weekly' ? ' tu-active' : ''}" data-budget="weekly"
       style="border-left:3px solid #8b5cf6;cursor:pointer;${tuBudgetView === '5h' ? 'opacity:0.4;' : ''}transition:opacity 0.2s">
-      <div class="overview-stat-label">Heti ablak</div>
+      <div class="overview-stat-label">${t('tokenUsage.window_weekly_label')}</div>
       <div class="overview-stat-value" style="color:#8b5cf6">${tuFormatTokens(curWeekly)}</div>
-      <div class="overview-stat-sub">kumulatív az aktuális ablakban</div>
+      <div class="overview-stat-sub">${t('tokenUsage.cumulative_sub')}</div>
     </div>`
 
   el.querySelectorAll('.tu-budget-card').forEach(card => {
@@ -10487,7 +10474,7 @@ function renderTuDetails(data) {
     const thStyle = 'cursor:pointer;user-select:none'
     const thStyleR = thStyle + ';text-align:right'
     el.innerHTML = `<div style="margin-bottom:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-      <input id="tuSearchInput" type="text" placeholder="Keresés (ágens, tool, tartalom)..."
+      <input id="tuSearchInput" type="text" placeholder="${t('tokenUsage.search_placeholder')}"
         style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);width:260px;font-size:13px">
       <span id="tuDetailsCount" style="color:var(--text-secondary);font-size:12px"></span>
     </div>
@@ -11155,7 +11142,7 @@ function renderConvEntry(e) {
     return `<div class="conv-row conv-in"><div class="conv-bubble"><div class="conv-meta">Telegram be · ${ts}</div><div class="conv-text">${txt}</div></div></div>`
   }
   if (e.kind === 'out') {
-    const lbl = escapeHtml(e.label || 'válasz')
+    const lbl = escapeHtml(e.label || t('messages.conv.reply_label'))
     return `<div class="conv-row conv-out"><div class="conv-bubble"><div class="conv-meta">${lbl} · ${ts}</div><div class="conv-text">${txt}</div></div></div>`
   }
   if (e.kind === 'note') {
