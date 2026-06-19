@@ -1364,4 +1364,5 @@ window._i18n.hu = {
   'agents.deepseek_hint_pre': 'DeepSeek-V4-Pro nincs konfigurálva.',
   'agents.deepseek_link': 'API kulcs hozzáadása',
   'agents.deepseek_hint_post': 'a Vault oldalon.',
+  'channel.btn.slack_manifest': 'Slack App létrehozása (manifest)',
 }

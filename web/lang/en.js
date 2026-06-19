@@ -1367,4 +1367,5 @@ window._i18n.en = {
   'agents.deepseek_hint_pre': 'DeepSeek-V4-Pro is not configured.',
   'agents.deepseek_link': 'Add API key',
   'agents.deepseek_hint_post': 'on the Vault page.',
+  'channel.btn.slack_manifest': 'Create Slack App (manifest)',
 }
