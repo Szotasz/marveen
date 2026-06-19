@@ -7,10 +7,10 @@ modal and left inbound messages dropped until a human noticed. They are
 **independent of the dashboard** (which dies with its process and is itself
 unreliable under disk-full).
 
-## A. Disk-space guard — `scripts/disk-space-guard.sh`
+## A. Disk-space guard -- `scripts/disk-space-guard.sh`
 
 Every minute: read `df /` usage.
-- `>= 90%` (`REAP_THRESHOLD`): reap **age-guarded allowlist scratch** — globs in
+- `>= 90%` (`REAP_THRESHOLD`): reap **age-guarded allowlist scratch** -- globs in
   `REAP_GLOBS` (currently `health_*`) directly under `/tmp`, only entries older
   than `REAP_MIN_AGE_MIN` (30 min), so a currently-running export (recent mtime)
   is never deleted.
@@ -20,7 +20,7 @@ Every minute: read `df /` usage.
 Thresholds + the reap allowlist are constants at the top of the script. All
 stamp/log writes are best-effort (ENOSPC-tolerant).
 
-## B. Stuck-modal guard — `scripts/stuck-modal-guard.sh`
+## B. Stuck-modal guard -- `scripts/stuck-modal-guard.sh`
 
 Every minute: classify the main channels session pane (`${MAIN_AGENT_ID}-channels`,
 mirrors `src/pane-state.ts`):
@@ -41,7 +41,7 @@ classified busy/idle and is never disturbed (locked by the contract test).
 
 ## Activation
 
-The unit files carry `/path/to/marveen` and `/home/USER` placeholders — replace
+The unit files carry `/path/to/marveen` and `/home/USER` placeholders -- replace
 them with your install dir and home before installing.
 
 ```bash
@@ -64,11 +64,11 @@ bash scripts/__tests__/stuck-modal-guard.test.sh   # classify fixtures (idle/bus
 
 ## Re-review hardening (2026-06-03, post-cross-model)
 
-- **W2a — busy-marker glyph robustness:** the `(Ns · ↓` token-counter separator can
+- **W2a -- busy-marker glyph robustness:** the `(Ns · ↓` token-counter separator can
   render as a Unicode middle-dot OR an ASCII period depending on terminal/locale.
   `classify_pane` now matches both (`(·|\.)`), so a working pane is never misread as
   STUCK and respawned mid-turn. Locked by a regression fixture in the test suite.
-- **W2b — respawn plugin id is config-overridable:** `STUCK_MODAL_PLUGIN` (default
+- **W2b -- respawn plugin id is config-overridable:** `STUCK_MODAL_PLUGIN` (default
   `plugin:telegram@claude-plugins-official`) so a renamed/local-build install isn't
   respawned with a wrong plugin id (which would exit immediately while the alert
   falsely says "respawned"). `%q`-quoted at interpolation, like the model id.
@@ -78,7 +78,7 @@ bash scripts/__tests__/stuck-modal-guard.test.sh   # classify fixtures (idle/bus
 - **Telegram bot token in the `curl` URL path (`alert_owner`, both guards).** The
   token is interpolated as `…/bot${token}/sendMessage`, so it is visible in
   `/proc/<pid>/cmdline` for the curl process's lifetime. **Disposition: ACCEPTED**
-  for this deployment — the host is single-user and the guards run as
+  for this deployment -- the host is single-user and the guards run as
   `systemctl --user`, so no other local user can read the process table; the token
   already lives in a local `.env` the same user owns. On a shared/multi-user host
   this would be a real exposure and must move to a `--config`/netrc (mode 0600) form.
