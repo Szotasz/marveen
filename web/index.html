@@ -572,8 +572,8 @@
             </svg>
           </div>
           <div class="cxhu-banner-text">
-            <span class="cxhu-banner-headline">connectors.hu, egy MCP mind fölött</span>
-            <span class="cxhu-banner-sub">NAV, Billingo, Wise, fal.ai: egyetlen MCP-ből, vagy token-hatékony CLI-vel. Magyar fókusz, nemzetközi lefedettség.</span>
+            <span class="cxhu-banner-headline" data-i18n="connectors.cxhu.banner_headline">connectors.hu, egy MCP mind fölött</span>
+            <span class="cxhu-banner-sub" data-i18n="connectors.cxhu.banner_sub">NAV, Billingo, Wise, fal.ai: egyetlen MCP-ből, vagy token-hatékony CLI-vel. Magyar fókusz, nemzetközi lefedettség.</span>
           </div>
           <!-- install flow: states swapped by JS -->
           <div class="cxhu-banner-action" id="cxhuAction">
@@ -658,7 +658,7 @@
             <div class="connector-external-add">
               <input type="text" id="vaultIdInput" class="input" placeholder="Kulcs nev (pl. OPENAI_API_KEY)" style="flex:1">
               <input type="password" id="vaultValueInput" class="input" placeholder="Ertek" style="flex:1">
-              <button class="btn-secondary btn-compact" id="vaultAddBtn">Mentés</button>
+              <button class="btn-secondary btn-compact" id="vaultAddBtn" data-i18n="vault.btn.save">Mentés</button>
             </div>
           </div>
         </div>
@@ -686,12 +686,12 @@
             <button class="modal-close" id="envVarModalClose">&times;</button>
           </div>
           <div class="modal-body">
-            <p class="modal-desc">Ez az MCP szerver az alabbi env változókat igenyeli. Az ertekek titkositva a Vault-ba kerulnek.</p>
+            <p class="modal-desc" data-i18n="connectors.env_modal.desc">Ez az MCP szerver az alabbi env változókat igenyeli. Az ertekek titkositva a Vault-ba kerulnek.</p>
             <div id="envVarFields"></div>
           </div>
           <div class="modal-footer">
             <button class="btn-secondary" id="envVarSkipBtn">Kihagyas</button>
-            <button class="btn-primary" id="envVarSaveBtn">Mentés és telepítés</button>
+            <button class="btn-primary" id="envVarSaveBtn" data-i18n="connectors.env_modal.save_btn">Mentés és telepítés</button>
           </div>
         </div>
       </div>
@@ -734,7 +734,7 @@
           </div>
           <button class="btn-primary btn-compact" id="migrateScanBtn">
             <span class="btn-text" data-i18n="migrate.step1.scan_btn">Feltérképezés</span>
-            <span class="btn-loading" hidden><span class="spinner"></span> Keresés...</span>
+            <span class="btn-loading" hidden><span class="spinner"></span> <span data-i18n="common.searching">Keresés...</span></span>
           </button>
         </div>
 
@@ -747,7 +747,7 @@
             <button class="btn-secondary btn-compact" id="migrateBackBtn" data-i18n="common.btn.back">Vissza</button>
             <button class="btn-primary btn-compact" id="migrateRunBtn">
               <span class="btn-text" data-i18n="migrate.step2.run_btn">Költöztetés indítása</span>
-              <span class="btn-loading" hidden><span class="spinner"></span> Költöztetés...</span>
+              <span class="btn-loading" hidden><span class="spinner"></span> <span data-i18n="common.migrating">Költöztetés...</span></span>
             </button>
           </div>
         </div>
@@ -769,10 +769,10 @@
       </div>
       <div class="docs-layout">
         <aside class="docs-list" id="docsList">
-          <p class="muted">Betöltés...</p>
+          <p class="muted" data-i18n="docs.loading">Betöltés...</p>
         </aside>
         <article class="docs-content markdown-body" id="docsContent">
-          <p class="muted">Válassz egy dokumentumot a bal oldali listából.</p>
+          <p class="muted" data-i18n="docs.select_hint">Válassz egy dokumentumot a bal oldali listából.</p>
         </article>
       </div>
     </div>
@@ -847,12 +847,12 @@
       </div>
       <div class="chat-layout">
         <div class="chat-sidebar" id="chatAgentList">
-          <div class="chat-sidebar-loading">Betöltés...</div>
+          <div class="chat-sidebar-loading" data-i18n="messages.loading">Betöltés...</div>
         </div>
         <div class="chat-thread-panel" id="chatThreadPanel">
           <div class="chat-thread-empty">
             <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:0.3"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-            <p>Válassz ügynököt</p>
+            <p data-i18n="messages.select_agent">Válassz ügynököt</p>
           </div>
         </div>
       </div>
@@ -959,7 +959,7 @@
             <div class="form-group"><label class="form-label" data-i18n="ideas.modal.desc_label">Leírás</label><textarea id="ideaDescInput" class="input" rows="4" placeholder="Részletes leírás..."></textarea></div>
             <div style="display:flex;gap:8px">
               <div class="form-group" style="flex:1"><label class="form-label" data-i18n="ideas.modal.category_label">Kategória</label>
-                <select id="ideaCategoryInput" class="input"><option>Sales</option><option>Oktatás</option><option>Automatizálás</option><option>Integráció</option><option>Rendszer</option><option>Egyéb</option></select>
+                <select id="ideaCategoryInput" class="input"><option data-i18n="ideas.category.sales">Sales</option><option data-i18n="ideas.category.education">Oktatás</option><option data-i18n="ideas.category.automation">Automatizálás</option><option data-i18n="ideas.category.integration">Integráció</option><option data-i18n="ideas.category.system">Rendszer</option><option data-i18n="ideas.category.other">Egyéb</option></select>
               </div>
             </div>
             <div style="display:flex;gap:8px">
@@ -1018,7 +1018,7 @@
             <div id="ideaDetailDesc" style="font-size:14px;color:var(--text);white-space:pre-wrap"></div>
             <!-- Inline impact/effort scoring -->
             <div id="ideaDetailScoring" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 10px;background:var(--bg-input);border-radius:var(--radius-sm)">
-              <span style="font-size:12px;font-weight:600;color:var(--text-muted)">Pontozás:</span>
+              <span style="font-size:12px;font-weight:600;color:var(--text-muted)" data-i18n="ideas.scoring_label">Pontozás:</span>
               <select id="ideaDetailImpact" class="input" style="width:105px;padding:3px 6px;font-size:12px">
                 <option value="">Impact -</option>
                 <option value="1">Impact 1</option>
@@ -1171,7 +1171,7 @@
               <select id="vaultBindServer" class="input"></select>
             </div>
             <div class="form-group">
-              <label for="vaultBindEnvVar">Kornyezeti változó neve</label>
+              <label for="vaultBindEnvVar" data-i18n="vault.field.env_var">Kornyezeti változó neve</label>
               <input type="text" id="vaultBindEnvVar" class="input" placeholder="pl. API_KEY">
             </div>
             <div id="vaultBindStatus" hidden class="vault-bind-status"></div>
@@ -1217,7 +1217,7 @@
         <div class="page-header-row" style="flex-wrap:wrap">
           <div style="flex:1;min-width:200px">
             <h1>Token Monitor</h1>
-            <p class="subtitle" id="tokenUsageSubtitle">Ügynök token-fogyasztás nyomon követése</p>
+            <p class="subtitle" id="tokenUsageSubtitle" data-i18n="tokenUsage.page_subtitle">Ügynök token-fogyasztás nyomon követése</p>
           </div>
           <div class="tu-header-controls" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <select id="tuPeriod" class="input-compact" style="width:auto">
@@ -1267,7 +1267,7 @@
         <div class="page-header-row">
           <div>
             <h1 data-i18n="updates.page_title">Frissítések</h1>
-            <p class="subtitle" id="updatesSubtitle">Marveen verzió ellenőrzés</p>
+            <p class="subtitle" id="updatesSubtitle" data-i18n="updates.brand_subtitle">Marveen verzió ellenőrzés</p>
           </div>
           <div style="display:flex;gap:8px">
             <button class="btn-secondary btn-compact" id="updatesCheckBtn" data-i18n="updates.btn.check">
@@ -1322,7 +1322,7 @@
           <span class="naplo-date-sep">-</span>
           <input type="date" id="naplo-to" class="naplo-date" title="Eddig">
           <input type="text" id="naplo-q" class="naplo-search" placeholder="Keresés..." data-i18n-placeholder="naplo.search_placeholder">
-          <span id="naplo-agent-wrap" style="display:none"><input type="text" id="naplo-agent" class="naplo-search" placeholder="Ágens (pl. jarvis)" style="width:130px"></span>
+          <span id="naplo-agent-wrap" style="display:none"><input type="text" id="naplo-agent" class="naplo-search" data-i18n-placeholder="naplo.agent_placeholder" placeholder="Ágens (pl. jarvis)" style="width:130px"></span>
           <button class="btn-primary btn-compact" id="naplo-search-btn" data-i18n="naplo.btn.search">Keresés</button>
         </div>
       </div>
@@ -1339,7 +1339,7 @@
   <div class="modal-overlay" id="cardModalOverlay">
     <div class="modal modal-wide">
       <div class="modal-header">
-        <h2 id="cardModalTitle">Új kártya</h2>
+        <h2 id="cardModalTitle" data-i18n="kanban.modal.title_new">Új kártya</h2>
         <button class="modal-close" id="cardModalClose">&times;</button>
       </div>
       <div class="modal-body">
@@ -1381,7 +1381,7 @@
         <input type="hidden" id="cardEditStatus">
         <button class="btn-primary" id="saveCardBtn">
           <span class="btn-text" data-i18n="common.btn.save">Mentés</span>
-          <span class="btn-loading" hidden><span class="spinner"></span> Mentés...</span>
+          <span class="btn-loading" hidden><span class="spinner"></span> <span data-i18n="common.saving">Mentés...</span></span>
         </button>
       </div>
     </div>
@@ -1391,7 +1391,7 @@
   <div class="modal-overlay" id="cardDetailOverlay">
     <div class="modal modal-wide">
       <div class="modal-header">
-        <h2 id="cardDetailTitle">Kártya</h2>
+        <h2 id="cardDetailTitle" data-i18n="kanban.card.detail_title">Kártya</h2>
         <button class="modal-close" id="cardDetailClose">&times;</button>
       </div>
       <div class="modal-body">
@@ -1545,7 +1545,7 @@
             <div class="wizard-spinner-wrap">
               <span class="spinner wizard-spin"></span>
             </div>
-            <p class="wizard-gen-status" id="wizardGenStatus">CLAUDE.md generálás...</p>
+            <p class="wizard-gen-status" id="wizardGenStatus" data-i18n="agents.wizard.generating_status">CLAUDE.md generálás...</p>
             <p class="wizard-gen-sub" data-i18n="agents.wizard.gen_hint">Ez néhány másodpercig tarthat</p>
           </div>
         </div>
@@ -1564,7 +1564,7 @@
             <button class="btn-secondary" id="wizardBackBtn" data-i18n="common.btn.back">Vissza</button>
             <button class="btn-primary btn-compact" id="wizardCreateBtn">
               <span class="btn-text" data-i18n="agents.wizard.create_btn">Létrehozás</span>
-              <span class="btn-loading" hidden><span class="spinner"></span> Létrehozás...</span>
+              <span class="btn-loading" hidden><span class="spinner"></span> <span data-i18n="common.creating">Létrehozás...</span></span>
             </button>
           </div>
         </div>
@@ -1576,7 +1576,7 @@
   <div class="modal-overlay" id="agentDetailOverlay">
     <div class="modal modal-agent-detail">
       <div class="modal-header">
-        <h2 id="agentDetailTitle">Ügynök részletek</h2>
+        <h2 id="agentDetailTitle" data-i18n="agents.detail.modal_title">Ügynök részletek</h2>
         <button class="modal-close" id="agentDetailClose">&times;</button>
       </div>
       <div class="modal-body" style="padding-top: 0;">
@@ -1605,7 +1605,7 @@
             </div>
           </div>
           <div class="detail-avatar-gallery" id="detailAvatarGallery" hidden>
-            <label class="form-label-sm">Válassz új avatart</label>
+            <label class="form-label-sm" data-i18n="agents.detail.select_avatar">Válassz új avatart</label>
             <div class="avatar-grid" id="detailAvatarGrid"></div>
             <div class="avatar-upload-divider"><span>vagy</span></div>
             <div class="avatar-upload-zone" id="avatarUploadZone">
@@ -1625,7 +1625,7 @@
               <span class="meta-label" data-i18n="agents.detail.model_label">Modell</span>
               <div class="meta-value-row">
                 <span class="meta-value" id="agentDetailModel"></span>
-                <span class="meta-badge" id="agentDetailModelRestarting" hidden>újraindítás alatt</span>
+                <span class="meta-badge" id="agentDetailModelRestarting" hidden data-i18n="agents.detail.restarting">újraindítás alatt</span>
               </div>
             </div>
             <div class="agent-overview-item">
@@ -1644,7 +1644,7 @@
           <div class="agent-process-control" id="agentProcessControl">
             <div class="process-status" id="processStatus">
               <span class="process-dot" id="processDot"></span>
-              <span id="processLabel">Leállva</span>
+              <span id="processLabel" data-i18n="agents.detail.stopped">Leállva</span>
               <span class="process-uptime" id="processUptime"></span>
             </div>
             <div class="process-actions">
@@ -1662,7 +1662,7 @@
         <div class="tab-panel" id="tabSettings" hidden>
           <div class="form-group" id="marveenReadonlyNote" hidden>
             <div style="padding:12px 14px;background:var(--bg-input);border-radius:var(--radius);border-left:3px solid var(--accent);font-size:13px;line-height:1.5;color:var(--text-muted)">
-              <strong style="color:var(--text)">Főagent konfiguráció -- csak olvasható</strong><br>
+              <strong style="color:var(--text)" data-i18n="agents.detail.main_readonly">Főagent konfiguráció -- csak olvasható</strong><br>
               A főagent identitás-fájljai biztonsági okból dashboardról nem szerkeszthetők
               (token szivárgás esetén távoli identitás-átírás kockázata).
               Szerkesztéshez nyisd meg fájlrendszerből a projekt gyökerében:
@@ -1769,8 +1769,8 @@
             <div id="authModeSharedSection" hidden style="margin-top:12px;padding:12px 14px;background:var(--bg-input);border-radius:var(--radius-sm)">
               <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
                 <div>
-                  <div style="font-size:13px;font-weight:500;color:var(--text)">Host OAuth alkalmazása</div>
-                  <small style="color:var(--text-muted);font-size:12px">Újraindítja az agentet a host hitelesítésével. Nincs külön bejelentkezés.</small>
+                  <div style="font-size:13px;font-weight:500;color:var(--text)" data-i18n="agents.auth.host_oauth_title">Host OAuth alkalmazása</div>
+                  <small style="color:var(--text-muted);font-size:12px" data-i18n="agents.auth.host_oauth_desc">Újraindítja az agentet a host hitelesítésével. Nincs külön bejelentkezés.</small>
                 </div>
                 <button class="btn-primary btn-compact" id="authSharedApplyBtn">
                   <span class="btn-text" data-i18n="agents.settings.apply_btn">Alkalmazás</span>
@@ -1782,8 +1782,8 @@
             <div id="authModeOwnTeamSection" hidden style="margin-top:12px;padding:12px 14px;background:var(--bg-input);border-radius:var(--radius-sm)">
               <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
                 <div>
-                  <div style="font-size:13px;font-weight:500;color:var(--text)">Auth-flow indítása</div>
-                  <small style="color:var(--text-muted);font-size:12px">Az agent tmux session-jében elindítja a <code>/login</code> parancsot és visszaadja az auth URL-t.</small>
+                  <div style="font-size:13px;font-weight:500;color:var(--text)" data-i18n="agents.auth.flow_title">Auth-flow indítása</div>
+                  <small style="color:var(--text-muted);font-size:12px" data-i18n="agents.auth.flow_desc">Az agent tmux session-jében elindítja a <code>/login</code> parancsot és visszaadja az auth URL-t.</small>
                 </div>
                 <button class="btn-primary btn-compact" id="authFlowInitBtn">
                   <span class="btn-text" data-i18n="agents.settings.login_btn">Bejelentkezés</span>
@@ -1867,7 +1867,7 @@
             <div class="form-group" id="chDiscordChannelIdGroup" hidden>
               <label for="chDiscordChannelId">Discord Channel ID</label>
               <input type="text" id="chDiscordChannelId" placeholder="1234567890123456789">
-              <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">Annak a server-csatornának az ID-je, amelyikbe a bot alapból ír. Discord &rarr; jobbklikk a csatornán &rarr; "Copy Channel ID" (Developer Mode kell hozzá).</small>
+              <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px" data-i18n="agents.channel.discord_channel_hint">Annak a server-csatornának az ID-je, amelyikbe a bot alapból ír. Discord &rarr; jobbklikk a csatornán &rarr; "Copy Channel ID" (Developer Mode kell hozzá).</small>
             </div>
             <button class="btn-primary" id="chConnectBtn">
               <span class="btn-text" data-i18n="channel.connect_btn">Összekapcsolás</span>
@@ -1885,28 +1885,28 @@
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
                 </svg>
-                <span>A bot csak akkor fogad üzeneteket, ha az ügynök fut. Indítsd el az Áttekintés tab-on az "Indítás" gombbal.</span>
+                <span data-i18n="agents.channel.bot_inactive">A bot csak akkor fogad üzeneteket, ha az ügynök fut. Indítsd el az Áttekintés tab-on az "Indítás" gombbal.</span>
               </div>
               <div class="tg-notice tg-notice-ok" id="chRunningNotice" hidden>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
                 </svg>
-                <span>Az ügynök fut, a bot aktívan figyel. A chat ID-d előre engedélyezve van, nem kell pairing kód.</span>
+                <span data-i18n="agents.channel.bot_active">Az ügynök fut, a bot aktívan figyel. A chat ID-d előre engedélyezve van, nem kell pairing kód.</span>
               </div>
             </div>
             <div class="tg-allowed-section" id="chAllowedSection">
               <h4 data-i18n="agents.channel.chats_title">Bekötött chat-ek és csoportok</h4>
-              <p class="tg-pairing-info">Az ügynök ide tud üzenetet küldeni és innen fogad üzenetet. Egy ügynök tetszőleges számú emberhez (DM) és csoporthoz köthető.</p>
+              <p class="tg-pairing-info" data-i18n="agents.channel.tg_pairing_desc">Az ügynök ide tud üzenetet küldeni és innen fogad üzenetet. Egy ügynök tetszőleges számú emberhez (DM) és csoporthoz köthető.</p>
               <div class="tg-allowed-list" id="chAllowedList">
-                <div class="tg-allowed-empty">Még nincs bekötött chat. Lent add hozzá az elsőt.</div>
+                <div class="tg-allowed-empty" data-i18n="agents.channel.tg_no_chats">Még nincs bekötött chat. Lent add hozzá az elsőt.</div>
               </div>
               <button class="btn-secondary btn-compact" id="chRefreshAllowedBtn" style="margin-top:8px; font-size:12px;" data-i18n="channel.refresh_list_btn">Lista frissítése</button>
             </div>
             <div class="tg-invite-section" id="chInviteSection">
               <h4 data-i18n="agents.channel.invite_title">Meghívó link (egy kattintásos hozzáadás)</h4>
-              <p class="tg-pairing-info">Generálj egy egyedi linket. Aki rákattint, automatikusan elindítja a botot, és Te a UI-n láthatóan azonnal jóváhagyhatod. Egy link csak egyszer használható.</p>
+              <p class="tg-pairing-info" data-i18n="agents.channel.tg_invite_desc">Generálj egy egyedi linket. Aki rákattint, automatikusan elindítja a botot, és Te a UI-n láthatóan azonnal jóváhagyhatod. Egy link csak egyszer használható.</p>
               <div class="tg-invite-list" id="chInviteList">
-                <div class="tg-allowed-empty">Nincs aktív meghívó link.</div>
+                <div class="tg-allowed-empty" data-i18n="agents.channel.tg_no_links">Nincs aktív meghívó link.</div>
               </div>
               <div class="form-row" style="gap:8px; align-items:center; margin-top:10px;">
                 <button class="btn-primary btn-compact" id="chGenerateInviteBtn" style="margin-top:0" data-i18n="channel.btn.invite_new">Új meghívó link</button>
@@ -1916,26 +1916,26 @@
             <div class="tg-pairing-section" id="chPairingSection">
               <h4 data-i18n="agents.channel.pairing_title">Új ember vagy csoport hozzáadása</h4>
               <details class="tg-howto" style="margin-bottom:12px;">
-                <summary style="cursor:pointer; font-weight:600;">Hogyan adj hozzá több embert vagy csoportot? &#9660;</summary>
+                <summary style="cursor:pointer; font-weight:600;" data-i18n="agents.channel.tg_howto_title">Hogyan adj hozzá több embert vagy csoportot? &#9660;</summary>
                 <div id="chHowtoContent" style="padding:10px 0 0 0; font-size:13px; line-height:1.5;">
-                  <p style="margin-top:0;"><strong>1. Új ember (privát chat) hozzáadása:</strong></p>
+                  <p style="margin-top:0;"><strong data-i18n="agents.channel.tg_howto_dm_heading">1. Új ember (privát chat) hozzáadása:</strong></p>
                   <ol style="padding-left:20px; margin-top:4px;">
-                    <li>Add meg az illetőnek a bot felhasználónevét (lent látható).</li>
+                    <li data-i18n="agents.channel.tg_howto_dm_1">Add meg az illetőnek a bot felhasználónevét (lent látható).</li>
                     <li>Az illető indítsa el a botot a Telegramban (<code>/start</code>) és írjon neki egy üzenetet.</li>
-                    <li>A bot válaszol egy 6-jegyű párosítási kóddal.</li>
-                    <li>Az illető elküldi neked a kódot, te ide írod be és jóváhagyod.</li>
+                    <li data-i18n="agents.channel.tg_howto_dm_3">A bot válaszol egy 6-jegyű párosítási kóddal.</li>
+                    <li data-i18n="agents.channel.tg_howto_dm_4">Az illető elküldi neked a kódot, te ide írod be és jóváhagyod.</li>
                   </ol>
-                  <p style="margin-top:10px;"><strong>2. Telegram csoport hozzáadása:</strong></p>
+                  <p style="margin-top:10px;"><strong data-i18n="agents.channel.tg_howto_group_heading">2. Telegram csoport hozzáadása:</strong></p>
                   <ol style="padding-left:20px; margin-top:4px;">
                     <li>Hívd meg a botot egy meglévő Telegram csoportba (csoport beállítások &rarr; Tagok &rarr; Hozzáadás).</li>
                     <li>A csoportban írj <code>/pair</code>-t (vagy a bot által megadott parancsot).</li>
-                    <li>Megjelenik egy párosítási kód a csoportban.</li>
-                    <li>Másold be ide és hagyd jóvá. Ezután az ügynök fog tudni írni a csoportba és olvasni a tagok üzeneteit.</li>
+                    <li data-i18n="agents.channel.tg_howto_group_3">Megjelenik egy párosítási kód a csoportban.</li>
+                    <li data-i18n="agents.channel.tg_howto_group_4">Másold be ide és hagyd jóvá. Ezután az ügynök fog tudni írni a csoportba és olvasni a tagok üzeneteit.</li>
                   </ol>
-                  <p style="margin-top:10px; color:var(--muted-foreground);"><em>Eltávolításhoz használd a Bekötött chat-ek listájában az X gombot.</em></p>
+                  <p style="margin-top:10px; color:var(--muted-foreground);" data-i18n="agents.channel.tg_howto_remove"><em>Eltávolításhoz használd a Bekötött chat-ek listájában az X gombot.</em></p>
                 </div>
               </details>
-              <p class="tg-pairing-info" id="chPairingInfo">Ha valaki ír a botnak, a plugin egy kódot küld neki. Ide írd be a kódot a jóváhagyáshoz.</p>
+              <p class="tg-pairing-info" id="chPairingInfo" data-i18n="agents.channel.slack_pairing_desc">Ha valaki ír a botnak, a plugin egy kódot küld neki. Ide írd be a kódot a jóváhagyáshoz.</p>
               <div class="tg-pending-list" id="chPendingList"></div>
               <div class="form-row" style="gap:8px; align-items:flex-end; margin-top: 12px;">
                 <div class="form-group" style="flex:1; margin-bottom:0">
@@ -1947,15 +1947,15 @@
               <button class="btn-secondary btn-compact" id="chRefreshPendingBtn" style="margin-top:10px; font-size:12px;" data-i18n="channel.refresh_pending_btn">Várakozók frissítése</button>
             </div>
             <div class="tg-allowed-section" id="chRequestSection" hidden>
-              <h4>Csatorna-kérések <span class="badge badge-warn" id="chRequestBadge" hidden>0</span></h4>
-              <p class="tg-pairing-info">Slack csatornák, amelyekben megemlítették a botot, de még nincsenek engedélyezve.</p>
+              <h4><span data-i18n="agents.channel.requests_heading">Csatorna-kérések</span> <span class="badge badge-warn" id="chRequestBadge" hidden>0</span></h4>
+              <p class="tg-pairing-info" data-i18n="agents.channel.slack_requests_desc">Slack csatornák, amelyekben megemlítették a botot, de még nincsenek engedélyezve.</p>
               <div id="chRequestList"></div>
             </div>
             <div class="tg-notice tg-notice-warn" id="chDisconnectedNotice" hidden>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
               </svg>
-              <span>Csatorna leszakadt. Automatikus újracsatlakozás folyamatban, vagy használd a gombot lent.</span>
+              <span data-i18n="agents.channel.reconnecting">Csatorna leszakadt. Automatikus újracsatlakozás folyamatban, vagy használd a gombot lent.</span>
             </div>
             <div class="tg-connected-actions">
               <button class="btn-secondary" id="chTestBtn" data-i18n="channel.test_btn">Kapcsolat tesztelése</button>
@@ -1995,7 +1995,7 @@
           <div class="form-group">
             <label for="editTeamReportsTo" data-i18n="agents.team.reports_to_label">Kinek jelent</label>
             <select id="editTeamReportsTo"></select>
-            <small style="display:block;margin-top:6px;color:var(--text-muted);font-size:12px">Üresen hagyva automatikusan a főügynöknek.</small>
+            <small style="display:block;margin-top:6px;color:var(--text-muted);font-size:12px" data-i18n="agents.team.assignee_hint">Üresen hagyva automatikusan a főügynöknek.</small>
           </div>
           <div class="form-group" id="editTeamDelegatesGroup">
             <label data-i18n="agents.team.delegates_label">Kiknek delegálhat (csak leaderhez)</label>
@@ -2006,12 +2006,12 @@
               <input type="checkbox" id="editTeamAutoDelegation">
               <span data-i18n="agents.team.auto_delegation">Autodelegálás: a vezető maga szétbontja és kiosztja a feladatot</span>
             </label>
-            <small style="display:block;margin-top:6px;color:var(--text-muted);font-size:12px">Ha nincs bepipálva, a vezető csak javaslatot ad, te hagyod jóvá Telegramon.</small>
+            <small style="display:block;margin-top:6px;color:var(--text-muted);font-size:12px" data-i18n="agents.team.auto_approve_hint">Ha nincs bepipálva, a vezető csak javaslatot ad, te hagyod jóvá Telegramon.</small>
           </div>
           <div class="form-group" id="editTeamTrustFromGroup">
-            <label>Explicit megbízható kapcsolatok (opcionális)</label>
+            <label data-i18n="agents.team.trusted_label">Explicit megbízható kapcsolatok (opcionális)</label>
             <div id="editTeamTrustFromList" style="display:flex;flex-direction:column;gap:6px"></div>
-            <small style="display:block;margin-top:6px;color:var(--text-muted);font-size:12px">A router alapból a jelent-kapcsolat és a delegálási lista alapján dönti el, hogy egy üzenet megbízható csapattárstól jön-e. Itt további ügynököket jelölhetsz kézzel &mdash; pl. egy cross-team együttműködő partner, akivel nincs hierarchikus kapcsolat, de a levelezése mégis csapattársi.</small>
+            <small style="display:block;margin-top:6px;color:var(--text-muted);font-size:12px" data-i18n="agents.team.trusted_hint">A router alapból a jelent-kapcsolat és a delegálási lista alapján dönti el, hogy egy üzenet megbízható csapattárstól jön-e. Itt további ügynököket jelölhetsz kézzel &mdash; pl. egy cross-team együttműködő partner, akivel nincs hierarchikus kapcsolat, de a levelezése mégis csapattársi.</small>
           </div>
           <button class="btn-secondary btn-compact agent-save-section" id="saveTeamBtn" data-i18n="common.btn.save">Mentés</button>
         </div>
@@ -2048,7 +2048,7 @@
           </div>
           <button class="btn-primary" id="saveSkillBtn">
             <span class="btn-text" data-i18n="skills.modal.generate_btn">Skill generálás</span>
-            <span class="btn-loading" hidden><span class="spinner"></span> Generálás...</span>
+            <span class="btn-loading" hidden><span class="spinner"></span> <span data-i18n="common.generating">Generálás...</span></span>
           </button>
         </div>
 
@@ -2066,7 +2066,7 @@
           </div>
           <button class="btn-primary" id="importSkillBtn">
             <span class="btn-text" data-i18n="skills.modal.import_btn">Importálás</span>
-            <span class="btn-loading" hidden><span class="spinner"></span> Importálás...</span>
+            <span class="btn-loading" hidden><span class="spinner"></span> <span data-i18n="common.importing">Importálás...</span></span>
           </button>
         </div>
       </div>
@@ -2081,7 +2081,7 @@
         <button class="modal-close" id="scheduleRunHistoryClose">&times;</button>
       </div>
       <div class="modal-body">
-        <p class="hint" style="margin-bottom:0.75rem">Utolsó 10 futtatás. Tokenszám becslés: az ágens tokenforgalma a futtatás utáni 1 órában (közelítő érték).</p>
+        <p class="hint" style="margin-bottom:0.75rem" data-i18n="tasks.run_history_hint">Utolsó 10 futtatás. Tokenszám becslés: az ágens tokenforgalma a futtatás utáni 1 órában (közelítő érték).</p>
         <div id="scheduleRunHistoryBody"></div>
       </div>
     </div>
@@ -2163,7 +2163,7 @@
           </div>
         </div>
         <div class="form-group" id="customScheduleGroup" hidden>
-          <label for="scheduleCustomCron">Cron kifejezés <span class="hint">(perc óra nap hónap hétnap)</span></label>
+          <label for="scheduleCustomCron" data-i18n="tasks.modal.cron_label">Cron kifejezés <span class="hint">(perc óra nap hónap hétnap)</span></label>
           <input type="text" id="scheduleCustomCron" placeholder="0 12 * * *">
         </div>
         <div class="form-group">
@@ -2179,7 +2179,7 @@
         <input type="hidden" id="scheduleEditName">
         <button class="btn-primary" id="saveScheduleBtn">
           <span class="btn-text" data-i18n="common.btn.save">Mentés</span>
-          <span class="btn-loading" hidden><span class="spinner"></span> Mentés...</span>
+          <span class="btn-loading" hidden><span class="spinner"></span> <span data-i18n="common.saving">Mentés...</span></span>
         </button>
       </div>
     </div>
@@ -2234,30 +2234,30 @@
           Korábbi AI asszisztens rendszer átmigrálása. Töltsd fel a workspace fájljait (.md, .txt, .json) -- az AI automatikusan felismeri és besorolja a memóriákat, személyiséget és beállításokat.
         </p>
         <div class="form-group">
-          <label>Fájl (.md, .txt, .json)</label>
+          <label data-i18n="memories.import.file_label">Fájl (.md, .txt, .json)</label>
           <div class="file-upload-area" id="memImportFileArea">
             <input type="file" id="memImportFile" accept=".md,.txt,.json" multiple hidden>
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
             </svg>
-            <p>Kattints vagy húzd ide a fájlokat</p>
+            <p data-i18n="memories.import.drop_hint">Kattints vagy húzd ide a fájlokat</p>
             <p class="hint" id="memImportFileNames"></p>
           </div>
         </div>
         <div class="form-group">
-          <label for="memImportAgent">Ügynök</label>
+          <label for="memImportAgent" data-i18n="memories.import.agent_label">Ügynök</label>
           <select id="memImportAgent"></select>
         </div>
         <div id="memImportProgress" hidden>
           <div style="display:flex;align-items:center;gap:10px;padding:12px;background:var(--bg-input);border-radius:var(--radius-sm)">
             <span class="spinner"></span>
-            <span id="memImportStatus">Feldolgozás...</span>
+            <span id="memImportStatus" data-i18n="memories.import.status_processing">Feldolgozás...</span>
           </div>
         </div>
         <div id="memImportResult" hidden style="padding:12px;background:var(--bg-input);border-radius:var(--radius-sm);margin-bottom:12px"></div>
         <button class="btn-primary" id="memImportSaveBtn">
           <span class="btn-text" data-i18n="memories.import.migrate_btn">Költöztetés</span>
-          <span class="btn-loading" hidden><span class="spinner"></span> Költöztetés...</span>
+          <span class="btn-loading" hidden><span class="spinner"></span> <span data-i18n="common.migrating">Költöztetés...</span></span>
         </button>
       </div>
     </div>
@@ -2267,17 +2267,17 @@
   <div class="modal-overlay" id="connectorModalOverlay">
     <div class="modal modal-wide">
       <div class="modal-header">
-        <h2 id="connectorModalTitle">Új connector</h2>
+        <h2 id="connectorModalTitle" data-i18n="connectors.modal.title_new">Új connector</h2>
         <button class="modal-close" id="connectorModalClose">&times;</button>
       </div>
       <div class="modal-body">
         <div class="form-group">
-          <label for="connectorName">Név <span style="font-weight:400;color:var(--text-muted);font-size:12px">(betűk, számok, kötőjel, aláhúzás — szóköz nem!)</span></label>
+          <label for="connectorName" data-i18n="connectors.field.name">Név <span style="font-weight:400;color:var(--text-muted);font-size:12px">(betűk, számok, kötőjel, aláhúzás — szóköz nem!)</span></label>
           <input type="text" id="connectorName" placeholder="pl. google-drive">
         </div>
         <div class="form-row">
           <div class="form-group form-half">
-            <label for="connectorType">Típus</label>
+            <label for="connectorType" data-i18n="connectors.field.type">Típus</label>
             <select id="connectorType">
               <option value="stdio">stdio (parancs)</option>
               <option value="http">HTTP (streamable)</option>
@@ -2285,10 +2285,10 @@
             </select>
           </div>
           <div class="form-group form-half">
-            <label for="connectorScope">Hatókör</label>
+            <label for="connectorScope" data-i18n="connectors.field.scope">Hatókör</label>
             <select id="connectorScope">
-              <option value="user">Globális (minden projekt)</option>
-              <option value="project">Projekt szintű</option>
+              <option value="user" data-i18n="connectors.field.scope_global">Globális (minden projekt)</option>
+              <option value="project" data-i18n="connectors.field.scope_project">Projekt szintű</option>
             </select>
           </div>
         </div>
@@ -2301,21 +2301,21 @@
           <input type="text" id="connectorCmd" placeholder="npx -y @my/mcp-server">
         </div>
         <div class="form-group" id="connectorArgsGroup" hidden>
-          <label for="connectorArgs">Argumentumok <span class="hint">(opcionális)</span></label>
+          <label for="connectorArgs" data-i18n="connectors.field.args">Argumentumok <span class="hint">(opcionális)</span></label>
           <input type="text" id="connectorArgs" placeholder="--port 3000">
         </div>
         <div class="form-group" id="connectorEnvGroup" hidden>
-          <label>Környezeti változók <span class="hint">(opcionális)</span></label>
+          <label data-i18n="connectors.field.env_vars">Környezeti változók <span class="hint">(opcionális)</span></label>
           <div id="connectorEnvList"></div>
-          <button type="button" class="btn-link" id="connectorEnvAddBtn" style="font-size:12px;margin-top:4px">+ Változó hozzáadása</button>
+          <button type="button" class="btn-link" id="connectorEnvAddBtn" style="font-size:12px;margin-top:4px" data-i18n="connectors.field.env_add_btn">+ Változó hozzáadása</button>
         </div>
         <div class="form-group" id="connectorAssignGroup">
-          <label>Hozzárendelés ügynökökhöz <span class="hint">(opcionális)</span></label>
+          <label data-i18n="connectors.field.assign">Hozzárendelés ügynökökhöz <span class="hint">(opcionális)</span></label>
           <div id="connectorNewAssignList"></div>
         </div>
         <button class="btn-primary" id="saveConnectorBtn">
           <span class="btn-text" data-i18n="common.btn.add">Hozzáadás</span>
-          <span class="btn-loading" hidden><span class="spinner"></span> Hozzáadás...</span>
+          <span class="btn-loading" hidden><span class="spinner"></span> <span data-i18n="common.adding_loading">Hozzáadás...</span></span>
         </button>
       </div>
     </div>
@@ -2325,13 +2325,13 @@
   <div class="modal-overlay" id="connectorDetailOverlay">
     <div class="modal modal-wide">
       <div class="modal-header">
-        <h2 id="connectorDetailTitle">Connector részletek</h2>
+        <h2 id="connectorDetailTitle" data-i18n="connectors.modal.title_detail">Connector részletek</h2>
         <button class="modal-close" id="connectorDetailClose">&times;</button>
       </div>
       <div class="modal-body">
         <div class="connector-detail-info" id="connectorDetailInfo"></div>
         <div class="form-group" style="margin-top:20px">
-          <label>Hozzárendelés ügynökökhöz</label>
+          <label data-i18n="connectors.field.assign">Hozzárendelés ügynökökhöz</label>
           <div class="connector-agent-list" id="connectorAgentList"></div>
           <button class="btn-secondary btn-compact" id="connectorAssignBtn" style="margin-top:8px" data-i18n="common.btn.save">Mentés</button>
         </div>
@@ -2346,7 +2346,7 @@
   <div class="modal-overlay" id="catalogInstallOverlay">
     <div class="modal">
       <div class="modal-header">
-        <h2 id="catalogInstallTitle">MCP telepítés</h2>
+        <h2 id="catalogInstallTitle" data-i18n="connectors.catalog.title_default">MCP telepítés</h2>
         <button class="modal-close" id="catalogInstallClose">&times;</button>
       </div>
       <div class="modal-body">
@@ -2355,7 +2355,7 @@
         <p id="catalogInstallNote" style="color:var(--text-muted);font-size:13px;margin-bottom:16px" hidden></p>
         <button class="btn-primary" id="catalogInstallBtn" style="width:100%">
           <span class="btn-text" data-i18n="connectors.catalog.install_btn">Telepítés</span>
-          <span class="btn-loading" hidden><span class="spinner"></span> Telepítés...</span>
+          <span class="btn-loading" hidden><span class="spinner"></span> <span data-i18n="common.installing">Telepítés...</span></span>
         </button>
       </div>
     </div>
@@ -2385,7 +2385,7 @@
   <div class="modal-overlay" id="builtinDetailOverlay">
     <div class="modal">
       <div class="modal-header">
-        <h2 id="builtinDetailTitle">Beépített képesség</h2>
+        <h2 id="builtinDetailTitle" data-i18n="connectors.builtin.title">Beépített képesség</h2>
         <button class="modal-close" id="builtinDetailClose">&times;</button>
       </div>
       <div class="modal-body">
@@ -2399,23 +2399,23 @@
   <div class="modal-overlay" id="chApproveModalOverlay" hidden role="dialog" aria-modal="true" aria-labelledby="chApproveModalTitle">
     <div class="modal" style="max-width:420px">
       <div class="modal-header">
-        <h2 id="chApproveModalTitle">Csatorna engedélyezése</h2>
+        <h2 id="chApproveModalTitle" data-i18n="channel.approve.title">Csatorna engedélyezése</h2>
         <button class="modal-close" id="chApproveModalClose">&times;</button>
       </div>
       <div class="modal-body">
         <p id="chApproveModalDesc" style="font-size:13px;color:var(--text-muted);margin-bottom:20px;"></p>
         <div class="form-group" style="margin-bottom:14px;">
           <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;gap:12px;">
-            <span style="font-size:13px;line-height:1.4;"><strong>Csak @-tageléskor figyeljen</strong><br>
-              <span style="color:var(--text-muted);font-size:12px;">Az ügynök csak @-tagelt üzenetekre reagál</span>
+            <span style="font-size:13px;line-height:1.4;"><strong data-i18n="channel.approve.mode1_title">Csak @-tageléskor figyeljen</strong><br>
+              <span style="color:var(--text-muted);font-size:12px;" data-i18n="channel.approve.mode1_desc">Az ügynök csak @-tagelt üzenetekre reagál</span>
             </span>
             <input type="checkbox" id="chApproveRequireMention" checked style="width:16px;height:16px;accent-color:var(--accent);flex-shrink:0;">
           </label>
         </div>
         <div class="form-group" style="margin-bottom:4px;">
           <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;gap:12px;">
-            <span style="font-size:13px;line-height:1.4;"><strong>Bárkitől fogadjon</strong><br>
-              <span style="color:var(--text-muted);font-size:12px;">Ha ki van kapcsolva, csak a kérést indító felhasználótól fogad</span>
+            <span style="font-size:13px;line-height:1.4;"><strong data-i18n="channel.approve.mode2_title">Bárkitől fogadjon</strong><br>
+              <span style="color:var(--text-muted);font-size:12px;" data-i18n="channel.approve.mode2_desc">Ha ki van kapcsolva, csak a kérést indító felhasználótól fogad</span>
             </span>
             <input type="checkbox" id="chApproveAllowFromAll" style="width:16px;height:16px;accent-color:var(--accent);flex-shrink:0;">
           </label>
@@ -2448,12 +2448,12 @@
   <div class="modal-overlay" id="conversationOverlay">
     <div class="modal conversation-modal">
       <div class="modal-header">
-        <h2 id="conversationModalTitle">Beszélgetés</h2>
+        <h2 id="conversationModalTitle" data-i18n="conversation.modal_title">Beszélgetés</h2>
         <button class="modal-close" id="conversationClose">&times;</button>
       </div>
       <div class="conversation-toolbar">
         <input type="text" id="conversationSearch" placeholder="Keresés a beszélgetésben…" data-i18n-placeholder="messages.conv.search_placeholder" autocomplete="off">
-        <label class="conversation-filter"><input type="checkbox" id="conversationShowActions"> Műveletek/jegyzetek mutatása</label>
+        <label class="conversation-filter"><input type="checkbox" id="conversationShowActions"> <span data-i18n="conversation.filter_label">Műveletek/jegyzetek mutatása</span></label>
         <button class="btn-secondary btn-compact" id="conversationRefresh" data-i18n="common.btn.refresh">Frissítés</button>
       </div>
       <div id="conversationContainer" class="conversation-container"></div>
@@ -2465,13 +2465,13 @@
   <div class="modal-overlay" id="mobileLoginOverlay">
     <div class="modal" style="max-width:420px">
       <div class="modal-header">
-        <h2>Mobil belépés</h2>
+        <h2 data-i18n="mobile_login.title">Mobil belépés</h2>
         <button class="modal-close" id="mobileLoginClose">&times;</button>
       </div>
       <div class="modal-body" style="display:flex;flex-direction:column;align-items:center;gap:14px">
-        <p class="modal-desc" style="text-align:center">Olvasd be a kódot a telefonod kamerájával. A dashboard megnyílik és bejelentkezve marad — újra belépni nem kell.</p>
+        <p class="modal-desc" style="text-align:center" data-i18n="mobile_login.desc">Olvasd be a kódot a telefonod kamerájával. A dashboard megnyílik és bejelentkezve marad — újra belépni nem kell.</p>
         <div id="mobileLoginQr" class="mobile-login-qr"></div>
-        <p class="mobile-login-warn">A kód a hozzáférési tokent tartalmazza. Csak a saját eszközöddel olvasd be, ne oszd meg és ne fotózd le másnak.</p>
+        <p class="mobile-login-warn" data-i18n="mobile_login.warn">A kód a hozzáférési tokent tartalmazza. Csak a saját eszközöddel olvasd be, ne oszd meg és ne fotózd le másnak.</p>
       </div>
     </div>
   </div>
