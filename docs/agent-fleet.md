@@ -202,23 +202,35 @@ A gép-specifikus mezők (`remoteHost`, `remoteWorkdir`, `claudeConfigDir`) impo
 
 ### Dashboard
 
-- **Exportálás**: az ügynök részleteinél az *Exportálás* gomb. Rákérdez, hogy a
-  titkokat (channel token, párosítási állapot) belevegyük-e. Titkok nélkül a
-  bundle biztonságosan megosztható; titkokkal CSAK saját gépek közötti átvitelhez.
+- **Exportálás** (egy ügynök): az ügynök részleteinél az *Exportálás* gomb.
+  Rákérdez, hogy a titkokat (channel token, párosítási állapot) belevegyük-e.
+  Titkok nélkül a bundle biztonságosan megosztható; titkokkal CSAK saját gépek
+  közötti átvitelhez.
+- **Összes exportálása** (egész flotta): a Csapat oldal fejlécében az *Összes
+  exportálása* gomb -> egyetlen `.tar.gz` az összes al-ügynökkel. Ugyanúgy
+  rákérdez a titkokra (ekkor MINDEN ügynöké bekerül).
 - **Importálás**: a Csapat oldalon az *Ügynök importálása* gomb -> válaszd ki a
-  `.tar.gz` fájlt. Névütközéskor felajánlja a felülírást.
+  `.tar.gz` fájlt. Ugyanaz a gomb fogad egy-ügynök ÉS flotta-bundle-t is (a
+  backend a manifestből ismeri fel). Névütközéskor felajánlja a felülírást;
+  flotta-importnál csak az ütköző ügynökök íródnak felül, a többi azonnal bejön.
 
 ### API
 
 ```
-GET  /api/agents/<név>/export            # bundle letöltése (titkok nélkül)
-GET  /api/agents/<név>/export?secrets=1  # bundle letöltése titkokkal
+GET  /api/agents/<név>/export            # egy ügynök bundle-je (titkok nélkül)
+GET  /api/agents/<név>/export?secrets=1  # egy ügynök bundle-je titkokkal
+GET  /api/agents/export-all              # az EGÉSZ flotta egy bundle-ben (titkok nélkül)
+GET  /api/agents/export-all?secrets=1    # az egész flotta titkokkal
 POST /api/agents/import                  # bundle feltöltése (multipart: file=, name=, overwrite=1)
+                                         #   -- egy-ügynök ÉS flotta-bundle-t is fogad
 ```
 
-A fő ügynök (`marveen`) nem exportálható így (a PROJECT_ROOT-ban él, nem az
-`agents/` alatt) -- teljes gép-átálláshoz lásd a `scripts/backup.sh`-t és a
-[MIGRATION.md](MIGRATION.md)-t.
+A fő ügynök (`marveen`) egyik módban sem exportálható (a PROJECT_ROOT-ban él,
+nem az `agents/` alatt) -- teljes gép-átálláshoz lásd a `scripts/backup.sh`-t és
+a [MIGRATION.md](MIGRATION.md)-t.
+
+A flotta-bundle elrendezése `manifest.json` (`kind: "fleet"`) + `agents/<név>/`
+ügynökönként; az egy-ügynök bundle `manifest.json` + `agent/`.
 
 ### Biztonság
 

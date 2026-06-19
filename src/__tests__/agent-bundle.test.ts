@@ -9,8 +9,13 @@ import {
   readBundleManifest,
   sanitizeImportedConfig,
   bundleFilename,
+  importAllAgentsBundle,
+  peekBundleKind,
+  readFleetManifest,
+  fleetBundleFilename,
   BUNDLE_SCHEMA_VERSION,
   type BundleManifest,
+  type FleetBundleManifest,
 } from '../web/agent-bundle.js'
 
 // Hermetic: every test builds its own agent source tree and install target in a
@@ -184,5 +189,115 @@ describe('agent bundle export/import', () => {
   it('builds a safe download filename', () => {
     expect(bundleFilename('tester')).toBe('marveen-agent-tester.tar.gz')
     expect(bundleFilename('../../etc/passwd')).toBe('marveen-agent-passwd.tar.gz')
+  })
+})
+
+// Pack a fleet bundle (manifest.json kind:'fleet' + agents/<name>/...) the same
+// way exportAllAgentsBundle would, but from arbitrary staged source trees so the
+// importer can be tested off the real AGENTS_BASE_DIR.
+function packFleetBundle(
+  stageRoot: string,
+  agents: Record<string, Record<string, string>>,
+  includesSecrets = false,
+): Buffer {
+  const agentsRoot = join(stageRoot, 'agents')
+  mkdirSync(agentsRoot, { recursive: true })
+  const names: string[] = []
+  for (const [name, files] of Object.entries(agents)) {
+    const src = join(stageRoot, 'src', name)
+    makeAgent(src, files)
+    stageAgentDirForExport(src, join(agentsRoot, name), includesSecrets)
+    names.push(name)
+  }
+  const manifest: FleetBundleManifest = {
+    schemaVersion: BUNDLE_SCHEMA_VERSION,
+    kind: 'fleet',
+    agents: names,
+    includesSecrets,
+  }
+  writeFileSync(join(stageRoot, 'manifest.json'), JSON.stringify(manifest, null, 2))
+  const out = join(stageRoot, 'fleet.tar.gz')
+  execFileSync('tar', ['-czf', out, '-C', stageRoot, 'manifest.json', 'agents'])
+  return readFileSync(out)
+}
+
+describe('fleet bundle export/import', () => {
+  let tmp: string
+  beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), 'fleet-bundle-test-')) })
+  afterEach(() => { rmSync(tmp, { recursive: true, force: true }) })
+
+  it('peekBundleKind tells a fleet bundle from a single-agent bundle', () => {
+    const fleet = packFleetBundle(join(tmp, 'f'), { alpha: { 'CLAUDE.md': 'a' } })
+    expect(peekBundleKind(fleet)).toBe('fleet')
+
+    // Single-agent bundle (manifest.json + agent/).
+    const single = join(tmp, 's')
+    makeAgent(join(single, 'agent'), { 'CLAUDE.md': 'x' })
+    writeFileSync(join(single, 'manifest.json'), JSON.stringify({
+      schemaVersion: BUNDLE_SCHEMA_VERSION, agentName: 'solo', includesSecrets: false,
+    }))
+    const singleOut = join(single, 'b.tar.gz')
+    execFileSync('tar', ['-czf', singleOut, '-C', single, 'manifest.json', 'agent'])
+    expect(peekBundleKind(readFileSync(singleOut))).toBe('agent')
+  })
+
+  it('imports every agent from a fleet bundle', () => {
+    const bundle = packFleetBundle(join(tmp, 'f'), {
+      alpha: { 'CLAUDE.md': '# Alpha', 'memory/MEMORY.md': 'mem-a' },
+      beta: { 'CLAUDE.md': '# Beta', 'agent-config.json': '{"model":"claude-sonnet-4-6"}' },
+    })
+    const destBase = join(tmp, 'agents')
+    const result = importAllAgentsBundle(bundle, { resolveDest: (n) => join(destBase, n) })
+
+    expect(result.imported.map((a) => a.name).sort()).toEqual(['alpha', 'beta'])
+    expect(result.skipped).toHaveLength(0)
+    expect(readFileSync(join(destBase, 'alpha', 'CLAUDE.md'), 'utf-8')).toContain('Alpha')
+    expect(readFileSync(join(destBase, 'beta', 'CLAUDE.md'), 'utf-8')).toContain('Beta')
+  })
+
+  it('skips colliding agents without overwrite, replaces them with it', () => {
+    const bundle = packFleetBundle(join(tmp, 'f'), {
+      alpha: { 'CLAUDE.md': 'v2' },
+      beta: { 'CLAUDE.md': 'fresh' },
+    })
+    const destBase = join(tmp, 'agents')
+    const resolveDest = (n: string) => join(destBase, n)
+    // Pre-existing alpha.
+    makeAgent(join(destBase, 'alpha'), { 'CLAUDE.md': 'v1' })
+
+    const first = importAllAgentsBundle(bundle, { resolveDest })
+    expect(first.imported.map((a) => a.name)).toEqual(['beta'])
+    expect(first.skipped).toEqual([{ name: 'alpha', reason: 'already exists' }])
+    expect(readFileSync(join(destBase, 'alpha', 'CLAUDE.md'), 'utf-8')).toBe('v1')
+
+    const second = importAllAgentsBundle(bundle, { resolveDest, overwrite: true })
+    expect(second.imported.find((a) => a.name === 'alpha')?.overwritten).toBe(true)
+    expect(readFileSync(join(destBase, 'alpha', 'CLAUDE.md'), 'utf-8')).toBe('v2')
+  })
+
+  it('rejects a single-agent bundle fed to the fleet importer', () => {
+    const single = join(tmp, 's')
+    makeAgent(join(single, 'agent'), { 'CLAUDE.md': 'x' })
+    writeFileSync(join(single, 'manifest.json'), JSON.stringify({
+      schemaVersion: BUNDLE_SCHEMA_VERSION, agentName: 'solo',
+    }))
+    const out = join(single, 'b.tar.gz')
+    execFileSync('tar', ['-czf', out, '-C', single, 'manifest.json', 'agent'])
+    expect(() => importAllAgentsBundle(readFileSync(out), {
+      resolveDest: (n) => join(tmp, 'agents', n),
+    })).toThrow(/not a fleet bundle/)
+  })
+
+  it('readFleetManifest rejects a newer schema', () => {
+    const extractRoot = join(tmp, 'extracted')
+    mkdirSync(extractRoot, { recursive: true })
+    writeFileSync(join(extractRoot, 'manifest.json'), JSON.stringify({
+      schemaVersion: BUNDLE_SCHEMA_VERSION + 1, kind: 'fleet', agents: [],
+    }))
+    expect(() => readFleetManifest(extractRoot)).toThrow(/newer than this install/)
+  })
+
+  it('builds a stable fleet download filename', () => {
+    expect(fleetBundleFilename()).toBe('marveen-fleet.tar.gz')
   })
 })

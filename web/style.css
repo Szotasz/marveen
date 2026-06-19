@@ -1182,6 +1182,12 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   gap: 16px;
 }
 
+.header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 /* === Agent Grid === */
 .agents-grid {
   display: grid;

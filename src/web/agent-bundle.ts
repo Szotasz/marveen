@@ -295,3 +295,189 @@ export function bundleFilename(name: string): string {
   const safe = basename(name).replace(/[^A-Za-z0-9_-]/g, '') || 'agent'
   return `marveen-agent-${safe}.tar.gz`
 }
+
+// ===========================================================================
+// Fleet bundle: ALL sub-agents in one archive.
+//
+// The same portability rules as a single-agent bundle, but for every agent
+// under AGENTS_BASE_DIR at once (the main agent lives at PROJECT_ROOT and is
+// NOT part of this -- use scripts/backup.sh for a whole-host move). Layout:
+//   manifest.json        (kind: 'fleet', agents: [names...])
+//   agents/<name>/<portable files...>
+// The `kind: 'fleet'` discriminator + the plural `agents/` dir distinguish a
+// fleet bundle from a single-agent one (manifest.json + agent/).
+// ===========================================================================
+
+export interface FleetBundleManifest {
+  schemaVersion: number
+  kind: 'fleet'
+  // The sanitized agent names actually staged into the bundle.
+  agents: string[]
+  includesSecrets: boolean
+  exportedBy?: string
+  exportedAt?: string
+}
+
+// Build a .tar.gz bundle of every named agent at <outPath>. Names that resolve
+// to no source dir are silently skipped (a stale registry entry should not fail
+// the whole export). Returns the embedded manifest.
+export function exportAllAgentsBundle(
+  outPath: string,
+  names: string[],
+  opts: { includeSecrets?: boolean; exportedBy?: string; exportedAt?: string } = {},
+): FleetBundleManifest {
+  const includeSecrets = opts.includeSecrets === true
+  const stage = makeTempDir('marveen-fleet-export-')
+  try {
+    const agentsRoot = join(stage, 'agents')
+    mkdirSync(agentsRoot, { recursive: true })
+
+    const staged: string[] = []
+    for (const name of names) {
+      const safe = sanitizeAgentName(name)
+      if (!safe || !existsSync(agentDir(name))) continue
+      stageAgentForExport(name, join(agentsRoot, safe), includeSecrets)
+      staged.push(safe)
+    }
+    if (staged.length === 0) throw new Error('No exportable agents found')
+
+    const manifest: FleetBundleManifest = {
+      schemaVersion: BUNDLE_SCHEMA_VERSION,
+      kind: 'fleet',
+      agents: staged,
+      includesSecrets: includeSecrets,
+      ...(opts.exportedBy ? { exportedBy: opts.exportedBy } : {}),
+      ...(opts.exportedAt ? { exportedAt: opts.exportedAt } : {}),
+    }
+    writeFileSync(join(stage, 'manifest.json'), JSON.stringify(manifest, null, 2))
+
+    mkdirSync(join(outPath, '..'), { recursive: true })
+    execFileSync('tar', ['-czf', outPath, '-C', stage, 'manifest.json', 'agents'])
+    return manifest
+  } finally {
+    rmSync(stage, { recursive: true, force: true })
+  }
+}
+
+// Validate + parse a fleet manifest. Throws with an operator-facing message.
+export function readFleetManifest(extractedRoot: string): FleetBundleManifest {
+  const manifestPath = join(extractedRoot, 'manifest.json')
+  if (!existsSync(manifestPath)) {
+    throw new Error('Invalid bundle: manifest.json missing (not a Marveen bundle?)')
+  }
+  let parsed: unknown
+  try { parsed = JSON.parse(readFileSync(manifestPath, 'utf-8')) } catch {
+    throw new Error('Invalid bundle: manifest.json is not valid JSON')
+  }
+  if (!parsed || typeof parsed !== 'object') throw new Error('Invalid bundle: manifest.json malformed')
+  const m = parsed as Record<string, unknown>
+  const schemaVersion = typeof m.schemaVersion === 'number' ? m.schemaVersion : 0
+  if (schemaVersion > BUNDLE_SCHEMA_VERSION) {
+    throw new Error(
+      `Bundle schema version ${schemaVersion} is newer than this install supports ` +
+      `(max ${BUNDLE_SCHEMA_VERSION}). Update Marveen on this machine first.`,
+    )
+  }
+  if (m.kind !== 'fleet') throw new Error('Invalid bundle: not a fleet bundle')
+  const agents = Array.isArray(m.agents) ? m.agents.filter((a): a is string => typeof a === 'string') : []
+  return {
+    schemaVersion,
+    kind: 'fleet',
+    agents,
+    includesSecrets: m.includesSecrets === true,
+    ...(typeof m.exportedBy === 'string' ? { exportedBy: m.exportedBy } : {}),
+    ...(typeof m.exportedAt === 'string' ? { exportedAt: m.exportedAt } : {}),
+  }
+}
+
+// Cheaply read just manifest.json out of a bundle to tell a single-agent bundle
+// (kind absent/'agent') from a fleet bundle (kind 'fleet'). Lets one import
+// endpoint accept either format. Throws on a non-extractable / manifest-less
+// archive (same operator-facing wording as the full importers).
+export function peekBundleKind(bundle: Buffer): 'agent' | 'fleet' {
+  const work = makeTempDir('marveen-bundle-peek-')
+  try {
+    const bundlePath = join(work, 'bundle.tar.gz')
+    writeFileSync(bundlePath, bundle)
+    try {
+      execFileSync('tar', ['-xzf', bundlePath, '-C', work, 'manifest.json'])
+    } catch {
+      throw new Error('Invalid bundle: could not extract (not a gzip tar archive?)')
+    }
+    const manifestPath = join(work, 'manifest.json')
+    if (!existsSync(manifestPath)) {
+      throw new Error('Invalid bundle: manifest.json missing (not a Marveen bundle?)')
+    }
+    let parsed: unknown
+    try { parsed = JSON.parse(readFileSync(manifestPath, 'utf-8')) } catch {
+      throw new Error('Invalid bundle: manifest.json is not valid JSON')
+    }
+    return parsed && typeof parsed === 'object' && (parsed as Record<string, unknown>).kind === 'fleet'
+      ? 'fleet'
+      : 'agent'
+  } finally {
+    rmSync(work, { recursive: true, force: true })
+  }
+}
+
+export interface FleetImportResult {
+  imported: { name: string; overwritten: boolean }[]
+  skipped: { name: string; reason: string }[]
+  includesSecrets: boolean
+}
+
+// Import every agent from a fleet bundle. Per-agent collisions are NOT fatal:
+//   - overwrite=false -> existing agents are skipped (reason 'already exists'),
+//     fresh ones imported. The caller can re-POST with overwrite=1.
+//   - overwrite=true  -> existing agents are replaced.
+// A malformed bundle (bad archive / wrong kind) throws as a whole.
+export function importAllAgentsBundle(
+  bundle: Buffer,
+  opts: { overwrite?: boolean; resolveDest?: (name: string) => string } = {},
+): FleetImportResult {
+  const resolveDest = opts.resolveDest ?? agentDir
+  const work = makeTempDir('marveen-fleet-import-')
+  try {
+    const bundlePath = join(work, 'bundle.tar.gz')
+    writeFileSync(bundlePath, bundle)
+    const extractRoot = join(work, 'extracted')
+    mkdirSync(extractRoot, { recursive: true })
+    try {
+      execFileSync('tar', ['-xzf', bundlePath, '-C', extractRoot])
+    } catch {
+      throw new Error('Invalid bundle: could not extract (not a gzip tar archive?)')
+    }
+
+    const manifest = readFleetManifest(extractRoot)
+    const agentsRoot = join(extractRoot, 'agents')
+    if (!existsSync(agentsRoot) || !statSync(agentsRoot).isDirectory()) {
+      throw new Error('Invalid bundle: agents/ directory missing')
+    }
+
+    const imported: { name: string; overwritten: boolean }[] = []
+    const skipped: { name: string; reason: string }[] = []
+    for (const entry of readdirSync(agentsRoot)) {
+      const stagedAgentDir = join(agentsRoot, entry)
+      try { if (!statSync(stagedAgentDir).isDirectory()) continue } catch { continue }
+      const name = sanitizeAgentName(entry)
+      if (!name) { skipped.push({ name: entry, reason: 'invalid name' }); continue }
+
+      sanitizeImportedConfig(stagedAgentDir)
+      const dest = resolveDest(name) // agentDir: safeJoin rejects traversal
+      const exists = existsSync(dest)
+      if (exists && !opts.overwrite) { skipped.push({ name, reason: 'already exists' }); continue }
+      if (exists) rmSync(dest, { recursive: true, force: true })
+      mkdirSync(join(dest, '..'), { recursive: true })
+      cpSync(stagedAgentDir, dest, { recursive: true })
+      imported.push({ name, overwritten: exists })
+    }
+
+    return { imported, skipped, includesSecrets: manifest.includesSecrets }
+  } finally {
+    rmSync(work, { recursive: true, force: true })
+  }
+}
+
+export function fleetBundleFilename(): string {
+  return 'marveen-fleet.tar.gz'
+}

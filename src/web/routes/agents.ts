@@ -105,7 +105,11 @@ import { readBody, json, serveFile } from '../http-helpers.js'
 import {
   exportAgentBundle,
   importAgentBundle,
+  exportAllAgentsBundle,
+  importAllAgentsBundle,
+  peekBundleKind,
   bundleFilename,
+  fleetBundleFilename,
 } from '../agent-bundle.js'
 import type { RouteContext } from './types.js'
 import { suggestForAgent, type AgentSignals } from '../model-suggest.js'
@@ -1480,6 +1484,39 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   // src/web/agent-bundle.ts. The main agent lives at PROJECT_ROOT (not under
   // agents/) so it is not exportable this way -- use scripts/backup.sh for a
   // whole-host move.
+  // GET /api/agents/export-all?secrets=1 -> a single .tar.gz of EVERY sub-agent
+  // (the main agent lives at PROJECT_ROOT and is excluded). Must be matched
+  // before the generic /api/agents/:name GET further down, or "export-all"
+  // would be read as an agent name.
+  if (path === '/api/agents/export-all' && method === 'GET') {
+    const names = listAgentNames().filter((n) => n !== MAIN_AGENT_ID)
+    if (names.length === 0) { json(res, { error: 'No agents to export' }, 404); return true }
+    const includeSecrets = /[?&]secrets=(1|true)\b/.test(req.url || '')
+    const work = mkdtempSync(join(tmpdir(), 'marveen-fleet-dl-'))
+    const outPath = join(work, fleetBundleFilename())
+    try {
+      exportAllAgentsBundle(outPath, names, {
+        includeSecrets,
+        exportedBy: MAIN_AGENT_ID,
+        exportedAt: new Date().toISOString(),
+      })
+      const data = readFileSync(outPath)
+      res.writeHead(200, {
+        'Content-Type': 'application/gzip',
+        'Content-Disposition': `attachment; filename="${fleetBundleFilename()}"`,
+        'Content-Length': String(data.length),
+        'Cache-Control': 'private, no-store',
+      })
+      res.end(data)
+    } catch (err) {
+      logger.error({ err }, 'Fleet export failed')
+      json(res, { error: 'Export failed', detail: err instanceof Error ? err.message : String(err) }, 500)
+    } finally {
+      rmSync(work, { recursive: true, force: true })
+    }
+    return true
+  }
+
   const exportMatch = path.match(/^\/api\/agents\/([^/]+)\/export$/)
   if (exportMatch && method === 'GET') {
     const name = decodeURIComponent(exportMatch[1])
@@ -1535,10 +1572,33 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }
     if (!bundle || bundle.length === 0) { json(res, { error: 'No bundle uploaded' }, 400); return true }
     try {
+      // One endpoint accepts either format: peek the manifest, then dispatch to
+      // the single-agent or whole-fleet importer.
+      if (peekBundleKind(bundle) === 'fleet') {
+        const result = importAllAgentsBundle(bundle, { overwrite })
+        logger.info(
+          { imported: result.imported.map((a) => a.name), skipped: result.skipped, secrets: result.includesSecrets },
+          'Fleet imported from bundle',
+        )
+        // Any collision (even with some fresh agents already imported) returns
+        // 409 so the UI can offer to overwrite the rest; re-POSTing with
+        // overwrite=1 is idempotent for the already-imported ones.
+        const hasCollision = result.skipped.some((s) => s.reason === 'already exists')
+        json(res, {
+          ok: true,
+          kind: 'fleet',
+          imported: result.imported,
+          skipped: result.skipped,
+          includedSecrets: result.includesSecrets,
+        }, hasCollision ? 409 : 200)
+        return true
+      }
+
       const result = importAgentBundle(bundle, { overrideName: overrideName || undefined, overwrite })
       logger.info({ name: result.name, overwritten: result.overwritten, secrets: result.manifest.includesSecrets }, 'Agent imported from bundle')
       json(res, {
         ok: true,
+        kind: 'agent',
         name: result.name,
         overwritten: result.overwritten,
         includedSecrets: result.manifest.includesSecrets,
