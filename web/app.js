@@ -377,6 +377,10 @@ function renderStaticI18n() {
   document.querySelectorAll('[data-i18n-aria-label]').forEach(el => {
     el.setAttribute('aria-label', t(el.dataset.i18nAriaLabel))
   })
+  // Elements whose translation contains inline markup (strong/code/a): set innerHTML.
+  document.querySelectorAll('[data-i18n-html]').forEach(el => {
+    el.innerHTML = t(el.dataset.i18nHtml)
+  })
 }
 
 // Initial render on page load.

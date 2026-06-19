@@ -551,7 +551,7 @@
             </button>
           </div>
         </div>
-        <div class="info-box" id="connectorInfoBox">
+        <div class="info-box" id="connectorInfoBox" data-i18n-html="connectors.builtin.dedup_html">
           Az itt listázott MCP szerverek a te Claude Code előfizetésedben bekapcsoltak (claude.ai OAuth connectorok, marketplace pluginok, lokális konfig).
           Minden sub-agent automatikusan látja őket, mert ugyanabban a HOME-ban fut, mint a fő session.
           Ha egy MCP már bekapcsolva van claude.ai-n, <strong>ne vedd fel még egyszer lokálisan</strong>: duplikálódik,
@@ -599,7 +599,7 @@
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
                 CLI telepítve
               </span>
-              <input class="cxhu-token-input" id="cxhuTokenInput" type="password" placeholder="connectors.hu token (dashboardról)" autocomplete="off" spellcheck="false">
+              <input class="cxhu-token-input" id="cxhuTokenInput" type="password" placeholder="connectors.hu token (dashboardról)" data-i18n-placeholder="connectors.cxhu.token_ph" autocomplete="off" spellcheck="false">
               <button class="cxhu-banner-cta" id="cxhuConfigureBtn" data-i18n="connectors.cxhu.save_sync">Mentés és szinkron</button>
             </div>
             <div class="cxhu-state" id="cxhuStateConfiguring" hidden>
@@ -955,8 +955,8 @@
             <button class="modal-close" id="ideaModalClose">&times;</button>
           </div>
           <div class="modal-body" style="display:flex;flex-direction:column;gap:12px">
-            <div class="form-group"><label class="form-label" data-i18n="ideas.modal.title_label">Cím *</label><input type="text" id="ideaTitleInput" class="input" placeholder="Rövid, egyértelmű cím"></div>
-            <div class="form-group"><label class="form-label" data-i18n="ideas.modal.desc_label">Leírás</label><textarea id="ideaDescInput" class="input" rows="4" placeholder="Részletes leírás..."></textarea></div>
+            <div class="form-group"><label class="form-label" data-i18n="ideas.modal.title_label">Cím *</label><input type="text" id="ideaTitleInput" class="input" placeholder="Rövid, egyértelmű cím" data-i18n-placeholder="ideas.modal.title_ph"></div>
+            <div class="form-group"><label class="form-label" data-i18n="ideas.modal.desc_label">Leírás</label><textarea id="ideaDescInput" class="input" rows="4" placeholder="Részletes leírás..." data-i18n-placeholder="ideas.modal.desc_ph"></textarea></div>
             <div style="display:flex;gap:8px">
               <div class="form-group" style="flex:1"><label class="form-label" data-i18n="ideas.modal.category_label">Kategória</label>
                 <select id="ideaCategoryInput" class="input"><option data-i18n="ideas.category.sales">Sales</option><option data-i18n="ideas.category.education">Oktatás</option><option data-i18n="ideas.category.automation">Automatizálás</option><option data-i18n="ideas.category.integration">Integráció</option><option data-i18n="ideas.category.system">Rendszer</option><option data-i18n="ideas.category.other">Egyéb</option></select>
@@ -1345,11 +1345,11 @@
       <div class="modal-body">
         <div class="form-group">
           <label for="cardTitle" data-i18n="common.title">Cím</label>
-          <input type="text" id="cardTitle" placeholder="Feladat megnevezése">
+          <input type="text" id="cardTitle" placeholder="Feladat megnevezése" data-i18n-placeholder="kanban.modal.title_ph">
         </div>
         <div class="form-group">
           <label for="cardDesc" data-i18n="common.description">Leírás <span class="hint">(opcionális)</span></label>
-          <textarea id="cardDesc" rows="3" placeholder="Részletek, kontextus..."></textarea>
+          <textarea id="cardDesc" rows="3" placeholder="Részletek, kontextus..." data-i18n-placeholder="kanban.modal.desc_ph"></textarea>
         </div>
         <div class="form-row">
           <div class="form-group form-half">
@@ -1411,7 +1411,7 @@
             <button class="btn-secondary btn-compact" id="cardLabelNewBtn" data-i18n="kanban.detail.new_label">+ Új címke</button>
           </div>
           <div class="form-row" id="cardLabelNewForm" style="display:none; gap:8px; align-items:center; margin-top:6px">
-            <input type="text" id="cardLabelNewName" placeholder="Címke neve (pl. bug)" style="flex:1; padding:5px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px">
+            <input type="text" id="cardLabelNewName" placeholder="Címke neve (pl. bug)" data-i18n-placeholder="kanban.label.new_ph" style="flex:1; padding:5px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px">
             <div class="label-color-swatches" id="cardLabelNewColors"></div>
             <button class="btn-primary btn-compact" id="cardLabelNewSaveBtn" data-i18n="common.btn.save">Mentés</button>
           </div>
@@ -1509,11 +1509,11 @@
           </div>
           <div class="form-group">
             <label for="agentName" data-i18n="common.name">Név</label>
-            <input type="text" id="agentName" placeholder="pl. kutató, copywriter, fejlesztő">
+            <input type="text" id="agentName" placeholder="pl. kutató, copywriter, fejlesztő" data-i18n-placeholder="agents.create.name_ph">
           </div>
           <div class="form-group">
             <label for="agentDesc" data-i18n="agents.wizard.desc_label">Írd le szabadon, mit szeretnél hogy csináljon ez az ügynök</label>
-            <textarea id="agentDesc" rows="4" placeholder="pl. Piackutatást végez, versenytársakat elemez, táblázatos összefoglalókat készít magyarul."></textarea>
+            <textarea id="agentDesc" rows="4" placeholder="pl. Piackutatást végez, versenytársakat elemez, táblázatos összefoglalókat készít magyarul." data-i18n-placeholder="agents.create.desc_ph"></textarea>
           </div>
           <div class="form-group">
             <label for="agentModel" data-i18n="agents.detail.model_label">Modell</label>
@@ -1687,7 +1687,7 @@
             <button class="btn-secondary btn-compact agent-save-section" id="saveModelBtn" data-i18n="common.btn.save">Mentés</button>
             <button class="btn-secondary btn-compact" id="modelSuggestBtn" style="margin-left:6px" data-i18n="agents.settings.model_suggest_btn">Javaslat</button>
             <small id="deepseekHint" style="display:none;margin-top:6px;color:var(--text-muted);font-size:12px;line-height:1.4">
-              DeepSeek-V4-Pro nincs konfigurálva. <a href="#" id="deepseekConfigLink">API kulcs hozzáadása</a> a Vault oldalon.
+              <span data-i18n="agents.deepseek_hint_pre">DeepSeek-V4-Pro nincs konfigurálva.</span> <a href="#" id="deepseekConfigLink" data-i18n="agents.deepseek_link">API kulcs hozzáadása</a> <span data-i18n="agents.deepseek_hint_post">a Vault oldalon.</span>
             </small>
             <div id="modelSuggestionResult" style="display:none;margin-top:8px;font-size:12.5px;padding:8px 10px;border-radius:6px;background:var(--surface-hover);color:var(--text-muted)"></div>
           </div>
@@ -1921,14 +1921,14 @@
                   <p style="margin-top:0;"><strong data-i18n="agents.channel.tg_howto_dm_heading">1. Új ember (privát chat) hozzáadása:</strong></p>
                   <ol style="padding-left:20px; margin-top:4px;">
                     <li data-i18n="agents.channel.tg_howto_dm_1">Add meg az illetőnek a bot felhasználónevét (lent látható).</li>
-                    <li>Az illető indítsa el a botot a Telegramban (<code>/start</code>) és írjon neki egy üzenetet.</li>
+                    <li data-i18n-html="channel.tg_howto.start_li">Az illető indítsa el a botot a Telegramban (<code>/start</code>) és írjon neki egy üzenetet.</li>
                     <li data-i18n="agents.channel.tg_howto_dm_3">A bot válaszol egy 6-jegyű párosítási kóddal.</li>
                     <li data-i18n="agents.channel.tg_howto_dm_4">Az illető elküldi neked a kódot, te ide írod be és jóváhagyod.</li>
                   </ol>
                   <p style="margin-top:10px;"><strong data-i18n="agents.channel.tg_howto_group_heading">2. Telegram csoport hozzáadása:</strong></p>
                   <ol style="padding-left:20px; margin-top:4px;">
-                    <li>Hívd meg a botot egy meglévő Telegram csoportba (csoport beállítások &rarr; Tagok &rarr; Hozzáadás).</li>
-                    <li>A csoportban írj <code>/pair</code>-t (vagy a bot által megadott parancsot).</li>
+                    <li data-i18n-html="channel.tg_howto.group_li">Hívd meg a botot egy meglévő Telegram csoportba (csoport beállítások &rarr; Tagok &rarr; Hozzáadás).</li>
+                    <li data-i18n-html="channel.tg_howto.pair_li">A csoportban írj <code>/pair</code>-t (vagy a bot által megadott parancsot).</li>
                     <li data-i18n="agents.channel.tg_howto_group_3">Megjelenik egy párosítási kód a csoportban.</li>
                     <li data-i18n="agents.channel.tg_howto_group_4">Másold be ide és hagyd jóvá. Ezután az ügynök fog tudni írni a csoportba és olvasni a tagok üzeneteit.</li>
                   </ol>
@@ -2044,7 +2044,7 @@
           </div>
           <div class="form-group">
             <label for="skillDescription" data-i18n="skills.modal.desc_label">Írd le szabadon, mit csináljon ez a skill</label>
-            <textarea id="skillDescription" rows="5" placeholder="pl. Piackutatási riportokat készít: versenytárs elemzés, piaci trendek, SWOT analízis. A riportot strukturáltan, táblázatokkal adja vissza magyarul."></textarea>
+            <textarea id="skillDescription" rows="5" placeholder="pl. Piackutatási riportokat készít: versenytárs elemzés, piaci trendek, SWOT analízis. A riportot strukturáltan, táblázatokkal adja vissza magyarul." data-i18n-placeholder="skills.create.desc_ph"></textarea>
           </div>
           <button class="btn-primary" id="saveSkillBtn">
             <span class="btn-text" data-i18n="skills.modal.generate_btn">Skill generálás</span>
@@ -2126,11 +2126,11 @@
         </div>
         <div class="form-group">
           <label for="scheduleDesc" data-i18n="common.description">Leírás <span class="hint">(rövid)</span></label>
-          <input type="text" id="scheduleDesc" placeholder="Mit csinál ez a feladat">
+          <input type="text" id="scheduleDesc" placeholder="Mit csinál ez a feladat" data-i18n-placeholder="schedules.modal.desc_ph">
         </div>
         <div class="form-group">
           <label for="schedulePrompt" data-i18n="tasks.modal.prompt_label">Prompt</label>
-          <textarea id="schedulePrompt" rows="6" placeholder="Röviden írd le mit csináljon (pl. 'nézd meg az emailjeimet és foglald össze')"></textarea>
+          <textarea id="schedulePrompt" rows="6" placeholder="Röviden írd le mit csináljon (pl. 'nézd meg az emailjeimet és foglald össze')" data-i18n-placeholder="schedules.modal.prompt_ph"></textarea>
           <div class="prompt-expand-row">
             <button class="btn-secondary btn-compact" id="expandPromptBtn" type="button">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -2174,7 +2174,7 @@
           <label style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:4px">
             <input type="checkbox" id="scheduleForceSend"> <span data-i18n="tasks.modal.force_send">Mindig küldje (a foglaltság ellenére is)</span>
           </label>
-          <input type="text" id="scheduleTargetSession" placeholder="Cél tmux session (opcionális, felülírja az alapértelmezettet)" style="margin-top:8px">
+          <input type="text" id="scheduleTargetSession" placeholder="Cél tmux session (opcionális, felülírja az alapértelmezettet)" data-i18n-placeholder="schedules.modal.target_ph" style="margin-top:8px">
         </div>
         <input type="hidden" id="scheduleEditName">
         <button class="btn-primary" id="saveScheduleBtn">
