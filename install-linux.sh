@@ -898,10 +898,21 @@ if command -v ollama &>/dev/null; then
   ok "ollama mar telepitve"
 else
   echo -e "  Ollama telepitese..."
-  curl -fsSL https://ollama.com/install.sh | sh
-  ok "ollama telepitve"
+  # Az ollama telepitoje sudo-val ir a /usr/local/bin-be es allit be systemd service-t.
+  # Elore gyorsitotarazzuk a sudo hitelesitest, hogy a gyermek-script sudo prompt-ja ne bukjon el.
+  sudo -v 2>/dev/null || true
+  # NEM fatalis: ha az ollama telepitoje hibara fut (pl. sudo, halozat, WSL),
+  # csak figyelmeztetunk es kihagyjuk a szemantikus memoria lepest -- a telepito megy tovabb.
+  if curl -fsSL https://ollama.com/install.sh | sh; then
+    ok "ollama telepitve"
+  else
+    warn "ollama telepitese sikertelen -- a szemantikus memoria kereses kimarad."
+    echo -e "  ${DIM}Kesobb kezzel: sudo -v && curl -fsSL https://ollama.com/install.sh | sh${NC}"
+  fi
 fi
 
+# A service-inditas es modell-letoltes csak akkor fut, ha az ollama tenyleg telepult.
+if command -v ollama &>/dev/null; then
 # A telepito letrehoz egy ollama.service systemd egységet és elindítja.
 # Ha megis nem futna, systemctl-lel indítjuk -- NEM ollama serve &
 if ! curl -s http://localhost:11434/api/version &>/dev/null; then
@@ -938,6 +949,7 @@ ollama_pull() {
 
 # nomic-embed-text (szemantikus memoria, kotelozo)
 ollama_pull "nomic-embed-text" "~274 MB"
+fi  # command -v ollama
 
 # --- Whisper (opcionalis) ---
 echo ""
