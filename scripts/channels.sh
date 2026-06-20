@@ -196,10 +196,26 @@ $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
 #  - "Do you trust the files in this folder?" / "trust" prompts (Y Enter)
 #  - "Welcome to Claude Code" / kezdo vezetes (Enter a folytatashoz)
 # 12 sec timeout ket retry-jal, mert WSL/tmux paint slow lehet first-run-on.
+#
+# EPERM fallback (Claude Code 2.1.183+ regression): launching --channels in a
+# trusted project directory throws EPERM before any dialog appears. Detected
+# below; one auto-restart from /tmp where the trust dialog fires instead.
+_eperm_restarted=0
 for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
   sleep 1
   pane=$($TMUX capture-pane -t "$SESSION" -p 2>/dev/null || true)
   case "$pane" in
+    *"EPERM"*|*"Operation not permitted"*|*"operation not permitted"*)
+      if [ "$_eperm_restarted" = "0" ]; then
+        _eperm_restarted=1
+        $TMUX kill-session -t "$SESSION" 2>/dev/null
+        _CHANNELS_STARTDIR="$(mktemp -d /tmp/marveen-channels-XXXXXX)"
+        $TMUX new-session -d -s "$SESSION" -c "$_CHANNELS_STARTDIR" \
+          "$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}"
+        unset _CHANNELS_STARTDIR
+      fi
+      continue
+      ;;
     *"Bypass Permissions mode"*"Yes, I accept"*)
       $TMUX send-keys -t "$SESSION" "2" Enter
       sleep 1
@@ -220,6 +236,7 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
       ;;
   esac
 done
+unset _eperm_restarted
 
 # Set agent name once the session is ready. (/remote-control dropped: the operator no
 # longer uses Remote Control.)
