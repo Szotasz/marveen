@@ -9,7 +9,11 @@ if [ -f "$INSTALL_DIR/.env" ]; then
 fi
 SLUG="${SLUG:-marveen}"
 
-echo "${BOT_NAME:-Marveen} leallitas..."
+MARVEEN_LANG="$(cat "${INSTALL_DIR}/.lang" 2>/dev/null || echo hu)"
+# shellcheck source=../install-lang.sh
+source "${INSTALL_DIR}/install-lang.sh"
+
+echo "${BOT_NAME:-Marveen} $(_t stop.stopping)"
 OS="$(uname -s)"
 if [ "$OS" = "Darwin" ]; then
   launchctl unload "$HOME/Library/LaunchAgents/com.${SLUG}.dashboard.plist" 2>/dev/null
@@ -35,4 +39,4 @@ fi
 # update seamless for the operator.
 tmux kill-session -t "${SLUG}-channels" 2>/dev/null || true
 
-echo "✓ ${BOT_NAME:-Marveen} leallitva"
+echo "✓ ${BOT_NAME:-Marveen} $(_t stop.stopped)"

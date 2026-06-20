@@ -12,12 +12,16 @@ if [ -f "$INSTALL_DIR/.env" ]; then
 fi
 SLUG="${SLUG:-marveen}"
 
+MARVEEN_LANG="$(cat "${INSTALL_DIR}/.lang" 2>/dev/null || echo hu)"
+# shellcheck source=../install-lang.sh
+source "${INSTALL_DIR}/install-lang.sh"
+
 # Root VPS / container: claude refuses --dangerously-skip-permissions as uid 0.
 # The dashboard (and the agent tmux sessions it spawns) hit the same wall as
 # channels.sh, so export the sandbox escape hatch for the whole stack when root.
 [ "$(id -u)" = "0" ] && export IS_SANDBOX=1
 
-echo "${BOT_NAME:-Marveen} inditas..."
+echo "${BOT_NAME:-Marveen} $(_t start.starting)"
 OS="$(uname -s)"
 if [ "$OS" = "Darwin" ]; then
   launchctl load "$HOME/Library/LaunchAgents/com.${SLUG}.dashboard.plist" 2>/dev/null || true
@@ -52,4 +56,4 @@ elif [ "$OS" = "Linux" ]; then
 fi
 
 echo "✓ Dashboard: http://localhost:3420"
-echo "✓ Csatorna inditva"
+echo "$(_t start.channel_started)"

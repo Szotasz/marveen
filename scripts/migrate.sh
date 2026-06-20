@@ -14,34 +14,38 @@ INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 [ -f "$INSTALL_DIR/.env" ] && WEB_PORT="$(grep -E '^WEB_PORT=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')"
 API="http://localhost:${WEB_PORT:-3420}/api"
 
+MARVEEN_LANG="$(cat "${INSTALL_DIR}/.lang" 2>/dev/null || echo hu)"
+# shellcheck source=../install-lang.sh
+source "${INSTALL_DIR}/install-lang.sh"
+
 clear
 echo ""
-echo -e "${BOLD}Marveen - Rendszer költöztetés${NC}"
-echo -e "${DIM}Korábbi AI asszisztens átmigrálása${NC}"
+echo -e "${BOLD}$(_t migrate.title)${NC}"
+echo -e "${DIM}$(_t migrate.subtitle)${NC}"
 echo ""
 
 # Step 1: Source
-echo -e "${BOLD}[1/4] Forrás megadása${NC}"
+echo -e "${BOLD}$(_t migrate.section_1)${NC}"
 echo ""
-echo -e "  Honnan költözöl?"
+echo -e "$(_t migrate.source_prompt)"
 echo -e "  ${DIM}1. OpenClaw workspace${NC}"
-echo -e "  ${DIM}2. Egyéni Claude bot / más rendszer${NC}"
-echo -e "  ${DIM}3. Egyetlen mappa (általános)${NC}"
+echo -e "  ${DIM}$(_t migrate.source_2)${NC}"
+echo -e "  ${DIM}$(_t migrate.source_3)${NC}"
 echo ""
-read -p "  Válassz (1/2/3): " SOURCE_TYPE
+read -rp "$(_t migrate.prompt_choose)" SOURCE_TYPE
 echo ""
 
-read -p "  Workspace / mappa útvonala: " SOURCE_PATH
+read -rp "$(_t migrate.prompt_path)" SOURCE_PATH
 if [ ! -e "$SOURCE_PATH" ]; then
-  echo -e "${ORANGE}Hiba: $SOURCE_PATH nem létezik${NC}"
+  echo -e "${ORANGE}Error: $SOURCE_PATH not found${NC}"
   exit 1
 fi
 
-read -p "  Melyik ágenshez importáljak? [marveen]: " AGENT_ID
+read -rp "$(_t migrate.prompt_agent)" AGENT_ID
 AGENT_ID=${AGENT_ID:-marveen}
 
 echo ""
-echo -e "${BOLD}[2/4] Rendszer feltérképezése...${NC}"
+echo -e "${BOLD}$(_t migrate.section_2)${NC}"
 echo ""
 
 # Discover files based on source type
@@ -53,23 +57,23 @@ FOUND_HEARTBEAT=""
 FOUND_CONFIG=()
 
 discover_openclaw() {
-  [ -f "$SOURCE_PATH/MEMORY.md" ] && FOUND_MEMORY+=("$SOURCE_PATH/MEMORY.md") && echo -e "  ${GREEN}✓${NC} MEMORY.md (cold memória)"
+  [ -f "$SOURCE_PATH/MEMORY.md" ] && FOUND_MEMORY+=("$SOURCE_PATH/MEMORY.md") && echo -e "  ${GREEN}✓${NC} MEMORY.md $(_t migrate.found_memory)"
   [ -f "$SOURCE_PATH/memory/hot/HOT_MEMORY.md" ] && FOUND_MEMORY+=("$SOURCE_PATH/memory/hot/HOT_MEMORY.md") && echo -e "  ${GREEN}✓${NC} HOT_MEMORY.md"
   [ -f "$SOURCE_PATH/memory/warm/WARM_MEMORY.md" ] && FOUND_MEMORY+=("$SOURCE_PATH/memory/warm/WARM_MEMORY.md") && echo -e "  ${GREEN}✓${NC} WARM_MEMORY.md"
-  [ -f "$SOURCE_PATH/SOUL.md" ] && FOUND_SOUL="$SOURCE_PATH/SOUL.md" && echo -e "  ${GREEN}✓${NC} SOUL.md (személyiség)"
-  [ -f "$SOURCE_PATH/USER.md" ] && FOUND_USER="$SOURCE_PATH/USER.md" && echo -e "  ${GREEN}✓${NC} USER.md (felhasználói profil)"
+  [ -f "$SOURCE_PATH/SOUL.md" ] && FOUND_SOUL="$SOURCE_PATH/SOUL.md" && echo -e "  ${GREEN}✓${NC} SOUL.md $(_t migrate.found_soul)"
+  [ -f "$SOURCE_PATH/USER.md" ] && FOUND_USER="$SOURCE_PATH/USER.md" && echo -e "  ${GREEN}✓${NC} USER.md $(_t migrate.found_user)"
   [ -f "$SOURCE_PATH/HEARTBEAT.md" ] && FOUND_HEARTBEAT="$SOURCE_PATH/HEARTBEAT.md" && echo -e "  ${GREEN}✓${NC} HEARTBEAT.md"
-  [ -f "$SOURCE_PATH/AGENTS.md" ] && FOUND_CONFIG+=("$SOURCE_PATH/AGENTS.md") && echo -e "  ${GREEN}✓${NC} AGENTS.md (ágens konfig)"
-  [ -f "$SOURCE_PATH/TOOLS.md" ] && FOUND_CONFIG+=("$SOURCE_PATH/TOOLS.md") && echo -e "  ${GREEN}✓${NC} TOOLS.md (eszközök)"
+  [ -f "$SOURCE_PATH/AGENTS.md" ] && FOUND_CONFIG+=("$SOURCE_PATH/AGENTS.md") && echo -e "  ${GREEN}✓${NC} AGENTS.md $(_t migrate.found_agents)"
+  [ -f "$SOURCE_PATH/TOOLS.md" ] && FOUND_CONFIG+=("$SOURCE_PATH/TOOLS.md") && echo -e "  ${GREEN}✓${NC} TOOLS.md $(_t migrate.found_tools)"
 
   # Daily logs
   for logfile in "$SOURCE_PATH"/memory/20*.md; do
-    [ -f "$logfile" ] && FOUND_MEMORY+=("$logfile") && echo -e "  ${GREEN}✓${NC} $(basename "$logfile") (napi napló)"
+    [ -f "$logfile" ] && FOUND_MEMORY+=("$logfile") && echo -e "  ${GREEN}✓${NC} $(basename "$logfile") $(_t migrate.found_log)"
   done
 
   # Cron/scheduled tasks
   for cronfile in "$SOURCE_PATH"/.claude/scheduled_tasks* "$SOURCE_PATH"/cron-registry.json; do
-    [ -f "$cronfile" ] && FOUND_CRON+=("$cronfile") && echo -e "  ${GREEN}✓${NC} $(basename "$cronfile") (ütemezés)"
+    [ -f "$cronfile" ] && FOUND_CRON+=("$cronfile") && echo -e "  ${GREEN}✓${NC} $(basename "$cronfile") $(_t migrate.found_cron)"
   done
 }
 
@@ -92,10 +96,10 @@ discover_general() {
     esac
   done | while IFS=: read type filepath; do
     case "$type" in
-      SOUL) FOUND_SOUL="$filepath"; echo -e "  ${GREEN}✓${NC} $(basename "$filepath") (személyiség)" ;;
-      USER) FOUND_USER="$filepath"; echo -e "  ${GREEN}✓${NC} $(basename "$filepath") (felhasználói profil)" ;;
+      SOUL) FOUND_SOUL="$filepath"; echo -e "  ${GREEN}✓${NC} $(basename "$filepath") $(_t migrate.found_soul)" ;;
+      USER) FOUND_USER="$filepath"; echo -e "  ${GREEN}✓${NC} $(basename "$filepath") $(_t migrate.found_user)" ;;
       HEARTBEAT) FOUND_HEARTBEAT="$filepath"; echo -e "  ${GREEN}✓${NC} $(basename "$filepath") (heartbeat)" ;;
-      MEMORY) FOUND_MEMORY+=("$filepath"); echo -e "  ${GREEN}✓${NC} $(basename "$filepath") (memória)" ;;
+      MEMORY) FOUND_MEMORY+=("$filepath"); echo -e "  ${GREEN}✓${NC} $(basename "$filepath") $(_t migrate.found_memory_file)" ;;
     esac
   done
 
@@ -104,7 +108,7 @@ discover_general() {
     if [ -d "$SOURCE_PATH/$dir" ]; then
       find "$SOURCE_PATH/$dir" -type f \( -name "*.md" -o -name "*.txt" -o -name "*.json" \) 2>/dev/null | while read f; do
         FOUND_MEMORY+=("$f")
-        echo -e "  ${GREEN}✓${NC} $(basename "$f") (memória - $dir/)"
+        echo -e "  ${GREEN}✓${NC} $(basename "$f") $(_t migrate.found_memory_file) ($dir/)"
       done
     fi
   done
@@ -127,35 +131,35 @@ find "$SOURCE_PATH" -maxdepth 4 -type f \( -name "*.md" -o -name "*.txt" -o -nam
 
 FILE_COUNT=$(wc -l < "$MEMORY_FILES" | tr -d ' ')
 echo ""
-echo -e "  Összesen: ${BOLD}$FILE_COUNT fájl${NC} található"
+echo -e "  $(_t migrate.total_prefix)${BOLD}$FILE_COUNT${NC}$(_t migrate.total_suffix)"
 
 # Step 3: Migration
 echo ""
-echo -e "${BOLD}[3/4] Migráció...${NC}"
+echo -e "${BOLD}$(_t migrate.section_3)${NC}"
 echo ""
 
 # Process SOUL.md
 SOUL_FILE=$(grep -i "soul\|personality" "$MEMORY_FILES" | head -1)
 if [ -n "$SOUL_FILE" ] && [ -f "$SOUL_FILE" ]; then
-  echo -e "  Személyiség átmentése..."
+  echo -e "$(_t migrate.migrating_soul)"
   curl -s -X POST "$API/memories" \
     -H "Content-Type: application/json" \
     -d "{\"agent_id\": \"$AGENT_ID\", \"content\": $(echo "Importált személyiség (SOUL.md): $(cat "$SOUL_FILE" | head -100)" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'), \"tier\": \"warm\", \"keywords\": \"személyiség, soul, import\"}" > /dev/null 2>&1
-  echo -e "  ${GREEN}✓${NC} Személyiség mentve a memóriába"
+  echo -e "  ${GREEN}✓${NC}$(_t migrate.migrated_soul)"
 fi
 
 # Process USER.md
 USER_FILE=$(grep -i "user\|profile" "$MEMORY_FILES" | head -1)
 if [ -n "$USER_FILE" ] && [ -f "$USER_FILE" ]; then
-  echo -e "  Felhasználói profil átmentése..."
+  echo -e "$(_t migrate.migrating_user)"
   curl -s -X POST "$API/memories" \
     -H "Content-Type: application/json" \
     -d "{\"agent_id\": \"$AGENT_ID\", \"content\": $(cat "$USER_FILE" | head -200 | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'), \"tier\": \"warm\", \"keywords\": \"felhasználó, profil, import\"}" > /dev/null 2>&1
-  echo -e "  ${GREEN}✓${NC} Felhasználói profil mentve"
+  echo -e "  ${GREEN}✓${NC}$(_t migrate.migrated_user)"
 fi
 
 # Process all memory files via the API with AI categorization
-echo -e "  Memóriák importálása AI kategorizálással..."
+echo -e "$(_t migrate.importing_memories)"
 
 # Collect chunks from all files
 python3 -c "
@@ -210,7 +214,7 @@ print(json.dumps(chunks))
 " > /tmp/marveen-migrate-chunks.json
 
 CHUNK_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/marveen-migrate-chunks.json'))))")
-echo -e "  ${BOLD}$CHUNK_COUNT${NC} memória chunk feldolgozása..."
+echo -e "  ${BOLD}$CHUNK_COUNT${NC}$(_t migrate.chunks_prefix)"
 
 if [ "$CHUNK_COUNT" -gt 0 ]; then
   curl -s -X POST "$API/memories/import" \
@@ -220,13 +224,13 @@ import json, sys
 d = json.load(sys.stdin)
 if d.get('ok'):
     stats = d.get('stats', {})
-    print(f'  Importálva: {d.get(\"imported\", 0)} emlék')
+    print(f'  Imported: {d.get(\"imported\", 0)} memories')
     print(f'    Hot: {stats.get(\"hot\", 0)}')
     print(f'    Warm: {stats.get(\"warm\", 0)}')
     print(f'    Cold: {stats.get(\"cold\", 0)}')
     print(f'    Shared: {stats.get(\"shared\", 0)}')
 else:
-    print(f'  Hiba: {d.get(\"error\", \"Ismeretlen\")}')
+    print(f'  Error: {d.get(\"error\", \"Unknown\")}')
 "
 fi
 
@@ -234,10 +238,10 @@ fi
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo -e "${BOLD}${GREEN}  ✓ Költöztetés kész!${NC}"
+echo -e "${BOLD}${GREEN}$(_t migrate.done)${NC}"
 echo ""
-echo -e "  ${DIM}Az importált memóriák a dashboardon tekinthetők meg:${NC}"
-echo -e "  ${DIM}http://localhost:3420 -> Memória${NC}"
+echo -e "  ${DIM}$(_t migrate.view_memories)${NC}"
+echo -e "  ${DIM}http://localhost:3420 -> Memory${NC}"
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 

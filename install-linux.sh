@@ -95,7 +95,7 @@ echo -e "${BOLD}  ▐▛███▜▌   Marveen${NC}"
 if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
   echo -e "${BOLD} ▝▜█████▛▘  Your AI team, running while you sleep.${NC}"
 else
-  echo -e "${BOLD} ▝▜█████▛▘  AI csapatod, ami fut amíg te alszol.${NC}"
+  echo -e "${BOLD} ▝▜█████▛▘  $(_t tagline)${NC}"
 fi
 echo -e "${DIM}   ▘▘ ▝▝${NC}"
 echo ""
@@ -128,7 +128,7 @@ if command -v free &>/dev/null; then
   TOTAL_SWAP_MB=$(free -m | awk '/^Swap:/ {print $2}')
   TOTAL_AVAIL=$((TOTAL_RAM_MB + TOTAL_SWAP_MB))
   if [ "$TOTAL_AVAIL" -lt 2048 ]; then
-    warn "Kevés memória: ${TOTAL_RAM_MB} MB RAM + ${TOTAL_SWAP_MB} MB swap = ${TOTAL_AVAIL} MB"
+    warn "$(_t linux.low_ram_prefix) ${TOTAL_RAM_MB} MB RAM + ${TOTAL_SWAP_MB} MB swap = ${TOTAL_AVAIL} MB"
     echo -e "  ${ORANGE}Az npm build legalabb 2 GB memoriat igenyel.${NC}"
     if [ "$TOTAL_SWAP_MB" -lt 1024 ]; then
       read -rp "$(_t prompt_swap)" CREATE_SWAP
@@ -577,7 +577,7 @@ print(s or 'marveen')
 PYEOF
 )
 if [ "$MAIN_AGENT_ID" != "marveen" ]; then
-  echo -e "  ${DIM}Ügynök belső azonosító: ${MAIN_AGENT_ID}${NC}"
+  echo -e "  ${DIM}$(_t macos.agent_id_info)${MAIN_AGENT_ID}${NC}"
 fi
 
 # Product / system brand. Per Szabi's decision the installer does NOT prompt for
@@ -780,7 +780,7 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
   "pending": {}
 }
 ACCESSEOF
-  ok "Telegram csatorna konfigurálva"
+  ok "$(_t linux.tg_channel_configured)"
 elif [ "$CHANNEL_PROVIDER" = "slack" ] && [ -n "$SLACK_BOT_TOKEN" ]; then
   (umask 077 && cat >"$CHANNEL_DIR/.env" <<SLACKENVEOF
 SLACK_BOT_TOKEN=$SLACK_BOT_TOKEN
@@ -796,7 +796,7 @@ SLACKENVEOF
   "pending": {}
 }
 ACCESSEOF
-  ok "Slack csatorna konfigurálva"
+  ok "$(_t linux.slack_channel_configured)"
 elif [ "$CHANNEL_PROVIDER" = "discord" ] && [ -n "$DISCORD_BOT_TOKEN" ]; then
   (umask 077 && cat >"$CHANNEL_DIR/.env" <<DISCORDENVEOF
 DISCORD_BOT_TOKEN=$DISCORD_BOT_TOKEN
@@ -812,7 +812,7 @@ DISCORDENVEOF
   "pending": {}
 }
 ACCESSEOF
-  ok "Discord csatorna konfigurálva"
+  ok "$(_t linux.discord_channel_configured)"
 fi
 
 # Channel plugin install
@@ -912,7 +912,7 @@ fi
 # A telepito letrehoz egy ollama.service systemd egységet és elindítja.
 # Ha megis nem futna, systemctl-lel indítjuk -- NEM ollama serve &
 if ! curl -s http://localhost:11434/api/version &>/dev/null; then
-  echo -e "  Ollama service indítása..."
+  echo -e "$(_t linux.ollama_starting)"
   sudo systemctl enable --now ollama 2>/dev/null || true
   # Megvarjuk amig az API valaszol (max 15 mp)
   for i in $(seq 1 15); do
@@ -1236,7 +1236,7 @@ with open('$ACCESS_FILE', 'w') as f:
           ok "Policy: allowlist (csak te erheted el a botot)"
           # Ujrainditjuk, hogy felvegye az uj access.json-t
           systemctl --user restart "${CHAN_UNIT}" 2>/dev/null || true
-          ok "${CHAN_UNIT} ujraindítva (uj konfig betoltve)"
+          ok "${CHAN_UNIT} $(_t linux.chan_restarted)"
         else
           warn "A kod nem talalhato az access.json pending bejegyzesei kozott."
           echo -e "  ${DIM}Lehetseges okok:${NC}"
@@ -1298,7 +1298,7 @@ if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
 fi
 if [ -n "$DASH_TOKEN" ]; then
   echo -e "  ${BOLD}Dashboard:${NC} ${BLUE}http://localhost:3420/?token=${DASH_TOKEN}${NC}"
-  echo -e "  ${DIM}(Nyisd meg egyszer, utana a bongeszo megjegyzi a tokent)${NC}"
+  echo -e "  ${DIM}$(_t dash.token_hint)${NC}"
 else
   echo -e "  ${BOLD}Dashboard:${NC} http://localhost:3420"
   echo -e "  ${DIM}(A tokenes URL-t a szerver logban talalod)${NC}"
@@ -1319,7 +1319,7 @@ echo -e "  ${DIM}  systemctl --user status ${DASH_UNIT} ${CHAN_UNIT} --no-pager$
 echo -e "  ${DIM}  journalctl --user -u ${DASH_UNIT} -f${NC}    -- dashboard logok"
 echo -e "  ${DIM}  journalctl --user -u ${CHAN_UNIT} -f${NC}     -- channels logok"
 echo -e "  ${DIM}  ./update.sh${NC}                                  -- frissites"
-echo -e "  ${DIM}  ./scripts/start.sh${NC}                           -- indítás"
+echo -e "  ${DIM}  ./scripts/start.sh${NC}                           $(_t linux.start_hint)"
 echo -e "  ${DIM}  ./scripts/stop.sh${NC}                            -- leallitas"
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
