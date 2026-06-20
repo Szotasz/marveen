@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { execSync, execFileSync } from 'node:child_process'
 import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS } from './config.js'
 import { loadOrCreateDashboardToken, checkBearerToken } from './web/dashboard-auth.js'
+import { isBlockedCrossOriginWrite } from './web/csrf-origin.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
@@ -73,7 +74,6 @@ export function startWebServer(port = 3420): http.Server {
     ...(DASHBOARD_PUBLIC_URL ? [DASHBOARD_PUBLIC_URL.replace(/\/$/, '')] : []),
     ...DASHBOARD_ALLOWED_ORIGINS.split(',').map((o) => o.trim().replace(/\/$/, '')).filter(Boolean),
   ])
-  const isSafeMethod = (m: string) => m === 'GET' || m === 'HEAD' || m === 'OPTIONS'
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', `http://localhost:${port}`)
@@ -90,10 +90,11 @@ export function startWebServer(port = 3420): http.Server {
     if (method === 'OPTIONS') { res.writeHead(204); res.end(); return }
 
     // Block state-changing requests from browsers running on foreign origins.
-    // Same-origin fetches from the dashboard don't set Origin on some browsers, so we
-    // accept requests where Origin is absent OR whitelisted. Requests carrying a foreign
-    // Origin are rejected outright (this is the primary CSRF defence).
-    if (!isSafeMethod(method) && origin && !allowedOrigins.has(origin)) {
+    // Same-origin fetches (Origin absent, allowlisted, or matching the host the
+    // server was actually reached on -- e.g. a Tailscale Serve / reverse-proxy
+    // hostname) are accepted; a foreign Origin is rejected (the CSRF defence).
+    if (isBlockedCrossOriginWrite(method, origin, req.headers.host, req.headers['x-forwarded-host'] as string | undefined, allowedOrigins)) {
+      logger.warn({ method, path, origin, host: req.headers.host, xForwardedHost: req.headers['x-forwarded-host'] }, 'CSRF: blocked write from foreign origin')
       res.writeHead(403, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'Origin not allowed' }))
       return
