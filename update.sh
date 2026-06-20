@@ -12,6 +12,13 @@ NC='\033[0m'
 
 INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$INSTALL_DIR"
+# ── Language (saved by installer, falls back to HU) ──────────────────────────
+MARVEEN_LANG="$(cat "${INSTALL_DIR}/.lang" 2>/dev/null || echo hu)"
+export MARVEEN_LANG
+# shellcheck source=install-lang.sh
+source "$(dirname "$0")/install-lang.sh"
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 # --- Optional modes (CLI flags or env vars) ---------------------------------
 # The default run is unchanged: it pulls, installs deps, and seeds only the
@@ -118,7 +125,11 @@ fi
 exec > >(tee -a "$UPDATE_LOG") 2>&1
 
 echo ""
-echo -e "${BOLD}Marveen frissites...${NC} [$(date -u +%Y-%m-%dT%H:%M:%SZ)]"
+if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+  echo -e "${BOLD}Marveen update...${NC} [$(date -u +%Y-%m-%dT%H:%M:%SZ)]"
+else
+  echo -e "${BOLD}Marveen frissítés...${NC} [$(date -u +%Y-%m-%dT%H:%M:%SZ)]"
+fi
 echo ""
 
 # Guard 1: derive the release branch from the current checkout and refuse
@@ -133,7 +144,11 @@ echo ""
 # this is defense-in-depth for manual invocations.
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 if [ "$CURRENT_BRANCH" = "HEAD" ] || [ -z "$CURRENT_BRANCH" ]; then
-  echo -e "${RED}HIBA:${NC} A repo detached-HEAD allapotban van."
+  if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+    echo -e "${RED}ERROR:${NC} The repo is in detached-HEAD state."
+  else
+    echo -e "${RED}HIBA:${NC} A repo detached-HEAD állapotban van."
+  fi
   echo "       Allj at egy release branchre, majd indithatod ujra a frissitest, pl.:"
   echo "         git checkout main"
   exit 2
@@ -142,7 +157,11 @@ fi
 # ref to fast-forward to (e.g. a local-only feature branch). Fail early with
 # a clear message instead of letting set -e abort mid-run.
 if ! git ls-remote --exit-code --heads origin "$CURRENT_BRANCH" >/dev/null 2>&1; then
-  echo -e "${RED}HIBA:${NC} A '${CURRENT_BRANCH}' branch nem letezik az origin-on."
+  if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+    echo -e "${RED}ERROR:${NC} Branch '${CURRENT_BRANCH}' does not exist on origin."
+  else
+    echo -e "${RED}HIBA:${NC} A '${CURRENT_BRANCH}' branch nem létezik az origin-on."
+  fi
   echo "       Csak az origin-on is meglevo (kovetett) branchrol lehet frissiteni."
   echo "       Allj at egy release branchre, pl.:"
   echo "         git checkout main"
@@ -170,12 +189,20 @@ if [ -n "$DIRTY" ]; then
   if [ "${AUTO_STASH:-0}" = "1" ]; then
     echo -e "  Lokalis valtozasok stash-elve (auto-stash)..."
     if ! git stash push --keep-index -m "marveen-update-auto-stash $(date +%Y%m%d-%H%M%S)"; then
-      echo -e "${RED}HIBA:${NC} Auto-stash sikertelen. Nezd meg: git status"
+      if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+        echo -e "${RED}ERROR:${NC} Auto-stash failed. Check: git status"
+      else
+        echo -e "${RED}HIBA:${NC} Auto-stash sikertelen. Nézd meg: git status"
+      fi
       exit 3
     fi
     STASHED_AUTO=1
   else
-    echo -e "${RED}HIBA:${NC} A working tree modosult allapotban van."
+    if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+      echo -e "${RED}ERROR:${NC} The working tree has uncommitted changes."
+    else
+      echo -e "${RED}HIBA:${NC} A working tree módosult állapotban van."
+    fi
     echo "       Commitold vagy stasheld a valtozasokat, majd indithatod ujra:"
     echo "         git stash"
     exit 3
@@ -192,13 +219,21 @@ NEW_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
 if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
   if [ "$RESEED_FLEET" != "1" ] && [ "$REGEN_CLAUDEMD" != "1" ]; then
-    echo -e "  ${GREEN}✓${NC} Mar a legfrissebb verzion vagy ($NEW_VERSION)"
+    if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+      echo -e "  ${GREEN}✓${NC} Already on the latest version ($NEW_VERSION)"
+    else
+      echo -e "  ${GREEN}✓${NC} Már a legfrissebb verzión vagy ($NEW_VERSION)"
+    fi
     exit 0
   fi
   # --reseed-fleet / --regen-claudemd are explicit refresh requests, so they
   # run even when the code is already current. Skip the dep-install + build
   # below (nothing changed there) and jump to the seed/identity refresh.
-  echo -e "  ${GREEN}✓${NC} Mar a legfrissebb verzion ($NEW_VERSION) -- folytatas a kert fleet-reseed/regen miatt"
+  if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+    echo -e "  ${GREEN}✓${NC} Already on the latest version ($NEW_VERSION) — continuing due to fleet-reseed/regen flag"
+  else
+    echo -e "  ${GREEN}✓${NC} Már a legfrissebb verzión ($NEW_VERSION) — folytatás a kért fleet-reseed/regen miatt"
+  fi
   SKIP_BUILD=1
 fi
 
@@ -226,7 +261,11 @@ if git diff "$OLD_VERSION" "$NEW_VERSION" --name-only | grep -qE "^package(-lock
   # whether to roll back.
   echo -e "  Biztonsagi ellenorzes..."
   if ! npm audit --audit-level=high --omit=dev --silent; then
-    echo -e "  FIGYELEM: npm audit magas-sulyossagu tetelt jelzett."
+    if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+      echo -e "  WARNING: npm audit reported high-severity item(s)."
+    else
+      echo -e "  FIGYELEM: npm audit magas-súlyosságú tételt jelzett."
+    fi
     echo -e "  A frissites folytatodik, de vizsgald meg: npm audit --omit=dev"
   fi
 fi
@@ -464,7 +503,11 @@ if [ -d "$MARKETPLACE_PLUGIN_DIR" ]; then
       if grep -q 'SLACK_SMOKE_TEST_ALLOWED=true' "$AGENT_ENV" 2>/dev/null; then
         echo -e "  Slack smoke-test futtatasa ($SLACK_AGENT)..."
         if ! bash "$INSTALL_DIR/scripts/smoke-test-slack-channel.sh" "$SLACK_AGENT"; then
-          echo -e "${RED}FIGYELEM:${NC} Slack smoke-test SIKERTELEN. Ellenorizd a plugin integraciot."
+          if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+            echo -e "${RED}WARNING:${NC} Slack smoke-test FAILED. Check the plugin integration."
+          else
+            echo -e "${RED}FIGYELEM:${NC} Slack smoke-test SIKERTELEN. Ellenőrizd a plugin integrációt."
+          fi
         fi
       fi
     fi
@@ -494,7 +537,11 @@ fi
 if [ "$STASHED_AUTO" = "1" ]; then
   echo -e "  Auto-stash visszaallitasa..."
   if ! git stash pop; then
-    echo -e "${RED}FIGYELEM:${NC} Auto-stash pop konfliktusos -- a stash benne marad a 'git stash list'-ben."
+    if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+      echo -e "${RED}WARNING:${NC} Auto-stash pop had conflicts — the stash remains in 'git stash list'."
+    else
+      echo -e "${RED}FIGYELEM:${NC} Auto-stash pop konfliktusos — a stash benne marad a 'git stash list'-ben."
+    fi
     echo -e "          Manualisan kezeld: git stash list / git stash apply / git stash drop"
   fi
 fi
@@ -505,5 +552,9 @@ echo -e "  Szolgaltatasok ujrainditasa..."
 "$INSTALL_DIR/scripts/start.sh"
 
 echo ""
-echo -e "${GREEN}✓ Frissitve: ${OLD_VERSION} -> ${NEW_VERSION}${NC}"
+if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+  echo -e "${GREEN}✓ Updated: ${OLD_VERSION} -> ${NEW_VERSION}${NC}"
+else
+  echo -e "${GREEN}✓ Frissítve: ${OLD_VERSION} -> ${NEW_VERSION}${NC}"
+fi
 echo ""

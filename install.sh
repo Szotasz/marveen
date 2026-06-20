@@ -13,6 +13,8 @@ if [[ -z "${MARVEEN_LANG:-}" ]]; then
   esac
 fi
 export MARVEEN_LANG
+# Save language choice for update.sh and other scripts
+echo "$MARVEEN_LANG" > "$(dirname "$0")/.lang"
 # ─────────────────────────────────────────────────────────────────────────────
 
 case "$(uname -s)" in
