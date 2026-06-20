@@ -15,6 +15,9 @@ NC='\033[0m'
 INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_STEP="init"
 
+# shellcheck source=install-lang.sh
+source "$(dirname "$0")/install-lang.sh"
+
 ok() { echo -e "  ${GREEN}✓${NC} $*"; }
 warn() { echo -e "  ${ORANGE}!${NC} $*"; }
 
@@ -27,9 +30,9 @@ offer_claude_fallback() {
   echo -e "${ORANGE}Claude Code elérhető a gépen.${NC}"
   local prompt="Marveen installer failed at step \"${step}\". Error: ${err_msg}. Script: install.sh${line_info}. Repo: https://github.com/Szotasz/marveen. OS: macOS $(sw_vers -productVersion 2>/dev/null || echo unknown). Node: $(node -v 2>/dev/null || echo missing). Dir: ${INSTALL_DIR}. Your task: diagnose this Marveen installer failure. The install scripts are install.sh (macOS) and install-linux.sh. Read the relevant section, check for missing dependencies or permission issues, and suggest concrete shell commands to fix."
   if [ -t 0 ]; then
-    read -p "  Megnyissam Claude Code-ot a hiba diagnosztizálásához? (i/n) [n]: " OPEN_CLAUDE
+    read -rp "$(_t prompt_open_claude)" OPEN_CLAUDE
     OPEN_CLAUDE=${OPEN_CLAUDE:-n}
-    if [ "$OPEN_CLAUDE" = "i" ]; then
+    if [[ "$OPEN_CLAUDE" == "i" || "$OPEN_CLAUDE" == "y" ]]; then
       claude --prompt "$prompt"
       return
     fi
@@ -55,15 +58,23 @@ trap 'on_error $LINENO' ERR
 clear
 echo ""
 echo -e "${BOLD}  ▐▛███▜▌   Marveen${NC}"
-echo -e "${BOLD} ▝▜█████▛▘  AI csapatod, ami fut amig te alszol.${NC}"
+if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+  echo -e "${BOLD} ▝▜█████▛▘  Your AI team, running while you sleep.${NC}"
+else
+  echo -e "${BOLD} ▝▜█████▛▘  AI csapatod, ami fut amíg te alszol.${NC}"
+fi
 echo -e "${DIM}   ▘▘ ▝▝${NC}"
 echo ""
-echo -e "${DIM}  Telepito wizard - macOS${NC}"
+if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+  echo -e "${DIM}  Setup wizard - macOS${NC}"
+else
+  echo -e "${DIM}  Telepítő wizard - macOS${NC}"
+fi
 echo ""
 
 # Step 1: Check prerequisites
 INSTALL_STEP="prerequisites"
-echo -e "${BOLD}[1/7] Elofeltetelek ellenorzese...${NC}"
+echo -e "${BOLD}$(_t section_1)${NC}"
 
 check_cmd() {
   if command -v "$1" &>/dev/null; then
@@ -133,8 +144,8 @@ echo ""
 if ! command -v claude &>/dev/null; then
   echo -e "  ${RED}✗${NC} Claude Code CLI - hianyzik"
   echo -e "${ORANGE}Telepites: npm install -g @anthropic-ai/claude-code${NC}"
-  read -p "Telepitsem most? (i/n) " INSTALL_CLAUDE
-  if [ "$INSTALL_CLAUDE" = "i" ]; then
+  read -rp "$(_t prompt_install_claude)" INSTALL_CLAUDE
+  if [[ "$INSTALL_CLAUDE" == "i" || "$INSTALL_CLAUDE" == "y" ]]; then
     npm install -g @anthropic-ai/claude-code
   else
     fail "Claude Code CLI szukseges a futtatashoz. Telepitsd: npm install -g @anthropic-ai/claude-code"
@@ -192,12 +203,12 @@ echo -e "  ${GREEN}✓${NC} Claude Code first-run flags pre-set"
 INSTALL_STEP="claude-auth"
 # Step 2b: Claude authentication (kept tolerant -- ha megakad, folytatjuk)
 echo ""
-echo -e "${BOLD}[2/7] Claude bejelentkezes${NC}"
+echo -e "${BOLD}$(_t section_2_macos)${NC}"
 echo -e "${DIM}  Ha meg nem jelentkeztel be, most megteheted.${NC}"
 echo -e "${DIM}  Ha a browser-os authorize-flow megakad, Ctrl+C-vel kilephetsz${NC}"
 echo -e "${DIM}  -- a telepites folytatodik, kesobb manualisan tudsz belepni.${NC}"
-read -p "  Szeretned most bejelentkezni? (i/n) " DO_AUTH
-if [ "$DO_AUTH" = "i" ]; then
+read -rp "$(_t prompt_login)" DO_AUTH
+if [[ "$DO_AUTH" == "i" || "$DO_AUTH" == "y" ]]; then
   set +e
   claude auth login
   AUTH_RC=$?
@@ -232,8 +243,8 @@ fi
 INSTALL_STEP="personal-info"
 # Step 3: Personal info
 echo ""
-echo -e "${BOLD}[3/7] Személyes beállítások${NC}"
-read -p "  Mi a neved? " OWNER_NAME
+echo -e "${BOLD}$(_t section_3_macos)${NC}"
+read -rp "$(_t prompt_your_name)" OWNER_NAME
 # Chat ID is NOT asked here -- the user doesn't know it yet.
 # It will be set automatically during the Telegram pairing flow.
 CHAT_ID="0"
@@ -241,12 +252,12 @@ CHAT_ID="0"
 INSTALL_STEP="channel-setup"
 # Step 4: Channel provider setup
 echo ""
-echo -e "${BOLD}[4/7] Csatorna beállítás${NC}"
+echo -e "${BOLD}$(_t section_4_macos)${NC}"
 echo -e "${DIM}  Melyik csatornan kommunikaljon az AI asszisztensed?${NC}"
 echo -e "  ${BOLD}1.${NC} Telegram (alapertelmezett)"
 echo -e "  ${BOLD}2.${NC} Slack"
 echo ""
-read -p "  Valassz (1/2) [1]: " PROVIDER_CHOICE
+read -rp "$(_t prompt_channel_select_macos)" PROVIDER_CHOICE
 PROVIDER_CHOICE=${PROVIDER_CHOICE:-1}
 if [ "$PROVIDER_CHOICE" = "2" ]; then
   CHANNEL_PROVIDER="slack"
@@ -267,7 +278,7 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   echo -e "${DIM}  3. Adj nevet a botodnak${NC}"
   echo -e "${DIM}  4. Masold ide a kapott tokent:${NC}"
   echo ""
-  read -p "  Telegram bot token (vagy hagyd uresen, kesobb is beallithatod): " BOT_TOKEN
+  read -rp "$(_t prompt_telegram_token)" BOT_TOKEN
 else
   echo ""
   echo -e "${DIM}  Az AI asszisztensed Slack-en kommunikal veled.${NC}"
@@ -281,8 +292,8 @@ else
   echo -e "${DIM}     app_mention, message.channels, message.groups, message.im${NC}"
   echo -e "${DIM}  5. Installald a workspace-be${NC}"
   echo ""
-  read -p "  Bot Token (xoxb-...): " SLACK_BOT_TOKEN
-  read -p "  App-Level Token (xapp-...): " SLACK_APP_TOKEN
+  read -rp "$(_t prompt_slack_bot_token)" SLACK_BOT_TOKEN
+  read -rp "$(_t prompt_slack_app_token)" SLACK_APP_TOKEN
 
   # Managed settings: Claude Code requires allowedChannelPlugins at system level
   MANAGED_DIR="/Library/Application Support/ClaudeCode"
@@ -327,7 +338,7 @@ print(json.dumps(existing, indent=2))
   fi
 fi
 
-read -p "  Mi legyen a botod neve? [Marveen]: " BOT_NAME
+read -rp "$(_t prompt_bot_name)" BOT_NAME
 BOT_NAME=${BOT_NAME:-"Marveen"}
 
 # Derive the ASCII slug the backend uses everywhere (tmux sessions, plist
@@ -357,7 +368,7 @@ SERVICE_ID="$MAIN_AGENT_ID"
 # Step 5: Install dependencies
 INSTALL_STEP="npm-install"
 echo ""
-echo -e "${BOLD}[5/7] Függőségek telepítése...${NC}"
+echo -e "${BOLD}$(_t section_5)${NC}"
 cd "$INSTALL_DIR"
 if ! npm install --loglevel warn || ! npm rebuild better-sqlite3 --build-from-source; then
   fail "npm install sikertelen. Ellenorizd a hibauzeneteket fentebb."
@@ -375,7 +386,7 @@ ok "TypeScript leforditva"
 INSTALL_STEP="configuration"
 # Step 6: Configuration
 echo ""
-echo -e "${BOLD}[6/7] Konfiguráció létrehozása...${NC}"
+echo -e "${BOLD}$(_t section_6_macos)${NC}"
 
 # Create .env
 (umask 077 && cat > "$INSTALL_DIR/.env" << ENVEOF
@@ -684,7 +695,7 @@ echo -e "  ${GREEN}✓${NC} ffmpeg kész"
 INSTALL_STEP="launchagent"
 # Step 7: LaunchAgent setup
 echo ""
-echo -e "${BOLD}[7/7] Automatikus indítás beállítása...${NC}"
+echo -e "${BOLD}$(_t section_7)${NC}"
 
 PLIST_DIR="$HOME/Library/LaunchAgents"
 mkdir -p "$PLIST_DIR"
@@ -781,7 +792,7 @@ echo -e "  ${GREEN}✓${NC} Szolgaltatasok elinditva"
 # Verify channel plugin is working
 sleep 3
 echo ""
-echo -e "${BOLD}Ellenorzes...${NC}"
+echo -e "${BOLD}$(_t section_checks)${NC}"
 if [ "$CHANNEL_PROVIDER" = "telegram" ] && ! command -v bun &>/dev/null; then
   echo -e "  ${RED}✗${NC} Bun nem talalhato. A Telegram plugin nem fog mukodni."
   echo -e "  ${BOLD}Javitas:${NC} curl -fsSL https://bun.sh/install | bash"
@@ -806,7 +817,7 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
   echo -e "  ${BOLD}2.${NC} A bot kuld neked egy parosito kodot"
   echo -e "  ${BOLD}3.${NC} Masold ide a kapott kodot:"
   echo ""
-  read -p "  Parosito kod (vagy hagyd uresen ha kesobb csinalod): " PAIR_CODE
+  read -rp "$(_t prompt_pair_code)" PAIR_CODE
   if [ -n "$PAIR_CODE" ]; then
     ACCESS_FILE="$CHANNEL_DIR/access.json"
     if [ -f "$ACCESS_FILE" ]; then
@@ -857,7 +868,7 @@ fi
 echo ""
 echo -e "${BOLD}Korábbi rendszer költöztetése${NC}"
 echo -e "${DIM}  Ha volt korábbi AI asszisztensed (OpenClaw, egyéni bot), átmigrálhatod a memóriáját.${NC}"
-read -p "  Szeretnéd most futtatni a költöztetést? (i/n) [n]: " DO_MIGRATE
+read -rp "$(_t prompt_migrate)" DO_MIGRATE
 DO_MIGRATE=${DO_MIGRATE:-n}
 if [ "$DO_MIGRATE" = "i" ]; then
   if [ -f "$INSTALL_DIR/scripts/migrate.sh" ]; then
@@ -871,7 +882,7 @@ fi
 if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ "$CHAT_ID" = "0" ]; then
   echo ""
   echo -e "${ORANGE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-  echo -e "${RED}  FIGYELEM: Telegram parositas nem tortent meg!${NC}"
+  echo -e "${RED}$(_t warn_pair_missing)${NC}"
   echo -e "${ORANGE}  Az ALLOWED_CHAT_ID=0 marad az .env-ben, ami azt jelenti${NC}"
   echo -e "${ORANGE}  hogy a bot NEM fog valaszolni senkinek.${NC}"
   echo ""
@@ -886,7 +897,7 @@ fi
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo -e "${BOLD}${GREEN}  ✓ Marveen sikeresen telepítve!${NC}"
+echo -e "${BOLD}${GREEN}$(_t success_installed)${NC}"
 echo ""
 
 # Read dashboard token for access URL

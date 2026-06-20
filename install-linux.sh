@@ -23,6 +23,9 @@ warn() { echo -e "  ${ORANGE}!${NC} $*"; }
 
 INSTALL_STEP="init"
 
+# shellcheck source=install-lang.sh
+source "$(dirname "$0")/install-lang.sh"
+
 offer_claude_fallback() {
   local step="$1" err_msg="$2" line_info="${3:+:$3}"
   if ! command -v claude &>/dev/null; then
@@ -32,9 +35,9 @@ offer_claude_fallback() {
   echo -e "${ORANGE}Claude Code elerheto a gepen.${NC}"
   local prompt="Marveen installer failed at step \"${step}\". Error: ${err_msg}. Script: install-linux.sh${line_info}. Repo: https://github.com/Szotasz/marveen. OS: $(lsb_release -ds 2>/dev/null || cat /etc/os-release 2>/dev/null | head -1 || echo Linux). Node: $(node -v 2>/dev/null || echo missing). Dir: ${INSTALL_DIR}. Your task: diagnose this Marveen installer failure. The install scripts are install.sh (macOS) and install-linux.sh. Read the relevant section, check for missing dependencies or permission issues, and suggest concrete shell commands to fix."
   if [ -t 0 ]; then
-    read -p "  Megnyissam Claude Code-ot a hiba diagnosztizalasahoz? (i/n) [n]: " OPEN_CLAUDE
+    read -rp "$(_t prompt_open_claude)" OPEN_CLAUDE
     OPEN_CLAUDE=${OPEN_CLAUDE:-n}
-    if [ "$OPEN_CLAUDE" = "i" ]; then
+    if [[ "$OPEN_CLAUDE" == "i" || "$OPEN_CLAUDE" == "y" ]]; then
       # `claude` az inicialis promptot pozicionalis argumentumkent veszi.
       # A regi `--prompt` flag mar nem letezik (unknown option '--prompt').
       claude "$prompt"
@@ -89,7 +92,11 @@ INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
 clear
 echo ""
 echo -e "${BOLD}  ▐▛███▜▌   Marveen${NC}"
-echo -e "${BOLD} ▝▜█████▛▘  AI csapatod, ami fut amig te alszol.${NC}"
+if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+  echo -e "${BOLD} ▝▜█████▛▘  Your AI team, running while you sleep.${NC}"
+else
+  echo -e "${BOLD} ▝▜█████▛▘  AI csapatod, ami fut amíg te alszol.${NC}"
+fi
 echo -e "${DIM}   ▘▘ ▝▝${NC}"
 echo ""
 echo -e "${DIM}  Telepito wizard - Linux (Ubuntu/Debian)${NC}"
@@ -99,7 +106,7 @@ INSTALL_STEP="prerequisites"
 # ─────────────────────────────────────────────
 # [1/7] Elofeltetelek
 # ─────────────────────────────────────────────
-echo -e "${BOLD}[1/7] Elofeltetelek ellenorzese...${NC}"
+echo -e "${BOLD}$(_t section_1)${NC}"
 
 # Csomagkezelo detektalas: apt-get (Debian/Ubuntu) vagy dnf (Fedora/Nobara/RHEL).
 # A kesobbi telepito agak PKG_MANAGER alapjan valasztanak parancsot es csomagnevet.
@@ -124,7 +131,7 @@ if command -v free &>/dev/null; then
     warn "Kevés memória: ${TOTAL_RAM_MB} MB RAM + ${TOTAL_SWAP_MB} MB swap = ${TOTAL_AVAIL} MB"
     echo -e "  ${ORANGE}Az npm build legalabb 2 GB memoriat igenyel.${NC}"
     if [ "$TOTAL_SWAP_MB" -lt 1024 ]; then
-      read -p "  Letrehozzak 2 GB swap fajlt? (i/n) [i]: " CREATE_SWAP
+      read -rp "$(_t prompt_swap)" CREATE_SWAP
       CREATE_SWAP=${CREATE_SWAP:-i}
       if [ "$CREATE_SWAP" = "i" ]; then
         echo -e "  Swap letrehozasa (sudo szukseges)..."
@@ -240,7 +247,7 @@ INSTALL_STEP="claude-bun-install"
 # [2/7] Claude Code + Bun telepitese
 # ─────────────────────────────────────────────
 echo ""
-echo -e "${BOLD}[2/7] Claude Code + Bun telepitese...${NC}"
+echo -e "${BOLD}$(_t section_2_linux)${NC}"
 
 # ~/.local/bin eloszor, hogy a claude check mar jo PATH-on fusson
 ensure_in_rc '.local/bin' 'export PATH="$HOME/.local/bin:$PATH"'
@@ -305,7 +312,7 @@ INSTALL_STEP="claude-auth"
 # [3/7] Claude bejelentkezes
 # ─────────────────────────────────────────────
 echo ""
-echo -e "${BOLD}[3/7] Claude bejelentkezes${NC}"
+echo -e "${BOLD}$(_t section_3_linux)${NC}"
 
 IS_HEADLESS=false
 if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
@@ -330,10 +337,10 @@ else
   echo -e "  ${BOLD}3.${NC} Kihagyas ${DIM}(kesobb allitod be)${NC}"
   echo ""
   if [ "$IS_HEADLESS" = "true" ]; then
-    read -p "  Valasztas (1/2/3) [2]: " AUTH_MODE
+    read -rp "$(_t prompt_auth_mode)" AUTH_MODE
     AUTH_MODE=${AUTH_MODE:-2}
   else
-    read -p "  Valasztas (1/2/3) [3]: " AUTH_MODE
+    read -rp "$(_t prompt_auth_mode)" AUTH_MODE
     AUTH_MODE=${AUTH_MODE:-3}
   fi
 
@@ -461,8 +468,8 @@ INSTALL_STEP="personal-info"
 # [4/7] Szemelyes beallitasok
 # ─────────────────────────────────────────────
 echo ""
-echo -e "${BOLD}[4/7] Szemelyes beallitasok${NC}"
-read -p "  Mi a neved? " OWNER_NAME
+echo -e "${BOLD}$(_t section_4_linux)${NC}"
+read -rp "$(_t prompt_your_name)" OWNER_NAME
 # Chat ID is NOT asked here -- the user doesn't know it yet.
 # It will be set automatically during the Telegram pairing flow.
 CHAT_ID="0"
@@ -479,7 +486,7 @@ if [ "$IS_HEADLESS" = "true" ]; then
   echo -e "  ${BOLD}Javasoljuk:${NC} lepj be a claude.ai Settings oldalara es"
   echo -e "  tiltsd le a felesleges MCP-ket telepites elott."
   echo -e "${ORANGE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-  read -p "  Folytassam a telepitést? (i/n) [i]: " CONTINUE_MCP
+  read -rp "$(_t prompt_vps_continue)" CONTINUE_MCP
   CONTINUE_MCP=${CONTINUE_MCP:-i}
   if [ "$CONTINUE_MCP" != "i" ]; then
     echo -e "  ${DIM}Telepites megszakitva. Tiltsd le a felesleges MCP-ket, majd futtasd ujra.${NC}"
@@ -495,7 +502,7 @@ echo -e "  ${BOLD}1.${NC} Telegram (alapertelmezett)"
 echo -e "  ${BOLD}2.${NC} Slack"
 echo -e "  ${BOLD}3.${NC} Discord"
 echo ""
-read -p "  Valassz (1/2/3) [1]: " PROVIDER_CHOICE
+read -rp "$(_t prompt_channel_select_linux)" PROVIDER_CHOICE
 PROVIDER_CHOICE=${PROVIDER_CHOICE:-1}
 if [ "$PROVIDER_CHOICE" = "2" ]; then
   CHANNEL_PROVIDER="slack"
@@ -521,7 +528,7 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   echo -e "${DIM}  3. Adj nevet a botodnak${NC}"
   echo -e "${DIM}  4. Masold ide a kapott tokent:${NC}"
   echo ""
-  read -p "  Telegram bot token (vagy hagyd uresen, kesobb is beallithatod): " BOT_TOKEN
+  read -rp "$(_t prompt_telegram_token)" BOT_TOKEN
 elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   echo ""
   echo -e "${DIM}  Az AI asszisztensed Discordon kommunikal veled.${NC}"
@@ -532,12 +539,12 @@ elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   echo -e "${DIM}  5. Masold ki a csatorna ID-jet (Developer Mode > jobb klikk > Copy Channel ID)${NC}"
   echo -e "${DIM}  6. Sajat (operator) user ID: jobb klikk a nevedre > Copy User ID${NC}"
   echo ""
-  read -p "  Discord bot token (vagy hagyd uresen, kesobb is beallithatod): " DISCORD_BOT_TOKEN
-  read -p "  Discord channel ID: " DISCORD_CHANNEL_ID
+  read -rp "$(_t prompt_discord_bot_token)" DISCORD_BOT_TOKEN
+  read -rp "$(_t prompt_discord_channel_id)" DISCORD_CHANNEL_ID
   echo ""
   echo -e "${DIM}  Az operator user ID-re a parositashoz kell: amikor egy uj felhasznalo${NC}"
   echo -e "${DIM}  DM-et ir a botnak, a bot ezen az ID-n ertesit teged jovahagyasert.${NC}"
-  read -p "  A Te Discord user ID-d (operator): " OPERATOR_DISCORD_USER_ID
+  read -rp "$(_t prompt_discord_user_id)" OPERATOR_DISCORD_USER_ID
 else
   echo ""
   echo -e "${DIM}  Az AI asszisztensed Slack-en kommunikal veled.${NC}"
@@ -551,11 +558,11 @@ else
   echo -e "${DIM}     app_mention, message.channels, message.groups, message.im${NC}"
   echo -e "${DIM}  5. Installald a workspace-be${NC}"
   echo ""
-  read -p "  Bot Token (xoxb-...): " SLACK_BOT_TOKEN
-  read -p "  App-Level Token (xapp-...): " SLACK_APP_TOKEN
+  read -rp "$(_t prompt_slack_bot_token)" SLACK_BOT_TOKEN
+  read -rp "$(_t prompt_slack_app_token)" SLACK_APP_TOKEN
 fi
 
-read -p "  Mi legyen a botod neve? [Marveen]: " BOT_NAME
+read -rp "$(_t prompt_bot_name)" BOT_NAME
 BOT_NAME=${BOT_NAME:-"Marveen"}
 
 # Derive the ASCII slug the backend uses everywhere (tmux sessions, systemd
@@ -587,7 +594,7 @@ INSTALL_STEP="npm-install"
 # [5/7] Fuggosegek telepitese + konfiguracic
 # ─────────────────────────────────────────────
 echo ""
-echo -e "${BOLD}[5/7] Fuggosegek telepitese...${NC}"
+echo -e "${BOLD}$(_t section_5)${NC}"
 cd "$INSTALL_DIR"
 
 echo -e "  npm install..."
@@ -890,7 +897,7 @@ INSTALL_STEP="ollama-whisper"
 # [6/7] Ollama + Whisper
 # ─────────────────────────────────────────────
 echo ""
-echo -e "${BOLD}[6/7] Ollama + Whisper...${NC}"
+echo -e "${BOLD}$(_t section_6_linux)${NC}"
 
 # --- Ollama telepites ---
 echo -e "  Ollama ellenorzese (szemantikus memoria kereseshez)..."
@@ -945,7 +952,7 @@ echo -e "  Whisper telepites (beszed -> szoveg leirat, opcionalis)..."
 if command -v whisper &>/dev/null; then
   ok "whisper mar telepitve"
 else
-  read -p "  Szeretned telepiteni a Whisper-t? (i/n) [n]: " DO_WHISPER
+  read -rp "$(_t prompt_whisper)" DO_WHISPER
   DO_WHISPER=${DO_WHISPER:-n}
   if [ "$DO_WHISPER" = "i" ]; then
     pipx install openai-whisper 2>/dev/null &&
@@ -961,7 +968,7 @@ INSTALL_STEP="systemd"
 # [7/7] Automatikus inditas (systemd)
 # ─────────────────────────────────────────────
 echo ""
-echo -e "${BOLD}[7/7] Automatikus inditas beallitasa (systemd)...${NC}"
+echo -e "${BOLD}$(_t section_7)${NC}"
 
 SYSTEMD_DIR="$HOME/.config/systemd/user"
 mkdir -p "$SYSTEMD_DIR"
@@ -1144,7 +1151,7 @@ fi
 # Ellenorzes
 sleep 3
 echo ""
-echo -e "${BOLD}Ellenorzes...${NC}"
+echo -e "${BOLD}$(_t section_checks)${NC}"
 if [ "$CHANNEL_PROVIDER" = "telegram" ] && ! command -v bun &>/dev/null; then
   echo -e "  ${RED}✗${NC} Bun nem talalhato. A Telegram plugin nem fog mukodni."
   echo -e "  ${BOLD}Javitas:${NC} curl -fsSL https://bun.sh/install | bash"
@@ -1190,7 +1197,7 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
     echo -e "  ${BOLD}2.${NC} A bot valaszol egy parosito kodot"
     echo -e "  ${BOLD}3.${NC} Masold ide a kapott kodot:"
     echo ""
-    read -p "  Parosito kod (vagy hagyd uresen ha kesobb csinalod): " PAIR_CODE
+    read -rp "$(_t prompt_pair_code)" PAIR_CODE
 
     if [ -n "$PAIR_CODE" ]; then
       if [ ! -f "$ACCESS_FILE" ]; then
@@ -1251,7 +1258,7 @@ fi
 echo ""
 echo -e "${BOLD}Korabbi rendszer koltoztetese${NC}"
 echo -e "${DIM}  Ha volt korabbi AI asszisztensed (OpenClaw, egyeni bot), atmigralhato a memoriai.${NC}"
-read -p "  Szeretned most futtatni a koltoztetest? (i/n) [n]: " DO_MIGRATE
+read -rp "$(_t prompt_migrate)" DO_MIGRATE
 DO_MIGRATE=${DO_MIGRATE:-n}
 if [ "$DO_MIGRATE" = "i" ]; then
   if [ -f "$INSTALL_DIR/scripts/migrate.sh" ]; then
@@ -1265,7 +1272,7 @@ fi
 if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ "$CHAT_ID" = "0" ]; then
   echo ""
   echo -e "${ORANGE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-  echo -e "${RED}  FIGYELEM: Telegram parositas nem tortent meg!${NC}"
+  echo -e "${RED}$(_t warn_pair_missing)${NC}"
   echo -e "${ORANGE}  Az ALLOWED_CHAT_ID=0 marad az .env-ben, ami azt jelenti${NC}"
   echo -e "${ORANGE}  hogy a bot NEM fog valaszolni senkinek.${NC}"
   echo ""
@@ -1282,7 +1289,7 @@ fi
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo -e "${BOLD}${GREEN}  ✓ Marveen sikeresen telepitve!${NC}"
+echo -e "${BOLD}${GREEN}$(_t success_installed)${NC}"
 echo ""
 
 DASH_TOKEN=""
