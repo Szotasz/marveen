@@ -6729,15 +6729,22 @@ async function loadGitHubRepos() {
         status.textContent = 'API kulcsok megadása szükséges...'
         const envValues = await showEnvVarModal(data.requiredEnvVars)
         if (envValues && Object.keys(envValues).length > 0) {
+          let vaultAllOk = true
           for (const [key, value] of Object.entries(envValues)) {
-            await fetch('/api/vault', {
+            const r = await fetch('/api/vault', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ id: `github-env-${data.repo.name}-${key}`, label: `${key} (${data.repo.name.replace('--', '/')})`, value }),
             })
+            if (!r.ok) vaultAllOk = false
           }
-          status.className = 'github-repo-status success'
-          status.textContent = 'Telepitve, kulcsok mentve a Vault-ba!'
+          if (vaultAllOk) {
+            status.className = 'github-repo-status success'
+            status.textContent = 'Telepitve, kulcsok mentve a Vault-ba!'
+          } else {
+            status.className = 'github-repo-status error'
+            status.textContent = 'Telepitve, de néhány kulcs mentése sikertelen. Add meg újra a Vault-ban.'
+          }
           loadVault()
         } else {
           status.className = 'github-repo-status success'
@@ -6779,7 +6786,8 @@ async function loadVault() {
       item.innerHTML = `<div class="github-repo-info"><span class="github-repo-name">${escapeHtml(s.label)}</span><span class="github-repo-date">${escapeHtml(s.id)} &middot; ${date}</span></div><button title="Torles" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:14px;padding:2px 6px">&times;</button>`
       item.querySelector('button').addEventListener('click', async () => {
         if (!confirm(`Torlod: ${s.label}?`)) return
-        await fetch(`/api/vault/${encodeURIComponent(s.id)}`, { method: 'DELETE' })
+        const res = await fetch(`/api/vault/${encodeURIComponent(s.id)}`, { method: 'DELETE' })
+        if (!res.ok) { showToast('Törlés sikertelen'); return }
         loadVault()
       })
       list.appendChild(item)
@@ -6803,11 +6811,16 @@ async function loadVault() {
     const id = idInput.value.trim()
     const val = valInput.value
     if (!id || !val) return
-    await fetch('/api/vault', {
+    const res = await fetch('/api/vault', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, label: id, value: val }),
     })
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}))
+      showToast('Mentés sikertelen: ' + (e.error || res.status))
+      return
+    }
     idInput.value = ''
     valInput.value = ''
     loadVault()
@@ -6935,11 +6948,18 @@ function renderVaultGrid(secrets) {
         const saveBtn = form.querySelector('.vault-edit-save')
         saveBtn.disabled = true
         saveBtn.textContent = '...'
-        await fetch('/api/vault', {
+        const res = await fetch('/api/vault', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id, label, value: newVal }),
         })
+        if (!res.ok) {
+          const e = await res.json().catch(() => ({}))
+          showToast('Frissítés sikertelen: ' + (e.error || res.status))
+          saveBtn.disabled = false
+          saveBtn.textContent = 'Mentés'
+          return
+        }
         form.remove()
         showToast('Kulcs frissitve es szinkronizalva')
         loadVaultPage()
@@ -6955,7 +6975,8 @@ function renderVaultGrid(secrets) {
     btn.addEventListener('click', async () => {
       const id = btn.getAttribute('data-id')
       if (!confirm(`Torlod: ${id}?`)) return
-      await fetch(`/api/vault/${encodeURIComponent(id)}`, { method: 'DELETE' })
+      const res = await fetch(`/api/vault/${encodeURIComponent(id)}`, { method: 'DELETE' })
+      if (!res.ok) { showToast('Törlés sikertelen'); return }
       loadVaultPage()
       loadVault()
     })
