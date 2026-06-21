@@ -374,7 +374,7 @@ window._i18n.hu = {
 
   // --- Activity ---
   'activity.page_title':         'Aktivitás',
-  'activity.page_subtitle':      'Mit csinál épp minden ügynök — élő nézet, 3 mp-enként frissül',
+  'activity.page_subtitle':      'Mit csinál épp minden ügynök: élő nézet, 3 mp-enként frissül',
 
   'activity.updated':            'Frissítve: {time}',
   'activity.error_load':         'Nem sikerült lekérni az aktivitást',
@@ -542,7 +542,7 @@ window._i18n.hu = {
   'conversation.error':          'Nem sikerült betölteni a beszélgetést.',
   'conversation.load_more':      'Korábbiak betöltése',
   'conversation.empty':          'Nincs megjeleníthető üzenet.',
-  'conversation.title':          '{name} — Beszélgetés',
+  'conversation.title':          '{name} - Beszélgetés',
   'conversation.filter_label':   'Műveletek/jegyzetek mutatása',
   'mobile_login.no_token':       'Nincs eltárolt token. Előbb lépj be itt.',
   'mobile_login.cdn_error':      'A QR-generátor nem töltött be (CDN). Hálózat?',

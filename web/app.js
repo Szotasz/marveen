@@ -11047,7 +11047,7 @@ function openTerminalModal(agentName) {
   const title = document.getElementById('terminalModalTitle')
   if (!overlay || !container) return
 
-  title.textContent = agentName + ' — Terminal'
+  title.textContent = agentName + ' - Terminal'
 
   // Cleanup previous
   if (terminalSSE) { terminalSSE.close(); terminalSSE = null }

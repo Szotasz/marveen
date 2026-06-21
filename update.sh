@@ -230,9 +230,9 @@ if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
   # run even when the code is already current. Skip the dep-install + build
   # below (nothing changed there) and jump to the seed/identity refresh.
   if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
-    echo -e "  ${GREEN}✓${NC} Already on the latest version ($NEW_VERSION) — continuing due to fleet-reseed/regen flag"
+    echo -e "  ${GREEN}✓${NC} Already on the latest version ($NEW_VERSION), continuing due to fleet-reseed/regen flag"
   else
-    echo -e "  ${GREEN}✓${NC} Már a legfrissebb verzión ($NEW_VERSION) — folytatás a kért fleet-reseed/regen miatt"
+    echo -e "  ${GREEN}✓${NC} Már a legfrissebb verzión ($NEW_VERSION), folytatás a kért fleet-reseed/regen miatt"
   fi
   SKIP_BUILD=1
 fi
@@ -538,9 +538,9 @@ if [ "$STASHED_AUTO" = "1" ]; then
   echo -e "  Auto-stash visszaallitasa..."
   if ! git stash pop; then
     if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
-      echo -e "${RED}WARNING:${NC} Auto-stash pop had conflicts — the stash remains in 'git stash list'."
+      echo -e "${RED}WARNING:${NC} Auto-stash pop had conflicts; the stash remains in 'git stash list'."
     else
-      echo -e "${RED}FIGYELEM:${NC} Auto-stash pop konfliktusos — a stash benne marad a 'git stash list'-ben."
+      echo -e "${RED}FIGYELEM:${NC} Auto-stash pop konfliktusos; a stash benne marad a 'git stash list'-ben."
     fi
     echo -e "          Manualisan kezeld: git stash list / git stash apply / git stash drop"
   fi

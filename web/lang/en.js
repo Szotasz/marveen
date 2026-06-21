@@ -255,7 +255,7 @@ window._i18n.en = {
 
   // --- Activity ---
   'activity.page_title':         'Activity',
-  'activity.page_subtitle':      'What each agent is doing — live view, updates every 3 sec',
+  'activity.page_subtitle':      'What each agent is doing: live view, updates every 3 sec',
   'activity.loading':            'Loading…',
   'activity.state.working':      'working',
   'activity.state.idle':         'idle',
@@ -925,7 +925,7 @@ window._i18n.en = {
   'conversation.error':			'Failed to load conversation.',
   'conversation.load_more':			'Load older',
   'conversation.loading':			'Loading...',
-  'conversation.title':			'{name} — Conversation',
+  'conversation.title':			'{name} - Conversation',
   'conversation.filter_label':   'Show actions/notes',
   'memories.agent_all':			'All agents',
   'memories.stat.total':			'Total',
