@@ -30,13 +30,16 @@ function tightenDbPermissions(dbPath: string): void {
   }
 }
 
-// dbPathOverride is for tests: pass ':memory:' (or a temp path) to open an
-// isolated database instead of the real store/claudeclaw.db. The file-precreate
-// (openSync 'wx') and tightenDbPermissions steps are SKIPPED for an override --
-// they only make sense for a real on-disk store file, and ':memory:' has no path
-// to chmod. This keeps tests idempotent and stops them polluting the prod DB.
+// dbPathOverride is for tests: pass ':memory:' (or a temp file path) to open an
+// isolated database instead of the real store/claudeclaw.db. ':memory:' has no
+// path to chmod, so the file-precreate (openSync 'wx') and tightenDbPermissions
+// steps are skipped for it. A real on-disk override path (e.g. a /tmp temp file)
+// STILL gets pre-create + tighten -- this lets the permission tests exercise the
+// tightening logic on a throwaway file instead of touching the prod DB. The
+// STORE_DIR mkdir stays prod-only; a temp-file override owns its own directory.
 export function initDatabase(dbPathOverride?: string): void {
   const useOverride = dbPathOverride !== undefined
+  const isMemory = dbPathOverride === ':memory:'
   if (!useOverride) mkdirSync(STORE_DIR, { recursive: true })
   // Idempotent re-init: close a previous handle before opening a new one
   // so repeated calls (tests, hot-reload, recovery paths) do not leak
@@ -48,8 +51,8 @@ export function initDatabase(dbPathOverride?: string): void {
   // Step 1: close the TOCTOU window on fresh installs. openSync with 'wx'
   // + 0o600 creates the file ONLY if it doesn't exist and sets the strict
   // mode atomically. better-sqlite3 then opens the existing file rather
-  // than creating one at the default umask. Skipped for a test override.
-  if (!useOverride && !existsSync(dbPath)) {
+  // than creating one at the default umask. Skipped only for ':memory:'.
+  if (!isMemory && !existsSync(dbPath)) {
     try {
       closeSync(openSync(dbPath, 'wx', 0o600))
     } catch (err) {
@@ -63,7 +66,7 @@ export function initDatabase(dbPathOverride?: string): void {
   }
   db = new Database(dbPath)
   db.pragma('journal_mode = WAL')
-  if (!useOverride) tightenDbPermissions(dbPath)
+  if (!isMemory) tightenDbPermissions(dbPath)
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (

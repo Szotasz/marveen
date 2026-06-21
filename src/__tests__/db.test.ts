@@ -22,7 +22,7 @@ import {
   markPendingTaskRetryAlert,
   clearPendingTaskRetryAlert,
 } from '../db.js'
-import { STORE_DIR, DB_FILENAME } from '../config.js'
+import { DB_FILENAME } from '../config.js'
 
 beforeAll(() => {
   // Teszt adatbázis inicializálás -- in-memory, hogy a teszt SOHA ne irjon a
@@ -241,45 +241,66 @@ describe('pending task retries', () => {
 })
 
 describe('database file permissions', () => {
-  // Enforcement (not just observation): loosen every sidecar to 0o644
-  // first, then re-run initDatabase() to prove tightenDbPermissions
-  // actually narrows them. Without this, the tests would pass even if
-  // tightenDbPermissions were removed entirely -- the files would
-  // simply retain whatever mode a previous test run left them at.
+  // Run the whole tightening check against a throwaway DB in the OS temp dir,
+  // never the real store/claudeclaw.db. initDatabase() now applies pre-create
+  // + tightenDbPermissions to any on-disk override path (only ':memory:' is
+  // exempt), so a temp file exercises the exact prod tightening logic without
+  // a single touch to the prod store.
+  //
+  // Enforcement (not just observation): loosen every sidecar to 0o644 first,
+  // then re-run initDatabase() to prove tightenDbPermissions actually narrows
+  // them. Without this, the tests would pass even if tightenDbPermissions were
+  // removed entirely -- the files would simply retain whatever mode the
+  // first init left them at.
+  let tmpDir: string
+  let tmpDbPath: string
+
   beforeAll(async () => {
-    const { chmodSync } = await import('node:fs')
-    const dbPath = join(STORE_DIR, DB_FILENAME)
-    for (const p of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`]) {
+    const { mkdtempSync, chmodSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    tmpDir = mkdtempSync(join(tmpdir(), 'claudeclaw-perm-'))
+    tmpDbPath = join(tmpDir, DB_FILENAME)
+    // First init creates the file + sidecars (already tightened).
+    initDatabase(tmpDbPath)
+    // Loosen them, then re-init to prove the tightening runs every time.
+    for (const p of [tmpDbPath, `${tmpDbPath}-wal`, `${tmpDbPath}-shm`, `${tmpDbPath}-journal`]) {
       if (existsSync(p)) {
         try { chmodSync(p, 0o644) } catch { /* best effort */ }
       }
     }
-    initDatabase()
+    initDatabase(tmpDbPath)
   })
 
-  it('claudeclaw.db is tightened to owner-only (0o600) by initDatabase', () => {
-    const dbPath = join(STORE_DIR, DB_FILENAME)
-    expect(existsSync(dbPath)).toBe(true)
-    const mode = statSync(dbPath).mode & 0o777
+  afterAll(async () => {
+    const { rmSync } = await import('node:fs')
+    // Restore the in-memory handle so we never leave the suite pointed at the
+    // temp file (which afterAll is about to delete).
+    initDatabase(':memory:')
+    try { rmSync(tmpDir, { recursive: true, force: true }) } catch { /* best effort */ }
+  })
+
+  it('db file is tightened to owner-only (0o600) by initDatabase', () => {
+    expect(existsSync(tmpDbPath)).toBe(true)
+    const mode = statSync(tmpDbPath).mode & 0o777
     expect(mode).toBe(0o600)
   })
 
   it('WAL sidecar (when present) is tightened to 0o600', () => {
-    const walPath = join(STORE_DIR, `${DB_FILENAME}-wal`)
+    const walPath = `${tmpDbPath}-wal`
     if (!existsSync(walPath)) return // WAL may not exist on a freshly-initialised empty DB
     const mode = statSync(walPath).mode & 0o777
     expect(mode).toBe(0o600)
   })
 
   it('SHM sidecar (when present) is tightened to 0o600', () => {
-    const shmPath = join(STORE_DIR, `${DB_FILENAME}-shm`)
+    const shmPath = `${tmpDbPath}-shm`
     if (!existsSync(shmPath)) return
     const mode = statSync(shmPath).mode & 0o777
     expect(mode).toBe(0o600)
   })
 
   it('rollback-journal sidecar (when present) is tightened to 0o600', () => {
-    const journalPath = join(STORE_DIR, `${DB_FILENAME}-journal`)
+    const journalPath = `${tmpDbPath}-journal`
     if (!existsSync(journalPath)) return
     const mode = statSync(journalPath).mode & 0o777
     expect(mode).toBe(0o600)
