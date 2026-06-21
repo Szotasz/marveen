@@ -2179,3 +2179,14 @@ export function pruneAuditLogs(): void {
   db.prepare('DELETE FROM store_file_audit WHERE created_at < ?').run(cutoff)
 }
 
+// Prune token_usage rows older than TOKEN_USAGE_RETENTION_DAYS. The table is the
+// main DB-growth driver (one row per inbound token-log event); without this it
+// grows unbounded. Called from the daily decay sweep. `timestamp` is unix
+// SECONDS. Returns the number of rows removed (for logging).
+export function pruneTokenUsage(): number {
+  const retentionDays = Number(getEffectiveSettingValue('TOKEN_USAGE_RETENTION_DAYS'))
+  const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400
+  const info = db.prepare('DELETE FROM token_usage WHERE timestamp < ?').run(cutoff)
+  return info.changes
+}
+

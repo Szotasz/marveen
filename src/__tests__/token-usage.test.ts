@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest'
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { getDb, initDatabase } from '../db.js'
+import { getDb, initDatabase, pruneTokenUsage } from '../db.js'
 
 const TEST_DIR = '/tmp/test-token-usage'
 const PROJECTS_DIR = join(TEST_DIR, '.claude', 'projects')
@@ -101,6 +101,43 @@ afterAll(() => {
   const db = getDb()
   db.exec("DELETE FROM token_usage WHERE agent LIKE 'test-%' OR session_id LIKE 'sess-%'")
   db.exec("DELETE FROM token_usage_cursors WHERE file_path LIKE '/tmp/%'")
+})
+
+describe('pruneTokenUsage', () => {
+  const NOW = Math.floor(Date.now() / 1000)
+  const DAY = 86400
+  function insertRow(sessionId: string, ageDays: number) {
+    getDb().prepare(
+      `INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
+       VALUES ('test-prune', ?, ?, 1, 1, 0, 0)`,
+    ).run(sessionId, NOW - ageDays * DAY)
+  }
+
+  beforeEach(() => {
+    getDb().exec("DELETE FROM token_usage WHERE agent = 'test-prune'")
+  })
+
+  it('deletes rows older than the retention window (default 90 days), keeps recent ones', () => {
+    insertRow('sess-old-1', 200)   // well past 90d
+    insertRow('sess-old-2', 91)    // just past 90d
+    insertRow('sess-recent-1', 89) // just inside 90d
+    insertRow('sess-recent-2', 1)  // recent
+
+    const removed = pruneTokenUsage()
+    expect(removed).toBe(2)
+
+    const remaining = getDb()
+      .prepare("SELECT session_id FROM token_usage WHERE agent = 'test-prune' ORDER BY session_id")
+      .all() as Array<{ session_id: string }>
+    expect(remaining.map((r) => r.session_id)).toEqual(['sess-recent-1', 'sess-recent-2'])
+  })
+
+  it('is a no-op when nothing is older than the window', () => {
+    insertRow('sess-fresh', 5)
+    expect(pruneTokenUsage()).toBe(0)
+    const cnt = getDb().prepare("SELECT COUNT(*) c FROM token_usage WHERE agent = 'test-prune'").get() as { c: number }
+    expect(cnt.c).toBe(1)
+  })
 })
 
 describe('collectTokenUsage', () => {
