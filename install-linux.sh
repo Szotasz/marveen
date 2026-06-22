@@ -975,6 +975,96 @@ else
   fi
 fi
 
+INSTALL_STEP="bumblebee"
+# ─────────────────────────────────────────────
+# Go + bumblebee (supply-chain scanner)
+# ─────────────────────────────────────────────
+echo ""
+echo -e "  Go + bumblebee (supply-chain scanner)..."
+
+_go_version_ok() {
+  command -v go &>/dev/null || return 1
+  local ver major minor
+  ver=$(go version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
+  major=$(echo "$ver" | cut -d. -f1)
+  minor=$(echo "$ver" | cut -d. -f2)
+  [ "$major" -gt 1 ] || ( [ "$major" -eq 1 ] && [ "${minor:-0}" -ge 25 ] )
+}
+
+if _go_version_ok; then
+  ok "$(go version | grep -oE 'go[0-9]+\.[0-9.]+')"
+else
+  echo -e "  ${ORANGE}!${NC} Go >= 1.25 szukseges -- telepites..."
+  _GO_INSTALLED=false
+  # 1. snap (Ubuntu/Debian desktop, Fedora, Nobara)
+  if command -v snap &>/dev/null; then
+    echo -e "  snap install go --classic..."
+    if sudo snap install go --classic 2>/dev/null; then
+      export PATH="/snap/bin:$PATH"
+      _GO_INSTALLED=true
+      ok "Go telepitve (snap)"
+    fi
+  fi
+  # 2. Hivatalos tarball fallback (ha snap nem elerheto vagy sikertelen)
+  if [ "$_GO_INSTALLED" = "false" ]; then
+    echo -e "  Hivatalos Go tarball letoltese (go.dev/dl)..."
+    _ARCH=$(uname -m)
+    case "$_ARCH" in
+      x86_64)  _GOARCH="amd64" ;;
+      aarch64) _GOARCH="arm64" ;;
+      armv7l)  _GOARCH="armv6l" ;;
+      *)       _GOARCH="" ;;
+    esac
+    if [ -n "$_GOARCH" ]; then
+      _GOVERSION=$(curl -fsSL "https://go.dev/dl/?mode=json" 2>/dev/null \
+        | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['version'])" 2>/dev/null \
+        || echo "go1.25.0")
+      _GOTAR="${_GOVERSION}.linux-${_GOARCH}.tar.gz"
+      if curl -fsSL "https://go.dev/dl/${_GOTAR}" -o "/tmp/${_GOTAR}" 2>/dev/null; then
+        sudo rm -rf /usr/local/go
+        sudo tar -C /usr/local -xzf "/tmp/${_GOTAR}" 2>/dev/null
+        rm -f "/tmp/${_GOTAR}"
+        export PATH="$PATH:/usr/local/go/bin"
+        ensure_in_rc '/usr/local/go/bin' 'export PATH="$PATH:/usr/local/go/bin"'
+        _GO_INSTALLED=true
+        ok "Go telepitve (/usr/local/go): ${_GOVERSION}"
+      else
+        echo -e "  ${RED}✗${NC} Go tarball letoltes sikertelen."
+      fi
+    else
+      echo -e "  ${RED}✗${NC} Ismeretlen CPU architektura ($_ARCH) -- Go nem telepitheto automatikusan."
+    fi
+  fi
+  if [ "$_GO_INSTALLED" = "false" ]; then
+    echo -e "  ${ORANGE}!${NC} Go telepites sikertelen -- bumblebee kihagyva."
+    echo -e "  ${DIM}  Kezzel: sudo snap install go --classic  VAGY  https://go.dev/dl${NC}"
+  fi
+fi
+
+BUMBLEBEE_BIN="$HOME/.local/bin/bumblebee"
+if [ -x "$BUMBLEBEE_BIN" ]; then
+  ok "bumblebee mar telepitve ($BUMBLEBEE_BIN)"
+elif _go_version_ok; then
+  echo -e "  bumblebee build forrasbol (github.com/perplexityai/bumblebee)..."
+  mkdir -p "$HOME/.local/bin"
+  _BB_TMP=$(mktemp -d)
+  if git clone -q --depth 1 https://github.com/perplexityai/bumblebee.git "$_BB_TMP" 2>/dev/null; then
+    if (cd "$_BB_TMP" && go build -o "$BUMBLEBEE_BIN" ./cmd/bumblebee 2>/dev/null); then
+      chmod +x "$BUMBLEBEE_BIN"
+      ok "bumblebee telepitve: $BUMBLEBEE_BIN"
+    else
+      echo -e "  ${ORANGE}!${NC} bumblebee build sikertelen -- a supply-chain scan kihagyja a binart."
+      echo -e "  ${DIM}  Kezzel: cd /tmp/bb && go build -o ~/.local/bin/bumblebee ./cmd/bumblebee${NC}"
+    fi
+  else
+    echo -e "  ${ORANGE}!${NC} bumblebee clone sikertelen (halozat?) -- kihagyva."
+  fi
+  rm -rf "$_BB_TMP"
+else
+  echo -e "  ${ORANGE}!${NC} Go nem elerheto -- bumblebee kihagyva. A supply-chain scan atlepve."
+  echo -e "  ${DIM}  Kezzel: sudo snap install go --classic && git clone https://github.com/perplexityai/bumblebee /tmp/bb && (cd /tmp/bb && go build -o ~/.local/bin/bumblebee ./cmd/bumblebee)${NC}"
+fi
+
 INSTALL_STEP="systemd"
 # ─────────────────────────────────────────────
 # [7/7] Automatikus inditas (systemd)
