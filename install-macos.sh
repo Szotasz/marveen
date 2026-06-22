@@ -711,9 +711,14 @@ if _go_version_ok; then
 else
   echo -e "  ${ORANGE}!${NC} Go >= 1.25 szukseges -- telepites (brew install go)..."
   if command -v brew &>/dev/null; then
-    brew install go
-    # Frissitjuk a PATH-ot az uj Go binary-re
-    export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+    # set -e + trap ERR van eletben: brew bukasa NE allitsa le a telepitest,
+    # csak hagyja ki bumblebee-t (a _go_version_ok ujra-ellenoriz lentebb).
+    if brew install go; then
+      # Frissitjuk a PATH-ot az uj Go binary-re
+      export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+    else
+      echo -e "  ${ORANGE}!${NC} Go telepites sikertelen -- bumblebee kihagyva."
+    fi
   else
     echo -e "  ${RED}✗${NC} Homebrew nem elerheto; bumblebee nem telepitheto automatikusan."
     echo -e "  ${DIM}  Kezzel: https://go.dev/dl (>= 1.25)${NC}"
@@ -727,7 +732,7 @@ elif _go_version_ok; then
   echo -e "  bumblebee build forrasbol (github.com/perplexityai/bumblebee)..."
   mkdir -p "$HOME/.local/bin"
   _BB_TMP=$(mktemp -d)
-  if git clone -q --depth 1 https://github.com/perplexityai/bumblebee.git "$_BB_TMP" 2>/dev/null; then
+  if git clone -q --depth 1 --branch v0.1.2 https://github.com/perplexityai/bumblebee.git "$_BB_TMP" 2>/dev/null; then
     if (cd "$_BB_TMP" && go build -o "$BUMBLEBEE_BIN" ./cmd/bumblebee 2>/dev/null); then
       chmod +x "$BUMBLEBEE_BIN"
       echo -e "  ${GREEN}✓${NC} bumblebee telepitve: $BUMBLEBEE_BIN"

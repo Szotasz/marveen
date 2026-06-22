@@ -1021,13 +1021,18 @@ else
         || echo "go1.25.0")
       _GOTAR="${_GOVERSION}.linux-${_GOARCH}.tar.gz"
       if curl -fsSL "https://go.dev/dl/${_GOTAR}" -o "/tmp/${_GOTAR}" 2>/dev/null; then
-        sudo rm -rf /usr/local/go
-        sudo tar -C /usr/local -xzf "/tmp/${_GOTAR}" 2>/dev/null
+        # set -e + trap ERR van eletben: a kicsomagolas bukasa NE allitsa le a
+        # telepitest, csak hagyja ki bumblebee-t.
+        sudo rm -rf /usr/local/go 2>/dev/null || true
+        if sudo tar -C /usr/local -xzf "/tmp/${_GOTAR}" 2>/dev/null; then
+          export PATH="$PATH:/usr/local/go/bin"
+          ensure_in_rc '/usr/local/go/bin' 'export PATH="$PATH:/usr/local/go/bin"'
+          _GO_INSTALLED=true
+          ok "Go telepitve (/usr/local/go): ${_GOVERSION}"
+        else
+          echo -e "  ${RED}✗${NC} Go tarball kicsomagolas sikertelen."
+        fi
         rm -f "/tmp/${_GOTAR}"
-        export PATH="$PATH:/usr/local/go/bin"
-        ensure_in_rc '/usr/local/go/bin' 'export PATH="$PATH:/usr/local/go/bin"'
-        _GO_INSTALLED=true
-        ok "Go telepitve (/usr/local/go): ${_GOVERSION}"
       else
         echo -e "  ${RED}✗${NC} Go tarball letoltes sikertelen."
       fi
@@ -1048,7 +1053,7 @@ elif _go_version_ok; then
   echo -e "  bumblebee build forrasbol (github.com/perplexityai/bumblebee)..."
   mkdir -p "$HOME/.local/bin"
   _BB_TMP=$(mktemp -d)
-  if git clone -q --depth 1 https://github.com/perplexityai/bumblebee.git "$_BB_TMP" 2>/dev/null; then
+  if git clone -q --depth 1 --branch v0.1.2 https://github.com/perplexityai/bumblebee.git "$_BB_TMP" 2>/dev/null; then
     if (cd "$_BB_TMP" && go build -o "$BUMBLEBEE_BIN" ./cmd/bumblebee 2>/dev/null); then
       chmod +x "$BUMBLEBEE_BIN"
       ok "bumblebee telepitve: $BUMBLEBEE_BIN"
