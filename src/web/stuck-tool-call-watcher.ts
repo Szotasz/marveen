@@ -46,6 +46,7 @@ import { resumeMarveenSession, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS 
 import {
   stuckToolCallSignature,
   decideStuckToolCallRecovery,
+  detectPaneState,
   type StuckToolCallState,
   type StuckToolCallThresholds,
 } from '../pane-state.js'
@@ -154,6 +155,27 @@ function checkSession(label: string, session: string): void {
   }
 
   if (recover) {
+    // Idle-prompt guard (2026-06-22 false-positive loop): the signature only
+    // sees a frozen "<verb> for Ns" footer -- it cannot tell an ACTIVELY-wedged
+    // tool-call (the 2026-06-02 incident) from the RESIDUAL footer a COMPLETED
+    // turn leaves on screen while the session sits idle waiting for its next
+    // heartbeat. Both read as a stagnant counter. The discriminator is the input
+    // box: a genuine mid-turn wedge has no ready prompt (detectPaneState != idle,
+    // the box is replaced by the busy/working indicator), whereas a completed
+    // turn's residual sits ABOVE a live `❯` idle prompt. If the pane is idle, the
+    // user can interact -- it is not the user-facing freeze this watcher targets
+    // -- so respawning is pure churn (this is what drove ~150 spurious respawns/
+    // week, each leaving a fresh residual footer that re-armed the loop). Clear
+    // the stale spell so the residual stops re-triggering every poll. Fail-open:
+    // a null pane (capture failed) does NOT block recovery.
+    if (pane != null && detectPaneState(pane) === 'idle') {
+      logger.info(
+        { label, session, tag: next.tag, seconds: next.lastSeconds, spellPeakSeconds: next.spellPeakSeconds },
+        'stuck-tool-call-watcher: counter stagnant but pane is at the idle prompt (residual footer of a completed turn, not a wedge) -- skipping recovery',
+      )
+      watchState.delete(session)
+      return
+    }
     // Post-respawn grace: defer if a respawn (this watcher, channel-monitor's
     // cascade, channel-watchdog.sh, or the #264 stuck-modal-guard on Linux)
     // happened within the grace window. Two reasons: (1) a freshly respawned
