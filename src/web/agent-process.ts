@@ -402,9 +402,24 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
       ? `export ${stateEnvVar}="${agentChannelDir}"${auditLogEnv} && `
       : ''
     const channelFlag = hasChannel ? `--channels plugin:${provider.pluginId}` : ''
+    // Channel-plugin MCP-registration guard (2026-06-23): the telegram/slack/etc.
+    // channel plugin registers as a stdio MCP server loaded via --channels. Claude
+    // Code connects stdio MCP servers in batches of MCP_SERVER_CONNECTION_BATCH_SIZE
+    // (default 3); when an agent ALSO runs a slow local .mcp.json stdio server
+    // (e.g. google-workspace/workspace-mcp, which spends seconds on OAuth + Google
+    // API init) plus many claude.ai connectors, the channel plugin gets starved
+    // out of the startup batch / hits MCP_TIMEOUT and never registers -- no /mcp
+    // entry, no bun poller, dead bot (observed: balazsmarveenja with workspace-mcp
+    // had NO telegram; removing workspace-mcp restored it). Raise the stdio batch
+    // size and per-server timeout, and force non-blocking startup, so a slow local
+    // MCP can never crowd the channel plugin out of registration. Only set for
+    // channel-having agents (channel-less agents have no plugin to protect).
+    const mcpEnv = hasChannel
+      ? 'export MCP_SERVER_CONNECTION_BATCH_SIZE=10 && export MCP_CONNECTION_NONBLOCKING=1 && export MCP_TIMEOUT=60000 && '
+      : ''
     // Single-quote `${model}` so values like `claude-opus-4-8[1m]` (1M-context
     // suffix) are not glob-expanded by the shell that tmux spawns the command in.
-    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${channelSetup}${apiKeyEnv}${claudeConfigEnv}${ollamaEnv}${deepseekEnv}cd "${dir}" && ${CLAUDE} ${continueFlag}${skipFlag}--model '${model}' ${channelFlag}`.trimEnd()
+    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${ollamaEnv}${deepseekEnv}cd "${dir}" && ${CLAUDE} ${continueFlag}${skipFlag}--model '${model}' ${channelFlag}`.trimEnd()
     runTmux(null, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir }, 'Agent tmux session started')
