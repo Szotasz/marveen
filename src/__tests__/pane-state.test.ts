@@ -1576,6 +1576,107 @@ describe('parkedInputText', () => {
   })
 })
 
+describe('parked input rendered with a non-breaking space (U+00A0) after ❯', () => {
+  // Live Claude Code panes render a NON-BREAKING SPACE (U+00A0), not an
+  // ASCII space, between the ❯ prompt glyph and parked (delivered-but-not-
+  // yet-submitted) text. Byte-for-byte the prompt line reads
+  //   e2 9d af (❯)  c2 a0 (NBSP)  <text>
+  // The ASCII-space form only shows up in scrollback for already-submitted
+  // lines. The original PARKED_INPUT_RX `/❯[ \t]+\S/` accepted only ASCII
+  // space or tab after the glyph, so an NBSP-rendered parked box fell
+  // through to 'idle'. And because every stuck-input recovery helper
+  // (stuckInputSignature, parkedChannelInput, parkedInputText) gates on
+  // detectPaneState === 'typing', that single miss took the whole recovery
+  // chain down: the delivered message stranded in the box forever, no
+  // recovery Enter was ever sent. Verified live 2026 on real captured panes.
+  const NBSP = '\u00a0'
+  const NBSP_PARKED = [
+    '', SEP,
+    `❯${NBSP}[Uzenet @dev2-tol]: please re-run the merge once CI is green`,
+    SEP,
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+  ].join('\n')
+  // The same message with an ordinary ASCII space, so the fix is proven to
+  // keep the pre-existing form working rather than swap one gap for another.
+  const ASCII_PARKED = [
+    '', SEP,
+    '❯ [Uzenet @dev2-tol]: please re-run the merge once CI is green',
+    SEP,
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+  ].join('\n')
+
+  it('classifies an NBSP-prompted parked box as typing, not idle', () => {
+    expect(detectPaneState(NBSP_PARKED)).toBe('typing')
+  })
+
+  it('still classifies the ASCII-space parked box as typing (no regression)', () => {
+    expect(detectPaneState(ASCII_PARKED)).toBe('typing')
+  })
+
+  it('merges an NBSP-parked box to busy when mergeTypingAsBusy is set', () => {
+    expect(detectPaneState(NBSP_PARKED, { mergeTypingAsBusy: true })).toBe('busy')
+  })
+
+  it('does not report an NBSP-parked pane as ready for a new prompt', () => {
+    expect(isReadyForPrompt(NBSP_PARKED)).toBe(false)
+  })
+
+  it('revives the stuck-input recovery chain (signature is non-null)', () => {
+    expect(stuckInputSignature(NBSP_PARKED)).not.toBe(null)
+  })
+
+  it('recovers the parked text with the ❯ prompt and NBSP stripped', () => {
+    expect(parkedInputText(NBSP_PARKED)).toBe(
+      '[Uzenet @dev2-tol]: please re-run the merge once CI is green',
+    )
+  })
+
+  // The production-critical stranding path: an inbound plugin notification
+  // (Telegram / inter-agent <channel> block) delivered into the box but not
+  // submitted, rendered with the NBSP gap. This is the exact shape that
+  // strands in the wild, so lock that parkedChannelInput recovers it intact.
+  it('recovers an NBSP-prompted parked CHANNEL block with the correct chat_id', () => {
+    const pane = [
+      '', SEP,
+      `❯${NBSP}<channel source="plugin:telegram:telegram" chat_id="1268077055" message_id="999" ts="2026-06-05T10:00:00Z">message body</channel>`,
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    const r = parkedChannelInput(pane)
+    expect(r).not.toBeNull()
+    expect(r!.complete).toBe(true)
+    expect(r!.chatId).toBe('1268077055')
+  })
+
+  // Real stranded messages are long and the TUI wraps them across input-box
+  // lines. Lock that NBSP + terminal-wrap collapse to one submittable line.
+  it('collapses a terminal-wrapped NBSP-parked message into one submittable line', () => {
+    const pane = [
+      '', SEP,
+      `❯${NBSP}[Uzenet @dev3-tol]: please review the latest changes when you`,
+      '  have a moment and re-run the merge once CI is green',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('typing')
+    expect(parkedInputText(pane)).toBe(
+      '[Uzenet @dev3-tol]: please review the latest changes when you have a moment and re-run the merge once CI is green',
+    )
+  })
+
+  // The idle footer has two arms (bypass-permissions and the strict
+  // `? for shortcuts`). Lock NBSP detection under the strict arm too.
+  it('classifies an NBSP-parked box as typing under the strict shortcuts footer', () => {
+    const pane = [
+      '', SEP,
+      `❯${NBSP}[Uzenet @dev2-tol]: ping`,
+      SEP,
+      '  ? for shortcuts',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('typing')
+  })
+})
+
 describe('detectsBlockingMenu', () => {
   // The real /mcp "Manage MCP servers" modal that wedged the main channels
   // session for ~6h (2026-06-12). The input box is gone; the footer shows the

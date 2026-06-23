@@ -174,11 +174,22 @@ export function detectsPastePlaceholder(pane: string): boolean {
 // HORIZONTAL. At least 10 in a run to ignore stray `-` glyphs.
 const BOX_SEP_RX = /^─{10,}/
 
-// Prompt line inside the input box. `❯` followed by at least one tab/
-// space and then a non-whitespace character means the user (or a
-// send-keys that didn't submit) parked text there. Single-line match
-// ([ \t] not \s) to avoid crossing into the next line.
-const PARKED_INPUT_RX = /❯[ \t]+\S/
+// Prompt line inside the input box. `❯` followed by at least one
+// horizontal whitespace and then a non-whitespace character means the
+// user (or a send-keys that didn't submit) parked text there.
+//
+// The class is `[^\S\r\n]` (any whitespace EXCEPT a line break), not
+// `[ \t]`: a live Claude Code pane renders the gap after the ❯ prompt
+// glyph as a NON-BREAKING SPACE (U+00A0), not an ASCII space, while a
+// message sits parked (delivered but not yet submitted). The ASCII-space
+// form only appears in scrollback for already-submitted lines. `[ \t]`
+// missed that NBSP, so an NBSP-rendered parked box read as 'idle' and the
+// whole stuck-input recovery chain (stuckInputSignature, parkedChannelInput,
+// parkedInputText all gate on detectPaneState === 'typing') never fired --
+// the message stranded forever. Excluding only \r\n keeps the original
+// single-line intent (the match must not cross into the next line) while
+// admitting the NBSP and any other horizontal Unicode space the TUI emits.
+const PARKED_INPUT_RX = /❯[^\S\r\n]+\S/
 
 // Persistent Anthropic thinking-block API error. When an assistant turn
 // ends with a 400 about thinking/redacted_thinking blocks that "cannot
