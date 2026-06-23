@@ -9,10 +9,26 @@
       "Write(${AGENT_DIR}/**)",
       "Edit(${AGENT_DIR}/**)",
       "Read(${HOME}/Downloads/**)",
+      "Read(${HOME}/localdev/marveen/**)",
       "Bash(ls:*)",
       "Bash(cat:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(jq:*)",
+      "Bash(wc:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(date:*)",
+      "Bash(mkdir:*)",
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(echo:*)",
       "WebFetch(*)",
-      "WebSearch(*)"
+      "WebSearch(*)",
+      "mcp__plugin_context-mode_context-mode__ctx_fetch_and_index",
+      "mcp__plugin_context-mode_context-mode__ctx_search",
+      "mcp__plugin_context-mode_context-mode__ctx_index"
     ],
     "deny": [
       "Read(${HOME}/.ssh/**)",
@@ -22,8 +38,8 @@
       "Read(**/.env)",
       "Bash(sudo:*)",
       "Bash(rm:*)",
-      "Bash(curl -X POST:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(curl -X POST:*)"
     ]
   }
 }

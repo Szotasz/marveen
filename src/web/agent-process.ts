@@ -26,7 +26,7 @@ import {
 } from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
-import { CHANNEL_PROVIDER, MAIN_AGENT_ID } from '../config.js'
+import { CHANNEL_PROVIDER, MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { loadProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { writeAgentSettingsFromProfile } from './agent-scaffold.js'
@@ -371,6 +371,18 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
       }
     }
     const skipFlag = profile.permissionMode === 'strict' ? '' : '--dangerously-skip-permissions '
+    // Strict-profile agents (e.g. the researcher/QA profile = devil) launch
+    // WITHOUT --dangerously-skip-permissions, so they honor the allow/deny
+    // rules -- good. But QA/research means reading files OUTSIDE the agent's
+    // own working dir (a peer agent's drafts/ under the project root). Claude
+    // Code gates reads outside the cwd subtree behind a per-directory TRUST
+    // prompt that the allow rule `Read(<project>/**)` does NOT satisfy, so the
+    // agent blocks on an interactive approval no operator is watching. Trust
+    // the whole project root up-front via --add-dir; the deny list (.env,
+    // .ssh, .aws, sudo, rm, git push) still applies, so this widens reach
+    // without weakening the hard stops. Permissive agents skip-permissions
+    // already, so they need no add-dir.
+    const addDirFlag = profile.permissionMode === 'strict' ? `--add-dir "${PROJECT_ROOT}" ` : ''
     // Optional per-agent CLAUDE_CONFIG_DIR (alternate Claude Code config dir,
     // e.g. for routing this agent to a separate Anthropic login). When the
     // agent-config field is missing or blank, claudeConfigDir is null and we
@@ -403,7 +415,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     const channelFlag = hasChannel ? `--channels plugin:${provider.pluginId}` : ''
     // Single-quote `${model}` so values like `claude-opus-4-8[1m]` (1M-context
     // suffix) are not glob-expanded by the shell that tmux spawns the command in.
-    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${channelSetup}${apiKeyEnv}${claudeConfigEnv}${ollamaEnv}${deepseekEnv}cd "${dir}" && ${CLAUDE} ${continueFlag}${skipFlag}--model '${model}' ${channelFlag}`.trimEnd()
+    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${channelSetup}${apiKeyEnv}${claudeConfigEnv}${ollamaEnv}${deepseekEnv}cd "${dir}" && ${CLAUDE} ${continueFlag}${skipFlag}${addDirFlag}--model '${model}' ${channelFlag}`.trimEnd()
     runTmux(null, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir }, 'Agent tmux session started')

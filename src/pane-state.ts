@@ -21,13 +21,18 @@
 
 export type PaneState = 'idle' | 'busy' | 'typing' | 'unknown' | 'error'
 
-// Claude Code shows the footer in one of two modes: the default "bypass"
-// permissions mode (permissive) and the "strict" mode. Both are "idle"
-// surfaces. If neither is visible the pane is not a recognised Claude
-// Code surface and we report 'unknown' rather than guess.
+// Claude Code shows the footer with the active shift+tab cycle mode as a
+// prefix: "bypass permissions on", "auto mode on", "accept edits on", or
+// "plan mode on". All of them are "idle" surfaces (the session is parked at
+// the prompt awaiting input); only the mode label differs. The fleet runs
+// agents in "auto mode on", so anchoring solely on "bypass permissions on"
+// stranded every inter-agent message to those sessions as 'unknown' --
+// MODE_PREFIX_RX below enumerates the known labels so any of them counts.
+// If none is visible the pane is not a recognised Claude Code surface and we
+// report 'unknown' rather than guess.
 //
-// The bypass-mode footer has known trailing variants after the
-// "bypass permissions on" prefix: the original "(shift+tab to cycle)"
+// The mode footer has known trailing variants after the mode-label
+// prefix: the original "(shift+tab to cycle)"
 // hint, and the background-shells indicator which Claude Code
 // substitutes when one or more BashTool background shells are running
 // in the session. The background-shells indicator itself comes in two
@@ -47,7 +52,10 @@ export type PaneState = 'idle' | 'busy' | 'typing' | 'unknown' | 'error'
 //       happens to contain "bypass permissions on · 1 shell" verbatim
 //       (an echoed log line, a quoted message, etc.) which would
 //       otherwise be misread as idle.
-const IDLE_FOOTER_RX = /bypass permissions on(?: \(shift\+tab to cycle\)| · \d+ shells? · (?:ctrl\+t|↓ to manage))|\? for shortcuts/
+// The shift+tab cycle mode labels Claude Code renders in the footer. Any of
+// these as the prefix marks a recognised idle surface.
+const MODE_PREFIX_RX = /(?:bypass permissions on|auto mode on|accept edits on|plan mode on)/
+const IDLE_FOOTER_RX = new RegExp(MODE_PREFIX_RX.source + /(?: \(shift\+tab to cycle\)| · \d+ shells? · (?:ctrl\+t|↓ to manage))|\? for shortcuts/.source)
 
 // Positive busy signals. ANY match anywhere in the pane means the turn
 // is mid-flight, even if the footer looks idle for a frame.

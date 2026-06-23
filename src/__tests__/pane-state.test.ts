@@ -38,6 +38,18 @@ const IDLE_STRICT = [
   '  ? for shortcuts',
 ].join('\n')
 
+// Fleet agents run in auto-accept mode, whose footer prefix is
+// "auto mode on" rather than "bypass permissions on". Captured verbatim
+// from a stuck creativedesigner/devil session (note the "· ← for agents"
+// tail Claude Code appends in the fleet build).
+const IDLE_AUTO_MODE = [
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents',
+].join('\n')
+
 const BUSY_FULL_FOOTER = [
   '✢ Combobulating… (52s · ↓ 2.6k tokens · thinking some more)',
   '',
@@ -386,6 +398,15 @@ describe('detectPaneState', () => {
 
   it('detects idle on strict-mode footer ("? for shortcuts")', () => {
     expect(detectPaneState(IDLE_STRICT)).toBe('idle')
+  })
+
+  it('detects idle on "auto mode on" footer (fleet auto-accept mode)', () => {
+    // Regression: the fleet runs agents in "auto mode on", whose footer
+    // prefix is not "bypass permissions on". The old regex anchored solely
+    // on the bypass label, so every inter-agent message to an auto-mode
+    // session was classified 'unknown' and stranded pending forever (the
+    // creativedesigner/devil proofit-redesign pipeline stalled on this).
+    expect(detectPaneState(IDLE_AUTO_MODE)).toBe('idle')
   })
 
   it('detects idle when the footer shows the multi-shell indicator', () => {
