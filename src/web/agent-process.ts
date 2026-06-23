@@ -30,6 +30,7 @@ import { CHANNEL_PROVIDER, MAIN_AGENT_ID } from '../config.js'
 import { loadProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { writeAgentSettingsFromProfile } from './agent-scaffold.js'
+import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { getSecret } from './vault.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
 
@@ -423,6 +424,21 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // sessions can also be present, so dismiss both. Errors are swallowed
     // -- the outbound pre-flight remains the safety net if this misses.
     scheduleIdentitySetup(session, readAgentDisplayName(name))
+
+    // Colleague auto-unlock (2026-06-22): mirror the main session's
+    // post-respawn unlock probe for channel-having sub-agents. After a restart
+    // the bun channel poller sometimes never attaches during the cold-start
+    // window (observed fleet-wide after a managed restart: the TUI comes up but
+    // bot.pid stays empty, so the agent goes deaf to inbound). The main session
+    // self-heals because channel-monitor schedules schedulePluginUnlockAfterRespawn;
+    // sub-agents had no such probe and stayed stuck until a manual /mcp kick.
+    // Schedule the same probe here. It is gated on bun-absence (a healthy poller
+    // is left untouched) and on an idle pane, so it never disturbs a colleague
+    // mid-turn. Channel-less agents (hasChannel false) get no probe; MAIN never
+    // takes this path (it comes up via channels.sh) but guard defensively.
+    if (hasChannel && name !== MAIN_AGENT_ID) {
+      schedulePluginUnlockAfterRespawn(session, provider.type)
+    }
 
     return { ok: true }
   } catch (err) {
