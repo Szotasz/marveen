@@ -72,6 +72,37 @@ export function ensureAgentHooks(name: string): boolean {
   return true
 }
 
+// Idempotent migration: ensure the staleness-guard UserPromptSubmit hook is
+// present. Unlike ensureAgentHooks (which seeds the WHOLE hooks block only for
+// hook-less agents), this MERGES a single UserPromptSubmit entry into an agent
+// that already has other hooks -- so the guard reaches the existing fleet, not
+// just freshly-scaffolded agents. The guard warns the agent when an inbound
+// <channel ts="..."> message was delivered long after it was sent (a lagged /
+// re-delivered message that may be stale), so it re-confirms before irreversible
+// actions. Re-running is a no-op once the entry exists (matched by command path).
+const STALENESS_HOOK_CMD = `python3 ${join(PROJECT_ROOT, 'scripts', 'hooks', 'staleness-guard.py')}`
+
+export function ensureAgentStalenessHook(name: string): boolean {
+  const settingsPath = join(agentDir(name), '.claude', 'settings.json')
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ups = Array.isArray(hooks.UserPromptSubmit) ? hooks.UserPromptSubmit as unknown[] : []
+  // Idempotency: already wired if any command entry references the guard script.
+  const already = JSON.stringify(ups).includes('staleness-guard.py')
+  if (already) return false
+  ups.push({ hooks: [{ type: 'command', command: STALENESS_HOOK_CMD, timeout: 10 }] })
+  hooks.UserPromptSubmit = ups
+  settings.hooks = hooks
+  mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
 export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemplate): void {
   const agentRoot = agentDir(name)
   const settingsDir = join(agentRoot, '.claude')

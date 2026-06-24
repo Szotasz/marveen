@@ -27,6 +27,17 @@
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 {{PROJECT_ROOT}}/scripts/hooks/staleness-guard.py",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }
