@@ -383,6 +383,19 @@ if ! npm run build --loglevel warn; then
 fi
 ok "$(_t macos.ts_built)"
 
+# Stamp the build-marker after a successful fresh-install build, mirroring the
+# update.sh self-heal (dist/.built-commit records the commit dist was built
+# from). On a build abort, fail()/the ERR-trap exit 1 BEFORE this line, so the
+# marker is only ever written for a complete dist -- it can never falsely
+# report a stale/partial dist as healthy. Stamping it here also keeps a later
+# update.sh run from a needless first-adoption self-healing rebuild (marker ==
+# HEAD on a fresh install). A failed rev-parse just leaves the marker absent,
+# which the update.sh self-heal then handles exactly as before (no regression).
+if [ -d "$INSTALL_DIR/dist" ]; then
+  _built_commit="$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null || true)"
+  [ -n "$_built_commit" ] && printf '%s\n' "$_built_commit" > "$INSTALL_DIR/dist/.built-commit"
+fi
+
 INSTALL_STEP="configuration"
 # Step 6: Configuration
 echo ""
