@@ -75,4 +75,6 @@ Ha NINCS komplex feladat / hiba / korrekció (A=B=C=NEM), ÉS nincs várakozó T
 - Ne ments memóriát feleslegesen
 - Ne generálj skill-t
 - Ne küldj üzenetet a csatornára
-- Maradj csendben (egy rövid "csendes heartbeat" sor a transzkriptbe elég)
+- Maradj csendben: egyszerűen FEJEZD BE a kört, akció nélkül.
+
+**KRITIKUS (felügyelet nélküli stabilitás):** SOHA ne gépelj semmit az input-boxba (a `❯` prompt-sorba) és ne hagyj ott parkolt, el-nem-küldött szöveget -- még a "csendes heartbeat" szót sem. Ha jelezni akarod a csendes kört, az KIZÁRÓLAG a normál válasz-szövegedben (transzkript) lehet, EGYETLEN rövid sorral, majd a köröd azonnal érjen véget. Parkolt input-szöveg blokkolja a következő üzenet kézbesítését (a router `busy`-nak látja a sessiont) -> a csatorna NÉMUL felügyelet nélkül.
