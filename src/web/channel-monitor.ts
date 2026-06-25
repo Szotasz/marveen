@@ -111,6 +111,40 @@ const MAIN_STUCK_THRESHOLDS: StuckInputThresholds = {
   maxAttempts: 4,
 }
 
+// --- Stuck-input hard-restart escalation (reliable backstop) ---
+// When the soft recovery above (Enter + clear+re-inject) is EXHAUSTED but the
+// main channel input is STILL parked, the TUI is hard-wedged: a paste
+// placeholder that Enter only expands (never submits), or a state where
+// keystrokes no longer register. Soft recovery cannot win there; the only fix
+// is a fresh claude process. Escalate to hardRestartMarveenChannels()
+// (respawn-pane on Linux -- replaces ONLY the main pane's claude, the tmux
+// server + every other agent session stay intact). Rate-limited + capped so a
+// wedge a restart cannot clear never becomes a restart loop.
+const STUCK_RESTART_MIN_INTERVAL_MS = 5 * 60 * 1000
+const STUCK_RESTART_MAX_CONSECUTIVE = 3
+let stuckRestartCount = 0
+let lastStuckRestartAt = 0
+
+// Pure decision for the stuck-input restart escalation.
+//   'restart' -> soft recovery exhausted + input still parked + rate-limit ok
+//   'alert'   -> restarts are not clearing the wedge (cap reached) -> surface once
+//   'skip'    -> not wedged past soft recovery, rate-limited, or already alerted
+export function decideStuckInputRestart(
+  parked: boolean,
+  attempts: number,
+  maxAttempts: number,
+  now: number,
+  lastRestartAt: number,
+  restartCount: number,
+  minIntervalMs: number,
+  maxConsecutive: number,
+): 'restart' | 'alert' | 'skip' {
+  if (!parked || attempts < maxAttempts) return 'skip'
+  if (now - lastRestartAt < minIntervalMs) return 'skip'
+  if (restartCount >= maxConsecutive) return restartCount === maxConsecutive ? 'alert' : 'skip'
+  return 'restart'
+}
+
 // Session-agnostic stuck-input recovery: capture the pane, and if a channel
 // notification is parked at the ❯ prompt, get it SUBMITTED (Enter-first, then
 // clear + verbatim re-inject of the COMPLETE block). The gate fires ONLY for a
@@ -593,6 +627,39 @@ export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
   return { ok: false, error: 'hard restart failed: tmux respawn-pane failed' }
 }
 
+// Escalate a main channel input that survived the full soft recovery to a hard
+// restart (respawn-pane). Driven by the pure decideStuckInputRestart; this
+// wrapper owns the I/O + counters. Called once per monitor tick right after the
+// main stuck-input recovery.
+function maybeRestartWedgedMainChannel(state: StuckInputState): void {
+  const parked = state.parkedSig !== null
+  // A cleared input box ends the spell -> reset the escalation counter so the
+  // next genuine wedge starts fresh (and a successful restart is not penalised).
+  if (!parked) { stuckRestartCount = 0; return }
+  const action = decideStuckInputRestart(
+    parked, state.attempts, MAIN_STUCK_THRESHOLDS.maxAttempts,
+    Date.now(), lastStuckRestartAt, stuckRestartCount,
+    STUCK_RESTART_MIN_INTERVAL_MS, STUCK_RESTART_MAX_CONSECUTIVE,
+  )
+  if (action === 'skip') return
+  if (action === 'alert') {
+    logger.error({ session: MAIN_CHANNELS_SESSION }, 'Stuck main channel input survived max restart escalations -- manual intervention needed')
+    sendAlert(`⛔ A ${MAIN_CHANNELS_SESSION} bemenete beragadt es ${STUCK_RESTART_MAX_CONSECUTIVE} automatikus respawn-pane sem szabaditotta ki. Kezi beavatkozas kell (pl. systemctl --user restart ${SERVICE_ID}-channels).`)
+    stuckRestartCount++ // tick past the cap so the alert fires only once
+    return
+  }
+  logger.warn({ session: MAIN_CHANNELS_SESSION, attempts: state.attempts, restart: stuckRestartCount + 1 }, 'Stuck main channel input survived soft recovery -- escalating to hard restart (respawn-pane)')
+  const r = hardRestartMarveenChannels()
+  lastStuckRestartAt = Date.now()
+  if (r.ok) {
+    stuckRestartCount++
+    // Reset the tracker so the fresh post-restart pane is re-evaluated cleanly.
+    mainStuckInput = { parkedSig: null, firstSeenAt: null, lastRecoverAt: null, attempts: 0 }
+  } else {
+    logger.error({ session: MAIN_CHANNELS_SESSION, err: r.error }, 'Stuck-input hard restart failed')
+  }
+}
+
 // --- Keep-alive staleness watchdog (deafness safety net, decision #3) ---
 //
 // The keep-alive (a scheduled edit_message round-trip from the channels
@@ -978,6 +1045,10 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
     // only when the captured block looks COMPLETE -- a truncated capture stays
     // on Enter rather than risk a partial re-inject to the wrong chat_id.
     mainStuckInput = recoverStuckInputForSession(MAIN_CHANNELS_SESSION, mainStuckInput, MAIN_STUCK_THRESHOLDS, false)
+    // Reliable backstop: if the soft recovery is exhausted and the input is
+    // STILL parked, the TUI is hard-wedged -- escalate to a respawn-pane (the
+    // automated form of the manual `systemctl restart channels`). Rate-limited.
+    maybeRestartWedgedMainChannel(mainStuckInput)
     // Same recovery for every running sub-agent session: a parked channel
     // message wedges a sub-agent ("nem válaszol") exactly as it would the main
     // session. Per-session state lives in agentStuckInput; drop it once the
