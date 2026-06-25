@@ -10,6 +10,8 @@ import {
   decideSubmitFollowup,
   shouldClearTruncatedPreamble,
   detectsPastePlaceholder,
+  detectPaneState,
+  parkedInputText,
 } from '../pane-state.js'
 import { agentDir, readAgentModel, readAgentClaudeConfigDir, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost } from './agent-config.js'
 import {
@@ -932,5 +934,41 @@ export function isSessionReadyForPrompt(session: string, host: string | null = n
   const second = capturePane(session, host)
   if (second == null) return false
   return paneLooksIdle(second)
+}
+
+// How long to wait between the two parked-input captures when deciding whether
+// the input box is STUCK (stale) vs being actively typed. Identical parked text
+// across this gap means nobody is typing -> it is a stranded artifact.
+const PARKED_STABLE_CONFIRM_S = '2'
+// Settle after a Ctrl-U so the next capture reflects the cleared box.
+const PARKED_CLEAR_SETTLE_S = '0.3'
+// Bound the Ctrl-U presses for a (possibly multi-line) stale parked input.
+const PARKED_CLEAR_MAX = 3
+
+// Un-wedge a session whose input box holds STALE parked text: a non-submitted
+// line (e.g. a weak local model that typed its heartbeat reply into the box
+// instead of ending the turn). Parked text makes isSessionReadyForPrompt()
+// false forever, so every inbound message strands as pending and the channel
+// goes silent with no recovery. Acts ONLY when the pane is 'typing' (idle WITH
+// parked text -- never 'busy'/processing) AND the text is unchanged across a
+// short settle, so input a human or agent is actively typing is never clobbered.
+// Returns true if it cleared something (caller should retry delivery next tick).
+export function clearStaleParkedInput(session: string, host: string | null = null): boolean {
+  const a = capturePane(session, host)
+  if (a == null || detectPaneState(a) !== 'typing') return false
+  const parked = parkedInputText(a)
+  if (!parked) return false
+  try { execFileSync('/bin/sleep', [PARKED_STABLE_CONFIRM_S], { timeout: 4000 }) } catch { /* best effort */ }
+  const b = capturePane(session, host)
+  // Changed (someone is typing) or already cleared -> leave it alone.
+  if (b == null || detectPaneState(b) !== 'typing' || parkedInputText(b) !== parked) return false
+  for (let i = 0; i < PARKED_CLEAR_MAX; i++) {
+    runTmux(host, ['send-keys', '-t', session, 'C-u'], { timeout: 5000 })
+    try { execFileSync('/bin/sleep', [PARKED_CLEAR_SETTLE_S], { timeout: 2000 }) } catch { /* best effort */ }
+    const after = capturePane(session, host)
+    if (after == null || detectPaneState(after) !== 'typing') break
+  }
+  logger.warn({ session, parked: parked.slice(0, 60) }, 'message-router: cleared stale parked input (channel un-wedge)')
+  return true
 }
 
