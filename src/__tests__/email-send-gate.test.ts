@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { gateDecision } from '../../scripts/email-send-gate.mjs'
-import { injectEmailSendGate } from '../web/agent-scaffold.js'
+import { injectEmailSendGate, agentGetsEmailGate } from '../web/agent-scaffold.js'
+import { MAIN_AGENT_ID } from '../config.js'
 
 // The PreToolUse gate decision: which tool calls count as outbound email-send.
 describe('gateDecision', () => {
@@ -32,6 +33,21 @@ describe('gateDecision', () => {
     expect(bash('curl -s http://localhost:3420/api/messages').deny).toBe(false)
     // mentioning "resend" without an email/send verb nearby is not gated
     expect(bash('grep resend src/foo.ts').deny).toBe(false)
+  })
+})
+
+// The main-exempt guard: every sub-agent is gated, the main agent never is.
+// Mirrors security-profile-resolution.test.ts -- pure, keyed on the configured
+// MAIN_AGENT_ID (not a hardcoded name), so a customer install exempts its own owner.
+describe('agentGetsEmailGate', () => {
+  it('gates every sub-agent', () => {
+    expect(agentGetsEmailGate('samu')).toBe(true)
+    expect(agentGetsEmailGate('boni')).toBe(true)
+    expect(agentGetsEmailGate('zara')).toBe(true)
+  })
+
+  it('NEVER gates the main agent (it retains email-send)', () => {
+    expect(agentGetsEmailGate(MAIN_AGENT_ID)).toBe(false)
   })
 })
 

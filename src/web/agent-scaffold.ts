@@ -91,8 +91,17 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // every spawn (this function regenerates settings.json), so it survives
   // respawns. The MAIN_AGENT_ID retains email-send capability -- all outbound
   // email routes through it for approval.
-  if (name !== MAIN_AGENT_ID) injectEmailSendGate(existing)
+  if (agentGetsEmailGate(name)) injectEmailSendGate(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
+}
+
+// Which agents are subject to the email-send hard-gate: every agent EXCEPT the
+// main agent (MAIN_AGENT_ID, e.g. Marveen). Name-agnostic -- keyed on the
+// configured main-agent id, not a hardcoded 'marveen', so a customer install
+// gates its own sub-agents and exempts its own owner (distribution-hardcode
+// rule). Pure + exported so the main-exempt guarantee is unit-testable.
+export function agentGetsEmailGate(name: string): boolean {
+  return name !== MAIN_AGENT_ID
 }
 
 // Idempotently wire the email-send-gate PreToolUse hook into a settings.json
