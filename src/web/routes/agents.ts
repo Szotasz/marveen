@@ -1416,7 +1416,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   if (startMatch && method === 'POST') {
     const name = decodeURIComponent(startMatch[1])
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
-    const result = startAgentProcess(name)
+    // Optional { "fresh": true } body -> no `--continue`. Required for channel
+    // agents on Claude Code 2.1.193, where a `--continue` resume does not load
+    // the --channels plugin MCP server (agent comes up deaf).
+    let startFresh = false
+    try { startFresh = JSON.parse((await readBody(req)).toString() || '{}').fresh === true } catch {}
+    const result = startAgentProcess(name, { fresh: startFresh })
     // Record operator intent so the monitor keeps this agent up across shared
     // tmux-server restarts / reboots (see agent-desired-state.ts).
     if (result.ok || result.error === 'Agent is already running') addDesiredAgent(name)
@@ -1451,7 +1456,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       return true
     }
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
-    const result = restartAgentProcess(name)
+    // Optional { "fresh": true } body -> no `--continue` (see /start note).
+    let restartFresh = false
+    try { restartFresh = JSON.parse((await readBody(req)).toString() || '{}').fresh === true } catch {}
+    const result = restartAgentProcess(name, { fresh: restartFresh })
     if (result.ok) { json(res, { ok: true }); return true }
     json(res, { error: result.error }, 400)
     return true
