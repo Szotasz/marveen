@@ -5,13 +5,15 @@ import {
   type StuckInputThresholds,
 } from '../pane-state.js'
 
-// Contract for the sub-agent FAST stuck-input recovery (stuck-input-watcher.ts):
+// Contract for the LOCAL FAST stuck-input recovery (stuck-input-watcher.ts):
 // on the 15s tick the same parked signature must reach the clear+re-inject
 // escalation (attempt > MAIN_STUCK_ENTER_ATTEMPTS=2, i.e. attempts 3..) WELL
-// BEFORE the give-up cap, so a sub-agent whose Enter is swallowed gets its
-// message actually re-injected within ~30-45s instead of waiting minutes for
-// the slow channel-monitor backstop. These thresholds mirror SUB_THRESHOLDS.
-const SUB_THRESHOLDS: StuckInputThresholds = {
+// BEFORE the give-up cap, so a swallowed Enter gets the message actually
+// re-injected within ~30-45s instead of waiting minutes for the slow
+// channel-monitor backstop. These thresholds mirror LOCAL_FAST_THRESHOLDS,
+// which the fast watcher applies to BOTH local sub-agents and the MAIN
+// channels session (MAIN no longer bare-Enter-only).
+const LOCAL_FAST_THRESHOLDS: StuckInputThresholds = {
   confirmMs: 12_000,
   dedupMs: 12_000,
   maxAttempts: 5,
@@ -28,7 +30,7 @@ function runSpell(sig: string, tickMs: number, ticks: number): number[] {
   const recoveredAttempts: number[] = []
   for (let i = 0; i < ticks; i++) {
     now += tickMs
-    const { recover, next } = decideStuckInputRecovery(sig, state, now, SUB_THRESHOLDS)
+    const { recover, next } = decideStuckInputRecovery(sig, state, now, LOCAL_FAST_THRESHOLDS)
     if (recover) recoveredAttempts.push(next.attempts)
     state = next
   }
@@ -50,7 +52,7 @@ describe('sub-agent fast stuck-input recovery contract', () => {
   it('stops acting once the give-up cap is hit (no infinite recovery)', () => {
     const attempts = runSpell('still parked', 15_000, 40)
     expect(attempts).toEqual([1, 2, 3, 4, 5])
-    expect(attempts.length).toBe(SUB_THRESHOLDS.maxAttempts)
+    expect(attempts.length).toBe(LOCAL_FAST_THRESHOLDS.maxAttempts)
   })
 
   it('a changed signature restarts the spell (message still arriving / edited)', () => {
@@ -58,23 +60,23 @@ describe('sub-agent fast stuck-input recovery contract', () => {
     let now = 0
     // First signature parks and recovers once...
     now += 15_000
-    let d = decideStuckInputRecovery('sig-a', state, now, SUB_THRESHOLDS)
+    let d = decideStuckInputRecovery('sig-a', state, now, LOCAL_FAST_THRESHOLDS)
     state = d.next // record only (new spell)
     now += 15_000
-    d = decideStuckInputRecovery('sig-a', state, now, SUB_THRESHOLDS)
+    d = decideStuckInputRecovery('sig-a', state, now, LOCAL_FAST_THRESHOLDS)
     expect(d.recover).toBe(true)
     expect(d.next.attempts).toBe(1)
     state = d.next
     // ...then the text changes: confirm window restarts, no immediate action.
     now += 15_000
-    d = decideStuckInputRecovery('sig-b', state, now, SUB_THRESHOLDS)
+    d = decideStuckInputRecovery('sig-b', state, now, LOCAL_FAST_THRESHOLDS)
     expect(d.recover).toBe(false)
     expect(d.next.attempts).toBe(0)
     expect(d.next.firstSeenAt).toBe(now)
   })
 
   it('clears state when nothing is parked', () => {
-    const d = decideStuckInputRecovery(null, { parkedSig: 'x', firstSeenAt: 1, lastRecoverAt: 1, attempts: 2 }, 99_999, SUB_THRESHOLDS)
+    const d = decideStuckInputRecovery(null, { parkedSig: 'x', firstSeenAt: 1, lastRecoverAt: 1, attempts: 2 }, 99_999, LOCAL_FAST_THRESHOLDS)
     expect(d.recover).toBe(false)
     expect(d.next.parkedSig).toBeNull()
   })
