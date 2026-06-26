@@ -408,6 +408,15 @@ export function buildMainSessionRespawnCmd(opts: {
 }): string {
   return [
     'export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"',
+    // MCP startup-batch tuning (parity with channels.sh + startAgentProcess):
+    // the --channels plugin is a stdio MCP server; the main session runs the
+    // most MCP servers (filesystem/playwright/chrome + claude.ai connectors +
+    // the plugin), so without these the channel plugin can be starved out of
+    // the default 3-wide blocking startup batch and never register a poller.
+    // This respawn-pane path is the RECOVERY launcher -- it must tune the same
+    // env as the channels.sh boot path, else a recovery respawn comes up
+    // un-tuned and can re-starve under load.
+    '&& export MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000',
     '&&', opts.claudePath,
     ...(opts.continueSession ? ['--continue'] : []),
     '--dangerously-skip-permissions',

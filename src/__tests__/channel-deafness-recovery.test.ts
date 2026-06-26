@@ -30,6 +30,15 @@ describe('buildMainSessionRespawnCmd', () => {
     expect(cmd).toContain("--model 'claude-opus-4-8[1m]'")
   })
 
+  it('tunes the MCP startup batch so the channel plugin is not starved (parity with channels.sh)', () => {
+    const cmd = buildMainSessionRespawnCmd({ ...base, continueSession: false })
+    expect(cmd).toContain('MCP_SERVER_CONNECTION_BATCH_SIZE=10')
+    expect(cmd).toContain('MCP_CONNECTION_NONBLOCKING=1')
+    expect(cmd).toContain('MCP_TIMEOUT=60000')
+    // Must be exported BEFORE the claude binary runs.
+    expect(cmd.indexOf('MCP_SERVER_CONNECTION_BATCH_SIZE')).toBeLessThan(cmd.indexOf('--channels'))
+  })
+
   it('omits --model when no model is configured', () => {
     const cmd = buildMainSessionRespawnCmd({ ...base, model: '', continueSession: false })
     expect(cmd).not.toContain('--model')
