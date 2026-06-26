@@ -90,6 +90,19 @@ TMUX="$(command -v tmux)"
 [ -z "$CLAUDE" ] && echo "ERROR: claude not found on PATH" >&2 && exit 1
 [ -z "$TMUX" ]   && echo "ERROR: tmux not found on PATH" >&2 && exit 1
 
+# MAIN-session fixes the upstream ghost-text fix (agent-process.ts) only applied
+# to SUB-agents -- the main channels session never got them, so Jarvis kept
+# hitting the ghost-text re-submit bug (stuck /mcp menu -> recovery hard-reset
+# loop) plus MCP startup-batch starvation (most MCP servers of any agent).
+#  - CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false: kill the DIM ghost-text of a
+#    previous prompt that the pane-scraping recovery misreads as parked input
+#    and re-submits (the root of the stuck-/mcp loop).
+#  - MCP_* batch tuning: the --channels plugin is a stdio MCP server; without
+#    these it gets starved out of the default 3-wide blocking startup batch.
+# Inline on the launch command -- the tmux server predates this script and does
+# not inherit its env. Mirrors startAgentProcess (sub-agent launch).
+MAIN_FIX_ENV="export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000 && "
+
 # Read the main agent's default model from .claude/settings.json so we can
 # pass --model explicitly. Without --model claude-code falls back to its
 # built-in default, which can drift across versions. Passing the flag makes
@@ -186,7 +199,7 @@ fi
 # resuming one of those loses the --channels activation state, causing
 # "Channel notifications skipped: server not in --channels list" errors.
 $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
-  "$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}"
+  "${MAIN_FIX_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}"
 
 # Session startup guard: a Claude Code first-run dialogusait auto-accept-eljuk
 # kulonben a headless session orokre parkolna a prompton es a Telegram plugin
@@ -227,7 +240,7 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
         # entry); see the PR description / card 7EB18437.
         [ -e "$INSTALL_DIR/CLAUDE.md" ] && ln -sf "$INSTALL_DIR/CLAUDE.md" "$_CHANNELS_STARTDIR/CLAUDE.md" 2>/dev/null || true
         $TMUX new-session -d -s "$SESSION" -c "$_CHANNELS_STARTDIR" \
-          "$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}"
+          "${MAIN_FIX_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}"
         unset _CHANNELS_STARTDIR
       fi
       continue
