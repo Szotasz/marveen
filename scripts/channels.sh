@@ -185,6 +185,14 @@ fi
 # the cwd-based project dir may contain the user's own CLI sessions, and
 # resuming one of those loses the --channels activation state, causing
 # "Channel notifications skipped: server not in --channels list" errors.
+#
+# Idempotent launch: the service runs KillMode=process so a `systemctl stop`
+# no longer cgroup-kills the SHARED tmux server (which would tear down every
+# sibling agent session on this host -- the 2026-06-26 fleet-wide outage). The
+# trade-off is that a prior "$SESSION" can survive into this relaunch, so kill
+# just THIS session first -- never the server, never another agent's session --
+# otherwise new-session below fails with "duplicate session".
+$TMUX kill-session -t "$SESSION" 2>/dev/null || true
 $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
   "$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}"
 

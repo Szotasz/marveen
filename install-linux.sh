@@ -1152,6 +1152,13 @@ After=network.target
 
 [Service]
 Type=simple
+# KillMode=process: the first tmux new-session from channels.sh starts the
+# SHARED tmux server in this unit's cgroup, and every sub-agent session lives
+# there too. Default control-group mode would SIGKILL the whole fleet on a
+# stop/restart (only the main agent's own unit). process mode kills only
+# channels.sh; the tmux server and all agents survive. channels.sh kill-sessions
+# its own "\$SESSION" before new-session so the surviving session doesn't collide.
+KillMode=process
 WorkingDirectory=$INSTALL_DIR
 ExecStart=$INSTALL_DIR/scripts/channels.sh
 Restart=on-failure

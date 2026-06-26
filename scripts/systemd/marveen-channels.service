@@ -9,6 +9,14 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
+# KillMode=process: channels.sh's first `tmux new-session` starts the SHARED
+# tmux server inside this unit's cgroup, and every sub-agent session lives there
+# too. The default control-group mode would SIGKILL the whole fleet on a
+# stop/restart (the 2026-06-26 fleet-wide outage), not just the main agent.
+# process mode kills only channels.sh; the tmux server and all agents survive.
+# channels.sh kill-sessions its own session before new-session, so the surviving
+# session does not collide on relaunch.
+KillMode=process
 WorkingDirectory=/path/to/marveen
 ExecStart=/path/to/marveen/scripts/channels.sh
 # P1 FIX: always (not on-failure). channels.sh exits 0 when the tmux session

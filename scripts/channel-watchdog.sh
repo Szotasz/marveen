@@ -12,10 +12,14 @@
 # on success, so a stale file means the session's MCP pipe is no longer doing
 # round-trips (wedged / deaf).
 #
-# Recovery: `tmux respawn-pane` of ONLY the <id>-channels pane. NEVER
-# `systemctl restart` -- the tmux SERVER is shared across every agent and lives
-# in the channels unit's cgroup (KillMode=control-group), so restarting the unit
-# would kill the server and every agent session, not just the main one.
+# Recovery: `tmux respawn-pane` of ONLY the <id>-channels pane -- the precise,
+# fleet-safe restart of just the main channels session. (Historically a
+# `systemctl restart` was outright forbidden here: the shared tmux SERVER lives
+# in the channels unit's cgroup, and under the old KillMode=control-group a
+# restart SIGKILLed the server and every agent session, not just the main one --
+# the 2026-06-26 fleet outage. The unit now runs KillMode=process so a restart is
+# no longer catastrophic, but respawn-pane stays preferred: it recovers only the
+# wedged pane without disturbing any sibling session.)
 #
 # Safety: a respawn-grace stamp prevents storming; a consecutive-respawn cap
 # stops a useless respawn loop when the keepalive is disabled or the problem is
