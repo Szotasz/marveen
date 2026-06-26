@@ -76,6 +76,43 @@ export function shouldAutoRestartDownAgent(input: AgentRestartDecisionInput): bo
   return true
 }
 
+export type DownAgentAction = 'restart' | 'alert' | 'skip'
+
+// Hard cap on consecutive watchdog restarts that never bring the plugin back
+// up. The exponential back-off above only SLOWS the churn; on its own a plugin
+// that no restart can fix -- e.g. the claude-side channel MCP wedged after a
+// respawn-pane, or an auth/token fault the watchdog cannot repair -- is
+// hard-restarted forever. Every sub-agent restart is a FRESH session, so the
+// agent loses all of its working context on each cycle (observed: a sub-agent
+// hard-restarted ~10x/hour, re-running /name every time). After this many
+// consecutive failed attempts the watchdog stops restarting and alerts the
+// operator instead, turning a silent infinite loop into one actionable ping.
+export const AGENT_MAX_RESTART_ATTEMPTS = 5
+
+// Decide what to do about a sub-agent whose channel plugin is observed down.
+// Wraps shouldAutoRestartDownAgent with a consecutive-failure cap so the
+// watchdog escalates to a human instead of churning the session indefinitely:
+//   'restart' -> under the cap and the back-off has elapsed: hard-restart
+//   'alert'   -> the cap was just reached: surface to the operator (once)
+//   'skip'    -> within back-off, or already alerted past the cap
+//
+// The caller must tick consecutiveFailures past maxRestartAttempts when it
+// acts on 'alert', so subsequent ticks fall through to 'skip' and the alert
+// fires exactly once per down-spell (the counter is reset when the plugin
+// recovers, re-arming the alert for any future spell).
+export function decideDownAgentAction(
+  input: AgentRestartDecisionInput,
+  maxRestartAttempts: number,
+): DownAgentAction {
+  const failures = Number.isFinite(input.consecutiveFailures) && (input.consecutiveFailures ?? 0) > 0
+    ? Math.floor(input.consecutiveFailures as number)
+    : 0
+  if (maxRestartAttempts > 0 && failures >= maxRestartAttempts) {
+    return failures === maxRestartAttempts ? 'alert' : 'skip'
+  }
+  return shouldAutoRestartDownAgent(input) ? 'restart' : 'skip'
+}
+
 // Parse the elapsed-time string from `ps -o etime=` into seconds.
 // Format is `[[dd-]hh:]mm:ss` on both BSD (macOS) and procps (Linux):
 //   "05:23"        -> 323
