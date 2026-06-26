@@ -255,13 +255,31 @@ window._i18n.en = {
 
   // --- Activity ---
   'activity.page_title':         'Activity',
-  'activity.page_subtitle':      'What each agent is doing: live view, updates every 3 sec',
+  'activity.page_subtitle':      'What each agent is doing: text status and live code/output, switchable per box via a tab. Updates every 3 sec.',
   'activity.loading':            'Loading…',
   'activity.state.working':      'working',
   'activity.state.idle':         'idle',
   'activity.state.unknown':      'unknown',
   'activity.state.error':        'error',
   'activity.state.stopped':      'stopped',
+  // Per-agent tabs + the self-reported status tab
+  'activity.tab.status':         'Status',
+  'activity.tab.output':         'Code / output',
+  'activity.status.none':        'This agent has not reported a text status yet.',
+  'activity.status.no_headline': 'no description',
+  'activity.status.stale':       'stale',
+  'activity.status.updated':     'updated {time}',
+  'activity.status.state.working': 'working',
+  'activity.status.state.blocked': 'blocked',
+  'activity.status.state.done':    'done',
+  'activity.status.state.idle':    'idle',
+  'activity.status.diff.konnyu':   'easy',
+  'activity.status.diff.kozepes':  'medium',
+  'activity.status.diff.nehez':    'hard',
+  'activity.status.rel.now':       'just now',
+  'activity.status.rel.min':       '{n}m ago',
+  'activity.status.rel.hour':      '{n}h ago',
+  'activity.status.rel.day':       '{n}d ago',
 
   // --- Tasks (Schedules) ---
   'tasks.page_title':            'Schedules',

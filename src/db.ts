@@ -578,6 +578,23 @@ export function initDatabase(dbPathOverride?: string): void {
   // Migration: add agent column to installs that created the table before this column existed.
   try { db.exec(`ALTER TABLE store_file_audit ADD COLUMN agent TEXT`) } catch { /* column already exists */ }
 
+  // Live "what is each agent working on" board. One row per agent (agent_id is
+  // the PK), upserted by the agent itself in human-readable terms: a one-line
+  // headline, a coarse difficulty, a free-text ETA, and an optional blocker.
+  // This is NOT command/log data -- it is the agent narrating its current task.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_status (
+      agent_id TEXT PRIMARY KEY,
+      state TEXT NOT NULL DEFAULT 'idle' CHECK(state IN ('working','idle','blocked','done')),
+      headline TEXT,
+      difficulty TEXT CHECK(difficulty IN ('konnyu','kozepes','nehez') OR difficulty IS NULL),
+      eta TEXT,
+      blocker TEXT,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_status_updated ON agent_status(updated_at)`)
+
   // One-shot migration from the old JSON file (which had a read-modify-write
   // race). Import rows if they exist, then rename the file so we don't keep
   // re-importing. Wrapped in a transaction so a crash mid-import is safe.
@@ -614,6 +631,55 @@ function migrateTaskRunsFromJson(): void {
 
 export function getDb(): Database.Database {
   return db
+}
+
+// --- Agent status board (who is working on what) ---
+
+export interface AgentStatus {
+  agent_id: string
+  state: 'working' | 'idle' | 'blocked' | 'done'
+  headline: string | null
+  difficulty: 'konnyu' | 'kozepes' | 'nehez' | null
+  eta: string | null
+  blocker: string | null
+  updated_at: number
+}
+
+export function listAgentStatus(): AgentStatus[] {
+  return db.prepare('SELECT * FROM agent_status ORDER BY updated_at DESC').all() as AgentStatus[]
+}
+
+export function upsertAgentStatus(s: {
+  agent_id: string
+  state?: string
+  headline?: string | null
+  difficulty?: string | null
+  eta?: string | null
+  blocker?: string | null
+}): void {
+  const now = Math.floor(Date.now() / 1000)
+  const state = s.state && ['working', 'idle', 'blocked', 'done'].includes(s.state) ? s.state : 'working'
+  const difficulty =
+    s.difficulty && ['konnyu', 'kozepes', 'nehez'].includes(s.difficulty) ? s.difficulty : null
+  db.prepare(
+    `INSERT INTO agent_status (agent_id, state, headline, difficulty, eta, blocker, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(agent_id) DO UPDATE SET
+       state = excluded.state,
+       headline = excluded.headline,
+       difficulty = excluded.difficulty,
+       eta = excluded.eta,
+       blocker = excluded.blocker,
+       updated_at = excluded.updated_at`
+  ).run(
+    s.agent_id,
+    state,
+    s.headline ?? null,
+    difficulty,
+    s.eta ?? null,
+    s.blocker ?? null,
+    now
+  )
 }
 
 // --- Munkamenetek ---
