@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { execSync, execFileSync } from 'node:child_process'
@@ -92,6 +92,127 @@ export function ownChannelProviderForScope(
   resolvedProvider: string | null,
 ): string | null {
   return hasOwnToken && resolvedProvider ? resolvedProvider : null
+}
+
+// Per-agent isolated CLAUDE_CONFIG_DIR provisioning (2026-06-26 fleet outage).
+//
+// Claude Code records a plugin's PROJECT-scoped install in a single shared
+// file -- ~/.claude/plugins/installed_plugins.json -- keyed by one projectPath
+// per plugin id. Every sub-agent ran out of the SAME ~/.claude, so each agent
+// launch (claude --channels plugin:telegram@...) rewrote that single slot to
+// its OWN project, evicting whichever agent registered before it. Net effect:
+// only ONE agent's channel plugin could be registered (and thus only one bun
+// getUpdates poller / one live bot.pid) at a time fleet-wide; every other agent
+// saw "No MCP servers configured", spawned no poller, and went deaf on its
+// channel. It also produced the /mcp-flap alert storm (agents racing for the
+// slot). Sequentialising restarts did NOT help (the slot is shared state, not a
+// startup-batch race); the only structural fix is to stop the agents sharing
+// one plugin-install file.
+//
+// This gives each channel sub-agent its own CLAUDE_CONFIG_DIR. The pattern
+// mirrors the heartbeat worker's isolation (src/heartbeat.ts): symlink every
+// top-level ~/.claude entry so auth (.credentials.json), project transcripts
+// (--continue) and the plugin marketplaces stay shared, EXCEPT settings.json
+// and plugins/ which become per-agent. The private plugins/ dir symlinks the
+// heavy shared, read-only parts (cache/marketplaces/data) but OWNS
+// installed_plugins.json + known_marketplaces.json, so each agent's
+// project-scoped install lives in its own file and can never evict another's.
+//
+// Idempotent and best-effort: returns the dir on success, or null so the caller
+// falls back to the shared ~/.claude (degraded, but never a launch failure).
+const ISOLATED_CONFIG_SKIP = new Set(['settings.json', 'plugins'])
+
+export function ensureIsolatedChannelConfigDir(
+  name: string,
+  providerType: ChannelProviderType,
+): string | null {
+  try {
+    const cwd = agentDir(name)
+    const cfg = join(cwd, '.claude-config')
+    const realClaude = join(homedir(), '.claude')
+    if (!existsSync(realClaude)) return null
+    mkdirSync(cfg, { recursive: true })
+
+    // 1. Symlink every top-level ~/.claude entry except the two we own.
+    //    A stale non-symlink (e.g. a prior copy) is removed and re-linked so a
+    //    manual edit cannot permanently break the isolation.
+    for (const entry of readdirSync(realClaude)) {
+      if (ISOLATED_CONFIG_SKIP.has(entry)) continue
+      const link = join(cfg, entry)
+      let needsLink = true
+      try {
+        if (lstatSync(link).isSymbolicLink()) needsLink = false
+        else rmSync(link, { recursive: true, force: true })
+      } catch { /* absent -> create */ }
+      if (needsLink) {
+        try { symlinkSync(join(realClaude, entry), link) }
+        catch (err) { logger.warn({ err, entry, name }, 'isolated-config: symlink failed') }
+      }
+    }
+
+    // 2. Own settings.json: copy the shared one (keeps hooks etc.) but force
+    //    enabledPlugins to this agent's own provider only (all other channel
+    //    plugins false), matching the spawn-time scope decision.
+    const sharedSettings = join(realClaude, 'settings.json')
+    let settings: Record<string, unknown> = {}
+    if (existsSync(sharedSettings)) {
+      try { settings = JSON.parse(readFileSync(sharedSettings, 'utf-8')) as Record<string, unknown> }
+      catch { settings = {} }
+    }
+    const ownScopedPlugins = scopeChannelPlugins(
+      providerType,
+      settings.enabledPlugins as Record<string, boolean> | undefined,
+    )
+    settings.enabledPlugins = ownScopedPlugins
+    writeFileSync(join(cfg, 'settings.json'), JSON.stringify(settings, null, 2) + '\n')
+
+    // 3. Own plugins/ dir: symlink the heavy shared parts, own the install state.
+    const pluginsDir = join(cfg, 'plugins')
+    mkdirSync(pluginsDir, { recursive: true })
+    const sharedPlugins = join(realClaude, 'plugins')
+    for (const sub of ['cache', 'marketplaces', 'data']) {
+      const link = join(pluginsDir, sub)
+      const target = join(sharedPlugins, sub)
+      if (!existsSync(target)) continue
+      let needsLink = true
+      try {
+        if (lstatSync(link).isSymbolicLink()) needsLink = false
+        else rmSync(link, { recursive: true, force: true })
+      } catch { /* absent -> create */ }
+      if (needsLink) {
+        try { symlinkSync(target, link) }
+        catch (err) { logger.warn({ err, sub, name }, 'isolated-config: plugin symlink failed') }
+      }
+    }
+    const sharedKnown = join(sharedPlugins, 'known_marketplaces.json')
+    if (existsSync(sharedKnown)) {
+      writeFileSync(join(pluginsDir, 'known_marketplaces.json'), readFileSync(sharedKnown, 'utf-8'))
+    }
+    // Seed installed_plugins.json with every project-scoped install re-pointed
+    // at THIS agent's cwd, so the channel plugin is registered for this project
+    // from first launch (Claude Code keeps maintaining it thereafter).
+    const sharedInstalled = join(sharedPlugins, 'installed_plugins.json')
+    if (existsSync(sharedInstalled)) {
+      try {
+        const inst = JSON.parse(readFileSync(sharedInstalled, 'utf-8')) as {
+          plugins?: Record<string, Array<{ scope?: string; projectPath?: string }>>
+        }
+        for (const entries of Object.values(inst.plugins ?? {})) {
+          for (const e of entries) {
+            if (e.scope === 'project') e.projectPath = cwd
+          }
+        }
+        writeFileSync(join(pluginsDir, 'installed_plugins.json'), JSON.stringify(inst, null, 2) + '\n')
+      } catch (err) {
+        logger.warn({ err, name }, 'isolated-config: failed to seed installed_plugins.json')
+      }
+    }
+
+    return cfg
+  } catch (err) {
+    logger.warn({ err, name }, 'isolated-config: provisioning failed, falling back to shared ~/.claude')
+    return null
+  }
 }
 
 function resolveAgentProvider(name: string): ChannelProviderType {
@@ -385,7 +506,15 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // e.g. for routing this agent to a separate Anthropic login). When the
     // agent-config field is missing or blank, claudeConfigDir is null and we
     // emit no export, preserving the default Claude Code behavior.
-    const claudeConfigDir = readAgentClaudeConfigDir(name)
+    // An explicit per-agent config dir wins. Otherwise, a channel sub-agent
+    // gets an auto-provisioned isolated config dir so its plugin install does
+    // not collide with the rest of the fleet in the shared ~/.claude (see
+    // ensureIsolatedChannelConfigDir). The main agent comes up via channels.sh
+    // and keeps the shared root.
+    let claudeConfigDir = readAgentClaudeConfigDir(name)
+    if (!claudeConfigDir && hasChannel && name !== MAIN_AGENT_ID) {
+      claudeConfigDir = ensureIsolatedChannelConfigDir(name, agentProvider)
+    }
     const claudeConfigEnv = claudeConfigDir ? `export CLAUDE_CONFIG_DIR="${claudeConfigDir}" && ` : ''
     // `--continue` requires an existing session; on a brand-new agent the
     // Claude Code projects directory does not yet exist and `claude` exits
