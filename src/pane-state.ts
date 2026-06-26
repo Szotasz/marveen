@@ -1017,6 +1017,79 @@ export function decideStuckInputRecovery(
 }
 
 // =============================================================================
+// Submit-action decision (delivery-reliability, BA56A500)
+// =============================================================================
+//
+// Turns the parked-input facts -- built from parkedInputRowCount() and
+// parkedChannelInput() above -- into a recovery MOVE. The decision is the heart
+// of the fix: a plain recovery Enter on a MULTI-ROW parked message inserts a
+// newline rather than submitting (corrupt), so multi-row must never bare-Enter;
+// and the chat_id truncation-guard (no verbatim re-inject of an incomplete
+// <channel> block) is preserved. The caller verifies the move landed with
+// submitLanded() and escalates within the attempts budget if it did not.
+
+/** A concrete recovery move for the stuck-input watcher. */
+export type StuckInputAction =
+  | 'reinject-block'   // clear + verbatim re-inject the COMPLETE <channel> block (chat_id-safe)
+  | 'reinject-plain'   // clear + re-inject collapsed parked text (sub-agents only)
+  | 'clear-preamble'   // clear a truncated/stale safety preamble, never re-inject
+  | 'enter'            // a single bare Enter -- ONLY safe at rowCount <= 1
+  | 'hold'             // do nothing this tick (multi-row truncated / truncation-guard)
+
+export interface StuckInputActionFacts {
+  /** attempt > MAIN_STUCK_ENTER_ATTEMPTS -- past the Enter-first budget. */
+  escalate: boolean
+  /** parkedInputRowCount(pane) -- >1 forbids a bare Enter. */
+  rowCount: number
+  /** A complete <channel> block is parked: chat_id-safe verbatim re-inject. */
+  blockComplete: boolean
+  /** A <channel> block is parked but truncated: chat_id unrecoverable, MUST
+   * NOT re-inject (wrong chat_id) and MUST NOT corrupt via a multi-row Enter. */
+  blockTruncated: boolean
+  /** shouldClearTruncatedPreamble(pane): a stale safety preamble to clear. */
+  truncatedPreamble: boolean
+  /** Sub-agent session: re-injecting collapsed parked text is safe (no human draft). */
+  allowPlainReinject: boolean
+  /** parkedInputText(pane) != null -- there is collapsed text to re-inject. */
+  hasPlainText: boolean
+}
+
+/**
+ * Pure decision: given the parked-input facts, what recovery move to make.
+ * Dependency-free so it is unit-testable without tmux.
+ *
+ * Invariants (the fix):
+ *   - NEVER bare-Enter a multi-row box (rowCount > 1) -- it inserts a newline
+ *     and corrupts the message. Multi-row escalates straight to a re-inject
+ *     (when one is safe) or holds.
+ *   - A complete <channel> block is the safest move (chat_id-safe re-inject);
+ *     prefer it as soon as we escalate, and immediately when multi-row.
+ *   - A TRUNCATED <channel> block (chat_id unrecoverable) must not be
+ *     re-injected; multi-row truncated holds (awaiting the keystroke fix),
+ *     single-row keeps the harmless legacy Enter.
+ *   - Otherwise a bare Enter is the swallowed-Enter remedy, but only single-row.
+ */
+export function decideStuckInputAction(f: StuckInputActionFacts): StuckInputAction {
+  const multiRow = f.rowCount > 1
+  // Complete channel block: chat_id-safe verbatim re-inject. Multi-row is itself
+  // a reason to escalate now (a plain Enter would corrupt it).
+  if (f.blockComplete) {
+    return f.escalate || multiRow ? 'reinject-block' : 'enter'
+  }
+  // Sub-agent non-channel parked text: clear + re-inject is safe (no human draft).
+  if (f.allowPlainReinject && f.hasPlainText && !f.blockTruncated) {
+    return f.escalate || multiRow ? 'reinject-plain' : 'enter'
+  }
+  // Truncated safety preamble: clear only (never re-inject a stale preamble).
+  if (f.truncatedPreamble && f.escalate) return 'clear-preamble'
+  // Truncated <channel> block: hold a multi-row (Enter would corrupt; re-inject
+  // would answer the wrong chat_id), keep the harmless legacy Enter single-row.
+  if (f.blockTruncated) return multiRow ? 'hold' : 'enter'
+  // Default swallowed-Enter remedy -- never on multi-row.
+  return multiRow ? 'hold' : 'enter'
+}
+
+// =============================================================================
 // Stuck tool-call watcher (2026-06-02 incident, Worked-for >Ns freeze)
 // =============================================================================
 //

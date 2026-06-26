@@ -25,7 +25,9 @@ import {
   detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, type PaneErrorAlertState, type PaneState,
   stuckInputSignature, decideStuckInputRecovery, parkedChannelInput,
   parkedInputText, shouldClearTruncatedPreamble,
-  type StuckInputState, type StuckInputThresholds,
+  parkedInputRowCount, submitLanded, decideStuckInputAction,
+  type StuckInputState, type StuckInputThresholds, type StuckInputAction,
+  type StuckInputActionFacts,
 } from '../pane-state.js'
 import { MAIN_CHANNELS_SESSION, MAIN_CHANNELS_PLIST } from './main-agent.js'
 import { notifyChannel } from '../notify.js'
@@ -196,49 +198,90 @@ export function recoverStuckInputForSession(
   const decision = decideStuckInputRecovery(sig, prev, Date.now(), thresholds)
   if (decision.recover && pane != null) {
     const attempt = decision.next.attempts
-    const escalate = attempt > MAIN_STUCK_ENTER_ATTEMPTS
     const block = parkedChannelInput(pane)
-    if (escalate && block != null && block.complete && block.block != null) {
-      logger.warn({ session, chatId: block.chatId, attempt }, 'Stuck channel input -- escalating to clear + verbatim re-inject')
-      try {
-        clearInputBuffer(session)
-        sendPromptToSession(session, block.block)
-      } catch (err) {
-        logger.warn({ err, session }, 'Stuck-input re-inject failed')
-      }
-    } else if (escalate && shouldClearTruncatedPreamble(pane)) {
-      logger.warn({ session, attempt }, 'Stuck input -- truncated safety preamble, clearing buffer (no re-inject)')
-      try {
-        clearInputBuffer(session)
-      } catch (err) {
-        logger.warn({ err, session }, 'Stuck-input preamble clear failed')
-      }
-    } else if (escalate && allowPlainReinject && block == null) {
-      const text = parkedInputText(pane)
-      if (text != null) {
-        logger.warn({ session, attempt }, 'Stuck input (non-channel) -- escalating to clear + re-inject parked text')
-        try {
-          clearInputBuffer(session)
-          sendPromptToSession(session, text)
-        } catch (err) {
-          logger.warn({ err, session }, 'Stuck-input plain re-inject failed')
-        }
-      } else {
-        try { execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 }) } catch { /* no-op */ }
-      }
-    } else {
-      // Enter-first, and the truncation-guard fallback: if escalation was due
-      // but the <channel> block looks incomplete, hold on Enter instead.
-      const heldForTruncation = escalate && block != null && !block.complete
-      logger.warn({ session, attempt, heldForTruncation }, 'Stuck input -- recovery Enter')
-      try {
-        execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
-      } catch (err) {
-        logger.warn({ err, session }, 'Stuck-input recovery Enter failed')
-      }
+    // Gather the parked-input facts and let the pure decision choose the move.
+    // The decision NEVER bare-Enters a multi-row box (that inserts a newline
+    // and corrupts the message) and prefers a chat_id-safe re-inject; the
+    // truncation-guard (no verbatim re-inject of an incomplete <channel> block)
+    // is preserved via blockTruncated.
+    const facts: StuckInputActionFacts = {
+      escalate: attempt > MAIN_STUCK_ENTER_ATTEMPTS,
+      rowCount: parkedInputRowCount(pane),
+      blockComplete: block != null && block.complete && block.block != null,
+      blockTruncated: block != null && !block.complete,
+      truncatedPreamble: shouldClearTruncatedPreamble(pane),
+      allowPlainReinject,
+      hasPlainText: allowPlainReinject && parkedInputText(pane) != null,
     }
+    const action = decideStuckInputAction(facts)
+    performStuckInputAction(session, action, pane, block, sig, attempt)
   }
   return decision.next
+}
+
+// Execute a stuck-input recovery action and verify it landed. The action is
+// chosen by the pure decideStuckInputAction(); this does only the tmux side-
+// effect plus POST-SUBMIT VERIFICATION (re-capture + submitLanded), so a move
+// that did NOT clear the parked text is logged and the next tick escalates
+// within the attempts budget (decideStuckInputRecovery caps it). 'hold' and
+// 'clear-preamble' submit nothing, so there is nothing to verify there.
+function performStuckInputAction(
+  session: string,
+  action: StuckInputAction,
+  paneBefore: string,
+  block: ReturnType<typeof parkedChannelInput>,
+  prevSig: string | null,
+  attempt: number,
+): void {
+  let submitted = false
+  try {
+    switch (action) {
+      case 'reinject-block':
+        logger.warn({ session, chatId: block?.chatId, attempt }, 'Stuck channel input -- clear + verbatim re-inject')
+        clearInputBuffer(session)
+        sendPromptToSession(session, block!.block!)
+        submitted = true
+        break
+      case 'reinject-plain': {
+        const text = parkedInputText(paneBefore)
+        if (text != null) {
+          logger.warn({ session, attempt }, 'Stuck input (non-channel) -- clear + re-inject parked text')
+          clearInputBuffer(session)
+          sendPromptToSession(session, text)
+        } else {
+          execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+        }
+        submitted = true
+        break
+      }
+      case 'clear-preamble':
+        logger.warn({ session, attempt }, 'Stuck input -- truncated safety preamble, clearing buffer (no re-inject)')
+        clearInputBuffer(session)
+        break
+      case 'enter':
+        execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+        submitted = true
+        break
+      case 'hold':
+        logger.warn({ session, attempt }, 'Stuck input -- multi-row/truncated, holding (no bare-Enter; awaiting keystroke fix)')
+        break
+    }
+  } catch (err) {
+    logger.warn({ err, session, action }, 'Stuck-input recovery action failed')
+    return
+  }
+  if (submitted) {
+    // submitLanded() handles a null capture internally (-> not landed). prevSig
+    // is non-null here in practice (recover only fires on a parked signature),
+    // but guard the type narrowing explicitly.
+    const landed = prevSig != null ? submitLanded(prevSig, capturePane(session)) : false
+    logger.warn(
+      { session, action, attempt, landed },
+      landed
+        ? 'Stuck input -- recovery action landed'
+        : 'Stuck input -- recovery action did NOT land (escalating next tick within budget)',
+    )
+  }
 }
 
 // Periodic detached-channel-claude reap (CB6CF755 durable fix). The pane-
