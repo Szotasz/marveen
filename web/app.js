@@ -525,21 +525,82 @@ function stopActivityPoll() {
   }
 }
 
+// --- Self-reported status ("who is working on what") ---
+// Each agent upserts a human-readable status to /api/agent-status; it is shown
+// as the "Status" tab of that agent's card, beside the live "Code / output"
+// terminal tail (the original Activity content).
+const ACT_STATUS_META = {
+  working: { cls: 'wb-working', label: () => t('activity.status.state.working') },
+  blocked: { cls: 'wb-blocked', label: () => t('activity.status.state.blocked') },
+  done: { cls: 'wb-done', label: () => t('activity.status.state.done') },
+  idle: { cls: 'wb-idle', label: () => t('activity.status.state.idle') },
+}
+const ACT_DIFF_LABEL = { konnyu: 'activity.status.diff.konnyu', kozepes: 'activity.status.diff.kozepes', nehez: 'activity.status.diff.nehez' }
+
+function actStatusRelTime(ts) {
+  const sec = Math.max(0, Math.floor(Date.now() / 1000) - ts)
+  if (sec < 60) return t('activity.status.rel.now')
+  if (sec < 3600) return t('activity.status.rel.min', { n: Math.floor(sec / 60) })
+  if (sec < 86400) return t('activity.status.rel.hour', { n: Math.floor(sec / 3600) })
+  return t('activity.status.rel.day', { n: Math.floor(sec / 86400) })
+}
+
+// Build the inner HTML of the "Status" tab from a self-reported status row.
+// Returns a muted placeholder when the agent has not reported a status yet.
+function actStatusPanelHtml(r) {
+  if (!r) return '<p class="activity-tail-empty">' + t('activity.status.none') + '</p>'
+  const STALE = 30 * 60
+  const stale = Math.floor(Date.now() / 1000) - r.updated_at > STALE
+  const stateKey = stale && r.state === 'working' ? 'idle' : r.state
+  const meta = ACT_STATUS_META[stateKey] || ACT_STATUS_META.idle
+  const diff = r.difficulty && ACT_DIFF_LABEL[r.difficulty]
+    ? '<span class="wb-diff wb-diff-' + r.difficulty + '">' + t(ACT_DIFF_LABEL[r.difficulty]) + '</span>'
+    : ''
+  const eta = r.eta ? '<span class="wb-eta">⏱ ' + escapeHtml(r.eta) + '</span>' : ''
+  const blocker = r.state === 'blocked' && r.blocker
+    ? '<div class="wb-blocker">⚠ ' + escapeHtml(r.blocker) + '</div>'
+    : ''
+  const headline = r.headline ? escapeHtml(r.headline) : '<span class="wb-muted">' + t('activity.status.no_headline') + '</span>'
+  const staleTag = stale ? ' <span class="wb-stale">' + t('activity.status.stale') + '</span>' : ''
+  return (
+    '<div class="wb-status-badge-row"><span class="wb-badge ' + meta.cls + '">' + meta.label() + '</span></div>' +
+    '<div class="wb-headline">' + headline + '</div>' +
+    (diff || eta ? '<div class="wb-meta-row">' + diff + eta + '</div>' : '') +
+    blocker +
+    '<div class="wb-foot">' + t('activity.status.updated', { time: actStatusRelTime(r.updated_at) }) + staleTag + '</div>'
+  )
+}
+
+// Which tab ('status' | 'output') is selected per agent. Persists across the
+// 3s poll re-render so the user's choice is not reset on every refresh.
+const activityTab = new Map()
+
 async function loadActivity() {
   try {
-    const res = await fetch('/api/agents/activity')
-    if (!res.ok) throw new Error('HTTP ' + res.status)
-    const entries = await res.json()
-    renderActivity(entries)
+    // Fetch the live terminal activity and the self-reported status in
+    // parallel, then merge per agent into one card.
+    const [actRes, stRes] = await Promise.all([
+      fetch('/api/agents/activity'),
+      fetch('/api/agent-status').catch(() => null),
+    ])
+    if (!actRes.ok) throw new Error('HTTP ' + actRes.status)
+    const entries = await actRes.json()
+    let statuses = []
+    if (stRes && stRes.ok) { try { statuses = await stRes.json() } catch { statuses = [] } }
+    const statusByAgent = {}
+    for (const s of (Array.isArray(statuses) ? statuses : [])) {
+      if (s && s.agent_id) statusByAgent[String(s.agent_id).toLowerCase()] = s
+    }
+    renderActivity(entries, statusByAgent)
     const upd = document.getElementById('activityUpdated')
-    if (upd) upd.textContent = t('activity.updated', { time: new Date().toLocaleTimeString('hu-HU') })
+    if (upd) upd.textContent = t('activity.updated', { time: new Date().toLocaleTimeString() })
   } catch (e) {
     const list = document.getElementById('activityList')
     if (list) list.innerHTML = '<p class="activity-empty">' + t('activity.error_load') + ': ' + escapeHtml(String(e.message || e)) + '</p>'
   }
 }
 
-function renderActivity(entries) {
+function renderActivity(entries, statusByAgent = {}) {
   const list = document.getElementById('activityList')
   if (!list) return
   if (!Array.isArray(entries) || entries.length === 0) {
@@ -555,8 +616,18 @@ function renderActivity(entries) {
     const termIcon = canOpen
       ? '<svg class="act-term-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" title="' + t('activity.tooltip.terminal') + '"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>'
       : ''
+    const agentAttr = escapeHtml(a.name)
+    const status = statusByAgent[String(a.name).toLowerCase()]
+
+    // Selected tab (default: the human-readable status).
+    const tab = activityTab.get(a.name) || 'status'
+    const statusActive = tab === 'status'
+    const outputPanel = tail
+      ? '<pre class="activity-tail">' + tail + '</pre>'
+      : '<p class="activity-tail-empty">' + (a.running ? t('activity.no_output') : t('activity.session_stopped')) + '</p>'
+
     return (
-      '<div class="activity-card ' + meta.cls + (canOpen ? ' act-clickable' : '') + '" data-agent="' + escapeHtml(a.name) + '">' +
+      '<div class="activity-card ' + meta.cls + '" data-agent="' + agentAttr + '">' +
         '<div class="activity-card-head">' +
           '<span class="activity-name">' + escapeHtml(a.name) + mainBadge + '</span>' +
           '<span style="display:flex;align-items:center;gap:8px">' +
@@ -564,23 +635,46 @@ function renderActivity(entries) {
             '<span class="activity-badge ' + meta.cls + '" title="' + escapeHtml(meta.tip || '') + '">' + meta.label + '</span>' +
           '</span>' +
         '</div>' +
-        (tail
-          ? '<pre class="activity-tail">' + tail + '</pre>'
-          : '<p class="activity-tail-empty">' + (a.running ? 'nincs friss kimenet' : 'a session nem fut') + '</p>') +
+        '<div class="act-tabs" role="tablist">' +
+          '<button type="button" class="act-tab' + (statusActive ? ' active' : '') + '" data-agent="' + agentAttr + '" data-tab="status">' + t('activity.tab.status') + '</button>' +
+          '<button type="button" class="act-tab' + (!statusActive ? ' active' : '') + '" data-agent="' + agentAttr + '" data-tab="output">' + t('activity.tab.output') + '</button>' +
+        '</div>' +
+        '<div class="act-tab-panel act-panel-status"' + (statusActive ? '' : ' hidden') + '>' +
+          actStatusPanelHtml(status) +
+        '</div>' +
+        '<div class="act-tab-panel act-panel-output' + (canOpen ? ' act-clickable' : '') + '"' + (!statusActive ? '' : ' hidden') + ' data-agent="' + agentAttr + '"' + (canOpen ? ' title="' + t('activity.tooltip.terminal') + '"' : '') + '>' +
+          outputPanel +
+        '</div>' +
       '</div>'
     )
   }).join('')
 }
 
-// Event delegation: clicking a running activity-card opens the terminal modal
+// Event delegation for the Activity page:
+//  - clicking a tab switches that card's panel (and remembers the choice)
+//  - clicking the live output panel (when running) opens the terminal modal
 ;(() => {
   const actList = document.getElementById('activityList')
-  if (actList) {
-    actList.addEventListener('click', (e) => {
-      const card = e.target.closest('.activity-card.act-clickable[data-agent]')
-      if (card) openTerminalModal(card.dataset.agent)
-    })
-  }
+  if (!actList) return
+  actList.addEventListener('click', (e) => {
+    const tabBtn = e.target.closest('.act-tab[data-tab][data-agent]')
+    if (tabBtn) {
+      const agent = tabBtn.dataset.agent
+      const tab = tabBtn.dataset.tab
+      activityTab.set(agent, tab)
+      const card = tabBtn.closest('.activity-card')
+      if (card) {
+        card.querySelectorAll('.act-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab))
+        const statusPanel = card.querySelector('.act-panel-status')
+        const outputPanel = card.querySelector('.act-panel-output')
+        if (statusPanel) statusPanel.hidden = tab !== 'status'
+        if (outputPanel) outputPanel.hidden = tab !== 'output'
+      }
+      return
+    }
+    const outPanel = e.target.closest('.act-panel-output.act-clickable[data-agent]')
+    if (outPanel) openTerminalModal(outPanel.dataset.agent)
+  })
 })()
 
 

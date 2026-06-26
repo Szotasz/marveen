@@ -5554,6 +5554,41 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
 }
 .activity-tail-empty { margin: 0; font-size: 12px; color: var(--text-muted); font-style: italic; }
 
+/* Per-agent tabs inside an activity card: switch between the human-readable
+   "Status" (self-reported) and the live "Code / output" terminal tail. */
+.act-tabs { display: flex; gap: 4px; margin-bottom: 10px; border-bottom: 1px solid var(--border); }
+.act-tab {
+  appearance: none; background: none; border: none; cursor: pointer;
+  font: inherit; font-size: 12px; font-weight: 600; color: var(--text-muted);
+  padding: 6px 10px; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: color 0.15s, border-color 0.15s;
+}
+.act-tab:hover { color: var(--text); }
+.act-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.act-tab-panel { display: flex; flex-direction: column; gap: 8px; }
+.act-tab-panel[hidden] { display: none; }
+.act-panel-output.act-clickable { cursor: pointer; border-radius: 6px; transition: box-shadow 0.15s; }
+.act-panel-output.act-clickable:hover { box-shadow: 0 0 0 2px var(--accent); }
+
+/* Self-reported status tab content. */
+.wb-status-badge-row { display: flex; }
+.wb-badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; color: #fff; text-transform: lowercase; }
+.wb-badge.wb-working { background: #22c55e; }
+.wb-badge.wb-blocked { background: #ef4444; }
+.wb-badge.wb-done    { background: #3b82f6; }
+.wb-badge.wb-idle    { background: #9ca3af; }
+.wb-headline { font-size: 14px; line-height: 1.45; color: var(--text); }
+.wb-muted { color: var(--text-muted); font-style: italic; }
+.wb-meta-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.wb-diff { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 6px; border: 1px solid var(--border); }
+.wb-diff-konnyu  { color: #16a34a; border-color: #16a34a55; }
+.wb-diff-kozepes { color: #d97706; border-color: #d9770655; }
+.wb-diff-nehez   { color: #dc2626; border-color: #dc262655; }
+.wb-eta { font-size: 12px; color: var(--text-muted); }
+.wb-blocker { font-size: 12.5px; color: #b91c1c; background: rgba(239, 68, 68, 0.08); border-radius: 7px; padding: 6px 9px; line-height: 1.4; }
+.wb-foot { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.wb-stale { color: #d97706; font-weight: 600; }
+
 /* === Messages / Chat page === */
 .chat-layout {
   display: flex;
