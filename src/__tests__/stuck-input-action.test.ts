@@ -49,6 +49,7 @@ function facts(over: Partial<StuckInputActionFacts>): StuckInputActionFacts {
     truncatedPreamble: false,
     allowPlainReinject: false,
     hasPlainText: false,
+    plainTextIsSystemDelivery: false,
     ...over,
   }
 }
@@ -68,11 +69,30 @@ describe('decideStuckInputAction (recovery-decision unit)', () => {
     expect(a).toBe('hold')
   })
 
-  it('multi-row sub-agent plain text -> re-inject plain, never enter', () => {
+  it('multi-row sub-agent SYSTEM-delivery plain text -> re-inject plain, never enter', () => {
     const a = decideStuckInputAction(
-      facts({ rowCount: 2, allowPlainReinject: true, hasPlainText: true }),
+      facts({ rowCount: 2, allowPlainReinject: true, hasPlainText: true, plainTextIsSystemDelivery: true }),
     )
     expect(a).toBe('reinject-plain')
+  })
+
+  it('single-row sub-agent SYSTEM-delivery plain text, escalated -> re-inject plain', () => {
+    const a = decideStuckInputAction(
+      facts({ rowCount: 1, allowPlainReinject: true, hasPlainText: true, plainTextIsSystemDelivery: true, escalate: true }),
+    )
+    expect(a).toBe('reinject-plain')
+  })
+
+  it('sub-agent RAW HUMAN draft (not a system delivery) -> hold, NEVER submit (2026-06-26 incident)', () => {
+    // The bug class: a half-typed dashboard-terminal draft parked in a sub-agent
+    // pane must not be auto-submitted -- not via re-inject and not via a bare
+    // Enter. Single-row is the dangerous case (a bare Enter would submit it).
+    expect(
+      decideStuckInputAction(facts({ rowCount: 1, allowPlainReinject: true, hasPlainText: true, plainTextIsSystemDelivery: false, escalate: true })),
+    ).toBe('hold')
+    expect(
+      decideStuckInputAction(facts({ rowCount: 2, allowPlainReinject: true, hasPlainText: true, plainTextIsSystemDelivery: false })),
+    ).toBe('hold')
   })
 
   it('multi-row with nothing safely re-injectable -> hold (never corrupt via Enter)', () => {

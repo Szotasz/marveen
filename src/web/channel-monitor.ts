@@ -24,7 +24,7 @@ import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import {
   detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, type PaneErrorAlertState, type PaneState,
   stuckInputSignature, decideStuckInputRecovery, parkedChannelInput,
-  parkedInputText, shouldClearTruncatedPreamble,
+  parkedInputText, shouldClearTruncatedPreamble, looksLikeSystemDelivery,
   parkedInputRowCount, submitLanded, decideStuckInputAction,
   type StuckInputState, type StuckInputThresholds, type StuckInputAction,
   type StuckInputActionFacts,
@@ -183,10 +183,14 @@ export function applyStuckRestartBusyGuard(
 //   2. a truncated/stale safety preamble (no real opening tag) -> clear only,
 //      NEVER re-inject (re-injecting it could let a later payload inherit a
 //      stale trust preamble -- see shouldClearTruncatedPreamble);
-//   3. SUB-AGENTS ONLY (allowPlainReinject): any other complete parked text
-//      (e.g. an inter-agent notification) -> clear + re-inject the collapsed
-//      text. A sub-agent's input box never holds a human draft, so this is
-//      safe; the main session stays conservative (Enter / <channel>-only).
+//   3. SUB-AGENTS ONLY (allowPlainReinject): other complete parked text that
+//      looks like a system delivery (inter-agent notification / scheduled
+//      task -- looksLikeSystemDelivery) -> clear + re-inject the collapsed
+//      text. NOTE: a sub-agent's input box CAN hold a human-typed draft -- the
+//      dashboard agent-terminal injects raw keystrokes straight into the pane
+//      -- so raw, non-system parked text is left UNTOUCHED rather than
+//      auto-submitted (2026-06-26 incident). The main session stays
+//      conservative (Enter / <channel>-only).
 export function recoverStuckInputForSession(
   session: string,
   prev: StuckInputState,
@@ -204,6 +208,7 @@ export function recoverStuckInputForSession(
     // and corrupts the message) and prefers a chat_id-safe re-inject; the
     // truncation-guard (no verbatim re-inject of an incomplete <channel> block)
     // is preserved via blockTruncated.
+    const plainText = allowPlainReinject ? parkedInputText(pane) : null
     const facts: StuckInputActionFacts = {
       escalate: attempt > MAIN_STUCK_ENTER_ATTEMPTS,
       rowCount: parkedInputRowCount(pane),
@@ -211,7 +216,16 @@ export function recoverStuckInputForSession(
       blockTruncated: block != null && !block.complete,
       truncatedPreamble: shouldClearTruncatedPreamble(pane),
       allowPlainReinject,
-      hasPlainText: allowPlainReinject && parkedInputText(pane) != null,
+      hasPlainText: plainText != null,
+      // 2026-06-26 incident: a sub-agent input box CAN hold a raw human-typed
+      // draft -- the dashboard agent-terminal (POST /api/agents/<n>/keys)
+      // injects keystrokes straight into the pane -- so only a recognised
+      // SYSTEM delivery (inter-agent / scheduled / wrapped peer block) may be
+      // auto-submitted on the plain re-inject path. A non-system draft is held
+      // parked, never re-injected and never bare-Entered (see
+      // decideStuckInputAction). A real channel delivery still goes through the
+      // chat_id-safe <channel> block path (blockComplete).
+      plainTextIsSystemDelivery: plainText != null && looksLikeSystemDelivery(plainText),
     }
     const action = decideStuckInputAction(facts)
     performStuckInputAction(session, action, pane, block, sig, attempt)

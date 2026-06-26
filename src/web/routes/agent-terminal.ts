@@ -157,6 +157,17 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
     }
     try {
       await tmux(args)
+      // Audit (2026-06-26): a raw keystroke injection here can become a
+      // SUBMITTED instruction -- the stuck-input watcher may auto-submit text
+      // left parked in the pane -- so a mis-fire (e.g. a half-typed draft that
+      // gets sent) must be traceable. The dashboard token gates this endpoint
+      // but carries no user identity, so the source IP is the best available
+      // attribution. Logged on success only (failures already warn above).
+      const ip = ctx.req.socket?.remoteAddress ?? 'unknown'
+      logger.info(
+        { name, session, ip, keys: parsed.keys?.slice(0, 300), special: parsed.special },
+        'agent-terminal: keystroke injection',
+      )
       json(res, { ok: true })
     } catch (err) {
       logger.warn({ err, name }, 'agent-terminal: send-keys failed')

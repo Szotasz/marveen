@@ -877,6 +877,34 @@ export function submitLanded(prevSig: string, paneAfter: string | null): boolean
   return stuckInputSignature(paneAfter) !== prevSig
 }
 
+// Markers that identify parked input as a genuine SYSTEM delivery -- an
+// inter-agent message, a scheduled task, or a wrapped channel/peer block --
+// rather than raw human-typed terminal text. The dashboard agent-terminal
+// (POST /api/agents/<n>/keys) injects raw keystrokes straight into a sub-agent
+// pane, so a sub-agent's input box CAN hold a half-typed human draft. The
+// stuck-input watcher must NOT auto-submit that (2026-06-26: a half-typed
+// "Szólj X-nek" terminal draft got submitted and the agent emailed against the
+// principal's wish). Only text bearing one of these system-injected markers is
+// safe to clear + re-submit on the plain (non-<channel>) re-inject path.
+const SYSTEM_DELIVERY_MARKERS = [
+  '[Uzenet @', '[Üzenet @',                 // inter-agent DM prefix (message-router)
+  '<trusted-peer', '</trusted-peer',        // trusted team peer wrapper
+  '<untrusted', '</untrusted',              // untrusted-sender wrapper
+  '<scheduled-task', '</scheduled-task',    // scheduled task wrapper
+  'TEAM MEMBER NOTICE', 'SCHEDULED TASK NOTICE',
+]
+
+/**
+ * True when parked pane text is a system-injected delivery (inter-agent /
+ * scheduled / wrapped peer block) rather than raw human-typed terminal input.
+ * Pure + dependency-free for unit testing; used to gate the sub-agent plain
+ * re-inject in the stuck-input watcher.
+ */
+export function looksLikeSystemDelivery(text: string | null | undefined): boolean {
+  if (!text) return false
+  return SYSTEM_DELIVERY_MARKERS.some((m) => text.includes(m))
+}
+
 // Per-session bookkeeping for the stuck-input recovery watcher. A "spell"
 // is one continuous stretch of the SAME text parked in the input box.
 export interface StuckInputState {
@@ -1020,6 +1048,12 @@ export interface StuckInputActionFacts {
   allowPlainReinject: boolean
   /** parkedInputText(pane) != null -- there is collapsed text to re-inject. */
   hasPlainText: boolean
+  /** The collapsed parked text looks like a system delivery (looksLikeSystemDelivery):
+   * an inter-agent message, scheduled task, or wrapped peer block. Gates the
+   * plain re-inject so a raw human-typed terminal draft -- which the dashboard
+   * agent-terminal can leave parked in a sub-agent pane -- is NEVER auto-submitted
+   * (2026-06-26 incident). When false, a parked plain draft is held, not submitted. */
+  plainTextIsSystemDelivery: boolean
 }
 
 /**
@@ -1044,8 +1078,15 @@ export function decideStuckInputAction(f: StuckInputActionFacts): StuckInputActi
   if (f.blockComplete) {
     return f.escalate || multiRow ? 'reinject-block' : 'enter'
   }
-  // Sub-agent non-channel parked text: clear + re-inject is safe (no human draft).
+  // Sub-agent non-channel parked text. A sub-agent pane CAN hold a raw
+  // human-typed draft (dashboard agent-terminal keystrokes), so re-inject ONLY
+  // a recognised system delivery (inter-agent / scheduled / wrapped peer
+  // block). A non-system draft must NEVER be auto-submitted -- not via
+  // re-inject and not via a bare Enter -- so it holds parked (2026-06-26
+  // incident: a half-typed "Szólj X-nek" draft got submitted and the agent
+  // emailed against the principal's wish).
   if (f.allowPlainReinject && f.hasPlainText && !f.blockTruncated) {
+    if (!f.plainTextIsSystemDelivery) return 'hold'
     return f.escalate || multiRow ? 'reinject-plain' : 'enter'
   }
   // Truncated safety preamble: clear only (never re-inject a stale preamble).
