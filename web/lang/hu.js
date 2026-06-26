@@ -374,7 +374,7 @@ window._i18n.hu = {
 
   // --- Activity ---
   'activity.page_title':         'Aktivitás',
-  'activity.page_subtitle':      'Mit csinál épp minden ügynök: élő nézet, 3 mp-enként frissül',
+  'activity.page_subtitle':      'Mit csinál épp minden ügynök: szöveges státusz és élő kód/kimenet, boxonként tabbal. 3 mp-enként frissül.',
 
   'activity.updated':            'Frissítve: {time}',
   'activity.error_load':         'Nem sikerült lekérni az aktivitást',
@@ -383,6 +383,24 @@ window._i18n.hu = {
   'activity.session_stopped':    'a session nem fut',
   'activity.badge.main':         'fő',
   'activity.loading':            'Betöltés…',
+  // Per-agent tabs + the self-reported status tab
+  'activity.tab.status':         'Státusz',
+  'activity.tab.output':         'Kód / kimenet',
+  'activity.status.none':        'Ez az ügynök még nem jelentett szöveges státuszt.',
+  'activity.status.no_headline': 'nincs leírás',
+  'activity.status.stale':       'régi',
+  'activity.status.updated':     'frissítve {time}',
+  'activity.status.state.working': 'dolgozik',
+  'activity.status.state.blocked': 'elakadt',
+  'activity.status.state.done':    'kész',
+  'activity.status.state.idle':    'várakozik',
+  'activity.status.diff.konnyu':   'könnyű',
+  'activity.status.diff.kozepes':  'közepes',
+  'activity.status.diff.nehez':    'nehéz',
+  'activity.status.rel.now':       'most',
+  'activity.status.rel.min':       '{n} perce',
+  'activity.status.rel.hour':      '{n} órája',
+  'activity.status.rel.day':       '{n} napja',
   'activity.state.working':      'dolgozik',
   'activity.state.idle':         'várakozik',
   'activity.state.unknown':      'ismeretlen',

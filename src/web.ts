@@ -30,6 +30,7 @@ import { tryHandleAgentTaskState } from './web/routes/agent-taskstate.js'
 import { sweepOrphanTaskStates } from './web/agent-taskstate.js'
 import { tryHandleDailyLog } from './web/routes/daily-log.js'
 import { tryHandleMemories } from './web/routes/memories.js'
+import { tryHandleAgentStatus } from './web/routes/agent-status.js'
 import { tryHandleMigrate } from './web/routes/migrate.js'
 import { tryHandleKanban } from './web/routes/kanban.js'
 import { tryHandleSchedules } from './web/routes/schedules.js'
@@ -145,6 +146,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleMessages(routeCtx)) return
       if (await tryHandleDailyLog(routeCtx)) return
       if (await tryHandleMemories(routeCtx)) return
+      if (await tryHandleAgentStatus(routeCtx)) return
       if (await tryHandleMigrate(routeCtx)) return
       if (await tryHandleKanban(routeCtx)) return
       if (await tryHandleSchedules(routeCtx)) return
