@@ -82,16 +82,27 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     try { existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { /* overwrite */ }
   }
   const ctx = { HOME: homedir(), AGENT_DIR: agentRoot }
+  const denyList = profile.filesystem.deny.map(p => resolveProfilePlaceholders(p, ctx))
+  // Self-pace tool-name deny: every sub-agent (NOT the main agent) is denied the
+  // Claude Code runtime self-scheduling tools. A whole-tool-name deny IS enforced
+  // even under --dangerously-skip-permissions (deny is checked BEFORE the bypass
+  // allow), so this is a fail-closed layer; the self-pace-gate hook below covers
+  // the Bash escape routes a name-deny cannot reach. (2026-06-26 autonom-kor fix.)
+  if (agentGetsGovernanceGates(name)) denyList.push(...SELF_PACE_TOOL_DENY)
   existing.permissions = {
     allow: profile.filesystem.allow.map(p => resolveProfilePlaceholders(p, ctx)),
-    deny: profile.filesystem.deny.map(p => resolveProfilePlaceholders(p, ctx)),
+    deny: denyList,
   }
-  // Email-send hard-gate: every sub-agent (NOT the main agent) gets a
-  // PreToolUse hook that blocks outbound email-send tools. Re-applied on
-  // every spawn (this function regenerates settings.json), so it survives
-  // respawns. The MAIN_AGENT_ID retains email-send capability -- all outbound
-  // email routes through it for approval.
+  // Governance hard-gates: every sub-agent (NOT the main agent) gets PreToolUse
+  // hooks. Re-applied on every spawn (this function regenerates settings.json),
+  // so they survive respawns. (a) email-send block -- outbound email routes
+  // through the main agent. (b) self-pace block -- no ScheduleWakeup/Cron*/Bash
+  // self-injection. The MAIN_AGENT_ID is exempt from both. Merge/deploy is NOT
+  // gated: the operator authorizes those autonomously (so test/deploy runs are
+  // never blocked); the actual incident vector -- an agent answering its OWN
+  // posed question -- is covered by the self-pace block + the #0 CLAUDE.md doctrine.
   if (agentGetsEmailGate(name)) injectEmailSendGate(existing)
+  if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
 
@@ -123,6 +134,40 @@ export function injectEmailSendGate(existing: Record<string, unknown>): void {
   // the hook never accumulates duplicates; other PreToolUse entries are kept.
   hooks.PreToolUse = [
     ...prev.filter((e) => !JSON.stringify(e).includes('email-send-gate.mjs')),
+    entry,
+  ]
+}
+
+// Claude Code runtime self-scheduling tool names denied for sub-agents (fail-
+// closed, enforced even under --dangerously-skip-permissions). The Bash escape
+// routes are covered by the self-pace-gate hook, which a name-deny cannot reach.
+const SELF_PACE_TOOL_DENY = ['ScheduleWakeup', 'CronCreate', 'CronDelete', 'CronList', 'RemoteTrigger']
+
+// Which agents are subject to the self-pace gate: every agent EXCEPT the main
+// agent (same name-agnostic main-exempt rule as the email gate). Pure + exported
+// so the main-exempt guarantee is unit-testable.
+export function agentGetsGovernanceGates(name: string): boolean {
+  return name !== MAIN_AGENT_ID
+}
+
+// Idempotently wire the self-pace-gate PreToolUse hook (blocks ScheduleWakeup /
+// Cron* / RemoteTrigger + the Bash self-injection routes). Same shape + dedupe
+// discipline as injectEmailSendGate.
+export function injectSelfPaceGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = `node ${join(PROJECT_ROOT, 'scripts', 'self-pace-gate.mjs')}`
+  const entry = {
+    // Write|Edit|NotebookEdit are included so the gate actually fires on the
+    // native-file route to the self-schedule store (gateDecision blocks a Write
+    // to scheduled_tasks.json); a Bash-only matcher would leave that route open.
+    matcher: 'ScheduleWakeup|CronCreate|CronDelete|CronList|RemoteTrigger|Bash|Write|Edit|NotebookEdit',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('self-pace-gate.mjs')),
     entry,
   ]
 }
