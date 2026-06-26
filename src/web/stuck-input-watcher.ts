@@ -112,11 +112,10 @@ function bareEnterRecovery(label: string, session: string, host: string | null):
   }
 }
 
-// LOCAL session: full robust escalation (Enter -> clear + verbatim re-inject)
-// on the fast tick. Used for the MAIN channels session AND local sub-agents --
-// both are local tmux, so the clear+re-inject (which re-injects the COMPLETE
-// parked <channel> block, or any complete parked text) applies. This is what
-// drops the mean-time-to-recovery for a swallowed Enter from ~3min to ~30-45s.
+// LOCAL session: full robust escalation (Enter -> clear + re-inject) on the
+// fast tick. Used for the MAIN channels session AND local sub-agents -- both
+// are local tmux, so the clear+re-inject applies. This drops the
+// mean-time-to-recovery for a swallowed Enter from ~3min to ~30-45s.
 //
 // alertOnGiveUp: a local SUB-agent that is still parked after maxAttempts
 // surfaces a one-shot alert for a manual restart. The MAIN channels session
@@ -125,9 +124,20 @@ function bareEnterRecovery(label: string, session: string, host: string | null):
 // would double-escalate. The fast 15s loop (12s confirm) always reaches its
 // recovery long before channel-monitor's 90s confirm, so the two layers do not
 // double-act on MAIN.
-function checkLocalSession(label: string, session: string, alertOnGiveUp: boolean): void {
+//
+// allowPlainReinject: gates the PLAIN-text re-inject branch (re-typing any
+// parked non-<channel> text). MAIN passes FALSE -- a dim prompt-suggestion
+// ghost in the MAIN box (no CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION env-var there,
+// that is sub-agent-spawn-only) would otherwise be re-typed + submitted as a
+// forged message (the 2026-06-26 phantom-injection class). With FALSE, MAIN
+// still gets the fast clear+re-inject of a COMPLETE parked <channel> block
+// (its real goal -- a stranded Telegram message; that path is independent of
+// this flag), only the ghost-risky plain-text branch is closed. Local
+// sub-agents pass TRUE: the env-var strips their ghost at the source, so their
+// plain re-inject (an inter-agent message the TUI failed to submit) is safe.
+function checkLocalSession(label: string, session: string, alertOnGiveUp: boolean, allowPlainReinject: boolean): void {
   const prev = watchState.get(session) ?? NO_STATE
-  const next = recoverStuckInputForSession(session, prev, LOCAL_FAST_THRESHOLDS, true)
+  const next = recoverStuckInputForSession(session, prev, LOCAL_FAST_THRESHOLDS, allowPlainReinject)
 
   if (next.parkedSig === null) {
     watchState.delete(session)
@@ -150,13 +160,15 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
     // `agent-<id>`, so isAgentRunning (which checks the agent- prefix)
     // does not apply. Check it directly; capturePane returns null when it
     // is not up, which ends any spell without acting. Main is always local,
-    // so it gets the FULL escalation (Enter -> clear + verbatim re-inject of
-    // the parked <channel> block) here -- previously it was bare-Enter-only
-    // and a swallowed Enter could leave an inbound channel message parked
-    // until the 60s channel-monitor re-injected it. The give-up alert + the
-    // rate-limited hard restart stay owned by channel-monitor (alert=false).
+    // so it gets the FULL escalation (Enter -> clear + re-inject of the parked
+    // <channel> block) here -- previously it was bare-Enter-only and a
+    // swallowed Enter could leave an inbound channel message parked until the
+    // 60s channel-monitor re-injected it. allowPlainReinject=false: MAIN gets
+    // the <channel>-block re-inject but NOT the ghost-risky plain-text branch
+    // (no prompt-suggestion env-var on the main session). The give-up alert +
+    // the rate-limited hard restart stay owned by channel-monitor (alert=false).
     try {
-      checkLocalSession(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, false)
+      checkLocalSession(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, false, false)
     } catch (err) {
       logger.debug({ err }, 'stuck-input-watcher: main agent check error')
     }
@@ -172,7 +184,7 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
         // alert); remote-host ones (no local tmux for clear+re-inject) stay on
         // the host-aware bare Enter.
         if (host == null) {
-          checkLocalSession(name, session, true)
+          checkLocalSession(name, session, true, true)
         } else {
           bareEnterRecovery(name, session, host)
         }
