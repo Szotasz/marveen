@@ -374,7 +374,18 @@ export function detectPaneState(
   // defer rather than pile a second prompt on.
   if (detectsPastePlaceholder(pane)) return 'busy'
 
-  if (!IDLE_FOOTER_RX.test(pane)) return 'unknown'
+  if (!IDLE_FOOTER_RX.test(pane)) {
+    // Footer-less fresh-session / welcome-screen: a PARKED \u276F input box still
+    // means the agent has a delivered message waiting to submit. Classify it
+    // 'typing' (not 'unknown') so the stuck-input recovery stack can see and
+    // resubmit it. An empty box / no box stays 'unknown' -- without a footer
+    // there is nothing to confirm a genuine idle state.
+    const box = liveInputBox(pane)
+    if (box != null && box.split('\n').some(l => PARKED_INPUT_RX.test(l))) {
+      return opts.mergeTypingAsBusy ? 'busy' : 'typing'
+    }
+    return 'unknown'
+  }
 
   if (detectsThinkingBlockError(pane)) return 'error'
 
@@ -437,10 +448,31 @@ export function isReadyForPrompt(pane: string): boolean {
 // Returns null when the pane does not have a live input box (no idle
 // footer, only one separator, etc.) -- callers should treat null as
 // "not enough signal to act, do nothing".
+// Fallback for the fresh-session / welcome-screen layout (Claude Code logo +
+// model line + cwd, NO idle footer): a delivered message can sit parked in the
+// input box before the footer is ever rendered, and the footer-anchored path
+// would miss it entirely (return null -> the whole recovery stack goes blind).
+// Anchor on the LAST TWO box separators (/^\u2500{10,}/) and treat the span
+// between them as the input box ONLY when its first non-empty row starts with
+// the \u276F prompt -- otherwise a pair of scrollback rules would be mis-read.
+function liveInputBoxFooterless(lines: string[]): string | null {
+  const seps: number[] = []
+  for (let i = 0; i < lines.length; i++) {
+    if (BOX_SEP_RX.test(lines[i])) seps.push(i)
+  }
+  if (seps.length < 2) return null
+  const topSep = seps[seps.length - 2]
+  const bottomSep = seps[seps.length - 1]
+  const inner = lines.slice(topSep + 1, bottomSep)
+  const firstNonEmpty = inner.find(l => l.trim().length > 0)
+  if (firstNonEmpty == null || !/^\s*\u276F/.test(firstNonEmpty)) return null
+  return inner.join('\n')
+}
+
 function liveInputBox(pane: string): string | null {
   const lines = pane.split('\n')
   const footerIdx = lines.findIndex(l => IDLE_FOOTER_RX.test(l))
-  if (footerIdx < 0) return null
+  if (footerIdx < 0) return liveInputBoxFooterless(lines)
   let bottomSep = -1
   for (let i = footerIdx - 1; i >= 0; i--) {
     if (BOX_SEP_RX.test(lines[i])) { bottomSep = i; break }
