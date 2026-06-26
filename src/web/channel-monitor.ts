@@ -1138,6 +1138,14 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
       else agentStuckInput.set(t.session, next)
     }
 
+    // Stagger restarts: at most ONE agent restart per monitor tick. A restart is
+    // fully synchronous (stopAgentProcess + sleep + startAgentProcess block the
+    // event loop), so restarting EVERY down agent in one tick freezes the
+    // dashboard for the whole burst AND makes several channel-plugin MCP servers
+    // fight to start at once -- the 2026-06-26 reboot cascade (all agents down ->
+    // all restarted together -> machine overload). One per tick lets each come up
+    // cleanly; any other down agents are picked up on later ticks.
+    let agentRestartedThisTick = false
     for (const t of targets) {
       const claudePid = getClaudePidForSession(t.session)
       if (!claudePid) {
@@ -1208,7 +1216,12 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           logger.warn({ agent: t.agentName, provider: agentProvider }, 'Agent has no channel token in state dir -- skipping restart to avoid token conflict')
           continue
         }
+        if (agentRestartedThisTick) {
+          logger.info({ agent: t.agentName, provider: t.provider }, 'Channel plugin down, but another agent was already restarted this tick -- deferring to next tick (stagger; avoids the reboot/cascade overload)')
+          continue
+        }
         logger.warn({ agent: t.agentName, provider: t.provider, failures }, 'Agent channel plugin down -- auto-restarting')
+        agentRestartedThisTick = true
         try {
           stopAgentProcess(t.agentName!)
           execSync('sleep 2', { timeout: 4000 })
