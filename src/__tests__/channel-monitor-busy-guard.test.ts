@@ -30,20 +30,28 @@ describe('channel-monitor: busy-guard before destructive auto-restart', () => {
     expect(stopIdx, 'stopAgentProcess call not found').toBeGreaterThan(0)
   })
 
-  it('a detectPaneState busy-check defers the restart and sits BEFORE the stop+start', () => {
+  it('a busy-check defers the restart and sits BEFORE the stop+start', () => {
     // The guard slice: window between the per-tick stagger check and the
     // destructive restart. Look just before the auto-restart log line.
     const windowStart = Math.max(0, restartLogIdx - 1200)
     const guardWindow = src.slice(windowStart, restartLogIdx)
 
-    // It must capture the pane and bail on 'busy'.
+    // It must bail on 'busy'. The pane is captured once higher up (downPaneState
+    // = detectPaneState(...)) and reused here, so the busy check reads the
+    // cached state rather than re-capturing.
     expect(guardWindow, 'busy-guard missing before hard restart').toMatch(
-      /detectPaneState\([^)]*\)\s*===\s*'busy'/,
+      /downPaneState\s*===\s*'busy'/,
     )
     expect(guardWindow, 'busy-guard must continue (defer) rather than fall through').toMatch(
       /busy[\s\S]*?continue/i,
     )
     // Ordering: the guard must precede the destructive stopAgentProcess.
     expect(restartLogIdx).toBeLessThan(stopIdx)
+  })
+
+  it('the pane state powering the busy-guard is read via detectPaneState', () => {
+    // The single capture+classify that both the fast-retry decision and the
+    // busy-guard reuse.
+    expect(src).toMatch(/const downPaneState = detectPaneState\(/)
   })
 })

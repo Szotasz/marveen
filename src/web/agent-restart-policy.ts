@@ -37,6 +37,23 @@ export interface AgentRestartDecisionInput {
   // long-down plugin occasionally (it may recover after an external fix) rather
   // than backing off unboundedly. Omitted = no cap beyond the exponent.
   maxRestartGraceMs?: number
+  // True when the agent's TUI has SETTLED at the idle prompt -- i.e. it finished
+  // cold-starting. A still-absent channel poller on a settled pane is a
+  // definitive flaky-load miss (the bun poller attaches within ~10s when it
+  // works), NOT a slow boot, so it is safe to relaunch without waiting out the
+  // full startup grace. Omitted/false keeps the conservative startupGraceMs.
+  paneSettled?: boolean
+  // Shorter startup grace to apply when paneSettled is true. Must still exceed
+  // the healthy plugin-attach window (~10s) so we never relaunch an agent that
+  // was about to come up. Only ever SHORTENS the grace (min with startupGraceMs);
+  // a value above startupGraceMs is ignored. Omitted = no fast path.
+  fastRetryGraceMs?: number
+  // Number of early failures that retry at the BASE restart grace before the
+  // exponential back-off kicks in. The common flaky-load case converges in ~2-3
+  // fresh relaunches, so doubling from the first failure needlessly slows it.
+  // Omitted/0 = original behaviour (double from the first failure). The cap and
+  // unbounded back-off for a genuinely-broken plugin are unchanged.
+  freeFastRetries?: number
 }
 
 // The restart grace after applying exponential back-off for repeated failed
@@ -47,12 +64,18 @@ export function effectiveRestartGraceMs(
   restartGraceMs: number,
   consecutiveFailures: number,
   maxRestartGraceMs?: number,
+  freeFastRetries?: number,
 ): number {
   const failures = Number.isFinite(consecutiveFailures) && consecutiveFailures > 0
     ? Math.floor(consecutiveFailures)
     : 0
-  // Cap the exponent well below the point where 2^n overflows Number range.
-  const exp = Math.min(failures, 30)
+  const free = Number.isFinite(freeFastRetries) && (freeFastRetries as number) > 0
+    ? Math.floor(freeFastRetries as number)
+    : 0
+  // The first `free` failures retry at the base grace (no doubling); the
+  // exponent only grows once those are spent. Cap it well below the point
+  // where 2^n overflows Number range.
+  const exp = Math.min(Math.max(failures - free, 0), 30)
   let grace = restartGraceMs * 2 ** exp
   if (maxRestartGraceMs != null && Number.isFinite(maxRestartGraceMs)) {
     grace = Math.min(grace, maxRestartGraceMs)
@@ -66,12 +89,35 @@ export function shouldAutoRestartDownAgent(input: AgentRestartDecisionInput): bo
   // Unknown process age: the age probe failed. Be conservative and do not
   // restart -- a false "down" must never kill a healthy agent.
   if (!Number.isFinite(processAgeMs) || processAgeMs < 0) return false
-  // Freshly started: the channel plugin may still be spawning.
-  if (processAgeMs < startupGraceMs) return false
+  // Freshly started: the channel plugin may still be spawning. A SETTLED pane
+  // (idle prompt reached) proves the cold-start finished, so a still-absent
+  // poller is a definitive flaky-load miss, not a slow boot -- use the shorter
+  // fast-retry grace there instead of waiting out the full startup grace. The
+  // fast grace can only SHORTEN the window (min), never lengthen it.
+  const fastEligible =
+    input.paneSettled === true && Number.isFinite(input.fastRetryGraceMs) && (input.fastRetryGraceMs as number) >= 0
+  const effectiveStartupGrace = fastEligible
+    ? Math.min(startupGraceMs, input.fastRetryGraceMs as number)
+    : startupGraceMs
+  if (processAgeMs < effectiveStartupGrace) return false
   // Recently restarted by the watchdog: give the new process time to come up,
   // backed off exponentially for repeated failed restarts so a plugin that can
-  // never come up is not restarted on a fixed short cadence forever.
-  const grace = effectiveRestartGraceMs(restartGraceMs, input.consecutiveFailures ?? 0, input.maxRestartGraceMs)
+  // never come up is not restarted on a fixed short cadence forever. The first
+  // `freeFastRetries` failures stay at the base grace so the common flaky-load
+  // case (converges in ~2-3 relaunches) is not slowed by doubling. On a SETTLED
+  // pane the relaunch window itself shrinks to the fast grace too -- a booted,
+  // deaf agent has already missed, so there is nothing to wait for between
+  // relaunches either. The exponential back-off (and its cap) still apply once
+  // the free retries are spent, so a genuinely-broken plugin cannot churn.
+  const restartBase = fastEligible
+    ? Math.min(restartGraceMs, input.fastRetryGraceMs as number)
+    : restartGraceMs
+  const grace = effectiveRestartGraceMs(
+    restartBase,
+    input.consecutiveFailures ?? 0,
+    input.maxRestartGraceMs,
+    input.freeFastRetries,
+  )
   if (msSinceLastRestart !== null && msSinceLastRestart < grace) return false
   return true
 }

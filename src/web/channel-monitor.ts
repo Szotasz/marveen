@@ -111,6 +111,20 @@ const AGENT_MAX_RESTART_GRACE_MS = 60 * 60 * 1000 // 1h
 // (observed on hacker, 23:49->07:22). 300s lets the slow-but-healthy poller land
 // before any restart, while staying well under the genuinely-dead escalation.
 const AGENT_STARTUP_GRACE_MS = 300_000
+// Fast-retry path for a flaky --channels plugin-load miss. The 300s startup
+// grace above protects a still-COLD-STARTING agent, but a channel sub-agent
+// that has already SETTLED at its idle prompt with no bun poller is a
+// definitive flaky-load miss (the poller attaches within ~10s when it works) --
+// waiting out the full 5min there left a deaf agent down far longer than the
+// manual recipe (Reni-observed: lumi ~110s+). When the pane is settled we use
+// this shorter grace instead. 45s comfortably clears the healthy attach window
+// while still never racing a genuinely-booting process (which reads non-idle).
+const AGENT_FAST_RETRY_GRACE_MS = 45_000
+// The first N relaunch failures retry at the base grace before the exponential
+// back-off starts doubling, so the common flaky-load case (converges in ~2-3
+// fresh relaunches) is not slowed; a genuinely-broken plugin still backs off
+// after these are spent.
+const AGENT_FREE_FAST_RETRIES = 2
 const PLUGIN_ALERT_DEDUP_MS = 30 * 60 * 1000
 
 // Stuck channel-input recovery (MAIN session only). A channel notification
@@ -1224,6 +1238,11 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
         if (!agentDownSince.has(t.session)) agentDownSince.set(t.session, Date.now())
         const lastRestart = agentLastRestart.get(t.agentName!)
         const failures = agentRestartFailures.get(t.agentName!) ?? 0
+        // Capture the pane ONCE here and reuse it for both the fast-retry
+        // decision (a settled idle pane == cold-start finished) and the
+        // busy-guard below.
+        const downPane = capturePane(t.session) ?? ''
+        const downPaneState = detectPaneState(downPane)
         const restart = shouldAutoRestartDownAgent({
           processAgeMs: getProcessAgeMs(claudePid),
           msSinceLastRestart: lastRestart != null ? Date.now() - lastRestart : null,
@@ -1231,6 +1250,11 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           restartGraceMs: AGENT_RESTART_GRACE_MS,
           consecutiveFailures: failures,
           maxRestartGraceMs: AGENT_MAX_RESTART_GRACE_MS,
+          // Fast-retry the definitive flaky-load miss: a SETTLED (idle) pane
+          // with no poller finished booting, so relaunch without the full 5min.
+          paneSettled: downPaneState === 'idle',
+          fastRetryGraceMs: AGENT_FAST_RETRY_GRACE_MS,
+          freeFastRetries: AGENT_FREE_FAST_RETRIES,
         })
         if (!restart) {
           logger.debug({ agent: t.agentName, provider: t.provider, failures }, 'Channel plugin probe reports down but agent is within startup/restart back-off -- deferring')
@@ -1270,9 +1294,9 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
         // costs a slightly longer plugin-down window. A truly wedged (frozen)
         // TUI is owned by the separate stuck-respawn watchdog, not here, so
         // deferring on 'busy' cannot strand a hung session. Only confirmed
-        // 'busy' defers; 'unknown'/'idle' proceed.
-        const restartPane = capturePane(t.session) ?? ''
-        if (detectPaneState(restartPane) === 'busy') {
+        // 'busy' defers; 'unknown'/'idle' proceed. Reuses the pane state read
+        // once above (no second capture).
+        if (downPaneState === 'busy') {
           logger.info({ agent: t.agentName, provider: t.provider }, 'Channel plugin down, but agent pane is busy (active turn) -- deferring hard restart to avoid interrupting work')
           continue
         }

@@ -267,3 +267,158 @@ describe('shouldAutoRestartDownAgent with back-off', () => {
     })).toBe(true)
   })
 })
+
+// 2026-06-27 follow-up: faster first retry on a flaky --channels plugin-load
+// miss. When the pane has SETTLED at the idle prompt the agent finished cold-
+// starting, so a still-absent channel poller is a definitive flaky miss (the
+// bun poller attaches within ~10s when it works) -- not a slow boot. In that
+// state we may relaunch without waiting out the full (5min) startup grace, and
+// the first couple of relaunch failures stay at the base grace instead of
+// doubling, so the common ~2-3 try convergence is not slowed.
+const FAST = 45_000
+describe('shouldAutoRestartDownAgent: settled-pane fast retry', () => {
+  it('restarts a SETTLED young process past the fast grace (definitive flaky miss)', () => {
+    // 60s old: well within the 180s startup grace, but pane is settled and the
+    // 45s fast grace has elapsed -> relaunch now instead of waiting 5 minutes.
+    expect(shouldAutoRestartDownAgent({
+      processAgeMs: 60_000,
+      msSinceLastRestart: null,
+      startupGraceMs: STARTUP,
+      restartGraceMs: RESTART,
+      paneSettled: true,
+      fastRetryGraceMs: FAST,
+    })).toBe(true)
+  })
+
+  it('does NOT restart a settled process still within the fast grace', () => {
+    expect(shouldAutoRestartDownAgent({
+      processAgeMs: 30_000,
+      msSinceLastRestart: null,
+      startupGraceMs: STARTUP,
+      restartGraceMs: RESTART,
+      paneSettled: true,
+      fastRetryGraceMs: FAST,
+    })).toBe(false)
+  })
+
+  it('does NOT use the fast grace when the pane is NOT settled (still booting)', () => {
+    // Same young age, but the pane has not reached idle -> it may genuinely be
+    // booting (large-context model); keep the conservative startup grace.
+    expect(shouldAutoRestartDownAgent({
+      processAgeMs: 60_000,
+      msSinceLastRestart: null,
+      startupGraceMs: STARTUP,
+      restartGraceMs: RESTART,
+      paneSettled: false,
+      fastRetryGraceMs: FAST,
+    })).toBe(false)
+  })
+
+  it('ignores the fast path when fastRetryGraceMs is omitted', () => {
+    expect(shouldAutoRestartDownAgent({
+      processAgeMs: 60_000,
+      msSinceLastRestart: null,
+      startupGraceMs: STARTUP,
+      restartGraceMs: RESTART,
+      paneSettled: true,
+    })).toBe(false)
+  })
+
+  it('never LENGTHENS the grace if fastRetryGraceMs exceeds the startup grace', () => {
+    // min(startup, fast) keeps the smaller; a bogus large fast value is ignored.
+    expect(shouldAutoRestartDownAgent({
+      processAgeMs: STARTUP - 1,
+      msSinceLastRestart: null,
+      startupGraceMs: STARTUP,
+      restartGraceMs: RESTART,
+      paneSettled: true,
+      fastRetryGraceMs: STARTUP + 100_000,
+    })).toBe(false)
+  })
+})
+
+describe('effectiveRestartGraceMs: free fast retries before back-off', () => {
+  it('keeps the base grace for the first freeFastRetries failures', () => {
+    expect(effectiveRestartGraceMs(RESTART, 1, undefined, 2)).toBe(RESTART)
+    expect(effectiveRestartGraceMs(RESTART, 2, undefined, 2)).toBe(RESTART)
+  })
+
+  it('starts doubling only after the free retries are spent', () => {
+    expect(effectiveRestartGraceMs(RESTART, 3, undefined, 2)).toBe(RESTART * 2)
+    expect(effectiveRestartGraceMs(RESTART, 4, undefined, 2)).toBe(RESTART * 4)
+  })
+
+  it('preserves original doubling when freeFastRetries omitted/zero', () => {
+    expect(effectiveRestartGraceMs(RESTART, 1)).toBe(RESTART * 2)
+    expect(effectiveRestartGraceMs(RESTART, 1, undefined, 0)).toBe(RESTART * 2)
+  })
+
+  it('still honours the cap with free retries', () => {
+    const cap = 60 * 60 * 1000
+    expect(effectiveRestartGraceMs(RESTART, 30, cap, 2)).toBe(cap)
+  })
+})
+
+describe('shouldAutoRestartDownAgent: free fast retries end-to-end', () => {
+  it('a settled agent relaunches at base grace for the first failures (no doubling)', () => {
+    // 1 prior failure, 100s since last restart: original behaviour would defer
+    // (180s grace); with 2 free retries the grace stays 90s -> relaunch now.
+    expect(shouldAutoRestartDownAgent({
+      processAgeMs: 60_000,
+      msSinceLastRestart: 100_000,
+      startupGraceMs: STARTUP,
+      restartGraceMs: RESTART,
+      consecutiveFailures: 1,
+      maxRestartGraceMs: 60 * 60 * 1000,
+      paneSettled: true,
+      fastRetryGraceMs: FAST,
+      freeFastRetries: 2,
+    })).toBe(true)
+  })
+
+  it('on a SETTLED pane the relaunch window also shrinks to the fast grace', () => {
+    // 50s since last restart: under the 90s base (would defer without the
+    // settled fast path), but a settled+deaf agent uses the 45s relaunch base.
+    expect(shouldAutoRestartDownAgent({
+      processAgeMs: 50_000,
+      msSinceLastRestart: 50_000,
+      startupGraceMs: STARTUP,
+      restartGraceMs: RESTART,
+      consecutiveFailures: 1,
+      maxRestartGraceMs: 60 * 60 * 1000,
+      paneSettled: true,
+      fastRetryGraceMs: FAST,
+      freeFastRetries: 2,
+    })).toBe(true)
+    // Same timing but NOT settled (still booting): keep the conservative window.
+    expect(shouldAutoRestartDownAgent({
+      processAgeMs: 50_000,
+      msSinceLastRestart: 50_000,
+      startupGraceMs: STARTUP,
+      restartGraceMs: RESTART,
+      consecutiveFailures: 1,
+      maxRestartGraceMs: 60 * 60 * 1000,
+      paneSettled: false,
+      fastRetryGraceMs: FAST,
+      freeFastRetries: 2,
+    })).toBe(false)
+  })
+
+  it('a genuinely-broken settled plugin still backs off after the free retries', () => {
+    // failures past the free window: doubling resumes (from the fast base),
+    // so a plugin that never comes up is not relaunched every 45s forever.
+    // 5 failures, 45s base, 2 free -> 45s * 2^3 = 360s grace; 200s since last
+    // restart is still within it -> defer.
+    expect(shouldAutoRestartDownAgent({
+      processAgeMs: 5 * 60_000,
+      msSinceLastRestart: 200_000,
+      startupGraceMs: STARTUP,
+      restartGraceMs: RESTART,
+      consecutiveFailures: 5,
+      maxRestartGraceMs: 60 * 60 * 1000,
+      paneSettled: true,
+      fastRetryGraceMs: FAST,
+      freeFastRetries: 2,
+    })).toBe(false)
+  })
+})
