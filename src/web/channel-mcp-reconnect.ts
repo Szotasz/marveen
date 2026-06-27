@@ -6,7 +6,7 @@ import { readAgentChannelProvider } from './agent-config.js'
 import { agentSessionName, capturePane } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { getProvider, type ChannelProviderType } from '../channel-provider.js'
-import { paneLooksIdle } from '../pane-state.js'
+import { paneLooksIdle, detectPaneState } from '../pane-state.js'
 
 const TMUX = resolveFromPath('tmux')
 const MAX_UP_ATTEMPTS = 8
@@ -161,6 +161,20 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
   const session = resolveAgentSession(agentName)
   const providerType = resolveAgentProviderType(agentName)
   const pluginPattern = getPluginPattern(providerType)
+
+  // Idle-guard: NEVER drive the /mcp menu (which starts by pressing Escape and
+  // then navigates Up/Enter/Down) into a pane that is actively generating. The
+  // Escape would interrupt the agent's in-flight turn and the navigation keys
+  // would inject stray input into a live session -- i.e. it kills work in
+  // progress. A 'busy' read means an Escape lands as an interrupt, so we defer
+  // and let the caller retry on a later tick when the pane is back at the idle
+  // prompt. (detectPaneState reads the live footer / busy indicators; scrollback
+  // mentions of "esc to interrupt" are footer-scoped so they don't false-trip.)
+  const preflight = capturePane(session) ?? ''
+  if (detectPaneState(preflight) === 'busy') {
+    logger.info({ agentName, session }, 'channel-mcp-reconnect: pane busy -- deferring reconnect to avoid interrupting active work')
+    return { ok: false, message: 'Pane busy -- reconnect deferred to avoid interrupting active work' }
+  }
 
   try {
     execFileSync(TMUX, ['send-keys', '-t', session, 'Escape'], { timeout: 3000 })
