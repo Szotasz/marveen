@@ -1276,6 +1276,20 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           logger.info({ agent: t.agentName, provider: t.provider }, 'Channel plugin down, but another agent was already restarted this tick -- deferring to next tick (stagger; avoids the reboot/cascade overload)')
           continue
         }
+        // Busy-guard: NEVER hard-restart (stop+start) an agent that is actively
+        // generating. The destructive restart kills both the agent's --continue
+        // context AND its in-flight turn -- exactly the "restarted me mid-work"
+        // failure. A genuinely-down channel plugin is still down on the next
+        // tick when the pane is idle, so we restart then instead; this only
+        // costs a slightly longer plugin-down window. A truly wedged (frozen)
+        // TUI is owned by the separate stuck-respawn watchdog, not here, so
+        // deferring on 'busy' cannot strand a hung session. Only confirmed
+        // 'busy' defers; 'unknown'/'idle' proceed.
+        const restartPane = capturePane(t.session) ?? ''
+        if (detectPaneState(restartPane) === 'busy') {
+          logger.info({ agent: t.agentName, provider: t.provider }, 'Channel plugin down, but agent pane is busy (active turn) -- deferring hard restart to avoid interrupting work')
+          continue
+        }
         logger.warn({ agent: t.agentName, provider: t.provider, failures }, 'Agent channel plugin down -- auto-restarting')
         agentRestartedThisTick = true
         try {
