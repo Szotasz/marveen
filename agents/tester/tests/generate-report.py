@@ -37,7 +37,7 @@ FONT   = "DV"      # body -- DejaVu (biztos ékezet)
 FONT_B = "Exo2B"   # fejlécek -- fiREG brand font
 
 REPORTS = Path(__file__).parent.parent / "reports"
-OUT = REPORTS / "2026-06-27-nagy-teszt-riport-v2.pdf"
+OUT = REPORTS / "2026-06-27-nagy-teszt-riport-v3.pdf"
 
 # fiREG brand palette (from brandkit.py / SVG)
 RED     = colors.HexColor("#FD291E")   # brand piros
@@ -53,7 +53,7 @@ BLACK   = INK
 
 W, H = A4  # 595 x 842 pt
 
-RUN_DATE = "2026.06.27. 13:48"
+RUN_DATE = "2026.06.27. 15:31"
 ENV      = "dev.fireg.hu"
 
 TYPES = [
@@ -65,10 +65,10 @@ TYPES = [
         "pdf_ok": True,
         "pdf_pages": 4,
         "pdf_note": "Naplónapló 7345 -- printDiary végpont",
-        "pdf_file": "2026-06-27T13-50-27-nagy-tuzoltokeszulekek-naplo7345.pdf",
+        "pdf_file": "2026-06-27T15-33-49-nagy-tuzoltokeszulekek-naplo7345.pdf",
         "scr": [
-            "2026-06-27T13-49-20-nagy-tuzoltokeszulekek_cb1_verify.png",
-            "2026-06-27T13-50-11-nagy-tuzoltokeszulekek_cb2_verify.png",
+            "2026-06-27T15-32-46-nagy-tuzoltokeszulekek_cb1_verify.png",
+            "2026-06-27T15-33-35-nagy-tuzoltokeszulekek_cb2_verify.png",
         ],
     },
     {
@@ -79,10 +79,10 @@ TYPES = [
         "pdf_ok": True,
         "pdf_pages": 4,
         "pdf_note": "Naplónapló 109046 -- printDiary végpont",
-        "pdf_file": "2026-06-27T13-51-30-nagy-tuzgatloeszkozok-naplo109046.pdf",
+        "pdf_file": "2026-06-27T15-34-53-nagy-tuzgatloeszkozok-naplo109046.pdf",
         "scr": [
-            "2026-06-27T13-50-58-nagy-tuzgatloeszkozok_cb1_verify.png",
-            "2026-06-27T13-51-17-nagy-tuzgatloeszkozok_cb2_verify.png",
+            "2026-06-27T15-34-21-nagy-tuzgatloeszkozok_cb1_verify.png",
+            "2026-06-27T15-34-40-nagy-tuzgatloeszkozok_cb2_verify.png",
         ],
     },
     {
@@ -93,10 +93,10 @@ TYPES = [
         "pdf_ok": True,
         "pdf_pages": 2,
         "pdf_note": "Naplónapló 7345 -- printDiary végpont",
-        "pdf_file": "2026-06-27T13-52-27-nagy-defibrillatorok-naplo7345.pdf",
+        "pdf_file": "2026-06-27T15-35-51-nagy-defibrillatorok-naplo7345.pdf",
         "scr": [
-            "2026-06-27T13-52-00-nagy-defibrillatorok_cb1_verify.png",
-            "2026-06-27T13-52-19-nagy-defibrillatorok_cb2_verify.png",
+            "2026-06-27T15-35-24-nagy-defibrillatorok_cb1_verify.png",
+            "2026-06-27T15-35-43-nagy-defibrillatorok_cb2_verify.png",
         ],
     },
     {
@@ -109,8 +109,8 @@ TYPES = [
         "pdf_note": "PDF letöltés timeout -- dev környezeti adathiány",
         "pdf_file": None,
         "scr": [
-            "2026-06-27T13-52-58-nagy-aggregatorok_cb1_verify.png",
-            "2026-06-27T13-53-17-nagy-aggregatorok_cb2_verify.png",
+            "2026-06-27T15-36-20-nagy-aggregatorok_cb1_verify.png",
+            "2026-06-27T15-36-39-nagy-aggregatorok_cb2_verify.png",
         ],
     },
     {
@@ -121,10 +121,10 @@ TYPES = [
         "pdf_ok": True,
         "pdf_pages": 8,
         "pdf_note": "Naplónapló 109046 -- printDiary végpont",
-        "pdf_file": "2026-06-27T13-54-55-nagy-tuzivizforrasok-naplo109046.pdf",
+        "pdf_file": "2026-06-27T15-38-19-nagy-tuzivizforrasok-naplo109046.pdf",
         "scr": [
-            "2026-06-27T13-54-22-nagy-tuzivizforrasok_cb1_verify.png",
-            "2026-06-27T13-54-41-nagy-tuzivizforrasok_cb2_verify.png",
+            "2026-06-27T15-37-45-nagy-tuzivizforrasok_cb1_verify.png",
+            "2026-06-27T15-38-05-nagy-tuzivizforrasok_cb2_verify.png",
         ],
     },
     {
@@ -137,8 +137,8 @@ TYPES = [
         "pdf_note": "PDF letöltés timeout -- dev környezeti adathiány",
         "pdf_file": None,
         "scr": [
-            "2026-06-27T13-55-29-nagy-fustgatloeszkozok_cb1_verify.png",
-            "2026-06-27T13-55-48-nagy-fustgatloeszkozok_cb2_verify.png",
+            "2026-06-27T15-38-51-nagy-fustgatloeszkozok_cb1_verify.png",
+            "2026-06-27T15-39-10-nagy-fustgatloeszkozok_cb2_verify.png",
         ],
     },
     {
@@ -151,8 +151,8 @@ TYPES = [
         "pdf_note": "PDF letöltés timeout -- dev környezeti adathiány",
         "pdf_file": None,
         "scr": [
-            "2026-06-27T13-57-02-nagy-veszkijaratok_cb1_verify.png",
-            "2026-06-27T13-57-21-nagy-veszkijaratok_cb2_verify.png",
+            "2026-06-27T15-40-28-nagy-veszkijaratok_cb1_verify.png",
+            "2026-06-27T15-40-47-nagy-veszkijaratok_cb2_verify.png",
         ],
     },
     {
@@ -163,10 +163,10 @@ TYPES = [
         "pdf_ok": True,
         "pdf_pages": 8,
         "pdf_note": "Naplónapló 7345 -- printDiary végpont",
-        "pdf_file": "2026-06-27T13-59-08-nagy-vilagitasok-naplo7345.pdf",
+        "pdf_file": "2026-06-27T15-42-36-nagy-vilagitasok-naplo7345.pdf",
         "scr": [
-            "2026-06-27T13-58-35-nagy-vilagitasok_cb1_verify.png",
-            "2026-06-27T13-58-54-nagy-vilagitasok_cb2_verify.png",
+            "2026-06-27T15-42-02-nagy-vilagitasok_cb1_verify.png",
+            "2026-06-27T15-42-22-nagy-vilagitasok_cb2_verify.png",
         ],
     },
     {
@@ -179,8 +179,8 @@ TYPES = [
         "pdf_note": "PDF letöltés timeout -- dev környezeti adathiány",
         "pdf_file": None,
         "scr": [
-            "2026-06-27T14-00-12-nagy-oltorendszerek_cb1_verify.png",
-            "2026-06-27T14-01-03-nagy-oltorendszerek_cb2_verify.png",
+            "2026-06-27T15-43-38-nagy-oltorendszerek_cb1_verify.png",
+            "2026-06-27T15-44-27-nagy-oltorendszerek_cb2_verify.png",
         ],
     },
 ]
