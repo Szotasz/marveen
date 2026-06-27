@@ -35,6 +35,7 @@ import { getProvider, channelStateDir, readChannelToken, type ChannelProviderTyp
 import { attemptChannelMcpReconnect } from './channel-mcp-reconnect.js'
 import { readLastIngestionTimestamp, TRANSCRIPT_DIR } from './inbound-probe.js'
 import { shouldAutoRestartDownAgent, parseEtimeToSeconds } from './agent-restart-policy.js'
+import { loadRestartState, saveRestartState } from './agent-restart-state.js'
 // getClaudePidForSession + hasChannelPluginAlive live in the shared liveness
 // module so the standalone channel-coordinator reuses the exact same probe.
 import { getClaudePidForSession, hasChannelPluginAlive } from '../channel-coordinator/liveness.js'
@@ -75,6 +76,31 @@ const agentLastRestart: Map<string, number> = new Map()
 // short cadence forever -- which restarts the WHOLE agent every few minutes and
 // renders it unusable. Reset to 0 the moment the plugin is seen alive again.
 const agentRestartFailures: Map<string, number> = new Map()
+// Sub-agent sessions for which we have already tried a NON-destructive soft
+// /mcp reconnect during the CURRENT down-spell (keyed by tmux session). The
+// watchdog tries one soft reconnect before escalating to a context-destroying
+// stop+start, mirroring the main session's soft-first cascade; cleared when the
+// agent's plugin is seen alive again so the next down-spell gets a fresh try.
+const agentSoftReconnectTried: Set<string> = new Set()
+
+// --- Back-off persistence (survive dashboard restarts) ---
+// agentRestartFailures + agentLastRestart drive the exponential back-off that
+// keeps a perpetually-down agent from being restart-churned. Both were memory-
+// only, so every dashboard restart (frequent: self-update, crash, service
+// bounce) wiped them and dropped the watchdog back to the aggressive base-grace
+// cadence. Persist them so the back-off survives a dashboard restart. Best-
+// effort: load on module init, flush after each mutation.
+const RESTART_STATE_FILE = join(PROJECT_ROOT, 'store', '.agent-restart-state.json')
+function hydrateRestartState(): void {
+  const state = loadRestartState(RESTART_STATE_FILE)
+  for (const [k, v] of Object.entries(state.failures)) agentRestartFailures.set(k, v)
+  for (const [k, v] of Object.entries(state.lastRestart)) agentLastRestart.set(k, v)
+}
+function persistRestartState(): void {
+  saveRestartState(RESTART_STATE_FILE, agentRestartFailures, agentLastRestart)
+}
+hydrateRestartState()
+
 const AGENT_RESTART_GRACE_MS = 90_000
 // Floor frequency for the backed-off restart: even a long-down plugin is still
 // retried at least this often, in case an external fix brings it back.
@@ -83,7 +109,14 @@ const AGENT_MAX_RESTART_GRACE_MS = 60 * 60 * 1000 // 1h
 // its channel plugin up (a large-context model launched with --continue spawns
 // the plugin only after a slow session load). Never restart a process younger
 // than this on a "plugin down" reading, or the watchdog crash-loops it.
-const AGENT_STARTUP_GRACE_MS = 180_000
+// Raised 180s -> 300s (2026-06-27): in a busy startup window the telegram
+// channel-plugin bun poller routinely registers only after ~4-5 min (MCP
+// batch-starvation among many stdio servers), even WITH MCP_CONNECTION_NONBLOCKING
+// set. At 180s the watchdog killed the agent right before the poller came up,
+// and the fresh process hit the same slow window -> an all-night stop+start loop
+// (observed on hacker, 23:49->07:22). 300s lets the slow-but-healthy poller land
+// before any restart, while staying well under the genuinely-dead escalation.
+const AGENT_STARTUP_GRACE_MS = 300_000
 const PLUGIN_ALERT_DEDUP_MS = 30 * 60 * 1000
 
 // Stuck channel-input recovery (MAIN session only). A channel notification
@@ -1187,7 +1220,9 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           }
           // Healthy observation clears the exponential back-off so the next
           // down-spell starts again at the base grace.
-          agentRestartFailures.delete(t.agentName!)
+          if (agentRestartFailures.delete(t.agentName!)) persistRestartState()
+          // End of the down-spell: allow a fresh soft reconnect next time.
+          agentSoftReconnectTried.delete(t.session)
         }
         continue
       }
@@ -1216,6 +1251,27 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           logger.warn({ agent: t.agentName, provider: agentProvider }, 'Agent has no channel token in state dir -- skipping restart to avoid token conflict')
           continue
         }
+        // Soft-first escalation (mirrors the main session's soft /mcp reconnect
+        // before any hard restart). Before stop+start -- which destroys the
+        // agent's --continue context -- try ONE non-destructive /mcp reconnect
+        // per down-spell: it re-handshakes a plugin that registered late or got
+        // wedged WITHOUT killing the conversation. Many "down" reads are exactly
+        // a slow/wedged MCP, not a dead process, so this avoids the context loss
+        // entirely in the common case. Counts toward the per-tick heavy-action
+        // budget (stagger) and re-evaluates next tick; if the plugin is still
+        // down then, the destructive restart below takes over.
+        if (!agentSoftReconnectTried.has(t.session) && !agentRestartedThisTick) {
+          agentSoftReconnectTried.add(t.session)
+          agentRestartedThisTick = true
+          logger.warn({ agent: t.agentName, provider: t.provider, failures }, 'Agent channel plugin down -- trying soft /mcp reconnect before hard restart')
+          try {
+            const r = attemptChannelMcpReconnect(t.agentName!)
+            logger.info({ agent: t.agentName, ok: r.ok, message: r.message }, 'Soft channel reconnect attempted -- re-checking next tick before escalating')
+          } catch (err) {
+            logger.warn({ err, agent: t.agentName }, 'Soft channel reconnect threw -- will escalate to hard restart next tick')
+          }
+          continue
+        }
         if (agentRestartedThisTick) {
           logger.info({ agent: t.agentName, provider: t.provider }, 'Channel plugin down, but another agent was already restarted this tick -- deferring to next tick (stagger; avoids the reboot/cascade overload)')
           continue
@@ -1232,6 +1288,9 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // alive (which resets the counter). Repeated failures back off the
           // next restart exponentially instead of churning every base-grace.
           agentRestartFailures.set(t.agentName!, failures + 1)
+          // Persist the back-off counters so a dashboard restart cannot reset
+          // them and re-enable aggressive churn (see agent-restart-state.ts).
+          persistRestartState()
         } catch (err) {
           logger.error({ err, agent: t.agentName }, 'Failed to auto-restart agent after channel plugin down')
         }
