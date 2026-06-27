@@ -6,7 +6,10 @@ import {
   clearTaskState,
   shouldReplayTaskState,
   buildTaskStateInjection,
+  deriveAgentStatusFromTaskState,
 } from '../agent-taskstate.js'
+import { upsertAgentStatus } from '../../db.js'
+import { logger } from '../../logger.js'
 import type { RouteContext } from './types.js'
 
 // Endpoints for the compact task-state re-injection feature (#4).
@@ -54,6 +57,14 @@ export async function tryHandleAgentTaskState(ctx: RouteContext): Promise<boolea
       pendingDecision: fields.pendingDecision as string | undefined,
       summary: fields.summary as string | undefined,
     }, Date.now())
+    // Self-populating Activity board: mirror the same task-state into the
+    // human-readable agent_status row. Best-effort -- a board failure must
+    // never break the (critical) compact-recovery write.
+    try {
+      upsertAgentStatus(deriveAgentStatusFromTaskState(record))
+    } catch (e) {
+      logger.warn({ agent, err: String(e) }, 'agent_status mirror failed (taskstate write OK)')
+    }
     json(res, { ok: true, record })
     return true
   }
@@ -64,7 +75,19 @@ export async function tryHandleAgentTaskState(ctx: RouteContext): Promise<boolea
   }
 
   if (baseMatch && method === 'DELETE') {
-    clearTaskState(decodeURIComponent(baseMatch[1]))
+    const agent = decodeURIComponent(baseMatch[1])
+    // Read the record before clearing so the board can show "done: <summary>"
+    // instead of snapping back to an empty card.
+    const prev = readTaskState(agent)
+    clearTaskState(agent)
+    try {
+      const derived = prev
+        ? deriveAgentStatusFromTaskState(prev, { done: true })
+        : { agent_id: agent, state: 'done' as const, headline: null, blocker: null }
+      upsertAgentStatus(derived)
+    } catch (e) {
+      logger.warn({ agent, err: String(e) }, 'agent_status done-mirror failed (taskstate clear OK)')
+    }
     json(res, { ok: true })
     return true
   }

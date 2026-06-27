@@ -62,6 +62,38 @@ export function isEmptyTaskState(r: Pick<AgentTaskState, 'doneSteps' | 'alreadyD
   )
 }
 
+// --- Self-populating Activity status board (#466 write-side) ---
+// The PreCompact hook already writes a structured task-state for every agent;
+// the same data drives the dashboard "Status" tab, so the board fills itself
+// with NO extra agent-narration step. Pure (no I/O) -> unit-testable.
+export interface DerivedAgentStatus {
+  agent_id: string
+  state: 'working' | 'idle' | 'blocked' | 'done'
+  headline: string | null
+  blocker: string | null
+}
+
+export function deriveAgentStatusFromTaskState(
+  r: Pick<AgentTaskState, 'agent' | 'summary' | 'nextAction' | 'pendingDecision' | 'doneSteps' | 'alreadyDelegated'>,
+  opts: { done?: boolean } = {},
+): DerivedAgentStatus {
+  const headline = r.summary?.trim() || r.nextAction?.trim() || null
+  const blocker = r.pendingDecision?.trim() || null
+  let state: DerivedAgentStatus['state']
+  if (opts.done) state = 'done'
+  else if (blocker) state = 'blocked'
+  else if (isEmptyTaskState(r)) state = 'idle'
+  else state = 'working'
+  return {
+    agent_id: r.agent,
+    state,
+    headline,
+    // The board only renders a blocker line when state is 'blocked'; on done we
+    // drop it so a stale decision does not linger on the card.
+    blocker: state === 'done' ? null : blocker,
+  }
+}
+
 /**
  * Pure decision: should this record be re-injected at SessionStart?
  * Replays ONLY when: record exists, not yet consumed, source is compact|resume

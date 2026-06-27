@@ -8,6 +8,7 @@ import {
   markConsumed,
   clearTaskState,
   sweepOrphanTaskStates,
+  deriveAgentStatusFromTaskState,
   TASKSTATE_TTL_MS,
   type AgentTaskState,
 } from '../web/agent-taskstate.js'
@@ -119,5 +120,37 @@ describe('task-state store I/O', () => {
     const r = readTaskState('../../etc/passwd')
     expect(r).not.toBeNull()
     clearTaskState('../../etc/passwd')
+  })
+})
+
+// Self-populating Activity board (#466 write-side): the PreCompact task-state
+// derives the human-readable agent_status row. Pure-fn coverage.
+describe('deriveAgentStatusFromTaskState', () => {
+  it('maps an in-flight task to working + summary headline', () => {
+    const s = deriveAgentStatusFromTaskState(rec())
+    expect(s).toEqual({ agent_id: 'tester', state: 'working', headline: 'building X', blocker: null })
+  })
+  it('falls back to nextAction when summary is empty', () => {
+    const s = deriveAgentStatusFromTaskState(rec({ summary: '', nextAction: 'do B' }))
+    expect(s.headline).toBe('do B')
+    expect(s.state).toBe('working')
+  })
+  it('marks blocked when a pending decision is present and surfaces the blocker', () => {
+    const s = deriveAgentStatusFromTaskState(rec({ pendingDecision: 'waiting on API key' }))
+    expect(s.state).toBe('blocked')
+    expect(s.blocker).toBe('waiting on API key')
+  })
+  it('is idle when the record carries no actual task', () => {
+    const s = deriveAgentStatusFromTaskState(
+      rec({ doneSteps: [], alreadyDelegated: [], nextAction: '', pendingDecision: '', summary: '' }),
+    )
+    expect(s.state).toBe('idle')
+    expect(s.headline).toBeNull()
+  })
+  it('done option wins and drops the blocker line', () => {
+    const s = deriveAgentStatusFromTaskState(rec({ pendingDecision: 'x' }), { done: true })
+    expect(s.state).toBe('done')
+    expect(s.blocker).toBeNull()
+    expect(s.headline).toBe('building X')
   })
 })
