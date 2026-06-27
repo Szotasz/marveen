@@ -76,12 +76,6 @@ const agentLastRestart: Map<string, number> = new Map()
 // short cadence forever -- which restarts the WHOLE agent every few minutes and
 // renders it unusable. Reset to 0 the moment the plugin is seen alive again.
 const agentRestartFailures: Map<string, number> = new Map()
-// Sub-agent sessions for which we have already tried a NON-destructive soft
-// /mcp reconnect during the CURRENT down-spell (keyed by tmux session). The
-// watchdog tries one soft reconnect before escalating to a context-destroying
-// stop+start, mirroring the main session's soft-first cascade; cleared when the
-// agent's plugin is seen alive again so the next down-spell gets a fresh try.
-const agentSoftReconnectTried: Set<string> = new Set()
 
 // --- Back-off persistence (survive dashboard restarts) ---
 // agentRestartFailures + agentLastRestart drive the exponential back-off that
@@ -1221,8 +1215,6 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // Healthy observation clears the exponential back-off so the next
           // down-spell starts again at the base grace.
           if (agentRestartFailures.delete(t.agentName!)) persistRestartState()
-          // End of the down-spell: allow a fresh soft reconnect next time.
-          agentSoftReconnectTried.delete(t.session)
         }
         continue
       }
@@ -1251,27 +1243,21 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           logger.warn({ agent: t.agentName, provider: agentProvider }, 'Agent has no channel token in state dir -- skipping restart to avoid token conflict')
           continue
         }
-        // Soft-first escalation (mirrors the main session's soft /mcp reconnect
-        // before any hard restart). Before stop+start -- which destroys the
-        // agent's --continue context -- try ONE non-destructive /mcp reconnect
-        // per down-spell: it re-handshakes a plugin that registered late or got
-        // wedged WITHOUT killing the conversation. Many "down" reads are exactly
-        // a slow/wedged MCP, not a dead process, so this avoids the context loss
-        // entirely in the common case. Counts toward the per-tick heavy-action
-        // budget (stagger) and re-evaluates next tick; if the plugin is still
-        // down then, the destructive restart below takes over.
-        if (!agentSoftReconnectTried.has(t.session) && !agentRestartedThisTick) {
-          agentSoftReconnectTried.add(t.session)
-          agentRestartedThisTick = true
-          logger.warn({ agent: t.agentName, provider: t.provider, failures }, 'Agent channel plugin down -- trying soft /mcp reconnect before hard restart')
-          try {
-            const r = attemptChannelMcpReconnect(t.agentName!)
-            logger.info({ agent: t.agentName, ok: r.ok, message: r.message }, 'Soft channel reconnect attempted -- re-checking next tick before escalating')
-          } catch (err) {
-            logger.warn({ err, agent: t.agentName }, 'Soft channel reconnect threw -- will escalate to hard restart next tick')
-          }
-          continue
-        }
+        // No soft /mcp reconnect for sub-agents (removed 2026-06-27). We used to
+        // drive ONE /mcp+Up+Enter+Enter keystroke "reconnect" here before the
+        // destructive restart, on the theory it would re-handshake a wedged
+        // plugin without killing the agent's --continue context. Two things made
+        // that wrong: (1) channel sub-agents are ALWAYS launched fresh (no
+        // --continue, see agent-process.ts continueFlag), so there is no context
+        // to preserve -- the soft path bought nothing. (2) the /mcp keystroke
+        // navigation is unstable: the MCP server list order differs per agent
+        // (an extra project .mcp.json server shifts every row), so the fixed
+        // "one Up == the channel plugin at the bottom" lands on the WRONG server
+        // and frequently leaves the pane parked in the /mcp modal -- the
+        // deaf-bot / stuck-in-/mcp incident (Reni-reported). So we go straight to
+        // the verified fresh relaunch below; a flaky --channels load that misses
+        // (no bun poller) is simply relaunched again next tick until it attaches
+        // (proven to converge in ~2 tries).
         if (agentRestartedThisTick) {
           logger.info({ agent: t.agentName, provider: t.provider }, 'Channel plugin down, but another agent was already restarted this tick -- deferring to next tick (stagger; avoids the reboot/cascade overload)')
           continue

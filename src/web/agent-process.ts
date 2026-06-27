@@ -32,7 +32,6 @@ import { CHANNEL_PROVIDER, MAIN_AGENT_ID } from '../config.js'
 import { loadProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { writeAgentSettingsFromProfile } from './agent-scaffold.js'
-import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { getSecret } from './vault.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
 
@@ -468,20 +467,21 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // -- the outbound pre-flight remains the safety net if this misses.
     scheduleIdentitySetup(session, readAgentDisplayName(name))
 
-    // Colleague auto-unlock (2026-06-22): mirror the main session's
-    // post-respawn unlock probe for channel-having sub-agents. After a restart
-    // the bun channel poller sometimes never attaches during the cold-start
-    // window (observed fleet-wide after a managed restart: the TUI comes up but
-    // bot.pid stays empty, so the agent goes deaf to inbound). The main session
-    // self-heals because channel-monitor schedules schedulePluginUnlockAfterRespawn;
-    // sub-agents had no such probe and stayed stuck until a manual /mcp kick.
-    // Schedule the same probe here. It is gated on bun-absence (a healthy poller
-    // is left untouched) and on an idle pane, so it never disturbs a colleague
-    // mid-turn. Channel-less agents (hasChannel false) get no probe; MAIN never
-    // takes this path (it comes up via channels.sh) but guard defensively.
-    if (hasChannel && name !== MAIN_AGENT_ID) {
-      schedulePluginUnlockAfterRespawn(session, provider.type)
-    }
+    // Post-respawn channel-plugin recovery for sub-agents is handled by the
+    // channel-monitor's verified fresh-relaunch loop, NOT by /mcp keystroke
+    // injection. The old "colleague auto-unlock" probe drove a fixed
+    // /mcp+Up+Enter+Enter navigation into the pane to re-enable a wedged plugin,
+    // but the MCP server list order differs per agent (e.g. an agent with an
+    // extra project .mcp.json server shifts every row), so the hard-coded
+    // "one Up == the channel plugin at the bottom" assumption lands on the WRONG
+    // server and frequently leaves the agent parked in the /mcp modal -- the
+    // deaf-bot / stuck-in-/mcp failure (2026-06-27 fleet incident, Reni-reported).
+    // Channel sub-agents are ALWAYS launched fresh (no --continue; see continueFlag
+    // above), so there is no conversation context to preserve with a soft in-place
+    // reconnect. When the flaky Claude Code --channels plugin load misses (no bun
+    // poller attaches), the monitor detects it next tick and relaunches fresh
+    // until the poller attaches -- proven to converge in ~2 tries. So we
+    // deliberately inject NO /mcp keys here.
 
     return { ok: true }
   } catch (err) {
