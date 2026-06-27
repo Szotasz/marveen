@@ -248,21 +248,31 @@ export function startWebServer(port = 3420): http.Server {
     )
   })
 
-  // Self-heal a SILENT bind failure. Under launchd, a `kickstart -k` can race
-  // the dying predecessor's lingering socket: the EADDRINUSE reclaim + re-listen
-  // path can leave this process ALIVE but not actually listening, with no error
-  // (observed 2026-06-27 -- the success log above fired yet nothing was bound,
-  // and the background loops started below kept running, so the dashboard was
-  // deaf for hours until a manual second restart, which bound cleanly). A clean
-  // restart binds reliably, so if the server is not actually listening after a
-  // generous grace window (covers the 1500ms reclaim + retry), exit and let
-  // launchd restart us fresh rather than linger un-servable.
+  // Self-heal a SILENT listener failure. Under launchd, a `kickstart -k` can
+  // race the dying predecessor's lingering socket: the EADDRINUSE reclaim +
+  // re-listen path can leave this process ALIVE but not actually listening, with
+  // no error (observed 2026-06-27 -- the success log above fired yet nothing was
+  // bound, and the background loops started below kept running, so the dashboard
+  // was deaf until a manual restart, which bound cleanly). A clean restart binds
+  // reliably, so if the listener is not up we exit(1) and let launchd restart us
+  // fresh rather than linger un-servable.
+  //
+  // The grace must comfortably exceed a SLOW-but-valid bind: restarting OVER a
+  // wedged predecessor, the EADDRINUSE reclaim retries every ~1500ms until the
+  // old socket finally releases -- observed up to ~5 MINUTES (2026-06-27). An
+  // 8s grace would exit MID-bind and loop, so wait STARTUP_GRACE first. After
+  // that, poll periodically so a mid-life listener drop is caught too, not just
+  // a startup failure.
+  const STARTUP_GRACE_MS = 7 * 60 * 1000
+  const RELISTEN_POLL_MS = 60 * 1000
   setTimeout(() => {
-    if (!server.listening) {
-      logger.error({ port }, 'Web server not listening after startup grace -- exiting(1) for a clean launchd restart')
-      process.exit(1)
-    }
-  }, 8000).unref()
+    setInterval(() => {
+      if (!server.listening) {
+        logger.error({ port }, 'Web server not listening -- exiting(1) for a clean launchd restart')
+        process.exit(1)
+      }
+    }, RELISTEN_POLL_MS).unref()
+  }, STARTUP_GRACE_MS).unref()
 
   const routerInterval = startMessageRouter()
   logger.info('Agent message router started (5s poll)')
