@@ -180,6 +180,30 @@ const ENABLE_RX = /\benable\b/i
 describe('attemptChannelMcpReconnect', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // attemptChannelMcpReconnect now does a preflight capturePane + busy-guard
+    // BEFORE pressing any key (so it never interrupts an actively generating
+    // pane). Queue a non-busy preflight read first; each test's own capture
+    // sequence then flows behind it unchanged. A 'no idle footer' string reads
+    // as 'unknown' (not 'busy'), so the guard lets the reconnect proceed.
+    mockCapturePane.mockReturnValueOnce('preflight-not-busy')
+  })
+
+  it('defers (sends NO keys) when the pane is actively generating', () => {
+    // Reni-reported root cause: the soft /mcp reconnect blindly pressed Escape
+    // into a live session, interrupting work in progress. The busy-guard must
+    // bail before any send-keys when detectPaneState reads 'busy'.
+    mockCapturePane.mockReset()
+    mockCapturePane.mockReturnValueOnce('· Synthesizing… (8s · ↓ 1.2k tokens · esc to interrupt)')
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('busy')
+    // The hard assertion: not a single key was sent into the pane.
+    const sendKeyCalls = mockExecFileSync.mock.calls.filter(
+      (c) => Array.isArray(c[1]) && c[1].includes('send-keys'),
+    )
+    expect(sendKeyCalls.length).toBe(0)
   })
 
   it('connected state: steps Down onto Reconnect, then activates it', () => {
