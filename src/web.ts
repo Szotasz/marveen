@@ -220,7 +220,9 @@ export function startWebServer(port = 3420): http.Server {
                 try { process.kill(pid, 'SIGKILL') } catch { /* gone */ }
               } catch { /* gone */ }
             }
-            server.listen(port, WEB_HOST)
+            server.listen(port, WEB_HOST, () => {
+              logger.info({ port }, `Web dashboard: re-listen bound after port reclaim`)
+            })
           }, 1500)
         } else {
           logger.error({ port }, 'Port foglalt de nem talaltunk felszabadithato node processt -- kilepes')
@@ -245,6 +247,22 @@ export function startWebServer(port = 3420): http.Server {
       `\nDashboard access URL (paste into browser, token is stored afterward):\n  ${bootstrapUrl}\n\n`
     )
   })
+
+  // Self-heal a SILENT bind failure. Under launchd, a `kickstart -k` can race
+  // the dying predecessor's lingering socket: the EADDRINUSE reclaim + re-listen
+  // path can leave this process ALIVE but not actually listening, with no error
+  // (observed 2026-06-27 -- the success log above fired yet nothing was bound,
+  // and the background loops started below kept running, so the dashboard was
+  // deaf for hours until a manual second restart, which bound cleanly). A clean
+  // restart binds reliably, so if the server is not actually listening after a
+  // generous grace window (covers the 1500ms reclaim + retry), exit and let
+  // launchd restart us fresh rather than linger un-servable.
+  setTimeout(() => {
+    if (!server.listening) {
+      logger.error({ port }, 'Web server not listening after startup grace -- exiting(1) for a clean launchd restart')
+      process.exit(1)
+    }
+  }, 8000).unref()
 
   const routerInterval = startMessageRouter()
   logger.info('Agent message router started (5s poll)')
