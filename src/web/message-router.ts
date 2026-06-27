@@ -21,6 +21,7 @@ import { readAgentTeam } from './agent-team.js'
 import {
   agentSessionName,
   isSessionReadyForPrompt,
+  clearStaleParkedInput,
   sendPromptToSession,
   sessionExistsOnHost,
 } from './agent-process.js'
@@ -42,6 +43,11 @@ const CHANNEL_COORDINATOR_AGENTS = new Set<string>([COORDINATOR_AGENT_ID])
 // queue and we stop re-scanning it forever. Matches the scheduled-task retry
 // window so a long turn that ate one also eats the other.
 const MESSAGE_ABANDON_WINDOW_MS = 60 * 60 * 1000
+// How long a message must have waited before the stale-parked-input janitor is
+// allowed to clear the receiver's input box. Long enough that a brief, genuine
+// "agent parked a draft it is about to submit" never gets clobbered; short
+// enough that a wedged channel recovers within ~a minute instead of forever.
+const JANITOR_PARKED_MIN_AGE_MS = 45 * 1000
 // Log "skipping, target not ready" at most once per message id so a busy
 // receiver over many 5s ticks does not spam the log.
 const routerLoggedMisses: Set<number> = new Set()
@@ -104,6 +110,19 @@ export function startMessageRouter(): NodeJS.Timeout {
       }
 
       if (!isSessionReadyForPrompt(session, host)) {
+        // Stale-parked-input janitor: a non-submitted line stuck in the input
+        // box (e.g. a weak local model that typed its heartbeat reply into the
+        // box instead of ending the turn) keeps isSessionReadyForPrompt false
+        // forever, so this message -- and every later one -- strands as pending
+        // and the channel silently wedges. Once a message has waited long enough,
+        // clear a STABLE parked input so delivery resumes next tick. clearStale
+        // ParkedInput only fires on the idle 'typing' state with text unchanged
+        // across a settle, so it never clobbers a session that is actually
+        // processing or input a human/agent is mid-typing.
+        if (ageMs > JANITOR_PARKED_MIN_AGE_MS && clearStaleParkedInput(session, host)) {
+          routerLoggedMisses.delete(msg.id)
+          continue // input cleared; deliver on the next tick
+        }
         if (!routerLoggedMisses.has(msg.id)) {
           logger.warn({ id: msg.id, to: msg.to_agent, session }, 'Agent message target session busy, will retry')
           routerLoggedMisses.add(msg.id)

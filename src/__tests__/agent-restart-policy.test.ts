@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { shouldAutoRestartDownAgent, effectiveRestartGraceMs, parseEtimeToSeconds } from '../web/agent-restart-policy.js'
+import { shouldAutoRestartDownAgent, effectiveRestartGraceMs, parseEtimeToSeconds, decideDownAgentAction } from '../web/agent-restart-policy.js'
 
 const STARTUP = 180_000
 const RESTART = 90_000
@@ -265,5 +265,52 @@ describe('shouldAutoRestartDownAgent with back-off', () => {
       startupGraceMs: STARTUP,
       restartGraceMs: RESTART,
     })).toBe(true)
+  })
+})
+
+describe('decideDownAgentAction', () => {
+  const MAX = 5
+  // A process old enough and past back-off -> the wrapped policy says restart.
+  const restartable = {
+    processAgeMs: 10 * 60_000,
+    msSinceLastRestart: null,
+    startupGraceMs: STARTUP,
+    restartGraceMs: RESTART,
+  }
+
+  it("restarts while under the cap", () => {
+    expect(decideDownAgentAction({ ...restartable, consecutiveFailures: 0 }, MAX)).toBe('restart')
+    expect(decideDownAgentAction({ ...restartable, consecutiveFailures: MAX - 1 }, MAX)).toBe('restart')
+  })
+
+  it("alerts exactly once when the cap is first reached", () => {
+    expect(decideDownAgentAction({ ...restartable, consecutiveFailures: MAX }, MAX)).toBe('alert')
+  })
+
+  it("skips (silent) once the counter has been ticked past the cap", () => {
+    expect(decideDownAgentAction({ ...restartable, consecutiveFailures: MAX + 1 }, MAX)).toBe('skip')
+    expect(decideDownAgentAction({ ...restartable, consecutiveFailures: MAX + 9 }, MAX)).toBe('skip')
+  })
+
+  it("skips (does not restart) within back-off even under the cap", () => {
+    // Recently restarted -> the wrapped policy returns false -> skip, not restart.
+    expect(decideDownAgentAction({
+      ...restartable,
+      msSinceLastRestart: 1_000,
+      consecutiveFailures: 1,
+    }, MAX)).toBe('skip')
+  })
+
+  it("never restarts a freshly started process even at zero failures", () => {
+    expect(decideDownAgentAction({
+      ...restartable,
+      processAgeMs: 20_000, // within startup grace
+      consecutiveFailures: 0,
+    }, MAX)).toBe('skip')
+  })
+
+  it("falls back to plain back-off behaviour when the cap is disabled (0)", () => {
+    // No cap -> never escalates to 'alert', however high the failure count.
+    expect(decideDownAgentAction({ ...restartable, consecutiveFailures: 999 }, 0)).toBe('restart')
   })
 })

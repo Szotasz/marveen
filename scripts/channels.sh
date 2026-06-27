@@ -90,6 +90,24 @@ TMUX="$(command -v tmux)"
 [ -z "$CLAUDE" ] && echo "ERROR: claude not found on PATH" >&2 && exit 1
 [ -z "$TMUX" ]   && echo "ERROR: tmux not found on PATH" >&2 && exit 1
 
+# MCP startup-batch tuning for the MAIN session (2026-06-26).
+#
+# The --channels telegram plugin registers as a stdio MCP server. Claude Code
+# connects stdio MCP servers in batches of MCP_SERVER_CONNECTION_BATCH_SIZE
+# (default 3) and, by default, blocks on each connection. The main session runs
+# the MOST MCP servers of any agent (filesystem + playwright + chrome + the
+# claude.ai Gmail/Calendar/Drive connectors + the channel plugin), so the slow
+# remote connectors starve the telegram plugin out of the startup batch / push
+# it past MCP_TIMEOUT -- it never registers, no poller spawns, and the main bot
+# goes silent (observed 2026-06-26: ~2h outage, auto-recovery exhausted).
+#
+# startAgentProcess already sets these for every sub-agent (which is why their
+# channels come up); channels.sh did NOT, so the main session never got the
+# mitigation. Set them inline on the launch command -- the tmux SERVER predates
+# this script and does not inherit its environment, so exporting here alone
+# would not reach the new claude. Mirrors the sub-agent launch.
+MCP_BATCH_ENV="export MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000 && "
+
 # Read the main agent's default model from .claude/settings.json so we can
 # pass --model explicitly. Without --model claude-code falls back to its
 # built-in default, which can drift across versions. Passing the flag makes
@@ -185,8 +203,16 @@ fi
 # the cwd-based project dir may contain the user's own CLI sessions, and
 # resuming one of those loses the --channels activation state, causing
 # "Channel notifications skipped: server not in --channels list" errors.
+#
+# Idempotent launch: the service runs KillMode=process so a `systemctl stop`
+# no longer cgroup-kills the SHARED tmux server (which would tear down every
+# sibling agent session on this host -- the 2026-06-26 fleet-wide outage). The
+# trade-off is that a prior "$SESSION" can survive into this relaunch, so kill
+# just THIS session first -- never the server, never another agent's session --
+# otherwise new-session below fails with "duplicate session".
+$TMUX kill-session -t "$SESSION" 2>/dev/null || true
 $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
-  "$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}"
+  "${MCP_BATCH_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}"
 
 # Session startup guard: a Claude Code first-run dialogusait auto-accept-eljuk
 # kulonben a headless session orokre parkolna a prompton es a Telegram plugin
@@ -227,7 +253,7 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
         # entry); see the PR description / card 7EB18437.
         [ -e "$INSTALL_DIR/CLAUDE.md" ] && ln -sf "$INSTALL_DIR/CLAUDE.md" "$_CHANNELS_STARTDIR/CLAUDE.md" 2>/dev/null || true
         $TMUX new-session -d -s "$SESSION" -c "$_CHANNELS_STARTDIR" \
-          "$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}"
+          "${MCP_BATCH_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}"
         unset _CHANNELS_STARTDIR
       fi
       continue

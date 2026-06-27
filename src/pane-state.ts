@@ -47,7 +47,17 @@ export type PaneState = 'idle' | 'busy' | 'typing' | 'unknown' | 'error'
 //       happens to contain "bypass permissions on · 1 shell" verbatim
 //       (an echoed log line, a quoted message, etc.) which would
 //       otherwise be misread as idle.
-const IDLE_FOOTER_RX = /bypass permissions on(?: \(shift\+tab to cycle\)| · \d+ shells? · (?:ctrl\+t|↓ to manage))|\? for shortcuts/
+// The idle footer's trailing action area is highly variable: `(shift+tab to
+// cycle)`, or `· N shells · ctrl+t`, or -- when a background monitor and/or
+// sub-agents are present -- `· N monitor · ← for agents · ↓ to manage`. The
+// previous regex only accepted the `· \d+ shells ·` shape, so a session running
+// a background monitor (footer `· 1 monitor · ← for agents · ↓ to manage`) was
+// mis-read as 'unknown' and the router/scheduler silently refused to deliver to
+// it -- a fleet-wide delivery hole. Match `bypass permissions on` + EITHER the
+// shift+tab hint OR any `·`-separated tail ending in a known idle action (ctrl+t
+// / ↓ to manage). Busy states are filtered above (esc to interrupt / busy
+// indicators / paste placeholder), so this stays idle-specific.
+const IDLE_FOOTER_RX = /bypass permissions on(?: \(shift\+tab to cycle\)| · [^\n]*?(?:ctrl\+t|↓ to manage))|\? for shortcuts/
 
 // Positive busy signals. ANY match anywhere in the pane means the turn
 // is mid-flight, even if the footer looks idle for a frame.
@@ -190,6 +200,61 @@ const BOX_SEP_RX = /^─{10,}/
 // single-line intent (the match must not cross into the next line) while
 // admitting the NBSP and any other horizontal Unicode space the TUI emits.
 const PARKED_INPUT_RX = /❯[^\S\r\n]+\S/
+
+// Strip Claude Code's DIM (SGR 2) "ghost suggestion" autocomplete from a
+// COLOURED pane capture (`tmux capture-pane -e -p`), then remove every
+// remaining ANSI escape, yielding plain text equivalent to `capture-pane -p`
+// MINUS the ghost. Claude Code renders a history/autocomplete hint inside an
+// EMPTY input box at REDUCED intensity (`❯ ` then `ESC[2m<hint>ESC[0m`). A
+// plain (`-p`) capture drops the colour, so the dim hint becomes
+// indistinguishable from a genuinely parked input -- and the stuck-input
+// recovery then re-types + Enter-submits it as if the agent had typed it
+// (the 2026-06-26 phantom prompt-injection: it triggered a real invoice storno
+// and a forged email). The discriminator is intensity: a real parked input is
+// rendered at NORMAL intensity, only the ghost is dim. We track SGR dim state
+// across the stream and DROP any character emitted while dim is active, so a
+// pure-ghost box collapses to `❯ ` (no `\S` after the prompt) and
+// PARKED_INPUT_RX / detectPaneState no longer read it as 'typing'.
+//
+// Pure: a string transform, unit-testable against captured `-e` fixtures.
+// `38`/`48` extended-colour params (`38;5;N`, `38;2;R;G;B`) are consumed as a
+// unit so a colour INDEX of 2 is never mistaken for the dim attribute.
+export function stripGhostSuggestion(coloredPane: string): string {
+  let out = ''
+  let dim = false
+  let i = 0
+  const n = coloredPane.length
+  while (i < n) {
+    const ch = coloredPane[i]
+    if (ch === '\x1b') {
+      if (coloredPane[i + 1] !== '[') { i++; continue } // drop non-CSI ESC
+      let j = i + 2
+      while (j < n && (coloredPane[j] < '@' || coloredPane[j] > '~')) j++
+      const final = coloredPane[j]
+      if (final === 'm') {
+        const params = coloredPane.slice(i + 2, j)
+        const codes = params.length === 0 ? [''] : params.split(';')
+        let k = 0
+        while (k < codes.length) {
+          const c = codes[k]
+          if (c === '38' || c === '48') {
+            const mode = codes[k + 1]
+            k += mode === '5' ? 3 : mode === '2' ? 5 : 1
+            continue
+          }
+          if (c === '2') dim = true
+          else if (c === '0' || c === '22' || c === '') dim = false
+          k++
+        }
+      }
+      i = j < n ? j + 1 : n // skip the whole escape sequence
+      continue
+    }
+    if (!dim) out += ch
+    i++
+  }
+  return out
+}
 
 // Persistent Anthropic thinking-block API error. When an assistant turn
 // ends with a 400 about thinking/redacted_thinking blocks that "cannot
@@ -374,7 +439,18 @@ export function detectPaneState(
   // defer rather than pile a second prompt on.
   if (detectsPastePlaceholder(pane)) return 'busy'
 
-  if (!IDLE_FOOTER_RX.test(pane)) return 'unknown'
+  if (!IDLE_FOOTER_RX.test(pane)) {
+    // Footer-less fresh-session / welcome-screen: a PARKED \u276F input box still
+    // means the agent has a delivered message waiting to submit. Classify it
+    // 'typing' (not 'unknown') so the stuck-input recovery stack can see and
+    // resubmit it. An empty box / no box stays 'unknown' -- without a footer
+    // there is nothing to confirm a genuine idle state.
+    const box = liveInputBox(pane)
+    if (box != null && box.split('\n').some(l => PARKED_INPUT_RX.test(l))) {
+      return opts.mergeTypingAsBusy ? 'busy' : 'typing'
+    }
+    return 'unknown'
+  }
 
   if (detectsThinkingBlockError(pane)) return 'error'
 
@@ -437,10 +513,31 @@ export function isReadyForPrompt(pane: string): boolean {
 // Returns null when the pane does not have a live input box (no idle
 // footer, only one separator, etc.) -- callers should treat null as
 // "not enough signal to act, do nothing".
+// Fallback for the fresh-session / welcome-screen layout (Claude Code logo +
+// model line + cwd, NO idle footer): a delivered message can sit parked in the
+// input box before the footer is ever rendered, and the footer-anchored path
+// would miss it entirely (return null -> the whole recovery stack goes blind).
+// Anchor on the LAST TWO box separators (/^\u2500{10,}/) and treat the span
+// between them as the input box ONLY when its first non-empty row starts with
+// the \u276F prompt -- otherwise a pair of scrollback rules would be mis-read.
+function liveInputBoxFooterless(lines: string[]): string | null {
+  const seps: number[] = []
+  for (let i = 0; i < lines.length; i++) {
+    if (BOX_SEP_RX.test(lines[i])) seps.push(i)
+  }
+  if (seps.length < 2) return null
+  const topSep = seps[seps.length - 2]
+  const bottomSep = seps[seps.length - 1]
+  const inner = lines.slice(topSep + 1, bottomSep)
+  const firstNonEmpty = inner.find(l => l.trim().length > 0)
+  if (firstNonEmpty == null || !/^\s*\u276F/.test(firstNonEmpty)) return null
+  return inner.join('\n')
+}
+
 function liveInputBox(pane: string): string | null {
   const lines = pane.split('\n')
   const footerIdx = lines.findIndex(l => IDLE_FOOTER_RX.test(l))
-  if (footerIdx < 0) return null
+  if (footerIdx < 0) return liveInputBoxFooterless(lines)
   let bottomSep = -1
   for (let i = footerIdx - 1; i >= 0; i--) {
     if (BOX_SEP_RX.test(lines[i])) { bottomSep = i; break }
@@ -842,6 +939,41 @@ export function parkedInputText(pane: string): string | null {
   return flat.length > 0 ? flat : null
 }
 
+// How many VISUAL rows the live input box content occupies, ignoring the
+// bare prompt glyph and blank padding. The caller uses this to choose the
+// right submit keystroke: a MULTI-row parked input must NOT be submitted with
+// a bare Enter, because in the Claude TUI a plain Enter on a wrapped /
+// multi-line buffer inserts a newline instead of submitting (see
+// agent-process.ts:833) -- a single-row buffer submits on Enter.
+//
+// Counts the non-empty rows of liveInputBox() after stripping the leading `❯`
+// prompt marker; an empty box (`❯ ` only) or no box at all -> 0. Pure: no
+// tmux, only the captured text.
+export function parkedInputRowCount(pane: string): number {
+  const box = liveInputBox(pane)
+  if (box == null) return 0
+  return box
+    .split('\n')
+    .map((row) => row.replace(/^\s*❯/, '').trim())
+    .filter((row) => row.length > 0).length
+}
+
+// Post-submit verification: did the parked input actually leave the box?
+//
+// `prevSig` is stuckInputSignature(pane) captured BEFORE the submit attempt
+// (the exact text that was parked). `paneAfter` is a fresh capture taken
+// AFTER the submit. Returns true when the submit LANDED -- the same parked
+// signature is no longer 'typing' in the box: it cleared (pane went idle),
+// the agent started processing it (pane went busy), or different text is now
+// parked. Returns false when the IDENTICAL signature is still parked (the
+// Enter was swallowed -> the caller should retry / escalate), or when
+// paneAfter is null (no capture -> cannot confirm, treat as not-landed).
+// Pure: builds on stuckInputSignature() (which gates on detectPaneState).
+export function submitLanded(prevSig: string, paneAfter: string | null): boolean {
+  if (paneAfter == null) return false
+  return stuckInputSignature(paneAfter) !== prevSig
+}
+
 // Per-session bookkeeping for the stuck-input recovery watcher. A "spell"
 // is one continuous stretch of the SAME text parked in the input box.
 export interface StuckInputState {
@@ -947,6 +1079,79 @@ export function decideStuckInputRecovery(
     recover: true,
     next: { parkedSig, firstSeenAt: prev.firstSeenAt, lastRecoverAt: now, attempts: prev.attempts + 1 },
   }
+}
+
+// =============================================================================
+// Submit-action decision (delivery-reliability, BA56A500)
+// =============================================================================
+//
+// Turns the parked-input facts -- built from parkedInputRowCount() and
+// parkedChannelInput() above -- into a recovery MOVE. The decision is the heart
+// of the fix: a plain recovery Enter on a MULTI-ROW parked message inserts a
+// newline rather than submitting (corrupt), so multi-row must never bare-Enter;
+// and the chat_id truncation-guard (no verbatim re-inject of an incomplete
+// <channel> block) is preserved. The caller verifies the move landed with
+// submitLanded() and escalates within the attempts budget if it did not.
+
+/** A concrete recovery move for the stuck-input watcher. */
+export type StuckInputAction =
+  | 'reinject-block'   // clear + verbatim re-inject the COMPLETE <channel> block (chat_id-safe)
+  | 'reinject-plain'   // clear + re-inject collapsed parked text (sub-agents only)
+  | 'clear-preamble'   // clear a truncated/stale safety preamble, never re-inject
+  | 'enter'            // a single bare Enter -- ONLY safe at rowCount <= 1
+  | 'hold'             // do nothing this tick (multi-row truncated / truncation-guard)
+
+export interface StuckInputActionFacts {
+  /** attempt > MAIN_STUCK_ENTER_ATTEMPTS -- past the Enter-first budget. */
+  escalate: boolean
+  /** parkedInputRowCount(pane) -- >1 forbids a bare Enter. */
+  rowCount: number
+  /** A complete <channel> block is parked: chat_id-safe verbatim re-inject. */
+  blockComplete: boolean
+  /** A <channel> block is parked but truncated: chat_id unrecoverable, MUST
+   * NOT re-inject (wrong chat_id) and MUST NOT corrupt via a multi-row Enter. */
+  blockTruncated: boolean
+  /** shouldClearTruncatedPreamble(pane): a stale safety preamble to clear. */
+  truncatedPreamble: boolean
+  /** Sub-agent session: re-injecting collapsed parked text is safe (no human draft). */
+  allowPlainReinject: boolean
+  /** parkedInputText(pane) != null -- there is collapsed text to re-inject. */
+  hasPlainText: boolean
+}
+
+/**
+ * Pure decision: given the parked-input facts, what recovery move to make.
+ * Dependency-free so it is unit-testable without tmux.
+ *
+ * Invariants (the fix):
+ *   - NEVER bare-Enter a multi-row box (rowCount > 1) -- it inserts a newline
+ *     and corrupts the message. Multi-row escalates straight to a re-inject
+ *     (when one is safe) or holds.
+ *   - A complete <channel> block is the safest move (chat_id-safe re-inject);
+ *     prefer it as soon as we escalate, and immediately when multi-row.
+ *   - A TRUNCATED <channel> block (chat_id unrecoverable) must not be
+ *     re-injected; multi-row truncated holds (awaiting the keystroke fix),
+ *     single-row keeps the harmless legacy Enter.
+ *   - Otherwise a bare Enter is the swallowed-Enter remedy, but only single-row.
+ */
+export function decideStuckInputAction(f: StuckInputActionFacts): StuckInputAction {
+  const multiRow = f.rowCount > 1
+  // Complete channel block: chat_id-safe verbatim re-inject. Multi-row is itself
+  // a reason to escalate now (a plain Enter would corrupt it).
+  if (f.blockComplete) {
+    return f.escalate || multiRow ? 'reinject-block' : 'enter'
+  }
+  // Sub-agent non-channel parked text: clear + re-inject is safe (no human draft).
+  if (f.allowPlainReinject && f.hasPlainText && !f.blockTruncated) {
+    return f.escalate || multiRow ? 'reinject-plain' : 'enter'
+  }
+  // Truncated safety preamble: clear only (never re-inject a stale preamble).
+  if (f.truncatedPreamble && f.escalate) return 'clear-preamble'
+  // Truncated <channel> block: hold a multi-row (Enter would corrupt; re-inject
+  // would answer the wrong chat_id), keep the harmless legacy Enter single-row.
+  if (f.blockTruncated) return multiRow ? 'hold' : 'enter'
+  // Default swallowed-Enter remedy -- never on multi-row.
+  return multiRow ? 'hold' : 'enter'
 }
 
 // =============================================================================

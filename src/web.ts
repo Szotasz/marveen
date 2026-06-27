@@ -8,7 +8,7 @@ import { isBlockedCrossOriginWrite } from './web/csrf-origin.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureDefaultScheduledTasks } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureAgentStalenessHook, ensureDefaultScheduledTasks } from './web/agent-scaffold.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
 import { startUpdateChecker } from './web/update-checker.js'
@@ -220,7 +220,9 @@ export function startWebServer(port = 3420): http.Server {
                 try { process.kill(pid, 'SIGKILL') } catch { /* gone */ }
               } catch { /* gone */ }
             }
-            server.listen(port)
+            server.listen(port, WEB_HOST, () => {
+              logger.info({ port }, `Web dashboard: re-listen bound after port reclaim`)
+            })
           }, 1500)
         } else {
           logger.error({ port }, 'Port foglalt de nem talaltunk felszabadithato node processt -- kilepes')
@@ -245,6 +247,32 @@ export function startWebServer(port = 3420): http.Server {
       `\nDashboard access URL (paste into browser, token is stored afterward):\n  ${bootstrapUrl}\n\n`
     )
   })
+
+  // Self-heal a SILENT listener failure. Under launchd, a `kickstart -k` can
+  // race the dying predecessor's lingering socket: the EADDRINUSE reclaim +
+  // re-listen path can leave this process ALIVE but not actually listening, with
+  // no error (observed 2026-06-27 -- the success log above fired yet nothing was
+  // bound, and the background loops started below kept running, so the dashboard
+  // was deaf until a manual restart, which bound cleanly). A clean restart binds
+  // reliably, so if the listener is not up we exit(1) and let launchd restart us
+  // fresh rather than linger un-servable.
+  //
+  // The grace must comfortably exceed a SLOW-but-valid bind: restarting OVER a
+  // wedged predecessor, the EADDRINUSE reclaim retries every ~1500ms until the
+  // old socket finally releases -- observed up to ~5 MINUTES (2026-06-27). An
+  // 8s grace would exit MID-bind and loop, so wait STARTUP_GRACE first. After
+  // that, poll periodically so a mid-life listener drop is caught too, not just
+  // a startup failure.
+  const STARTUP_GRACE_MS = 7 * 60 * 1000
+  const RELISTEN_POLL_MS = 60 * 1000
+  setTimeout(() => {
+    setInterval(() => {
+      if (!server.listening) {
+        logger.error({ port }, 'Web server not listening -- exiting(1) for a clean launchd restart')
+        process.exit(1)
+      }
+    }, RELISTEN_POLL_MS).unref()
+  }, STARTUP_GRACE_MS).unref()
 
   const routerInterval = startMessageRouter()
   logger.info('Agent message router started (5s poll)')
@@ -325,10 +353,13 @@ export function startWebServer(port = 3420): http.Server {
   // agent already has its own hooks block.
   try {
     const patched: string[] = []
+    const stalePatched: string[] = []
     for (const agentName of listAgentNames()) {
       if (ensureAgentHooks(agentName)) patched.push(agentName)
+      if (ensureAgentStalenessHook(agentName)) stalePatched.push(agentName)
     }
     if (patched.length) logger.info({ patched }, 'PreCompact hook backfilled into agent settings.json')
+    if (stalePatched.length) logger.info({ patched: stalePatched }, 'staleness-guard UserPromptSubmit hook backfilled into agent settings.json')
   } catch (err) {
     logger.warn({ err }, 'Agent hook backfill skipped')
   }

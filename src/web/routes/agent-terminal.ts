@@ -120,6 +120,26 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
   const keysMatch = path.match(/^\/api\/agents\/([^/]+)\/keys$/)
   if (keysMatch && method === 'POST') {
     const name = decodeURIComponent(keysMatch[1])
+    // SECURITY (2026-06-26): this raw keystroke-injection endpoint -- the
+    // dashboard live-terminal write path (#275) -- let anyone holding the
+    // dashboard token type arbitrary input into ANY agent's tmux pane, and it
+    // never logged successful calls, so an injection left no trace. That makes
+    // it a prime (and unlogged) vector for the forged-"Szabi" prompt injections
+    // seen in the 2026-06-26 incident. Disabled by default; set
+    // DASHBOARD_ALLOW_KEY_INJECTION=1 to re-enable for manual debugging. Blocked
+    // attempts are logged with remote/UA for tracing. Legit inter-agent
+    // delivery is unaffected: it uses the message-router's own send-keys path,
+    // not this HTTP endpoint.
+    if (process.env.DASHBOARD_ALLOW_KEY_INJECTION !== '1') {
+      logger.warn({
+        name,
+        remote: ctx.req.socket?.remoteAddress ?? 'unknown',
+        xff: ctx.req.headers['x-forwarded-for'] ?? '',
+        ua: ctx.req.headers['user-agent'] ?? '',
+      }, 'agent-terminal: KEYS INJECTION BLOCKED (endpoint disabled)')
+      json(res, { error: 'Keystroke injection endpoint disabled' }, 403)
+      return true
+    }
     const target = resolveTarget(name)
     if (!target.exists) { json(res, { error: 'Agent not found' }, 404); return true }
     if (!target.running) { json(res, { error: 'Agent is not running' }, 400); return true }

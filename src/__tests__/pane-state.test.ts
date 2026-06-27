@@ -13,6 +13,8 @@ import {
   decideStuckInputRecovery,
   parkedChannelInput,
   parkedInputText,
+  parkedInputRowCount,
+  submitLanded,
 } from '../pane-state.js'
 
 // Realistic pane fixtures modelled on actual `tmux capture-pane -p`
@@ -1819,5 +1821,130 @@ describe('detectsPastePlaceholder', () => {
       '  paste again to expand',
     ].join('\n')
     expect(detectsPastePlaceholder(stubInBox)).toBe(true)
+  })
+})
+
+describe('parkedInputRowCount', () => {
+  it('returns 0 for an empty input box (bare prompt)', () => {
+    expect(parkedInputRowCount(IDLE_BYPASS)).toBe(0)
+    expect(parkedInputRowCount(BUSY_FULL_FOOTER)).toBe(0)
+  })
+
+  it('returns 0 when there is no input box at all', () => {
+    expect(parkedInputRowCount('just scrollback text\nno separators here')).toBe(0)
+  })
+
+  it('returns 1 for a single-row parked input', () => {
+    expect(parkedInputRowCount(TYPING_PARKED)).toBe(1)
+    expect(parkedInputRowCount(PENDING_PASTE)).toBe(1)
+  })
+
+  it('counts every visual row of a wrapped multi-row parked input', () => {
+    // A wrapped message occupying 3 box-interior rows; a bare Enter here would
+    // insert a newline instead of submitting.
+    const multiRow = [
+      '',
+      SEP,
+      '❯ first line of a long parked message that wraps across',
+      '  several visual rows inside the input box and would not',
+      '  submit on a bare Enter',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(parkedInputRowCount(multiRow)).toBe(3)
+  })
+})
+
+describe('submitLanded', () => {
+  // The exact text parked before the submit attempt.
+  const parkedSig = stuckInputSignature(TYPING_PARKED) as string
+
+  it('captures a non-empty signature from the parked fixture', () => {
+    expect(parkedSig).toBeTruthy()
+  })
+
+  it('is false when the identical signature is still parked', () => {
+    expect(submitLanded(parkedSig, TYPING_PARKED)).toBe(false)
+  })
+
+  it('is true when the box cleared (pane went idle)', () => {
+    expect(submitLanded(parkedSig, IDLE_BYPASS)).toBe(true)
+  })
+
+  it('is true when the agent started processing (pane went busy)', () => {
+    expect(submitLanded(parkedSig, BUSY_FULL_FOOTER)).toBe(true)
+  })
+
+  it('is true when different text is now parked', () => {
+    expect(submitLanded(parkedSig, PENDING_PASTE)).toBe(true)
+  })
+
+  it('is false when there is no after-capture (null)', () => {
+    expect(submitLanded(parkedSig, null)).toBe(false)
+  })
+})
+
+// Fresh-session / welcome-screen layout (Claude Code logo + model line + cwd,
+// the input box framed by two ──── rules, ❯ prefix, NO footer). Modelled on a
+// real captured stuck pane (store/qwen-welcome-stuck-fixture.txt) where a
+// delivered multi-row message parked before any footer rendered, and the whole
+// recovery stack went blind (liveInputBox null -> detectPaneState 'unknown').
+const WELCOME_STUCK = [
+  '',
+  ' ▐▛███▜▌   Claude Code v2.1.170',
+  '▝▜█████▛▘  qwen3.6:27b-192k with high effort · API Usage Billing',
+  '  ▘▘ ▝▝    ~/ClaudeClaw/agents/qwen',
+  '',
+  '',
+  SEP,
+  '❯ kepet: /Users/marvin/workspace/aahe486-screenshot.png',
+  '  Olvasd be a Read tool-lal a kepfajlt, majd mondd meg: (1) mi ez az',
+  '  alkalmazas, (2) a tablazat konkret ertekei. Roviden a vegeredmenyt.',
+  '  </trusted-peer>',
+  SEP,
+  '',
+].join('\n')
+
+describe('footer-less welcome-screen parked input', () => {
+  it('classifies the parked box as typing (not unknown)', () => {
+    expect(detectPaneState(WELCOME_STUCK)).toBe('typing')
+  })
+
+  it('mergeTypingAsBusy folds the footer-less parked box into busy', () => {
+    expect(detectPaneState(WELCOME_STUCK, { mergeTypingAsBusy: true })).toBe('busy')
+  })
+
+  it('stuckInputSignature recovers a non-null signature', () => {
+    const sig = stuckInputSignature(WELCOME_STUCK)
+    expect(sig).not.toBeNull()
+    expect(sig).toContain('kepet')
+  })
+
+  it('parkedInputText returns the collapsed multi-row message (not empty)', () => {
+    const t = parkedInputText(WELCOME_STUCK)
+    expect(t).not.toBeNull()
+    expect(t).not.toBe('')
+    expect(t).toContain('Olvasd be')
+  })
+
+  it('parkedInputRowCount counts every wrapped row (> 1 on a real wedge)', () => {
+    expect(parkedInputRowCount(WELCOME_STUCK)).toBe(4)
+    expect(parkedInputRowCount(WELCOME_STUCK)).toBeGreaterThan(1)
+  })
+
+  it('submitLanded fires once the welcome wedge clears to an idle pane', () => {
+    // Full P1 -> P2 chain on the real wedge: detection sees the footer-less
+    // parked box (sig != null), and after the message submits the pane is no
+    // longer that signature -> submitLanded true. This is what tells the
+    // recovery ladder the resubmit actually landed.
+    const sig = stuckInputSignature(WELCOME_STUCK)
+    expect(sig).not.toBeNull()
+    expect(submitLanded(sig as string, IDLE_BYPASS)).toBe(true)
+  })
+
+  it('does NOT mistake a scrollback ──── pair without a ❯ box for input', () => {
+    const noBox = ['some scrollback line', SEP, 'plain text, no prompt glyph', SEP, ''].join('\n')
+    expect(detectPaneState(noBox)).toBe('unknown')
+    expect(parkedInputRowCount(noBox)).toBe(0)
   })
 })
