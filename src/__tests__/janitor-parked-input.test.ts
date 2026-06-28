@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { detectPaneState, parkedInputText } from '../pane-state.js'
+import { parkedClearLevel } from '../web/agent-process.js'
 
 // The stale-parked-input janitor (clearStaleParkedInput in agent-process.ts,
 // gated by the message-router) clears a stranded input box ONLY when the pane
@@ -42,5 +43,25 @@ describe('stale-parked-input janitor safety contract', () => {
   it('treats a clean empty prompt as idle (nothing to clear)', () => {
     expect(detectPaneState(IDLE_EMPTY)).toBe('idle')
     expect(parkedInputText(IDLE_EMPTY)).toBeNull()
+  })
+})
+
+// A box that resists the gentle Ctrl-U / C-a-C-k clear must not back off forever
+// (the channel then stays silently wedged). After enough consecutive failed
+// windows the un-wedge escalates to the HARD clear (Escape + Backspace burst).
+describe('parked-input clear escalation', () => {
+  it('uses the gentle clear for the first windows', () => {
+    expect(parkedClearLevel(0)).toBe('normal')
+    expect(parkedClearLevel(1)).toBe('normal')
+  })
+
+  it('escalates to hard clear once the box has resisted enough windows', () => {
+    expect(parkedClearLevel(2)).toBe('hard')
+    expect(parkedClearLevel(5)).toBe('hard')
+  })
+
+  it('honours a custom hardAfter threshold', () => {
+    expect(parkedClearLevel(2, 3)).toBe('normal')
+    expect(parkedClearLevel(3, 3)).toBe('hard')
   })
 })

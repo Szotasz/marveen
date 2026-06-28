@@ -1217,6 +1217,28 @@ const PARKED_STABLE_CONFIRM_S = '2'
 const PARKED_CLEAR_SETTLE_S = '0.3'
 // Bound the Ctrl-U presses for a (possibly multi-line) stale parked input.
 const PARKED_CLEAR_MAX = 3
+// After the normal clear (Ctrl-U, then C-a/C-k) has failed to empty the box for
+// this many consecutive un-wedge windows, escalate to a HARD clear: Escape (the
+// Claude TUI wipes the input line on an idle prompt) plus one sized Backspace
+// burst. A box that resisted Ctrl-U used to back off forever and keep the
+// channel silently wedged; this is the last-resort un-wedge it lacked.
+const PARKED_HARD_CLEAR_AFTER_FAILS = 2
+
+/**
+ * Pure decision: given how many consecutive windows the normal clear has failed
+ * for the SAME parked text, which clear strength should this attempt use?
+ *
+ * 'normal' = Ctrl-U + C-a/C-k only (gentle, the default for the first windows).
+ * 'hard'   = additionally Escape + a sized Backspace burst, once the box has
+ *            proven stubborn. Escape/backspace only ever run in the idle
+ *            'typing' state, so they can never interrupt a real turn.
+ */
+export function parkedClearLevel(
+  consecutiveFails: number,
+  hardAfter: number = PARKED_HARD_CLEAR_AFTER_FAILS,
+): 'normal' | 'hard' {
+  return consecutiveFails >= hardAfter ? 'hard' : 'normal'
+}
 // A parked input that resists clearing must NOT be retried on every router tick:
 // each attempt blocks the event loop for ~PARKED_STABLE_CONFIRM_S on the settle
 // sleep, so a permanently-stuck box would pin the loop, stall the HTTP server
@@ -1281,11 +1303,41 @@ export function clearStaleParkedInput(session: string, host: string | null = nul
   // Verify the box is ACTUALLY empty before claiming success: only then is the
   // pending message safe to deliver next tick. Otherwise record the failure so
   // the cooldown guard above backs us off instead of hammering every tick.
-  const final = capturePane(session, host)
-  const stillStuck = final != null && detectPaneState(final) === 'typing' && parkedInputText(final) === parked
-  unwedgeAttempts.set(key, { last: nowMs, sig: parked, fails: stillStuck ? ((prev && prev.sig === parked ? prev.fails : 0) + 1) : 0 })
+  let final = capturePane(session, host)
+  let stillStuck = final != null && detectPaneState(final) === 'typing' && parkedInputText(final) === parked
+
+  // HARD-clear escalation: a box that resisted the normal Ctrl-U / C-a-C-k clear
+  // for several consecutive windows is force-cleared with Escape (TUI input-line
+  // wipe on an idle prompt) and a single sized Backspace burst. The burst is one
+  // tmux `-N` call (NOT a per-key loop), and the whole function stays behind the
+  // UNWEDGE_COOLDOWN_MS guard, so this can run at most once per 30s per text and
+  // can never pin the event loop -- the dashboard crash-loop stays impossible.
+  // Still gated on the idle 'typing' state, so it never interrupts a live turn.
+  const priorFails = prev && prev.sig === parked ? prev.fails : 0
+  if (stillStuck && parkedClearLevel(priorFails + 1) === 'hard') {
+    runTmux(host, ['send-keys', '-t', session, 'Escape'], { timeout: 5000 })
+    try { execFileSync('/bin/sleep', [PARKED_CLEAR_SETTLE_S], { timeout: 2000 }) } catch { /* best effort */ }
+    const h = capturePane(session, host)
+    if (h != null && detectPaneState(h) === 'typing' && parkedInputText(h) === parked) {
+      runTmux(host, ['send-keys', '-t', session, 'C-e'], { timeout: 5000 })
+      const burst = Math.min(parked.length + 16, 500)
+      runTmux(host, ['send-keys', '-t', session, '-N', String(burst), 'BSpace'], { timeout: 5000 })
+      try { execFileSync('/bin/sleep', [PARKED_CLEAR_SETTLE_S], { timeout: 2000 }) } catch { /* best effort */ }
+    }
+    final = capturePane(session, host)
+    stillStuck = final != null && detectPaneState(final) === 'typing' && parkedInputText(final) === parked
+  }
+
+  const fails = stillStuck ? priorFails + 1 : 0
+  unwedgeAttempts.set(key, { last: nowMs, sig: parked, fails })
   if (stillStuck) {
-    logger.warn({ session, parked: parked.slice(0, 60), fails: unwedgeAttempts.get(key)!.fails }, 'message-router: parked input resisted clearing, backing off')
+    const hard = parkedClearLevel(priorFails + 1) === 'hard'
+    logger.warn(
+      { session, parked: parked.slice(0, 60), fails, hardClear: hard },
+      hard
+        ? 'message-router: parked input resisted even hard clear, backing off'
+        : 'message-router: parked input resisted clearing, backing off',
+    )
     return false
   }
   logger.warn({ session, parked: parked.slice(0, 60) }, 'message-router: cleared stale parked input (channel un-wedge)')
