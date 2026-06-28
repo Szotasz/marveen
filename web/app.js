@@ -2654,6 +2654,7 @@ async function openAgentDetail(agentName) {
   )
   renderTeamEditor(currentAgent, agents)
   updateAuthModeUI(currentAgent.authMode || 'shared', currentAgent.hasApiKey || false)
+  loadVoiceConfig(currentAgent.name)
   document.getElementById('editClaudeMd').value = currentAgent.claudeMd || currentAgent.content || ''
   document.getElementById('editSoulMd').value = currentAgent.soulMd || ''
   document.getElementById('editMcpJson').value = currentAgent.mcpJson || ''
@@ -3292,6 +3293,126 @@ document.getElementById('saveAutoRestartBtn').addEventListener('click', async ()
     if (currentAgent) currentAgent.autoRestart = body.autoRestart
     showToast(t('agents.toast.auto_restart_saved'))
   } catch { showToast(t('common.error_save')) }
+})
+
+// ---- voice config UI -------------------------------------------------------
+
+async function loadVoiceConfig(agentName) {
+  const voiceModelSel = document.getElementById('editAgentVoiceModel')
+  if (!voiceModelSel) return
+  const banner = document.getElementById('voiceNotInstalledBanner')
+  const controls = document.getElementById('voiceInstalledControls')
+  try {
+    // Check toolkit installation first
+    const statusR = await fetch('/api/voice/status')
+    if (!statusR.ok) return
+    const status = await statusR.json()
+
+    if (!status.installed) {
+      if (banner) banner.hidden = false
+      if (controls) controls.hidden = true
+      return
+    }
+    if (banner) banner.hidden = true
+    if (controls) controls.hidden = false
+
+    const r = await fetch(`/api/agents/${encodeURIComponent(agentName)}/voice-config`)
+    if (!r.ok) return
+    const cfg = await r.json()
+    voiceModelSel.innerHTML = (cfg.availableVoices || []).map(v =>
+      `<option value="${v}"${v === cfg.voiceModel ? ' selected' : ''}>${v}</option>`
+    ).join('')
+    const modeInput = document.querySelector(`input[name="voiceResponseMode"][value="${cfg.responseMode || 'text'}"]`)
+    if (modeInput) modeInput.checked = true
+  } catch { /* silent */ }
+}
+
+let _voiceInstallPollTimer = null
+
+document.getElementById('voiceInstallBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('voiceInstallBtn')
+  const sudoHint = document.getElementById('voiceInstallSudoHint')
+  const progress = document.getElementById('voiceInstallProgress')
+
+  if (sudoHint) sudoHint.hidden = true
+  btn.disabled = true
+  btn.textContent = 'Indítás...'
+
+  try {
+    const r = await fetch('/api/voice/install', { method: 'POST' })
+    if (!r.ok) throw new Error(await r.text())
+    const data = await r.json()
+
+    if (data.needsSudo) {
+      // Show sudo command -- user must run it then click again
+      if (sudoHint) {
+        sudoHint.hidden = false
+        sudoHint.innerHTML = 'A rendszercsomagok telepítéséhez futtasd terminálon:<br><code style="display:block;margin-top:4px;word-break:break-all">' + escapeHtml(data.sudoCommand) + '</code><br>Ezután kattints újra a Telepítés gombra.'
+      }
+      btn.disabled = false
+      btn.textContent = 'Telepítés'
+      return
+    }
+
+    if (data.alreadyInstalled) {
+      if (currentAgent) loadVoiceConfig(currentAgent.name)
+      return
+    }
+
+    // Install started -- poll /api/voice/status until installed=true.
+    // Max 4 minutes (80 × 3s); on timeout show a hint and re-enable the button
+    // so the user can retry (the only failure signal from a fire-and-forget spawn).
+    if (progress) progress.hidden = false
+    btn.textContent = 'Telepítés...'
+    clearInterval(_voiceInstallPollTimer)
+    let _voiceInstallPollCount = 0
+    const VOICE_INSTALL_MAX_POLLS = 80 // 80 × 3s = 4 min
+    _voiceInstallPollTimer = setInterval(async () => {
+      _voiceInstallPollCount++
+      try {
+        const sr = await fetch('/api/voice/status')
+        const s = await sr.json()
+        if (s.installed) {
+          clearInterval(_voiceInstallPollTimer)
+          _voiceInstallPollTimer = null
+          if (progress) progress.hidden = true
+          if (currentAgent) loadVoiceConfig(currentAgent.name)
+          return
+        }
+      } catch { /* keep polling */ }
+      if (_voiceInstallPollCount >= VOICE_INSTALL_MAX_POLLS) {
+        clearInterval(_voiceInstallPollTimer)
+        _voiceInstallPollTimer = null
+        if (progress) progress.hidden = true
+        if (sudoHint) {
+          sudoHint.hidden = false
+          sudoHint.textContent = 'A telepítés tovább tart vagy elakadt. Ellenőrizd a dashboard logjait, majd próbáld újra.'
+        }
+        btn.disabled = false
+        btn.textContent = 'Újrapróbálás'
+      }
+    }, 3000)
+  } catch {
+    btn.disabled = false
+    btn.textContent = 'Telepítés'
+    showToast('Hiba a telepítés során')
+  }
+})
+
+document.getElementById('saveVoiceConfigBtn').addEventListener('click', async () => {
+  if (!currentAgent) return
+  const modeEl = document.querySelector('input[name="voiceResponseMode"]:checked')
+  const modelEl = document.getElementById('editAgentVoiceModel')
+  if (!modeEl || !modelEl) return
+  try {
+    const r = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/voice-config`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ responseMode: modeEl.value, voiceModel: modelEl.value }),
+    })
+    if (!r.ok) throw new Error()
+    showToast('Hangbeállítás mentve')
+  } catch { showToast('Hiba a mentés során') }
 })
 
 document.getElementById('saveProfileBtn').addEventListener('click', async () => {

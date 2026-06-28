@@ -62,6 +62,11 @@ DREAM.md
 .external-ops-last-run
 REBUILD_PROMPT_V3.1.md
 
+# Main agent's runtime voice config (responseMode/voiceModel). Sub-agents store
+# theirs under agents/ (already ignored); the main agent's lives at the repo root
+# and is per-install runtime state, never source.
+/agent-config.json
+
 # Operator's branded support auto-reply. The shipped support-mail tooling is a
 # generic IMAP/SMTP CLI (no operator data); each operator keeps their own
 # branded auto-reply here locally. Ignored so it never ships to other installs.

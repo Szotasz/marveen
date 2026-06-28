@@ -1,5 +1,6 @@
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID } from '../config.js'
+import { MAIN_AGENT_ID, STORE_DIR, WEB_PORT } from '../config.js'
+import { resolveAgentChannelStateDir } from './voice-directive.js'
 import {
   getPendingMessages,
   markMessageDelivered,
@@ -16,7 +17,7 @@ import {
 } from '../prompt-safety.js'
 import { isTrustedPeer } from '../team-trust.js'
 import { COORDINATOR_AGENT_ID } from '../channel-coordinator/ingest.js'
-import { isKnownAgent, readAgentRemoteHost } from './agent-config.js'
+import { isKnownAgent, readAgentRemoteHost, readAgentVoiceConfig } from './agent-config.js'
 import { readAgentTeam } from './agent-team.js'
 import {
   agentSessionName,
@@ -26,6 +27,7 @@ import {
   sessionExistsOnHost,
 } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
+import { setLastInboundModality } from './voice-modality.js'
 
 // Channel-coordinator sources whose messages are real inbound user messages
 // (relayed during a native-channel disconnect window), NOT inter-agent data.
@@ -74,8 +76,15 @@ export function shouldAbandon(sessionExists: boolean, ageMs: number, windowMs: n
 
 // Checks for pending messages every 5 seconds and injects them into target
 // agent tmux sessions.
+let _tickRunning = false
+
 export function startMessageRouter(): NodeJS.Timeout {
-  return setInterval(() => {
+  return setInterval(async () => {
+    // Re-entrancy guard: STT can hold a tick for up to 65s; skip new ticks
+    // while the previous one is still in flight to prevent double-delivery.
+    if (_tickRunning) return
+    _tickRunning = true
+    try {
     const pending = getPendingMessages()
     const now = Date.now()
     for (const msg of pending) {
@@ -160,13 +169,43 @@ export function startMessageRouter(): NodeJS.Timeout {
         readAgentTeam,
       })
 
+      // Voice auto-mode: if this is a channel-inbound voice message, run STT
+      // and update the last-inbound-modality flag. The decision (STT or not)
+      // lives HERE so both the inbound transcript injection and the modality
+      // flag are set in one place, with full knowledge of agent-id + chat-id.
+      let deliveryContent = msg.content
+      if (isChannelInbound) {
+        const voiceFileId = extractVoiceFileId(msg.content)
+        const chatId = extractChatId(msg.content)
+        const voiceCfg = readAgentVoiceConfig(msg.to_agent)
+        if (voiceFileId && chatId) {
+          // Always record modality so auto-mode TTS can fire on reply.
+          setLastInboundModality(msg.to_agent, chatId, 'voice')
+          if (voiceCfg.responseMode !== 'text') {
+            // Attempt STT; on failure fall through to raw voice block.
+            const transcript = await callVoiceSTT(voiceFileId, msg.to_agent)
+            if (transcript) {
+              deliveryContent = injectTranscript(msg.content, transcript)
+              logger.info({ id: msg.id, agent: msg.to_agent }, 'message-router: voice STT applied')
+              // TTS directive is injected by the UserPromptSubmit hook (voice-reply-directive.py)
+              // which fires on every delivery path, not just coordinator-relay.
+            } else {
+              logger.warn({ id: msg.id, agent: msg.to_agent }, 'message-router: STT failed, delivering raw voice block')
+            }
+          }
+        } else if (chatId) {
+          // Text message: record modality so a previous voice flag is cleared.
+          setLastInboundModality(msg.to_agent, chatId, 'text')
+        }
+      }
+
       try {
         let prefix: string
         let wrapped: string
         if (isChannelInbound) {
           // No "[Uzenet @...]" agent-DM line: the <channel> block IS the
           // message, framed exactly like the native plugin's inbound.
-          wrapped = wrapChannelInbound(msg.content)
+          wrapped = wrapChannelInbound(deliveryContent)
           prefix = `${CHANNEL_INBOUND_PREAMBLE}\n`
         } else if (trusted) {
           wrapped = wrapTrustedPeer(`agent:${safeFromAgent}`, msg.content)
@@ -191,5 +230,73 @@ export function startMessageRouter(): NodeJS.Timeout {
         routerLoggedMisses.delete(msg.id)
       }
     }
+    } finally {
+      _tickRunning = false
+    }
   }, 5000)
 }
+
+// ---- voice helpers (message-router level) ----------------------------------
+
+// Extract attachment_file_id from a <channel ... attachment_kind="voice" attachment_file_id="..."> block.
+function extractVoiceFileId(content: string): string | null {
+  if (!content.includes('attachment_kind="voice"')) return null
+  const m = content.match(/attachment_file_id="([^"]+)"/)
+  return m ? m[1] : null
+}
+
+// Extract chat_id from a <channel chat_id="..."> block.
+function extractChatId(content: string): string | null {
+  const m = content.match(/chat_id="([^"]+)"/)
+  return m ? m[1] : null
+}
+
+// Replace the voice attachment block with a transcript prefix.
+// Removes attachment_kind and attachment_file_id attributes; prepends [Hang átirat]:.
+function injectTranscript(content: string, transcript: string): string {
+  // Strip the attachment attributes from the opening tag
+  let result = content
+    .replace(/\s*attachment_kind="voice"/, '')
+    .replace(/\s*attachment_file_id="[^"]*"/, '')
+  // Replace the body with the transcript unconditionally (handles empty, "(empty message)", and caption).
+  // Replacer function avoids $1/$& special-pattern interpretation in the transcript string.
+  result = result.replace(
+    /(<channel[^>]*>)[\s\S]*?(<\/channel>)/,
+    (_m, open: string, close: string) => `${open}\n[Hang átirat]: ${transcript}\n${close}`,
+  )
+  return result
+}
+
+// Call the dashboard /api/voice/stt endpoint (localhost, same process).
+// Returns the transcript string on success, null on failure.
+async function callVoiceSTT(fileId: string, agentId: string): Promise<string | null> {
+  try {
+    const { readFileSync, existsSync } = await import('node:fs')
+    const { join } = await import('node:path')
+
+    // Resolve the agent's channel state_dir using the canonical helper so
+    // sub-agents (whose .env lives under AGENTS_BASE_DIR) are found correctly.
+    const resolvedDir = resolveAgentChannelStateDir(agentId, 'telegram')
+
+    if (!existsSync(join(resolvedDir, '.env'))) return null
+
+    const tokenPath = join(STORE_DIR, '.dashboard-token')
+    if (!existsSync(tokenPath)) return null
+    const dashToken = readFileSync(tokenPath, 'utf-8').trim()
+
+    const body = JSON.stringify({ file_id: fileId, state_dir: resolvedDir })
+    const resp = await fetch(`http://127.0.0.1:${WEB_PORT}/api/voice/stt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${dashToken}` },
+      body,
+      signal: AbortSignal.timeout(65_000),
+    })
+    if (!resp.ok) return null
+    const data = await resp.json() as { transcript?: string }
+    return data.transcript ?? null
+  } catch (err) {
+    logger.warn({ err }, 'message-router: callVoiceSTT error')
+    return null
+  }
+}
+

@@ -16,6 +16,7 @@ Minden lap két szemszögből mutatja be a funkciót:
 | [Ügynök-flotta + inter-agent kommunikáció](agent-fleet.md) | Több specializált ügynök közös üzenetsoron keresztül |
 | [Skill-factory (öntanulás)](skill-factory.md) | Visszatérő munkafolyamatokból újrahasznosítható skill-ek |
 | [Channels (Telegram / Slack)](channels.md) | Natív üzenetküldő-integráció proaktív értesítésekkel |
+| [Hangüzenetek (voice)](voice.md) | Per-agent STT+TTS: helyben futó hang oda-vissza Telegramon, ügynökönként állítható móddal |
 | [Printing-press CLI-k](printing-press-cli.md) | API nélküli oldalakhoz is agent-natív CLI generálás |
 | [Skool CLI](skool-cli.md) | Közösségi platform kezelése parancssorból (API nélkül) |
 | [connectors.hu](connectors-hu.md) | Üzleti API-átjáró (NAV, Billingo, Wise, fal.ai) MCP-n |

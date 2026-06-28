@@ -35,6 +35,11 @@
             "type": "command",
             "command": "python3 {{PROJECT_ROOT}}/scripts/hooks/staleness-guard.py",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 {{PROJECT_ROOT}}/scripts/hooks/voice-reply-directive.py",
+            "timeout": 60
           }
         ]
       }

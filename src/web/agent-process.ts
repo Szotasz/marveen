@@ -402,7 +402,15 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // opts.fresh forces a brand-new conversation (auto-restart 'fresh' mode):
     // omit --continue so the heavy accumulated context is dropped. Without it
     // we resume the prior session (the 'continue' mode / normal restart).
-    const continueFlag = (hasPriorSession && !opts.fresh) ? '--continue ' : ''
+    //
+    // CC 2.1.193 REGRESSION: a `--continue` resume does NOT re-initialise the
+    // `--channels` plugin MCP server -- the agent comes up with the plugin
+    // absent from /mcp, no bun poller, no bot.pid -> permanently deaf on its
+    // channel. A FRESH launch loads the plugin correctly. So channel-having
+    // agents are ALWAYS launched fresh: the lost conversation context is the
+    // price of a reachable bot (file/db memory persists either way). Channel-
+    // less agents keep --continue to preserve their accumulated context.
+    const continueFlag = (hasPriorSession && !opts.fresh && !hasChannel) ? '--continue ' : ''
     const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : agentProvider === 'discord' ? 'DISCORD_STATE_DIR' : agentProvider === 'googlechat' ? 'GOOGLECHAT_STATE_DIR' : 'TELEGRAM_STATE_DIR'
     const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN'
     // Slack plugin is third-party; its "not on approved allowlist" check is

@@ -1855,6 +1855,33 @@
             </div>
             <button class="btn-secondary btn-compact agent-save-section" id="saveAuthModeBtn" style="margin-top:12px" data-i18n="common.btn.save">Mentés</button>
           </div>
+          <div class="form-group" id="voiceConfigGroup">
+            <label>Válaszmód (hang/szöveg)</label>
+            <!-- shown when toolkit is NOT installed -->
+            <div id="voiceNotInstalledBanner" hidden>
+              <p style="margin:8px 0;font-size:13px;color:var(--text-muted);line-height:1.5">A hang funkciók használatához először telepíteni kell a hang-toolkitet, ami a Whisper (beszédfelismerés) és a Piper (beszédszintézis) könyvtárakat tartalmazza.</p>
+              <div id="voiceInstallSudoHint" hidden style="margin:8px 0;padding:8px;background:var(--bg-secondary,#1e1e2e);border-radius:6px;font-size:12px;line-height:1.6"></div>
+              <div id="voiceInstallProgress" hidden style="margin:8px 0;font-size:13px;color:var(--text-muted)"><span class="spinner" style="width:14px;height:14px;display:inline-block;vertical-align:middle;margin-right:6px"></span>Telepítés folyamatban, ez eltarthat pár percig...</div>
+              <button class="btn-secondary btn-compact" id="voiceInstallBtn" style="margin-top:4px">Telepítés</button>
+            </div>
+            <!-- shown when toolkit IS installed -->
+            <div id="voiceInstalledControls" hidden>
+              <div style="display:flex;gap:8px;margin-bottom:10px">
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                  <input type="radio" name="voiceResponseMode" value="text"> Szöveg
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                  <input type="radio" name="voiceResponseMode" value="voice"> Hang
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                  <input type="radio" name="voiceResponseMode" value="auto"> Auto
+                </label>
+              </div>
+              <label for="editAgentVoiceModel" style="font-size:12px;color:var(--text-muted)">Hangmodell</label>
+              <select id="editAgentVoiceModel" style="margin-top:4px"></select>
+              <button class="btn-secondary btn-compact agent-save-section" id="saveVoiceConfigBtn" style="margin-top:10px">Mentés</button>
+            </div>
+          </div>
           <div class="form-group">
             <label for="editAgentProfile" data-i18n="agents.wizard.profile_label">Biztonsági profil</label>
             <select id="editAgentProfile"></select>

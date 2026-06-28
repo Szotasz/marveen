@@ -194,8 +194,11 @@ export function buildHandoffContent(ev: {
   message_id: number | null
   content: string
   tg_date: number | null
+  meta?: Record<string, unknown>
 }): string {
   const ts = ev.tg_date ? new Date(ev.tg_date * 1000).toISOString() : ''
+  const voiceMeta = ev.meta?.voice as { file_id?: string } | undefined
+  const voiceFileId = voiceMeta?.file_id ?? ''
   const attrs = [
     `source="telegram"`,
     ev.chat_id != null ? `chat_id="${ev.chat_id}"` : '',
@@ -204,6 +207,8 @@ export function buildHandoffContent(ev: {
     ev.user_id != null ? `user_id="${ev.user_id}"` : '',
     ts ? `ts="${ts}"` : '',
     ev.kind !== 'message' ? `kind="${ev.kind}"` : '',
+    voiceFileId ? `attachment_kind="voice"` : '',
+    voiceFileId ? `attachment_file_id="${voiceFileId}"` : '',
   ].filter(Boolean).join(' ')
   const body = neutralizeChannelTags(ev.content || '(empty message)')
   return `<channel ${attrs}>\n${body}\n</channel>`
@@ -272,6 +277,8 @@ function reconcilePending(): void {
   }
   for (const ev of events) {
     try {
+      let parsedMeta: Record<string, unknown> = {}
+      try { if (ev.meta) parsedMeta = JSON.parse(ev.meta) as Record<string, unknown> } catch {}
       const agentMessageId = createHandoffMessage(buildHandoffContent({
         kind: ev.kind,
         chat_id: ev.chat_id,
@@ -280,6 +287,7 @@ function reconcilePending(): void {
         message_id: ev.message_id,
         content: ev.content ?? '',
         tg_date: ev.tg_date,
+        meta: parsedMeta,
       }))
       markEventDelivered(ev.id, agentMessageId)
       logger.warn({ update_id: ev.update_id, eventId: ev.id, agentMessageId }, 'channel-coordinator: re-queued abandoned/stranded inbound message')

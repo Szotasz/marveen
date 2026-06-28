@@ -1,12 +1,51 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { serveFile } from '../http-helpers.js'
+import { MIME } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
+
+// Returns a short version token derived from app.js mtime+size so the
+// script URL changes whenever the file changes, busting browser cache.
+function appJsVersion(webDir: string): string {
+  try {
+    const s = statSync(join(webDir, 'app.js'))
+    return `${s.mtimeMs.toString(36)}-${s.size.toString(36)}`
+  } catch {
+    return '0'
+  }
+}
+
+function serveIndexHtml(ctx: RouteContext, webDir: string): void {
+  const { req, res } = ctx
+  try {
+    const filePath = join(webDir, 'index.html')
+    const s = statSync(filePath)
+    const etag = `"${s.mtimeMs}-${s.size}-${appJsVersion(webDir)}"`
+    const ifNoneMatch = req.headers['if-none-match']
+    if (ifNoneMatch === etag) {
+      res.writeHead(304, { ETag: etag, 'Cache-Control': 'no-cache' })
+      res.end()
+      return
+    }
+    const html = readFileSync(filePath, 'utf-8').replace(
+      /(<script\s+src=")\/app\.js(")/,
+      `$1/app.js?v=${appJsVersion(webDir)}$2`,
+    )
+    res.writeHead(200, {
+      'Content-Type': MIME['.html'],
+      ETag: etag,
+      'Cache-Control': 'no-cache',
+    })
+    res.end(html)
+  } catch {
+    res.writeHead(404); res.end('Not found')
+  }
+}
 
 export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path } = ctx
 
-  if (path === '/' || path === '/index.html') { serveFile(req, res, join(webDir, 'index.html')); return true }
+  if (path === '/' || path === '/index.html') { serveIndexHtml(ctx, webDir); return true }
   if (path === '/style.css') { serveFile(req, res, join(webDir, 'style.css')); return true }
   if (path === '/app.js') { serveFile(req, res, join(webDir, 'app.js')); return true }
   if (path === '/manifest.json') { serveFile(req, res, join(webDir, 'manifest.json')); return true }

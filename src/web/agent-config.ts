@@ -359,6 +359,67 @@ export function listAgentNames(): string[] {
   })
 }
 
+// ---- per-agent voice config -----------------------------------------------
+
+export type VoiceResponseMode = 'text' | 'voice' | 'auto'
+
+export interface AgentVoiceConfig {
+  responseMode: VoiceResponseMode
+  voiceModel: string
+}
+
+// Canonical set of bundled voice model identifiers (basename without .onnx).
+// Extend here when new models are added to the installer.
+export const KNOWN_VOICE_MODELS = new Set<string>([
+  'hu_HU-imre-medium',
+  'hu_HU-anna-medium',
+])
+
+const VALID_RESPONSE_MODES = new Set<VoiceResponseMode>(['text', 'voice', 'auto'])
+
+export const DEFAULT_VOICE_CONFIG: AgentVoiceConfig = {
+  responseMode: 'text',
+  voiceModel: 'hu_HU-imre-medium',
+}
+
+export function readAgentVoiceConfig(name: string): AgentVoiceConfig {
+  const configPath = join(agentConfigRoot(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}'))
+    const vc = (config.voice ?? {}) as Partial<AgentVoiceConfig>
+    return {
+      responseMode: VALID_RESPONSE_MODES.has(vc.responseMode as VoiceResponseMode)
+        ? (vc.responseMode as VoiceResponseMode)
+        : DEFAULT_VOICE_CONFIG.responseMode,
+      voiceModel: KNOWN_VOICE_MODELS.has(vc.voiceModel ?? '')
+        ? (vc.voiceModel as string)
+        : DEFAULT_VOICE_CONFIG.voiceModel,
+    }
+  } catch {
+    return { ...DEFAULT_VOICE_CONFIG }
+  }
+}
+
+export function writeAgentVoiceConfig(name: string, patch: Partial<AgentVoiceConfig>): void {
+  if (patch.responseMode !== undefined && !VALID_RESPONSE_MODES.has(patch.responseMode)) {
+    throw new Error(`Invalid responseMode: ${patch.responseMode}`)
+  }
+  if (patch.voiceModel !== undefined && !KNOWN_VOICE_MODELS.has(patch.voiceModel)) {
+    throw new Error(`Unknown voiceModel: ${patch.voiceModel}`)
+  }
+  const configPath = join(agentConfigRoot(name), 'agent-config.json')
+  let config: Record<string, unknown> = {}
+  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  const current = readAgentVoiceConfig(name)
+  config.voice = {
+    responseMode: patch.responseMode ?? current.responseMode,
+    voiceModel: patch.voiceModel ?? current.voiceModel,
+  }
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
+// ---- agent lookup ----------------------------------------------------------
+
 // Does this identifier refer to a registered agent? MAIN_AGENT_ID always
 // counts (it lives outside agents/ but is a first-class peer). Sub-agents
 // need a directory on disk. One fs stat per call -- the router calls this

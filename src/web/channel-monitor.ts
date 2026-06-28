@@ -76,6 +76,13 @@ const agentLastRestart: Map<string, number> = new Map()
 // short cadence forever -- which restarts the WHOLE agent every few minutes and
 // renders it unusable. Reset to 0 the moment the plugin is seen alive again.
 const agentRestartFailures: Map<string, number> = new Map()
+// Global stagger for channel-down restarts. On Claude Code 2.1.193 a sub-agent's
+// --channels plugin only LOADS on a fresh (no --continue) launch, and several
+// such cold-boots at once race on the shared plugin cache so NONE attach a
+// poller. Serialise: at most one channel-down restart per this interval,
+// fleet-wide, so each fresh cold-boot completes in isolation.
+let lastChannelAgentRestartAt = 0
+const CHANNEL_RESTART_STAGGER_MS = 90_000
 const AGENT_RESTART_GRACE_MS = 90_000
 // Floor frequency for the backed-off restart: even a long-down plugin is still
 // retried at least this often, in case an external fix brings it back.
@@ -510,6 +517,14 @@ export function resumeMarveenSession(): boolean {
     // direct. Schedule the same probe in-process so the plugin doesn't get
     // stuck in `◯ disabled` after an in-process respawn (2026-06-01 18:55).
     schedulePluginUnlockAfterRespawn(MAIN_CHANNELS_SESSION, provider.type)
+    // Post-resume guard (CC 2.1.193 regression). A --continue resume can come up
+    // WITHOUT the --channels plugin (absent from /mcp, no poller -> deaf main
+    // channel). The unlock probe above only revives a Failed/disabled plugin --
+    // it cannot help when the plugin never loaded at all. Schedule a liveness
+    // probe; if the plugin is still missing after the settle, escalate straight
+    // to a FRESH respawn instead of burning the full RESUME_GRACE_MS cascade.
+    // Context is dropped only in the bad case; a clean --continue keeps it.
+    schedulePostResumePluginGuard(provider.type)
     // Stamp the shared respawn timestamp so lastMainRespawnAt() sees this
     // respawn from any caller (down-cascade stage 3, stuck-tool-call-watcher,
     // external systemd-timer watchdog). Without it the watcher cannot defer
@@ -675,6 +690,51 @@ function respawnMarveenSessionFresh(): boolean {
     logger.error({ err }, 'Fresh session respawn failed')
     return false
   }
+}
+
+// Post-resume guard delay. Must clear the unlock-probe budget (first probe at
+// ~35s, retries every 15s up to 2x => ~65s worst case) so a plugin that merely
+// loaded `disabled` gets revived BEFORE we declare the resume deaf, yet stay
+// well under RESUME_GRACE_MS (240s) so a genuinely-absent plugin escalates
+// ~150s sooner than the cascade would. 90s leaves a healthy --continue ample
+// time to attach its poller; only a pathologically large (>200k-token) context
+// resume risks a false escalation, which still self-heals (fresh respawn).
+export const POST_RESUME_GUARD_DELAY_MS = 90_000
+
+// PURE decision for the post-resume guard: after a --continue resume, do we have
+// to escalate to a fresh respawn? Yes iff the resumed session is NOT serving the
+// channel plugin -- either the claude pid is gone, or the pid is alive but the
+// plugin never attached (the CC 2.1.193 regression). A live pid WITH the plugin
+// means --continue succeeded and the conversation context is preserved.
+export function shouldEscalateAfterResume(f: { claudePid: number | null; pluginAlive: boolean }): boolean {
+  if (f.claudePid == null) return true
+  return !f.pluginAlive
+}
+
+// Scheduled (non-blocking) check fired after a --continue resume. If the
+// channels plugin attached, the resume succeeded and the conversation context
+// is preserved -- nothing to do. If it did not (CC 2.1.193: --continue does not
+// re-init the plugin MCP server), escalate to a FRESH respawn so the main
+// channel becomes reachable again. respawnMarveenSessionFresh() writes the
+// respawn stamp, so lastMainRespawnAt() suppresses the down-cascade's redundant
+// stage-4 hard restart during the ensuing cold boot.
+function schedulePostResumePluginGuard(provider: ChannelProviderType): void {
+  setTimeout(() => {
+    try {
+      const claudePid = getClaudePidForSession(MAIN_CHANNELS_SESSION)
+      const pluginAlive = claudePid != null && hasChannelPluginAlive(claudePid, provider)
+      if (!shouldEscalateAfterResume({ claudePid, pluginAlive })) {
+        logger.info({ provider }, 'Post-resume guard: channel plugin attached after --continue -- context preserved, no escalation')
+        return
+      }
+      logger.warn({ provider }, 'Post-resume guard: --continue resume came up WITHOUT the channels plugin (CC 2.1.193) -- escalating to fresh respawn (context dropped, memory persists)')
+      sendAlert(`⚠️ A --continue resume suketen jott fel (nincs channel plugin). Fresh respawn most a ${MAIN_CHANNELS_SESSION} session-on (a beszelgetes elveszik, memoria marad).`)
+      respawnMarveenSessionFresh()
+    } catch (err) {
+      logger.warn({ err }, 'Post-resume guard probe failed (leaving recovery to the down-cascade)')
+    }
+  }, POST_RESUME_GUARD_DELAY_MS)
+  logger.info({ delayMs: POST_RESUME_GUARD_DELAY_MS }, 'Post-resume plugin guard scheduled after --continue resume')
 }
 
 export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
@@ -1233,11 +1293,22 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           logger.warn({ agent: t.agentName, provider: agentProvider }, 'Agent has no channel token in state dir -- skipping restart to avoid token conflict')
           continue
         }
+        // Stagger: only one channel-down restart per CHANNEL_RESTART_STAGGER_MS
+        // fleet-wide, so fresh sub-agent cold-boots serialise instead of racing.
+        if (Date.now() - lastChannelAgentRestartAt < CHANNEL_RESTART_STAGGER_MS) {
+          logger.debug({ agent: t.agentName }, 'Channel-down restart staggered -- deferring to avoid simultaneous cold-boot race')
+          continue
+        }
         logger.warn({ agent: t.agentName, provider: t.provider, failures }, 'Agent channel plugin down -- auto-restarting')
         try {
           stopAgentProcess(t.agentName!)
           execSync('sleep 2', { timeout: 4000 })
-          startAgentProcess(t.agentName!)
+          lastChannelAgentRestartAt = Date.now()
+          // FRESH (no --continue): on CC 2.1.193 a --continue resume does NOT load
+          // the --channels plugin MCP server, so the agent comes up with no plugin
+          // and no poller (verified: continue -> "Plugin not found" in /mcp; fresh
+          // -> plugin loads + poller attaches). Context is dropped, memory persists.
+          startAgentProcess(t.agentName!, { fresh: true })
           agentLastRestart.set(t.agentName!, Date.now())
           agentDownSince.delete(t.session)
           // Count this restart as failed until a later sweep sees the plugin

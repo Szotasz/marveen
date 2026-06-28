@@ -106,7 +106,14 @@ TMUX="$(command -v tmux)"
 # mitigation. Set them inline on the launch command -- the tmux SERVER predates
 # this script and does not inherit its environment, so exporting here alone
 # would not reach the new claude. Mirrors the sub-agent launch.
-MCP_BATCH_ENV="export MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000 && "
+#
+# CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false also added here: the sub-agent spawn
+# (startAgentProcess) sets it to suppress the DIM ghost-text autocomplete, but
+# the MAIN channels session never got it -- so a dim ghost in the main box was
+# the one place the pane-scrape recovery could still misread it (the v1.15.0
+# dim-strip catches it on the recovery side, but killing it at the SOURCE on MAIN
+# too closes the gap end-to-end). Parity with the sub-agent launch.
+MCP_BATCH_ENV="export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000 && "
 
 # Read the main agent's default model from .claude/settings.json so we can
 # pass --model explicitly. Without --model claude-code falls back to its

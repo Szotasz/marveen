@@ -5,6 +5,8 @@ import {
   shouldDeferKeepaliveRespawn,
   shouldRefreshKeepaliveFromInbound,
   lastMainRespawnAt,
+  shouldEscalateAfterResume,
+  POST_RESUME_GUARD_DELAY_MS,
 } from '../web/channel-monitor.js'
 
 // CONTRACT: the respawn command MUST carry the .bun/bin PATH export -- without
@@ -47,6 +49,27 @@ describe('buildMainSessionRespawnCmd', () => {
   it('includes --continue only for a resume, not a fresh start', () => {
     expect(buildMainSessionRespawnCmd({ ...base, continueSession: true })).toContain('--continue')
     expect(buildMainSessionRespawnCmd({ ...base, continueSession: false })).not.toContain('--continue')
+  })
+})
+
+// CONTRACT: the post-resume guard (CC 2.1.193) escalates to a fresh respawn iff
+// the --continue resume did NOT bring up the channel plugin. A live pid serving
+// the plugin means context was preserved -- do not escalate.
+describe('shouldEscalateAfterResume', () => {
+  it('does NOT escalate when the resumed claude is alive AND the plugin attached', () => {
+    expect(shouldEscalateAfterResume({ claudePid: 1234, pluginAlive: true })).toBe(false)
+  })
+  it('escalates when the pid is alive but the plugin never loaded (the 2.1.193 regression)', () => {
+    expect(shouldEscalateAfterResume({ claudePid: 1234, pluginAlive: false })).toBe(true)
+  })
+  it('escalates when the resumed claude pid is gone entirely', () => {
+    expect(shouldEscalateAfterResume({ claudePid: null, pluginAlive: false })).toBe(true)
+  })
+  it('guard delay clears the unlock-probe budget (~65s) yet stays under RESUME_GRACE_MS (240s)', () => {
+    // > worst-case unlock-probe completion so a merely-disabled plugin is revived
+    // first, and < the cascade grace so a genuinely-absent plugin escalates sooner.
+    expect(POST_RESUME_GUARD_DELAY_MS).toBeGreaterThan(65_000)
+    expect(POST_RESUME_GUARD_DELAY_MS).toBeLessThan(240_000)
   })
 })
 

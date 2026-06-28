@@ -5,7 +5,7 @@ import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WE
 import { channelStateDir } from '../channel-provider.js'
 import { runAgent } from '../agent.js'
 import { atomicWriteFileSync } from './atomic-write.js'
-import { agentDir } from './agent-config.js'
+import { agentDir, agentConfigRoot } from './agent-config.js'
 import { resolveProfilePlaceholders, type ProfileTemplate } from './profiles.js'
 
 // Identity values the template substitution injects. Pulled out so the
@@ -45,12 +45,21 @@ export function resolveTemplatePlaceholders(content: string): string {
   })
 }
 
+// Return the settings.json path for an agent.
+// The main agent's settings live at ~/.claude/settings.json (not inside agents/).
+function agentSettingsPath(name: string): string {
+  if (name === MAIN_AGENT_ID) return join(homedir(), '.claude', 'settings.json')
+  return join(agentDir(name), '.claude', 'settings.json')
+}
+
 // Idempotent migration: every agent's settings.json should carry the
 // PreCompact hook (memory save + skill reflection). Pre-refactor agents
 // were scaffolded before scaffoldAgentDir seeded the template, so their
 // file is permissions-only. Merge the template's hooks block in place.
+// Also handles the main agent (MAIN_AGENT_ID) whose settings.json is at
+// ~/.claude/settings.json -- voice hook is added alongside existing hooks.
 export function ensureAgentHooks(name: string): boolean {
-  const settingsPath = join(agentDir(name), '.claude', 'settings.json')
+  const settingsPath = agentSettingsPath(name)
   const tplPath = join(PROJECT_ROOT, 'templates', 'settings.json.template')
   if (!existsSync(tplPath)) return false
   let tpl: Record<string, unknown>
@@ -65,9 +74,57 @@ export function ensureAgentHooks(name: string): boolean {
   if (existsSync(settingsPath)) {
     try { existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { /* overwrite */ }
   }
-  if (existing.hooks) return false  // user already has hooks, leave alone
-  existing.hooks = tpl.hooks
-  mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  const tplHooks = tpl.hooks as Record<string, unknown>
+  type HookEntry = { hooks?: Array<{ command?: string; timeout?: number; [k: string]: unknown }> }
+  if (existing.hooks) {
+    // Merge strategy:
+    //   1. If a hook event is entirely missing: add it wholesale.
+    //   2. If the event exists: add any template hook commands not yet present
+    //      as a new hook group entry (preserves existing hooks like telegram_progress.py).
+    //   3. Sync the timeout of any command hook whose command matches but timeout differs.
+    const existingHooks = existing.hooks as Record<string, unknown>
+    let changed = false
+    for (const [event, handlers] of Object.entries(tplHooks)) {
+      if (!existingHooks[event]) {
+        existingHooks[event] = handlers
+        changed = true
+      } else {
+        const tplEntries = handlers as HookEntry[]
+        const existEntries = existingHooks[event] as HookEntry[]
+        // Collect all command strings already present in this event's hook groups.
+        const existingCommands = new Set(
+          existEntries.flatMap((e) => (e.hooks ?? []).map((h) => h.command).filter(Boolean)),
+        )
+        for (const tplEntry of tplEntries) {
+          // Add hooks that are missing (as a new group entry, preserving sibling hooks).
+          const newHooks = (tplEntry.hooks ?? []).filter(
+            (h) => h.command && !existingCommands.has(h.command),
+          )
+          if (newHooks.length > 0) {
+            existEntries.push({ ...tplEntry, hooks: newHooks })
+            changed = true
+          }
+          // Sync timeouts for hooks that already exist with a stale timeout.
+          for (const tplHook of tplEntry.hooks ?? []) {
+            if (!tplHook.command || tplHook.timeout == null) continue
+            for (const existEntry of existEntries) {
+              for (const existHook of existEntry.hooks ?? []) {
+                if (existHook.command === tplHook.command && existHook.timeout !== tplHook.timeout) {
+                  existHook.timeout = tplHook.timeout
+                  changed = true
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    if (!changed) return false
+  } else {
+    existing.hooks = tplHooks
+  }
+  // For the main agent, ~/.claude already exists; sub-agents need the dir created.
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
   return true
 }
@@ -83,7 +140,10 @@ export function ensureAgentHooks(name: string): boolean {
 const STALENESS_HOOK_CMD = `python3 ${join(PROJECT_ROOT, 'scripts', 'hooks', 'staleness-guard.py')}`
 
 export function ensureAgentStalenessHook(name: string): boolean {
-  const settingsPath = join(agentDir(name), '.claude', 'settings.json')
+  // agentSettingsPath() maps MAIN_AGENT_ID to ~/.claude/settings.json; using
+  // agentDir() directly here would create a spurious agents/<main> dir and make
+  // the main agent show up as a phantom "down" agent on the dashboard.
+  const settingsPath = agentSettingsPath(name)
   let settings: Record<string, unknown> = {}
   if (existsSync(settingsPath)) {
     try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
@@ -98,7 +158,8 @@ export function ensureAgentStalenessHook(name: string): boolean {
   ups.push({ hooks: [{ type: 'command', command: STALENESS_HOOK_CMD, timeout: 10 }] })
   hooks.UserPromptSubmit = ups
   settings.hooks = hooks
-  mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  // Main agent's ~/.claude already exists; only sub-agent dirs need creating.
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
 }
@@ -113,16 +174,27 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     try { existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { /* overwrite */ }
   }
   const ctx = { HOME: homedir(), AGENT_DIR: agentRoot }
+  const denyList = profile.filesystem.deny.map(p => resolveProfilePlaceholders(p, ctx))
+  // Self-pace tool-name deny: every sub-agent (NOT the main agent) is denied the
+  // Claude Code runtime self-scheduling tools. A whole-tool-name deny IS enforced
+  // even under --dangerously-skip-permissions (deny is checked BEFORE the bypass
+  // allow), so this is a fail-closed layer; the self-pace-gate hook below covers
+  // the Bash escape routes a name-deny cannot reach. (2026-06-26 autonom-kor fix.)
+  if (agentGetsGovernanceGates(name)) denyList.push(...SELF_PACE_TOOL_DENY)
   existing.permissions = {
     allow: profile.filesystem.allow.map(p => resolveProfilePlaceholders(p, ctx)),
-    deny: profile.filesystem.deny.map(p => resolveProfilePlaceholders(p, ctx)),
+    deny: denyList,
   }
-  // Email-send hard-gate: every sub-agent (NOT the main agent) gets a
-  // PreToolUse hook that blocks outbound email-send tools. Re-applied on
-  // every spawn (this function regenerates settings.json), so it survives
-  // respawns. The MAIN_AGENT_ID retains email-send capability -- all outbound
-  // email routes through it for approval.
+  // Governance hard-gates: every sub-agent (NOT the main agent) gets PreToolUse
+  // hooks. Re-applied on every spawn (this function regenerates settings.json),
+  // so they survive respawns. (a) email-send block -- outbound email routes
+  // through the main agent. (b) self-pace block -- no ScheduleWakeup/Cron*/Bash
+  // self-injection. The MAIN_AGENT_ID is exempt from both. Merge/deploy is NOT
+  // gated: the operator authorizes those autonomously (so test/deploy runs are
+  // never blocked); the actual incident vector -- an agent answering its OWN
+  // posed question -- is covered by the self-pace block + the #0 CLAUDE.md doctrine.
   if (agentGetsEmailGate(name)) injectEmailSendGate(existing)
+  if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
 
@@ -154,6 +226,40 @@ export function injectEmailSendGate(existing: Record<string, unknown>): void {
   // the hook never accumulates duplicates; other PreToolUse entries are kept.
   hooks.PreToolUse = [
     ...prev.filter((e) => !JSON.stringify(e).includes('email-send-gate.mjs')),
+    entry,
+  ]
+}
+
+// Claude Code runtime self-scheduling tool names denied for sub-agents (fail-
+// closed, enforced even under --dangerously-skip-permissions). The Bash escape
+// routes are covered by the self-pace-gate hook, which a name-deny cannot reach.
+const SELF_PACE_TOOL_DENY = ['ScheduleWakeup', 'CronCreate', 'CronDelete', 'CronList', 'RemoteTrigger']
+
+// Which agents are subject to the self-pace gate: every agent EXCEPT the main
+// agent (same name-agnostic main-exempt rule as the email gate). Pure + exported
+// so the main-exempt guarantee is unit-testable.
+export function agentGetsGovernanceGates(name: string): boolean {
+  return name !== MAIN_AGENT_ID
+}
+
+// Idempotently wire the self-pace-gate PreToolUse hook (blocks ScheduleWakeup /
+// Cron* / RemoteTrigger + the Bash self-injection routes). Same shape + dedupe
+// discipline as injectEmailSendGate.
+export function injectSelfPaceGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = `node ${join(PROJECT_ROOT, 'scripts', 'self-pace-gate.mjs')}`
+  const entry = {
+    // Write|Edit|NotebookEdit are included so the gate actually fires on the
+    // native-file route to the self-schedule store (gateDecision blocks a Write
+    // to scheduled_tasks.json); a Bash-only matcher would leave that route open.
+    matcher: 'ScheduleWakeup|CronCreate|CronDelete|CronList|RemoteTrigger|Bash|Write|Edit|NotebookEdit',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('self-pace-gate.mjs')),
     entry,
   ]
 }
