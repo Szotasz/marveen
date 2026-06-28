@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { execSync, execFileSync } from 'node:child_process'
@@ -29,7 +29,7 @@ import {
 } from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
-import { CHANNEL_PROVIDER, MAIN_AGENT_ID } from '../config.js'
+import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR } from '../config.js'
 import { loadProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { writeAgentSettingsFromProfile } from './agent-scaffold.js'
@@ -93,6 +93,161 @@ export function ownChannelProviderForScope(
   resolvedProvider: string | null,
 ): string | null {
   return hasOwnToken && resolvedProvider ? resolvedProvider : null
+}
+
+// The fleet's shared long-lived OAuth token (from `claude setup-token`), stored
+// 0600 in store/. Isolated channel sub-agents authenticate via this token in the
+// CLAUDE_CODE_OAUTH_TOKEN env var -- NOT via a copied/symlinked .credentials.json.
+// See ensureIsolatedChannelConfigDir for why.
+export const FLEET_OAUTH_TOKEN_PATH = join(STORE_DIR, '.claude-oauth-token')
+
+// True when the fleet OAuth token file exists and is non-empty. Provisioning an
+// isolated config dir WITHOUT auth would launch the sub-agent logged-out, so
+// isolation is gated on this: no token -> keep the shared ~/.claude (degraded
+// dup-poller risk, but never a broken login).
+export function hasFleetOauthToken(): boolean {
+  try {
+    return existsSync(FLEET_OAUTH_TOKEN_PATH) && readFileSync(FLEET_OAUTH_TOKEN_PATH, 'utf-8').trim().length > 0
+  } catch {
+    return false
+  }
+}
+
+// Per-agent isolated CLAUDE_CONFIG_DIR provisioning (2026-06-26 fleet outage).
+//
+// Claude Code records a plugin's PROJECT-scoped install in a single shared file
+// -- ~/.claude/plugins/installed_plugins.json -- keyed by ONE projectPath per
+// plugin id. Every sub-agent ran out of the SAME ~/.claude, so each agent launch
+// (claude --channels plugin:telegram@...) rewrote that single slot to its OWN
+// project, evicting whichever agent registered before it. Net effect: only ONE
+// agent's channel plugin could be registered (one bun getUpdates poller / one
+// bot.pid) fleet-wide; every other agent saw "No MCP servers configured", spawned
+// no poller, and went deaf. Sequentialising restarts did NOT help (the slot is
+// shared state, not a startup race); the only structural fix is to stop the
+// agents sharing one plugin-install file.
+//
+// This gives each channel sub-agent its own CLAUDE_CONFIG_DIR: symlink every
+// top-level ~/.claude entry so project transcripts and plugin marketplaces stay
+// shared, EXCEPT settings.json and plugins/ which become per-agent (so each
+// agent's project-scoped install lives in its own installed_plugins.json and can
+// never evict another's).
+//
+// AUTH (2026-06-28, addressing Szotasz's #459 review): we DELIBERATELY do NOT
+// symlink or copy .credentials.json. On Linux/Windows Claude Code refreshes the
+// OAuth token atomically (temp file + rename), which would replace a symlink with
+// a standalone file -- the isolated agent's token then diverges from the shared
+// one, and because OAuth refresh tokens are single-use, concurrent refreshes from
+// multiple isolated dirs race and break the shared login (confirmed: claude-code
+// issues #27933, #24317, #43392). Instead the launcher passes a long-lived
+// CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`, ~1y, no refresh) via env.
+// With that env var present Claude Code authenticates from it and writes NO
+// .credentials.json into the config dir -- so there is nothing to diverge and no
+// refresh race. .credentials.json is therefore in the skip set below.
+//
+// Idempotent and best-effort: returns the dir on success, or null so the caller
+// falls back to the shared ~/.claude (degraded, but never a launch failure).
+const ISOLATED_CONFIG_SKIP = new Set(['settings.json', 'plugins', '.credentials.json'])
+
+export function ensureIsolatedChannelConfigDir(
+  name: string,
+  providerType: ChannelProviderType,
+): string | null {
+  try {
+    const cwd = agentDir(name)
+    const cfg = join(cwd, '.claude-config')
+    const realClaude = join(homedir(), '.claude')
+    if (!existsSync(realClaude)) return null
+    mkdirSync(cfg, { recursive: true })
+
+    // 1. Symlink every top-level ~/.claude entry except the ones we own or that
+    //    must stay out of the isolated dir (.credentials.json -- see header). A
+    //    stale non-symlink (e.g. a prior copy, or a .credentials.json left by an
+    //    earlier build) is removed so it can never shadow the env-var auth.
+    for (const entry of readdirSync(realClaude)) {
+      if (ISOLATED_CONFIG_SKIP.has(entry)) {
+        // Defensively drop a real .credentials.json that an older build may have
+        // symlinked/copied here, so the env-var token is the only auth source.
+        const stale = join(cfg, entry)
+        if (entry === '.credentials.json') {
+          try { rmSync(stale, { force: true }) } catch { /* absent */ }
+        }
+        continue
+      }
+      const link = join(cfg, entry)
+      let needsLink = true
+      try {
+        if (lstatSync(link).isSymbolicLink()) needsLink = false
+        else rmSync(link, { recursive: true, force: true })
+      } catch { /* absent -> create */ }
+      if (needsLink) {
+        try { symlinkSync(join(realClaude, entry), link) }
+        catch (err) { logger.warn({ err, entry, name }, 'isolated-config: symlink failed') }
+      }
+    }
+
+    // 2. Own settings.json: copy the shared one (keeps hooks etc.) but force
+    //    enabledPlugins to this agent's own provider only (all other channel
+    //    plugins false), matching the spawn-time scope decision.
+    const sharedSettings = join(realClaude, 'settings.json')
+    let settings: Record<string, unknown> = {}
+    if (existsSync(sharedSettings)) {
+      try { settings = JSON.parse(readFileSync(sharedSettings, 'utf-8')) as Record<string, unknown> }
+      catch { settings = {} }
+    }
+    const scopedPlugins = scopeChannelPlugins(
+      providerType,
+      settings.enabledPlugins as Record<string, boolean> | undefined,
+    )
+    settings.enabledPlugins = scopedPlugins
+    writeFileSync(join(cfg, 'settings.json'), JSON.stringify(settings, null, 2) + '\n')
+
+    // 3. Own plugins/ dir: symlink the heavy shared parts, own the install state.
+    const pluginsDir = join(cfg, 'plugins')
+    mkdirSync(pluginsDir, { recursive: true })
+    const sharedPlugins = join(realClaude, 'plugins')
+    for (const sub of ['cache', 'marketplaces', 'data']) {
+      const link = join(pluginsDir, sub)
+      const target = join(sharedPlugins, sub)
+      if (!existsSync(target)) continue
+      let needsLink = true
+      try {
+        if (lstatSync(link).isSymbolicLink()) needsLink = false
+        else rmSync(link, { recursive: true, force: true })
+      } catch { /* absent -> create */ }
+      if (needsLink) {
+        try { symlinkSync(target, link) }
+        catch (err) { logger.warn({ err, sub, name }, 'isolated-config: plugin symlink failed') }
+      }
+    }
+    const sharedKnown = join(sharedPlugins, 'known_marketplaces.json')
+    if (existsSync(sharedKnown)) {
+      writeFileSync(join(pluginsDir, 'known_marketplaces.json'), readFileSync(sharedKnown, 'utf-8'))
+    }
+    // Seed installed_plugins.json with every project-scoped install re-pointed at
+    // THIS agent's cwd, so the channel plugin is registered for this project from
+    // first launch (Claude Code keeps maintaining it thereafter).
+    const sharedInstalled = join(sharedPlugins, 'installed_plugins.json')
+    if (existsSync(sharedInstalled)) {
+      try {
+        const inst = JSON.parse(readFileSync(sharedInstalled, 'utf-8')) as {
+          plugins?: Record<string, Array<{ scope?: string; projectPath?: string }>>
+        }
+        for (const entries of Object.values(inst.plugins ?? {})) {
+          for (const e of entries) {
+            if (e.scope === 'project') e.projectPath = cwd
+          }
+        }
+        writeFileSync(join(pluginsDir, 'installed_plugins.json'), JSON.stringify(inst, null, 2) + '\n')
+      } catch (err) {
+        logger.warn({ err, name }, 'isolated-config: failed to seed installed_plugins.json')
+      }
+    }
+
+    return cfg
+  } catch (err) {
+    logger.warn({ err, name }, 'isolated-config: provisioning failed, falling back to shared ~/.claude')
+    return null
+  }
 }
 
 function resolveAgentProvider(name: string): ChannelProviderType {
@@ -386,7 +541,31 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // e.g. for routing this agent to a separate Anthropic login). When the
     // agent-config field is missing or blank, claudeConfigDir is null and we
     // emit no export, preserving the default Claude Code behavior.
-    const claudeConfigDir = readAgentClaudeConfigDir(name)
+    // An explicit per-agent config dir wins. Otherwise, a channel sub-agent gets
+    // an auto-provisioned isolated config dir so its plugin install cannot collide
+    // with the rest of the fleet in the shared ~/.claude (see
+    // ensureIsolatedChannelConfigDir). The main agent comes up via channels.sh and
+    // keeps the shared root. Isolation is GATED on the fleet OAuth token: the
+    // isolated dir carries no .credentials.json, so without CLAUDE_CODE_OAUTH_TOKEN
+    // the sub-agent would launch logged-out -- so when the token is absent we skip
+    // isolation and keep the shared ~/.claude (the pre-isolation, still-stable
+    // behaviour) rather than break auth.
+    let claudeConfigDir = readAgentClaudeConfigDir(name)
+    let oauthTokenEnv = ''
+    if (!claudeConfigDir && hasChannel && name !== MAIN_AGENT_ID) {
+      if (hasFleetOauthToken()) {
+        const isolated = ensureIsolatedChannelConfigDir(name, agentProvider)
+        if (isolated) {
+          claudeConfigDir = isolated
+          // Read the token at launch via $(cat) so the literal secret never
+          // appears in the JS-built command string or in `ps`. The file is 0600
+          // and the value lands only in this process's own environment.
+          oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
+        }
+      } else {
+        logger.warn({ name }, 'isolated-config: no fleet OAuth token (store/.claude-oauth-token); keeping shared ~/.claude. Run `claude setup-token` and store it to enable per-agent isolation.')
+      }
+    }
     const claudeConfigEnv = claudeConfigDir ? `export CLAUDE_CONFIG_DIR="${claudeConfigDir}" && ` : ''
     // `--continue` requires an existing session; on a brand-new agent the
     // Claude Code projects directory does not yet exist and `claude` exits
@@ -447,7 +626,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     const promptSuggestionEnv = 'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false && '
     // Single-quote `${model}` so values like `claude-opus-4-8[1m]` (1M-context
     // suffix) are not glob-expanded by the shell that tmux spawns the command in.
-    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${ollamaEnv}${deepseekEnv}cd "${dir}" && ${CLAUDE} ${continueFlag}${skipFlag}--model '${model}' ${channelFlag}`.trimEnd()
+    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${ollamaEnv}${deepseekEnv}cd "${dir}" && ${CLAUDE} ${continueFlag}${skipFlag}--model '${model}' ${channelFlag}`.trimEnd()
     runTmux(null, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir }, 'Agent tmux session started')
