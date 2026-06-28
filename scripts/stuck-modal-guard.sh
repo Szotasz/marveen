@@ -251,7 +251,13 @@ run_guard() {
   CLAUDE_Q="$(printf '%q' "$CLAUDE")"
   # W2: %q-quote the (config-overridable) plugin id, same treatment as the model.
   local PLUGIN_Q; PLUGIN_Q="$(printf '%q' "$RESPAWN_PLUGIN")"
-  local RESPAWN_CMD="export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && $CLAUDE_Q --dangerously-skip-permissions ${MODEL_FLAG}--channels $PLUGIN_Q"
+  # Route through the single-flight launcher (per-token flock) so a respawn can
+  # never become a second concurrent poller on the same bot token. %q-quote the
+  # wrapper path; fail open to the raw claude binary if the wrapper is missing.
+  local LAUNCHER="$INSTALL_DIR/scripts/launch-channels-claude.sh"
+  [ -x "$LAUNCHER" ] || LAUNCHER="$CLAUDE"
+  local LAUNCHER_Q; LAUNCHER_Q="$(printf '%q' "$LAUNCHER")"
+  local RESPAWN_CMD="export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && CLAUDE=$CLAUDE_Q $LAUNCHER_Q --dangerously-skip-permissions ${MODEL_FLAG}--channels $PLUGIN_Q"
 
   log "stuck modal not cleared by Escape -- respawn-pane $SESSION (respawn #$((count+1)))"
   # G: alert ONLY after the respawn-pane actually succeeds, so a failed respawn

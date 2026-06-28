@@ -88,6 +88,12 @@ export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HO
 
 CLAUDE="$(command -v claude)"
 TMUX="$(command -v tmux)"
+# Single-flight launcher: routes the `claude --channels` start through a
+# per-token flock so two processes can never poll the same bot token at once
+# (the "two sessions / 409 Conflict" bug). Keyed on the resolved channel state
+# dir, so different agents (different tokens) never block each other.
+LAUNCHER="$INSTALL_DIR/scripts/launch-channels-claude.sh"
+[ -x "$LAUNCHER" ] || LAUNCHER="$CLAUDE"   # fail open if the wrapper is missing
 [ -z "$CLAUDE" ] && echo "ERROR: claude not found on PATH" >&2 && exit 1
 [ -z "$TMUX" ]   && echo "ERROR: tmux not found on PATH" >&2 && exit 1
 
@@ -340,10 +346,28 @@ date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
 (
   sleep 15
   CLAUDE_PID="$($TMUX list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)"
-  # Check 1: bun grandchild of the marveen-channels claude
+  # Check 1: bun poller somewhere in the pane process subtree. We walk the whole
+  # descendant tree, not just direct children, because the single-flight flock
+  # wrapper inserts a level: the pane process is `flock`, claude is its child and
+  # the bun poller a grandchild, so a direct `pgrep -P` would miss it. The walk
+  # is depth-tolerant and works identically with or without the wrapper.
   BUN_CHILD=""
   if [ -n "$CLAUDE_PID" ]; then
-    BUN_CHILD="$(/usr/bin/pgrep -P "$CLAUDE_PID" bun 2>/dev/null | head -1)"
+    _frontier="$CLAUDE_PID"
+    for _depth in 1 2 3 4 5; do
+      [ -z "$_frontier" ] && break
+      _next=""
+      for _p in $_frontier; do
+        for _k in $(/usr/bin/pgrep -P "$_p" 2>/dev/null); do
+          if [ "$(cat /proc/$_k/comm 2>/dev/null)" = "bun" ]; then
+            BUN_CHILD="$_k"; break 3
+          fi
+          _next="$_next $_k"
+        done
+      done
+      _frontier="$_next"
+    done
+    unset _frontier _next _depth _p _k
   fi
   if [ -n "$BUN_CHILD" ]; then
     # Plugin is alive via the authoritative process-tree check. Don't probe the

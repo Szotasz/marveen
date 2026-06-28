@@ -78,3 +78,12 @@ scripts/support-mail/no-support-reply.html
 # Python bytecode cache
 __pycache__/
 *.pyc
+.venv-gdocs/
+.venv-kef/
+.vscode/
+dist.predeploy/
+scratch_summary_*.json
+/cutover.sh
+scripts/kef/out_tv/
+scripts/kef/out_import/
+scripts/kef/out_*/

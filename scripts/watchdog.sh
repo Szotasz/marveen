@@ -82,13 +82,27 @@ PYEOF
 }
 
 # ── Dashboard ──────────────────────────────────────────────────────────────
-DASHBOARD_PID=$(ps -ef | grep "node dist/index.js" | grep -v grep | awk '{print $2}' | head -1)
-if [ -z "$DASHBOARD_PID" ]; then
-  echo "$(timestamp) [watchdog] Dashboard down, restarting..." >> "$LOG"
-  cd "$INSTALL_DIR" && nohup npm start >> "$INSTALL_DIR/logs/dashboard.log" 2>&1 &
-  sleep 5
-  NEW_PID=$(ps -ef | grep "node dist/index.js" | grep -v grep | awk '{print $2}' | head -1)
-  echo "$(timestamp) [watchdog] Dashboard restarted (PID: ${NEW_PID:-?})" >> "$LOG"
+# When systemd owns the dashboard (marveen-dashboard.service, Restart=always)
+# DEFER to it. The old `grep "node dist/index.js"` never matched the unit's
+# absolute-path argv (`/usr/bin/node /root/marveen/dist/index.js`), so the
+# watchdog believed the dashboard was down and launched a SECOND `npm start`
+# dashboard on every run -- two processes fighting for WEB_PORT (EADDRINUSE),
+# which produced the endless crash-restart loop. Only intervene if systemd
+# itself has given up; fall back to npm start only on non-systemd installs.
+if systemctl list-unit-files marveen-dashboard.service >/dev/null 2>&1; then
+  DASH_STATE=$(systemctl is-active marveen-dashboard.service 2>/dev/null)
+  if [ "$DASH_STATE" != "active" ] && [ "$DASH_STATE" != "activating" ]; then
+    echo "$(timestamp) [watchdog] Dashboard $DASH_STATE, systemctl restart..." >> "$LOG"
+    systemctl reset-failed marveen-dashboard.service 2>/dev/null
+    systemctl restart marveen-dashboard.service
+    sleep 5
+  fi
+else
+  if ! curl -s -m 5 -o /dev/null "http://localhost:${WEB_PORT}/" 2>/dev/null; then
+    echo "$(timestamp) [watchdog] Dashboard down, npm start..." >> "$LOG"
+    cd "$INSTALL_DIR" && nohup npm start >> "$INSTALL_DIR/logs/dashboard.log" 2>&1 &
+    sleep 5
+  fi
 fi
 
 # ── Main agent session ─────────────────────────────────────────────────────
@@ -133,7 +147,17 @@ for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
     continue
   fi
 
-  CMD="export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export TELEGRAM_STATE_DIR=\"$CHAN_DIR\" && cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:telegram@claude-plugins-official"
+  # Route through the single-flight launcher so an agent restart can never
+  # become a second concurrent poller on that agent's bot token (per-token
+  # flock, keyed on TELEGRAM_STATE_DIR=$CHAN_DIR). Fail open if missing.
+  LAUNCHER="$INSTALL_DIR/scripts/launch-channels-claude.sh"
+  [ -x "$LAUNCHER" ] || LAUNCHER="$CLAUDE_BIN"
+  # CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false: disable the input ghost-text
+  # suggestions. Without it, stale history suggestions can get auto-re-submitted
+  # (the "ghost-text re-submit" bug) -- an agent silently re-runs the same task
+  # over and over. The dashboard launcher (agent-process.js) sets this; the
+  # recovery launch must match it, or watchdog-restarted agents lose the guard.
+  CMD="export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false && export TELEGRAM_STATE_DIR=\"$CHAN_DIR\" && cd \"$AGENT_DIR\" && CLAUDE=\"$CLAUDE_BIN\" \"$LAUNCHER\" --dangerously-skip-permissions --model '$MODEL' --channels plugin:telegram@claude-plugins-official"
 
   tmux new-session -d -s "$SESSION_NAME" "$CMD" 2>/dev/null
   sleep 2

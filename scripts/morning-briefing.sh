@@ -21,7 +21,17 @@ echo "=== Reggeli napindító $(date) ===" >> "$LOG"
 
 cd "$INSTALL_DIR"
 
-$CLAUDE --dangerously-skip-permissions \
+# DEPRECATED: the live morning briefing is the `reggeli-napindito` scheduled
+# task, which the schedule runner injects into the ALREADY RUNNING main session
+# (no second poller). This standalone script is macOS-LaunchAgent-era legacy and
+# is no longer triggered by anything. Kept only as a manual fallback. If ever
+# run, route through the single-flight launcher so it cannot become a second
+# concurrent poller on the main bot token (409 Conflict) while the main session
+# is up -- the flock simply refuses and this exits.
+LAUNCHER="$INSTALL_DIR/scripts/launch-channels-claude.sh"
+[ -x "$LAUNCHER" ] || LAUNCHER="$CLAUDE"
+
+CLAUDE="$CLAUDE" "$LAUNCHER" --dangerously-skip-permissions \
   --channels plugin:telegram@claude-plugins-official \
   -p "Reggeli napindító - készítsd el és küld el Telegramra (chat_id: $CHAT_ID).
 
