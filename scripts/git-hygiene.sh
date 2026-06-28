@@ -23,8 +23,10 @@ log() { echo "$(ts) [git-hygiene] $*" >> "$LOG"; }
 UPSTREAM_REPO="Szotasz/marveen"
 FORK_REPO="attila-fiREG/marveen"
 # Never delete these (anchored prefixes): production main, upstream-integration
-# snapshots, the live fiREG ops branch, and the dev line.
-PROTECT_RE='^(main|develop|merge/upstream-|chore/fireg-ops)'
+# snapshots, the live fiREG ops branch, the dev line, and the deploy branches
+# (deploy/* carry the live dist source + cherry-picked fixes; pruning one would
+# let a deploy rebuild from a fix-less upstream branch and re-drop the fix).
+PROTECT_RE='^(main|develop|merge/upstream-|chore/fireg-ops|deploy/)'
 LAG_THRESHOLD=50
 
 command -v git >/dev/null 2>&1 || exit 0
