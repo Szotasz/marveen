@@ -3,6 +3,7 @@ import { MAIN_AGENT_ID } from '../config.js'
 import { listAgentNames, readAgentRemoteHost } from './agent-config.js'
 import { isAgentRunning, captureParkedInputView, sendEnterToSession } from './agent-process.js'
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
+import { selectSweepBatch } from './sweep-budget.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { recoverStuckInputForSession, sendAlert } from './channel-monitor.js'
 import {
@@ -77,6 +78,13 @@ const INTERVAL_MS = 15_000
 const NO_STATE: StuckInputState = { parkedSig: null, firstSeenAt: null, lastRecoverAt: null, attempts: 0 }
 
 const watchState = new Map<string, StuckInputState>()
+
+// How many sub-agents the stuck-input watcher processes per 15s tick
+// (round-robin), bounding the synchronous per-tick work on a large fleet.
+const STUCK_WATCH_SWEEP_BUDGET = Number(process.env.STUCK_WATCH_SWEEP_BUDGET) > 0
+  ? Number(process.env.STUCK_WATCH_SWEEP_BUDGET)
+  : 4
+let watcherSweepCursor = 0
 
 // Bare-Enter recovery (host-aware). Used for the MAIN session (host null) and
 // for REMOTE sub-agents, where the local-tmux clear+re-inject is not
@@ -175,7 +183,14 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
     } catch (err) {
       logger.debug({ err }, 'stuck-input-watcher: main agent check error')
     }
-    for (const name of listAgentNames()) {
+    // Tick-budget the sub-agent sweep: isAgentRunning + checkLocalSubAgent are
+    // synchronous (tmux list-sessions + capture-pane + recovery), so sweeping
+    // every agent each 15s tick on a large fleet pinned the event loop. Process
+    // only a rotating batch per tick (round-robin); every agent is still covered
+    // over a few ticks. The main session is always checked above (not batched).
+    const { batch, nextCursor } = selectSweepBatch(listAgentNames(), watcherSweepCursor, STUCK_WATCH_SWEEP_BUDGET)
+    watcherSweepCursor = nextCursor
+    for (const name of batch) {
       if (!isAgentRunning(name)) {
         watchState.delete(resolveAgentSession(name))
         continue

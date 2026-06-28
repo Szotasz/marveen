@@ -5,6 +5,7 @@ import { execSync, execFileSync, spawn } from 'node:child_process'
 import { resolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, SERVICE_ID, BOT_NAME, CHANNEL_PROVIDER, PROJECT_ROOT, RESPAWN_ENABLED } from '../config.js'
+import { selectSweepBatch } from './sweep-budget.js'
 import { agentDir, listAgentNames, readAgentChannelProvider } from './agent-config.js'
 import {
   agentHasChannel,
@@ -1152,6 +1153,15 @@ function shouldEscalateMarveenDown(): boolean {
   return now - marveenSuspectFirstSeen >= MARVEEN_DOWN_CONFIRM_MS
 }
 
+// How many sub-agents the plugin monitor processes per tick (round-robin).
+// Bounds the synchronous per-tick work so a large fleet cannot pin the event
+// loop. Overridable via env for tuning without a code change.
+const MONITOR_SWEEP_BUDGET = Number(process.env.MONITOR_SWEEP_BUDGET) > 0
+  ? Number(process.env.MONITOR_SWEEP_BUDGET)
+  : 4
+// Rolling cursor into listAgentNames() for the round-robin sweep batch.
+let monitorSweepCursor = 0
+
 export function startChannelPluginMonitor(): NodeJS.Timeout | null {
   // Respawn/keep-alive is production-only. On any non-production host (e.g. a
   // local dev checkout) we never respawn the main agent or auto-restart
@@ -1171,7 +1181,18 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
 
     type Target = { session: string; isMarveen: boolean; agentName?: string; provider: ChannelProviderType }
     const targets: Target[] = [{ session: MAIN_CHANNELS_SESSION, isMarveen: true, provider: mainProvider }]
-    for (const a of listAgentNames()) {
+    // Tick-budget: the main session is swept every tick (most critical), but
+    // only a ROTATING BATCH of sub-agents is processed per tick. Every per-agent
+    // check below (isAgentRunning + agentHasChannel + capture-pane passes + pid /
+    // plugin-liveness) is synchronous; sweeping all 17+ agents each tick pinned
+    // the event loop for many seconds (HTTP 000 windows). Batching the agent
+    // NAMES up front -- before the expensive per-agent calls -- bounds a tick to
+    // MONITOR_SWEEP_BUDGET agents while still covering every agent over a few
+    // ticks (round-robin). Recovery latency rises to ~ceil(N/budget) ticks, an
+    // acceptable trade for not stalling the whole fleet's coordination API.
+    const { batch: agentBatch, nextCursor } = selectSweepBatch(listAgentNames(), monitorSweepCursor, MONITOR_SWEEP_BUDGET)
+    monitorSweepCursor = nextCursor
+    for (const a of agentBatch) {
       if (isAgentRunning(a) && agentHasChannel(a)) {
         targets.push({
           session: agentSessionName(a),
