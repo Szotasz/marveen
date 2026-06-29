@@ -47,6 +47,7 @@ import {
   readAgentTelegramConfig,
   readAgentDiscordConfig,
   readAgentGooglechatConfig,
+  readAgentTeamsConfig,
   readMarveenTelegramConfig,
   sendAvatarChangeMessage,
   sendWelcomeMessage,
@@ -308,6 +309,7 @@ interface AgentSummary {
   telegramBotUsername?: string
   hasDiscord: boolean
   hasGooglechat: boolean
+  hasTeams: boolean
   status: 'configured' | 'draft'
   running: boolean
   /** Tri-state: 'running' | 'stopped' | 'unreachable' (remote ssh failure). */
@@ -344,6 +346,7 @@ function getAgentSummary(name: string): AgentSummary {
   const tg = readAgentTelegramConfig(name)
   const dc = readAgentDiscordConfig(name)
   const gc = readAgentGooglechatConfig(name)
+  const tc = readAgentTeamsConfig(name)
   const hasClaudeMd = claudeMd.trim().length > 0
   const hasSoulMd = soulMd.trim().length > 0
 
@@ -375,6 +378,7 @@ function getAgentSummary(name: string): AgentSummary {
     telegramBotUsername: tg.botUsername,
     hasDiscord: dc.hasDiscord,
     hasGooglechat: gc.hasGooglechat,
+    hasTeams: tc.hasTeams,
     status: hasClaudeMd && hasSoulMd ? 'configured' : 'draft',
     running,
     runState,

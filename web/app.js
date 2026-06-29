@@ -3625,12 +3625,14 @@ function agentIsConnected(agent) {
   if (!agent) return false
   if (currentChannelProvider === 'discord') return !!agent.hasDiscord
   if (currentChannelProvider === 'slack') return !!agent.hasSlack
+  if (currentChannelProvider === 'teams') return !!agent.hasTeams
   return !!agent.hasTelegram
 }
 
 function getProviderLabel() {
   if (currentChannelProvider === 'discord') return 'Discord'
   if (currentChannelProvider === 'slack') return 'Slack'
+  if (currentChannelProvider === 'teams') return 'Microsoft Teams'
   return 'Telegram'
 }
 
@@ -3641,6 +3643,7 @@ function getProviderLabel() {
 function buildHowtoHtml() {
   if (currentChannelProvider === 'discord') return t('channel.howto.discord')
   if (currentChannelProvider === 'slack') return t('channel.howto.slack')
+  if (currentChannelProvider === 'teams') return t('channel.howto.teams')
   return t('channel.howto.telegram')
 }
 
@@ -3657,6 +3660,10 @@ function updateProviderUI() {
   const howto = document.getElementById('chHowtoContent')
   const pairingInfo = document.getElementById('chPairingInfo')
   const discordChannelGroup = document.getElementById('chDiscordChannelIdGroup')
+  const tokenGroup = document.getElementById('chTokenGroup')
+  // Teams config is terminal-driven (creds land in the .env via setup-azure-bot.sh),
+  // not a dashboard token paste -- default the token field visible, hide it for teams.
+  if (tokenGroup) tokenGroup.hidden = false
 
   if (isTg) {
     if (title) title.textContent = t('channel.setup.tg_title')
@@ -3678,6 +3685,16 @@ function updateProviderUI() {
     if (smokeTestBtn) smokeTestBtn.hidden = true
     if (discordChannelGroup) discordChannelGroup.hidden = false
     if (pairingInfo) pairingInfo.textContent = t('channel.setup.discord_pairing')
+  } else if (currentChannelProvider === 'teams') {
+    if (title) title.textContent = t('channel.setup.teams_title')
+    if (steps) steps.innerHTML = t('channel.setup.teams_steps')
+    if (slackGroup) slackGroup.hidden = true
+    if (manifestBtnGroup) manifestBtnGroup.hidden = true
+    if (smokeTestBtn) smokeTestBtn.hidden = true
+    if (discordChannelGroup) discordChannelGroup.hidden = true
+    // No dashboard token entry for Teams -- creds come from the terminal setup.
+    if (tokenGroup) tokenGroup.hidden = true
+    if (pairingInfo) pairingInfo.textContent = t('channel.setup.teams_pairing')
   } else {
     if (title) title.textContent = t('channel.setup.slack_title')
     if (steps) steps.innerHTML = t('channel.setup.slack_steps')
