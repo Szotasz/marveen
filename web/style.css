@@ -5989,3 +5989,15 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
 .naplo-note { font-style: italic; color: var(--text-muted); }
 .naplo-event-type { font-size: 11px; background: var(--bg); border-radius: 3px; padding: 1px 5px; color: var(--text-muted); }
 .naplo-sensitive { font-size: 11px; color: var(--danger, #ef4444); font-weight: 600; }
+
+/* sidebar nav section group headers (left-menu grouping) */
+.sb-section {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  opacity: 0.65;
+  padding: 4px 10px 2px;
+  margin-top: 12px;
+}
