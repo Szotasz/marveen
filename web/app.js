@@ -12082,7 +12082,7 @@ function downloadMarkdown(name, content) {
     const todayPct = Math.max(0, Math.min(100, (nowMs - rangeStart) / totalMs * 100))
 
     // Filter: cards that have a due_date
-    let cards = (typeof kanbanCards !== 'undefined' ? kanbanCards : []).filter(c => c.due_date)
+    let cards = (Array.isArray(kanbanCards) ? kanbanCards : []).filter(c => c.due_date)
 
     if (ganttOverdueOnly) {
       // Keep cards that are overdue OR due within 7 days
