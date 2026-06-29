@@ -1327,6 +1327,23 @@ window._i18n.hu = {
   'kanban.filter.group_assignee':'Felelős szerint',
   'kanban.filter.group_priority':'Prioritás szerint',
 
+  // --- Kanban Gantt/idővonal nézet ---
+  'kanban.view.board':              'Tábla',
+  'kanban.view.gantt':              'Idővonal',
+  'kanban.gantt.filter.period_week':    'Ezen hét',
+  'kanban.gantt.filter.period_month':   'Hónap',
+  'kanban.gantt.filter.period_quarter': 'Negyedév',
+  'kanban.gantt.filter.overdue_only':   'Csak lejárt/közelgő',
+  'kanban.gantt.no_cards':          'Nincs határidős kártya',
+  'kanban.gantt.legend.planned':    'Tervezett',
+  'kanban.gantt.legend.in_progress':'Folyamatban',
+  'kanban.gantt.legend.waiting':    'Várakozó',
+  'kanban.gantt.legend.done':       'Kész',
+  'kanban.gantt.legend.overdue':    'Lejárt',
+  'kanban.gantt.legend.today':      'MA = mai nap (piros vonal)',
+  'kanban.gantt.col_label':         'Projekt / Kártya',
+  'kanban.gantt.no_project':        '(nincs projekt)',
+
   // --- Activity tooltip ---
   'activity.tooltip.terminal':   'Terminal megnyitása',
 

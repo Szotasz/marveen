@@ -1329,6 +1329,23 @@ window._i18n.en = {
   'kanban.filter.group_assignee':'By assignee',
   'kanban.filter.group_priority':'By priority',
 
+  // --- Kanban Gantt/timeline view ---
+  'kanban.view.board':              'Board',
+  'kanban.view.gantt':              'Timeline',
+  'kanban.gantt.filter.period_week':    'This week',
+  'kanban.gantt.filter.period_month':   'Month',
+  'kanban.gantt.filter.period_quarter': 'Quarter',
+  'kanban.gantt.filter.overdue_only':   'Only overdue/upcoming',
+  'kanban.gantt.no_cards':          'No cards with a due date',
+  'kanban.gantt.legend.planned':    'Planned',
+  'kanban.gantt.legend.in_progress':'In Progress',
+  'kanban.gantt.legend.waiting':    'Waiting',
+  'kanban.gantt.legend.done':       'Done',
+  'kanban.gantt.legend.overdue':    'Overdue',
+  'kanban.gantt.legend.today':      'TODAY = today line (red)',
+  'kanban.gantt.col_label':         'Project / Card',
+  'kanban.gantt.no_project':        '(no project)',
+
   // --- Activity tooltip ---
   'activity.tooltip.terminal':   'Open terminal',
 

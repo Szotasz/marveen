@@ -250,7 +250,7 @@ function switchPage(pageId) {
   // Kanban auto-refresh: start on enter, stop on leave.
   if (pageId !== 'kanban') stopKanbanRefresh()
   if (pageId === 'overview') loadOverview()
-  if (pageId === 'kanban') { loadKanban(); startKanbanRefresh() }
+  if (pageId === 'kanban') { if (typeof _initGanttViewSwitcher === 'function') _initGanttViewSwitcher(); loadKanban(); startKanbanRefresh() }
   if (pageId === 'tasks') loadSchedules()
   if (pageId === 'agents') loadAgents()
   if (pageId === 'memories') { loadMemAgents(); loadMemStats(); loadMemories() }
@@ -11996,4 +11996,318 @@ function downloadMarkdown(name, content) {
   }
 
   window.loadNaplo = loadNaplo
+})()
+
+// === Kanban Gantt / timeline view ===
+;(function () {
+  // --- State ---
+  let ganttPeriod = 'week'  // 'week' | 'month' | 'quarter'
+  let ganttOverdueOnly = false
+  let _initialized = false
+
+  // --- Color map by status (vars from theme) ---
+  const STATUS_COLOR = {
+    planned:     { bg: 'var(--accent)',  border: 'var(--accent)' },
+    in_progress: { bg: '#4f8ef7',        border: '#3a7be0' },
+    waiting:     { bg: '#e8a838',        border: '#c88c20' },
+    done:        { bg: '#3dbf79',        border: '#28a560' },
+  }
+
+  // Period window: returns { rangeStart: Date, rangeEnd: Date } (midnight boundaries)
+  function periodWindow() {
+    const now = new Date()
+    const start = new Date(now)
+    start.setHours(0, 0, 0, 0)
+    const end = new Date(start)
+    if (ganttPeriod === 'week') {
+      // Mon..Sun of current week
+      const dow = (start.getDay() + 6) % 7  // Mon=0
+      start.setDate(start.getDate() - dow)
+      end.setDate(start.getDate() + 7)
+    } else if (ganttPeriod === 'month') {
+      start.setDate(1)
+      end.setFullYear(start.getFullYear(), start.getMonth() + 1, 1)
+    } else {  // quarter
+      const qStart = Math.floor(start.getMonth() / 3) * 3
+      start.setMonth(qStart, 1)
+      end.setFullYear(start.getFullYear(), qStart + 3, 1)
+    }
+    return { rangeStart: start, rangeEnd: end }
+  }
+
+  // Format date as short label (e.g. "jún 15" / "Jun 15")
+  function fmtDateShort(d) {
+    return d.toLocaleDateString(typeof _lang !== 'undefined' && _lang === 'en' ? 'en-US' : 'hu-HU', { month: 'short', day: 'numeric' })
+  }
+
+  // Return header tick labels for the visible range
+  function buildHeaderTicks(rangeStart, rangeEnd) {
+    const ticks = []
+    const totalMs = rangeEnd - rangeStart
+    // Aim for ~5-8 ticks; snap to day boundaries
+    let stepDays = 1
+    if (ganttPeriod === 'month') stepDays = 7
+    else if (ganttPeriod === 'quarter') stepDays = 14
+    const cur = new Date(rangeStart)
+    while (cur < rangeEnd) {
+      ticks.push({
+        date: new Date(cur),
+        pct: (cur - rangeStart) / totalMs * 100,
+      })
+      cur.setDate(cur.getDate() + stepDays)
+    }
+    return ticks
+  }
+
+  // Group visible cards by project (or 'Nincs projekt' for null)
+  function groupCardsByProject(cards) {
+    const map = new Map()
+    for (const c of cards) {
+      const key = c.project || t('kanban.gantt.no_project')
+      if (!map.has(key)) map.set(key, [])
+      map.get(key).push(c)
+    }
+    return map
+  }
+
+  // Build and inject the Gantt DOM into #kanbanGanttView
+  function renderGantt() {
+    const container = document.getElementById('kanbanGanttView')
+    if (!container) return
+    container.innerHTML = ''
+
+    const { rangeStart, rangeEnd } = periodWindow()
+    const totalMs = rangeEnd - rangeStart
+    const nowMs = Date.now()
+    const todayPct = Math.max(0, Math.min(100, (nowMs - rangeStart) / totalMs * 100))
+
+    // Filter: cards that have a due_date
+    let cards = (typeof kanbanCards !== 'undefined' ? kanbanCards : []).filter(c => c.due_date)
+
+    if (ganttOverdueOnly) {
+      // Keep cards that are overdue OR due within 7 days
+      const cutoff = (nowMs + 7 * 86400000) / 1000
+      cards = cards.filter(c => c.due_date <= cutoff / 1 && c.status !== 'done')
+    }
+
+    // Exclude cards whose entire bar lies outside the window
+    cards = cards.filter(c => {
+      const barStart = c.created_at ? c.created_at * 1000 : rangeStart.getTime()
+      const barEnd   = c.due_date * 1000
+      return barEnd >= rangeStart && barStart <= rangeEnd
+    })
+
+    if (cards.length === 0) {
+      container.innerHTML = `<p style="color:var(--muted);padding:24px 0;text-align:center;">${t('kanban.gantt.no_cards')}</p>`
+      return
+    }
+
+    const grouped = groupCardsByProject(cards)
+
+    // --- Outer layout ---
+    const wrap = document.createElement('div')
+    wrap.className = 'gantt-wrap'
+    wrap.style.cssText = 'display:flex;flex-direction:column;overflow:hidden;'
+
+    // --- Header row: left label + tick strip ---
+    const headerRow = document.createElement('div')
+    headerRow.style.cssText = 'display:flex;border-bottom:1px solid var(--border);margin-bottom:4px;'
+
+    const headerLabel = document.createElement('div')
+    headerLabel.style.cssText = 'width:220px;min-width:220px;font-size:12px;color:var(--muted);padding:4px 8px;border-right:1px solid var(--border);'
+    headerLabel.textContent = t('kanban.gantt.col_label')
+    headerRow.appendChild(headerLabel)
+
+    const headerTrack = document.createElement('div')
+    headerTrack.style.cssText = 'flex:1;position:relative;height:28px;overflow:hidden;'
+    const ticks = buildHeaderTicks(rangeStart, rangeEnd)
+    for (const tick of ticks) {
+      const el = document.createElement('div')
+      el.style.cssText = `position:absolute;left:${tick.pct.toFixed(2)}%;transform:translateX(-50%);font-size:11px;color:var(--muted);top:6px;white-space:nowrap;`
+      el.textContent = fmtDateShort(tick.date)
+      headerTrack.appendChild(el)
+    }
+    // Today marker in header
+    if (todayPct >= 0 && todayPct <= 100) {
+      const todayHead = document.createElement('div')
+      todayHead.style.cssText = `position:absolute;left:${todayPct.toFixed(2)}%;top:0;bottom:0;width:2px;background:var(--danger,#e05252);opacity:0.6;`
+      headerTrack.appendChild(todayHead)
+    }
+    headerRow.appendChild(headerTrack)
+    wrap.appendChild(headerRow)
+
+    // --- Body rows ---
+    const body = document.createElement('div')
+    body.style.cssText = 'overflow-y:auto;max-height:70vh;'
+
+    for (const [project, projCards] of grouped) {
+      // Group header
+      const groupHeader = document.createElement('div')
+      groupHeader.style.cssText = 'display:flex;align-items:center;background:var(--bg2,var(--sidebar-bg));border-bottom:1px solid var(--border);'
+      const ghLabel = document.createElement('div')
+      ghLabel.style.cssText = 'width:220px;min-width:220px;font-size:12px;font-weight:600;color:var(--fg);padding:5px 8px;border-right:1px solid var(--border);'
+      ghLabel.textContent = `${project} (${projCards.length})`
+      groupHeader.appendChild(ghLabel)
+      const ghStripe = document.createElement('div')
+      ghStripe.style.cssText = 'flex:1;height:26px;background:var(--bg2,var(--sidebar-bg));'
+      groupHeader.appendChild(ghStripe)
+      body.appendChild(groupHeader)
+
+      // Card rows
+      for (const card of projCards) {
+        const barStartMs = card.created_at ? card.created_at * 1000 : rangeStart.getTime()
+        const barEndMs   = card.due_date * 1000
+        const isOverdue  = card.status !== 'done' && barEndMs < nowMs
+
+        // Clamp to window
+        const clampedStart = Math.max(barStartMs, rangeStart.getTime())
+        const clampedEnd   = Math.min(barEndMs,   rangeEnd.getTime())
+        const leftPct  = (clampedStart - rangeStart) / totalMs * 100
+        const widthPct = Math.max(0.5, (clampedEnd - clampedStart) / totalMs * 100)
+
+        const col = isOverdue ? { bg: 'var(--danger,#e05252)', border: '#b83030' }
+                              : (STATUS_COLOR[card.status] || STATUS_COLOR.planned)
+
+        const row = document.createElement('div')
+        row.style.cssText = 'display:flex;align-items:center;border-bottom:1px solid var(--border);min-height:32px;'
+
+        const rowLabel = document.createElement('div')
+        rowLabel.style.cssText = 'width:220px;min-width:220px;font-size:12px;color:var(--fg);padding:4px 8px;border-right:1px solid var(--border);overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer;'
+        rowLabel.title = card.title
+        rowLabel.textContent = `#${card.id} ${card.title}`
+        rowLabel.addEventListener('click', () => { if (typeof openCardDetail === 'function') openCardDetail(card.id) })
+
+        const rowTrack = document.createElement('div')
+        rowTrack.style.cssText = 'flex:1;position:relative;height:32px;overflow:hidden;'
+
+        // Today line (in each row)
+        if (todayPct >= 0 && todayPct <= 100) {
+          const tl = document.createElement('div')
+          tl.style.cssText = `position:absolute;left:${todayPct.toFixed(2)}%;top:0;bottom:0;width:2px;background:var(--danger,#e05252);z-index:1;pointer-events:none;`
+          rowTrack.appendChild(tl)
+        }
+
+        const bar = document.createElement('div')
+        bar.style.cssText = [
+          `position:absolute`,
+          `left:${leftPct.toFixed(2)}%`,
+          `width:${widthPct.toFixed(2)}%`,
+          `top:5px`,
+          `bottom:5px`,
+          `background:${col.bg}`,
+          `border:1px solid ${col.border}`,
+          `border-radius:4px`,
+          `overflow:hidden`,
+          `white-space:nowrap`,
+          `font-size:11px`,
+          `color:#fff`,
+          `display:flex`,
+          `align-items:center`,
+          `padding:0 6px`,
+          `box-sizing:border-box`,
+          `cursor:pointer`,
+          `z-index:2`,
+          isOverdue ? 'background-image:repeating-linear-gradient(45deg,rgba(0,0,0,.12) 0px,rgba(0,0,0,.12) 4px,transparent 4px,transparent 8px)' : '',
+        ].filter(Boolean).join(';')
+        bar.title = `#${card.id} ${card.title}\n${fmtDateShort(new Date(barStartMs))} - ${fmtDateShort(new Date(barEndMs))}`
+        bar.textContent = `#${card.id} ${card.title}`
+        bar.addEventListener('click', () => { if (typeof openCardDetail === 'function') openCardDetail(card.id) })
+        rowTrack.appendChild(bar)
+        row.appendChild(rowLabel)
+        row.appendChild(rowTrack)
+        body.appendChild(row)
+      }
+    }
+
+    wrap.appendChild(body)
+
+    // --- Legend ---
+    const legend = document.createElement('div')
+    legend.style.cssText = 'display:flex;align-items:center;gap:16px;margin-top:10px;font-size:12px;flex-wrap:wrap;'
+    const legendItems = [
+      { key: 'planned',     color: STATUS_COLOR.planned.bg },
+      { key: 'in_progress', color: STATUS_COLOR.in_progress.bg },
+      { key: 'waiting',     color: STATUS_COLOR.waiting.bg },
+      { key: 'done',        color: STATUS_COLOR.done.bg },
+      { key: 'overdue',     color: 'var(--danger,#e05252)' },
+    ]
+    for (const item of legendItems) {
+      const dot = document.createElement('span')
+      dot.innerHTML = `<span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:${item.color};vertical-align:middle;margin-right:4px;"></span>${t('kanban.gantt.legend.' + item.key)}`
+      legend.appendChild(dot)
+    }
+    const todayLegend = document.createElement('span')
+    todayLegend.style.cssText = 'margin-left:auto;color:var(--muted);'
+    todayLegend.innerHTML = `<span style="display:inline-block;width:12px;height:2px;background:var(--danger,#e05252);vertical-align:middle;margin-right:4px;"></span>${t('kanban.gantt.legend.today')}`
+    legend.appendChild(todayLegend)
+    wrap.appendChild(legend)
+
+    container.appendChild(wrap)
+  }
+
+  // --- View switcher init (called once after DOM ready) ---
+  function initGanttViewSwitcher() {
+    if (_initialized) return
+    _initialized = true
+
+    const boardBtn  = document.getElementById('kanbanViewBoard')
+    const ganttBtn  = document.getElementById('kanbanViewGantt')
+    const boardFilters = document.getElementById('kanbanBoardFilters')
+    const ganttFilters = document.getElementById('kanbanGanttFilters')
+    const boardEls  = [document.getElementById('kanbanBoard'), document.getElementById('kanbanSwimlaneBoard')]
+    const ganttEl   = document.getElementById('kanbanGanttView')
+
+    function activateBoard() {
+      boardBtn.classList.add('active')
+      ganttBtn.classList.remove('active')
+      boardFilters.style.display = 'flex'
+      ganttFilters.style.display = 'none'
+      boardEls.forEach(el => { if (el) el.style.removeProperty('display') })
+      ganttEl.style.display = 'none'
+    }
+
+    function activateGantt() {
+      ganttBtn.classList.add('active')
+      boardBtn.classList.remove('active')
+      ganttFilters.style.display = 'flex'
+      boardFilters.style.display = 'none'
+      boardEls.forEach(el => { if (el) el.style.display = 'none' })
+      ganttEl.style.display = 'block'
+      renderGantt()
+    }
+
+    boardBtn.addEventListener('click', activateBoard)
+    ganttBtn.addEventListener('click', activateGantt)
+
+    // Period buttons
+    document.querySelectorAll('#kanbanGanttFilters [data-period]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        ganttPeriod = btn.dataset.period
+        document.querySelectorAll('#kanbanGanttFilters [data-period]').forEach(b => b.classList.remove('active'))
+        btn.classList.add('active')
+        renderGantt()
+      })
+    })
+
+    // Overdue toggle
+    const overdueChk = document.getElementById('ganttOverdueOnly')
+    if (overdueChk) {
+      overdueChk.addEventListener('change', () => {
+        ganttOverdueOnly = overdueChk.checked
+        renderGantt()
+      })
+    }
+
+    // Re-render on data refresh (hook into global loadKanban completion)
+    const _origRenderKanban = window.renderKanban
+    if (typeof _origRenderKanban === 'function') {
+      window.renderKanban = function () {
+        _origRenderKanban.apply(this, arguments)
+        if (ganttEl.style.display !== 'none') renderGantt()
+      }
+    }
+  }
+
+  window._initGanttViewSwitcher = initGanttViewSwitcher
+  window.renderGantt = renderGantt
 })()

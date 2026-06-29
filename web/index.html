@@ -203,7 +203,14 @@
 
     <!-- === Kanban Page === -->
     <div class="page" id="kanbanPage" hidden>
-      <div style="margin-bottom:12px;display:flex;align-items:center;gap:8px;">
+      <!-- View switcher: board vs gantt (top, always visible) -->
+      <div id="kanbanViewSwitcher" style="display:flex;align-items:center;gap:6px;margin-bottom:10px;">
+        <button class="view-btn active" id="kanbanViewBoard" style="width:auto;padding:0 12px;" data-i18n="kanban.view.board">Tábla</button>
+        <button class="view-btn" id="kanbanViewGantt" style="width:auto;padding:0 12px;" data-i18n="kanban.view.gantt">Idővonal</button>
+      </div>
+
+      <!-- Board-specific filter row (hidden when gantt active) -->
+      <div id="kanbanBoardFilters" style="margin-bottom:12px;display:flex;align-items:center;gap:8px;">
         <label for="kanbanProjectFilter" style="font-size:13px;color:var(--muted);white-space:nowrap;">Projekt:</label>
         <select id="kanbanProjectFilter" style="font-size:13px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);min-width:140px;">
           <option value="">Mind</option>
@@ -216,6 +223,18 @@
         </select>
         <div class="kanban-quick-filters" id="kanbanQuickFilters" style="margin-left:auto; display:flex; gap:6px; flex-wrap:wrap; align-items:center;"></div>
       </div>
+
+      <!-- Gantt-specific filter row (hidden when board active) -->
+      <div id="kanbanGanttFilters" style="display:none;margin-bottom:12px;align-items:center;gap:6px;flex-wrap:wrap;">
+        <button class="view-btn active" id="ganttPeriodWeek" data-period="week" data-i18n="kanban.gantt.filter.period_week">Ezen hét</button>
+        <button class="view-btn" id="ganttPeriodMonth" data-period="month" data-i18n="kanban.gantt.filter.period_month">Hónap</button>
+        <button class="view-btn" id="ganttPeriodQuarter" data-period="quarter" data-i18n="kanban.gantt.filter.period_quarter">Negyedév</button>
+        <label style="display:flex;align-items:center;gap:5px;font-size:13px;color:var(--muted);margin-left:10px;cursor:pointer;">
+          <input type="checkbox" id="ganttOverdueOnly" style="cursor:pointer;">
+          <span data-i18n="kanban.gantt.filter.overdue_only">Csak lejárt/közelgő</span>
+        </label>
+      </div>
+
       <div class="kanban-board" id="kanbanBoard">
         <div class="kanban-col" data-status="planned">
           <div class="kanban-col-header">
@@ -250,6 +269,8 @@
         </div>
       </div>
       <div class="kanban-board kanban-swimlane-board" id="kanbanSwimlaneBoard" hidden></div>
+      <!-- Gantt / timeline view container -->
+      <div id="kanbanGanttView" style="display:none;"></div>
     </div>
 
     <!-- === Archived Cards Page === -->
