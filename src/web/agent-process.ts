@@ -244,6 +244,43 @@ export function ensureIsolatedChannelConfigDir(
       }
     }
 
+    // 4. Seed onboarding/consent state so the FIRST interactive launch of this
+    //    fresh CLAUDE_CONFIG_DIR does not drop into Claude Code's first-run
+    //    dialogs. A brand-new config dir triggers a CHAIN of interactive prompts
+    //    -- "Select login method" (gated on hasCompletedOnboarding) and the
+    //    per-project "allow external imports" trust dialog (gated on
+    //    projects[cwd].hasTrustDialogAccepted) -- each of which blocks the
+    //    channels TUI before it ever authenticates from CLAUDE_CODE_OAUTH_TOKEN
+    //    (the env token works headlessly but the interactive pickers bypass it).
+    //    Rather than enumerate every flag (the set grows across Claude Code
+    //    versions; confirmed on 2.1.195, 2026-06-29 fleet rollout), seed the
+    //    isolated .claude.json from a COPY of the already-consented shared
+    //    ~/.claude.json on first provision, so every consent flag is inherited.
+    //    Only seed when absent -- once Claude Code owns the file we leave its
+    //    evolved state alone, just guaranteeing hasCompletedOnboarding stays set.
+    try {
+      const dotClaude = join(cfg, '.claude.json')
+      const sharedDot = join(homedir(), '.claude.json')
+      if (!existsSync(dotClaude)) {
+        let seed: Record<string, unknown> = { hasCompletedOnboarding: true }
+        if (existsSync(sharedDot)) {
+          try { seed = JSON.parse(readFileSync(sharedDot, 'utf-8')) as Record<string, unknown> } catch { /* keep minimal */ }
+        }
+        seed.hasCompletedOnboarding = true
+        writeFileSync(dotClaude, JSON.stringify(seed, null, 2) + '\n')
+      } else {
+        try {
+          const cur = JSON.parse(readFileSync(dotClaude, 'utf-8')) as Record<string, unknown>
+          if (cur.hasCompletedOnboarding !== true) {
+            cur.hasCompletedOnboarding = true
+            writeFileSync(dotClaude, JSON.stringify(cur, null, 2) + '\n')
+          }
+        } catch { /* unparseable -> leave for Claude Code to recreate */ }
+      }
+    } catch (err) {
+      logger.warn({ err, name }, 'isolated-config: failed to seed onboarding state')
+    }
+
     return cfg
   } catch (err) {
     logger.warn({ err, name }, 'isolated-config: provisioning failed, falling back to shared ~/.claude')
