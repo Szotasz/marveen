@@ -87,6 +87,27 @@ function runProc(
 // Concurrency guard: prevents parallel installs racing on the same venv/DEST.
 let _installInProgress = false
 
+// Transcribe a Telegram voice file via the local whisper toolkit. This is the
+// single in-process entry point for STT -- both the /api/voice/stt route AND
+// the message-router tick call it DIRECTLY. The router must never self-HTTP to
+// /api/voice/stt: a process HTTP-calling its own dashboard from the 5s tick
+// coupled message delivery to the HTTP server and, under sustained voice
+// traffic, threw the event loop (progressive /api/agents latency 73ms -> 12s ->
+// timeout). Returns the transcript, or null on any failure (toolkit missing,
+// invalid input, whisper non-zero). The whisper subprocess keeps its own 60s
+// timeout inside runProc, so a slow transcription can never hang the caller.
+export async function transcribeVoiceFile(fileId: string, stateDir: string): Promise<string | null> {
+  if (!isVoiceInstalled()) return null
+  if (!SAFE_FILE_ID_RE.test(fileId)) return null
+  if (!isSafeStateDir(stateDir)) return null
+  const result = await runProc(VENV_PY, [VTOOLS_PY, 'transcribe', fileId, stateDir], { timeoutMs: 60_000 })
+  if (result.code !== 0) {
+    logger.warn({ fileId, stderr: result.stderr.slice(0, 200) }, 'transcribeVoiceFile: whisper failed')
+    return null
+  }
+  return result.stdout.trim()
+}
+
 export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -181,17 +202,13 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
     if (!SAFE_FILE_ID_RE.test(fileId)) { json(res, { error: 'Invalid file_id' }, 400); return true }
     if (!isSafeStateDir(stateDir)) { json(res, { error: 'Invalid state_dir' }, 400); return true }
 
-    const result = await runProc(
-      VENV_PY,
-      [VTOOLS_PY, 'transcribe', fileId, stateDir],
-      { timeoutMs: 60_000 },
-    )
-    if (result.code !== 0) {
-      logger.warn({ fileId, stderr: result.stderr }, '/api/voice/stt: whisper failed')
-      json(res, { error: 'STT failed', detail: result.stderr.slice(0, 200) }, 500)
+    const transcript = await transcribeVoiceFile(fileId, stateDir)
+    if (transcript === null) {
+      logger.warn({ fileId }, '/api/voice/stt: whisper failed')
+      json(res, { error: 'STT failed' }, 500)
       return true
     }
-    json(res, { transcript: result.stdout.trim() })
+    json(res, { transcript })
     return true
   }
 

@@ -1,5 +1,5 @@
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID, STORE_DIR, WEB_PORT } from '../config.js'
+import { MAIN_AGENT_ID } from '../config.js'
 import { resolveAgentChannelStateDir } from './voice-directive.js'
 import {
   getPendingMessages,
@@ -78,6 +78,9 @@ export function shouldAbandon(sessionExists: boolean, ageMs: number, windowMs: n
 // agent tmux sessions.
 let _tickRunning = false
 
+// Max messages drained per 5s tick; a larger backlog rolls to the next tick.
+const MAX_MESSAGES_PER_TICK = 25
+
 export function startMessageRouter(): NodeJS.Timeout {
   return setInterval(async () => {
     // Re-entrancy guard: STT can hold a tick for up to 65s; skip new ticks
@@ -85,7 +88,12 @@ export function startMessageRouter(): NodeJS.Timeout {
     if (_tickRunning) return
     _tickRunning = true
     try {
-    const pending = getPendingMessages()
+    // Cap work per tick: process at most MAX_MESSAGES_PER_TICK messages, the
+    // rest roll to the next 5s tick. Bounds a single tick's wall-time so a
+    // backlog (e.g. after a delivery stall) can never make one tick run long
+    // and starve the event loop -- the slow-tick half of the progressive-hang
+    // pattern. Ordering is preserved (oldest first) so nothing is starved.
+    const pending = getPendingMessages().slice(0, MAX_MESSAGES_PER_TICK)
     const now = Date.now()
     for (const msg of pending) {
       const ageMs = now - msg.created_at * 1000
@@ -267,33 +275,25 @@ function injectTranscript(content: string, transcript: string): string {
   return result
 }
 
-// Call the dashboard /api/voice/stt endpoint (localhost, same process).
-// Returns the transcript string on success, null on failure.
+// Transcribe an inbound voice message. Calls transcribeVoiceFile() DIRECTLY
+// (in-process) instead of self-HTTP'ing to /api/voice/stt: the old fetch to
+// the same process's dashboard (65s AbortSignal) ran on the tick and coupled
+// delivery to the HTTP server -- under sustained voice traffic it progressively
+// throttled the event loop (/api/agents 73ms -> 12s -> timeout). The whisper
+// subprocess keeps its own 60s timeout inside transcribeVoiceFile, so this can
+// never hang the tick beyond that. Returns the transcript, or null on failure.
 async function callVoiceSTT(fileId: string, agentId: string): Promise<string | null> {
   try {
-    const { readFileSync, existsSync } = await import('node:fs')
+    const { existsSync } = await import('node:fs')
     const { join } = await import('node:path')
 
     // Resolve the agent's channel state_dir using the canonical helper so
     // sub-agents (whose .env lives under AGENTS_BASE_DIR) are found correctly.
     const resolvedDir = resolveAgentChannelStateDir(agentId, 'telegram')
-
     if (!existsSync(join(resolvedDir, '.env'))) return null
 
-    const tokenPath = join(STORE_DIR, '.dashboard-token')
-    if (!existsSync(tokenPath)) return null
-    const dashToken = readFileSync(tokenPath, 'utf-8').trim()
-
-    const body = JSON.stringify({ file_id: fileId, state_dir: resolvedDir })
-    const resp = await fetch(`http://127.0.0.1:${WEB_PORT}/api/voice/stt`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${dashToken}` },
-      body,
-      signal: AbortSignal.timeout(65_000),
-    })
-    if (!resp.ok) return null
-    const data = await resp.json() as { transcript?: string }
-    return data.transcript ?? null
+    const { transcribeVoiceFile } = await import('./routes/voice.js')
+    return await transcribeVoiceFile(fileId, resolvedDir)
   } catch (err) {
     logger.warn({ err }, 'message-router: callVoiceSTT error')
     return null
