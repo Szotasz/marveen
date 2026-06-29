@@ -46,6 +46,13 @@ export interface ScheduledTask {
   timeoutMs?: number
   // type='command' only: consecutive failures before a Telegram alert (default 2).
   failThreshold?: number
+  // Optional pre-check script (filename relative to the task dir, or absolute path).
+  // Runs via `bash` BEFORE invoking the LLM. Protocol:
+  //   exit 0 + stdout "SKIP" → skip LLM this tick (nothing actionable)
+  //   exit 0 + other stdout  → run LLM with stdout prepended to prompt as context
+  //   exit 0 + empty stdout  → run LLM normally
+  //   non-zero exit          → log warning, run LLM anyway (fail-open)
+  preCheck?: string
 }
 
 function readFileOr(path: string, fallback: string): string {
@@ -78,7 +85,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
   const skillContent = hasSkill ? readFileOr(skillPath, '') : ''
   const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number } = {}
+  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string } = {}
   try {
     config = JSON.parse(readFileOr(configPath, '{}'))
   } catch { /* use defaults */ }
@@ -98,6 +105,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     command: config.command,
     timeoutMs: config.timeoutMs,
     failThreshold: config.failThreshold,
+    preCheck: config.preCheck,
   }
 }
 
@@ -116,7 +124,7 @@ export function listScheduledTasks(): ScheduledTask[] {
 
 export function writeScheduledTask(
   taskName: string,
-  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number },
+  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string },
 ): void {
   const dir = join(SCHEDULED_TASKS_DIR, taskName)
   mkdirSync(dir, { recursive: true })
@@ -146,6 +154,7 @@ export function writeScheduledTask(
   if (data.command !== undefined) config.command = data.command
   if (data.timeoutMs !== undefined) config.timeoutMs = data.timeoutMs
   if (data.failThreshold !== undefined) config.failThreshold = data.failThreshold
+  if (data.preCheck !== undefined) config.preCheck = data.preCheck
   if (data.description !== undefined) config.description = data.description
   if (!config.createdAt) config.createdAt = Math.floor(Date.now() / 1000)
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))

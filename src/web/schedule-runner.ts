@@ -1,5 +1,6 @@
-import { join } from 'node:path'
-import { readFileSync } from 'node:fs'
+import { join, isAbsolute } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { logger } from '../logger.js'
 import {
@@ -24,6 +25,7 @@ import {
 import { cronMatchesNow } from './cron.js'
 import {
   listScheduledTasks,
+  SCHEDULED_TASKS_DIR,
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
 import { listAgentNames, readFileOr, readAgentRemoteHost } from './agent-config.js'
@@ -83,10 +85,50 @@ function persistScheduleLastRun(): void {
   }
 }
 
+// Run the task's pre-check script (if configured) and return whether to skip
+// this LLM invocation and an optional context prefix to prepend to the prompt.
+//
+// Protocol (stdout + exit code):
+//   exit 0, stdout = "SKIP"  → skip the LLM entirely (nothing actionable)
+//   exit 0, stdout non-empty → run LLM with stdout as context prefix
+//   exit 0, stdout empty     → run LLM normally
+//   non-zero exit            → log warning, run LLM anyway (fail-open)
+export function runPreCheck(task: ScheduledTask): { skip: boolean; prefix?: string } {
+  if (!task.preCheck) return { skip: false }
+  const scriptPath = isAbsolute(task.preCheck)
+    ? task.preCheck
+    : join(SCHEDULED_TASKS_DIR, task.name, task.preCheck)
+  if (!existsSync(scriptPath)) {
+    logger.warn({ task: task.name, scriptPath }, 'pre-check script not found, running LLM anyway')
+    return { skip: false }
+  }
+  try {
+    const r = spawnSync('bash', [scriptPath], { timeout: 10_000, encoding: 'utf-8' })
+    if (r.error) {
+      logger.warn({ task: task.name, error: r.error.message }, 'pre-check script spawn error, running LLM anyway')
+      return { skip: false }
+    }
+    if (r.status !== 0) {
+      logger.warn({ task: task.name, status: r.status, stderr: (r.stderr || '').trim().slice(0, 200) }, 'pre-check script exited non-zero, running LLM anyway')
+      return { skip: false }
+    }
+    const out = (r.stdout || '').trim()
+    if (out === 'SKIP') {
+      logger.info({ task: task.name }, 'pre-check: nothing actionable, skipping LLM')
+      return { skip: true }
+    }
+    if (out) return { skip: false, prefix: out }
+    return { skip: false }
+  } catch (err) {
+    logger.warn({ err, task: task.name }, 'pre-check script threw, running LLM anyway')
+    return { skip: false }
+  }
+}
+
 // Try to fire a task at a single target agent. Returns the outcome so the
 // caller can decide whether to queue a retry. Splitting this out means the
 // pendingTaskRetries loop and the normal cron loop share one code path.
-function attemptFireTask(task: ScheduledTask, agentName: string, now: number): 'fired' | 'busy' | 'missing' | 'starting' | 'error' {
+function attemptFireTask(task: ScheduledTask, agentName: string, now: number, preCheckPrefix?: string): 'fired' | 'busy' | 'missing' | 'starting' | 'error' {
   const isMainAgent = agentName === MAIN_AGENT_ID
   // Allow per-task session override via targetSession config field.
   // Falls back to the standard agent session name derivation.
@@ -170,10 +212,13 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number): '
     // Use the scheduled-task framing instead: tags are still scrubbed (so a
     // poisoned body cannot smuggle a fake security tag) but the preamble marks
     // it as a task-to-execute with the standard escalate-if-dangerous guard.
+    const taskBody = preCheckPrefix
+      ? `[Pre-check eredmeny]\n${preCheckPrefix}\n\n[Feladat]\n${task.prompt}`
+      : task.prompt
     const fullPrompt =
       SCHEDULED_TASK_PREAMBLE + '\n' +
       prefix.trimEnd() + '\n\n' +
-      wrapScheduledTask(`scheduled-task:${task.name}`, task.prompt)
+      wrapScheduledTask(`scheduled-task:${task.name}`, taskBody)
     // forceSend skips the busy-state check above; it must also skip the
     // pre-flight wait-until-idle gate inside sendPromptToSession, otherwise a
     // task aimed at a long-busy session would block on the 12s idle wait every
@@ -357,8 +402,17 @@ export function startScheduleRunner(): NodeJS.Timeout {
       const key = `${row.task_name}@${row.agent_name}`
       pendingKeys.add(key)
 
+      // Re-run pre-check on retry: state may have changed since the task
+      // was first scheduled (e.g. Eszter cards already processed).
+      const retryPc = runPreCheck(taskDef)
+      if (retryPc.skip) {
+        deletePendingTaskRetry(row.task_name, row.agent_name)
+        appendTaskRun(row.task_name, row.agent_name, 'skipped')
+        continue
+      }
+
       const view = toPendingRetryView(row, now)
-      const result = attemptFireTask(taskDef, row.agent_name, now)
+      const result = attemptFireTask(taskDef, row.agent_name, now, retryPc.prefix)
       if (result === 'fired' || result === 'missing') {
         deletePendingTaskRetry(row.task_name, row.agent_name)
         continue
@@ -401,12 +455,24 @@ export function startScheduleRunner(): NodeJS.Timeout {
         targetAgents = [task.agent || MAIN_AGENT_ID]
       }
 
+      // Run pre-check once per task (not per agent) since it queries shared
+      // state (DB, filesystem) that does not vary by target agent.
+      const cronPc = runPreCheck(task)
+      if (cronPc.skip) {
+        scheduleLastRun.set(task.name, now)
+        persistScheduleLastRun()
+        for (const agentName of targetAgents) {
+          appendTaskRun(task.name, agentName, 'skipped')
+        }
+        continue
+      }
+
       for (const agentName of targetAgents) {
         const key = `${task.name}@${agentName}`
         // If already queued for retry from an earlier tick, leave it to
         // the retry handler -- don't re-queue or double-fire.
         if (pendingKeys.has(key)) continue
-        const result = attemptFireTask(task, agentName, now)
+        const result = attemptFireTask(task, agentName, now, cronPc.prefix)
         if (result === 'starting') {
           // Agent was auto-started this tick. ALWAYS enqueue the retry that
           // delivers the prompt once the session is ready -- skipIfBusy must
