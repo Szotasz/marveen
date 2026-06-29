@@ -49,6 +49,7 @@ export const CHANNEL_PLUGIN_IDS: Record<string, string> = {
   slack: 'slack-channel@marveen-marketplace',
   discord: 'discord@claude-plugins-official',
   googlechat: 'googlechat@claude-channel-googlechat',
+  teams: 'teams@marveen-marketplace',
 }
 
 // Pure: compute the enabledPlugins map for a sub-agent so that exactly its own
@@ -97,7 +98,7 @@ export function ownChannelProviderForScope(
 
 function resolveAgentProvider(name: string): ChannelProviderType {
   const perAgent = readAgentChannelProvider(name)
-  if (perAgent === 'slack' || perAgent === 'telegram' || perAgent === 'discord' || perAgent === 'googlechat') return perAgent
+  if (perAgent === 'slack' || perAgent === 'telegram' || perAgent === 'discord' || perAgent === 'googlechat' || perAgent === 'teams') return perAgent
   return CHANNEL_PROVIDER
 }
 
@@ -411,7 +412,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // price of a reachable bot (file/db memory persists either way). Channel-
     // less agents keep --continue to preserve their accumulated context.
     const continueFlag = (hasPriorSession && !opts.fresh && !hasChannel) ? '--continue ' : ''
-    const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : agentProvider === 'discord' ? 'DISCORD_STATE_DIR' : agentProvider === 'googlechat' ? 'GOOGLECHAT_STATE_DIR' : 'TELEGRAM_STATE_DIR'
+    const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : agentProvider === 'discord' ? 'DISCORD_STATE_DIR' : agentProvider === 'googlechat' ? 'GOOGLECHAT_STATE_DIR' : agentProvider === 'teams' ? 'TEAMS_STATE_DIR' : 'TELEGRAM_STATE_DIR'
     const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN'
     // Slack plugin is third-party; its "not on approved allowlist" check is
     // bypassed via `allowedChannelPlugins` in /Library/Application Support/ClaudeCode/managed-settings.json.
