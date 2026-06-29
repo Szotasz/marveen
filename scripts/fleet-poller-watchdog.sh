@@ -55,10 +55,12 @@ MAX_CONSECUTIVE=3                # back off + alert after this many w/o recovery
 
 NOW_MODE=0
 DRY_RUN=0
+FIX_IDENTITY=0
 for arg in "$@"; do
   case "$arg" in
-    --now)     NOW_MODE=1 ;;
-    --dry-run) DRY_RUN=1 ;;
+    --now)         NOW_MODE=1 ;;
+    --dry-run)     DRY_RUN=1 ;;
+    --fix-identity) FIX_IDENTITY=1 ;;
   esac
 done
 
@@ -129,17 +131,50 @@ poller_alive() {
 }
 
 respawn() {
-  local agent="$1" pane_pid="$2"
-  local sdir="$INSTALL_DIR/agents/$agent/.claude/channels/telegram"
+  local agent="$1" pane_pid="$2" mode="${3:-continue}"
+  local home="$INSTALL_DIR/agents/$agent"
+  local sdir="$home/.claude/channels/telegram"
   local model; model="$(running_model "$pane_pid")"; [ -z "$model" ] && model="$(model_for "$agent")"
-  local cmd="export PATH=\"\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && \
-export TELEGRAM_STATE_DIR=\"$sdir\" && CLAUDE=\"$CLAUDE\" \"$LAUNCHER\" --continue --dangerously-skip-permissions --model '$model' --channels plugin:telegram@claude-plugins-official"
-  if "$TMUX_BIN" respawn-pane -k -t "agent-$agent" "$cmd" 2>/dev/null; then
-    log "RESPAWN agent-$agent (model=$model, state=$sdir)"
+  # CRITICAL: the respawned claude MUST start in the agent's OWN home dir, or it
+  # loads the wrong CLAUDE.md (e.g. /root/marveen -> the Boss persona) and the
+  # agent comes back identity-corrupted (Boss brain on its own bot token).
+  # respawn-pane inherits the *calling client's* cwd when -c is omitted, so a
+  # cron/manual run from /root/marveen silently mis-homed every agent. Force the
+  # pane start-dir with -c AND `cd` defensively inside the command.
+  #
+  # RESUME-GATE (mode=fresh): `claude --continue` on a large/long session stops
+  # at the interactive ">Resume from summary?" prompt and WAITS for input -> the
+  # bun poller never starts, and the cron re-kills it every run (churn). For
+  # poller RECOVERY we launch FRESH (no --continue): it boots straight to the
+  # poller with no prompt. Trade-off: the recovered agent starts a NEW
+  # conversation -- acceptable for a deaf agent. (fix-identity keeps --continue.)
+  local cont="--continue "
+  [ "$mode" = "fresh" ] && cont=""
+  local cmd="cd \"$home\" && export PATH=\"\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && \
+export TELEGRAM_STATE_DIR=\"$sdir\" && CLAUDE=\"$CLAUDE\" \"$LAUNCHER\" ${cont}--dangerously-skip-permissions --model '$model' --channels plugin:telegram@claude-plugins-official"
+  if "$TMUX_BIN" respawn-pane -k -c "$home" -t "agent-$agent" "$cmd" 2>/dev/null; then
+    log "RESPAWN agent-$agent (mode=$mode, model=$model, home=$home)"
     return 0
   fi
   log "RESPAWN FAILED agent-$agent"
   return 1
+}
+
+# cwd of the `claude --continue` process under a pane (its loaded CLAUDE.md =
+# identity). Empty if not found.
+claude_cwd() {
+  local root="$1" pid child queue next depth
+  queue="$root"
+  for depth in 1 2 3 4 5 6; do
+    next=""
+    for pid in $queue; do
+      if tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q 'claude --continue'; then
+        readlink "/proc/$pid/cwd" 2>/dev/null; return
+      fi
+      for child in $(pgrep -P "$pid" 2>/dev/null); do next="$next $child"; done
+    done
+    queue="$next"; [ -z "$queue" ] && break
+  done
 }
 
 for a in $AGENTS; do
@@ -147,6 +182,26 @@ for a in $AGENTS; do
   "$TMUX_BIN" has-session -t "$sess" 2>/dev/null || { log "$sess not present -- skip"; continue; }
   pane_pid="$("$TMUX_BIN" list-panes -t "$sess" -F '#{pane_pid}' 2>/dev/null | head -1)"
   [ -z "$pane_pid" ] && { log "$sess no pane -- skip"; continue; }
+
+  # --- --fix-identity: re-home any agent whose claude is running from the wrong
+  # cwd (loaded the wrong CLAUDE.md). Independent of poller health.
+  if [ "$FIX_IDENTITY" -eq 1 ]; then
+    home="$INSTALL_DIR/agents/$a"
+    cwd="$(claude_cwd "$pane_pid")"
+    if [ -z "$cwd" ]; then
+      log "FIX-IDENTITY: $sess no claude --continue found -- skip"
+    elif [ "$cwd" = "$home" ]; then
+      [ "$DRY_RUN" -eq 1 ] && log "FIX-IDENTITY: $sess cwd OK ($cwd)"
+    else
+      if [ "$DRY_RUN" -eq 1 ]; then
+        log "FIX-IDENTITY: $sess WRONG cwd ($cwd != $home) -- WOULD re-home"
+      else
+        log "FIX-IDENTITY: $sess WRONG cwd ($cwd) -- re-homing to $home"
+        respawn "$a" "$pane_pid"
+      fi
+    fi
+    continue
+  fi
 
   dead_stamp="$STATE/$a.dead"
   grace_stamp="$STATE/$a.last-respawn"
@@ -164,6 +219,14 @@ for a in $AGENTS; do
   if [ "$DRY_RUN" -eq 1 ]; then
     drm="$(running_model "$pane_pid")"; [ -z "$drm" ] && drm="$(model_for "$a")"
     log "DRY-RUN: $sess poller DEAD (pane_pid=$pane_pid, model=$drm) -- WOULD respawn after 2-strike/grace/cap checks"
+    continue
+  fi
+
+  # PAUSE flag: detect + log only, NO state writes, NO respawn. Halts cron churn
+  # while a controlled recovery is coordinated (the respawn cascade + resume-gate
+  # was pulling pollers down repeatedly). Remove the flag to re-arm.
+  if [ -f "$STORE/.fleet-poller-watchdog.pause" ]; then
+    log "$sess poller DEAD but respawn PAUSED (flag present) -- no action (controlled recovery in progress)"
     continue
   fi
 
@@ -199,7 +262,8 @@ for a in $AGENTS; do
     continue
   fi
 
-  if respawn "$a" "$pane_pid"; then
+  # Poller recovery launches FRESH (no --continue) to clear the resume-gate.
+  if respawn "$a" "$pane_pid" fresh; then
     date +%s > "$grace_stamp"
     echo $(( count + 1 )) > "$count_file"
     rm -f "$dead_stamp" 2>/dev/null || true
