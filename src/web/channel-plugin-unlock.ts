@@ -125,12 +125,37 @@ function isSessionReadyForUnlock(session: string): boolean {
   }
 }
 
-function sendUnlockKeystrokes(session: string): void {
+function sendUnlockKeystrokes(session: string, provider: ChannelProviderType): void {
   try {
     // Open the MCP dialog. Claude renders the server list within ~2s; the
     // 3s settle ensures the cursor is on the first item before we move.
     execFileSync(TMUX, ['send-keys', '-t', session, '/mcp', 'Enter'], { timeout: 5000 })
     execFileSync('/bin/sleep', [String(MCP_OPEN_SETTLE_MS / 1000)], { timeout: MCP_OPEN_SETTLE_MS + 2000 })
+
+    // Safety gate: check whether the channel plugin appears in the /mcp list
+    // before navigating to it. When the CC regression prevents the plugin from
+    // loading at all, the list only shows google-workspace / spotify / computer-use
+    // -- the Up key would select the wrong entry and Enable/Reconnect an unrelated
+    // MCP server. If the provider slug is absent, bail out with Escape.
+    let paneAfterOpen = ''
+    try {
+      paneAfterOpen = execFileSync(TMUX, ['capture-pane', '-t', session, '-p'], {
+        timeout: 3000,
+        encoding: 'utf-8',
+      })
+    } catch (err) {
+      logger.warn({ err, session }, 'channel-plugin-unlock: capture-pane after /mcp open failed -- aborting')
+      try { execFileSync(TMUX, ['send-keys', '-t', session, 'Escape'], { timeout: 5000 }) } catch { /* ignore */ }
+      return
+    }
+    if (!paneAfterOpen.includes(provider)) {
+      // Plugin is not in the MCP list (never loaded, not Failed/disabled) --
+      // the unlock sequence cannot help and would target the wrong entry.
+      logger.warn({ session, provider }, 'channel-plugin-unlock: provider plugin absent from /mcp list -- skipping unlock (plugin never loaded, not recoverable via /mcp)')
+      try { execFileSync(TMUX, ['send-keys', '-t', session, 'Escape'], { timeout: 5000 }) } catch { /* ignore */ }
+      return
+    }
+
     // Up wraps to the bottom of the list, where the plugin servers live
     // (claude lists them last). Built-in MCPs are above Plugin MCPs in the
     // sort order, so the bottommost entry is the channel plugin we want.
@@ -200,7 +225,7 @@ function runUnlockProbe(state: UnlockProbeState): void {
     { session: state.session, claudePid, provider: state.provider },
     'channel-plugin-unlock: bun child absent after cold-start window, firing /mcp unlock sequence',
   )
-  sendUnlockKeystrokes(state.session)
+  sendUnlockKeystrokes(state.session, state.provider)
 }
 
 /**
