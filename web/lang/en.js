@@ -1345,6 +1345,8 @@ window._i18n.en = {
   'kanban.gantt.legend.today':      'TODAY = today line (red)',
   'kanban.gantt.col_label':         'Project / Card',
   'kanban.gantt.no_project':        '(no project)',
+  'kanban.gantt.nav_prev':          'Previous',
+  'kanban.gantt.nav_next':          'Next',
 
   // --- Activity tooltip ---
   'activity.tooltip.terminal':   'Open terminal',

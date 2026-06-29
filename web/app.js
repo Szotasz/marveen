@@ -12002,6 +12002,7 @@ function downloadMarkdown(name, content) {
 ;(function () {
   // --- State ---
   let ganttPeriod = 'week'  // 'week' | 'month' | 'quarter'
+  let ganttPeriodOffset = 0  // periods stepped from the current one (0 = current, -1 = prev, +1 = next)
   let ganttOverdueOnly = false
   let _initialized = false
 
@@ -12020,17 +12021,19 @@ function downloadMarkdown(name, content) {
     start.setHours(0, 0, 0, 0)
     const end = new Date(start)
     if (ganttPeriod === 'week') {
-      // Mon..Sun of current week
+      // Mon..Sun of current week, shifted by ganttPeriodOffset weeks
       const dow = (start.getDay() + 6) % 7  // Mon=0
-      start.setDate(start.getDate() - dow)
+      start.setDate(start.getDate() - dow + ganttPeriodOffset * 7)
+      end.setTime(start.getTime())
       end.setDate(start.getDate() + 7)
     } else if (ganttPeriod === 'month') {
       start.setDate(1)
+      start.setMonth(start.getMonth() + ganttPeriodOffset)
       end.setFullYear(start.getFullYear(), start.getMonth() + 1, 1)
     } else {  // quarter
-      const qStart = Math.floor(start.getMonth() / 3) * 3
+      const qStart = Math.floor(start.getMonth() / 3) * 3 + ganttPeriodOffset * 3
       start.setMonth(qStart, 1)
-      end.setFullYear(start.getFullYear(), qStart + 3, 1)
+      end.setFullYear(start.getFullYear(), start.getMonth() + 3, 1)
     }
     return { rangeStart: start, rangeEnd: end }
   }
@@ -12174,7 +12177,9 @@ function downloadMarkdown(name, content) {
         const rowLabel = document.createElement('div')
         rowLabel.style.cssText = 'width:220px;min-width:220px;font-size:12px;color:var(--fg);padding:4px 8px;border-right:1px solid var(--border);overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer;'
         rowLabel.title = card.title
-        rowLabel.textContent = `#${card.id} ${card.title}`
+        // Show the running display number (#N, card.seq) like the board, not the hex id.
+        const seqLabel = card.seq != null ? `#${card.seq}` : `#${card.id}`
+        rowLabel.textContent = `${seqLabel} ${card.title}`
         rowLabel.addEventListener('click', () => { if (typeof openCardDetail === 'function') openCardDetail(card.id) })
 
         const rowTrack = document.createElement('div')
@@ -12209,8 +12214,8 @@ function downloadMarkdown(name, content) {
           `z-index:2`,
           isOverdue ? 'background-image:repeating-linear-gradient(45deg,rgba(0,0,0,.12) 0px,rgba(0,0,0,.12) 4px,transparent 4px,transparent 8px)' : '',
         ].filter(Boolean).join(';')
-        bar.title = `#${card.id} ${card.title}\n${fmtDateShort(new Date(barStartMs))} - ${fmtDateShort(new Date(barEndMs))}`
-        bar.textContent = `#${card.id} ${card.title}`
+        bar.title = `${seqLabel} ${card.title}\n${fmtDateShort(new Date(barStartMs))} - ${fmtDateShort(new Date(barEndMs))}`
+        bar.textContent = `${seqLabel} ${card.title}`
         bar.addEventListener('click', () => { if (typeof openCardDetail === 'function') openCardDetail(card.id) })
         rowTrack.appendChild(bar)
         row.appendChild(rowLabel)
@@ -12243,6 +12248,25 @@ function downloadMarkdown(name, content) {
     wrap.appendChild(legend)
 
     container.appendChild(wrap)
+
+    // --- Period stepper (below the timeline): step back/forward by one period unit ---
+    const nav = document.createElement('div')
+    nav.style.cssText = 'display:flex;align-items:center;justify-content:center;gap:10px;margin-top:12px;'
+    const prevBtn = document.createElement('button')
+    prevBtn.className = 'view-btn'
+    prevBtn.style.cssText = 'width:auto;padding:0 14px;'
+    prevBtn.textContent = '‹ ' + t('kanban.gantt.nav_prev')
+    prevBtn.addEventListener('click', () => { ganttPeriodOffset--; renderGantt() })
+    const rangeLbl = document.createElement('span')
+    rangeLbl.style.cssText = 'font-size:12px;color:var(--muted);min-width:130px;text-align:center;'
+    rangeLbl.textContent = `${fmtDateShort(rangeStart)} - ${fmtDateShort(new Date(rangeEnd.getTime() - 1))}`
+    const nextBtn = document.createElement('button')
+    nextBtn.className = 'view-btn'
+    nextBtn.style.cssText = 'width:auto;padding:0 14px;'
+    nextBtn.textContent = t('kanban.gantt.nav_next') + ' ›'
+    nextBtn.addEventListener('click', () => { ganttPeriodOffset++; renderGantt() })
+    nav.append(prevBtn, rangeLbl, nextBtn)
+    container.appendChild(nav)
   }
 
   // --- View switcher init (called once after DOM ready) ---
@@ -12283,6 +12307,7 @@ function downloadMarkdown(name, content) {
     document.querySelectorAll('#kanbanGanttFilters [data-period]').forEach(btn => {
       btn.addEventListener('click', () => {
         ganttPeriod = btn.dataset.period
+        ganttPeriodOffset = 0  // recenter on the current period when switching granularity
         document.querySelectorAll('#kanbanGanttFilters [data-period]').forEach(b => b.classList.remove('active'))
         btn.classList.add('active')
         renderGantt()

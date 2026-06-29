@@ -1343,6 +1343,8 @@ window._i18n.hu = {
   'kanban.gantt.legend.today':      'MA = mai nap (piros vonal)',
   'kanban.gantt.col_label':         'Projekt / Kártya',
   'kanban.gantt.no_project':        '(nincs projekt)',
+  'kanban.gantt.nav_prev':          'Előző',
+  'kanban.gantt.nav_next':          'Következő',
 
   // --- Activity tooltip ---
   'activity.tooltip.terminal':   'Terminal megnyitása',
