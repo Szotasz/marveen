@@ -105,14 +105,24 @@ running_model() {
   done
 }
 
-# Does the pane's process tree contain the live Telegram MCP poller?
-# Token-free: BFS the descendants and match the poller's OWN cmdline
-# (`bun .../server.ts`). This is more precise than `pstree | grep bun` -- it
-# confirms the actual server.ts poller, not just any "bun" string in the tree,
-# and is robust to the flock->claude->bun launch chain (the pane_pid may be the
-# flock single-flight wrapper; we still find server.ts below it).
+# Is the agent's Telegram MCP poller alive?
+# PRIMARY signal: the `bot.pid` the poller writes into its TELEGRAM_STATE_DIR ->
+# is that pid a live `bun .../server.ts`? This is AUTHORITATIVE and reparent-proof.
+# CRITICAL: the bun poller can DETACH from the pane's process tree (observed:
+# piktor/irnok/success ran live pollers that a pane-tree BFS could not see), so a
+# pure descendant scan FALSE-NEGATIVES and the watchdog churns a HEALTHY agent.
+# bot.pid + cmdline check also rejects a stale pid (dead, or reused by non-bun).
+# Fall back to the pane-tree BFS only when bot.pid is absent (first boot).
 poller_alive() {
-  local root="$1" pid child queue next depth
+  local agent="$1" root="$2" pid child queue next depth pidfile
+  pidfile="$INSTALL_DIR/agents/$agent/.claude/channels/telegram/bot.pid"
+  if [ -f "$pidfile" ]; then
+    pid="$(cat "$pidfile" 2>/dev/null)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null \
+       && tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q 'server\.ts'; then
+      return 0
+    fi
+  fi
   queue="$root"
   for depth in 1 2 3 4 5 6; do
     next=""
@@ -150,8 +160,20 @@ respawn() {
   # conversation -- acceptable for a deaf agent. (fix-identity keeps --continue.)
   local cont="--continue "
   [ "$mode" = "fresh" ] && cont=""
-  local cmd="cd \"$home\" && export PATH=\"\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && \
-export TELEGRAM_STATE_DIR=\"$sdir\" && CLAUDE=\"$CLAUDE\" \"$LAUNCHER\" ${cont}--dangerously-skip-permissions --model '$model' --channels plugin:telegram@claude-plugins-official"
+  # MCP-REGISTRATION RACE FIX (parity with the dashboard's src/web/agent-process.ts):
+  # the channel plugin registers as a stdio MCP server loaded via --channels.
+  # Claude Code connects stdio MCP servers in batches (default 3) with a per-server
+  # timeout; when an agent ALSO loads claude.ai connectors (Canva 39 tools, GCal,
+  # ...) the telegram plugin gets starved out of the startup batch / hits
+  # MCP_TIMEOUT and never registers -> no /mcp entry, no bun poller, deaf bot. The
+  # dashboard sets these envs at launch to protect the channel plugin; a bare
+  # respawn did NOT, so watchdog-recovered agents lost the race nondeterministically
+  # (8/12 stuck deaf). Replicate them so a recovered poller registers as reliably as
+  # a dashboard-launched one. Also unset inherited bot tokens + kill the ghost
+  # prompt-suggestion (parity / phantom-injection safety).
+  local mcp_env="export MCP_SERVER_CONNECTION_BATCH_SIZE=10 && export MCP_CONNECTION_NONBLOCKING=1 && export MCP_TIMEOUT=180000 && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false && "
+  local cmd="cd \"$home\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export PATH=\"\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && \
+${mcp_env}export TELEGRAM_STATE_DIR=\"$sdir\" && CLAUDE=\"$CLAUDE\" \"$LAUNCHER\" ${cont}--dangerously-skip-permissions --model '$model' --channels plugin:telegram@claude-plugins-official"
   if "$TMUX_BIN" respawn-pane -k -c "$home" -t "agent-$agent" "$cmd" 2>/dev/null; then
     log "RESPAWN agent-$agent (mode=$mode, model=$model, home=$home)"
     return 0
@@ -207,7 +229,7 @@ for a in $AGENTS; do
   grace_stamp="$STATE/$a.last-respawn"
   count_file="$STATE/$a.count"
 
-  if poller_alive "$pane_pid"; then
+  if poller_alive "$a" "$pane_pid"; then
     # Healthy -> clear dead-mark + reset consecutive counter.
     rm -f "$dead_stamp" "$count_file" 2>/dev/null || true
     [ "$DRY_RUN" -eq 1 ] && log "DRY-RUN: $sess poller OK (pane_pid=$pane_pid)"
