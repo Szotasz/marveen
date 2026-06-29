@@ -596,10 +596,35 @@ if [ "$STASHED_AUTO" = "1" ]; then
   fi
 fi
 
-# Restart services
+# Restart services.
+#
+# BUG FIX (update.sh self-kill): when the update is triggered from the dashboard,
+# update.sh runs INSIDE the marveen-*-dashboard systemd service's cgroup. stop.sh
+# tears that cgroup down, which reaps THIS script before start.sh runs -> both
+# services stay `inactive (dead)` after every update (update.log ends at the
+# "inditas..." line, no "elinditva"). Run the stop+start in a transient systemd
+# scope OUTSIDE our cgroup so the restart completes even though our own process
+# is killed mid-way. The scope is registered with (and survives under) the user
+# systemd manager, independent of the dashboard cgroup.
+#
+# NOTE: setsid is NOT a valid escape here -- a new session/process-group is still
+# in the same cgroup, so stop.sh would still kill it. Only a separate cgroup
+# (systemd-run --scope) survives. On macOS/launchd there is no cgroup self-kill,
+# so the direct call (else branch) is correct there and is a no-op change.
 echo -e "  Szolgaltatasok ujrainditasa..."
-"$INSTALL_DIR/scripts/stop.sh"
-"$INSTALL_DIR/scripts/start.sh"
+if command -v systemd-run >/dev/null 2>&1 && [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+  # --scope: run synchronously in a fresh transient scope (its own cgroup).
+  # --collect: garbage-collect the scope unit once it exits.
+  # $INSTALL_DIR is passed as the positional arg so the inner shell sees it even
+  # if the environment is trimmed.
+  systemd-run --user --scope --collect --quiet \
+    bash -c '"$1/scripts/stop.sh"; "$1/scripts/start.sh"' _ "$INSTALL_DIR" \
+    || { "$INSTALL_DIR/scripts/stop.sh"; "$INSTALL_DIR/scripts/start.sh"; }
+else
+  # macOS/launchd, or no user-systemd: no cgroup self-kill, restart directly.
+  "$INSTALL_DIR/scripts/stop.sh"
+  "$INSTALL_DIR/scripts/start.sh"
+fi
 
 echo ""
 if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
