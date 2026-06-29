@@ -427,6 +427,26 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // Channel-less agents (inter-agent only, no direct Telegram/Slack) are allowed to start
   }
 
+  // Teams name-sync (companion to make-teams-manifest.sh): keep
+  // TEAMS_BOT_DISPLAY_NAME in the agent's teams .env equal to the agent's
+  // displayName, so the generated Teams manifest names the bot after the agent
+  // (not the generic fallback). Idempotent; writes only on drift, non-fatal.
+  if (agentProvider === 'teams' && hasChannel) {
+    try {
+      const envPath = join(agentChannelDir, '.env')
+      const displayName = readAgentDisplayName(name)
+      const raw = existsSync(envPath) ? readFileSync(envPath, 'utf-8') : ''
+      const current = raw.match(/^TEAMS_BOT_DISPLAY_NAME=(.*)$/m)?.[1]?.trim()
+      if (displayName && current !== displayName) {
+        const line = `TEAMS_BOT_DISPLAY_NAME=${displayName}`
+        const next = current !== undefined
+          ? raw.replace(/^TEAMS_BOT_DISPLAY_NAME=.*$/m, line)
+          : (raw === '' || raw.endsWith('\n') ? raw + line + '\n' : raw + '\n' + line + '\n')
+        writeFileSync(envPath, next)
+      }
+    } catch { /* best-effort name-sync; never block launch */ }
+  }
+
   const session = agentSessionName(name)
 
   try {
