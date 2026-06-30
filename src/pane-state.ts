@@ -86,13 +86,23 @@ const IDLE_FOOTER_RX = /bypass permissions on(?: \(shift\+tab to cycle\)| · [^\
 // that renames the spinner labels will miss the label regex but still
 // be caught by the tokens pattern.
 const BUSY_INDICATORS: RegExp[] = [
-  // NOTE: /\besc to interrupt\b/ is NOT in this whole-pane list.
+  // NOTE: /\besc to interrupt\b/ is NOT in this list.
   // It is checked separately via BUSY_ESC_TO_INTERRUPT_RX scoped to the
   // bottom LIVE_FOOTER_REGION_LINES lines, because a watchdog report or
   // tool-call output that quotes the phrase in scrollback would otherwise
   // permanently pin the session as busy (81-retry starvation incident).
-  // Tokens-down-arrow counter: "(52s · ↓ 2.6k tokens ..." Turn-scoped,
-  // overwritten with whitespace the moment the turn completes.
+  //
+  // These patterns are ALSO region-scoped (to BUSY_LIVE_REGION_LINES, see
+  // below) for the same reason: a completed turn's final spinner frame
+  // "Accomplishing… (3m 8s · ↓ 9.3k tokens)" is NOT always overwritten on
+  // completion -- only the footer line is. A stale token-counter line left
+  // rendered ABOVE the live (empty) input box of a genuinely idle session
+  // would otherwise match whole-pane and pin it busy forever (observed:
+  // 94 consecutive scheduler retries on an idle neo-channels session,
+  // 2026-06-30). The live spinner/token line renders just above the input
+  // box during a real turn, so the bottom-region scope still catches it.
+  //
+  // Tokens-down-arrow counter: "(52s · ↓ 2.6k tokens ..."
   /\(\s*\d+s\s*·\s*↓\s*\d/,
   // Known spinner labels paired with the turn-scoped `(Ns · ↓` tail on
   // the same line. The tail requirement kills the "Thinking…" prose
@@ -110,6 +120,14 @@ const BUSY_INDICATORS: RegExp[] = [
 // contained the phrase in its body).
 const BUSY_ESC_TO_INTERRUPT_RX = /\besc to interrupt\b/
 const LIVE_FOOTER_REGION_LINES = 5
+
+// How many trailing lines the BUSY_INDICATORS (spinner / token-counter)
+// scan inspects. During a live turn the status line renders just above the
+// input box (footer ~3 lines + box ~2 lines + the spinner line + a little
+// tool-output tail), comfortably inside this window. Must exceed
+// LIVE_FOOTER_REGION_LINES so the spinner line above the box is included,
+// while a stale counter scrolled higher (from a completed turn) is excluded.
+const BUSY_LIVE_REGION_LINES = 12
 
 // Pasted-text placeholder. Claude Code lifts a single large input write
 // (empirically a tmux send-keys -l of more than ~700 chars) into a
@@ -398,9 +416,9 @@ export interface DetectPaneStateOptions {
  *
  * Algorithm, in order:
  *   1. Empty / whitespace-only -> 'unknown'.
- *   2. Any BUSY_INDICATOR matches anywhere -> 'busy'. This includes the
- *      wider spinner/token-count fallbacks that catch the frame-level
- *      footer gap.
+ *   2. Any BUSY_INDICATOR matches in the live bottom region -> 'busy'.
+ *      Covers the spinner/token-count fallbacks that catch the frame-level
+ *      footer gap; region-scoped so a stale counter does not pin idle.
  *   3. No idle footer visible -> 'unknown' (pane is not Claude Code).
  *   4. Wedged thinking-block API error in the live tail -> 'error'.
  *      Checked after the busy guard (a live turn is never 'error') and
@@ -416,15 +434,20 @@ export function detectPaneState(
 ): PaneState {
   if (!pane || !pane.trim()) return 'unknown'
 
+  const paneLines = pane.split('\n')
+
+  // Spinner / token-counter busy signals, scoped to the live bottom region.
+  // Whole-pane scanning let a completed turn's stale token-counter line pin
+  // an idle session busy (see BUSY_LIVE_REGION_LINES).
+  const busyRegion = paneLines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
   for (const rx of BUSY_INDICATORS) {
-    if (rx.test(pane)) return 'busy'
+    if (rx.test(busyRegion)) return 'busy'
   }
 
   // Scope `esc to interrupt` check to the live footer region only.
   // Checking the whole pane would let a scrollback quote of the phrase
   // (e.g. in a watchdog report or a log analysis) permanently classify
   // an idle session as busy.
-  const paneLines = pane.split('\n')
   const footerRegion = paneLines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return 'busy'
 
@@ -625,12 +648,16 @@ export function shouldRetrySubmit(
 ): boolean {
   if (!pane || !pane.trim()) return false
 
-  // Busy pane: the turn is mid-flight, no retry needed.
+  const retryPaneLines = pane.split('\n')
+
+  // Busy pane: the turn is mid-flight, no retry needed. Region-scoped (same
+  // as detectPaneState) so a stale token-counter line does not suppress a
+  // legitimate retry on an idle pane.
+  const retryBusyRegion = retryPaneLines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
   for (const rx of BUSY_INDICATORS) {
-    if (rx.test(pane)) return false
+    if (rx.test(retryBusyRegion)) return false
   }
   // Footer-region `esc to interrupt` check (same scoping as detectPaneState).
-  const retryPaneLines = pane.split('\n')
   const retryFooterRegion = retryPaneLines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
   if (BUSY_ESC_TO_INTERRUPT_RX.test(retryFooterRegion)) return false
 

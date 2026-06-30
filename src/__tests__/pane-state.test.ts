@@ -530,6 +530,29 @@ describe('detectPaneState', () => {
     expect(detectPaneState(IDLE_AFTER_TOOL_USE)).toBe('idle')
   })
 
+  it('does NOT classify a stale token-counter scrolled above the box as busy', () => {
+    // 94-retry starvation regression (2026-06-30): a completed turn's final
+    // "Accomplishing… (Ns · ↓ N tokens)" frame lingered well above the idle
+    // input box. The token-counter scan is region-scoped, so a counter that
+    // has scrolled out of the live bottom region must not pin the pane busy.
+    const staleCounter = [
+      '✶ Accomplishing… (3m 8s · ↓ 9.3k tokens)',
+      '⏺ Done: rebuilt and restarted the dashboard.',
+      '⏺ Verified endpoints, logged the fix.',
+      '⏺ Extra trailing scrollback line one.',
+      '⏺ Extra trailing scrollback line two.',
+      '⏺ Extra trailing scrollback line three.',
+      '⏺ Extra trailing scrollback line four.',
+      '⏺ Extra trailing scrollback line five.',
+      '',
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(detectPaneState(staleCounter)).toBe('idle')
+  })
+
   it('detects typing when text is parked in the input box', () => {
     expect(detectPaneState(TYPING_PARKED)).toBe('typing')
   })

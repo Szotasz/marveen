@@ -56,6 +56,29 @@ const IDLE_AFTER_TOOL_USE = [
   '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
 ].join('\n')
 
+// Regression guard for the 94-retry starvation incident (2026-06-30): a
+// COMPLETED turn's final spinner frame "Accomplishing… (Ns · ↓ N tokens)" is
+// not always overwritten on completion -- it can stay rendered in scrollback
+// well ABOVE the now-empty idle input box. The whole-pane BUSY_INDICATORS scan
+// matched it and pinned the (genuinely idle) session busy forever, so the
+// scheduler deferred every tick. The token-counter scan is now region-scoped;
+// a stale counter ≥13 lines up must NOT count. Idle.
+const IDLE_STALE_TOKEN_COUNTER = [
+  '✶ Accomplishing… (3m 8s · ↓ 9.3k tokens)',
+  '  ⎿  Tip: Use /btw to ask a quick side question',
+  '⏺ Done: rebuilt and restarted the dashboard.',
+  '⏺ Verified all endpoints return 200.',
+  '⏺ Logged the fix to the daily log.',
+  '⏺ Another line of completed scrollback output.',
+  '⏺ And one more, pushing the counter out of the live region.',
+  '⏺ Final trailing summary line before the idle box.',
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+].join('\n')
+
 // Multibyte / non-ASCII content sitting in scrollback above an empty, idle
 // input box. The idle classification must not be perturbed by wide glyphs,
 // accented Latin, CJK or emoji in the reply text above.
@@ -86,6 +109,20 @@ const BUSY_FULL_FOOTER = [
 // closes (a tick here previously sent a prompt into a mid-turn pane).
 const BUSY_FOOTER_FRAME_GAP = [
   '✢ Combobulating… (52s · ↓ 2.6k tokens · thinking some more)',
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+].join('\n')
+
+// Live turn with real scrollback above: the spinner/token line renders just
+// above the input box (inside the live region) while older output sits higher.
+// The region scope must still catch this genuine mid-turn pane. Busy.
+const BUSY_LIVE_SPINNER_WITH_SCROLLBACK = [
+  '⏺ Earlier completed output line one.',
+  '⏺ Earlier completed output line two.',
+  '✶ Accomplishing… (52s · ↓ 2.6k tokens)',
   '',
   SEP,
   '❯ ',
@@ -173,6 +210,9 @@ describe('paneLooksIdle', () => {
     it('multibyte / emoji content in scrollback above an empty idle box', () => {
       expect(paneLooksIdle(IDLE_MULTIBYTE_SCROLLBACK)).toBe(true)
     })
+    it('stale token-counter scrolled above the idle box (94-retry regression)', () => {
+      expect(paneLooksIdle(IDLE_STALE_TOKEN_COUNTER)).toBe(true)
+    })
   })
 
   describe('busy surfaces -> false', () => {
@@ -184,6 +224,9 @@ describe('paneLooksIdle', () => {
     })
     it('esc to interrupt footer marker alone', () => {
       expect(paneLooksIdle(BUSY_ESC_ONLY)).toBe(false)
+    })
+    it('live spinner just above the box with older scrollback present', () => {
+      expect(paneLooksIdle(BUSY_LIVE_SPINNER_WITH_SCROLLBACK)).toBe(false)
     })
   })
 
