@@ -1,0 +1,6 @@
+# Futásidejű riportok és diff képek (nem etalon)
+reports/
+node_modules/
+
+# Baseline-ok GIT-TRACKED — szándékosan NEM gitignore-olt:
+# tests/visual-baselines/
