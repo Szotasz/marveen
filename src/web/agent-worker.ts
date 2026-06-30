@@ -496,10 +496,20 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
   // measured on vps47 during the WORKERHOME1 cold-start probe: session created,
   // gone before the first 5s poll). tryResolveFromPath probes the known install
   // dirs; fall back to the bare name so an exotic layout keeps the old behavior.
+  //
+  // CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false (2026-06-29): without it the
+  // worker's empty input box shows a DIM history-based ghost suggestion (e.g.
+  // `❯ Try "refactor channel-monitor.ts"`). isSessionReadyForPrompt scrapes the
+  // pane colourless via capture-pane, so PARKED_INPUT_RX matches the ghost and
+  // detectPaneState returns 'typing' -- the worker reads "not ready" FOREVER and
+  // every agent-create fails with "worker session not ready" (observed: agent-create
+  // failed 4x after a cold start). Mirror the agent-process.ts launcher,
+  // which already disables the suggestion for the same scrape-misread reason.
   const claudeLaunchBin = tryResolveFromPath('claude') ?? 'claude'
   const launch =
     (hasFleetOauthToken() ? `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shArg(FLEET_OAUTH_TOKEN_PATH)})"; ` : '') +
     `export CLAUDE_CONFIG_DIR=${shArg(ctx.configDir)}; ` +
+    `export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false; ` +
     `cd ${shArg(ctx.home)} && ` +
     `${shArg(claudeLaunchBin)} --dangerously-skip-permissions --model ${shArg(WORKER_MODEL)}`
   execFileSync(TMUX, ['new-session', '-d', '-s', ctx.session, '-c', ctx.home, 'bash', '-lc', launch], { timeout: 8000 })

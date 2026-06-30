@@ -1,7 +1,7 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, mkdtempSync } from 'node:fs'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { AGENT_LOCAL_BASE_URL } from '../config.js'
 import { makeLazyBinResolver } from '../platform.js'
@@ -1988,16 +1988,79 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // exactly how korall lost its `hasCompletedOnboarding` flag on every restart
     // and parked on the login picker with a perfectly good token in its env.
     const umaskPrefix = agentTmuxTarget(name).runAsUser ? 'umask 002 && ' : ''
-    const cmd = `${umaskPrefix}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
+    // buildLaunchCmd(launchCwd): only the launch CWD varies between the normal start and the
+    // EPERM /tmp fallback below; every env export is an absolute path and stays pointed at the
+    // real agent dir.
+    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
     // silently started it as the router's user -- measured 2026-08-19: the start
     // reported ok, no session existed under the agent's user, and the first
     // capture-pane failed against the router's empty tmux server.
     const startTarget = agentTmuxTarget(name)
-    runTmux(startTarget, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
+    runTmux(startTarget, ['new-session', '-d', '-s', session, buildLaunchCmd(dir)], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir, runAsUser: startTarget.runAsUser ?? null }, 'Agent tmux session started')
+
+    // EPERM /tmp-fallback (2026-06-30, mirrors scripts/channels.sh:233+): on
+    // Claude Code 2.1.183+ launching `--channels` in a TRUSTED project directory
+    // throws EPERM before any dialog -- the plugin never loads, no bun poller,
+    // the sub-bot is deaf. The MAIN channels session has this fallback in
+    // channels.sh; sub-agents did NOT, so after a reboot/restart hephaestus and
+    // hermes came up with their telegram plugin silently absent. Watch the pane and, on EPERM,
+    // relaunch ONCE from a /tmp dir (untrusted -> a trust dialog fires instead of
+    // EPERM) with the agent CLAUDE.md symlinked so personality survives; the
+    // channel state dir + CLAUDE_CONFIG_DIR are absolute so the bot still
+    // attaches. Non-blocking setTimeout poller (the dashboard is single-threaded
+    // -- a synchronous sleep loop would freeze the whole event loop). Only for
+    // channel-having sub-agents; MAIN comes up via channels.sh, not this path.
+    if (hasChannel && name !== MAIN_AGENT_ID) {
+      const epermDeadline = Date.now() + 14_000
+      let epermRestarted = false
+      const checkEperm = () => {
+        if (Date.now() > epermDeadline) return
+        let pane = ''
+        try { pane = capturePane(session) ?? '' } catch { /* transient capture miss */ }
+        if (!epermRestarted && /EPERM|[Oo]peration not permitted/.test(pane)) {
+          epermRestarted = true
+          try { runTmux(null, ['kill-session', '-t', session], { timeout: 5000 }) } catch { /* already gone */ }
+          try {
+            const fallbackCwd = mkdtempSync(join(tmpdir(), `marveen-agent-${name}-`))
+            const agentClaudeMd = join(dir, 'CLAUDE.md')
+            if (existsSync(agentClaudeMd)) {
+              try { symlinkSync(agentClaudeMd, join(fallbackCwd, 'CLAUDE.md')) } catch { /* degrade to context-less */ }
+            }
+            runTmux(null, ['new-session', '-d', '-s', session, buildLaunchCmd(fallbackCwd)], { timeout: 10000 })
+            logger.warn({ name, session, fallbackCwd }, 'Agent --channels EPERM in trusted dir; relaunched from /tmp fallback')
+          } catch (err) {
+            logger.error({ err, name, session }, 'EPERM /tmp fallback relaunch failed')
+          }
+          setTimeout(checkEperm, 1000)
+          return
+        }
+        // Dialogs ONLY on the fresh /tmp path we ourselves just created (untrusted,
+        // first-run) -- mirror channels.sh. The `epermRestarted` guard is the whole
+        // point: without it this block runs on EVERY tick of EVERY channel-having
+        // sub-agent start, not just the fallback, and one of these branches answers
+        // the Bypass Permissions prompt with a keystroke. Auto-accepting that on a
+        // directory we just minted for a relaunch is a startup detail; auto-accepting
+        // it on every normal start is a security setting, and not one this function
+        // gets to make. Reported upstream on #1460 by reading the control flow: the
+        // EPERM branch returns early, so the non-EPERM path fell through to here.
+        if (epermRestarted) {
+          if (/Do you trust the files in this folder\?/.test(pane)) {
+            try { runTmux(null, ['send-keys', '-t', session, '1', 'Enter'], { timeout: 4000 }) } catch { /* ignore */ }
+          } else if (/Bypass Permissions mode/.test(pane) && /Yes, I accept/.test(pane)) {
+            try { runTmux(null, ['send-keys', '-t', session, '2', 'Enter'], { timeout: 4000 }) } catch { /* ignore */ }
+          } else if (/Welcome to Claude Code/.test(pane)) {
+            try { runTmux(null, ['send-keys', '-t', session, 'Enter'], { timeout: 4000 }) } catch { /* ignore */ }
+          }
+        }
+        if (/Listening for channel messages/.test(pane)) return
+        setTimeout(checkEperm, 1000)
+      }
+      setTimeout(checkEperm, 1500)
+    }
 
     // After a restart with --continue, a session that's been idle for >24h
     // shows the "Resume from summary" modal before the prompt input is ready
