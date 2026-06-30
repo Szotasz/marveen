@@ -47,6 +47,7 @@ import {
   readAgentTelegramConfig,
   readAgentDiscordConfig,
   readAgentGooglechatConfig,
+  readAgentTeamsConfig,
   readMarveenTelegramConfig,
   sendAvatarChangeMessage,
   sendWelcomeMessage,
@@ -110,7 +111,7 @@ import { suggestForAgent, type AgentSignals } from '../model-suggest.js'
 import { getTokenSummary } from '../token-usage.js'
 import { listScheduledTasks } from '../scheduled-tasks-io.js'
 
-const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'discord', 'googlechat'])
+const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'discord', 'googlechat', 'teams'])
 
 // Short-TTL caches so the synchronous, frequently-polled status endpoints
 // (`/api/agents` on load, `/api/agents/activity` every 3s) don't issue a fresh
@@ -147,7 +148,7 @@ function parseChannelProvider(raw: string): ChannelProviderType | null {
 // Match both new /channels/:provider/ and legacy /telegram/ URL patterns.
 // Returns [agentName, provider] or null. Legacy routes always resolve to 'telegram'.
 function matchChannelRoute(path: string, suffix: string): [string, ChannelProviderType] | null {
-  const newPattern = new RegExp(`^/api/agents/([^/]+)/channels/(telegram|slack|discord|googlechat)${suffix}$`)
+  const newPattern = new RegExp(`^/api/agents/([^/]+)/channels/(telegram|slack|discord|googlechat|teams)${suffix}$`)
   const newMatch = path.match(newPattern)
   if (newMatch) {
     const provider = parseChannelProvider(newMatch[2])
@@ -229,6 +230,7 @@ export function setAgentEnabledPlugins(name: string, provider: ChannelProviderTy
     slack: 'slack-channel@marveen-marketplace',
     discord: 'discord@claude-plugins-official',
     googlechat: 'googlechat@claude-channel-googlechat',
+    teams: 'teams@marveen-marketplace',
   }
   for (const [p, pluginKey] of Object.entries(allPlugins)) {
     plugins[pluginKey] = p === provider
@@ -308,6 +310,7 @@ interface AgentSummary {
   telegramBotUsername?: string
   hasDiscord: boolean
   hasGooglechat: boolean
+  hasTeams: boolean
   status: 'configured' | 'draft'
   running: boolean
   /** Tri-state: 'running' | 'stopped' | 'unreachable' (remote ssh failure). */
@@ -344,6 +347,7 @@ function getAgentSummary(name: string): AgentSummary {
   const tg = readAgentTelegramConfig(name)
   const dc = readAgentDiscordConfig(name)
   const gc = readAgentGooglechatConfig(name)
+  const tc = readAgentTeamsConfig(name)
   const hasClaudeMd = claudeMd.trim().length > 0
   const hasSoulMd = soulMd.trim().length > 0
 
@@ -375,6 +379,7 @@ function getAgentSummary(name: string): AgentSummary {
     telegramBotUsername: tg.botUsername,
     hasDiscord: dc.hasDiscord,
     hasGooglechat: gc.hasGooglechat,
+    hasTeams: tc.hasTeams,
     status: hasClaudeMd && hasSoulMd ? 'configured' : 'draft',
     running,
     runState,

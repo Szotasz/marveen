@@ -161,6 +161,20 @@ for pkg in ffmpeg git tmux lsof curl python3 pipx unzip; do
   fi
 done
 
+# C/C++ toolchain a native npm modulok forditasahoz. A better-sqlite3 elobb egy
+# prebuilt binarist probal letolteni (prebuild-install); ha az nem elerheto vagy
+# a letoltes idotullepes miatt elbukik, node-gyp-pel forditja forrasbol, amihez
+# make + gcc/g++ kell. A csomagnev a 'command -v' nevtol elter, ezert kulon
+# ellenorizzuk (make/cc), es managerenkent a megfelelo csomagot adjuk hozza
+# (apt: build-essential -- make/gcc/g++; dnf: make gcc gcc-c++).
+if ! command -v make &>/dev/null || ! command -v cc &>/dev/null; then
+  if [ "$PKG_MANAGER" = "apt" ]; then
+    MISSING_PKGS="$MISSING_PKGS build-essential"
+  else
+    MISSING_PKGS="$MISSING_PKGS make gcc gcc-c++"
+  fi
+fi
+
 # Node.js v20+ ellenorzes
 NODE_OK=false
 if command -v node &>/dev/null; then
@@ -207,6 +221,7 @@ command -v npm &>/dev/null || fail "npm nem talalhato a nodejs csomag utan sem. 
 
 ok "ffmpeg $(ffmpeg -version | awk 'NR==1 {print $3}')"
 ok "git $(git --version | awk '{print $3}')"
+ok "make $(make --version | awk 'NR==1 {print $3}')"
 ok "lsof $(lsof -v 2>&1 | awk '/^    revision:/ {print $2}')"
 ok "node $(node --version)"
 ok "npm $(npm --version)"

@@ -1,6 +1,7 @@
 import {
   createAgentMessage, getPendingMessages, listAgentMessages,
   getAgentConversation, getAgentConversationThreads,
+  getKanbanSeqByIdPrefix,
   markMessageDone, markMessageFailed,
   type AgentMessage,
 } from '../../db.js'
@@ -8,6 +9,7 @@ import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID } from '../../channel-coordinator/ingest.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { readBody, json } from '../http-helpers.js'
+import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
@@ -40,7 +42,13 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'from is reserved for the in-process channel coordinator' }, 403)
       return true
     }
-    const msg = createAgentMessage(from.trim(), to.trim(), content.trim())
+    // Code-side enforcement of the kanban-ref convention: rewrite any
+    // `#<hex8>` token that maps to a real kanban_cards row into its
+    // human-facing `#<seq>` form before persistence, so the dashboard and
+    // every downstream consumer sees the canonical reference even when a
+    // sub-agent forgets the CLAUDE.md rule (#75 Cuzcoo dispatch).
+    const normalizedContent = normalizeKanbanRefs(content.trim(), getKanbanSeqByIdPrefix)
+    const msg = createAgentMessage(from.trim(), to.trim(), normalizedContent)
     logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, 'Agent message created')
     json(res, msg)
     return true

@@ -35,6 +35,9 @@ test-results/
 # Generated from template (personal config)
 CLAUDE.md
 
+# Agent persona / soul (per-operator personality; never ship upstream)
+SOUL.md
+
 # Custom MCP servers and config (user-specific)
 mcp-servers/
 .mcp.json

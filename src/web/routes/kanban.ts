@@ -6,11 +6,13 @@ import {
   getKanbanComments, addKanbanComment, listKanbanProjects,
   getKanbanCard, getChildCards, getDb,
   createAgentMessage, markKanbanCardDispatched,
+  getKanbanSeqByIdPrefix,
   listLabels, getLabel, createLabel, updateLabel, deleteLabel,
   addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
   listArchivedKanbanCards,
   revertIdeaFromKanban,
 } from '../../db.js'
+import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
@@ -262,7 +264,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { author, content } = JSON.parse(body.toString())
     if (!author || !content) { json(res, { error: 'Szerző és tartalom kötelező' }, 400); return true }
-    json(res, addKanbanComment(cardId, author, content))
+    // Code-side kanban-ref enforcement: rewrite `#<hex8>` references that map
+    // to a real card into the human-facing `#<seq>` form before persistence
+    // (#75 Cuzcoo dispatch). Random hex / non-matching tokens pass through.
+    const normalizedContent = normalizeKanbanRefs(content, getKanbanSeqByIdPrefix)
+    json(res, addKanbanComment(cardId, author, normalizedContent))
     return true
   }
 

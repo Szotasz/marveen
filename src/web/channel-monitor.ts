@@ -75,7 +75,50 @@ const agentLastRestart: Map<string, number> = new Map()
 // launch (e.g. a broken third-party channel plugin) is not restarted on a fixed
 // short cadence forever -- which restarts the WHOLE agent every few minutes and
 // renders it unusable. Reset to 0 the moment the plugin is seen alive again.
+// Persisted to disk so a dashboard process restart does not reset the counter and
+// restart a channel plugin that has already been given up on (bug: dashboard PID
+// bounce wiped in-memory counters, restarting agents indefinitely on every boot).
 const agentRestartFailures: Map<string, number> = new Map()
+let agentRestartFailuresInitialized = false
+
+function agentFailuresPath(agentName: string): string {
+  return join(PROJECT_ROOT, 'store', `.agent-failures-${agentName}`)
+}
+
+function loadPersistedAgentFailures(agentName: string): number {
+  try {
+    const n = parseInt(readFileSync(agentFailuresPath(agentName), 'utf-8').trim(), 10)
+    return Number.isFinite(n) && n >= 0 ? n : 0
+  } catch {
+    return 0
+  }
+}
+
+function savePersistedAgentFailures(agentName: string, count: number): void {
+  try {
+    writeFileSync(agentFailuresPath(agentName), String(count))
+  } catch (err) {
+    logger.debug({ err, agentName }, 'Failed to persist agent restart failures (non-fatal)')
+  }
+}
+
+function clearPersistedAgentFailures(agentName: string): void {
+  try {
+    writeFileSync(agentFailuresPath(agentName), '0')
+  } catch { /* best effort */ }
+}
+
+function ensureAgentRestartFailuresInitialized(): void {
+  if (agentRestartFailuresInitialized) return
+  agentRestartFailuresInitialized = true
+  for (const a of listAgentNames()) {
+    const persisted = loadPersistedAgentFailures(a)
+    if (persisted > 0) {
+      agentRestartFailures.set(a, persisted)
+      logger.info({ agent: a, failures: persisted }, 'channel-monitor: restored persisted restart failure count from disk')
+    }
+  }
+}
 // Global stagger for channel-down restarts. On Claude Code 2.1.193 a sub-agent's
 // --channels plugin only LOADS on a fresh (no --continue) launch, and several
 // such cold-boots at once race on the shared plugin cache so NONE attach a
@@ -738,8 +781,12 @@ function schedulePostResumePluginGuard(provider: ChannelProviderType): void {
 }
 
 export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
-  // macOS: bounce the launchd job (its own process group -- safe).
-  if (process.platform !== 'linux') {
+  // macOS: bounce the launchd job when the plist exists. If the channels session
+  // is NOT managed by launchd on this install (plist absent -- only
+  // com.jarvis.dashboard exists), fall through to the respawn-pane path below.
+  // The previous unconditional launchctl call was a silent no-op: launchctl
+  // accepts a non-existent plist with exit 0, leaving the session untouched.
+  if (process.platform !== 'linux' && existsSync(MAIN_CHANNELS_PLIST)) {
     try {
       execFileSync('/bin/launchctl', ['unload', MAIN_CHANNELS_PLIST], { timeout: 5000 })
       execFileSync('/bin/sleep', ['2'], { timeout: 4000 })
@@ -752,6 +799,10 @@ export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
       logger.error({ err }, 'Hard restart failed (launchctl)')
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
+  }
+
+  if (process.platform !== 'linux') {
+    logger.warn({ plist: MAIN_CHANNELS_PLIST }, 'Hard restart: launchd channels plist absent -- falling back to respawn-pane')
   }
 
   // Linux: respawn-pane ONLY -- NEVER `systemctl --user restart`. The channels
@@ -1114,6 +1165,10 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
   const mainProvider = getMainAgentProvider()
 
   function check() {
+    // Restore persisted failure counts on first tick so a dashboard restart
+    // does not reset the cap and restart agents that have already been given up on.
+    ensureAgentRestartFailuresInitialized()
+
     type Target = { session: string; isMarveen: boolean; agentName?: string; provider: ChannelProviderType }
     const targets: Target[] = [{ session: MAIN_CHANNELS_SESSION, isMarveen: true, provider: mainProvider }]
     for (const a of listAgentNames()) {
@@ -1253,6 +1308,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // Healthy observation clears the exponential back-off so the next
           // down-spell starts again at the base grace.
           agentRestartFailures.delete(t.agentName!)
+          clearPersistedAgentFailures(t.agentName!)
         }
         continue
       }
@@ -1283,6 +1339,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           logger.error({ agent: t.agentName, provider: t.provider, failures }, 'Agent channel plugin down after max restart attempts -- giving up, alerting operator')
           sendAlert(`⛔ A(z) ${t.agentName} agens ${t.provider} csatornaja ${AGENT_MAX_RESTART_ATTEMPTS} automatikus ujrainditas utan sem allt helyre. Tovabb nem indinitom ujra (minden restart elveszi a session kontextusat). Kezi beavatkozas kell: nezd meg a ${t.session} session-t es a ${SERVICE_ID} csatorna-plugint.`)
           agentRestartFailures.set(t.agentName!, failures + 1)
+          savePersistedAgentFailures(t.agentName!, failures + 1)
           agentDownSince.delete(t.session)
           continue
         }
@@ -1314,7 +1371,9 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // Count this restart as failed until a later sweep sees the plugin
           // alive (which resets the counter). Repeated failures back off the
           // next restart exponentially instead of churning every base-grace.
+          // Persisted to disk so a dashboard restart does not reset the counter.
           agentRestartFailures.set(t.agentName!, failures + 1)
+          savePersistedAgentFailures(t.agentName!, failures + 1)
         } catch (err) {
           logger.error({ err, agent: t.agentName }, 'Failed to auto-restart agent after channel plugin down')
         }

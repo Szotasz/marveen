@@ -1244,6 +1244,20 @@ export function getKanbanComments(cardId: string): KanbanComment[] {
   return db.prepare('SELECT * FROM kanban_comments WHERE card_id = ? ORDER BY created_at ASC').all(cardId) as KanbanComment[]
 }
 
+// Lookup a kanban card's `seq` (its sqlite rowid) by the 8-char hex id stored
+// in `kanban_cards.id`. Used by the kanban-ref normalizer to rewrite hex
+// references to the human-facing `#<seq>` form. Returns null when the prefix
+// matches zero rows OR more than one row (ambiguous → leave the message
+// untouched rather than guess). Case-insensitive: breakdown subtask ids are
+// uppercased while createKanbanCard ids stay lowercase.
+export function getKanbanSeqByIdPrefix(prefix: string): number | null {
+  const rows = db.prepare(
+    'SELECT rowid AS seq FROM kanban_cards WHERE id = ? COLLATE NOCASE LIMIT 2'
+  ).all(prefix) as { seq: number }[]
+  if (rows.length !== 1) return null
+  return rows[0].seq
+}
+
 export function addKanbanComment(cardId: string, author: string, content: string): KanbanComment {
   const now = Math.floor(Date.now() / 1000)
   const info = db.prepare(

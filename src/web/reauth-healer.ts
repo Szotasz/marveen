@@ -45,6 +45,14 @@ export interface ReauthHealerInput {
   isDeadToken: boolean
   sessionAlive: boolean
   isMain: boolean
+  /**
+   * Whether this host can actually complete an interactive /login (a browser
+   * authorize step). FALSE on a headless Linux box: there a /login send-keys can
+   * never finish AND it rotates the SHARED single-use OAuth refresh token, which
+   * kicks every other fleet process into 401 -- the auth cascade. So on headless
+   * we escalate-only and never inject /login.
+   */
+  canInteractiveLogin: boolean
   prev: ReauthHealerState
   nowMs: number
 }
@@ -70,7 +78,7 @@ export const NO_REAUTH_STATE: ReauthHealerState = { consecutiveDead: 0, lastActi
  * into the session every tick) and never fires for the main agent.
  */
 export function decideReauthAction(input: ReauthHealerInput, t: ReauthHealerThresholds): ReauthHealerDecision {
-  const { isDeadToken, sessionAlive, isMain, prev, nowMs } = input
+  const { isDeadToken, sessionAlive, isMain, canInteractiveLogin, prev, nowMs } = input
 
   // Clean / not-applicable: end the spell, allow a fresh alert next time.
   if (!isDeadToken || !sessionAlive) {
@@ -83,13 +91,25 @@ export function decideReauthAction(input: ReauthHealerInput, t: ReauthHealerThre
   const fireNow = atThreshold && cooldownElapsed
 
   return {
-    sendKeys: fireNow && !isMain,
+    // Autonomous /login only where it can actually help: a sub-agent, at a host
+    // that can complete the browser step. On headless it would amplify the
+    // cascade (rotates the shared token), so suppress it and escalate-only.
+    sendKeys: fireNow && !isMain && canInteractiveLogin,
     escalate: fireNow,
     next: {
       consecutiveDead,
       lastActionAtMs: fireNow ? nowMs : prev.lastActionAtMs,
     },
   }
+}
+
+// True when this host can complete an interactive browser /login. macOS dev
+// hosts can; a headless Linux fleet host (no display server) cannot -- and there
+// a /login both fails AND rotates the shared OAuth token into a fleet-wide 401
+// cascade, so we escalate-only instead (BUG #1.3 from the isapp06 report).
+function hostCanInteractiveLogin(): boolean {
+  if (process.platform === 'darwin') return true
+  return Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY)
 }
 
 const watchState = new Map<string, ReauthHealerState>()
@@ -128,7 +148,7 @@ function checkSession(label: string, session: string, isMain: boolean): void {
   const prev = watchState.get(session) ?? NO_REAUTH_STATE
 
   const decision = decideReauthAction(
-    { isDeadToken: reauth.needsReauth, sessionAlive, isMain, prev, nowMs: Date.now() },
+    { isDeadToken: reauth.needsReauth, sessionAlive, isMain, canInteractiveLogin: hostCanInteractiveLogin(), prev, nowMs: Date.now() },
     { threshold: DEAD_PROBE_THRESHOLD, cooldownMs: ESCALATION_COOLDOWN_MS },
   )
 
