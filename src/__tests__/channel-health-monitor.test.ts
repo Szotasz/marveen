@@ -1,8 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
+// The health monitor runs the (synchronous, blocking) MCP reconnect in a DETACHED
+// child process so it can never starve the dashboard event loop -- so we assert on
+// spawn(), not on an inline reconnect call.
+const { mockSpawn } = vi.hoisted(() => ({ mockSpawn: vi.fn() }))
 vi.mock('node:child_process', () => ({
   execFileSync: vi.fn(),
   execSync: vi.fn(),
+  spawn: mockSpawn,
 }))
 
 vi.mock('../platform.js', () => ({
@@ -69,6 +74,12 @@ describe('getChannelHealth', () => {
 describe('startChannelHealthMonitor', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // Fake child: register handlers and fire 'exit' immediately so the monitor's
+    // in-flight guard clears between tests.
+    mockSpawn.mockImplementation(() => ({
+      once: (event: string, cb: () => void) => { if (event === 'exit') cb() },
+      unref: vi.fn(),
+    }))
     vi.useFakeTimers()
   })
 
@@ -88,12 +99,11 @@ describe('startChannelHealthMonitor', () => {
 
     vi.advanceTimersByTime(46_000)
 
-    expect(mockReconnect).not.toHaveBeenCalled()
+    expect(mockSpawn).not.toHaveBeenCalled()
     clearInterval(timer)
   })
 
-  it('triggers reconnect when pane shows plugin failure', () => {
-    mockReconnect.mockReturnValue({ ok: false, message: 'test' })
+  it('spawns a detached reconnect when pane shows plugin failure', () => {
     const timer = startChannelHealthMonitor()
     mockCapturePane.mockReturnValue(
       'plugin:telegram:telegram  ✘ failed\nsome other output',
@@ -101,7 +111,12 @@ describe('startChannelHealthMonitor', () => {
 
     vi.advanceTimersByTime(46_000)
 
-    expect(mockReconnect).toHaveBeenCalled()
+    // Reconnect runs OFF the event loop: a detached child process is spawned for
+    // the affected agent rather than blocking inline.
+    expect(mockSpawn).toHaveBeenCalled()
+    const argLists = mockSpawn.mock.calls.map(c => c[1] as string[])
+    expect(argLists.some(args => args.includes('samu'))).toBe(true)
+    expect(mockSpawn.mock.calls[0][2]).toMatchObject({ detached: true })
     clearInterval(timer)
   })
 })

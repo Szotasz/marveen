@@ -1,14 +1,47 @@
+import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { listAgentNames } from './agent-config.js'
 import { isAgentRunning, capturePane } from './agent-process.js'
 import {
-  attemptChannelMcpReconnect,
   resolveAgentSession,
   resolveAgentProviderType,
 } from './channel-mcp-reconnect.js'
 import { getProvider } from '../channel-provider.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
+
+// The MCP reconnect (attemptChannelMcpReconnect) is deliberately synchronous --
+// it drives the interactive /mcp tmux menu with execFileSync('/bin/sleep', ...)
+// pacing. Calling it inline from this 60s timer BLOCKS the libuv event loop for
+// the full tmux+sleep duration; with several agents stuck in '✘ failed' the loop
+// is starved continuously and the dashboard accepts TCP but never services HTTP
+// (observed 2026-06-30: deaf for hours, 0% CPU, wedged in SyncProcessRunner under
+// uv__run_timers). So run it in a DETACHED child process instead -- the blocking
+// work happens off the main event loop. One in-flight reconnect per agent.
+const RECONNECT_CLI = fileURLToPath(new URL('./reconnect-cli.js', import.meta.url))
+const inFlightReconnects = new Set<string>()
+
+function spawnDetachedReconnect(agentName: string): void {
+  if (inFlightReconnects.has(agentName)) return
+  inFlightReconnects.add(agentName)
+  try {
+    const child = spawn(process.execPath, [RECONNECT_CLI, agentName], {
+      detached: true,
+      stdio: 'ignore',
+      env: process.env,
+    })
+    child.once('exit', () => inFlightReconnects.delete(agentName))
+    child.once('error', err => {
+      inFlightReconnects.delete(agentName)
+      logger.warn({ agentName, err }, 'channel-health-monitor: failed to spawn reconnect worker')
+    })
+    child.unref()
+  } catch (err) {
+    inFlightReconnects.delete(agentName)
+    logger.warn({ agentName, err }, 'channel-health-monitor: reconnect spawn threw')
+  }
+}
 
 // Detect `plugin:X · ✘ failed` (or ✘ error / ✘ disconnected) in the
 // pane output. Claude Code renders this in the MCP status area when a
@@ -81,12 +114,16 @@ function checkAgent(agentName: string, session: string): void {
   }
 
   const attempt = state ? state.attempts : 0
+
+  // A detached reconnect for this agent is still running -- don't pile on.
+  if (inFlightReconnects.has(agentName)) return
+
   logger.warn(
     { agentName, attempt, provider: providerType },
-    'channel-health-monitor: plugin failure detected, attempting reconnect',
+    'channel-health-monitor: plugin failure detected, spawning detached reconnect',
   )
 
-  const result = attemptChannelMcpReconnect(agentName)
+  spawnDetachedReconnect(agentName)
 
   const backoffMs = getBackoffMs(attempt)
   reconnectState.set(agentName, {
@@ -94,15 +131,6 @@ function checkAgent(agentName: string, session: string): void {
     lastAttemptAt: now,
     nextRetryAt: now + backoffMs,
   })
-
-  if (result.ok) {
-    logger.info({ agentName, attempt }, 'channel-health-monitor: reconnect succeeded')
-  } else {
-    logger.warn(
-      { agentName, attempt, message: result.message },
-      'channel-health-monitor: reconnect failed',
-    )
-  }
 }
 
 export function startChannelHealthMonitor(): NodeJS.Timeout {

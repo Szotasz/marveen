@@ -285,8 +285,28 @@ export function startWebServer(port = 3420): http.Server {
     logger.info('[staging] WEB_ONLY mode: background services disabled')
   }
 
-  const routerInterval = webOnly ? undefined : startMessageRouter()
-  if (!webOnly) logger.info('Agent message router started (5s poll)')
+  // SAFE MODE kill-switch (MARVEEN_SAFE_MODE=true). The dashboard's tmux layer is
+  // pervasively SYNCHRONOUS: the channel monitors (channel-mcp-reconnect.ts,
+  // channel-monitor.ts), the recovery watchers (stuck-input / stuck-tool-call /
+  // auto-restart / reauth), the agent message router and the agent-worker all
+  // drive tmux send-keys + execFileSync('/bin/sleep', ...) sequences inline. When
+  // the fleet is degraded (agents stuck in '✘ failed' / parked /mcp menus) those
+  // timers spend their whole tick inside node::SyncProcessRunner::Spawn and STARVE
+  // the libuv event loop -- the HTTP server accepts TCP but never services a
+  // request, so the dashboard goes deaf while CPU stays ~0% (root-caused
+  // 2026-06-30, traced with `sample`). Safe mode keeps ONLY the HTTP server + the
+  // schedule runner (its 60s tmux deliveries are bounded) and skips every other
+  // blocking background service. Working-by-morning fallback until those paths are
+  // made non-blocking (async).
+  const safeMode = webOnly || process.env['MARVEEN_SAFE_MODE'] === 'true'
+  if (safeMode && !webOnly) {
+    logger.warn(
+      'MARVEEN_SAFE_MODE=true: only HTTP + schedule runner active; channel monitors, recovery watchers, message router and agent-worker NOT started (self-healing OFF until re-enabled)',
+    )
+  }
+
+  const routerInterval = safeMode ? undefined : startMessageRouter()
+  if (!safeMode) logger.info('Agent message router started (5s poll)')
 
   const scheduleInterval = webOnly ? undefined : startScheduleRunner()
   if (!webOnly) logger.info('Schedule runner started (60s poll)')
@@ -295,19 +315,19 @@ export function startWebServer(port = 3420): http.Server {
   // heartbeat / scheduled generation after boot does not pay the cold-boot
   // latency. runViaWorker still lazy-starts + restarts it on demand, so this is
   // a warm-up, not a hard dependency. Skipped on the SDK rollback backend.
-  if (!webOnly && (process.env.MARVEEN_AGENT_BACKEND || 'worker').toLowerCase() !== 'sdk') {
+  if (!safeMode && (process.env.MARVEEN_AGENT_BACKEND || 'worker').toLowerCase() !== 'sdk') {
     import('./web/agent-worker.js')
       .then(m => { m.startWorkerSession(); logger.info('Interactive agent worker pre-started') })
       .catch(err => logger.warn({ err }, 'Failed to pre-start agent worker (will lazy-start on first use)'))
   }
 
-  const pluginMonitorInterval = webOnly ? undefined : startChannelPluginMonitor()
-  if (!webOnly) logger.info('Channel plugin health monitor started (60s poll)')
+  const pluginMonitorInterval = safeMode ? undefined : startChannelPluginMonitor()
+  if (!safeMode) logger.info('Channel plugin health monitor started (60s poll)')
 
   // Userbot inbound-probe (gold-standard deafness detector). Safe no-op until
   // the prober session file + allowlist are configured. Wrapped so a failure
   // never crashes server startup.
-  if (!webOnly) {
+  if (!safeMode) {
     try {
       startInboundProber()
     } catch (err) {
@@ -315,20 +335,25 @@ export function startWebServer(port = 3420): http.Server {
     }
   }
 
-  const channelHealthInterval = webOnly ? undefined : startChannelHealthMonitor()
-  if (!webOnly) logger.info('Channel MCP health monitor started (60s poll, 45s offset)')
+  const channelHealthInterval = safeMode ? undefined : startChannelHealthMonitor()
+  if (!safeMode) logger.info('Channel MCP health monitor started (60s poll, 45s offset)')
 
-  const stuckInputInterval = webOnly ? undefined : startStuckInputWatcher()
-  if (!webOnly) logger.info('Stuck-input watcher started (15s poll, 20s offset)')
+  // These recovery watchers also drive synchronous tmux + /bin/sleep sequences
+  // (unstick a wedged input box, dismiss a stuck /mcp menu, respawn a dead pane).
+  // Same event-loop-starvation hazard as the channel monitors, so the same
+  // kill-switch gates them -- when the fleet is degraded they collectively wedge
+  // the loop in node::SyncProcessRunner::Spawn and the dashboard goes deaf.
+  const stuckInputInterval = safeMode ? undefined : startStuckInputWatcher()
+  if (!safeMode) logger.info('Stuck-input watcher started (15s poll, 20s offset)')
 
-  const stuckToolCallInterval = webOnly ? undefined : startStuckToolCallWatcher()
-  if (!webOnly) logger.info('Stuck-tool-call watcher started (30s poll, 35s offset)')
+  const stuckToolCallInterval = safeMode ? undefined : startStuckToolCallWatcher()
+  if (!safeMode) logger.info('Stuck-tool-call watcher started (30s poll, 35s offset)')
 
-  const reauthHealerInterval = webOnly ? undefined : startReauthHealer()
-  if (!webOnly && reauthHealerInterval) logger.info('Reauth healer started (3min poll, 90s offset)')
+  const reauthHealerInterval = safeMode ? undefined : startReauthHealer()
+  if (!safeMode && reauthHealerInterval) logger.info('Reauth healer started (3min poll, 90s offset)')
 
-  const autoRestartInterval = webOnly ? undefined : startAutoRestartRunner()
-  if (!webOnly) logger.info('Auto-restart runner started (60s poll, 40s offset)')
+  const autoRestartInterval = safeMode ? undefined : startAutoRestartRunner()
+  if (!safeMode) logger.info('Auto-restart runner started (60s poll, 40s offset)')
 
   const updateCheckerInterval = webOnly ? undefined : startUpdateChecker()
   if (!webOnly) logger.info('Update checker started (15min poll)')
