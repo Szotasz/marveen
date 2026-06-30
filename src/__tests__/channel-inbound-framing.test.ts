@@ -22,6 +22,7 @@ import { tryHandleMessages } from '../web/routes/messages.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const ROUTER_SRC = readFileSync(join(here, '../web/message-router.ts'), 'utf-8')
+const WRAP_SRC = readFileSync(join(here, '../web/agent-message-wrap.ts'), 'utf-8')
 const MESSAGES_ROUTE_SRC = readFileSync(join(here, '../web/routes/messages.ts'), 'utf-8')
 
 describe('wrapChannelInbound', () => {
@@ -76,27 +77,37 @@ describe('CHANNEL_INBOUND_PREAMBLE (load-bearing security contract)', () => {
   })
 })
 
-describe('message-router channel-inbound classification', () => {
-  it('imports the coordinator id + channel-inbound helpers', () => {
-    expect(ROUTER_SRC).toMatch(/wrapChannelInbound/)
-    expect(ROUTER_SRC).toMatch(/CHANNEL_INBOUND_PREAMBLE/)
-    expect(ROUTER_SRC).toMatch(/COORDINATOR_AGENT_ID/)
+describe('agent-message classification + wrap (single source: agent-message-wrap.ts)', () => {
+  it('the router delegates classification + wrapping to the single-source module', () => {
+    // The security framing lives in ONE place so the router (tmux inject) and the
+    // main-agent pull endpoint (drain-inbox) can never drift apart.
+    expect(ROUTER_SRC).toMatch(/from '\.\/agent-message-wrap\.js'/)
+    expect(ROUTER_SRC).toMatch(/classifyAgentMessage\(/)
+    expect(ROUTER_SRC).toMatch(/wrapAgentMessageForDelivery\(/)
+    // ...and no longer carries its own copy of the wrap orchestration.
+    expect(ROUTER_SRC).not.toMatch(/CHANNEL_COORDINATOR_AGENTS\s*=\s*new Set/)
+  })
+
+  it('the wrap module imports the coordinator id + channel-inbound helpers', () => {
+    expect(WRAP_SRC).toMatch(/wrapChannelInbound/)
+    expect(WRAP_SRC).toMatch(/CHANNEL_INBOUND_PREAMBLE/)
+    expect(WRAP_SRC).toMatch(/COORDINATOR_AGENT_ID/)
   })
 
   it('matches channel-inbound on an identity CONSTANT set, not the trust graph or a DB flag', () => {
-    expect(ROUTER_SRC).toMatch(/CHANNEL_COORDINATOR_AGENTS\s*=\s*new Set/)
-    expect(ROUTER_SRC).toMatch(/CHANNEL_COORDINATOR_AGENTS\.has\(safeFromAgent\)/)
+    expect(WRAP_SRC).toMatch(/CHANNEL_COORDINATOR_AGENTS\s*=\s*new Set/)
+    expect(WRAP_SRC).toMatch(/CHANNEL_COORDINATOR_AGENTS\.has\(safeFrom\)/)
   })
 
   it('classifies channel-inbound BEFORE trusted/untrusted (so a coordinator msg is never treated as plain agent data)', () => {
-    const inboundIdx = ROUTER_SRC.indexOf('CHANNEL_COORDINATOR_AGENTS.has(safeFromAgent)')
-    const trustedIdx = ROUTER_SRC.indexOf('isTrustedPeer(msg.from_agent')
+    const inboundIdx = WRAP_SRC.indexOf('CHANNEL_COORDINATOR_AGENTS.has(safeFrom)')
+    const trustedIdx = WRAP_SRC.indexOf('isTrustedPeer(')
     expect(inboundIdx).toBeGreaterThan(0)
     expect(trustedIdx).toBeGreaterThan(0)
     expect(inboundIdx).toBeLessThan(trustedIdx)
     // A non-coordinator sender must still reach the trusted/untrusted branches.
-    expect(ROUTER_SRC).toMatch(/wrapTrustedPeer/)
-    expect(ROUTER_SRC).toMatch(/wrapUntrusted/)
+    expect(WRAP_SRC).toMatch(/wrapTrustedPeer/)
+    expect(WRAP_SRC).toMatch(/wrapUntrusted/)
   })
 })
 

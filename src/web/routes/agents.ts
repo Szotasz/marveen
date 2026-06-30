@@ -4,7 +4,8 @@ import { homedir, platform } from 'node:os'
 import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID, BOT_NAME, PROJECT_ROOT } from '../../config.js'
-import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb } from '../../db.js'
+import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent } from '../../db.js'
+import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
 import {
@@ -429,6 +430,11 @@ function getAgentDetail(name: string): AgentDetail {
 function listAgentSummaries(): AgentSummary[] {
   return listAgentNames().map(getAgentSummary)
 }
+
+// Max inter-agent messages a single main-agent inbox drain returns. The rest
+// stay pending (FIFO) for the next turn's drain -- bounds the context a single
+// turn absorbs, mirroring the router's MAX_MESSAGES_PER_TICK.
+const INBOX_DRAIN_CAP = 10
 
 export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path, method } = ctx
@@ -1446,6 +1452,34 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     removeDesiredAgent(name)
     if (result.ok) { json(res, { ok: true }); return true }
     json(res, { error: result.error }, 400)
+    return true
+  }
+
+  // Main-agent inbox PULL (drain-inbox): atomically CLAIM the main agent's
+  // pending inter-agent messages and return them already WRAPPED (single-source
+  // security framing via agent-message-wrap), for the UserPromptSubmit hook to
+  // print into the agent's context. The router skips main-agent tmux delivery,
+  // so this is the SOLE delivery path for the main agent -- which is why it is
+  // restricted to the main agent (serving a sub-agent here would double-deliver
+  // alongside the router's still-active tmux push). Auth is the global /api
+  // bearer gate. One quick claim+wrap per turn (NOT a hot loop -> not the #498
+  // self-HTTP event-loop hazard).
+  const drainMatch = path.match(/^\/api\/agents\/([^/]+)\/drain-inbox$/)
+  if (drainMatch && method === 'POST') {
+    const name = decodeURIComponent(drainMatch[1])
+    if (name !== MAIN_AGENT_ID) {
+      json(res, { error: 'drain-inbox is main-agent only (sub-agents use the router push path)' }, 400)
+      return true
+    }
+    const claimed = claimPendingForAgent(name, INBOX_DRAIN_CAP)
+    const blocks: string[] = []
+    for (const msg of claimed) {
+      const cls = classifyAgentMessage(msg.from_agent, msg.to_agent)
+      if (!cls) continue // empty/invalid from_agent -> cannot frame safely; drop
+      const { prefix, wrapped } = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, msg.from_agent, msg.content)
+      blocks.push(prefix + wrapped)
+    }
+    json(res, { count: blocks.length, text: blocks.join('\n\n') })
     return true
   }
 

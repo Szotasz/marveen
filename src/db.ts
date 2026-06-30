@@ -1412,6 +1412,30 @@ export function markMessageDelivered(id: number): boolean {
   return db.prepare("UPDATE agent_messages SET status = 'delivered', delivered_at = ? WHERE id = ?").run(now, id).changes > 0
 }
 
+// Atomically CLAIM (pending -> delivered) the oldest `limit` pending messages
+// for an agent, returning the claimed rows. A SINGLE `UPDATE ... WHERE
+// status='pending' RETURNING` (NOT a SELECT-then-UPDATE) so two concurrent
+// drains can never double-claim the same message (-> no ghost double-delivery).
+// Backs the main-agent inbox PULL model: the main agent drains its own inbox at
+// each turn (via the drain-inbox endpoint + UserPromptSubmit hook) instead of
+// the router tmux-injecting into its perpetually-busy channel session.
+export function claimPendingForAgent(toAgent: string, limit: number): AgentMessage[] {
+  const now = Math.floor(Date.now() / 1000)
+  const rows = db.prepare(
+    `UPDATE agent_messages SET status = 'delivered', delivered_at = ?
+       WHERE id IN (
+         SELECT id FROM agent_messages
+         WHERE to_agent = ? AND status = 'pending'
+         ORDER BY created_at ASC, id ASC
+         LIMIT ?
+       )
+     RETURNING id, from_agent, to_agent, content, status, result, created_at, delivered_at, completed_at`,
+  ).all(now, toAgent, limit) as AgentMessage[]
+  // RETURNING row order is unspecified; restore FIFO (created_at, then id as the
+  // tiebreaker for same-second inserts) for delivery.
+  return rows.sort((a, b) => (a.created_at - b.created_at) || (a.id - b.id))
+}
+
 export function markMessageDone(id: number, result?: string): boolean {
   const now = Math.floor(Date.now() / 1000)
   return db.prepare("UPDATE agent_messages SET status = 'done', result = ?, completed_at = ? WHERE id = ?").run(result ?? null, now, id).changes > 0
