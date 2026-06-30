@@ -1,0 +1,9 @@
+{
+  "schedule": "0 8 * * 1-5",
+  "agent": "firesales",
+  "enabled": true,
+  "type": "task",
+  "skipIfBusy": false,
+  "forceSend": false,
+  "createdAt": 1780588077
+}
