@@ -1248,7 +1248,15 @@ const unwedgeAttempts = new Map<string, { last: number; sig: string; fails: numb
 export function clearStaleParkedInput(session: string, host: string | null = null): boolean {
   const a = capturePane(session, host)
   if (a == null || detectPaneState(a) !== 'typing') return false
-  const parked = parkedInputText(a)
+  // DIM-GUARD (2026-06-30, Szabi insight): extract the parked TEXT from the
+  // dim-stripped (-e) view. Ghost/phantom frames -- stale captures, placeholder
+  // hints, a persona fragment left by a send-keys delivery (the "Koszi a halakat."
+  // false-positive) -- render DIM (SGR-2 faint) and are stripped by
+  // captureParkedInputView, so they read as NO parked text and are never treated
+  // as a wedge (no clear, no escalate). Only a REAL typed line (normal intensity)
+  // survives the strip. Falls back to the plain capture only if the -e capture
+  // fails (rare), preserving prior behaviour in that edge case.
+  const parked = parkedInputText(captureParkedInputView(session, host) ?? a)
   if (!parked) return false
 
   // Cooldown guard FIRST, before any blocking sleep: if the same parked text was
@@ -1264,8 +1272,9 @@ export function clearStaleParkedInput(session: string, host: string | null = nul
   try { execFileSync('/bin/sleep', [PARKED_STABLE_CONFIRM_S], { timeout: 4000 }) } catch { /* best effort */ }
   const b = capturePane(session, host)
   // Changed (someone is typing) or already cleared -> leave it alone, and do not
-  // record an attempt (this was never a stuck box).
-  if (b == null || detectPaneState(b) !== 'typing' || parkedInputText(b) !== parked) return false
+  // record an attempt (this was never a stuck box). Compare on the SAME dim-
+  // stripped view as the initial extraction so a dim ghost can't flip the result.
+  if (b == null || detectPaneState(b) !== 'typing' || parkedInputText(captureParkedInputView(session, host) ?? b) !== parked) return false
 
   // The main agent's input box is NEVER auto-cleared (a parked line could be a
   // real reply -- the 2026-06-30 "Balogh" near-miss). The operator escalation is
