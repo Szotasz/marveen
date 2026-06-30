@@ -1281,7 +1281,7 @@ export function clearStaleParkedInput(session: string, host: string | null = nul
       const preview = parked.slice(0, 80).replace(/[<>&]/g, ' ')
       notifyChannel(
         '⚠️ Beragadt egy parkolt (el nem kuldott) sor a fo-agent input-mezojeben, ' +
-        'a beerkezo uzenetek kezbesitese all. Kuldd el VAGY torold azt a sort (Escape a prompt-boxban), ' +
+        'a beerkezo uzenetek kezbesitese all. Kuldd el (Enter) VAGY torold a sort (Ctrl+U a prompt-boxban), ' +
         `hogy a varakozok megerkezzenek. Reszlet: "${preview}"`,
       ).catch(() => { /* notify is best-effort */ })
       unwedgeAttempts.set(key, { last: nowMs, sig: parked, fails, escalated: true })
