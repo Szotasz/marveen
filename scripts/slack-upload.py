@@ -9,7 +9,7 @@ If channel_id is omitted, the file is uploaded but not shared to any channel (te
 """
 import sys, os, json, urllib.request, urllib.parse, uuid
 
-TOKENS = "/Users/macbook/marveen/store/.slack-tokens"
+TOKENS = "/root/marveen/store/.slack-tokens"
 
 def bot_token():
     for line in open(TOKENS):
