@@ -4,6 +4,245 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [v1.18.0] - 2026-06-29
+
+Teams channel productization + recovery/clinic fixes
+
+### Added
+
+- feat(kanban): normalize #<hex8> refs to #<seq> on inter-agent message + comment write by @jocoo
+- feat(ops): doctor.sh -- one-shot system health check (#489) by @Rotary89
+- feat(channels): wire Teams provider into main channels.sh + docs (#478) by @Szotasz
+- feat(agents): auto-sync TEAMS_BOT_DISPLAY_NAME from agent displayName (#495) by @Szotasz
+- feat(install): allow Teams plugin in managed-settings at install time (#494) by @Szotasz
+- feat(dashboard): Teams in the channel-selector (full-stack) (#493) by @Szotasz
+- feat(channels): add Teams as a sub-agent channel provider (#485) by @Szotasz
+- Add model-fallback-on-limit auto-switch (#474) by @theisszsolt
+
+### Fixed
+
+- fix(agents): seed onboarding/consent state in isolated CLAUDE_CONFIG_DIR (#496) by @cett
+- fix(channel-monitor): 3 watchdog bugs causing infinite restart flapping (#483) by @cett
+- fix(channel-router): stop parked-input un-wedge from pinning the event loop (#481) by @attila-fiREG
+- fix(update): run restart in a transient systemd scope to survive stop (self-kill) (#487) by @Szotasz
+- fix(reauth): suppress autonomous /login on headless hosts (auth-cascade guard) (#486) by @Szotasz
+- fix(agents): per-agent isolated CLAUDE_CONFIG_DIR with shared OAuth-token auth (#479) by @juhasz007-maker
+- fix(installer): provision C/C++ toolchain for native better-sqlite3 build (#477) by @adambenedek2010-create
+- Fix token-usage double-counting of tool-calling turns (#476) by @theisszsolt
+
+### Changed
+
+- chore: gitignore SOUL.md (per-operator agent persona) (#492) by @Rotary89
+
+## [v1.17.0] - 2026-06-27
+
+Per-agent voice messaging (#443) + main-agent hook fix
+
+### Added
+
+- feat(voice): per-agent STT/TTS with installer + dashboard UI (#6) by @nortops
+- feat(voice): outbound TTS directive -- voice/auto agents reply with native voice (#7) by @nortops
+- feat(voice): main agent as first-class voice citizen (#12) by @nortops
+
+### Fixed
+
+- fix(voice): hook-based TTS directive -- wrong-path trigger, sub-agent channel, voice model (#9) by @nortops
+- fix(voice): server-side STT in hook -- no agent Bash/permission prompt (#10) by @nortops
+- fix(voice): correct mode semantics -- voice-mode speaks even to text input (#11) by @nortops
+- fix(#443): main-agent hook path + distribution-safe voice pitch default by @Szotasz
+
+### Changed
+
+- docs(voice): add voice messaging guide (HU + EN) + index entry by @nortops
+
+## [v1.16.2] - 2026-06-27
+
+Channel idle-guard + MAIN ghost-env
+
+### Fixed
+
+- fix(channels): extract #472 unique value -- idle-guard + MAIN ghost-env (#475) by @Szotasz
+
+### Changed
+
+- Revert "feat(dashboard): self-reported agent status as a tab on the Activity page (#466)"
+
+## [v1.16.1] - 2026-06-27
+
+CC 2.1.193 --continue fix + sub-agent self-pace gate
+
+### Fixed
+
+- fix(channel): survive the CC 2.1.193 --continue plugin regression (#464) by @tutker
+
+### Changed
+
+- security: gate sub-agent self-pace via PreToolUse hook + tool-deny (#463) by @kovesdan
+
+## [v1.16.0] - 2026-06-27
+
+Channel reliability batch
+
+### Added
+
+- feat(channel): give the MAIN fast-watcher clear+re-inject (#455) by @Szotasz
+- feat(staleness-guard): warn before acting on a stale/late-delivered channel message (#446) by @juhasz007-maker
+
+### Fixed
+
+- fix(channel): reliable parked-message recovery -- welcome-screen detection + submit-verify ladder (#458) by @Szotasz
+- fix(channels): fleet-safe restart via KillMode=process + idempotent relaunch (#462) by @Karma
+- fix(channel-monitor): cap sub-agent channel-plugin restart loop, alert instead of churning (#465) by @tutker
+- fix(channels): set MCP startup-batch env for the main session (parity with sub-agents) (#467) by @tutker
+
+## [v1.15.2] - 2026-06-27
+
+Silent-bind self-heal on dashboard restart
+
+### Fixed
+
+- fix(dashboard): self-heal a silent HTTP bind failure on restart (#471) by @Szotasz
+- fix(install): raise dashboard FD limit (NumberOfFiles 16384/32768, LimitNOFILE 16384) by @Szotasz
+
+## [v1.15.0] - 2026-06-26
+
+Dim-aware stuck-input recovery, removes temporary ghost-containment
+
+### Fixed
+
+- fix(security): never auto-submit a dim ghost-suggestion as parked input by @Szotasz
+
+## [v1.14.1] - 2026-06-26
+
+Pane-state idle-footer fix for background-monitor sessions
+
+### Fixed
+
+- fix(pane-state): recognise the background-monitor idle footer (delivery-reliability) by @Szotasz
+
+## [v1.14.0] - 2026-06-26
+
+Promote delivery-reliability recovery stack to main (preserves ghost-fix)
+
+### Added
+
+- feat(pane-state): parkedInputRowCount + submitLanded predicates by @Szotasz
+
+### Fixed
+
+- fix(security): disable Claude Code prompt-suggestions in agent spawn (ghost-text re-submit root) by @Szotasz
+- fix(security): disable raw keystroke-injection endpoint, bind listen fallback to localhost by @Szotasz
+- fix(channel-monitor): verify-and-escalate stuck-input recovery; never bare-Enter multi-row by @Szotasz
+
+## [v1.13.2] - 2026-06-26
+
+Disable keystroke-injection endpoint + localhost-bind fallback
+
+### Fixed
+
+- fix(security): disable raw keystroke-injection endpoint, bind listen fallback to localhost by @Szotasz
+
+## [v1.13.1] - 2026-06-26
+
+Busy-guard the stuck-input hard restart
+
+### Fixed
+
+- fix(channel): busy-guard the stuck-input hard restart (stop false-positive session kills) by @Szotasz
+
+## [v1.13.0] - 2026-06-25
+
+Heartbeat-wedge recovery stack
+
+### Added
+
+- feat(channel): escalate a wedged main channel to hard restart (respawn-pane) (#452) by @Szotasz
+- feat(router): stale-parked-input janitor to auto-un-wedge silent channels (#451) by @Szotasz
+
+### Fixed
+
+- fix(heartbeat): silent heartbeat must not park text in the input box (#450) by @Szotasz
+
+## [v1.12.8] - 2026-06-25
+
+Symlink-safe email-send gate + main-exempt test
+
+### Changed
+
+- test(security): unit-test main-exempt guard for email-send gate (#448) by @Szotasz
+
+## [v1.12.7] - 2026-06-25
+
+Hard-gate sub-agent email-send via PreToolUse hook
+
+### Added
+
+- feat(security): hard-gate sub-agent email-send via PreToolUse hook (#447) by @Szotasz
+
+### Fixed
+
+- fix(install): stamp dist/.built-commit on fresh install (build-marker self-heal parity) (#444) by @Szotasz
+
+## [v1.12.6] - 2026-06-24
+
+ANTHROPIC_MODEL non-Claude (Ollama/deepseek) agents, MCP batch-size fix, parked-input nbsp detect, plugin-unlock probe
+
+### Fixed
+
+- fix(agents): set ANTHROPIC_MODEL for non-Claude (Ollama/deepseek) agents (#441) by @Szotasz
+- fix(agent-process): raise MCP batch size so channel plugin always registers (#439) by @juhasz007-maker
+- fix(agent-process): schedule plugin-unlock probe for colleague agents (#437) by @juhasz007-maker
+- pane-state: detect parked input rendered with a non-breaking space after the prompt (#438) by @kovesdan
+
+## [v1.12.5] - 2026-06-23
+
+Update.sh stale-dist self-heal (Doka i18n hotfix)
+
+### Fixed
+
+- fix(update): self-heal stale dist via build-marker (Doka i18n hotfix) by @Szotasz
+
+## [v1.12.4] - 2026-06-22
+
+Per-agent Supabase MCP deny (security) + 4 fixes
+
+### Added
+
+- feat(security): per-agent Supabase MCP deny (sub-dev + non-applier), applier-pool exempt by @Szotasz
+- feat(installer): auto-install Go and build bumblebee during setup (#432) by @cett
+
+### Fixed
+
+- fix(stuck-watcher): skip respawn when pane is at the idle prompt (#433) by @juhasz007-maker
+- fix(agent-process): schedule plugin-unlock probe for colleague agents (#436) by @juhasz007-maker
+
+## [v1.12.3] - 2026-06-21
+
+Dashboard HU/EN i18n nyelvvaltó + installer/CLI lokalizáció
+
+### Added
+
+- feat(dashboard): global HU/EN language switcher + full UI localization (#419) by @cett
+
+## [v1.12.2] - 2026-06-21
+
+EPERM fallback + CLAUDE.md, token_usage retention, db perm-test, vault-write surfacing, CI smoke-gate
+
+### Added
+
+- feat(db): time-based retention for token_usage (bounds DB growth) (#428) by @Szotasz
+- feat(ci): frontend smoke-test + syntax-gate (#423) by @cett
+
+### Fixed
+
+- fix(channels): restore Marveen CLAUDE.md context in the EPERM /tmp fallback (#431) by @Szotasz
+- fix(dashboard): surface vault-write errors instead of swallowing them (#430) by @Szotasz
+- fix(channels): auto-fallback to /tmp on EPERM (Claude Code 2.1.183+ regression) (#425) by @cett
+
+### Changed
+
+- test(db): run permission test on /tmp temp file, never the prod DB (#429) by @Szotasz
+
 ## [v1.12.1] - 2026-06-20
 
 ### Fixed
