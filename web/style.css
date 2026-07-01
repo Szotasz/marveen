@@ -6082,17 +6082,22 @@ body.voice-fullscreen .sidebar { display: none; }
   justify-content: center;
 }
 
+/* Own, independently-positioned overlay container -- deliberately NOT nested inside
+   .voice-stage's flow or coupled to the orb's CSS (Ender's architecture direction,
+   2026-07-01: orb is the base layer, every other UI element is its own layer, so a
+   future drag-and-drop widget system only needs to swap the positioning rule, not
+   restructure markup). Top-center per Ender's placement call -- this also resolves
+   the earlier caption-bar/music-bar bottom-slot collision, since they no longer
+   share a slot at all. No card/frame -- Ender wants it minimalist when it appears. */
 .voice-music-bar {
-  position: relative;
-  z-index: 3;
-  margin: 0 auto 28px;
+  position: absolute;
+  top: 68px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4;
   width: 65%;
   min-width: 280px;
   max-width: 760px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: var(--radius);
-  padding: 10px 14px 14px;
 }
 .voice-music-toggle { display: flex; gap: 6px; margin-bottom: 8px; }
 .voice-music-toggle-btn {
