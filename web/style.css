@@ -5954,3 +5954,174 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
 .naplo-note { font-style: italic; color: var(--text-muted); }
 .naplo-event-type { font-size: 11px; background: var(--bg); border-radius: 3px; padding: 1px 5px; color: var(--text-muted); }
 .naplo-sensitive { font-size: 11px; color: var(--danger, #ef4444); font-weight: 600; }
+
+/* === Hang (élő hang-mód) page ===
+   Fix sötét téma -- szándékosan NEM a --bg-*/--text-* globális változókat használja,
+   hanem saját kódolt színeket, hogy a globális light/dark témától függetlenül mindig
+   sötét maradjon (Ender direkt kérése). Mantis layout-elve: az orb az egyetlen domináns
+   elem, minden más periférikus, sok üres tér körülötte ("színpadszerű" hatás). Pontos
+   hex-kódok Mantistól TBD -- ezek egyelőre a két referenciakép alapján becsült közelítő
+   színek (amber ~#f2a541 idle, türkiz ~#3ddfd0 speaking). */
+main.voice-active { max-width: none; padding: 0; }
+body.voice-fullscreen { grid-template-columns: 0 1fr; }
+body.voice-fullscreen .sidebar { display: none; }
+
+.voice-page {
+  --mood-color: #f2a541;
+  position: relative;
+  height: 100vh;
+  width: 100%;
+  background: radial-gradient(ellipse at center, #102022 0%, #060a0b 70%);
+  color: rgba(255, 255, 255, 0.82);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.voice-fullscreen-btn {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  z-index: 5;
+  width: 38px;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+}
+.voice-fullscreen-btn:hover { background: rgba(255, 255, 255, 0.1); }
+
+.voice-clock {
+  position: absolute;
+  top: 22px;
+  right: 26px;
+  z-index: 5;
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  font-size: 20px;
+  letter-spacing: 0.04em;
+  opacity: 0.55;
+  color: var(--mood-color);
+  transition: color 0.4s ease;
+}
+
+.voice-stage {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+}
+
+.voice-orb-wrap {
+  position: relative;
+  width: min(46vh, 46vw);
+  height: min(46vh, 46vw);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.voice-orb-wrap canvas { width: 100%; height: 100%; display: block; }
+
+.voice-mic-btn {
+  position: absolute;
+  bottom: -8px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: 1px solid var(--mood-color);
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--mood-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: box-shadow 0.3s ease, color 0.3s ease, border-color 0.3s ease;
+  box-shadow: 0 0 18px -4px var(--mood-color);
+}
+.voice-mic-btn.recording { box-shadow: 0 0 28px 4px var(--mood-color); }
+
+/* Kép-panel: csak hely lefoglalva, üres/rejtett amíg nincs tartalom (Ender kérése) */
+.voice-image-panel {
+  position: absolute;
+  top: 8%;
+  bottom: 8%;
+  right: 0;
+  width: 32%;
+  max-width: 420px;
+  border-radius: var(--radius-lg) 0 0 var(--radius-lg);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-right: none;
+  transform: translateX(100%);
+  opacity: 0;
+  transition: transform 0.45s ease, opacity 0.45s ease;
+  pointer-events: none;
+  overflow: hidden;
+}
+.voice-image-panel.active {
+  transform: translateX(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+.voice-image-panel-inner {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.voice-music-bar {
+  position: relative;
+  z-index: 3;
+  margin: 0 auto 28px;
+  width: 65%;
+  min-width: 280px;
+  max-width: 760px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius);
+  padding: 10px 14px 14px;
+}
+.voice-music-toggle { display: flex; gap: 6px; margin-bottom: 8px; }
+.voice-music-toggle-btn {
+  flex: 0 0 auto;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: transparent;
+  color: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+}
+.voice-music-toggle-btn.active {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  border-color: var(--mood-color);
+}
+.voice-music-player { display: none; }
+.voice-music-player.active { display: block; }
+#voiceSoundcloudFrame { border-radius: var(--radius-sm); }
+.voice-music-spotify-warning {
+  font-size: 12px;
+  color: #ff8a8a;
+  background: rgba(255, 80, 80, 0.08);
+  border: 1px solid rgba(255, 80, 80, 0.25);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  margin-bottom: 8px;
+}
+.voice-music-spotify-placeholder {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.4);
+  text-align: center;
+  padding: 20px 0;
+}

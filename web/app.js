@@ -244,6 +244,13 @@ function switchPage(pageId) {
   navLinks.forEach((l) => l.classList.toggle('active', l.dataset.page === pageId))
   // Kanban needs full-width layout (overrides main's max-width: 1200px)
   document.querySelector('main').classList.toggle('kanban-active', pageId === 'kanban')
+  // Hang (élő hang-mód) is a full-bleed, always-dark surface -- also drop the
+  // fullscreen/sidebar-hidden state when navigating away so it doesn't leak to other pages.
+  document.querySelector('main').classList.toggle('voice-active', pageId === 'voice')
+  // Guarded: switchPage() runs on initial load (routeFromHash, called before this
+  // file's bottom IIFE has executed) for whatever the default landing page is, so
+  // stopVoicePage may not be defined yet the very first time this fires.
+  if (pageId !== 'voice') { document.body.classList.remove('voice-fullscreen'); if (typeof stopVoicePage === 'function') stopVoicePage() }
   // Activity page runs a live poll; stop it whenever we navigate away.
   if (pageId !== 'activity') stopActivityPoll()
   if (pageId === 'activity') startActivityPoll()
@@ -271,6 +278,7 @@ function switchPage(pageId) {
   if (pageId === 'ideas') loadIdeasPage()
   if (pageId === 'archived') loadArchivedPage()
   if (pageId === 'naplo') loadNaplo()
+  if (pageId === 'voice') loadVoicePage()
 }
 
 // Mobile off-canvas sidebar toggle. No-op visual effect on desktop (the
@@ -11996,4 +12004,113 @@ function downloadMarkdown(name, content) {
   }
 
   window.loadNaplo = loadNaplo
+})()
+
+// === Hang (élő hang-mód) page ===
+// The Three.js orb itself lives in voice-orb.js (a separate ES module -- see index.html
+// importmap); this block only wires the DOM controls and talks to it via the
+// 'voice:mood' window CustomEvent. Mic capture here is LOCAL-ONLY (getUserMedia +
+// AnalyserNode driving the orb's pulse) -- no audio is sent to a backend yet. The real
+// Gemini Live ASR/TTS duplex (voice-mode-design.md, Option B) replaces this stub later
+// and will drive the 'speaking' mood from the TTS playback side instead of the mic input.
+;(() => {
+  let initialized = false
+  let clockTimer = null
+  let micStream = null
+  let audioCtx = null
+  let analyser = null
+  let micRafId = null
+  let listening = false
+
+  function tickClock() {
+    const el = document.getElementById('voiceClock')
+    if (!el) return
+    const parts = new Intl.DateTimeFormat('hu-HU', {
+      timeZone: 'Europe/Budapest', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    }).formatToParts(new Date())
+    const get = (type) => parts.find((p) => p.type === type)?.value ?? '--'
+    el.textContent = `${get('hour')}:${get('minute')}:${get('second')}`
+  }
+
+  function setMood(mood, volume) {
+    window.dispatchEvent(new CustomEvent('voice:mood', { detail: { mood, volume } }))
+  }
+
+  function stopMic() {
+    if (micRafId) cancelAnimationFrame(micRafId)
+    micRafId = null
+    if (micStream) { micStream.getTracks().forEach((tr) => tr.stop()); micStream = null }
+    if (audioCtx) { audioCtx.close(); audioCtx = null }
+    analyser = null
+    listening = false
+    document.getElementById('voiceMicBtn')?.classList.remove('recording')
+    setMood('idle', 0)
+  }
+
+  async function startMic() {
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    } catch (err) {
+      console.warn('[voice] mikrofon-hozzáférés megtagadva vagy hiba:', err)
+      return
+    }
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+    const source = audioCtx.createMediaStreamSource(micStream)
+    analyser = audioCtx.createAnalyser()
+    analyser.fftSize = 256
+    source.connect(analyser)
+    const data = new Uint8Array(analyser.frequencyBinCount)
+    listening = true
+    document.getElementById('voiceMicBtn')?.classList.add('recording')
+
+    function loop() {
+      if (!listening) return
+      analyser.getByteFrequencyData(data)
+      const avg = data.reduce((a, b) => a + b, 0) / data.length
+      setMood('listening', avg / 255)
+      micRafId = requestAnimationFrame(loop)
+    }
+    loop()
+  }
+
+  function initVoicePageOnce() {
+    if (initialized) return
+    initialized = true
+
+    document.getElementById('voiceFullscreenBtn')?.addEventListener('click', () => {
+      document.body.classList.toggle('voice-fullscreen')
+    })
+
+    document.getElementById('voiceMicBtn')?.addEventListener('click', () => {
+      if (listening) stopMic()
+      else startMic()
+    })
+
+    document.querySelectorAll('.voice-music-toggle-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const src = btn.dataset.source
+        document.querySelectorAll('.voice-music-toggle-btn').forEach((b) => b.classList.toggle('active', b === btn))
+        const scPlayer = document.getElementById('voiceMusicPlayerSoundcloud')
+        const spPlayer = document.getElementById('voiceMusicPlayerSpotify')
+        scPlayer?.classList.toggle('active', src === 'soundcloud')
+        scPlayer?.toggleAttribute('hidden', src !== 'soundcloud')
+        spPlayer?.classList.toggle('active', src === 'spotify')
+        spPlayer?.toggleAttribute('hidden', src !== 'spotify')
+        // Spotify Web Playback SDK bekötése (Ender saját Premium-fiók-függés, lásd
+        // voice-mode-design.md 3b -- előfizetés-lejárat 2026-07-13) egy KÉSŐBBI kör,
+        // itt csak a UI-váltás és a figyelmeztető felirat működik.
+        if (src === 'spotify') document.getElementById('voiceSpotifyWarning')?.removeAttribute('hidden')
+      })
+    })
+  }
+
+  window.loadVoicePage = function loadVoicePage() {
+    initVoicePageOnce()
+    if (!clockTimer) { tickClock(); clockTimer = setInterval(tickClock, 1000) }
+  }
+
+  window.stopVoicePage = function stopVoicePageImpl() {
+    if (clockTimer) { clearInterval(clockTimer); clockTimer = null }
+    stopMic()
+  }
 })()

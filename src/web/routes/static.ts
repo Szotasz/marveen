@@ -48,6 +48,7 @@ export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promis
   if (path === '/' || path === '/index.html') { serveIndexHtml(ctx, webDir); return true }
   if (path === '/style.css') { serveFile(req, res, join(webDir, 'style.css')); return true }
   if (path === '/app.js') { serveFile(req, res, join(webDir, 'app.js')); return true }
+  if (path === '/voice-orb.js') { serveFile(req, res, join(webDir, 'voice-orb.js')); return true }
   if (path === '/manifest.json') { serveFile(req, res, join(webDir, 'manifest.json')); return true }
   if (path === '/sw.js') { serveFile(req, res, join(webDir, 'sw.js')); return true }
 

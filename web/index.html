@@ -14,6 +14,11 @@
   <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@2.0.4/dist/qrcode.js"></script>
   <script src="/lang/hu.js"></script>
   <script src="/lang/en.js"></script>
+  <!-- Three.js for the Hang (élő hang-mód) page orb visual -- ES module + importmap so no
+       build step is needed (consistent with the rest of this no-bundler dashboard). -->
+  <script type="importmap">
+  { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js" } }
+  </script>
   <link rel="icon" href="/api/marveen/avatar">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <link rel="manifest" href="/manifest.json">
@@ -129,6 +134,10 @@
       <a href="#" class="sb-link" data-page="ideas">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
         <span class="sb-label">Ötletláda</span>
+      </a>
+      <a href="#" class="sb-link" data-page="voice">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+        <span class="sb-label">Hang</span>
       </a>
       <a href="#" class="sb-link" data-page="updates" id="updatesNavLink">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
@@ -1077,6 +1086,49 @@
             <button class="btn-secondary btn-compact" id="ideaDetailEditBtn" data-i18n="ideas.detail.edit_btn">Szerkeszt</button>
             <button class="btn-secondary btn-compact" id="ideaDetailCloseBtn" data-i18n="ideas.detail.close_btn">Bezár</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- === Hang (élő hang-mód) Page ===
+         Fix sötét téma, független a globális data-theme-től (lásd style.css .voice-page
+         szabályai -- saját, kódolt színekkel dolgozik, nem a --bg-*/--text-* változókkal). -->
+    <div class="page voice-page" id="voicePage" hidden>
+      <button class="voice-fullscreen-btn" id="voiceFullscreenBtn" title="Teljes képernyő / sidebar elrejtése" aria-label="Teljes képernyő">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+      </button>
+      <div class="voice-clock" id="voiceClock">--:--:--</div>
+
+      <div class="voice-stage">
+        <div class="voice-orb-wrap" id="voiceOrbWrap" data-mood="idle">
+          <canvas id="voiceOrbCanvas"></canvas>
+          <button class="voice-mic-btn" id="voiceMicBtn" title="Élő hang indítása/leállítása" aria-label="Élő hang indítása/leállítása">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+          </button>
+        </div>
+
+        <!-- Kép-megjelenítő placeholder -- CSAK hely lefoglalva (Ender kérése), a
+             tényleges kép-betöltés mechanizmusa későbbi kör. Üres/rejtett amíg nincs
+             tartalom, oldalról csúszik be ha aktiválódik (lásd voice-image-panel.active). -->
+        <div class="voice-image-panel" id="voiceImagePanel">
+          <div class="voice-image-panel-inner" id="voiceImagePanelInner"></div>
+        </div>
+      </div>
+
+      <div class="voice-music-bar" id="voiceMusicBar">
+        <div class="voice-music-toggle" id="voiceMusicToggle">
+          <button class="voice-music-toggle-btn active" data-source="soundcloud" data-i18n="voice.music.soundcloud">SoundCloud</button>
+          <button class="voice-music-toggle-btn" data-source="spotify" data-i18n="voice.music.spotify">Spotify</button>
+        </div>
+        <div class="voice-music-player active" id="voiceMusicPlayerSoundcloud">
+          <iframe id="voiceSoundcloudFrame" width="100%" height="80" scrolling="no" frameborder="no" allow="autoplay"
+            src="https://w.soundcloud.com/player/?url=https%3A%2F%2Fon.soundcloud.com%2FBPNSnAXaxmRr1TeGfr&color=%23f2a541&auto_play=false&show_comments=false&show_user=false&show_reposts=false&show_teaser=false"></iframe>
+        </div>
+        <div class="voice-music-player" id="voiceMusicPlayerSpotify" hidden>
+          <div class="voice-music-spotify-warning" id="voiceSpotifyWarning" hidden data-i18n="voice.music.spotify_warning">
+            A Spotify-lejátszáshoz saját Premium fiók szükséges munkamenet közben -- jelenleg nem elérhető.
+          </div>
+          <div class="voice-music-spotify-placeholder" data-i18n="voice.music.spotify_placeholder">Spotify lejátszó -- bekötés folyamatban</div>
         </div>
       </div>
     </div>
@@ -2554,5 +2606,6 @@
   </div>
 
   <script src="/app.js"></script>
+  <script type="module" src="/voice-orb.js"></script>
 </body>
 </html>

@@ -1373,4 +1373,8 @@ window._i18n.hu = {
   'agents.deepseek_link': 'API kulcs hozzáadása',
   'agents.deepseek_hint_post': 'a Vault oldalon.',
   'channel.btn.slack_manifest': 'Slack App létrehozása (manifest)',
+  'voice.music.soundcloud': 'SoundCloud',
+  'voice.music.spotify': 'Spotify',
+  'voice.music.spotify_warning': 'A Spotify-lejátszáshoz saját Premium fiók szükséges munkamenet közben -- jelenleg nem elérhető.',
+  'voice.music.spotify_placeholder': 'Spotify lejátszó -- bekötés folyamatban',
 }
