@@ -2,7 +2,23 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { serveFile } from '../http-helpers.js'
 import { MIME } from '../http-helpers.js'
+import { BRAND_NAME } from '../../config.js'
 import type { RouteContext } from './types.js'
+
+// Substitute the configured brand into the PWA manifest's user-visible fields
+// (name/short_name) so an install that sets BRAND_NAME shows its own name on
+// the installed home-screen icon. Replaces only those two quoted string values
+// in place, preserving the file's exact formatting (whitespace + trailing
+// newline), so a stock install (brandName == the shipped default) serves the
+// file BYTE-FOR-BYTE unchanged. Keyed on the exact `"name"` / `"short_name"`
+// keys (the `"name"` rule cannot match `"short_name"`). Pure + side-effect-free
+// so it is provable independent of the request pipeline; a manifest missing the
+// keys is returned untouched rather than throwing.
+export function buildManifest(raw: string, brandName: string): string {
+  return raw
+    .replace(/^(\s*"name"\s*:\s*)"[^"]*"/m, (_m, p: string) => `${p}${JSON.stringify(`${brandName} Dashboard`)}`)
+    .replace(/^(\s*"short_name"\s*:\s*)"[^"]*"/m, (_m, p: string) => `${p}${JSON.stringify(brandName)}`)
+}
 
 // Returns a short version token derived from app.js mtime+size so the
 // script URL changes whenever the file changes, busting browser cache.
@@ -48,7 +64,16 @@ export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promis
   if (path === '/' || path === '/index.html') { serveIndexHtml(ctx, webDir); return true }
   if (path === '/style.css') { serveFile(req, res, join(webDir, 'style.css')); return true }
   if (path === '/app.js') { serveFile(req, res, join(webDir, 'app.js')); return true }
-  if (path === '/manifest.json') { serveFile(req, res, join(webDir, 'manifest.json')); return true }
+  if (path === '/manifest.json') {
+    try {
+      const raw = readFileSync(join(webDir, 'manifest.json'), 'utf-8')
+      res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-cache' })
+      res.end(buildManifest(raw, BRAND_NAME))
+    } catch {
+      res.writeHead(404); res.end('Not found')
+    }
+    return true
+  }
   if (path === '/sw.js') { serveFile(req, res, join(webDir, 'sw.js')); return true }
 
   if (path.startsWith('/lang/')) {

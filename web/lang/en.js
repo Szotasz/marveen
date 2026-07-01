@@ -607,7 +607,7 @@ window._i18n.en = {
   'settings.desc.KANBAN_AGING_CRITICAL_COLOR': 'Aging badge color at the critical threshold.',
   'settings.desc.KANBAN_SWIMLANE_DEFAULT_GROUP': 'Default board grouping on load. none = flat view.',
   'settings.desc.KANBAN_SWIMLANE_SEPARATOR_COLOR': 'Background color of the swimlane separator header.',
-  'settings.desc.DASHBOARD_PUBLIC_URL':        'Publicly accessible URL of the dashboard (e.g. https://marveen.example.com). Empty = no additional CORS whitelist.',
+  'settings.desc.DASHBOARD_PUBLIC_URL':        'Publicly accessible URL of the dashboard (e.g. https://{agentId}.example.com). Empty = no additional CORS whitelist.',
   'settings.desc.OLLAMA_URL':                  'Base URL for the Ollama API. Used for memory embedding and model suggestions.',
   'settings.desc.DASHBOARD_LANG':              'Default display language of the dashboard (hu = Hungarian, en = English). Browser-saved preference (localStorage) overrides this.',
   'settings.desc.HEARTBEAT_START_HOUR':        'Start of the heartbeat active time window (local time, 0-22). No notifications sent before this hour.',
@@ -743,7 +743,7 @@ window._i18n.en = {
   // --- Updates ---
   'updates.page_title':          'Updates',
   'updates.page_subtitle':        'version check',
-  'updates.brand_subtitle':        'Marveen version check',
+  'updates.brand_subtitle':        '{brand} version check',
   'conversation.modal_title':      'Conversation',
   'updates.checking':             'Checking...',
   'updates.btn.check':           'Check',
@@ -857,10 +857,10 @@ window._i18n.en = {
   'agents.claude_md_saved':        'CLAUDE.md saved',
   'agents.soul_md_saved':          'SOUL.md saved',
   'agents.restart_failed':         'Failed to start restart',
-  'agents.confirm.hard_restart':   'Hard restart the marveen-channels session. The ongoing Marveen conversation will be lost (memory is preserved). Continue?',
+  'agents.confirm.hard_restart':   'Hard restart the {agentId}-channels session. The ongoing {bot} conversation will be lost (memory is preserved). Continue?',
   'agents.confirm.stop':           'Stop this agent?',
   'agents.confirm.delete':         'Delete agent: {name}?',
-  'agents.toast.marveen_restarted': 'Marveen channels restarted',
+  'agents.toast.marveen_restarted': '{bot} channels restarted',
   'agents.toast.restart_failed':   'Restart failed',
   'agents.toast.start_failed':     'Start failed',
   'agents.toast.stop_failed':      'Stop failed',
@@ -1126,7 +1126,7 @@ window._i18n.en = {
   'agents.channel.connected':    'Connected',
   'agents.channel.disconnected': 'Not connected',
   'agents.strict_mode':          ' (strict)',
-  'agents.marveen_boss':         'Marveen Boss',
+  'agents.marveen_boss':         '{bot} Boss',
   'agents.btn.login':            'Login',
 
   // --- Agent model switch card ---
@@ -1292,8 +1292,8 @@ window._i18n.en = {
   'connectors.catalog.filter.development': 'Development',
   'connectors.catalog.filter.finance': 'Finance',
   'connectors.catalog.filter.system': 'System',
-  'connectors.builtin.computer_use_html': '<p>Computer Use is a native Claude capability managed by the Claude Code CLI / Claude app itself, not by Marveen. It does not appear in <code>claude mcp list</code> output, so the dashboard cannot auto-detect it.</p><p><strong>Enable:</strong> the exact steps depend on your Claude version and may change between releases. Follow the official Anthropic documentation and Claude Code changelog. Find your main session tmux name on the Agents page and attach with <code>tmux attach</code>.</p><p style="color:var(--text-muted)">This capability grants the agent control over your screen and keyboard, so only use it in a trusted environment.</p>',
-  'connectors.builtin.chrome_html': '<p>Claude in Chrome is a launch-time flag for the Claude Code CLI, not a toggleable MCP server. It therefore does not appear in <code>claude mcp list</code> output and the dashboard cannot auto-detect it.</p><p><strong>Enable:</strong> start Claude with the <code>--chrome</code> flag:</p><pre style="background:var(--bg-input);padding:8px 12px;border-radius:4px;font-size:12px;overflow-x:auto">claude --chrome</pre><p style="color:var(--text-muted)">Chrome integration enables browser automation. Marveen sub-agent launches do not currently pass this flag, so only the manually started main session can use it.</p>',
+  'connectors.builtin.computer_use_html': '<p>Computer Use is a native Claude capability managed by the Claude Code CLI / Claude app itself, not by {brand}. It does not appear in <code>claude mcp list</code> output, so the dashboard cannot auto-detect it.</p><p><strong>Enable:</strong> the exact steps depend on your Claude version and may change between releases. Follow the official Anthropic documentation and Claude Code changelog. Find your main session tmux name on the Agents page and attach with <code>tmux attach</code>.</p><p style="color:var(--text-muted)">This capability grants the agent control over your screen and keyboard, so only use it in a trusted environment.</p>',
+  'connectors.builtin.chrome_html': '<p>Claude in Chrome is a launch-time flag for the Claude Code CLI, not a toggleable MCP server. It therefore does not appear in <code>claude mcp list</code> output and the dashboard cannot auto-detect it.</p><p><strong>Enable:</strong> start Claude with the <code>--chrome</code> flag:</p><pre style="background:var(--bg-input);padding:8px 12px;border-radius:4px;font-size:12px;overflow-x:auto">claude --chrome</pre><p style="color:var(--text-muted)">Chrome integration enables browser automation. {brand} sub-agent launches do not currently pass this flag, so only the manually started main session can use it.</p>',
 
   // --- Updates toasts ---
   'updates.toast.not_started':   'Update not started: {msg}',

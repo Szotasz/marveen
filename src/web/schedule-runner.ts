@@ -6,6 +6,7 @@ import {
   PROJECT_ROOT,
   MAIN_AGENT_ID,
   ALLOWED_CHAT_ID,
+  BOT_NAME,
 } from '../config.js'
 import {
   appendTaskRun,
@@ -297,7 +298,7 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
   const ageMinutes = Math.floor(view.ageMs / 60000)
   const firstAttempt = new Date(view.firstAttempt).toLocaleString('hu-HU')
   const text = [
-    `[Marveen scheduler] A(z) "${view.taskName}" (${view.agentName}) utemezett feladat ${ageMinutes} perce varakozik.`,
+    `[${BOT_NAME} scheduler] A(z) "${view.taskName}" (${view.agentName}) utemezett feladat ${ageMinutes} perce varakozik.`,
     `Elso probalkozas: ${firstAttempt}.`,
     'A rendszer tovabb probalkozik; a dashboard /Utemezesek oldalan visszavonhato.',
   ].join('\n')

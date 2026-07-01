@@ -40,5 +40,18 @@
   <div class="card"><img src="19_princess.png" alt="Princess"><div class="name">Princess</div><div class="num">#19</div></div>
   <div class="card"><img src="20_alien.png" alt="Alien"><div class="name">Alien</div><div class="num">#20</div></div>
 </div>
+<script>
+  // Reflect the configured brand in the standalone gallery heading. Falls back
+  // to the static "Marveen" text above when /api/marveen is unreachable, so a
+  // stock install renders byte-identically.
+  fetch('/api/marveen').then(function (r) { return r.ok ? r.json() : null }).then(function (m) {
+    if (!m) return
+    var b = m.brandName || m.name
+    if (!b) return
+    document.title = 'Pixel Avatar Gallery - ' + b + ' Team'
+    var st = document.querySelector('.subtitle')
+    if (st) st.textContent = '20 Minecraft-style agent avatars for ' + b
+  }).catch(function () {})
+</script>
 </body>
 </html>

@@ -354,10 +354,10 @@ window._i18n.hu = {
   'agents.claude_md_saved':        'CLAUDE.md mentve',
   'agents.soul_md_saved':          'SOUL.md mentve',
   'agents.restart_failed':         'Az újraindítás indítása sikertelen',
-  'agents.confirm.hard_restart':   'Hard restart a marveen-channels session-ön. A folyamatban lévő Marveen beszélgetés elveszik (memória megmarad). Folytatod?',
+  'agents.confirm.hard_restart':   'Hard restart a {agentId}-channels session-ön. A folyamatban lévő {bot} beszélgetés elveszik (memória megmarad). Folytatod?',
   'agents.confirm.stop':           'Biztosan leállítod az ügynököt?',
   'agents.confirm.delete':         'Biztosan törlöd: {name}?',
-  'agents.toast.marveen_restarted': 'Marveen channels újraindítva',
+  'agents.toast.marveen_restarted': '{bot} channels újraindítva',
   'agents.toast.restart_failed':   'Restart sikertelen',
   'agents.toast.start_failed':     'Indítási hiba',
   'agents.toast.stop_failed':      'Leállítási hiba',
@@ -900,7 +900,7 @@ window._i18n.hu = {
   'settings.desc.KANBAN_AGING_CRITICAL_COLOR': 'Az aging-badge színe a kritikus küszöbnél.',
   'settings.desc.KANBAN_SWIMLANE_DEFAULT_GROUP': 'A tábla alapértelmezett csoportosítása betöltéskor. none = lapos nézet.',
   'settings.desc.KANBAN_SWIMLANE_SEPARATOR_COLOR': 'Az swimlane-elválasztó fejléc háttérszíne.',
-  'settings.desc.DASHBOARD_PUBLIC_URL':        'A dashboard nyilvánosan elérhető URL-je (pl. https://marveen.example.com). Üres = nincs CORS whitelist bővítés.',
+  'settings.desc.DASHBOARD_PUBLIC_URL':        'A dashboard nyilvánosan elérhető URL-je (pl. https://{agentId}.example.com). Üres = nincs CORS whitelist bővítés.',
   'settings.desc.OLLAMA_URL':                  'Az Ollama API alap-URL-je. Memória-embedding és modell-javaslat ezt használja.',
   'settings.desc.DASHBOARD_LANG':              'A dashboard alapértelmezett megjelenítési nyelve (hu = magyar, en = angol). A böngészőben mentett preferencia (localStorage) felülírja.',
   'settings.desc.HEARTBEAT_START_HOUR':        'A heartbeat aktív időablakának kezdete (helyi idő, 0-22). Előtte nem küld értesítést.',
@@ -1036,7 +1036,7 @@ window._i18n.hu = {
   // --- Updates ---
   'updates.page_title':          'Frissítések',
   'updates.page_subtitle':        'verzió ellenőrzés',
-  'updates.brand_subtitle':        'Marveen verzió ellenőrzés',
+  'updates.brand_subtitle':        '{brand} verzió ellenőrzés',
   'conversation.modal_title':      'Beszélgetés',
   'updates.checking':             'Ellenőrzés...',
   'updates.btn.check':           'Ellenőrzés',
@@ -1124,7 +1124,7 @@ window._i18n.hu = {
   'agents.channel.connected':    'Csatlakozva',
   'agents.channel.disconnected': 'Nincs bekötve',
   'agents.strict_mode':          ' (szigorú)',
-  'agents.marveen_boss':         'Marveen Főnök',
+  'agents.marveen_boss':         '{bot} Főnök',
   'agents.btn.login':            'Bejelentkezés',
 
   // --- Agent model switch card ---
@@ -1290,8 +1290,8 @@ window._i18n.hu = {
   'connectors.catalog.filter.development': 'Fejlesztés',
   'connectors.catalog.filter.finance': 'Pénzügy',
   'connectors.catalog.filter.system': 'Rendszer',
-  'connectors.builtin.computer_use_html': '<p>A Computer Use egy natív Claude képesség, amit nem a Marveen kezel, hanem maga a Claude Code CLI / Claude alkalmazás. Nem jelenik meg a <code>claude mcp list</code> kimenetében, ezért a dashboard sem tudja automatikusan detektálni.</p><p><strong>Bekapcsolás:</strong> a pontos folyamat a Claude verziójától függ és változhat verziók között. Kövesd az Anthropic hivatalos dokumentációját és a Claude Code changelogot. A fő session tmux-nevét az "Ügynökök" oldalon találod -- oda <code>tmux attach</code>-al tudsz belépni manuálisan.</p><p style="color:var(--text-muted)">Ez a képesség engedélyt ad az ügynöknek a képernyő vezérlésére és kattintásra, ezért csak megbízható környezetben használd.</p>',
-  'connectors.builtin.chrome_html': '<p>A Claude in Chrome egy indítás-idejű flag a Claude Code CLI-n, nem egy bekapcsolható MCP szerver. Ezért nem jelenik meg a <code>claude mcp list</code> kimenetében, és a dashboard sem tudja automatikusan detektálni.</p><p><strong>Bekapcsolás:</strong> indítsd a Claude-ot a <code>--chrome</code> flaggel:</p><pre style="background:var(--bg-input);padding:8px 12px;border-radius:4px;font-size:12px;overflow-x:auto">claude --chrome</pre><p style="color:var(--text-muted)">A Chrome integráció lehetővé teszi a böngészőautomatizálást. A Marveen sub-agentek indítása jelenleg nem adja át ezt a flaget, így csak a manuálisan indított fő session használhatja.</p>',
+  'connectors.builtin.computer_use_html': '<p>A Computer Use egy natív Claude képesség, amit nem a {brand} kezel, hanem maga a Claude Code CLI / Claude alkalmazás. Nem jelenik meg a <code>claude mcp list</code> kimenetében, ezért a dashboard sem tudja automatikusan detektálni.</p><p><strong>Bekapcsolás:</strong> a pontos folyamat a Claude verziójától függ és változhat verziók között. Kövesd az Anthropic hivatalos dokumentációját és a Claude Code changelogot. A fő session tmux-nevét az "Ügynökök" oldalon találod -- oda <code>tmux attach</code>-al tudsz belépni manuálisan.</p><p style="color:var(--text-muted)">Ez a képesség engedélyt ad az ügynöknek a képernyő vezérlésére és kattintásra, ezért csak megbízható környezetben használd.</p>',
+  'connectors.builtin.chrome_html': '<p>A Claude in Chrome egy indítás-idejű flag a Claude Code CLI-n, nem egy bekapcsolható MCP szerver. Ezért nem jelenik meg a <code>claude mcp list</code> kimenetében, és a dashboard sem tudja automatikusan detektálni.</p><p><strong>Bekapcsolás:</strong> indítsd a Claude-ot a <code>--chrome</code> flaggel:</p><pre style="background:var(--bg-input);padding:8px 12px;border-radius:4px;font-size:12px;overflow-x:auto">claude --chrome</pre><p style="color:var(--text-muted)">A Chrome integráció lehetővé teszi a böngészőautomatizálást. A {brand} sub-agentek indítása jelenleg nem adja át ezt a flaget, így csak a manuálisan indított fő session használhatja.</p>',
 
   // --- Updates toasts ---
   'updates.toast.not_started':   'Frissítés nem indult: {msg}',

@@ -7,6 +7,12 @@
   const LS_KEY = 'marveen.lang'
   const VALID = new Set(['hu', 'en'])
 
+  // Brand tokens ({brand} = product/brand name, {bot} = main agent display
+  // name, {agentId} = canonical slug) are filled from /api/marveen once it
+  // resolves (see initSidebarBrand). Until then these defaults keep a stock
+  // install byte-identical. Explicit params passed to t() still win over them.
+  window._brandTokens = window._brandTokens || { brand: 'Marveen', bot: 'Marveen', agentId: 'marveen' }
+
   window.t = function t(key, params = {}) {
     const lang = window._lang || 'hu'
     const str =
@@ -16,7 +22,8 @@
     if (str === key && localStorage.getItem('marveen.dev') === '1') {
       console.warn('[i18n] missing key:', key)
     }
-    return str.replace(/\{(\w+)\}/g, (_, k) => (params[k] != null ? params[k] : `{${k}}`))
+    const vals = { ...window._brandTokens, ...params }
+    return str.replace(/\{(\w+)\}/g, (_, k) => (vals[k] != null ? vals[k] : `{${k}}`))
   }
 
   function applyLang(lang) {
@@ -9129,12 +9136,23 @@ async function initSidebarBrand() {
     if (res.ok) {
       const m = await res.json()
       const brand = m.brandName || m.name
+      // Publish the brand tokens so every t() call ({brand}/{bot}/{agentId})
+      // renders the configured names, then re-apply the static i18n so any
+      // label painted before this fetch resolved picks up the real brand.
+      window._brandTokens = {
+        brand: brand || 'Marveen',
+        bot: m.name || brand || 'Marveen',
+        agentId: m.agentId || 'marveen',
+      }
+      if (typeof renderStaticI18n === 'function') renderStaticI18n()
       if (brand) {
         document.title = brand
         const topbar = document.getElementById('mobileTopbarTitle')
         if (topbar) topbar.textContent = brand
         const name = document.getElementById('sidebarBrandName')
         if (name) name.textContent = brand
+        const appleTitle = document.querySelector('meta[name="apple-mobile-web-app-title"]')
+        if (appleTitle) appleTitle.setAttribute('content', brand)
         const subtitle = document.getElementById('updatesSubtitle')
         if (subtitle) subtitle.textContent = `${brand} ` + t('overview.updates_subtitle')
       }

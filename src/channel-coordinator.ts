@@ -32,7 +32,7 @@ import { homedir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { execFile } from 'node:child_process'
 import { logger } from './logger.js'
-import { PROJECT_ROOT, MAIN_AGENT_ID, CHANNEL_PROVIDER } from './config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, CHANNEL_PROVIDER, BOT_NAME } from './config.js'
 import { getUpdates, probeHighWater, mapUpdate, TelegramApiError } from './channel-coordinator/telegram-client.js'
 import { probeNativeChannelDown } from './channel-coordinator/liveness.js'
 import {
@@ -301,7 +301,7 @@ function reconcilePending(): void {
 
 async function fatalExit(err: TelegramApiError): Promise<never> {
   logger.error({ msg: err.message }, 'channel-coordinator: fatal error, exiting')
-  sendAlert(`Marveen channel-coordinator FATAL: ${err.message}. Inbound backfill leallt amig nem javitod.`)
+  sendAlert(`${BOT_NAME} channel-coordinator FATAL: ${err.message}. Inbound backfill leallt amig nem javitod.`)
   await sleep(1500) // let notify.sh fire before exit
   process.exit(1)
 }
