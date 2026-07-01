@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { platform } from 'node:os'
+import { SERVICE_ID, launchdStatusPattern, systemdStatusUnits } from '../src/config.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = join(__dirname, '..')
@@ -108,7 +109,7 @@ if (existsSync(dbPath)) {
 const os = platform()
 if (os === 'darwin') {
   try {
-    const out = execSync('launchctl list | grep claudeclaw 2>/dev/null', {
+    const out = execSync(`launchctl list | grep -E "${launchdStatusPattern(SERVICE_ID)}" 2>/dev/null`, {
       encoding: 'utf-8',
     }).trim()
     if (out) {
@@ -121,7 +122,7 @@ if (os === 'darwin') {
   }
 } else if (os === 'linux') {
   try {
-    execSync('systemctl --user is-active claudeclaw 2>/dev/null', { encoding: 'utf-8' })
+    execSync(systemdStatusUnits(SERVICE_ID).map((u) => `systemctl --user is-active ${u} 2>/dev/null`).join(' || '), { encoding: 'utf-8' })
     ok('Hatterszolgaltatas (systemd)', 'aktiv')
   } catch {
     warn('Hatterszolgaltatas (systemd)', 'nem aktiv')

@@ -112,6 +112,48 @@ export const MAIN_AGENT_ID = env['MAIN_AGENT_ID'] ?? 'marveen'
 // (launchctl unload/load, kickstart) still targets the right unit.
 export const SERVICE_ID = env['SERVICE_ID'] ?? MAIN_AGENT_ID
 
+// Legacy service id from before the OS service units were keyed off SERVICE_ID
+// (the project originally shipped as "claudeclaw"). Retained so the standalone
+// installer can retire a stale unit on re-run and the status command still
+// recognizes a service created by an older install.
+export const LEGACY_SERVICE_ID = 'claudeclaw'
+export const LEGACY_APP_SERVICE_LABEL = `com.${LEGACY_SERVICE_ID}.app`
+
+// launchd Label for the standalone interactive installer's app process
+// (scripts/setup.ts, `npm run setup`). Keyed off SERVICE_ID so a branded
+// install names its background service after the brand, matching how
+// install-macos.sh already derives its com.<id>.dashboard / .channels units.
+export function appServiceLabel(serviceId: string): string {
+  return `com.${serviceId}.app`
+}
+
+// grep -E alternation matching this install's dashboard/app launchd unit
+// regardless of which installer created it: the SERVICE_ID-derived app service
+// (com.<id>.app from the standalone installer) or dashboard service
+// (com.<id>.dashboard from install-macos.sh), plus the legacy
+// "com.claudeclaw.app". The status command uses it so a running dashboard is
+// detected on every install shape -- the old check only matched the legacy name
+// and silently reported a modern (brand-aware) install as stopped. Anchored
+// with a trailing `$` (the launchd Label is the last field of a
+// `launchctl list` line) so only the exact unit matches -- an ancillary unit
+// whose final segment merely starts with app/dashboard (e.g.
+// com.<id>.dashboard-helper, com.<id>.appliance) does NOT count as "the
+// dashboard is running". The pattern is used unchanged in both `grep -E` and a
+// JS RegExp, so it sticks to features common to both (`$`, groups, `\.`).
+// serviceId is an ASCII slug, so no regex escaping is needed.
+export function launchdStatusPattern(serviceId: string): string {
+  return `(com\\.${serviceId}\\.(app|dashboard)|com\\.${LEGACY_SERVICE_ID}\\.app)$`
+}
+
+// systemd --user unit names to probe for the dashboard, newest install shape
+// first: install-linux.sh's "<id>-dashboard", the standalone installer's
+// "<id>", then the legacy "claudeclaw". The status command reports active if
+// any is active. Deduplicated so an id that already equals the legacy id does
+// not probe the same unit twice.
+export function systemdStatusUnits(serviceId: string): string[] {
+  return [...new Set([`${serviceId}-dashboard`, serviceId, LEGACY_SERVICE_ID])]
+}
+
 export const WEB_PORT = parseInt(env['WEB_PORT'] ?? '3420', 10)
 
 export const WEB_HOST = env['WEB_HOST'] ?? '127.0.0.1'
