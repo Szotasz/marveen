@@ -102,6 +102,43 @@ export function splitSegments(command) {
     .map((s) => s.trim())
 }
 
+// Blank out curl/HTTP DATA-PAYLOAD arguments before self-pace matching. A -d /
+// --data body is data sent over the wire, NEVER a shell invocation, so a trigger
+// token that only appears INSIDE the payload must not false-deny. The classic
+// false-positive: an /api/messages inter-agent dispatch (a legit peer message in
+// a green, operator-authorised review-loop) whose JSON body happens to mention
+// "/api/schedules", "tmux send-keys", "scheduled_tasks.json" or "/loop" -- pure
+// text, not an invocation. Only PROVABLY-LITERAL payloads are stripped:
+// single-quoted '...', ANSI-C $'...', and double-quoted "..." WITHOUT
+// $(...)/backtick. A payload that can run a command substitution (double-quoted
+// with $(...) / backticks) is left intact so a real command-substitution payload
+// is not blanked. A `$(...)` payload is then still denied by SCHEDULER_RX (its `(`
+// sits at a command boundary the anchor recognises); a backtick one leans on the
+// ScheduleWakeup/Cron* runtime tool-deny layer, since SCHEDULER_RX's boundary
+// anchor omits the backtick -- a pre-existing denylist limit (see splitSegments
+// notes), not something this payload-strip introduces. The data FLAG itself is
+// kept, so HTTP-write detection (-d /
+// --data) is unchanged; the URL and method args live OUTSIDE the payload, so a
+// real WRITE to /api/schedules is still denied.
+//
+// Quote classes match BASH parsing, not C. Inside a plain '...' a backslash is
+// LITERAL and the FIRST following ' always closes the string, so the class is
+// '[^']*'. A C-style '(?:[^'\\]|\\.)*' would treat \' as an escaped quote and
+// scan PAST bash's real closing quote -- e.g. `curl -d 'x\' ; crontab -r` would
+// blank the out-of-band `; crontab -r` and let a real self-pace command slip.
+// ANSI-C $'...' DOES process \', so that branch keeps the \\. escape form; "..."
+// keeps it too (backslash is special inside bash double quotes).
+export function stripDataPayloads(seg) {
+  return String(seg ?? '').replace(
+    /((?:^|\s)(?:-d|--data(?:-(?:raw|binary|ascii|urlencode))?)(?:\s+|=))('[^']*'|\$'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/gi,
+    (full, flag, arg) => {
+      const dq = arg.startsWith('"')
+      if (dq && (arg.includes('$(') || arg.includes('`'))) return full // may substitute -> keep
+      return flag + (dq ? '""' : "''") // literal payload -> blank the content
+    },
+  )
+}
+
 // Pure decision: does this tool call set up self-pace / self-injection?
 export function gateDecision(toolName, toolInput) {
   const name = String(toolName ?? '')
@@ -112,9 +149,17 @@ export function gateDecision(toolName, toolInput) {
     if (SCHEDULE_STORE_RX.test(fp)) return { deny: true }
   }
   if (name === 'Bash') {
+    // Strip -d/--data payloads on the WHOLE command BEFORE splitting. A payload is
+    // data, not an invocation; and since splitSegments is NOT quote-aware, a shell
+    // separator (; && | &) INSIDE a dispatch body would otherwise orphan a fragment
+    // that false-matches. Stripping first blanks the body (incl. any separators in
+    // it), so the URL/method args still match but the body text never does. A
+    // separator OUTSIDE the payload still splits, so `curl -d '' x ; crontab -r`
+    // is still caught.
+    const safeCommand = stripDataPayloads(String(toolInput?.command ?? ''))
     // Per-segment so an unrelated token elsewhere in a compound command cannot
     // turn a legit read (store inspection, schedule-API GET) into a false deny.
-    for (const seg of splitSegments(toolInput?.command)) {
+    for (const seg of splitSegments(safeCommand)) {
       if (SELF_PACE_BASH_PATTERNS.some((re) => re.test(seg))) return { deny: true }
       // scheduler binaries: deny the exec/submit forms, allow pure read-listing
       if (SCHEDULER_RX.test(seg) && !SCHEDULER_READ_RX.test(seg)) return { deny: true }
