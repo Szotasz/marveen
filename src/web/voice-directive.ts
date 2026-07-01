@@ -45,3 +45,37 @@ export function buildTtsDirective(opts: {
     return null
   }
 }
+
+// Directive appended after a Hang (élő hang-mód) <channel> handoff block (see
+// channel-coordinator/voice-live-ingest.ts). Distinct from buildTtsDirective above:
+// this is a REAL-TIME browser session, not a backfilled Telegram voice note, so it
+// explicitly corrects the generic CHANNEL_INBOUND_PREAMBLE framing ("channel was
+// down, backfill delivered it") which does not apply here, carries the persona-switch
+// instruction (Ender's design ask: livelier/more theatrical register while live), and
+// points at the live-specific reply endpoint (session-scoped, not chat_id-scoped).
+export function buildLiveVoiceDirective(sessionId: string): string | null {
+  try {
+    const tokenPath = join(STORE_DIR, '.dashboard-token')
+    if (!existsSync(tokenPath)) return null
+    const token = readFileSync(tokenPath, 'utf-8').trim()
+    return (
+      `\n\n[Élő hang-mód direktíva]: Ez EGY ÉLŐ hang-beszélgetés VALÓS IDŐBEN zajlik éppen -- ` +
+      `NEM egy backfillelt/kesett üzenet (a fenti <channel> blokk kerete általános minden ` +
+      `channel-inbound esetre, de ITT konkrétan Ender beszél hozzád élőben a dashboard ` +
+      `mikrofonján keresztül, a natív csatorna nem "volt lent"). Válts színészkedőbb, ` +
+      `kevésbé tárgyilagos regiszterbe -- a Tars alap-hangnem (melankolikus, öndepresszív ` +
+      `humor, Galaxis Útikalauz utalások) marad az alap, csak elevenebbre váltva, amíg ez a ` +
+      `munkamenet aktív.\n` +
+      `Amikor megvan a válaszod szövege, futtasd le ezt a parancsot (JSON-escape-elve a --arg-ban):\n` +
+      `\`\`\`bash\n` +
+      `jq -n --arg t "A_VÁLASZOD_SZÖVEGE" '{"session_id":"${sessionId}","text":$t}' | ` +
+      `curl -s -X POST http://localhost:${WEB_PORT}/api/voice/live/reply -H "Content-Type: application/json" -H "Authorization: Bearer ${token}" -d @-\n` +
+      `\`\`\`\n` +
+      `Szöveges választ NE küldj -- CSAK a fenti curl-t futtasd le, ez szóban mondja fel a ` +
+      `válaszod és visszaküldi az élő böngésző-munkamenetbe. Ha a munkamenet már lezárult ` +
+      `(a curl 404-et ad session_id-ra), ne próbáld újra, egyszerűen zárd le a választ csendben.`
+    )
+  } catch {
+    return null
+  }
+}

@@ -54,7 +54,7 @@ import { tryHandleSettings } from './web/routes/settings.js'
 import { tryHandleAuditLog } from './web/routes/audit-log.js'
 import { tryHandleStatic } from './web/routes/static.js'
 import { tryHandleVoice } from './web/routes/voice.js'
-import { attachVoiceLiveUpgrade } from './web/routes/voice-live.js'
+import { attachVoiceLiveUpgrade, tryHandleVoiceLive } from './web/routes/voice-live.js'
 import type { RouteContext } from './web/routes/types.js'
 
 const WEB_DIR = join(PROJECT_ROOT, 'web')
@@ -172,6 +172,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleToolLog(routeCtx)) return
       if (await tryHandleSettings(routeCtx)) return
       if (await tryHandleVoice(routeCtx)) return
+      if (await tryHandleVoiceLive(routeCtx)) return
       if (await tryHandleAuditLog(routeCtx)) return
       if (await tryHandleStatic(routeCtx, WEB_DIR)) return
 

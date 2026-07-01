@@ -7,6 +7,7 @@ import {
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID } from '../../channel-coordinator/ingest.js'
+import { VOICE_LIVE_COORDINATOR_ID } from '../../channel-coordinator/voice-live-ingest.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { readBody, json } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
@@ -40,6 +41,14 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (sanitizeAgentIdent(from) === COORDINATOR_AGENT_ID) {
       logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST forging channel-coordinator id')
       json(res, { error: 'from is reserved for the in-process channel coordinator' }, 403)
+      return true
+    }
+    // Same defense-in-depth for the Hang (élő hang-mód) coordinator id: the only
+    // legitimate writer is voice-live.ts's WS handler, which inserts directly via
+    // createVoiceLiveHandoffMessage() -- it never POSTs here either.
+    if (sanitizeAgentIdent(from) === VOICE_LIVE_COORDINATOR_ID) {
+      logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST forging voice-live coordinator id')
+      json(res, { error: 'from is reserved for the in-process voice-live coordinator' }, 403)
       return true
     }
     // Code-side enforcement of the kanban-ref convention: rewrite any

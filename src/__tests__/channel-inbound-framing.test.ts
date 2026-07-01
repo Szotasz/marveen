@@ -10,6 +10,7 @@ import {
 } from '../prompt-safety.js'
 import { buildHandoffContent } from '../channel-coordinator.js'
 import { COORDINATOR_AGENT_ID } from '../channel-coordinator/ingest.js'
+import { VOICE_LIVE_COORDINATOR_ID } from '../channel-coordinator/voice-live-ingest.js'
 import { tryHandleMessages } from '../web/routes/messages.js'
 
 // Regression tests for the channel-inbound framing fix (2026-06-02 cutover
@@ -99,6 +100,11 @@ describe('agent-message classification + wrap (single source: agent-message-wrap
     expect(WRAP_SRC).toMatch(/CHANNEL_COORDINATOR_AGENTS\.has\(safeFrom\)/)
   })
 
+  it('the voice-live coordinator id is a member of the same allowlist (equal trust to Telegram)', () => {
+    expect(WRAP_SRC).toMatch(/VOICE_LIVE_COORDINATOR_ID/)
+    expect(VOICE_LIVE_COORDINATOR_ID).toBe('voice-live-coordinator')
+  })
+
   it('classifies channel-inbound BEFORE trusted/untrusted (so a coordinator msg is never treated as plain agent data)', () => {
     const inboundIdx = WRAP_SRC.indexOf('CHANNEL_COORDINATOR_AGENTS.has(safeFrom)')
     const trustedIdx = WRAP_SRC.indexOf('isTrustedPeer(')
@@ -158,6 +164,18 @@ describe('/api/messages 403 guard -- behavior (router-symmetric normalization)',
 
   it('blocks the bypass variants that sanitize to the coordinator id (the regression)', async () => {
     for (const forged of ['@telegram-coordinator', 'telegram-coordinator.', '.telegram-coordinator', 'telegram-coordinator!', ' telegram-coordinator ']) {
+      const { status } = await postFrom(forged)
+      expect(status, `forged from=${JSON.stringify(forged)} must be blocked`).toBe(403)
+    }
+  })
+
+  it('blocks the exact voice-live coordinator id with 403 (same protection, second coordinator)', async () => {
+    const { status } = await postFrom(VOICE_LIVE_COORDINATOR_ID)
+    expect(status).toBe(403)
+  })
+
+  it('blocks bypass variants of the voice-live coordinator id', async () => {
+    for (const forged of ['@voice-live-coordinator', 'voice-live-coordinator.', ' voice-live-coordinator ']) {
       const { status } = await postFrom(forged)
       expect(status, `forged from=${JSON.stringify(forged)} must be blocked`).toBe(403)
     }

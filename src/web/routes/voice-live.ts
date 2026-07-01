@@ -23,14 +23,14 @@
 // működő turn-határt -- ez pont illeszkedik a kliens toggle-mic-gombhoz (mic be = activityStart,
 // mic ki = activityEnd).
 //
-// FONTOS, MÉG NYITOTT KÉRDÉS (lásd a rocket->tars checkpoint üzenetet): a kész transzkript
-// jelenleg NEM kerül be Tars tényleges promptjába -- ehhez a meglévő agent_messages
-// queue-ba kellene írni (createAgentMessage), de a from_agent bizalmi besorolása
-// (classifyAgentMessage: channel-inbound / trusted-peer / untrusted) egy security-releváns
-// döntés, amit nem ez a fájl hoz meg egyoldalúan. Amíg ez nincs jóváhagyva, a transzkript
-// csak visszamegy a böngészőnek megjelenítésre és logolásra.
+// Delivery to Tars: a finished transcript is handed off through the SAME trust
+// mechanism as a Telegram message, per tars's explicit design call (channel-inbound,
+// via a dedicated coordinator identity -- see channel-coordinator/voice-live-ingest.ts).
+// Nothing here ever inserts with a client-supplied `from`; the coordinator id is a code
+// constant, and the handoff is a direct DB call, never the public POST /api/messages
+// path (which 403s on both coordinator ids, see web/routes/messages.ts).
 
-import { createSign } from 'node:crypto'
+import { createSign, randomUUID } from 'node:crypto'
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Server, IncomingMessage } from 'node:http'
@@ -39,6 +39,11 @@ import { WebSocketServer, WebSocket as UpstreamWebSocket } from 'ws'
 import { STORE_DIR } from '../../config.js'
 import { checkBearerToken } from '../dashboard-auth.js'
 import { logger } from '../../logger.js'
+import { readBody, json } from '../http-helpers.js'
+import { createVoiceLiveHandoffMessage } from '../../channel-coordinator/voice-live-ingest.js'
+import { neutralizeChannelTags } from '../../channel-coordinator.js'
+import { buildLiveVoiceDirective } from '../voice-directive.js'
+import type { RouteContext } from './types.js'
 
 const SERVICE_ACCOUNT_PATH = join(STORE_DIR, '.secrets', 'maxine-vertex-runner.json')
 // Ugyanaz a projekt/location mint a media-generation skill nanobana.mjs referenciája,
@@ -129,14 +134,24 @@ export async function synthesizeVoiceReply(text: string): Promise<{ audioBase64:
   return { audioBase64: part.inlineData.data, mimeType: part.inlineData.mimeType }
 }
 
+// Registry of open live-voice browser sessions, keyed by a server-generated session id
+// (independent of Google's own setupComplete.sessionId). Populated for the lifetime of
+// the WS connection so /api/voice/live/reply (below) can push Tars's synthesized reply
+// back down the right socket once the async agent turn finishes -- there is no other way
+// to correlate "which live browser tab" a later, out-of-band HTTP call refers to.
+const activeSessions = new Map<string, import('ws').WebSocket>()
+
 // Per-browser-connection session: proxies mic audio to a fresh upstream Live API
 // connection and relays input-transcription text back to the browser.
 function runSession(clientWs: import('ws').WebSocket): void {
+  const sessionId = randomUUID()
+  activeSessions.set(sessionId, clientWs)
   let upstream: UpstreamWebSocket | null = null
   let upstreamReady = false
   const pendingAudio: string[] = [] // base64 PCM chunks queued while upstream connects
 
   const send = (obj: unknown) => { if (clientWs.readyState === clientWs.OPEN) clientWs.send(JSON.stringify(obj)) }
+  send({ type: 'session', sessionId })
 
   mintAccessToken().then((token) => {
     if (!token) { send({ type: 'error', message: 'Google-hitelesítés sikertelen (service account hiányzik vagy érvénytelen)' }); clientWs.close(); return }
@@ -164,12 +179,21 @@ function runSession(clientWs: import('ws').WebSocket): void {
         send({ type: 'ready' })
         return
       }
+      // NOTE: only verified against a single short (~3s) utterance that arrived as ONE
+      // inputTranscription message with finished=true already carrying the full text.
+      // Whether a longer utterance streams multiple incremental messages before the
+      // finished one (in which case this would need to accumulate them) is UNTESTED --
+      // smoke-test with a longer sentence before relying on this for real conversations.
       const serverContent = msg.serverContent as Record<string, unknown> | undefined
       const inputTranscription = serverContent?.inputTranscription as { text?: string; finished?: boolean } | undefined
       if (inputTranscription?.text) {
-        send({ type: 'transcript', text: inputTranscription.text, finished: !!inputTranscription.finished })
-        // NOTE: does not yet forward into Tars's actual prompt -- see file header
-        // ("MÉG NYITOTT KÉRDÉS"). The browser displays/logs the transcript for now.
+        const finished = !!inputTranscription.finished
+        send({ type: 'transcript', text: inputTranscription.text, finished })
+        if (finished) {
+          const channelBlock = `<channel source="voice-live" session_id="${sessionId}">\n${neutralizeChannelTags(inputTranscription.text)}\n</channel>`
+          const directive = buildLiveVoiceDirective(sessionId) ?? ''
+          createVoiceLiveHandoffMessage(channelBlock + directive)
+        }
       }
       // Deliberately ignore serverContent.modelTurn (the Live model's own generated
       // audio reply) -- Option B discards it; Tars authors the real reply separately.
@@ -200,8 +224,38 @@ function runSession(clientWs: import('ws').WebSocket): void {
     else if (msg.type === 'activity_end') forward({ realtimeInput: { activityEnd: {} } })
   })
 
-  clientWs.on('close', () => { upstream?.close() })
-  clientWs.on('error', () => { upstream?.close() })
+  clientWs.on('close', () => { activeSessions.delete(sessionId); upstream?.close() })
+  clientWs.on('error', () => { activeSessions.delete(sessionId); upstream?.close() })
+}
+
+// POST /api/voice/live/reply -- called by Tars's own UserPromptSubmit-driven directive
+// (buildLiveVoiceDirective) once it has authored the actual reply text. Synthesizes the
+// audio and pushes it down the matching still-open browser session, if any. Auth is the
+// same blanket /api/* bearer-token gate in web.ts (nothing extra needed here); this route
+// is registered in the normal tryHandle* dispatch chain, unlike the WS upgrade above.
+export async function tryHandleVoiceLive(ctx: RouteContext): Promise<boolean> {
+  const { req, res, path, method } = ctx
+  if (path !== '/api/voice/live/reply' || method !== 'POST') return false
+
+  const body = await readBody(req)
+  let data: { session_id?: string; text?: string }
+  try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
+  const sessionId = data.session_id?.trim() ?? ''
+  const text = data.text?.trim() ?? ''
+  if (!sessionId || !text) { json(res, { error: 'session_id and text required' }, 400); return true }
+
+  const clientWs = activeSessions.get(sessionId)
+  if (!clientWs || clientWs.readyState !== clientWs.OPEN) {
+    json(res, { error: 'session not found or closed' }, 404)
+    return true
+  }
+
+  const audio = await synthesizeVoiceReply(text)
+  if (!audio) { json(res, { error: 'TTS failed' }, 500); return true }
+
+  clientWs.send(JSON.stringify({ type: 'speak', audioBase64: audio.audioBase64, mimeType: audio.mimeType, text }))
+  json(res, { ok: true })
+  return true
 }
 
 // Hooked once at server startup (src/web.ts) -- the http.Server 'upgrade' event has no

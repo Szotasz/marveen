@@ -18,11 +18,12 @@ import { MAIN_AGENT_ID } from '../config.js'
 import { isKnownAgent } from './agent-config.js'
 import { readAgentTeam } from './agent-team.js'
 import { COORDINATOR_AGENT_ID } from '../channel-coordinator/ingest.js'
+import { VOICE_LIVE_COORDINATOR_ID } from '../channel-coordinator/voice-live-ingest.js'
 
 // Channel-coordinator sources whose messages are real inbound user messages
 // (relayed during a native-channel disconnect), matched on a CODE CONSTANT --
 // never the attacker-influenceable from_agent string.
-const CHANNEL_COORDINATOR_AGENTS = new Set<string>([COORDINATOR_AGENT_ID])
+const CHANNEL_COORDINATOR_AGENTS = new Set<string>([COORDINATOR_AGENT_ID, VOICE_LIVE_COORDINATOR_ID])
 
 export type AgentMessageCategory = 'channel-inbound' | 'trusted-peer' | 'untrusted'
 
