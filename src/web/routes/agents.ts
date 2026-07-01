@@ -1480,7 +1480,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     for (const msg of claimed) {
       const cls = classifyAgentMessage(msg.from_agent, msg.to_agent)
       if (!cls) continue // empty/invalid from_agent -> cannot frame safely; drop
-      const { prefix, wrapped } = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, msg.from_agent, msg.content)
+      const isChannelInbound = cls.category === 'channel-inbound'
+      const { prefix: basePrefix, wrapped } = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, msg.from_agent, msg.content)
+      // Mirror message-router msg_id injection: lets the main agent write back via
+      // PUT /api/messages/:id for tasks it receives through the PULL path.
+      const prefix = isChannelInbound ? basePrefix : basePrefix.replace(']: ', `, msg_id:${msg.id}]: `)
       blocks.push(prefix + wrapped)
     }
     json(res, { count: blocks.length, text: blocks.join('\n\n') })
