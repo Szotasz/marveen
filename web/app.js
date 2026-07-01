@@ -277,7 +277,9 @@ function switchPage(pageId) {
   if (pageId === 'tokenUsage') loadTokenUsage()
   if (pageId === 'ideas') loadIdeasPage()
   if (pageId === 'archived') loadArchivedPage()
-  if (pageId === 'naplo') loadNaplo()
+  // Same definition-order race as voice below: loadNaplo is assigned (~line 12012) after
+  // routeFromHash runs, so a direct #naplo load would throw and halt the script. Guard it.
+  if (pageId === 'naplo' && typeof loadNaplo === 'function') loadNaplo()
   // typeof-guard, NOT a bare call: routeFromHash() runs near line 11457 during initial
   // load, but window.loadVoicePage is only assigned later in the file (~12323, its IIFE
   // hasn't executed yet). A bare loadVoicePage() on a direct #voice load throws a
@@ -12010,6 +12012,11 @@ function downloadMarkdown(name, content) {
   }
 
   window.loadNaplo = loadNaplo
+
+  // Direct #naplo load: routeFromHash() made the page visible earlier but its guarded
+  // loadNaplo() call no-op'd (this IIFE hadn't defined it yet). Initialize now if active.
+  const npEl = document.getElementById('naploPage')
+  if (npEl && !npEl.hidden) window.loadNaplo()
 })()
 
 // === Hang (élő hang-mód) page ===
