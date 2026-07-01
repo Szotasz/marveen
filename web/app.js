@@ -12102,10 +12102,41 @@ function downloadMarkdown(name, content) {
         playPcm16(msg.audioBase64, 24000)
       } else if (msg.type === 'error') {
         console.warn('[voice] szerver hiba:', msg.message)
+      } else if (msg.type === 'player_action') {
+        handlePlayerAction(msg.action)
       }
     })
     liveWs.addEventListener('close', () => { liveWs = null; wsPending = [] })
     liveWs.addEventListener('error', (err) => console.warn('[voice] WS hiba:', err))
+  }
+
+  // Voice-triggered music (Ender, 2026-07-01): Tars decides from context whether the
+  // user actually asked for music (no keyword-matching here -- see buildLiveVoiceDirective
+  // in voice-directive.ts), then hits POST /api/voice/live/player-action, which the server
+  // relays here as this WS message. The bar is hidden by default (index.html) and only
+  // revealed this way.
+  let scWidget = null
+  function handlePlayerAction(action) {
+    if (action !== 'play_random') return
+    const bar = document.getElementById('voiceMusicBar')
+    if (bar) bar.hidden = false
+    const frame = document.getElementById('voiceSoundcloudFrame')
+    if (!frame || typeof SC === 'undefined') return
+    if (!scWidget) scWidget = SC.Widget(frame)
+    const playRandom = () => {
+      scWidget.getSounds((sounds) => {
+        if (!sounds || !sounds.length) return
+        const idx = Math.floor(Math.random() * sounds.length)
+        scWidget.skip(idx)
+        scWidget.play()
+      })
+    }
+    // READY only fires once per iframe lifetime -- if this is the first trigger and the
+    // widget isn't ready yet, the bind catches it; if it's already long past ready (a
+    // later trigger), the immediate call below handles it. Harmless if both fire (just
+    // picks two random tracks back-to-back, second one wins).
+    scWidget.bind(SC.Widget.Events.READY, playRandom)
+    playRandom()
   }
 
   function wsSend(obj) {

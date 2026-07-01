@@ -73,7 +73,17 @@ export function buildLiveVoiceDirective(sessionId: string): string | null {
       `\`\`\`\n` +
       `Szöveges választ NE küldj -- CSAK a fenti curl-t futtasd le, ez szóban mondja fel a ` +
       `válaszod és visszaküldi az élő böngésző-munkamenetbe. Ha a munkamenet már lezárult ` +
-      `(a curl 404-et ad session_id-ra), ne próbáld újra, egyszerűen zárd le a választ csendben.`
+      `(a curl 404-et ad session_id-ra), ne próbáld újra, egyszerűen zárd le a választ csendben.\n\n` +
+      `Zene-lejátszás: HA (és csak ha) a felhasználó ebben a mondatban ténylegesen zenét kért ` +
+      `("tegyél be zenét", "indíts valamit", hasonlók -- ITT te döntesz kontextusból, nincs ` +
+      `kód-szintű kulcsszó-illesztés erre, szóval egy tréfás vagy nem-komoly félmondatnál ` +
+      `NE indítsd el), a hangválaszod MELLETT futtasd le ezt is:\n` +
+      `\`\`\`bash\n` +
+      `curl -s -X POST http://localhost:${WEB_PORT}/api/voice/live/player-action -H "Content-Type: application/json" -H "Authorization: Bearer ${token}" -d '{"session_id":"${sessionId}","action":"play_random"}'\n` +
+      `\`\`\`\n` +
+      `Ez felfedi a zene-sávot és elindít egy véletlenszerű MXNDR-számot a böngészőben -- nem ` +
+      `ad vissza semmilyen dalcímet neked, ne hivatkozz rá a válaszodban mintha tudnád melyik ` +
+      `szám indult el.`
     )
   } catch {
     return null

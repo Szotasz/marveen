@@ -235,27 +235,53 @@ function runSession(clientWs: import('ws').WebSocket): void {
 // is registered in the normal tryHandle* dispatch chain, unlike the WS upgrade above.
 export async function tryHandleVoiceLive(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
-  if (path !== '/api/voice/live/reply' || method !== 'POST') return false
 
-  const body = await readBody(req)
-  let data: { session_id?: string; text?: string }
-  try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
-  const sessionId = data.session_id?.trim() ?? ''
-  const text = data.text?.trim() ?? ''
-  if (!sessionId || !text) { json(res, { error: 'session_id and text required' }, 400); return true }
+  if (path === '/api/voice/live/reply' && method === 'POST') {
+    const body = await readBody(req)
+    let data: { session_id?: string; text?: string }
+    try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
+    const sessionId = data.session_id?.trim() ?? ''
+    const text = data.text?.trim() ?? ''
+    if (!sessionId || !text) { json(res, { error: 'session_id and text required' }, 400); return true }
 
-  const clientWs = activeSessions.get(sessionId)
-  if (!clientWs || clientWs.readyState !== clientWs.OPEN) {
-    json(res, { error: 'session not found or closed' }, 404)
+    const clientWs = activeSessions.get(sessionId)
+    if (!clientWs || clientWs.readyState !== clientWs.OPEN) {
+      json(res, { error: 'session not found or closed' }, 404)
+      return true
+    }
+
+    const audio = await synthesizeVoiceReply(text)
+    if (!audio) { json(res, { error: 'TTS failed' }, 500); return true }
+
+    clientWs.send(JSON.stringify({ type: 'speak', audioBase64: audio.audioBase64, mimeType: audio.mimeType, text }))
+    json(res, { ok: true })
     return true
   }
 
-  const audio = await synthesizeVoiceReply(text)
-  if (!audio) { json(res, { error: 'TTS failed' }, 500); return true }
+  // POST /api/voice/live/player-action -- called by Tars when it decides, from context
+  // (not a code-side keyword match -- see buildLiveVoiceDirective), that the user actually
+  // asked for music. Only action currently supported: 'play_random' (reveal the SoundCloud
+  // bar + play a random MXNDR track client-side via the SC Widget JS API).
+  if (path === '/api/voice/live/player-action' && method === 'POST') {
+    const body = await readBody(req)
+    let data: { session_id?: string; action?: string }
+    try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
+    const sessionId = data.session_id?.trim() ?? ''
+    const action = data.action?.trim() ?? ''
+    if (!sessionId || action !== 'play_random') { json(res, { error: 'session_id and a valid action required' }, 400); return true }
 
-  clientWs.send(JSON.stringify({ type: 'speak', audioBase64: audio.audioBase64, mimeType: audio.mimeType, text }))
-  json(res, { ok: true })
-  return true
+    const clientWs = activeSessions.get(sessionId)
+    if (!clientWs || clientWs.readyState !== clientWs.OPEN) {
+      json(res, { error: 'session not found or closed' }, 404)
+      return true
+    }
+
+    clientWs.send(JSON.stringify({ type: 'player_action', action }))
+    json(res, { ok: true })
+    return true
+  }
+
+  return false
 }
 
 // Hooked once at server startup (src/web.ts) -- the http.Server 'upgrade' event has no

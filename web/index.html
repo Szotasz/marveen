@@ -12,6 +12,9 @@
        ?token= bootstrap URL on the already-authenticated desktop -- the token
        never travels through chat). MIT, dependency-free, same CDN as xterm. -->
   <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@2.0.4/dist/qrcode.js"></script>
+  <!-- SoundCloud Widget JS API (official host, not npm-mirrored) -- lets app.js control
+       the embedded player (getSounds/skip/play) for voice-triggered playback. -->
+  <script src="https://w.soundcloud.com/player/api.js"></script>
   <script src="/lang/hu.js"></script>
   <script src="/lang/en.js"></script>
   <!-- Three.js for the Hang (élő hang-mód) page orb visual -- ES module + importmap so no
@@ -1115,7 +1118,9 @@
         </div>
       </div>
 
-      <div class="voice-music-bar" id="voiceMusicBar">
+      <!-- Alapból rejtve (Ender kérése, 2026-07-01): csak a hangparancsra érkező
+           'player_action' WS-üzenet fedi fel (app.js), nem manuális UI-toggle. -->
+      <div class="voice-music-bar" id="voiceMusicBar" hidden>
         <div class="voice-music-toggle" id="voiceMusicToggle">
           <button class="voice-music-toggle-btn active" data-source="soundcloud" data-i18n="voice.music.soundcloud">SoundCloud</button>
           <button class="voice-music-toggle-btn" data-source="spotify" data-i18n="voice.music.spotify">Spotify</button>
