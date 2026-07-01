@@ -12050,6 +12050,28 @@ function downloadMarkdown(name, content) {
     return out
   }
 
+  // Resample a Float32 PCM block to 16kHz (the Live API's required input rate). We do NOT
+  // trust the AudioContext to actually run at the requested 16000 -- Chromium in particular
+  // may ignore the sampleRate constructor hint when a MediaStreamSource is attached and run
+  // at the mic's native rate (44.1/48kHz). If that happens and we still label the bytes as
+  // rate=16000, the Live API hears 3x-fast garbled audio and never returns a transcript.
+  // Reading the ACTUAL audioCtx.sampleRate and resampling here removes that whole class of
+  // silent, browser-specific failures.
+  function resampleTo16k(float32, inRate) {
+    if (inRate === 16000) return float32
+    const ratio = inRate / 16000
+    const outLen = Math.round(float32.length / ratio)
+    const out = new Float32Array(outLen)
+    for (let i = 0; i < outLen; i++) {
+      const pos = i * ratio
+      const lo = Math.floor(pos)
+      const hi = Math.min(lo + 1, float32.length - 1)
+      const frac = pos - lo
+      out[i] = float32[lo] * (1 - frac) + float32[hi] * frac
+    }
+    return out
+  }
+
   function base64FromInt16(int16) {
     const bytes = new Uint8Array(int16.buffer)
     let binary = ''
@@ -12176,7 +12198,13 @@ function downloadMarkdown(name, content) {
     // CLOSED/CLOSING: genuinely nothing to send to, drop silently as before.
   }
 
-  function stopMic() {
+  // Stop MIC CAPTURE only -- the WS deliberately stays open. The old code closed the
+  // socket right here (immediately after activity_end), which made the server tear down
+  // the Live API session BEFORE the transcript came back: no transcript -> no handoff ->
+  // nothing ever reached Tars, despite a perfectly successful WS upgrade. It also meant
+  // Tars's later spoken reply had no session to return to (404). The WS now lives for the
+  // whole page session; each mic on/off is just one activity_start/activity_end turn on it.
+  function stopMicCapture() {
     if (micRafId) cancelAnimationFrame(micRafId)
     micRafId = null
     if (scriptNode) { scriptNode.disconnect(); scriptNode = null }
@@ -12185,9 +12213,15 @@ function downloadMarkdown(name, content) {
     analyser = null
     listening = false
     wsSend({ type: 'activity_end' })
-    if (liveWs) { liveWs.close(); liveWs = null }
     document.getElementById('voiceMicBtn')?.classList.remove('recording')
     setMood('idle', 0)
+  }
+
+  // Full teardown: stop capture AND close the WS. Only on leaving the Hang page.
+  function closeVoiceSession() {
+    stopMicCapture()
+    if (liveWs) { liveWs.close(); liveWs = null }
+    wsPending = []
   }
 
   async function startMic() {
@@ -12195,14 +12229,19 @@ function downloadMarkdown(name, content) {
       micStream = await navigator.mediaDevices.getUserMedia({ audio: true })
     } catch (err) {
       console.warn('[voice] mikrofon-hozzáférés megtagadva vagy hiba:', err)
+      showVoiceError('Mikrofon-hozzáférés megtagadva vagy nem elérhető.')
       return
     }
-    connectLiveWs()
+    // Reuse the existing socket across mic on/off cycles; only open one if there isn't a
+    // live one already (guards against a second WS per click -- the "4 stream entries"
+    // Ender saw were 4 separate connect+immediate-close cycles under the old teardown).
+    if (!liveWs || liveWs.readyState === WebSocket.CLOSED || liveWs.readyState === WebSocket.CLOSING) {
+      connectLiveWs()
+    }
     wsSend({ type: 'activity_start' })
 
-    // sampleRate:16000 in the AudioContext constructor is honored by all current
-    // major browser engines -- this avoids hand-rolling a resampler for the
-    // Live API's required 16kHz PCM16 input.
+    // Request 16kHz, but never TRUST it -- resampleTo16k() below uses the real
+    // audioCtx.sampleRate, so a browser that ignores this hint still sends correct audio.
     audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 })
     const source = audioCtx.createMediaStreamSource(micStream)
     analyser = audioCtx.createAnalyser()
@@ -12223,7 +12262,8 @@ function downloadMarkdown(name, content) {
     silentGain.connect(audioCtx.destination)
     scriptNode.onaudioprocess = (ev) => {
       const input = ev.inputBuffer.getChannelData(0)
-      const pcm16 = floatTo16BitPCM(input)
+      const resampled = resampleTo16k(input, audioCtx.sampleRate)
+      const pcm16 = floatTo16BitPCM(resampled)
       wsSend({ type: 'audio', data: base64FromInt16(pcm16) })
     }
 
@@ -12258,7 +12298,7 @@ function downloadMarkdown(name, content) {
     })
 
     document.getElementById('voiceMicBtn')?.addEventListener('click', () => {
-      if (listening) stopMic()
+      if (listening) stopMicCapture()
       else startMic()
     })
 
@@ -12287,6 +12327,6 @@ function downloadMarkdown(name, content) {
 
   window.stopVoicePage = function stopVoicePageImpl() {
     if (clockTimer) { clearInterval(clockTimer); clockTimer = null }
-    stopMic()
+    closeVoiceSession()
   }
 })()
