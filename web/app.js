@@ -12008,19 +12008,24 @@ function downloadMarkdown(name, content) {
 
 // === Hang (élő hang-mód) page ===
 // The Three.js orb itself lives in voice-orb.js (a separate ES module -- see index.html
-// importmap); this block only wires the DOM controls and talks to it via the
-// 'voice:mood' window CustomEvent. Mic capture here is LOCAL-ONLY (getUserMedia +
-// AnalyserNode driving the orb's pulse) -- no audio is sent to a backend yet. The real
-// Gemini Live ASR/TTS duplex (voice-mode-design.md, Option B) replaces this stub later
-// and will drive the 'speaking' mood from the TTS playback side instead of the mic input.
+// importmap); this block wires the DOM controls, the mic-capture pipeline, and the
+// server WS (src/web/routes/voice-live.ts), and talks to the orb via the 'voice:mood'
+// window CustomEvent. Mic audio is resampled to 16kHz PCM16 client-side (AudioContext
+// constructed with sampleRate:16000 -- honored by all current major browsers) and
+// streamed over the WS as base64 chunks; Tars's spoken reply comes back as raw PCM16 at
+// 24kHz (per the verified Vertex TTS probe) and is played via a manually-built AudioBuffer
+// (decodeAudioData does not accept headerless raw PCM).
 ;(() => {
   let initialized = false
   let clockTimer = null
   let micStream = null
   let audioCtx = null
   let analyser = null
+  let scriptNode = null
   let micRafId = null
   let listening = false
+  let liveWs = null
+  let playbackCtx = null
 
   function tickClock() {
     const el = document.getElementById('voiceClock')
@@ -12036,13 +12041,75 @@ function downloadMarkdown(name, content) {
     window.dispatchEvent(new CustomEvent('voice:mood', { detail: { mood, volume } }))
   }
 
+  function floatTo16BitPCM(float32) {
+    const out = new Int16Array(float32.length)
+    for (let i = 0; i < float32.length; i++) {
+      const s = Math.max(-1, Math.min(1, float32[i]))
+      out[i] = s < 0 ? s * 0x8000 : s * 0x7fff
+    }
+    return out
+  }
+
+  function base64FromInt16(int16) {
+    const bytes = new Uint8Array(int16.buffer)
+    let binary = ''
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+    return btoa(binary)
+  }
+
+  // Plays 24kHz mono PCM16 audio (as returned by /api/voice/live/reply's 'speak'
+  // message) via a manually-built AudioBuffer -- decodeAudioData needs a container
+  // format (WAV/MP3), not headerless raw PCM, so we construct the buffer by hand.
+  function playPcm16(base64, sampleRate) {
+    const binary = atob(base64)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+    const int16 = new Int16Array(bytes.buffer)
+    if (!playbackCtx) playbackCtx = new (window.AudioContext || window.webkitAudioContext)()
+    const buffer = playbackCtx.createBuffer(1, int16.length, sampleRate)
+    const channel = buffer.getChannelData(0)
+    for (let i = 0; i < int16.length; i++) channel[i] = int16[i] / 0x8000
+    const src = playbackCtx.createBufferSource()
+    src.buffer = buffer
+    src.connect(playbackCtx.destination)
+    setMood('speaking', 0.6)
+    src.onended = () => setMood(listening ? 'listening' : 'idle', 0)
+    src.start()
+  }
+
+  function connectLiveWs() {
+    const token = localStorage.getItem('marveen-dashboard-token') || ''
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
+    liveWs = new WebSocket(`${proto}//${location.host}/api/voice/live/stream?token=${encodeURIComponent(token)}`)
+    liveWs.addEventListener('message', (ev) => {
+      let msg
+      try { msg = JSON.parse(ev.data) } catch { return }
+      if (msg.type === 'transcript') {
+        console.log('[voice] transcript' + (msg.finished ? ' (finished)' : ''), msg.text)
+      } else if (msg.type === 'speak') {
+        playPcm16(msg.audioBase64, 24000)
+      } else if (msg.type === 'error') {
+        console.warn('[voice] szerver hiba:', msg.message)
+      }
+    })
+    liveWs.addEventListener('close', () => { liveWs = null })
+    liveWs.addEventListener('error', (err) => console.warn('[voice] WS hiba:', err))
+  }
+
+  function wsSend(obj) {
+    if (liveWs && liveWs.readyState === WebSocket.OPEN) liveWs.send(JSON.stringify(obj))
+  }
+
   function stopMic() {
     if (micRafId) cancelAnimationFrame(micRafId)
     micRafId = null
+    if (scriptNode) { scriptNode.disconnect(); scriptNode = null }
     if (micStream) { micStream.getTracks().forEach((tr) => tr.stop()); micStream = null }
     if (audioCtx) { audioCtx.close(); audioCtx = null }
     analyser = null
     listening = false
+    wsSend({ type: 'activity_end' })
+    if (liveWs) { liveWs.close(); liveWs = null }
     document.getElementById('voiceMicBtn')?.classList.remove('recording')
     setMood('idle', 0)
   }
@@ -12054,19 +12121,44 @@ function downloadMarkdown(name, content) {
       console.warn('[voice] mikrofon-hozzáférés megtagadva vagy hiba:', err)
       return
     }
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+    connectLiveWs()
+    wsSend({ type: 'activity_start' })
+
+    // sampleRate:16000 in the AudioContext constructor is honored by all current
+    // major browser engines -- this avoids hand-rolling a resampler for the
+    // Live API's required 16kHz PCM16 input.
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 })
     const source = audioCtx.createMediaStreamSource(micStream)
     analyser = audioCtx.createAnalyser()
     analyser.fftSize = 256
     source.connect(analyser)
-    const data = new Uint8Array(analyser.frequencyBinCount)
+
+    // ScriptProcessorNode is deprecated but simplest for a v1 (no separate worklet
+    // file to serve/maintain) -- an AudioWorklet migration is a reasonable follow-up,
+    // not a functional blocker.
+    scriptNode = audioCtx.createScriptProcessor(4096, 1, 1)
+    source.connect(scriptNode)
+    // Route through a zero-gain node rather than straight to destination -- some
+    // browsers only fire onaudioprocess once the node is connected into the live
+    // graph, but the mic must never be audibly monitored back to the user (echo).
+    const silentGain = audioCtx.createGain()
+    silentGain.gain.value = 0
+    scriptNode.connect(silentGain)
+    silentGain.connect(audioCtx.destination)
+    scriptNode.onaudioprocess = (ev) => {
+      const input = ev.inputBuffer.getChannelData(0)
+      const pcm16 = floatTo16BitPCM(input)
+      wsSend({ type: 'audio', data: base64FromInt16(pcm16) })
+    }
+
+    const freqData = new Uint8Array(analyser.frequencyBinCount)
     listening = true
     document.getElementById('voiceMicBtn')?.classList.add('recording')
 
     function loop() {
       if (!listening) return
-      analyser.getByteFrequencyData(data)
-      const avg = data.reduce((a, b) => a + b, 0) / data.length
+      analyser.getByteFrequencyData(freqData)
+      const avg = freqData.reduce((a, b) => a + b, 0) / freqData.length
       setMood('listening', avg / 255)
       micRafId = requestAnimationFrame(loop)
     }
