@@ -36,10 +36,42 @@ import {
   sessionExistsOnHost,
   capturePane,
   sendEnterToSession,
+  clearStaleParkedInput,
 } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { sendTelegramMessage } from './telegram.js'
 import { runCommandTask } from './command-task.js'
+
+// How many bare-Enter attempts the post-send resubmit tries before escalating
+// to a clear + re-inject, and the hard cap after which it gives up.
+const RESUBMIT_BARE_ENTER_ATTEMPTS = 2
+const RESUBMIT_MAX_ATTEMPTS = 6
+
+export type ResubmitAction = 'none' | 'enter' | 'reinject' | 'giveup'
+
+// Decide what the post-send resubmit loop should do on a given attempt. Pure
+// so the escalation ladder is unit-tested without tmux I/O.
+//
+// A scheduled prompt's closing Enter is occasionally swallowed by the Claude
+// TUI in raw mode, leaving the prompt parked in the input box. A parked box
+// reads 'typing' (not idle), so isSessionReadyForPrompt() stays false and
+// EVERY subsequent scheduled task is deferred -- the session pins itself busy
+// for hours on a single stranded prompt (observed 2026-07-01: 3223 deferrals
+// and 0/96 heartbeats fired in 24h, while the b7bda8f region-scope fix only
+// covered the spinner/busy path, not this typing/parked-input path). Bare
+// Enter alone loses to a persistently swallowed Enter, so after
+// RESUBMIT_BARE_ENTER_ATTEMPTS Enters we escalate to a real clear + re-inject
+// of the prompt. Re-injecting is safe here: the scheduled prompt is locally
+// authored (SKILL.md / bearer-gated editor), not the ghost-suggestion text
+// that gates the MAIN plain-text re-inject path in stuck-input-watcher.
+export function decideScheduledResubmitAction(
+  attempt: number,
+  stuck: boolean,
+): ResubmitAction {
+  if (!stuck) return 'none'
+  if (attempt >= RESUBMIT_MAX_ATTEMPTS) return 'giveup'
+  return attempt < RESUBMIT_BARE_ENTER_ATTEMPTS ? 'enter' : 'reinject'
+}
 
 // --- Schedule Runner ---
 // Checks every minute if any scheduled task is due and injects the prompt
@@ -200,12 +232,28 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number): '
         // hit the laptop session, not a (nonexistent) local one.
         const pane = capturePane(session, host)
         const stuck = pane != null && /❯\s+\S/.test(pane) && pane.includes(marker)
-        if (!stuck) return
-        if (attempt >= 5) {
-          logger.warn({ task: task.name, session }, 'Scheduled prompt still stuck after 5 Enter retries -- giving up')
+        const action = decideScheduledResubmitAction(attempt, stuck)
+        if (action === 'none') return
+        if (action === 'giveup') {
+          logger.warn({ task: task.name, session }, 'Scheduled prompt still stuck after Enter + re-inject retries -- giving up')
           return
         }
-        sendEnterToSession(session, host)
+        if (action === 'reinject') {
+          // The Enter is being swallowed persistently. Clear the parked prompt
+          // and re-type it. clearStaleParkedInput verifies the box is empty
+          // before returning true; if it can't clear (box changed under us, or
+          // its cooldown fired), fall back to one more bare Enter. waitForIdle
+          // is off because the box is 'typing', not idle -- the pre-flight gate
+          // would otherwise burn its whole budget and time out every attempt.
+          if (clearStaleParkedInput(session, host)) {
+            sendPromptToSession(session, fullPrompt, host, { waitForIdle: false })
+            logger.info({ task: task.name, session, attempt }, 'Scheduled prompt re-injected after swallowed Enter')
+          } else {
+            sendEnterToSession(session, host)
+          }
+        } else {
+          sendEnterToSession(session, host)
+        }
         setTimeout(() => resubmit(attempt + 1), 3000)
       } catch (err) {
         logger.warn({ err, task: task.name }, 'Post-send resubmit failed')
