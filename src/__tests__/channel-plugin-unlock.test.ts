@@ -125,3 +125,51 @@ describe('channel-monitor wires the unlock probe into both in-process respawn pa
     expect(body).toMatch(/schedulePluginUnlockAfterRespawn\(MAIN_CHANNELS_SESSION/)
   })
 })
+
+describe('absent-plugin verdict feeds the down-cascade restart budget', () => {
+  // 2026-07-01: rocket + mantis fresh-restarted 5x each on a plugin that was
+  // ABSENT from /mcp (never loaded, distinct from Failed/disabled). Fresh
+  // restarts cannot reload an absent plugin and each one wipes the agent's
+  // session context. The probe records the absent verdict; the monitor caps the
+  // restart budget at one for that case. These pin the wiring end to end.
+
+  it('records the absent verdict in the "plugin absent from /mcp list" branch', () => {
+    // The absent branch must call markPluginAbsent so the monitor can react;
+    // and it must be gated to the absent (not the slow/Failed) case.
+    expect(helper).toMatch(/provider plugin absent from \/mcp list/)
+    const sendStart = helper.indexOf('function sendUnlockKeystrokes')
+    const sendEnd = helper.indexOf('\n}\n', sendStart)
+    const sendBody = helper.slice(sendStart, sendEnd > sendStart ? sendEnd : undefined)
+    const absentLogIdx = sendBody.indexOf('provider plugin absent from /mcp list')
+    const markIdx = sendBody.indexOf('markPluginAbsent(')
+    expect(markIdx, 'markPluginAbsent not called in the absent branch').toBeGreaterThan(absentLogIdx)
+  })
+
+  it('exports the accessors the monitor reads and clears', () => {
+    expect(helper).toMatch(/export\s+function\s+wasPluginConfirmedAbsent\b/)
+    expect(helper).toMatch(/export\s+function\s+clearPluginAbsent\b/)
+  })
+
+  it('retires the absent verdict once the probe sees the plugin healthy', () => {
+    const probeStart = helper.indexOf('function runUnlockProbe')
+    const probeEnd = helper.indexOf('\n}\n', probeStart)
+    const probeBody = helper.slice(probeStart, probeEnd > probeStart ? probeEnd : undefined)
+    const healthyIdx = probeBody.indexOf('plugin healthy')
+    const clearIdx = probeBody.indexOf('clearPluginAbsent(')
+    expect(clearIdx, 'clearPluginAbsent not called in the healthy branch').toBeGreaterThan(0)
+    expect(clearIdx).toBeLessThan(healthyIdx)
+  })
+
+  it('monitor caps the restart budget at one attempt when absent-confirmed', () => {
+    expect(monitor).toMatch(/wasPluginConfirmedAbsent/)
+    expect(monitor).toMatch(/const\s+PLUGIN_ABSENT_MAX_RESTART_ATTEMPTS\s*=\s*1\b/)
+    // The absent verdict must select the reduced cap, not the full one.
+    expect(monitor).toMatch(/absentConfirmed\s*\n?\s*\?\s*PLUGIN_ABSENT_MAX_RESTART_ATTEMPTS/)
+    // And the chosen cap must be what decideDownAgentAction receives.
+    expect(monitor).toMatch(/\}\s*,\s*maxRestartAttempts\)/)
+  })
+
+  it('monitor clears the absent verdict on a healthy sweep', () => {
+    expect(monitor).toMatch(/clearPluginAbsent\(t\.session\)/)
+  })
+})
