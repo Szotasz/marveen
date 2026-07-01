@@ -278,7 +278,13 @@ function switchPage(pageId) {
   if (pageId === 'ideas') loadIdeasPage()
   if (pageId === 'archived') loadArchivedPage()
   if (pageId === 'naplo') loadNaplo()
-  if (pageId === 'voice') loadVoicePage()
+  // typeof-guard, NOT a bare call: routeFromHash() runs near line 11457 during initial
+  // load, but window.loadVoicePage is only assigned later in the file (~12323, its IIFE
+  // hasn't executed yet). A bare loadVoicePage() on a direct #voice load throws a
+  // ReferenceError that HALTS the rest of app.js -- so the voice IIFE never runs and the
+  // clock/mic never initialize. The guard lets that initial call no-op; the voice IIFE
+  // then self-initializes at its own definition point if the voice page is already active.
+  if (pageId === 'voice' && typeof loadVoicePage === 'function') loadVoicePage()
 }
 
 // Mobile off-canvas sidebar toggle. No-op visual effect on desktop (the
@@ -12329,4 +12335,12 @@ function downloadMarkdown(name, content) {
     if (clockTimer) { clearInterval(clockTimer); clockTimer = null }
     closeVoiceSession()
   }
+
+  // Direct #voice load: routeFromHash() already ran switchPage('voice') earlier in the
+  // file (it made the page visible but the guarded loadVoicePage() call there no-op'd,
+  // since this IIFE hadn't defined it yet). Now that it's defined, initialize if the voice
+  // page is the active one -- otherwise the clock and mic-button listener never get set up
+  // on a direct hash-load. initVoicePageOnce() is idempotent, so normal nav is unaffected.
+  const vp = document.getElementById('voicePage')
+  if (vp && !vp.hidden) window.loadVoicePage()
 })()
