@@ -1102,6 +1102,10 @@
       </button>
       <div class="voice-clock" id="voiceClock">--:--:--</div>
 
+      <!-- Látható hiba-visszajelzés a WS-kapcsolat auth/hálózati hibáira -- korábban csak
+           console.warn volt, ami "csendes" hibát okozott (2026-07-01, Ender debug-köre). -->
+      <div class="voice-error-banner" id="voiceErrorBanner" hidden></div>
+
       <div class="voice-stage">
         <div class="voice-orb-wrap" id="voiceOrbWrap" data-mood="idle">
           <canvas id="voiceOrbCanvas"></canvas>

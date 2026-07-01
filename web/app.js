@@ -1,59 +1,3 @@
-// === i18n runtime ===
-// Priority: localStorage['marveen.lang'] > DASHBOARD_LANG (server default, read
-// from /api/settings on init) > 'hu' (hardcoded fallback).
-// Rick's spec (kanban card 209696a9): t(key,params), window._i18n={hu,en},
-// window._lang; {name} interpolation; EN-fallback then key; dev-mode warning.
-;(() => {
-  const LS_KEY = 'marveen.lang'
-  const VALID = new Set(['hu', 'en'])
-
-  window.t = function t(key, params = {}) {
-    const lang = window._lang || 'hu'
-    const str =
-      window._i18n?.[lang]?.[key] ??
-      window._i18n?.['en']?.[key] ??
-      key
-    if (str === key && localStorage.getItem('marveen.dev') === '1') {
-      console.warn('[i18n] missing key:', key)
-    }
-    return str.replace(/\{(\w+)\}/g, (_, k) => (params[k] != null ? params[k] : `{${k}}`))
-  }
-
-  function applyLang(lang) {
-    window._lang = VALID.has(lang) ? lang : 'hu'
-  }
-
-  // Initialise from localStorage; server default fetched async below.
-  applyLang(localStorage.getItem(LS_KEY) || 'hu')
-
-  // Fetch server default (DASHBOARD_LANG) and apply only if localStorage not set.
-  fetch('/api/settings')
-    .then(r => r.ok ? r.json() : null)
-    .then(data => {
-      if (!data || localStorage.getItem(LS_KEY)) return
-      const entry = (data.settings || []).find(s => s.key === 'DASHBOARD_LANG')
-      if (entry && VALID.has(entry.value)) applyLang(entry.value)
-    })
-    .catch(() => {})
-
-  window.setLang = function setLang(lang) {
-    if (!VALID.has(lang)) return
-    window._lang = lang
-    localStorage.setItem(LS_KEY, lang)
-    renderNav()
-    // Static elements (kanban column titles, hints, empty states) are otherwise
-    // only translated at DOMContentLoaded -- re-apply them on every switch so the
-    // currently-open page updates live, not just after a manual reload.
-    if (typeof renderStaticI18n === 'function') renderStaticI18n()
-    // Re-render the active page by re-triggering the switchPage handler.
-    const activeLink = document.querySelector('.sb-link.active[data-page]')
-    if (activeLink) {
-      const pageId = activeLink.dataset.page
-      if (typeof switchPage === 'function') switchPage(pageId)
-    }
-  }
-})()
-
 // === Dashboard auth bootstrap ===
 // The server prints an URL like http://127.0.0.1:3420/?token=XXX on startup.
 // On first visit we pluck the token out of the URL, store it in localStorage,
@@ -189,6 +133,62 @@ function mainAgentId() {
     }
     overlay.querySelector('#mv-token-save').addEventListener('click', submit)
     setTimeout(() => input.focus(), 50)
+  }
+})()
+
+// === i18n runtime ===
+// Priority: localStorage['marveen.lang'] > DASHBOARD_LANG (server default, read
+// from /api/settings on init) > 'hu' (hardcoded fallback).
+// Rick's spec (kanban card 209696a9): t(key,params), window._i18n={hu,en},
+// window._lang; {name} interpolation; EN-fallback then key; dev-mode warning.
+;(() => {
+  const LS_KEY = 'marveen.lang'
+  const VALID = new Set(['hu', 'en'])
+
+  window.t = function t(key, params = {}) {
+    const lang = window._lang || 'hu'
+    const str =
+      window._i18n?.[lang]?.[key] ??
+      window._i18n?.['en']?.[key] ??
+      key
+    if (str === key && localStorage.getItem('marveen.dev') === '1') {
+      console.warn('[i18n] missing key:', key)
+    }
+    return str.replace(/\{(\w+)\}/g, (_, k) => (params[k] != null ? params[k] : `{${k}}`))
+  }
+
+  function applyLang(lang) {
+    window._lang = VALID.has(lang) ? lang : 'hu'
+  }
+
+  // Initialise from localStorage; server default fetched async below.
+  applyLang(localStorage.getItem(LS_KEY) || 'hu')
+
+  // Fetch server default (DASHBOARD_LANG) and apply only if localStorage not set.
+  fetch('/api/settings')
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (!data || localStorage.getItem(LS_KEY)) return
+      const entry = (data.settings || []).find(s => s.key === 'DASHBOARD_LANG')
+      if (entry && VALID.has(entry.value)) applyLang(entry.value)
+    })
+    .catch(() => {})
+
+  window.setLang = function setLang(lang) {
+    if (!VALID.has(lang)) return
+    window._lang = lang
+    localStorage.setItem(LS_KEY, lang)
+    renderNav()
+    // Static elements (kanban column titles, hints, empty states) are otherwise
+    // only translated at DOMContentLoaded -- re-apply them on every switch so the
+    // currently-open page updates live, not just after a manual reload.
+    if (typeof renderStaticI18n === 'function') renderStaticI18n()
+    // Re-render the active page by re-triggering the switchPage handler.
+    const activeLink = document.querySelector('.sb-link.active[data-page]')
+    if (activeLink) {
+      const pageId = activeLink.dataset.page
+      if (typeof switchPage === 'function') switchPage(pageId)
+    }
   }
 })()
 
@@ -12083,10 +12083,26 @@ function downloadMarkdown(name, content) {
   // talking. Buffer here and flush in order once the 'open' event actually fires.
   let wsPending = []
 
+  // Látható hiba-visszajelzés (Ender debug-köre, 2026-07-01: korábban csak console.warn
+  // volt, ami "csendes" hibaként tűnt fel -- egy elutasított/érvénytelen dashboard-token
+  // pl. semmilyen UI-jelet nem adott, csak a böngésző Console-jában látszott).
+  function showVoiceError(message) {
+    const el = document.getElementById('voiceErrorBanner')
+    if (!el) return
+    el.textContent = message
+    el.hidden = false
+  }
+  function hideVoiceError() {
+    const el = document.getElementById('voiceErrorBanner')
+    if (el) el.hidden = true
+  }
+
   function connectLiveWs() {
     const token = localStorage.getItem('marveen-dashboard-token') || ''
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
     wsPending = []
+    let everReady = false
+    hideVoiceError()
     liveWs = new WebSocket(`${proto}//${location.host}/api/voice/live/stream?token=${encodeURIComponent(token)}`)
     liveWs.addEventListener('open', () => {
       const queued = wsPending
@@ -12096,18 +12112,33 @@ function downloadMarkdown(name, content) {
     liveWs.addEventListener('message', (ev) => {
       let msg
       try { msg = JSON.parse(ev.data) } catch { return }
-      if (msg.type === 'transcript') {
+      if (msg.type === 'ready') {
+        everReady = true
+      } else if (msg.type === 'transcript') {
         console.log('[voice] transcript' + (msg.finished ? ' (finished)' : ''), msg.text)
       } else if (msg.type === 'speak') {
         playPcm16(msg.audioBase64, 24000)
       } else if (msg.type === 'error') {
         console.warn('[voice] szerver hiba:', msg.message)
+        showVoiceError('Kapcsolódási hiba: ' + (msg.message || 'ismeretlen szerver hiba'))
       } else if (msg.type === 'player_action') {
         handlePlayerAction(msg.action)
       }
     })
-    liveWs.addEventListener('close', () => { liveWs = null; wsPending = [] })
-    liveWs.addEventListener('error', (err) => console.warn('[voice] WS hiba:', err))
+    liveWs.addEventListener('close', (ev) => {
+      liveWs = null
+      wsPending = []
+      // A WS-upgrade-kori 401 (pl. hiányzó/érvénytelen dashboard-token) sosem küld JSON
+      // 'error' üzenetet -- a böngésző egyszerűen elutasítja a handshake-et, és a
+      // kapcsolat úgy zárul le hogy 'ready' SOHA nem érkezett. Ez a legvalószínűbb, "néma"
+      // hiba-eset, ezért itt is adunk látható jelzést, nem csak a szerver-oldali error-nál.
+      if (!everReady) {
+        showVoiceError('Kapcsolódási hiba: nem sikerült kapcsolódni (érvénytelen token vagy hálózati hiba?)')
+      }
+    })
+    liveWs.addEventListener('error', (err) => {
+      console.warn('[voice] WS hiba:', err)
+    })
   }
 
   // Voice-triggered music (Ender, 2026-07-01): Tars decides from context whether the
