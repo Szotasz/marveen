@@ -12258,7 +12258,9 @@ function downloadMarkdown(name, content) {
   function stopMicCapture() {
     if (micRafId) cancelAnimationFrame(micRafId)
     micRafId = null
-    if (scriptNode) { scriptNode.disconnect(); scriptNode = null }
+    // Detach the audio callback BEFORE tearing down audioCtx, so a queued buffer can't
+    // fire the handler against a nulled audioCtx (the null.sampleRate race).
+    if (scriptNode) { scriptNode.onaudioprocess = null; scriptNode.disconnect(); scriptNode = null }
     if (micStream) { micStream.getTracks().forEach((tr) => tr.stop()); micStream = null }
     if (audioCtx) { audioCtx.close(); audioCtx = null }
     analyser = null
@@ -12313,6 +12315,11 @@ function downloadMarkdown(name, content) {
     scriptNode.connect(silentGain)
     silentGain.connect(audioCtx.destination)
     scriptNode.onaudioprocess = (ev) => {
+      // Cleanup-race guard: the browser can dispatch one more buffered callback AFTER
+      // stopMicCapture() nulled audioCtx, so reading audioCtx.sampleRate would throw
+      // (null.sampleRate). stopMicCapture also nulls this handler first, but this guard
+      // covers a callback already mid-flight at that moment.
+      if (!audioCtx) return
       const input = ev.inputBuffer.getChannelData(0)
       const resampled = resampleTo16k(input, audioCtx.sampleRate)
       const pcm16 = floatTo16BitPCM(resampled)
