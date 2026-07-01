@@ -1398,6 +1398,13 @@ export function createAgentMessage(from: string, to: string, content: string): A
   }
 }
 
+// Read-only single-message fetch by id. Used by the voice-live latency instrumentation
+// to read created_at/delivered_at so the "time until the main agent drained it" (a turn/
+// wakeup latency) can be separated from the agent's own generation time.
+export function getAgentMessageById(id: number): AgentMessage | undefined {
+  return db.prepare('SELECT * FROM agent_messages WHERE id = ?').get(id) as AgentMessage | undefined
+}
+
 export function getPendingMessages(toAgent?: string): AgentMessage[] {
   if (toAgent) {
     return db.prepare("SELECT * FROM agent_messages WHERE status = 'pending' AND to_agent = ? ORDER BY created_at ASC")

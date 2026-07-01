@@ -43,6 +43,7 @@ import { readBody, json } from '../http-helpers.js'
 import { createVoiceLiveHandoffMessage } from '../../channel-coordinator/voice-live-ingest.js'
 import { neutralizeChannelTags } from '../../channel-coordinator.js'
 import { buildLiveVoiceDirective } from '../voice-directive.js'
+import { getAgentMessageById } from '../../db.js'
 import type { RouteContext } from './types.js'
 
 const SERVICE_ACCOUNT_PATH = join(STORE_DIR, '.secrets', 'maxine-vertex-runner.json')
@@ -141,11 +142,21 @@ export async function synthesizeVoiceReply(text: string): Promise<{ audioBase64:
 // to correlate "which live browser tab" a later, out-of-band HTTP call refers to.
 const activeSessions = new Map<string, import('ws').WebSocket>()
 
+// Latency instrumentation (2026-07-01: Ender measured >30s end-to-end). Timestamps per
+// session so /api/voice/live/reply can log a full breakdown and, crucially, SEPARATE the
+// two suspected sources: (a) how long the handoff sat before the MAIN agent drained it --
+// a turn/wakeup latency, NOT the 5s sub-agent poll, since the main agent uses the PULL
+// (drain-inbox) path -- vs (b) the agent's own reply-generation time. The split comes from
+// the handoff row's created_at (insert) and delivered_at (claimed on the agent's turn).
+interface SessionTiming { tActivityEnd?: number; tTranscriptFinished?: number; tHandoff?: number; handoffMsgId?: number }
+const sessionTimings = new Map<string, SessionTiming>()
+
 // Per-browser-connection session: proxies mic audio to a fresh upstream Live API
 // connection and relays input-transcription text back to the browser.
 function runSession(clientWs: import('ws').WebSocket): void {
   const sessionId = randomUUID()
   activeSessions.set(sessionId, clientWs)
+  sessionTimings.set(sessionId, {})
   let upstream: UpstreamWebSocket | null = null
   let upstreamReady = false
   const pendingAudio: string[] = [] // base64 PCM chunks queued while upstream connects
@@ -190,9 +201,16 @@ function runSession(clientWs: import('ws').WebSocket): void {
         const finished = !!inputTranscription.finished
         send({ type: 'transcript', text: inputTranscription.text, finished })
         if (finished) {
+          const timing = sessionTimings.get(sessionId)
+          if (timing) timing.tTranscriptFinished = Date.now()
           const channelBlock = `<channel source="voice-live" session_id="${sessionId}">\n${neutralizeChannelTags(inputTranscription.text)}\n</channel>`
           const directive = buildLiveVoiceDirective(sessionId) ?? ''
-          createVoiceLiveHandoffMessage(channelBlock + directive)
+          const msgId = createVoiceLiveHandoffMessage(channelBlock + directive)
+          if (timing) { timing.tHandoff = Date.now(); timing.handoffMsgId = msgId }
+          logger.info({
+            sessionId, msgId,
+            asrMs: (timing?.tActivityEnd && timing.tTranscriptFinished) ? timing.tTranscriptFinished - timing.tActivityEnd : null,
+          }, 'voice-live: transcript finished, handoff created')
         }
       }
       // Deliberately ignore serverContent.modelTurn (the Live model's own generated
@@ -221,11 +239,16 @@ function runSession(clientWs: import('ws').WebSocket): void {
     }
     if (msg.type === 'activity_start') forward({ realtimeInput: { activityStart: {} } })
     else if (msg.type === 'audio' && msg.data) forward({ realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: msg.data } } })
-    else if (msg.type === 'activity_end') forward({ realtimeInput: { activityEnd: {} } })
+    else if (msg.type === 'activity_end') {
+      const timing = sessionTimings.get(sessionId)
+      if (timing) timing.tActivityEnd = Date.now() // turn-end: the ASR clock starts here
+      forward({ realtimeInput: { activityEnd: {} } })
+    }
   })
 
-  clientWs.on('close', () => { activeSessions.delete(sessionId); upstream?.close() })
-  clientWs.on('error', () => { activeSessions.delete(sessionId); upstream?.close() })
+  const cleanup = () => { activeSessions.delete(sessionId); sessionTimings.delete(sessionId); upstream?.close() }
+  clientWs.on('close', cleanup)
+  clientWs.on('error', cleanup)
 }
 
 // POST /api/voice/live/reply -- called by Tars's own UserPromptSubmit-driven directive
@@ -250,11 +273,33 @@ export async function tryHandleVoiceLive(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
+    const tReplyReceived = Date.now()
     const audio = await synthesizeVoiceReply(text)
     if (!audio) { json(res, { error: 'TTS failed' }, 500); return true }
+    const tTtsDone = Date.now()
 
     clientWs.send(JSON.stringify({ type: 'speak', audioBase64: audio.audioBase64, mimeType: audio.mimeType, text }))
     json(res, { ok: true })
+
+    // Latency breakdown. created_at/delivered_at are unix SECONDS, so the delivery/gen
+    // split is ~1s-granular -- coarse, but ample to tell a ~1s wait from a ~20s one when
+    // the total is 30s+. deliveryWaitMs = handoff insert -> main agent claimed it (turn/
+    // wakeup); agentGenMs = claimed -> reply POSTed (the agent's own generation time).
+    const timing = sessionTimings.get(sessionId)
+    if (timing?.handoffMsgId) {
+      const row = getAgentMessageById(timing.handoffMsgId)
+      const createdMs = row ? row.created_at * 1000 : null
+      const deliveredMs = row?.delivered_at ? row.delivered_at * 1000 : null
+      logger.info({
+        sessionId,
+        asrMs: (timing.tActivityEnd && timing.tTranscriptFinished) ? timing.tTranscriptFinished - timing.tActivityEnd : null,
+        deliveryWaitMs: (createdMs != null && deliveredMs != null) ? deliveredMs - createdMs : null,
+        agentGenMs: deliveredMs != null ? tReplyReceived - deliveredMs : null,
+        ttsMs: tTtsDone - tReplyReceived,
+        handoffToReplyMs: timing.tHandoff ? tReplyReceived - timing.tHandoff : null,
+        totalMs: timing.tActivityEnd ? tTtsDone - timing.tActivityEnd : null,
+      }, 'voice-live: latency breakdown')
+    }
     return true
   }
 
