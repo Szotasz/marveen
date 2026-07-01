@@ -35,6 +35,12 @@ self.addEventListener('fetch', (event) => {
         }
         return response;
       })
-      .catch(() => caches.match(event.request))
+      // Bare caches.match() can resolve to undefined (first load, empty cache --
+      // e.g. before this SW ever cached anything, or a brand-new route like /#voice).
+      // Passing undefined to respondWith throws "Failed to convert value to Response"
+      // and can wedge the navigation that was supposed to run the page's own JS (this
+      // broke Ender's token bootstrap on 2026-07-01). Response.error() is a valid
+      // network-error Response, so respondWith never receives undefined.
+      .catch(() => caches.match(event.request).then((cached) => cached || Response.error()))
   );
 });
