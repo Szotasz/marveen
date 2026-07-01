@@ -66,6 +66,10 @@ export function buildLiveVoiceDirective(sessionId: string): string | null {
       `kevésbé tárgyilagos regiszterbe -- a Tars alap-hangnem (melankolikus, öndepresszív ` +
       `humor, Galaxis Útikalauz utalások) marad az alap, csak elevenebbre váltva, amíg ez a ` +
       `munkamenet aktív.\n` +
+      `TARTSD RÖVIDEN a kimondott választ -- élő beszélgetés, egy-két mondat elég. Ez nem ` +
+      `stílus-kérés: a válasz hossza EGYENESEN arányos a késleltetéssel (a te generálásod ÉS a ` +
+      `hang-szintézis ideje is a szöveghosszal skálázódik), egy hosszú monológ több másodperccel ` +
+      `lassítja a választ. Ha sok mondanivaló van, mondd el a lényeget röviden, ne olvass fel esszét.\n` +
       `Amikor megvan a válaszod szövege, futtasd le ezt a parancsot (JSON-escape-elve a --arg-ban):\n` +
       `\`\`\`bash\n` +
       `jq -n --arg t "A_VÁLASZOD_SZÖVEGE" '{"session_id":"${sessionId}","text":$t}' | ` +
