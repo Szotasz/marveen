@@ -64,6 +64,36 @@ export function readAgentModel(name: string): string {
   }
 }
 
+// True for Claude-routed agents. The Claude Code harness knows a Claude
+// model's real context window and auto-compacts correctly, so those agents
+// don't need the context-compaction watcher. Everything else (MiniMax,
+// DeepSeek, litellm bridge, local Ollama) is routed through a custom
+// ANTHROPIC_BASE_URL whose window the harness can't infer -> watcher-managed.
+export function isClaudeModel(model: string): boolean {
+  return model.toLowerCase().startsWith('claude-')
+}
+
+// Usable context window, in THOUSANDS of tokens, per model. Drives the
+// model-aware compaction thresholds so the watcher works for whatever model
+// an agent is set to -- not just MiniMax-M3. Deliberately conservative
+// (slightly under the advertised max) to leave headroom below the real cap,
+// and the unknown-model fallback is small so an unrecognised model compacts
+// early rather than wedging. Percentages (not this absolute) are what the
+// watcher applies, so tuning the safety margin lives there.
+export function modelContextWindowK(model: string): number {
+  const m = model.toLowerCase()
+  // litellm/<alias>: peek at the aliased backend after the slash.
+  const key = m.startsWith('litellm/') ? m.slice('litellm/'.length) : m
+  if (key.startsWith('minimax-m3')) return 1000   // advertised 1M (direct MiniMax API)
+  if (key.startsWith('minimax-m1')) return 1000
+  if (key.startsWith('minimax-')) return 200      // M2 family ~204k
+  if (key.startsWith('deepseek-')) return 120     // ~128k, conservative
+  if (key.startsWith('claude-opus') || key.startsWith('claude-sonnet')) return 1000
+  if (key.startsWith('claude-haiku')) return 200
+  if (key.startsWith('claude-')) return 200
+  return 180  // unknown (e.g. local Ollama tags): compact early, never wedge
+}
+
 export function writeAgentModel(name: string, model: string): void {
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}

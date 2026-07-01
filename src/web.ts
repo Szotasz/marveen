@@ -18,6 +18,7 @@ import { startInboundProber } from './web/inbound-probe.js'
 import { startChannelHealthMonitor } from './web/channel-health-monitor.js'
 import { startStuckInputWatcher } from './web/stuck-input-watcher.js'
 import { startStuckToolCallWatcher } from './web/stuck-tool-call-watcher.js'
+import { startContextCompactionWatcher } from './web/context-compaction-watcher.js'
 import { startReauthHealer } from './web/reauth-healer.js'
 import { startAutoRestartRunner } from './web/auto-restart-runner.js'
 import { startModelFallbackRunner } from './web/model-fallback-runner.js'
@@ -325,6 +326,9 @@ export function startWebServer(port = 3420): http.Server {
   const stuckToolCallInterval = webOnly ? undefined : startStuckToolCallWatcher()
   if (!webOnly) logger.info('Stuck-tool-call watcher started (30s poll, 35s offset)')
 
+  const contextCompactionInterval = webOnly ? undefined : startContextCompactionWatcher()
+  if (!webOnly) logger.info('Context-compaction watcher started (60s poll, 50s offset)')
+
   const reauthHealerInterval = webOnly ? undefined : startReauthHealer()
   if (!webOnly && reauthHealerInterval) logger.info('Reauth healer started (3min poll, 90s offset)')
 
@@ -413,6 +417,7 @@ export function startWebServer(port = 3420): http.Server {
     clearInterval(channelHealthInterval)
     clearInterval(stuckInputInterval)
     clearInterval(stuckToolCallInterval)
+    clearInterval(contextCompactionInterval)
     if (reauthHealerInterval) clearInterval(reauthHealerInterval)
     clearInterval(autoRestartInterval)
     clearInterval(modelFallbackInterval)

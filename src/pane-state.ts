@@ -1386,3 +1386,135 @@ export function decideStuckToolCallRecovery(
     next: { ...prev, lastSeconds: sig.seconds, stagnantPolls: nextStagnant, stagnantSince: nextStagnantSince, attempts: 1 },
   }
 }
+
+// ---------------------------------------------------------------------------
+// Context-compaction watcher (2026-07-01, G "context full -> nem valaszol").
+//
+// MiniMax-routed sub-agents run the Claude Code harness against a custom
+// ANTHROPIC_BASE_URL. Claude Code's auto-compaction is keyed to the model's
+// assumed context window, which is miscalibrated for MiniMax-M3 (advertised
+// 1M, but the serving provider caps far lower ~512k). So the conversation can
+// grow toward MiniMax's real cap without Claude Code compacting in time; the
+// API then rejects the oversized request and the agent wedges with no reply.
+//
+// Fix A (prevention): proactively fire `/compact` while the agent is IDLE and
+// its context has grown past a safe threshold, well below the provider cap.
+// Non-destructive -- /compact summarises, and the PreCompact hook saves
+// memory/skill/task-state first, so an early compaction costs little.
+// Fix B (safety net): if context reaches the danger ceiling (compaction not
+// keeping up, or a 429 wedge where /compact itself can't run), ALERT the owner
+// rather than auto-reset -- consistent with decidePaneErrorAlert's deliberate
+// "never auto-nuke a sub-agent on an imperfectly-understood trigger" stance.
+//
+// The token count is read from Claude Code's idle footer hint
+// ("new task? /clear to save 292.3k tokens"), which appears ONLY when the
+// agent is idle -- so a non-null parse doubles as the "safe to compact" gate.
+
+/** Parse the idle context-size hint ("/clear to save N.Nk tokens") into a
+ * token count in thousands (k). Returns null when the hint is absent, i.e.
+ * the agent is busy or its context is too small to bother -- either way,
+ * not a moment to act. */
+export function parseIdleContextTokensK(pane: string | null): number | null {
+  if (!pane) return null
+  const m = pane.match(/\/clear to save\s+([\d.]+)k tokens/)
+  if (!m) return null
+  const v = parseFloat(m[1])
+  return Number.isFinite(v) ? v : null
+}
+
+export interface ContextCompactionState {
+  /** First tick (ms) the context was observed at/over compactK in this spell. */
+  firstOverAt: number | null
+  /** Last tick (ms) a /compact was issued -- dedups the multi-minute compaction. */
+  lastCompactAt: number | null
+  /** Last tick (ms) an owner alert was escalated -- dedups the ceiling alert. */
+  lastAlertAt: number | null
+}
+
+export interface ContextCompactionThresholds {
+  /** Compact once context grows past this (thousand tokens). */
+  compactK: number
+  /** Danger ceiling (thousand tokens): compaction isn't keeping up -> alert. */
+  ceilingK: number
+  /** Context must stay over compactK this long before acting (anti-fluke). */
+  confirmMs: number
+  /** Min gap between /compact issuances (compaction runs for minutes). */
+  compactDedupMs: number
+  /** Min gap between owner alerts within one spell. */
+  alertDedupMs: number
+}
+
+export type ContextCompactionAction = 'none' | 'compact' | 'alert'
+
+export interface ContextCompactionDecision {
+  action: ContextCompactionAction
+  next: ContextCompactionState
+}
+
+const NO_COMPACTION_STATE: ContextCompactionState = { firstOverAt: null, lastCompactAt: null, lastAlertAt: null }
+
+/**
+ * Pure decision for the context-compaction watcher. Dependency-free so it is
+ * unit-testable without tmux/timers. Priority: a danger-ceiling context
+ * escalates to 'alert' (deduped); otherwise an over-threshold context issues
+ * 'compact' (deduped, since compaction takes minutes); otherwise 'none'.
+ *
+ * Guards mirror the other pane-state state machines: a null reading (busy /
+ * idle-low) does not act and HOLDS the spell unchanged (a busy agent's context
+ * hasn't shrunk, so the confirm window survives busy gaps); only a real
+ * below-threshold reading fully resets; a confirm window requires the
+ * over-threshold state to persist before the first action; at the ceiling we
+ * compact first and only alert if a prior compaction failed to bring it down;
+ * future-dated stored timestamps (clock skew) are treated as "elapsed" rather
+ * than stalling the machine.
+ */
+export function decideContextCompaction(
+  tokensK: number | null,
+  prev: ContextCompactionState,
+  now: number,
+  t: ContextCompactionThresholds,
+): ContextCompactionDecision {
+  // Null reading: agent is busy (mid-turn, no idle hint) or its context is too
+  // small to show the hint. This is "unknown this tick", NOT "recovered" -- a
+  // busy agent's context has not shrunk. HOLD the spell unchanged so an agent
+  // that is only intermittently idle (a working sub-agent) still accumulates
+  // its confirm window across busy gaps. Only a real below-threshold reading
+  // clears the spell. Because an action is only emitted on a non-null tick,
+  // /compact is always sent while the agent is idle (safe), never mid-turn.
+  if (tokensK === null) {
+    return { action: 'none', next: { ...prev } }
+  }
+  // Comfortably below threshold: fully reset (fresh spell next time).
+  if (tokensK < t.compactK) {
+    return { action: 'none', next: { ...NO_COMPACTION_STATE } }
+  }
+  // Over threshold. Anchor the spell; clock-skew (future firstOverAt) restarts it.
+  let firstOverAt = prev.firstOverAt ?? now
+  if (now < firstOverAt) firstOverAt = now
+  const sustained = now - firstOverAt >= t.confirmMs
+  if (!sustained) {
+    return { action: 'none', next: { firstOverAt, lastCompactAt: prev.lastCompactAt, lastAlertAt: prev.lastAlertAt } }
+  }
+  const compactElapsed = prev.lastCompactAt === null || now < prev.lastCompactAt || now - prev.lastCompactAt >= t.compactDedupMs
+  // Danger ceiling AND a prior /compact already ran this spell but the context
+  // is still at/above the ceiling after the compaction window -- compaction
+  // isn't keeping up (or it's a wedge where /compact can't run, e.g. a 429).
+  // Escalate to the owner (deduped). Never auto-reset. A FIRST encounter with
+  // an already-huge context (no prior compact this spell) falls through to
+  // /compact below: rescue it before alerting.
+  if (tokensK >= t.ceilingK && prev.lastCompactAt !== null && compactElapsed) {
+    const alertElapsed = prev.lastAlertAt === null || now < prev.lastAlertAt || now - prev.lastAlertAt >= t.alertDedupMs
+    if (alertElapsed) {
+      return { action: 'alert', next: { firstOverAt, lastCompactAt: prev.lastCompactAt, lastAlertAt: now } }
+    }
+    return { action: 'none', next: { firstOverAt, lastCompactAt: prev.lastCompactAt, lastAlertAt: prev.lastAlertAt } }
+  }
+  // Compact zone: fire /compact (deduped so we don't stack summarisations).
+  // Covers the normal over-threshold case AND the first encounter with an
+  // already-huge (>= ceiling) context -- compact first, alert only if that
+  // fails to bring it down.
+  if (compactElapsed) {
+    return { action: 'compact', next: { firstOverAt, lastCompactAt: now, lastAlertAt: prev.lastAlertAt } }
+  }
+  return { action: 'none', next: { firstOverAt, lastCompactAt: prev.lastCompactAt, lastAlertAt: prev.lastAlertAt } }
+}
