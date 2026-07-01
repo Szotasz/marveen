@@ -12077,10 +12077,22 @@ function downloadMarkdown(name, content) {
     src.start()
   }
 
+  // A brand-new WebSocket is NEVER synchronously OPEN -- it needs at least one network
+  // round trip. wsSend() used to silently drop anything sent before that (including the
+  // very first activity_start), so the Live API session never learned the user started
+  // talking. Buffer here and flush in order once the 'open' event actually fires.
+  let wsPending = []
+
   function connectLiveWs() {
     const token = localStorage.getItem('marveen-dashboard-token') || ''
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
+    wsPending = []
     liveWs = new WebSocket(`${proto}//${location.host}/api/voice/live/stream?token=${encodeURIComponent(token)}`)
+    liveWs.addEventListener('open', () => {
+      const queued = wsPending
+      wsPending = []
+      for (const obj of queued) liveWs.send(JSON.stringify(obj))
+    })
     liveWs.addEventListener('message', (ev) => {
       let msg
       try { msg = JSON.parse(ev.data) } catch { return }
@@ -12092,12 +12104,14 @@ function downloadMarkdown(name, content) {
         console.warn('[voice] szerver hiba:', msg.message)
       }
     })
-    liveWs.addEventListener('close', () => { liveWs = null })
+    liveWs.addEventListener('close', () => { liveWs = null; wsPending = [] })
     liveWs.addEventListener('error', (err) => console.warn('[voice] WS hiba:', err))
   }
 
   function wsSend(obj) {
     if (liveWs && liveWs.readyState === WebSocket.OPEN) liveWs.send(JSON.stringify(obj))
+    else if (liveWs && liveWs.readyState === WebSocket.CONNECTING) wsPending.push(obj)
+    // CLOSED/CLOSING: genuinely nothing to send to, drop silently as before.
   }
 
   function stopMic() {
@@ -12171,6 +12185,14 @@ function downloadMarkdown(name, content) {
 
     document.getElementById('voiceFullscreenBtn')?.addEventListener('click', () => {
       document.body.classList.toggle('voice-fullscreen')
+    })
+    // Fail-safe exit regardless of why the button itself might be unreachable
+    // (Ender got stuck once and needed the browser back button) -- Escape always
+    // drops fullscreen while the Hang page is open.
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && document.body.classList.contains('voice-fullscreen')) {
+        document.body.classList.remove('voice-fullscreen')
+      }
     })
 
     document.getElementById('voiceMicBtn')?.addEventListener('click', () => {

@@ -5982,7 +5982,9 @@ body.voice-fullscreen .sidebar { display: none; }
   position: absolute;
   top: 20px;
   left: 20px;
-  z-index: 5;
+  /* Higher than .sidebar's z-index:90 -- this control must NEVER be coverable by
+     anything else on the page (Ender got stuck once with no visible way out). */
+  z-index: 100;
   width: 38px;
   height: 38px;
   display: inline-flex;
@@ -5993,6 +5995,7 @@ body.voice-fullscreen .sidebar { display: none; }
   background: rgba(255, 255, 255, 0.04);
   color: rgba(255, 255, 255, 0.7);
   cursor: pointer;
+  pointer-events: auto;
 }
 .voice-fullscreen-btn:hover { background: rgba(255, 255, 255, 0.1); }
 
