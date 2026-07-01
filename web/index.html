@@ -1102,6 +1102,14 @@
       </button>
       <div class="voice-clock" id="voiceClock">--:--:--</div>
 
+      <!-- Mód-kapcsoló: "Tars" (teljes, dolgozó munkamenet válaszol, lassabb, valódi eszközök)
+           vs "Élő arc" (Gemini natív hang persona válaszol, gyors, nincs eszköz-hozzáférés).
+           Csak nem-aktív mikrofon mellett vált (a WS a következő kapcsolódásnál kapja a módot). -->
+      <div class="voice-mode-toggle" id="voiceModeToggle">
+        <button class="voice-mode-btn active" data-mode="tars" data-i18n="voice.mode.tars">Tars</button>
+        <button class="voice-mode-btn" data-mode="face" data-i18n="voice.mode.face">Élő arc</button>
+      </div>
+
       <!-- Látható hiba-visszajelzés a WS-kapcsolat auth/hálózati hibáira -- korábban csak
            console.warn volt, ami "csendes" hibát okozott (2026-07-01, Ender debug-köre). -->
       <div class="voice-error-banner" id="voiceErrorBanner" hidden></div>

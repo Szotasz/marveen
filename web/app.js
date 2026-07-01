@@ -12039,6 +12039,8 @@ function downloadMarkdown(name, content) {
   let listening = false
   let liveWs = null
   let playbackCtx = null
+  let voiceMode = 'tars'      // 'tars' (full session answers) | 'face' (Gemini native persona)
+  let facePlayhead = 0        // AudioContext-timeline cursor for gapless face-audio streaming
 
   function tickClock() {
     const el = document.getElementById('voiceClock')
@@ -12112,6 +12114,29 @@ function downloadMarkdown(name, content) {
     src.start()
   }
 
+  // Gapless streaming playback for face-mode: the Gemini model's reply arrives as many
+  // small 24kHz PCM chunks. Rather than play each in isolation (which would overlap or
+  // gap), schedule each buffer back-to-back on the AudioContext timeline via a running
+  // playhead. facePlayhead is reset on face_turn_complete so the next turn starts fresh.
+  function playFaceChunk(base64, sampleRate) {
+    const binary = atob(base64)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+    const int16 = new Int16Array(bytes.buffer)
+    if (!playbackCtx) playbackCtx = new (window.AudioContext || window.webkitAudioContext)()
+    const buffer = playbackCtx.createBuffer(1, int16.length, sampleRate)
+    const channel = buffer.getChannelData(0)
+    for (let i = 0; i < int16.length; i++) channel[i] = int16[i] / 0x8000
+    const src = playbackCtx.createBufferSource()
+    src.buffer = buffer
+    src.connect(playbackCtx.destination)
+    const now = playbackCtx.currentTime
+    if (facePlayhead < now) facePlayhead = now // fell behind (first chunk or a gap) -> catch up
+    src.start(facePlayhead)
+    facePlayhead += buffer.duration
+    setMood('speaking', 0.6)
+  }
+
   // A brand-new WebSocket is NEVER synchronously OPEN -- it needs at least one network
   // round trip. wsSend() used to silently drop anything sent before that (including the
   // very first activity_start), so the Live API session never learned the user started
@@ -12138,7 +12163,10 @@ function downloadMarkdown(name, content) {
     wsPending = []
     let everReady = false
     hideVoiceError()
-    liveWs = new WebSocket(`${proto}//${location.host}/api/voice/live/stream?token=${encodeURIComponent(token)}`)
+    // The mode rides on the WS URL because the server's Live setup (persona vs ASR-only) is
+    // sent immediately on connect, before any client message could arrive.
+    const modeParam = voiceMode === 'face' ? '&mode=face' : ''
+    liveWs = new WebSocket(`${proto}//${location.host}/api/voice/live/stream?token=${encodeURIComponent(token)}${modeParam}`)
     liveWs.addEventListener('open', () => {
       const queued = wsPending
       wsPending = []
@@ -12152,7 +12180,17 @@ function downloadMarkdown(name, content) {
       } else if (msg.type === 'transcript') {
         console.log('[voice] transcript' + (msg.finished ? ' (finished)' : ''), msg.text)
       } else if (msg.type === 'speak') {
+        // Tars mode: full synthesized reply as one buffer.
         playPcm16(msg.audioBase64, 24000)
+      } else if (msg.type === 'face_audio') {
+        // Face mode: streamed chunks of the model's own reply, played gaplessly.
+        playFaceChunk(msg.audioBase64, 24000)
+      } else if (msg.type === 'face_transcript') {
+        console.log('[voice] face:', msg.text)
+      } else if (msg.type === 'face_turn_complete') {
+        facePlayhead = 0
+        // Return to idle/listening a moment after the last scheduled audio finishes.
+        setMood(listening ? 'listening' : 'idle', 0)
       } else if (msg.type === 'error') {
         console.warn('[voice] szerver hiba:', msg.message)
         showVoiceError('Kapcsolódási hiba: ' + (msg.message || 'ismeretlen szerver hiba'))
@@ -12251,6 +12289,7 @@ function downloadMarkdown(name, content) {
     if (!liveWs || liveWs.readyState === WebSocket.CLOSED || liveWs.readyState === WebSocket.CLOSING) {
       connectLiveWs()
     }
+    facePlayhead = 0 // fresh turn -> don't inherit a stale playback cursor
     wsSend({ type: 'activity_start' })
 
     // Request 16kHz, but never TRUST it -- resampleTo16k() below uses the real
@@ -12313,6 +12352,19 @@ function downloadMarkdown(name, content) {
     document.getElementById('voiceMicBtn')?.addEventListener('click', () => {
       if (listening) stopMicCapture()
       else startMic()
+    })
+
+    // Mode toggle (Tars <-> Élő arc). The Live setup differs per mode and is sent on
+    // connect, so a switch tears down any open session; the next mic press reconnects in
+    // the new mode. No-op if the same mode is re-clicked.
+    document.querySelectorAll('.voice-mode-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const mode = btn.dataset.mode
+        if (mode === voiceMode) return
+        voiceMode = mode
+        document.querySelectorAll('.voice-mode-btn').forEach((b) => b.classList.toggle('active', b === btn))
+        closeVoiceSession() // drop the current-mode session; next mic press opens the new mode
+      })
     })
 
     document.querySelectorAll('.voice-music-toggle-btn').forEach((btn) => {

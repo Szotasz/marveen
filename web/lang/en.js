@@ -1376,6 +1376,8 @@ window._i18n.en = {
   'agents.deepseek_link': 'Add API key',
   'agents.deepseek_hint_post': 'on the Vault page.',
   'channel.btn.slack_manifest': 'Create Slack App (manifest)',
+  'voice.mode.tars': 'Tars',
+  'voice.mode.face': 'Live face',
   'voice.music.soundcloud': 'SoundCloud',
   'voice.music.spotify': 'Spotify',
   'voice.music.spotify_warning': 'Spotify playback requires your own Premium account for the session -- currently unavailable.',

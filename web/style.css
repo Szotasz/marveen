@@ -6012,6 +6012,36 @@ body.voice-fullscreen .sidebar { display: none; }
   transition: color 0.4s ease;
 }
 
+/* Mód-kapcsoló: saját, önállóan pozicionált réteg (12b.) a felső sávban, középen. */
+.voice-mode-toggle {
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+.voice-mode-btn {
+  font-size: 12px;
+  padding: 4px 14px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+.voice-mode-btn.active {
+  background: var(--mood-color);
+  color: #0a0a0a;
+  font-weight: 600;
+}
+
 /* Saját, önállóan pozicionált réteg (12b. architektúra-elv) -- nem a felirat-sáv/zene-sáv
    markupjába ágyazva, mert egy hiba-üzenetnek bármikor meg kell tudnia jelennie, akkor is
    ha azok még nincsenek a DOM-ban vagy más állapotban vannak. */
