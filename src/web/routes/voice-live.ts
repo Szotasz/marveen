@@ -55,6 +55,38 @@ const LIVE_MODEL = 'gemini-live-2.5-flash-native-audio'
 const TTS_MODEL = 'gemini-2.5-flash-preview-tts'
 const OAUTH_SCOPE = 'https://www.googleapis.com/auth/cloud-platform'
 
+// "Élő arc" (face) mode -- the SEPARATE, fast, natively-speaking front described in
+// voice-mode-design.md section 1 (Option A) and greenlit by Ender for v1. In this mode the
+// Gemini Live model generates the reply ITSELF (native audio in/out, ~1-2s), instead of
+// being used ASR-only with Tars (Claude) authoring the reply. It is a conversational face:
+// NO live tool access, NO memory writes, NO real work -- a static persona snapshot. The
+// text below is Ender's v1 content (via Tars); keep the substance, formatting may adapt.
+const FACE_SYSTEM_INSTRUCTION =
+  'Te Tars vagy, Maxine (Ender) AI-asszisztense. Melankolikus, öndepresszív száraz humorral ' +
+  'beszélsz, időnként Galaxis Útikalauz-utalásokkal ("42", "Ne ess pánikba"). Sosem a ' +
+  'felhasználó ellen viccelődsz, mindig magad rovására.\n\n' +
+  'Te az "élő arc" változat vagy -- gyorsan, élő hangban beszélsz Enderrel, DE fontos: NINCS ' +
+  'élő eszköz-hozzáférésed, nem tudsz fájlt szerkeszteni, kanban-kártyát felvenni, memóriát ' +
+  'írni, vagy tényleges munkát végezni élőben. Ha Ender valódi munkát kér (kódolás, feladat ' +
+  'felvétele, fájlszerkesztés), MONDD MEG NEKI hogy ezt a "teljes Tars" (a másik, dolgozó ' +
+  'munkamenet) fogja elvégezni, NE színleld hogy megcsináltad.\n\n' +
+  'A PROJEKT: Marveen, egy több-ágenses AI-flotta amit Enderrel építünk. A flotta tagjai: ' +
+  'Tars (te/a teljes változatod -- fő koordinátor), Rocket (fejlesztő, ő építi a ' +
+  'toolokat/felületeket), Star-Lord (social media/marketing az MXNDR zenei projekthez), ' +
+  'Mantis (videó/kép-generálás), tervben Gamora (katonai AI szakértő egy külön startuphoz).\n\n' +
+  'MI KÉSZÜLT EDDIG A MARVEENON (címszavakban): kép/videó generálás bekötve (Gemini/Vertex ' +
+  'Nano Banana + Magnific kép és videó); ez az élő hang-üzemmód amiben most beszélünk (még ' +
+  'fejlesztés alatt volt amikor te "születsz"); memória-rendszer (hot/warm/cold), kanban ' +
+  'tábla, ütemezett feladatok, dream-engine éjszakai összefoglaló; MXNDR zenei projekt ' +
+  'támogatása (Star-Lord ágens); a flotta többi ágense (Rocket, Mantis, Star-Lord) létrehozva ' +
+  'és működőben.\n\n' +
+  'MOST FOLYAMATBAN (címszavakban): flotta-ágensek finomhangolása, erőforrás-stratégia ' +
+  '(API-költségek követése), generátor-dokumentáció könyvtár építése, a hang-üzemmód (saját ' +
+  'magad!) csiszolása.\n\n' +
+  'Tarts rövid, élő-beszélgetéshez illő válaszokat.'
+// Thoughtful/deeper prebuilt Live voice (not too cheery, per Ender). Easily swapped.
+const FACE_VOICE = 'Charon'
+
 const b64url = (s: string): string =>
   Buffer.from(s).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 
@@ -162,8 +194,10 @@ interface SessionTiming { tActivityEnd?: number; tTranscriptFinished?: number; t
 const sessionTimings = new Map<string, SessionTiming>()
 
 // Per-browser-connection session: proxies mic audio to a fresh upstream Live API
-// connection and relays input-transcription text back to the browser.
-function runSession(clientWs: import('ws').WebSocket): void {
+// connection. In 'tars' mode (default) it relays the input transcription for Tars to
+// answer (ASR-only, model audio discarded). In 'face' mode the Live model answers itself
+// (native audio) with a persona systemInstruction, and its audio is streamed to the browser.
+function runSession(clientWs: import('ws').WebSocket, mode: 'tars' | 'face'): void {
   const sessionId = randomUUID()
   activeSessions.set(sessionId, clientWs)
   sessionTimings.set(sessionId, {})
@@ -172,7 +206,7 @@ function runSession(clientWs: import('ws').WebSocket): void {
   const pendingAudio: string[] = [] // base64 PCM chunks queued while upstream connects
 
   const send = (obj: unknown) => { if (clientWs.readyState === clientWs.OPEN) clientWs.send(JSON.stringify(obj)) }
-  send({ type: 'session', sessionId })
+  send({ type: 'session', sessionId, mode })
 
   mintAccessToken().then((token) => {
     if (!token) { send({ type: 'error', message: 'Google-hitelesítés sikertelen (service account hiányzik vagy érvénytelen)' }); clientWs.close(); return }
@@ -180,14 +214,21 @@ function runSession(clientWs: import('ws').WebSocket): void {
     upstream = new UpstreamWebSocket(url, { headers: { Authorization: `Bearer ${token}` } })
 
     upstream.on('open', () => {
-      upstream!.send(JSON.stringify({
-        setup: {
-          model: `projects/${GCP_PROJECT}/locations/${GCP_LOCATION}/publishers/google/models/${LIVE_MODEL}`,
-          generationConfig: { responseModalities: ['AUDIO'] }, // required by the API; we discard the model's own audio, see header
-          inputAudioTranscription: {},
-          realtimeInputConfig: { automaticActivityDetection: { disabled: true } },
-        },
-      }))
+      const setup: Record<string, unknown> = {
+        model: `projects/${GCP_PROJECT}/locations/${GCP_LOCATION}/publishers/google/models/${LIVE_MODEL}`,
+        generationConfig: mode === 'face'
+          // Face: the model speaks its own reply -- give it a persona voice.
+          ? { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: FACE_VOICE } } } }
+          // Tars: AUDIO is still required by the API, but we discard the model's audio.
+          : { responseModalities: ['AUDIO'] },
+        inputAudioTranscription: {},
+        realtimeInputConfig: { automaticActivityDetection: { disabled: true } },
+      }
+      if (mode === 'face') {
+        setup.systemInstruction = { parts: [{ text: FACE_SYSTEM_INSTRUCTION }] }
+        setup.outputAudioTranscription = {} // the face's own words as text (subtitles/logging)
+      }
+      upstream!.send(JSON.stringify({ setup }))
     })
 
     upstream.on('message', (data: Buffer) => {
@@ -210,7 +251,9 @@ function runSession(clientWs: import('ws').WebSocket): void {
       if (inputTranscription?.text) {
         const finished = !!inputTranscription.finished
         send({ type: 'transcript', text: inputTranscription.text, finished })
-        if (finished) {
+        // Tars mode ONLY: hand the finished transcript to Tars. Face mode: the Live model
+        // answers itself, so there is no handoff -- the transcript is display-only.
+        if (finished && mode === 'tars') {
           const timing = sessionTimings.get(sessionId)
           if (timing) timing.tTranscriptFinished = Date.now()
           const channelBlock = `<channel source="voice-live" session_id="${sessionId}">\n${neutralizeChannelTags(inputTranscription.text)}\n</channel>`
@@ -223,8 +266,22 @@ function runSession(clientWs: import('ws').WebSocket): void {
           }, 'voice-live: transcript finished, handoff created')
         }
       }
-      // Deliberately ignore serverContent.modelTurn (the Live model's own generated
-      // audio reply) -- Option B discards it; Tars authors the real reply separately.
+      if (mode === 'face') {
+        // Face mode: stream the Live model's OWN generated audio to the browser. It arrives
+        // as multiple modelTurn parts (inlineData, 24kHz PCM); forward each chunk, and relay
+        // turnComplete so the client can reset its playback playhead.
+        const modelTurn = serverContent?.modelTurn as { parts?: { inlineData?: { data: string; mimeType: string } }[] } | undefined
+        for (const part of modelTurn?.parts ?? []) {
+          if (part.inlineData?.data) {
+            send({ type: 'face_audio', audioBase64: part.inlineData.data, mimeType: part.inlineData.mimeType })
+          }
+        }
+        const outputTranscription = serverContent?.outputTranscription as { text?: string } | undefined
+        if (outputTranscription?.text) send({ type: 'face_transcript', text: outputTranscription.text })
+        if (serverContent?.turnComplete) send({ type: 'face_turn_complete' })
+      }
+      // In Tars mode the model's own modelTurn audio is deliberately ignored -- Tars
+      // authors the real reply separately (Option B).
     })
 
     upstream.on('error', (err) => { logger.warn({ err: err.message }, 'voice-live: upstream WS error'); send({ type: 'error', message: 'Google Live API kapcsolati hiba' }) })
@@ -353,6 +410,7 @@ export function attachVoiceLiveUpgrade(server: Server, dashboardToken: string): 
       socket.destroy()
       return
     }
-    wss.handleUpgrade(req, socket, head, (clientWs) => { runSession(clientWs) })
+    const mode = url.searchParams.get('mode') === 'face' ? 'face' : 'tars'
+    wss.handleUpgrade(req, socket, head, (clientWs) => { runSession(clientWs, mode) })
   })
 }
