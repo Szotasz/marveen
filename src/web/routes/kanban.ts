@@ -36,6 +36,7 @@ export function kanbanMoveInstructions(id: string, target: string): string {
   const auth = `-H "Authorization: Bearer $(cat ${tokenPath})"`
   const moveUrl = `${base}/api/kanban/${id}/move`
   const commentUrl = `${base}/api/kanban/${id}/comments`
+  const cardUrl = `${base}/api/kanban/${id}`
   return [
     'A kártyát in_progress-re húzták. Amikor VÉGEZTÉL, két lépés (mindkettő a kártyára kerül, a web UI-ban látszik):',
     '',
@@ -51,7 +52,15 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     `    -H 'Content-Type: application/json' \\`,
     `    -d '{"status":"done"}'`,
     '',
-    'Ha elakadtál / inputra vársz: a 2) helyett status="waiting".',
+    `Ha elakadtál / ${OWNER_NAME} döntésére/lépésére vársz: NE csak status="waiting"-et állíts be. HÁROM lépés kell EGYÜTT:`,
+    `  a) Írj egy kommentet ami KÖZVETLENÜL ${OWNER_NAME}-hez szól, egyértelműen megfogalmazva mit kell eldöntenie/megtennie (NE a saját belső elemzésedet írd oda) -- ugyanaz a comments hívás mint fent, "content" mezőben.`,
+    `  b) Told át a kártyát ${OWNER_NAME}-re, hogy egyértelmű legyen a felelősség (a te neved NE maradjon rajta, ha nem te vagy a blokkoló):`,
+    `     curl -s -X PUT ${cardUrl} \\`,
+    `       ${auth} \\`,
+    `       -H 'Content-Type: application/json' \\`,
+    `       -d '{"assignee":"${OWNER_NAME}"}'`,
+    `  c) Csak EZUTÁN állítsd a kártyát status="waiting"-re (a fenti move-hívással, "waiting" értékkel "done" helyett).`,
+    `Ez azért kritikus, mert ${OWNER_NAME} nem tudja kitalálni a dashboardon hogy egy nála maradt/rossz-assignee-jű, homályos kártya rá vár -- explicit átadás + explicit kérdés nélkül a felelősség-váltás elvész.`,
     'A "done"-t mindenképp te jelezd — a dashboard csak az in_progress/waiting állapotot követi automatikusan a session aktivitásából. Az eredmény-kommentet (1) ne hagyd ki: az a kártyán a látható eredmény.',
   ].join('\n')
 }
