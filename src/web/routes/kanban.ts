@@ -37,6 +37,15 @@ export function kanbanMoveInstructions(id: string, target: string): string {
   const moveUrl = `${base}/api/kanban/${id}/move`
   const commentUrl = `${base}/api/kanban/${id}/comments`
   const cardUrl = `${base}/api/kanban/${id}`
+  // Escalation target when blocked: sub-agents hand back to the main agent
+  // (their delegator), who triages and only escalates to the operator when
+  // the block genuinely needs a human decision. Only the main agent itself
+  // escalates directly to OWNER_NAME (Ender explicit correction, 2026-07-02:
+  // "ha megoldja pl. rocket az egyik feladatot akkor tegye vissza rád és ne
+  // rám" -- sub-agent completions/blocks route through Tars, not straight to
+  // the operator).
+  const isMainAgent = target === MAIN_AGENT_ID
+  const escalateTo = isMainAgent ? OWNER_NAME : MAIN_AGENT_ID
   return [
     'A kártyát in_progress-re húzták. Amikor VÉGEZTÉL, két lépés (mindkettő a kártyára kerül, a web UI-ban látszik):',
     '',
@@ -52,15 +61,17 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     `    -H 'Content-Type: application/json' \\`,
     `    -d '{"status":"done"}'`,
     '',
-    `Ha elakadtál / ${OWNER_NAME} döntésére/lépésére vársz: NE csak status="waiting"-et állíts be. HÁROM lépés kell EGYÜTT:`,
-    `  a) Írj egy kommentet ami KÖZVETLENÜL ${OWNER_NAME}-hez szól, egyértelműen megfogalmazva mit kell eldöntenie/megtennie (NE a saját belső elemzésedet írd oda) -- ugyanaz a comments hívás mint fent, "content" mezőben.`,
-    `  b) Told át a kártyát ${OWNER_NAME}-re, hogy egyértelmű legyen a felelősség (a te neved NE maradjon rajta, ha nem te vagy a blokkoló):`,
+    `Ha elakadtál / ${escalateTo} döntésére/lépésére vársz: NE csak status="waiting"-et állíts be. HÁROM lépés kell EGYÜTT:`,
+    `  a) Írj egy kommentet ami KÖZVETLENÜL ${escalateTo}-hez szól, egyértelműen megfogalmazva mit kell eldöntenie/megtennie (NE a saját belső elemzésedet írd oda) -- ugyanaz a comments hívás mint fent, "content" mezőben.`,
+    `  b) Told át a kártyát ${escalateTo}-re, hogy egyértelmű legyen a felelősség (a te neved NE maradjon rajta, ha nem te vagy a blokkoló):`,
     `     curl -s -X PUT ${cardUrl} \\`,
     `       ${auth} \\`,
     `       -H 'Content-Type: application/json' \\`,
-    `       -d '{"assignee":"${OWNER_NAME}"}'`,
+    `       -d '{"assignee":"${escalateTo}"}'`,
     `  c) Csak EZUTÁN állítsd a kártyát status="waiting"-re (a fenti move-hívással, "waiting" értékkel "done" helyett).`,
-    `Ez azért kritikus, mert ${OWNER_NAME} nem tudja kitalálni a dashboardon hogy egy nála maradt/rossz-assignee-jű, homályos kártya rá vár -- explicit átadás + explicit kérdés nélkül a felelősség-váltás elvész.`,
+    isMainAgent
+      ? `Ez azért kritikus, mert ${OWNER_NAME} nem tudja kitalálni a dashboardon hogy egy nála maradt/rossz-assignee-jű, homályos kártya rá vár -- explicit átadás + explicit kérdés nélkül a felelősség-váltás elvész.`
+      : `FONTOS: ${OWNER_NAME}-hez (az operátorhoz) EGYENESEN NE told át a kártyát, még ha a blokk végül tőle igényel is döntést -- ${MAIN_AGENT_ID} a delegálód, ő triázsol és ő dönti el, hogy tovább kell-e ${OWNER_NAME}-hez eszkalálnia. Ez azért kritikus, mert ${MAIN_AGENT_ID} nem tudja kitalálni a dashboardon hogy egy nála maradt/rossz-assignee-jű kártya rá vár -- explicit átadás + explicit kérdés nélkül a felelősség-váltás elvész.`,
     'A "done"-t mindenképp te jelezd — a dashboard csak az in_progress/waiting állapotot követi automatikusan a session aktivitásából. Az eredmény-kommentet (1) ne hagyd ki: az a kártyán a látható eredmény.',
   ].join('\n')
 }
