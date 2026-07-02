@@ -7230,6 +7230,7 @@ function showEnvVarModal(envVars) {
 let _sshServers = []
 let _sshKeys = []
 let _sshView = 'table'
+let _sshEditingId = null
 
 async function loadSshServers() {
   try {
@@ -7430,6 +7431,31 @@ function renderSshServers() {
         await fetch(`/api/vault/ssh-servers/${encodeURIComponent(id)}`, { method: 'DELETE' })
         await loadSshServers()
       } catch { showToast('Törlés sikertelen') }
+    })
+  })
+
+  // Edit handlers -- open the add-server panel pre-filled, switch it to edit mode
+  document.querySelectorAll('.ssh-edit-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-id')
+      const server = _sshServers.find(s => s.id === id)
+      if (!server) return
+      _sshEditingId = id
+
+      document.getElementById('sshNameInput').value = server.name || ''
+      document.getElementById('sshHostInput').value = server.host || ''
+      document.getElementById('sshUserInput').value = server.user || ''
+      document.getElementById('sshPortInput').value = server.port || 22
+      document.getElementById('sshDescInput').value = server.desc || ''
+      const keySel = document.getElementById('sshKeySelectInput')
+      if (keySel) keySel.value = server.sshKeyId || server.assignedKeyId || server.vaultKeyId || ''
+
+      const titleEl = document.getElementById('sshAddPanelTitle')
+      if (titleEl) titleEl.textContent = `Szerver szerkesztése – ${server.name}`
+
+      const panel = document.getElementById('sshAddPanel')
+      panel.hidden = false
+      document.getElementById('sshNameInput').focus()
     })
   })
 
@@ -7683,11 +7709,24 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
 
   if (!newBtn) return
 
+  function resetSshAddForm() {
+    _sshEditingId = null
+    const titleEl = document.getElementById('sshAddPanelTitle')
+    if (titleEl) titleEl.textContent = 'Szerver hozzáadása'
+    document.getElementById('sshNameInput').value = ''
+    document.getElementById('sshHostInput').value = ''
+    document.getElementById('sshUserInput').value = ''
+    document.getElementById('sshPortInput').value = '22'
+    document.getElementById('sshDescInput').value = ''
+    if (document.getElementById('sshKeySelectInput')) document.getElementById('sshKeySelectInput').value = ''
+  }
+
   newBtn.addEventListener('click', () => {
+    if (panel.hidden) resetSshAddForm()
     panel.hidden = !panel.hidden
     if (!panel.hidden) document.getElementById('sshNameInput').focus()
   })
-  closeBtn?.addEventListener('click', () => { panel.hidden = true })
+  closeBtn?.addEventListener('click', () => { panel.hidden = true; resetSshAddForm() })
 
   // (i) install guide button inside the "new server" form -- key-only mode
   document.getElementById('sshKeyInstallFromFormBtn')?.addEventListener('click', () => {
@@ -7713,25 +7752,24 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
     const desc = document.getElementById('sshDescInput').value.trim()
     const sshKeyId = document.getElementById('sshKeySelectInput')?.value || null
     if (!name || !host || !user) { showToast('Név, IP és felhasználó megadása kötelező'); return }
+    const isEdit = !!_sshEditingId
     try {
-      const res = await fetch('/api/vault/ssh-servers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, host, user, port, desc, sshKeyId: sshKeyId || undefined }),
-      })
+      const res = await fetch(
+        isEdit ? `/api/vault/ssh-servers/${encodeURIComponent(_sshEditingId)}` : '/api/vault/ssh-servers',
+        {
+          method: isEdit ? 'PUT' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, host, user, port, desc, sshKeyId: sshKeyId || undefined }),
+        }
+      )
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
         showToast(err.error || 'Hiba a mentéskor'); return
       }
-      document.getElementById('sshNameInput').value = ''
-      document.getElementById('sshHostInput').value = ''
-      document.getElementById('sshUserInput').value = ''
-      document.getElementById('sshPortInput').value = '22'
-      document.getElementById('sshDescInput').value = ''
-      if (document.getElementById('sshKeySelectInput')) document.getElementById('sshKeySelectInput').value = ''
+      resetSshAddForm()
       panel.hidden = true
       await loadSshServers()
-      showToast('Szerver hozzáadva')
+      showToast(isEdit ? 'Szerver frissítve' : 'Szerver hozzáadva')
     } catch { showToast('Hálózati hiba') }
   })
 
