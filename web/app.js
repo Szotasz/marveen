@@ -7226,6 +7226,524 @@ function showEnvVarModal(envVars) {
   })
 })()
 
+// --- SSH Vault ---
+let _sshServers = []
+let _sshKeys = []
+let _sshView = 'table'
+
+async function loadSshServers() {
+  try {
+    const res = await fetch('/api/vault/ssh-servers')
+    const data = await res.json()
+    _sshServers = data.servers || []
+    renderSshServers()
+  } catch { /* ignore */ }
+}
+
+async function loadSshKeys() {
+  try {
+    const res = await fetch('/api/vault/ssh-keys')
+    if (!res.ok) return
+    const data = await res.json()
+    _sshKeys = data.keys || []
+    renderSshKeys()
+    _refreshKeySelects()
+  } catch { /* ignore */ }
+}
+
+function renderSshKeys() {
+  const tbody = document.getElementById('sshKeysTableBody')
+  const keysView = document.getElementById('sshKeysView')
+  const emptyEl = document.getElementById('sshKeysEmpty')
+  if (!tbody) return
+  if (_sshKeys.length === 0) {
+    keysView.hidden = true
+    emptyEl.hidden = false
+    return
+  }
+  keysView.hidden = false
+  emptyEl.hidden = true
+  tbody.innerHTML = _sshKeys.map(k => `
+    <tr>
+      <td class="ssh-table-name">${escapeHtml(k.label || k.id)}</td>
+      <td class="ssh-table-mono">${escapeHtml(k.username || '')}</td>
+      <td class="ssh-table-mono">${escapeHtml(k.keyType || 'ed25519')}</td>
+      <td class="ssh-table-mono" style="font-size:11px">${k.fingerprint ? escapeHtml(k.fingerprint.slice(0,28)) + '…' : ''}</td>
+      <td class="ssh-table-mono">${k.createdAt ? new Date(k.createdAt).toLocaleDateString('hu-HU') : ''}</td>
+      <td><div class="ssh-table-actions">
+        <button class="btn-secondary btn-compact ssh-key-copy-btn" data-id="${escapeHtml(k.id)}" title="Publikus kulcs másolása">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        </button>
+        <button class="btn-secondary btn-compact ssh-key-delete-btn" data-id="${escapeHtml(k.id)}" title="Törlés">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+        </button>
+      </div></td>
+    </tr>
+  `).join('')
+  tbody.querySelectorAll('.ssh-key-copy-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const key = _sshKeys.find(k => k.id === btn.dataset.id)
+      if (!key) return
+      try {
+        const res = await fetch(`/api/vault/ssh-keys/${encodeURIComponent(btn.dataset.id)}/public-key`)
+        if (res.ok) {
+          const data = await res.json()
+          await navigator.clipboard.writeText(data.publicKey || '')
+          btn.textContent = '✓'
+          setTimeout(() => { btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>' }, 1500)
+        }
+      } catch { /* ignore */ }
+    })
+  })
+  tbody.querySelectorAll('.ssh-key-delete-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Biztosan törlöd ezt a kulcsot?')) return
+      await fetch(`/api/vault/ssh-keys/${encodeURIComponent(btn.dataset.id)}`, { method: 'DELETE' })
+      await loadSshKeys()
+    })
+  })
+}
+
+function _refreshKeySelects() {
+  const opts = ['<option value="">-- Nincs kulcs --</option>',
+    ..._sshKeys.map(k => `<option value="${escapeHtml(k.id)}">${escapeHtml(k.label || k.id)} (${escapeHtml(k.username || '')})</option>`)
+  ].join('')
+  document.querySelectorAll('.ssh-key-select').forEach(sel => {
+    const prev = sel.value
+    sel.innerHTML = opts
+    sel.value = prev
+  })
+}
+
+function _sshKeyBadge(status) {
+  const labels = { ok: 'OK', missing: 'Hiányzó', expired: 'Lejárt' }
+  const icons = {
+    ok: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>',
+    missing: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',
+    expired: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
+  }
+  return `<span class="ssh-key-badge ${status}">${icons[status] || ''} ${labels[status] || status}</span>`
+}
+
+function _sshKeyAssignSelect(s) {
+  const currentKeyId = s.sshKeyId || s.assignedKeyId || s.vaultKeyId || ''
+  const opts = ['<option value="">-- Nincs kulcs --</option>',
+    ..._sshKeys.map(k => {
+      const sel = (currentKeyId && currentKeyId === k.id) ? ' selected' : ''
+      return `<option value="${escapeHtml(k.id)}"${sel}>${escapeHtml(k.label || k.id)}</option>`
+    })
+  ].join('')
+  return `<select class="ssh-key-assign ssh-key-select" data-id="${escapeHtml(s.id)}" title="Kulcs hozzárendelése">${opts}</select>`
+}
+
+function _sshInfoBtn(s) {
+  return `<button class="ssh-info-btn" data-id="${escapeHtml(s.id)}" data-user="${escapeHtml(s.user)}" title="Telepítési útmutató">i</button>`
+}
+
+function renderSshServers() {
+  const cardsEl = document.getElementById('sshCardsView')
+  const tableView = document.getElementById('sshTableView')
+  const tableBody = document.getElementById('sshTableBody')
+  const emptyEl = document.getElementById('sshEmpty')
+  if (!cardsEl || !tableBody || !emptyEl) return
+
+  // Sync view state with _sshView
+  const isTable = _sshView === 'table'
+  cardsEl.hidden = isTable
+  if (tableView) tableView.hidden = !isTable
+  document.getElementById('sshViewCards')?.classList.toggle('active', !isTable)
+  document.getElementById('sshViewTable')?.classList.toggle('active', isTable)
+
+  if (_sshServers.length === 0) {
+    cardsEl.innerHTML = ''
+    tableBody.innerHTML = ''
+    emptyEl.hidden = false
+    return
+  }
+  emptyEl.hidden = true
+
+  // Cards
+  cardsEl.innerHTML = _sshServers.map(s => `
+    <div class="ssh-card" data-id="${escapeHtml(s.id)}">
+      <div class="ssh-card-head">
+        <div class="ssh-card-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+        </div>
+        <div class="ssh-card-title">
+          <div class="ssh-card-name">${escapeHtml(s.name)}</div>
+          ${s.desc ? `<div class="ssh-card-desc">${escapeHtml(s.desc)}</div>` : ''}
+        </div>
+      </div>
+      <div class="ssh-card-meta">
+        <div class="ssh-card-row">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          <span>${escapeHtml(s.host)}</span>
+        </div>
+        <div class="ssh-card-row">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          <span>${escapeHtml(s.user)}${s.port !== 22 ? ` :${s.port}` : ''}</span>
+        </div>
+        ${s.fingerprint ? `<div class="ssh-card-row"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span>${escapeHtml(s.keyType || '')} ${escapeHtml(s.fingerprint.slice(0,24))}…</span></div>` : ''}
+      </div>
+      <div class="ssh-card-footer">
+        <div style="display:flex;align-items:center;gap:4px;width:100%">
+          ${_sshKeyAssignSelect(s)}
+          <div class="ssh-card-actions">
+            <button class="btn-secondary btn-compact ssh-edit-btn" data-id="${escapeHtml(s.id)}" title="Szerkesztés">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            </button>
+            <button class="btn-secondary btn-compact ssh-delete-btn" data-id="${escapeHtml(s.id)}" title="Törlés">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `).join('')
+
+  // Table
+  tableBody.innerHTML = _sshServers.map(s => `
+    <tr data-id="${escapeHtml(s.id)}">
+      <td class="ssh-table-name">${escapeHtml(s.name)}</td>
+      <td class="ssh-table-mono">${escapeHtml(s.host)}</td>
+      <td class="ssh-table-mono">${escapeHtml(s.user)}</td>
+      <td class="ssh-table-mono">${s.port}</td>
+      <td>${_sshKeyAssignSelect(s)}</td>
+      <td style="color:var(--text-muted)">${escapeHtml(s.desc || '')}</td>
+      <td><div class="ssh-table-actions">
+        <button class="btn-secondary btn-compact ssh-edit-btn" data-id="${escapeHtml(s.id)}" title="Szerkesztés">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </button>
+        <button class="btn-secondary btn-compact ssh-delete-btn" data-id="${escapeHtml(s.id)}" title="Törlés">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+        </button>
+      </div></td>
+    </tr>
+  `).join('')
+
+  // Delete handlers
+  document.querySelectorAll('.ssh-delete-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.getAttribute('data-id')
+      if (!confirm(`Törlöd: ${id}?`)) return
+      try {
+        await fetch(`/api/vault/ssh-servers/${encodeURIComponent(id)}`, { method: 'DELETE' })
+        await loadSshServers()
+      } catch { showToast('Törlés sikertelen') }
+    })
+  })
+
+  // Key assign select handlers
+  document.querySelectorAll('.ssh-key-assign').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      const id = sel.getAttribute('data-id')
+      const sshKeyId = sel.value || null
+      try {
+        await fetch(`/api/vault/ssh-servers/${encodeURIComponent(id)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sshKeyId }),
+        })
+        await loadSshServers()
+      } catch { /* ignore */ }
+    })
+  })
+
+}
+
+// --- SSH Keygen modal (standalone key creation for Kulcstároló) ---
+let _sshKeygenCallback = null  // called with new key after successful generation
+
+function openSshKeygenModal(callback) {
+  const overlay = document.getElementById('sshKeygenOverlay')
+  document.getElementById('sshKeygenLabelInput').value = ''
+  document.getElementById('sshKeygenUserInput').value = ''
+  document.getElementById('sshKeygenSpinner').hidden = true
+  document.getElementById('sshKeygenResult').hidden = true
+  document.getElementById('sshKeygenFooter').hidden = false
+  document.getElementById('sshKeygenForm').hidden = false
+  document.getElementById('sshKeygenPubkeyBox').value = ''
+  _sshKeygenCallback = callback || null
+  openModal(overlay)
+  document.getElementById('sshKeygenLabelInput').focus()
+}
+
+;(function wireSshKeygenModal() {
+  const overlay = document.getElementById('sshKeygenOverlay')
+  const closeBtn = document.getElementById('sshKeygenClose')
+  const submitBtn = document.getElementById('sshKeygenSubmitBtn')
+  const copyBtn = document.getElementById('sshKeygenCopyBtn')
+  if (!overlay) return
+
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(overlay) })
+  closeBtn.addEventListener('click', () => closeModal(overlay))
+
+  submitBtn.addEventListener('click', async () => {
+    const label = document.getElementById('sshKeygenLabelInput').value.trim()
+    const username = document.getElementById('sshKeygenUserInput').value.trim()
+    if (!label || !username) { showToast('Cimke és felhasználónév megadása kötelező'); return }
+
+    document.getElementById('sshKeygenForm').hidden = true
+    document.getElementById('sshKeygenSpinner').hidden = false
+    document.getElementById('sshKeygenResult').hidden = true
+    document.getElementById('sshKeygenFooter').hidden = true
+
+    try {
+      const res = await fetch('/api/vault/ssh-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label, username }),
+      })
+      const data = await res.json()
+      if (!res.ok) { showToast(data.error || 'Generálás sikertelen'); resetKeygenForm(); return }
+
+      const pubkey = data.publicKey || (data.key && data.key.publicKey) || ''
+      document.getElementById('sshKeygenPubkeyBox').value = pubkey
+      document.getElementById('sshKeygenSpinner').hidden = true
+      document.getElementById('sshKeygenResult').hidden = false
+
+      await loadSshKeys()
+      if (_sshKeygenCallback) _sshKeygenCallback(data.key || data)
+    } catch { showToast('Hálózati hiba'); resetKeygenForm() }
+  })
+
+  copyBtn?.addEventListener('click', () => {
+    const val = document.getElementById('sshKeygenPubkeyBox').value
+    navigator.clipboard.writeText(val).then(() => {
+      copyBtn.textContent = 'Másolva!'
+      setTimeout(() => { copyBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Másolás' }, 2000)
+    }).catch(() => {})
+  })
+
+  function resetKeygenForm() {
+    document.getElementById('sshKeygenForm').hidden = false
+    document.getElementById('sshKeygenSpinner').hidden = true
+    document.getElementById('sshKeygenResult').hidden = true
+    document.getElementById('sshKeygenFooter').hidden = false
+  }
+})()
+
+// --- SSH Info modal ---
+let _sshInfoServerId = null
+
+async function _sshInfoLoadKey(keyId, serverUser) {
+  const installSection = document.getElementById('sshInfoInstallSection')
+  const noKeyEl = document.getElementById('sshInfoNoKey')
+  if (!keyId) {
+    installSection.hidden = true
+    noKeyEl.hidden = false
+    return
+  }
+  installSection.hidden = false
+  noKeyEl.hidden = true
+
+  let pubkey = ''
+  try {
+    const res = await fetch(`/api/vault/ssh-keys/${encodeURIComponent(keyId)}/public-key`)
+    if (res.ok) { const d = await res.json(); pubkey = d.publicKey || '' }
+  } catch {}
+
+  document.getElementById('sshInfoUser').textContent = serverUser || 'root'
+  const cmd2text = pubkey
+    ? `echo "${pubkey}" >> ~/.ssh/authorized_keys`
+    : `echo "<publikus kulcs ide>" >> ~/.ssh/authorized_keys`
+  document.getElementById('sshInfoCmd2').textContent = cmd2text
+  document.getElementById('sshInfoPubkey').textContent = pubkey || '(kulcs nem elérhető)'
+
+  const overlay = document.getElementById('sshInfoOverlay')
+  overlay.querySelectorAll('.ssh-code-copy').forEach(btn => {
+    const clone = btn.cloneNode(true)
+    btn.parentNode.replaceChild(clone, btn)
+    clone.addEventListener('click', () => {
+      const text = document.getElementById(clone.getAttribute('data-target'))?.textContent || ''
+      navigator.clipboard.writeText(text).then(() => {
+        clone.classList.add('copied')
+        setTimeout(() => clone.classList.remove('copied'), 2000)
+      }).catch(() => {})
+    })
+  })
+}
+
+function _sshInfoLoadServer(serverId) {
+  _sshInfoServerId = serverId
+  const server = _sshServers.find(s => s.id === serverId)
+
+  document.getElementById('sshInfoServerName').textContent = server ? server.name : (serverId || '')
+
+  const keySel = document.getElementById('sshInfoKeySelect')
+  keySel.innerHTML = ['<option value="">-- Nincs kulcs --</option>',
+    ..._sshKeys.map(k => `<option value="${escapeHtml(k.id)}">${escapeHtml(k.label || k.id)} (${escapeHtml(k.username || '')})</option>`)
+  ].join('')
+  const assignedKeyId = (server && (server.sshKeyId || server.assignedKeyId || server.vaultKeyId)) || ''
+  keySel.value = assignedKeyId
+  return { server, assignedKeyId }
+}
+
+function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
+  const overlay = document.getElementById('sshInfoOverlay')
+  const serverSection = overlay.querySelector('.ssh-info-server-section')
+
+  if (keyOnly) {
+    // Key-only mode: hide server selector, reset server context
+    serverSection.hidden = true
+    _sshInfoServerId = null
+    document.getElementById('sshInfoServerName').textContent = 'Új szerver'
+
+    // Populate key selector without a pre-selected key
+    const keySel = document.getElementById('sshInfoKeySelect')
+    keySel.innerHTML = ['<option value="">-- Válassz kulcsot --</option>',
+      ..._sshKeys.map(k => `<option value="${escapeHtml(k.id)}">${escapeHtml(k.label || k.id)} (${escapeHtml(k.username || '')})</option>`)
+    ].join('')
+    // Pre-select whatever is chosen in the form's key dropdown
+    const formKeyId = document.getElementById('sshKeySelectInput')?.value || ''
+    keySel.value = formKeyId
+
+    openModal(overlay)
+    _sshInfoLoadKey(formKeyId, 'root')
+  } else {
+    // Normal mode: show server selector, pick first server by default
+    serverSection.hidden = false
+    const serverSel = document.getElementById('sshInfoServerSelect')
+    serverSel.innerHTML = ['<option value="">-- Válassz szervert --</option>',
+      ..._sshServers.map(s => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)} (${escapeHtml(s.host)})</option>`)
+    ].join('')
+
+    const firstId = preselectedServerId || (_sshServers[0] && _sshServers[0].id) || ''
+    serverSel.value = firstId
+
+    const { server, assignedKeyId } = _sshInfoLoadServer(firstId)
+    const targetUser = (server && server.user) || 'root'
+
+    openModal(overlay)
+    _sshInfoLoadKey(assignedKeyId, targetUser)
+  }
+}
+
+;(function wireSshInfoModal() {
+  const overlay = document.getElementById('sshInfoOverlay')
+  const closeBtn = document.getElementById('sshInfoClose')
+  const serverSel = document.getElementById('sshInfoServerSelect')
+  const keySel = document.getElementById('sshInfoKeySelect')
+  if (!overlay) return
+
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(overlay) })
+  closeBtn.addEventListener('click', () => closeModal(overlay))
+
+  serverSel?.addEventListener('change', () => {
+    const { server, assignedKeyId } = _sshInfoLoadServer(serverSel.value)
+    _sshInfoLoadKey(assignedKeyId, (server && server.user) || 'root')
+  })
+
+  keySel?.addEventListener('change', async () => {
+    const keyId = keySel.value || null
+    const server = _sshServers.find(s => s.id === _sshInfoServerId)
+    const targetUser = (server && server.user) || 'root'
+
+    if (_sshInfoServerId) {
+      try {
+        await fetch(`/api/vault/ssh-servers/${encodeURIComponent(_sshInfoServerId)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sshKeyId: keyId }),
+        })
+        await loadSshServers()
+      } catch { /* ignore */ }
+    }
+    await _sshInfoLoadKey(keyId, targetUser)
+  })
+})()
+
+;(function wireSshSection() {
+  const newBtn = document.getElementById('sshNewBtn')
+  const panel = document.getElementById('sshAddPanel')
+  const closeBtn = document.getElementById('sshAddPanelClose')
+  const addBtn = document.getElementById('sshAddBtn')
+  const cardViewBtn = document.getElementById('sshViewCards')
+  const tableViewBtn = document.getElementById('sshViewTable')
+  const cardsView = document.getElementById('sshCardsView')
+  const tableView = document.getElementById('sshTableView')
+
+  if (!newBtn) return
+
+  newBtn.addEventListener('click', () => {
+    panel.hidden = !panel.hidden
+    if (!panel.hidden) document.getElementById('sshNameInput').focus()
+  })
+  closeBtn?.addEventListener('click', () => { panel.hidden = true })
+
+  // (i) install guide button inside the "new server" form -- key-only mode
+  document.getElementById('sshKeyInstallFromFormBtn')?.addEventListener('click', () => {
+    openSshInfoModal(null, { keyOnly: true })
+  })
+
+  // "+ Új kulcs" button inside the "new server" form
+  document.getElementById('sshKeyNewFromFormBtn')?.addEventListener('click', () => {
+    openSshKeygenModal(newKey => {
+      // After key created, select it in the form dropdown
+      if (newKey && newKey.id) {
+        const sel = document.getElementById('sshKeySelectInput')
+        if (sel) sel.value = newKey.id
+      }
+    })
+  })
+
+  addBtn?.addEventListener('click', async () => {
+    const name = document.getElementById('sshNameInput').value.trim()
+    const host = document.getElementById('sshHostInput').value.trim()
+    const user = document.getElementById('sshUserInput').value.trim()
+    const port = parseInt(document.getElementById('sshPortInput').value, 10) || 22
+    const desc = document.getElementById('sshDescInput').value.trim()
+    const sshKeyId = document.getElementById('sshKeySelectInput')?.value || null
+    if (!name || !host || !user) { showToast('Név, IP és felhasználó megadása kötelező'); return }
+    try {
+      const res = await fetch('/api/vault/ssh-servers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, host, user, port, desc, sshKeyId: sshKeyId || undefined }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        showToast(err.error || 'Hiba a mentéskor'); return
+      }
+      document.getElementById('sshNameInput').value = ''
+      document.getElementById('sshHostInput').value = ''
+      document.getElementById('sshUserInput').value = ''
+      document.getElementById('sshPortInput').value = '22'
+      document.getElementById('sshDescInput').value = ''
+      if (document.getElementById('sshKeySelectInput')) document.getElementById('sshKeySelectInput').value = ''
+      panel.hidden = true
+      await loadSshServers()
+      showToast('Szerver hozzáadva')
+    } catch { showToast('Hálózati hiba') }
+  })
+
+  cardViewBtn?.addEventListener('click', () => {
+    _sshView = 'cards'
+    cardViewBtn.classList.add('active')
+    tableViewBtn.classList.remove('active')
+    cardsView.hidden = false
+    tableView.hidden = true
+  })
+
+  tableViewBtn?.addEventListener('click', () => {
+    _sshView = 'table'
+    tableViewBtn.classList.add('active')
+    cardViewBtn.classList.remove('active')
+    cardsView.hidden = true
+    tableView.hidden = false
+  })
+
+  // Kulcstároló "Új kulcs generálása" button
+  document.getElementById('sshKeyNewBtn')?.addEventListener('click', () => {
+    openSshKeygenModal()
+  })
+
+  // Global (i) info button in section header
+  document.getElementById('sshInfoGlobalBtn')?.addEventListener('click', () => {
+    openSshInfoModal()
+  })
+})()
+
 // --- Vault Page ---
 let _vaultSecrets = []
 
@@ -7244,6 +7762,7 @@ async function loadVaultPage() {
     document.getElementById('vaultStatTotal').textContent = String(_vaultSecrets.length)
     document.getElementById('vaultStatBindings').textContent = String(_vaultBindings.length)
     renderVaultGrid(_vaultSecrets)
+    await Promise.all([loadSshKeys(), loadSshServers()])
   } catch { /* ignore */ }
 }
 
