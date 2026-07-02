@@ -699,12 +699,18 @@ function discardPlaceholderBuffer(session: string, host: string | null = null): 
 // still reports stuck, send up to SUBMIT_RETRY_MAX_ATTEMPTS extra
 // Enters. The retry budget bounds the loop so a pathologically stuck
 // pane gives up rather than spinning.
+// Returns whether the submit was CONFIRMED (the post-send retry loop observed
+// the pane leave the parked state -- decideSubmitFollowup === 'done'). Callers
+// that care about delivery integrity (the message router) must gate their
+// "delivered" bookkeeping on this: a `false` return means the prompt is still
+// parked in the target TUI after the retry budget, so claiming delivery would
+// be a silent lie. Legacy callers that ignore the return value are unaffected.
 export function sendPromptToSession(
   session: string,
   text: string,
   host: string | null = null,
   opts: { waitForIdle?: boolean } = {},
-): void {
+): boolean {
   dismissSurveyModalIfPresent(session, host)
   dismissResumeSummaryModalIfPresent(session, host)
 
@@ -794,11 +800,17 @@ export function sendPromptToSession(
   //     multi-row verbatim buffer that a plain Enter cannot submit, so a
   //     resend that itself parks is re-cleared and retried until it lands.
   const payloadHint = oneLine.slice(0, Math.min(oneLine.length, 96))
+  // Confirmed only when the loop observes decideSubmitFollowup === 'done' (the
+  // pane left the parked state). Any terminal 'give-up' -- budget spent, a
+  // failed capture we cannot interpret, or a send error mid-recovery -- leaves
+  // this false so the caller can surface an unconfirmed delivery instead of
+  // silently booking it as delivered.
+  let submitted = false
   for (let attempt = 0; ; attempt++) {
     try { execFileSync('/bin/sleep', [SUBMIT_RETRY_POLL_MS], { timeout: 2000 }) } catch { /* best effort */ }
     const pane = capturePane(session, host)
     const action = decideSubmitFollowup(pane, payloadHint, attempt, SUBMIT_RETRY_MAX_ATTEMPTS)
-    if (action === 'done') break
+    if (action === 'done') { submitted = true; break }
     if (action === 'give-up') {
       logger.warn({ session, attempt }, 'sendPromptToSession: prompt still parked after retries')
       break
@@ -828,6 +840,7 @@ export function sendPromptToSession(
       break
     }
   }
+  return submitted
 }
 
 // How long to wait between the two capture samples when the first one

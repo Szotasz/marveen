@@ -4,6 +4,7 @@ import {
   getPendingMessages,
   markMessageDelivered,
   markMessageFailed,
+  createAgentMessage,
 } from '../db.js'
 import {
   wrapUntrusted,
@@ -158,12 +159,49 @@ export function startMessageRouter(): NodeJS.Timeout {
         }
         // Inline preamble so a fresh session (post hard-restart) doesn't miss
         // the context that explains the tag semantics.
-        sendPromptToSession(session, prefix + wrapped, host)
-        if (!markMessageDelivered(msg.id)) {
-          logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
+        //
+        // Gate the "delivered" bookkeeping on a CONFIRMED submit. Previously we
+        // marked delivered the instant send-keys returned -- but the closing
+        // Enter is occasionally swallowed by the Claude TUI, leaving the prompt
+        // parked in the input box. That booked a silent-lie "delivered" while
+        // the target never saw the message (the incident that motivated this).
+        // sendPromptToSession now returns false when its retry budget could not
+        // confirm the submit; treat that as a surfaced failure, not a success.
+        const submitted = sendPromptToSession(session, prefix + wrapped, host)
+        if (submitted) {
+          if (!markMessageDelivered(msg.id)) {
+            logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
+          }
+          routerLoggedMisses.delete(msg.id)
+          logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, category: isChannelInbound ? 'channel-inbound' : trusted ? 'trusted-peer' : 'untrusted' }, 'Agent message delivered')
+        } else {
+          // Submit unconfirmed: the prompt is parked in the target TUI after
+          // the send-retry budget. Do NOT claim delivery. Mark failed so the
+          // router stops re-scanning it (the text is already sitting in the box
+          // -- re-sending next tick would just duplicate it), and escalate to
+          // the owner through the main agent instead of vanishing silently.
+          logger.error({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, 'Agent message delivery UNCONFIRMED (parked in target TUI after retry budget); marking failed and alerting owner')
+          if (!markMessageFailed(msg.id, 'Submit unconfirmed: parked in target TUI after retry budget')) {
+            logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
+          }
+          routerLoggedMisses.delete(msg.id)
+          // Escalate via the main agent, UNLESS the stranded message was itself
+          // bound for the main agent -- the alert below is delivered to
+          // MAIN_AGENT_ID through this same router, so alerting on a failed
+          // main-agent delivery would loop (alert -> fails -> alert -> ...).
+          if (msg.to_agent !== MAIN_AGENT_ID) {
+            const preview = msg.content.slice(0, 80).replace(/\s+/g, ' ')
+            try {
+              createAgentMessage(
+                'message-router',
+                MAIN_AGENT_ID,
+                `⚠️ Kézbesítési figyelmeztetés: a(z) "${msg.from_agent}" → "${msg.to_agent}" üzenet (#${msg.id}) nem tudott igazoltan beérni — beragadt a cél input-mezőjében a retry-budget után. Tartalom eleje: "${preview}". Nézz rá a(z) ${msg.to_agent} ágensre, és jelezd Bakkinak, ha kézi beavatkozás kell.`,
+              )
+            } catch (err) {
+              logger.warn({ err, id: msg.id }, 'Failed to enqueue stuck-delivery alert to main agent')
+            }
+          }
         }
-        routerLoggedMisses.delete(msg.id)
-        logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, category: isChannelInbound ? 'channel-inbound' : trusted ? 'trusted-peer' : 'untrusted' }, 'Agent message delivered')
       } catch (err) {
         logger.warn({ err, id: msg.id }, 'Failed to deliver agent message')
         if (!markMessageFailed(msg.id, 'Failed to inject into tmux session')) {
