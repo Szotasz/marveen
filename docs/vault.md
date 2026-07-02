@@ -39,3 +39,29 @@ scripts/vault-resolve.mjs      # secret ID → plaintext feloldás
 ### Ügynök-használat
 
 Az ügynökök programatikusan kiolvashatják a titkot (pl. egy press-CLI auth beállításához) a dist vault-modulon át — érték kiírása nélkül. A titkok címke (label) szerint azonosítva. A dashboard `/api/autonomy`-hoz hasonlóan Bearer-token védett API.
+
+---
+
+## 🔑 SSH Vault (szerver- és kulcskezelés)
+
+> Központi SSH szerver- és kulcsnyilvántartás a flottának -- külön a generikus titkosított titkoktól.
+
+A generikus secret-vault mellett a dashboard egy dedikált **SSH Vault** modult is biztosít, ami a flotta által elért SSH szervereket és a hozzájuk tartozó kulcsokat tartja nyilván.
+
+### Adatmodell
+
+- `vault_ssh_servers`: nyilvántartott szerverek (host, user, opcionális `ssh_key_id` hivatkozás).
+- `vault_ssh_keys`: megosztott SSH kulcs-készlet (label, username, publikus kulcs, fingerprint, kulcstípus). Egy kulcs **több szerverhez** is hozzárendelhető (many-servers-to-one-key modell).
+- A privát kulcsok a generikus `vault.ts` titkosított tárolóban élnek (`ssh-key-<id>` prefixű bejegyzésként), de a generikus `/api/vault` listázásból ki vannak szűrve -- kizárólag a Kulcstároló saját endpointján (`/api/vault/ssh-keys`) érhetők el, hogy ne duplikálódjanak a UI-n.
+
+### API végpontok
+
+- `GET/POST /api/vault/ssh-servers`, `PUT/DELETE /api/vault/ssh-servers/:id` -- szerver CRUD.
+- `GET/POST /api/vault/ssh-keys` -- kulcs-készlet listázás/generálás (új ed25519 pár).
+- `POST /api/vault/ssh-keys/import` -- meglévő privát kulcs importálása (publikus kulcs + fingerprint automatikus levezetéssel, `ssh-keygen -y`).
+- `GET /api/vault/ssh-keys/:id/public-key` -- publikus kulcs + telepítési (`authorized_keys`) instrukció lekérése.
+- `DELETE /api/vault/ssh-keys/:id` -- kulcs törlése; a hozzárendelt szerverek referenciája is törlődik, és a mögöttes titkosított secret is takarítva (`deleteSecret`), nincs árva bejegyzés.
+
+### UI
+
+A dashboard Vault oldalán külön szekció (Kulcstároló) mutatja a kulcs-készletet (lista/másolás/törlés), és a SSH Szerverek szekció (kártya- és táblázat-nézet) a szerverekhez rendelt kulcsot egy legördülőben lehet váltani. Új szerver felvételekor egy önálló, csak-kulcsválasztós info-modal mutatja a telepítési parancsokat -- szerver-kiválasztás nélkül, mivel az új szerver még nincs felvéve.
