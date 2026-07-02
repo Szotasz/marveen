@@ -1399,8 +1399,17 @@
             <!-- Part 2: Install commands -->
             <div id="sshInfoInstallSection">
               <p class="vault-scan-desc" style="margin-bottom:12px">Futtasd az alábbi parancsokat a célszerveren (<strong id="sshInfoUser"></strong> felhasználóval) a kiválasztott kulcs telepítéséhez:</p>
+              <div class="ssh-install-step" id="sshInfoStep0">
+                <div class="ssh-install-step-label">1. Felhasználó létrehozása (ha még nincs, root-tal futtatva)</div>
+                <div class="ssh-code-wrap">
+                  <code class="ssh-code" id="sshInfoCmd0"></code>
+                  <button class="ssh-code-copy" data-target="sshInfoCmd0" title="Másolás">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  </button>
+                </div>
+              </div>
               <div class="ssh-install-step">
-                <div class="ssh-install-step-label">1. SSH könyvtár létrehozása (ha még nincs)</div>
+                <div class="ssh-install-step-label">2. SSH könyvtár létrehozása (ha még nincs)</div>
                 <div class="ssh-code-wrap">
                   <code class="ssh-code" id="sshInfoCmd1">mkdir -p ~/.ssh &amp;&amp; chmod 700 ~/.ssh</code>
                   <button class="ssh-code-copy" data-target="sshInfoCmd1" title="Másolás">
@@ -1409,7 +1418,7 @@
                 </div>
               </div>
               <div class="ssh-install-step">
-                <div class="ssh-install-step-label">2. Publikus kulcs hozzáfűzése</div>
+                <div class="ssh-install-step-label">3. Publikus kulcs hozzáfűzése</div>
                 <div class="ssh-code-wrap">
                   <code class="ssh-code" id="sshInfoCmd2"></code>
                   <button class="ssh-code-copy" data-target="sshInfoCmd2" title="Másolás">
@@ -1418,7 +1427,7 @@
                 </div>
               </div>
               <div class="ssh-install-step">
-                <div class="ssh-install-step-label">3. Jogosultság beállítása</div>
+                <div class="ssh-install-step-label">4. Jogosultság beállítása</div>
                 <div class="ssh-code-wrap">
                   <code class="ssh-code" id="sshInfoCmd3">chmod 600 ~/.ssh/authorized_keys</code>
                   <button class="ssh-code-copy" data-target="sshInfoCmd3" title="Másolás">

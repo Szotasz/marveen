@@ -7543,7 +7543,19 @@ async function _sshInfoLoadKey(keyId, serverUser) {
     if (res.ok) { const d = await res.json(); pubkey = d.publicKey || '' }
   } catch {}
 
-  document.getElementById('sshInfoUser').textContent = serverUser || 'root'
+  const targetUser = serverUser || 'root'
+  document.getElementById('sshInfoUser').textContent = targetUser
+
+  // root always exists -- only show the "create user" step for a real,
+  // non-root target user (e.g. a fresh server that needs the account first).
+  const step0 = document.getElementById('sshInfoStep0')
+  if (targetUser === 'root') {
+    step0.hidden = true
+  } else {
+    step0.hidden = false
+    document.getElementById('sshInfoCmd0').textContent = `useradd -m -s /bin/bash ${targetUser}`
+  }
+
   const cmd2text = pubkey
     ? `echo "${pubkey}" >> ~/.ssh/authorized_keys`
     : `echo "<publikus kulcs ide>" >> ~/.ssh/authorized_keys`
@@ -7598,8 +7610,11 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
     const formKeyId = document.getElementById('sshKeySelectInput')?.value || ''
     keySel.value = formKeyId
 
+    // Use the username typed into the new-server form, not a hardcoded root
+    const formUser = document.getElementById('sshUserInput')?.value.trim() || 'root'
+
     openModal(overlay)
-    _sshInfoLoadKey(formKeyId, 'root')
+    _sshInfoLoadKey(formKeyId, formUser)
   } else {
     // Normal mode: show server selector, pick first server by default
     serverSection.hidden = false
@@ -7636,8 +7651,11 @@ function openSshInfoModal(preselectedServerId, { keyOnly = false } = {}) {
 
   keySel?.addEventListener('change', async () => {
     const keyId = keySel.value || null
-    const server = _sshServers.find(s => s.id === _sshInfoServerId)
-    const targetUser = (server && server.user) || 'root'
+    // Key-only mode (new-server flow) has no _sshInfoServerId -- read the
+    // username from the new-server form instead of falling back to root.
+    const targetUser = _sshInfoServerId
+      ? ((_sshServers.find(s => s.id === _sshInfoServerId) || {}).user || 'root')
+      : (document.getElementById('sshUserInput')?.value.trim() || 'root')
 
     if (_sshInfoServerId) {
       try {
