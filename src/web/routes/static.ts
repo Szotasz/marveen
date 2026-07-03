@@ -126,6 +126,13 @@ export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promis
     return true
   }
 
+  if (path.startsWith('/js/')) {
+    const jsPath = join(webDir, path)
+    if (existsSync(jsPath)) { serveFile(req, res, jsPath); return true }
+    res.writeHead(404); res.end()
+    return true
+  }
+
   if (path.startsWith('/avatars/')) {
     const avatarFile = path.replace('/avatars/', '')
     const avatarPath = join(webDir, 'avatars', avatarFile)
