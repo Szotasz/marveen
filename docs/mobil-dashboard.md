@@ -35,6 +35,8 @@ A dashboard a localhostra kötve marad; a Tailscale Serve csak proxyzza a tailne
 ## Kinek működik?
 
 - A PWA (app-ikon, token-beillesztő, mobil-nézet) MINDEN telepítésben benne van alapból.
+- A home-screen / app-ikon a beállított fő agent avatarját használja (ugyanaz a kép, mint a böngésző faviconja). Ha lecseréled az avatart a dashboardon, az ikon is frissül (a megszokott iOS törlés + újra hozzáadás után).
+- A felület tiszteletben tartja az iOS biztonságos területeit (notch, Dynamic Island, home indicator) álló és fekvő nézetben is; notch nélküli eszközön (Android, desktop) ez nem változtat semmin.
 - A biztonságos távoli mobil-elérés a fenti Tailscale-beállítást igényli a gazdagépen (nem automatikus). Tailscale nélkül alternatíva az azonos helyi hálózaton való elérés vagy saját VPN/tunnel.
 
 ## Buktatók

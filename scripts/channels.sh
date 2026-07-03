@@ -86,6 +86,15 @@ export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HO
 # documented sandbox escape hatch. Harmless for non-root (guarded by uid check).
 [ "$(id -u)" = "0" ] && export IS_SANDBOX=1
 
+# Disable Claude Code's "Prompt Suggestions" (the grayed-out/DIM suggested command
+# shown in the input box, picked from git history / conversation). For headless
+# agent sessions it is pure noise AND it caused a false-positive incident: the
+# stuck-input recovery read the dim suggestion as a "parked input" and escalated a
+# phantom to the operator (2026-06-30, "Köszi a halakat."). Killing it at the
+# source removes the phantom entirely. Inherited by every sub-agent via the tmux
+# global env set below.
+export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false
+
 CLAUDE="$(command -v claude)"
 TMUX="$(command -v tmux)"
 [ -z "$CLAUDE" ] && echo "ERROR: claude not found on PATH" >&2 && exit 1
@@ -199,6 +208,8 @@ fi
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   $TMUX set-environment -g ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY" 2>/dev/null || true
 fi
+# Propagate the prompt-suggestion disable to every sub-agent tmux session.
+$TMUX set-environment -g CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION false 2>/dev/null || true
 
 # Hybrid channel-coordinator model: the native plugin stays the PRIMARY inbound
 # path (it always polls getUpdates here -- never outbound-only). The standalone

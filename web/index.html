@@ -15,17 +15,23 @@
   <script src="/lang/hu.js"></script>
   <script src="/lang/en.js"></script>
   <link rel="icon" href="/api/marveen/avatar">
-  <link rel="apple-touch-icon" href="/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="/api/marveen/avatar">
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#1a1917">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Marveen">
   <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js').catch(() => {});
-      });
+    // Service worker intentionally DISABLED. A caching SW caused iOS load
+    // failures (respondWith null on cache miss) and a reload-loop when combined
+    // with re-registration. We no longer register one, and we actively
+    // unregister any previously-installed SW so a wedged client self-heals on
+    // the next visit. The dashboard is a localhost/tailnet tool that does not
+    // need offline caching.
+    if ('serviceWorker' in navigator && navigator.serviceWorker.getRegistrations) {
+      navigator.serviceWorker.getRegistrations()
+        .then((regs) => regs.forEach((r) => r.unregister()))
+        .catch(() => {});
     }
   </script>
 </head>
@@ -203,7 +209,14 @@
 
     <!-- === Kanban Page === -->
     <div class="page" id="kanbanPage" hidden>
-      <div style="margin-bottom:12px;display:flex;align-items:center;gap:8px;">
+      <!-- View switcher: board vs gantt (top, always visible) -->
+      <div id="kanbanViewSwitcher" style="display:flex;align-items:center;gap:6px;margin-bottom:10px;">
+        <button class="view-btn active" id="kanbanViewBoard" style="width:auto;padding:0 12px;" data-i18n="kanban.view.board">Tábla</button>
+        <button class="view-btn" id="kanbanViewGantt" style="width:auto;padding:0 12px;" data-i18n="kanban.view.gantt">Idővonal</button>
+      </div>
+
+      <!-- Board-specific filter row (hidden when gantt active) -->
+      <div id="kanbanBoardFilters" style="margin-bottom:12px;display:flex;align-items:center;gap:8px;">
         <label for="kanbanProjectFilter" style="font-size:13px;color:var(--muted);white-space:nowrap;">Projekt:</label>
         <select id="kanbanProjectFilter" style="font-size:13px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);min-width:140px;">
           <option value="">Mind</option>
@@ -216,6 +229,18 @@
         </select>
         <div class="kanban-quick-filters" id="kanbanQuickFilters" style="margin-left:auto; display:flex; gap:6px; flex-wrap:wrap; align-items:center;"></div>
       </div>
+
+      <!-- Gantt-specific filter row (hidden when board active) -->
+      <div id="kanbanGanttFilters" style="display:none;margin-bottom:12px;align-items:center;gap:6px;flex-wrap:wrap;">
+        <button class="view-btn active" id="ganttPeriodWeek" style="width:auto;padding:0 10px;" data-period="week" data-i18n="kanban.gantt.filter.period_week">Ezen hét</button>
+        <button class="view-btn" id="ganttPeriodMonth" style="width:auto;padding:0 10px;" data-period="month" data-i18n="kanban.gantt.filter.period_month">Hónap</button>
+        <button class="view-btn" id="ganttPeriodQuarter" style="width:auto;padding:0 10px;" data-period="quarter" data-i18n="kanban.gantt.filter.period_quarter">Negyedév</button>
+        <label style="display:flex;align-items:center;gap:5px;font-size:13px;color:var(--muted);margin-left:10px;cursor:pointer;">
+          <input type="checkbox" id="ganttOverdueOnly" style="cursor:pointer;">
+          <span data-i18n="kanban.gantt.filter.overdue_only">Csak lejárt/közelgő</span>
+        </label>
+      </div>
+
       <div class="kanban-board" id="kanbanBoard">
         <div class="kanban-col" data-status="planned">
           <div class="kanban-col-header">
@@ -250,6 +275,8 @@
         </div>
       </div>
       <div class="kanban-board kanban-swimlane-board" id="kanbanSwimlaneBoard" hidden></div>
+      <!-- Gantt / timeline view container -->
+      <div id="kanbanGanttView" style="display:none;"></div>
     </div>
 
     <!-- === Archived Cards Page === -->

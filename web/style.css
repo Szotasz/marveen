@@ -57,6 +57,19 @@
    overflows by a hair: Safari's rubber-band hides it, standalone does not. */
 html, body { max-width: 100%; overflow-x: clip; }
 
+/* Keep the iOS rubber-band bounce -- it looks good. The problem was only that
+ * flinging past the TOP edge dragged the sticky chrome and exposed the darker
+ * body background beside the (lighter) menu. We bleed the menu's own card
+ * background (and its divider line) straight up above the sticky chrome via
+ * .sidebar::before (wide layout) and .mobile-topbar::before (portrait), so the
+ * overpull on the menu side stays the light menu colour, seam included.
+ *
+ * Only the TOP is handled this way. The bottom overscroll gutter can't be split
+ * per-column: iOS paints it from a single canvas background COLOR (it ignores
+ * background-image/gradients there) and absolutely-positioned bleed below the
+ * content either adds stray scroll or gets clipped. So the bottom gutter stays
+ * the dark content colour, which is the larger part of the page anyway. */
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
   background: var(--bg);
@@ -82,6 +95,24 @@ body {
   padding: 20px 14px;
   z-index: 90;
 }
+/* Bleed the sidebar's card background -- and its right-hand divider line --
+ * straight up above itself, so the iOS rubber-band overpull at the TOP shows the
+ * light menu colour and the seam continues, instead of the darker body bg the
+ * dragged sticky column would otherwise expose. Off-screen except during the
+ * bounce; absolute so it adds no scroll height; pointer-events:none so it never
+ * eats taps. right:-1px reaches the border-box edge so the 1px border-right
+ * lines up exactly with the sidebar's own divider. */
+.sidebar::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: -1px;
+  bottom: 100%;
+  height: 100vh;
+  background: var(--bg-card);
+  border-right: 1px solid var(--border);
+  pointer-events: none;
+}
 
 /* === Mobile shell (hamburger + off-canvas sidebar) === */
 /* On desktop the top bar and backdrop are hidden; the sidebar lives in the
@@ -106,6 +137,17 @@ body {
     border-bottom: 1px solid var(--border);
   }
   .mobile-topbar-title { font-weight: 600; font-size: 15px; }
+  /* Same bleed for the portrait top bar: light card colour overpulls above it. */
+  .mobile-topbar::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 100%;
+    height: 100vh;
+    background: var(--bg-card);
+    pointer-events: none;
+  }
   .mobile-menu-btn {
     display: inline-flex;
     align-items: center;
@@ -174,6 +216,14 @@ body {
   margin-top: 14px;
   flex: 1;
   overflow-y: auto;
+  /* overflow-y:auto makes the browser compute overflow-x from `visible` to
+   * `auto`, so a label that overran the column turned the nav into a sideways
+   * scroller (landscape, where the notch inset squeezed the column). Pin it. */
+  overflow-x: hidden;
+  /* Keep a scroll gesture that starts in the menu inside the menu: without this
+   * it chains to the document the moment the nav hits its top/bottom (or has
+   * nothing to scroll), so "scrolling the menu" ends up scrolling the page. */
+  overscroll-behavior: contain;
 }
 .sb-link {
   display: flex;
@@ -188,7 +238,12 @@ body {
   transition: all var(--transition);
 }
 .sb-link svg { flex-shrink: 0; color: currentColor; }
-.sb-link .sb-label { flex: 1; }
+/* min-width:0 lets a long label wrap inside the column instead of forcing the
+ * link wider than the nav (which is what produced the landscape overflow);
+ * overflow-wrap:anywhere lets even a single long word (e.g. "Dokumentáció", or
+ * any label at a large system text size) break onto a second line rather than
+ * spill past the edge or get clipped. */
+.sb-link .sb-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .sb-link:hover { color: var(--text); background: var(--accent-soft); }
 .sb-link.active { color: var(--text); background: var(--accent-soft); }
 .sb-link.active svg { color: var(--accent); }
@@ -401,6 +456,14 @@ main {
   max-width: 1200px;
   padding: 32px 32px 64px;
   width: 100%;
+  /* main is the 1fr grid track; a grid item's default minimum size is its
+   * content's min-content, so wide cards (e.g. schedule rows with badges +
+   * action buttons) inflate the track and push the whole layout past the
+   * viewport -- everything on the right clips. This was masked in portrait,
+   * where main gets overflow-x:hidden (a scroll container's min size is 0).
+   * min-width:0 gives the wide/landscape layout the same freedom: the track
+   * follows 1fr and the flex cards shrink to fit instead of overflowing. */
+  min-width: 0;
 }
 
 .page-header { margin-bottom: 32px; }
@@ -1180,6 +1243,10 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
+  /* On a narrow (landscape phone) main, let the action cluster drop below the
+   * title instead of overflowing the right edge. No-op on desktop, where there
+   * is room for one row. */
+  flex-wrap: wrap;
 }
 
 /* === Agent Grid === */
@@ -3109,6 +3176,10 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   transition: opacity var(--transition);
 }
 .schedule-row:hover .schedule-actions { opacity: 1; }
+/* Touch devices have no hover, so the reveal-on-hover would leave the actions
+ * permanently invisible (e.g. a landscape phone, which is wider than the 640px
+ * mobile tweak). Show them whenever the pointer can't hover. */
+@media (hover: none) { .schedule-actions { opacity: 1; } }
 
 .schedule-empty {
   text-align: center;
@@ -5954,3 +6025,69 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
 .naplo-note { font-style: italic; color: var(--text-muted); }
 .naplo-event-type { font-size: 11px; background: var(--bg); border-radius: 3px; padding: 1px 5px; color: var(--text-muted); }
 .naplo-sensitive { font-size: 11px; color: var(--danger, #ef4444); font-weight: 600; }
+
+/* === Safe-area insets (iOS notch / Dynamic Island / home indicator) ===
+ * The page ships viewport-fit=cover (see index.html), which lets content draw
+ * edge-to-edge under the notch in an installed (standalone) PWA. env() resolves
+ * to 0 on devices/browsers with no inset (Android without a cutout, desktop),
+ * so every rule here is a no-op there -- no platform sniffing needed.
+ *
+ * Landscape is the important case: an iPhone in landscape is WIDER than the
+ * mobile breakpoint, so it uses the desktop column layout (sidebar + main as
+ * in-flow grid children of <body>), NOT the mobile shell.
+ *
+ * Each side inset is filled by the column that meets it, NOT by a body gap, so
+ * the strip shows the right colour. The LEFT inset (the menu side) is handled on
+ * .sidebar below, letting its lighter card background bleed into the cutout
+ * instead of leaving a darker body-coloured gap beside the menu. The RIGHT inset
+ * sits next to <main>, whose background already is the body colour, so padding
+ * the body on the right is seamless there. Bottom padding clears the home
+ * indicator in both orientations. iOS reports left/right insets as 0 in
+ * portrait, so none of this adds stray side padding there. */
+body {
+  padding-right: env(safe-area-inset-right);
+}
+/* Bottom inset: on the wide layout (the sidebar lives in the body grid as a
+ * sticky column) put it on <main>, NOT <body>. Padding on <body> shortens the
+ * sticky sidebar's containing block, so a flick to the very bottom detaches the
+ * menu from top:0 and slides it up by the inset -- the residual drift still
+ * visible at the bottom in landscape. <main> is the scrolling content; padding
+ * it clears the home indicator without shrinking that container, so the menu
+ * stays pinned. Below the breakpoint the sidebar is a fixed off-canvas drawer
+ * (independent of body height), so <body> padding is correct there. */
+@media (min-width: 769px) {
+  main { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
+  /* Widen the sidebar track by the left inset so the menu keeps its full content
+   * width in landscape. Without this the inset (added to .sidebar padding-left
+   * below) eats into a fixed 220px track, squeezing the labels until they
+   * overflow. The added track width and the added padding cancel out, leaving
+   * the same 192px content box as desktop. */
+  body { grid-template-columns: calc(220px + env(safe-area-inset-left)) 1fr; }
+}
+@media (max-width: 768px) {
+  body { padding-bottom: env(safe-area-inset-bottom); }
+}
+/* Left inset = the menu side. Extend the sidebar's own (lighter) card background
+ * into the cutout; the extra inner padding keeps the brand/nav clear of the
+ * notch. Portrait and no-notch devices report 0, so this stays the base 14px. */
+.sidebar {
+  padding-left: calc(14px + env(safe-area-inset-left));
+}
+/* Portrait status-bar/notch: grow the sticky top bar so its card background
+ * fills the strip and its content sits below the notch. Done here (not via
+ * body padding-top) so the strip shows the bar colour, not a body-coloured
+ * gap. The bar only renders below the mobile breakpoint (portrait), where this
+ * height override wins over the base rule by source order. */
+.mobile-topbar {
+  height: calc(52px + env(safe-area-inset-top));
+  padding-top: env(safe-area-inset-top);
+}
+@media (max-width: 768px) {
+  /* Off-canvas drawer is position:fixed, so it ignores the <body> padding above.
+   * When opened in portrait, keep its top brand below the notch and its footer
+   * above the home indicator. */
+  .sidebar {
+    padding-top: max(20px, env(safe-area-inset-top));
+    padding-bottom: max(20px, env(safe-area-inset-bottom));
+  }
+}

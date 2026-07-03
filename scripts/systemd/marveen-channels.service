@@ -18,6 +18,10 @@ Type=simple
 # session does not collide on relaunch.
 KillMode=process
 WorkingDirectory=/path/to/marveen
+# Rebuild the better-sqlite3 native binding if it can't load for the current Node
+# ABI before starting. Prevents the "Could not locate the bindings file"
+# crash-loop after an npm install / Node upgrade (root-caused 2026-07-03).
+ExecStartPre=/path/to/marveen/scripts/ensure-native-modules.sh
 ExecStart=/path/to/marveen/scripts/channels.sh
 # P1 FIX: always (not on-failure). channels.sh exits 0 when the tmux session
 # dies normally, which on-failure did NOT restart -> the bridge was dead for

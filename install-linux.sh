@@ -1146,6 +1146,11 @@ Type=simple
 # the node main process on stop/restart, leaving the agents running.
 KillMode=process
 WorkingDirectory=$INSTALL_DIR
+# Rebuild the better-sqlite3 native binding if it can't load for the current
+# Node ABI before starting. Prevents the "Could not locate the bindings file"
+# crash-loop after an npm install / Node upgrade (root-caused 2026-07-03: ~350
+# restarts, StartLimit hit, dashboard + channels down ~42 min).
+ExecStartPre=$INSTALL_DIR/scripts/ensure-native-modules.sh
 ExecStart=$NODE_PATH $INSTALL_DIR/dist/index.js
 Restart=on-failure
 RestartSec=5
@@ -1180,6 +1185,9 @@ Type=simple
 # its own "\$SESSION" before new-session so the surviving session doesn't collide.
 KillMode=process
 WorkingDirectory=$INSTALL_DIR
+# See the dashboard unit: rebuild the better-sqlite3 native binding if it can't
+# load for the current Node ABI before starting (2026-07-03 crash-loop fix).
+ExecStartPre=$INSTALL_DIR/scripts/ensure-native-modules.sh
 ExecStart=$INSTALL_DIR/scripts/channels.sh
 Restart=on-failure
 RestartSec=10

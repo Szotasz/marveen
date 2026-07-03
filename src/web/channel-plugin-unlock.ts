@@ -67,6 +67,38 @@ const KEYSTROKE_SETTLE_MS = 1500
 // out of the action menu.
 const POST_UNLOCK_SETTLE_MS = 3000
 
+// Sessions whose most recent unlock probe found the channel plugin ABSENT from
+// the /mcp list -- i.e. the plugin MCP server never loaded at all (distinct from
+// a Failed/disabled plugin, which the /mcp unlock sequence CAN revive). A fresh
+// restart cannot fix an absent plugin: it comes up absent again (observed
+// 2026-07-01, rocket + mantis looped 5x fresh-restarts, each absent, until the
+// watchdog gave up -- every restart cost the agent its whole session context).
+// The down-cascade reads this to escalate to the operator after ONE restart
+// instead of burning the full AGENT_MAX_RESTART_ATTEMPTS on a condition no
+// restart can repair. Keyed by tmux session name; entries are re-stamped by each
+// probe and cleared once the plugin is observed healthy again.
+const pluginAbsentAt = new Map<string, number>()
+
+function markPluginAbsent(session: string): void {
+  pluginAbsentAt.set(session, Date.now())
+}
+
+/** Clear the absent mark once the plugin is observed healthy (recovery). */
+export function clearPluginAbsent(session: string): void {
+  pluginAbsentAt.delete(session)
+}
+
+/**
+ * True iff an unlock probe confirmed the plugin ABSENT from the /mcp list for
+ * this session within the last `withinMs`. The down-cascade uses this to cut the
+ * restart budget for the absent case, since fresh-restarting cannot reload a
+ * plugin that never registered.
+ */
+export function wasPluginConfirmedAbsent(session: string, withinMs: number): boolean {
+  const at = pluginAbsentAt.get(session)
+  return at != null && Date.now() - at <= withinMs
+}
+
 function getSessionClaudePid(session: string): number | null {
   try {
     const raw = execFileSync(TMUX, ['list-panes', '-t', session, '-F', '#{pane_pid}'], {
@@ -152,6 +184,9 @@ function sendUnlockKeystrokes(session: string, provider: ChannelProviderType): v
       // Plugin is not in the MCP list (never loaded, not Failed/disabled) --
       // the unlock sequence cannot help and would target the wrong entry.
       logger.warn({ session, provider }, 'channel-plugin-unlock: provider plugin absent from /mcp list -- skipping unlock (plugin never loaded, not recoverable via /mcp)')
+      // Record the absent verdict so the down-cascade escalates to the operator
+      // after one restart instead of looping fresh-restarts that cannot help.
+      markPluginAbsent(session)
       try { execFileSync(TMUX, ['send-keys', '-t', session, 'Escape'], { timeout: 5000 }) } catch { /* ignore */ }
       return
     }
@@ -201,6 +236,9 @@ function runUnlockProbe(state: UnlockProbeState): void {
   }
 
   if (hasBunChild(claudePid)) {
+    // Plugin is up again -- retire any stale absent verdict so a future
+    // down-spell starts from a clean restart budget.
+    clearPluginAbsent(state.session)
     logger.info(
       { session: state.session, claudePid, provider: state.provider },
       'channel-plugin-unlock: bun child present, plugin healthy - no unlock needed',

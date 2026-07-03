@@ -21,7 +21,7 @@ import {
 } from './agent-process.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
-import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
+import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPluginAbsent } from './channel-plugin-unlock.js'
 import {
   detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, type PaneErrorAlertState, type PaneState,
   stuckInputSignature, decideStuckInputRecovery, parkedChannelInput,
@@ -135,6 +135,16 @@ const AGENT_MAX_RESTART_GRACE_MS = 60 * 60 * 1000 // 1h
 // the plugin only after a slow session load). Never restart a process younger
 // than this on a "plugin down" reading, or the watchdog crash-loops it.
 const AGENT_STARTUP_GRACE_MS = 180_000
+// When the unlock probe has confirmed the plugin ABSENT from /mcp (never
+// loaded, not merely Failed/disabled), a fresh restart cannot bring it back --
+// it comes up absent again, and each restart wipes the agent's session context
+// (2026-07-01: rocket + mantis burned 5 fresh-restarts each on an absent plugin
+// before the watchdog gave up). Cap the restart budget at ONE for that case so
+// the watchdog escalates to the operator after a single attempt instead of the
+// full AGENT_MAX_RESTART_ATTEMPTS. The absent verdict is honoured only while
+// fresh (re-stamped by each post-respawn probe, cleared on recovery).
+const PLUGIN_ABSENT_MAX_RESTART_ATTEMPTS = 1
+const PLUGIN_ABSENT_TTL_MS = 15 * 60 * 1000
 const PLUGIN_ALERT_DEDUP_MS = 30 * 60 * 1000
 
 // Stuck channel-input recovery (MAIN session only). A channel notification
@@ -415,7 +425,7 @@ function triggerMarveenMemorySave(): void {
   const prompt = [
     '[SYSTEM: channels recovery] A csatorna plugin nem reagal, kb 60 masodperc',
     `mulva hard restart lesz a ${MAIN_CHANNELS_SESSION} session-on (a beszelgetes elveszik).`,
-    'MOST mentsd el a Marveen memoriaba amit a kovetkezo sessionnek tudnia kell:',
+    `MOST mentsd el a ${BOT_NAME} memoriaba amit a kovetkezo sessionnek tudnia kell:`,
     'aktiv feladatok (category hot), friss dontesek/preferenciak (warm), tanulsagok (cold).',
     'Hasznald: curl -s -X POST http://localhost:3420/api/memories ... (lasd CLAUDE.md).',
     'Ha kesz vagy, irj egy rovid napi naplo bejegyzest is a /api/daily-log-ra. Utana eleg.',
@@ -1125,7 +1135,7 @@ function handleMarveenDown(): void {
   }
   if (now - marveenDownState.lastAlertAt > PLUGIN_ALERT_DEDUP_MS) {
     marveenDownState.lastAlertAt = now
-    sendAlert(`🚨 Marveen ${providerLabel} plugin meg mindig halott. Nezd meg kezzel.`)
+    sendAlert(`🚨 ${BOT_NAME} ${providerLabel} plugin meg mindig halott. Nezd meg kezzel.`)
   }
 }
 
@@ -1137,7 +1147,7 @@ function handleMarveenUp(): void {
     const providerLabel = getMainAgentProvider()
     logger.info({ stage, downedFor, provider: providerLabel }, 'Marveen channel plugin recovered')
     if (stage !== 'soft' && stage !== 'save' && stage !== 'resume') {
-      sendAlert(`✅ Marveen ${providerLabel} plugin helyrealt (${stage} utan, ${downedFor}s kieses).`)
+      sendAlert(`✅ ${BOT_NAME} ${providerLabel} plugin helyrealt (${stage} utan, ${downedFor}s kieses).`)
     }
     marveenDownState = null
   }
@@ -1309,6 +1319,9 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // down-spell starts again at the base grace.
           agentRestartFailures.delete(t.agentName!)
           clearPersistedAgentFailures(t.agentName!)
+          // Retire any stale absent verdict too, so a future down-spell starts
+          // with the full restart budget rather than the absent-capped one.
+          clearPluginAbsent(t.session)
         }
         continue
       }
@@ -1318,6 +1331,15 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
         if (!agentDownSince.has(t.session)) agentDownSince.set(t.session, Date.now())
         const lastRestart = agentLastRestart.get(t.agentName!)
         const failures = agentRestartFailures.get(t.agentName!) ?? 0
+        // If the unlock probe confirmed the plugin ABSENT from /mcp (never
+        // loaded), fresh-restarting cannot fix it -- cap the budget at one
+        // attempt so we escalate to the operator instead of nuking the agent's
+        // context 5x. A merely Failed/disabled plugin (still in the list) keeps
+        // the full budget: a restart genuinely helps that case.
+        const absentConfirmed = wasPluginConfirmedAbsent(t.session, PLUGIN_ABSENT_TTL_MS)
+        const maxRestartAttempts = absentConfirmed
+          ? PLUGIN_ABSENT_MAX_RESTART_ATTEMPTS
+          : AGENT_MAX_RESTART_ATTEMPTS
         const action = decideDownAgentAction({
           processAgeMs: getProcessAgeMs(claudePid),
           msSinceLastRestart: lastRestart != null ? Date.now() - lastRestart : null,
@@ -1325,7 +1347,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           restartGraceMs: AGENT_RESTART_GRACE_MS,
           consecutiveFailures: failures,
           maxRestartGraceMs: AGENT_MAX_RESTART_GRACE_MS,
-        }, AGENT_MAX_RESTART_ATTEMPTS)
+        }, maxRestartAttempts)
         if (action === 'skip') {
           logger.debug({ agent: t.agentName, provider: t.provider, failures }, 'Channel plugin probe reports down but agent is within startup/restart back-off -- deferring')
           continue
@@ -1336,8 +1358,10 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // loop and hand it to a human. Tick the counter past the cap so this
           // fires exactly once; a later healthy sweep resets it (re-arming the
           // alert for a future down-spell).
-          logger.error({ agent: t.agentName, provider: t.provider, failures }, 'Agent channel plugin down after max restart attempts -- giving up, alerting operator')
-          sendAlert(`⛔ A(z) ${t.agentName} agens ${t.provider} csatornaja ${AGENT_MAX_RESTART_ATTEMPTS} automatikus ujrainditas utan sem allt helyre. Tovabb nem indinitom ujra (minden restart elveszi a session kontextusat). Kezi beavatkozas kell: nezd meg a ${t.session} session-t es a ${SERVICE_ID} csatorna-plugint.`)
+          logger.error({ agent: t.agentName, provider: t.provider, failures, absentConfirmed }, 'Agent channel plugin down after max restart attempts -- giving up, alerting operator')
+          sendAlert(absentConfirmed
+            ? `⛔ A(z) ${t.agentName} agens ${t.provider} plugin-je BE SEM TOLTODOTT (absent a /mcp listabol), a fresh-restart ezt nem javitja -- tovabb nem probalom (minden restart elveszi a session kontextusat). Kezi TISZTA ujrainditas kell (uresen, mas agens indulasaval nem atlapolva): ${t.session}.`
+            : `⛔ A(z) ${t.agentName} agens ${t.provider} csatornaja ${AGENT_MAX_RESTART_ATTEMPTS} automatikus ujrainditas utan sem allt helyre. Tovabb nem indinitom ujra (minden restart elveszi a session kontextusat). Kezi beavatkozas kell: nezd meg a ${t.session} session-t es a ${SERVICE_ID} csatorna-plugint.`)
           agentRestartFailures.set(t.agentName!, failures + 1)
           savePersistedAgentFailures(t.agentName!, failures + 1)
           agentDownSince.delete(t.session)
@@ -1359,7 +1383,15 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
         logger.warn({ agent: t.agentName, provider: t.provider, failures }, 'Agent channel plugin down -- auto-restarting')
         try {
           stopAgentProcess(t.agentName!)
-          execSync('sleep 2', { timeout: 4000 })
+          // Settle before the fresh start. stopAgentProcess already reaps this
+          // agent's channel orphans + waits 2s; add more so the shared plugin
+          // cache (bun run --cwd <plugin>, .in_use markers) fully releases from
+          // the torn-down claude before the new one loads the plugin. A too-short
+          // gap is the suspected trigger for the plugin coming up ABSENT on a
+          // rapid restart (2026-07-01 rocket/mantis loop). Fleet-wide staggering
+          // (CHANNEL_RESTART_STAGGER_MS) means this extra block runs at most once
+          // per 90s, so it does not stall the monitor's per-agent sweep.
+          execSync('sleep 8', { timeout: 10000 })
           lastChannelAgentRestartAt = Date.now()
           // FRESH (no --continue): on CC 2.1.193 a --continue resume does NOT load
           // the --channels plugin MCP server, so the agent comes up with no plugin
