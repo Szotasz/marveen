@@ -88,6 +88,9 @@ export interface RunCollectorArgs {
   collector: ProviderCollector
   opts: CollectOpts
   now: number
+  // v0.5: optional sanitized per-run detail JSON (breakdown) stored on import_runs.
+  // MUST be secret-free and contain no raw account/service IDs (type/plan labels only).
+  detailJson?: string
 }
 
 export interface DryRunArgs {
@@ -166,9 +169,9 @@ export async function runCollector(args: RunCollectorArgs): Promise<ImportRunRes
   const { db, collector, opts, now } = args
   const insertRun = db.prepare(`
     INSERT INTO import_runs (provider, collector_name, started_at, finished_at, status,
-      period_start, period_end, imported_count, error_code, error_message_sanitized, data_freshness_at)
+      period_start, period_end, imported_count, error_code, error_message_sanitized, data_freshness_at, detail_json)
     VALUES (@provider, @collector, @started, @finished, @status,
-      @ps, @pe, @count, @ecode, @emsg, @fresh)
+      @ps, @pe, @count, @ecode, @emsg, @fresh, @detail)
   `)
   let status: ImportStatus = 'ok'
   let importedCount = 0
@@ -190,7 +193,7 @@ export async function runCollector(args: RunCollectorArgs): Promise<ImportRunRes
     provider: collector.provider, collector: collector.collectorName,
     started: now, finished: now, status,
     ps: opts.periodStart, pe: opts.periodEnd, count: importedCount,
-    ecode: errorCode, emsg: errorMsg, fresh: freshness,
+    ecode: errorCode, emsg: errorMsg, fresh: freshness, detail: args.detailJson ?? null,
   })
   return {
     provider: collector.provider, collectorName: collector.collectorName,

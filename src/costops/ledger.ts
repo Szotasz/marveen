@@ -277,9 +277,9 @@ export interface CostSummary {
   estimated_total_with_token_cost: number
   // v0.3: per-source estimate-vs-actual (only sources that have a provider_api line).
   reconcile: Array<{ source_id: string; estimate: number; actual: number; variance: number; resolved_confidence: string }>
-  // v0.3: last collector run per provider (from import_runs).
-  provider_sync: Array<{ provider: string; collector_name: string; status: string; imported_count: number; data_freshness_at: number | null; last_sync: number; stale: boolean; error_code: string | null }>
-  // v0.3 Render plan-based estimate (ADVISORY -- NOT in current_spend). null until a Render import.
+  // v0.3/v0.5: last collector run per provider + sync state (ok/stale/failed).
+  provider_sync: Array<{ provider: string; collector_name: string; status: string; imported_count: number; data_freshness_at: number | null; last_sync: number; last_success: number | null; last_failed: number | null; data_age_secs: number | null; current_period: string; previous_period_coverage: boolean; stale: boolean; error_code: string | null }>
+  // v0.3/v0.5 Render plan-based estimate (ADVISORY -- NOT in current_spend). null until a Render import.
   render_plan: {
     currency: string
     plan_estimate_total: number
@@ -288,6 +288,8 @@ export interface CostSummary {
     confidence: string
     data_freshness_at: number | null
     not_covered: string[]
+    detail: unknown            // sanitized breakdown from the latest sync (service_count, by_type_plan, ...)
+    last_sync: number | null
   } | null
   data_freshness: number | null
   config_present: boolean
@@ -388,6 +390,11 @@ export function getCostSummary(
       .reduce((s, r) => s + (perSource.get(r.id) || 0), 0),
   )
   const planFreshness = planLines.reduce((m, l) => Math.max(m, l.data_freshness), 0) || null
+  // v0.5: latest successful Render sync -> sanitized breakdown (service_count, plan
+  // breakdown, undercount) + last_sync for the dashboard Render detail.
+  const renderRun = db.prepare(`SELECT detail_json, started_at FROM import_runs WHERE provider='render' AND status='ok' ORDER BY started_at DESC LIMIT 1`).get() as { detail_json: string | null; started_at: number } | undefined
+  let renderDetail: unknown = null
+  if (renderRun?.detail_json) { try { renderDetail = JSON.parse(renderRun.detail_json) } catch { renderDetail = null } }
   const render_plan: CostSummary['render_plan'] = planLines.length > 0 ? {
     currency: config.currency,
     plan_estimate_total,
@@ -396,6 +403,8 @@ export function getCostSummary(
     confidence: 'provider_plan_estimate',
     data_freshness_at: planFreshness,
     not_covered: RENDER_NOT_COVERED,
+    detail: renderDetail,
+    last_sync: renderRun?.started_at ?? null,
   } : null
 
   // v0.4: provider-preferred OPERATIONAL spend (new main KPI). Uses ALL lines
@@ -467,20 +476,34 @@ export function getCostSummary(
   // v0.3 per-source estimate-vs-actual reconciliation
   const reconcile: Array<{ source_id: string; estimate: number; actual: number; variance: number; resolved_confidence: string }> = []
 
-  // v0.3 provider sync status: the latest import_runs row per provider.
+  // v0.3/v0.5 provider sync status: the latest run per provider + last ok/failed +
+  // derived status (ok / stale / failed / no_data) + data age + period coverage.
   const STALE_SECS = 3 * 24 * 3600
-  const syncRows = db.prepare(`
+  const latestRows = db.prepare(`
     SELECT provider, collector_name, status, imported_count, data_freshness_at, started_at, error_code
     FROM import_runs r
     WHERE started_at = (SELECT MAX(started_at) FROM import_runs WHERE provider = r.provider)
     GROUP BY provider
   `).all() as Array<{ provider: string; collector_name: string; status: string; imported_count: number; data_freshness_at: number | null; started_at: number; error_code: string | null }>
-  const provider_sync = syncRows.map(r => ({
-    provider: r.provider, collector_name: r.collector_name, status: r.status,
-    imported_count: r.imported_count, data_freshness_at: r.data_freshness_at, last_sync: r.started_at,
-    stale: r.data_freshness_at != null ? (now - r.data_freshness_at) > STALE_SECS : true,
-    error_code: r.error_code,
-  }))
+  const lastOkStmt = db.prepare(`SELECT MAX(started_at) t FROM import_runs WHERE provider = ? AND status = 'ok'`)
+  const lastFailStmt = db.prepare(`SELECT MAX(started_at) t FROM import_runs WHERE provider = ? AND status IN ('error','failed','partial','rate_limited')`)
+  const prevProviders = new Set(prevRows.map(l => providerBySource.get(l.source_id) || 'other'))
+  const provider_sync = latestRows.map(r => {
+    const lastOk = (lastOkStmt.get(r.provider) as { t: number | null }).t || null
+    const lastFailed = (lastFailStmt.get(r.provider) as { t: number | null }).t || null
+    // "stale" means we have not SYNCED recently (not about the billing-period age).
+    const syncAge = now - r.started_at
+    const stale = syncAge > STALE_SECS
+    const status = r.status !== 'ok' ? 'failed' : (stale ? 'stale' : 'ok')
+    return {
+      provider: r.provider, collector_name: r.collector_name, status,
+      imported_count: r.imported_count, data_freshness_at: r.data_freshness_at,
+      last_sync: r.started_at, last_success: lastOk, last_failed: lastFailed,
+      data_age_secs: syncAge,
+      current_period: win.key, previous_period_coverage: prevProviders.has(r.provider),
+      stale, error_code: r.error_code,
+    }
+  })
 
   return {
     month: win.key,
