@@ -8679,21 +8679,6 @@ const CHAT_SYSTEM_AGENTS = new Set(['heartbeat','telegram-coordinator','channel-
 // recognizes its real owner. Empty until _marveen resolves (no false match).
 function chatOwnerName() { return window._marveen?.ownerName || '' }
 
-// The main agent's display name (BOT_NAME). mainAgentId() is the routing id
-// (e.g. "marveen") used for matching, avatar lookups and API calls; this is
-// what the user should SEE. Sourced from the backend (/api/marveen -> name,
-// mirrored into _brandTokens.bot by initSidebarBrand), so a renamed install
-// shows its real bot name. Falls back to the id before _marveen resolves.
-function mainAgentDisplayName() {
-  return window._marveen?.name || window._brandTokens?.bot || mainAgentId()
-}
-// Map a routing agent id to its user-facing label: the main agent's id becomes
-// its BOT_NAME display name; every other agent already carries a human name as
-// its id, so it passes through unchanged.
-function chatDisplayName(name) {
-  return name === mainAgentId() ? mainAgentDisplayName() : name
-}
-
 function chatLastSeenKey(agentName) { return 'chat_last_seen_' + agentName }
 function chatGetLastSeen(agentName) { return parseInt(localStorage.getItem(chatLastSeenKey(agentName)) || '0', 10) }
 function chatMarkSeen(agentName, maxId) {
@@ -8766,7 +8751,7 @@ async function loadChatAgentList() {
       const isSelected = name === chatSelectedAgent ? ' selected' : ''
       const dimmed = info ? '' : ' style="opacity:0.5"'
       const unread = chatIsUnread(name, info)
-      const displayName = owner && name === owner ? owner + ' (te)' : chatDisplayName(name)
+      const displayName = owner && name === owner ? owner + ' (te)' : name
       return `<div class="chat-agent-item${isSelected}${unread ? ' unread' : ''}" data-agent="${escapeHtml(name)}"${dimmed}>
         <div class="chat-agent-avatar">${chatAvatarHtml(name, 40)}</div>
         <div class="chat-agent-info">
@@ -8810,7 +8795,7 @@ async function loadChatThread(agentName) {
   chatThreadState.loading = false
 
   const owner = chatOwnerName()
-  const threadDisplayName = owner && agentName === owner ? owner + ' (te)' : chatDisplayName(agentName)
+  const threadDisplayName = owner && agentName === owner ? owner + ' (te)' : agentName
 
   panel.innerHTML = `
     <div class="chat-thread-header">
@@ -8823,7 +8808,7 @@ async function loadChatThread(agentName) {
     <div class="chat-bubbles" id="chatBubbles"><div class="chat-loading-indicator" id="chatLoadingTop" style="display:none;text-align:center;padding:8px;font-size:11px;color:var(--text-muted)">${t('messages.loading')}</div></div>
     <div class="chat-compose">
       <div class="chat-compose-row">
-        <textarea id="chatComposeText" class="chat-compose-input" rows="2" placeholder="${t('messages.placeholder', { agent: escapeHtml(chatDisplayName(agentName)) })}"></textarea>
+        <textarea id="chatComposeText" class="chat-compose-input" rows="2" placeholder="${t('messages.placeholder', { agent: escapeHtml(agentName) })}"></textarea>
         <button class="btn-primary btn-compact chat-send-btn" id="chatSendBtn">${t('messages.send_btn')}</button>
       </div>
     </div>
@@ -8863,10 +8848,7 @@ async function loadChatThread(agentName) {
 
 function buildBubbleHtml(m) {
   const isOutgoing = m.from_agent === mainAgentId()
-  // senderName stays the routing id (avatar lookup keys off it); senderLabel is
-  // what the user sees, so the main agent reads as its BOT_NAME, not "marveen".
   const senderName = isOutgoing ? mainAgentId() : m.from_agent
-  const senderLabel = chatDisplayName(senderName)
   const when = m.created_at ? new Date(m.created_at * 1000).toLocaleString('hu-HU', {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : ''
   const statusMetaRaw = MSG_STATUS_META[m.status] || { label: m.status || '', cls: 'badge' }
   const statusMeta = { ...statusMetaRaw, label: typeof statusMetaRaw.label === 'function' ? statusMetaRaw.label() : statusMetaRaw.label }
@@ -8874,7 +8856,7 @@ function buildBubbleHtml(m) {
     ${!isOutgoing ? `<div class="chat-bubble-avatar">${chatAvatarHtml(senderName, 28)}</div>` : ''}
     <div class="chat-bubble ${isOutgoing ? 'bubble-out' : 'bubble-in'}">
       <div class="bubble-meta">
-        ${!isOutgoing ? `<span class="bubble-sender">${escapeHtml(senderLabel)}</span>` : ''}
+        ${!isOutgoing ? `<span class="bubble-sender">${escapeHtml(senderName)}</span>` : ''}
         <span class="bubble-id-chip">#${m.id}</span>
         <span class="badge ${statusMeta.cls}" style="font-size:10px">${escapeHtml(statusMeta.label)}</span>
       </div>
@@ -11255,6 +11237,21 @@ async function handleAgentLogin(agentName, btn) {
 let terminalInstance = null
 let terminalSSE = null
 let terminalFit = null
+// Master input gate (mirrors the server-side terminal-input toggle). Keystrokes
+// are dropped locally when OFF so we never spam the audit log with 403s; the
+// server enforces the same gate independently (fail-closed). Owner flips it via
+// the checkbox in the modal header (POST /api/terminal-input).
+let terminalInputEnabled = false
+
+function syncTerminalInputToggleUI() {
+  const cb = document.getElementById('terminalInputToggle')
+  const label = document.getElementById('terminalInputToggleLabel')
+  if (cb) cb.checked = terminalInputEnabled
+  if (label) {
+    label.textContent = terminalInputEnabled ? 'Input on' : 'Input off'
+    label.style.color = terminalInputEnabled ? '#8fbf6f' : '#b8b2a6'
+  }
+}
 
 function openTerminalModal(agentName) {
   const overlay = document.getElementById('terminalOverlay')
@@ -11263,6 +11260,12 @@ function openTerminalModal(agentName) {
   if (!overlay || !container) return
 
   title.textContent = agentName + ' - Terminal'
+
+  // Read the current server-side gate so the modal reflects reality on open.
+  fetch('/api/terminal-input')
+    .then(r => r.ok ? r.json() : { enabled: false })
+    .then(d => { terminalInputEnabled = d.enabled === true; syncTerminalInputToggleUI() })
+    .catch(() => { terminalInputEnabled = false; syncTerminalInputToggleUI() })
 
   // Cleanup previous
   if (terminalSSE) { terminalSSE.close(); terminalSSE = null }
@@ -11339,6 +11342,12 @@ function openTerminalModal(agentName) {
   term.onData(data => {
     if (data === '\x1b[5~') { term.scrollPages(-1); return } // PageUp -> scroll history up
     if (data === '\x1b[6~') { term.scrollPages(1); return }  // PageDown -> scroll history down
+    if (!terminalInputEnabled) {
+      // Read-only mode: input gate is OFF. Drop the keystroke locally (server
+      // would 403 it anyway) and nudge the user to the toggle.
+      showToast('Terminal input is off. Enable it with the header toggle first.')
+      return
+    }
     const special = ESC_TO_SPECIAL[data]
     const body = special ? { special } : { keys: data }
     fetch(`/api/agents/${encodeURIComponent(agentName)}/keys`, {
@@ -11363,6 +11372,27 @@ document.getElementById('terminalClose')?.addEventListener('click', () => {
   if (overlay) closeModal(overlay)
   if (terminalSSE) { terminalSSE.close(); terminalSSE = null }
   if (terminalInstance) { terminalInstance.dispose(); terminalInstance = null }
+})
+
+// Owner flips the master terminal-input gate. Optimistically reflect the desired
+// state, POST it, then reconcile with the server's authoritative response.
+document.getElementById('terminalInputToggle')?.addEventListener('change', (e) => {
+  const desired = e.target.checked === true
+  fetch('/api/terminal-input', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: desired }),
+  })
+    .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
+    .then(d => {
+      terminalInputEnabled = d.enabled === true
+      syncTerminalInputToggleUI()
+      showToast(terminalInputEnabled ? 'Terminal input enabled (audit-logged)' : 'Terminal input disabled')
+    })
+    .catch(() => {
+      terminalInputEnabled = false
+      syncTerminalInputToggleUI()
+      showToast('Could not change terminal input state')
+    })
 })
 
 // === Agent conversation (readable transcript) modal ===

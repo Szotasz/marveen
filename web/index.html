@@ -2542,7 +2542,13 @@
     <div class="modal terminal-modal">
       <div class="modal-header">
         <h2 id="terminalModalTitle">Terminal</h2>
-        <button class="modal-close" id="terminalClose">&times;</button>
+        <div style="display:flex;align-items:center;gap:10px;margin-left:auto;">
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#b8b2a6;cursor:pointer;user-select:none;" title="Enable keyboard input to the agent pane (owner-gated, audit-logged)">
+            <input type="checkbox" id="terminalInputToggle" style="cursor:pointer;">
+            <span id="terminalInputToggleLabel">Input off</span>
+          </label>
+          <button class="modal-close" id="terminalClose">&times;</button>
+        </div>
       </div>
       <div id="terminalContainer" style="background:#1a1a1a;padding:8px;border-radius:0 0 8px 8px;flex:1;min-height:360px;"></div>
     </div>

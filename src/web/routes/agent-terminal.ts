@@ -7,6 +7,7 @@ import { agentDir } from '../agent-config.js'
 import { agentSessionName, isAgentRunning } from '../agent-process.js'
 import { isMainChannelsAgent, MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { literalKeyArgs, specialKeyArgs, loginSequence, type LoginStep } from '../tmux-keys.js'
+import { readTerminalInputEnabled, writeTerminalInputEnabled } from '../terminal-input-store.js'
 import type { RouteContext } from './types.js'
 
 const TMUX = resolveFromPath('tmux')
@@ -65,6 +66,36 @@ async function runLoginSteps(session: string, steps: LoginStep[]): Promise<void>
 export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean> {
   const { res, path, method, url } = ctx
 
+  // --- terminal-input master toggle (owner-gated opt-in) ---------------
+  // GET returns the current state; POST {enabled:boolean} flips it. Both sit
+  // behind the global dashboard-token gate (web.ts), so only the operator can
+  // read or change it. This is the deliberate first step of the two-step opt-in:
+  // /keys stays 403 until this is ON. Every flip is audit-logged.
+  if (path === '/api/terminal-input') {
+    if (method === 'GET') {
+      json(res, { enabled: readTerminalInputEnabled() })
+      return true
+    }
+    if (method === 'POST') {
+      const body = await readBody(ctx.req)
+      let enabled: unknown
+      try { enabled = (JSON.parse(body.toString()) as { enabled?: unknown }).enabled } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
+      if (typeof enabled !== 'boolean') {
+        json(res, { error: 'Provide {enabled:boolean}' }, 400)
+        return true
+      }
+      const next = writeTerminalInputEnabled(enabled)
+      logger.warn({
+        enabled: next,
+        remote: ctx.req.socket?.remoteAddress ?? 'unknown',
+        xff: ctx.req.headers['x-forwarded-for'] ?? '',
+        ua: ctx.req.headers['user-agent'] ?? '',
+      }, `agent-terminal: TERMINAL-INPUT TOGGLE ${next ? 'ENABLED' : 'DISABLED'}`)
+      json(res, { enabled: next })
+      return true
+    }
+  }
+
   // --- live pane stream (SSE) ------------------------------------------
   const streamMatch = path.match(/^\/api\/agents\/([^/]+)\/pane\/stream$/)
   if (streamMatch && method === 'GET') {
@@ -120,24 +151,27 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
   const keysMatch = path.match(/^\/api\/agents\/([^/]+)\/keys$/)
   if (keysMatch && method === 'POST') {
     const name = decodeURIComponent(keysMatch[1])
-    // SECURITY (2026-06-26): this raw keystroke-injection endpoint -- the
-    // dashboard live-terminal write path (#275) -- let anyone holding the
-    // dashboard token type arbitrary input into ANY agent's tmux pane, and it
-    // never logged successful calls, so an injection left no trace. That makes
-    // it a prime (and unlogged) vector for the forged-"Szabi" prompt injections
-    // seen in the 2026-06-26 incident. Disabled by default; set
-    // DASHBOARD_ALLOW_KEY_INJECTION=1 to re-enable for manual debugging. Blocked
-    // attempts are logged with remote/UA for tracing. Legit inter-agent
-    // delivery is unaffected: it uses the message-router's own send-keys path,
-    // not this HTTP endpoint.
-    if (process.env.DASHBOARD_ALLOW_KEY_INJECTION !== '1') {
-      logger.warn({
-        name,
-        remote: ctx.req.socket?.remoteAddress ?? 'unknown',
-        xff: ctx.req.headers['x-forwarded-for'] ?? '',
-        ua: ctx.req.headers['user-agent'] ?? '',
-      }, 'agent-terminal: KEYS INJECTION BLOCKED (endpoint disabled)')
-      json(res, { error: 'Keystroke injection endpoint disabled' }, 403)
+    // SECURITY (2026-06-26 / 2026-07-05): this raw keystroke-injection endpoint --
+    // the dashboard live-terminal write path (#275) -- lets a dashboard-token
+    // holder type arbitrary input into an agent's tmux pane, and originally never
+    // logged successful calls, so an injection left no trace. That made it the
+    // (unlogged) vector for the forged-"Szabi" prompt injections in the
+    // 2026-06-26 incident, and it was disabled outright.
+    //
+    // It comes back (ddc0cd9b, Szabi option B) as a DELIBERATE two-step opt-in:
+    // the operator must explicitly flip the terminal-input toggle ON in the
+    // dashboard (behind the dashboard-token gate) before any /keys call is
+    // accepted; default OFF, fail-closed (readTerminalInputEnabled). AND every
+    // ACCEPTED call is now audit-logged with remote-addr + UA + agent + a preview
+    // of the injected keys/special -- the #1 missing fix from the incident.
+    // Legit inter-agent delivery is unaffected: it uses the message-router's own
+    // send-keys path, not this HTTP endpoint.
+    const remote = ctx.req.socket?.remoteAddress ?? 'unknown'
+    const xff = ctx.req.headers['x-forwarded-for'] ?? ''
+    const ua = ctx.req.headers['user-agent'] ?? ''
+    if (!readTerminalInputEnabled()) {
+      logger.warn({ name, remote, xff, ua }, 'agent-terminal: KEYS INJECTION BLOCKED (toggle OFF)')
+      json(res, { error: 'Terminal input is disabled. Enable it in the dashboard first.' }, 403)
       return true
     }
     const target = resolveTarget(name)
@@ -155,6 +189,12 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
       json(res, { error: 'Provide {keys:string} or an allow-listed {special}' }, 400)
       return true
     }
+    // AUDIT every accepted injection. Preview is truncated so a long paste does
+    // not bloat the log, but is present so a forged prompt is traceable.
+    const preview = parsed.special
+      ? `special:${parsed.special}`
+      : `keys:${JSON.stringify((parsed.keys ?? '').slice(0, 120))}${(parsed.keys ?? '').length > 120 ? '…' : ''}`
+    logger.info({ name, remote, xff, ua, preview }, 'agent-terminal: KEYS INJECTION ACCEPTED')
     try {
       await tmux(args)
       json(res, { ok: true })
