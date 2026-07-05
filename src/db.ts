@@ -1199,6 +1199,18 @@ export function getChildCards(parentId: string): KanbanCard[] {
   return db.prepare('SELECT * FROM kanban_cards WHERE parent_id = ? AND archived_at IS NULL ORDER BY sort_order ASC').all(parentId) as KanbanCard[]
 }
 
+// Cards assigned to `assignee` that transitioned to done after `sinceSec`
+// (updated_at is stored in whole seconds). Used by the context-clean runner to
+// fire a task-boundary clean when an agent finishes a card. archived_at IS NULL
+// keeps the auto-archival of old done cards from re-surfacing here.
+export function getRecentlyDoneCardsForAssignee(
+  assignee: string, sinceSec: number,
+): { id: string; updated_at: number }[] {
+  return db.prepare(
+    "SELECT id, updated_at FROM kanban_cards WHERE assignee = ? AND status = 'done' AND archived_at IS NULL AND updated_at > ? ORDER BY updated_at ASC"
+  ).all(assignee, sinceSec) as { id: string; updated_at: number }[]
+}
+
 export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrder: number, actor?: string): boolean {
   const now = Math.floor(Date.now() / 1000)
   // Read the previous status first so we only record an audit event on a real
