@@ -53,6 +53,24 @@ function tmux(args: string[]): Promise<void> {
   })
 }
 
+// Sanitize a literal keys payload before it hits send-keys. Motivation
+// (v1.19.0, Szabi UX): on a VPS the operator pastes a token-login link / auth
+// code into the terminal input, and copy-paste often drags along leading/trailing
+// whitespace or a trailing newline -- the newline would prematurely SUBMIT the
+// half-pasted line, and stray spaces corrupt the code/URL. So for a PASTE
+// (multi-char payload) we strip bracketed-paste markers, drop all CR/LF (a login
+// URL/code is single-line; an embedded newline can only hurt), and trim the
+// outer whitespace. A single keystroke (length <= 1) is passed through untouched
+// so deliberately typing a space still works. The intentional Enter is a
+// SEPARATE {special:'Enter'} action, never part of the text payload, so trimming
+// the text is safe.
+export function sanitizeLiteralKeys(keys: string): string {
+  if (keys.length <= 1) return keys // single keystroke -- literal passthrough
+  const noPasteMarkers = keys.replace(/\x1b\[20[01]~/g, '')
+  const singleLine = noPasteMarkers.replace(/[\r\n]+/g, '')
+  return singleLine.replace(/^\s+|\s+$/g, '')
+}
+
 async function runLoginSteps(session: string, steps: LoginStep[]): Promise<void> {
   for (const step of steps) {
     const args = step.kind === 'literal'
@@ -182,18 +200,22 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
     let parsed: { keys?: string; special?: string }
     try { parsed = JSON.parse(body.toString()) } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
 
+    // Sanitize a pasted literal payload (strip surrounding whitespace + stray
+    // newlines) so a pasted login link/code doesn't pre-submit or get corrupted.
+    const literalKeys = typeof parsed.keys === 'string' ? sanitizeLiteralKeys(parsed.keys) : null
     const args = parsed.special
       ? specialKeyArgs(session, parsed.special)
-      : (typeof parsed.keys === 'string' ? literalKeyArgs(session, parsed.keys) : null)
+      : (literalKeys ? literalKeyArgs(session, literalKeys) : null)
     if (!args) {
       json(res, { error: 'Provide {keys:string} or an allow-listed {special}' }, 400)
       return true
     }
-    // AUDIT every accepted injection. Preview is truncated so a long paste does
-    // not bloat the log, but is present so a forged prompt is traceable.
+    // AUDIT every accepted injection. Preview reflects the SANITIZED payload
+    // actually sent (truncated so a long paste does not bloat the log, but
+    // present so a forged prompt is traceable).
     const preview = parsed.special
       ? `special:${parsed.special}`
-      : `keys:${JSON.stringify((parsed.keys ?? '').slice(0, 120))}${(parsed.keys ?? '').length > 120 ? '…' : ''}`
+      : `keys:${JSON.stringify((literalKeys ?? '').slice(0, 120))}${(literalKeys ?? '').length > 120 ? '…' : ''}`
     logger.info({ name, remote, xff, ua, preview }, 'agent-terminal: KEYS INJECTION ACCEPTED')
     try {
       await tmux(args)
