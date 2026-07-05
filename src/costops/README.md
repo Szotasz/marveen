@@ -129,6 +129,23 @@ manual/estimate rows, and with a strict secrets-in-Vault-only posture.
 **Vault**: real Admin keys go into `src/web/vault.ts` via the secure handover, never
 into config/log/transcript/dashboard-response.
 
+## v0.3 -- Render plan-based infra collector (`provider_plan_estimate`, advisory)
+
+`src/costops/collectors/render.ts` reads Render services (+ `/v1/postgres`) READ-ONLY
+and maps each service's PLAN to a monthly HUF estimate via a local plan->price map
+(`store/costops-render-pricing.json`, gitignored; safe 0-rate example tracked at
+`render-pricing.example.json`). Key points:
+- **`provider_plan_estimate` confidence** -- NOT an invoice, NOT provider_api actual.
+  It is **excluded from the headline `current_spend`** and never overrides the manual
+  `render-hosting` estimate. It surfaces only in the summary `render_plan` block:
+  `plan_estimate_total`, `manual_estimate`, `variance`, `not_covered[]`.
+- **Aggregated** to one `render-plan` line/month (idempotent dedup_key). Raw service/
+  account IDs are NEVER stored/returned -- only a `raw_ref_hash` + type/plan labels.
+  `static_site`/`suspended` = 0; unknown plan -> unpriced warning (never fabricated).
+- **Lower bound**: bandwidth/storage overage, seats, tax, credits, one-off charges are
+  structurally invisible -> listed in `render_plan.not_covered`. Design:
+  `audits/costops-v0.3-render-plan-collector-plan.md`.
+
 ## Known limitations
 
 - Provider API calls only happen when Vault keys are configured and a live run is

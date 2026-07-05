@@ -5,7 +5,7 @@
 // call happens unless a real fetcher is passed in by an explicitly-approved run.
 // Secrets are passed in by the runner (from the Vault) and are NEVER logged.
 
-export type CostConfidenceApi = 'provider_api' | 'billing_export'
+export type CostConfidenceApi = 'provider_api' | 'billing_export' | 'provider_plan_estimate'
 
 export interface NormalizedCostLine {
   provider: string

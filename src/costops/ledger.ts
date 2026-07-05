@@ -52,7 +52,30 @@ export function hashRef(salt: string, raw: string): string {
 // (v0.3) so a provider_api actual supersedes a manual estimate without double count.
 export const CONF_PRIORITY: Record<string, number> = {
   actual_invoice: 6, provider_api: 5, billing_export: 4, local_usage: 3, estimate: 2, manual: 1,
+  // provider_plan_estimate is ADVISORY only: it is excluded from the headline
+  // current_spend entirely (see getCostSummary), so its priority never applies
+  // to a headline resolution. Kept here for completeness / bucketing.
+  provider_plan_estimate: 0,
 }
+
+// provider_plan_estimate lines never enter the headline spend; they surface in a
+// dedicated render_plan block (manual vs plan vs variance).
+export const ADVISORY_CONF = new Set<string>(['provider_plan_estimate'])
+
+// Costs a plan-based Render estimate structurally CANNOT see -> the estimate is a
+// lower bound. Surfaced verbatim so the number is never mistaken for an invoice.
+export const RENDER_NOT_COVERED: string[] = [
+  'bandwidth overage (web + static site)',
+  'database storage / backup overage above the plan',
+  'logs / metrics / observability add-ons',
+  'team / workspace seats',
+  'tax / VAT',
+  'credits / discounts',
+  'invoice adjustments',
+  'one-off charges',
+  'cron per-run compute above the flat approximation',
+  'preview environments (excluded)',
+]
 
 export type CostBucket = 'fixed_manual' | 'provider' | 'estimate'
 
@@ -64,6 +87,7 @@ export function confidenceBucket(c: CostConfidence): CostBucket {
       return 'provider'
     case 'estimate':
     case 'local_usage':
+    case 'provider_plan_estimate':
       return 'estimate'
     case 'manual':
     default:
@@ -168,6 +192,16 @@ export interface CostSummary {
   reconcile: Array<{ source_id: string; estimate: number; actual: number; variance: number; resolved_confidence: string }>
   // v0.3: last collector run per provider (from import_runs).
   provider_sync: Array<{ provider: string; collector_name: string; status: string; imported_count: number; data_freshness_at: number | null; last_sync: number; stale: boolean; error_code: string | null }>
+  // v0.3 Render plan-based estimate (ADVISORY -- NOT in current_spend). null until a Render import.
+  render_plan: {
+    currency: string
+    plan_estimate_total: number
+    manual_estimate: number
+    variance: number
+    confidence: string
+    data_freshness_at: number | null
+    not_covered: string[]
+  } | null
   data_freshness: number | null
   config_present: boolean
   config_errors: string[]
@@ -208,9 +242,16 @@ export function getCostSummary(
   // single highest-confidence line (v0.3: a provider_api actual supersedes the
   // manual/estimate WITHOUT double-counting), while all lines are kept for the
   // estimate-vs-actual reconcile view.
+  // provider_plan_estimate lines are ADVISORY -- excluded from the headline
+  // current_spend and from all_sources; they surface only in the render_plan block.
+  const headlineLines = lines.filter(l => !ADVISORY_CONF.has(l.confidence))
+  const planLines = lines.filter(l => ADVISORY_CONF.has(l.confidence))
+  const advisorySourceIds = new Set(planLines.map(l => l.source_id))
   const bySource = new Map<string, LineRow[]>()
-  for (const l of lines) {
+  for (const l of headlineLines) {
     const arr = bySource.get(l.source_id); if (arr) arr.push(l); else bySource.set(l.source_id, [l])
+  }
+  for (const l of lines) {
     if (latestFreshness === null || l.data_freshness > latestFreshness) latestFreshness = l.data_freshness
   }
   const EST_CONF = ['manual', 'estimate', 'local_usage']
@@ -242,12 +283,33 @@ export function getCostSummary(
     .slice(0, 5)
 
   // Full list: every configured/active source with spend (0 if none this month).
+  // Advisory-only sources (render-plan / provider_plan_estimate) are excluded --
+  // they appear in the render_plan block, never in the headline source list.
   const all_sources = srcRows
+    .filter(r => !advisorySourceIds.has(r.id))
     .map(r => ({
       source_id: r.id, name: r.name, provider: r.provider, source_type: r.source_type,
       spend: round2(perSource.get(r.id) || 0), confidence: perSourceConfidence.get(r.id) || 'manual',
     }))
     .sort((a, b) => b.spend - a.spend || a.name.localeCompare(b.name))
+
+  // v0.3 Render plan-based estimate (ADVISORY): manual render estimate vs plan-based
+  // estimate vs variance. NEVER folded into current_spend. Empty until a Render import.
+  const plan_estimate_total = round2(planLines.reduce((s, l) => s + l.billed_cost, 0))
+  const manual_render_estimate = round2(
+    srcRows.filter(r => r.provider === 'render' && !advisorySourceIds.has(r.id))
+      .reduce((s, r) => s + (perSource.get(r.id) || 0), 0),
+  )
+  const planFreshness = planLines.reduce((m, l) => Math.max(m, l.data_freshness), 0) || null
+  const render_plan: CostSummary['render_plan'] = planLines.length > 0 ? {
+    currency: config.currency,
+    plan_estimate_total,
+    manual_estimate: manual_render_estimate,
+    variance: round2(plan_estimate_total - manual_render_estimate),
+    confidence: 'provider_plan_estimate',
+    data_freshness_at: planFreshness,
+    not_covered: RENDER_NOT_COVERED,
+  } : null
 
   // budget (first budget, or the 'global-monthly' one if present)
   const budgetDef = config.budgets.find(b => b.id === 'global-monthly') || config.budgets[0] || null
@@ -323,6 +385,7 @@ export function getCostSummary(
     estimated_total_with_token_cost,
     reconcile,
     provider_sync,
+    render_plan,
     data_freshness: latestFreshness,
     config_present: opts.configExists ?? true,
     config_errors: opts.configErrors ?? [],
