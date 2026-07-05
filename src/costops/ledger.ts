@@ -77,6 +77,83 @@ export const RENDER_NOT_COVERED: string[] = [
   'preview environments (excluded)',
 ]
 
+// v0.4: operational spend preference. The MAIN KPI prefers provider data over the
+// manual fallback, per source's provider: provider_api_actual > provider_plan_estimate
+// > local_usage > manual/estimate. A provider that HAS a provider-derived line drops
+// its manual/estimate lines from operational (they become fallback/comparison only),
+// so manual + provider are never double-counted (e.g. Render: plan 37080 wins over manual 40000).
+export const OPERATIONAL_TIER: Record<string, number> = {
+  actual_invoice: 4, provider_api: 4, billing_export: 4,
+  provider_plan_estimate: 3,
+  local_usage: 2,
+  estimate: 1, manual: 1,
+}
+const PROVIDER_DERIVED_MIN = 3  // provider_plan_estimate or higher = "provider-derived"
+
+interface OpLine { source_id: string; provider: string; billed_cost: number; charge_category: string; confidence: string; data_freshness: number }
+
+export interface OperationalResult {
+  operational_spend: number
+  manual_spend: number
+  provider_derived_spend: number
+  operational_forecast_month_end: number
+  provider_breakdown: Array<{ provider: string; spend: number; confidence: string }>
+  confidence_breakdown: Record<string, number>
+  manual_vs_provider_variance: number
+  data_freshness: number | null
+}
+
+/**
+ * Resolve the provider-preferred OPERATIONAL spend for a set of month lines.
+ * Per source -> best line by OPERATIONAL_TIER. Per provider -> if it has any
+ * provider-derived source, its manual/estimate sources are excluded from operational
+ * (fallback only). No double counting. `win` is used for the forecast run-rate.
+ */
+export function resolveOperational(lines: OpLine[], win: MonthWindow): OperationalResult {
+  const bySource = new Map<string, OpLine[]>()
+  for (const l of lines) { const a = bySource.get(l.source_id); if (a) a.push(l); else bySource.set(l.source_id, [l]) }
+  const sourceBest = new Map<string, OpLine>()
+  for (const [sid, ls] of bySource) {
+    sourceBest.set(sid, ls.reduce((a, b) => (OPERATIONAL_TIER[b.confidence] || 0) > (OPERATIONAL_TIER[a.confidence] || 0) ? b : a))
+  }
+  // which providers have a provider-derived (tier>=3) source
+  const providerHasDerived = new Map<string, boolean>()
+  for (const best of sourceBest.values()) {
+    if ((OPERATIONAL_TIER[best.confidence] || 0) >= PROVIDER_DERIVED_MIN) providerHasDerived.set(best.provider, true)
+  }
+  let operational = 0, manual = 0, providerDerived = 0, forecast = 0, manualForDerivedProviders = 0
+  let fresh: number | null = null
+  const providerAgg = new Map<string, { spend: number; conf: string; tier: number }>()
+  const confBreakdown: Record<string, number> = {}
+  for (const [, best] of sourceBest) {
+    const tier = OPERATIONAL_TIER[best.confidence] || 0
+    const p = best.provider
+    if (fresh === null || best.data_freshness > fresh) fresh = best.data_freshness
+    if (tier <= 2) manual += best.billed_cost
+    if (tier >= PROVIDER_DERIVED_MIN) providerDerived += best.billed_cost
+    const isFallbackExcluded = providerHasDerived.get(p) === true && tier < PROVIDER_DERIVED_MIN
+    if (isFallbackExcluded) { manualForDerivedProviders += best.billed_cost; continue }
+    operational += best.billed_cost
+    confBreakdown[best.confidence] = round2((confBreakdown[best.confidence] || 0) + best.billed_cost)
+    const agg = providerAgg.get(p) || { spend: 0, conf: best.confidence, tier: -1 }
+    agg.spend += best.billed_cost
+    if (tier > agg.tier) { agg.tier = tier; agg.conf = best.confidence }
+    providerAgg.set(p, agg)
+    // forecast policy: provider_api_actual usage MTD -> run-rate; plan/manual -> full monthly
+    forecast += (tier >= 4 && best.charge_category === 'usage') ? best.billed_cost / win.fractionElapsed : best.billed_cost
+  }
+  return {
+    operational_spend: round2(operational),
+    manual_spend: round2(manual),
+    provider_derived_spend: round2(providerDerived),
+    operational_forecast_month_end: round2(forecast),
+    provider_breakdown: [...providerAgg.entries()].map(([provider, v]) => ({ provider, spend: round2(v.spend), confidence: v.conf })).sort((a, b) => b.spend - a.spend),
+    confidence_breakdown: confBreakdown,
+    manual_vs_provider_variance: round2(providerDerived - manualForDerivedProviders),
+    data_freshness: fresh,
+  }
+}
+
 export type CostBucket = 'fixed_manual' | 'provider' | 'estimate'
 
 export function confidenceBucket(c: CostConfidence): CostBucket {
@@ -157,8 +234,16 @@ export function syncFixedCostsToLedger(
 export interface CostSummary {
   month: string
   currency: string
+  // legacy manual/estimate headline (kept for back-compat; excludes provider_plan_estimate)
   current_spend: number
   forecast_month_end: number
+  // v0.4: provider-preferred OPERATIONAL spend -- the NEW main KPI.
+  operational_spend: number
+  operational_forecast_month_end: number
+  operational: OperationalResult
+  // previous month operational aggregate (null == no_previous_month_data; never fabricated)
+  previous_month: { month: string; operational_spend: number; by_provider: Array<{ provider: string; spend: number; confidence: string }> } | null
+  month_over_month_delta: number | null
   top_sources: Array<{ source_id: string; name: string; spend: number }>
   // Full list of every configured/active source (not capped) -- top_sources is
   // the top-5 by spend; all_sources is the complete set for the dashboard table.
@@ -173,6 +258,8 @@ export interface CostSummary {
     status: 'ok' | 'warning' | 'hard'
     warning_threshold: number
     hard_threshold: number
+    operational_used_pct: number
+    operational_forecast_pct: number
   } | null
   token_usage: {
     note: string
@@ -311,6 +398,32 @@ export function getCostSummary(
     not_covered: RENDER_NOT_COVERED,
   } : null
 
+  // v0.4: provider-preferred OPERATIONAL spend (new main KPI). Uses ALL lines
+  // (manual + plan + provider actual), mapped to their provider, resolved so a
+  // provider's manual is dropped once it has provider-derived data (no double count).
+  const providerBySource = new Map(srcRows.map(r => [r.id, r.provider]))
+  const opLines: OpLine[] = lines.map(l => ({
+    source_id: l.source_id, provider: providerBySource.get(l.source_id) || 'other',
+    billed_cost: l.billed_cost, charge_category: l.charge_category, confidence: l.confidence, data_freshness: l.data_freshness,
+  }))
+  const op = resolveOperational(opLines, win)
+
+  // previous month: aggregate from cost_line_items; NEVER fabricated. null if no data.
+  const prevWin = monthWindow(win.start - 86400)
+  const prevRows = db.prepare(`
+    SELECT source_id, billed_cost, charge_category, confidence, data_freshness
+    FROM cost_line_items WHERE charge_period_start < @end AND charge_period_end > @start
+  `).all({ start: prevWin.start, end: prevWin.end }) as LineRow[]
+  let previous_month: CostSummary['previous_month'] = null
+  if (prevRows.length > 0) {
+    const prevOp = resolveOperational(prevRows.map(l => ({
+      source_id: l.source_id, provider: providerBySource.get(l.source_id) || 'other',
+      billed_cost: l.billed_cost, charge_category: l.charge_category, confidence: l.confidence, data_freshness: l.data_freshness,
+    })), prevWin)
+    previous_month = { month: prevWin.key, operational_spend: prevOp.operational_spend, by_provider: prevOp.provider_breakdown }
+  }
+  const month_over_month_delta = previous_month ? round2(op.operational_spend - previous_month.operational_spend) : null
+
   // budget (first budget, or the 'global-monthly' one if present)
   const budgetDef = config.budgets.find(b => b.id === 'global-monthly') || config.budgets[0] || null
   let budget: CostSummary['budget'] = null
@@ -319,12 +432,16 @@ export function getCostSummary(
     const hard = budgetDef.hard_threshold ?? 1.0
     const used_pct = current_spend / budgetDef.amount
     const forecast_pct = forecast_month_end / budgetDef.amount
-    // Status is display-only. No action is ever taken here.
+    // v0.4: budget usage against the OPERATIONAL spend (the main KPI).
+    const op_used_pct = op.operational_spend / budgetDef.amount
+    const op_forecast_pct = op.operational_forecast_month_end / budgetDef.amount
+    // Status is display-only. No action is ever taken here. Driven by operational.
     const status: 'ok' | 'warning' | 'hard' =
-      used_pct >= hard ? 'hard' : used_pct >= warning ? 'warning' : 'ok'
+      op_used_pct >= hard ? 'hard' : op_used_pct >= warning ? 'warning' : 'ok'
     budget = {
       id: budgetDef.id, amount: budgetDef.amount,
       used_pct: round4(used_pct), forecast_pct: round4(forecast_pct),
+      operational_used_pct: round4(op_used_pct), operational_forecast_pct: round4(op_forecast_pct),
       status, warning_threshold: warning, hard_threshold: hard,
     }
   }
@@ -370,6 +487,11 @@ export function getCostSummary(
     currency: config.currency,
     current_spend,
     forecast_month_end,
+    operational_spend: op.operational_spend,
+    operational_forecast_month_end: op.operational_forecast_month_end,
+    operational: op,
+    previous_month,
+    month_over_month_delta,
     top_sources,
     all_sources,
     confidence_breakdown: roundValues(confidence_breakdown),
