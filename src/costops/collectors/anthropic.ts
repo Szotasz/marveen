@@ -89,7 +89,10 @@ export function mapAnthropicCostReport(
 export const anthropicCollector: ProviderCollector = {
   provider: 'anthropic',
   collectorName: 'anthropic-cost-report',
-  async collect(opts: CollectOpts): Promise<NormalizedCostLine[]> {
+  // READ the cost report and return BOTH the raw response and the normalized
+  // lines. The raw is used ONLY to describe its shape in a dry-run (never
+  // persisted, never logged). The secret is used only as the auth header.
+  async collectRaw(opts: CollectOpts): Promise<{ raw: unknown; lines: NormalizedCostLine[] }> {
     const startIso = new Date(opts.periodStart * 1000).toISOString()
     const endIso = new Date(opts.periodEnd * 1000).toISOString()
     const url = `${ANTHROPIC_COST_URL}?starting_at=${encodeURIComponent(startIso)}&ending_at=${encodeURIComponent(endIso)}`
@@ -100,9 +103,13 @@ export const anthropicCollector: ProviderCollector = {
       'content-type': 'application/json',
     }
     const raw = await opts.httpGetJson(url, headers)
-    return mapAnthropicCostReport(raw, {
+    const lines = mapAnthropicCostReport(raw, {
       periodStart: opts.periodStart, periodEnd: opts.periodEnd,
       fxUsdHuf: opts.fxUsdHuf, idSalt: opts.idSalt, now: opts.periodStart,
     })
+    return { raw, lines }
+  },
+  async collect(opts: CollectOpts): Promise<NormalizedCostLine[]> {
+    return (await this.collectRaw!(opts)).lines
   },
 }

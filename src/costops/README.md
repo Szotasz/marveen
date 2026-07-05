@@ -116,6 +116,16 @@ manual/estimate rows, and with a strict secrets-in-Vault-only posture.
   double counting. New `reconcile[]` (per-source estimate vs actual vs variance) and
   `provider_sync[]` (last run per provider: status, freshness, stale/failed marker).
 
+- **Dry-run mode** (`dryRunCollector` in `runner.ts`): a safety layer that runs
+  fetch + normalize EXACTLY like a real import but persists **no** `provider_api`
+  cost line. It returns the planned normalized lines, their `dedup_key`s, a
+  `wouldImportCount`, and a **sanitized response shape** (`describeShape` -- types,
+  object keys and array lengths ONLY, never a scalar value, so no secret / account
+  id / invoice ref / raw datum can travel in it). Its only optional write is a
+  `status='dry_run'`, `imported_count=0` audit row in `import_runs` (no cost, no
+  secret, no raw); pass `recordRun:false` to persist nothing at all. This is the
+  gate before any real import: preview the shape and the planned lines first.
+
 **Vault**: real Admin keys go into `src/web/vault.ts` via the secure handover, never
 into config/log/transcript/dashboard-response.
 

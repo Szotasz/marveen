@@ -41,9 +41,36 @@ export interface ProviderCollector {
   collectorName: string
   // PURE network READ + normalize. Never writes to the provider. No LLM.
   collect(opts: CollectOpts): Promise<NormalizedCostLine[]>
+  // Optional: same READ, but also returns the raw response so a DRY-RUN can
+  // describe its SHAPE (types only, never values). No secret is in `raw`'s
+  // shape description. Collectors without this fall back to lines-only dry-run.
+  collectRaw?(opts: CollectOpts): Promise<{ raw: unknown; lines: NormalizedCostLine[] }>
 }
 
-export type ImportStatus = 'ok' | 'partial' | 'rate_limited' | 'error'
+// 'dry_run' marks a preview run that imported NOTHING (imported_count always 0).
+export type ImportStatus = 'ok' | 'partial' | 'rate_limited' | 'error' | 'dry_run'
+
+// A sanitized description of a value's STRUCTURE -- types, object keys, and
+// array lengths ONLY. It carries NO scalar values, so no secret, account id,
+// invoice ref, or raw provider datum can travel in it.
+export type ShapeNode =
+  | 'string' | 'number' | 'boolean' | 'null' | 'undefined'
+  | { type: 'array'; length: number; of: ShapeNode }
+  | { type: 'object'; keys: Record<string, ShapeNode> }
+
+// Result of a DRY-RUN: what a real import WOULD do, without persisting any
+// provider_api cost line. Secret-free by construction.
+export interface DryRunReport {
+  provider: string
+  collectorName: string
+  status: 'dry_run' | 'error'
+  plannedLines: NormalizedCostLine[]  // normalized lines (raw_ref_hash is a hash, no raw id)
+  dedupKeys: string[]                 // the idempotent keys a real import would upsert on
+  responseShape: ShapeNode | null     // sanitized shape of the provider response (null if unavailable)
+  wouldImportCount: number            // how many provider_api lines a real import WOULD write
+  errorCode: string | null
+  errorMessageSanitized: string | null
+}
 
 export interface ImportRunResult {
   provider: string
