@@ -48,6 +48,12 @@ export function hashRef(salt: string, raw: string): string {
 
 // ---- confidence -> breakdown bucket ----------------------------------------
 
+// Higher = more authoritative. Used to resolve a source to one headline line
+// (v0.3) so a provider_api actual supersedes a manual estimate without double count.
+export const CONF_PRIORITY: Record<string, number> = {
+  actual_invoice: 6, provider_api: 5, billing_export: 4, local_usage: 3, estimate: 2, manual: 1,
+}
+
 export type CostBucket = 'fixed_manual' | 'provider' | 'estimate'
 
 export function confidenceBucket(c: CostConfidence): CostBucket {
@@ -153,6 +159,15 @@ export interface CostSummary {
     cache_read_tokens: number
     cache_creation_tokens: number
   }
+  // v0.2: deterministic token-cost ESTIMATE (separate from fixed/manual spend).
+  token_cost_estimate: TokenCostEstimate
+  // current_spend (fixed/manual) + token_cost_estimate.total -- clearly labeled,
+  // NOT folded into current_spend.
+  estimated_total_with_token_cost: number
+  // v0.3: per-source estimate-vs-actual (only sources that have a provider_api line).
+  reconcile: Array<{ source_id: string; estimate: number; actual: number; variance: number; resolved_confidence: string }>
+  // v0.3: last collector run per provider (from import_runs).
+  provider_sync: Array<{ provider: string; collector_name: string; status: string; imported_count: number; data_freshness_at: number | null; last_sync: number; stale: boolean; error_code: string | null }>
   data_freshness: number | null
   config_present: boolean
   config_errors: string[]
@@ -189,18 +204,31 @@ export function getCostSummary(
   const perSourceConfidence = new Map<string, string>()
   let latestFreshness: number | null = null
 
+  // Group lines per source. The HEADLINE spend resolves each source to its
+  // single highest-confidence line (v0.3: a provider_api actual supersedes the
+  // manual/estimate WITHOUT double-counting), while all lines are kept for the
+  // estimate-vs-actual reconcile view.
+  const bySource = new Map<string, LineRow[]>()
   for (const l of lines) {
-    current_spend += l.billed_cost
-    // Usage-type lines are prorated to month-end; committed/fixed lines are
-    // already whole-month (no proration).
-    forecast_month_end += l.charge_category === 'usage'
-      ? l.billed_cost / win.fractionElapsed
-      : l.billed_cost
-    confidence_breakdown[l.confidence] = (confidence_breakdown[l.confidence] || 0) + l.billed_cost
-    breakdown[confidenceBucket(l.confidence)] += l.billed_cost
-    perSource.set(l.source_id, (perSource.get(l.source_id) || 0) + l.billed_cost)
-    perSourceConfidence.set(l.source_id, l.confidence)
+    const arr = bySource.get(l.source_id); if (arr) arr.push(l); else bySource.set(l.source_id, [l])
     if (latestFreshness === null || l.data_freshness > latestFreshness) latestFreshness = l.data_freshness
+  }
+  const EST_CONF = ['manual', 'estimate', 'local_usage']
+  const ACT_CONF = ['provider_api', 'billing_export', 'actual_invoice']
+  const reconcile: CostSummary['reconcile'] = []
+  for (const [sid, ls] of bySource) {
+    const resolved = ls.reduce((a, b) => (CONF_PRIORITY[b.confidence] || 0) > (CONF_PRIORITY[a.confidence] || 0) ? b : a)
+    current_spend += resolved.billed_cost
+    forecast_month_end += resolved.charge_category === 'usage'
+      ? resolved.billed_cost / win.fractionElapsed
+      : resolved.billed_cost
+    confidence_breakdown[resolved.confidence] = (confidence_breakdown[resolved.confidence] || 0) + resolved.billed_cost
+    breakdown[confidenceBucket(resolved.confidence)] += resolved.billed_cost
+    perSource.set(sid, resolved.billed_cost)
+    perSourceConfidence.set(sid, resolved.confidence)
+    const estAmt = ls.filter(l => EST_CONF.includes(l.confidence)).reduce((s, l) => s + l.billed_cost, 0)
+    const actAmt = ls.filter(l => ACT_CONF.includes(l.confidence)).reduce((s, l) => s + l.billed_cost, 0)
+    if (actAmt > 0) reconcile.push({ source_id: sid, estimate: round2(estAmt), actual: round2(actAmt), variance: round2(actAmt - estAmt), resolved_confidence: resolved.confidence })
   }
   current_spend = round2(current_spend)
   forecast_month_end = round2(forecast_month_end)
@@ -252,6 +280,29 @@ export function getCostSummary(
     cache_read_tokens: number; cache_creation_tokens: number
   }
 
+  // v0.2 token-cost estimate (deterministic; unknown model / no rate -> unpriced).
+  const pricing = opts.pricing ?? { version: 1, currency: config.currency, models: {} }
+  const token_cost_estimate = getTokenCostEstimate(db, pricing, opts.pricingExists ?? false, win.start, win.end)
+  const estimated_total_with_token_cost = round2(current_spend + token_cost_estimate.total_estimated_huf)
+
+  // v0.3 per-source estimate-vs-actual reconciliation
+  const reconcile: Array<{ source_id: string; estimate: number; actual: number; variance: number; resolved_confidence: string }> = []
+
+  // v0.3 provider sync status: the latest import_runs row per provider.
+  const STALE_SECS = 3 * 24 * 3600
+  const syncRows = db.prepare(`
+    SELECT provider, collector_name, status, imported_count, data_freshness_at, started_at, error_code
+    FROM import_runs r
+    WHERE started_at = (SELECT MAX(started_at) FROM import_runs WHERE provider = r.provider)
+    GROUP BY provider
+  `).all() as Array<{ provider: string; collector_name: string; status: string; imported_count: number; data_freshness_at: number | null; started_at: number; error_code: string | null }>
+  const provider_sync = syncRows.map(r => ({
+    provider: r.provider, collector_name: r.collector_name, status: r.status,
+    imported_count: r.imported_count, data_freshness_at: r.data_freshness_at, last_sync: r.started_at,
+    stale: r.data_freshness_at != null ? (now - r.data_freshness_at) > STALE_SECS : true,
+    error_code: r.error_code,
+  }))
+
   return {
     month: win.key,
     currency: config.currency,
@@ -268,6 +319,10 @@ export function getCostSummary(
       input_tokens: tu.input_tokens, output_tokens: tu.output_tokens,
       cache_read_tokens: tu.cache_read_tokens, cache_creation_tokens: tu.cache_creation_tokens,
     },
+    token_cost_estimate,
+    estimated_total_with_token_cost,
+    reconcile,
+    provider_sync,
     data_freshness: latestFreshness,
     config_present: opts.configExists ?? true,
     config_errors: opts.configErrors ?? [],
