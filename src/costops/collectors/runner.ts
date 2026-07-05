@@ -7,7 +7,7 @@
 // Secrets never enter the DB, logs, or the returned result.
 
 import type Database from 'better-sqlite3'
-import type { ProviderCollector, CollectOpts, NormalizedCostLine, ImportRunResult, ImportStatus } from './types.js'
+import type { ProviderCollector, CollectOpts, NormalizedCostLine, ImportRunResult, ImportStatus, ShapeNode, DryRunReport } from './types.js'
 
 /** Redact anything that looks like a key/token before it can reach a log/DB. */
 export function sanitizeError(err: unknown): { code: string; message: string } {
@@ -58,11 +58,103 @@ function upsertProviderLines(db: Database.Database, lines: NormalizedCostLine[],
   return tx(lines)
 }
 
+/**
+ * Describe a value's STRUCTURE only -- types, object keys, and array lengths.
+ * NEVER includes a scalar value, so no secret / account id / invoice ref / raw
+ * provider datum can leak through it. Depth-bounded to stay finite.
+ */
+export function describeShape(value: unknown, depth = 0): ShapeNode {
+  if (value === null) return 'null'
+  if (value === undefined) return 'undefined'
+  if (Array.isArray(value)) {
+    return { type: 'array', length: value.length, of: value.length ? describeShape(value[0], depth + 1) : 'undefined' }
+  }
+  const t = typeof value
+  if (t === 'string') return 'string'
+  if (t === 'number') return 'number'
+  if (t === 'boolean') return 'boolean'
+  if (t === 'object') {
+    const keys: Record<string, ShapeNode> = {}
+    if (depth < 6) for (const k of Object.keys(value as Record<string, unknown>)) {
+      keys[k] = describeShape((value as Record<string, unknown>)[k], depth + 1)
+    }
+    return { type: 'object', keys }
+  }
+  return 'undefined' // functions/symbols are not represented
+}
+
 export interface RunCollectorArgs {
   db: Database.Database
   collector: ProviderCollector
   opts: CollectOpts
   now: number
+}
+
+export interface DryRunArgs {
+  db: Database.Database
+  collector: ProviderCollector
+  opts: CollectOpts
+  now: number
+  // If true (default), record an audit row in import_runs with status='dry_run'
+  // and imported_count=0 (NO cost line, NO secret, NO raw provider datum). If
+  // false, persist nothing at all.
+  recordRun?: boolean
+}
+
+/**
+ * DRY-RUN a collector: fetch + normalize exactly like a real run, but write NO
+ * provider_api cost_line_items. It returns the planned normalized lines, their
+ * dedup_keys, and a sanitized SHAPE of the provider response (types only). The
+ * only optional write is a status='dry_run' import_runs audit row (count 0).
+ * Secret-free by construction: raw responses and secrets never reach the DB,
+ * the log, or the returned report.
+ */
+export async function dryRunCollector(args: DryRunArgs): Promise<DryRunReport> {
+  const { db, collector, opts, now } = args
+  const recordRun = args.recordRun !== false
+  let status: 'dry_run' | 'error' = 'dry_run'
+  let plannedLines: NormalizedCostLine[] = []
+  let responseShape: ShapeNode | null = null
+  let errorCode: string | null = null
+  let errorMsg: string | null = null
+  let freshness: number | null = null
+  try {
+    if (collector.collectRaw) {
+      const { raw, lines } = await collector.collectRaw(opts)
+      responseShape = describeShape(raw)   // types only -- never values
+      plannedLines = lines
+    } else {
+      // No raw access on this collector -> lines only, shape unavailable.
+      plannedLines = await collector.collect(opts)
+      responseShape = null
+    }
+    freshness = plannedLines.reduce((m, l) => Math.max(m, l.data_freshness_at), 0) || now
+  } catch (err) {
+    status = 'error'
+    const s = sanitizeError(err)
+    errorCode = s.code
+    errorMsg = s.message
+  }
+  // CRITICAL: no provider_api cost_line_items are ever written in a dry-run.
+  // Optionally leave a clearly-marked audit trail (no cost, no secret, no raw).
+  if (recordRun) {
+    db.prepare(`
+      INSERT INTO import_runs (provider, collector_name, started_at, finished_at, status,
+        period_start, period_end, imported_count, error_code, error_message_sanitized, data_freshness_at)
+      VALUES (@provider, @collector, @started, @finished, @status, @ps, @pe, 0, @ecode, @emsg, @fresh)
+    `).run({
+      provider: collector.provider, collector: collector.collectorName,
+      started: now, finished: now, status,
+      ps: opts.periodStart, pe: opts.periodEnd,
+      ecode: errorCode, emsg: errorMsg, fresh: freshness,
+    })
+  }
+  return {
+    provider: collector.provider, collectorName: collector.collectorName,
+    status, plannedLines, dedupKeys: plannedLines.map(l => l.dedup_key),
+    responseShape, wouldImportCount: plannedLines.length,
+    errorCode, errorMessageSanitized: errorMsg,
+  }
 }
 
 /**
