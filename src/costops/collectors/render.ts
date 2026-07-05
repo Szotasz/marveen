@@ -190,6 +190,68 @@ export function mapRenderPlanCost(
   return { lines, breakdown }
 }
 
+// v0.5: read the Render API key WITHOUT logging it. process.env first, then the
+// gitignored root .env. Returns null if absent (caller reports a config error).
+export function getRenderApiKey(): string | null {
+  const fromEnv = process.env.RENDER_API_KEY
+  if (fromEnv && fromEnv.trim()) return fromEnv.trim()
+  try {
+    const envFile = readFileSync(join(PROJECT_ROOT, '.env'), 'utf-8')
+    const line = envFile.split('\n').find(l => l.startsWith('RENDER_API_KEY'))
+    if (line) return line.slice(line.indexOf('=') + 1).trim().replace(/^["']|["']$/g, '')
+  } catch { /* no .env */ }
+  return null
+}
+
+export interface RenderSyncResult {
+  ok: boolean
+  provider: 'render'
+  status: string
+  imported_count: number
+  error?: string
+  service_count?: number
+  total_huf?: number
+  period?: string
+}
+
+/**
+ * v0.5 sync spine: run the Render collector LIVE (read-only GET) and idempotently
+ * import the aggregated provider_plan_estimate line for the current month, storing
+ * a sanitized breakdown on the import_runs row. NO provider-side write. Injected
+ * httpGetJson defaults to a real GET fetcher; tests pass a stub.
+ */
+export async function syncRenderCollector(
+  db: import('better-sqlite3').Database,
+  now: number,
+  deps: { httpGetJson?: import('./types.js').HttpGetJson; apiKey?: string | null } = {},
+): Promise<RenderSyncResult> {
+  const { runCollector } = await import('./runner.js')
+  const { monthWindow } = await import('../ledger.js')
+  const { pricing } = loadRenderPricing()
+  const apiKey = deps.apiKey !== undefined ? deps.apiKey : getRenderApiKey()
+  if (!apiKey) return { ok: false, provider: 'render', status: 'error', imported_count: 0, error: 'no RENDER_API_KEY configured' }
+  const httpGetJson = deps.httpGetJson || (async (url: string, headers: Record<string, string>) => {
+    const r = await fetch(url, { method: 'GET', headers })
+    if (!r.ok) throw new Error(`render api ${r.status}`)
+    return r.json()
+  })
+  const w = monthWindow(now)
+  const collector = makeRenderCollector(pricing)
+  const opts = { periodStart: w.start, periodEnd: w.end, secret: apiKey, fxUsdHuf: pricing.fx_usd_huf, idSalt: 'render-salt', httpGetJson }
+  // pre-compute the sanitized breakdown for the run detail (no raw IDs)
+  let detail: RenderBreakdown | null = null
+  try {
+    const { raw } = await collector.collectRaw!(opts)
+    detail = mapRenderPlanCost(raw, { periodStart: w.start, periodEnd: w.end, pricing, idSalt: 'render-salt', now }).breakdown
+  } catch { /* runCollector will re-run + record the sanitized error */ }
+  const res = await runCollector({ db, collector, opts, now, detailJson: detail ? JSON.stringify(detail) : undefined })
+  return {
+    ok: res.status === 'ok', provider: 'render', status: res.status, imported_count: res.importedCount,
+    error: res.errorMessageSanitized || undefined,
+    service_count: detail?.service_count, total_huf: detail?.total_huf, period: w.key,
+  }
+}
+
 /** Build the Render collector bound to a loaded pricing config. READ-ONLY. */
 export function makeRenderCollector(pricing: RenderPricing): ProviderCollector {
   return {

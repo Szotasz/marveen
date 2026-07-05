@@ -51,6 +51,23 @@ export async function tryHandleCosts(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // v0.5: sync spine -- run the Render collector LIVE (read-only GET) + idempotent import.
+  // Bearer-gated (like every /api/*). NO provider-side write; same-month re-run is idempotent.
+  if (path === '/api/costs/sync' && method === 'POST') {
+    try {
+      const provider = url.searchParams.get('provider') || 'render'
+      if (provider !== 'render') { json(res, { error: 'only provider=render is supported in v0.5' }, 400); return true }
+      const { syncRenderCollector } = await import('../../costops/collectors/render.js')
+      const now = Math.floor(Date.now() / 1000)
+      const result = await syncRenderCollector(getDb(), now)
+      json(res, result, result.ok ? 200 : 502)
+    } catch (err) {
+      logger.error({ err }, 'CostOps sync failed')
+      json(res, { ok: false, error: 'sync failed' }, 500)
+    }
+    return true
+  }
+
   if (path === '/api/costs/sources' && method === 'GET') {
     try {
       json(res, getCostSources(getDb()))
