@@ -59,3 +59,73 @@ No client writes, no LLM, no provider API, no secrets in any response.
   is ever derived from tokens here.
 - Additive schema (`CREATE TABLE IF NOT EXISTS`); with no CostOps config the rest
   of the app behaves exactly as before.
+- No autonomous action of any kind. `warning_threshold` / `hard_threshold` are
+  **display-only** -- never stop an agent, switch a model, change a spend cap,
+  top-up, or modify a subscription.
+- No LLM anywhere in CostOps (summary is pure SQL + arithmetic). Future periodic
+  collectors must run as `type: "command"` scheduled tasks (raw shell, no LLM),
+  never as an LLM heartbeat.
+- No raw account IDs / invoice refs / secrets in DB, logs, audit or API response.
+  Use `hashRef(salt, raw)` for identifiers if ever needed.
+
+## v0.2 -- token-cost ESTIMATE (deterministic, no LLM/provider API)
+
+v0.2 adds a **separate, estimate-only** token cost derived from `token_usage`.
+It is never folded into `current_spend` and is clearly labelled as an estimate.
+
+**Model enrichment (forward-only).** `token_usage` now has nullable `model`,
+`provider`, `model_source` columns. The ingestion (`src/web/token-usage.ts`)
+captures `message.model` from the transcript for NEW rows (`model_source =
+'transcript'`) and derives a coarse `provider` (`deriveProvider`). Existing rows
+stay `NULL` (unknown) -- no uncertain backfill. **The model-capture activates on
+the next dashboard restart**; rows ingested before that stay unknown.
+
+**Pricing config (local, gitignored).** Per-model rates live in
+`store/costops-pricing.json` (gitignored; a safe 0-rate `.example` is generated).
+Rates are **per 1,000,000 tokens** in `currency`. No provider prices are hardcoded
+in tracked source.
+
+**Summary block.** `GET /api/costs/summary` gains `token_cost_estimate`
+(`total_estimated_huf`, `priced_by_model[]`, `unpriced.{unknown_model_tokens,
+no_rate_tokens}`, `pricing_profile_status`, `confidence: "estimate"`) and
+`estimated_total_with_token_cost` (= `current_spend` + token estimate, clearly
+labelled -- not added to `current_spend`).
+
+**Provider billing/usage API collector is v0.3** (still no external API in v0.2).
+
+## v0.3 -- provider cost collector framework
+
+v0.3 adds a generic, deterministic framework to import ACTUAL provider cost as
+high-confidence `provider_api` line items -- **without** overwriting the local
+manual/estimate rows, and with a strict secrets-in-Vault-only posture.
+
+- **Framework** (`src/costops/collectors/`): `ProviderCollector` interface with an
+  INJECTED HTTP fetcher (so collectors are unit-tested fully offline with fixtures
+  -- no live call unless a real fetcher is passed after explicit approval).
+- **`runner.ts`**: loads a collector's normalized lines, idempotently upserts them
+  into `cost_line_items` as `confidence='provider_api'`, and records an `import_runs`
+  row. On error it DELETES NOTHING and records a **sanitized** failure (keys redacted).
+- **`import_runs` table**: run history / sync status. No raw account id, no raw API
+  response, no secret ever stored.
+- **Config**: gitignored `store/costops-collectors.json` holds only non-secret
+  wiring -- an `enabled` flag and a `secret_ref` (validated to REQUIRE the `vault:`
+  form, never a raw key). A tracked safe example lives at
+  `src/costops/collectors/collectors-config.example.json` (no key, no account id).
+- **Summary reconcile**: the headline `current_spend` resolves each source to its
+  single highest-confidence line so an actual supersedes an estimate WITHOUT
+  double counting. New `reconcile[]` (per-source estimate vs actual vs variance) and
+  `provider_sync[]` (last run per provider: status, freshness, stale/failed marker).
+
+**Vault**: real Admin keys go into `src/web/vault.ts` via the secure handover, never
+into config/log/transcript/dashboard-response.
+
+## Known limitations
+
+- Provider API calls only happen when Vault keys are configured and a live run is
+  explicitly approved. Until then `provider_sync`/`reconcile` stay empty.
+- Forward-only enrichment: token costs only appear for rows ingested AFTER
+  the dashboard restart that activates model-capture.
+- Forecast is a naive linear proration of usage-type lines; fixed monthly costs
+  are attributed whole-month (no proration).
+- No provider billing integration yet (see the maturity model in
+  `audits/costops-v0.1-pr1-local-ledger-plan.md`).
