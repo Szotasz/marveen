@@ -20,6 +20,7 @@ export type CostConfidence =
   | 'actual_invoice'
   | 'provider_api'
   | 'billing_export'
+  | 'provider_plan_estimate'  // v0.3: derived from provider plan inventory (Render), NOT an invoice; advisory
   | 'local_usage'
   | 'estimate'
   | 'manual'
