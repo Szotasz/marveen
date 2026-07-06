@@ -16,7 +16,7 @@ import {
   paneShowsContextSaturation,
 } from '../pane-state.js'
 import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost } from './agent-config.js'
-import { getClaudePlan } from './claude-plans.js'
+import { resolveAgentConfigDir } from './claude-plans.js'
 import {
   buildTmuxInvocation,
   buildSshExec,
@@ -672,8 +672,18 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // configDir is already launcher-validated (claude-plans.ts reuses
     // expandAndValidateConfigDir). NOTE: this covers regular agents only; the
     // main agent still launches via channels.sh (separate, gated follow-up).
-    let claudeConfigDir = getClaudePlan(readAgentClaudePlan(name))?.configDir
-      ?? readAgentClaudeConfigDir(name)
+    const planResolution = resolveAgentConfigDir(name)
+    if (planResolution.planUnresolved) {
+      // The agent has a claudePlan set but it no longer resolves (registry
+      // entry removed/renamed). Do NOT silently boot on the host login --
+      // surface it. The channelsAllowed enforcement guardrail is a separate
+      // gated follow-up; this is just the visibility floor.
+      logger.warn(
+        { name, plan: readAgentClaudePlan(name) },
+        'claude-plan: configured plan id does not resolve in store/claude-plans.json; falling back to raw config-dir / default login',
+      )
+    }
+    let claudeConfigDir = planResolution.configDir
     let oauthTokenEnv = ''
     if (!claudeConfigDir && hasChannel && name !== MAIN_AGENT_ID) {
       if (hasFleetOauthToken()) {

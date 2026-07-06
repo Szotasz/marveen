@@ -2116,17 +2116,30 @@ function populatePlanSelect(selectEl, descEl, selected) {
     .then(res => (res.ok ? res.json() : []))
     .catch(() => [])
     .then((plans) => {
+      const known = plans.some(p => p.id === selected)
       const opts = ['<option value="">— alap (host OAuth / config-dir) —</option>']
       for (const p of plans) {
         opts.push(`<option value="${escapeHtml(p.id)}">${escapeHtml(p.label)}</option>`)
+      }
+      // Preserve an already-assigned plan id that is NOT in the loaded registry
+      // (registry edited/renamed, OR /api/claude-plans transiently failed and
+      // returned []). Without this the dropdown would resolve to '' and a save
+      // would silently wipe the real assignment.
+      if (selected && !known) {
+        opts.push(`<option value="${escapeHtml(selected)}">${escapeHtml(selected)} (nem található a registryben)</option>`)
       }
       selectEl.innerHTML = opts.join('')
       selectEl.value = selected || ''
       const updateDesc = () => {
         if (!descEl) return
-        const p = plans.find(x => x.id === selectEl.value)
-        if (!p) {
+        const val = selectEl.value
+        if (!val) {
           descEl.textContent = 'Nincs nevesített plan — a host OAuth / raw config-dir dönt.'
+          return
+        }
+        const p = plans.find(x => x.id === val)
+        if (!p) {
+          descEl.textContent = `⚠️ '${val}' nincs a registryben (store/claude-plans.json). Launchkor a raw config-dir / host login dönt.`
           return
         }
         const warn = p.channelsAllowed ? '' : ' ⚠️ Channels tiltva ezen a planen'

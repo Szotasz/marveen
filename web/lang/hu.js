@@ -318,6 +318,7 @@ window._i18n.hu = {
   'agents.page.analyze_btn':              'Modell elemzés',
   'agents.page.new_btn':                  'Új ügynök',
   'agents.settings.model_suggest_btn':    'Javaslat',
+  'agents.settings.plan_label':           'Claude előfizetés',
   'agents.settings.auto_restart_label':   'Automatikus újraindítás',
   'agents.settings.auto_restart_enabled': 'Bekapcsolva',
   'agents.settings.ar_mode_label':        'Mód',

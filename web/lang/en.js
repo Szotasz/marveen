@@ -821,6 +821,7 @@ window._i18n.en = {
   'agents.page.analyze_btn':              'Model analysis',
   'agents.page.new_btn':                  'New agent',
   'agents.settings.model_suggest_btn':    'Suggest',
+  'agents.settings.plan_label':           'Claude subscription',
   'agents.settings.auto_restart_label':   'Auto restart',
   'agents.settings.auto_restart_enabled': 'Enabled',
   'agents.settings.ar_mode_label':        'Mode',

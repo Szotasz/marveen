@@ -28,7 +28,6 @@ import {
   writeAgentChannelProvider,
   readAgentAuthMode,
   writeAgentAuthMode,
-  readAgentClaudeConfigDir,
   readAgentClaudePlan,
   writeAgentClaudePlan,
   readAgentRemoteConfig,
@@ -39,7 +38,7 @@ import {
   KNOWN_VOICE_MODELS,
   type AuthMode,
 } from '../agent-config.js'
-import { readClaudePlans } from '../claude-plans.js'
+import { readClaudePlans, resolveAgentConfigDir } from '../claude-plans.js'
 import {
   readAgentTeam,
   writeAgentTeam,
@@ -377,7 +376,7 @@ function getAgentSummary(name: string): AgentSummary {
     displayName: readAgentDisplayName(name),
     description: extractDescriptionFromClaudeMd(claudeMd),
     model: readAgentModel(name),
-    activeModel: running ? readActiveModelFromProjectDir(dir, runningSince ?? undefined, readAgentClaudeConfigDir(name) ?? undefined) : null,
+    activeModel: running ? readActiveModelFromProjectDir(dir, runningSince ?? undefined, resolveAgentConfigDir(name).configDir ?? undefined) : null,
     runningSince,
     authMode: readAgentAuthMode(name),
     securityProfile: readAgentSecurityProfile(name),
@@ -396,7 +395,7 @@ function getAgentSummary(name: string): AgentSummary {
     session,
     hasAvatar: findAvatarForAgent(name) !== null,
     autoRestart: readAutoRestartConfig(name),
-    contextTokens: running ? readContextTokensFromProjectDir(dir, readAgentClaudeConfigDir(name) ?? undefined) : null,
+    contextTokens: running ? readContextTokensFromProjectDir(dir, resolveAgentConfigDir(name).configDir ?? undefined) : null,
     needsReauth: reauth.needsReauth,
     reauthReason: reauth.reason,
   }
@@ -1561,12 +1560,18 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         deleteSecret(`agent-${name}-api-key`)
       }
     }
-    // Named Claude plan id (empty string clears it -> revert to raw
-    // claudeConfigDir / default). Unknown ids are accepted here and simply
-    // resolve to no plan at launch (fallback), so a stale id never breaks a
-    // launch; the dropdown only offers registry ids anyway.
+    // Named Claude plan id. Empty string clears it (-> raw claudeConfigDir /
+    // default). A non-empty id MUST exist in the registry, otherwise the
+    // dashboard would show the agent as plan-assigned while launch silently
+    // falls back to a different login (state/launch drift). Reject unknown ids
+    // rather than persist them.
     if (data.claudePlan !== undefined) {
-      writeAgentClaudePlan(name, data.claudePlan)
+      const planId = data.claudePlan.trim()
+      if (planId && !readClaudePlans().some(p => p.id === planId)) {
+        json(res, { error: `Ismeretlen Claude plan id: ${planId}` }, 400)
+        return true
+      }
+      writeAgentClaudePlan(name, planId)
     }
     json(res, { ok: true })
     return true

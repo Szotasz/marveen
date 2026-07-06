@@ -19,11 +19,15 @@
 // kept pure (raw JSON string + homeDir in, validated array out) so it unit-
 // tests without the fs, mirroring resolveClaudeConfigDir in agent-config.ts.
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { PROJECT_ROOT } from '../config.js'
-import { expandAndValidateConfigDir } from './agent-config.js'
+import {
+  expandAndValidateConfigDir,
+  readAgentClaudeConfigDir,
+  readAgentClaudePlan,
+} from './agent-config.js'
 
 export const CLAUDE_PLANS_PATH = join(PROJECT_ROOT, 'store', 'claude-plans.json')
 
@@ -114,14 +118,52 @@ export function resolveClaudePlans(rawJson: string, homeDir: string): ClaudePlan
 // Read + resolve the registry from disk. Missing file => empty list (the
 // feature is opt-in: no registry means every agent keeps its current
 // behaviour).
+//
+// Memoized by the file's mtime: the fleet-list poll resolves an agent's config
+// dir on every tick (getAgentSummary -> resolveAgentConfigDir), so without a
+// cache each poll re-reads + re-validates the whole registry per agent. The
+// cache is invalidated automatically when the operator edits the file (mtime
+// bumps); a missing file caches as an empty list under the sentinel mtime -1.
+let plansCache: { mtimeMs: number; plans: ClaudePlan[] } | null = null
+
 export function readClaudePlans(): ClaudePlan[] {
-  let rawJson: string
-  try { rawJson = readFileSync(CLAUDE_PLANS_PATH, 'utf8') } catch { return [] }
-  return resolveClaudePlans(rawJson, homedir())
+  let mtimeMs: number
+  try { mtimeMs = statSync(CLAUDE_PLANS_PATH).mtimeMs } catch { mtimeMs = -1 }
+  if (plansCache && plansCache.mtimeMs === mtimeMs) return plansCache.plans
+  let plans: ClaudePlan[]
+  if (mtimeMs === -1) {
+    plans = []
+  } else {
+    let rawJson: string
+    try { rawJson = readFileSync(CLAUDE_PLANS_PATH, 'utf8') } catch { rawJson = '' }
+    plans = resolveClaudePlans(rawJson, homedir())
+  }
+  plansCache = { mtimeMs, plans }
+  return plans
 }
 
 // Resolve a single plan id to its plan, or null when the id is blank/unknown.
 export function getClaudePlan(id: string | null | undefined): ClaudePlan | null {
   if (!id) return null
   return readClaudePlans().find(p => p.id === id) ?? null
+}
+
+// The one place that decides an agent's effective CLAUDE_CONFIG_DIR. Named plan
+// wins over the raw claudeConfigDir; neither set => null (Claude Code default).
+// EVERY read path (launch env, activeModel/contextTokens transcript lookup,
+// conversation viewer) must go through this so the dashboard reads from the
+// same projects dir the launcher actually wrote to. `planUnresolved` is true
+// when the agent has a claudePlan set that no longer resolves (registry entry
+// removed/renamed) -- callers that launch should surface it rather than
+// silently fall back to the host login.
+export function resolveAgentConfigDir(
+  name: string,
+): { configDir: string | null; planUnresolved: boolean } {
+  const planId = readAgentClaudePlan(name)
+  if (planId) {
+    const plan = getClaudePlan(planId)
+    if (plan) return { configDir: plan.configDir, planUnresolved: false }
+    return { configDir: readAgentClaudeConfigDir(name), planUnresolved: true }
+  }
+  return { configDir: readAgentClaudeConfigDir(name), planUnresolved: false }
 }
