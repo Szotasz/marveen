@@ -35,6 +35,21 @@ describe('resolveOperational (provider-preferred, no double count)', () => {
     expect(render.confidence).toBe('provider_plan_estimate')
   })
 
+  it('a REAL invoice supersedes the plan estimate for the same provider (no double count)', () => {
+    const win = monthWindow(NOW)
+    const r = resolveOperational([
+      // same provider "render": a real invoice AND the plan-estimate proxy both present
+      { source_id: 'render-hosting', provider: 'render', billed_cost: 4000, charge_category: 'hosting', confidence: 'actual_invoice', data_freshness: NOW },
+      { source_id: 'render-plan', provider: 'render', billed_cost: 32000, charge_category: 'usage', confidence: 'provider_plan_estimate', data_freshness: NOW },
+    ], win)
+    // operational = 4000 (the real invoice), NOT 4000 + 32000; the plan proxy is dropped
+    expect(r.operational_spend).toBe(4000)
+    expect(r.provider_derived_spend).toBe(4000)
+    const render = r.provider_breakdown.find(p => p.provider === 'render')!
+    expect(render.spend).toBe(4000)
+    expect(render.confidence).toBe('actual_invoice')
+  })
+
   it('provider_api_actual usage forecasts by run-rate; plan forecasts full monthly', () => {
     const win = monthWindow(NOW) // mid-month, fractionElapsed < 1
     const r = resolveOperational([

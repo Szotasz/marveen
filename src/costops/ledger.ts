@@ -89,6 +89,7 @@ export const OPERATIONAL_TIER: Record<string, number> = {
   estimate: 1, manual: 1,
 }
 const PROVIDER_DERIVED_MIN = 3  // provider_plan_estimate or higher = "provider-derived"
+const REAL_ACTUAL_MIN = 4       // actual_invoice / provider_api / billing_export = a REAL measured cost
 
 interface OpLine { source_id: string; provider: string; billed_cost: number; charge_category: string; confidence: string; data_freshness: number }
 
@@ -116,10 +117,16 @@ export function resolveOperational(lines: OpLine[], win: MonthWindow): Operation
   for (const [sid, ls] of bySource) {
     sourceBest.set(sid, ls.reduce((a, b) => (OPERATIONAL_TIER[b.confidence] || 0) > (OPERATIONAL_TIER[a.confidence] || 0) ? b : a))
   }
-  // which providers have a provider-derived (tier>=3) source
+  // which providers have a provider-derived (tier>=3) source, and which have a REAL
+  // measured actual (tier>=4). A real invoice/api actual SUPERSEDES the whole-provider
+  // provider_plan_estimate proxy for that provider -- otherwise the plan estimate and
+  // the real invoice both count and the provider is double-counted (e.g. Render).
   const providerHasDerived = new Map<string, boolean>()
+  const providerHasRealActual = new Map<string, boolean>()
   for (const best of sourceBest.values()) {
-    if ((OPERATIONAL_TIER[best.confidence] || 0) >= PROVIDER_DERIVED_MIN) providerHasDerived.set(best.provider, true)
+    const t = OPERATIONAL_TIER[best.confidence] || 0
+    if (t >= PROVIDER_DERIVED_MIN) providerHasDerived.set(best.provider, true)
+    if (t >= REAL_ACTUAL_MIN) providerHasRealActual.set(best.provider, true)
   }
   let operational = 0, manual = 0, providerDerived = 0, forecast = 0, manualForDerivedProviders = 0
   let fresh: number | null = null
@@ -129,10 +136,12 @@ export function resolveOperational(lines: OpLine[], win: MonthWindow): Operation
     const tier = OPERATIONAL_TIER[best.confidence] || 0
     const p = best.provider
     if (fresh === null || best.data_freshness > fresh) fresh = best.data_freshness
-    if (tier <= 2) manual += best.billed_cost
-    if (tier >= PROVIDER_DERIVED_MIN) providerDerived += best.billed_cost
-    const isFallbackExcluded = providerHasDerived.get(p) === true && tier < PROVIDER_DERIVED_MIN
+    if (tier <= 2) manual += best.billed_cost  // fallback view: all manual/estimate, pre-exclusion
+    // plan estimate is a proxy for the provider's total -> drop it once a real invoice/api actual exists
+    const planSuperseded = best.confidence === 'provider_plan_estimate' && providerHasRealActual.get(p) === true
+    const isFallbackExcluded = (providerHasDerived.get(p) === true && tier < PROVIDER_DERIVED_MIN) || planSuperseded
     if (isFallbackExcluded) { manualForDerivedProviders += best.billed_cost; continue }
+    if (tier >= PROVIDER_DERIVED_MIN) providerDerived += best.billed_cost
     operational += best.billed_cost
     confBreakdown[best.confidence] = round2((confBreakdown[best.confidence] || 0) + best.billed_cost)
     const agg = providerAgg.get(p) || { spend: 0, conf: best.confidence, tier: -1 }
