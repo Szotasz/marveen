@@ -4,7 +4,7 @@
 // startCostsSyncTask() below (called once at server boot), not as a side effect
 // of a client request. No LLM, no provider API, no secrets in the response.
 
-import { json } from '../http-helpers.js'
+import { json, readBody } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import { getDb } from '../../db.js'
 import { loadCostopsConfig } from '../../costops/config.js'
@@ -81,6 +81,25 @@ export async function tryHandleCosts(ctx: RouteContext): Promise<boolean> {
     } catch (err) {
       logger.error({ err }, 'CostOps sync failed')
       json(res, { ok: false, error: 'sync failed' }, 500)
+    }
+    return true
+  }
+
+  // Email-sourced cost ingest: an agent-side Gmail sweep POSTs structured receipt
+  // entries here. Idempotent per (email, month). No raw email content is stored.
+  if (path === '/api/costs/email-ingest' && method === 'POST') {
+    try {
+      const body = await readBody(ctx.req) as { entries?: unknown }
+      const entries = Array.isArray(body?.entries) ? body.entries : []
+      const now = Math.floor(Date.now() / 1000)
+      let fxUsdHuf = 0
+      try { const { loadRenderPricing } = await import('../../costops/collectors/render.js'); fxUsdHuf = loadRenderPricing().pricing.fx_usd_huf || 0 } catch { /* fx 0 -> USD entries flagged */ }
+      const { ingestEmailCosts } = await import('../../costops/email-ingest.js')
+      const result = ingestEmailCosts(getDb(), entries as import('../../costops/email-ingest.js').EmailCostEntry[], { fxUsdHuf, now })
+      json(res, { ok: result.errors.length === 0, ...result })
+    } catch (err) {
+      logger.error({ err }, 'CostOps email-ingest failed')
+      json(res, { ok: false, error: 'email-ingest failed' }, 500)
     }
     return true
   }
