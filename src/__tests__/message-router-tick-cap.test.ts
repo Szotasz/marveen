@@ -14,9 +14,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const mockGetPendingMessages = vi.fn()
-const mockMarkDelivered = vi.fn(() => true)
-const mockMarkFailed = vi.fn(() => true)
-const mockSessionExistsOnHost = vi.fn(() => false)
+const mockMarkDelivered = vi.fn((..._a: unknown[]) => true)
+const mockMarkFailed = vi.fn((..._a: unknown[]) => true)
+const mockSessionExistsOnHost = vi.fn((..._a: unknown[]) => false)
 
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
