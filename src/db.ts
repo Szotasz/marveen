@@ -330,6 +330,21 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_comments_card ON kanban_comments(card_id)`)
 
+  // Status-change audit trail: one row per real status transition so the board
+  // can answer "who moved this card, when, from/to status". Written by
+  // moveKanbanCard only when the status actually changes.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS kanban_card_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      card_id TEXT NOT NULL,
+      from_status TEXT,
+      to_status TEXT NOT NULL,
+      actor TEXT,
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_events_card ON kanban_card_events(card_id, created_at)`)
+
   // --- Kanban labels (tags) -----------------------------------------------
   // Labels are a separate registry (not hardcoded per-card strings) so the
   // same label can be reused across many cards and recolored in one place.
@@ -577,6 +592,49 @@ export function initDatabase(dbPathOverride?: string): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_store_file_audit_ts ON store_file_audit(created_at)`)
   // Migration: add agent column to installs that created the table before this column existed.
   try { db.exec(`ALTER TABLE store_file_audit ADD COLUMN agent TEXT`) } catch { /* column already exists */ }
+
+  // --- Vault SSH Keys (shared pool) ---
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS vault_ssh_keys (
+      id TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      username TEXT NOT NULL,
+      vault_key_id TEXT NOT NULL,
+      public_key TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      key_type TEXT NOT NULL DEFAULT 'ed25519',
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_vault_ssh_keys_label ON vault_ssh_keys(label)`)
+
+  // --- Vault SSH Servers ---
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS vault_ssh_servers (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      host TEXT NOT NULL,
+      port INTEGER NOT NULL DEFAULT 22,
+      username TEXT NOT NULL,
+      ssh_key_id TEXT REFERENCES vault_ssh_keys(id),
+      description TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_vault_ssh_servers_name ON vault_ssh_servers(name)`)
+  // Migrations for installs that ran earlier schema versions. MUST run before
+  // the ssh_key_id index below: on an install where vault_ssh_servers already
+  // existed (pre-dating this column), CREATE TABLE IF NOT EXISTS above is a
+  // no-op and never adds ssh_key_id -- indexing it before this ALTER TABLE
+  // runs throws "no such column: ssh_key_id" and crashes startup entirely
+  // (2026-07-01 incident: dashboard 502'd, crash-looped on every restart).
+  try { db.exec('ALTER TABLE vault_ssh_servers ADD COLUMN key_type TEXT') } catch { /* pre-existing */ }
+  try { db.exec('ALTER TABLE vault_ssh_servers ADD COLUMN fingerprint TEXT') } catch { /* pre-existing */ }
+  try { db.exec('ALTER TABLE vault_ssh_servers ADD COLUMN vault_key_id TEXT') } catch { /* pre-existing */ }
+  try { db.exec('ALTER TABLE vault_ssh_servers ADD COLUMN key_expires_at INTEGER') } catch { /* pre-existing */ }
+  try { db.exec('ALTER TABLE vault_ssh_servers ADD COLUMN ssh_key_id TEXT REFERENCES vault_ssh_keys(id)') } catch { /* already exists */ }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_vault_ssh_servers_key ON vault_ssh_servers(ssh_key_id)`)
 
   // One-shot migration from the old JSON file (which had a read-modify-write
   // race). Import rows if they exist, then rename the file so we don't keep
@@ -1141,11 +1199,20 @@ export function getChildCards(parentId: string): KanbanCard[] {
   return db.prepare('SELECT * FROM kanban_cards WHERE parent_id = ? AND archived_at IS NULL ORDER BY sort_order ASC').all(parentId) as KanbanCard[]
 }
 
-export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrder: number): boolean {
+export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrder: number, actor?: string): boolean {
   const now = Math.floor(Date.now() / 1000)
-  return db.prepare(
+  // Read the previous status first so we only record an audit event on a real
+  // status transition (not a pure sort_order reorder within the same column).
+  const prev = (db.prepare('SELECT status FROM kanban_cards WHERE id=?').get(id) as { status: string } | undefined)?.status
+  const changed = db.prepare(
     'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
   ).run(status, sortOrder, now, id).changes > 0
+  if (changed && prev !== undefined && prev !== status) {
+    db.prepare(
+      'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)'
+    ).run(id, prev, status, actor ?? null, now)
+  }
+  return changed
 }
 
 // Stamp the once-only kanban -> agent dispatch guard. Returns false if the
@@ -1242,6 +1309,19 @@ export function deleteKanbanCard(id: string): boolean {
 
 export function getKanbanComments(cardId: string): KanbanComment[] {
   return db.prepare('SELECT * FROM kanban_comments WHERE card_id = ? ORDER BY created_at ASC').all(cardId) as KanbanComment[]
+}
+
+export interface KanbanCardEvent {
+  id: number
+  card_id: string
+  from_status: string | null
+  to_status: string
+  actor: string | null
+  created_at: number
+}
+
+export function getKanbanCardEvents(cardId: string): KanbanCardEvent[] {
+  return db.prepare('SELECT * FROM kanban_card_events WHERE card_id = ? ORDER BY created_at ASC, id ASC').all(cardId) as KanbanCardEvent[]
 }
 
 // Lookup a kanban card's `seq` (its sqlite rowid) by the 8-char hex id stored
@@ -2229,5 +2309,110 @@ export function pruneTokenUsage(): number {
   const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400
   const info = db.prepare('DELETE FROM token_usage WHERE timestamp < ?').run(cutoff)
   return info.changes
+}
+
+// --- Vault SSH Keys (shared key pool) ---
+// Each key is independent of any server -- one key may be assigned to many
+// servers. The private key blob lives in the AES-256-GCM vault (vault.ts);
+// only its id (vault_key_id) is stored here. public_key and fingerprint are
+// safe to surface in the API; the private key never leaves the backend.
+
+export interface VaultSshKey {
+  id: string
+  label: string
+  username: string
+  vault_key_id: string
+  public_key: string
+  fingerprint: string
+  key_type: string
+  created_at: number
+}
+
+export function listVaultSshKeys(): VaultSshKey[] {
+  return db.prepare('SELECT * FROM vault_ssh_keys ORDER BY label ASC').all() as VaultSshKey[]
+}
+
+export function getVaultSshKey(id: string): VaultSshKey | undefined {
+  return db.prepare('SELECT * FROM vault_ssh_keys WHERE id = ?').get(id) as VaultSshKey | undefined
+}
+
+export function createVaultSshKey(key: Pick<VaultSshKey, 'id' | 'label' | 'username' | 'vault_key_id' | 'public_key' | 'fingerprint' | 'key_type'>): VaultSshKey {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(
+    `INSERT INTO vault_ssh_keys (id, label, username, vault_key_id, public_key, fingerprint, key_type, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(key.id, key.label, key.username, key.vault_key_id, key.public_key, key.fingerprint, key.key_type, now)
+  return { ...key, created_at: now }
+}
+
+// Unassign the key from all servers, then delete it. Returns the count of
+// servers that were unassigned so callers can surface that in the response.
+export function deleteVaultSshKey(id: string): { deleted: boolean; unassigned: number } {
+  return db.transaction(() => {
+    const unassigned = db.prepare(
+      'UPDATE vault_ssh_servers SET ssh_key_id = NULL, updated_at = ? WHERE ssh_key_id = ?'
+    ).run(Math.floor(Date.now() / 1000), id).changes
+    const deleted = db.prepare('DELETE FROM vault_ssh_keys WHERE id = ?').run(id).changes > 0
+    return { deleted, unassigned }
+  })()
+}
+
+// --- Vault SSH Servers ---
+// Stores server metadata. The ssh_key_id FK points to vault_ssh_keys (nullable;
+// null = no key assigned = keyStatus "missing"). Legacy per-server key columns
+// (vault_key_id, key_type, fingerprint, key_expires_at) are kept in the schema
+// for backward compatibility but are no longer the source of truth.
+
+export interface VaultSshServer {
+  id: string
+  name: string
+  host: string
+  port: number
+  username: string
+  ssh_key_id: string | null
+  description: string | null
+  created_at: number
+  updated_at: number
+}
+
+export type SshKeyStatus = 'ok' | 'missing'
+
+export function computeSshKeyStatus(server: VaultSshServer): SshKeyStatus {
+  return server.ssh_key_id ? 'ok' : 'missing'
+}
+
+export function listVaultSshServers(): VaultSshServer[] {
+  return db.prepare('SELECT * FROM vault_ssh_servers ORDER BY name ASC').all() as VaultSshServer[]
+}
+
+export function getVaultSshServer(id: string): VaultSshServer | undefined {
+  return db.prepare('SELECT * FROM vault_ssh_servers WHERE id = ?').get(id) as VaultSshServer | undefined
+}
+
+export function createVaultSshServer(server: Pick<VaultSshServer, 'id' | 'name' | 'host' | 'port' | 'username' | 'description'>): VaultSshServer {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(
+    `INSERT INTO vault_ssh_servers (id, name, host, port, username, description, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(server.id, server.name, server.host, server.port, server.username, server.description ?? null, now, now)
+  return { ...server, ssh_key_id: null, created_at: now, updated_at: now }
+}
+
+export function updateVaultSshServer(id: string, patch: Partial<Pick<VaultSshServer, 'name' | 'host' | 'port' | 'username' | 'ssh_key_id' | 'description'>>): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  const sets: string[] = ['updated_at = ?']
+  const params: unknown[] = [now]
+  if (patch.name !== undefined)        { sets.push('name = ?');        params.push(patch.name) }
+  if (patch.host !== undefined)        { sets.push('host = ?');        params.push(patch.host) }
+  if (patch.port !== undefined)        { sets.push('port = ?');        params.push(patch.port) }
+  if (patch.username !== undefined)    { sets.push('username = ?');    params.push(patch.username) }
+  if (patch.ssh_key_id !== undefined)  { sets.push('ssh_key_id = ?'); params.push(patch.ssh_key_id) }
+  if (patch.description !== undefined) { sets.push('description = ?'); params.push(patch.description) }
+  params.push(id)
+  return db.prepare(`UPDATE vault_ssh_servers SET ${sets.join(', ')} WHERE id = ?`).run(...params).changes > 0
+}
+
+export function deleteVaultSshServer(id: string): boolean {
+  return db.prepare('DELETE FROM vault_ssh_servers WHERE id = ?').run(id).changes > 0
 }
 

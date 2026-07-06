@@ -1205,6 +1205,276 @@
         <p class="vault-empty-hint" data-i18n="vault.empty_hint">Adj hozza egyet az "Uj kulcs" gombbal</p>
       </div>
 
+      <!-- === SSH Key Store section === -->
+      <div class="ssh-section ssh-key-store-section">
+        <div class="ssh-section-header">
+          <div>
+            <h2 class="ssh-section-title">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+              Kulcstároló
+            </h2>
+            <p class="ssh-section-sub">Generált ed25519 kulcspárok – ezeket rendelheted a szerverekhez</p>
+          </div>
+          <div class="ssh-section-actions">
+            <button class="btn-primary btn-compact" id="sshKeyNewBtn">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Új kulcs generálása
+            </button>
+          </div>
+        </div>
+        <div class="ssh-table-wrap" id="sshKeysView" hidden>
+          <table class="ssh-table">
+            <thead>
+              <tr>
+                <th>Cimke</th>
+                <th>Felhasználónév</th>
+                <th>Típus</th>
+                <th>Ujjlenyomat</th>
+                <th>Létrehozva</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="sshKeysTableBody"></tbody>
+          </table>
+        </div>
+        <div id="sshKeysEmpty" class="vault-empty">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+          <p>Még nincs kulcs</p>
+          <p class="vault-empty-hint">Generálj egyet, majd rendeld hozzá a szerverekhez</p>
+        </div>
+      </div>
+
+      <!-- === SSH Servers section === -->
+      <div class="ssh-section">
+        <div class="ssh-section-header">
+          <div>
+            <h2 class="ssh-section-title">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+              SSH Szerverek
+            </h2>
+            <p class="ssh-section-sub">Szerver hozzáférések és SSH kulcs állapotok</p>
+          </div>
+          <div class="ssh-section-actions">
+            <div class="schedule-view-toggle">
+              <button class="view-btn" id="sshViewCards" title="Kártya nézet">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+              </button>
+              <button class="view-btn active" id="sshViewTable" title="Táblázat nézet">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+              </button>
+              <button class="view-btn" id="sshInfoGlobalBtn" title="Telepítési útmutató (meglévő szerver)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+              </button>
+            </div>
+            <button class="btn-primary btn-compact" id="sshNewBtn">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Új szerver
+            </button>
+          </div>
+        </div>
+
+        <!-- Add server panel -->
+        <div class="vault-add-panel" id="sshAddPanel" hidden>
+          <div class="vault-add-panel-header">
+            <h3 id="sshAddPanelTitle">Szerver hozzáadása</h3>
+            <button class="modal-close" id="sshAddPanelClose">&times;</button>
+          </div>
+          <div class="vault-add-fields" style="grid-template-columns:1fr 1fr 1fr">
+            <div class="vault-field-group">
+              <label class="vault-field-label">Név</label>
+              <input type="text" id="sshNameInput" class="input" placeholder="pl. web-prod-01">
+            </div>
+            <div class="vault-field-group">
+              <label class="vault-field-label">IP / Hostnév</label>
+              <input type="text" id="sshHostInput" class="input" placeholder="192.168.1.10">
+            </div>
+            <div class="vault-field-group">
+              <label class="vault-field-label">Felhasználónév</label>
+              <input type="text" id="sshUserInput" class="input" placeholder="root">
+            </div>
+            <div class="vault-field-group">
+              <label class="vault-field-label">Port</label>
+              <input type="number" id="sshPortInput" class="input" placeholder="22" value="22">
+            </div>
+            <div class="vault-field-group">
+              <label class="vault-field-label">SSH kulcs</label>
+              <div class="ssh-key-select-wrap">
+                <select id="sshKeySelectInput" class="input ssh-key-select">
+                  <option value="">-- Nincs kulcs --</option>
+                </select>
+                <button type="button" class="btn-secondary btn-compact" id="sshKeyNewFromFormBtn" title="Új kulcs generálása">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                  Új kulcs
+                </button>
+                <button type="button" class="ssh-info-btn" id="sshKeyInstallFromFormBtn" title="Telepítési útmutató (ehhez az új szerverhez)">i</button>
+              </div>
+            </div>
+            <div class="vault-field-group">
+              <label class="vault-field-label">Leírás (opcionális)</label>
+              <input type="text" id="sshDescInput" class="input" placeholder="pl. Produkciós webszerver">
+            </div>
+          </div>
+          <div class="vault-add-actions">
+            <button class="btn-primary" id="sshAddBtn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/></svg>
+              Szerver mentése
+            </button>
+          </div>
+        </div>
+
+        <!-- Card view -->
+        <div class="ssh-cards schedule-view" id="sshCardsView"></div>
+
+        <!-- Table view -->
+        <div class="schedule-view" id="sshTableView" hidden>
+          <div class="ssh-table-wrap">
+            <table class="ssh-table">
+              <thead>
+                <tr>
+                  <th>Név</th>
+                  <th>IP / Hostnév</th>
+                  <th>Felhasználó</th>
+                  <th>Port</th>
+                  <th>Hozzárendelt kulcs</th>
+                  <th>Leírás</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="sshTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="sshEmpty" class="vault-empty" hidden>
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+          <p>Még nincs szerver</p>
+          <p class="vault-empty-hint">Add hozzá az "Új szerver" gombbal</p>
+        </div>
+      </div>
+
+      <!-- SSH Key Generation modal (standalone key store) -->
+      <div class="modal-overlay" id="sshKeygenOverlay">
+        <div class="modal" style="max-width:520px">
+          <div class="modal-header">
+            <h2>SSH kulcs generálása</h2>
+            <button class="modal-close" id="sshKeygenClose">&times;</button>
+          </div>
+          <div class="modal-body">
+            <p class="vault-scan-desc">Új ed25519 kulcspár generálása. A privát kulcs titkosítva tárolódik a Vault-ban, soha nem hagyja el a szervert.</p>
+            <div id="sshKeygenForm">
+              <div class="form-group">
+                <label for="sshKeygenLabelInput">Cimke</label>
+                <input type="text" id="sshKeygenLabelInput" class="input" placeholder="pl. bishop-ro jumphost">
+              </div>
+              <div class="form-group">
+                <label for="sshKeygenUserInput">Felhasználónév (ssh komment)</label>
+                <input type="text" id="sshKeygenUserInput" class="input" placeholder="pl. bishop-ro">
+              </div>
+            </div>
+            <div id="sshKeygenSpinner" hidden style="text-align:center;padding:20px 0">
+              <svg class="spin" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+              <p style="margin-top:8px;font-size:13px;color:var(--text-muted)">Generálás folyamatban...</p>
+            </div>
+            <div id="sshKeygenResult" hidden>
+              <div class="ssh-pubkey-label">
+                <span>Publikus kulcs</span>
+                <button class="btn-secondary btn-compact" id="sshKeygenCopyBtn">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  Másolás
+                </button>
+              </div>
+              <textarea id="sshKeygenPubkeyBox" class="ssh-pubkey-box" readonly rows="3"></textarea>
+              <p class="ssh-pubkey-hint">A kulcs mentve a Kulcstárolóba. Rendeld hozzá egy szerverhez, majd telepítsd az (i) gomb segítségével.</p>
+            </div>
+          </div>
+          <div class="modal-footer" id="sshKeygenFooter">
+            <button class="btn-primary" id="sshKeygenSubmitBtn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              Generálás
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- SSH Install Info modal -->
+      <div class="modal-overlay" id="sshInfoOverlay">
+        <div class="modal" style="max-width:580px">
+          <div class="modal-header">
+            <h2>Kulcs telepítése – <span id="sshInfoServerName"></span></h2>
+            <button class="modal-close" id="sshInfoClose">&times;</button>
+          </div>
+          <div class="modal-body">
+            <!-- Part 0: Server selector -->
+            <div class="ssh-info-server-section">
+              <div class="ssh-info-key-section-label">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+                Szerver
+              </div>
+              <select id="sshInfoServerSelect" class="input ssh-key-select" style="width:100%;max-width:100%;height:34px;font-size:13px"></select>
+            </div>
+
+            <!-- Part 1: Key selector -->
+            <div class="ssh-info-key-section">
+              <div class="ssh-info-key-section-label">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                Kulcs kiválasztása
+              </div>
+              <p class="ssh-section-sub" style="margin:0 0 8px">Válaszd ki, melyik Kulcstárolóban lévő kulcsot rendeled ehhez a szerverhez. A változás azonnal mentésre kerül.</p>
+              <select id="sshInfoKeySelect" class="input ssh-key-select"></select>
+            </div>
+
+            <!-- Part 2: Install commands -->
+            <div id="sshInfoInstallSection">
+              <p class="vault-scan-desc" style="margin-bottom:12px">Futtasd az alábbi parancsokat a célszerveren (<strong id="sshInfoUser"></strong> felhasználóval) a kiválasztott kulcs telepítéséhez:</p>
+              <div class="ssh-install-step" id="sshInfoStep0">
+                <div class="ssh-install-step-label">1. Felhasználó létrehozása (ha még nincs, root-tal futtatva)</div>
+                <div class="ssh-code-wrap">
+                  <code class="ssh-code" id="sshInfoCmd0"></code>
+                  <button class="ssh-code-copy" data-target="sshInfoCmd0" title="Másolás">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  </button>
+                </div>
+              </div>
+              <div class="ssh-install-step">
+                <div class="ssh-install-step-label">2. SSH könyvtár létrehozása (ha még nincs)</div>
+                <div class="ssh-code-wrap">
+                  <code class="ssh-code" id="sshInfoCmd1">mkdir -p ~/.ssh &amp;&amp; chmod 700 ~/.ssh</code>
+                  <button class="ssh-code-copy" data-target="sshInfoCmd1" title="Másolás">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  </button>
+                </div>
+              </div>
+              <div class="ssh-install-step">
+                <div class="ssh-install-step-label">3. Publikus kulcs hozzáfűzése</div>
+                <div class="ssh-code-wrap">
+                  <code class="ssh-code" id="sshInfoCmd2"></code>
+                  <button class="ssh-code-copy" data-target="sshInfoCmd2" title="Másolás">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  </button>
+                </div>
+              </div>
+              <div class="ssh-install-step">
+                <div class="ssh-install-step-label">4. Jogosultság beállítása</div>
+                <div class="ssh-code-wrap">
+                  <code class="ssh-code" id="sshInfoCmd3">chmod 600 ~/.ssh/authorized_keys</code>
+                  <button class="ssh-code-copy" data-target="sshInfoCmd3" title="Másolás">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  </button>
+                </div>
+              </div>
+              <div class="info-box" style="margin-top:16px">
+                <strong>Publikus kulcs:</strong>
+                <div id="sshInfoPubkey" style="font-family:monospace;font-size:11px;word-break:break-all;margin-top:4px;color:var(--text-muted)"></div>
+              </div>
+            </div>
+
+            <div id="sshInfoNoKey" hidden style="text-align:center;padding:16px 0;color:var(--text-muted);font-size:13px">
+              Nincs kulcs kiválasztva. Válassz egyet fentebb, vagy generálj újat a Kulcstárolóban.
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Binding modal -->
       <div class="modal-overlay" id="vaultBindOverlay">
         <div class="modal" style="max-width:500px">
@@ -2542,7 +2812,13 @@
     <div class="modal terminal-modal">
       <div class="modal-header">
         <h2 id="terminalModalTitle">Terminal</h2>
-        <button class="modal-close" id="terminalClose">&times;</button>
+        <div style="display:flex;align-items:center;gap:10px;margin-left:auto;">
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#b8b2a6;cursor:pointer;user-select:none;" title="Enable keyboard input to the agent pane (owner-gated, audit-logged)">
+            <input type="checkbox" id="terminalInputToggle" style="cursor:pointer;">
+            <span id="terminalInputToggleLabel">Input off</span>
+          </label>
+          <button class="modal-close" id="terminalClose">&times;</button>
+        </div>
       </div>
       <div id="terminalContainer" style="background:#1a1a1a;padding:8px;border-radius:0 0 8px 8px;flex:1;min-height:360px;"></div>
     </div>

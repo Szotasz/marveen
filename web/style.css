@@ -4076,6 +4076,336 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
 }
 .vault-card-edit-form .input { flex: 1; }
 
+/* === SSH Vault Section === */
+.ssh-section {
+  margin-top: 32px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+.ssh-key-store-section { margin-top: 28px; }
+
+/* Key assign select in card/table */
+.ssh-key-select {
+  font-size: 12px;
+  padding: 3px 6px;
+  height: 28px;
+  min-width: 0;
+  max-width: 160px;
+}
+.ssh-key-select-wrap {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.ssh-key-select-wrap .ssh-key-select { flex: 1; }
+
+/* Info modal server section */
+.ssh-info-server-section {
+  margin-bottom: 14px;
+}
+.ssh-info-server-section .ssh-info-key-section-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+/* Info modal key section */
+.ssh-info-key-section {
+  background: var(--bg-hover, rgba(127,127,127,.05));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 20px;
+}
+.ssh-info-key-section-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+.ssh-info-key-section .ssh-key-select {
+  width: 100%;
+  max-width: 100%;
+  height: 34px;
+  font-size: 13px;
+}
+.ssh-section-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+.ssh-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 4px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.ssh-section-sub {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.ssh-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* SSH key status badges */
+.ssh-key-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 20px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.ssh-key-badge.ok { background: rgba(34,197,94,.15); color: #16a34a; }
+.ssh-key-badge.missing { background: rgba(234,179,8,.15); color: #b45309; }
+.ssh-key-badge.expired { background: rgba(239,68,68,.15); color: #dc2626; }
+[data-theme="dark"] .ssh-key-badge.ok { color: #4ade80; }
+[data-theme="dark"] .ssh-key-badge.missing { color: #fbbf24; }
+[data-theme="dark"] .ssh-key-badge.expired { color: #f87171; }
+
+/* SSH card grid */
+.ssh-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+.ssh-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+.ssh-card:hover { border-color: var(--accent); box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+.ssh-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.ssh-card-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.ssh-card-title { flex: 1; min-width: 0; }
+.ssh-card-name {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ssh-card-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ssh-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+.ssh-card-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+}
+.ssh-card-row svg { flex-shrink: 0; opacity: 0.6; }
+.ssh-card-row span { color: var(--text); font-family: monospace; font-size: 12px; }
+.ssh-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.ssh-card-actions { display: flex; gap: 4px; }
+
+/* SSH table */
+.ssh-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.ssh-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.ssh-table th {
+  background: var(--bg-card);
+  padding: 10px 14px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.ssh-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.ssh-table tr:last-child td { border-bottom: none; }
+.ssh-table tbody tr:hover { background: var(--bg-hover, rgba(127,127,127,.05)); }
+.ssh-table .ssh-table-name { font-weight: 600; }
+.ssh-table .ssh-table-mono { font-family: monospace; font-size: 12px; color: var(--text-muted); }
+.ssh-table .ssh-table-actions { display: flex; gap: 4px; justify-content: flex-end; }
+
+@media (max-width: 600px) {
+  .ssh-cards { grid-template-columns: 1fr; }
+  .ssh-section-header { flex-direction: column; }
+}
+
+/* SSH keygen + info modal styles */
+.ssh-pubkey-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+.ssh-pubkey-box {
+  width: 100%;
+  font-family: monospace;
+  font-size: 11px;
+  padding: 10px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  resize: none;
+  line-height: 1.5;
+  word-break: break-all;
+}
+.ssh-pubkey-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 8px;
+}
+.ssh-install-step {
+  margin-bottom: 14px;
+}
+.ssh-install-step-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+.ssh-code-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+.ssh-code {
+  flex: 1;
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--text);
+  word-break: break-all;
+  white-space: pre-wrap;
+  user-select: all;
+}
+.ssh-code-copy {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.ssh-code-copy:hover { color: var(--accent); border-color: var(--accent); }
+.ssh-code-copy.copied { color: var(--success); border-color: var(--success); }
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { animation: spin 0.8s linear infinite; }
+
+/* Keygen button -- inline on card/table */
+.ssh-keygen-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 20px;
+  border: 1px solid currentColor;
+  background: transparent;
+  cursor: pointer;
+  transition: all var(--transition);
+  color: #b45309;
+}
+[data-theme="dark"] .ssh-keygen-btn { color: #fbbf24; }
+.ssh-keygen-btn:hover { background: rgba(234,179,8,.12); }
+
+.ssh-info-btn {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  transition: all var(--transition);
+  flex-shrink: 0;
+}
+.ssh-info-btn:hover { color: var(--accent); border-color: var(--accent); }
+
 .vault-bind-status {
   font-size: 13px;
   padding: 8px 12px;
