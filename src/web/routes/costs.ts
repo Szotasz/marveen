@@ -56,10 +56,23 @@ export async function tryHandleCosts(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/costs/sync' && method === 'POST') {
     try {
       const provider = url.searchParams.get('provider') || 'render'
-      if (provider !== 'render') { json(res, { error: 'only provider=render is supported in v0.5' }, 400); return true }
-      const { syncRenderCollector } = await import('../../costops/collectors/render.js')
       const now = Math.floor(Date.now() / 1000)
-      const result = await syncRenderCollector(getDb(), now)
+      const db = getDb()
+      let result: { ok: boolean }
+      if (provider === 'render') {
+        const { syncRenderCollector } = await import('../../costops/collectors/render.js')
+        result = await syncRenderCollector(db, now)
+      } else if (provider === 'openai') {
+        // LIVE read-only OpenAI Costs API sync; admin key pulled from the Vault, never logged.
+        const { syncOpenAiCollector } = await import('../../costops/collectors/openai.js')
+        result = await syncOpenAiCollector(db, now)
+      } else if (provider === 'github') {
+        // LIVE read-only GitHub billing usage sync; PAT pulled from the Vault, never logged.
+        const { syncGitHubCollector } = await import('../../costops/collectors/github.js')
+        result = await syncGitHubCollector(db, now)
+      } else {
+        json(res, { error: `unsupported provider '${provider}' (supported: render, openai, github)` }, 400); return true
+      }
       json(res, result, result.ok ? 200 : 502)
     } catch (err) {
       logger.error({ err }, 'CostOps sync failed')
