@@ -70,8 +70,12 @@ export async function tryHandleCosts(ctx: RouteContext): Promise<boolean> {
         // LIVE read-only GitHub billing usage sync; PAT pulled from the Vault, never logged.
         const { syncGitHubCollector } = await import('../../costops/collectors/github.js')
         result = await syncGitHubCollector(db, now)
+      } else if (provider === 'deepseek') {
+        // LIVE read-only DeepSeek prepaid-balance sync; key from the Vault, never logged.
+        const { syncDeepSeekBalance } = await import('../../costops/collectors/deepseek.js')
+        result = await syncDeepSeekBalance(db, now)
       } else {
-        json(res, { error: `unsupported provider '${provider}' (supported: render, openai, github)` }, 400); return true
+        json(res, { error: `unsupported provider '${provider}' (supported: render, openai, github, deepseek)` }, 400); return true
       }
       json(res, result, result.ok ? 200 : 502)
     } catch (err) {

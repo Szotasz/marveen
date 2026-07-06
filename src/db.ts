@@ -841,6 +841,19 @@ export function initDatabase(dbPathOverride?: string): void {
   // v0.5: sanitized per-run detail (service_count, plan breakdown, not_covered) as JSON.
   // NO raw service/account IDs -- the breakdown carries only type/plan labels + counts.
   try { db.exec(`ALTER TABLE import_runs ADD COLUMN detail_json TEXT`) } catch { /* already exists */ }
+  // CostOps: provider prepaid-balance snapshots. For prepaid providers (e.g.
+  // DeepSeek) that expose remaining balance but not per-period cost, MTD spend
+  // is derived from the balance DROP across snapshots. No secret, no raw id.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS provider_balance_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider TEXT NOT NULL,
+      currency TEXT NOT NULL,
+      balance REAL NOT NULL,
+      captured_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_balance_snapshots_provider ON provider_balance_snapshots(provider, captured_at)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_vault_ssh_servers_name ON vault_ssh_servers(name)`)
   // Migrations for installs that ran earlier schema versions. MUST run before
   // the ssh_key_id index below: on an install where vault_ssh_servers already
