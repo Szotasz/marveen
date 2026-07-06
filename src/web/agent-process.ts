@@ -367,13 +367,20 @@ function runTmux(host: string | null, tmuxArgs: string[], opts: { timeout?: numb
   // marveen restart would lose connection multiplexing and re-handshake each tick.
   if (host) ensureControlDir()
   const inv = buildTmuxInvocation(host, TMUX, tmuxArgs)
-  execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000) })
+  // stdio: capture the child's stderr into the thrown error instead of letting
+  // execFileSync's default inherit it to the parent stderr. A restarting agent
+  // makes tmux emit `can't find session: agent-X` / `no server running`; without
+  // this those leaked as ~450 bare (non-pino) lines into store/dashboard.log.
+  // Callers that care read err.stderr via logger.warn({ err }).
+  execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), stdio: ['ignore', 'ignore', 'pipe'] })
 }
 
 function captureTmux(host: string | null, tmuxArgs: string[], opts: { timeout?: number } = {}): string {
   if (host) ensureControlDir()
   const inv = buildTmuxInvocation(host, TMUX, tmuxArgs)
-  return execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8' })
+  // stdout piped (we return it); stderr piped too so tmux's `can't find session`
+  // noise lands in err.stderr on failure rather than the parent stderr / dashboard.log.
+  return execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
 }
 
 // Tri-state run state. For a remote agent a failed list-sessions query is
