@@ -29,6 +29,8 @@ import {
   readAgentAuthMode,
   writeAgentAuthMode,
   readAgentClaudeConfigDir,
+  readAgentClaudePlan,
+  writeAgentClaudePlan,
   readAgentRemoteConfig,
   readAgentRemoteHost,
   writeAgentRemoteConfig,
@@ -37,6 +39,7 @@ import {
   KNOWN_VOICE_MODELS,
   type AuthMode,
 } from '../agent-config.js'
+import { readClaudePlans } from '../claude-plans.js'
 import {
   readAgentTeam,
   writeAgentTeam,
@@ -306,6 +309,9 @@ interface AgentSummary {
   runningSince: number | null
   authMode: AuthMode
   securityProfile: string
+  /** Named Claude subscription plan id (see claude-plans.ts), or null when the
+   *  agent uses the raw claudeConfigDir / default resolution. */
+  claudePlan: string | null
   team: TeamConfig
   hasTelegram: boolean
   telegramBotUsername?: string
@@ -375,6 +381,7 @@ function getAgentSummary(name: string): AgentSummary {
     runningSince,
     authMode: readAgentAuthMode(name),
     securityProfile: readAgentSecurityProfile(name),
+    claudePlan: readAgentClaudePlan(name),
     team: readAgentTeam(name),
     hasTelegram: tg.hasTelegram,
     telegramBotUsername: tg.botUsername,
@@ -467,6 +474,15 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
   if (path === '/api/agents' && method === 'GET') {
     json(res, listAgentSummaries())
+    return true
+  }
+
+  // Named Claude subscription registry (store/claude-plans.json), resolved +
+  // validated. Feeds the per-agent plan dropdown; empty array when no registry
+  // file exists (opt-in feature). Read-only in PR1 -- editing the registry is a
+  // separate surface.
+  if (path === '/api/claude-plans' && method === 'GET') {
+    json(res, readClaudePlans())
     return true
   }
 
@@ -1530,7 +1546,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const configRoot = agentConfigRoot(name)
     const data = JSON.parse(body.toString()) as {
       claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string
-      authMode?: AuthMode; apiKey?: string
+      authMode?: AuthMode; apiKey?: string; claudePlan?: string
     }
     if (data.claudeMd !== undefined) atomicWriteFileSync(join(configRoot, 'CLAUDE.md'), data.claudeMd)
     if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)
@@ -1544,6 +1560,13 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       if (data.authMode !== 'api') {
         deleteSecret(`agent-${name}-api-key`)
       }
+    }
+    // Named Claude plan id (empty string clears it -> revert to raw
+    // claudeConfigDir / default). Unknown ids are accepted here and simply
+    // resolve to no plan at launch (fallback), so a stale id never breaks a
+    // launch; the dropdown only offers registry ids anyway.
+    if (data.claudePlan !== undefined) {
+      writeAgentClaudePlan(name, data.claudePlan)
     }
     json(res, { ok: true })
     return true

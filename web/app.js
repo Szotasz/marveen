@@ -2105,6 +2105,38 @@ function populateProfileSelect(selectEl, descEl, selected) {
   })
 }
 
+// Populate the per-agent Claude subscription plan dropdown from the named
+// registry (/api/claude-plans). The empty value means "no named plan" -> the
+// agent keeps its raw config-dir / host default. The description line shows the
+// plan type + config dir and flags a Channels-forbidden plan so the operator
+// sees the guardrail context before saving.
+function populatePlanSelect(selectEl, descEl, selected) {
+  if (!selectEl) return
+  fetch('/api/claude-plans')
+    .then(res => (res.ok ? res.json() : []))
+    .catch(() => [])
+    .then((plans) => {
+      const opts = ['<option value="">— alap (host OAuth / config-dir) —</option>']
+      for (const p of plans) {
+        opts.push(`<option value="${escapeHtml(p.id)}">${escapeHtml(p.label)}</option>`)
+      }
+      selectEl.innerHTML = opts.join('')
+      selectEl.value = selected || ''
+      const updateDesc = () => {
+        if (!descEl) return
+        const p = plans.find(x => x.id === selectEl.value)
+        if (!p) {
+          descEl.textContent = 'Nincs nevesített plan — a host OAuth / raw config-dir dönt.'
+          return
+        }
+        const warn = p.channelsAllowed ? '' : ' ⚠️ Channels tiltva ezen a planen'
+        descEl.textContent = `${p.planType} · ${p.configDir}${warn}`
+      }
+      selectEl.onchange = updateDesc
+      updateDesc()
+    })
+}
+
 function resetWizard() {
   wizardStep = 1
   agentName.value = ''
@@ -2669,6 +2701,11 @@ async function openAgentDetail(agentName) {
     document.getElementById('editAgentProfile'),
     document.getElementById('editAgentProfileDesc'),
     currentAgent.securityProfile || 'default',
+  )
+  populatePlanSelect(
+    document.getElementById('editAgentPlan'),
+    document.getElementById('editAgentPlanDesc'),
+    currentAgent.claudePlan || '',
   )
   renderTeamEditor(currentAgent, agents)
   updateAuthModeUI(currentAgent.authMode || 'shared', currentAgent.hasApiKey || false)
@@ -3447,6 +3484,22 @@ document.getElementById('saveProfileBtn').addEventListener('click', async () => 
     showToast(body.requiresRestart ? t('agents.toast.profile_saved_restart') : t('agents.toast.profile_saved'))
     loadAgents()
   } catch { showToast(t('agents.toast.profile_error')) }
+})
+
+document.getElementById('savePlanBtn').addEventListener('click', async () => {
+  if (!currentAgent) return
+  const claudePlan = document.getElementById('editAgentPlan').value
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ claudePlan }),
+    })
+    if (!res.ok) throw new Error()
+    currentAgent.claudePlan = claudePlan || null
+    showToast('Plan mentve — újraindítás után lép életbe')
+    loadAgents()
+  } catch { showToast('Hiba a plan mentésekor') }
 })
 
 // === Auth Mode ===

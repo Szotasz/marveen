@@ -15,7 +15,8 @@ import {
   stripGhostSuggestion,
   paneShowsContextSaturation,
 } from '../pane-state.js'
-import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost } from './agent-config.js'
+import { getClaudePlan } from './claude-plans.js'
 import {
   buildTmuxInvocation,
   buildSshExec,
@@ -666,7 +667,13 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // the sub-agent would launch logged-out -- so when the token is absent we skip
     // isolation and keep the shared ~/.claude (the pre-isolation, still-stable
     // behaviour) rather than break auth.
-    let claudeConfigDir = readAgentClaudeConfigDir(name)
+    // Named plan wins over the raw per-agent claudeConfigDir; both are opt-in,
+    // so with neither set this is exactly the prior behaviour. The plan's
+    // configDir is already launcher-validated (claude-plans.ts reuses
+    // expandAndValidateConfigDir). NOTE: this covers regular agents only; the
+    // main agent still launches via channels.sh (separate, gated follow-up).
+    let claudeConfigDir = getClaudePlan(readAgentClaudePlan(name))?.configDir
+      ?? readAgentClaudeConfigDir(name)
     let oauthTokenEnv = ''
     if (!claudeConfigDir && hasChannel && name !== MAIN_AGENT_ID) {
       if (hasFleetOauthToken()) {
