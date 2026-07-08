@@ -6324,7 +6324,7 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
 .conversation-toolbar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border, #2a2a2a); flex-wrap: wrap; }
 .conversation-toolbar #conversationSearch { flex: 1; min-width: 160px; padding: 7px 10px; border-radius: 6px; border: 1px solid var(--border, #333); background: var(--bg-input, #1c1c1c); color: inherit; }
 .conversation-filter { display: flex; align-items: center; gap: 5px; font-size: 12px; opacity: .85; white-space: nowrap; }
-.conversation-container { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 8px; background: #141414; border-radius: 0 0 8px 8px; min-height: 320px; }
+.conversation-container { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 8px; background: var(--bg); border-radius: 0 0 8px 8px; min-height: 320px; }
 .conversation-empty { opacity: .6; text-align: center; padding: 30px; }
 .conv-load-older {
   display: block;
@@ -6343,8 +6343,8 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
 .conv-row.conv-in { justify-content: flex-start; }
 .conv-row.conv-out { justify-content: flex-end; }
 .conv-bubble { max-width: 78%; padding: 8px 12px; border-radius: 12px; font-size: 13.5px; line-height: 1.45; }
-.conv-in .conv-bubble { background: #26323d; border-bottom-left-radius: 3px; }
-.conv-out .conv-bubble { background: #1f4030; border-bottom-right-radius: 3px; }
+.conv-in .conv-bubble { background: var(--info-soft); border-bottom-left-radius: 3px; }
+.conv-out .conv-bubble { background: var(--success-soft); border-bottom-right-radius: 3px; }
 .conv-meta { font-size: 10.5px; opacity: .6; margin-bottom: 3px; }
 .conv-text { white-space: normal; word-break: break-word; }
 .conv-row.conv-note { justify-content: center; }
