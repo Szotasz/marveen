@@ -395,6 +395,13 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_messages_status ON agent_messages(status, to_agent)`)
 
+  // Migration: owner_id propagation through inter-agent messages
+  try {
+    db.exec('ALTER TABLE agent_messages ADD COLUMN owner_id TEXT')
+  } catch {
+    // column already exists
+  }
+
   // --- Pending Channel Requests (Slack channel opt-in workflow) ---
   db.exec(`
     CREATE TABLE IF NOT EXISTS pending_channel_requests (
@@ -1495,17 +1502,19 @@ export interface AgentMessage {
   created_at: number
   delivered_at: number | null
   completed_at: number | null
+  owner_id: string | null  // human user's chat_id; propagated so receiving agent can tag memories
 }
 
-export function createAgentMessage(from: string, to: string, content: string): AgentMessage {
+export function createAgentMessage(from: string, to: string, content: string, ownerId?: string): AgentMessage {
   const now = Math.floor(Date.now() / 1000)
   const info = db.prepare(
-    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at) VALUES (?, ?, ?, ?, ?)'
-  ).run(from, to, content, 'pending', now)
+    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, owner_id) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(from, to, content, 'pending', now, ownerId ?? null)
   return {
     id: Number(info.lastInsertRowid),
     from_agent: from, to_agent: to, content, status: 'pending',
     result: null, created_at: now, delivered_at: null, completed_at: null,
+    owner_id: ownerId ?? null,
   }
 }
 

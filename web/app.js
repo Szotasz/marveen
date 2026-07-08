@@ -5416,6 +5416,13 @@ document.getElementById('memAgentFilter').addEventListener('change', () => {
   }
 })
 
+// Owner filter
+let memOwnerTimer
+document.getElementById('memOwnerFilter')?.addEventListener('input', () => {
+  clearTimeout(memOwnerTimer)
+  memOwnerTimer = setTimeout(loadMemories, 400)
+})
+
 // Search with debounce
 memSearchInput.addEventListener('input', () => {
   clearTimeout(memSearchTimer)
@@ -5535,6 +5542,7 @@ async function loadMemories() {
   if (currentMemTier === 'log' || currentMemTier === 'graph') return
   const q = memSearchInput.value.trim()
   const agent = document.getElementById('memAgentFilter').value
+  const ownerId = (document.getElementById('memOwnerFilter')?.value || '').trim()
   const searchMode = document.getElementById('memSearchMode')?.value || 'hybrid'
   const params = new URLSearchParams()
   if (q) {
@@ -5542,6 +5550,7 @@ async function loadMemories() {
     params.set('mode', searchMode)
   }
   if (agent) params.set('agent', agent)
+  if (ownerId) params.set('owner_id', ownerId)
   if (currentMemTier) params.set('tier', currentMemTier)
   params.set('limit', '50')
 
@@ -5567,6 +5576,7 @@ function renderMemories(memories) {
     const badgeClass = 'badge-' + tier
     const shortContent = mem.content.length > 120 ? mem.content.slice(0, 120) + '...' : mem.content
     const agentLabel = mem.agent_id || mainAgentId()
+    const ownerLabel = mem.owner_id ? `owner:${mem.owner_id}` : ''
 
     // Build keywords HTML
     let keywordsHtml = ''
@@ -5581,6 +5591,7 @@ function renderMemories(memories) {
       <div class="mem-item-header">
         <span class="badge ${badgeClass}">${tierBadge}</span>
         <span class="mem-agent-badge">${escapeHtml(agentLabel)}</span>
+        ${ownerLabel ? `<span class="mem-agent-badge" title="Tulajdonos (owner_id)" style="opacity:.7;font-size:11px;">${escapeHtml(ownerLabel)}</span>` : ''}
         <span class="mem-date">${escapeHtml(mem.created_label || '')}</span>
         ${typeof mem.salience === 'number' ? `<span class="mem-salience" title="Relevancia ertek">S: ${mem.salience.toFixed(2)}</span>` : ''}
       </div>

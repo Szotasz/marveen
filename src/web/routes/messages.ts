@@ -17,7 +17,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/messages' && method === 'POST') {
     const body = await readBody(req)
-    const { from, to, content } = JSON.parse(body.toString()) as { from: string; to: string; content: string }
+    const { from, to, content, owner_id } = JSON.parse(body.toString()) as { from: string; to: string; content: string; owner_id?: string }
     if (!from?.trim() || !to?.trim() || !content?.trim()) {
       json(res, { error: 'from, to, and content are required' }, 400)
       return true
@@ -48,8 +48,8 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // every downstream consumer sees the canonical reference even when a
     // sub-agent forgets the CLAUDE.md rule (#75 Cuzcoo dispatch).
     const normalizedContent = normalizeKanbanRefs(content.trim(), getKanbanSeqByIdPrefix)
-    const msg = createAgentMessage(from.trim(), to.trim(), normalizedContent)
-    logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, 'Agent message created')
+    const msg = createAgentMessage(from.trim(), to.trim(), normalizedContent, owner_id?.trim() || undefined)
+    logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, owner_id: msg.owner_id }, 'Agent message created')
     json(res, msg)
     return true
   }
