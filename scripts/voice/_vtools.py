@@ -12,6 +12,14 @@ Subcommands:
       ogg/opus, and send it as a Telegram voice message via the bot token
       in <state_dir>/.env. Prints "ok=<bool> id=<message_id>".
 
+  canary <voice_onnx> <expected_text...>
+      Local-only self-test, no Telegram/network involved: synthesize
+      <expected_text> with Piper, transcribe the resulting audio straight
+      back with faster-whisper, and compare. Prints a one-line JSON result
+      {"passed": bool, "expected": str, "transcript": str, "ratio": float}
+      and exits 0 on pass / 1 on fail. Temp wav is always deleted -- never
+      touches the live Telegram-facing stt.sh/tts.sh state or sends anything.
+
 The bot token is read from the caller's OWN state dir at call time, never
 hardcoded -- so each agent speaks/listens on its own bot.
 """
@@ -94,11 +102,46 @@ def speak(voice_onnx, state_dir, chat_id, text):
                 pass
 
 
+def _normalize(s):
+    s = s.lower()
+    s = re.sub(r"[^\w\sáéíóöőúüű]", "", s, flags=re.UNICODE)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def canary(voice_onnx, expected_text):
+    fd_wav, wav = tempfile.mkstemp(suffix=".wav")
+    os.close(fd_wav)
+    try:
+        subprocess.run([VENV_PY, "-m", "piper", "-m", voice_onnx, "-f", wav],
+                       input=expected_text.encode(), check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        from faster_whisper import WhisperModel
+        m = WhisperModel("small", device="cpu", compute_type="int8")
+        segs, _ = m.transcribe(wav, language="hu", beam_size=5)
+        transcript = " ".join(s.text.strip() for s in segs).strip()
+        exp_words = _normalize(expected_text).split()
+        got_words = set(_normalize(transcript).split())
+        common = sum(1 for w in exp_words if w in got_words)
+        ratio = common / max(1, len(exp_words))
+        passed = ratio >= 0.8
+        print(json.dumps({"passed": passed, "expected": expected_text,
+                           "transcript": transcript, "ratio": round(ratio, 2)}))
+        sys.exit(0 if passed else 1)
+    finally:
+        try:
+            os.unlink(wav)
+        except OSError:
+            pass
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     if cmd == "transcribe":
         transcribe(sys.argv[2], sys.argv[3])
     elif cmd == "speak":
         speak(sys.argv[2], sys.argv[3], sys.argv[4], " ".join(sys.argv[5:]))
+    elif cmd == "canary":
+        canary(sys.argv[2], " ".join(sys.argv[3:]))
     else:
-        sys.exit("usage: _vtools.py transcribe <file_id> <state_dir> | speak <voice_onnx> <state_dir> <chat_id> <text...")
+        sys.exit("usage: _vtools.py transcribe <file_id> <state_dir> | speak <voice_onnx> <state_dir> <chat_id> <text...> | canary <voice_onnx> <expected_text...>")
