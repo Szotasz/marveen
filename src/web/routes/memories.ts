@@ -35,7 +35,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/memories' && method === 'POST') {
     const body = await readBody(req)
-    const data = JSON.parse(body.toString()) as { agent_id?: string; content: string; tier?: string; category?: string; keywords?: string }
+    const data = JSON.parse(body.toString()) as { agent_id?: string; content: string; tier?: string; category?: string; keywords?: string; owner_id?: string }
     if (!data.content?.trim()) { json(res, { error: 'Content is required' }, 400); return true }
     if (containsSuspiciousContent(data.content)) {
       logger.warn({ agent: data.agent_id }, 'Memory content rejected: suspicious pattern')
@@ -55,7 +55,8 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       data.content.trim(),
       category,
       data.keywords || undefined,
-      true
+      true,
+      data.owner_id || undefined
     )
     json(res, { ok: true, id: result.id })
     return true
@@ -67,16 +68,22 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     const tier = url.searchParams.get('tier') || url.searchParams.get('category') || ''
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
     const mode = url.searchParams.get('mode') || 'fts'
+    const ownerId = url.searchParams.get('owner_id') || undefined
 
     let results: Memory[]
     if (q && mode === 'hybrid') {
       results = await hybridSearch(agentId || MAIN_AGENT_ID, q, limit)
+      if (ownerId) results = results.filter(m => m.owner_id === ownerId || m.owner_id === null || m.category === 'shared')
     } else if (q && agentId) {
-      results = searchAgentMemories(agentId, q, limit)
+      results = searchAgentMemories(agentId, q, limit, ownerId)
       if (results.length === 0) {
         const db2 = getDb()
-        results = db2.prepare("SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?")
-          .all(agentId, `%${q}%`, `%${q}%`, limit) as Memory[]
+        const ownerClause = ownerId ? "AND (owner_id = ? OR owner_id IS NULL OR category = 'shared')" : ''
+        const params = ownerId
+          ? [agentId, ownerId, `%${q}%`, `%${q}%`, limit]
+          : [agentId, `%${q}%`, `%${q}%`, limit]
+        results = db2.prepare(`SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') ${ownerClause} AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?`)
+          .all(...params) as Memory[]
       }
     } else if (q) {
       results = searchMemories(q, ALLOWED_CHAT_ID, limit)
@@ -84,10 +91,12 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
         const db2 = getDb()
         results = db2.prepare('SELECT * FROM memories WHERE content LIKE ? ORDER BY accessed_at DESC LIMIT ?').all(`%${q}%`, limit) as Memory[]
       }
+      if (ownerId) results = results.filter(m => m.owner_id === ownerId || m.owner_id === null || m.category === 'shared')
     } else if (agentId) {
-      results = getAgentMemories(agentId, limit)
+      results = getAgentMemories(agentId, limit, ownerId)
     } else {
       results = getMemoriesForChat(ALLOWED_CHAT_ID, limit)
+      if (ownerId) results = results.filter(m => m.owner_id === ownerId || m.owner_id === null || m.category === 'shared')
     }
 
     if (tier) results = results.filter(m => m.category === tier)
@@ -232,6 +241,15 @@ Respond ONLY with JSON, nothing else:
   if (memUpdateMatch && method === 'DELETE') {
     const id = parseInt(memUpdateMatch[1], 10)
     const db2 = getDb()
+    // owner_id guard: if caller passes owner_id, only allow deleting own memories
+    const ownerParam = url.searchParams.get('owner_id')
+    if (ownerParam) {
+      const mem = db2.prepare('SELECT owner_id FROM memories WHERE id = ?').get(id) as { owner_id: string | null } | undefined
+      if (mem && mem.owner_id !== null && mem.owner_id !== ownerParam) {
+        json(res, { error: 'Forbidden: memory belongs to a different owner' }, 403)
+        return true
+      }
+    }
     const changes = db2.prepare('DELETE FROM memories WHERE id = ?').run(id).changes
     if (changes > 0) { json(res, { ok: true }); return true }
     json(res, { error: 'Memory not found' }, 404)
