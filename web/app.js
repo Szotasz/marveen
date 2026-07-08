@@ -2117,7 +2117,7 @@ function populatePlanSelect(selectEl, descEl, selected) {
     .catch(() => [])
     .then((plans) => {
       const known = plans.some(p => p.id === selected)
-      const opts = ['<option value="">— alap (host OAuth / config-dir) —</option>']
+      const opts = [`<option value="">${escapeHtml(t('agents.settings.plan_default'))}</option>`]
       for (const p of plans) {
         opts.push(`<option value="${escapeHtml(p.id)}">${escapeHtml(p.label)}</option>`)
       }
@@ -2126,7 +2126,7 @@ function populatePlanSelect(selectEl, descEl, selected) {
       // returned []). Without this the dropdown would resolve to '' and a save
       // would silently wipe the real assignment.
       if (selected && !known) {
-        opts.push(`<option value="${escapeHtml(selected)}">${escapeHtml(selected)} (nem található a registryben)</option>`)
+        opts.push(`<option value="${escapeHtml(selected)}">${escapeHtml(selected)}${escapeHtml(t('agents.settings.plan_not_found_suffix'))}</option>`)
       }
       selectEl.innerHTML = opts.join('')
       selectEl.value = selected || ''
@@ -2134,15 +2134,15 @@ function populatePlanSelect(selectEl, descEl, selected) {
         if (!descEl) return
         const val = selectEl.value
         if (!val) {
-          descEl.textContent = 'Nincs nevesített plan — a host OAuth / raw config-dir dönt.'
+          descEl.textContent = t('agents.settings.plan_default_desc')
           return
         }
         const p = plans.find(x => x.id === val)
         if (!p) {
-          descEl.textContent = `⚠️ '${val}' nincs a registryben (store/claude-plans.json). Launchkor a raw config-dir / host login dönt.`
+          descEl.textContent = t('agents.settings.plan_unresolved_desc', { id: val })
           return
         }
-        const warn = p.channelsAllowed ? '' : ' ⚠️ Channels tiltva ezen a planen'
+        const warn = p.channelsAllowed ? '' : t('agents.settings.plan_no_channels')
         descEl.textContent = `${p.planType} · ${p.configDir}${warn}`
       }
       selectEl.onchange = updateDesc
@@ -2715,6 +2715,10 @@ async function openAgentDetail(agentName) {
     document.getElementById('editAgentProfileDesc'),
     currentAgent.securityProfile || 'default',
   )
+  // The main agent's Claude login is managed via channels.sh, not the per-agent
+  // config path, so plan selection does not apply to it. Hide the whole group.
+  const planGroup = document.getElementById('claudePlanGroup')
+  if (planGroup) planGroup.hidden = currentAgent.role === 'main'
   populatePlanSelect(
     document.getElementById('editAgentPlan'),
     document.getElementById('editAgentPlanDesc'),
@@ -3500,7 +3504,9 @@ document.getElementById('saveProfileBtn').addEventListener('click', async () => 
 })
 
 document.getElementById('savePlanBtn').addEventListener('click', async () => {
-  if (!currentAgent) return
+  // The main agent's login comes up via channels.sh, not this path, so its
+  // plan is not settable here (the selector is hidden for it anyway).
+  if (!currentAgent || currentAgent.role === 'main') return
   const claudePlan = document.getElementById('editAgentPlan').value
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`, {
@@ -3510,9 +3516,9 @@ document.getElementById('savePlanBtn').addEventListener('click', async () => {
     })
     if (!res.ok) throw new Error()
     currentAgent.claudePlan = claudePlan || null
-    showToast('Plan mentve — újraindítás után lép életbe')
+    showToast(t('agents.toast.plan_saved'))
     loadAgents()
-  } catch { showToast('Hiba a plan mentésekor') }
+  } catch { showToast(t('agents.toast.plan_error')) }
 })
 
 // === Auth Mode ===

@@ -1566,6 +1566,13 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // falls back to a different login (state/launch drift). Reject unknown ids
     // rather than persist them.
     if (data.claudePlan !== undefined) {
+      // The main agent's Claude login comes up via channels.sh (hardcoded
+      // CLAUDE_CONFIG_DIR), not this per-agent path, so a plan set here would be
+      // a silent no-op at launch. Reject loudly rather than mislead the UI.
+      if (name === MAIN_AGENT_ID) {
+        json(res, { error: 'main agent plan is managed via channels.sh, not settable here' }, 400)
+        return true
+      }
       const planId = data.claudePlan.trim()
       if (planId && !readClaudePlans().some(p => p.id === planId)) {
         json(res, { error: `Ismeretlen Claude plan id: ${planId}` }, 400)
