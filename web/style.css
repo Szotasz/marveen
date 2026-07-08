@@ -609,6 +609,8 @@ main {
    `display: grid` above otherwise wins the cascade over the UA [hidden]
    default (equal specificity, later source order). */
 .kanban-board[hidden] { display: none; }
+/* Same override needed for columns: display:flex above wins over UA [hidden]{display:none}. */
+.kanban-col[hidden] { display: none; }
 
 .kanban-col {
   background: var(--bg-input);
@@ -965,6 +967,11 @@ main {
   cursor: pointer;
   text-decoration: underline;
   padding: 0;
+}
+/* On narrow screens the filter row wraps; remove the auto-margin so
+   quick-filter chips don't get pushed to the far right of their own line. */
+@media (max-width: 768px) {
+  #kanbanQuickFilters { margin-left: 0 !important; }
 }
 
 .priority-bar {
