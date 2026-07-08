@@ -633,6 +633,9 @@ let kanbanGroupByInitialized = false
 // Which swimlane keys (assignee name or priority value) are collapsed. Lives
 // for the page session only -- intentionally not persisted across reloads.
 const kanbanCollapsedLanes = new Set()
+// Set of status column keys that are hidden from the board view.
+// Empty = all columns visible. Persisted in localStorage.
+let kanbanHiddenColumns = new Set()
 
 const cardModalOverlay = document.getElementById('cardModalOverlay')
 const cardDetailOverlay = document.getElementById('cardDetailOverlay')
@@ -688,6 +691,10 @@ async function loadKanban() {
         const storedLabels = JSON.parse(localStorage.getItem('marveen.kanbanLabelFilter') || '[]')
         if (Array.isArray(storedLabels)) kanbanLabelFilter = new Set(storedLabels)
       } catch { /* ignore malformed storage */ }
+      try {
+        const storedHiddenCols = JSON.parse(localStorage.getItem('marveen.kanbanHiddenColumns') || '[]')
+        if (Array.isArray(storedHiddenCols)) kanbanHiddenColumns = new Set(storedHiddenCols)
+      } catch { /* ignore malformed storage */ }
     }
     const [cardsRes, assigneesRes, projectsRes, labelsRes] = await Promise.all([
       fetch('/api/kanban'),
@@ -726,6 +733,27 @@ function populateProjectFilter() {
     sel.appendChild(opt)
   }
   if (prev && !kanbanProjects.includes(prev)) kanbanProjectFilter = ''
+}
+
+function renderKanbanColumnChips() {
+  const container = document.getElementById('kanbanColumnChips')
+  if (!container) return
+  container.innerHTML = ''
+  for (const def of KANBAN_STATUS_DEFS) {
+    const hidden = kanbanHiddenColumns.has(def.status)
+    const label = typeof def.title === 'function' ? def.title() : def.title
+    const chip = document.createElement('span')
+    chip.className = 'kanban-col-chip' + (hidden ? ' hidden' : '')
+    chip.title = hidden ? t('kanban.filter.column_show') : t('kanban.filter.column_hide')
+    chip.textContent = label
+    chip.addEventListener('click', () => {
+      if (kanbanHiddenColumns.has(def.status)) kanbanHiddenColumns.delete(def.status)
+      else kanbanHiddenColumns.add(def.status)
+      localStorage.setItem('marveen.kanbanHiddenColumns', JSON.stringify([...kanbanHiddenColumns]))
+      renderKanban()
+    })
+    container.appendChild(chip)
+  }
 }
 
 function populateProjectSuggestions() {
@@ -903,6 +931,7 @@ function renderKanbanQuickFilters() {
 function renderKanban() {
   const cardById = new Map(kanbanCards.map(c => [c.id, c]))
 
+  renderKanbanColumnChips()
   renderKanbanQuickFilters()
 
   // Determine which top-level cards are visible under current filters.
@@ -955,6 +984,25 @@ function renderKanban() {
           .sort((a, b) => a.sort_order - b.sort_order)
         col.appendChild(createCardEl(card, embeddedChildren))
       }
+    }
+    // Hide/show flat-board columns based on visibility set
+    const allColsHidden = KANBAN_STATUS_DEFS.every(d => kanbanHiddenColumns.has(d.status))
+    for (const def of KANBAN_STATUS_DEFS) {
+      const colEl = flatBoard.querySelector(`.kanban-col[data-status="${def.status}"]`)
+      if (colEl) colEl.hidden = kanbanHiddenColumns.has(def.status)
+    }
+    // "All columns hidden" hint
+    let allHiddenMsg = document.getElementById('kanbanAllHiddenMsg')
+    if (allColsHidden) {
+      if (!allHiddenMsg) {
+        allHiddenMsg = document.createElement('p')
+        allHiddenMsg.id = 'kanbanAllHiddenMsg'
+        allHiddenMsg.style.cssText = 'color:var(--muted);font-size:13px;padding:24px 0;text-align:center;width:100%;'
+        flatBoard.appendChild(allHiddenMsg)
+      }
+      allHiddenMsg.textContent = t('kanban.filter.all_cols_hidden')
+    } else {
+      allHiddenMsg?.remove()
     }
     // Badge: only count subtasks that are in a different column (not embedded here)
     updateSubtaskBadges(embeddedSubtaskIds)
@@ -1028,7 +1076,7 @@ function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {
     for (const def of KANBAN_STATUS_DEFS) {
       const cards = grouped[def.status].filter(c => kanbanSwimlaneKeyFor(c) === key)
       laneCardsByStatus[def.status] = cards
-      totalCount += cards.length
+      if (!kanbanHiddenColumns.has(def.status)) totalCount += cards.length
     }
 
     const lane = document.createElement('div')
@@ -1055,6 +1103,7 @@ function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {
     const body = document.createElement('div')
     body.className = 'kanban-swimlane-body'
     for (const def of KANBAN_STATUS_DEFS) {
+      if (kanbanHiddenColumns.has(def.status)) continue
       const col = document.createElement('div')
       col.className = 'kanban-swimlane-col'
 

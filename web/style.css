@@ -905,6 +905,28 @@ main {
   color: var(--text-muted);
 }
 
+.kanban-col-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 12px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-card));
+  cursor: pointer;
+  user-select: none;
+  transition: opacity 0.15s;
+}
+.kanban-col-chip:hover { opacity: 0.8; }
+.kanban-col-chip.hidden {
+  border-color: var(--border);
+  color: var(--muted);
+  background: var(--bg);
+  text-decoration: line-through;
+  opacity: 0.55;
+}
+
 .kanban-quick-filter-chip {
   display: inline-flex;
   align-items: center;
