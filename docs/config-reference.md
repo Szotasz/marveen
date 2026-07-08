@@ -253,6 +253,21 @@ Mikor kapcsold be: több-felhasználós (több megbízós) telepítésen, ágens
 
 ---
 
+## Linux OAuth-token race + CLAUDE_CREDENTIALS_GUARD
+
+Linuxon a `~/.claude/.credentials.json` egy rövid életű, magától rotálódó OAuth tokent tárol, OS-szintű fájlzárolás nélkül. Ha több agent egyszerre ér a token lejáratához (jellemzően éjjel), a frissítő írásaik egymásra futnak és elrontják a fájlt, ezért reggelente minden agent `/login`-t kér. macOS-en a Keychain sorbarendezi az írásokat, ott nincs ez a hiba.
+
+A megoldás: egy 1 éves, nem rotálódó setup-token (`claude setup-token`) a `store/.claude-oauth-token` fájlban, amit az agent-indító `CLAUDE_CODE_OAUTH_TOKEN`-ként exportál minden lokális agentnek. Ezzel a Claude Code-nak nincs szüksége a rotálódó `credentials.json`-ra. A `CLAUDE_CREDENTIALS_GUARD=1` flag bekapcsolja, hogy az indító a rotálódó `credentials.json`-t félretegye (`.credentials.json.bak`), így megszűnik a verseny.
+
+- **Alapértelmezés: KIKAPCSOLVA.** A flag nélkül semmi nem történik (a jelenlegi viselkedés bájtra változatlan). Egy pilot-hoston kapcsold be a `.env`-ben (`CLAUDE_CREDENTIALS_GUARD=1`), ne mindenhol egyszerre.
+- **Csak Linux**, macOS-en no-op (ott nincs is credentials.json).
+- **Guardolt**: a rename CSAK akkor fut, ha van érvényes setup-token (formátum-ellenőrzés + egyszeri éles teszthívás, token-értékhez kötött cache-sel). Érvénytelen/hiányzó token esetén a credentials.json érintetlen marad, hogy egyetlen agent se essen ki.
+- **Idempotens és visszaállítható**: a rename `.bak`-ra megy, visszavonás `mv .credentials.json.bak .credentials.json`.
+- **Fontos install-konzisztencia**: a fő channels-agent a `.env` `CLAUDE_CODE_OAUTH_TOKEN`-jét használja, a sub-agentek a `store/.claude-oauth-token`-t. Bekapcsolás előtt győződj meg róla, hogy a kettő UGYANAZ az érvényes token, különben a fő agent kieshet.
+- A token SOHA nem kerül logba, commitba vagy chatbe.
+
+---
+
 ## templates/ -- ágens-létrehozási sablonok
 
 Ezek a sablonok az ágens scaffold során töltődnek ki és kerülnek az `agents/<name>/` mappába.

@@ -18,6 +18,7 @@ import {
 } from '../pane-state.js'
 import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentMemoryIsolation } from './agent-config.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
+import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
 import {
   buildTmuxInvocation,
   buildSshExec,
@@ -523,6 +524,12 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
   // existing installs is byte-identical.
   if (readAgentMemoryIsolation(name)) provisionMemoryBoundaryDir(dir)
 
+  // Linux shared-credentials race guard (opt-in, default OFF; no-op on macOS
+  // and without the flag). Runs before launch so a valid setup-token retires
+  // the rotating ~/.claude/.credentials.json; idempotent, so calling it per
+  // start also self-heals if Claude Code recreates the file on a refresh.
+  renameSharedCredentialsIfSafe(CLAUDE)
+
 
   if (isAgentRunning(name)) return { ok: false, error: 'Agent is already running' }
 
@@ -684,6 +691,15 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // behaviour) rather than break auth.
     let claudeConfigDir = readAgentClaudeConfigDir(name)
     let oauthTokenEnv = ''
+    // Shared-home agents (no isolated config dir) authenticate from the rotating
+    // ~/.claude/.credentials.json by default. If the operator has a long-lived
+    // fleet setup-token, export it so EVERY locally launched agent uses the
+    // stable token instead -- this is what makes the Linux credentials-guard
+    // rename safe (a shared sub-agent with no env token would otherwise be
+    // locked out once credentials.json is moved aside). No-op without a token.
+    if (!claudeConfigDir && hasFleetOauthToken()) {
+      oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
+    }
     if (!claudeConfigDir && hasChannel && name !== MAIN_AGENT_ID) {
       if (hasFleetOauthToken()) {
         // Token present -> isolation works; any earlier degradation is resolved,
