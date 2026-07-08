@@ -528,6 +528,23 @@ export function isReadyForPrompt(pane: string): boolean {
   return paneLooksIdle(pane)
 }
 
+/**
+ * Idle check that tolerates DIM-only "parked text". Claude Code >=2.1.202
+ * renders a placeholder hint (e.g. "Try refactor...") in dim (SGR-2 faint)
+ * inside the EMPTY input box; a plain capture-pane read shows it as parked
+ * text, detectPaneState classifies 'typing', and a readiness poll never turns
+ * true. Ghost/placeholder text is dim while real typed input is not (the same
+ * invariant clearStaleParkedInput's DIM-GUARD relies on), so when the plain
+ * view says 'typing' the caller re-reads the pane through the dim-stripping
+ * view (captureParkedInputView) and passes it here: if the stripped view is
+ * idle, the box only ever held ghost text and the session IS ready.
+ */
+export function idleConsideringDimGhost(plain: string, dimStripped: string | null): boolean {
+  if (paneLooksIdle(plain)) return true
+  if (detectPaneState(plain) !== 'typing') return false
+  return dimStripped != null && paneLooksIdle(dimStripped)
+}
+
 // Locate the live Claude Code input box and return its inner content as
 // one string. Bounded strictly to the region between the two most
 // recent BOX_SEP_RX separators above the idle footer, so a parked input

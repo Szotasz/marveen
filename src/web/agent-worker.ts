@@ -277,7 +277,7 @@ export function ensureWorkerCwd(): void {
     const homeClaudeJson = join(homedir(), '.claude.json')
     const parsed: { projects?: Record<string, unknown>; hasCompletedOnboarding?: boolean; [k: string]: unknown } =
       existsSync(homeClaudeJson) ? JSON.parse(readFileSync(homeClaudeJson, 'utf-8')) : {}
-    parsed.hasCompletedOnboarding = true
+    stampWorkerFirstRun(parsed)
     const projects: Record<string, unknown> = (parsed.projects && typeof parsed.projects === 'object') ? parsed.projects : {}
     const base = (projects[PROJECT_ROOT] && typeof projects[PROJECT_ROOT] === 'object')
       ? projects[PROJECT_ROOT] as Record<string, unknown>
@@ -291,6 +291,25 @@ export function ensureWorkerCwd(): void {
   } catch (err) {
     logger.warn({ err }, 'worker: failed to materialise .claude.json (worker may park on a first-run modal)')
   }
+}
+
+/**
+ * Pre-accept Claude Code's global first-run chrome for the worker so a fresh
+ * install's very first generation call never parks on a modal:
+ *  - hasCompletedOnboarding: theme picker + login onboarding;
+ *  - fullscreenUpsellSeenCount: the CC >=2.1.202 "Try the new fullscreen
+ *    renderer?" upsell, which otherwise sits over the input box and the 90s
+ *    boot poll times out. Stamped HIGH (never lowered) so the modal never
+ *    renders. We deliberately do NOT opt INTO the fullscreen renderer: the
+ *    worker's whole output pipeline is a tmux capture-pane scrape and the
+ *    pane-state heuristics assume the classic renderer's layout.
+ * Pure (mutates the parsed object only) so it is unit-testable; idempotent and
+ * harmless on CC versions that do not know these keys.
+ */
+export function stampWorkerFirstRun(parsed: { hasCompletedOnboarding?: boolean; fullscreenUpsellSeenCount?: unknown; [k: string]: unknown }): void {
+  parsed.hasCompletedOnboarding = true
+  const seen = Number(parsed.fullscreenUpsellSeenCount)
+  parsed.fullscreenUpsellSeenCount = Number.isFinite(seen) ? Math.max(99, seen) : 99
 }
 
 // --- session lifecycle ---------------------------------------------------------

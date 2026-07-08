@@ -14,6 +14,7 @@ import {
   parkedInputText,
   stripGhostSuggestion,
   paneShowsContextSaturation,
+  idleConsideringDimGhost,
 } from '../pane-state.js'
 import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentMemoryIsolation } from './agent-config.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
@@ -1283,13 +1284,20 @@ export function captureParkedInputView(session: string, host: string | null = nu
 // whether) to recover the session is left to the caller / operator tooling, so
 // this predicate stays a pure, dependency-free readiness check.
 export function isSessionReadyForPrompt(session: string, host: string | null = null): boolean {
+  // Dim-ghost tolerant idle read: CC >=2.1.202 paints a dim placeholder into
+  // the empty input box, which a plain capture reads as parked text. Only when
+  // the plain view says 'typing' do we pay for the second (-e, dim-stripped)
+  // capture to decide whether anything REAL is parked (see
+  // idleConsideringDimGhost / captureParkedInputView).
+  const idleOrGhost = (plain: string): boolean =>
+    idleConsideringDimGhost(plain, detectPaneState(plain) === 'typing' ? captureParkedInputView(session, host) : null)
   const first = capturePane(session, host)
   if (first == null) return false
   if (paneShowsContextSaturation(first)) {
     logger.warn({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
     return false
   }
-  if (!paneLooksIdle(first)) return false
+  if (!idleOrGhost(first)) return false
 
   try { execFileSync('/bin/sleep', [PANE_READY_CONFIRM_DELAY_S], { timeout: 2000 }) } catch { /* best effort */ }
 
@@ -1299,7 +1307,7 @@ export function isSessionReadyForPrompt(session: string, host: string | null = n
     logger.warn({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
     return false
   }
-  return paneLooksIdle(second)
+  return idleOrGhost(second)
 }
 
 // How long to wait between the two parked-input captures when deciding whether
