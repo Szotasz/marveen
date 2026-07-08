@@ -318,6 +318,20 @@ export function readAgentAuthMode(name: string): AuthMode {
   return 'shared'
 }
 
+// Opt-in per-agent auto-memory isolation (default OFF). When true, the
+// launcher plants a stub git root in the agent dir so Claude Code's
+// file-based auto-memory resolves to the agent's own project key instead of
+// the shared install-root key. See src/web/memory-boundary.ts for the full
+// mechanism and trade-offs. Absent/false = current shared behavior, unchanged.
+export function readAgentMemoryIsolation(name: string): boolean {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}'))
+    return config.memoryIsolation === true
+  } catch { /* fall through */ }
+  return false
+}
+
 export function writeAgentAuthMode(name: string, mode: AuthMode): void {
   if (!VALID_AUTH_MODES.has(mode)) return
   const configPath = join(agentDir(name), 'agent-config.json')

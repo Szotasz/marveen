@@ -15,7 +15,8 @@ import {
   stripGhostSuggestion,
   paneShowsContextSaturation,
 } from '../pane-state.js'
-import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentMemoryIsolation } from './agent-config.js'
+import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import {
   buildTmuxInvocation,
   buildSshExec,
@@ -514,6 +515,13 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
   if (remote.host && remote.workdir) {
     return startRemoteAgentProcess(name, remote.host, remote.workdir, opts)
   }
+
+  // Opt-in per-agent auto-memory isolation (local agents only; a remote
+  // workdir cannot be provisioned from here). Default OFF: without the
+  // memoryIsolation flag this is a no-op and the shared-memory behavior of
+  // existing installs is byte-identical.
+  if (readAgentMemoryIsolation(name)) provisionMemoryBoundaryDir(dir)
+
 
   if (isAgentRunning(name)) return { ok: false, error: 'Agent is already running' }
 
