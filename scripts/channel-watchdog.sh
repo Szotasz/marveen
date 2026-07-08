@@ -46,9 +46,11 @@ MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
 MAIN_AGENT_ID="${MAIN_AGENT_ID//[^a-zA-Z0-9_-]/}"
 SESSION="${MAIN_AGENT_ID}-channels"
 
-TMUX="$(command -v tmux)"
+# NB: use TMUX_BIN, not TMUX -- the latter is tmux's own env var (socket,pid,
+# session); assigning the binary path to it corrupts server-socket detection.
+TMUX_BIN="$(command -v tmux)"
 CLAUDE="$(command -v claude)"
-if [ -z "$TMUX" ] || [ -z "$CLAUDE" ]; then
+if [ -z "$TMUX_BIN" ] || [ -z "$CLAUDE" ]; then
   log "tmux or claude not on PATH; cannot act. PATH=$PATH"
   exit 0
 fi
@@ -56,7 +58,7 @@ fi
 now=$(date +%s)
 
 # --- gate 1: the channels session must EXIST (bridge "running") ---
-if ! "$TMUX" has-session -t "$SESSION" 2>/dev/null; then
+if ! "$TMUX_BIN" has-session -t "$SESSION" 2>/dev/null; then
   log "session $SESSION not present -- systemd marveen-channels.service owns (re)start; watchdog no-op"
   exit 0
 fi
@@ -108,7 +110,7 @@ MODEL_FLAG=""
 RESPAWN_CMD="export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false && $CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:telegram@claude-plugins-official"
 
 log "keepalive stale ${age}s (>${STALE_SECONDS}s) and session up -- respawn-pane $SESSION (respawn #$((count+1)))"
-if "$TMUX" respawn-pane -k -t "$SESSION" "$RESPAWN_CMD" 2>/dev/null; then
+if "$TMUX_BIN" respawn-pane -k -t "$SESSION" "$RESPAWN_CMD" 2>/dev/null; then
   date +%s > "$RESPAWN_STAMP"
   echo $(( count + 1 )) > "$RESPAWN_COUNT_FILE"
   log "respawn-pane issued"
