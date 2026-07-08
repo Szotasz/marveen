@@ -2448,6 +2448,8 @@ function applyMarveenReadonlyMode(readOnly) {
   }
   const authModeGroup = document.getElementById('authModeGroup')
   if (authModeGroup) authModeGroup.hidden = readOnly
+  const memoryIsolationGroup = document.getElementById('memoryIsolationGroup')
+  if (memoryIsolationGroup) memoryIsolationGroup.hidden = readOnly
   const note = document.getElementById('marveenReadonlyNote')
   if (note) note.hidden = !readOnly
 }
@@ -2672,6 +2674,8 @@ async function openAgentDetail(agentName) {
   )
   renderTeamEditor(currentAgent, agents)
   updateAuthModeUI(currentAgent.authMode || 'shared', currentAgent.hasApiKey || false)
+  const memIsoToggle = document.getElementById('memoryIsolationToggle')
+  if (memIsoToggle) memIsoToggle.checked = currentAgent.memoryIsolation === true
   loadVoiceConfig(currentAgent.name)
   document.getElementById('editClaudeMd').value = currentAgent.claudeMd || currentAgent.content || ''
   document.getElementById('editSoulMd').value = currentAgent.soulMd || ''
@@ -3568,6 +3572,24 @@ document.getElementById('authFlowInitBtn').addEventListener('click', async () =>
 document.getElementById('authFlowCopyBtn').addEventListener('click', () => {
   const url = document.getElementById('authFlowUrl').textContent
   navigator.clipboard.writeText(url).then(() => showToast('URL masolva'))
+})
+
+document.getElementById('memoryIsolationToggle').addEventListener('change', async (e) => {
+  if (!currentAgent || currentAgent.role === 'main') return
+  const enabled = e.target.checked
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ memoryIsolation: enabled }),
+    })
+    if (!res.ok) throw new Error()
+    currentAgent.memoryIsolation = enabled
+    showToast(t(enabled ? 'agents.toast.memory_isolation_on' : 'agents.toast.memory_isolation_off'))
+  } catch {
+    e.target.checked = !enabled
+    showToast(t('common.error_save'))
+  }
 })
 
 document.getElementById('saveAuthModeBtn').addEventListener('click', async () => {

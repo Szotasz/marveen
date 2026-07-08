@@ -28,6 +28,8 @@ import {
   writeAgentChannelProvider,
   readAgentAuthMode,
   writeAgentAuthMode,
+  readAgentMemoryIsolation,
+  writeAgentMemoryIsolation,
   readAgentClaudeConfigDir,
   readAgentRemoteConfig,
   readAgentRemoteHost,
@@ -332,6 +334,7 @@ interface AgentSummary {
 }
 
 interface AgentDetail extends AgentSummary {
+  memoryIsolation: boolean
   claudeMd: string
   soulMd: string
   mcpJson: string
@@ -418,6 +421,7 @@ function getAgentDetail(name: string): AgentDetail {
 
   return {
     ...summary,
+    memoryIsolation: readAgentMemoryIsolation(name),
     claudeMd,
     soulMd,
     mcpJson,
@@ -1530,7 +1534,17 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const configRoot = agentConfigRoot(name)
     const data = JSON.parse(body.toString()) as {
       claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string
-      authMode?: AuthMode; apiKey?: string
+      authMode?: AuthMode; apiKey?: string; memoryIsolation?: boolean
+    }
+    if (data.memoryIsolation !== undefined) {
+      // The main agent's cwd IS the install repo root, which is already a git
+      // root: a memory boundary there is meaningless, and exposing the knob
+      // for it would invite the classic main-agent footgun. Sub-agents only.
+      if (isMainChannelsAgent(name)) {
+        json(res, { error: 'memoryIsolation is not applicable to the main agent' }, 400)
+        return true
+      }
+      writeAgentMemoryIsolation(name, data.memoryIsolation === true)
     }
     if (data.claudeMd !== undefined) atomicWriteFileSync(join(configRoot, 'CLAUDE.md'), data.claudeMd)
     if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)

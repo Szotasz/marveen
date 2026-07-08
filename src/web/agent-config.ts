@@ -332,6 +332,17 @@ export function readAgentMemoryIsolation(name: string): boolean {
   return false
 }
 
+// Persist the opt-in memoryIsolation flag. `false` removes the key so the
+// config file stays minimal and the default-OFF semantics remain explicit.
+export function writeAgentMemoryIsolation(name: string, enabled: boolean): void {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  let config: Record<string, unknown> = {}
+  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  if (enabled) config.memoryIsolation = true
+  else delete config.memoryIsolation
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
 export function writeAgentAuthMode(name: string, mode: AuthMode): void {
   if (!VALID_AUTH_MODES.has(mode)) return
   const configPath = join(agentDir(name), 'agent-config.json')

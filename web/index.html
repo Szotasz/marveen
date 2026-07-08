@@ -2078,6 +2078,16 @@
             </small>
             <button class="btn-secondary btn-compact agent-save-section" id="saveAutoRestartBtn" style="margin-top:10px" data-i18n="common.btn.save">Mentés</button>
           </div>
+          <div class="form-group" id="memoryIsolationGroup">
+            <label data-i18n="agents.settings.memory_isolation_label">Memória-izoláció</label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal">
+              <input type="checkbox" id="memoryIsolationToggle">
+              <span data-i18n="agents.settings.memory_isolation_toggle">Saját, izolált fájl-memória ennek az ágensnek</span>
+            </label>
+            <small style="display:block;margin-top:8px;color:var(--text-muted);font-size:12px;line-height:1.5" data-i18n="agents.settings.memory_isolation_desc">
+              Bekapcsolva az ágens a saját, kezdetben üres fájl-memóriájával indul, és nem látja a közös MEMORY.md-t. A megosztott SQLite-emlékek és a CLAUDE.md továbbra is elérnek hozzá. Több-felhasználós telepítésen ajánlott; egy-felhasználós telepítésen hagyd kikapcsolva. A következő újraindításkor lép életbe.
+            </small>
+          </div>
           <div class="form-group" id="authModeGroup">
             <label data-i18n="agents.settings.auth_mode_label">Hitelesítési mód</label>
             <div class="auth-mode-cards">

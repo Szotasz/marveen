@@ -236,6 +236,7 @@ Minden sub-ágens mappája gitignore-olt (`agents/` mappa), így a titkos kulcso
 {
   "model": "claude-sonnet-4-6",
   "profileId": "developer-senior",
+  "memoryIsolation": false,
   "team": {
     "role": "member",
     "reportsTo": "marveen",
@@ -245,6 +246,10 @@ Minden sub-ágens mappája gitignore-olt (`agents/` mappa), így a titkos kulcso
   }
 }
 ```
+
+A `memoryIsolation` mező (opcionális, alapértelmezés: kikapcsolva) az ágens fájl-alapú auto-memóriáját választja le a közös, telepítés-szintű memóriáról. Bekapcsolva az ágens indításkor saját git-gyökeret kap (stub .git az agents/<név> alatt), így a Claude Code auto-memory a saját projekt-kulcsa alá kerül, és az ágens nem látja a közös MEMORY.md-t. A megosztott SQLite-emlékek és a CLAUDE.md továbbra is elérnek hozzá.
+
+Mikor kapcsold be: több-felhasználós (több megbízós) telepítésen, ágensenként, hogy az egyes megbízók memóriái ne szivárogjanak át egymáshoz. Egy-felhasználós telepítésen hagyd kikapcsolva: ott a közös MEMORY.md a flotta-szabályok szándékolt terítő-csatornája. Életbe lépés: az ágens következő (újra)indítása. Visszavonás: a mező törlése és az `agents/<név>/.git` stub eltávolítása. A fő ágensre nem alkalmazható (a dashboard el is rejti ott a kapcsolót).
 
 ---
 
