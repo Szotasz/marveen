@@ -18,25 +18,25 @@ beforeAll(() => { initDatabase(':memory:') })
 
 describe('completion-notification contract', () => {
   it('getAgentMessage returns the saved message after markMessageDone', () => {
-    const msg = createAgentMessage('atlas', 'prometheus', 'Kutass valamit')
-    expect(markMessageDone(msg.id, 'Kész: eredmény')).toBe(true)
+    const msg = createAgentMessage('orin', 'dex', 'Research something')
+    expect(markMessageDone(msg.id, 'Done: result')).toBe(true)
     const fetched = getAgentMessage(msg.id)
     expect(fetched).toBeDefined()
-    expect(fetched!.from_agent).toBe('atlas')
-    expect(fetched!.to_agent).toBe('prometheus')
-    expect(fetched!.result).toBe('Kész: eredmény')
+    expect(fetched!.from_agent).toBe('orin')
+    expect(fetched!.to_agent).toBe('dex')
+    expect(fetched!.result).toBe('Done: result')
     expect(fetched!.status).toBe('done')
   })
 
   it('completion sentinel prefix is detectable (ping-pong guard)', () => {
-    const notif = createAgentMessage('prometheus', 'atlas', '[Eredmény] msg_id:42 status:done\n\nVálasz')
+    const notif = createAgentMessage('dex', 'orin', '[Eredmény] msg_id:42 status:done\n\nreply')
     const fetched = getAgentMessage(notif.id)!
     expect(fetched.content.startsWith('[Eredmény]')).toBe(true)
   })
 
   it('notification message has correct from/to/content and is pending', () => {
-    const msg = createAgentMessage('atlas', 'daidalosz', 'Csinálj valamit')
-    markMessageDone(msg.id, 'PR #16 kész')
+    const msg = createAgentMessage('orin', 'rex', 'Do something')
+    markMessageDone(msg.id, 'PR opened')
     const done = getAgentMessage(msg.id)!
 
     // Simulate what routes/messages.ts does after marking done
@@ -47,16 +47,16 @@ describe('completion-notification contract', () => {
       done.from_agent,
       `[Eredmény] msg_id:${done.id} status:done\n\n${summary}`,
     )
-    expect(notif.from_agent).toBe('daidalosz')
-    expect(notif.to_agent).toBe('atlas')
+    expect(notif.from_agent).toBe('rex')
+    expect(notif.to_agent).toBe('orin')
     expect(notif.status).toBe('pending')
     expect(notif.content).toContain('[Eredmény]')
-    expect(notif.content).toContain('PR #16 kész')
+    expect(notif.content).toContain('PR opened')
   })
 
   it('failed message also triggers notification with status:failed', () => {
-    const msg = createAgentMessage('atlas', 'hermes', 'Valami feladat')
-    markMessageFailed(msg.id, 'Hálózati hiba')
+    const msg = createAgentMessage('orin', 'lex', 'Some task')
+    markMessageFailed(msg.id, 'Network error')
     const failed = getAgentMessage(msg.id)!
     expect(failed.status).toBe('failed')
 
@@ -67,13 +67,13 @@ describe('completion-notification contract', () => {
       `[Eredmény] msg_id:${failed.id} status:failed\n\n${summary}`,
     )
     expect(notif.content).toContain('status:failed')
-    expect(notif.content).toContain('Hálózati hiba')
+    expect(notif.content).toContain('Network error')
   })
 
   it('self-message (from === to) does not create a notification', () => {
     // The route handler skips notification when from_agent === to_agent
     const before = listAgentMessages(200).length
-    const msg = createAgentMessage('atlas', 'atlas', 'Saját magának küld')
+    const msg = createAgentMessage('orin', 'orin', 'Send to self')
     markMessageDone(msg.id, 'ok')
     // Only the original message was created; route handler would NOT add a notification
     const after = listAgentMessages(200).length
