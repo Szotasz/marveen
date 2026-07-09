@@ -96,6 +96,7 @@ window._i18n.hu = {
   // --- Kanban ---
   'kanban.col.planned':          'Tervezett',
   'kanban.col.in_progress':      'Folyamatban',
+  'kanban.col.testing':          'Tesztelés',
   'kanban.col.waiting':          'Várakozik',
   'kanban.col.done':             'Kész',
   'kanban.filter.project':       'Projekt:',
@@ -111,6 +112,7 @@ window._i18n.hu = {
   'kanban.priority.urgent':      'Sürgős',
   'kanban.status.planned':       'Tervezett',
   'kanban.status.in_progress':   'Folyamatban',
+  'kanban.status.testing':       'Tesztelés',
   'kanban.status.waiting':       'Várakozik',
   'kanban.status.done':          'Kész',
   'kanban.filter.assignee_label':  'Felelős:',

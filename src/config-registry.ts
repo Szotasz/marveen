@@ -52,6 +52,17 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: false,
   },
   {
+    key: 'KANBAN_WIP_TESTING',
+    type: 'int',
+    default: 0,
+    min: 0,
+    max: 100,
+    description: 'A "testing" oszlop WIP-limitje (max. kártyaszám). 0 = korlátlan.',
+    module: 'kanban',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
     key: 'KANBAN_WIP_WAITING',
     type: 'int',
     default: 0,

@@ -96,6 +96,7 @@ window._i18n.en = {
   // --- Kanban ---
   'kanban.col.planned':          'Planned',
   'kanban.col.in_progress':      'In Progress',
+  'kanban.col.testing':          'Testing',
   'kanban.col.waiting':          'Waiting',
   'kanban.col.done':             'Done',
   'kanban.filter.project':       'Project:',
@@ -111,6 +112,7 @@ window._i18n.en = {
   'kanban.priority.urgent':      'Urgent',
   'kanban.status.planned':       'Planned',
   'kanban.status.in_progress':   'In Progress',
+  'kanban.status.testing':       'Testing',
   'kanban.status.waiting':       'Waiting',
   'kanban.status.done':          'Done',
   'kanban.filter.assignee_label':  'Assignee:',
