@@ -346,6 +346,16 @@ print(json.dumps(existing, indent=2))
   fi
 fi
 
+# Channel inbound org-policy gate: ensure the system managed-settings enable
+# channels (runs unconditionally, not only in the Slack branch above). claude-code
+# >= 2.1.205 silently drops channel-plugin INBOUND notifications on a team/
+# enterprise org unless managed-settings has channelsEnabled:true (harmless /
+# no-op on a personal org). Idempotent + preserves existing managed keys.
+if [ -f "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" ]; then
+  echo -e "  Managed-settings channel-kapu ellenorzese..."
+  bash "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" || true
+fi
+
 read -rp "$(_t prompt_bot_name)" BOT_NAME
 BOT_NAME=${BOT_NAME:-"Marveen"}
 
