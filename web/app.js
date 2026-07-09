@@ -9868,6 +9868,50 @@ async function loadUpdates() {
     summary.textContent = 'Hiba: ' + (err.message || err)
     applyBtn.hidden = true
   }
+  renderDiagnoseOffer()
+}
+
+// Post-rollback diagnosis offer (PR-D). Reads /api/updates/status: if the last
+// update failed/rolled-back and this host can run a Claude agent, offer the
+// opt-in fixer; if it cannot (AVX), show a manual-intervention note instead.
+async function renderDiagnoseOffer() {
+  const box = document.getElementById('updatesDiagnose')
+  if (!box) return
+  let data
+  try { data = await (await fetch('/api/updates/status')).json() } catch { box.hidden = true; return }
+  if (data.needsHuman) {
+    box.hidden = false
+    box.className = 'updates-diagnose needs-human'
+    box.innerHTML = `<strong>${escapeHtmlUpdates(t('updates.diagnose.title'))}</strong><p>${escapeHtmlUpdates(t('updates.diagnose.needs_human'))}</p>`
+    return
+  }
+  if (!data.canDiagnose) { box.hidden = true; box.innerHTML = ''; return }
+  box.hidden = false
+  box.className = 'updates-diagnose'
+  box.innerHTML = `<strong>${escapeHtmlUpdates(t('updates.diagnose.title'))}</strong>`
+    + `<p>${escapeHtmlUpdates(t('updates.diagnose.body'))}</p>`
+    + `<button class="btn-secondary btn-compact" id="updatesDiagnoseBtn">${escapeHtmlUpdates(t('updates.diagnose.btn'))}</button>`
+  document.getElementById('updatesDiagnoseBtn').addEventListener('click', runDiagnose)
+}
+
+async function runDiagnose() {
+  if (!confirm(t('updates.diagnose.consent'))) return
+  const btn = document.getElementById('updatesDiagnoseBtn')
+  if (btn) btn.disabled = true
+  try {
+    const res = await fetch('/api/updates/diagnose', { method: 'POST' })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      if (btn) btn.disabled = false
+      showToast(t('updates.diagnose.failed', { msg: data.error || ('HTTP ' + res.status) }))
+      return
+    }
+    showToast(data.already ? t('updates.diagnose.already') : t('updates.diagnose.started'))
+    if (btn) { btn.hidden = true }
+  } catch (err) {
+    if (btn) btn.disabled = false
+    showToast(t('updates.diagnose.failed', { msg: err.message || err }))
+  }
 }
 
 document.getElementById('updatesCheckBtn').addEventListener('click', async () => {
@@ -9949,11 +9993,13 @@ async function pollUpdateOutcome(resetBtn) {
       if (st === 'rolled-back') {
         if (resetBtn) resetBtn()
         showToast(t('updates.toast.rolled_back', { old: result.old || '', msg: result.message || '' }))
+        renderDiagnoseOffer()
         return
       }
       // failed
       if (resetBtn) resetBtn()
       showToast(t('updates.toast.failed', { phase: result.phase || '?', msg: result.message || ('code ' + result.code) }))
+      renderDiagnoseOffer()
       return
     }
   }

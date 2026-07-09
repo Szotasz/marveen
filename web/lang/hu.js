@@ -1308,6 +1308,14 @@ window._i18n.hu = {
   'updates.toast.rolled_back':   'A frissítés nem sikerült, visszaálltunk a korábbi verzióra ({old}). {msg}',
   'updates.toast.failed':        'Frissítés sikertelen ({phase}): {msg}',
   'updates.toast.status_timeout':'A frissítés állapota nem érkezett meg időben. Nézd meg a store/update.log fájlt.',
+  'updates.diagnose.title':      'A legutóbbi frissítés sikertelen volt',
+  'updates.diagnose.body':       'A rendszer visszaállt a korábbi, működő verzióra. Elindíthatsz egy AI-diagnózist, ami megnézi miért bukott a frissítés, és biztonságos keretek közt (nincs force-push, nincs helyi-változás-dobás) megpróbálja javítani.',
+  'updates.diagnose.btn':        'Frissítés diagnózisa (AI-agens)',
+  'updates.diagnose.consent':    'Ez egy AI-agenst indít, ami Claude kreditet használ. Elindítsam a diagnózist?',
+  'updates.diagnose.started':    'Diagnózis elindítva. Az ügynök jelentkezik az eredménnyel.',
+  'updates.diagnose.already':    'A diagnózis ehhez a bukáshoz már el lett indítva.',
+  'updates.diagnose.failed':     'A diagnózis nem indult el: {msg}',
+  'updates.diagnose.needs_human':'A legutóbbi frissítés sikertelen volt, és ez a gép nem tud AI-agenst futtatni (a CPU nem támogatja az AVX-et). Kézi beavatkozás szükséges. Nézd meg a store/update.log fájlt.',
 
   // --- Ideas toasts ---
   'ideas.toast.score_saved':     'Pontozás mentve',

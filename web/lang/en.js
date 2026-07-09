@@ -1310,6 +1310,14 @@ window._i18n.en = {
   'updates.toast.rolled_back':   'Update failed, rolled back to the previous version ({old}). {msg}',
   'updates.toast.failed':        'Update failed ({phase}): {msg}',
   'updates.toast.status_timeout':'Update status did not arrive in time. Check store/update.log.',
+  'updates.diagnose.title':      'The last update failed',
+  'updates.diagnose.body':       'The system rolled back to the previous working version. You can start an AI diagnosis that inspects why the update failed and, within safe limits (no force-push, no discarding of local changes), attempts a fix.',
+  'updates.diagnose.btn':        'Diagnose update (AI agent)',
+  'updates.diagnose.consent':    'This starts an AI agent that uses Claude credits. Start the diagnosis?',
+  'updates.diagnose.started':    'Diagnosis started. The agent will report back with the result.',
+  'updates.diagnose.already':    'A diagnosis for this failure has already been started.',
+  'updates.diagnose.failed':     'Diagnosis did not start: {msg}',
+  'updates.diagnose.needs_human':'The last update failed, and this machine cannot run an AI agent (the CPU lacks AVX). Manual intervention needed. Check store/update.log.',
 
   // --- Ideas toasts ---
   'ideas.toast.score_saved':     'Score saved',

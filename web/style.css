@@ -336,6 +336,22 @@ nav { display: flex; gap: 4px; }
 .updates-summary.error {
   border-left: 4px solid #e53e3e;
 }
+.updates-diagnose {
+  padding: 16px 18px;
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  border-left: 4px solid #e53e3e;
+  margin: 0 0 20px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.updates-diagnose.needs-human {
+  border-left-color: #f59e0b;
+}
+.updates-diagnose p {
+  margin: 8px 0 12px;
+  color: var(--text-muted);
+}
 .updates-summary code {
   background: var(--bg-card);
   padding: 2px 6px;

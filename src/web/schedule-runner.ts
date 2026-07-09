@@ -287,10 +287,16 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number): '
 // for it). Reuses attemptFireTask, so a stopped agent is auto-started and the
 // prompt is queued for delivery exactly like a real cron fire. Returns a
 // per-target summary string for the API/UI.
-export function runScheduledTaskNow(taskName: string): { ok: boolean; result?: string; error?: string } {
+export function runScheduledTaskNow(
+  taskName: string,
+  opts: { allowDisabled?: boolean } = {},
+): { ok: boolean; result?: string; error?: string } {
   const task = listScheduledTasks().find(t => t.name === taskName)
   if (!task) return { ok: false, error: 'Schedule not found' }
-  if (!task.enabled) return { ok: false, error: 'Schedule is disabled' }
+  // allowDisabled: for on-demand-only tasks that are intentionally kept
+  // enabled:false so the cron never fires them, but a guarded endpoint can
+  // still trigger them (e.g. the post-rollback diagnosis, PR-D).
+  if (!task.enabled && !opts.allowDisabled) return { ok: false, error: 'Schedule is disabled' }
 
   const now = Date.now()
   const targets = task.agent === 'all'

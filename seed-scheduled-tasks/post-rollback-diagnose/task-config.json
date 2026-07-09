@@ -1,0 +1,8 @@
+{
+  "schedule": "0 0 1 1 *",
+  "agent": "{{MAIN_AGENT_ID}}",
+  "enabled": false,
+  "type": "task",
+  "description": "On-demand (opt-in) diagnózis egy sikertelen frissítés + automatikus rollback UTÁN. NEM cron-vezérelt (enabled:false): kizárólag a dashboard 'Frissítés diagnózisa' gombja indítja, a POST /api/updates/diagnose végponton át, miután a felhasználó jóváhagyta (Claude kredit). A box ilyenkor már a működő régi verzión fut.",
+  "createdAt": 0
+}
