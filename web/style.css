@@ -6488,3 +6488,25 @@ body {
 .updates-version-details > summary::before { content: "\25B8 "; transition: transform .15s; display: inline-block; }
 .updates-version-details[open] > summary::before { transform: rotate(90deg); }
 .updates-version-details .updates-commit-list { padding: 10px 0 2px; }
+/* First-run onboarding wizard */
+.onboarding-overlay { z-index: 10000; }
+.onboarding-modal { max-width: 540px; width: 92%; }
+.onboarding-modal h2 { margin: 0 0 4px; }
+.onb-sub { color: var(--text-muted); font-size: 13px; margin: 0 0 16px; }
+.onboarding-steps { display: flex; gap: 8px; margin-bottom: 18px; }
+.onboarding-step { flex: 1; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); padding: 6px 8px; border-radius: 8px; background: var(--bg-input); border: 1px solid var(--border); }
+.onboarding-step.active { color: var(--text); border-color: var(--accent); }
+.onboarding-step.done { opacity: 0.55; }
+.onboarding-step .onb-num { display: inline-flex; width: 18px; height: 18px; align-items: center; justify-content: center; border-radius: 50%; background: var(--border); font-size: 11px; }
+.onboarding-step.active .onb-num { background: var(--accent); color: #fff; }
+.onboarding-body p { font-size: 14px; line-height: 1.6; }
+.onb-input { width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-input); color: var(--text); font-size: 13px; margin: 4px 0; }
+.onb-hint { font-size: 12px; color: var(--text-muted); margin: 4px 0 12px; }
+.onboarding-body .btn-primary, .onboarding-body .btn-secondary { margin-right: 8px; margin-top: 4px; }
+.onb-msg { font-size: 13px; margin-top: 12px; min-height: 18px; }
+.onb-msg.ok { color: #22c55e; }
+.onb-msg.err { color: #e53e3e; }
+.onb-ok-line { color: #22c55e; font-size: 14px; }
+.onb-list { font-size: 13px; color: var(--text-muted); padding-left: 18px; line-height: 1.7; }
+.onb-pending { margin: 10px 0; }
+.onb-pending-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
