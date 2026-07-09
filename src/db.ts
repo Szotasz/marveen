@@ -143,7 +143,7 @@ export function initDatabase(dbPathOverride?: string): void {
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
       description TEXT,
-      status TEXT NOT NULL DEFAULT 'planned' CHECK(status IN ('planned','in_progress','waiting','done')),
+      status TEXT NOT NULL DEFAULT 'planned' CHECK(status IN ('planned','in_progress','testing','waiting','done')),
       assignee TEXT,
       priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('low','normal','high','urgent')),
       project TEXT,
@@ -176,6 +176,42 @@ export function initDatabase(dbPathOverride?: string): void {
     db.exec('ALTER TABLE kanban_cards ADD COLUMN dispatched_at INTEGER')
   } catch {
     // column already exists
+  }
+  // Migration: add 'testing' status to kanban_cards CHECK constraint.
+  // SQLite can't ALTER a CHECK constraint, so we recreate the table when the
+  // current schema doesn't yet include 'testing'. Idempotent on fresh DBs.
+  try {
+    const kcSchema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='kanban_cards'").get() as { sql: string } | undefined
+    if (kcSchema?.sql && !kcSchema.sql.includes("'testing'")) {
+      db.exec(`
+        CREATE TABLE kanban_cards_new (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          description TEXT,
+          status TEXT NOT NULL DEFAULT 'planned' CHECK(status IN ('planned','in_progress','testing','waiting','done')),
+          assignee TEXT,
+          priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('low','normal','high','urgent')),
+          project TEXT,
+          due_date INTEGER,
+          sort_order REAL NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          archived_at INTEGER,
+          parent_id TEXT REFERENCES kanban_cards_new(id),
+          dispatched_at INTEGER
+        );
+        INSERT INTO kanban_cards_new
+          SELECT id, title, description, status, assignee, priority, project, due_date,
+                 sort_order, created_at, updated_at, archived_at, parent_id, dispatched_at
+          FROM kanban_cards;
+        DROP TABLE kanban_cards;
+        ALTER TABLE kanban_cards_new RENAME TO kanban_cards;
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_parent ON kanban_cards(parent_id)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_status ON kanban_cards(status, archived_at)`)
+    }
+  } catch (err) {
+    logger.warn({ err }, 'kanban_cards testing-status migration failed -- continuing')
   }
   // Migration: add agent_id, category, auto_generated columns to memories
   try {
@@ -1110,7 +1146,7 @@ export interface KanbanCard {
   seq?: number
   title: string
   description: string | null
-  status: 'planned' | 'in_progress' | 'waiting' | 'done'
+  status: 'planned' | 'in_progress' | 'waiting' | 'testing' | 'done'
   assignee: string | null
   priority: 'low' | 'normal' | 'high' | 'urgent'
   project: string | null

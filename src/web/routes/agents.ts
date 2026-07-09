@@ -30,6 +30,9 @@ import {
   writeAgentAuthMode,
   readAgentClaudePlan,
   writeAgentClaudePlan,
+  readAgentMemoryIsolation,
+  writeAgentMemoryIsolation,
+  readAgentClaudeConfigDir,
   readAgentRemoteConfig,
   readAgentRemoteHost,
   writeAgentRemoteConfig,
@@ -337,6 +340,7 @@ interface AgentSummary {
 }
 
 interface AgentDetail extends AgentSummary {
+  memoryIsolation: boolean
   claudeMd: string
   soulMd: string
   mcpJson: string
@@ -424,6 +428,7 @@ function getAgentDetail(name: string): AgentDetail {
 
   return {
     ...summary,
+    memoryIsolation: readAgentMemoryIsolation(name),
     claudeMd,
     soulMd,
     mcpJson,
@@ -1491,7 +1496,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     for (const msg of claimed) {
       const cls = classifyAgentMessage(msg.from_agent, msg.to_agent)
       if (!cls) continue // empty/invalid from_agent -> cannot frame safely; drop
-      const { prefix, wrapped } = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, msg.from_agent, msg.content)
+      const { prefix, wrapped } = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, msg.from_agent, msg.content, msg.id)
       blocks.push(prefix + wrapped)
     }
     json(res, { count: blocks.length, text: blocks.join('\n\n') })
@@ -1545,7 +1550,17 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const configRoot = agentConfigRoot(name)
     const data = JSON.parse(body.toString()) as {
       claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string
-      authMode?: AuthMode; apiKey?: string; claudePlan?: string
+      authMode?: AuthMode; apiKey?: string; claudePlan?: string; memoryIsolation?: boolean
+    }
+    if (data.memoryIsolation !== undefined) {
+      // The main agent's cwd IS the install repo root, which is already a git
+      // root: a memory boundary there is meaningless, and exposing the knob
+      // for it would invite the classic main-agent footgun. Sub-agents only.
+      if (isMainChannelsAgent(name)) {
+        json(res, { error: 'memoryIsolation is not applicable to the main agent' }, 400)
+        return true
+      }
+      writeAgentMemoryIsolation(name, data.memoryIsolation === true)
     }
     if (data.claudeMd !== undefined) atomicWriteFileSync(join(configRoot, 'CLAUDE.md'), data.claudeMd)
     if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)

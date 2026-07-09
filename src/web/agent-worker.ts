@@ -13,6 +13,8 @@ import {
   sessionExistsOnHost,
 } from './agent-process.js'
 import { readClaudeCodeOauthJson } from './claude-credentials.js'
+import { detectPaneState } from '../pane-state.js'
+import { notifyChannel } from '../notify.js'
 
 // =============================================================================
 // Interactive-tmux agent worker (jun.15 subscription migration).
@@ -156,6 +158,40 @@ export function buildWorkerPrompt(callerPrompt: string, outPath: string, donePat
   ].join('\n')
 }
 
+/**
+ * Coarse classification of a NOT-ready worker pane, used by the boot-time
+ * self-heal. TS port of scripts/stuck-modal-guard.sh classify_pane (the
+ * channels-session guard), tuned for the worker:
+ *  - 'busy'/'idle': a live turn or a healthy prompt -- never self-heal these;
+ *  - 'auth': the login/401 chrome -- handled by the existing auth recovery;
+ *  - 'modal': confirm/option-list chrome without an idle footer (e.g. the CC
+ *    2.1.202 fullscreen-renderer upsell, or whatever first-run dialog a future
+ *    CC ships) -- the self-heal target;
+ *  - 'empty': inconclusive (still booting);
+ *  - 'unknown': text without any recognised marker -- also a self-heal target,
+ *    because an unrecognised full-screen overlay hides the idle footer.
+ */
+export type WorkerPaneClass = 'idle' | 'busy' | 'auth' | 'modal' | 'empty' | 'unknown'
+
+export function classifyWorkerPane(pane: string | null): WorkerPaneClass {
+  if (pane == null || pane.trim() === '') return 'empty'
+  const tail = pane.split('\n').slice(-30).join('\n')
+  if (WORKER_AUTH_FAILURE_RX.test(tail)) return 'auth'
+  const st = detectPaneState(pane)
+  if (st === 'busy') return 'busy'
+  if (st === 'idle' || st === 'typing') return 'idle'
+  // Modal chrome: a numbered option list or a confirm footer. Matches the
+  // fullscreen-upsell dialog captured live on 2026-07-08 and the Trust-folder /
+  // onboarding dialog family.
+  if (/Enter to confirm|Esc to cancel|\u276F\s*1\./.test(pane)) return 'modal'
+  return 'unknown'
+}
+
+/** Pure decision: should the boot poll attempt a self-heal for this pane class? */
+export function shouldSelfHeal(cls: WorkerPaneClass): boolean {
+  return cls === 'modal' || cls === 'unknown'
+}
+
 export type PollDecision = 'ready' | 'timeout' | 'dead' | 'wait'
 
 /**
@@ -277,7 +313,7 @@ export function ensureWorkerCwd(): void {
     const homeClaudeJson = join(homedir(), '.claude.json')
     const parsed: { projects?: Record<string, unknown>; hasCompletedOnboarding?: boolean; [k: string]: unknown } =
       existsSync(homeClaudeJson) ? JSON.parse(readFileSync(homeClaudeJson, 'utf-8')) : {}
-    parsed.hasCompletedOnboarding = true
+    stampWorkerFirstRun(parsed)
     const projects: Record<string, unknown> = (parsed.projects && typeof parsed.projects === 'object') ? parsed.projects : {}
     const base = (projects[PROJECT_ROOT] && typeof projects[PROJECT_ROOT] === 'object')
       ? projects[PROJECT_ROOT] as Record<string, unknown>
@@ -291,6 +327,25 @@ export function ensureWorkerCwd(): void {
   } catch (err) {
     logger.warn({ err }, 'worker: failed to materialise .claude.json (worker may park on a first-run modal)')
   }
+}
+
+/**
+ * Pre-accept Claude Code's global first-run chrome for the worker so a fresh
+ * install's very first generation call never parks on a modal:
+ *  - hasCompletedOnboarding: theme picker + login onboarding;
+ *  - fullscreenUpsellSeenCount: the CC >=2.1.202 "Try the new fullscreen
+ *    renderer?" upsell, which otherwise sits over the input box and the 90s
+ *    boot poll times out. Stamped HIGH (never lowered) so the modal never
+ *    renders. We deliberately do NOT opt INTO the fullscreen renderer: the
+ *    worker's whole output pipeline is a tmux capture-pane scrape and the
+ *    pane-state heuristics assume the classic renderer's layout.
+ * Pure (mutates the parsed object only) so it is unit-testable; idempotent and
+ * harmless on CC versions that do not know these keys.
+ */
+export function stampWorkerFirstRun(parsed: { hasCompletedOnboarding?: boolean; fullscreenUpsellSeenCount?: unknown; [k: string]: unknown }): void {
+  parsed.hasCompletedOnboarding = true
+  const seen = Number(parsed.fullscreenUpsellSeenCount)
+  parsed.fullscreenUpsellSeenCount = Number.isFinite(seen) ? Math.max(99, seen) : 99
 }
 
 // --- session lifecycle ---------------------------------------------------------
@@ -319,19 +374,98 @@ export function startWorkerSession(): void {
     `claude --dangerously-skip-permissions --model ${shArg(WORKER_MODEL)}`
   execFileSync(TMUX, ['new-session', '-d', '-s', WORKER_SESSION, '-c', WORKER_HOME, 'bash', '-lc', launch], { timeout: 8000 })
   logger.info({ session: WORKER_SESSION, cwd: WORKER_HOME }, 'agent-worker: launched interactive worker session')
+  logWorkerClaudeVersion()
+}
+
+/**
+ * Log the Claude Code version the worker will run and persist the last seen
+ * value; a change since the previous boot gets a WARN so a CC upgrade (the
+ * usual source of brand-new first-run chrome, like the 2.1.202 fullscreen
+ * upsell) is visible in the log timeline instead of being reverse-engineered
+ * from a stuck pane. Best effort: a probe failure never blocks the boot.
+ */
+function logWorkerClaudeVersion(): void {
+  try {
+    const claudeBin = resolveFromPath('claude')
+    const v = execFileSync(claudeBin, ['--version'], { encoding: 'utf-8', timeout: 10_000 }).trim()
+    const stampPath = join(WORKER_HOME, '.last-claude-version')
+    const prev = existsSync(stampPath) ? readFileSync(stampPath, 'utf-8').trim() : null
+    if (prev && prev !== v) {
+      logger.warn({ prev, current: v }, 'agent-worker: Claude Code version changed since the last worker boot -- watch for new first-run chrome')
+    } else {
+      logger.info({ version: v }, 'agent-worker: claude version')
+    }
+    writeFileSync(stampPath, v + '\n')
+  } catch (err) {
+    logger.warn({ err }, 'agent-worker: claude version probe failed (continuing)')
+  }
 }
 
 function shArg(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`
 }
 
+// Give a booting worker this long to reach an idle prompt on its own before
+// the self-heal inspects the pane: normal boot chrome (MOTD, plugin load)
+// resolves well within this window, so Escape is never fired into a healthy
+// startup sequence.
+const WORKER_SELF_HEAL_GRACE_MS = 20_000
+// Bounded Escape presses against a parked dialog, with a ready-recheck between.
+const WORKER_SELF_HEAL_MAX_ESCAPES = 3
+// Operator alert at most once per hour per process, so a persistently broken
+// worker does not spam the channel while still never failing silently.
+const WORKER_STUCK_ALERT_COOLDOWN_MS = 60 * 60 * 1000
+let lastWorkerStuckAlert = 0
+
+/**
+ * One bounded self-heal pass for a worker parked on unexpected chrome:
+ * Escape up to N times (rechecking between), then a full session restart if
+ * the pane still is not healthy. Never touches a busy/idle/auth pane.
+ * Returns true if it acted.
+ */
+function selfHealWorkerOnce(): boolean {
+  const cls = classifyWorkerPane(capturePane(WORKER_SESSION))
+  if (!shouldSelfHeal(cls)) return false
+  logger.warn({ cls }, 'agent-worker: pane parked on unexpected chrome -- bounded Escape self-heal')
+  for (let i = 0; i < WORKER_SELF_HEAL_MAX_ESCAPES; i++) {
+    try { execFileSync(TMUX, ['send-keys', '-t', WORKER_SESSION, 'Escape'], { timeout: 5000 }) } catch { break }
+    try { execFileSync('/bin/sleep', ['0.5'], { timeout: 2000 }) } catch { /* best effort */ }
+    const now = classifyWorkerPane(capturePane(WORKER_SESSION))
+    if (now === 'idle' || now === 'busy') {
+      logger.info({ escapes: i + 1 }, 'agent-worker: self-heal cleared the parked chrome via Escape')
+      return true
+    }
+  }
+  logger.warn('agent-worker: Escape did not clear the parked chrome -- restarting the worker session')
+  restartWorkerSession()
+  return true
+}
+
+/** Loud, rate-limited operator signal: the worker never became ready. */
+function alertWorkerStuck(paneTail: string): void {
+  logger.error({ paneTail }, 'agent-worker: worker never became ready (agent-gen / capability-summary / heartbeat / digest consumers will fail)')
+  if (Date.now() - lastWorkerStuckAlert < WORKER_STUCK_ALERT_COOLDOWN_MS) return
+  lastWorkerStuckAlert = Date.now()
+  void notifyChannel(
+    '\u26A0\uFE0F Marveen worker: a hatter-worker session nem all keszen (beragadt dialogus vagy ismeretlen kepernyo). Onjavitas lefutott (Escape + restart), de a keszenlet nem allt helyre. Erintett: agens-generalas, capability-osszefoglalo, heartbeat, digest. Nezz ra: tmux attach -t marveen-worker',
+  ).catch(() => { /* notifyChannel logs internally */ })
+}
+
 async function ensureWorkerReady(): Promise<boolean> {
   startWorkerSession()
-  const deadline = Date.now() + WORKER_BOOT_TIMEOUT_MS
+  const start = Date.now()
+  const deadline = start + WORKER_BOOT_TIMEOUT_MS
+  let healed = false
   while (Date.now() < deadline) {
     if (isSessionReadyForPrompt(WORKER_SESSION)) return true
+    if (!healed && Date.now() - start > WORKER_SELF_HEAL_GRACE_MS) {
+      healed = true
+      try { selfHealWorkerOnce() } catch (err) { logger.warn({ err }, 'agent-worker: self-heal pass failed') }
+    }
     await sleepMs(2000)
   }
+  const pane = capturePane(WORKER_SESSION)
+  alertWorkerStuck((pane ?? '').split('\n').slice(-12).join('\n'))
   return false
 }
 
@@ -434,7 +568,19 @@ export async function runViaWorker(message: string, timeoutMs: number): Promise<
     for (let attempt = 0; attempt < 2; attempt++) {
       const r = await runWorkerAttempt(message, timeoutMs)
       if (r.kind === 'ok') return { text: r.text, error: r.error }
-      if (r.kind === 'fail') return { text: null, error: r.error }
+      if (r.kind === 'fail') {
+        // A momentary not-ready is TRANSIENT, not terminal: the boot-time
+        // self-heal (or a plain restart here) usually brings the worker back,
+        // and every consumer (agent-gen, capability-summary, heartbeat,
+        // digest) reaches this single choke point -- so one central retry
+        // fixes them all. Mirrors the auth-recovery retry-once shape above.
+        if (r.error === 'worker session not ready' && attempt === 0) {
+          logger.warn('agent-worker: worker not ready -- restarting once and retrying the request')
+          restartWorkerSession()
+          continue
+        }
+        return { text: null, error: r.error }
+      }
       // r.kind === 'auth'
       if (attempt === 0) {
         logger.warn('agent-worker: auth failure -> recovering (reseed creds + clear keychain + restart)')

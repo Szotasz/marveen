@@ -51,6 +51,24 @@ if ! bash scripts/verify-channels-health.sh &>/dev/null; then
   FAIL=1
 fi
 
+# --- Managed-settings channel org-policy gate ---
+# claude-code >= 2.1.205 silently drops channel-plugin INBOUND notifications on a
+# team/enterprise org unless the system managed-settings has channelsEnabled:true.
+# Diagnostic only (warn, not fail): a personal org ignores the flag.
+echo -e "\n${BOLD}Managed-settings${RESET}"
+case "$(uname -s)" in
+  Darwin) MANAGED_FILE="/Library/Application Support/ClaudeCode/managed-settings.json" ;;
+  Linux)  MANAGED_FILE="/etc/claude-code/managed-settings.json" ;;
+  *)      MANAGED_FILE="" ;;
+esac
+if [ -z "$MANAGED_FILE" ]; then
+  warn "channelsEnabled: nem tamogatott OS -- kihagyva"
+elif [ -f "$MANAGED_FILE" ] && python3 -c "import json,sys; sys.exit(0 if json.load(open('$MANAGED_FILE')).get('channelsEnabled') is True else 1)" 2>/dev/null; then
+  ok "channelsEnabled: OK ($MANAGED_FILE)"
+else
+  warn "channelsEnabled: HIANYZIK -- team/enterprise orgnal a bejovo channel-uzenetek eldobodhatnak. Fix: bash scripts/ensure-managed-channels-enabled.sh"
+fi
+
 # --- Channel keepalive ---
 echo -e "\n${BOLD}Keepalive${RESET}"
 KA_FILE="store/.channel-keepalive"

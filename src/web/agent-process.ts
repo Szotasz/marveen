@@ -14,9 +14,12 @@ import {
   parkedInputText,
   stripGhostSuggestion,
   paneShowsContextSaturation,
+  idleConsideringDimGhost,
 } from '../pane-state.js'
-import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentMemoryIsolation } from './agent-config.js'
 import { resolveAgentConfigDir } from './claude-plans.js'
+import { provisionMemoryBoundaryDir } from './memory-boundary.js'
+import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
 import {
   buildTmuxInvocation,
   buildSshExec,
@@ -516,6 +519,19 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     return startRemoteAgentProcess(name, remote.host, remote.workdir, opts)
   }
 
+  // Opt-in per-agent auto-memory isolation (local agents only; a remote
+  // workdir cannot be provisioned from here). Default OFF: without the
+  // memoryIsolation flag this is a no-op and the shared-memory behavior of
+  // existing installs is byte-identical.
+  if (readAgentMemoryIsolation(name)) provisionMemoryBoundaryDir(dir)
+
+  // Linux shared-credentials race guard (opt-in, default OFF; no-op on macOS
+  // and without the flag). Runs before launch so a valid setup-token retires
+  // the rotating ~/.claude/.credentials.json; idempotent, so calling it per
+  // start also self-heals if Claude Code recreates the file on a refresh.
+  renameSharedCredentialsIfSafe(CLAUDE)
+
+
   if (isAgentRunning(name)) return { ok: false, error: 'Agent is already running' }
 
   const agentProvider = resolveAgentProvider(name)
@@ -692,6 +708,15 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     }
     let claudeConfigDir = planResolution.configDir
     let oauthTokenEnv = ''
+    // Shared-home agents (no isolated config dir) authenticate from the rotating
+    // ~/.claude/.credentials.json by default. If the operator has a long-lived
+    // fleet setup-token, export it so EVERY locally launched agent uses the
+    // stable token instead -- this is what makes the Linux credentials-guard
+    // rename safe (a shared sub-agent with no env token would otherwise be
+    // locked out once credentials.json is moved aside). No-op without a token.
+    if (!claudeConfigDir && hasFleetOauthToken()) {
+      oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
+    }
     if (!claudeConfigDir && hasChannel && name !== MAIN_AGENT_ID) {
       if (hasFleetOauthToken()) {
         // Token present -> isolation works; any earlier degradation is resolved,
@@ -1292,13 +1317,20 @@ export function captureParkedInputView(session: string, host: string | null = nu
 // whether) to recover the session is left to the caller / operator tooling, so
 // this predicate stays a pure, dependency-free readiness check.
 export function isSessionReadyForPrompt(session: string, host: string | null = null): boolean {
+  // Dim-ghost tolerant idle read: CC >=2.1.202 paints a dim placeholder into
+  // the empty input box, which a plain capture reads as parked text. Only when
+  // the plain view says 'typing' do we pay for the second (-e, dim-stripped)
+  // capture to decide whether anything REAL is parked (see
+  // idleConsideringDimGhost / captureParkedInputView).
+  const idleOrGhost = (plain: string): boolean =>
+    idleConsideringDimGhost(plain, detectPaneState(plain) === 'typing' ? captureParkedInputView(session, host) : null)
   const first = capturePane(session, host)
   if (first == null) return false
   if (paneShowsContextSaturation(first)) {
     logger.warn({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
     return false
   }
-  if (!paneLooksIdle(first)) return false
+  if (!idleOrGhost(first)) return false
 
   try { execFileSync('/bin/sleep', [PANE_READY_CONFIRM_DELAY_S], { timeout: 2000 }) } catch { /* best effort */ }
 
@@ -1308,7 +1340,7 @@ export function isSessionReadyForPrompt(session: string, host: string | null = n
     logger.warn({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
     return false
   }
-  return paneLooksIdle(second)
+  return idleOrGhost(second)
 }
 
 // How long to wait between the two parked-input captures when deciding whether

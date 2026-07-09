@@ -23,7 +23,7 @@ Two things make it special:
 
 SQLite (`store/`): `kanban_cards` (id, title, status, project, priority, assignee, sort_order, archived_at, timestamps) + `kanban_comments` (card-level log).
 
-- **Statuses:** `planned`, `in_progress`, `waiting`, `done`
+- **Statuses:** `planned`, `in_progress`, `waiting`, `testing`, `done`
 - **Priorities:** `low`, `normal`, `high`, `urgent`
 
 ### Automatic breakdown
@@ -184,11 +184,11 @@ On a large board with lots of cards, the plain column view gets hard to scan. Th
 
 ### Swimlanes -- technical details
 
-The kanban board can optionally split into horizontal lanes (swimlanes), grouped by one of two fields: assignee or priority. By default (no grouping) the board uses the usual 4-column layout, unchanged.
+The kanban board can optionally split into horizontal lanes (swimlanes), grouped by one of two fields: assignee or priority. By default (no grouping) the board uses the usual 5-column layout, unchanged.
 
 **Layout in grouped view:**
 
-Each swimlane is a full-width band containing all 4 status columns (planned/in_progress/waiting/done), but only with cards belonging to that group. A 44px header bar precedes each lane:
+Each swimlane is a full-width band containing all 5 status columns (planned/in_progress/waiting/testing/done), but only with cards belonging to that group. A 44px header bar precedes each lane:
 
 - **Left side:** a 28px round avatar (assignee-type color + initial, or a priority-color marker with no text), followed by the bold name/priority label.
 - **Right side:** a card-count badge (total cards in the lane across all statuses), followed by a chevron button (▼/▶) to collapse the lane.

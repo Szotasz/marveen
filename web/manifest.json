@@ -4,7 +4,6 @@
   "description": "AI fleet management dashboard",
   "start_url": "/",
   "display": "standalone",
-  "orientation": "any",
   "theme_color": "#1a1917",
   "background_color": "#faf9f5",
   "icons": [

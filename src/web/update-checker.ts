@@ -9,11 +9,25 @@ export interface UpdateCommit {
   date: string
 }
 
+export interface UpdateRelease {
+  /** Release tag, e.g. "v1.20.0"; empty string for the not-yet-released group. */
+  version: string
+  /** Human-language summary for the version (release-commit subject after "--",
+   * or the release-commit body when present). Empty when none is available. */
+  summary: string
+  commits: UpdateCommit[]
+}
+
 export interface UpdateStatus {
   current: string
   latest: string
   behind: number
   commits: UpdateCommit[]
+  /** Commits grouped by release tag (newest first; the first group is the
+   * not-yet-released "upcoming" commits with version=""). Derived from the
+   * chore(release) commits in the list. Absent/empty when there is nothing to
+   * group; the flat `commits` list is always populated for backward compat. */
+  releases?: UpdateRelease[]
   remote: string
   lastChecked: number
   error?: string
@@ -70,19 +84,65 @@ async function fetchCompare(remote: string, base: string, head: string): Promise
   return null
 }
 
-// Map a GitHub compare body onto the status (behind count + newest-first commit
-// list).
+// Matches a `chore(release): vX.Y.Z` subject and captures the version + the
+// human summary that follows a "--" / "—" separator (if any).
+const RELEASE_RE = /^chore\(release\):\s*(v\d+\.\d+\.\d+)\s*(?:--|—)?\s*(.*)$/
+
+// Strip trailing git trailers (Co-Authored-By, Signed-off-by) and blank lines
+// from a release-commit body so only the human summary remains.
+function releaseBodySummary(fullMessage: string): string {
+  const lines = fullMessage.split('\n').slice(1) // drop the subject line
+  const kept: string[] = []
+  for (const line of lines) {
+    if (/^(Co-Authored-By|Signed-off-by|Co-authored-by):/i.test(line.trim())) continue
+    kept.push(line)
+  }
+  return kept.join('\n').trim()
+}
+
+// Map a GitHub compare body onto the status: the flat newest-first commit list
+// (backward compat) plus a release-grouped view derived from the chore(release)
+// commits already present in the list.
 function applyCompare(status: UpdateStatus, cmp: GhCompare): void {
   status.behind = cmp.ahead_by ?? 0
   // GitHub returns commits oldest-first; flip to newest-first for the UI.
   const raw = (cmp.commits ?? []).slice().reverse()
-  status.commits = raw.map(c => ({
+  const commits: UpdateCommit[] = raw.map(c => ({
     sha: c.sha,
     short: c.sha.slice(0, 7),
     message: (c.commit.message || '').split('\n')[0],
     author: c.commit.author?.name || '',
     date: c.commit.author?.date || '',
   }))
+  status.commits = commits
+  status.releases = groupByRelease(commits, raw.map(c => c.commit.message || ''))
+}
+
+// Group a newest-first commit list into release buckets. A `chore(release): vX`
+// commit starts a version group; the non-release commits OLDER than it (until
+// the next release marker) are the changes shipped in vX. Commits newer than
+// the newest release marker form the leading "upcoming" group (version="").
+export function groupByRelease(commits: UpdateCommit[], fullMessages: string[]): UpdateRelease[] {
+  const groups: UpdateRelease[] = []
+  let cur: UpdateRelease | null = null
+  const upcoming: UpdateRelease = { version: '', summary: '', commits: [] }
+  for (let i = 0; i < commits.length; i++) {
+    const c = commits[i]
+    const m = c.message.match(RELEASE_RE)
+    if (m) {
+      const subjectSummary = (m[2] || '').trim()
+      const bodySummary = releaseBodySummary(fullMessages[i] || '')
+      cur = { version: m[1], summary: bodySummary || subjectSummary, commits: [] }
+      groups.push(cur)
+    } else if (cur) {
+      cur.commits.push(c)
+    } else {
+      upcoming.commits.push(c)
+    }
+  }
+  const out: UpdateRelease[] = []
+  if (upcoming.commits.length) out.push(upcoming)
+  return out.concat(groups)
 }
 
 // Merge-base of local HEAD with the upstream tracking ref (origin/main, which

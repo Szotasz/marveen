@@ -236,6 +236,7 @@ Minden sub-ágens mappája gitignore-olt (`agents/` mappa), így a titkos kulcso
 {
   "model": "claude-sonnet-4-6",
   "profileId": "developer-senior",
+  "memoryIsolation": false,
   "team": {
     "role": "member",
     "reportsTo": "marveen",
@@ -245,6 +246,25 @@ Minden sub-ágens mappája gitignore-olt (`agents/` mappa), így a titkos kulcso
   }
 }
 ```
+
+A `memoryIsolation` mező (opcionális, alapértelmezés: kikapcsolva) az ágens fájl-alapú auto-memóriáját választja le a közös, telepítés-szintű memóriáról. Bekapcsolva az ágens indításkor saját git-gyökeret kap (stub .git az agents/<név> alatt), így a Claude Code auto-memory a saját projekt-kulcsa alá kerül, és az ágens nem látja a közös MEMORY.md-t. A megosztott SQLite-emlékek és a CLAUDE.md továbbra is elérnek hozzá.
+
+Mikor kapcsold be: több-felhasználós (több megbízós) telepítésen, ágensenként, hogy az egyes megbízók memóriái ne szivárogjanak át egymáshoz. Egy-felhasználós telepítésen hagyd kikapcsolva: ott a közös MEMORY.md a flotta-szabályok szándékolt terítő-csatornája. Életbe lépés: az ágens következő (újra)indítása. Visszavonás: a mező törlése és az `agents/<név>/.git` stub eltávolítása. A fő ágensre nem alkalmazható (a dashboard el is rejti ott a kapcsolót).
+
+---
+
+## Linux OAuth-token race + CLAUDE_CREDENTIALS_GUARD
+
+Linuxon a `~/.claude/.credentials.json` egy rövid életű, magától rotálódó OAuth tokent tárol, OS-szintű fájlzárolás nélkül. Ha több agent egyszerre ér a token lejáratához (jellemzően éjjel), a frissítő írásaik egymásra futnak és elrontják a fájlt, ezért reggelente minden agent `/login`-t kér. macOS-en a Keychain sorbarendezi az írásokat, ott nincs ez a hiba.
+
+A megoldás: egy 1 éves, nem rotálódó setup-token (`claude setup-token`) a `store/.claude-oauth-token` fájlban, amit az agent-indító `CLAUDE_CODE_OAUTH_TOKEN`-ként exportál minden lokális agentnek. Ezzel a Claude Code-nak nincs szüksége a rotálódó `credentials.json`-ra. A `CLAUDE_CREDENTIALS_GUARD=1` flag bekapcsolja, hogy az indító a rotálódó `credentials.json`-t félretegye (`.credentials.json.bak`), így megszűnik a verseny.
+
+- **Alapértelmezés: KIKAPCSOLVA.** A flag nélkül semmi nem történik (a jelenlegi viselkedés bájtra változatlan). Egy pilot-hoston kapcsold be a `.env`-ben (`CLAUDE_CREDENTIALS_GUARD=1`), ne mindenhol egyszerre.
+- **Csak Linux**, macOS-en no-op (ott nincs is credentials.json).
+- **Guardolt**: a rename CSAK akkor fut, ha van érvényes setup-token (formátum-ellenőrzés + egyszeri éles teszthívás, token-értékhez kötött cache-sel). Érvénytelen/hiányzó token esetén a credentials.json érintetlen marad, hogy egyetlen agent se essen ki.
+- **Idempotens és visszaállítható**: a rename `.bak`-ra megy, visszavonás `mv .credentials.json.bak .credentials.json`.
+- **Fontos install-konzisztencia**: a fő channels-agent a `.env` `CLAUDE_CODE_OAUTH_TOKEN`-jét használja, a sub-agentek a `store/.claude-oauth-token`-t. Bekapcsolás előtt győződj meg róla, hogy a kettő UGYANAZ az érvényes token, különben a fő agent kieshet.
+- A token SOHA nem kerül logba, commitba vagy chatbe.
 
 ---
 
