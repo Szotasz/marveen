@@ -314,6 +314,15 @@ else
   fi
 fi
 
+# Channel inbound org-policy gate: ensure the system managed-settings enable
+# channels. claude-code >= 2.1.205 silently drops channel-plugin INBOUND
+# notifications on a team/enterprise org unless managed-settings has
+# channelsEnabled:true (harmless / no-op on a personal org). Idempotent.
+if [ -f "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" ]; then
+  echo -e "  Managed-settings channel-kapu ellenorzese..."
+  bash "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" || true
+fi
+
 # Linuxbrew (ha telepitve van)
 if [ -x "/home/linuxbrew/.linuxbrew/bin/brew" ]; then
   ensure_in_rc 'linuxbrew' 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv bash)"'
