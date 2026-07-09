@@ -9829,16 +9829,37 @@ async function loadUpdates() {
       summary.innerHTML = `<strong>${t('updates.behind', { n: data.behind })}</strong> ${t('updates.available_on', { remote: `<code>${escapeHtmlUpdates(data.remote)}</code>` })}<br>${t('updates.current_label')} <code>${cur}</code> → ${t('updates.latest_label')} <code>${lat}</code>`
       applyBtn.hidden = false
     }
-    if (data.commits && data.commits.length) {
-      list.innerHTML = data.commits.map(c => `
+    const commitCard = (c) => `
         <div class="updates-commit">
           <div class="updates-commit-head">
             <span>${escapeHtmlUpdates(c.short)} · ${escapeHtmlUpdates(c.author)}</span>
             <span>${escapeHtmlUpdates((c.date || '').slice(0, 10))}</span>
           </div>
           <div class="updates-commit-msg">${escapeHtmlUpdates(c.message)}</div>
-        </div>
-      `).join('')
+        </div>`
+    if (data.releases && data.releases.length) {
+      // Grouped-by-release view: one collapsible <details> per version, newest
+      // open by default. Falls back to the flat list below when absent.
+      list.innerHTML = data.releases.map((rel, idx) => {
+        const label = rel.version
+          ? escapeHtmlUpdates(rel.version)
+          : t('updates.group.upcoming')
+        const summary = rel.summary
+          ? `<span class="updates-group-summary">${escapeHtmlUpdates(rel.summary)}</span>`
+          : ''
+        const count = t('updates.group.commit_count', { n: rel.commits.length })
+        return `
+        <details class="updates-group"${idx === 0 ? ' open' : ''}>
+          <summary class="updates-group-head">
+            <span class="updates-group-tag">${label}</span>
+            ${summary}
+            <span class="updates-group-count">${count}</span>
+          </summary>
+          <div class="updates-commit-list">${rel.commits.map(commitCard).join('')}</div>
+        </details>`
+      }).join('')
+    } else if (data.commits && data.commits.length) {
+      list.innerHTML = data.commits.map(commitCard).join('')
     } else if (data.behind === 0) {
       list.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${t('updates.no_changes')}</p>`
     }

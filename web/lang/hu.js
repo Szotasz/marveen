@@ -1055,6 +1055,8 @@ window._i18n.hu = {
   'updates.up_to_date_html':     'A legfrissebb verzión vagy',
   'updates.no_changes':          'Nincs változás.',
   'updates.btn.update_now':      'Frissítés most',
+  'updates.group.upcoming':    'Közelgő változások',
+  'updates.group.commit_count': '{n} commit',
   'updates.behind':              '{n} új commit elérhető',
   'updates.available_on':        'a {remote} repón.',
   'updates.latest_label':        'Legfrissebb:',

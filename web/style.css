@@ -6421,3 +6421,14 @@ body {
     padding-bottom: max(20px, env(safe-area-inset-bottom));
   }
 }
+
+/* Update view: release-grouped collapsible list */
+.updates-group { border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 10px; overflow: hidden; }
+.updates-group > summary.updates-group-head { list-style: none; cursor: pointer; display: flex; align-items: baseline; gap: 10px; padding: 12px 14px; background: var(--bg-input); font-size: 14px; }
+.updates-group > summary.updates-group-head::-webkit-details-marker { display: none; }
+.updates-group > summary.updates-group-head::before { content: "\25B8"; color: var(--text-muted); transition: transform .15s; }
+.updates-group[open] > summary.updates-group-head::before { transform: rotate(90deg); }
+.updates-group-tag { font-weight: 600; color: var(--accent, #dc2626); white-space: nowrap; }
+.updates-group-summary { color: var(--text); flex: 1; }
+.updates-group-count { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.updates-group .updates-commit-list { padding: 6px 14px 12px; }

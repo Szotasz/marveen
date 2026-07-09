@@ -1057,6 +1057,8 @@ window._i18n.en = {
   'updates.up_to_date_html':     'You are on the latest version',
   'updates.no_changes':          'No changes.',
   'updates.btn.update_now':      'Update now',
+  'updates.group.upcoming':    'Upcoming changes',
+  'updates.group.commit_count': '{n} commits',
   'updates.behind':              '{n} new commits available',
   'updates.available_on':        'on {remote}.',
   'updates.latest_label':        'Latest:',
