@@ -1,0 +1,11 @@
+{
+  "schedule": "0 4 * * 3",
+  "agent": "{{MAIN_AGENT_ID}}",
+  "enabled": true,
+  "type": "command",
+  "description": "Auto-update (opt-in): heti egyszer meghivja a robusztus update.sh-t. ALAPERTELMEZETTEN KIKAPCSOLVA -- a parancs csak akkor futtatja a frissitest, ha az .env-ben AUTO_UPDATE_ENABLED=1. A frissites, restart, health-check es szukseg eseten a rollback a update.sh dolga; a kimenetrol a finalizer kuld Telegram-riasztast (MARVEEN_UPDATE_NOTIFY=1).",
+  "command": "AUE=$(grep '^AUTO_UPDATE_ENABLED=' '{{INSTALL_DIR}}/.env' 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' \\r\"'); [ \"$AUE\" = \"1\" ] || exit 0; cd '{{INSTALL_DIR}}' || exit 1; if command -v setsid >/dev/null 2>&1; then DETACH=setsid; else DETACH=nohup; fi; MARVEEN_UPDATE_NOTIFY=1 AUTO_STASH=1 $DETACH bash '{{INSTALL_DIR}}/update.sh' >> '{{INSTALL_DIR}}/store/update.log' 2>&1 < /dev/null & exit 0",
+  "timeoutMs": 30000,
+  "failThreshold": 1,
+  "createdAt": 0
+}
