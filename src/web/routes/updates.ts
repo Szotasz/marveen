@@ -29,6 +29,22 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // Real outcome of the last (or in-flight) update.sh run. update.sh writes
+  // store/update.last-result on EXIT with the true status, so the frontend can
+  // show success/failed/rolled-back instead of a blind reload that hides a
+  // silent failure. Absent file => no run yet (or one still in progress; the
+  // presence of store/update.pid disambiguates).
+  if (path === '/api/updates/status' && method === 'GET') {
+    let result: unknown = null
+    try {
+      result = JSON.parse(readFileSync(join(STORE_DIR, 'update.last-result'), 'utf-8'))
+    } catch { /* no result yet */ }
+    let running = false
+    try { running = statSync(UPDATE_PIDFILE).isFile() } catch { /* not running */ }
+    json(res, { running, result })
+    return true
+  }
+
   if (path === '/api/updates/check' && method === 'POST') {
     const status = await refreshUpdateStatus()
     json(res, status)
@@ -129,6 +145,17 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
         ['status', '--porcelain', '--untracked-files=no'],
         { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' },
       ),
+      aheadCount: () => {
+        try {
+          const out = execFileSync(
+            '/usr/bin/git',
+            ['rev-list', '--count', '@{u}..HEAD'],
+            { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' },
+          ).trim()
+          const n = parseInt(out, 10)
+          return Number.isFinite(n) ? n : 0
+        } catch { return 0 }
+      },
     }
     let preflight
     try {
@@ -145,6 +172,7 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
       // dirty-tree + autoStash=true: skip the dashboard-side block and let
       // update.sh handle the stash+pop. The other failure reason (detached
       // HEAD) still hard-blocks since stash cannot rescue it.
+      // dirty-tree can be auto-stashed; local-commits and detached-head cannot.
       const skipForAutoStash = preflight.reason === 'dirty-tree' && autoStash
       if (!skipForAutoStash) {
         releaseLock()
@@ -157,12 +185,19 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
       }
     }
     try {
+      // Verify store/ is writable BEFORE spawning update.sh. If update.log
+      // cannot be opened, the script would die at its own exit-4 with the log
+      // (its only output channel) being the very thing that failed -> a silent
+      // detached death. Surface it here as a synchronous error instead.
       let outFd: number | 'ignore' = 'ignore'
       try {
         mkdirSync(STORE_DIR, { recursive: true })
         outFd = openSync(join(STORE_DIR, 'update.log'), 'a', 0o600)
       } catch (err) {
-        logger.warn({ err }, 'Could not open update.log for update.sh stdio; falling back to ignore')
+        releaseLock()
+        logger.error({ err }, 'store/update.log not writable; refusing to start a blind update')
+        json(res, { error: 'store/ is not writable; cannot run the updater safely.', reason: 'store-unwritable' }, 500)
+        return true
       }
       const child = spawn('/bin/bash', [join(PROJECT_ROOT, 'update.sh')], {
         cwd: PROJECT_ROOT,

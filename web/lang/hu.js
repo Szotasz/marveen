@@ -1303,6 +1303,11 @@ window._i18n.hu = {
   // --- Updates toasts ---
   'updates.toast.not_started':   'Frissítés nem indult: {msg}',
   'updates.toast.started':       'Frissítés elindult, a dashboard újratöltődik...',
+  'updates.toast.applying':      'Frissítés folyamatban (újraindítás és health-check)...',
+  'updates.toast.success':       'Frissítve: {old} -> {new}. Újratöltés...',
+  'updates.toast.rolled_back':   'A frissítés nem sikerült, visszaálltunk a korábbi verzióra ({old}). {msg}',
+  'updates.toast.failed':        'Frissítés sikertelen ({phase}): {msg}',
+  'updates.toast.status_timeout':'A frissítés állapota nem érkezett meg időben. Nézd meg a store/update.log fájlt.',
 
   // --- Ideas toasts ---
   'ideas.toast.score_saved':     'Pontozás mentve',

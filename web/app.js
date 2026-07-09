@@ -9910,12 +9910,55 @@ async function runUpdate(autoStash) {
       showToast(t('updates.toast.not_started', { msg: data.error || ('HTTP ' + res.status) }))
       return
     }
-    showToast(t('updates.toast.started'))
-    setTimeout(() => window.location.reload(), 30000)
+    showToast(t('updates.toast.applying'))
+    // Poll the real outcome instead of a blind timed reload. update.sh (and its
+    // detached finalizer) write store/update.last-result on exit, so we surface
+    // success / rolled-back / failed rather than a false "done" that reloads
+    // into an unchanged (or dead) dashboard.
+    await pollUpdateOutcome(resetBtn)
   } catch (err) {
     resetBtn()
     showToast(t('updates.toast.error', {msg: err.message || err}))
   }
+}
+
+// Poll /api/updates/status until the run finishes (pidfile gone AND a fresh
+// result is present), then show the true outcome. Reload only on success.
+async function pollUpdateOutcome(resetBtn) {
+  const startedAt = Date.now()
+  const deadline = startedAt + 5 * 60_000   // hard cap: 5 min
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 3000))
+    let data
+    try {
+      const res = await fetch('/api/updates/status')
+      data = await res.json()
+    } catch {
+      // Dashboard is mid-restart (expected): keep polling.
+      continue
+    }
+    const result = data && data.result
+    const fresh = result && typeof result.ts === 'number' && result.ts * 1000 >= startedAt - 5000
+    if (data && !data.running && fresh) {
+      const st = result.status
+      if (st === 'success') {
+        showToast(t('updates.toast.success', { old: result.old || '', new: result.new || '' }))
+        setTimeout(() => window.location.reload(), 2000)
+        return
+      }
+      if (st === 'rolled-back') {
+        if (resetBtn) resetBtn()
+        showToast(t('updates.toast.rolled_back', { old: result.old || '', msg: result.message || '' }))
+        return
+      }
+      // failed
+      if (resetBtn) resetBtn()
+      showToast(t('updates.toast.failed', { phase: result.phase || '?', msg: result.message || ('code ' + result.code) }))
+      return
+    }
+  }
+  if (resetBtn) resetBtn()
+  showToast(t('updates.toast.status_timeout'))
 }
 
 document.getElementById('updatesApplyBtn').addEventListener('click', async () => {

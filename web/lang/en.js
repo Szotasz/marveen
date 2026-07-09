@@ -1305,6 +1305,11 @@ window._i18n.en = {
   // --- Updates toasts ---
   'updates.toast.not_started':   'Update not started: {msg}',
   'updates.toast.started':       'Update started, dashboard reloading...',
+  'updates.toast.applying':      'Update in progress (restart and health-check)...',
+  'updates.toast.success':       'Updated: {old} -> {new}. Reloading...',
+  'updates.toast.rolled_back':   'Update failed, rolled back to the previous version ({old}). {msg}',
+  'updates.toast.failed':        'Update failed ({phase}): {msg}',
+  'updates.toast.status_timeout':'Update status did not arrive in time. Check store/update.log.',
 
   // --- Ideas toasts ---
   'ideas.toast.score_saved':     'Score saved',
