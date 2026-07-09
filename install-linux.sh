@@ -268,13 +268,50 @@ echo -e "${BOLD}$(_t section_2_linux)${NC}"
 ensure_in_rc '.local/bin' 'export PATH="$HOME/.local/bin:$PATH"'
 export PATH="$HOME/.local/bin:$PATH"
 
-if command -v claude &>/dev/null; then
-  ok "claude mar telepitve: $(claude --version 2>/dev/null || echo 'ok')"
+# Does an installed claude actually LAUNCH? On an AVX-less x86 host the official
+# installer's Bun standalone binary SIGILLs / hangs on start, so `command -v`
+# alone is not enough -- we verify it runs (with a timeout so a hanging Bun
+# binary cannot wedge the installer).
+_claude_runs() { command -v claude >/dev/null 2>&1 && timeout 25 claude --version </dev/null >/dev/null 2>&1; }
+
+# Pinned Node-based fallback for AVX-less hosts. @2.0.76 ships bin=cli.js (a
+# `#!/usr/bin/env node` entrypoint) that runs without AVX; npm-latest (2.1.x)
+# still bundles the Bun ELF binary, so DO NOT use latest here. Verified on the
+# AVX-less pilot VPS.
+CLAUDE_PIN="2.0.76"
+
+if _claude_runs; then
+  ok "claude mar telepitve es fut: $(claude --version 2>/dev/null || echo 'ok')"
 else
-  echo -e "  Claude Code telepitese (~/.local/bin)..."
-  curl -fsSL https://claude.ai/install.sh | bash
+  # AVX pre-flight: the official installer's Bun binary needs AVX. Only x86
+  # (has a `flags :` line in /proc/cpuinfo) can lack it; ARM (`Features :`, no
+  # `avx`) runs the arm64 Bun binary fine, so it takes the official path.
+  if grep -qE '^flags[[:space:]]*:' /proc/cpuinfo 2>/dev/null && ! grep -qiw avx /proc/cpuinfo 2>/dev/null; then
+    warn "A CPU nem tamogatja az AVX-et; a hivatalos installer Bun-binaryja elszallna (SIGILL)."
+    echo -e "  ${DIM}Pinnelt Node-verzio telepitese: @${CLAUDE_PIN} (nehany legfrissebb Claude Code fix kimaradhat, de fut AVX nelkul).${NC}"
+    if command -v npm >/dev/null 2>&1; then
+      npm install -g "@anthropic-ai/claude-code@${CLAUDE_PIN}" || warn "npm install sikertelen (@${CLAUDE_PIN})."
+    else
+      warn "npm nem elerheto; a pinnelt hivatalos installert probalom (@${CLAUDE_PIN})."
+      curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_PIN}" || warn "pinnelt install.sh sikertelen."
+    fi
+  else
+    echo -e "  Claude Code telepitese (hivatalos installer, ~/.local/bin)..."
+    curl -fsSL https://claude.ai/install.sh | bash
+  fi
   hash -r
-  ok "claude telepitve -> ~/.local/bin/claude"
+  # Verify the install actually launches -- surfaces an AVX crash HERE with a
+  # clear message instead of a cryptic SIGILL at first agent-spawn.
+  if _claude_runs; then
+    ok "claude telepitve es fut: $(claude --version 2>/dev/null || echo 'ok')"
+  else
+    echo -e "  ${RED}HIBA:${NC} claude telepitve, de nem indul (valoszinuleg AVX-hianyos CPU + Bun-binary)."
+    if command -v npm >/dev/null 2>&1; then
+      echo -e "  ${DIM}Probald manualisan: npm install -g @anthropic-ai/claude-code@${CLAUDE_PIN}${NC}"
+    else
+      echo -e "  ${DIM}Telepits nvm+node-ot, majd: npm install -g @anthropic-ai/claude-code@${CLAUDE_PIN}${NC}"
+    fi
+  fi
 fi
 
 # Linuxbrew (ha telepitve van)
