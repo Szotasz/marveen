@@ -6477,3 +6477,14 @@ body {
 .updates-group-summary { color: var(--text); flex: 1; }
 .updates-group-count { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
 .updates-group .updates-commit-list { padding: 6px 14px 12px; }
+
+/* Version-centric update view: human summary up front, raw commits collapsed. */
+.updates-version { border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 12px; padding: 14px 16px; }
+.updates-version-tag { font-weight: 700; color: var(--accent, #dc2626); font-size: 15px; margin-bottom: 6px; }
+.updates-version-summary { color: var(--text); font-size: 14px; line-height: 1.6; }
+.updates-version-details { margin-top: 10px; }
+.updates-version-details > summary { list-style: none; cursor: pointer; color: var(--text-muted); font-size: 12px; user-select: none; }
+.updates-version-details > summary::-webkit-details-marker { display: none; }
+.updates-version-details > summary::before { content: "\25B8 "; transition: transform .15s; display: inline-block; }
+.updates-version-details[open] > summary::before { transform: rotate(90deg); }
+.updates-version-details .updates-commit-list { padding: 10px 0 2px; }

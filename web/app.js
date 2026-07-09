@@ -9838,8 +9838,14 @@ function escapeHtmlUpdates(s) {
 function renderUpdatesBadge(status) {
   const badge = document.getElementById('updatesBadge')
   if (!badge) return
-  if (status && status.behind && status.behind > 0) {
-    badge.textContent = String(status.behind)
+  // Version-centric: show the number of NEW VERSIONS, not raw commits. Fall back
+  // to the behind count only in the rare pre-release state (unreleased commits
+  // but no new version tag yet).
+  const versionCount = status && Array.isArray(status.releases)
+    ? status.releases.filter((r) => r.version).length : 0
+  const count = versionCount > 0 ? versionCount : ((status && status.behind) || 0)
+  if (count > 0) {
+    badge.textContent = String(count)
     badge.hidden = false
   } else {
     badge.hidden = true
@@ -9878,7 +9884,14 @@ async function loadUpdates() {
       applyBtn.hidden = true
     } else {
       summary.className = 'updates-summary behind'
-      summary.innerHTML = `<strong>${t('updates.behind', { n: data.behind })}</strong> ${t('updates.available_on', { remote: `<code>${escapeHtmlUpdates(data.remote)}</code>` })}<br>${t('updates.current_label')} <code>${cur}</code> → ${t('updates.latest_label')} <code>${lat}</code>`
+      const versions = (data.releases || []).filter((r) => r.version)
+      if (versions.length > 0) {
+        // Version-centric: "N uj verzio elerheto (v1.21.0)".
+        summary.innerHTML = `<strong>${t('updates.versions_available', { n: versions.length })}</strong> <code>${escapeHtmlUpdates(versions[0].version)}</code>`
+      } else {
+        // Pre-release: unreleased commits but no new version tag yet.
+        summary.innerHTML = `<strong>${t('updates.changes_available')}</strong> ${t('updates.available_on', { remote: `<code>${escapeHtmlUpdates(data.remote)}</code>` })}`
+      }
       applyBtn.hidden = false
     }
     const commitCard = (c) => `
@@ -9890,25 +9903,25 @@ async function loadUpdates() {
           <div class="updates-commit-msg">${escapeHtmlUpdates(c.message)}</div>
         </div>`
     if (data.releases && data.releases.length) {
-      // Grouped-by-release view: one collapsible <details> per version, newest
-      // open by default. Falls back to the flat list below when absent.
-      list.innerHTML = data.releases.map((rel, idx) => {
-        const label = rel.version
-          ? escapeHtmlUpdates(rel.version)
-          : t('updates.group.upcoming')
-        const summary = rel.summary
-          ? `<span class="updates-group-summary">${escapeHtmlUpdates(rel.summary)}</span>`
-          : ''
-        const count = t('updates.group.commit_count', { n: rel.commits.length })
+      // Version-centric: the human-language summary per version is the primary
+      // content; the raw commit list (SHAs, conventional-commit prefixes, author
+      // names) is tucked behind a collapsed "details" so it is never the first
+      // thing the operator sees.
+      list.innerHTML = data.releases.map((rel) => {
+        const isUpcoming = !rel.version
+        const label = isUpcoming ? t('updates.group.upcoming') : escapeHtmlUpdates(rel.version)
+        const human = rel.summary
+          ? escapeHtmlUpdates(rel.summary)
+          : (isUpcoming ? t('updates.upcoming_note') : '')
         return `
-        <details class="updates-group"${idx === 0 ? ' open' : ''}>
-          <summary class="updates-group-head">
-            <span class="updates-group-tag">${label}</span>
-            ${summary}
-            <span class="updates-group-count">${count}</span>
-          </summary>
-          <div class="updates-commit-list">${rel.commits.map(commitCard).join('')}</div>
-        </details>`
+        <div class="updates-version">
+          <div class="updates-version-tag">${label}</div>
+          ${human ? `<div class="updates-version-summary">${human}</div>` : ''}
+          <details class="updates-version-details">
+            <summary>${t('updates.details', { n: rel.commits.length })}</summary>
+            <div class="updates-commit-list">${rel.commits.map(commitCard).join('')}</div>
+          </details>
+        </div>`
       }).join('')
     } else if (data.commits && data.commits.length) {
       list.innerHTML = data.commits.map(commitCard).join('')
