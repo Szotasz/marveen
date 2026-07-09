@@ -336,6 +336,22 @@ nav { display: flex; gap: 4px; }
 .updates-summary.error {
   border-left: 4px solid #e53e3e;
 }
+.updates-diagnose {
+  padding: 16px 18px;
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  border-left: 4px solid #e53e3e;
+  margin: 0 0 20px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.updates-diagnose.needs-human {
+  border-left-color: #f59e0b;
+}
+.updates-diagnose p {
+  margin: 8px 0 12px;
+  color: var(--text-muted);
+}
 .updates-summary code {
   background: var(--bg-card);
   padding: 2px 6px;
@@ -609,6 +625,8 @@ main {
    `display: grid` above otherwise wins the cascade over the UA [hidden]
    default (equal specificity, later source order). */
 .kanban-board[hidden] { display: none; }
+/* Same override needed for columns: display:flex above wins over UA [hidden]{display:none}. */
+.kanban-col[hidden] { display: none; }
 
 .kanban-col {
   background: var(--bg-input);
@@ -905,6 +923,28 @@ main {
   color: var(--text-muted);
 }
 
+.kanban-col-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 12px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-card));
+  cursor: pointer;
+  user-select: none;
+  transition: opacity 0.15s;
+}
+.kanban-col-chip:hover { opacity: 0.8; }
+.kanban-col-chip.hidden {
+  border-color: var(--border);
+  color: var(--muted);
+  background: var(--bg);
+  text-decoration: line-through;
+  opacity: 0.55;
+}
+
 .kanban-quick-filter-chip {
   display: inline-flex;
   align-items: center;
@@ -943,6 +983,11 @@ main {
   cursor: pointer;
   text-decoration: underline;
   padding: 0;
+}
+/* On narrow screens the filter row wraps; remove the auto-margin so
+   quick-filter chips don't get pushed to the far right of their own line. */
+@media (max-width: 768px) {
+  #kanbanQuickFilters { margin-left: 0 !important; }
 }
 
 .priority-bar {
@@ -6421,3 +6466,14 @@ body {
     padding-bottom: max(20px, env(safe-area-inset-bottom));
   }
 }
+
+/* Update view: release-grouped collapsible list */
+.updates-group { border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 10px; overflow: hidden; }
+.updates-group > summary.updates-group-head { list-style: none; cursor: pointer; display: flex; align-items: baseline; gap: 10px; padding: 12px 14px; background: var(--bg-input); font-size: 14px; }
+.updates-group > summary.updates-group-head::-webkit-details-marker { display: none; }
+.updates-group > summary.updates-group-head::before { content: "\25B8"; color: var(--text-muted); transition: transform .15s; }
+.updates-group[open] > summary.updates-group-head::before { transform: rotate(90deg); }
+.updates-group-tag { font-weight: 600; color: var(--accent, #dc2626); white-space: nowrap; }
+.updates-group-summary { color: var(--text); flex: 1; }
+.updates-group-count { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.updates-group .updates-commit-list { padding: 6px 14px 12px; }

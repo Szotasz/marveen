@@ -23,7 +23,7 @@ Két dolog teszi különlegessé:
 
 SQLite (`store/`): `kanban_cards` (id, title, status, project, priority, assignee, sort_order, archived_at, időbélyegek) + `kanban_comments` (kártya-szintű napló).
 
-- **Státuszok:** `planned`, `in_progress`, `waiting`, `done`
+- **Státuszok:** `planned`, `in_progress`, `waiting`, `testing`, `done`
 - **Prioritások:** `low`, `normal`, `high`, `urgent`
 
 ### Automatikus bontás
@@ -185,11 +185,11 @@ Nagy, sok kártyás táblánál a sima oszlopnézet könnyen átláthatatlanná 
 
 ### Swimlane-ek -- technikai részletek
 
-A kanban-tábla opcionálisan vízszintes sávokra (swimlane) bontható, két csoportosító mező közül választva: felelős (assignee) vagy prioritás. Alapállapotban (nincs csoportosítás) a tábla a megszokott 4 oszlopos elrendezést használja, változás nélkül.
+A kanban-tábla opcionálisan vízszintes sávokra (swimlane) bontható, két csoportosító mező közül választva: felelős (assignee) vagy prioritás. Alapállapotban (nincs csoportosítás) a tábla az 5 oszlopos elrendezést használja, változás nélkül.
 
 **Felépítés csoportosított nézetben:**
 
-Minden swimlane egy teljes szélességű sáv, amely a tábla mind a 4 státusz-oszlopát (tervezett/folyamatban/várakozik/kész) tartalmazza, de csak az adott csoportba tartozó kártyákkal. A swimlane előtt egy 44px magas fejléc-sáv jelenik meg:
+Minden swimlane egy teljes szélességű sáv, amely a tábla mind az 5 státusz-oszlopát (tervezett/folyamatban/várakozik/tesztelés/kész) tartalmazza, de csak az adott csoportba tartozó kártyákkal. A swimlane előtt egy 44px magas fejléc-sáv jelenik meg:
 
 - **Bal oldal:** 28px kör alakú avatar (a felelős típusa szerinti szín + kezdőbetű, vagy prioritás-szín jelölő, szöveg nélkül), majd a félkövér név/prioritás-címke.
 - **Jobb oldal:** kártyaszám-badge (a swimlane összes kártyájának száma, az összes státuszban összesítve), majd egy chevron gomb (▼/▶) a sáv összecsukásához.

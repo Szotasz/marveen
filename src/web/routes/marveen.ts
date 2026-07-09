@@ -115,6 +115,7 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
         limits: {
           planned: getEffectiveSettingValue('KANBAN_WIP_PLANNED'),
           in_progress: getEffectiveSettingValue('KANBAN_WIP_IN_PROGRESS'),
+          testing: getEffectiveSettingValue('KANBAN_WIP_TESTING'),
           waiting: getEffectiveSettingValue('KANBAN_WIP_WAITING'),
           done: getEffectiveSettingValue('KANBAN_WIP_DONE'),
         },

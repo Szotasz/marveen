@@ -176,6 +176,7 @@ export const KANBAN_AGING_CRITICAL_COLOR = env['KANBAN_AGING_CRITICAL_COLOR'] ??
 // that genuinely wants the boot-time value.
 export const KANBAN_WIP_PLANNED = parseInt(env['KANBAN_WIP_PLANNED'] ?? '0', 10)
 export const KANBAN_WIP_IN_PROGRESS = parseInt(env['KANBAN_WIP_IN_PROGRESS'] ?? '0', 10)
+export const KANBAN_WIP_TESTING = parseInt(env['KANBAN_WIP_TESTING'] ?? '0', 10)
 export const KANBAN_WIP_WAITING = parseInt(env['KANBAN_WIP_WAITING'] ?? '0', 10)
 export const KANBAN_WIP_DONE = parseInt(env['KANBAN_WIP_DONE'] ?? '0', 10)
 // Utilisation % at which the badge turns yellow (default 80)

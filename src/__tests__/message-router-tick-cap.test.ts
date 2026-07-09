@@ -53,6 +53,10 @@ vi.mock('../web/voice-modality.js', () => ({
   setLastInboundModality: vi.fn(),
 }))
 
+vi.mock('../web/main-agent.js', () => ({
+  MAIN_CHANNELS_SESSION: 'orin-channels',
+}))
+
 vi.mock('../web/agent-message-wrap.js', () => ({
   classifyAgentMessage: () => ({ category: 'trusted-peer', safeFrom: 'orin' }),
   wrapAgentMessageForDelivery: () => ({ prefix: '', wrapped: '' }),

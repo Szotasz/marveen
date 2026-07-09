@@ -2,7 +2,7 @@ import {
   createAgentMessage, getPendingMessages, listAgentMessages,
   getAgentConversation, getAgentConversationThreads,
   getKanbanSeqByIdPrefix,
-  markMessageDone, markMessageFailed,
+  markMessageDone, markMessageFailed, getAgentMessage,
   type AgentMessage,
 } from '../../db.js'
 import { logger } from '../../logger.js'
@@ -95,7 +95,23 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (newStatus === 'done') ok = markMessageDone(id, result)
     else if (newStatus === 'failed') ok = markMessageFailed(id, result)
 
-    if (ok) { json(res, { ok: true }); return true }
+    if (ok) {
+      // Notify the delegator: create a reverse message from executor → delegator so
+      // they learn the result without polling. Use a sentinel prefix to break
+      // ping-pong chains (the delegator might write back, which would trigger
+      // markMessageDone on this notification; we skip creating ANOTHER notification
+      // when the original content is already a completion report).
+      const done = getAgentMessage(id)
+      if (done && done.from_agent !== done.to_agent && !done.content.startsWith('[Eredmény]')) {
+        const summary = result ? result.slice(0, 500) : '(nincs eredmény)'
+        createAgentMessage(
+          done.to_agent,
+          done.from_agent,
+          `[Eredmény] msg_id:${id} status:${newStatus}\n\n${summary}`,
+        )
+      }
+      json(res, { ok: true }); return true
+    }
     json(res, { error: 'Message not found or invalid status' }, 404)
     return true
   }
