@@ -14,8 +14,11 @@ import {
   parkedInputText,
   stripGhostSuggestion,
   paneShowsContextSaturation,
+  idleConsideringDimGhost,
 } from '../pane-state.js'
-import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentMemoryIsolation } from './agent-config.js'
+import { provisionMemoryBoundaryDir } from './memory-boundary.js'
+import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
 import {
   buildTmuxInvocation,
   buildSshExec,
@@ -367,13 +370,20 @@ function runTmux(host: string | null, tmuxArgs: string[], opts: { timeout?: numb
   // marveen restart would lose connection multiplexing and re-handshake each tick.
   if (host) ensureControlDir()
   const inv = buildTmuxInvocation(host, TMUX, tmuxArgs)
-  execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000) })
+  // stdio: capture the child's stderr into the thrown error instead of letting
+  // execFileSync's default inherit it to the parent stderr. A restarting agent
+  // makes tmux emit `can't find session: agent-X` / `no server running`; without
+  // this those leaked as ~450 bare (non-pino) lines into store/dashboard.log.
+  // Callers that care read err.stderr via logger.warn({ err }).
+  execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), stdio: ['ignore', 'ignore', 'pipe'] })
 }
 
 function captureTmux(host: string | null, tmuxArgs: string[], opts: { timeout?: number } = {}): string {
   if (host) ensureControlDir()
   const inv = buildTmuxInvocation(host, TMUX, tmuxArgs)
-  return execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8' })
+  // stdout piped (we return it); stderr piped too so tmux's `can't find session`
+  // noise lands in err.stderr on failure rather than the parent stderr / dashboard.log.
+  return execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
 }
 
 // Tri-state run state. For a remote agent a failed list-sessions query is
@@ -507,6 +517,19 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
   if (remote.host && remote.workdir) {
     return startRemoteAgentProcess(name, remote.host, remote.workdir, opts)
   }
+
+  // Opt-in per-agent auto-memory isolation (local agents only; a remote
+  // workdir cannot be provisioned from here). Default OFF: without the
+  // memoryIsolation flag this is a no-op and the shared-memory behavior of
+  // existing installs is byte-identical.
+  if (readAgentMemoryIsolation(name)) provisionMemoryBoundaryDir(dir)
+
+  // Linux shared-credentials race guard (opt-in, default OFF; no-op on macOS
+  // and without the flag). Runs before launch so a valid setup-token retires
+  // the rotating ~/.claude/.credentials.json; idempotent, so calling it per
+  // start also self-heals if Claude Code recreates the file on a refresh.
+  renameSharedCredentialsIfSafe(CLAUDE)
+
 
   if (isAgentRunning(name)) return { ok: false, error: 'Agent is already running' }
 
@@ -668,6 +691,15 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // behaviour) rather than break auth.
     let claudeConfigDir = readAgentClaudeConfigDir(name)
     let oauthTokenEnv = ''
+    // Shared-home agents (no isolated config dir) authenticate from the rotating
+    // ~/.claude/.credentials.json by default. If the operator has a long-lived
+    // fleet setup-token, export it so EVERY locally launched agent uses the
+    // stable token instead -- this is what makes the Linux credentials-guard
+    // rename safe (a shared sub-agent with no env token would otherwise be
+    // locked out once credentials.json is moved aside). No-op without a token.
+    if (!claudeConfigDir && hasFleetOauthToken()) {
+      oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
+    }
     if (!claudeConfigDir && hasChannel && name !== MAIN_AGENT_ID) {
       if (hasFleetOauthToken()) {
         // Token present -> isolation works; any earlier degradation is resolved,
@@ -1268,13 +1300,20 @@ export function captureParkedInputView(session: string, host: string | null = nu
 // whether) to recover the session is left to the caller / operator tooling, so
 // this predicate stays a pure, dependency-free readiness check.
 export function isSessionReadyForPrompt(session: string, host: string | null = null): boolean {
+  // Dim-ghost tolerant idle read: CC >=2.1.202 paints a dim placeholder into
+  // the empty input box, which a plain capture reads as parked text. Only when
+  // the plain view says 'typing' do we pay for the second (-e, dim-stripped)
+  // capture to decide whether anything REAL is parked (see
+  // idleConsideringDimGhost / captureParkedInputView).
+  const idleOrGhost = (plain: string): boolean =>
+    idleConsideringDimGhost(plain, detectPaneState(plain) === 'typing' ? captureParkedInputView(session, host) : null)
   const first = capturePane(session, host)
   if (first == null) return false
   if (paneShowsContextSaturation(first)) {
     logger.warn({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
     return false
   }
-  if (!paneLooksIdle(first)) return false
+  if (!idleOrGhost(first)) return false
 
   try { execFileSync('/bin/sleep', [PANE_READY_CONFIRM_DELAY_S], { timeout: 2000 }) } catch { /* best effort */ }
 
@@ -1284,7 +1323,7 @@ export function isSessionReadyForPrompt(session: string, host: string | null = n
     logger.warn({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
     return false
   }
-  return paneLooksIdle(second)
+  return idleOrGhost(second)
 }
 
 // How long to wait between the two parked-input captures when deciding whether
