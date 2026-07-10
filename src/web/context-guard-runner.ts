@@ -26,7 +26,7 @@ import {
 } from '../context-guard.js'
 
 // Fleet context guard (kanban #81): acts BEFORE a session drowns in its own
-// context. Sweep every agent (main included) once a minute; at actPct ask the
+// context. Sweep every agent (main included) every five minutes; at actPct ask the
 // agent to write HANDOFF.md, then fresh-restart it and inject a resume prompt
 // pointing at the handoff. See src/context-guard.ts for the why and the pure
 // state machine; this module is only the I/O, mirroring auto-restart-runner.

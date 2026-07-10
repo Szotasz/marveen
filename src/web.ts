@@ -350,7 +350,7 @@ export function startWebServer(port = 3420): http.Server {
   if (!webOnly) logger.info('Model-fallback runner started (60s poll, 50s offset)')
 
   const contextGuardInterval = webOnly ? undefined : startContextGuardRunner()
-  if (!webOnly) logger.info('Context-guard runner started (60s poll, 55s offset)')
+  if (!webOnly) logger.info('Context-guard runner started (5min poll, 4.5min initial delay)')
 
   const updateCheckerInterval = webOnly ? undefined : startUpdateChecker()
   if (!webOnly) logger.info('Update checker started (15min poll)')
