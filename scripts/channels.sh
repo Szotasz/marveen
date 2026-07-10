@@ -46,6 +46,32 @@ case "$CHANNEL_PROVIDER" in
   *)        PLUGIN_ID="telegram@claude-plugins-official" ;;
 esac
 
+# Self-healing guard: ensure PLUGIN_ID is enabled in both project and global
+# settings.json before launch. Any PR review-reset or branch-switch that
+# reverts .claude/settings.json loses this entry; the guard re-adds it
+# automatically, preventing silent Telegram outages.
+_ensure_plugin_enabled() {
+  local settings_file="$1"
+  [ -f "$settings_file" ] || return
+  python3 - "$settings_file" "$PLUGIN_ID" <<'PYEOF'
+import json, sys
+path, plugin_id = sys.argv[1], sys.argv[2]
+try:
+    d = json.load(open(path))
+except Exception:
+    d = {}
+plugins = d.setdefault("enabledPlugins", {})
+if plugins.get(plugin_id) is not True:
+    plugins[plugin_id] = True
+    with open(path, "w") as f:
+        json.dump(d, f, indent=2)
+    print(f"channels.sh: enabled {plugin_id} in {path}", flush=True)
+PYEOF
+}
+_ensure_plugin_enabled "$INSTALL_DIR/.claude/settings.json"
+_ensure_plugin_enabled "$HOME/.claude/settings.json"
+unset -f _ensure_plugin_enabled
+
 # ROOT-CAUSE NOTE (kali-linux WSL, claude-code 2.1.152, 2026-05-27):
 # Inbound MCP notifications from the `--channels` plugin go through a SECOND
 # gate beyond --dangerously-skip-permissions / --dangerously-load-development-
