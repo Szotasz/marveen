@@ -11,6 +11,14 @@ import { paneLooksIdle, detectPaneState } from '../pane-state.js'
 const TMUX = resolveFromPath('tmux')
 const MAX_UP_ATTEMPTS = 8
 
+// Non-blocking wait. The reconnect sequence used execFileSync('/bin/sleep', ...)
+// which froze the libuv event loop for seconds at a time; when the fleet was
+// degraded the recovery timers stormed and the dashboard HTTP server went deaf.
+// Awaiting a setTimeout yields the loop instead of blocking it.
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 /**
  * Fully dismiss the /mcp modal before returning.
  *
@@ -31,11 +39,11 @@ const MAX_UP_ATTEMPTS = 8
  * causing state. paneLooksIdle returns only when the input box is live and empty.
  * Extra Escapes at the normal prompt are harmless no-ops, so over-pressing is safe.
  */
-function dismissMcpMenu(session: string): void {
+async function dismissMcpMenu(session: string): Promise<void> {
   for (let i = 0; i < 4; i++) {
     try {
       execFileSync(TMUX, ['send-keys', '-t', session, 'Escape'], { timeout: 3000 })
-      execFileSync('/bin/sleep', ['0.4'], { timeout: 1000 })
+      await delay(400)
     } catch {
       return
     }
@@ -157,7 +165,7 @@ export function chooseSubmenuTarget(pane: string): RegExp | null {
  * read the menu and only press Enter once the cursor is confirmed on a safe
  * target.
  */
-export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
+export async function attemptChannelMcpReconnect(agentName: string): Promise<ReconnectResult> {
   const session = resolveAgentSession(agentName)
   const providerType = resolveAgentProviderType(agentName)
   const pluginPattern = getPluginPattern(providerType)
@@ -178,24 +186,24 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
 
   try {
     execFileSync(TMUX, ['send-keys', '-t', session, 'Escape'], { timeout: 3000 })
-    execFileSync('/bin/sleep', ['1'], { timeout: 2000 })
+    await delay(1000)
 
     execFileSync(TMUX, ['send-keys', '-t', session, '/mcp', 'Enter'], { timeout: 3000 })
-    execFileSync('/bin/sleep', ['1'], { timeout: 3000 })
+    await delay(1000)
 
     const pane1 = capturePane(session)
     if (!pane1) {
       logger.warn({ agentName, session }, 'channel-mcp-reconnect: capture failed after /mcp')
-      dismissMcpMenu(session)
+      await dismissMcpMenu(session)
       return { ok: false, message: 'Failed to capture pane after /mcp' }
     }
 
     let matchedAt = -1
     for (let upCount = 1; upCount <= MAX_UP_ATTEMPTS; upCount++) {
       execFileSync(TMUX, ['send-keys', '-t', session, 'Up'], { timeout: 3000 })
-      execFileSync('/bin/sleep', ['0.2'], { timeout: 1000 })
+      await delay(200)
       execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 3000 })
-      execFileSync('/bin/sleep', ['1'], { timeout: 3000 })
+      await delay(1000)
 
       const pane = capturePane(session)
       if (pane && pluginPattern.test(pane)) {
@@ -203,7 +211,7 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
         break
       }
       execFileSync(TMUX, ['send-keys', '-t', session, 'Escape'], { timeout: 3000 })
-      execFileSync('/bin/sleep', ['0.5'], { timeout: 1000 })
+      await delay(500)
     }
 
     if (matchedAt < 0) {
@@ -211,7 +219,7 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
         { agentName, session, maxUpAttempts: MAX_UP_ATTEMPTS, pluginPattern: pluginPattern.source },
         'channel-mcp-reconnect: plugin submenu not found',
       )
-      dismissMcpMenu(session)
+      await dismissMcpMenu(session)
       return { ok: false, message: `Plugin not found within ${MAX_UP_ATTEMPTS} Up attempts` }
     }
 
@@ -221,14 +229,14 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
     let submenu = capturePane(session)
     if (!submenu) {
       logger.warn({ agentName, session }, 'channel-mcp-reconnect: capture failed in submenu')
-      dismissMcpMenu(session)
+      await dismissMcpMenu(session)
       return { ok: false, message: 'Failed to capture submenu pane' }
     }
 
     const target = chooseSubmenuTarget(submenu)
     if (!target) {
       logger.warn({ agentName, session }, 'channel-mcp-reconnect: no Reconnect/Enable option in submenu')
-      dismissMcpMenu(session)
+      await dismissMcpMenu(session)
       return { ok: false, message: 'No Reconnect/Enable option in submenu' }
     }
 
@@ -240,7 +248,7 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
         break
       }
       execFileSync(TMUX, ['send-keys', '-t', session, 'Down'], { timeout: 3000 })
-      execFileSync('/bin/sleep', ['0.3'], { timeout: 1000 })
+      await delay(300)
       submenu = capturePane(session) ?? ''
     }
 
@@ -249,20 +257,20 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
         { agentName, session, target: target.source, maxSteps: SUBMENU_MAX_STEPS },
         'channel-mcp-reconnect: could not place cursor on target option',
       )
-      dismissMcpMenu(session)
+      await dismissMcpMenu(session)
       return { ok: false, message: `Could not select ${target.source} within ${SUBMENU_MAX_STEPS} steps` }
     }
 
     execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 3000 })
-    execFileSync('/bin/sleep', ['2'], { timeout: 4000 })
-    dismissMcpMenu(session)
+    await delay(2000)
+    await dismissMcpMenu(session)
 
     const action = target === RECONNECT_RX ? 'Reconnect' : 'Enable'
     logger.info({ agentName, session, matchedAt, action, provider: providerType }, 'channel-mcp-reconnect: completed')
     return { ok: true, message: `Activated ${action} via /mcp (Up x${matchedAt})` }
   } catch (err) {
     logger.warn({ err, agentName, session }, 'channel-mcp-reconnect failed')
-    try { dismissMcpMenu(session) } catch { /* best effort */ }
+    try { await dismissMcpMenu(session) } catch { /* best effort */ }
     return { ok: false, message: err instanceof Error ? err.message : String(err) }
   }
 }

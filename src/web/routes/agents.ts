@@ -757,7 +757,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (name !== MAIN_AGENT_ID && !isAgentRunning(name)) {
       json(res, { error: 'Agent is not running' }, 400); return true
     }
-    const result = attemptChannelMcpReconnect(name)
+    const result = await attemptChannelMcpReconnect(name)
     json(res, result)
     return true
   }
@@ -828,7 +828,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       let gcRestarted = false
       let gcWasRunning = false
       if (isMain) {
-        const r = hardRestartMarveenChannels()
+        const r = await hardRestartMarveenChannels()
         gcRestarted = r.ok
         gcWasRunning = true
       } else {
@@ -910,7 +910,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     let restarted = false
     let wasRunning = false
     if (isMain) {
-      const r = hardRestartMarveenChannels()
+      const r = await hardRestartMarveenChannels()
       restarted = r.ok
       wasRunning = true
     } else {
@@ -1453,7 +1453,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // `/remote-control` (needs a full-scope login token the agent lacks). Mirror
     // the precedent in the channels-config handler above. Sub-agents unchanged.
     if (isMainChannelsAgent(name)) {
-      const r = hardRestartMarveenChannels()
+      const r = await hardRestartMarveenChannels()
       if (r.ok) { json(res, { ok: true }); return true }
       json(res, { error: r.error || 'Restart failed' }, 500)
       return true

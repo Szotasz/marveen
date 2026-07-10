@@ -21,14 +21,16 @@ if (!agentName) {
   process.exit(2)
 }
 
-try {
-  const result = attemptChannelMcpReconnect(agentName)
-  logger.info(
-    { agentName, ok: result.ok, message: result.message },
-    'reconnect-cli: reconnect attempt finished',
-  )
-  process.exit(result.ok ? 0 : 1)
-} catch (err) {
-  logger.error({ agentName, err }, 'reconnect-cli: reconnect attempt threw')
-  process.exit(1)
-}
+void (async () => {
+  try {
+    const result = await attemptChannelMcpReconnect(agentName)
+    logger.info(
+      { agentName, ok: result.ok, message: result.message },
+      'reconnect-cli: reconnect attempt finished',
+    )
+    process.exit(result.ok ? 0 : 1)
+  } catch (err) {
+    logger.error({ agentName, err }, 'reconnect-cli: reconnect attempt threw')
+    process.exit(1)
+  }
+})()

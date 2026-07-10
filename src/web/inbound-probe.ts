@@ -315,7 +315,7 @@ function checkInboundProbeDeafness(probeTimeoutMs: number): void {
   // Lazy import to avoid circular dependency at module load time.
   // B2: also import lastMainRespawnAt to enforce cross-path grace (an inbound-probe
   // respawn must suppress the keepalive path and vice-versa).
-  import('./channel-monitor.js').then(({ hardRestartMarveenChannels, lastMainRespawnAt }) => {
+  import('./channel-monitor.js').then(async ({ hardRestartMarveenChannels, lastMainRespawnAt }) => {
     const nowAfterImport = Date.now()
 
     // B2 fix: cross-path grace — skip if EITHER path has respawned recently.
@@ -336,7 +336,7 @@ function checkInboundProbeDeafness(probeTimeoutMs: number): void {
 
     // hardRestartMarveenChannels sets marveenLastHardRestart on success, which
     // automatically suppresses the keepalive path for KEEPALIVE_RESPAWN_GRACE_MS.
-    const result = hardRestartMarveenChannels()
+    const result = await hardRestartMarveenChannels()
     if (result.ok) {
       lastInboundRespawn = nowAfterImport
       logger.warn('Inbound deafness respawn triggered successfully')
