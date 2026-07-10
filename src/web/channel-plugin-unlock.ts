@@ -113,8 +113,10 @@ function isSessionReadyForUnlock(session: string): boolean {
     })
     // Idle footer: claude renders this footer line once the TUI is ready
     // for input. Matches the empirical signature used by detectPaneState
-    // for the 'idle' state.
-    if (!/bypass permissions on/.test(pane)) return false
+    // for the 'idle' state. Mode-agnostic: a Claude Code update renamed the
+    // permission modes, so a restarted session shows "auto mode on" (etc.)
+    // instead of "bypass permissions on" -- see IDLE_FOOTER_RX in pane-state.ts.
+    if (!/(?:bypass permissions|auto mode|accept edits|plan mode|manual mode) on/.test(pane)) return false
     // Refuse if any modal is visible.
     if (/Resume from summary/.test(pane)) return false
     if (/Open System Settings/.test(pane)) return false

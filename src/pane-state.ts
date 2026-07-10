@@ -53,11 +53,22 @@ export type PaneState = 'idle' | 'busy' | 'typing' | 'unknown' | 'error'
 // previous regex only accepted the `· \d+ shells ·` shape, so a session running
 // a background monitor (footer `· 1 monitor · ← for agents · ↓ to manage`) was
 // mis-read as 'unknown' and the router/scheduler silently refused to deliver to
-// it -- a fleet-wide delivery hole. Match `bypass permissions on` + EITHER the
+// it -- a fleet-wide delivery hole. Match the permission-mode marker + EITHER the
 // shift+tab hint OR any `·`-separated tail ending in a known idle action (ctrl+t
 // / ↓ to manage). Busy states are filtered above (esc to interrupt / busy
 // indicators / paste placeholder), so this stays idle-specific.
-const IDLE_FOOTER_RX = /bypass permissions on(?: \(shift\+tab to cycle\)| · [^\n]*?(?:ctrl\+t|↓ to manage))|\? for shortcuts/
+//
+// Mode-agnostic (2026-07-10): a Claude Code update RENAMED the permission modes
+// -- the old "bypass permissions on" idle footer now renders as "auto mode on"
+// on freshly (re)started sessions, and the shift+tab cycle also exposes
+// "accept edits on" / "plan mode on" / "manual mode on". Sessions still running
+// the pre-update binary keep "bypass permissions on". Keying on "bypass
+// permissions" only meant every restarted agent read as 'unknown' and the
+// router/scheduler silently refused to deliver to it -- the same fleet-wide
+// delivery hole, re-opened by the rename. Match ANY of the mode markers so the
+// idle footer is recognised regardless of which mode the session sits in (the
+// mode governs execution, not whether the pane is at its idle prompt).
+const IDLE_FOOTER_RX = /(?:bypass permissions|auto mode|accept edits|plan mode|manual mode) on(?: \(shift\+tab to cycle\)| · [^\n]*?(?:ctrl\+t|↓ to manage))|\? for shortcuts/
 
 // Positive busy signals. ANY match anywhere in the pane means the turn
 // is mid-flight, even if the footer looks idle for a frame.

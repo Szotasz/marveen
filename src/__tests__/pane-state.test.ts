@@ -390,6 +390,21 @@ describe('detectPaneState', () => {
     expect(detectPaneState(IDLE_STRICT)).toBe('idle')
   })
 
+  it('detects idle on the renamed permission-mode footers (CC update: bypass permissions -> auto mode etc.)', () => {
+    // A Claude Code update renamed the modes; a restarted session shows
+    // "auto mode on" (and the cycle exposes accept edits / plan mode / manual
+    // mode) instead of "bypass permissions on". All are idle-at-prompt footers.
+    for (const mode of ['auto mode', 'accept edits', 'plan mode', 'manual mode']) {
+      const pane = ['', SEP, '❯ ', SEP, `  ⏵⏵ ${mode} on (shift+tab to cycle) · ← for agents`].join('\n')
+      expect(detectPaneState(pane), `mode=${mode}`).toBe('idle')
+    }
+  })
+
+  it('still classifies a renamed-mode footer as busy when "esc to interrupt" is present', () => {
+    const pane = ['✢ Working… (8s)', '', SEP, '❯ ', SEP, '  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt'].join('\n')
+    expect(detectPaneState(pane)).toBe('busy')
+  })
+
   it('detects idle when the footer shows the multi-shell indicator', () => {
     // Regression: Claude Code rewrites "(shift+tab to cycle)" to
     // "· N shells · ctrl+t to hide tasks · ↓ to manage" when the session
