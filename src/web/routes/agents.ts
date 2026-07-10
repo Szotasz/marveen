@@ -98,6 +98,8 @@ import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '
 import { detectPaneState } from '../../pane-state.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
+import { readContextGuardConfig, writeContextGuardConfig } from '../context-guard-store.js'
+import { getContextGuardStatus } from '../context-guard-runner.js'
 import type { AutoRestartConfig } from '../../auto-restart.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
 import { attemptChannelMcpReconnect } from '../channel-mcp-reconnect.js'
@@ -1009,6 +1011,33 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     setStoreWriteActor('dashboard')
     const saved = writeAutoRestartConfig(name, data)
     json(res, { ok: true, autoRestart: saved })
+    return true
+  }
+
+  // GET/PUT /api/agents/:name/context-guard -- per-agent context-guard config
+  // (kanban #81). Default-off (opt-in): a GET for an agent with no store entry
+  // returns the disabled defaults. PUT normalizes server-side like auto-restart.
+  const contextGuardMatch = path.match(/^\/api\/agents\/([^/]+)\/context-guard$/)
+  if (contextGuardMatch && (method === 'GET' || method === 'PUT')) {
+    const name = decodeURIComponent(contextGuardMatch[1])
+    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (method === 'GET') {
+      json(res, { ok: true, contextGuard: readContextGuardConfig(name) })
+      return true
+    }
+    const body = await readBody(req)
+    let data: unknown
+    try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'invalid JSON' }, 400); return true }
+    setStoreWriteActor('dashboard')
+    const saved = writeContextGuardConfig(name, data)
+    json(res, { ok: true, contextGuard: saved })
+    return true
+  }
+
+  // GET /api/context-guard -- live guard status (phase + measured context pct)
+  // for every agent, main included.
+  if (path === '/api/context-guard' && method === 'GET') {
+    json(res, { ok: true, agents: getContextGuardStatus() })
     return true
   }
 
