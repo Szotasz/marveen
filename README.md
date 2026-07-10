@@ -38,6 +38,7 @@ Részletes, funkciónkénti leírások a [`docs/`](docs/README.md) mappában —
 | Memória-rendszer (FTS5 + vektor + RRF) | [docs/memory-system.md](docs/memory-system.md) |
 | Kanban (auto-breakdown, swimlane, WIP-limit, card-aging) | [docs/kanban.md](docs/kanban.md) |
 | Ügynök-flotta + inter-agent | [docs/agent-fleet.md](docs/agent-fleet.md) |
+| Föderáció (több példány összekötése, dashboard-menüvel) | [docs/federation.md](docs/federation.md) |
 | Skill-factory (öntanulás) | [docs/skill-factory.md](docs/skill-factory.md) |
 | Channels (Telegram / Slack) | [docs/channels.md](docs/channels.md) |
 | Printing-press CLI-k | [docs/printing-press-cli.md](docs/printing-press-cli.md) |

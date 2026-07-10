@@ -6,9 +6,14 @@ import {
   markMessageDelivered,
   markMessageDone,
   markMessageFailed,
+  markPendingFederatedFailed,
+  setMessageResult,
   createAgentMessage,
+  type AgentMessage,
 } from '../db.js'
-import type { AgentMessage } from '../db.js'
+import { isQualifiedId } from './federation/address.js'
+import { sendFederatedMessage } from './federation/bridge.js'
+import { getFederationConfig, abandonWindowMsForPeer } from './federation/config.js'
 import { readAgentRemoteHost, readAgentVoiceConfig } from './agent-config.js'
 import {
   agentSessionName,
@@ -88,6 +93,26 @@ function notifyOrchestratorOfFailedHandoff(msg: AgentMessage, reason: string): v
 let lastMainAgentWakeupMs = 0
 const MAIN_AGENT_WAKEUP_COOLDOWN_MS = 45 * 1000
 
+// Bounce a terminal federated-delivery failure back to the SENDER's inbox as
+// a local 'system' notice, so a delegating agent learns its task never
+// arrived (otherwise the failure only flips a DB row nobody reads, and the
+// delegation directive's "the answer will arrive on your inbox" waits
+// forever). The notice is always LOCAL (from_agent is slash-free -- bridge.ts
+// refuses to forward a qualified sender), so it can never cross the bridge or
+// loop. Fired only once, right after the terminal markMessageFailed.
+function notifyDelegationFailed(msg: AgentMessage, error: string): void {
+  try {
+    createAgentMessage(
+      'system',
+      msg.from_agent,
+      `A(z) ${msg.to_agent} címre küldött föderált üzeneted (#${msg.id}) véglegesen meghiúsult: ${error.slice(0, 200)}. ` +
+      'Ne delegáld újra automatikusan — jelezd a tulajdonosnak, vagy válaszolj magad a kérőnek.',
+    )
+  } catch (err) {
+    logger.warn({ err, id: msg.id }, 'federated failure notice could not be created')
+  }
+}
+
 // ---- session-stuck detection (card 2922e380 thread a) ------------------------
 // When a session EXISTS but is never ready (menu-blocked / context-saturated /
 // parked input the janitor can't clear), track how long it has been continuously
@@ -136,6 +161,89 @@ let _tickRunning = false
 
 // Max messages drained per 5s tick; a larger backlog rolls to the next tick.
 export const MAX_MESSAGES_PER_TICK = 25
+// Federated (slash-qualified to_agent) messages get their own, smaller
+// per-tick budget: each attempt is an HTTPS round-trip with a 5s timeout
+// inside the serialized tick, so the cap bounds how long federation can hold
+// the tick (~15s worst case). Backoff-skipped messages don't count.
+const MAX_FEDERATED_PER_TICK = 3
+
+// Deliver pending FEDERATED messages over the HTTPS bridge. Kept separate
+// from the local queue on purpose: qualified rows never consume the local
+// 25-message budget (and vice versa), so a down peer cannot starve local
+// tmux delivery -- and a local backlog cannot starve the bridge.
+export async function deliverFederatedBatch(federated: AgentMessage[], now: number): Promise<void> {
+  let attempts = 0
+  let abandons = 0
+  const fedCfg = getFederationConfig()
+  for (const msg of federated) {
+    const ageMs = now - msg.created_at * 1000
+    // The local queue's shouldAbandon() is session-existence-based and
+    // meaningless here; mirror its window against wall-clock age instead.
+    // The window is PER PEER (config abandonWindowMinutes, default 60): a
+    // laptop peer that sleeps for hours can be given a longer patience.
+    const abandonMs = abandonWindowMsForPeer(fedCfg, msg.to_agent.split('/')[0])
+    if (ageMs > abandonMs) {
+      // Cap abandon+notify actions per tick like the send budget: a large
+      // backlog to a long-down peer must not fail+bounce hundreds of rows
+      // (and fan out hundreds of notices) in a single tick. The rest roll to
+      // the next tick.
+      if (abandons >= MAX_FEDERATED_PER_TICK) continue
+      abandons++
+      logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent, ageMs }, 'Federated message abandoned: peer unreachable for full retry window')
+      // Status-guarded: only bounce a notice when THIS call closed a still-
+      // pending row (a concurrent disable/removal purge may have failed it).
+      if (markPendingFederatedFailed(msg.id, 'Abandoned: peer unreachable for full retry window')) {
+        notifyDelegationFailed(msg, 'a társ a teljes türelmi ablakban elérhetetlen volt')
+      } else {
+        logger.warn({ id: msg.id }, 'markPendingFederatedFailed affected 0 rows (already closed concurrently)')
+      }
+      routerLoggedMisses.delete(msg.id)
+      continue
+    }
+    if (attempts >= MAX_FEDERATED_PER_TICK) continue
+    let result: Awaited<ReturnType<typeof sendFederatedMessage>>
+    try {
+      result = await sendFederatedMessage(msg, now)
+    } catch (err) {
+      // sendFederatedMessage classifies its own errors; this is a belt for
+      // the unexpected -- never let one row kill the batch.
+      result = { kind: 'retry', error: String(err) }
+    }
+    if (result.kind === 'skipped') continue // peer in backoff: no network attempt made
+    attempts++
+    if (result.kind === 'delivered') {
+      const marked = markMessageDelivered(msg.id)
+      if (marked && result.remoteId) {
+        setMessageResult(msg.id, `fed:${msg.to_agent.split('/')[0]}:${result.remoteId}`)
+      }
+      if (!marked) {
+        // The row was concurrently closed (bulk-fail on disable/removal, or
+        // a manual PUT) while the send was in flight. The peer DID accept it
+        // -- at-least-once semantics; the receiver's ref-dedup absorbs any
+        // replay. Do NOT overwrite the closer's result text.
+        logger.warn({ fedOut: true, id: msg.id, to: msg.to_agent }, 'Federated message concurrently closed during send; peer accepted (at-least-once)')
+      }
+      routerLoggedMisses.delete(msg.id)
+      logger.info({ fedOut: true, id: msg.id, from: msg.from_agent, to: msg.to_agent, remoteId: result.remoteId }, 'Federated message delivered to peer inbox')
+    } else if (result.kind === 'failed') {
+      logger.warn({ fedOut: true, id: msg.id, to: msg.to_agent, error: result.error }, 'Federated message failed (terminal)')
+      // Status-guarded: bounce the failure notice only if this call closed a
+      // still-pending row (not a row a concurrent purge already failed).
+      if (markPendingFederatedFailed(msg.id, result.error)) {
+        notifyDelegationFailed(msg, result.error)
+      } else {
+        logger.warn({ id: msg.id }, 'markPendingFederatedFailed affected 0 rows (already closed concurrently)')
+      }
+      routerLoggedMisses.delete(msg.id)
+    } else {
+      // retry: row stays pending; log once per message id, not per tick.
+      if (!routerLoggedMisses.has(msg.id)) {
+        logger.warn({ fedOut: true, id: msg.id, to: msg.to_agent, error: result.error }, 'Federated message delivery failed, will retry')
+        routerLoggedMisses.add(msg.id)
+      }
+    }
+  }
+}
 
 export function startMessageRouter(): NodeJS.Timeout {
   return setInterval(async () => {
@@ -228,7 +336,16 @@ export async function runMessageRouterTick(): Promise<void> {
     // backlog (e.g. after a delivery stall) can never make one tick run long
     // and starve the event loop -- the slow-tick half of the progressive-hang
     // pattern. Ordering is preserved (oldest first) so nothing is starved.
-    const pending = getPendingMessages().slice(0, MAX_MESSAGES_PER_TICK)
+    //
+    // Federated (slash-qualified) recipients are split out FIRST: they must
+    // never reach the local path (agentSessionName / readAgentRemoteHost would
+    // treat "sys/agent" as a nested filesystem path) and they have their own
+    // budget so neither queue can starve the other.
+    const allPending = getPendingMessages()
+    const localPending: AgentMessage[] = []
+    const federatedPending: AgentMessage[] = []
+    for (const m of allPending) (isQualifiedId(m.to_agent) ? federatedPending : localPending).push(m)
+    const pending = localPending.slice(0, MAX_MESSAGES_PER_TICK)
     const now = Date.now()
     // ---- update absent/present tracking for all receivers in this tick ----
     // Rebuild the stuck-detector's view of which agents are absent RIGHT NOW.
@@ -280,11 +397,21 @@ export async function runMessageRouterTick(): Promise<void> {
       agentWasAbsent.delete(agent)
     }
 
+    // Federated (slash-qualified) recipients delivered over the HTTPS bridge,
+    // on their own budget so neither queue starves the other.
+    await deliverFederatedBatch(federatedPending, now)
+
     let mainAgentWakeupFiredThisTick = false
     for (const msg of pending) {
       // Skip messages already batched by the reconnect pre-pass: they are
       // 'done' in the DB now but still appear in our snapshot slice.
       if (batchedMsgIdsThisTick.has(msg.id)) continue
+      // Per-message fault isolation: a throw from any helper (e.g. safeJoin
+      // on a '..'-bearing to_agent) previously escaped the whole tick through
+      // the catch-less try/finally, aborting delivery for every younger
+      // message and retrying the same poison row forever -- permanent
+      // head-of-line blockage of ALL local delivery. Mark it failed instead.
+      try {
       const ageMs = now - msg.created_at * 1000
       // The main agent runs in `${MAIN_AGENT_ID}-channels`, not `agent-${name}`,
       // so agentSessionName() would miss it and strand every sub-agent → main
@@ -443,7 +570,7 @@ export async function runMessageRouterTick(): Promise<void> {
         }
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
-        logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, category: isChannelInbound ? 'channel-inbound' : trusted ? 'trusted-peer' : 'untrusted' }, 'Agent message delivered')
+        logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, category }, 'Agent message delivered')
       } catch (err) {
         // An inject throw is usually transient (pane un-ready at the instant of
         // send-keys). Retry across ticks instead of the old silent instant-fail;
@@ -461,6 +588,13 @@ export async function runMessageRouterTick(): Promise<void> {
         }
         notifyOrchestratorOfFailedHandoff(msg, `tmux inject failed ${failCount}x`)
         routerInjectFailures.delete(msg.id)
+        routerLoggedMisses.delete(msg.id)
+      }
+      } catch (err) {
+        logger.warn({ err, id: msg.id, to: msg.to_agent }, 'Agent message processing threw; marking failed so the queue cannot wedge')
+        if (!markMessageFailed(msg.id, `Delivery error: ${String(err).slice(0, 200)}`)) {
+          logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
+        }
         routerLoggedMisses.delete(msg.id)
       }
     }

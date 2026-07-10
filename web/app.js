@@ -33,15 +33,31 @@
   // Initialise from localStorage; server default fetched async below.
   applyLang(localStorage.getItem(LS_KEY) || 'hu')
 
-  // Fetch server default (DASHBOARD_LANG) and apply only if localStorage not set.
-  fetch('/api/settings')
-    .then(r => r.ok ? r.json() : null)
-    .then(data => {
-      if (!data || localStorage.getItem(LS_KEY)) return
-      const entry = (data.settings || []).find(s => s.key === 'DASHBOARD_LANG')
-      if (entry && VALID.has(entry.value)) applyLang(entry.value)
-    })
-    .catch(() => {})
+  // Fetch server default (DASHBOARD_LANG) and apply only if localStorage not
+  // set. Deferred to a MICROTASK: this IIFE evaluates before the fetch-wrapper
+  // IIFE installs the Bearer-injecting window.fetch, so an eager call here
+  // went out with the native fetch, got 401 from the /api gate, and the
+  // server default was silently dead code. Microtasks run after the whole
+  // classic script has evaluated, when window.fetch is the wrapped version.
+  queueMicrotask(() => {
+    fetch('/api/settings')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!data || localStorage.getItem(LS_KEY)) return
+        const entry = (data.settings || []).find(s => s.key === 'DASHBOARD_LANG')
+        if (!entry || !VALID.has(entry.value) || entry.value === window._lang) return
+        // Apply WITHOUT persisting (localStorage must keep overriding the
+        // server default), and re-run the render dance: the initial
+        // DOMContentLoaded render almost always beats this response, so a
+        // plain applyLang would leave the page painted in the old language.
+        applyLang(entry.value)
+        if (typeof renderNav === 'function') renderNav()
+        if (typeof renderStaticI18n === 'function') renderStaticI18n()
+        const activeLink = document.querySelector('.sb-link.active[data-page]')
+        if (activeLink && typeof switchPage === 'function') switchPage(activeLink.dataset.page)
+      })
+      .catch(() => {})
+  })
 
   window.setLang = function setLang(lang) {
     if (!VALID.has(lang)) return
@@ -290,6 +306,7 @@ function switchPage(pageId) {
   if (pageId === 'ideas') loadIdeasPage()
   if (pageId === 'archived') loadArchivedPage()
   if (pageId === 'naplo') loadNaplo()
+  if (pageId === 'federation') loadFederationPage()
 }
 
 // Mobile off-canvas sidebar toggle. No-op visual effect on desktop (the
@@ -332,7 +349,7 @@ const NAV_I18N = {
   skills: 'nav.skills', connectors: 'nav.connectors', migrate: 'nav.migrate',
   docs: 'nav.docs', status: 'nav.status', autonomy: 'nav.autonomy',
   settings: 'nav.settings', vault: 'nav.vault', tokenUsage: 'nav.tokenUsage',
-  ideas: 'nav.ideas', updates: 'nav.updates', costs: 'nav.costs',
+  ideas: 'nav.ideas', federation: 'nav.federation', updates: 'nav.updates', costs: 'nav.costs',
 }
 
 function renderNav() {
@@ -376,6 +393,7 @@ const PAGE_HEADER_I18N = {
   updatesPage:    { title: 'updates.page_title',     sub: null },
   naploPage:      { title: 'naplo.page_title',       sub: 'naplo.page_subtitle' },
   costsPage:      { title: 'costs.page_title',       sub: 'costs.page_subtitle' },
+  federationPage: { title: 'federation.page_title',  sub: 'federation.page_subtitle' },
 }
 
 function renderStaticI18n() {
@@ -2380,11 +2398,16 @@ function showToast(msg, duration = 3000) {
 // === Agents API ===
 async function loadAgents() {
   try {
-    const [agentsRes, marveenRes] = await Promise.all([
+    // The federation status fetch is deliberately failure-proof (.catch ->
+    // null): it must NEVER take down the Agents page -- including on an
+    // older backend where the route 404s.
+    const [agentsRes, marveenRes, fedStatus] = await Promise.all([
       fetch('/api/agents'),
       fetch('/api/marveen'),
+      fetch('/api/federation/status').then((r) => (r.ok ? r.json() : null)).catch(() => null),
     ])
     agents = await agentsRes.json()
+    if (fedStatus && Array.isArray(fedStatus.peers)) federatedPeerStatus = fedStatus.peers
     if (marveenRes.ok) {
       window._marveen = await marveenRes.json()
       // A backend CHANNEL_PROVIDER-éhez igazitsuk a kliens-default-ot,
@@ -2727,6 +2750,68 @@ function renderAgents() {
     if (isRunning) attachTmuxCopyButtons(card, agent)
     agentsGrid.insertBefore(card, addBtn)
   }
+  renderFederatedAgentCards(agentsGrid, addBtn)
+}
+
+// Federated (remote-system) agents from the manifest-poller cache. Kept in a
+// SEPARATE array from `agents`: that global feeds the team editor and the
+// create-wizard, where qualified ids would be selectable-and-invalid.
+// "remote" already means SSH agents in this codebase -- these are FEDERATED.
+let federatedPeerStatus = []
+
+// System/plumbing agent names never shown as message targets.
+const FEDERATED_HIDDEN_AGENTS = new Set(['heartbeat', 'telegram-coordinator', 'channel-coordinator'])
+
+function federatedAgentEntries() {
+  const out = []
+  for (const peer of federatedPeerStatus) {
+    const manifest = peer && peer.manifest
+    if (!manifest || !Array.isArray(manifest.agents)) continue
+    for (const a of manifest.agents) {
+      if (!a || typeof a.id !== 'string' || FEDERATED_HIDDEN_AGENTS.has(a.id.split('/').pop())) continue
+      out.push({ peer: peer.id, peerState: peer.state, qualified: `${peer.id}/${a.id}`, displayName: a.displayName || a.id, model: a.model || '' })
+    }
+  }
+  return out
+}
+
+function renderFederatedAgentCards(agentsGrid, addBtn) {
+  for (const fa of federatedAgentEntries()) {
+    const card = document.createElement('div')
+    card.className = 'agent-card federated-agent-card'
+    const reachable = fa.peerState === 'ok'
+    // SECURITY: every manifest-derived string is peer-controlled. Text nodes
+    // go through escapeHtml; NOTHING peer-controlled may land in an attribute
+    // (escapeHtml does not encode quotes). The model badge is a plain text
+    // span WITHOUT a model-derived class.
+    const gradientClass = 'gradient-' + ((fa.qualified.charCodeAt(0) % 3) + 1)
+    card.innerHTML = `
+      <div class="agent-card-top">
+        <div class="agent-avatar ${gradientClass}">${escapeHtml(fa.displayName.charAt(0).toUpperCase())}</div>
+        <div class="agent-card-info">
+          <div class="agent-name">${escapeHtml(fa.displayName)} <span class="federated-badge">${t('federation.badge', { peer: fa.peer })}</span></div>
+          <div class="agent-desc">${escapeHtml(fa.qualified)}</div>
+        </div>
+      </div>
+      <div class="agent-card-footer">
+        <span class="agent-model-badge">${escapeHtml(fa.model)}</span>
+        <span class="tg-status"><span class="tg-dot ${reachable ? 'connected' : 'disconnected'}"></span> ${reachable ? t('federation.peer_state.ok') : t('federation.peer_state.' + (fa.peerState || 'unknown'))}</span>
+      </div>
+      <div class="agent-card-actions">
+        <button class="btn-secondary btn-compact federated-message-btn">${t('federation.btn.message')}</button>
+      </div>`
+    card.querySelector('.federated-message-btn').addEventListener('click', (e) => {
+      e.stopPropagation()
+      openFederatedThread(fa.qualified)
+    })
+    agentsGrid.insertBefore(card, addBtn)
+  }
+}
+
+function openFederatedThread(qualifiedId) {
+  chatSelectedAgent = qualifiedId
+  if (location.hash === '#messages') switchPage('messages')
+  else location.hash = 'messages'
 }
 
 // === Agent Detail ===
@@ -8761,7 +8846,11 @@ document.getElementById('saveConnectorBtn').addEventListener('click', async () =
 function escapeHtml(str) {
   const d = document.createElement('div')
   d.textContent = str
-  return d.innerHTML
+  // textContent->innerHTML escapes & < > but NOT quotes. Encode quotes too so
+  // the result is safe in ATTRIBUTE contexts as well as text nodes -- several
+  // renderers interpolate escapeHtml() output into data-*/title/value="..."
+  // attributes, where a surviving " would allow an attribute breakout.
+  return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 }
 
 // ============================================================
@@ -9811,18 +9900,29 @@ async function loadChatAgentList() {
   const sidebar = document.getElementById('chatAgentList')
   if (!sidebar) return
   try {
-    // Load fleet agents + threads in parallel
-    const [agentsRes, threadsRes] = await Promise.all([
+    // Load fleet agents + threads in parallel (the federation status fetch is
+    // failure-proof: it must never take down the Messages page)
+    const [agentsRes, threadsRes, fedStatus] = await Promise.all([
       fetch('/api/agents'),
       fetch('/api/messages/threads'),
+      fetch('/api/federation/status').then((r) => (r.ok ? r.json() : null)).catch(() => null),
     ])
     const agentsRaw = agentsRes.ok ? await agentsRes.json() : []
     const threads = threadsRes.ok ? await threadsRes.json() : []
+    if (fedStatus && Array.isArray(fedStatus.peers)) federatedPeerStatus = fedStatus.peers
 
-    // Build fleet list: API agents + marveen, minus system agents
+    // Build fleet list: API agents + marveen, minus system agents; plus
+    // federated agents from the poller cache so a remote conversation can be
+    // STARTED without prior history. The system-agent filter runs on the
+    // unqualified segment too ('teodor/heartbeat' is just as much noise).
     const fleetNames = [mainAgentId(), ...agentsRaw.map(a => a.name || a)]
       .filter(n => !CHAT_SYSTEM_AGENTS.has(n))
       .filter((n, i, arr) => arr.indexOf(n) === i)
+    for (const fa of federatedAgentEntries()) {
+      if (!fleetNames.includes(fa.qualified) && !CHAT_SYSTEM_AGENTS.has(fa.qualified.split('/').pop())) {
+        fleetNames.push(fa.qualified)
+      }
+    }
 
     // Populate avatar map from API data
     chatAgentHasAvatar.clear()
@@ -9887,7 +9987,14 @@ async function loadChatAgentList() {
       })
     })
 
-    if (!chatSelectedAgent) {
+    if (chatSelectedAgent && chatThreadState.agent !== chatSelectedAgent) {
+      // Preselected target (e.g. the federated card's message button): open
+      // its thread. Direct loadChatThread fallback covers targets with no
+      // sidebar entry yet (composer + history render for any id).
+      const el = sidebar.querySelector(`.chat-agent-item[data-agent="${CSS.escape(chatSelectedAgent)}"]`)
+      if (el) el.click()
+      else loadChatThread(chatSelectedAgent)
+    } else if (!chatSelectedAgent) {
       const first = sidebar.querySelector('.chat-agent-item')
       if (first) first.click()
     }
@@ -9978,6 +10085,7 @@ function buildBubbleHtml(m) {
         ${!isOutgoing ? `<span class="bubble-sender">${escapeHtml(senderLabel)}</span>` : ''}
         <span class="bubble-id-chip">#${m.id}</span>
         <span class="badge ${statusMeta.cls}" style="font-size:10px">${escapeHtml(statusMeta.label)}</span>
+        ${m.status === 'pending' && m.to_agent === mainAgentId() ? `<span style="font-size:10px;color:var(--text-muted)">${escapeHtml(t('messages.pending_main_hint'))}</span>` : ''}
       </div>
       <div class="bubble-text">${escapeHtml(m.content || '')}</div>
       <div class="bubble-time">${when}</div>
@@ -13198,6 +13306,313 @@ document.getElementById('conversationClose')?.addEventListener('click', () => {
 document.getElementById('conversationSearch')?.addEventListener('input', () => renderConversation())
 document.getElementById('conversationShowActions')?.addEventListener('change', () => renderConversation())
 document.getElementById('conversationRefresh')?.addEventListener('click', () => loadConversation())
+
+// === Federation page ===
+// State lets live BEFORE the router IIFE (top-level code runs in order; a
+// first-load #federation route must not hit a TDZ on these).
+let fedPageWired = false
+let fedPeersViewCache = null
+
+async function loadFederationPage() {
+  wireFederationPage()
+  const statsEl = document.getElementById('federationStats')
+  const masterEl = document.getElementById('federationMaster')
+  const peersEl = document.getElementById('federationPeers')
+  if (!statsEl || !masterEl || !peersEl) return
+  peersEl.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${t('common.loading')}</p>`
+  try {
+    const [peersRes, statusRes] = await Promise.all([
+      fetch('/api/federation/peers'),
+      fetch('/api/federation/status').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    ])
+    if (!peersRes.ok) throw new Error('HTTP ' + peersRes.status)
+    fedPeersViewCache = await peersRes.json()
+    if (statusRes && Array.isArray(statusRes.peers)) federatedPeerStatus = statusRes.peers
+    renderFederationPage()
+  } catch (e) {
+    peersEl.innerHTML = `<p style="color:var(--danger)">${t('federation.error', { msg: escapeHtml(String(e.message || e)) })}</p>`
+  }
+}
+
+function fedStateLabel(state) {
+  const key = 'federation.peer_state.' + (state || 'unknown')
+  return t(key)
+}
+
+function renderFederationPage() {
+  const view = fedPeersViewCache
+  if (!view) return
+  const statsEl = document.getElementById('federationStats')
+  const masterEl = document.getElementById('federationMaster')
+  const peersEl = document.getElementById('federationPeers')
+  const statusById = new Map(federatedPeerStatus.map((p) => [p.id, p]))
+  const okCount = federatedPeerStatus.filter((p) => p.state === 'ok').length
+
+  const statBox = (value, label) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 16px;min-width:110px">
+    <div style="font-size:20px;font-weight:600">${value}</div>
+    <div style="font-size:12px;color:var(--text-muted)">${label}</div>
+  </div>`
+  statsEl.innerHTML = [
+    statBox(view.enabled ? t('common.yes') : t('common.no'), t('federation.stat.enabled')),
+    statBox(String(view.peers.length), t('federation.stat.peers')),
+    statBox(String(okCount), t('federation.stat.reachable')),
+    statBox(escapeHtml(view.systemId || '-'), t('federation.stat.system_id')),
+  ].join('')
+
+  const routingMode = view.routingMode || 'catalog-first'
+  const routingRadios = ['strong', 'catalog-first', 'advisory'].map((m) => `
+    <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;padding:5px 0">
+      <input type="radio" name="fedRoutingMode" value="${m}" ${routingMode === m ? 'checked' : ''} style="margin-top:3px;accent-color:var(--accent)">
+      <span>
+        <span style="font-weight:600">${t('federation.routing.mode.' + m + '.label')}</span>
+        <span style="display:block;font-size:12px;color:var(--text-muted)">${t('federation.routing.mode.' + m + '.hint')}</span>
+      </span>
+    </label>`).join('')
+  masterEl.innerHTML = `
+    <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+      <input type="checkbox" id="fedEnabledToggle" style="width:16px;height:16px;accent-color:var(--accent)" ${view.enabled ? 'checked' : ''}>
+      <span style="font-weight:600">${t('federation.master_label')}</span>
+    </label>
+    <p style="font-size:12px;color:var(--text-muted);margin:6px 0 0 26px">${t('federation.master_hint')}</p>
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+      <div style="font-weight:600">${t('federation.routing.title')}</div>
+      <p style="font-size:12px;color:var(--text-muted);margin:2px 0 8px 0">${t('federation.routing.subtitle')}</p>
+      ${routingRadios}
+      <p style="font-size:12px;color:var(--text-muted);margin:8px 0 0 0">${t('federation.routing.apply_note')}</p>
+    </div>`
+  document.getElementById('fedEnabledToggle').addEventListener('change', async (e) => {
+    const enabled = e.target.checked
+    if (!enabled && !confirm(t('federation.confirm.disable'))) { e.target.checked = true; return }
+    try {
+      const res = await fetch('/api/federation/enabled', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); e.target.checked = !enabled; return }
+      showToast(enabled ? t('federation.toast.enabled') : t('federation.toast.disabled'))
+      fedRefreshAndReload()
+    } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })); e.target.checked = !enabled }
+  })
+  document.querySelectorAll('input[name="fedRoutingMode"]').forEach((radio) => {
+    radio.addEventListener('change', async (e) => {
+      const mode = e.target.value
+      try {
+        const res = await fetch('/api/federation/routing-mode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) })
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+        showToast(t('federation.routing.toast_set', { mode: t('federation.routing.mode.' + mode + '.label') }))
+      } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
+    })
+  })
+
+  if (!view.peers.length) {
+    peersEl.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${t('federation.peers_empty')}</p>`
+    return
+  }
+  peersEl.innerHTML = ''
+  for (const peer of view.peers) {
+    const st = statusById.get(peer.id)
+    const state = peer.hasOutboundToken ? (st ? st.state : 'unknown') : 'unpaired'
+    const reachable = state === 'ok'
+    const lastOk = st && st.lastOkAt ? new Date(st.lastOkAt).toLocaleString() : '-'
+    const agentCount = st && st.manifest && Array.isArray(st.manifest.agents) ? String(st.manifest.agents.length) : '-'
+    const card = document.createElement('div')
+    card.className = 'card'
+    card.style.cssText = 'padding:12px 16px;display:flex;flex-direction:column;gap:8px'
+    // Peer ids/baseUrls are OWNER-entered and segment-validated; state labels
+    // come from t(). Still: text nodes only, escapeHtml everywhere.
+    card.innerHTML = `
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <strong style="font-size:15px">${escapeHtml(peer.id)}</strong>
+        <span class="tg-status"><span class="tg-dot ${reachable ? 'connected' : 'disconnected'}"></span> ${fedStateLabel(state)}</span>
+        <span style="color:var(--text-muted);font-size:12px;margin-left:auto">${t('federation.card.last_ok')}: ${escapeHtml(lastOk)} · ${t('federation.card.agents')}: ${escapeHtml(agentCount)}</span>
+      </div>
+      <div style="font-size:13px;color:var(--text-muted);word-break:break-all">${escapeHtml(peer.baseUrl)}</div>
+      ${st && st.error ? `<div style="font-size:12px;color:var(--danger)">${escapeHtml(st.error)}</div>` : ''}
+      <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-muted);cursor:pointer">
+        <input type="checkbox" class="fed-share-cap" ${peer.shareCapabilitySummaries ? 'checked' : ''} style="accent-color:var(--accent)">
+        ${t('federation.share_cap_label')}
+      </label>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn-secondary btn-compact" data-action="reveal">${t('federation.btn.reveal')}</button>
+        <button class="btn-secondary btn-compact" data-action="rotate">${t('federation.btn.rotate')}</button>
+        <button class="btn-secondary btn-compact" data-action="edit">${t('common.edit')}</button>
+        <button class="btn-secondary btn-compact" data-action="delete" style="color:var(--danger)">${t('common.delete')}</button>
+      </div>
+      <div class="fed-token-reveal" hidden style="font-family:monospace;font-size:12px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px;word-break:break-all"></div>`
+    card.querySelector('[data-action="reveal"]').addEventListener('click', () => fedRevealToken(peer.id, card))
+    card.querySelector('[data-action="rotate"]').addEventListener('click', () => fedRotateToken(peer.id))
+    card.querySelector('[data-action="edit"]').addEventListener('click', () => fedOpenPeerModal(peer))
+    card.querySelector('[data-action="delete"]').addEventListener('click', () => fedDeletePeer(peer.id))
+    card.querySelector('.fed-share-cap').addEventListener('change', (e) => fedToggleShareCap(peer.id, e.target.checked))
+    peersEl.appendChild(card)
+  }
+}
+
+async function fedRevealToken(peerId, card) {
+  const box = card.querySelector('.fed-token-reveal')
+  if (!box.hidden) { box.hidden = true; box.textContent = ''; return }
+  try {
+    const res = await fetch(`/api/federation/peers/${encodeURIComponent(peerId)}/inbound-token`)
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+    box.textContent = data.inboundToken
+    box.hidden = false
+    navigator.clipboard?.writeText(data.inboundToken).then(
+      () => showToast(t('federation.toast.token_copied')),
+      () => {},
+    )
+  } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
+}
+
+async function fedRotateToken(peerId) {
+  if (!confirm(t('federation.confirm.rotate', { peer: peerId }))) return
+  try {
+    const res = await fetch(`/api/federation/peers/${encodeURIComponent(peerId)}/rotate-inbound-token`, { method: 'POST' })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+    showToast(t('federation.toast.rotated'))
+    loadFederationPage()
+  } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
+}
+
+async function fedToggleShareCap(peerId, share) {
+  try {
+    const res = await fetch(`/api/federation/peers/${encodeURIComponent(peerId)}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ shareCapabilitySummaries: share }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); loadFederationPage(); return }
+    showToast(share ? t('federation.toast.share_cap_on') : t('federation.toast.share_cap_off'))
+  } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })); loadFederationPage() }
+}
+
+async function fedDeletePeer(peerId) {
+  if (!confirm(t('federation.confirm.delete_peer', { peer: peerId }))) return
+  try {
+    const res = await fetch(`/api/federation/peers/${encodeURIComponent(peerId)}`, { method: 'DELETE' })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+    // Sweep browser leftovers scoped to the removed peer.
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i)
+      if (key && key.startsWith('chat_last_seen_' + peerId + '/')) localStorage.removeItem(key)
+    }
+    if (chatSelectedAgent && chatSelectedAgent.startsWith(peerId + '/')) chatSelectedAgent = null
+    showToast(t('federation.toast.peer_deleted'))
+    loadFederationPage()
+  } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
+}
+
+// Apply federation config changes to the RUNNING main agent by restarting it
+// (it reloads CLAUDE.md, which carries the federation onboarding + delegation
+// directive). Reuses the existing main-agent restart endpoint -- no new
+// backend, no terminal command for the operator.
+async function fedApplyToMainAgent() {
+  if (!confirm(t('federation.confirm.apply'))) return
+  try {
+    // Server-side apply: restarts the main channels agent by MAIN_AGENT_ID,
+    // so the client does not depend on window._marveen being loaded (the
+    // Federation page does not populate it -> the old /api/agents/:name path
+    // 404'd when it fell back to the 'marveen' default).
+    const res = await fetch('/api/federation/apply', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+    showToast(t('federation.toast.applied'))
+  } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
+}
+
+// Re-poll peer reachability then re-render. Called after config mutations
+// (enable, peer add/edit) so the status shows fresh -- there is no separate
+// manual "refresh" button anymore (the apply action owns the top-right slot).
+async function fedRefreshAndReload() {
+  try { await fetch('/api/federation/refresh', { method: 'POST' }) } catch { /* best effort */ }
+  loadFederationPage()
+}
+
+let fedPeerModalEditId = null
+
+function fedOpenPeerModal(peer) {
+  fedPeerModalEditId = peer ? peer.id : null
+  document.getElementById('fedPeerModalTitle').textContent = peer ? t('federation.modal.edit_title', { peer: peer.id }) : t('federation.modal.add_title')
+  const idInput = document.getElementById('fedPeerId')
+  idInput.value = peer ? peer.id : ''
+  idInput.disabled = !!peer
+  document.getElementById('fedPeerBaseUrl').value = peer ? peer.baseUrl : ''
+  document.getElementById('fedPeerOutboundToken').value = ''
+  document.getElementById('fedPeerOutboundToken').placeholder = peer && peer.hasOutboundToken ? t('federation.modal.outbound_keep') : ''
+  document.getElementById('fedPeerAbandonWindow').value = peer && peer.abandonWindowMinutes ? String(peer.abandonWindowMinutes) : ''
+  openModal(document.getElementById('fedPeerModalOverlay'))
+}
+
+async function fedSavePeerModal() {
+  // Ids are case-insensitive server-side (stored lowercase); fold here too so
+  // the operator immediately sees the canonical form.
+  const id = document.getElementById('fedPeerId').value.trim().toLowerCase()
+  const baseUrl = document.getElementById('fedPeerBaseUrl').value.trim()
+  const outbound = document.getElementById('fedPeerOutboundToken').value.trim()
+  const abandonRaw = document.getElementById('fedPeerAbandonWindow').value.trim()
+  try {
+    let res, data
+    if (fedPeerModalEditId) {
+      const body = { baseUrl }
+      if (outbound) body.outboundToken = outbound
+      if (abandonRaw) body.abandonWindowMinutes = parseInt(abandonRaw, 10)
+      else body.abandonWindowMinutes = null
+      res = await fetch(`/api/federation/peers/${encodeURIComponent(fedPeerModalEditId)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      data = await res.json().catch(() => ({}))
+      if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+      showToast(t('federation.toast.peer_saved'))
+    } else {
+      const body = { id, baseUrl }
+      if (outbound) body.outboundToken = outbound
+      res = await fetch('/api/federation/peers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      data = await res.json().catch(() => ({}))
+      if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+      // The minted inbound token is shown ONCE right away: the owner hands it
+      // to the peer's operator during pairing.
+      prompt(t('federation.modal.minted_token_hint'), data.inboundToken)
+      showToast(t('federation.toast.peer_added'))
+    }
+    closeModal(document.getElementById('fedPeerModalOverlay'))
+    fedRefreshAndReload()
+  } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
+}
+
+async function fedRemoveAll() {
+  if (!confirm(t('federation.confirm.remove'))) return
+  try {
+    const res = await fetch('/api/federation/remove', { method: 'POST' })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+    federatedPeerStatus = []
+    // Sweep browser leftovers for ALL federated (qualified) threads -- the
+    // per-peer DELETE path does this per peer, full removal must do it wholesale.
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i)
+      if (key && /^chat_last_seen_[^/]+\//.test(key)) localStorage.removeItem(key)
+    }
+    if (chatSelectedAgent && chatSelectedAgent.includes('/')) chatSelectedAgent = null
+    showToast(t('federation.toast.removed'))
+    loadFederationPage()
+  } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
+}
+
+function wireFederationPage() {
+  if (fedPageWired) return
+  fedPageWired = true
+  const fedApplyBtn = document.getElementById('federationApplyBtn')
+  if (fedApplyBtn) { fedApplyBtn.title = t('federation.apply_hint'); fedApplyBtn.addEventListener('click', fedApplyToMainAgent) }
+  document.getElementById('federationAddPeerBtn')?.addEventListener('click', () => fedOpenPeerModal(null))
+  document.getElementById('federationRemoveBtn')?.addEventListener('click', fedRemoveAll)
+  document.getElementById('fedPeerModalSave')?.addEventListener('click', fedSavePeerModal)
+  document.getElementById('fedPeerModalCancel')?.addEventListener('click', () => closeModal(document.getElementById('fedPeerModalOverlay')))
+  document.getElementById('fedPeerModalClose')?.addEventListener('click', () => closeModal(document.getElementById('fedPeerModalOverlay')))
+  const overlay = document.getElementById('fedPeerModalOverlay')
+  overlay?.addEventListener('click', (e) => { if (e.target === overlay) closeModal(overlay) })
+}
+
 ;(() => {
   function routeFromHash() {
     let pageId = decodeURIComponent((location.hash || '').replace(/^#/, ''))

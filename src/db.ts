@@ -428,6 +428,28 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_messages_status ON agent_messages(status, to_agent)`)
 
+  // One-time L1 backfill: federation system ids are now stored lowercase, but
+  // rows written by a pre-L1 build (an install that federated with a
+  // display-cased id like "Teodor/agent") keep their old case. Left alone,
+  // thread grouping and conversation history key on the exact string and
+  // silently SPLIT such a peer into two threads once new lowercase rows
+  // arrive. Fold the SYSTEM prefix of qualified rows in place (the agent
+  // segment keeps its case -- it is the peer's namespace). Idempotent: an
+  // already-lowercase prefix compares equal and is skipped, so this is a
+  // safe no-op after the first run and on fresh installs.
+  db.exec(`
+    UPDATE agent_messages
+       SET from_agent = lower(substr(from_agent, 1, instr(from_agent, '/') - 1)) || substr(from_agent, instr(from_agent, '/'))
+     WHERE instr(from_agent, '/') > 0
+       AND substr(from_agent, 1, instr(from_agent, '/') - 1) <> lower(substr(from_agent, 1, instr(from_agent, '/') - 1))
+  `)
+  db.exec(`
+    UPDATE agent_messages
+       SET to_agent = lower(substr(to_agent, 1, instr(to_agent, '/') - 1)) || substr(to_agent, instr(to_agent, '/'))
+     WHERE instr(to_agent, '/') > 0
+       AND substr(to_agent, 1, instr(to_agent, '/') - 1) <> lower(substr(to_agent, 1, instr(to_agent, '/') - 1))
+  `)
+
   // --- Pending Channel Requests (Slack channel opt-in workflow) ---
   db.exec(`
     CREATE TABLE IF NOT EXISTS pending_channel_requests (
@@ -1719,9 +1741,48 @@ export function getPendingMessages(toAgent?: string): AgentMessage[] {
     .all() as AgentMessage[]
 }
 
+// Status-guarded (pending only): the federation removal path bulk-fails
+// pending rows CONCURRENTLY with an in-flight bridge send -- an unguarded
+// UPDATE would flip such a row failed->delivered after the fact. If the row
+// is no longer pending, this returns false and the caller must not record a
+// result either.
 export function markMessageDelivered(id: number): boolean {
   const now = Math.floor(Date.now() / 1000)
-  return db.prepare("UPDATE agent_messages SET status = 'delivered', delivered_at = ? WHERE id = ?").run(now, id).changes > 0
+  return db.prepare("UPDATE agent_messages SET status = 'delivered', delivered_at = ? WHERE id = ? AND status = 'pending'").run(now, id).changes > 0
+}
+
+// Supplementary result text WITHOUT a status change. The federation bridge
+// records the peer-assigned id on delivered rows ("fed:<peer>:<remote id>")
+// so a cross-system message can be traced without a schema migration.
+export function setMessageResult(id: number, result: string): boolean {
+  return db.prepare('UPDATE agent_messages SET result = ? WHERE id = ?').run(result, id).changes > 0
+}
+
+// Bulk-fail PENDING federated (slash-qualified to_agent) messages -- the
+// deterministic counterpart of the bridge's drip-fail on disable/removal.
+// ONE statement (claimPendingForAgent idiom: no SELECT-then-UPDATE window).
+// pending only: delivered/done/failed rows are conversation history.
+// Per-peer scoping compares the exact prefix segment via instr/substr -- a
+// LIKE pattern would treat '_' in a peer id as a wildcard ('te_dor' purging
+// 'teodor'). lower() on both sides: system ids are case-insensitive, and rows
+// written before the lowercase normalization may carry an uppercase prefix
+// that must still be purged with its peer (ASCII-only lower() is fine -- the
+// id charset is [a-zA-Z0-9_-]).
+export function failPendingFederatedMessages(peerId: string | undefined, reason: string): number[] {
+  const now = Math.floor(Date.now() / 1000)
+  const rows = peerId === undefined
+    ? db.prepare(
+        `UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ?
+           WHERE status = 'pending' AND instr(to_agent, '/') > 0
+         RETURNING id`,
+      ).all(reason, now) as Array<{ id: number }>
+    : db.prepare(
+        `UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ?
+           WHERE status = 'pending' AND instr(to_agent, '/') > 0
+             AND lower(substr(to_agent, 1, instr(to_agent, '/') - 1)) = lower(?)
+         RETURNING id`,
+      ).all(reason, now, peerId) as Array<{ id: number }>
+  return rows.map((r) => r.id)
 }
 
 // Atomically CLAIM (pending -> delivered) the oldest `limit` pending messages
@@ -1756,6 +1817,18 @@ export function markMessageDone(id: number, result?: string): boolean {
 export function markMessageFailed(id: number, error?: string): boolean {
   const now = Math.floor(Date.now() / 1000)
   return db.prepare("UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ?").run(error ?? null, now, id).changes > 0
+}
+
+// Status-guarded fail for the federation bridge's terminal branches: it must
+// only fire (and only bounce a failure notice) when THIS call actually closed
+// a still-pending row. The unguarded markMessageFailed above would also
+// "succeed" on a row a concurrent disable/removal purge already failed
+// (result/completed_at change -> changes>0), producing a spurious second
+// notice. The drain-inbox path deliberately keeps the unguarded variant (it
+// fails an already-delivered row).
+export function markPendingFederatedFailed(id: number, error: string): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  return db.prepare("UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ? AND status = 'pending'").run(error, now, id).changes > 0
 }
 
 export function listAgentMessages(limit = 50): AgentMessage[] {

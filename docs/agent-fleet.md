@@ -32,6 +32,8 @@ GET  /api/messages?agent=<agent>      # státusz
 
 A rendszer az üzenetet a célpont ügynök tmux-session-jébe juttatja (`[Uzenet @<felado>-tol]: ...` formátumban), aki feldolgozza és a saját csatornáján válaszol. Csak futó (tmux-session-nel rendelkező) ügynöknek lehet üzenni. Távoli ügynöknél ez azt jelenti, hogy az ssh-kapcsolat és a laptop tmux-szervere elérhető kell legyen a delivery-loop ciklusában; ha nem az, az üzenet a sorban marad és visszakapcsoláskor kézbesül (lásd [Távoli ügynökök](#-távoli-remote-ügynökök)).
 
+A címzett lehet egy **másik Marveen-rendszer ügynöke** is, rendszer-minősített névvel (`to: "teodor/backend-dev"`) — ilyenkor az üzenet HTTPS-en át a társrendszer inboxába kerül. Részletek: [Föderáció](federation.md).
+
 ### Életciklus
 
 ```

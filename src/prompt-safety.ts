@@ -48,6 +48,14 @@ const SECURITY_TAG_RX = new RegExp(
 // still finds every occurrence in audit logs.
 const STRIPPED_SENTINEL = `[[SECURITY_TAG_REMOVED_${randomBytes(4).toString('hex')}]]`
 
+/** Neutralize security-framing tags in free text that reaches an agent's
+ *  context OUTSIDE a wrap (e.g. peer-supplied catalog text rendered into the
+ *  routing directory). Same regex + sentinel as the wrappers -- never
+ *  duplicated at call sites. */
+export function scrubSecurityTags(raw: string): string {
+  return raw.replace(SECURITY_TAG_RX, STRIPPED_SENTINEL)
+}
+
 // Raw agent identifier: no ':' allowed (the router builds "agent:NAME" itself).
 export function sanitizeAgentIdent(raw: string): string {
   return String(raw ?? '').replace(/[^a-zA-Z0-9_-]/g, '')

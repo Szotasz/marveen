@@ -155,6 +155,10 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
         <span class="sb-label">Ötletláda</span>
       </a>
+      <a href="#" class="sb-link" data-page="federation">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="12" r="3"/><circle cx="19" cy="12" r="3"/><path d="M8 12h8"/><path d="M12 9v-3"/><path d="M12 15v3"/></svg>
+        <span class="sb-label">Föderáció</span>
+      </a>
       <a href="#" class="sb-link" data-page="updates" id="updatesNavLink">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
         <span class="sb-label">Frissítések</span>
@@ -1783,6 +1787,62 @@
       <div class="naplo-summary" id="naplo-summary"></div>
       <div class="naplo-timeline" id="naplo-timeline">
         <p class="naplo-empty" data-i18n="naplo.empty_hint">Válassz szűrőt és kattints Keresés-re.</p>
+      </div>
+    </div>
+
+    <div class="page" id="federationPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1 data-i18n="federation.page_title">Föderáció</h1>
+            <p class="subtitle" data-i18n="federation.page_subtitle">Társrendszerek összekötése: távoli ügynökök címzése rendszer/ügynök alakban</p>
+          </div>
+          <button class="btn-primary btn-compact" id="federationApplyBtn" data-i18n="federation.btn.apply"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg> Beállítások életbe léptetése</button>
+        </div>
+      </div>
+      <div id="federationStats" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px"></div>
+      <div id="federationMaster" class="card" style="padding:14px 16px;margin-bottom:16px"></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <h3 style="font-size:15px;font-weight:600" data-i18n="federation.peers_title">Társrendszerek</h3>
+        <button class="btn-primary btn-compact" id="federationAddPeerBtn" data-i18n="federation.btn.add_peer">+ Társ hozzáadása</button>
+      </div>
+      <div id="federationPeers" style="display:flex;flex-direction:column;gap:10px;margin-bottom:24px"></div>
+      <div class="card" style="padding:14px 16px;border-color:var(--danger)">
+        <h3 style="font-size:14px;font-weight:600;color:var(--danger);margin-bottom:6px" data-i18n="federation.danger_title">Veszélyzóna</h3>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:10px" data-i18n="federation.danger_hint">A teljes eltávolítás törli a konfigurációt, a tokeneket és lezárja a függő üzeneteket. A társrendszereken a párosítást külön kell megszüntetni.</p>
+        <button class="btn-secondary btn-compact" id="federationRemoveBtn" style="color:var(--danger);border-color:var(--danger)" data-i18n="federation.btn.remove_all">Föderáció teljes eltávolítása</button>
+      </div>
+
+      <div class="modal-overlay" id="fedPeerModalOverlay">
+        <div class="modal" style="max-width:520px">
+          <div class="modal-header">
+            <h2 id="fedPeerModalTitle">Társ hozzáadása</h2>
+            <button class="modal-close" id="fedPeerModalClose">&times;</button>
+          </div>
+          <div class="modal-body" style="display:flex;flex-direction:column;gap:12px">
+            <div class="form-group">
+              <label data-i18n="federation.modal.id_label">Rendszer-azonosító (pl. teodor)</label>
+              <input type="text" class="input" id="fedPeerId" placeholder="teodor">
+              <p style="font-size:12px;color:var(--text-muted);margin:4px 0 0" data-i18n="federation.modal.id_hint">A másik rendszer gépi azonosítója — a társ Föderáció-oldalán a „Saját azonosító" mezőből másold (nem a megjelenítési név). Kis-nagybetű nem számít.</p>
+            </div>
+            <div class="form-group">
+              <label data-i18n="federation.modal.url_label">Alap-URL (https://...)</label>
+              <input type="text" class="input" id="fedPeerBaseUrl" placeholder="https://gep.tailnet.ts.net">
+            </div>
+            <div class="form-group">
+              <label data-i18n="federation.modal.outbound_label">Tőle kapott token (üresen hagyható a párosításig)</label>
+              <input type="password" class="input" id="fedPeerOutboundToken" autocomplete="off">
+            </div>
+            <div class="form-group">
+              <label data-i18n="federation.modal.abandon_label">Türelmi ablak percben (üresen: 60)</label>
+              <input type="number" class="input" id="fedPeerAbandonWindow" min="5" max="10080" placeholder="60">
+            </div>
+          </div>
+          <div class="modal-footer" style="display:flex;gap:8px;justify-content:flex-end">
+            <button class="btn-secondary" id="fedPeerModalCancel" data-i18n="common.btn.cancel">Mégse</button>
+            <button class="btn-primary btn-compact" id="fedPeerModalSave" data-i18n="common.btn.save">Mentés</button>
+          </div>
+        </div>
       </div>
     </div>
 

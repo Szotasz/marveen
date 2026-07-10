@@ -11,6 +11,7 @@ Ezek a fájlok a dashboard által kezelt, futásidőben módosuló konfiguráci�
 | Fájl | Módosítható | Leírás |
 |------|-------------|--------|
 | `store/.dashboard-token` | nem | Dashboard Bearer token -- minden `/api/*` híváshoz kell |
+| `store/federation.json` | dashboard UI (Föderáció menü) | Föderáció-konfiguráció: enabled, systemId, peers[] társankénti inbound/outbound tokenekkel (0600) -- ld. docs/federation.md |
 | `store/autonomy-config.json` | dashboard UI | Heartbeat autonómia-szintek kategóriánként (1=jelz, 2=javasol, 3=autonóm) |
 | `store/dashboard-settings.json` | dashboard UI | GitHub repo integráció, frissítési beállítások |
 | `store/agents-desired.json` | dashboard UI | Melyik sub-ágenseket kell életben tartani (auto-restart lista) |

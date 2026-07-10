@@ -1,5 +1,6 @@
 import {
   readFileSync,
+  readlinkSync,
   unlinkSync,
   mkdirSync,
   openSync,
@@ -9,7 +10,7 @@ import {
 import { join } from 'node:path'
 import { execFileSync, execSync } from 'node:child_process'
 import type { Server as HttpServer } from 'node:http'
-import { STORE_DIR, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
+import { PROJECT_ROOT, STORE_DIR, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
 import { initDatabase, backfillEmbeddings } from './db.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
 import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
@@ -60,6 +61,36 @@ const SHUTDOWN_HARD_KILL_MS = 5000
 // those files would get SIGKILLed on startup.
 const DASHBOARD_BINARY_PATTERN = /(?:^|[\s/])(?:dist\/index\.js|src\/index\.ts)(?:\s|$)/
 
+// Own-install affinity guard for the takeover kill. The binary pattern alone
+// matches ANY Marveen dashboard argv of the same UID -- including a SECOND
+// install's live process (federation makes multi-install machines a supported
+// reality, and dev/test copies always existed). Only processes that belong to
+// THIS install may be taken over: an absolute argv must contain PROJECT_ROOT,
+// a relative argv ("node dist/index.js" via npm start) must have its cwd
+// inside PROJECT_ROOT. A process we cannot attribute is left alone -- failing
+// to reclaim our own port surfaces as EADDRINUSE (handled downstream), while
+// killing a stranger's dashboard would be silent data-plane damage.
+function processCwd(pid: number): string | null {
+  try {
+    // Linux: cheap and exact.
+    return readlinkSync(`/proc/${pid}/cwd`)
+  } catch { /* not Linux or no access; try lsof (macOS) */ }
+  try {
+    const raw = execSync(`lsof -a -p ${pid} -d cwd -Fn 2>/dev/null || true`, { timeout: 2000, encoding: 'utf-8' })
+    const line = raw.split('\n').find((l) => l.startsWith('n'))
+    return line ? line.slice(1) : null
+  } catch {
+    return null
+  }
+}
+
+function argvBelongsToThisInstall(argv: string, pid: number): boolean {
+  // Boundary-suffixed so /path/marveen never matches /path/marveen2.
+  if (argv.includes(PROJECT_ROOT + '/')) return true
+  const cwd = processCwd(pid)
+  return cwd !== null && (cwd === PROJECT_ROOT || cwd.startsWith(PROJECT_ROOT + '/'))
+}
+
 // Build the I/O surface used by process-lock.ts. Kept here so the pure
 // module stays testable with a mock ctx and never imports node:child_process
 // or node:fs directly.
@@ -98,6 +129,7 @@ function buildProcessLockContext(): ProcessLockContext {
           if (pid === process.pid) continue
           if (uid != null && rowUid !== uid) continue
           if (!pattern.test(argv)) continue
+          if (!argvBelongsToThisInstall(argv, pid)) continue
           out.push(pid)
         }
         return out

@@ -10,6 +10,8 @@ import { COORDINATOR_AGENT_ID } from '../../channel-coordinator/ingest.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { readBody, json } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
+import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
+import { getFederationConfig } from '../federation/config.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
@@ -42,13 +44,64 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'from is reserved for the in-process channel coordinator' }, 403)
       return true
     }
+    // Federation spoof guard: a slash-qualified from ("teodor/teodor") is the
+    // provenance mark of a REMOTE sender and may only ever be written by the
+    // token-authenticated /api/federation/inbox. Accepting it here would let
+    // any dashboard-token holder (i.e. every local sub-agent) impersonate a
+    // federation peer toward another local agent.
+    if (from.includes('/')) {
+      logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST with qualified from (federation impersonation guard)')
+      json(res, { error: 'from must be a local agent id without "/" -- federated senders are only accepted via /api/federation/inbox' }, 403)
+      return true
+    }
+    // Qualified to ("peer/agent"): validate at creation time so the sender
+    // gets an actionable error NOW instead of a silent 1h abandon. Local
+    // (slash-free) recipients are untouched.
+    let storedTo = to.trim()
+    if (storedTo.includes('/')) {
+      const target = parseQualifiedId(storedTo)
+      if (!target) {
+        json(res, { error: 'Invalid federated address in to (expected "<system>/<agent>")' }, 400)
+        return true
+      }
+      const cfg = getFederationConfig()
+      if (!cfg.enabled) {
+        json(res, { error: 'Federation is disabled on this system' }, 400)
+        return true
+      }
+      // System ids are case-insensitive (stored lowercase in the config).
+      // Normalize the STORED prefix too: the per-peer purge SQL and the
+      // bridge's peer lookup key on it, and thread grouping in the UI should
+      // not split 'Teodor/x' from 'teodor/x'. The agent segment is the
+      // PEER's namespace -- leave its case alone.
+      const targetSystem = target.system.toLowerCase()
+      if (targetSystem === cfg.systemId) {
+        json(res, { error: `'${target.system}' is this system -- address the agent locally as '${target.agent}'` }, 400)
+        return true
+      }
+      if (!cfg.peers.some((p) => p.id === targetSystem)) {
+        json(res, { error: `Unknown federation peer '${target.system}'` }, 400)
+        return true
+      }
+      storedTo = formatQualifiedId(targetSystem, target.agent)
+    } else if (storedTo.includes(':')) {
+      // A colon-form 'to' ("federation:teodor:teodor", copied from an
+      // <untrusted source> attribute) is NOT a valid address: it has no '/',
+      // so it would be treated as a LOCAL recipient, never match a session,
+      // and silently sit pending until the 1h abandon window. Reject it now
+      // with the correct form. Safe: sanitizeAgentIdent strips ':', so no
+      // legitimate local agent id can contain one, and the channel
+      // coordinator inserts directly into the DB, bypassing this endpoint.
+      json(res, { error: 'Invalid recipient: use "<system>/<agent>" (slash) for a federated address, not the "federation:x:y" source form' }, 400)
+      return true
+    }
     // Code-side enforcement of the kanban-ref convention: rewrite any
     // `#<hex8>` token that maps to a real kanban_cards row into its
     // human-facing `#<seq>` form before persistence, so the dashboard and
     // every downstream consumer sees the canonical reference even when a
     // sub-agent forgets the CLAUDE.md rule (#75 Cuzcoo dispatch).
     const normalizedContent = normalizeKanbanRefs(content.trim(), getKanbanSeqByIdPrefix)
-    const msg = createAgentMessage(from.trim(), to.trim(), normalizedContent)
+    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent)
     logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, 'Agent message created')
     json(res, msg)
     return true
