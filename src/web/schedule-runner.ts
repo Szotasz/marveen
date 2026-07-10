@@ -31,7 +31,8 @@ import {
   SCHEDULED_TASKS_DIR,
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
-import { listAgentNames, readFileOr, readAgentRemoteHost } from './agent-config.js'
+import { listAgentNames, readFileOr, readAgentRemoteHost, agentDir } from './agent-config.js'
+import { channelStateDir } from '../channel-provider.js'
 import {
   agentSessionName,
   isAgentRunning,
@@ -160,6 +161,30 @@ export function runPreCheck(task: ScheduledTask): { skip: boolean; prefix?: stri
   }
 }
 
+// Resolve the chat id a "task"-type scheduled prompt should tell the agent to
+// reply to. Historically this was the literal string "chat_id: 0", on the
+// assumption that the channel plugin resolves "0" to the running agent's own
+// bound/paired chat -- it does not (confirmed empirically: the Telegram reply
+// tool rejects chat_id="0" as not-allowlisted, since "0" is never a real
+// Telegram chat). Resolve for real instead: prefer the agent's OWN isolated
+// channel .env (set per-agent once that agent is paired with its own owner --
+// this is what keeps a sub-agent's task result going to ITS owner rather than
+// the global admin, the original reason "0" was used over ALLOWED_CHAT_ID),
+// falling back to the global ALLOWED_CHAT_ID when the agent has no such
+// per-agent binding yet (the common case today: every agent in this fleet is
+// paired to the same single owner).
+function resolveAgentOwnerChatId(agentName: string): string {
+  if (agentName === MAIN_AGENT_ID) return ALLOWED_CHAT_ID
+  try {
+    const envPath = join(channelStateDir('telegram', agentDir(agentName)), '.env')
+    const content = readFileOr(envPath, '')
+    const match = content.match(/^ALLOWED_CHAT_ID=(.+)$/m)
+    const perAgent = match ? match[1].trim() : ''
+    if (perAgent) return perAgent
+  } catch { /* fall through to the global owner below */ }
+  return ALLOWED_CHAT_ID
+}
+
 // Try to fire a task at a single target agent. Returns the outcome so the
 // caller can decide whether to queue a retry. Splitting this out means the
 // pendingTaskRetries loop and the normal cron loop share one code path.
@@ -181,7 +206,19 @@ function mcpMissingReason(taskName: string, agentName: string): string {
 //      required server is dead.
 // Both are fail-open: a broken script or an unreadable MCP state never
 // blocks the task.
-function attemptFireTask(task: ScheduledTask, agentName: string, now: number, preCheckPrefix?: string): 'fired' | 'busy' | 'missing' | 'starting' | 'error' | 'mcp-missing' {
+//
+// lateCatchUpMs is set by the caller when this tick only matched because of
+// the enlarged restart catch-up window (see startScheduleRunner) -- i.e. the
+// task missed its normal tick and is only firing now as a catch-up; it is
+// recorded as a distinct 'fired_late' run status further down instead of
+// silently folding into 'fired'.
+function attemptFireTask(
+  task: ScheduledTask,
+  agentName: string,
+  now: number,
+  preCheckPrefix?: string,
+  lateCatchUpMs?: number,
+): 'fired' | 'busy' | 'missing' | 'starting' | 'error' | 'mcp-missing' {
   const isMainAgent = agentName === MAIN_AGENT_ID
   // Allow per-task session override via targetSession config field.
   // Falls back to the standard agent session name derivation.
@@ -280,14 +317,20 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number, pr
       // heartbeat prompts.
       prefix = `[Heartbeat: ${task.name}] `
     } else {
-      // Target the RUNNING agent's own bound channel (chat_id: 0), NOT the
-      // global ALLOWED_CHAT_ID. The latter is the main/admin chat; injecting it
-      // here pointed every sub-agent's task result at the boss's chat instead of
-      // its own owner (e.g. attilamarveenja -> Papp Attila). chat_id: 0 is the
-      // established "bound channel" convention (template-identity-hygiene), so it
-      // resolves per-agent and stays correct for the main agent too. The
-      // system-level pending-retry alert below still uses ALLOWED_CHAT_ID.
-      prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el Telegramon (chat_id: 0, reply tool). `
+      // Target the RUNNING agent's own bound channel, NOT unconditionally the
+      // global ALLOWED_CHAT_ID -- that is the main/admin chat, and pointing
+      // every sub-agent's task result at it instead of its own owner (e.g.
+      // attilamarveenja -> Papp Attila) was the original bug this avoided.
+      // The literal "chat_id: 0" placeholder used to stand in for "resolve
+      // this per-agent", on the assumption the channel plugin does that
+      // translation -- it does not (confirmed empirically: chat_id="0" is
+      // rejected as not-allowlisted). resolveAgentOwnerChatId() now does the
+      // resolution here instead: the agent's own isolated channel .env if it
+      // has one bound, else the global owner. The system-level pending-retry
+      // alert below still uses ALLOWED_CHAT_ID directly (system-owner alert,
+      // not a per-agent task result).
+      const chatId = resolveAgentOwnerChatId(agentName)
+      prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el Telegramon (chat_id: ${chatId}, reply tool). `
     }
     // A scheduled task body is the agent's OWN task, authored by the operator
     // (SKILL.md on disk, or the bearer-gated /api/schedules editor -- both
@@ -313,7 +356,24 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number, pr
     sendPromptToSession(session, fullPrompt, host, { waitForIdle: !task.forceSend })
     scheduleLastRun.set(task.name, now)
     persistScheduleLastRun()
-    appendTaskRun(task.name, agentName, 'fired')
+    // A lateCatchUpMs value means this tick only matched because of the
+    // enlarged first-run catch-up window (see startScheduleRunner), i.e. the
+    // task missed its normal tick (e.g. the process was down/restarting at
+    // the scheduled minute) and is only firing now as a catch-up. Recording
+    // a distinct status -- instead of silently folding it into 'fired' --
+    // means the existing per-task run-history view (dashboard schedule
+    // history) surfaces exactly which tasks were missed and had to be
+    // caught up, without any new alert/polling path that could race other
+    // running tasks. Read-only w.r.t. everything else in this function.
+    if (lateCatchUpMs != null) {
+      appendTaskRun(task.name, agentName, 'fired_late')
+      logger.warn(
+        { task: task.name, agent: agentName, session, lateCatchUpMinutes: Math.round(lateCatchUpMs / 60000) },
+        'Scheduled task fired via restart catch-up window -- missed its normal tick',
+      )
+    } else {
+      appendTaskRun(task.name, agentName, 'fired')
+    }
     logger.info({ task: task.name, agent: agentName, session }, 'Scheduled task fired')
 
     // Post-send verify: if the agent started a new turn during our chunk
@@ -497,7 +557,8 @@ export function startScheduleRunner(): NodeJS.Timeout {
     const tasks = listScheduledTasks()
     const now = Date.now()
     // On first run after restart, catch up missed tasks from last 30 min
-    const catchUp = firstRun ? 30 * 60000 : 60000
+    const isFirstRunTick = firstRun
+    const catchUp = isFirstRunTick ? 30 * 60000 : 60000
     firstRun = false
 
     // Retry tasks that were busy-skipped on earlier ticks (persisted in
@@ -562,6 +623,15 @@ export function startScheduleRunner(): NodeJS.Timeout {
       const lastRun = scheduleLastRun.get(task.name) || 0
       if (now - lastRun < catchUp) continue
 
+      // This tick only matched because of the enlarged first-run catch-up
+      // window, not the normal ~1-tick tolerance -- i.e. the task's own
+      // scheduled minute was missed (process was down/restarting) and it is
+      // only firing now as a catch-up. Recorded further down via
+      // attemptFireTask's lateCatchUpMs param so the run-history shows it.
+      const lateCatchUpMs = isFirstRunTick && catchUp > 60000 && !cronMatchesNow(task.schedule, 60000)
+        ? catchUp
+        : undefined
+
       // type='command' tasks run a raw shell command directly -- no LLM, no
       // tmux, no target agent. They self-manage failure streaks + Telegram
       // alerts. Record the run time like a fired task so the catch-up window
@@ -600,7 +670,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         // If already queued for retry from an earlier tick, leave it to
         // the retry handler -- don't re-queue or double-fire.
         if (pendingKeys.has(key)) continue
-        const result = attemptFireTask(task, agentName, now, cronPc.prefix)
+        const result = attemptFireTask(task, agentName, now, cronPc.prefix, lateCatchUpMs)
         if (result === 'starting') {
           // Agent was auto-started this tick. ALWAYS enqueue the retry that
           // delivers the prompt once the session is ready -- skipIfBusy must
