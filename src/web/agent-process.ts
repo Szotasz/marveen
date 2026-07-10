@@ -120,33 +120,81 @@ export function hasFleetOauthToken(): boolean {
   }
 }
 
-// H1 silent-degradation hardening (2026-06-30).
+// H1 silent-degradation hardening (2026-06-30, refined 2026-07-10).
 //
 // When the fleet OAuth token is absent, channel sub-agents skip isolation and
 // fall back to the SHARED ~/.claude (the pre-isolation behaviour, gated in
 // startAgentProcess). ONE channel sub-agent on the shared dir is harmless -- it
-// owns the single plugin-install slot and poller. TWO OR MORE collide on that
-// slot, which is exactly the fleet outage isolation was built to end (only one
-// agent registers its plugin, the rest go deaf -- see
-// ensureIsolatedChannelConfigDir). Today that collision is logged at WARN only,
-// so it stays invisible until a bot silently stops answering.
+// owns the single plugin-install slot and poller. The collision the alert
+// guards against needs TWO OR MORE agents actually contending for the SAME
+// provider's plugin slot at the same time (only one registers its plugin, the
+// rest go deaf -- see ensureIsolatedChannelConfigDir).
 //
-// The decision is pure (token-absent AND more-than-one channel sub-agent) so it
-// is unit-tested without I/O, mirroring shouldSendDeferAlert. Token PRESENT ->
-// isolation works -> never alerts, regardless of agent count.
+// 2026-07-10 refinement -- the original check over-triggered ("cried wolf"):
+//   - It counted CONFIGURED channel sub-agents. An agent that is not running
+//     cannot contend for anything: 6 configured / 2 running must not read as
+//     a 6-way collision.
+//   - It counted across providers. Plugin installs are keyed per plugin id
+//     (telegram/slack/teams/... are separate slots in installed_plugins.json),
+//     so a running Teams agent never collides with running Telegram agents.
+//   - On macOS the collision does not manifest (verified empirically
+//     2026-07-10 on the origin host: three concurrent telegram pollers --
+//     main + two sub-agents, distinct own tokens, a live `bun server.ts`
+//     each, all on the shared ~/.claude while the installed_plugins.json
+//     telegram slot pointed at a THIRD agent's projectPath). Channel agents
+//     always launch fresh with an explicit --channels plugin:<id> flag, which
+//     loads the plugin regardless of the project-scoped install slot; and
+//     macOS auth lives in the Keychain, so the Linux credentials-refresh
+//     motive for isolation does not apply either. The guard is
+//     process.platform-based -- nothing host-specific is baked into this
+//     distribution artifact. On Linux/other the alert stays: the shared-config
+//     multi-bot eviction remains the documented failure mode there and has
+//     not been empirically cleared. If a real macOS collision is ever
+//     observed again, drop the darwin early-return.
+//
+// The decision stays pure (token, same-provider contender count, platform) so
+// it is unit-tested without I/O, mirroring shouldSendDeferAlert. Token PRESENT
+// -> isolation works -> never alerts, regardless of agent count.
 export function shouldAlertSharedConfigCollision(
   hasToken: boolean,
-  channelSubAgentCount: number,
+  sameProviderContenderCount: number,
+  platform: NodeJS.Platform = process.platform,
 ): boolean {
-  return !hasToken && channelSubAgentCount > 1
+  if (platform === 'darwin') return false
+  return !hasToken && sameProviderContenderCount > 1
 }
 
-// Count of channel-HAVING sub-agents in the fleet (main agent excluded -- it
-// comes up via channels.sh and keeps the shared root by design). Uses the same
-// own-token signal as the launch path, so the count reflects which agents will
-// actually contend for the shared ~/.claude plugin slot.
-export function countChannelSubAgents(): number {
-  return listAgentNames().filter((n) => n !== MAIN_AGENT_ID && agentHasChannel(n)).length
+// Pure: the largest number of channel sub-agents contending for a single
+// provider's plugin slot. Only RUNNING agents with a channel of their own
+// count; agents on different providers occupy different slots and never
+// collide with each other.
+export function maxSameProviderContenders(
+  agents: Array<{ provider: string; running: boolean; hasChannel: boolean }>,
+): number {
+  const counts = new Map<string, number>()
+  for (const a of agents) {
+    if (!a.running || !a.hasChannel) continue
+    counts.set(a.provider, (counts.get(a.provider) ?? 0) + 1)
+  }
+  return counts.size ? Math.max(...counts.values()) : 0
+}
+
+// Same-provider contender count for the fleet (main agent excluded -- it comes
+// up via channels.sh and keeps the shared root by design). Uses the same
+// own-token signal as the launch path. `startingName` is the agent being
+// spawned right now: its tmux session does not exist yet at alert time, so it
+// is treated as running -- otherwise the very launch that completes a real
+// collision would never see itself in the count.
+export function countSameProviderChannelContenders(startingName: string): number {
+  return maxSameProviderContenders(
+    listAgentNames()
+      .filter((n) => n !== MAIN_AGENT_ID)
+      .map((n) => ({
+        provider: resolveAgentProvider(n),
+        running: n === startingName || agentRunState(n) === 'running',
+        hasChannel: agentHasChannel(n),
+      })),
+  )
 }
 
 // One operator alert per degradation episode: spamming on every spawn would
@@ -161,17 +209,18 @@ export function resetSharedConfigCollisionAlert(): void {
 // Loud, owner-facing alert routed via notifyChannel (direct Bot API POST from
 // the dashboard process) -- NOT an inter-agent relay, which would itself need a
 // healthy channel agent to deliver. No-op unless the token is absent AND >1
-// channel sub-agent would share ~/.claude.
+// RUNNING same-provider channel sub-agent would share ~/.claude (and never on
+// macOS -- see shouldAlertSharedConfigCollision).
 function maybeAlertSharedConfigCollision(name: string): void {
-  const count = countChannelSubAgents()
+  const count = countSameProviderChannelContenders(name)
   if (!shouldAlertSharedConfigCollision(false, count) || sharedConfigCollisionAlerted) return
   sharedConfigCollisionAlerted = true
   logger.error(
-    { name, channelSubAgentCount: count },
-    'isolated-config: fleet OAuth token missing with multiple channel sub-agents -- shared ~/.claude plugin-slot collision, bots will go deaf',
+    { name, sameProviderContenders: count },
+    'isolated-config: fleet OAuth token missing with multiple RUNNING same-provider channel sub-agents -- shared ~/.claude plugin-slot collision, bots may go deaf',
   )
   void notifyChannel(
-    `⚠️ Flotta-figyelmeztetes: hianyzik a fleet OAuth token (store/.claude-oauth-token), de ${count} csatornas sub-agent fut. Izolacio nelkul mind a kozos ~/.claude-ot hasznalja, igy a plugin-slot utkozik es csak egy bot marad eleresheto (a tobbi elnemul). Javitas: futtasd a \`claude setup-token\`-t, mentsd a store/.claude-oauth-token fajlba, majd inditsd ujra az agenseket.`,
+    `⚠️ Flotta-figyelmeztetes: hianyzik a fleet OAuth token (store/.claude-oauth-token), es ${count} AZONOS csatorna-providerü sub-agent fut egyszerre. Izolacio nelkul mind a kozos ~/.claude-ot hasznalja, igy a plugin-slot utkozhet es bot nemulhat el. Javitas: futtasd a \`claude setup-token\`-t, mentsd a store/.claude-oauth-token fajlba, majd inditsd ujra az agenseket.`,
   ).catch(() => { /* notifyChannel logs internally */ })
 }
 
