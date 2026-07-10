@@ -138,9 +138,9 @@ function bareEnterRecovery(label: string, session: string, host: string | null):
 // this flag), only the ghost-risky plain-text branch is closed. Local
 // sub-agents pass TRUE: the env-var strips their ghost at the source, so their
 // plain re-inject (an inter-agent message the TUI failed to submit) is safe.
-function checkLocalSession(label: string, session: string, alertOnGiveUp: boolean, allowPlainReinject: boolean): void {
+async function checkLocalSession(label: string, session: string, alertOnGiveUp: boolean, allowPlainReinject: boolean): Promise<void> {
   const prev = watchState.get(session) ?? NO_STATE
-  const next = recoverStuckInputForSession(session, prev, LOCAL_FAST_THRESHOLDS, allowPlainReinject)
+  const next = await recoverStuckInputForSession(session, prev, LOCAL_FAST_THRESHOLDS, allowPlainReinject)
 
   if (next.parkedSig === null) {
     watchState.delete(session)
@@ -158,7 +158,7 @@ function checkLocalSession(label: string, session: string, alertOnGiveUp: boolea
 }
 
 export function startStuckInputWatcher(): NodeJS.Timeout {
-  function sweep() {
+  async function sweep() {
     // The main agent's channels session is named `<id>-channels`, not
     // `agent-<id>`, so isAgentRunning (which checks the agent- prefix)
     // does not apply. Check it directly; capturePane returns null when it
@@ -171,7 +171,7 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
     // (no prompt-suggestion env-var on the main session). The give-up alert +
     // the rate-limited hard restart stay owned by channel-monitor (alert=false).
     try {
-      checkLocalSession(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, false, false)
+      await checkLocalSession(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, false, false)
     } catch (err) {
       logger.debug({ err }, 'stuck-input-watcher: main agent check error')
     }
@@ -187,7 +187,7 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
         // alert); remote-host ones (no local tmux for clear+re-inject) stay on
         // the host-aware bare Enter.
         if (host == null) {
-          checkLocalSession(name, session, true, true)
+          await checkLocalSession(name, session, true, true)
         } else {
           bareEnterRecovery(name, session, host)
         }

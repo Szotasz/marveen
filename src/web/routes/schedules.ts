@@ -211,7 +211,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     const name = decodeURIComponent(scheduleRunMatch[1])
     const dir = join(SCHEDULED_TASKS_DIR, name)
     if (!existsSync(dir)) { json(res, { error: 'Schedule not found' }, 404); return true }
-    const result = runScheduledTaskNow(name)
+    const result = await runScheduledTaskNow(name)
     if (!result.ok) { json(res, { error: result.error }, 400); return true }
     logger.info({ name, result: result.result }, 'Scheduled task run-now fired')
     json(res, { ok: true, result: result.result })

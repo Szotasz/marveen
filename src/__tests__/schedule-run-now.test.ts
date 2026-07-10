@@ -14,11 +14,11 @@ const APP = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
 
 describe('Run now: runner exports an immediate-fire entry point', () => {
   it('schedule-runner exports runScheduledTaskNow', () => {
-    expect(RUNNER).toMatch(/export function runScheduledTaskNow\(/)
+    expect(RUNNER).toMatch(/export async function runScheduledTaskNow\(/)
   })
 
   it('a manual run delivers regardless of skipIfBusy (always enqueues on starting/busy)', () => {
-    const fn = RUNNER.slice(RUNNER.indexOf('export function runScheduledTaskNow('))
+    const fn = RUNNER.slice(RUNNER.indexOf('export async function runScheduledTaskNow('))
     const body = fn.slice(0, fn.indexOf('\n}\n') + 3)
     // Reuses the real fire path...
     expect(body).toMatch(/attemptFireTask\(/)

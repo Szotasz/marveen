@@ -118,7 +118,7 @@ export function startMessageRouter(): NodeJS.Timeout {
         continue
       }
 
-      if (!isSessionReadyForPrompt(session, host)) {
+      if (!(await isSessionReadyForPrompt(session, host))) {
         // Stale-parked-input janitor: a non-submitted line stuck in the input
         // box (e.g. a weak local model that typed its heartbeat reply into the
         // box instead of ending the turn) keeps isSessionReadyForPrompt false
@@ -128,7 +128,7 @@ export function startMessageRouter(): NodeJS.Timeout {
         // ParkedInput only fires on the idle 'typing' state with text unchanged
         // across a settle, so it never clobbers a session that is actually
         // processing or input a human/agent is mid-typing.
-        if (ageMs > JANITOR_PARKED_MIN_AGE_MS && clearStaleParkedInput(session, host)) {
+        if (ageMs > JANITOR_PARKED_MIN_AGE_MS && (await clearStaleParkedInput(session, host))) {
           routerLoggedMisses.delete(msg.id)
           continue // input cleared; deliver on the next tick
         }
@@ -216,7 +216,7 @@ export function startMessageRouter(): NodeJS.Timeout {
         }
         // Inline preamble so a fresh session (post hard-restart) doesn't miss
         // the context that explains the tag semantics.
-        sendPromptToSession(session, prefix + wrapped, host)
+        await sendPromptToSession(session, prefix + wrapped, host)
         if (!markMessageDelivered(msg.id)) {
           logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
         }

@@ -329,7 +329,7 @@ async function ensureWorkerReady(): Promise<boolean> {
   startWorkerSession()
   const deadline = Date.now() + WORKER_BOOT_TIMEOUT_MS
   while (Date.now() < deadline) {
-    if (isSessionReadyForPrompt(WORKER_SESSION)) return true
+    if (await isSessionReadyForPrompt(WORKER_SESSION)) return true
     await sleepMs(2000)
   }
   return false
@@ -381,7 +381,7 @@ async function runWorkerAttempt(message: string, timeoutMs: number): Promise<Att
   for (const p of [outPath, donePath]) { try { rmSync(p, { force: true }) } catch { /* none */ } }
 
   clearWorkerContext()
-  sendPromptToSession(WORKER_SESSION, buildWorkerPrompt(message, outPath, donePath))
+  await sendPromptToSession(WORKER_SESSION, buildWorkerPrompt(message, outPath, donePath))
 
   const start = Date.now()
   try {

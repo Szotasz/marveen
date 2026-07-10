@@ -1388,7 +1388,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const session = agentSessionName(name)
     const host = readAgentRemoteHost(name)
     try {
-      sendPromptToSession(session, '/login', host)
+      await sendPromptToSession(session, '/login', host)
       // Wait for Claude Code to render the auth URL (typically 3-6s)
       let authUrl: string | null = null
       for (let i = 0; i < 12; i++) {

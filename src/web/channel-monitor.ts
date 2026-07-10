@@ -195,12 +195,12 @@ export function applyStuckRestartBusyGuard(
 //      (e.g. an inter-agent notification) -> clear + re-inject the collapsed
 //      text. A sub-agent's input box never holds a human draft, so this is
 //      safe; the main session stays conservative (Enter / <channel>-only).
-export function recoverStuckInputForSession(
+export async function recoverStuckInputForSession(
   session: string,
   prev: StuckInputState,
   thresholds: StuckInputThresholds,
   allowPlainReinject: boolean,
-): StuckInputState {
+): Promise<StuckInputState> {
   // Ghost-stripped capture: a dim autocomplete hint in an empty box must NOT
   // read as parked input, or the recovery below would re-type + submit it
   // (phantom prompt-injection). See captureParkedInputView / stripGhostSuggestion.
@@ -225,7 +225,7 @@ export function recoverStuckInputForSession(
       hasPlainText: allowPlainReinject && parkedInputText(pane) != null,
     }
     const action = decideStuckInputAction(facts)
-    performStuckInputAction(session, action, pane, block, sig, attempt)
+    await performStuckInputAction(session, action, pane, block, sig, attempt)
   }
   return decision.next
 }
@@ -236,29 +236,29 @@ export function recoverStuckInputForSession(
 // that did NOT clear the parked text is logged and the next tick escalates
 // within the attempts budget (decideStuckInputRecovery caps it). 'hold' and
 // 'clear-preamble' submit nothing, so there is nothing to verify there.
-function performStuckInputAction(
+async function performStuckInputAction(
   session: string,
   action: StuckInputAction,
   paneBefore: string,
   block: ReturnType<typeof parkedChannelInput>,
   prevSig: string | null,
   attempt: number,
-): void {
+): Promise<void> {
   let submitted = false
   try {
     switch (action) {
       case 'reinject-block':
         logger.warn({ session, chatId: block?.chatId, attempt }, 'Stuck channel input -- clear + verbatim re-inject')
-        clearInputBuffer(session)
-        sendPromptToSession(session, block!.block!)
+        await clearInputBuffer(session)
+        await sendPromptToSession(session, block!.block!)
         submitted = true
         break
       case 'reinject-plain': {
         const text = parkedInputText(paneBefore)
         if (text != null) {
           logger.warn({ session, attempt }, 'Stuck input (non-channel) -- clear + re-inject parked text')
-          clearInputBuffer(session)
-          sendPromptToSession(session, text)
+          await clearInputBuffer(session)
+          await sendPromptToSession(session, text)
         } else {
           execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
         }
@@ -267,7 +267,7 @@ function performStuckInputAction(
       }
       case 'clear-preamble':
         logger.warn({ session, attempt }, 'Stuck input -- truncated safety preamble, clearing buffer (no re-inject)')
-        clearInputBuffer(session)
+        await clearInputBuffer(session)
         break
       case 'enter':
         execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
@@ -368,7 +368,7 @@ async function softReconnectMarveen(): Promise<boolean> {
   return (await attemptChannelMcpReconnect(MAIN_AGENT_ID)).ok
 }
 
-function triggerMarveenMemorySave(): void {
+async function triggerMarveenMemorySave(): Promise<void> {
   const prompt = [
     '[SYSTEM: channels recovery] A csatorna plugin nem reagal, kb 60 masodperc',
     `mulva hard restart lesz a ${MAIN_CHANNELS_SESSION} session-on (a beszelgetes elveszik).`,
@@ -378,7 +378,7 @@ function triggerMarveenMemorySave(): void {
     'Ha kesz vagy, irj egy rovid napi naplo bejegyzest is a /api/daily-log-ra. Utana eleg.',
   ].join(' ')
   try {
-    sendPromptToSession(MAIN_CHANNELS_SESSION, prompt)
+    await sendPromptToSession(MAIN_CHANNELS_SESSION, prompt)
     logger.info(`${BOT_NAME} memory-save prompt dispatched before hard restart`)
   } catch (err) {
     logger.warn({ err }, `Failed to dispatch ${BOT_NAME} memory-save prompt`)
@@ -488,7 +488,7 @@ export async function resumeMarveenSession(): Promise<boolean> {
     // dismisses this modal; we mirror it here for the resume path.
     try {
       await delay(2000)
-      dismissResumeSummaryModalIfPresent(MAIN_CHANNELS_SESSION)
+      await dismissResumeSummaryModalIfPresent(MAIN_CHANNELS_SESSION)
     } catch (err) {
       logger.warn({ err }, 'resumeMarveenSession: post-respawn modal dismiss failed (continuing)')
     }
@@ -501,7 +501,7 @@ export async function resumeMarveenSession(): Promise<boolean> {
     // this modal; we do the same here so the resume path matches.
     try {
       await delay(2000)
-      dismissResumeSummaryModalIfPresent(MAIN_CHANNELS_SESSION)
+      await dismissResumeSummaryModalIfPresent(MAIN_CHANNELS_SESSION)
     } catch (err) {
       logger.warn({ err }, 'resumeMarveenSession: post-respawn modal dismiss failed (continuing)')
     }
@@ -1034,7 +1034,7 @@ async function handleMarveenDown(): Promise<void> {
     marveenDownState.stageStartedAt = now
     marveenDownState.lastAlertAt = now
     logger.warn({ provider: providerLabel }, 'Marveen channel plugin still down -- stage 2 (memory save)')
-    triggerMarveenMemorySave()
+    await triggerMarveenMemorySave()
     return
   }
   if (marveenDownState.stage === 'save') {
@@ -1205,7 +1205,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
     // escalate to clear+re-inject only after MAIN_STUCK_ENTER_ATTEMPTS, and
     // only when the captured block looks COMPLETE -- a truncated capture stays
     // on Enter rather than risk a partial re-inject to the wrong chat_id.
-    mainStuckInput = recoverStuckInputForSession(MAIN_CHANNELS_SESSION, mainStuckInput, MAIN_STUCK_THRESHOLDS, false)
+    mainStuckInput = await recoverStuckInputForSession(MAIN_CHANNELS_SESSION, mainStuckInput, MAIN_STUCK_THRESHOLDS, false)
     // Reliable backstop: if the soft recovery is exhausted and the input is
     // STILL parked, the TUI is hard-wedged -- escalate to a respawn-pane (the
     // automated form of the manual `systemctl restart channels`). Rate-limited.
@@ -1217,7 +1217,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
     for (const t of targets) {
       if (t.isMarveen) continue
       const prev = agentStuckInput.get(t.session) ?? { parkedSig: null, firstSeenAt: null, lastRecoverAt: null, attempts: 0 }
-      const next = recoverStuckInputForSession(t.session, prev, MAIN_STUCK_THRESHOLDS, true)
+      const next = await recoverStuckInputForSession(t.session, prev, MAIN_STUCK_THRESHOLDS, true)
       if (next.parkedSig === null) agentStuckInput.delete(t.session)
       else agentStuckInput.set(t.session, next)
     }
