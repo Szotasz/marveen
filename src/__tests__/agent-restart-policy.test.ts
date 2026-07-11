@@ -313,4 +313,32 @@ describe('decideDownAgentAction', () => {
     // No cap -> never escalates to 'alert', however high the failure count.
     expect(decideDownAgentAction({ ...restartable, consecutiveFailures: 999 }, 0)).toBe('restart')
   })
+
+  // The channel-monitor passes maxRestartAttempts=1 when the unlock probe has
+  // confirmed the plugin ABSENT from /mcp (never loaded). Fresh-restarting
+  // cannot reload it, so one attempt then escalate. Pin that exact semantics.
+  describe("absent-plugin cap (maxRestartAttempts=1)", () => {
+    const ABSENT_MAX = 1
+
+    it("allows exactly one restart, then alerts", () => {
+      // First down-spell: no prior watchdog restart yet -> restart once.
+      expect(decideDownAgentAction({ ...restartable, consecutiveFailures: 0 }, ABSENT_MAX)).toBe('restart')
+      // After that restart ticked the counter to 1, the next confirmed-absent
+      // sweep escalates instead of nuking the agent's context again.
+      expect(decideDownAgentAction({ ...restartable, consecutiveFailures: 1 }, ABSENT_MAX)).toBe('alert')
+      // And stays silent thereafter.
+      expect(decideDownAgentAction({ ...restartable, consecutiveFailures: 2 }, ABSENT_MAX)).toBe('skip')
+    })
+
+    it("still honours the startup grace on the first attempt", () => {
+      // A brand-new session that came up absent must not be torn down before it
+      // has had its full startup window (the absent verdict does not override
+      // the young-process guard).
+      expect(decideDownAgentAction({
+        ...restartable,
+        processAgeMs: 20_000, // within startup grace
+        consecutiveFailures: 0,
+      }, ABSENT_MAX)).toBe('skip')
+    })
+  })
 })

@@ -13,6 +13,8 @@ import {
   type GitRunner, type PidfileRunner,
 } from '../../update-preflight.js'
 import { json, readBody } from '../http-helpers.js'
+import { claudeAgentRunnable } from '../../update-agent-capability.js'
+import { runScheduledTaskNow } from '../schedule-runner.js'
 import type { RouteContext } from './types.js'
 
 // Pidfile path owned by update.sh for the lifetime of an update run.
@@ -21,11 +23,90 @@ import type { RouteContext } from './types.js'
 // restart that happens inside a successful update.
 const UPDATE_PIDFILE = join(PROJECT_ROOT, 'store', 'update.pid')
 
+// The seeded on-demand (enabled:false) task the post-rollback diagnosis fires.
+const DIAGNOSE_TASK = 'post-rollback-diagnose'
+// One-diagnosis-per-rollback marker (keyed by the last-result timestamp).
+const DIAGNOSE_MARKER = join(PROJECT_ROOT, 'store', 'update-diagnose.last')
+
+type LastResult = { status?: string; ts?: number; phase?: string; message?: string }
+function readLastResult(): LastResult | null {
+  try { return JSON.parse(readFileSync(join(STORE_DIR, 'update.last-result'), 'utf-8')) as LastResult }
+  catch { return null }
+}
+// A post-rollback diagnosis is meaningful only after a terminal FAILED /
+// ROLLED-BACK outcome (a success or an in-progress run is not diagnosable).
+function isDiagnosable(r: LastResult | null): boolean {
+  return r?.status === 'rolled-back' || r?.status === 'failed'
+}
+
 export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
   const { res, path, method } = ctx
 
   if (path === '/api/updates' && method === 'GET') {
     json(res, getUpdateStatus())
+    return true
+  }
+
+  // Real outcome of the last (or in-flight) update.sh run. update.sh writes
+  // store/update.last-result on EXIT with the true status, so the frontend can
+  // show success/failed/rolled-back instead of a blind reload that hides a
+  // silent failure. Absent file => no run yet (or one still in progress; the
+  // presence of store/update.pid disambiguates).
+  if (path === '/api/updates/status' && method === 'GET') {
+    const result = readLastResult()
+    let running = false
+    try { running = statSync(UPDATE_PIDFILE).isFile() } catch { /* not running */ }
+    // Post-rollback diagnosis offer (PR-D). Offer the opt-in fixer only when the
+    // last update FAILED/ROLLED-BACK *and* this host can actually run a Claude
+    // agent. On an AVX-less host (agent cannot start) we flag needsHuman so the
+    // UI shows a "manual intervention" note instead of a dead-end button.
+    const diagnosable = isDiagnosable(result)
+    const claudeRunnable = claudeAgentRunnable()
+    json(res, {
+      running,
+      result,
+      canDiagnose: diagnosable && claudeRunnable && !running,
+      needsHuman: diagnosable && !claudeRunnable,
+    })
+    return true
+  }
+
+  // Opt-in post-rollback diagnosis (PR-D). The operator explicitly requests it
+  // from the dashboard (credit consent handled in the UI). Fires the seeded,
+  // guardrailed post-rollback-diagnose task at the main agent. Guarded so it is
+  // only reachable in a genuine rollback state and never on a host that cannot
+  // run the agent.
+  if (path === '/api/updates/diagnose' && method === 'POST') {
+    const result = readLastResult()
+    if (!isDiagnosable(result)) {
+      json(res, { error: 'No failed or rolled-back update to diagnose.', reason: 'no-rollback' }, 409)
+      return true
+    }
+    if (!claudeAgentRunnable()) {
+      json(res, {
+        error: 'This host cannot run a Claude agent (CPU lacks AVX), so auto-diagnosis is unavailable. Manual intervention needed.',
+        reason: 'claude-unrunnable',
+      }, 400)
+      return true
+    }
+    // Idempotency: one diagnosis per rollback, keyed by the outcome timestamp,
+    // so a double-click (or a re-poll) does not spawn a second agent.
+    const key = String(result?.ts ?? '')
+    try {
+      if (key && readFileSync(DIAGNOSE_MARKER, 'utf-8').trim() === key) {
+        json(res, { ok: true, already: true })
+        return true
+      }
+    } catch { /* no marker yet */ }
+    const fired = runScheduledTaskNow(DIAGNOSE_TASK, { allowDisabled: true })
+    if (!fired.ok) {
+      logger.warn({ err: fired.error }, 'post-rollback diagnosis could not be fired')
+      json(res, { error: fired.error || 'Could not start the diagnosis agent.', reason: 'fire-failed' }, 500)
+      return true
+    }
+    try { writeFileSync(DIAGNOSE_MARKER, key, { mode: 0o600 }) } catch { /* best-effort */ }
+    logger.info({ result: fired.result }, 'post-rollback diagnosis fired')
+    json(res, { ok: true, result: fired.result })
     return true
   }
 
@@ -129,6 +210,17 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
         ['status', '--porcelain', '--untracked-files=no'],
         { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' },
       ),
+      aheadCount: () => {
+        try {
+          const out = execFileSync(
+            '/usr/bin/git',
+            ['rev-list', '--count', '@{u}..HEAD'],
+            { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' },
+          ).trim()
+          const n = parseInt(out, 10)
+          return Number.isFinite(n) ? n : 0
+        } catch { return 0 }
+      },
     }
     let preflight
     try {
@@ -145,6 +237,7 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
       // dirty-tree + autoStash=true: skip the dashboard-side block and let
       // update.sh handle the stash+pop. The other failure reason (detached
       // HEAD) still hard-blocks since stash cannot rescue it.
+      // dirty-tree can be auto-stashed; local-commits and detached-head cannot.
       const skipForAutoStash = preflight.reason === 'dirty-tree' && autoStash
       if (!skipForAutoStash) {
         releaseLock()
@@ -157,12 +250,19 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
       }
     }
     try {
+      // Verify store/ is writable BEFORE spawning update.sh. If update.log
+      // cannot be opened, the script would die at its own exit-4 with the log
+      // (its only output channel) being the very thing that failed -> a silent
+      // detached death. Surface it here as a synchronous error instead.
       let outFd: number | 'ignore' = 'ignore'
       try {
         mkdirSync(STORE_DIR, { recursive: true })
         outFd = openSync(join(STORE_DIR, 'update.log'), 'a', 0o600)
       } catch (err) {
-        logger.warn({ err }, 'Could not open update.log for update.sh stdio; falling back to ignore')
+        releaseLock()
+        logger.error({ err }, 'store/update.log not writable; refusing to start a blind update')
+        json(res, { error: 'store/ is not writable; cannot run the updater safely.', reason: 'store-unwritable' }, 500)
+        return true
       }
       const child = spawn('/bin/bash', [join(PROJECT_ROOT, 'update.sh')], {
         cwd: PROJECT_ROOT,

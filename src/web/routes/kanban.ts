@@ -3,14 +3,16 @@ import { join } from 'node:path'
 import {
   listKanbanCards, createKanbanCard, updateKanbanCard,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
-  getKanbanComments, addKanbanComment, listKanbanProjects,
+  getKanbanComments, addKanbanComment, getKanbanCardEvents, listKanbanProjects,
   getKanbanCard, getChildCards, getDb,
   createAgentMessage, markKanbanCardDispatched,
+  getKanbanSeqByIdPrefix,
   listLabels, getLabel, createLabel, updateLabel, deleteLabel,
   addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
   listArchivedKanbanCards,
   revertIdeaFromKanban,
 } from '../../db.js'
+import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
@@ -208,8 +210,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanMoveMatch && method === 'POST') {
     const id = decodeURIComponent(kanbanMoveMatch[1])
     const body = await readBody(req)
-    const { status, sort_order } = JSON.parse(body.toString())
-    if (moveKanbanCard(id, status, sort_order ?? 0)) {
+    const { status, sort_order, actor } = JSON.parse(body.toString())
+    if (moveKanbanCard(id, status, sort_order ?? 0, actor)) {
       // Wake the assigned agent once when the card enters in_progress.
       if (status === 'in_progress') fireKanbanDispatch(id)
       json(res, { ok: true })
@@ -262,7 +264,18 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { author, content } = JSON.parse(body.toString())
     if (!author || !content) { json(res, { error: 'Szerző és tartalom kötelező' }, 400); return true }
-    json(res, addKanbanComment(cardId, author, content))
+    // Code-side kanban-ref enforcement: rewrite `#<hex8>` references that map
+    // to a real card into the human-facing `#<seq>` form before persistence
+    // (#75 Cuzcoo dispatch). Random hex / non-matching tokens pass through.
+    const normalizedContent = normalizeKanbanRefs(content, getKanbanSeqByIdPrefix)
+    json(res, addKanbanComment(cardId, author, normalizedContent))
+    return true
+  }
+
+  const kanbanEventsMatch = path.match(/^\/api\/kanban\/([^/]+)\/events$/)
+  if (kanbanEventsMatch && method === 'GET') {
+    const cardId = decodeURIComponent(kanbanEventsMatch[1])
+    json(res, getKanbanCardEvents(cardId))
     return true
   }
 

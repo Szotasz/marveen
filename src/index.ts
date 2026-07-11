@@ -15,6 +15,7 @@ import { runDecaySweep, runDailyDigest } from './memory.js'
 import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
 import { ensureHeartbeatAgent, shouldBootHeartbeatAgent, HEARTBEAT_AGENT_NAME } from './web/heartbeat-agent-scaffold.js'
 import { startAgentProcess } from './web/agent-process.js'
+import { renameSharedCredentialsIfSafe } from './web/claude-credentials-guard.js'
 import { startWebServer } from './web.js'
 import { logger } from './logger.js'
 import { startInviteMonitor, stopInviteMonitor } from './web/channel-invites.js'
@@ -450,6 +451,11 @@ async function main(): Promise<void> {
   if (shouldBootHeartbeatAgent({ respawnEnabled: RESPAWN_ENABLED, agentEnabled: HEARTBEAT_AGENT_ENABLED })) {
     ensureHeartbeatAgent()
     logger.info({ agent: HEARTBEAT_AGENT_NAME }, 'Heartbeat agent scaffold ensured (channel-less, dashboard-hidden)')
+    // Linux credentials-guard, once at boot before any agent starts (opt-in,
+    // default OFF, no-op on macOS). Retires the rotating credentials.json so
+    // even the systemd-managed main channels agent comes up on the stable
+    // setup-token; startAgentProcess re-runs it per launch for self-healing.
+    renameSharedCredentialsIfSafe()
     const heartbeatStart = startAgentProcess(HEARTBEAT_AGENT_NAME)
     if (heartbeatStart.ok) {
       logger.info({ agent: HEARTBEAT_AGENT_NAME }, 'Heartbeat agent started')

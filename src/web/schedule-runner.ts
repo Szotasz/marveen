@@ -1,4 +1,6 @@
 import { join, isAbsolute } from 'node:path'
+import { homedir } from 'node:os'
+import { checkTaskMcpRequirements } from './schedule-mcp-precheck.js'
 import { existsSync, readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -7,6 +9,7 @@ import {
   PROJECT_ROOT,
   MAIN_AGENT_ID,
   ALLOWED_CHAT_ID,
+  BOT_NAME,
 } from '../config.js'
 import {
   appendTaskRun,
@@ -38,10 +41,42 @@ import {
   sessionExistsOnHost,
   capturePane,
   sendEnterToSession,
+  clearStaleParkedInput,
 } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { sendTelegramMessage } from './telegram.js'
 import { runCommandTask } from './command-task.js'
+
+// How many bare-Enter attempts the post-send resubmit tries before escalating
+// to a clear + re-inject, and the hard cap after which it gives up.
+const RESUBMIT_BARE_ENTER_ATTEMPTS = 2
+const RESUBMIT_MAX_ATTEMPTS = 6
+
+export type ResubmitAction = 'none' | 'enter' | 'reinject' | 'giveup'
+
+// Decide what the post-send resubmit loop should do on a given attempt. Pure
+// so the escalation ladder is unit-tested without tmux I/O.
+//
+// A scheduled prompt's closing Enter is occasionally swallowed by the Claude
+// TUI in raw mode, leaving the prompt parked in the input box. A parked box
+// reads 'typing' (not idle), so isSessionReadyForPrompt() stays false and
+// EVERY subsequent scheduled task is deferred -- the session pins itself busy
+// for hours on a single stranded prompt (observed 2026-07-01: 3223 deferrals
+// and 0/96 heartbeats fired in 24h, while the b7bda8f region-scope fix only
+// covered the spinner/busy path, not this typing/parked-input path). Bare
+// Enter alone loses to a persistently swallowed Enter, so after
+// RESUBMIT_BARE_ENTER_ATTEMPTS Enters we escalate to a real clear + re-inject
+// of the prompt. Re-injecting is safe here: the scheduled prompt is locally
+// authored (SKILL.md / bearer-gated editor), not the ghost-suggestion text
+// that gates the MAIN plain-text re-inject path in stuck-input-watcher.
+export function decideScheduledResubmitAction(
+  attempt: number,
+  stuck: boolean,
+): ResubmitAction {
+  if (!stuck) return 'none'
+  if (attempt >= RESUBMIT_MAX_ATTEMPTS) return 'giveup'
+  return attempt < RESUBMIT_BARE_ENTER_ATTEMPTS ? 'enter' : 'reinject'
+}
 
 // --- Schedule Runner ---
 // Checks every minute if any scheduled task is due and injects the prompt
@@ -128,7 +163,25 @@ export function runPreCheck(task: ScheduledTask): { skip: boolean; prefix?: stri
 // Try to fire a task at a single target agent. Returns the outcome so the
 // caller can decide whether to queue a retry. Splitting this out means the
 // pendingTaskRetries loop and the normal cron loop share one code path.
-function attemptFireTask(task: ScheduledTask, agentName: string, now: number, preCheckPrefix?: string): 'fired' | 'busy' | 'missing' | 'starting' | 'error' {
+// Missing MCP server names from the last failed pre-check, keyed by
+// task@agent, so the retry-row reason and the alert can name the servers.
+const lastMcpMissing = new Map<string, string[]>()
+
+function mcpMissingReason(taskName: string, agentName: string): string {
+  const missing = lastMcpMissing.get(`${taskName}@${agentName}`) ?? []
+  return missing.length ? `mcp-missing:${missing.join(',')}` : 'mcp-missing'
+}
+
+// Two pre-check gates coexist here:
+//   1. the operator preCheck SCRIPT (business gate) runs in the callers via
+//      runPreCheck() -- it can SKIP the whole tick (no LLM) or inject context
+//      via preCheckPrefix;
+//   2. the MCP manifest check (infra gate, requires.mcp_servers) runs below,
+//      after the busy check, and defers delivery ('mcp-missing') when a
+//      required server is dead.
+// Both are fail-open: a broken script or an unreadable MCP state never
+// blocks the task.
+function attemptFireTask(task: ScheduledTask, agentName: string, now: number, preCheckPrefix?: string): 'fired' | 'busy' | 'missing' | 'starting' | 'error' | 'mcp-missing' {
   const isMainAgent = agentName === MAIN_AGENT_ID
   // Allow per-task session override via targetSession config field.
   // Falls back to the standard agent session name derivation.
@@ -169,6 +222,12 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number, pr
   // will process it at the next idle slot. This prevents the infinite
   // retry loop observed when the target session stays busy for hours
   // (275 retries overnight in production).
+  //
+  // KNOWN FOLLOW-UP: forceSend also bypasses the context-saturation refusal
+  // now folded into isSessionReadyForPrompt(). A forceSend task can therefore
+  // still land on a 100%-context session. Left open deliberately -- forceSend's
+  // contract is "always eventually land, never silently drop", and a saturated
+  // session needs a separate delivery policy, tracked as future work.
   if (!task.forceSend && !isSessionReadyForPrompt(session, host)) {
     logger.warn({ task: task.name, agent: agentName, session }, 'Schedule target session busy or has pending input, will retry')
     return 'busy'
@@ -176,6 +235,26 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number, pr
 
   if (task.forceSend) {
     logger.info({ task: task.name, agent: agentName, session }, 'forceSend=true, bypassing busy-state check')
+  }
+
+  // MCP manifest pre-check (requires.mcp_servers, Roitman 22.5): a required
+  // server with no live process under the target session defers the task with
+  // a reasoned alert instead of letting the prompt fail at runtime INSIDE the
+  // session (2026-07-08: morning briefing ran against a silently dead gmail
+  // MCP). Runs after the busy check so a busy session stays a plain 'busy'.
+  // forceSend keeps its "always eventually land" contract: it logs the gap
+  // loudly but still delivers.
+  if (task.type !== 'command' && task.requires?.mcp_servers?.length) {
+    const check = checkTaskMcpRequirements(task.requires.mcp_servers, agentName, session, host)
+    if (!check.ok) {
+      if (task.forceSend) {
+        logger.warn({ task: task.name, agent: agentName, session, missing: check.missing }, 'MCP pre-check failed but forceSend=true -- delivering anyway')
+      } else {
+        lastMcpMissing.set(`${task.name}@${agentName}`, check.missing)
+        logger.warn({ task: task.name, agent: agentName, session, missing: check.missing }, 'Required MCP server(s) not running in target session -- deferring task')
+        return 'mcp-missing'
+      }
+    }
   }
 
   try {
@@ -201,7 +280,14 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number, pr
       // heartbeat prompts.
       prefix = `[Heartbeat: ${task.name}] `
     } else {
-      prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el Telegramon (chat_id: ${ALLOWED_CHAT_ID}, reply tool). `
+      // Target the RUNNING agent's own bound channel (chat_id: 0), NOT the
+      // global ALLOWED_CHAT_ID. The latter is the main/admin chat; injecting it
+      // here pointed every sub-agent's task result at the boss's chat instead of
+      // its own owner (e.g. attilamarveenja -> Papp Attila). chat_id: 0 is the
+      // established "bound channel" convention (template-identity-hygiene), so it
+      // resolves per-agent and stays correct for the main agent too. The
+      // system-level pending-retry alert below still uses ALLOWED_CHAT_ID.
+      prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el Telegramon (chat_id: 0, reply tool). `
     }
     // A scheduled task body is the agent's OWN task, authored by the operator
     // (SKILL.md on disk, or the bearer-gated /api/schedules editor -- both
@@ -245,12 +331,28 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number, pr
         // hit the laptop session, not a (nonexistent) local one.
         const pane = capturePane(session, host)
         const stuck = pane != null && /❯\s+\S/.test(pane) && pane.includes(marker)
-        if (!stuck) return
-        if (attempt >= 5) {
-          logger.warn({ task: task.name, session }, 'Scheduled prompt still stuck after 5 Enter retries -- giving up')
+        const action = decideScheduledResubmitAction(attempt, stuck)
+        if (action === 'none') return
+        if (action === 'giveup') {
+          logger.warn({ task: task.name, session }, 'Scheduled prompt still stuck after Enter + re-inject retries -- giving up')
           return
         }
-        sendEnterToSession(session, host)
+        if (action === 'reinject') {
+          // The Enter is being swallowed persistently. Clear the parked prompt
+          // and re-type it. clearStaleParkedInput verifies the box is empty
+          // before returning true; if it can't clear (box changed under us, or
+          // its cooldown fired), fall back to one more bare Enter. waitForIdle
+          // is off because the box is 'typing', not idle -- the pre-flight gate
+          // would otherwise burn its whole budget and time out every attempt.
+          if (clearStaleParkedInput(session, host)) {
+            sendPromptToSession(session, fullPrompt, host, { waitForIdle: false })
+            logger.info({ task: task.name, session, attempt }, 'Scheduled prompt re-injected after swallowed Enter')
+          } else {
+            sendEnterToSession(session, host)
+          }
+        } else {
+          sendEnterToSession(session, host)
+        }
         setTimeout(() => resubmit(attempt + 1), 3000)
       } catch (err) {
         logger.warn({ err, task: task.name }, 'Post-send resubmit failed')
@@ -270,10 +372,16 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number, pr
 // for it). Reuses attemptFireTask, so a stopped agent is auto-started and the
 // prompt is queued for delivery exactly like a real cron fire. Returns a
 // per-target summary string for the API/UI.
-export function runScheduledTaskNow(taskName: string): { ok: boolean; result?: string; error?: string } {
+export function runScheduledTaskNow(
+  taskName: string,
+  opts: { allowDisabled?: boolean } = {},
+): { ok: boolean; result?: string; error?: string } {
   const task = listScheduledTasks().find(t => t.name === taskName)
   if (!task) return { ok: false, error: 'Schedule not found' }
-  if (!task.enabled) return { ok: false, error: 'Schedule is disabled' }
+  // allowDisabled: for on-demand-only tasks that are intentionally kept
+  // enabled:false so the cron never fires them, but a guarded endpoint can
+  // still trigger them (e.g. the post-rollback diagnosis, PR-D).
+  if (!task.enabled && !opts.allowDisabled) return { ok: false, error: 'Schedule is disabled' }
 
   const now = Date.now()
   const targets = task.agent === 'all'
@@ -287,8 +395,9 @@ export function runScheduledTaskNow(taskName: string): { ok: boolean; result?: s
     // busy session both get a queued retry that lands once the session is
     // ready. We deliberately do NOT consult skipIfBusy here -- that flag trims
     // redundant cron ticks, but an explicit run-now must not be dropped.
-    if (result === 'starting' || result === 'busy') {
-      insertPendingTaskRetryIfNew(task.name, agentName, now, result)
+    if (result === 'starting' || result === 'busy' || result === 'mcp-missing') {
+      const reason = result === 'mcp-missing' ? mcpMissingReason(task.name, agentName) : result
+      insertPendingTaskRetryIfNew(task.name, agentName, now, reason)
     }
     summary.push(`${agentName}: ${result}`)
   }
@@ -322,7 +431,14 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
   const envPath = join(PROJECT_ROOT, '.env')
   const envContent = readFileOr(envPath, '')
   const tokenMatch = envContent.match(/TELEGRAM_BOT_TOKEN=(.+)/)
-  const token = tokenMatch?.[1]?.trim()
+  let token = tokenMatch?.[1]?.trim()
+  if (!token) {
+    // Since the channels migration the bot token lives in the telegram channel
+    // plugin's env, not marveen/.env (2026-07-08: every scheduler alert was
+    // silently suppressed on such hosts). Same fallback as scripts/notify.sh.
+    const channelEnv = readFileOr(join(homedir(), '.claude', 'channels', 'telegram', '.env'), '')
+    token = channelEnv.match(/TELEGRAM_BOT_TOKEN=(.+)/)?.[1]?.trim()
+  }
   if (!token) {
     logger.warn({ task: view.taskName, agent: view.agentName }, 'Pending-retry alert suppressed: no TELEGRAM_BOT_TOKEN (config error, stamp kept to avoid 60s spin)')
     return
@@ -334,11 +450,22 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
 
   const ageMinutes = Math.floor(view.ageMs / 60000)
   const firstAttempt = new Date(view.firstAttempt).toLocaleString('hu-HU')
-  const text = [
-    `[Marveen scheduler] A(z) "${view.taskName}" (${view.agentName}) utemezett feladat ${ageMinutes} perce varakozik.`,
-    `Elso probalkozas: ${firstAttempt}.`,
-    'A rendszer tovabb probalkozik; a dashboard /Utemezesek oldalan visszavonhato.',
-  ].join('\n')
+  // A retry stuck on a dead required MCP names the server(s): the operator's
+  // fix is restarting an MCP, not freeing up a busy session.
+  const mcpMissing = view.lastReason?.startsWith('mcp-missing')
+    ? view.lastReason.slice('mcp-missing:'.length) || 'ismeretlen'
+    : null
+  const text = (mcpMissing
+    ? [
+        `[${BOT_NAME} scheduler] A(z) "${view.taskName}" (${view.agentName}) feladat NEM tud lefutni: a szukseges MCP szerver(ek) nem futnak a cel-sessionben: ${mcpMissing}.`,
+        `Elso probalkozas: ${firstAttempt} (${ageMinutes} perce).`,
+        'Amint az MCP szerver ujra el, a feladat magatol lefut; a dashboard /Utemezesek oldalan visszavonhato.',
+      ]
+    : [
+        `[${BOT_NAME} scheduler] A(z) "${view.taskName}" (${view.agentName}) utemezett feladat ${ageMinutes} perce varakozik.`,
+        `Elso probalkozas: ${firstAttempt}.`,
+        'A rendszer tovabb probalkozik; a dashboard /Utemezesek oldalan visszavonhato.',
+      ]).join('\n')
   ;(async () => {
     try {
       await sendTelegramMessage(token, ALLOWED_CHAT_ID, text)
@@ -422,7 +549,8 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // false when the row has been cancelled between load and now --
       // in that case, do not re-insert (the operator's cancel wins) and
       // do not alert.
-      const stillPresent = updatePendingTaskRetry(row.task_name, row.agent_name, now, result)
+      const reason = result === 'mcp-missing' ? mcpMissingReason(row.task_name, row.agent_name) : result
+      const stillPresent = updatePendingTaskRetry(row.task_name, row.agent_name, now, reason)
       if (stillPresent && view.alertDue) sendPendingRetryAlert(view, now)
     }
 
@@ -497,6 +625,12 @@ export function startScheduleRunner(): NodeJS.Timeout {
           // row already exists (race with a just-cancelled retry), do
           // nothing so the cancel wins the tiebreak.
           insertPendingTaskRetryIfNew(task.name, agentName, now, 'busy')
+        } else if (result === 'mcp-missing') {
+          // Deliberately NOT honoring skipIfBusy here: dropping a tick because
+          // a required MCP is dead would be exactly the silent starvation this
+          // pre-check exists to eliminate. The retry row keeps the task alive
+          // until the server returns, and the alert names the dead server.
+          insertPendingTaskRetryIfNew(task.name, agentName, now, mcpMissingReason(task.name, agentName))
         }
       }
     }

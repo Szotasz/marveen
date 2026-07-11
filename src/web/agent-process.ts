@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { execSync, execFileSync } from 'node:child_process'
@@ -13,8 +13,12 @@ import {
   detectPaneState,
   parkedInputText,
   stripGhostSuggestion,
+  paneShowsContextSaturation,
+  idleConsideringDimGhost,
 } from '../pane-state.js'
-import { agentDir, readAgentModel, readAgentClaudeConfigDir, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentMemoryIsolation } from './agent-config.js'
+import { provisionMemoryBoundaryDir } from './memory-boundary.js'
+import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
 import {
   buildTmuxInvocation,
   buildSshExec,
@@ -29,13 +33,15 @@ import {
 } from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
-import { CHANNEL_PROVIDER, MAIN_AGENT_ID } from '../config.js'
+import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR } from '../config.js'
 import { loadProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { writeAgentSettingsFromProfile } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { getSecret } from './vault.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
+import { MAIN_CHANNELS_SESSION } from './main-agent.js'
+import { notifyChannel } from '../notify.js'
 
 const TMUX = resolveFromPath('tmux')
 const CLAUDE = resolveFromPath('claude')
@@ -49,6 +55,7 @@ export const CHANNEL_PLUGIN_IDS: Record<string, string> = {
   slack: 'slack-channel@marveen-marketplace',
   discord: 'discord@claude-plugins-official',
   googlechat: 'googlechat@claude-channel-googlechat',
+  teams: 'teams@marveen-marketplace',
 }
 
 // Pure: compute the enabledPlugins map for a sub-agent so that exactly its own
@@ -95,9 +102,305 @@ export function ownChannelProviderForScope(
   return hasOwnToken && resolvedProvider ? resolvedProvider : null
 }
 
+// The fleet's shared long-lived OAuth token (from `claude setup-token`), stored
+// 0600 in store/. Isolated channel sub-agents authenticate via this token in the
+// CLAUDE_CODE_OAUTH_TOKEN env var -- NOT via a copied/symlinked .credentials.json.
+// See ensureIsolatedChannelConfigDir for why.
+export const FLEET_OAUTH_TOKEN_PATH = join(STORE_DIR, '.claude-oauth-token')
+
+// True when the fleet OAuth token file exists and is non-empty. Provisioning an
+// isolated config dir WITHOUT auth would launch the sub-agent logged-out, so
+// isolation is gated on this: no token -> keep the shared ~/.claude (degraded
+// dup-poller risk, but never a broken login).
+export function hasFleetOauthToken(): boolean {
+  try {
+    return existsSync(FLEET_OAUTH_TOKEN_PATH) && readFileSync(FLEET_OAUTH_TOKEN_PATH, 'utf-8').trim().length > 0
+  } catch {
+    return false
+  }
+}
+
+// H1 silent-degradation hardening (2026-06-30, refined 2026-07-10).
+//
+// When the fleet OAuth token is absent, channel sub-agents skip isolation and
+// fall back to the SHARED ~/.claude (the pre-isolation behaviour, gated in
+// startAgentProcess). ONE channel sub-agent on the shared dir is harmless -- it
+// owns the single plugin-install slot and poller. The collision the alert
+// guards against needs TWO OR MORE agents actually contending for the SAME
+// provider's plugin slot at the same time (only one registers its plugin, the
+// rest go deaf -- see ensureIsolatedChannelConfigDir).
+//
+// 2026-07-10 refinement -- the original check over-triggered ("cried wolf"):
+//   - It counted CONFIGURED channel sub-agents. An agent that is not running
+//     cannot contend for anything: 6 configured / 2 running must not read as
+//     a 6-way collision.
+//   - It counted across providers. Plugin installs are keyed per plugin id
+//     (telegram/slack/teams/... are separate slots in installed_plugins.json),
+//     so a running Teams agent never collides with running Telegram agents.
+//   - On macOS the collision does not manifest (verified empirically
+//     2026-07-10 on the origin host: three concurrent telegram pollers --
+//     main + two sub-agents, distinct own tokens, a live `bun server.ts`
+//     each, all on the shared ~/.claude while the installed_plugins.json
+//     telegram slot pointed at a THIRD agent's projectPath). Channel agents
+//     always launch fresh with an explicit --channels plugin:<id> flag, which
+//     loads the plugin regardless of the project-scoped install slot; and
+//     macOS auth lives in the Keychain, so the Linux credentials-refresh
+//     motive for isolation does not apply either. The guard is
+//     process.platform-based -- nothing host-specific is baked into this
+//     distribution artifact. On Linux/other the alert stays: the shared-config
+//     multi-bot eviction remains the documented failure mode there and has
+//     not been empirically cleared. If a real macOS collision is ever
+//     observed again, drop the darwin early-return.
+//
+// The decision stays pure (token, same-provider contender count, platform) so
+// it is unit-tested without I/O, mirroring shouldSendDeferAlert. Token PRESENT
+// -> isolation works -> never alerts, regardless of agent count.
+export function shouldAlertSharedConfigCollision(
+  hasToken: boolean,
+  sameProviderContenderCount: number,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (platform === 'darwin') return false
+  return !hasToken && sameProviderContenderCount > 1
+}
+
+// Pure: the largest number of channel sub-agents contending for a single
+// provider's plugin slot. Only RUNNING agents with a channel of their own
+// count; agents on different providers occupy different slots and never
+// collide with each other.
+export function maxSameProviderContenders(
+  agents: Array<{ provider: string; running: boolean; hasChannel: boolean }>,
+): number {
+  const counts = new Map<string, number>()
+  for (const a of agents) {
+    if (!a.running || !a.hasChannel) continue
+    counts.set(a.provider, (counts.get(a.provider) ?? 0) + 1)
+  }
+  return counts.size ? Math.max(...counts.values()) : 0
+}
+
+// Same-provider contender count for the fleet (main agent excluded -- it comes
+// up via channels.sh and keeps the shared root by design). Uses the same
+// own-token signal as the launch path. `startingName` is the agent being
+// spawned right now: its tmux session does not exist yet at alert time, so it
+// is treated as running -- otherwise the very launch that completes a real
+// collision would never see itself in the count.
+export function countSameProviderChannelContenders(startingName: string): number {
+  return maxSameProviderContenders(
+    listAgentNames()
+      .filter((n) => n !== MAIN_AGENT_ID)
+      .map((n) => ({
+        provider: resolveAgentProvider(n),
+        running: n === startingName || agentRunState(n) === 'running',
+        hasChannel: agentHasChannel(n),
+      })),
+  )
+}
+
+// One operator alert per degradation episode: spamming on every spawn would
+// bury the signal. Cleared the moment the token reappears (isolation restored),
+// so a later token-loss re-alerts. Process-local, like defer-alert's dedup set.
+let sharedConfigCollisionAlerted = false
+
+export function resetSharedConfigCollisionAlert(): void {
+  sharedConfigCollisionAlerted = false
+}
+
+// Loud, owner-facing alert routed via notifyChannel (direct Bot API POST from
+// the dashboard process) -- NOT an inter-agent relay, which would itself need a
+// healthy channel agent to deliver. No-op unless the token is absent AND >1
+// RUNNING same-provider channel sub-agent would share ~/.claude (and never on
+// macOS -- see shouldAlertSharedConfigCollision).
+function maybeAlertSharedConfigCollision(name: string): void {
+  const count = countSameProviderChannelContenders(name)
+  if (!shouldAlertSharedConfigCollision(false, count) || sharedConfigCollisionAlerted) return
+  sharedConfigCollisionAlerted = true
+  logger.error(
+    { name, sameProviderContenders: count },
+    'isolated-config: fleet OAuth token missing with multiple RUNNING same-provider channel sub-agents -- shared ~/.claude plugin-slot collision, bots may go deaf',
+  )
+  void notifyChannel(
+    `⚠️ Flotta-figyelmeztetes: hianyzik a fleet OAuth token (store/.claude-oauth-token), es ${count} AZONOS csatorna-providerü sub-agent fut egyszerre. Izolacio nelkul mind a kozos ~/.claude-ot hasznalja, igy a plugin-slot utkozhet es bot nemulhat el. Javitas: futtasd a \`claude setup-token\`-t, mentsd a store/.claude-oauth-token fajlba, majd inditsd ujra az agenseket.`,
+  ).catch(() => { /* notifyChannel logs internally */ })
+}
+
+// Per-agent isolated CLAUDE_CONFIG_DIR provisioning (2026-06-26 fleet outage).
+//
+// Claude Code records a plugin's PROJECT-scoped install in a single shared file
+// -- ~/.claude/plugins/installed_plugins.json -- keyed by ONE projectPath per
+// plugin id. Every sub-agent ran out of the SAME ~/.claude, so each agent launch
+// (claude --channels plugin:telegram@...) rewrote that single slot to its OWN
+// project, evicting whichever agent registered before it. Net effect: only ONE
+// agent's channel plugin could be registered (one bun getUpdates poller / one
+// bot.pid) fleet-wide; every other agent saw "No MCP servers configured", spawned
+// no poller, and went deaf. Sequentialising restarts did NOT help (the slot is
+// shared state, not a startup race); the only structural fix is to stop the
+// agents sharing one plugin-install file.
+//
+// This gives each channel sub-agent its own CLAUDE_CONFIG_DIR: symlink every
+// top-level ~/.claude entry so project transcripts and plugin marketplaces stay
+// shared, EXCEPT settings.json and plugins/ which become per-agent (so each
+// agent's project-scoped install lives in its own installed_plugins.json and can
+// never evict another's).
+//
+// AUTH (2026-06-28, addressing Szotasz's #459 review): we DELIBERATELY do NOT
+// symlink or copy .credentials.json. On Linux/Windows Claude Code refreshes the
+// OAuth token atomically (temp file + rename), which would replace a symlink with
+// a standalone file -- the isolated agent's token then diverges from the shared
+// one, and because OAuth refresh tokens are single-use, concurrent refreshes from
+// multiple isolated dirs race and break the shared login (confirmed: claude-code
+// issues #27933, #24317, #43392). Instead the launcher passes a long-lived
+// CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`, ~1y, no refresh) via env.
+// With that env var present Claude Code authenticates from it and writes NO
+// .credentials.json into the config dir -- so there is nothing to diverge and no
+// refresh race. .credentials.json is therefore in the skip set below.
+//
+// Idempotent and best-effort: returns the dir on success, or null so the caller
+// falls back to the shared ~/.claude (degraded, but never a launch failure).
+const ISOLATED_CONFIG_SKIP = new Set(['settings.json', 'plugins', '.credentials.json'])
+
+export function ensureIsolatedChannelConfigDir(
+  name: string,
+  providerType: ChannelProviderType,
+): string | null {
+  try {
+    const cwd = agentDir(name)
+    const cfg = join(cwd, '.claude-config')
+    const realClaude = join(homedir(), '.claude')
+    if (!existsSync(realClaude)) return null
+    mkdirSync(cfg, { recursive: true })
+
+    // 1. Symlink every top-level ~/.claude entry except the ones we own or that
+    //    must stay out of the isolated dir (.credentials.json -- see header). A
+    //    stale non-symlink (e.g. a prior copy, or a .credentials.json left by an
+    //    earlier build) is removed so it can never shadow the env-var auth.
+    for (const entry of readdirSync(realClaude)) {
+      if (ISOLATED_CONFIG_SKIP.has(entry)) {
+        // Defensively drop a real .credentials.json that an older build may have
+        // symlinked/copied here, so the env-var token is the only auth source.
+        const stale = join(cfg, entry)
+        if (entry === '.credentials.json') {
+          try { rmSync(stale, { force: true }) } catch { /* absent */ }
+        }
+        continue
+      }
+      const link = join(cfg, entry)
+      let needsLink = true
+      try {
+        if (lstatSync(link).isSymbolicLink()) needsLink = false
+        else rmSync(link, { recursive: true, force: true })
+      } catch { /* absent -> create */ }
+      if (needsLink) {
+        try { symlinkSync(join(realClaude, entry), link) }
+        catch (err) { logger.warn({ err, entry, name }, 'isolated-config: symlink failed') }
+      }
+    }
+
+    // 2. Own settings.json: copy the shared one (keeps hooks etc.) but force
+    //    enabledPlugins to this agent's own provider only (all other channel
+    //    plugins false), matching the spawn-time scope decision.
+    const sharedSettings = join(realClaude, 'settings.json')
+    let settings: Record<string, unknown> = {}
+    if (existsSync(sharedSettings)) {
+      try { settings = JSON.parse(readFileSync(sharedSettings, 'utf-8')) as Record<string, unknown> }
+      catch { settings = {} }
+    }
+    const scopedPlugins = scopeChannelPlugins(
+      providerType,
+      settings.enabledPlugins as Record<string, boolean> | undefined,
+    )
+    settings.enabledPlugins = scopedPlugins
+    writeFileSync(join(cfg, 'settings.json'), JSON.stringify(settings, null, 2) + '\n')
+
+    // 3. Own plugins/ dir: symlink the heavy shared parts, own the install state.
+    const pluginsDir = join(cfg, 'plugins')
+    mkdirSync(pluginsDir, { recursive: true })
+    const sharedPlugins = join(realClaude, 'plugins')
+    for (const sub of ['cache', 'marketplaces', 'data']) {
+      const link = join(pluginsDir, sub)
+      const target = join(sharedPlugins, sub)
+      if (!existsSync(target)) continue
+      let needsLink = true
+      try {
+        if (lstatSync(link).isSymbolicLink()) needsLink = false
+        else rmSync(link, { recursive: true, force: true })
+      } catch { /* absent -> create */ }
+      if (needsLink) {
+        try { symlinkSync(target, link) }
+        catch (err) { logger.warn({ err, sub, name }, 'isolated-config: plugin symlink failed') }
+      }
+    }
+    const sharedKnown = join(sharedPlugins, 'known_marketplaces.json')
+    if (existsSync(sharedKnown)) {
+      writeFileSync(join(pluginsDir, 'known_marketplaces.json'), readFileSync(sharedKnown, 'utf-8'))
+    }
+    // Seed installed_plugins.json with every project-scoped install re-pointed at
+    // THIS agent's cwd, so the channel plugin is registered for this project from
+    // first launch (Claude Code keeps maintaining it thereafter).
+    const sharedInstalled = join(sharedPlugins, 'installed_plugins.json')
+    if (existsSync(sharedInstalled)) {
+      try {
+        const inst = JSON.parse(readFileSync(sharedInstalled, 'utf-8')) as {
+          plugins?: Record<string, Array<{ scope?: string; projectPath?: string }>>
+        }
+        for (const entries of Object.values(inst.plugins ?? {})) {
+          for (const e of entries) {
+            if (e.scope === 'project') e.projectPath = cwd
+          }
+        }
+        writeFileSync(join(pluginsDir, 'installed_plugins.json'), JSON.stringify(inst, null, 2) + '\n')
+      } catch (err) {
+        logger.warn({ err, name }, 'isolated-config: failed to seed installed_plugins.json')
+      }
+    }
+
+    // 4. Seed onboarding/consent state so the FIRST interactive launch of this
+    //    fresh CLAUDE_CONFIG_DIR does not drop into Claude Code's first-run
+    //    dialogs. A brand-new config dir triggers a CHAIN of interactive prompts
+    //    -- "Select login method" (gated on hasCompletedOnboarding) and the
+    //    per-project "allow external imports" trust dialog (gated on
+    //    projects[cwd].hasTrustDialogAccepted) -- each of which blocks the
+    //    channels TUI before it ever authenticates from CLAUDE_CODE_OAUTH_TOKEN
+    //    (the env token works headlessly but the interactive pickers bypass it).
+    //    Rather than enumerate every flag (the set grows across Claude Code
+    //    versions; confirmed on 2.1.195, 2026-06-29 fleet rollout), seed the
+    //    isolated .claude.json from a COPY of the already-consented shared
+    //    ~/.claude.json on first provision, so every consent flag is inherited.
+    //    Only seed when absent -- once Claude Code owns the file we leave its
+    //    evolved state alone, just guaranteeing hasCompletedOnboarding stays set.
+    try {
+      const dotClaude = join(cfg, '.claude.json')
+      const sharedDot = join(homedir(), '.claude.json')
+      if (!existsSync(dotClaude)) {
+        let seed: Record<string, unknown> = { hasCompletedOnboarding: true }
+        if (existsSync(sharedDot)) {
+          try { seed = JSON.parse(readFileSync(sharedDot, 'utf-8')) as Record<string, unknown> } catch { /* keep minimal */ }
+        }
+        seed.hasCompletedOnboarding = true
+        writeFileSync(dotClaude, JSON.stringify(seed, null, 2) + '\n')
+      } else {
+        try {
+          const cur = JSON.parse(readFileSync(dotClaude, 'utf-8')) as Record<string, unknown>
+          if (cur.hasCompletedOnboarding !== true) {
+            cur.hasCompletedOnboarding = true
+            writeFileSync(dotClaude, JSON.stringify(cur, null, 2) + '\n')
+          }
+        } catch { /* unparseable -> leave for Claude Code to recreate */ }
+      }
+    } catch (err) {
+      logger.warn({ err, name }, 'isolated-config: failed to seed onboarding state')
+    }
+
+    return cfg
+  } catch (err) {
+    logger.warn({ err, name }, 'isolated-config: provisioning failed, falling back to shared ~/.claude')
+    return null
+  }
+}
+
 function resolveAgentProvider(name: string): ChannelProviderType {
   const perAgent = readAgentChannelProvider(name)
-  if (perAgent === 'slack' || perAgent === 'telegram' || perAgent === 'discord' || perAgent === 'googlechat') return perAgent
+  if (perAgent === 'slack' || perAgent === 'telegram' || perAgent === 'discord' || perAgent === 'googlechat' || perAgent === 'teams') return perAgent
   return CHANNEL_PROVIDER
 }
 
@@ -116,13 +419,20 @@ function runTmux(host: string | null, tmuxArgs: string[], opts: { timeout?: numb
   // marveen restart would lose connection multiplexing and re-handshake each tick.
   if (host) ensureControlDir()
   const inv = buildTmuxInvocation(host, TMUX, tmuxArgs)
-  execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000) })
+  // stdio: capture the child's stderr into the thrown error instead of letting
+  // execFileSync's default inherit it to the parent stderr. A restarting agent
+  // makes tmux emit `can't find session: agent-X` / `no server running`; without
+  // this those leaked as ~450 bare (non-pino) lines into store/dashboard.log.
+  // Callers that care read err.stderr via logger.warn({ err }).
+  execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), stdio: ['ignore', 'ignore', 'pipe'] })
 }
 
 function captureTmux(host: string | null, tmuxArgs: string[], opts: { timeout?: number } = {}): string {
   if (host) ensureControlDir()
   const inv = buildTmuxInvocation(host, TMUX, tmuxArgs)
-  return execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8' })
+  // stdout piped (we return it); stderr piped too so tmux's `can't find session`
+  // noise lands in err.stderr on failure rather than the parent stderr / dashboard.log.
+  return execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
 }
 
 // Tri-state run state. For a remote agent a failed list-sessions query is
@@ -257,6 +567,19 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     return startRemoteAgentProcess(name, remote.host, remote.workdir, opts)
   }
 
+  // Opt-in per-agent auto-memory isolation (local agents only; a remote
+  // workdir cannot be provisioned from here). Default OFF: without the
+  // memoryIsolation flag this is a no-op and the shared-memory behavior of
+  // existing installs is byte-identical.
+  if (readAgentMemoryIsolation(name)) provisionMemoryBoundaryDir(dir)
+
+  // Linux shared-credentials race guard (opt-in, default OFF; no-op on macOS
+  // and without the flag). Runs before launch so a valid setup-token retires
+  // the rotating ~/.claude/.credentials.json; idempotent, so calling it per
+  // start also self-heals if Claude Code recreates the file on a refresh.
+  renameSharedCredentialsIfSafe(CLAUDE)
+
+
   if (isAgentRunning(name)) return { ok: false, error: 'Agent is already running' }
 
   const agentProvider = resolveAgentProvider(name)
@@ -269,6 +592,26 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     const legacyToken = parseTelegramToken(name)
     hasChannel = !!legacyToken
     // Channel-less agents (inter-agent only, no direct Telegram/Slack) are allowed to start
+  }
+
+  // Teams name-sync (companion to make-teams-manifest.sh): keep
+  // TEAMS_BOT_DISPLAY_NAME in the agent's teams .env equal to the agent's
+  // displayName, so the generated Teams manifest names the bot after the agent
+  // (not the generic fallback). Idempotent; writes only on drift, non-fatal.
+  if (agentProvider === 'teams' && hasChannel) {
+    try {
+      const envPath = join(agentChannelDir, '.env')
+      const displayName = readAgentDisplayName(name)
+      const raw = existsSync(envPath) ? readFileSync(envPath, 'utf-8') : ''
+      const current = raw.match(/^TEAMS_BOT_DISPLAY_NAME=(.*)$/m)?.[1]?.trim()
+      if (displayName && current !== displayName) {
+        const line = `TEAMS_BOT_DISPLAY_NAME=${displayName}`
+        const next = current !== undefined
+          ? raw.replace(/^TEAMS_BOT_DISPLAY_NAME=.*$/m, line)
+          : (raw === '' || raw.endsWith('\n') ? raw + line + '\n' : raw + '\n' + line + '\n')
+        writeFileSync(envPath, next)
+      }
+    } catch { /* best-effort name-sync; never block launch */ }
   }
 
   const session = agentSessionName(name)
@@ -386,7 +729,46 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // e.g. for routing this agent to a separate Anthropic login). When the
     // agent-config field is missing or blank, claudeConfigDir is null and we
     // emit no export, preserving the default Claude Code behavior.
-    const claudeConfigDir = readAgentClaudeConfigDir(name)
+    // An explicit per-agent config dir wins. Otherwise, a channel sub-agent gets
+    // an auto-provisioned isolated config dir so its plugin install cannot collide
+    // with the rest of the fleet in the shared ~/.claude (see
+    // ensureIsolatedChannelConfigDir). The main agent comes up via channels.sh and
+    // keeps the shared root. Isolation is GATED on the fleet OAuth token: the
+    // isolated dir carries no .credentials.json, so without CLAUDE_CODE_OAUTH_TOKEN
+    // the sub-agent would launch logged-out -- so when the token is absent we skip
+    // isolation and keep the shared ~/.claude (the pre-isolation, still-stable
+    // behaviour) rather than break auth.
+    let claudeConfigDir = readAgentClaudeConfigDir(name)
+    let oauthTokenEnv = ''
+    // Shared-home agents (no isolated config dir) authenticate from the rotating
+    // ~/.claude/.credentials.json by default. If the operator has a long-lived
+    // fleet setup-token, export it so EVERY locally launched agent uses the
+    // stable token instead -- this is what makes the Linux credentials-guard
+    // rename safe (a shared sub-agent with no env token would otherwise be
+    // locked out once credentials.json is moved aside). No-op without a token.
+    if (!claudeConfigDir && hasFleetOauthToken()) {
+      oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
+    }
+    if (!claudeConfigDir && hasChannel && name !== MAIN_AGENT_ID) {
+      if (hasFleetOauthToken()) {
+        // Token present -> isolation works; any earlier degradation is resolved,
+        // so re-arm the one-shot alert for a future token loss.
+        resetSharedConfigCollisionAlert()
+        const isolated = ensureIsolatedChannelConfigDir(name, agentProvider)
+        if (isolated) {
+          claudeConfigDir = isolated
+          // Read the token at launch via $(cat) so the literal secret never
+          // appears in the JS-built command string or in `ps`. The file is 0600
+          // and the value lands only in this process's own environment.
+          oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
+        }
+      } else {
+        logger.warn({ name }, 'isolated-config: no fleet OAuth token (store/.claude-oauth-token); keeping shared ~/.claude. Run `claude setup-token` and store it to enable per-agent isolation.')
+        // H1: the WARN above is silent. With >1 channel sub-agent sharing
+        // ~/.claude this is an active plugin-slot collision -> raise a loud alert.
+        maybeAlertSharedConfigCollision(name)
+      }
+    }
     const claudeConfigEnv = claudeConfigDir ? `export CLAUDE_CONFIG_DIR="${claudeConfigDir}" && ` : ''
     // `--continue` requires an existing session; on a brand-new agent the
     // Claude Code projects directory does not yet exist and `claude` exits
@@ -411,7 +793,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // price of a reachable bot (file/db memory persists either way). Channel-
     // less agents keep --continue to preserve their accumulated context.
     const continueFlag = (hasPriorSession && !opts.fresh && !hasChannel) ? '--continue ' : ''
-    const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : agentProvider === 'discord' ? 'DISCORD_STATE_DIR' : agentProvider === 'googlechat' ? 'GOOGLECHAT_STATE_DIR' : 'TELEGRAM_STATE_DIR'
+    const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : agentProvider === 'discord' ? 'DISCORD_STATE_DIR' : agentProvider === 'googlechat' ? 'GOOGLECHAT_STATE_DIR' : agentProvider === 'teams' ? 'TEAMS_STATE_DIR' : 'TELEGRAM_STATE_DIR'
     const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN'
     // Slack plugin is third-party; its "not on approved allowlist" check is
     // bypassed via `allowedChannelPlugins` in /Library/Application Support/ClaudeCode/managed-settings.json.
@@ -447,7 +829,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     const promptSuggestionEnv = 'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false && '
     // Single-quote `${model}` so values like `claude-opus-4-8[1m]` (1M-context
     // suffix) are not glob-expanded by the shell that tmux spawns the command in.
-    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${ollamaEnv}${deepseekEnv}cd "${dir}" && ${CLAUDE} ${continueFlag}${skipFlag}--model '${model}' ${channelFlag}`.trimEnd()
+    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${ollamaEnv}${deepseekEnv}cd "${dir}" && ${CLAUDE} ${continueFlag}${skipFlag}--model '${model}' ${channelFlag}`.trimEnd()
     runTmux(null, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir }, 'Agent tmux session started')
@@ -960,16 +1342,37 @@ export function captureParkedInputView(session: string, host: string | null = nu
 //      returns true. Cost on the ready path: ~250ms sleep plus a second
 //      tmux capture-pane round-trip (typically tens of ms). Busy pass
 //      through layer 1 and return immediately without the delay.
+//
+// A saturated pane ("100% context used") is refused up front: it can present
+// as perfectly idle, so without this a new prompt would be dispatched into a
+// session that cannot act on it. We only log/audit the refusal here; how (or
+// whether) to recover the session is left to the caller / operator tooling, so
+// this predicate stays a pure, dependency-free readiness check.
 export function isSessionReadyForPrompt(session: string, host: string | null = null): boolean {
+  // Dim-ghost tolerant idle read: CC >=2.1.202 paints a dim placeholder into
+  // the empty input box, which a plain capture reads as parked text. Only when
+  // the plain view says 'typing' do we pay for the second (-e, dim-stripped)
+  // capture to decide whether anything REAL is parked (see
+  // idleConsideringDimGhost / captureParkedInputView).
+  const idleOrGhost = (plain: string): boolean =>
+    idleConsideringDimGhost(plain, detectPaneState(plain) === 'typing' ? captureParkedInputView(session, host) : null)
   const first = capturePane(session, host)
   if (first == null) return false
-  if (!paneLooksIdle(first)) return false
+  if (paneShowsContextSaturation(first)) {
+    logger.warn({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
+    return false
+  }
+  if (!idleOrGhost(first)) return false
 
   try { execFileSync('/bin/sleep', [PANE_READY_CONFIRM_DELAY_S], { timeout: 2000 }) } catch { /* best effort */ }
 
   const second = capturePane(session, host)
   if (second == null) return false
-  return paneLooksIdle(second)
+  if (paneShowsContextSaturation(second)) {
+    logger.warn({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
+    return false
+  }
+  return idleOrGhost(second)
 }
 
 // How long to wait between the two parked-input captures when deciding whether
@@ -980,6 +1383,23 @@ const PARKED_STABLE_CONFIRM_S = '2'
 const PARKED_CLEAR_SETTLE_S = '0.3'
 // Bound the Ctrl-U presses for a (possibly multi-line) stale parked input.
 const PARKED_CLEAR_MAX = 3
+// A parked input that resists clearing must NOT be retried on every router tick:
+// each attempt blocks the event loop for ~PARKED_STABLE_CONFIRM_S on the settle
+// sleep, so a permanently-stuck box would pin the loop, stall the HTTP server
+// (health probes read 000) and drive the watchdog into a dashboard restart loop.
+// Retry the SAME stuck text at most once per this window, per session.
+const UNWEDGE_COOLDOWN_MS = 30_000
+// Escalate to the operator (NOTIFY only -- a Telegram message, never a
+// keystroke) once per stuck episode after this many consecutive confirmed-stuck
+// detections (~one per UNWEDGE_COOLDOWN_MS). The main agent escalates sooner
+// because its box is NEVER auto-cleared (the parked line may be a real reply),
+// so escalation is the only recovery; a sub-agent escalates only after the
+// auto-clear has genuinely failed several times.
+const SUBAGENT_PARKED_ESCALATE_AFTER = 6  // ~3min for a sub-agent whose auto-clear keeps failing
+// Per-session record of the last un-wedge attempt: when, on what text, how many
+// consecutive attempts failed to empty the box, and whether we already notified
+// the operator for this exact stuck text (one-shot; resets when sig/clears).
+const unwedgeAttempts = new Map<string, { last: number; sig: string; fails: number; escalated: boolean }>()
 
 // Un-wedge a session whose input box holds STALE parked text: a non-submitted
 // line (e.g. a weak local model that typed its heartbeat reply into the box
@@ -992,18 +1412,98 @@ const PARKED_CLEAR_MAX = 3
 export function clearStaleParkedInput(session: string, host: string | null = null): boolean {
   const a = capturePane(session, host)
   if (a == null || detectPaneState(a) !== 'typing') return false
-  const parked = parkedInputText(a)
+  // DIM-GUARD (2026-06-30, Szabi insight): extract the parked TEXT from the
+  // dim-stripped (-e) view. Ghost/phantom frames -- stale captures, placeholder
+  // hints, a persona fragment left by a send-keys delivery (the "Koszi a halakat."
+  // false-positive) -- render DIM (SGR-2 faint) and are stripped by
+  // captureParkedInputView, so they read as NO parked text and are never treated
+  // as a wedge (no clear, no escalate). Only a REAL typed line (normal intensity)
+  // survives the strip. Falls back to the plain capture only if the -e capture
+  // fails (rare), preserving prior behaviour in that edge case.
+  const parked = parkedInputText(captureParkedInputView(session, host) ?? a)
   if (!parked) return false
+
+  // Cooldown guard FIRST, before any blocking sleep: if the same parked text was
+  // attempted within the cooldown window, bail in microseconds. This is what
+  // keeps a stubborn box from starving the event loop on every router tick --
+  // the root cause of the dashboard crash-loop (constant ~2s blocking sleeps ->
+  // HTTP 000 -> watchdog restart -> re-wedge on the same persisted input).
+  const key = (host ?? 'local') + ':' + session
+  const nowMs = Date.now()
+  const prev = unwedgeAttempts.get(key)
+  if (prev && prev.sig === parked && nowMs - prev.last < UNWEDGE_COOLDOWN_MS) return false
+
   try { execFileSync('/bin/sleep', [PARKED_STABLE_CONFIRM_S], { timeout: 4000 }) } catch { /* best effort */ }
   const b = capturePane(session, host)
-  // Changed (someone is typing) or already cleared -> leave it alone.
-  if (b == null || detectPaneState(b) !== 'typing' || parkedInputText(b) !== parked) return false
+  // Changed (someone is typing) or already cleared -> leave it alone, and do not
+  // record an attempt (this was never a stuck box). Compare on the SAME dim-
+  // stripped view as the initial extraction so a dim ghost can't flip the result.
+  if (b == null || detectPaneState(b) !== 'typing' || parkedInputText(captureParkedInputView(session, host) ?? b) !== parked) return false
+
+  // The main agent's input box is NEVER auto-cleared (a parked line could be a
+  // real reply -- the 2026-06-30 "Balogh" near-miss). The operator escalation is
+  // MUTED (2026-06-30, Szabi): the main box's "parked" lines are overwhelmingly
+  // DIM ghost/placeholder frames (stale capture, not real input -- e.g. a persona
+  // fragment shown for 28 min while the agent was actively turning), so notifying
+  // on each is false-positive noise. The durable fix is the inbox pull-model (no
+  // send-keys delivery -> no parked fragments) + a dim-text guard in pane
+  // detection (a faint SGR line is a ghost, not a parked command). Until those
+  // land: stay silent. Still RECORD the attempt so the cooldown guard backs us off
+  // and we don't re-run the stable-confirm sleep on every router tick.
+  if (session === MAIN_CHANNELS_SESSION) {
+    const fails = (prev && prev.sig === parked ? prev.fails : 0) + 1
+    unwedgeAttempts.set(key, { last: nowMs, sig: parked, fails, escalated: true })
+    logger.debug({ session, parked: parked.slice(0, 60), fails }, 'message-router: main-agent parked input -- left untouched (escalation muted)')
+    return false
+  }
+
   for (let i = 0; i < PARKED_CLEAR_MAX; i++) {
     runTmux(host, ['send-keys', '-t', session, 'C-u'], { timeout: 5000 })
     try { execFileSync('/bin/sleep', [PARKED_CLEAR_SETTLE_S], { timeout: 2000 }) } catch { /* best effort */ }
     const after = capturePane(session, host)
     if (after == null || detectPaneState(after) !== 'typing') break
   }
+
+  // Escalation: if Ctrl-U alone did not empty a multi-row box, send Home (C-a)
+  // then kill-to-end (C-k) and one more Ctrl-U round before giving up.
+  let post = capturePane(session, host)
+  if (post != null && detectPaneState(post) === 'typing' && parkedInputText(post) === parked) {
+    runTmux(host, ['send-keys', '-t', session, 'C-a'], { timeout: 5000 })
+    runTmux(host, ['send-keys', '-t', session, 'C-k'], { timeout: 5000 })
+    for (let i = 0; i < PARKED_CLEAR_MAX; i++) {
+      runTmux(host, ['send-keys', '-t', session, 'C-u'], { timeout: 5000 })
+      try { execFileSync('/bin/sleep', [PARKED_CLEAR_SETTLE_S], { timeout: 2000 }) } catch { /* best effort */ }
+      post = capturePane(session, host)
+      if (post == null || detectPaneState(post) !== 'typing') break
+    }
+  }
+
+  // Verify the box is ACTUALLY empty before claiming success: only then is the
+  // pending message safe to deliver next tick. Otherwise record the failure so
+  // the cooldown guard above backs us off instead of hammering every tick.
+  const final = capturePane(session, host)
+  const stillStuck = final != null && detectPaneState(final) === 'typing' && parkedInputText(final) === parked
+  if (stillStuck) {
+    const fails = (prev && prev.sig === parked ? prev.fails : 0) + 1
+    let escalated = !!(prev && prev.sig === parked && prev.escalated)
+    // A sub-agent box that resists the Ctrl-U clear this many times is genuinely
+    // wedged (not the usual junk heartbeat line the auto-clear handles) -- surface
+    // it to the operator ONCE so it cannot stall silently like the 1h main-agent
+    // incident did behind a lone WARN.
+    if (!escalated && fails >= SUBAGENT_PARKED_ESCALATE_AFTER) {
+      const preview = parked.slice(0, 80).replace(/[<>&]/g, ' ')
+      notifyChannel(
+        `⚠️ Egy sub-agent (${session}) input-mezojebe beragadt egy parkolt sor, ` +
+        `az auto-tisztitas ${fails}x sikertelen -- lehet kezi beavatkozas kell. Reszlet: "${preview}"`,
+      ).catch(() => { /* notify is best-effort */ })
+      escalated = true
+      logger.warn({ session, parked: parked.slice(0, 60), fails }, 'message-router: sub-agent parked input resisted clearing -- escalated to operator')
+    }
+    unwedgeAttempts.set(key, { last: nowMs, sig: parked, fails, escalated })
+    logger.warn({ session, parked: parked.slice(0, 60), fails }, 'message-router: parked input resisted clearing, backing off')
+    return false
+  }
+  unwedgeAttempts.set(key, { last: nowMs, sig: parked, fails: 0, escalated: false })
   logger.warn({ session, parked: parked.slice(0, 60) }, 'message-router: cleared stale parked input (channel un-wedge)')
   return true
 }

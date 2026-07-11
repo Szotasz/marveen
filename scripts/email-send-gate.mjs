@@ -17,6 +17,7 @@
 
 import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 
 // Bash command patterns that send mail. Read-only inspection of these tools
 // (e.g. cat'ing the send script) may be caught too -- acceptable: a sub-agent
@@ -47,11 +48,41 @@ export function gateDecision(toolName, toolInput) {
   return { deny: false }
 }
 
-const GATE_MSG =
-  'Email-kuldes sub-agentkent tiltott (governance hard-gate). ' +
-  'Kuldd a tervezett emailt (CIMZETT + TARGY + TELJES SZOVEG) Marveennek inter-agent uzenetben ' +
-  'jovahagyasra; a kimeno emailt Marveen kuldi. Csak VERIFIKALT cimre (soha nem nevbol talalt cim). ' +
-  'Soha ne irj ala Szabi/Szabolcs nevevel, es soha ne kerj penzt senki neveben.'
+// Pure builder for the deny message, so the brand/owner substitution is
+// provable without spawning the hook. With the stock defaults (botName
+// 'Marveen', ownerName 'Szabolcs') the wording is byte-identical to before.
+export function buildGateMsg(botName, ownerName) {
+  return (
+    'Email-kuldes sub-agentkent tiltott (governance hard-gate). ' +
+    `Kuldd a tervezett emailt (CIMZETT + TARGY + TELJES SZOVEG) ${botName}nek inter-agent uzenetben ` +
+    `jovahagyasra; a kimeno emailt ${botName} kuldi. Csak VERIFIKALT cimre (soha nem nevbol talalt cim). ` +
+    `Soha ne irj ala ${ownerName} nevevel, es soha ne kerj penzt senki neveben.`
+  )
+}
+
+// Resolve the brand + owner display names for the deny message. The hook runs
+// standalone (no config.ts), so read the install's .env directly, keyed off
+// this file's own location (<root>/scripts/email-send-gate.mjs -> <root>/.env).
+// Any failure falls back to the stock defaults, so the gate never breaks and a
+// bare install keeps the original wording.
+export function readBrandEnv(readFile = (p) => readFileSync(p, 'utf-8')) {
+  const fallback = { botName: 'Marveen', ownerName: 'Szabolcs' }
+  try {
+    const envPath = join(dirname(fileURLToPath(import.meta.url)), '..', '.env')
+    const raw = readFile(envPath)
+    const pick = (key) => {
+      const m = raw.match(new RegExp(`^\\s*${key}\\s*=\\s*(.*)$`, 'm'))
+      if (!m) return ''
+      return m[1].trim().replace(/^["']|["']$/g, '').trim()
+    }
+    return {
+      botName: pick('BOT_NAME') || fallback.botName,
+      ownerName: pick('OWNER_NAME') || fallback.ownerName,
+    }
+  } catch {
+    return fallback
+  }
+}
 
 function allow() { process.exit(0) }
 
@@ -89,6 +120,9 @@ if (isInvokedDirectly()) {
     allow() // malformed/empty input must never break the agent's tool calls
   }
   const { deny: shouldDeny } = gateDecision(payload?.tool_name, payload?.tool_input)
-  if (shouldDeny) deny(GATE_MSG)
+  if (shouldDeny) {
+    const { botName, ownerName } = readBrandEnv()
+    deny(buildGateMsg(botName, ownerName))
+  }
   allow()
 }

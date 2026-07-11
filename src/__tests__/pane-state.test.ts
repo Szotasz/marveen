@@ -15,6 +15,7 @@ import {
   parkedInputText,
   parkedInputRowCount,
   submitLanded,
+  paneShowsContextSaturation,
 } from '../pane-state.js'
 
 // Realistic pane fixtures modelled on actual `tmux capture-pane -p`
@@ -528,6 +529,29 @@ describe('detectPaneState', () => {
     // any agent's tool call. Only active-turn signals (spinner, tokens,
     // esc-to-interrupt, footer-scoped) count.
     expect(detectPaneState(IDLE_AFTER_TOOL_USE)).toBe('idle')
+  })
+
+  it('does NOT classify a stale token-counter scrolled above the box as busy', () => {
+    // 94-retry starvation regression (2026-06-30): a completed turn's final
+    // "Accomplishing… (Ns · ↓ N tokens)" frame lingered well above the idle
+    // input box. The token-counter scan is region-scoped, so a counter that
+    // has scrolled out of the live bottom region must not pin the pane busy.
+    const staleCounter = [
+      '✶ Accomplishing… (3m 8s · ↓ 9.3k tokens)',
+      '⏺ Done: rebuilt and restarted the dashboard.',
+      '⏺ Verified endpoints, logged the fix.',
+      '⏺ Extra trailing scrollback line one.',
+      '⏺ Extra trailing scrollback line two.',
+      '⏺ Extra trailing scrollback line three.',
+      '⏺ Extra trailing scrollback line four.',
+      '⏺ Extra trailing scrollback line five.',
+      '',
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(detectPaneState(staleCounter)).toBe('idle')
   })
 
   it('detects typing when text is parked in the input box', () => {
@@ -1946,5 +1970,53 @@ describe('footer-less welcome-screen parked input', () => {
     const noBox = ['some scrollback line', SEP, 'plain text, no prompt glyph', SEP, ''].join('\n')
     expect(detectPaneState(noBox)).toBe('unknown')
     expect(parkedInputRowCount(noBox)).toBe(0)
+  })
+})
+
+describe('paneShowsContextSaturation', () => {
+  // Real capture shape observed live: an idle, ready-looking footer with the
+  // saturation banner one line above it — the combination that lets a
+  // saturated session keep silently accepting new dispatches.
+  const CTX_SAT_IDLE = [
+    '  some prior assistant output',
+    '',
+    '✻ Cooked for 3m 7s',
+    '                                                              100% context used',
+    SEP,
+    '❯ ',
+    SEP,
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+  ].join('\n')
+
+  it('detects the saturation banner on an otherwise-idle pane', () => {
+    expect(detectPaneState(CTX_SAT_IDLE)).toBe('idle') // sanity: still reads as idle
+    expect(paneShowsContextSaturation(CTX_SAT_IDLE)).toBe(true)
+  })
+
+  it('is false on a normal idle pane', () => {
+    expect(paneShowsContextSaturation(IDLE_BYPASS)).toBe(false)
+    expect(paneShowsContextSaturation(IDLE_STRICT)).toBe(false)
+  })
+
+  it('is false on a normal busy pane (no false alarm mid-turn)', () => {
+    expect(paneShowsContextSaturation(BUSY_FULL_FOOTER)).toBe(false)
+  })
+
+  it('does NOT misfire on a scrollback quote of the same phrase', () => {
+    const quoted = [
+      '  QA report: the watchdog now greps for "100% context used" in the footer.',
+      '  This is a scrollback quote, not the live indicator.',
+      ...Array.from({ length: 10 }, () => '  more scrollback padding'),
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(paneShowsContextSaturation(quoted)).toBe(false)
+  })
+
+  it('is false on empty/null-ish input', () => {
+    expect(paneShowsContextSaturation('')).toBe(false)
+    expect(paneShowsContextSaturation('   \n  ')).toBe(false)
   })
 })

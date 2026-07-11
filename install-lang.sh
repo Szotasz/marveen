@@ -133,8 +133,8 @@ _t() {
     hu:macos.managed_update) echo "  A managed-settings.json frissítése szükséges (sudo)." ;;
     en:macos.managed_updated) echo "  managed-settings.json updated" ;;
     hu:macos.managed_updated) echo "  managed-settings.json frissítve" ;;
-    en:macos.managed_has_slack) echo "  managed-settings.json already contains the Slack plugin" ;;
-    hu:macos.managed_has_slack) echo "  managed-settings.json mar tartalmazza a Slack plugint" ;;
+    en:macos.managed_has_slack) echo "  managed-settings.json already contains the channel plugins" ;;
+    hu:macos.managed_has_slack) echo "  managed-settings.json mar tartalmazza a csatorna-pluginokat" ;;
     en:macos.managed_create) echo "  Managed settings creation required (sudo)." ;;
     hu:macos.managed_create) echo "  Managed settings létrehozása szükséges (sudo)." ;;
     en:macos.managed_created) echo "  managed-settings.json created" ;;

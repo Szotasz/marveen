@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { PROJECT_ROOT, ALLOWED_CHAT_ID } from '../config.js'
 import { logger } from '../logger.js'
 import { agentDir, readFileOr, findAvatarForAgent } from './agent-config.js'
+import { TOOL_TIMEOUTS } from '../tool-timeouts.js'
 
 export function readAgentTelegramConfig(name: string): { hasTelegram: boolean; botUsername?: string } {
   const envPath = join(agentDir(name), '.claude', 'channels', 'telegram', '.env')
@@ -31,6 +32,15 @@ export function readAgentGooglechatConfig(name: string): { hasGooglechat: boolea
   if (!existsSync(envPath)) return { hasGooglechat: false }
   const m = readFileOr(envPath, '').match(/GOOGLECHAT_PROJECT_ID=(.+)/)
   return { hasGooglechat: !!m?.[1]?.trim() }
+}
+
+export function readAgentTeamsConfig(name: string): { hasTeams: boolean } {
+  // Teams has no single bot token; TEAMS_BOT_APP_ID standing in the .env signals
+  // the channel is configured (mirrors readChannelToken's teams branch).
+  const envPath = join(agentDir(name), '.claude', 'channels', 'teams', '.env')
+  if (!existsSync(envPath)) return { hasTeams: false }
+  const m = readFileOr(envPath, '').match(/TEAMS_BOT_APP_ID=(.+)/)
+  return { hasTeams: !!m?.[1]?.trim() }
 }
 
 // Marveen's Telegram channel lives under the global ~/.claude path, not
@@ -65,6 +75,13 @@ export function readMarveenGooglechatConfig(): { hasGooglechat: boolean } {
   return { hasGooglechat: !!m?.[1]?.trim() }
 }
 
+export function readMarveenTeamsConfig(): { hasTeams: boolean } {
+  const envPath = join(homedir(), '.claude', 'channels', 'teams', '.env')
+  if (!existsSync(envPath)) return { hasTeams: false }
+  const m = readFileOr(envPath, '').match(/TEAMS_BOT_APP_ID=(.+)/)
+  return { hasTeams: !!m?.[1]?.trim() }
+}
+
 export function readMarveenSlackConfig(): { hasSlack: boolean } {
   const envPath = join(homedir(), '.claude', 'channels', 'slack', '.env')
   if (!existsSync(envPath)) return { hasSlack: false }
@@ -82,7 +99,7 @@ export async function refreshMarveenBotUsername(): Promise<void> {
   const token = tokenMatch?.[1]?.trim()
   if (!token) return
   try {
-    const r = await fetch(`https://api.telegram.org/bot${token}/getMe`)
+    const r = await fetch(`https://api.telegram.org/bot${token}/getMe`, { signal: AbortSignal.timeout(TOOL_TIMEOUTS['telegram']) })
     const data = await r.json() as { ok?: boolean; result?: { username?: string } }
     if (data.ok && data.result?.username) {
       marveenBotUsernameCache.value = `@${data.result.username}`
@@ -96,6 +113,7 @@ export async function sendTelegramMessage(token: string, chatId: string, text: s
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ chat_id: chatId, text }),
+    signal: AbortSignal.timeout(TOOL_TIMEOUTS['telegram']),
   })
   // fetch does not throw on 4xx -- a wrong chat_id or revoked token resolves
   // silently, which historically made "alert sent" log lines lies. Throw so
@@ -120,6 +138,7 @@ export async function sendTelegramPhoto(token: string, chatId: string, photoPath
     method: 'POST',
     headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
     body: Buffer.concat(parts),
+    signal: AbortSignal.timeout(TOOL_TIMEOUTS['telegram']),
   })
 }
 
@@ -195,7 +214,7 @@ export async function sendAvatarChangeMessage(agentName: string, avatarPath: str
 
 export async function validateTelegramToken(token: string): Promise<{ ok: boolean; botUsername?: string; botId?: number; error?: string }> {
   try {
-    const resp = await fetch(`https://api.telegram.org/bot${token}/getMe`)
+    const resp = await fetch(`https://api.telegram.org/bot${token}/getMe`, { signal: AbortSignal.timeout(TOOL_TIMEOUTS['telegram']) })
     const data = await resp.json() as { ok: boolean; result?: { username: string; id: number } }
     if (data.ok && data.result) {
       return { ok: true, botUsername: data.result.username, botId: data.result.id }

@@ -661,7 +661,9 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
   // === Vault ===
   if (path === '/api/vault' && method === 'GET') {
-    json(res, { secrets: listSecrets() })
+    // ssh-key-* entries are managed exclusively via the SSH key pool
+    // (/api/vault/ssh-keys) and must not appear as generic secret cards too.
+    json(res, { secrets: listSecrets().filter(s => !s.id.startsWith('ssh-key-')) })
     return true
   }
 
@@ -676,7 +678,12 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   }
 
   const vaultMatch = path.match(/^\/api\/vault\/([^/]+)$/)
-  const isVaultSubroute = vaultMatch && ['bindings', 'sync', 'scan', 'import'].includes(vaultMatch[1])
+  // 'ssh-servers' is the dedicated SSH-server sub-resource (routes/vault-ssh.ts),
+  // handled later in the web.ts chain -- without this exclusion, a bare GET
+  // /api/vault/ssh-servers matches THIS generic secret-store route first
+  // (id="ssh-servers"), finds no such secret, and returns 404 before
+  // tryHandleVaultSsh ever runs (2026-07-01, frontend/backend Vault epic).
+  const isVaultSubroute = vaultMatch && ['bindings', 'sync', 'scan', 'import', 'ssh-servers', 'ssh-keys'].includes(vaultMatch[1])
   if (vaultMatch && !isVaultSubroute && method === 'GET') {
     const id = decodeURIComponent(vaultMatch[1])
     const val = getSecret(id)

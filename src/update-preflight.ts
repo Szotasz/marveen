@@ -30,6 +30,12 @@
 export interface GitRunner {
   // Current branch name. "HEAD" (or empty) signals a detached checkout.
   currentBranch(): string
+  // Number of local commits ahead of the upstream tracking ref
+  // (git rev-list --count @{u}..HEAD). >0 means the local history has
+  // diverged, so `git pull --ff-only` will refuse -- the dominant silent
+  // failure. Returns 0 when there is no upstream or the probe fails (the
+  // safe default: do not block on an uncertain count).
+  aheadCount(): number
   // Porcelain status excluding untracked files. Non-empty = dirty tree.
   // Untracked files are excluded because the repo legitimately carries
   // ad-hoc backup files (CLAUDE.md.backup-*, SOUL.md mid-edit, etc.)
@@ -41,6 +47,7 @@ export type PreflightResult =
   | { ok: true }
   | { ok: false; reason: 'dirty-tree'; message: string }
   | { ok: false; reason: 'detached-head'; message: string }
+  | { ok: false; reason: 'local-commits'; message: string; ahead: number }
 
 // Concurrency gate: refuse a second /api/updates/apply while the first
 // update.sh is still running. An in-memory timestamp would reset on the
@@ -155,6 +162,26 @@ export function checkUpdatePreflight(git: GitRunner): PreflightResult {
       message:
         'Working tree has uncommitted changes (staged or unstaged). ' +
         'Commit or stash them before updating: git stash',
+    }
+  }
+
+  // Local commits ahead of upstream = a diverged history. `git pull --ff-only`
+  // refuses this, and because update.sh runs detached the abort is invisible
+  // (the update looks "started" then reloads to the same commit list). Catch it
+  // here with an actionable message instead of that silent death. A running
+  // agent committing to its own tracked CLAUDE.md/SOUL.md/task-config is the
+  // usual cause. The tree is clean (changes are committed), so the dirty-tree
+  // stash cannot help; reconciliation is a separate, explicit step.
+  const ahead = git.aheadCount()
+  if (ahead > 0) {
+    return {
+      ok: false,
+      reason: 'local-commits',
+      ahead,
+      message:
+        `The local checkout has ${ahead} commit(s) not on the upstream, so a ` +
+        'fast-forward update is not possible. This is usually a local edit that ' +
+        'was committed. Review with: git log @{u}..HEAD',
     }
   }
 

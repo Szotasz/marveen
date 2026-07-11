@@ -35,6 +35,9 @@ test-results/
 # Generated from template (personal config)
 CLAUDE.md
 
+# Agent persona / soul (per-operator personality; never ship upstream)
+SOUL.md
+
 # Custom MCP servers and config (user-specific)
 mcp-servers/
 .mcp.json
@@ -55,6 +58,10 @@ backups/
 
 # GitNexus knowledge-graph index (local, per-clone; auto-rebuilt by the post-commit hook)
 .gitnexus/
+
+# Context-guard runtime handoff document (auto-written by agents at ~90% context;
+# per-session state, never source).
+HANDOFF.md
 
 # Local one-off artifacts (brainstorm docs, runtime state, rebuild prompts) --
 # never committed; ignored to prevent accidental `git add -A` bloat.

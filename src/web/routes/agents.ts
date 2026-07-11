@@ -4,7 +4,8 @@ import { homedir, platform } from 'node:os'
 import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID, BOT_NAME, PROJECT_ROOT } from '../../config.js'
-import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb } from '../../db.js'
+import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent } from '../../db.js'
+import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
 import {
@@ -27,6 +28,8 @@ import {
   writeAgentChannelProvider,
   readAgentAuthMode,
   writeAgentAuthMode,
+  readAgentMemoryIsolation,
+  writeAgentMemoryIsolation,
   readAgentClaudeConfigDir,
   readAgentRemoteConfig,
   readAgentRemoteHost,
@@ -47,6 +50,7 @@ import {
   readAgentTelegramConfig,
   readAgentDiscordConfig,
   readAgentGooglechatConfig,
+  readAgentTeamsConfig,
   readMarveenTelegramConfig,
   sendAvatarChangeMessage,
   sendWelcomeMessage,
@@ -94,6 +98,8 @@ import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '
 import { detectPaneState } from '../../pane-state.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
+import { readContextGuardConfig, writeContextGuardConfig } from '../context-guard-store.js'
+import { getContextGuardStatus } from '../context-guard-runner.js'
 import type { AutoRestartConfig } from '../../auto-restart.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
 import { attemptChannelMcpReconnect } from '../channel-mcp-reconnect.js'
@@ -110,7 +116,7 @@ import { suggestForAgent, type AgentSignals } from '../model-suggest.js'
 import { getTokenSummary } from '../token-usage.js'
 import { listScheduledTasks } from '../scheduled-tasks-io.js'
 
-const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'discord', 'googlechat'])
+const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'discord', 'googlechat', 'teams'])
 
 // Short-TTL caches so the synchronous, frequently-polled status endpoints
 // (`/api/agents` on load, `/api/agents/activity` every 3s) don't issue a fresh
@@ -147,7 +153,7 @@ function parseChannelProvider(raw: string): ChannelProviderType | null {
 // Match both new /channels/:provider/ and legacy /telegram/ URL patterns.
 // Returns [agentName, provider] or null. Legacy routes always resolve to 'telegram'.
 function matchChannelRoute(path: string, suffix: string): [string, ChannelProviderType] | null {
-  const newPattern = new RegExp(`^/api/agents/([^/]+)/channels/(telegram|slack|discord|googlechat)${suffix}$`)
+  const newPattern = new RegExp(`^/api/agents/([^/]+)/channels/(telegram|slack|discord|googlechat|teams)${suffix}$`)
   const newMatch = path.match(newPattern)
   if (newMatch) {
     const provider = parseChannelProvider(newMatch[2])
@@ -229,6 +235,7 @@ export function setAgentEnabledPlugins(name: string, provider: ChannelProviderTy
     slack: 'slack-channel@marveen-marketplace',
     discord: 'discord@claude-plugins-official',
     googlechat: 'googlechat@claude-channel-googlechat',
+    teams: 'teams@marveen-marketplace',
   }
   for (const [p, pluginKey] of Object.entries(allPlugins)) {
     plugins[pluginKey] = p === provider
@@ -308,6 +315,7 @@ interface AgentSummary {
   telegramBotUsername?: string
   hasDiscord: boolean
   hasGooglechat: boolean
+  hasTeams: boolean
   status: 'configured' | 'draft'
   running: boolean
   /** Tri-state: 'running' | 'stopped' | 'unreachable' (remote ssh failure). */
@@ -328,6 +336,7 @@ interface AgentSummary {
 }
 
 interface AgentDetail extends AgentSummary {
+  memoryIsolation: boolean
   claudeMd: string
   soulMd: string
   mcpJson: string
@@ -344,6 +353,7 @@ function getAgentSummary(name: string): AgentSummary {
   const tg = readAgentTelegramConfig(name)
   const dc = readAgentDiscordConfig(name)
   const gc = readAgentGooglechatConfig(name)
+  const tc = readAgentTeamsConfig(name)
   const hasClaudeMd = claudeMd.trim().length > 0
   const hasSoulMd = soulMd.trim().length > 0
 
@@ -375,6 +385,7 @@ function getAgentSummary(name: string): AgentSummary {
     telegramBotUsername: tg.botUsername,
     hasDiscord: dc.hasDiscord,
     hasGooglechat: gc.hasGooglechat,
+    hasTeams: tc.hasTeams,
     status: hasClaudeMd && hasSoulMd ? 'configured' : 'draft',
     running,
     runState,
@@ -412,6 +423,7 @@ function getAgentDetail(name: string): AgentDetail {
 
   return {
     ...summary,
+    memoryIsolation: readAgentMemoryIsolation(name),
     claudeMd,
     soulMd,
     mcpJson,
@@ -424,6 +436,11 @@ function getAgentDetail(name: string): AgentDetail {
 function listAgentSummaries(): AgentSummary[] {
   return listAgentNames().map(getAgentSummary)
 }
+
+// Max inter-agent messages a single main-agent inbox drain returns. The rest
+// stay pending (FIFO) for the next turn's drain -- bounds the context a single
+// turn absorbs, mirroring the router's MAX_MESSAGES_PER_TICK.
+const INBOX_DRAIN_CAP = 10
 
 export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path, method } = ctx
@@ -997,6 +1014,33 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     return true
   }
 
+  // GET/PUT /api/agents/:name/context-guard -- per-agent context-guard config
+  // (kanban #81). Default-off (opt-in): a GET for an agent with no store entry
+  // returns the disabled defaults. PUT normalizes server-side like auto-restart.
+  const contextGuardMatch = path.match(/^\/api\/agents\/([^/]+)\/context-guard$/)
+  if (contextGuardMatch && (method === 'GET' || method === 'PUT')) {
+    const name = decodeURIComponent(contextGuardMatch[1])
+    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (method === 'GET') {
+      json(res, { ok: true, contextGuard: readContextGuardConfig(name) })
+      return true
+    }
+    const body = await readBody(req)
+    let data: unknown
+    try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'invalid JSON' }, 400); return true }
+    setStoreWriteActor('dashboard')
+    const saved = writeContextGuardConfig(name, data)
+    json(res, { ok: true, contextGuard: saved })
+    return true
+  }
+
+  // GET /api/context-guard -- live guard status (phase + measured context pct)
+  // for every agent, main included.
+  if (path === '/api/context-guard' && method === 'GET') {
+    json(res, { ok: true, agents: getContextGuardStatus() })
+    return true
+  }
+
   // PUT /api/agents/:name/remote -- set or clear the remote host + workdir that
   // makes this agent's tmux session run on another machine over ssh. Empty
   // strings clear the fields (revert to local). The main agent is always local.
@@ -1444,6 +1488,34 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     return true
   }
 
+  // Main-agent inbox PULL (drain-inbox): atomically CLAIM the main agent's
+  // pending inter-agent messages and return them already WRAPPED (single-source
+  // security framing via agent-message-wrap), for the UserPromptSubmit hook to
+  // print into the agent's context. The router skips main-agent tmux delivery,
+  // so this is the SOLE delivery path for the main agent -- which is why it is
+  // restricted to the main agent (serving a sub-agent here would double-deliver
+  // alongside the router's still-active tmux push). Auth is the global /api
+  // bearer gate. One quick claim+wrap per turn (NOT a hot loop -> not the #498
+  // self-HTTP event-loop hazard).
+  const drainMatch = path.match(/^\/api\/agents\/([^/]+)\/drain-inbox$/)
+  if (drainMatch && method === 'POST') {
+    const name = decodeURIComponent(drainMatch[1])
+    if (name !== MAIN_AGENT_ID) {
+      json(res, { error: 'drain-inbox is main-agent only (sub-agents use the router push path)' }, 400)
+      return true
+    }
+    const claimed = claimPendingForAgent(name, INBOX_DRAIN_CAP)
+    const blocks: string[] = []
+    for (const msg of claimed) {
+      const cls = classifyAgentMessage(msg.from_agent, msg.to_agent)
+      if (!cls) continue // empty/invalid from_agent -> cannot frame safely; drop
+      const { prefix, wrapped } = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, msg.from_agent, msg.content, msg.id)
+      blocks.push(prefix + wrapped)
+    }
+    json(res, { count: blocks.length, text: blocks.join('\n\n') })
+    return true
+  }
+
   const restartMatch = path.match(/^\/api\/agents\/([^/]+)\/restart$/)
   if (restartMatch && method === 'POST') {
     const name = decodeURIComponent(restartMatch[1])
@@ -1491,7 +1563,17 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const configRoot = agentConfigRoot(name)
     const data = JSON.parse(body.toString()) as {
       claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string
-      authMode?: AuthMode; apiKey?: string
+      authMode?: AuthMode; apiKey?: string; memoryIsolation?: boolean
+    }
+    if (data.memoryIsolation !== undefined) {
+      // The main agent's cwd IS the install repo root, which is already a git
+      // root: a memory boundary there is meaningless, and exposing the knob
+      // for it would invite the classic main-agent footgun. Sub-agents only.
+      if (isMainChannelsAgent(name)) {
+        json(res, { error: 'memoryIsolation is not applicable to the main agent' }, 400)
+        return true
+      }
+      writeAgentMemoryIsolation(name, data.memoryIsolation === true)
     }
     if (data.claudeMd !== undefined) atomicWriteFileSync(join(configRoot, 'CLAUDE.md'), data.claudeMd)
     if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)

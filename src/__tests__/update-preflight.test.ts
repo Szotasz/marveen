@@ -10,10 +10,11 @@ import {
 // Helper: build a GitRunner from plain strings. Covers the common
 // "return this exact branch / status" fixtures without dragging in a
 // real git invocation.
-function makeGit(branch: string, porcelain = ''): GitRunner {
+function makeGit(branch: string, porcelain = '', ahead = 0): GitRunner {
   return {
     currentBranch: () => branch,
     porcelainStatus: () => porcelain,
+    aheadCount: () => ahead,
   }
 }
 
@@ -26,6 +27,29 @@ describe('checkUpdatePreflight --happy path', () => {
   it('ignores whitespace-only branch output', () => {
     const result = checkUpdatePreflight(makeGit('  main  ', '   '))
     expect(result.ok).toBe(true)
+  })
+})
+
+describe('checkUpdatePreflight --local commits (diverged history)', () => {
+  it('rejects when the local checkout has commits ahead of upstream', () => {
+    const result = checkUpdatePreflight(makeGit('main', '', 2))
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.reason).toBe('local-commits')
+    if (result.reason !== 'local-commits') return
+    expect(result.ahead).toBe(2)
+    expect(result.message).toMatch(/fast-forward/)
+  })
+
+  it('passes a clean tree with zero ahead', () => {
+    expect(checkUpdatePreflight(makeGit('main', '', 0)).ok).toBe(true)
+  })
+
+  it('dirty-tree takes precedence over ahead (stash is offered first)', () => {
+    const result = checkUpdatePreflight(makeGit('main', ' M src/x.ts', 3))
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.reason).toBe('dirty-tree')
   })
 })
 

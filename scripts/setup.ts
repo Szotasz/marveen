@@ -1,9 +1,10 @@
 import { execSync, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, copyFileSync, unlinkSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
 import { homedir, platform } from 'node:os'
+import { SERVICE_ID, BRAND_NAME, appServiceLabel, LEGACY_SERVICE_ID, LEGACY_APP_SERVICE_LABEL } from '../src/config.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = join(__dirname, '..')
@@ -192,8 +193,9 @@ async function main() {
   if (os === 'darwin') {
     const installService = await ask('Telepited hatterszolgaltatasnak? (i/n):')
     if (installService.toLowerCase() === 'i' || installService.toLowerCase() === 'igen') {
-      const plistName = 'com.claudeclaw.app'
+      const plistName = appServiceLabel(SERVICE_ID)
       const plistPath = join(homedir(), 'Library', 'LaunchAgents', `${plistName}.plist`)
+      const logPath = `/tmp/${SERVICE_ID}.log`
       const nodePath = execSync('which node', { encoding: 'utf-8' }).trim()
 
       const plist = `<?xml version="1.0" encoding="UTF-8"?>
@@ -216,9 +218,9 @@ async function main() {
   <key>ThrottleInterval</key>
   <integer>5</integer>
   <key>StandardOutPath</key>
-  <string>/tmp/claudeclaw.log</string>
+  <string>${logPath}</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/claudeclaw.log</string>
+  <string>${logPath}</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
@@ -227,6 +229,17 @@ async function main() {
 </dict>
 </plist>`
 
+      // Retire a service unit from an older install that used the legacy fixed
+      // name, so an in-place re-run does not leave an orphan launchd job
+      // fighting for the same port as the newly named one.
+      if (plistName !== LEGACY_APP_SERVICE_LABEL) {
+        const legacyPlist = join(homedir(), 'Library', 'LaunchAgents', `${LEGACY_APP_SERVICE_LABEL}.plist`)
+        if (existsSync(legacyPlist)) {
+          try { execSync(`launchctl unload ${legacyPlist} 2>/dev/null`, { stdio: 'ignore' }) } catch { /* not loaded */ }
+          try { unlinkSync(legacyPlist) } catch { /* already gone */ }
+          warn(`Regi ${LEGACY_APP_SERVICE_LABEL} szolgaltatas eltavolitva (atnevezve: ${plistName})`)
+        }
+      }
       writeFileSync(plistPath, plist)
       try {
         execSync(`launchctl unload ${plistPath} 2>/dev/null`, { stdio: 'ignore' })
@@ -236,7 +249,7 @@ async function main() {
       execSync(`launchctl load ${plistPath}`)
       ok(`Hatterszolgaltatas telepitve: ${plistPath}`)
       ok('Automatikusan indul a gep bekapcsolasakor')
-      console.log(`  Naplo: tail -f /tmp/claudeclaw.log`)
+      console.log(`  Naplo: tail -f ${logPath}`)
       console.log(`  Leallitas: launchctl unload ${plistPath}`)
     }
   } else if (os === 'linux') {
@@ -245,10 +258,10 @@ async function main() {
       const nodePath = execSync('which node', { encoding: 'utf-8' }).trim()
       const serviceDir = join(homedir(), '.config', 'systemd', 'user')
       execSync(`mkdir -p ${serviceDir}`)
-      const servicePath = join(serviceDir, 'claudeclaw.service')
+      const servicePath = join(serviceDir, `${SERVICE_ID}.service`)
 
       const service = `[Unit]
-Description=Marveen AI Asszisztens
+Description=${BRAND_NAME} AI Asszisztens
 After=network.target
 
 [Service]
@@ -262,17 +275,27 @@ RestartSec=5
 WantedBy=default.target`
 
       writeFileSync(servicePath, service)
+      // Retire a legacy-named unit from an older install so the two do not run
+      // side by side after a rename.
+      if (SERVICE_ID !== LEGACY_SERVICE_ID) {
+        const legacyUnit = join(serviceDir, `${LEGACY_SERVICE_ID}.service`)
+        if (existsSync(legacyUnit)) {
+          try { execSync(`systemctl --user disable --now ${LEGACY_SERVICE_ID} 2>/dev/null`, { stdio: 'ignore' }) } catch { /* not active */ }
+          try { unlinkSync(legacyUnit) } catch { /* already gone */ }
+          warn(`Regi ${LEGACY_SERVICE_ID} systemd egyseg eltavolitva`)
+        }
+      }
       execSync('systemctl --user daemon-reload')
-      execSync('systemctl --user enable claudeclaw')
-      execSync('systemctl --user start claudeclaw')
+      execSync(`systemctl --user enable ${SERVICE_ID}`)
+      execSync(`systemctl --user start ${SERVICE_ID}`)
       ok('Systemd szolgaltatas telepitve es elindítva')
-      console.log('  Allapot: systemctl --user status claudeclaw')
-      console.log('  Naplo: journalctl --user -u claudeclaw -f')
+      console.log(`  Allapot: systemctl --user status ${SERVICE_ID}`)
+      console.log(`  Naplo: journalctl --user -u ${SERVICE_ID} -f`)
     }
   } else {
     warn('Windows: hasznald a PM2-t a hatterszolgaltatashoz:')
     console.log('  npm install -g pm2')
-    console.log(`  pm2 start ${join(PROJECT_ROOT, 'dist', 'index.js')} --name claudeclaw`)
+    console.log(`  pm2 start ${join(PROJECT_ROOT, 'dist', 'index.js')} --name ${SERVICE_ID}`)
     console.log('  pm2 save && pm2 startup')
   }
 

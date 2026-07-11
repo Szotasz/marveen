@@ -6,6 +6,7 @@ const base = (over: Partial<Parameters<typeof decideReauthAction>[0]> = {}) => (
   isDeadToken: true,
   sessionAlive: true,
   isMain: false,
+  canInteractiveLogin: true,
   prev: NO_REAUTH_STATE,
   nowMs: 1_000_000,
   ...over,
@@ -46,6 +47,14 @@ describe('decideReauthAction', () => {
 
   it('main agent at threshold escalates but does NOT send-keys', () => {
     const d = decideReauthAction(base({ isMain: true, prev: { consecutiveDead: 2, lastActionAtMs: null } }), T)
+    expect(d.escalate).toBe(true)
+    expect(d.sendKeys).toBe(false)
+  })
+
+  it('headless host at threshold escalates but does NOT send-keys (cascade guard)', () => {
+    // A headless Linux fleet host: /login would fail AND rotate the shared OAuth
+    // token into a fleet-wide 401 cascade, so escalate-only even for a sub-agent.
+    const d = decideReauthAction(base({ canInteractiveLogin: false, prev: { consecutiveDead: 2, lastActionAtMs: null } }), T)
     expect(d.escalate).toBe(true)
     expect(d.sendKeys).toBe(false)
   })

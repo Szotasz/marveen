@@ -1,40 +1,30 @@
-// Service worker for PWA installability.
-// Strategy: network-first for app-shell assets (always fresh when online),
-// cache fallback for offline use. /api/* always bypassed (Bearer-auth safety).
+// Service worker DISABLED (kill-switch). No fetch handler -> no request is ever
+// intercepted, so this can never break a page load. On activate it purges any
+// old caches and unregisters itself. It does NOT reload clients (that caused a
+// reload loop with re-registration). index.html also unregisters any SW on load,
+// which is the primary cleanup path; this stub only exists to neutralise a
+// still-registered old worker that a browser fetches for its update check.
 
-const CACHE_NAME = 'marveen-shell-v1';
-
-self.addEventListener('install', (event) => {
+self.addEventListener('install', () => {
   self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
-    )
-  );
-  self.clients.claim();
-});
-
-self.addEventListener('fetch', (event) => {
-  const url = new URL(event.request.url);
-
-  // Never intercept API calls — they carry Bearer auth and must not be cached.
-  if (url.pathname.startsWith('/api/')) return;
-
-  // Network-first: try live fetch, update cache on success, fall back to cache offline.
-  // Only cache same-origin responses — cross-origin CDN scripts return opaque responses
-  // that would throw TypeError on cache.put.
-  event.respondWith(
-    fetch(event.request)
-      .then((response) => {
-        if (url.origin === self.location.origin) {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-        }
-        return response;
-      })
-      .catch(() => caches.match(event.request))
+    (async () => {
+      try {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((k) => caches.delete(k)));
+      } catch {
+        /* best-effort */
+      }
+      try {
+        await self.registration.unregister();
+      } catch {
+        /* best-effort */
+      }
+    })()
   );
 });
+
+// No fetch handler on purpose.

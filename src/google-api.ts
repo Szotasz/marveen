@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { logger } from './logger.js'
+import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 
 const TOKENS_PATH = join(homedir(), '.config', 'google-calendar-mcp', 'tokens.json')
 const CLIENT_CREDS_PATH = join(homedir(), '.gmail-mcp', 'gcp-oauth.keys.json')
@@ -77,7 +78,12 @@ function loadClientCredentials(): ClientCredentials {
   return cachedClient!
 }
 
-function httpsRequest(url: string, options: https.RequestOptions, body?: string): Promise<{ status: number; data: string }> {
+function httpsRequest(
+  url: string,
+  options: https.RequestOptions,
+  body?: string,
+  timeoutMs = TOOL_TIMEOUTS['google-calendar'],
+): Promise<{ status: number; data: string }> {
   return new Promise((resolve, reject) => {
     const req = https.request(url, options, (res) => {
       const chunks: Buffer[] = []
@@ -89,6 +95,9 @@ function httpsRequest(url: string, options: https.RequestOptions, body?: string)
         })
       })
       res.on('error', reject)
+    })
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Google API request timed out after ${timeoutMs}ms`))
     })
     req.on('error', reject)
     if (body) req.write(body)

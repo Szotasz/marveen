@@ -53,6 +53,11 @@ export interface ScheduledTask {
   //   exit 0 + empty stdout  → run LLM normally
   //   non-zero exit          → log warning, run LLM anyway (fail-open)
   preCheck?: string
+  // Manifest-style requirements (Roitman 22.5). When mcp_servers is set, the
+  // runner pre-checks each named MCP server has a live process under the
+  // target session before injecting the prompt; a dead server defers the task
+  // with a reasoned alert instead of a silent runtime failure.
+  requires?: { mcp_servers?: string[] }
 }
 
 function readFileOr(path: string, fallback: string): string {
@@ -85,7 +90,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
   const skillContent = hasSkill ? readFileOr(skillPath, '') : ''
   const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string } = {}
+  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; requires?: { mcp_servers?: unknown } } = {}
   try {
     config = JSON.parse(readFileOr(configPath, '{}'))
   } catch { /* use defaults */ }
@@ -106,7 +111,16 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     timeoutMs: config.timeoutMs,
     failThreshold: config.failThreshold,
     preCheck: config.preCheck,
+    requires: parseRequires(config.requires),
   }
+}
+
+// Accept only a string array for requires.mcp_servers; anything else is
+// treated as absent so a malformed config cannot wedge the runner.
+export function parseRequires(raw: { mcp_servers?: unknown } | undefined): ScheduledTask['requires'] {
+  if (!raw || !Array.isArray(raw.mcp_servers)) return undefined
+  const servers = raw.mcp_servers.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+  return servers.length ? { mcp_servers: servers } : undefined
 }
 
 export function listScheduledTasks(): ScheduledTask[] {

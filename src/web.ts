@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { execSync, execFileSync } from 'node:child_process'
 import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID } from './config.js'
 import { loadOrCreateDashboardToken, checkBearerToken } from './web/dashboard-auth.js'
-import { isBlockedCrossOriginWrite } from './web/csrf-origin.js'
+import { isBlockedCrossOriginWrite, originMatchesServedHost } from './web/csrf-origin.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
@@ -21,6 +21,7 @@ import { startStuckToolCallWatcher } from './web/stuck-tool-call-watcher.js'
 import { startReauthHealer } from './web/reauth-healer.js'
 import { startAutoRestartRunner } from './web/auto-restart-runner.js'
 import { startModelFallbackRunner } from './web/model-fallback-runner.js'
+import { startContextGuardRunner } from './web/context-guard-runner.js'
 import { collectTokenUsage } from './web/token-usage.js'
 import { logger } from './logger.js'
 import { tryHandleProfiles } from './web/routes/profiles.js'
@@ -45,6 +46,7 @@ import { tryHandleRecall } from './web/routes/recall.js'
 import { tryHandleBackgroundTasks, sweepOrphanedBackgroundTasks } from './web/routes/background-tasks.js'
 import { tryHandleOverview } from './web/routes/overview.js'
 import { tryHandleUpdates } from './web/routes/updates.js'
+import { tryHandleOnboarding } from './web/routes/onboarding.js'
 import { tryHandleStatus } from './web/routes/status.js'
 import { tryHandleAutonomy } from './web/routes/autonomy.js'
 import { tryHandleTokenUsage } from './web/routes/token-usage.js'
@@ -54,6 +56,8 @@ import { tryHandleSettings } from './web/routes/settings.js'
 import { tryHandleAuditLog } from './web/routes/audit-log.js'
 import { tryHandleStatic } from './web/routes/static.js'
 import { tryHandleVoice } from './web/routes/voice.js'
+import { tryHandleVaultSsh } from './web/routes/vault-ssh.js'
+import { tryHandleVaultSshKeys } from './web/routes/vault-ssh-keys.js'
 import type { RouteContext } from './web/routes/types.js'
 
 const WEB_DIR = join(PROJECT_ROOT, 'web')
@@ -83,11 +87,19 @@ export function startWebServer(port = 3420): http.Server {
     const method = req.method || 'GET'
 
     const origin = req.headers.origin
-    if (origin && allowedOrigins.has(origin)) {
+    // Emit CORS headers for allowlisted origins AND for genuinely same-origin
+    // requests reached via a reverse proxy (e.g. Tailscale Serve's ts.net host,
+    // where the Origin host matches Host / X-Forwarded-Host). Without this, an
+    // iOS Safari preflight for an Authorization-bearing /api/ fetch over the
+    // proxy gets a 204 with no Access-Control-* headers and the browser blocks
+    // the request -- the page shell loads but no data does. Authorization must be
+    // in Allow-Headers or the preflight rejects the Bearer header.
+    if (origin && (allowedOrigins.has(origin) ||
+        originMatchesServedHost(origin, req.headers.host, req.headers['x-forwarded-host'] as string | undefined))) {
       res.setHeader('Access-Control-Allow-Origin', origin)
       res.setHeader('Vary', 'Origin')
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
     }
     if (method === 'OPTIONS') { res.writeHead(204); res.end(); return }
 
@@ -164,6 +176,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleRecall(routeCtx)) return
       if (await tryHandleOverview(routeCtx)) return
       if (await tryHandleUpdates(routeCtx)) return
+      if (await tryHandleOnboarding(routeCtx)) return
       if (await tryHandleStatus(routeCtx)) return
       if (await tryHandleAutonomy(routeCtx)) return
       if (await tryHandleTokenUsage(routeCtx)) return
@@ -171,6 +184,8 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleToolLog(routeCtx)) return
       if (await tryHandleSettings(routeCtx)) return
       if (await tryHandleVoice(routeCtx)) return
+      if (await tryHandleVaultSshKeys(routeCtx)) return
+      if (await tryHandleVaultSsh(routeCtx)) return
       if (await tryHandleAuditLog(routeCtx)) return
       if (await tryHandleStatic(routeCtx, WEB_DIR)) return
 
@@ -334,6 +349,9 @@ export function startWebServer(port = 3420): http.Server {
   const modelFallbackInterval = webOnly ? undefined : startModelFallbackRunner()
   if (!webOnly) logger.info('Model-fallback runner started (60s poll, 50s offset)')
 
+  const contextGuardInterval = webOnly ? undefined : startContextGuardRunner()
+  if (!webOnly) logger.info('Context-guard runner started (5min poll, 4.5min initial delay)')
+
   const updateCheckerInterval = webOnly ? undefined : startUpdateChecker()
   if (!webOnly) logger.info('Update checker started (15min poll)')
 
@@ -416,6 +434,7 @@ export function startWebServer(port = 3420): http.Server {
     if (reauthHealerInterval) clearInterval(reauthHealerInterval)
     clearInterval(autoRestartInterval)
     clearInterval(modelFallbackInterval)
+    clearInterval(contextGuardInterval)
     clearInterval(updateCheckerInterval)
     clearInterval(tokenCollectInterval)
     return origClose(cb)

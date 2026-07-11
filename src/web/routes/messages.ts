@@ -1,13 +1,15 @@
 import {
   createAgentMessage, getPendingMessages, listAgentMessages,
   getAgentConversation, getAgentConversationThreads,
-  markMessageDone, markMessageFailed,
+  getKanbanSeqByIdPrefix,
+  markMessageDone, markMessageFailed, getAgentMessage,
   type AgentMessage,
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID } from '../../channel-coordinator/ingest.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { readBody, json } from '../http-helpers.js'
+import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
@@ -40,7 +42,13 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'from is reserved for the in-process channel coordinator' }, 403)
       return true
     }
-    const msg = createAgentMessage(from.trim(), to.trim(), content.trim())
+    // Code-side enforcement of the kanban-ref convention: rewrite any
+    // `#<hex8>` token that maps to a real kanban_cards row into its
+    // human-facing `#<seq>` form before persistence, so the dashboard and
+    // every downstream consumer sees the canonical reference even when a
+    // sub-agent forgets the CLAUDE.md rule (#75 Cuzcoo dispatch).
+    const normalizedContent = normalizeKanbanRefs(content.trim(), getKanbanSeqByIdPrefix)
+    const msg = createAgentMessage(from.trim(), to.trim(), normalizedContent)
     logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, 'Agent message created')
     json(res, msg)
     return true
@@ -87,7 +95,23 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (newStatus === 'done') ok = markMessageDone(id, result)
     else if (newStatus === 'failed') ok = markMessageFailed(id, result)
 
-    if (ok) { json(res, { ok: true }); return true }
+    if (ok) {
+      // Notify the delegator: create a reverse message from executor → delegator so
+      // they learn the result without polling. Use a sentinel prefix to break
+      // ping-pong chains (the delegator might write back, which would trigger
+      // markMessageDone on this notification; we skip creating ANOTHER notification
+      // when the original content is already a completion report).
+      const done = getAgentMessage(id)
+      if (done && done.from_agent !== done.to_agent && !done.content.startsWith('[Eredmény]')) {
+        const summary = result ? result.slice(0, 500) : '(nincs eredmény)'
+        createAgentMessage(
+          done.to_agent,
+          done.from_agent,
+          `[Eredmény] msg_id:${id} status:${newStatus}\n\n${summary}`,
+        )
+      }
+      json(res, { ok: true }); return true
+    }
     json(res, { error: 'Message not found or invalid status' }, 404)
     return true
   }

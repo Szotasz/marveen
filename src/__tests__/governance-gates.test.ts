@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision as selfPaceDecision } from '../../scripts/self-pace-gate.mjs'
+import { gateDecision as selfPaceDecision, stripDataPayloads } from '../../scripts/self-pace-gate.mjs'
 import {
   agentGetsGovernanceGates,
   injectSelfPaceGate,
@@ -66,6 +66,76 @@ describe('self-pace-gate gateDecision', () => {
   it('ALLOWS read-only tools', () => {
     expect(selfPaceDecision('Read', {}).deny).toBe(false)
     expect(selfPaceDecision('Grep', {}).deny).toBe(false)
+  })
+})
+
+// --- stripDataPayloads: a curl -d/--data body is DATA sent over the wire, never
+// a shell invocation, so a trigger token INSIDE the payload must not false-deny a
+// legit dispatch. Only provably-literal payloads are blanked; a payload that can
+// command-substitute ($(...)/backtick) is kept so a real substitution still trips. ---
+describe('self-pace-gate stripDataPayloads (data-payload false-positive guard)', () => {
+  it('blanks a single-quoted -d payload but keeps the flag', () => {
+    expect(stripDataPayloads(`curl -d '{"x":"/api/schedules"}' u`)).toBe(`curl -d '' u`)
+  })
+  it('blanks a double-quoted -d payload without substitution', () => {
+    expect(stripDataPayloads(`curl -d "{tmux send-keys}" u`)).toBe(`curl -d "" u`)
+  })
+  it("blanks an ANSI-C $'...' payload", () => {
+    expect(stripDataPayloads(`curl -d $'{"a":"/loop"}' u`)).toBe(`curl -d '' u`)
+  })
+  it('KEEPS a payload that can command-substitute ($(...))', () => {
+    const cmd = `curl -d "$(crontab -r)" u`
+    expect(stripDataPayloads(cmd)).toBe(cmd)
+  })
+  it('KEEPS a payload with a backtick substitution', () => {
+    const cmd = 'curl -d "`crontab -r`" u'
+    expect(stripDataPayloads(cmd)).toBe(cmd)
+  })
+  it('handles --data / --data-raw / --data-binary / --data-urlencode long forms', () => {
+    for (const flag of ['--data', '--data-raw', '--data-binary', '--data-urlencode']) {
+      expect(stripDataPayloads(`curl ${flag} '/api/schedules' u`)).toBe(`curl ${flag} '' u`)
+    }
+  })
+  it('supports the --data=VALUE equals form', () => {
+    expect(stripDataPayloads(`curl --data='{"/loop":1}' u`)).toBe(`curl --data='' u`)
+  })
+  it('leaves URL/method args outside the payload untouched', () => {
+    expect(stripDataPayloads(`curl -X POST /api/schedules -d '{}'`)).toBe(`curl -X POST /api/schedules -d ''`)
+  })
+  it('is a no-op when there is no -d/--data flag', () => {
+    expect(stripDataPayloads('git status && ls -la')).toBe('git status && ls -la')
+  })
+  it('matches bash single-quote parsing: backslash is literal, first quote closes', () => {
+    // bash: the -d value is `x\`; a C-style escape regex would scan PAST the real
+    // closing quote and blank the out-of-band `; crontab -r`.
+    expect(stripDataPayloads(`curl -d 'x\\' ; crontab -r`)).toBe(`curl -d '' ; crontab -r`)
+  })
+})
+
+// --- integration: the payload-blanking must NOT weaken real WRITE/substitution
+// detection; only the false-deny on a legit dispatch body is removed ---
+describe('self-pace-gate: data-payload guard does not weaken real detection', () => {
+  it('ALLOWS a dispatch whose JSON body merely MENTIONS /api/schedules', () => {
+    expect(selfPaceDecision('Bash', { command: `curl -X POST http://localhost:3420/api/messages -d '{"to":"dev4","content":"please read the /api/schedules docs"}'` }).deny).toBe(false)
+  })
+  it('ALLOWS a dispatch body mentioning tmux send-keys / scheduled_tasks.json / /loop as text', () => {
+    expect(selfPaceDecision('Bash', { command: `curl -X POST http://localhost:3420/api/messages -d '{"to":"dev3","content":"the tmux send-keys path writes scheduled_tasks.json on /loop"}'` }).deny).toBe(false)
+  })
+  it('STILL denies a real WRITE to /api/schedules (URL/method live outside the payload)', () => {
+    expect(selfPaceDecision('Bash', { command: `curl -X POST http://localhost:3420/api/schedules -d '{"schedule":"*/5 * * * *"}'` }).deny).toBe(true)
+  })
+  it('STILL denies a command-substitution payload ($(...) is kept, not blanked)', () => {
+    expect(selfPaceDecision('Bash', { command: `curl -d "$(crontab -r)" http://x` }).deny).toBe(true)
+  })
+  it('STILL denies a blocked binary outside the payload after a separator', () => {
+    expect(selfPaceDecision('Bash', { command: `curl -d '{}' http://x ; crontab -r` }).deny).toBe(true)
+  })
+  it('STILL denies a self-pace after a bash single-quote close (backslash-literal parity)', () => {
+    // regression for the C-vs-bash single-quote desync: the -d value is `x\`, then
+    // the real `; <blocked>` executes -- must still deny for every self-pace route.
+    for (const tail of ['crontab -r', "tmux send-keys -t s 'go' Enter", 'curl -X POST http://h/api/schedules', 'claude /loop 5m foo']) {
+      expect(selfPaceDecision('Bash', { command: `curl -d 'x\\' ; ${tail} ; echo 'z'` }).deny).toBe(true)
+    }
   })
 })
 
