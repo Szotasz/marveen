@@ -11038,7 +11038,7 @@ window.addEventListener('beforeunload', (e) => {
 // entry never requires a frontend change just to render a sane heading.
 function settingsModuleLabel(mod) {
   const key = `settings.module.${mod}`
-  const known = { kanban: true, system: true, heartbeat: true, audit: true, ideabox: true }
+  const known = { kanban: true, system: true, heartbeat: true, audit: true, ideabox: true, channels: true }
   return known[mod] ? t(key) : (mod.charAt(0).toUpperCase() + mod.slice(1))
 }
 
@@ -11054,8 +11054,16 @@ function updateSettingsSaveBar() {
   if (countEl) countEl.textContent = t('settings.dirty_count', {n})
 }
 
+// Read the current editor value in the canonical form the API expects. A
+// boolean setting renders as a checkbox, so its value is derived from .checked
+// as the canonical "1"/"0" string (not the element's .value, which is "on").
+function settingInputValue(input, type) {
+  if (type === 'boolean') return input.checked ? '1' : '0'
+  return input.value
+}
+
 function markSettingDirty(key, input, originalValue, type, errorEl) {
-  const currentVal = type === 'color' ? input.value : input.value
+  const currentVal = settingInputValue(input, type)
   if (currentVal === String(originalValue)) {
     settingsDirty.delete(key)
   } else {
@@ -11158,6 +11166,11 @@ function buildSettingRow(def) {
       valueInput.appendChild(o)
     }
     valueInput.value = originalValue
+  } else if (def.type === 'boolean') {
+    valueInput = document.createElement('input')
+    valueInput.type = 'checkbox'
+    valueInput.className = 'settings-toggle'
+    valueInput.checked = String(def.value) === '1'
   } else if (def.type === 'color') {
     valueInput = document.createElement('input')
     valueInput.type = 'color'
@@ -11202,7 +11215,7 @@ async function saveAllSettings() {
 
   for (const [key, { input, type, errorEl }] of settingsDirty) {
     errorEl.textContent = ''
-    const raw = type === 'int' ? Number(input.value) : input.value
+    const raw = type === 'int' ? Number(input.value) : settingInputValue(input, type)
     try {
       const res = await fetch('/api/settings', {
         method: 'POST',
@@ -11224,8 +11237,8 @@ async function saveAllSettings() {
   }
 
   // Remove successfully saved keys from dirty map
-  for (const [key, { input }] of settingsDirty) {
-    if (String(input.value) === input.dataset.originalValue) settingsDirty.delete(key)
+  for (const [key, { input, type }] of settingsDirty) {
+    if (settingInputValue(input, type) === input.dataset.originalValue) settingsDirty.delete(key)
   }
   updateSettingsSaveBar()
 

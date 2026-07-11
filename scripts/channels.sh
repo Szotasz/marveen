@@ -25,10 +25,6 @@ if [ -f "$INSTALL_DIR/.env" ]; then
   MAIN_AGENT_ID="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
   CHANNEL_PROVIDER="$(grep -E '^CHANNEL_PROVIDER=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
   BOT_NAME="$(grep -E '^BOT_NAME=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
-  # Opt-in (macOS): give the MAIN channels agent its own CLAUDE_CONFIG_DIR so it
-  # authenticates from the long-lived fleet setup-token instead of the rotating
-  # Keychain OAuth session (which periodically expires -> 401 -> manual /login).
-  MAIN_AGENT_ISOLATED_CONFIG="$(grep -E '^MAIN_AGENT_ISOLATED_CONFIG=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
   # Claude Code auth: pass API key or OAuth token so the tmux-spawned
   # claude process can authenticate. These are safe to export -- unlike
   # TELEGRAM_BOT_TOKEN they don't cause cross-session conflicts.
@@ -142,19 +138,25 @@ MODEL_FLAG=""
 # tmux command-string round-trip without the inner shell glob-expanding `[1m]`.
 [ -n "$MAIN_MODEL" ] && MODEL_FLAG="--model '$MAIN_MODEL' "
 
-# macOS main-agent config isolation (OPT-IN via MAIN_AGENT_ISOLATED_CONFIG=1).
+# macOS main-agent config isolation (OPT-IN, default OFF).
 #
 # By default the main channels agent keeps the shared ~/.claude and, on macOS,
 # authenticates from the ROTATING Keychain OAuth session -- which periodically
 # expires and 401s the main bot ("Please run /login"), while the isolated
-# sub-agents (long-lived fleet setup-token) never do. When the flag is set, we
-# provision an isolated CLAUDE_CONFIG_DIR (same code path as the sub-agents, via
-# dist/web/agent-process.js) and authenticate the main agent from the fleet
-# setup-token instead. CFG_ENV stays EMPTY -- and the agent keeps the shared root
-# -- unless macOS + flag=1 + a valid fleet token (store/.claude-oauth-token) + a
-# dist build are ALL present, so this is a strict no-op for existing installs.
+# sub-agents (long-lived fleet setup-token) never do. The helper provisions an
+# isolated CLAUDE_CONFIG_DIR (same code path as the sub-agents, via
+# dist/web/agent-process.js) and authenticates the main agent from the fleet
+# setup-token instead.
+#
+# The ON/OFF decision lives ENTIRELY in the helper (ensureMainAgentIsolatedConfigDir):
+# it reads the effective MAIN_AGENT_ISOLATED_CONFIG setting (dashboard toggle in
+# store/config-overrides.json OR a hand-set .env key -- resolution override>.env>
+# default '0') plus the fleet-token gate. So on macOS we ALWAYS call the helper;
+# it prints a path only when isolation is enabled AND a valid fleet token exists,
+# otherwise CFG_ENV stays EMPTY and the agent keeps the shared root. Strict no-op
+# for existing installs (non-macOS, setting off, no fleet token, or no dist build).
 CFG_ENV=""
-if [ "$(uname)" = "Darwin" ] && [ "${MAIN_AGENT_ISOLATED_CONFIG:-}" = "1" ]; then
+if [ "$(uname)" = "Darwin" ]; then
   mkdir -p "$INSTALL_DIR/store" 2>/dev/null || true
   _node_bin="$(command -v node || true)"
   if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
