@@ -108,7 +108,7 @@ Every dashboard-editable setting is a registry entry with the following fields:
 | Field | Type | Description |
 |-------|------|-------------|
 | `key` | string | ENV-compatible key (e.g. `KANBAN_WIP_PLANNED`) |
-| `type` | `int` / `color` / `string` | Value type (drives validation + UI widget) |
+| `type` | `int` / `color` / `string` / `boolean` | Value type (drives validation + UI widget). `boolean` renders as an on/off checkbox with a canonical `"1"`/`"0"` value |
 | `default` | any | Fallback when no override and no `.env` entry |
 | `description` | string | Human-readable description shown in the UI |
 | `module` | string | Grouping label on the Settings page (e.g. `kanban`) |
@@ -160,6 +160,51 @@ Every dashboard-editable setting is a registry entry with the following fields:
 |-----|------|---------|------------|---------|
 | `IDEA_BREAKDOWN_MAX_SUBTASKS` | int | 10 | min 2, max 20 | no |
 | `IDEA_STALE_DAYS` | int | 7 | min 1, max 365 | no |
+
+**Registry -- Channels module:**
+
+| Key | Type | Default | Platform | Restart |
+|-----|------|---------|----------|---------|
+| `MAIN_AGENT_ISOLATED_CONFIG` | boolean | `0` (off) | macOS only | yes |
+
+#### `MAIN_AGENT_ISOLATED_CONFIG` -- main-agent config isolation (macOS)
+
+**What it is for.** An opt-in fix for the periodic `401 Invalid authentication
+credentials` / "Please run /login" the main channels agent hits on macOS. Symptom:
+the main bot goes silent every so often, needs a manual `/login`, and recurs a few
+days later -- while the sub-agents never drop.
+
+**Root cause.** By default the main channels agent uses the shared `~/.claude`
+config dir. On macOS that authenticates from the **rotating Keychain OAuth session**,
+which periodically expires → 401. The sub-agents instead run with their own isolated
+`CLAUDE_CONFIG_DIR` and the long-lived fleet setup-token
+(`store/.claude-oauth-token`), so they stay stable.
+
+**What it does when on.** The main agent gets the SAME isolated config dir as the
+sub-agents (`<install>/.channels-config`: shared parts symlinked, but its own
+`settings.json`/`plugins/` state and NO `.credentials.json`). It then authenticates
+from the stable `CLAUDE_CODE_OAUTH_TOKEN` instead of the expiring Keychain.
+
+**Single gate.** The on/off decision is made by one helper
+(`ensureMainAgentIsolatedConfigDir`), which reads the effective setting (resolution:
+`config-overrides.json` > `.env` > default `0`). All THREE main-agent launch paths
+call this helper, so the toggle governs them uniformly:
+1. the `scripts/channels.sh` boot (launch helper),
+2. the dashboard channel-monitor `--continue` resume respawn,
+3. the dashboard channel-monitor fresh hard-restart respawn.
+
+**Gating (when it is a no-op).** No effect (keeps the shared `~/.claude`) when: not
+macOS; no valid fleet setup-token; or no built `dist/`. On Linux the rotating
+`credentials.json` is handled by the separate credentials-guard instead.
+
+**Enabling.** Dashboard: *Settings → Channels → `MAIN_AGENT_ISOLATED_CONFIG`* (the
+toggle writes to `store/config-overrides.json`). Or by hand: `MAIN_AGENT_ISOLATED_CONFIG=1`
+in `.env`. The change takes effect on the next channels-session restart (the
+`requiresRestart` badge signals this).
+
+**Reverting.** Turn it OFF (dashboard) or set `MAIN_AGENT_ISOLATED_CONFIG=0` (`.env`),
+then restart the channels session -- all three launch paths fall back to the shared
+`~/.claude` behaviour.
 
 **API endpoints:**
 
