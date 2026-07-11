@@ -403,7 +403,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
       pendingKeys.add(key)
 
       // Re-run pre-check on retry: state may have changed since the task
-      // was first scheduled (e.g. Eszter cards already processed).
+      // was first scheduled (e.g. kanban cards already processed).
       const retryPc = runPreCheck(taskDef)
       if (retryPc.skip) {
         deletePendingTaskRetry(row.task_name, row.agent_name)
