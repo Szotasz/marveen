@@ -461,33 +461,37 @@ export function isKnownAgent(name: string): boolean {
   }
 }
 
-// Seed defaults live in seed-config/agent-capabilities.json (git-tracked).
-// An agent's agent-config.json "capabilities" field overrides when present.
-let _capabilitiesSeed: Record<string, string[]> | null = null
-function loadCapabilitiesSeed(): Record<string, string[]> {
-  if (!_capabilitiesSeed) {
-    const seedPath = join(PROJECT_ROOT, 'seed-config', 'agent-capabilities.json')
-    try {
-      const raw = JSON.parse(readFileSync(seedPath, 'utf-8'))
-      _capabilitiesSeed = Object.fromEntries(
-        Object.entries(raw)
-          .filter(([k]) => k !== '_doc')
-          .map(([k, v]) => [k, Array.isArray(v) ? v : []])
-      )
-    } catch {
-      _capabilitiesSeed = {}
-    }
+// Parse YAML frontmatter capabilities from a persona file.
+// Expected format (first block in the file):
+//   ---
+//   capabilities: [tag1, tag2, tag3]
+//   ---
+// Returns [] if the file has no frontmatter or no capabilities key.
+function parsePersonaCapabilities(name: string): string[] {
+  const personaPath = join(PROJECT_ROOT, 'personas', `${name}.md`)
+  try {
+    const content = readFileSync(personaPath, 'utf-8')
+    const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/)
+    if (!fmMatch) return []
+    // Simple YAML inline array: capabilities: [a, b, c]
+    const lineMatch = fmMatch[1].match(/^capabilities:\s*\[([^\]]*)\]/m)
+    if (!lineMatch) return []
+    return lineMatch[1].split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean)
+  } catch {
+    return []
   }
-  return _capabilitiesSeed
 }
 
+// Capability resolution order (first match wins):
+//   1. agent-config.json "capabilities" field (runtime override via PUT API)
+//   2. personas/<name>.md YAML frontmatter "capabilities:" line (auto-derived)
 export function readAgentCapabilities(name: string): string[] {
   const configPath = join(agentDir(name), 'agent-config.json')
   try {
     const config = JSON.parse(readFileOr(configPath, '{}'))
     if (Array.isArray(config.capabilities)) return config.capabilities
-  } catch { /* fall through to seed */ }
-  return loadCapabilitiesSeed()[name] ?? []
+  } catch { /* fall through to persona */ }
+  return parsePersonaCapabilities(name)
 }
 
 export function writeAgentCapabilities(name: string, capabilities: string[]): void {
@@ -498,21 +502,6 @@ export function writeAgentCapabilities(name: string, capabilities: string[]): vo
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
-// On startup: write seed defaults into each agent's agent-config.json if the
-// "capabilities" field is absent. This ensures that after a `git pull` +
-// restart the live system immediately serves the manifest without any manual
-// editing. Existing per-agent overrides (already present in agent-config.json)
-// are never touched.
-export function bootstrapCapabilities(): void {
-  const seed = loadCapabilitiesSeed()
-  for (const name of listAgentNames()) {
-    const configPath = join(agentDir(name), 'agent-config.json')
-    try {
-      const config = JSON.parse(readFileOr(configPath, '{}'))
-      if (!Array.isArray(config.capabilities) && seed[name]) {
-        config.capabilities = seed[name]
-        atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
-      }
-    } catch { /* skip agents whose config can't be read/written */ }
-  }
-}
+// No-op kept for API compatibility; persona-based derivation is always live so
+// there is nothing to bootstrap at startup anymore.
+export function bootstrapCapabilities(): void { /* intentionally empty */ }
