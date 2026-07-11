@@ -460,3 +460,32 @@ export function isKnownAgent(name: string): boolean {
     return false
   }
 }
+
+// Seed defaults live in seed-config/agent-capabilities.json (git-tracked).
+// An agent's agent-config.json "capabilities" field overrides when present.
+let _capabilitiesSeed: Record<string, string[]> | null = null
+function loadCapabilitiesSeed(): Record<string, string[]> {
+  if (!_capabilitiesSeed) {
+    const seedPath = join(PROJECT_ROOT, 'seed-config', 'agent-capabilities.json')
+    try {
+      const raw = JSON.parse(readFileSync(seedPath, 'utf-8'))
+      _capabilitiesSeed = Object.fromEntries(
+        Object.entries(raw)
+          .filter(([k]) => k !== '_doc')
+          .map(([k, v]) => [k, Array.isArray(v) ? v : []])
+      )
+    } catch {
+      _capabilitiesSeed = {}
+    }
+  }
+  return _capabilitiesSeed
+}
+
+export function readAgentCapabilities(name: string): string[] {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}'))
+    if (Array.isArray(config.capabilities)) return config.capabilities
+  } catch { /* fall through to seed */ }
+  return loadCapabilitiesSeed()[name] ?? []
+}

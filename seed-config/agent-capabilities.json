@@ -1,0 +1,9 @@
+{
+  "_doc": "Default capability tags per agent. The fleet manifest endpoint (GET /.well-known/fleetq) reads these as the fallback; an agent's agent-config.json 'capabilities' field overrides when present.",
+  "dave":  ["it-management", "project-management", "vendor-management", "sla", "budget", "risk", "it-governance", "ai-monitoring"],
+  "peter": ["garmin", "training", "health-data", "fitness", "sport", "exercise-planning"],
+  "poly":  ["design", "image-generation", "video", "visual", "graphics", "creative"],
+  "rick":  ["architecture", "system-design", "tech-decisions", "cloud", "integrations", "code-review"],
+  "zack":  ["backend", "api", "database", "github", "code-review", "typescript", "nodejs", "python"],
+  "zoe":   ["finance", "invoices", "expenses", "accounting", "budget", "financial-reporting"]
+}
