@@ -159,6 +159,10 @@
         <span class="sb-label">Frissítések</span>
         <span class="updates-badge sb-badge" id="updatesBadge" hidden></span>
       </a>
+      <a href="#" class="sb-link" data-page="graphify">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><line x1="7" y1="7" x2="10.5" y2="16"/><line x1="17" y1="7" x2="13.5" y2="16"/><line x1="7.3" y1="6" x2="16.7" y2="6"/></svg>
+        <span class="sb-label">Graphify</span>
+      </a>
     </nav>
     <div class="sidebar-footer">
       <button class="theme-toggle" id="langToggle" title="Language / Nyelv">HU</button>
@@ -1664,6 +1668,16 @@
       </div>
 
       <div id="costsContent"></div>
+    </div>
+
+    <!-- Graphify page -->
+    <div class="page" id="graphifyPage" hidden>
+      <div class="page-header">
+        <h1>Graphify</h1>
+        <p class="subtitle">Marveen <code>src/</code> kódbázis interaktív tudásgráf. D3 force-directed, tree-sitter AST (2123 node, 6165 edge)</p>
+      </div>
+      <iframe id="graphifyFrame" data-src="/icons/graphify-graph.html" title="Marveen Graphify graph" loading="lazy"
+        style="width:100%;height:calc(100vh - 190px);min-height:480px;border:1px solid var(--border,#333);border-radius:8px;background:#fff"></iframe>
     </div>
 
     <!-- Naplo page -->

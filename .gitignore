@@ -82,3 +82,4 @@ scripts/support-mail/no-support-reply.html
 # Python bytecode cache
 __pycache__/
 *.pyc
+web/icons/graphify-graph.html
