@@ -489,3 +489,30 @@ export function readAgentCapabilities(name: string): string[] {
   } catch { /* fall through to seed */ }
   return loadCapabilitiesSeed()[name] ?? []
 }
+
+export function writeAgentCapabilities(name: string, capabilities: string[]): void {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  let config: Record<string, unknown> = {}
+  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  config.capabilities = capabilities
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
+// On startup: write seed defaults into each agent's agent-config.json if the
+// "capabilities" field is absent. This ensures that after a `git pull` +
+// restart the live system immediately serves the manifest without any manual
+// editing. Existing per-agent overrides (already present in agent-config.json)
+// are never touched.
+export function bootstrapCapabilities(): void {
+  const seed = loadCapabilitiesSeed()
+  for (const name of listAgentNames()) {
+    const configPath = join(agentDir(name), 'agent-config.json')
+    try {
+      const config = JSON.parse(readFileOr(configPath, '{}'))
+      if (!Array.isArray(config.capabilities) && seed[name]) {
+        config.capabilities = seed[name]
+        atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+      }
+    } catch { /* skip agents whose config can't be read/written */ }
+  }
+}

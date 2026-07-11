@@ -1,20 +1,41 @@
-import { listAgentNames, readAgentCapabilities } from '../agent-config.js'
-import { json } from '../http-helpers.js'
+import { listAgentNames, readAgentCapabilities, writeAgentCapabilities, isKnownAgent } from '../agent-config.js'
+import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
 // GET /.well-known/fleetq
-// Returns a machine-readable capability manifest for the agent fleet.
-// Each key is an agent id; the value is a list of capability tags declared
-// in that agent's agent-config.json ("capabilities" field). Agents with no
-// declared capabilities return an empty array.
-// This endpoint is intentionally unauthenticated (standard .well-known convention).
+// Machine-readable fleet capability manifest. Intentionally unauthenticated
+// (standard .well-known convention) so any agent or tool can discover capabilities
+// without needing a Bearer token.
+//
+// PUT /api/agents/:name/capabilities
+// Update a specific agent's capability tags at runtime. Requires Bearer auth
+// (handled by the outer auth gate in web.ts). Body: { "capabilities": string[] }
 export async function tryHandleFleetQ(ctx: RouteContext): Promise<boolean> {
-  if (ctx.path !== '/.well-known/fleetq' || ctx.method !== 'GET') return false
+  const { req, res, path, method } = ctx
 
-  const manifest: Record<string, string[]> = {}
-  for (const name of listAgentNames()) {
-    manifest[name] = readAgentCapabilities(name)
+  if (path === '/.well-known/fleetq' && method === 'GET') {
+    const manifest: Record<string, string[]> = {}
+    for (const name of listAgentNames()) {
+      manifest[name] = readAgentCapabilities(name)
+    }
+    json(res, manifest)
+    return true
   }
-  json(ctx.res, manifest)
-  return true
+
+  const capMatch = path.match(/^\/api\/agents\/([^/]+)\/capabilities$/)
+  if (capMatch && method === 'PUT') {
+    const name = decodeURIComponent(capMatch[1])
+    if (!isKnownAgent(name)) { json(res, { error: 'Agent nem található' }, 404); return true }
+    const body = await readBody(req)
+    const parsed = JSON.parse(body.toString()) as { capabilities?: unknown }
+    if (!Array.isArray(parsed.capabilities) || !parsed.capabilities.every((c: unknown) => typeof c === 'string')) {
+      json(res, { error: 'capabilities: string[] required' }, 400)
+      return true
+    }
+    writeAgentCapabilities(name, parsed.capabilities)
+    json(res, { ok: true, capabilities: parsed.capabilities })
+    return true
+  }
+
+  return false
 }
