@@ -1602,6 +1602,27 @@
         </div>
       </div>
 
+      <div class="overview-card" id="tuModelDistSection" style="margin-bottom:16px">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+          <h3 style="margin:0" data-i18n="tokenUsage.model_dist_title">Modell eloszlás</h3>
+        </div>
+        <div id="tuModelDistContent" style="display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap">
+          <canvas id="tuModelPieCanvas" width="180" height="180" style="flex-shrink:0"></canvas>
+          <div id="tuModelDistTable" style="flex:1;min-width:220px"></div>
+        </div>
+      </div>
+
+      <div class="overview-card" id="tuToolStatsSection" style="margin-bottom:16px">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap">
+          <h3 style="margin:0" data-i18n="tokenUsage.tool_stats_title">MCP eszközhasználat</h3>
+          <label style="font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:4px;cursor:pointer">
+            <input type="checkbox" id="tuToolAgentBreakdown">
+            <span data-i18n="tokenUsage.tool_stats_agent_toggle">Ágens bontás</span>
+          </label>
+        </div>
+        <div id="tuToolStatsContent"></div>
+      </div>
+
       <div class="overview-card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
           <h3 style="margin:0" data-i18n="tokenUsage.biggest_calls_title">Legnagyobb hívások</h3>

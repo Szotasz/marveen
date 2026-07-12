@@ -267,6 +267,7 @@ export interface TokenSummary {
   totalOutput: number
   totalCacheRead: number
   totalCacheCreation: number
+  totalSessions: number
   firstSeen: number
   lastSeen: number
 }
@@ -280,6 +281,7 @@ export function getTokenSummary(from?: number, to?: number): TokenSummary[] {
       SUM(output_tokens) as totalOutput,
       SUM(cache_read_tokens) as totalCacheRead,
       SUM(cache_creation_tokens) as totalCacheCreation,
+      COUNT(DISTINCT session_id) as totalSessions,
       MIN(timestamp) as firstSeen,
       MAX(timestamp) as lastSeen
     FROM token_usage
@@ -292,6 +294,66 @@ export function getTokenSummary(from?: number, to?: number): TokenSummary[] {
   sql += ' GROUP BY agent ORDER BY totalInput DESC'
 
   return db.prepare(sql).all(...params) as TokenSummary[]
+}
+
+export interface ModelDistEntry {
+  model: string
+  count: number
+  totalInput: number
+  totalOutput: number
+  totalCacheRead: number
+  totalCacheCreation: number
+}
+
+export function getModelDistribution(from?: number, to?: number, agent?: string): ModelDistEntry[] {
+  const db = getDb()
+  const hasModelCol = db.prepare("SELECT COUNT(*) as n FROM pragma_table_info('token_usage') WHERE name='model'").get() as { n: number }
+  if (!hasModelCol.n) return []
+
+  let sql = `
+    SELECT COALESCE(model, '(unknown)') as model,
+      COUNT(*) as count,
+      SUM(input_tokens) as totalInput,
+      SUM(output_tokens) as totalOutput,
+      SUM(cache_read_tokens) as totalCacheRead,
+      SUM(cache_creation_tokens) as totalCacheCreation
+    FROM token_usage
+  `
+  const conditions: string[] = []
+  const params: any[] = []
+  if (from) { conditions.push('timestamp >= ?'); params.push(from) }
+  if (to) { conditions.push('timestamp <= ?'); params.push(to) }
+  if (agent) { conditions.push('agent = ?'); params.push(agent) }
+  if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ')
+  sql += ' GROUP BY model ORDER BY count DESC'
+
+  return db.prepare(sql).all(...params) as ModelDistEntry[]
+}
+
+export interface ToolStatEntry {
+  tool_name: string
+  count: number
+  agents: string
+}
+
+export function getToolStats(from?: number, to?: number, agent?: string): ToolStatEntry[] {
+  const db = getDb()
+  let sql = `
+    SELECT tool_name,
+      COUNT(*) as count,
+      GROUP_CONCAT(DISTINCT agent) as agents
+    FROM token_usage
+    WHERE tool_name IS NOT NULL
+  `
+  const conditions: string[] = []
+  const params: any[] = []
+  if (from) { conditions.push('timestamp >= ?'); params.push(from) }
+  if (to) { conditions.push('timestamp <= ?'); params.push(to) }
+  if (agent) { conditions.push('agent = ?'); params.push(agent) }
+  if (conditions.length) sql += ' AND ' + conditions.join(' AND ')
+  sql += ' GROUP BY tool_name ORDER BY count DESC LIMIT 50'
+
+  return db.prepare(sql).all(...params) as ToolStatEntry[]
 }
 
 export interface TimelineBucket {

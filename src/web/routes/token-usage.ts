@@ -3,6 +3,8 @@ import {
   getTokenSummary,
   getTokenTimeline,
   getTokenDetails,
+  getModelDistribution,
+  getToolStats,
   correlateWithKanban,
 } from '../token-usage.js'
 import { json } from '../http-helpers.js'
@@ -47,6 +49,30 @@ export async function tryHandleTokenUsage(ctx: RouteContext): Promise<boolean> {
       agent,
     )
     json(res, timeline)
+    return true
+  }
+
+  if (path === '/api/token-usage/model-dist' && method === 'GET') {
+    const from = url.searchParams.get('from')
+    const to = url.searchParams.get('to')
+    const agent = url.searchParams.get('agent') || undefined
+    json(res, getModelDistribution(
+      from ? parseInt(from) : undefined,
+      to ? parseInt(to) : undefined,
+      agent,
+    ))
+    return true
+  }
+
+  if (path === '/api/token-usage/tool-stats' && method === 'GET') {
+    const from = url.searchParams.get('from')
+    const to = url.searchParams.get('to')
+    const agent = url.searchParams.get('agent') || undefined
+    json(res, getToolStats(
+      from ? parseInt(from) : undefined,
+      to ? parseInt(to) : undefined,
+      agent,
+    ))
     return true
   }
 
