@@ -359,7 +359,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: 'MAIN_AGENT_ISOLATED_CONFIG',
     type: 'boolean',
     default: '0',
-    description: 'CSAK macOS: a fő channels-agent kapjon-e saját, izolált CLAUDE_CONFIG_DIR-t (mint a sub-agentek). Bekapcsolva a fő agent a hosszú élettartamú fleet setup-tokenből (store/.claude-oauth-token) hitelesít, nem a rotálódó macOS Keychain OAuth-sessionből — az utóbbi periodikusan lejár és 401-et ad ("Please run /login"), amitől a bot elnémul. Token hiányában vagy nem-macOS gépen no-op. A módosítás a channels session újraindításakor lép életbe.',
+    description: 'CSAK macOS: a fő channels-agent kapjon-e saját, izolált CLAUDE_CONFIG_DIR-t (mint a sub-agentek). Bekapcsolva a fő agent a hosszú élettartamú fleet setup-tokenből (store/.claude-oauth-token) hitelesít, nem a rotálódó macOS Keychain OAuth-sessionből, ami periodikusan lejár és 401-et ad ("Please run /login"), amitől a bot elnémul. Token hiányában vagy nem-macOS gépen no-op. A módosítás a channels session újraindításakor lép életbe.',
     module: 'channels',
     secret: false,
     requiresRestart: true,
