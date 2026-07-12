@@ -34,7 +34,8 @@ import {
 } from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
-import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR } from '../config.js'
+import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT } from '../config.js'
+import { getEffectiveSettingValue } from '../settings-store.js'
 import { loadProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { writeAgentSettingsFromProfile } from './agent-scaffold.js'
@@ -264,9 +265,62 @@ export function ensureIsolatedChannelConfigDir(
   name: string,
   providerType: ChannelProviderType,
 ): string | null {
+  return provisionIsolatedConfigDir(join(agentDir(name), '.claude-config'), agentDir(name), providerType, name)
+}
+
+// The main channels agent (started by scripts/channels.sh, cwd = PROJECT_ROOT)
+// normally keeps the shared ~/.claude by design. On macOS that means it
+// authenticates from the ROTATING Keychain OAuth session, which periodically
+// expires and 401s the main bot (a manual /login is then needed) -- while the
+// isolated sub-agents, which authenticate from the long-lived fleet setup-token,
+// never do. This gives the main agent the SAME isolated CLAUDE_CONFIG_DIR as the
+// sub-agents so it too authenticates from CLAUDE_CODE_OAUTH_TOKEN and never
+// touches the rotating Keychain.
+//
+// Deliberately narrow and OPT-IN (default OFF), so nothing changes for existing
+// installs unless the operator turns it on:
+//   - macOS only -- on Linux the main agent's rotating credentials.json is
+//     handled by the separate credentials-guard; the Keychain-expiry motive is
+//     macOS-specific. This does NOT touch shouldAlertSharedConfigCollision's
+//     darwin early-return (a different failure mode: plugin-slot collision).
+//   - gated on the MAIN_AGENT_ISOLATED_CONFIG setting via the settings-store, so
+//     BOTH the dashboard toggle (config-overrides.json) AND a hand-set .env key
+//     take effect (resolution: override > .env > default '0'). channels.sh no
+//     longer parses the flag itself -- it always calls the helper on macOS and
+//     this function is the single gate.
+//   - gated on the fleet OAuth token (no token -> no isolation, since the
+//     isolated dir carries no .credentials.json -- identical gate to the
+//     sub-agent path in startAgentProcess);
+//   - returns null (caller keeps the shared root) whenever not applicable.
+export function ensureMainAgentIsolatedConfigDir(
+  provider?: string,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  if (platform !== 'darwin') return null
+  let enabled = false
+  try { enabled = String(getEffectiveSettingValue('MAIN_AGENT_ISOLATED_CONFIG')) === '1' } catch { enabled = false }
+  if (!enabled) return null
+  if (!hasFleetOauthToken()) return null
+  return provisionIsolatedConfigDir(
+    join(PROJECT_ROOT, '.channels-config'),
+    PROJECT_ROOT,
+    getProviderType(provider),
+    MAIN_AGENT_ID,
+  )
+}
+
+// Shared provisioning core for BOTH the sub-agents (ensureIsolatedChannelConfigDir)
+// and the main agent (ensureMainAgentIsolatedConfigDir) -- one code path so the
+// two can never diverge. `cfg` is the isolated CLAUDE_CONFIG_DIR to create; `cwd`
+// is the agent's project dir stamped into its own installed_plugins.json; `name`
+// is used for logs only.
+function provisionIsolatedConfigDir(
+  cfg: string,
+  cwd: string,
+  providerType: ChannelProviderType,
+  name: string,
+): string | null {
   try {
-    const cwd = agentDir(name)
-    const cfg = join(cwd, '.claude-config')
     const realClaude = join(homedir(), '.claude')
     if (!existsSync(realClaude)) return null
     mkdirSync(cfg, { recursive: true })

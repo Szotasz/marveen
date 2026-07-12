@@ -1,0 +1,8 @@
+{
+  "schedule": "0 7 * * *",
+  "agent": "{{MAIN_AGENT_ID}}",
+  "enabled": false,
+  "type": "task",
+  "skipIfBusy": false,
+  "createdAt": 0
+}

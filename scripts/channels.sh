@@ -138,6 +138,42 @@ MODEL_FLAG=""
 # tmux command-string round-trip without the inner shell glob-expanding `[1m]`.
 [ -n "$MAIN_MODEL" ] && MODEL_FLAG="--model '$MAIN_MODEL' "
 
+# macOS main-agent config isolation (OPT-IN, default OFF).
+#
+# By default the main channels agent keeps the shared ~/.claude and, on macOS,
+# authenticates from the ROTATING Keychain OAuth session -- which periodically
+# expires and 401s the main bot ("Please run /login"), while the isolated
+# sub-agents (long-lived fleet setup-token) never do. The helper provisions an
+# isolated CLAUDE_CONFIG_DIR (same code path as the sub-agents, via
+# dist/web/agent-process.js) and authenticates the main agent from the fleet
+# setup-token instead.
+#
+# The ON/OFF decision lives ENTIRELY in the helper (ensureMainAgentIsolatedConfigDir):
+# it reads the effective MAIN_AGENT_ISOLATED_CONFIG setting (dashboard toggle in
+# store/config-overrides.json OR a hand-set .env key -- resolution override>.env>
+# default '0') plus the fleet-token gate. So on macOS we ALWAYS call the helper;
+# it prints a path only when isolation is enabled AND a valid fleet token exists,
+# otherwise CFG_ENV stays EMPTY and the agent keeps the shared root. Strict no-op
+# for existing installs (non-macOS, setting off, no fleet token, or no dist build).
+CFG_ENV=""
+if [ "$(uname)" = "Darwin" ]; then
+  mkdir -p "$INSTALL_DIR/store" 2>/dev/null || true
+  _node_bin="$(command -v node || true)"
+  if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
+    _iso_cfg="$("$_node_bin" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$CHANNEL_PROVIDER" 2>>"$INSTALL_DIR/store/channels-failures.log" || true)"
+    if [ -n "$_iso_cfg" ] && [ -d "$_iso_cfg" ]; then
+      # Seed the token from the SAME 0600 file the isolated dir is gated on, so
+      # the config dir and the active token always match (the isolated dir carries
+      # no .credentials.json). $(cat) is evaluated in the launched shell so the
+      # secret never lands in the argv/`ps` command string.
+      CFG_ENV="export CLAUDE_CONFIG_DIR='$_iso_cfg' && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$INSTALL_DIR/store/.claude-oauth-token')\" && "
+      echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent isolated CLAUDE_CONFIG_DIR=$_iso_cfg" >> "$INSTALL_DIR/store/channels-failures.log"
+    fi
+    unset _iso_cfg
+  fi
+  unset _node_bin
+fi
+
 # Régi session takarítás
 $TMUX kill-session -t "$SESSION" 2>/dev/null
 
@@ -232,7 +268,7 @@ $TMUX set-environment -g CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION false 2>/dev/null 
 # otherwise new-session below fails with "duplicate session".
 $TMUX kill-session -t "$SESSION" 2>/dev/null || true
 $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
-  "${MCP_BATCH_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}"
+  "${MCP_BATCH_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}"
 
 # Session startup guard: a Claude Code first-run dialogusait auto-accept-eljuk
 # kulonben a headless session orokre parkolna a prompton es a Telegram plugin
@@ -273,7 +309,7 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
         # entry); see the PR description / card 7EB18437.
         [ -e "$INSTALL_DIR/CLAUDE.md" ] && ln -sf "$INSTALL_DIR/CLAUDE.md" "$_CHANNELS_STARTDIR/CLAUDE.md" 2>/dev/null || true
         $TMUX new-session -d -s "$SESSION" -c "$_CHANNELS_STARTDIR" \
-          "${MCP_BATCH_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}"
+          "${MCP_BATCH_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}"
         unset _CHANNELS_STARTDIR
       fi
       continue

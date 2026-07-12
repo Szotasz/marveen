@@ -56,6 +56,7 @@ import { tryHandleIdeas } from './web/routes/ideas.js'
 import { tryHandleToolLog } from './web/routes/tool-log.js'
 import { tryHandleSettings } from './web/routes/settings.js'
 import { tryHandleAuditLog } from './web/routes/audit-log.js'
+import { tryHandleFleetQ } from './web/routes/fleet-q.js'
 import { tryHandleStatic } from './web/routes/static.js'
 import { tryHandleVoice } from './web/routes/voice.js'
 import { tryHandleVaultSsh } from './web/routes/vault-ssh.js'
@@ -135,7 +136,10 @@ export function startWebServer(port = 3420): http.Server {
     // path, validated with the same constant-time check. Everything else stays
     // header-only.
     const isSseStream = method === 'GET' && /^\/api\/agents\/[^/]+\/pane\/stream$/.test(path)
-    if (path.startsWith('/api/') && !isPublicApi) {
+    // /.well-known/fleetq exposes the agent roster; protect it with the same
+    // Bearer token as /api/* so LAN-exposed instances don't leak fleet topology.
+    const isFleetManifest = path === '/.well-known/fleetq' && method === 'GET'
+    if ((path.startsWith('/api/') && !isPublicApi) || isFleetManifest) {
       const headerOk = checkBearerToken(req.headers.authorization, DASHBOARD_TOKEN)
       const queryOk = isSseStream && checkBearerToken(`Bearer ${url.searchParams.get('token') ?? ''}`, DASHBOARD_TOKEN)
       if (!headerOk && !queryOk) {
@@ -190,6 +194,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleVaultSshKeys(routeCtx)) return
       if (await tryHandleVaultSsh(routeCtx)) return
       if (await tryHandleAuditLog(routeCtx)) return
+      if (await tryHandleFleetQ(routeCtx)) return
       if (await tryHandleStatic(routeCtx, WEB_DIR)) return
 
       res.writeHead(404)

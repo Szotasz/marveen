@@ -108,7 +108,7 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 | Mező | Típus | Leírás |
 |------|-------|--------|
 | `key` | string | ENV-kompatibilis kulcs (pl. `KANBAN_WIP_PLANNED`) |
-| `type` | `int` / `color` / `string` | Érték típusa (validáció + UI widget) |
+| `type` | `int` / `color` / `string` / `boolean` | Érték típusa (validáció + UI widget). A `boolean` ki/be kapcsoló (checkbox), kanonikus `"1"`/`"0"` értékkel |
 | `default` | any | Fallback érték, ha nincs override és nincs .env |
 | `description` | string | Felhasználói leírás (UI-ban megjelenik) |
 | `module` | string | Csoportosítás a Beállítások oldalon (pl. `kanban`) |
@@ -160,6 +160,51 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 |-------|-------|-----------|--------|-------------|
 | `IDEA_BREAKDOWN_MAX_SUBTASKS` | int | 10 | min 2, max 20 | nem |
 | `IDEA_STALE_DAYS` | int | 7 | min 1, max 365 | nem |
+
+**Registry -- Csatornák modul:**
+
+| Kulcs | Típus | Alapérték | Platform | Újraindítás |
+|-------|-------|-----------|----------|-------------|
+| `MAIN_AGENT_ISOLATED_CONFIG` | boolean | `0` (ki) | csak macOS | igen |
+
+#### `MAIN_AGENT_ISOLATED_CONFIG` -- a fő agent config-izolációja (macOS)
+
+**Mire szolgál.** Ki-be kapcsolható javítás a fő channels-agent macOS-en jelentkező
+periodikus `401 Invalid authentication credentials` / „Please run /login" hibájára.
+A tünet: a fő bot időnként elnémul, kézi `/login` kell, pár nap múlva megismétlődik --
+miközben a sub-agentek sosem esnek ki.
+
+**A gyökérok.** A fő channels-agent alapból a közös `~/.claude` config dir-t
+használja. macOS-en ez a **rotálódó Keychain OAuth-sessionből** hitelesít, ami
+periodikusan lejár → 401. A sub-agentek ezzel szemben saját, izolált
+`CLAUDE_CONFIG_DIR`-rel és a hosszú élettartamú fleet setup-tokennel
+(`store/.claude-oauth-token`) futnak, ezért ők stabilak.
+
+**Mit csinál bekapcsolva.** A fő agent is megkapja a sub-agentekével AZONOS izolált
+config dir-t (`<install>/.channels-config`, symlinkelt megosztott résekkel, de saját
+`settings.json`/`plugins/` állapottal és `.credentials.json` NÉLKÜL). Így a fő agent
+a stabil `CLAUDE_CODE_OAUTH_TOKEN`-ből hitelesít, nem a lejáró Keychainből.
+
+**Egységes kapu.** A be/ki döntést egyetlen helper (`ensureMainAgentIsolatedConfigDir`)
+hozza, ami az effektív beállítást olvassa (feloldás: `config-overrides.json` >
+`.env` > default `0`). Ezt a helpert hívja MINDHÁROM fő-agent indítási út, így a
+kapcsoló egységesen vezérli az összeset:
+1. a `scripts/channels.sh` boot (indító helper),
+2. a dashboard channel-monitor `--continue` resume respawn-ja,
+3. a dashboard channel-monitor fresh hard-restart respawn-ja.
+
+**Kapuk (mikor no-op).** Nincs hatása (marad a közös `~/.claude`), ha: nem macOS a
+gép; nincs érvényes fleet setup-token; vagy nincs build-elt `dist/`. Linuxon a
+rotálódó `credentials.json`-t ehelyett a külön credentials-guard kezeli.
+
+**Bekapcsolás.** Dashboard: *Beállítások → Csatornák → `MAIN_AGENT_ISOLATED_CONFIG`*
+(a kapcsoló a `store/config-overrides.json`-ba ír). Vagy kézzel: `.env`-ben
+`MAIN_AGENT_ISOLATED_CONFIG=1`. A módosítás a channels session újraindításakor lép
+életbe (a `requiresRestart` badge is ezt jelzi).
+
+**Visszaállítás.** Kapcsold KI (dashboard) vagy `MAIN_AGENT_ISOLATED_CONFIG=0`
+(`.env`), majd indítsd újra a channels sessiont -- mindhárom indítási út visszaáll
+a közös `~/.claude` viselkedésre.
 
 **API végpontok:**
 
