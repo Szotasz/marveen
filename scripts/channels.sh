@@ -46,6 +46,73 @@ case "$CHANNEL_PROVIDER" in
   *)        PLUGIN_ID="telegram@claude-plugins-official" ;;
 esac
 
+# Self-healing guard: ensure PLUGIN_ID is enabled in the PROJECT settings.json
+# before launch. A PR review-reset or branch-switch that reverts
+# .claude/settings.json can silently drop the entry and disable the channel
+# plugin, leaving Claude running with no active channel; this re-adds it.
+#
+# Deliberately PROJECT-SCOPED only ($INSTALL_DIR/.claude/settings.json). We do
+# NOT force-enable in the user-global ~/.claude/settings.json: that would make
+# EVERY Claude context (all sub-agent sessions) load the channel plugin, and a
+# provider that opens a single Socket-Mode connection (Slack) would then have
+# multiple sessions fighting over one workspace socket -- a duplicate-socket /
+# 409 hazard.
+_ensure_plugin_enabled() {
+  local settings_file="$1"
+  [ -f "$settings_file" ] || return 0
+  python3 - "$settings_file" "$PLUGIN_ID" <<'PYEOF'
+import json, os, sys, tempfile
+
+path, plugin_id = sys.argv[1], sys.argv[2]
+
+# SKIP-ON-PARSE-FAILURE: if the file is unreadable or not valid JSON (e.g. a
+# concurrent writer caught mid-write, or a genuinely corrupt file), NEVER fall
+# back to an empty object and write it back -- that would clobber the user's
+# hooks / model / permissions. Leave the file untouched; the next launch retries.
+try:
+    with open(path, "r") as f:
+        data = json.load(f)
+except (OSError, ValueError):
+    print("channels.sh: settings.json unreadable/invalid, guard skipped: %s" % path,
+          file=sys.stderr, flush=True)
+    sys.exit(0)
+
+if not isinstance(data, dict):
+    sys.exit(0)
+
+plugins = data.get("enabledPlugins")
+if not isinstance(plugins, dict):
+    plugins = {}
+    data["enabledPlugins"] = plugins
+
+if plugins.get(plugin_id) is True:
+    sys.exit(0)  # already enabled -> no write, no needless churn
+
+plugins[plugin_id] = True
+
+# ATOMIC write: serialize to a temp file in the SAME directory, then os.replace
+# (atomic rename on POSIX). A reader -- or the hook-registration guard (#565)
+# running concurrently -- never observes a half-written settings.json.
+dir_name = os.path.dirname(path) or "."
+fd, tmp = tempfile.mkstemp(dir=dir_name, prefix=".settings-", suffix=".tmp")
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+except BaseException:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
+
+print("channels.sh: enabled %s in %s" % (plugin_id, path), flush=True)
+PYEOF
+}
+_ensure_plugin_enabled "$INSTALL_DIR/.claude/settings.json"
+unset -f _ensure_plugin_enabled
+
 # ROOT-CAUSE NOTE (kali-linux WSL, claude-code 2.1.152, 2026-05-27):
 # Inbound MCP notifications from the `--channels` plugin go through a SECOND
 # gate beyond --dangerously-skip-permissions / --dangerously-load-development-
