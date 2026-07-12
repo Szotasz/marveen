@@ -31,8 +31,7 @@ import {
   SCHEDULED_TASKS_DIR,
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
-import { listAgentNames, readFileOr, readAgentRemoteHost, agentDir } from './agent-config.js'
-import { channelStateDir } from '../channel-provider.js'
+import { listAgentNames, readFileOr, readAgentRemoteHost } from './agent-config.js'
 import {
   agentSessionName,
   isAgentRunning,
@@ -159,30 +158,6 @@ export function runPreCheck(task: ScheduledTask): { skip: boolean; prefix?: stri
     logger.warn({ err, task: task.name }, 'pre-check script threw, running LLM anyway')
     return { skip: false }
   }
-}
-
-// Resolve the chat id a "task"-type scheduled prompt should tell the agent to
-// reply to. Historically this was the literal string "chat_id: 0", on the
-// assumption that the channel plugin resolves "0" to the running agent's own
-// bound/paired chat -- it does not (confirmed empirically: the Telegram reply
-// tool rejects chat_id="0" as not-allowlisted, since "0" is never a real
-// Telegram chat). Resolve for real instead: prefer the agent's OWN isolated
-// channel .env (set per-agent once that agent is paired with its own owner --
-// this is what keeps a sub-agent's task result going to ITS owner rather than
-// the global admin, the original reason "0" was used over ALLOWED_CHAT_ID),
-// falling back to the global ALLOWED_CHAT_ID when the agent has no such
-// per-agent binding yet (the common case today: every agent in this fleet is
-// paired to the same single owner).
-function resolveAgentOwnerChatId(agentName: string): string {
-  if (agentName === MAIN_AGENT_ID) return ALLOWED_CHAT_ID
-  try {
-    const envPath = join(channelStateDir('telegram', agentDir(agentName)), '.env')
-    const content = readFileOr(envPath, '')
-    const match = content.match(/^ALLOWED_CHAT_ID=(.+)$/m)
-    const perAgent = match ? match[1].trim() : ''
-    if (perAgent) return perAgent
-  } catch { /* fall through to the global owner below */ }
-  return ALLOWED_CHAT_ID
 }
 
 // Try to fire a task at a single target agent. Returns the outcome so the
@@ -317,20 +292,14 @@ function attemptFireTask(
       // heartbeat prompts.
       prefix = `[Heartbeat: ${task.name}] `
     } else {
-      // Target the RUNNING agent's own bound channel, NOT unconditionally the
-      // global ALLOWED_CHAT_ID -- that is the main/admin chat, and pointing
-      // every sub-agent's task result at it instead of its own owner (e.g.
-      // attilamarveenja -> Papp Attila) was the original bug this avoided.
-      // The literal "chat_id: 0" placeholder used to stand in for "resolve
-      // this per-agent", on the assumption the channel plugin does that
-      // translation -- it does not (confirmed empirically: chat_id="0" is
-      // rejected as not-allowlisted). resolveAgentOwnerChatId() now does the
-      // resolution here instead: the agent's own isolated channel .env if it
-      // has one bound, else the global owner. The system-level pending-retry
-      // alert below still uses ALLOWED_CHAT_ID directly (system-owner alert,
-      // not a per-agent task result).
-      const chatId = resolveAgentOwnerChatId(agentName)
-      prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el Telegramon (chat_id: ${chatId}, reply tool). `
+      // Target the RUNNING agent's own bound channel (chat_id: 0), NOT the
+      // global ALLOWED_CHAT_ID. The latter is the main/admin chat; injecting it
+      // here pointed every sub-agent's task result at the boss's chat instead of
+      // its own owner (e.g. attilamarveenja -> Papp Attila). chat_id: 0 is the
+      // established "bound channel" convention (template-identity-hygiene), so it
+      // resolves per-agent and stays correct for the main agent too. The
+      // system-level pending-retry alert below still uses ALLOWED_CHAT_ID.
+      prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el Telegramon (chat_id: 0, reply tool). `
     }
     // A scheduled task body is the agent's OWN task, authored by the operator
     // (SKILL.md on disk, or the bearer-gated /api/schedules editor -- both
