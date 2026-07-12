@@ -75,6 +75,10 @@ interface ParsedCall {
   outputTokens: number
   cacheReadTokens: number
   cacheCreationTokens: number
+  /** Tokens in thinking content blocks (estimated from char length / 4). */
+  thinkingTokens: number
+  /** Model identifier from the API response, e.g. "claude-sonnet-4-6". */
+  model: string | null
   contentPreview: string
   toolName: string | null
   /** The API message id (msg_...). One assistant turn that calls a tool is
@@ -112,6 +116,8 @@ export function collapseByMessageId(calls: ParsedCall[]): ParsedCall[] {
     ex.outputTokens = Math.max(ex.outputTokens, c.outputTokens)
     ex.cacheReadTokens = Math.max(ex.cacheReadTokens, c.cacheReadTokens)
     ex.cacheCreationTokens = Math.max(ex.cacheCreationTokens, c.cacheCreationTokens)
+    ex.thinkingTokens = Math.max(ex.thinkingTokens, c.thinkingTokens)
+    if (!ex.model && c.model) ex.model = c.model
     if (!ex.toolName && c.toolName) ex.toolName = c.toolName
     if (!ex.contentPreview && c.contentPreview) ex.contentPreview = c.contentPreview
   }
@@ -164,11 +170,15 @@ async function parseJsonlFile(
     }
 
     let toolName: string | null = null
+    let thinkingTokens = 0
     if (Array.isArray(content)) {
       for (const block of content) {
-        if (block.type === 'tool_use' && block.name) {
+        if (block.type === 'tool_use' && block.name && !toolName) {
           toolName = block.name
-          break
+        }
+        // Estimate thinking tokens from char length (no per-block count in API)
+        if (block.type === 'thinking' && typeof block.thinking === 'string') {
+          thinkingTokens += Math.ceil(block.thinking.length / 4)
         }
       }
     }
@@ -181,6 +191,8 @@ async function parseJsonlFile(
       outputTokens: (u.output_tokens || 0),
       cacheReadTokens: (u.cache_read_input_tokens || 0),
       cacheCreationTokens: (u.cache_creation_input_tokens || 0),
+      thinkingTokens,
+      model: obj.message?.model || null,
       contentPreview: preview,
       toolName,
       messageId: obj.message?.id || null,
@@ -202,8 +214,8 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
   const setCursor = db.prepare('INSERT OR REPLACE INTO token_usage_cursors (file_path, last_line, last_size) VALUES (?, ?, ?)')
   const insertCall = db.prepare(`
     INSERT OR IGNORE INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens,
-      cache_read_tokens, cache_creation_tokens, content_preview, tool_name)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      cache_read_tokens, cache_creation_tokens, thinking_tokens, model, content_preview, tool_name)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   for (const source of sources) {
@@ -227,6 +239,7 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
                 c.agent, c.sessionId, c.timestamp,
                 c.inputTokens, c.outputTokens,
                 c.cacheReadTokens, c.cacheCreationTokens,
+                c.thinkingTokens, c.model,
                 c.contentPreview || null, c.toolName,
               )
             }
@@ -326,6 +339,8 @@ export interface TokenDetail {
   outputTokens: number
   cacheReadTokens: number
   cacheCreationTokens: number
+  thinkingTokens: number
+  model: string | null
   contentPreview: string | null
   toolName: string | null
   taskTitle: string | null
