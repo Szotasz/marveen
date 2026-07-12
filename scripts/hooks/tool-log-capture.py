@@ -44,8 +44,8 @@ _SECRET_PATTERNS = [
     re.compile(r'(?i)((?:token|secret|password|api[_\-]?key|apikey|auth|credential)\s*[=:]\s*)[^\s,\'";&|]{6,}'),
     # GitHub/Anthropic/OpenAI style tokens
     re.compile(r'\b(ghp_|sk-|sk-ant-|xoxb-|xoxp-)[A-Za-z0-9_\-]{10,}'),
-    # Raw hex/base64 blobs ≥ 32 chars (likely hashed secrets)
-    re.compile(r'\b([0-9a-fA-F]{32,})\b'),
+    # Raw hex blobs ≥ 32 chars (likely hashed secrets) -- no capture group, full match replaced
+    re.compile(r'\b[0-9a-fA-F]{32,}\b'),
 ]
 
 
