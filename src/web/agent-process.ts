@@ -104,6 +104,21 @@ export function ownChannelProviderForScope(
   return hasOwnToken && resolvedProvider ? resolvedProvider : null
 }
 
+// Wrap the telegram plugin's bun stdio server in a tee that persists each
+// inbound channel notification to <stateDir>/inbox-pending.jsonl, which the
+// channel-inbox-drain UserPromptSubmit hook then pulls into the next turn.
+// Sub-agents load the plugin as a plain MCP server, so Claude Code drops its
+// channel notifications; this tee is what makes SUBAGENT_TELEGRAM_WAKE_ENABLED
+// have an inbox to wake on.
+export function buildTelegramMcpServerConfig(bunBin: string, pluginDir: string, stateDir: string) {
+  const wrapper = join(PROJECT_ROOT, 'scripts', 'channel-inbound-tee.mjs')
+  return {
+    command: 'node',
+    args: [wrapper, bunBin, 'run', '--cwd', pluginDir, '--shell=bun', '--silent', 'start'],
+    env: { TELEGRAM_STATE_DIR: stateDir },
+  }
+}
+
 // The fleet's shared long-lived OAuth token (from `claude setup-token`), stored
 // 0600 in store/. Isolated channel sub-agents authenticate via this token in the
 // CLAUDE_CODE_OAUTH_TOKEN env var -- NOT via a copied/symlinked .credentials.json.
@@ -757,21 +772,57 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // its channel comes up via channels.sh -- but if a future caller ever passed
     // MAIN_AGENT_ID in, scopeChannelPlugins(null) would DISABLE the owner's
     // telegram channel (Szabi's primary line). Refuse outright.
+    //
+    // Telegram agents use a per-agent .mcp.json to spawn their own bun process
+    // instead of the shared --channels flag path. The --channels path goes
+    // through the plugin's .in_use/<pid> lock: if one process already holds the
+    // lock, every other agent that starts with --channels gets "already in use"
+    // and ends up with No MCP servers configured -- no bun, no bot.pid, deaf to
+    // inbound Telegram. The mcp.json path bypasses the lock: Claude Code spawns a
+    // fresh bun stdio server per agent, each with its own TELEGRAM_STATE_DIR. The
+    // stdio tee wrapper restores inbound delivery by persisting notifications to a
+    // local inbox that the UserPromptSubmit drain hook pulls into context.
+    let useMcpJsonForChannel = false
+    if (hasChannel && agentProvider === 'telegram' && name !== MAIN_AGENT_ID) {
+      try {
+        const pluginCacheDir = join(homedir(), '.claude', 'plugins', 'cache', 'claude-plugins-official', 'telegram')
+        const versions = existsSync(pluginCacheDir)
+          ? readdirSync(pluginCacheDir).filter(v => /^\d+\.\d+\.\d+$/.test(v)).sort().reverse()
+          : []
+        const pluginVersion = versions[0] ?? '0.0.6'
+        const pluginDir = join(pluginCacheDir, pluginVersion)
+        const bunBin = join(homedir(), '.bun', 'bin', 'bun')
+        // The agent working-dir .mcp.json (NOT .claude/mcp.json) is what Claude Code
+        // loads as project-scope MCP config. An empty .mcp.json already present would
+        // override .claude/mcp.json, so write to the same file Claude Code reads.
+        const mcpJsonPath = join(agentDir(name), '.mcp.json')
+        const mcpConfig = {
+          mcpServers: {
+            'plugin:telegram:telegram': buildTelegramMcpServerConfig(bunBin, pluginDir, agentChannelDir),
+          },
+        }
+        writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2))
+        useMcpJsonForChannel = true
+        logger.info({ name, pluginVersion, pluginDir }, 'Wrote per-agent mcp.json for telegram plugin')
+      } catch (err) {
+        logger.warn({ err, name }, 'Could not write mcp.json for telegram agent; falling back to --channels flag')
+      }
+    }
+
     if (name !== MAIN_AGENT_ID) {
       const settingsPath = join(agentDir(name), '.claude', 'settings.json')
       try {
         const s = JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown>
-        // Gate the enable decision on the SAME signal as the --channels launch
-        // flag: a real own bot token in this agent's channel .env (token, above).
-        // A genuine own-token agent enables its own provider's plugin; a channel-
-        // less agent (no own token, only the legacy/global fallback that still
-        // marks hasChannel) yields null -> all providers disabled, so it never
-        // fights the main agent over the shared getUpdates slot. Keying on the
-        // explicit channelProvider config field instead (always null for sub-agents)
-        // was the regression that disabled the plugin for every legitimately-
-        // channelled sub-agent after a respawn (truly-unreachable plugin, no poller).
+        // When mcp.json is used for the telegram plugin, force enabledPlugins.telegram
+        // to false so Claude Code does not ALSO load the plugin via the marketplace
+        // enabledPlugins path -- that would spawn a second bun process and produce
+        // 409 Conflict / poller races. When --channels is still used (non-telegram
+        // providers or mcp.json write failure), keep the original token-gated logic.
+        const scopeProvider = useMcpJsonForChannel
+          ? null
+          : ownChannelProviderForScope(!!token, agentProvider)
         s.enabledPlugins = scopeChannelPlugins(
-          ownChannelProviderForScope(!!token, agentProvider),
+          scopeProvider,
           s.enabledPlugins as Record<string, boolean> | undefined,
         )
         writeFileSync(settingsPath, JSON.stringify(s, null, 2))
