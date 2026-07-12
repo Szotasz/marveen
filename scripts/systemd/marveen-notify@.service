@@ -1,0 +1,20 @@
+# NOTE: replace /path/to/marveen (install dir) and /home/USER (home) with your values.
+# Templated app-crash notifier. Instantiated by an `OnFailure=` line on a unit,
+# e.g. a drop-in on marveen-dashboard.service / marveen-channels.service:
+#   [Unit]
+#   OnFailure=marveen-notify@%n.service
+# %i carries the failed unit's name. Reports an APP/service crash -- distinct
+# from a host/WSL-VM restart (host-restart-watchdog.sh). See
+# scripts/systemd/README-host-stability.md.
+[Unit]
+Description=Marveen app-crash notifier for %i
+
+[Service]
+Type=oneshot
+ExecStart=/path/to/marveen/scripts/unit-fail-notify.sh %i
+Environment=TELEGRAM_ENV=/home/USER/.claude/channels/telegram/.env
+Environment=PATH=/home/USER/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/USER
+Environment=TZ=Europe/Budapest
+StandardOutput=journal
+StandardError=journal

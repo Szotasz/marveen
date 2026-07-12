@@ -5,6 +5,7 @@ import { CHANNEL_PROVIDER } from '../config.js'
 import { channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { agentDir, listAgentNames, readAgentChannelProvider } from './agent-config.js'
 import { upsertChannelRequest, listPendingChannelRequests, updateChannelRequestName } from '../db.js'
+import { TOOL_TIMEOUTS } from '../tool-timeouts.js'
 
 function resolveAgentProvider(name: string): ChannelProviderType {
   const perAgent = readAgentChannelProvider(name)
@@ -76,6 +77,7 @@ async function lookupChannelName(agent: string, channelId: string): Promise<void
         'Authorization': `Bearer ${token}`,
       },
       body: `channel=${encodeURIComponent(channelId)}`,
+      signal: AbortSignal.timeout(TOOL_TIMEOUTS['slack']),
     })
     const data = await resp.json() as { ok: boolean; channel?: { name: string } }
     if (data.ok && data.channel?.name) {

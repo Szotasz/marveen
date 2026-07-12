@@ -65,4 +65,23 @@ test.describe('Dashboard smoke', () => {
     await page.waitForTimeout(500)
     expect(errors).toHaveLength(0)
   })
+
+  // Card 2ed90db1 / PR #524 review blocker: "no UI is wired, /api/costs isn't
+  // reachable from the dashboard" -- this proves the Costs nav link is real, the
+  // page actually renders live data from /api/costs/summary (not dead scaffolding),
+  // and no JS error fires.
+  test('costs page loads and renders live summary data without errors', async ({ page }) => {
+    const errors: string[] = []
+    page.on('pageerror', (err) => errors.push(err.message))
+    await page.goto(`/?token=${TOKEN}`)
+    await page.click('.sb-link[data-page="costs"]')
+    await page.waitForTimeout(500)
+    const content = page.locator('#costsContent')
+    await expect(content).toBeVisible()
+    // The summary always includes a "month" stat (YYYY-MM), regardless of whether
+    // any real fixed costs are configured -- proves the fetch to /api/costs/summary
+    // actually happened and rendered, not just an empty/loading shell.
+    await expect(content).toContainText(/\d{4}-\d{2}/)
+    expect(errors).toHaveLength(0)
+  })
 })

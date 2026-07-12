@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, c
 import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL } from './config.js'
 import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
+import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 
 let db: Database.Database
 
@@ -629,6 +630,54 @@ export function initDatabase(dbPathOverride?: string): void {
   // Migration: add agent column to installs that created the table before this column existed.
   try { db.exec(`ALTER TABLE store_file_audit ADD COLUMN agent TEXT`) } catch { /* column already exists */ }
 
+  // --- CostOps (local cost ledger) ---
+  // Read-mostly, FOCUS-inspired. cost_sources = provider/subscription origin,
+  // cost_line_items = individual charge rows (estimate or provider-sourced).
+  // No secrets/account IDs stored raw. Budgets are config-driven (costops/config.ts's
+  // BudgetEntry, from store/costops-config.json) -- there is deliberately no separate
+  // `budgets` DB table: an earlier draft of this schema had one, but it was never
+  // read from or written to (config.budgets was always the actual source), so it was
+  // a dead, unused second source of truth. Removed rather than wired up, since the
+  // config file already covers this fully and a DB table would just be a sync burden
+  // for no benefit.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS cost_sources (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      source_type TEXT NOT NULL,
+      account_ref TEXT,
+      currency TEXT NOT NULL DEFAULT 'HUF',
+      active INTEGER NOT NULL DEFAULT 1,
+      notes TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS cost_line_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_id TEXT NOT NULL REFERENCES cost_sources(id),
+      charge_period_start INTEGER NOT NULL,
+      charge_period_end INTEGER NOT NULL,
+      charge_category TEXT NOT NULL,
+      service_name TEXT,
+      usage_type TEXT,
+      consumed_quantity REAL,
+      consumed_unit TEXT,
+      billed_cost REAL NOT NULL,
+      effective_cost REAL,
+      currency TEXT NOT NULL DEFAULT 'HUF',
+      confidence TEXT NOT NULL,
+      data_freshness INTEGER NOT NULL,
+      source_ref TEXT,
+      dedup_key TEXT UNIQUE,
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_cost_line_items_period ON cost_line_items(charge_period_start, charge_period_end)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_cost_line_items_source ON cost_line_items(source_id)`)
+
   // --- Vault SSH Keys (shared pool) ---
   db.exec(`
     CREATE TABLE IF NOT EXISTS vault_ssh_keys (
@@ -789,19 +838,73 @@ export function buildFtsMatchExpression(query: string): string {
   return tokens.join(' ')
 }
 
+// -- Recency-weighted retrieval (Roitman 17.4.2) --
+//
+// score = λ·relevance + (1−λ)·recency, where recency = exp(−age/τ). Pure
+// keyword rank returns whichever memory FTS scores highest regardless of age,
+// so a stale fact ("reply tool down") can outrank its own correction ("reply
+// tool up"). The blend keeps relevance dominant (λ = 0.7) but breaks
+// near-ties in favour of the newer memory.
+//
+// FTS5 `rank` is bm25: negative, more negative = better. Normalized to 0..1
+// via −rank/(1−rank) (monotonic, no unbounded tail). The blend runs in JS on
+// an oversampled candidate set rather than in SQL so it does not depend on
+// SQLite being compiled with math functions, and stays unit-testable.
+export const RECENCY_LAMBDA = 0.7
+export const RECENCY_TAU_SEC = 7 * 86400
+// Candidates fetched per requested row before re-ranking. Bounded so a broad
+// query still touches at most 4x the requested rows.
+const RECENCY_OVERSAMPLE = 4
+
+export interface RecencyRankable {
+  rank: number
+  created_at: number
+}
+
+export function recencyWeightedScore(
+  row: RecencyRankable,
+  nowSec: number,
+  lambda = RECENCY_LAMBDA,
+  tauSec = RECENCY_TAU_SEC,
+): number {
+  const relevance = row.rank < 0 ? -row.rank / (1 - row.rank) : 0
+  const ageSec = Math.max(0, nowSec - row.created_at)
+  const recency = Math.exp(-ageSec / tauSec)
+  return lambda * relevance + (1 - lambda) * recency
+}
+
+export function reRankByRecency<T extends RecencyRankable>(
+  rows: T[],
+  limit: number,
+  nowSec: number = Math.floor(Date.now() / 1000),
+): T[] {
+  return rows
+    .map((row) => ({ row, score: recencyWeightedScore(row, nowSec) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((x) => x.row)
+}
+
+// Strip the FTS rank column the oversampled queries select for re-ranking, so
+// the public return shape stays exactly Memory.
+function withoutRank<T extends { rank: number }>(rows: T[]): Omit<T, 'rank'>[] {
+  return rows.map(({ rank: _rank, ...rest }) => rest)
+}
+
 export function searchMemories(query: string, chatId: string, limit = 3): Memory[] {
   const terms = buildFtsMatchExpression(query)
   if (!terms) return []
   try {
-    return db
+    const candidates = db
       .prepare(
-        `SELECT m.* FROM memories m
+        `SELECT m.*, f.rank AS rank FROM memories m
          JOIN memories_fts f ON m.id = f.rowid
          WHERE f.content MATCH ? AND m.chat_id = ?
          ORDER BY rank
          LIMIT ?`
       )
-      .all(terms, chatId, limit) as Memory[]
+      .all(terms, chatId, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
+    return withoutRank(reRankByRecency(candidates, limit)) as Memory[]
   } catch {
     return []
   }
@@ -866,12 +969,13 @@ export function searchAgentMemories(agentId: string, query: string, limit: numbe
   const terms = buildFtsMatchExpression(query)
   if (!terms) return []
   try {
-    return db.prepare(
-      `SELECT m.* FROM memories m
+    const candidates = db.prepare(
+      `SELECT m.*, f.rank AS rank FROM memories m
        JOIN memories_fts f ON m.id = f.rowid
        WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')
        ORDER BY rank LIMIT ?`
-    ).all(terms, agentId, limit) as Memory[]
+    ).all(terms, agentId, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
+    return withoutRank(reRankByRecency(candidates, limit)) as Memory[]
   } catch {
     return db.prepare(
       "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?"
@@ -970,12 +1074,16 @@ export function recallSearch(query: string, agentId?: string, limit = 50): Recal
   const escaped = escapeLike(query)
   if (terms) {
     try {
+      // Was ORDER BY created_at DESC (pure recency, relevance ignored); now the
+      // same λ-blend as the other search paths, so a strongly matching older
+      // memory can still surface above barely-matching fresh noise.
       const sql = agentId
-        ? `SELECT m.* FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared') ORDER BY m.created_at DESC LIMIT ?`
-        : `SELECT m.* FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? ORDER BY m.created_at DESC LIMIT ?`
-      memories = agentId
-        ? db.prepare(sql).all(terms, agentId, limit) as Memory[]
-        : db.prepare(sql).all(terms, limit) as Memory[]
+        ? `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared') ORDER BY rank LIMIT ?`
+        : `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? ORDER BY rank LIMIT ?`
+      const candidates = agentId
+        ? db.prepare(sql).all(terms, agentId, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
+        : db.prepare(sql).all(terms, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
+      memories = withoutRank(reRankByRecency(candidates, limit)) as Memory[]
     } catch {
       const sql = agentId
         ? "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY created_at DESC LIMIT ?"
@@ -1805,6 +1913,7 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: EMBED_MODEL, prompt: text.slice(0, 2000) }),
+      signal: AbortSignal.timeout(TOOL_TIMEOUTS['ollama-embedding']),
     })
     const data = await resp.json() as { embedding?: number[] }
     return data.embedding || null

@@ -130,18 +130,110 @@ async function sendBestEffortLogin(session: string): Promise<void> {
   }
 }
 
-function escalate(label: string, reason: string, consecutiveDead: number): void {
+// -- Quiet hours (23:00-06:00 Europe/Budapest) -------------------------------
+//
+// Overnight a dead token is not actionable: the fix is a manual browser
+// /login, and nobody does that at 03:00 -- but the healer used to re-alert
+// every 30 minutes all night (2026-07-09: spock+scotty alerted until morning).
+// Inside the window the PROBE keeps running and the state stays accurate;
+// ONLY the notify.sh escalation is held back. The first sweep after 06:00
+// sends ONE summary naming the agents that are STILL dead at that moment
+// (suppressed intermediates are dropped, healed agents are dropped silently),
+// and the normal 30-min re-alert cadence resumes from that summary.
+export const QUIET_START_HOUR = 23 // inclusive
+export const QUIET_END_HOUR = 6    // exclusive
+
+export function isQuietHour(hourLocal: number): boolean {
+  return hourLocal >= QUIET_START_HOUR || hourLocal < QUIET_END_HOUR
+}
+
+// Local wall-clock hour in Europe/Budapest regardless of the host TZ (the
+// same explicit-TZ rule the rest of the fleet follows for time handling).
+export function budapestHour(nowMs: number): number {
+  return parseInt(
+    new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Budapest', hour: '2-digit', hour12: false }).format(new Date(nowMs)),
+    10,
+  )
+}
+
+export interface QuietSuppressedEntry {
+  session: string
+  label: string
+  reason: string
+  consecutiveDead: number
+}
+
+const quietSuppressed = new Map<string, QuietSuppressedEntry>()
+
+export function buildEscalationMessage(label: string, reason: string, consecutiveDead: number): string {
   // Dynamic duration: consecutiveDead probes at PROBE_INTERVAL_MS each. On a
   // re-alert (after the 30min cooldown, still dead) this grows past the initial
   // ~9min, so a hardcoded value would lie -- compute it from the probe count.
   const approxMin = Math.round((consecutiveDead * PROBE_INTERVAL_MS) / 60_000)
-  const msg = `🔐 A(z) ${label} ágens halott OAuth tokent jelez (${reason}) több mint ~${approxMin} perce. Manuális browser /login kell a dashboardon (az ügynök kártyáján a "Bejelentkezés" gomb), automatikusan nem gyógyítható.`
+  return `🔐 A(z) ${label} ágens halott OAuth tokent jelez (${reason}) több mint ~${approxMin} perce. Manuális browser /login kell a dashboardon (az ügynök kártyáján a "Bejelentkezés" gomb), automatikusan nem gyógyítható.`
+}
+
+export function buildQuietSummaryMessage(entries: QuietSuppressedEntry[]): string {
+  const lines = entries.map((e) => {
+    const approxMin = Math.round((e.consecutiveDead * PROBE_INTERVAL_MS) / 60_000)
+    return `• ${e.label}: ${e.reason} (~${approxMin} perce)`
+  })
+  return [
+    `🔐 Reggeli token-összegzés: az éjszakai csendes sáv (${QUIET_START_HOUR}:00-0${QUIET_END_HOUR}:00) alatt elnyomott riasztások. MOST IS halott tokent jelez:`,
+    ...lines,
+    'Manuális browser /login kell a dashboardon (az ügynök kártyáján a "Bejelentkezés" gomb).',
+  ].join('\n')
+}
+
+/**
+ * Route one escalation decision: outside quiet hours notify immediately;
+ * inside, record it for the morning summary instead. Pure over its deps so
+ * the night->morning sequence is simulatable in tests.
+ */
+export function routeEscalation(
+  entry: QuietSuppressedEntry,
+  quiet: boolean,
+  notify: (msg: string) => void,
+  suppressed: Map<string, QuietSuppressedEntry> = quietSuppressed,
+): void {
+  if (quiet) {
+    suppressed.set(entry.session, entry)
+    logger.warn({ label: entry.label, session: entry.session, reason: entry.reason }, 'reauth-healer: dead token escalation suppressed (quiet hours), queued for morning summary')
+    return
+  }
+  notify(buildEscalationMessage(entry.label, entry.reason, entry.consecutiveDead))
+}
+
+/**
+ * First sweep after quiet hours: send ONE summary for agents still dead now,
+ * stamp their cooldown from the summary (it IS an alert), and drop everything
+ * else silently. No-op while still quiet or when nothing was suppressed.
+ */
+export function flushQuietSummary(
+  quiet: boolean,
+  stillDeadCount: (session: string) => number,
+  notify: (msg: string) => void,
+  stampAlert: (session: string) => void,
+  suppressed: Map<string, QuietSuppressedEntry> = quietSuppressed,
+): void {
+  if (quiet || suppressed.size === 0) return
+  const entries = [...suppressed.values()]
+  suppressed.clear()
+  const stillDead = entries
+    .map((e) => ({ ...e, consecutiveDead: stillDeadCount(e.session) }))
+    .filter((e) => e.consecutiveDead > 0)
+  if (stillDead.length === 0) return
+  notify(buildQuietSummaryMessage(stillDead))
+  for (const e of stillDead) stampAlert(e.session)
+}
+
+function sendNotify(msg: string): void {
   execFile('/bin/bash', [NOTIFY_SCRIPT, msg], { timeout: 10_000 }, (err) => {
-    if (err) logger.warn({ err, label }, 'reauth-healer: notify.sh escalation failed')
+    if (err) logger.warn({ err }, 'reauth-healer: notify.sh escalation failed')
   })
 }
 
-function checkSession(label: string, session: string, isMain: boolean): void {
+function checkSession(label: string, session: string, isMain: boolean, quiet: boolean): void {
   const pane = capturePane(session)
   const sessionAlive = pane != null
   const reauth = detectReauthNeeded(pane)
@@ -154,6 +246,9 @@ function checkSession(label: string, session: string, isMain: boolean): void {
 
   if (decision.next.consecutiveDead === 0) {
     watchState.delete(session)
+    // A healed agent's suppressed overnight alert is obsolete -- drop it so it
+    // never appears in the morning summary.
+    quietSuppressed.delete(session)
   } else {
     watchState.set(session, decision.next)
   }
@@ -163,8 +258,12 @@ function checkSession(label: string, session: string, isMain: boolean): void {
     void sendBestEffortLogin(session)
   }
   if (decision.escalate) {
-    logger.error({ label, session, reason: reauth.reason }, 'reauth-healer: dead OAuth token on live session -- escalating to owner')
-    escalate(label, reauth.reason ?? 'auth failure', decision.next.consecutiveDead)
+    logger.error({ label, session, reason: reauth.reason, quiet }, 'reauth-healer: dead OAuth token on live session -- escalating to owner')
+    routeEscalation(
+      { session, label, reason: reauth.reason ?? 'auth failure', consecutiveDead: decision.next.consecutiveDead },
+      quiet,
+      sendNotify,
+    )
   }
 }
 
@@ -177,10 +276,11 @@ export function startReauthHealer(): NodeJS.Timeout | null {
   }
 
   function sweep(): void {
+    const quiet = isQuietHour(budapestHour(Date.now()))
     // Main agent: escalate-only (no autonomous /login into a live always-on
     // conversation). capturePane returns null when it is down -> spell ends.
     try {
-      checkSession(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, true)
+      checkSession(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, true, quiet)
     } catch (err) {
       logger.debug({ err }, 'reauth-healer: main agent check error')
     }
@@ -188,14 +288,26 @@ export function startReauthHealer(): NodeJS.Timeout | null {
       const session = resolveAgentSession(name)
       if (!isAgentRunning(name)) {
         watchState.delete(session)
+        quietSuppressed.delete(session)
         continue
       }
       try {
-        checkSession(name, session, false)
+        checkSession(name, session, false, quiet)
       } catch (err) {
         logger.debug({ err, agent: name }, 'reauth-healer: agent check error')
       }
     }
+    // First sweep after 06:00: one summary for the agents still dead now.
+    // The summary counts as the alert, so the 30-min cadence restarts from it.
+    flushQuietSummary(
+      quiet,
+      (session) => watchState.get(session)?.consecutiveDead ?? 0,
+      sendNotify,
+      (session) => {
+        const st = watchState.get(session)
+        if (st) watchState.set(session, { ...st, lastActionAtMs: Date.now() })
+      },
+    )
   }
 
   setTimeout(sweep, INITIAL_DELAY_MS)

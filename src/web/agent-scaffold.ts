@@ -47,7 +47,9 @@ export function resolveTemplatePlaceholders(content: string): string {
 
 // Return the settings.json path for an agent.
 // The main agent's settings live at ~/.claude/settings.json (not inside agents/).
-function agentSettingsPath(name: string): string {
+// Exported so the startup self-heal (hook-registration-guard) can prune stale
+// entries from the same files this module writes.
+export function agentSettingsPath(name: string): string {
   if (name === MAIN_AGENT_ID) return join(homedir(), '.claude', 'settings.json')
   return join(agentDir(name), '.claude', 'settings.json')
 }

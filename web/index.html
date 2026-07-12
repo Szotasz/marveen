@@ -146,6 +146,10 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>
         <span class="sb-label">Token Monitor</span>
       </a>
+      <a href="#" class="sb-link" data-page="costs">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+        <span class="sb-label">Költségek</span>
+      </a>
       <a href="#" class="sb-link" data-page="ideas">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
         <span class="sb-label">Ötletláda</span>
@@ -332,6 +336,9 @@
             <p class="subtitle" data-i18n="agents.page_subtitle">AI csapattagok kezelése</p>
           </div>
           <div class="header-actions">
+            <button class="btn-secondary btn-compact" id="exportAllAgentsBtn">Összes exportálása</button>
+            <button class="btn-secondary btn-compact" id="importAgentBtn">Ügynök importálása</button>
+            <input type="file" id="importAgentFile" accept=".gz,.tgz,application/gzip" hidden>
             <button class="btn-secondary btn-compact" id="analyzeAllModelsBtn" data-i18n="agents.page.analyze_btn">Modell elemzés</button>
           </div>
         </div>
@@ -1639,6 +1646,26 @@
       </div>
     </div>
 
+    <!-- Costs page (CostOps v0.1, PR #524) -->
+    <div class="page" id="costsPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1 data-i18n="costs.page_title">Költségek</h1>
+            <p class="subtitle" data-i18n="costs.page_subtitle">Havi költség-összefoglaló a helyi konfigurációból</p>
+          </div>
+          <button class="btn-secondary btn-compact" id="refreshCostsBtn" data-i18n="common.btn.refresh">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+            </svg>
+            Frissítés
+          </button>
+        </div>
+      </div>
+
+      <div id="costsContent"></div>
+    </div>
+
     <!-- Naplo page -->
     <div class="page" id="naploPage" hidden>
       <div class="page-header">
@@ -2221,6 +2248,12 @@
             <small id="editAgentProfileDesc" style="display:block;margin-top:6px;color:var(--text-muted);font-size:12px;line-height:1.4"></small>
             <button class="btn-secondary btn-compact agent-save-section" id="saveProfileBtn" data-i18n="common.btn.save">Mentés</button>
           </div>
+          <div class="form-group" id="claudePlanGroup">
+            <label for="editAgentPlan" data-i18n="agents.settings.plan_label">Claude előfizetés</label>
+            <select id="editAgentPlan"></select>
+            <small id="editAgentPlanDesc" style="display:block;margin-top:6px;color:var(--text-muted);font-size:12px;line-height:1.4"></small>
+            <button class="btn-secondary btn-compact agent-save-section" id="savePlanBtn" data-i18n="common.btn.save">Mentés</button>
+          </div>
           <div class="form-group">
             <label for="editClaudeMd">CLAUDE.md</label>
             <textarea id="editClaudeMd" class="code-textarea" rows="12"></textarea>
@@ -2428,6 +2461,7 @@
 
         <!-- Bottom actions -->
         <div class="detail-actions agent-detail-bottom" id="agentDetailActions">
+          <button class="btn-secondary" id="exportAgentBtn">Exportálás</button>
           <button class="btn-danger" id="deleteAgentBtn" data-i18n="common.btn.delete">Törlés</button>
         </div>
       </div>

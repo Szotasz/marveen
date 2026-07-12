@@ -1,7 +1,8 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { json } from '../http-helpers.js'
-import { agentDir, readAgentClaudeConfigDir } from '../agent-config.js'
+import { agentDir } from '../agent-config.js'
+import { resolveAgentConfigDir } from '../claude-plans.js'
 import { projectsDirFor } from '../active-model.js'
 import { isMainChannelsAgent } from '../main-agent.js'
 import { PROJECT_ROOT } from '../../config.js'
@@ -34,7 +35,7 @@ function workingDirFor(name: string): string {
 }
 
 function newestTranscript(name: string): string | null {
-  const configDir = isMainChannelsAgent(name) ? undefined : (readAgentClaudeConfigDir(name) ?? undefined)
+  const configDir = isMainChannelsAgent(name) ? undefined : (resolveAgentConfigDir(name).configDir ?? undefined)
   const dir = projectsDirFor(workingDirFor(name), configDir)
   try {
     if (!existsSync(dir)) return null

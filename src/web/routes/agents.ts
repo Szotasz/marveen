@@ -1,6 +1,6 @@
-import { existsSync, readFileSync, mkdirSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync, copyFileSync, renameSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync, copyFileSync, renameSync } from 'node:fs'
 import { join, extname, dirname } from 'node:path'
-import { homedir, platform } from 'node:os'
+import { homedir, platform, tmpdir } from 'node:os'
 import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID, BOT_NAME, PROJECT_ROOT } from '../../config.js'
@@ -28,6 +28,8 @@ import {
   writeAgentChannelProvider,
   readAgentAuthMode,
   writeAgentAuthMode,
+  readAgentClaudePlan,
+  writeAgentClaudePlan,
   readAgentMemoryIsolation,
   writeAgentMemoryIsolation,
   readAgentClaudeConfigDir,
@@ -39,6 +41,7 @@ import {
   KNOWN_VOICE_MODELS,
   type AuthMode,
 } from '../agent-config.js'
+import { readClaudePlans, resolveAgentConfigDir } from '../claude-plans.js'
 import {
   readAgentTeam,
   writeAgentTeam,
@@ -98,6 +101,8 @@ import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '
 import { detectPaneState } from '../../pane-state.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
+import { readContextGuardConfig, writeContextGuardConfig } from '../context-guard-store.js'
+import { getContextGuardStatus } from '../context-guard-runner.js'
 import type { AutoRestartConfig } from '../../auto-restart.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
 import { attemptChannelMcpReconnect } from '../channel-mcp-reconnect.js'
@@ -109,6 +114,15 @@ import {
 import { sanitizeAgentName } from '../sanitize.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json, serveFile } from '../http-helpers.js'
+import {
+  exportAgentBundle,
+  importAgentBundle,
+  exportAllAgentsBundle,
+  importAllAgentsBundle,
+  peekBundleKind,
+  bundleFilename,
+  fleetBundleFilename,
+} from '../agent-bundle.js'
 import type { RouteContext } from './types.js'
 import { suggestForAgent, type AgentSignals } from '../model-suggest.js'
 import { getTokenSummary } from '../token-usage.js'
@@ -308,6 +322,9 @@ interface AgentSummary {
   runningSince: number | null
   authMode: AuthMode
   securityProfile: string
+  /** Named Claude subscription plan id (see claude-plans.ts), or null when the
+   *  agent uses the raw claudeConfigDir / default resolution. */
+  claudePlan: string | null
   team: TeamConfig
   hasTelegram: boolean
   telegramBotUsername?: string
@@ -374,10 +391,11 @@ function getAgentSummary(name: string): AgentSummary {
     displayName: readAgentDisplayName(name),
     description: extractDescriptionFromClaudeMd(claudeMd),
     model: readAgentModel(name),
-    activeModel: running ? readActiveModelFromProjectDir(dir, runningSince ?? undefined, readAgentClaudeConfigDir(name) ?? undefined) : null,
+    activeModel: running ? readActiveModelFromProjectDir(dir, runningSince ?? undefined, resolveAgentConfigDir(name).configDir ?? undefined) : null,
     runningSince,
     authMode: readAgentAuthMode(name),
     securityProfile: readAgentSecurityProfile(name),
+    claudePlan: readAgentClaudePlan(name),
     team: readAgentTeam(name),
     hasTelegram: tg.hasTelegram,
     telegramBotUsername: tg.botUsername,
@@ -392,7 +410,7 @@ function getAgentSummary(name: string): AgentSummary {
     session,
     hasAvatar: findAvatarForAgent(name) !== null,
     autoRestart: readAutoRestartConfig(name),
-    contextTokens: running ? readContextTokensFromProjectDir(dir, readAgentClaudeConfigDir(name) ?? undefined) : null,
+    contextTokens: running ? readContextTokensFromProjectDir(dir, resolveAgentConfigDir(name).configDir ?? undefined) : null,
     needsReauth: reauth.needsReauth,
     reauthReason: reauth.reason,
   }
@@ -471,6 +489,15 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
   if (path === '/api/agents' && method === 'GET') {
     json(res, listAgentSummaries())
+    return true
+  }
+
+  // Named Claude subscription registry (store/claude-plans.json), resolved +
+  // validated. Feeds the per-agent plan dropdown; empty array when no registry
+  // file exists (opt-in feature). Read-only in PR1 -- editing the registry is a
+  // separate surface.
+  if (path === '/api/claude-plans' && method === 'GET') {
+    json(res, readClaudePlans())
     return true
   }
 
@@ -1012,6 +1039,33 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     return true
   }
 
+  // GET/PUT /api/agents/:name/context-guard -- per-agent context-guard config
+  // (kanban #81). Default-off (opt-in): a GET for an agent with no store entry
+  // returns the disabled defaults. PUT normalizes server-side like auto-restart.
+  const contextGuardMatch = path.match(/^\/api\/agents\/([^/]+)\/context-guard$/)
+  if (contextGuardMatch && (method === 'GET' || method === 'PUT')) {
+    const name = decodeURIComponent(contextGuardMatch[1])
+    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (method === 'GET') {
+      json(res, { ok: true, contextGuard: readContextGuardConfig(name) })
+      return true
+    }
+    const body = await readBody(req)
+    let data: unknown
+    try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'invalid JSON' }, 400); return true }
+    setStoreWriteActor('dashboard')
+    const saved = writeContextGuardConfig(name, data)
+    json(res, { ok: true, contextGuard: saved })
+    return true
+  }
+
+  // GET /api/context-guard -- live guard status (phase + measured context pct)
+  // for every agent, main included.
+  if (path === '/api/context-guard' && method === 'GET') {
+    json(res, { ok: true, agents: getContextGuardStatus() })
+    return true
+  }
+
   // PUT /api/agents/:name/remote -- set or clear the remote host + workdir that
   // makes this agent's tmux session run on another machine over ssh. Empty
   // strings clear the fields (revert to local). The main agent is always local.
@@ -1519,6 +1573,145 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     return true
   }
 
+  // --- Per-agent export/import bundle (move an agent to another machine) ---
+  //
+  // GET  /api/agents/:name/export?secrets=1   -> downloads a .tar.gz bundle
+  // POST /api/agents/import                   -> uploads a bundle (multipart)
+  //
+  // The bundle is the portable subset of agents/<name>/ (identity + behaviour),
+  // with channel tokens included only when ?secrets=1 is set explicitly. See
+  // src/web/agent-bundle.ts. The main agent lives at PROJECT_ROOT (not under
+  // agents/) so it is not exportable this way -- use scripts/backup.sh for a
+  // whole-host move.
+  // GET /api/agents/export-all?secrets=1 -> a single .tar.gz of EVERY sub-agent
+  // (the main agent lives at PROJECT_ROOT and is excluded). Must be matched
+  // before the generic /api/agents/:name GET further down, or "export-all"
+  // would be read as an agent name.
+  if (path === '/api/agents/export-all' && method === 'GET') {
+    const names = listAgentNames().filter((n) => n !== MAIN_AGENT_ID)
+    if (names.length === 0) { json(res, { error: 'No agents to export' }, 404); return true }
+    const includeSecrets = /[?&]secrets=(1|true)\b/.test(req.url || '')
+    const work = mkdtempSync(join(tmpdir(), 'marveen-fleet-dl-'))
+    const outPath = join(work, fleetBundleFilename())
+    try {
+      exportAllAgentsBundle(outPath, names, {
+        includeSecrets,
+        exportedBy: MAIN_AGENT_ID,
+        exportedAt: new Date().toISOString(),
+      })
+      const data = readFileSync(outPath)
+      res.writeHead(200, {
+        'Content-Type': 'application/gzip',
+        'Content-Disposition': `attachment; filename="${fleetBundleFilename()}"`,
+        'Content-Length': String(data.length),
+        'Cache-Control': 'private, no-store',
+      })
+      res.end(data)
+    } catch (err) {
+      logger.error({ err }, 'Fleet export failed')
+      json(res, { error: 'Export failed', detail: err instanceof Error ? err.message : String(err) }, 500)
+    } finally {
+      rmSync(work, { recursive: true, force: true })
+    }
+    return true
+  }
+
+  const exportMatch = path.match(/^\/api\/agents\/([^/]+)\/export$/)
+  if (exportMatch && method === 'GET') {
+    const name = decodeURIComponent(exportMatch[1])
+    if (name === MAIN_AGENT_ID) {
+      json(res, { error: 'The main agent cannot be exported as a bundle; use scripts/backup.sh for a whole-host move.' }, 400)
+      return true
+    }
+    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    const includeSecrets = /[?&]secrets=(1|true)\b/.test(req.url || '')
+    const work = mkdtempSync(join(tmpdir(), 'marveen-agent-dl-'))
+    const outPath = join(work, bundleFilename(name))
+    try {
+      exportAgentBundle(name, outPath, {
+        includeSecrets,
+        exportedBy: MAIN_AGENT_ID,
+        exportedAt: new Date().toISOString(),
+      })
+      const data = readFileSync(outPath)
+      res.writeHead(200, {
+        'Content-Type': 'application/gzip',
+        'Content-Disposition': `attachment; filename="${bundleFilename(name)}"`,
+        'Content-Length': String(data.length),
+        'Cache-Control': 'private, no-store',
+      })
+      res.end(data)
+    } catch (err) {
+      logger.error({ err, name }, 'Agent export failed')
+      json(res, { error: 'Export failed', detail: err instanceof Error ? err.message : String(err) }, 500)
+    } finally {
+      rmSync(work, { recursive: true, force: true })
+    }
+    return true
+  }
+
+  if (path === '/api/agents/import' && method === 'POST') {
+    const body = await readBody(req)
+    const contentType = req.headers['content-type'] || ''
+    let bundle: Buffer | undefined
+    let overrideName = ''
+    let overwrite = false
+    if (contentType.includes('multipart/form-data')) {
+      const { file, fields } = parseMultipart(body, contentType)
+      if (file) bundle = file.data
+      overrideName = (fields.name || '').trim()
+      overwrite = fields.overwrite === '1' || fields.overwrite === 'true'
+    } else {
+      // Raw .tar.gz body; name/overwrite from query string.
+      bundle = body
+      const url = req.url || ''
+      const nameMatch = url.match(/[?&]name=([^&]+)/)
+      if (nameMatch) overrideName = decodeURIComponent(nameMatch[1]).trim()
+      overwrite = /[?&]overwrite=(1|true)\b/.test(url)
+    }
+    if (!bundle || bundle.length === 0) { json(res, { error: 'No bundle uploaded' }, 400); return true }
+    try {
+      // One endpoint accepts either format: peek the manifest, then dispatch to
+      // the single-agent or whole-fleet importer.
+      if (peekBundleKind(bundle) === 'fleet') {
+        const result = importAllAgentsBundle(bundle, { overwrite })
+        logger.info(
+          { imported: result.imported.map((a) => a.name), skipped: result.skipped, secrets: result.includesSecrets },
+          'Fleet imported from bundle',
+        )
+        // Any collision (even with some fresh agents already imported) returns
+        // 409 so the UI can offer to overwrite the rest; re-POSTing with
+        // overwrite=1 is idempotent for the already-imported ones.
+        const hasCollision = result.skipped.some((s) => s.reason === 'already exists')
+        json(res, {
+          ok: true,
+          kind: 'fleet',
+          imported: result.imported,
+          skipped: result.skipped,
+          includedSecrets: result.includesSecrets,
+        }, hasCollision ? 409 : 200)
+        return true
+      }
+
+      const result = importAgentBundle(bundle, { overrideName: overrideName || undefined, overwrite })
+      logger.info({ name: result.name, overwritten: result.overwritten, secrets: result.manifest.includesSecrets }, 'Agent imported from bundle')
+      json(res, {
+        ok: true,
+        kind: 'agent',
+        name: result.name,
+        overwritten: result.overwritten,
+        includedSecrets: result.manifest.includesSecrets,
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      // A name collision without overwrite is a 409 the UI can offer to resolve;
+      // everything else (malformed bundle, bad name) is a 400.
+      const status = /already exists/.test(msg) ? 409 : 400
+      json(res, { error: msg }, status)
+    }
+    return true
+  }
+
   const agentMatch = path.match(/^\/api\/agents\/([^/]+)$/)
   if (agentMatch && method === 'GET') {
     const name = decodeURIComponent(agentMatch[1])
@@ -1534,7 +1727,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const configRoot = agentConfigRoot(name)
     const data = JSON.parse(body.toString()) as {
       claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string
-      authMode?: AuthMode; apiKey?: string; memoryIsolation?: boolean
+      authMode?: AuthMode; apiKey?: string; claudePlan?: string; memoryIsolation?: boolean
     }
     if (data.memoryIsolation !== undefined) {
       // The main agent's cwd IS the install repo root, which is already a git
@@ -1558,6 +1751,26 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       if (data.authMode !== 'api') {
         deleteSecret(`agent-${name}-api-key`)
       }
+    }
+    // Named Claude plan id. Empty string clears it (-> raw claudeConfigDir /
+    // default). A non-empty id MUST exist in the registry, otherwise the
+    // dashboard would show the agent as plan-assigned while launch silently
+    // falls back to a different login (state/launch drift). Reject unknown ids
+    // rather than persist them.
+    if (data.claudePlan !== undefined) {
+      // The main agent's Claude login comes up via channels.sh (hardcoded
+      // CLAUDE_CONFIG_DIR), not this per-agent path, so a plan set here would be
+      // a silent no-op at launch. Reject loudly rather than mislead the UI.
+      if (name === MAIN_AGENT_ID) {
+        json(res, { error: 'main agent plan is managed via channels.sh, not settable here' }, 400)
+        return true
+      }
+      const planId = data.claudePlan.trim()
+      if (planId && !readClaudePlans().some(p => p.id === planId)) {
+        json(res, { error: `Ismeretlen Claude plan id: ${planId}` }, 400)
+        return true
+      }
+      writeAgentClaudePlan(name, planId)
     }
     json(res, { ok: true })
     return true

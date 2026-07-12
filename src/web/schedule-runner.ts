@@ -1,5 +1,8 @@
-import { join } from 'node:path'
-import { readFileSync } from 'node:fs'
+import { join, isAbsolute } from 'node:path'
+import { homedir } from 'node:os'
+import { checkTaskMcpRequirements } from './schedule-mcp-precheck.js'
+import { existsSync, readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { logger } from '../logger.js'
 import {
@@ -25,6 +28,7 @@ import {
 import { cronMatchesNow } from './cron.js'
 import {
   listScheduledTasks,
+  SCHEDULED_TASKS_DIR,
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
 import { listAgentNames, readFileOr, readAgentRemoteHost } from './agent-config.js'
@@ -116,10 +120,68 @@ function persistScheduleLastRun(): void {
   }
 }
 
+// Run the task's pre-check script (if configured) and return whether to skip
+// this LLM invocation and an optional context prefix to prepend to the prompt.
+//
+// Protocol (stdout + exit code):
+//   exit 0, stdout = "SKIP"  → skip the LLM entirely (nothing actionable)
+//   exit 0, stdout non-empty → run LLM with stdout as context prefix
+//   exit 0, stdout empty     → run LLM normally
+//   non-zero exit            → log warning, run LLM anyway (fail-open)
+export function runPreCheck(task: ScheduledTask): { skip: boolean; prefix?: string } {
+  if (!task.preCheck) return { skip: false }
+  const scriptPath = isAbsolute(task.preCheck)
+    ? task.preCheck
+    : join(SCHEDULED_TASKS_DIR, task.name, task.preCheck)
+  if (!existsSync(scriptPath)) {
+    logger.warn({ task: task.name, scriptPath }, 'pre-check script not found, running LLM anyway')
+    return { skip: false }
+  }
+  try {
+    const r = spawnSync('bash', [scriptPath], { timeout: 10_000, encoding: 'utf-8' })
+    if (r.error) {
+      logger.warn({ task: task.name, error: r.error.message }, 'pre-check script spawn error, running LLM anyway')
+      return { skip: false }
+    }
+    if (r.status !== 0) {
+      logger.warn({ task: task.name, status: r.status, stderr: (r.stderr || '').trim().slice(0, 200) }, 'pre-check script exited non-zero, running LLM anyway')
+      return { skip: false }
+    }
+    const out = (r.stdout || '').trim()
+    if (out === 'SKIP') {
+      logger.info({ task: task.name }, 'pre-check: nothing actionable, skipping LLM')
+      return { skip: true }
+    }
+    if (out) return { skip: false, prefix: out }
+    return { skip: false }
+  } catch (err) {
+    logger.warn({ err, task: task.name }, 'pre-check script threw, running LLM anyway')
+    return { skip: false }
+  }
+}
+
 // Try to fire a task at a single target agent. Returns the outcome so the
 // caller can decide whether to queue a retry. Splitting this out means the
 // pendingTaskRetries loop and the normal cron loop share one code path.
-function attemptFireTask(task: ScheduledTask, agentName: string, now: number): 'fired' | 'busy' | 'missing' | 'starting' | 'error' {
+// Missing MCP server names from the last failed pre-check, keyed by
+// task@agent, so the retry-row reason and the alert can name the servers.
+const lastMcpMissing = new Map<string, string[]>()
+
+function mcpMissingReason(taskName: string, agentName: string): string {
+  const missing = lastMcpMissing.get(`${taskName}@${agentName}`) ?? []
+  return missing.length ? `mcp-missing:${missing.join(',')}` : 'mcp-missing'
+}
+
+// Two pre-check gates coexist here:
+//   1. the operator preCheck SCRIPT (business gate) runs in the callers via
+//      runPreCheck() -- it can SKIP the whole tick (no LLM) or inject context
+//      via preCheckPrefix;
+//   2. the MCP manifest check (infra gate, requires.mcp_servers) runs below,
+//      after the busy check, and defers delivery ('mcp-missing') when a
+//      required server is dead.
+// Both are fail-open: a broken script or an unreadable MCP state never
+// blocks the task.
+function attemptFireTask(task: ScheduledTask, agentName: string, now: number, preCheckPrefix?: string): 'fired' | 'busy' | 'missing' | 'starting' | 'error' | 'mcp-missing' {
   const isMainAgent = agentName === MAIN_AGENT_ID
   // Allow per-task session override via targetSession config field.
   // Falls back to the standard agent session name derivation.
@@ -175,6 +237,26 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number): '
     logger.info({ task: task.name, agent: agentName, session }, 'forceSend=true, bypassing busy-state check')
   }
 
+  // MCP manifest pre-check (requires.mcp_servers, Roitman 22.5): a required
+  // server with no live process under the target session defers the task with
+  // a reasoned alert instead of letting the prompt fail at runtime INSIDE the
+  // session (2026-07-08: morning briefing ran against a silently dead gmail
+  // MCP). Runs after the busy check so a busy session stays a plain 'busy'.
+  // forceSend keeps its "always eventually land" contract: it logs the gap
+  // loudly but still delivers.
+  if (task.type !== 'command' && task.requires?.mcp_servers?.length) {
+    const check = checkTaskMcpRequirements(task.requires.mcp_servers, agentName, session, host)
+    if (!check.ok) {
+      if (task.forceSend) {
+        logger.warn({ task: task.name, agent: agentName, session, missing: check.missing }, 'MCP pre-check failed but forceSend=true -- delivering anyway')
+      } else {
+        lastMcpMissing.set(`${task.name}@${agentName}`, check.missing)
+        logger.warn({ task: task.name, agent: agentName, session, missing: check.missing }, 'Required MCP server(s) not running in target session -- deferring task')
+        return 'mcp-missing'
+      }
+    }
+  }
+
   try {
     let prefix: string
     if (task.type === 'heartbeat') {
@@ -216,10 +298,13 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number): '
     // Use the scheduled-task framing instead: tags are still scrubbed (so a
     // poisoned body cannot smuggle a fake security tag) but the preamble marks
     // it as a task-to-execute with the standard escalate-if-dangerous guard.
+    const taskBody = preCheckPrefix
+      ? `[Pre-check eredmeny]\n${preCheckPrefix}\n\n[Feladat]\n${task.prompt}`
+      : task.prompt
     const fullPrompt =
       SCHEDULED_TASK_PREAMBLE + '\n' +
       prefix.trimEnd() + '\n\n' +
-      wrapScheduledTask(`scheduled-task:${task.name}`, task.prompt)
+      wrapScheduledTask(`scheduled-task:${task.name}`, taskBody)
     // forceSend skips the busy-state check above; it must also skip the
     // pre-flight wait-until-idle gate inside sendPromptToSession, otherwise a
     // task aimed at a long-busy session would block on the 12s idle wait every
@@ -310,8 +395,9 @@ export function runScheduledTaskNow(
     // busy session both get a queued retry that lands once the session is
     // ready. We deliberately do NOT consult skipIfBusy here -- that flag trims
     // redundant cron ticks, but an explicit run-now must not be dropped.
-    if (result === 'starting' || result === 'busy') {
-      insertPendingTaskRetryIfNew(task.name, agentName, now, result)
+    if (result === 'starting' || result === 'busy' || result === 'mcp-missing') {
+      const reason = result === 'mcp-missing' ? mcpMissingReason(task.name, agentName) : result
+      insertPendingTaskRetryIfNew(task.name, agentName, now, reason)
     }
     summary.push(`${agentName}: ${result}`)
   }
@@ -345,7 +431,14 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
   const envPath = join(PROJECT_ROOT, '.env')
   const envContent = readFileOr(envPath, '')
   const tokenMatch = envContent.match(/TELEGRAM_BOT_TOKEN=(.+)/)
-  const token = tokenMatch?.[1]?.trim()
+  let token = tokenMatch?.[1]?.trim()
+  if (!token) {
+    // Since the channels migration the bot token lives in the telegram channel
+    // plugin's env, not marveen/.env (2026-07-08: every scheduler alert was
+    // silently suppressed on such hosts). Same fallback as scripts/notify.sh.
+    const channelEnv = readFileOr(join(homedir(), '.claude', 'channels', 'telegram', '.env'), '')
+    token = channelEnv.match(/TELEGRAM_BOT_TOKEN=(.+)/)?.[1]?.trim()
+  }
   if (!token) {
     logger.warn({ task: view.taskName, agent: view.agentName }, 'Pending-retry alert suppressed: no TELEGRAM_BOT_TOKEN (config error, stamp kept to avoid 60s spin)')
     return
@@ -357,11 +450,22 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
 
   const ageMinutes = Math.floor(view.ageMs / 60000)
   const firstAttempt = new Date(view.firstAttempt).toLocaleString('hu-HU')
-  const text = [
-    `[${BOT_NAME} scheduler] A(z) "${view.taskName}" (${view.agentName}) utemezett feladat ${ageMinutes} perce varakozik.`,
-    `Elso probalkozas: ${firstAttempt}.`,
-    'A rendszer tovabb probalkozik; a dashboard /Utemezesek oldalan visszavonhato.',
-  ].join('\n')
+  // A retry stuck on a dead required MCP names the server(s): the operator's
+  // fix is restarting an MCP, not freeing up a busy session.
+  const mcpMissing = view.lastReason?.startsWith('mcp-missing')
+    ? view.lastReason.slice('mcp-missing:'.length) || 'ismeretlen'
+    : null
+  const text = (mcpMissing
+    ? [
+        `[${BOT_NAME} scheduler] A(z) "${view.taskName}" (${view.agentName}) feladat NEM tud lefutni: a szukseges MCP szerver(ek) nem futnak a cel-sessionben: ${mcpMissing}.`,
+        `Elso probalkozas: ${firstAttempt} (${ageMinutes} perce).`,
+        'Amint az MCP szerver ujra el, a feladat magatol lefut; a dashboard /Utemezesek oldalan visszavonhato.',
+      ]
+    : [
+        `[${BOT_NAME} scheduler] A(z) "${view.taskName}" (${view.agentName}) utemezett feladat ${ageMinutes} perce varakozik.`,
+        `Elso probalkozas: ${firstAttempt}.`,
+        'A rendszer tovabb probalkozik; a dashboard /Utemezesek oldalan visszavonhato.',
+      ]).join('\n')
   ;(async () => {
     try {
       await sendTelegramMessage(token, ALLOWED_CHAT_ID, text)
@@ -425,8 +529,17 @@ export function startScheduleRunner(): NodeJS.Timeout {
       const key = `${row.task_name}@${row.agent_name}`
       pendingKeys.add(key)
 
+      // Re-run pre-check on retry: state may have changed since the task
+      // was first scheduled (e.g. kanban cards already processed).
+      const retryPc = runPreCheck(taskDef)
+      if (retryPc.skip) {
+        deletePendingTaskRetry(row.task_name, row.agent_name)
+        appendTaskRun(row.task_name, row.agent_name, 'skipped')
+        continue
+      }
+
       const view = toPendingRetryView(row, now)
-      const result = attemptFireTask(taskDef, row.agent_name, now)
+      const result = attemptFireTask(taskDef, row.agent_name, now, retryPc.prefix)
       if (result === 'fired' || result === 'missing') {
         deletePendingTaskRetry(row.task_name, row.agent_name)
         continue
@@ -436,7 +549,8 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // false when the row has been cancelled between load and now --
       // in that case, do not re-insert (the operator's cancel wins) and
       // do not alert.
-      const stillPresent = updatePendingTaskRetry(row.task_name, row.agent_name, now, result)
+      const reason = result === 'mcp-missing' ? mcpMissingReason(row.task_name, row.agent_name) : result
+      const stillPresent = updatePendingTaskRetry(row.task_name, row.agent_name, now, reason)
       if (stillPresent && view.alertDue) sendPendingRetryAlert(view, now)
     }
 
@@ -469,12 +583,24 @@ export function startScheduleRunner(): NodeJS.Timeout {
         targetAgents = [task.agent || MAIN_AGENT_ID]
       }
 
+      // Run pre-check once per task (not per agent) since it queries shared
+      // state (DB, filesystem) that does not vary by target agent.
+      const cronPc = runPreCheck(task)
+      if (cronPc.skip) {
+        scheduleLastRun.set(task.name, now)
+        persistScheduleLastRun()
+        for (const agentName of targetAgents) {
+          appendTaskRun(task.name, agentName, 'skipped')
+        }
+        continue
+      }
+
       for (const agentName of targetAgents) {
         const key = `${task.name}@${agentName}`
         // If already queued for retry from an earlier tick, leave it to
         // the retry handler -- don't re-queue or double-fire.
         if (pendingKeys.has(key)) continue
-        const result = attemptFireTask(task, agentName, now)
+        const result = attemptFireTask(task, agentName, now, cronPc.prefix)
         if (result === 'starting') {
           // Agent was auto-started this tick. ALWAYS enqueue the retry that
           // delivers the prompt once the session is ready -- skipIfBusy must
@@ -499,6 +625,12 @@ export function startScheduleRunner(): NodeJS.Timeout {
           // row already exists (race with a just-cancelled retry), do
           // nothing so the cancel wins the tiebreak.
           insertPendingTaskRetryIfNew(task.name, agentName, now, 'busy')
+        } else if (result === 'mcp-missing') {
+          // Deliberately NOT honoring skipIfBusy here: dropping a tick because
+          // a required MCP is dead would be exactly the silent starvation this
+          // pre-check exists to eliminate. The retry row keeps the task alive
+          // until the server returns, and the alert names the dead server.
+          insertPendingTaskRetryIfNew(task.name, agentName, now, mcpMissingReason(task.name, agentName))
         }
       }
     }

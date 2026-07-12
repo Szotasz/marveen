@@ -174,3 +174,68 @@ Válasz: ágensenként `{ agent, currentModel, suggestedModel, reason, changeAdv
 ### Kanban integráció
 
 Ha `changeAdvised: true` bármely agensnél, és a felhasználó megerősíti, a rendszer automatikusan kanban-kártyát hoz létre az érintett ügynökhöz (`assignee: marveen`, státusz: `planned`).
+
+---
+
+## 📦 Ügynök exportálása / importálása (gépek közötti átvitel)
+
+Egy ügynököt át lehet vinni egyik gépről a másikra egy hordozható `.tar.gz`
+bundle-ben, az egész flotta vagy a globális SQLite adatbázis mozgatása nélkül
+(az utóbbi a `scripts/backup.sh` dolga). A bundle az `agents/<név>/` mappa
+hordozható részhalmaza: identitás + viselkedés, opcionálisan a csatorna-titkokkal.
+
+### Mi kerül a bundle-be
+
+| Tartalom | Mindig | Csak `secrets=1` esetén |
+|----------|:------:|:-----------------------:|
+| `agent-config.json` (modell, displayName, profil, authMode) | ✅ | |
+| `CLAUDE.md`, `SOUL.md` (identitás) | ✅ | |
+| `.mcp.json` (MCP eszközök) | ✅ | |
+| `avatar.*` | ✅ | |
+| `.claude/settings.json`, `.claude/skills/`, `.claude/hooks/` | ✅ | |
+| `memory/` (az ügynök saját memóriája) | ✅ | |
+| `.claude/channels/*/.env` (channel bot token) | | ✅ |
+| `.claude/channels/*/access.json`, `invites.json`, `approved/` (párosítás) | | ✅ |
+
+A gép-specifikus mezők (`remoteHost`, `remoteWorkdir`, `claudeConfigDir`) importkor
+**eltávolításra kerülnek**, így az importált ügynök tiszta, helyi ügynökként indul.
+
+### Dashboard
+
+- **Exportálás** (egy ügynök): az ügynök részleteinél az *Exportálás* gomb.
+  Rákérdez, hogy a titkokat (channel token, párosítási állapot) belevegyük-e.
+  Titkok nélkül a bundle biztonságosan megosztható; titkokkal CSAK saját gépek
+  közötti átvitelhez.
+- **Összes exportálása** (egész flotta): a Csapat oldal fejlécében az *Összes
+  exportálása* gomb -> egyetlen `.tar.gz` az összes al-ügynökkel. Ugyanúgy
+  rákérdez a titkokra (ekkor MINDEN ügynöké bekerül).
+- **Importálás**: a Csapat oldalon az *Ügynök importálása* gomb -> válaszd ki a
+  `.tar.gz` fájlt. Ugyanaz a gomb fogad egy-ügynök ÉS flotta-bundle-t is (a
+  backend a manifestből ismeri fel). Névütközéskor felajánlja a felülírást;
+  flotta-importnál csak az ütköző ügynökök íródnak felül, a többi azonnal bejön.
+
+### API
+
+```
+GET  /api/agents/<név>/export            # egy ügynök bundle-je (titkok nélkül)
+GET  /api/agents/<név>/export?secrets=1  # egy ügynök bundle-je titkokkal
+GET  /api/agents/export-all              # az EGÉSZ flotta egy bundle-ben (titkok nélkül)
+GET  /api/agents/export-all?secrets=1    # az egész flotta titkokkal
+POST /api/agents/import                  # bundle feltöltése (multipart: file=, name=, overwrite=1)
+                                         #   -- egy-ügynök ÉS flotta-bundle-t is fogad
+```
+
+A fő ügynök (`marveen`) egyik módban sem exportálható (a PROJECT_ROOT-ban él,
+nem az `agents/` alatt) -- teljes gép-átálláshoz lásd a `scripts/backup.sh`-t és
+a [MIGRATION.md](MIGRATION.md)-t.
+
+A flotta-bundle elrendezése `manifest.json` (`kind: "fleet"`) + `agents/<név>/`
+ügynökönként; az egy-ügynök bundle `manifest.json` + `agent/`.
+
+### Biztonság
+
+A titkokat tartalmazó bundle channel bot tokeneket hordoz. Ne töltsd fel
+megosztott/publikus helyre, és ne tartsd cloud-sync mappában. Emlékeztető:
+**egy bot = egy poller** -- ha az importált ügynököt egy második gépen is
+elindítod ugyanazzal a tokennel, a Telegram/Slack 409-cel elhasítja a bejövő
+üzeneteket. Régi gép le, új gép fel -- soha ne fusson a kettő egyszerre.

@@ -143,16 +143,18 @@ function hasParentTraversal(raw: string): boolean {
   return raw.split('/').some(segment => segment === '..')
 }
 
-export function resolveClaudeConfigDir(
-  rawConfigJson: string,
+// Expand + validate a raw config-dir string (already extracted from wherever
+// it was stored) against the launcher's shell-safety rules. Shared by the
+// per-agent `claudeConfigDir` resolver and the named-plan registry
+// (claude-plans.ts) so both feed the tmux launcher through the exact same
+// whitelist/traversal/tilde gauntlet -- there is only one place that decides
+// what is safe to inline into the launch command. Returns the absolute path,
+// or null when the value is blank/malformed/unsafe.
+export function expandAndValidateConfigDir(
+  rawValue: string,
   homeDir: string,
 ): string | null {
-  let config: unknown
-  try { config = JSON.parse(rawConfigJson) } catch { return null }
-  if (!config || typeof config !== 'object') return null
-  const value = (config as Record<string, unknown>).claudeConfigDir
-  if (typeof value !== 'string') return null
-  const raw = value.trim()
+  const raw = rawValue.trim()
   if (!raw) return null
   if (!CLAUDE_CONFIG_DIR_ALLOWED.test(raw)) return null
   if (hasParentTraversal(raw)) return null
@@ -177,6 +179,18 @@ export function resolveClaudeConfigDir(
   // launcher cmd. Reject rather than ship a broken export.
   if (!CLAUDE_CONFIG_DIR_ALLOWED.test(resolved)) return null
   return resolved
+}
+
+export function resolveClaudeConfigDir(
+  rawConfigJson: string,
+  homeDir: string,
+): string | null {
+  let config: unknown
+  try { config = JSON.parse(rawConfigJson) } catch { return null }
+  if (!config || typeof config !== 'object') return null
+  const value = (config as Record<string, unknown>).claudeConfigDir
+  if (typeof value !== 'string') return null
+  return expandAndValidateConfigDir(value, homeDir)
 }
 
 // Optional per-agent override for the Claude Code config directory. When set,
@@ -357,6 +371,36 @@ export function writeAgentSecurityProfile(name: string, profileId: string): void
   let config: Record<string, unknown> = {}
   try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
   config.securityProfile = profileId
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
+// Optional per-agent named Claude subscription plan. Stores a registry id
+// (see claude-plans.ts) that resolves to a CLAUDE_CONFIG_DIR at launch. This
+// is the operator-facing, dashboard-selectable indirection over the raw
+// `claudeConfigDir` field: a plan bundles {configDir, planType, channelsAllowed}
+// under a stable id so many agents can share one login without repeating the
+// path. When unset (null), launch falls back to the raw claudeConfigDir and
+// then to Claude Code's default -- fully backwards-compatible.
+export function readAgentClaudePlan(name: string): string | null {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}'))
+    const value = config.claudePlan
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  } catch { /* fall through */ }
+  return null
+}
+
+// Set (non-empty string) or clear (empty/whitespace) the per-agent plan id.
+// Clearing removes the key so the agent reverts to the raw-configDir/default
+// resolution path.
+export function writeAgentClaudePlan(name: string, planId: string): void {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  let config: Record<string, unknown> = {}
+  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  const trimmed = planId.trim()
+  if (trimmed) config.claudePlan = trimmed
+  else delete config.claudePlan
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
 

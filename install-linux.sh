@@ -1220,6 +1220,11 @@ cat >"$SYSTEMD_DIR/${CHAN_UNIT}.service" <<EOF
 [Unit]
 Description=${BOT_NAME} Channels (Telegram bridge)
 After=network.target
+# StartLimit* belong in [Unit], not [Service] (systemd logs "Unknown key
+# StartLimitIntervalSec in section [Service]" and ignores them there), so the
+# crash-loop throttle only applies when they live here.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -1237,8 +1242,6 @@ ExecStartPre=$INSTALL_DIR/scripts/ensure-native-modules.sh
 ExecStart=$INSTALL_DIR/scripts/channels.sh
 Restart=on-failure
 RestartSec=10
-StartLimitIntervalSec=300
-StartLimitBurst=5
 StandardOutput=append:$INSTALL_DIR/store/channels.log
 StandardError=append:$INSTALL_DIR/store/channels.error.log
 Environment=PATH=$HOME/.local/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin
@@ -1280,6 +1283,57 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
+# marveen-host-watchdog.service -- host/WSL-VM restart detector (btime-based).
+# Distinguishes a whole-VM restart (all units down at once, NOT an app crash)
+# from a service crash, and Telegrams it. See scripts/host-restart-watchdog.sh.
+cat >"$SYSTEMD_DIR/${SERVICE_ID}-host-watchdog.service" <<EOF
+[Unit]
+Description=${BOT_NAME} host/WSL-VM restart watchdog (btime-based)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$INSTALL_DIR/scripts/host-restart-watchdog.sh
+Environment=MARVEEN_STORE=$INSTALL_DIR/store
+Environment=TELEGRAM_ENV=$HOME/.claude/channels/telegram/.env
+Environment=PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=$HOME
+${TZ_LINE}
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+EOF
+
+# marveen-notify@.service -- templated app-crash notifier, fired by OnFailure=
+# drop-ins on the dashboard/channels units. OnFailure => app crash (vs the
+# host-watchdog's btime-change => host restart).
+cat >"$SYSTEMD_DIR/${SERVICE_ID}-notify@.service" <<EOF
+[Unit]
+Description=${BOT_NAME} app-crash notifier for %i
+
+[Service]
+Type=oneshot
+ExecStart=$INSTALL_DIR/scripts/unit-fail-notify.sh %i
+Environment=TELEGRAM_ENV=$HOME/.claude/channels/telegram/.env
+Environment=PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=$HOME
+${TZ_LINE}
+StandardOutput=journal
+StandardError=journal
+EOF
+
+# OnFailure drop-ins: wire the app-crash notifier onto the two long-running units.
+for u in "${DASH_UNIT}" "${CHAN_UNIT}"; do
+  mkdir -p "$SYSTEMD_DIR/${u}.service.d"
+  cat >"$SYSTEMD_DIR/${u}.service.d/onfailure.conf" <<EOF
+[Unit]
+OnFailure=${SERVICE_ID}-notify@%n.service
+EOF
+done
+
 # 1. linger eloszor: ez engedelyezi a user systemd sessiont boot utan is,
 #    es headless-en az aktualis script futasa alatt is szukseges lehet
 if loginctl show-user "$USER" 2>/dev/null | grep -q "Linger=yes"; then
@@ -1308,7 +1362,7 @@ fi
 SVCFAIL=0
 if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
   systemctl --user daemon-reload
-  systemctl --user enable "${DASH_UNIT}" "${CHAN_UNIT}" "${MORN_UNIT}.timer" 2>/dev/null || true
+  systemctl --user enable "${DASH_UNIT}" "${CHAN_UNIT}" "${MORN_UNIT}.timer" "${SERVICE_ID}-host-watchdog.service" 2>/dev/null || true
   ok "systemd unitok generalva es engedelyezve"
   systemctl --user start "${DASH_UNIT}" "${CHAN_UNIT}" 2>/dev/null || true
   sleep 2

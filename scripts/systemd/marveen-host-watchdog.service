@@ -1,0 +1,25 @@
+# NOTE: replace /path/to/marveen (install dir) and /home/USER (home) with your values.
+# Host / WSL-VM restart watchdog. Runs once at every user-manager start and, if
+# the kernel boot time (/proc/stat btime) changed since the last run, sends one
+# Telegram notice that the whole host/VM restarted (distinct from an app crash,
+# which is reported by marveen-notify@.service via OnFailure=). See
+# scripts/host-restart-watchdog.sh and scripts/systemd/README-host-stability.md.
+[Unit]
+Description=Marveen host/WSL-VM restart watchdog (btime-based)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/path/to/marveen/scripts/host-restart-watchdog.sh
+Environment=MARVEEN_STORE=/path/to/marveen/store
+Environment=TELEGRAM_ENV=/home/USER/.claude/channels/telegram/.env
+Environment=PATH=/home/USER/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/USER
+Environment=TZ=Europe/Budapest
+# journal only: the store/ dir or disk may not be ready/writable this early.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
