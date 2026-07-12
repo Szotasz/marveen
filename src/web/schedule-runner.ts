@@ -181,7 +181,19 @@ function mcpMissingReason(taskName: string, agentName: string): string {
 //      required server is dead.
 // Both are fail-open: a broken script or an unreadable MCP state never
 // blocks the task.
-function attemptFireTask(task: ScheduledTask, agentName: string, now: number, preCheckPrefix?: string): 'fired' | 'busy' | 'missing' | 'starting' | 'error' | 'mcp-missing' {
+//
+// lateCatchUpMs is set by the caller when this tick only matched because of
+// the enlarged restart catch-up window (see startScheduleRunner) -- i.e. the
+// task missed its normal tick and is only firing now as a catch-up; it is
+// recorded as a distinct 'fired_late' run status further down instead of
+// silently folding into 'fired'.
+function attemptFireTask(
+  task: ScheduledTask,
+  agentName: string,
+  now: number,
+  preCheckPrefix?: string,
+  lateCatchUpMs?: number,
+): 'fired' | 'busy' | 'missing' | 'starting' | 'error' | 'mcp-missing' {
   const isMainAgent = agentName === MAIN_AGENT_ID
   // Allow per-task session override via targetSession config field.
   // Falls back to the standard agent session name derivation.
@@ -313,7 +325,24 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number, pr
     sendPromptToSession(session, fullPrompt, host, { waitForIdle: !task.forceSend })
     scheduleLastRun.set(task.name, now)
     persistScheduleLastRun()
-    appendTaskRun(task.name, agentName, 'fired')
+    // A lateCatchUpMs value means this tick only matched because of the
+    // enlarged first-run catch-up window (see startScheduleRunner), i.e. the
+    // task missed its normal tick (e.g. the process was down/restarting at
+    // the scheduled minute) and is only firing now as a catch-up. Recording
+    // a distinct status -- instead of silently folding it into 'fired' --
+    // means the existing per-task run-history view (dashboard schedule
+    // history) surfaces exactly which tasks were missed and had to be
+    // caught up, without any new alert/polling path that could race other
+    // running tasks. Read-only w.r.t. everything else in this function.
+    if (lateCatchUpMs != null) {
+      appendTaskRun(task.name, agentName, 'fired_late')
+      logger.warn(
+        { task: task.name, agent: agentName, session, lateCatchUpMinutes: Math.round(lateCatchUpMs / 60000) },
+        'Scheduled task fired via restart catch-up window -- missed its normal tick',
+      )
+    } else {
+      appendTaskRun(task.name, agentName, 'fired')
+    }
     logger.info({ task: task.name, agent: agentName, session }, 'Scheduled task fired')
 
     // Post-send verify: if the agent started a new turn during our chunk
@@ -497,7 +526,8 @@ export function startScheduleRunner(): NodeJS.Timeout {
     const tasks = listScheduledTasks()
     const now = Date.now()
     // On first run after restart, catch up missed tasks from last 30 min
-    const catchUp = firstRun ? 30 * 60000 : 60000
+    const isFirstRunTick = firstRun
+    const catchUp = isFirstRunTick ? 30 * 60000 : 60000
     firstRun = false
 
     // Retry tasks that were busy-skipped on earlier ticks (persisted in
@@ -562,6 +592,15 @@ export function startScheduleRunner(): NodeJS.Timeout {
       const lastRun = scheduleLastRun.get(task.name) || 0
       if (now - lastRun < catchUp) continue
 
+      // This tick only matched because of the enlarged first-run catch-up
+      // window, not the normal ~1-tick tolerance -- i.e. the task's own
+      // scheduled minute was missed (process was down/restarting) and it is
+      // only firing now as a catch-up. Recorded further down via
+      // attemptFireTask's lateCatchUpMs param so the run-history shows it.
+      const lateCatchUpMs = isFirstRunTick && catchUp > 60000 && !cronMatchesNow(task.schedule, 60000)
+        ? catchUp
+        : undefined
+
       // type='command' tasks run a raw shell command directly -- no LLM, no
       // tmux, no target agent. They self-manage failure streaks + Telegram
       // alerts. Record the run time like a fired task so the catch-up window
@@ -600,7 +639,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         // If already queued for retry from an earlier tick, leave it to
         // the retry handler -- don't re-queue or double-fire.
         if (pendingKeys.has(key)) continue
-        const result = attemptFireTask(task, agentName, now, cronPc.prefix)
+        const result = attemptFireTask(task, agentName, now, cronPc.prefix, lateCatchUpMs)
         if (result === 'starting') {
           // Agent was auto-started this tick. ALWAYS enqueue the retry that
           // delivers the prompt once the session is ready -- skipIfBusy must

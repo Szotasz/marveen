@@ -1119,6 +1119,23 @@ window._i18n.en = {
 
   // --- Token usage extra ---
   'tokenUsage.collect_done':     'Done ({n} new)',
+  'tokenUsage.cost_usd':              '~${cost} USD',
+  'tokenUsage.cost_note':             'estimated (Sonnet base rate)',
+  'tokenUsage.sessions_sub':          '{sessions} sessions',
+  'tokenUsage.tok_per_session':       'tokens/session',
+  'tokenUsage.cost_per_session':      '$/session',
+  'tokenUsage.model_dist_title':      'Model distribution',
+  'tokenUsage.model_dist_no_data':    'No model data yet (collect newer calls)',
+  'tokenUsage.model_dist_calls':      '{n} calls',
+  'tokenUsage.tool_stats_title':      'MCP tool usage',
+  'tokenUsage.tool_stats_no_data':    'No tool data',
+  'tokenUsage.tool_stats_col_tool':   'Tool',
+  'tokenUsage.tool_stats_col_calls':  'Calls',
+  'tokenUsage.tool_stats_col_agents': 'Agents',
+  'tokenUsage.tool_stats_col_server': 'MCP server',
+  'tokenUsage.tool_stats_col_cost':   'Est. cost',
+  'tokenUsage.tool_stats_builtin':    'built-in',
+  'tokenUsage.tool_stats_agent_toggle': 'Per-agent breakdown',
 
   // --- Agents auth flow ---
   'agents.auth.btn_starting':    'Starting...',

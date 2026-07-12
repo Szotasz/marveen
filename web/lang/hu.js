@@ -1117,6 +1117,23 @@ window._i18n.hu = {
 
   // --- Token usage extra ---
   'tokenUsage.collect_done':     'Kész ({n} új)',
+  'tokenUsage.cost_usd':              '~${cost} USD',
+  'tokenUsage.cost_note':             'becsült (Sonnet alapár)',
+  'tokenUsage.sessions_sub':          '{sessions} session',
+  'tokenUsage.tok_per_session':       'token/session',
+  'tokenUsage.cost_per_session':      '$/session',
+  'tokenUsage.model_dist_title':      'Modell eloszlás',
+  'tokenUsage.model_dist_no_data':    'Nincs modell adat (gyűjts újabb hívásokat)',
+  'tokenUsage.model_dist_calls':      '{n} hívás',
+  'tokenUsage.tool_stats_title':      'MCP eszközhasználat',
+  'tokenUsage.tool_stats_no_data':    'Nincs eszköz adat',
+  'tokenUsage.tool_stats_col_tool':   'Eszköz',
+  'tokenUsage.tool_stats_col_calls':  'Hívás',
+  'tokenUsage.tool_stats_col_agents': 'Ágensek',
+  'tokenUsage.tool_stats_col_server': 'MCP szerver',
+  'tokenUsage.tool_stats_col_cost':   'Becsült költség',
+  'tokenUsage.tool_stats_builtin':    'beépített',
+  'tokenUsage.tool_stats_agent_toggle': 'Ágens bontás',
 
   // --- Agents auth flow ---
   'agents.auth.btn_starting':    'Indítás...',

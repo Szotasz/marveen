@@ -11380,8 +11380,57 @@ const TU_COLORS = {
 let tuSelectedAgent = ''
 let tuChartState = null
 
+// Model pricing in USD per million tokens (input / output / cache-write / cache-read).
+// Fallback row is used when model is unknown or not yet captured.
+const TU_MODEL_PRICING = {
+  'claude-sonnet-4-6':   { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
+  'claude-sonnet-4-5':   { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
+  'claude-sonnet-5':     { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
+  'claude-opus-4':       { in: 15.0,  out: 75.0,  cw: 18.75, cr: 1.50 },
+  'claude-opus-4-8':     { in: 15.0,  out: 75.0,  cw: 18.75, cr: 1.50 },
+  'claude-haiku-4-5':    { in: 0.80,  out: 4.0,   cw: 1.00,  cr: 0.08 },
+  'claude-fable-5':      { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
+  default:               { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
+}
+
+function tuPriceForModel(model) {
+  if (!model) return TU_MODEL_PRICING.default
+  for (const key of Object.keys(TU_MODEL_PRICING)) {
+    if (key !== 'default' && model.startsWith(key)) return TU_MODEL_PRICING[key]
+  }
+  return TU_MODEL_PRICING.default
+}
+
+function tuCalcCostUSD(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, model) {
+  const p = tuPriceForModel(model)
+  return (
+    (inputTokens || 0) * p.in +
+    (outputTokens || 0) * p.out +
+    (cacheCreationTokens || 0) * p.cw +
+    (cacheReadTokens || 0) * p.cr
+  ) / 1_000_000
+}
+
+function tuFormatCostUSD(usd) {
+  if (usd < 0.001) return '<$0.001'
+  if (usd < 1) return '$' + usd.toFixed(3)
+  return '$' + usd.toFixed(2)
+}
+
+// Pie chart color palette for model distribution (distinct from agent colors)
+const TU_MODEL_COLORS = ['#6366f1','#06b6d4','#f59e0b','#22c55e','#ef4444','#8b5cf6','#ec4899','#10b981']
+
+function tuGetModelColor(idx) { return TU_MODEL_COLORS[idx % TU_MODEL_COLORS.length] }
+
 function tuGetColor(agent) {
   return TU_COLORS[agent] || '#64748b'
+}
+
+function tuMcpServerFromTool(toolName) {
+  if (!toolName || !toolName.startsWith('mcp__')) return null
+  const parts = toolName.split('__')
+  // parts: ['mcp', '<server>', '<tool>'] -- server may contain single underscores
+  return parts.length >= 3 ? parts[1] : null
 }
 
 function tuFormatTokens(n) {
@@ -11444,6 +11493,17 @@ async function loadTokenUsage() {
   tuDetailSearch = ''
   const searchEl = document.getElementById('tuSearchInput')
   if (searchEl) searchEl.value = ''
+
+  const agentParam = agent ? '&agent=' + encodeURIComponent(agent) : ''
+  const baseQuery = params.toString()
+
+  const [modelDistRes, toolStatsRes] = await Promise.all([
+    fetch('/api/token-usage/model-dist?' + baseQuery + agentParam),
+    fetch('/api/token-usage/tool-stats?' + baseQuery + agentParam),
+  ])
+  if (modelDistRes.ok) renderTuModelDist(await modelDistRes.json())
+  if (toolStatsRes.ok) renderTuToolStats(await toolStatsRes.json())
+
   await tuFetchDetails()
 }
 
@@ -11458,12 +11518,20 @@ function renderTuSummary(summary) {
     const totalIn = (s.totalInput || 0) + (s.totalCacheRead || 0) + (s.totalCacheCreation || 0)
     const isActive = tuSelectedAgent === s.agent
     const dimmed = tuSelectedAgent && !isActive
+    const costUSD = Array.isArray(s.perModel) && s.perModel.length
+      ? s.perModel.reduce((sum, m) => sum + tuCalcCostUSD(m.totalInput || 0, m.totalOutput || 0, m.totalCacheRead || 0, m.totalCacheCreation || 0, m.model && m.model !== '(unknown)' ? m.model : null), 0)
+      : tuCalcCostUSD(s.totalInput, s.totalOutput, s.totalCacheRead, s.totalCacheCreation, null)
+    const sessions = s.totalSessions || 0
+    const tokPerSession = sessions > 0 ? Math.round(totalIn / sessions) : 0
+    const costPerSession = sessions > 0 ? costUSD / sessions : 0
     return `
       <div class="overview-stat tu-agent-card${isActive ? ' tu-active' : ''}" data-agent="${escapeHtml(s.agent)}"
         style="border-left:3px solid ${tuGetColor(s.agent)};cursor:pointer;${dimmed ? 'opacity:0.4;' : ''}transition:opacity 0.2s">
         <div class="overview-stat-label">${escapeHtml(s.agent)}</div>
         <div class="overview-stat-value">${tuFormatTokens(totalIn)}</div>
         <div class="overview-stat-sub">${t('tokenUsage.calls_sub', { calls: (s.totalCalls || 0).toLocaleString(), out: tuFormatTokens(s.totalOutput) })}</div>
+        <div class="overview-stat-sub" style="margin-top:4px;color:var(--text-secondary)">${tuFormatCostUSD(costUSD)} &middot; ${sessions} sess</div>
+        <div class="overview-stat-sub" style="font-size:11px;color:var(--text-secondary)">${tuFormatTokens(tokPerSession)} tok/sess &middot; ${tuFormatCostUSD(costPerSession)}/sess</div>
       </div>`
   }).join('')
 
@@ -12054,12 +12122,175 @@ document.getElementById('tuCollectBtn')?.addEventListener('click', async () => {
 document.getElementById('tuPeriod')?.addEventListener('change', () => { tuSelectedAgent = ''; loadTokenUsage() })
 document.getElementById('tuAgent')?.addEventListener('change', () => { tuSelectedAgent = document.getElementById('tuAgent').value; loadTokenUsage() })
 document.getElementById('tuMinTokens')?.addEventListener('change', () => tuFetchDetails())
+document.getElementById('tuToolAgentBreakdown')?.addEventListener('change', () => {
+  if (tuToolStatsData) renderTuToolStats(tuToolStatsData)
+})
 
 window.addEventListener('resize', () => {
   if (!document.getElementById('tokenUsagePage')?.hidden) {
     if (tuChartState && renderTuTimeline.__lastData) renderTuTimeline(renderTuTimeline.__lastData, renderTuTimeline.__lastAgent)
+    if (tuModelDistData) renderTuModelDist(tuModelDistData)
   }
 })
+
+// ============================================================
+// Token Monitor: Model distribution pie chart
+// ============================================================
+let tuModelDistData = null
+
+function renderTuModelDist(data) {
+  tuModelDistData = data
+  const section = document.getElementById('tuModelDistSection')
+  const tableEl = document.getElementById('tuModelDistTable')
+  const canvas = document.getElementById('tuModelPieCanvas')
+  if (!section || !tableEl || !canvas) return
+
+  if (!data || !data.length) {
+    tableEl.innerHTML = `<span style="color:var(--text-secondary);font-size:13px">${t('tokenUsage.model_dist_no_data')}</span>`
+    const ctx = canvas.getContext('2d')
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    return
+  }
+
+  // Pie chart
+  const dpr = window.devicePixelRatio || 1
+  const size = 180
+  canvas.width = size * dpr
+  canvas.height = size * dpr
+  canvas.style.width = size + 'px'
+  canvas.style.height = size + 'px'
+  const ctx = canvas.getContext('2d')
+  ctx.scale(dpr, dpr)
+  ctx.clearRect(0, 0, size, size)
+
+  const total = data.reduce((s, d) => s + (d.count || 0), 0)
+  const cx = size / 2, cy = size / 2, r = size / 2 - 8
+  let startAngle = -Math.PI / 2
+  for (let i = 0; i < data.length; i++) {
+    const frac = (data[i].count || 0) / total
+    const endAngle = startAngle + frac * Math.PI * 2
+    ctx.beginPath()
+    ctx.moveTo(cx, cy)
+    ctx.arc(cx, cy, r, startAngle, endAngle)
+    ctx.closePath()
+    ctx.fillStyle = tuGetModelColor(i)
+    ctx.fill()
+    // Thin separator
+    ctx.strokeStyle = 'var(--bg-primary, #0f172a)'
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+    startAngle = endAngle
+  }
+
+  // Center hole (donut effect)
+  ctx.beginPath()
+  ctx.arc(cx, cy, r * 0.5, 0, Math.PI * 2)
+  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--bg-elevated') || '#1e293b'
+  ctx.fill()
+
+  // Legend + table
+  const thStyle = 'text-align:left;padding:4px 8px 4px 0;font-size:12px;color:var(--text-secondary);border-bottom:1px solid var(--border);font-weight:600'
+  const tdStyle = 'padding:4px 8px 4px 0;font-size:13px;vertical-align:middle'
+  const tdRStyle = tdStyle + ';text-align:right'
+
+  let rows = data.map((d, i) => {
+    const pct = total > 0 ? ((d.count / total) * 100).toFixed(1) : '0.0'
+    const costUSD = tuCalcCostUSD(d.totalInput, d.totalOutput, d.totalCacheRead, d.totalCacheCreation, d.model !== '(unknown)' ? d.model : null)
+    return `<tr>
+      <td style="${tdStyle}">
+        <span style="display:inline-block;width:10px;height:10px;background:${tuGetModelColor(i)};border-radius:2px;margin-right:6px;vertical-align:middle"></span>
+        <code style="font-size:12px">${escapeHtml(d.model)}</code>
+      </td>
+      <td style="${tdRStyle}">${(d.count || 0).toLocaleString()}</td>
+      <td style="${tdRStyle}">${pct}%</td>
+      <td style="${tdRStyle}">${tuFormatCostUSD(costUSD)}</td>
+    </tr>`
+  }).join('')
+
+  tableEl.innerHTML = `<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;min-width:300px">
+    <thead><tr>
+      <th style="${thStyle}">Modell</th>
+      <th style="${thStyle.replace('text-align:left','text-align:right')}">${t('tokenUsage.model_dist_calls', { n: '' }).trim()}</th>
+      <th style="${thStyle.replace('text-align:left','text-align:right')}">%</th>
+      <th style="${thStyle.replace('text-align:left','text-align:right')}">Becsült USD</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table></div>`
+}
+
+// ============================================================
+// Token Monitor: MCP tool usage grid
+// ============================================================
+let tuToolStatsData = null
+
+function renderTuToolStats(data) {
+  tuToolStatsData = data
+  const el = document.getElementById('tuToolStatsContent')
+  if (!el) return
+
+  if (!data || !data.length) {
+    el.innerHTML = `<span style="color:var(--text-secondary);font-size:13px">${t('tokenUsage.tool_stats_no_data')}</span>`
+    return
+  }
+
+  // Aggregate per-model rows into one entry per tool_name
+  const byTool = new Map()
+  for (const row of data) {
+    let entry = byTool.get(row.tool_name)
+    if (!entry) {
+      entry = { tool_name: row.tool_name, count: 0, agentSet: new Set(), costUSD: 0 }
+      byTool.set(row.tool_name, entry)
+    }
+    entry.count += row.count || 0
+    ;(row.agents || '').split(',').forEach(a => { const s = a.trim(); if (s) entry.agentSet.add(s) })
+    entry.costUSD += tuCalcCostUSD(row.totalInput || 0, row.totalOutput || 0, row.totalCacheRead || 0, row.totalCacheCreation || 0, row.model || null)
+  }
+  const aggregated = Array.from(byTool.values()).sort((a, b) => b.count - a.count).slice(0, 50)
+
+  const showAgents = document.getElementById('tuToolAgentBreakdown')?.checked
+  const thStyle = 'text-align:left;padding:4px 8px 4px 0;font-size:12px;color:var(--text-secondary);border-bottom:1px solid var(--border);font-weight:600'
+  const tdStyle = 'padding:4px 8px 4px 0;font-size:13px;overflow:hidden;text-overflow:ellipsis;max-width:260px;white-space:nowrap'
+  const tdRStyle = 'padding:4px 8px 4px 0;font-size:13px;text-align:right;font-variant-numeric:tabular-nums'
+
+  const maxCount = Math.max(...aggregated.map(d => d.count || 0))
+
+  const rows = aggregated.map(d => {
+    const barPct = maxCount > 0 ? Math.round((d.count / maxCount) * 100) : 0
+    const server = tuMcpServerFromTool(d.tool_name)
+    const serverLabel = server
+      ? `<span style="font-size:11px;color:var(--text-secondary)">${escapeHtml(server)}</span>`
+      : `<span style="font-size:11px;color:var(--text-secondary);opacity:0.6">${t('tokenUsage.tool_stats_builtin')}</span>`
+    const agentChips = Array.from(d.agentSet).map(a => {
+      const color = tuGetColor(a)
+      return `<span style="display:inline-block;padding:1px 6px;border-radius:10px;font-size:11px;font-weight:500;border:1px solid ${color};color:${color};margin:1px 2px 1px 0;white-space:nowrap">${escapeHtml(a)}</span>`
+    }).join('')
+    const agentCell = showAgents ? `<td style="${tdStyle};white-space:normal">${agentChips}</td>` : ''
+    return `<tr>
+      <td style="${tdStyle}" title="${escapeHtml(d.tool_name)}"><code style="font-size:12px">${escapeHtml(d.tool_name)}</code></td>
+      <td style="${tdRStyle}">${(d.count || 0).toLocaleString()}</td>
+      <td style="padding:4px 8px 4px 0;vertical-align:middle;min-width:70px">
+        <div style="background:var(--accent,#6366f1);height:6px;border-radius:3px;width:${barPct}%;opacity:0.7"></div>
+      </td>
+      <td style="${tdStyle}">${serverLabel}</td>
+      <td style="${tdRStyle}">${tuFormatCostUSD(d.costUSD)}</td>
+      ${agentCell}
+    </tr>`
+  }).join('')
+
+  const agentHeader = showAgents ? `<th style="${thStyle}">${t('tokenUsage.tool_stats_col_agents')}</th>` : ''
+
+  el.innerHTML = `<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;min-width:400px">
+    <thead><tr>
+      <th style="${thStyle}">${t('tokenUsage.tool_stats_col_tool')}</th>
+      <th style="${thStyle.replace('text-align:left','text-align:right')}">${t('tokenUsage.tool_stats_col_calls')}</th>
+      <th style="${thStyle}"></th>
+      <th style="${thStyle}">${t('tokenUsage.tool_stats_col_server')}</th>
+      <th style="${thStyle.replace('text-align:left','text-align:right')}">${t('tokenUsage.tool_stats_col_cost')}</th>
+      ${agentHeader}
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table></div>`
+}
 
 // ============================================================
 // Ideas (Ötletláda)
