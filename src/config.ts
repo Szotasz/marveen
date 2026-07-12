@@ -254,6 +254,18 @@ export const HEARTBEAT_START_HOUR = parseInt(env['HEARTBEAT_START_HOUR'] ?? '9',
 export const HEARTBEAT_AGENT_ENABLED =
   ['1', 'true', 'yes', 'on'].includes((cfg('HEARTBEAT_AGENT_ENABLED') ?? '').trim().toLowerCase())
 
+// Sub-agent Telegram inbox wake-nudge (opt-in, DEFAULT OFF).
+// The message-router can nudge an idle sub-agent whose derived Telegram inbox
+// (<state>/inbox-pending.jsonl) has stuck inbound messages, so its drain hook
+// fires and claims the backlog. PREREQUISITE not yet upstream: the inbound-tee
+// writer and the UserPromptSubmit drain hook that produce/consume that inbox
+// file. Until they land, no inbox file exists and the watcher is a no-op even
+// when enabled. Ships DISABLED so an upstream install sees zero behaviour change
+// and pays no per-tick cost; enable with SUBAGENT_TELEGRAM_WAKE_ENABLED=1 once
+// the drain path is in place.
+export const SUBAGENT_TELEGRAM_WAKE_ENABLED =
+  ['1', 'true', 'yes', 'on'].includes((cfg('SUBAGENT_TELEGRAM_WAKE_ENABLED') ?? '').trim().toLowerCase())
+
 // Google Calendar account the heartbeat summarises (next 2h). Empty (the
 // default) means the agent uses whatever calendar its MCP server is
 // authenticated as, so no personal address is baked into the shipped
