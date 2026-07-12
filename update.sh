@@ -364,6 +364,10 @@ if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
     else
       echo -e "  ${GREEN}✓${NC} Már a legfrissebb verzión vagy ($NEW_VERSION)"
     fi
+    # Nothing to pull, but an auto-stash may still be sitting on top of HEAD
+    # (dashboard's "stash + update" run against an already-current checkout).
+    # Without this, the operator's local files stay stashed with no restore.
+    restore_stash_before_exit
     exit 0
   else
     # --reseed-fleet / --regen-claudemd are explicit refresh requests, so they
@@ -702,9 +706,36 @@ fi
 # the same lines the operator had locally; we drop and warn rather
 # than block the restart, but the entry stays in `git stash list`
 # until the operator deals with it.
+#
+# Incident (2026-07-12): the build above (SKIP_BUILD branch aside) compiles
+# whatever is on disk AT THAT POINT -- the pulled commit WITHOUT the
+# operator's stashed local files, since the stash is not popped until here.
+# A locally-added source file (e.g. a new route) therefore never made it into
+# dist/, even though `git stash pop` puts it back on disk right after: the
+# pop happens too late for the build that already ran. Rebuild again below,
+# only when the pop actually restored something, to close that gap without
+# moving the pop earlier -- an earlier pop would put local edits back on disk
+# before the build-failure rollback further up, so a failed build's
+# `git reset --hard` would destroy them instead of leaving them safe in the
+# stash.
 if [ "$STASHED_AUTO" = "1" ]; then
   echo -e "  Auto-stash visszaallitasa..."
-  if ! git stash pop; then
+  if git stash pop; then
+    STASHED_AUTO=0
+    if [ "${SKIP_BUILD:-0}" != "1" ]; then
+      echo -e "  Ujraforditas a visszaallitott helyi valtozasokkal..."
+      if ! retry 2 3 npm run build --silent; then
+        if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+          echo -e "${RED}WARNING:${NC} Rebuild after stash-restore failed; dist/ may not reflect local changes."
+        else
+          echo -e "${RED}FIGYELEM:${NC} Az ujraforditas a stash-visszaallitas utan sikertelen; a dist/ lehet hogy nem tartalmazza a helyi valtozasokat."
+        fi
+        echo -e "          Futtasd kezzel: npm run build"
+      elif [ -d "$INSTALL_DIR/dist" ]; then
+        echo "$NEW_VERSION_FULL" > "$BUILT_COMMIT_FILE"
+      fi
+    fi
+  else
     if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
       echo -e "${RED}WARNING:${NC} Auto-stash pop had conflicts; the stash remains in 'git stash list'."
     else
