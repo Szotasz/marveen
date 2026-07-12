@@ -66,4 +66,44 @@ describe('detectReauthNeeded', () => {
     ].join('\n')
     expect(detectReauthNeeded(pane).needsReauth).toBe(true)
   })
+
+  // Devy 2026-07-12: recovered agent still badged as broken. The stale
+  // "Not logged in" transcript result sits inside the 15-line tail, ABOVE a
+  // later "Login successful" -- but the live status line (above the input box)
+  // shows a healthy context readout. The status line is what tracks auth.
+  it('does NOT fire when a stale login failure is followed by a successful login', () => {
+    const pane = [
+      '  1 in_progress Devy kártya </scheduled-task>',
+      '  ⎿  Not logged in · Please run /login',
+      '✻ Crunched for 0s',
+      '❯ /login',
+      '  ⎿  Login interrupted',
+      '❯ /login',
+      '  ⎿  Login successful',
+      '                                        ~290k uncached · /clear to start fresh',
+      '──────────────────────────────────────────────────────────────── Devy ──',
+      '❯ ',
+      '────────────────────────────────────────────────────────────────────────',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
+    ].join('\n')
+    expect(detectReauthNeeded(pane).needsReauth).toBe(false)
+  })
+
+  // Finy 2026-07-12, the genuinely-broken twin of the case above: the SAME
+  // interrupted-login transcript, but the live status line still says so.
+  it('DOES fire when the live status line above the input box reports the failure', () => {
+    const pane = [
+      '  ⎿  Login interrupted',
+      '❯ /login',
+      '  ⎿  Login interrupted',
+      '                                            Not logged in · Run /login',
+      '────────────────────────────────────────────────────────────── Finy ──',
+      '❯ ',
+      '──────────────────────────────────────────────────────────────────────',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
+    ].join('\n')
+    const r = detectReauthNeeded(pane)
+    expect(r.needsReauth).toBe(true)
+    expect(r.reason).toMatch(/not logged in/i)
+  })
 })
