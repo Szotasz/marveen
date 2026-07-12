@@ -504,3 +504,47 @@ export function isKnownAgent(name: string): boolean {
     return false
   }
 }
+
+// Parse YAML frontmatter capabilities from a persona file.
+// Expected format (first block in the file):
+//   ---
+//   capabilities: [tag1, tag2, tag3]
+//   ---
+// Returns [] if the file has no frontmatter or no capabilities key.
+function parsePersonaCapabilities(name: string): string[] {
+  const personaPath = join(PROJECT_ROOT, 'personas', `${name}.md`)
+  try {
+    const content = readFileSync(personaPath, 'utf-8')
+    const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/)
+    if (!fmMatch) return []
+    const lineMatch = fmMatch[1].match(/^capabilities:\s*\[([^\]]*)\]/m)
+    if (!lineMatch) return []
+    return lineMatch[1].split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
+// Capability resolution order (first match wins):
+//   1. agent-config.json "capabilities" field (runtime override via PUT API)
+//   2. personas/<name>.md YAML frontmatter "capabilities:" line (auto-derived)
+export function readAgentCapabilities(name: string): string[] {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}'))
+    if (Array.isArray(config.capabilities)) return config.capabilities
+  } catch { /* fall through to persona */ }
+  return parsePersonaCapabilities(name)
+}
+
+export function writeAgentCapabilities(name: string, capabilities: string[]): void {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  let config: Record<string, unknown> = {}
+  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  config.capabilities = capabilities
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
+// No-op kept for API compatibility; persona-based derivation is always live so
+// there is nothing to bootstrap at startup anymore.
+export function bootstrapCapabilities(): void { /* intentionally empty */ }
