@@ -276,6 +276,28 @@ if [ -n "$DIRTY" ]; then
   fi
 fi
 
+# Restore an auto-stash before an EARLY exit (AHEAD-check / pull-failure /
+# build-failure below) -- any exit between the stash push above and the
+# normal restore point further down would otherwise strand the operator's
+# local files with no restore. Incident (2026-07-12): the AHEAD-check exit
+# left scripts/imap-business-mail/*.py, billingo-report, crm-report etc.
+# stashed for hours until manually recovered via `git stash apply`.
+restore_stash_before_exit() {
+  if [ "$STASHED_AUTO" = "1" ]; then
+    echo -e "  Auto-stash visszaallitasa (korai kilepes elott)..."
+    if git stash pop; then
+      STASHED_AUTO=0
+    else
+      if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+        echo -e "${RED}WARNING:${NC} Auto-stash pop had conflicts; the stash remains in 'git stash list'."
+      else
+        echo -e "${RED}FIGYELEM:${NC} Auto-stash pop konfliktusos; a stash benne marad a 'git stash list'-ben."
+      fi
+      echo "          Manualisan kezeld: git stash list / git stash apply / git stash drop"
+    fi
+  fi
+}
+
 # Save current version
 OLD_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
@@ -290,6 +312,7 @@ AHEAD=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
 if [ "${AHEAD:-0}" -gt 0 ]; then
   RESULT_MSG="A helyi checkout ${AHEAD} committal elore van az upstreamhez kepest; a fast-forward frissites nem lehetseges. Nezd meg: git log @{u}..HEAD"
   echo -e "${RED}HIBA:${NC} a helyi checkout ${AHEAD} committal elore van az upstreamhez kepest; fast-forward nem lehetseges. Nezd: git log @{u}..HEAD"
+  restore_stash_before_exit
   exit 5
 fi
 
@@ -298,6 +321,7 @@ echo -e "  Letoltes (origin/${CURRENT_BRANCH})..."
 if ! retry 3 3 git pull --ff-only origin "$CURRENT_BRANCH"; then
   RESULT_MSG="git pull --ff-only sikertelen (divergencia vagy halozati hiba). Nezd: git status; git log @{u}..HEAD"
   echo -e "${RED}HIBA:${NC} git pull --ff-only sikertelen origin/${CURRENT_BRANCH}."
+  restore_stash_before_exit
   exit 5
 fi
 NEW_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -411,6 +435,7 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
     fi
     RESULT_STATUS="rolled-back"
     RESULT_MSG="A build elbukott; a rendszer visszaallt a korabbi mukodo verziora (${OLD_VERSION}). A frissites nem ment ki."
+    restore_stash_before_exit
     exit 6
   fi
 
