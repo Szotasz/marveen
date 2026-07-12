@@ -213,9 +213,12 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
   const getCursor = db.prepare('SELECT last_line, last_size FROM token_usage_cursors WHERE file_path = ?')
   const setCursor = db.prepare('INSERT OR REPLACE INTO token_usage_cursors (file_path, last_line, last_size) VALUES (?, ?, ?)')
   const insertCall = db.prepare(`
-    INSERT OR IGNORE INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens,
+    INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens,
       cache_read_tokens, cache_creation_tokens, thinking_tokens, model, content_preview, tool_name)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(agent, session_id, timestamp, input_tokens, output_tokens) DO UPDATE SET
+      model = CASE WHEN token_usage.model IS NULL AND excluded.model IS NOT NULL THEN excluded.model ELSE token_usage.model END,
+      thinking_tokens = CASE WHEN (token_usage.thinking_tokens IS NULL OR token_usage.thinking_tokens = 0) AND excluded.thinking_tokens > 0 THEN excluded.thinking_tokens ELSE token_usage.thinking_tokens END
   `)
 
   for (const source of sources) {
@@ -260,6 +263,14 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
   return { inserted: totalInserted, files: totalFiles }
 }
 
+export interface TokenSummaryModelRow {
+  model: string | null
+  totalInput: number
+  totalOutput: number
+  totalCacheRead: number
+  totalCacheCreation: number
+}
+
 export interface TokenSummary {
   agent: string
   totalCalls: number
@@ -270,11 +281,18 @@ export interface TokenSummary {
   totalSessions: number
   firstSeen: number
   lastSeen: number
+  perModel: TokenSummaryModelRow[]
 }
 
 export function getTokenSummary(from?: number, to?: number): TokenSummary[] {
   const db = getDb()
-  let sql = `
+  const conditions: string[] = []
+  const params: any[] = []
+  if (from) { conditions.push('timestamp >= ?'); params.push(from) }
+  if (to) { conditions.push('timestamp <= ?'); params.push(to) }
+  const where = conditions.length ? ' WHERE ' + conditions.join(' AND ') : ''
+
+  const rows = db.prepare(`
     SELECT agent,
       COUNT(*) as totalCalls,
       SUM(input_tokens) as totalInput,
@@ -285,15 +303,29 @@ export function getTokenSummary(from?: number, to?: number): TokenSummary[] {
       MIN(timestamp) as firstSeen,
       MAX(timestamp) as lastSeen
     FROM token_usage
-  `
-  const conditions: string[] = []
-  const params: any[] = []
-  if (from) { conditions.push('timestamp >= ?'); params.push(from) }
-  if (to) { conditions.push('timestamp <= ?'); params.push(to) }
-  if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ')
-  sql += ' GROUP BY agent ORDER BY totalInput DESC'
+    ${where}
+    GROUP BY agent ORDER BY totalInput DESC
+  `).all(...params) as Omit<TokenSummary, 'perModel'>[]
 
-  return db.prepare(sql).all(...params) as TokenSummary[]
+  const modelRows = db.prepare(`
+    SELECT agent, model,
+      SUM(input_tokens) as totalInput,
+      SUM(output_tokens) as totalOutput,
+      SUM(cache_read_tokens) as totalCacheRead,
+      SUM(cache_creation_tokens) as totalCacheCreation
+    FROM token_usage
+    ${where}
+    GROUP BY agent, model
+  `).all(...params) as (TokenSummaryModelRow & { agent: string })[]
+
+  const byAgent = new Map<string, TokenSummaryModelRow[]>()
+  for (const mr of modelRows) {
+    const { agent, ...rest } = mr as { agent: string } & TokenSummaryModelRow
+    if (!byAgent.has(agent)) byAgent.set(agent, [])
+    byAgent.get(agent)!.push(rest)
+  }
+
+  return rows.map(r => ({ ...r, perModel: byAgent.get(r.agent) ?? [] }))
 }
 
 export interface ModelDistEntry {
@@ -332,16 +364,26 @@ export function getModelDistribution(from?: number, to?: number, agent?: string)
 
 export interface ToolStatEntry {
   tool_name: string
+  model: string | null
   count: number
   agents: string
+  totalInput: number
+  totalOutput: number
+  totalCacheRead: number
+  totalCacheCreation: number
 }
 
 export function getToolStats(from?: number, to?: number, agent?: string): ToolStatEntry[] {
   const db = getDb()
   let sql = `
     SELECT tool_name,
+      model,
       COUNT(*) as count,
-      GROUP_CONCAT(DISTINCT agent) as agents
+      GROUP_CONCAT(DISTINCT agent) as agents,
+      SUM(input_tokens) as totalInput,
+      SUM(output_tokens) as totalOutput,
+      SUM(cache_read_tokens) as totalCacheRead,
+      SUM(cache_creation_tokens) as totalCacheCreation
     FROM token_usage
     WHERE tool_name IS NOT NULL
   `
@@ -351,7 +393,7 @@ export function getToolStats(from?: number, to?: number, agent?: string): ToolSt
   if (to) { conditions.push('timestamp <= ?'); params.push(to) }
   if (agent) { conditions.push('agent = ?'); params.push(agent) }
   if (conditions.length) sql += ' AND ' + conditions.join(' AND ')
-  sql += ' GROUP BY tool_name ORDER BY count DESC LIMIT 50'
+  sql += ' GROUP BY tool_name, model ORDER BY count DESC'
 
   return db.prepare(sql).all(...params) as ToolStatEntry[]
 }

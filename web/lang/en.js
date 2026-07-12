@@ -1132,6 +1132,9 @@ window._i18n.en = {
   'tokenUsage.tool_stats_col_tool':   'Tool',
   'tokenUsage.tool_stats_col_calls':  'Calls',
   'tokenUsage.tool_stats_col_agents': 'Agents',
+  'tokenUsage.tool_stats_col_server': 'MCP server',
+  'tokenUsage.tool_stats_col_cost':   'Est. cost',
+  'tokenUsage.tool_stats_builtin':    'built-in',
   'tokenUsage.tool_stats_agent_toggle': 'Per-agent breakdown',
 
   // --- Agents auth flow ---

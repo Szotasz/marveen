@@ -1130,6 +1130,9 @@ window._i18n.hu = {
   'tokenUsage.tool_stats_col_tool':   'Eszköz',
   'tokenUsage.tool_stats_col_calls':  'Hívás',
   'tokenUsage.tool_stats_col_agents': 'Ágensek',
+  'tokenUsage.tool_stats_col_server': 'MCP szerver',
+  'tokenUsage.tool_stats_col_cost':   'Becsült költség',
+  'tokenUsage.tool_stats_builtin':    'beépített',
   'tokenUsage.tool_stats_agent_toggle': 'Ágens bontás',
 
   // --- Agents auth flow ---

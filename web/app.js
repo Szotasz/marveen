@@ -11426,6 +11426,13 @@ function tuGetColor(agent) {
   return TU_COLORS[agent] || '#64748b'
 }
 
+function tuMcpServerFromTool(toolName) {
+  if (!toolName || !toolName.startsWith('mcp__')) return null
+  const parts = toolName.split('__')
+  // parts: ['mcp', '<server>', '<tool>'] -- server may contain single underscores
+  return parts.length >= 3 ? parts[1] : null
+}
+
 function tuFormatTokens(n) {
   if (n == null || isNaN(n)) return '0'
   if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B'
@@ -11511,7 +11518,9 @@ function renderTuSummary(summary) {
     const totalIn = (s.totalInput || 0) + (s.totalCacheRead || 0) + (s.totalCacheCreation || 0)
     const isActive = tuSelectedAgent === s.agent
     const dimmed = tuSelectedAgent && !isActive
-    const costUSD = tuCalcCostUSD(s.totalInput, s.totalOutput, s.totalCacheRead, s.totalCacheCreation, null)
+    const costUSD = Array.isArray(s.perModel) && s.perModel.length
+      ? s.perModel.reduce((sum, m) => sum + tuCalcCostUSD(m.totalInput || 0, m.totalOutput || 0, m.totalCacheRead || 0, m.totalCacheCreation || 0, m.model && m.model !== '(unknown)' ? m.model : null), 0)
+      : tuCalcCostUSD(s.totalInput, s.totalOutput, s.totalCacheRead, s.totalCacheCreation, null)
     const sessions = s.totalSessions || 0
     const tokPerSession = sessions > 0 ? Math.round(totalIn / sessions) : 0
     const costPerSession = sessions > 0 ? costUSD / sessions : 0
@@ -12224,35 +12233,59 @@ function renderTuToolStats(data) {
     return
   }
 
+  // Aggregate per-model rows into one entry per tool_name
+  const byTool = new Map()
+  for (const row of data) {
+    let entry = byTool.get(row.tool_name)
+    if (!entry) {
+      entry = { tool_name: row.tool_name, count: 0, agentSet: new Set(), costUSD: 0 }
+      byTool.set(row.tool_name, entry)
+    }
+    entry.count += row.count || 0
+    ;(row.agents || '').split(',').forEach(a => { const s = a.trim(); if (s) entry.agentSet.add(s) })
+    entry.costUSD += tuCalcCostUSD(row.totalInput || 0, row.totalOutput || 0, row.totalCacheRead || 0, row.totalCacheCreation || 0, row.model || null)
+  }
+  const aggregated = Array.from(byTool.values()).sort((a, b) => b.count - a.count).slice(0, 50)
+
   const showAgents = document.getElementById('tuToolAgentBreakdown')?.checked
   const thStyle = 'text-align:left;padding:4px 8px 4px 0;font-size:12px;color:var(--text-secondary);border-bottom:1px solid var(--border);font-weight:600'
-  const tdStyle = 'padding:4px 8px 4px 0;font-size:13px;overflow:hidden;text-overflow:ellipsis;max-width:320px;white-space:nowrap'
+  const tdStyle = 'padding:4px 8px 4px 0;font-size:13px;overflow:hidden;text-overflow:ellipsis;max-width:260px;white-space:nowrap'
   const tdRStyle = 'padding:4px 8px 4px 0;font-size:13px;text-align:right;font-variant-numeric:tabular-nums'
 
-  const maxCount = Math.max(...data.map(d => d.count || 0))
+  const maxCount = Math.max(...aggregated.map(d => d.count || 0))
 
-  const rows = data.map(d => {
+  const rows = aggregated.map(d => {
     const barPct = maxCount > 0 ? Math.round((d.count / maxCount) * 100) : 0
-    const agentCell = showAgents
-      ? `<td style="${tdStyle}" title="${escapeHtml(d.agents || '')}">${escapeHtml((d.agents || '').replace(/,/g, ', '))}</td>`
-      : ''
+    const server = tuMcpServerFromTool(d.tool_name)
+    const serverLabel = server
+      ? `<span style="font-size:11px;color:var(--text-secondary)">${escapeHtml(server)}</span>`
+      : `<span style="font-size:11px;color:var(--text-secondary);opacity:0.6">${t('tokenUsage.tool_stats_builtin')}</span>`
+    const agentChips = Array.from(d.agentSet).map(a => {
+      const color = tuGetColor(a)
+      return `<span style="display:inline-block;padding:1px 6px;border-radius:10px;font-size:11px;font-weight:500;border:1px solid ${color};color:${color};margin:1px 2px 1px 0;white-space:nowrap">${escapeHtml(a)}</span>`
+    }).join('')
+    const agentCell = showAgents ? `<td style="${tdStyle};white-space:normal">${agentChips}</td>` : ''
     return `<tr>
       <td style="${tdStyle}" title="${escapeHtml(d.tool_name)}"><code style="font-size:12px">${escapeHtml(d.tool_name)}</code></td>
       <td style="${tdRStyle}">${(d.count || 0).toLocaleString()}</td>
-      <td style="padding:4px 8px 4px 0;vertical-align:middle;min-width:80px">
+      <td style="padding:4px 8px 4px 0;vertical-align:middle;min-width:70px">
         <div style="background:var(--accent,#6366f1);height:6px;border-radius:3px;width:${barPct}%;opacity:0.7"></div>
       </td>
+      <td style="${tdStyle}">${serverLabel}</td>
+      <td style="${tdRStyle}">${tuFormatCostUSD(d.costUSD)}</td>
       ${agentCell}
     </tr>`
   }).join('')
 
   const agentHeader = showAgents ? `<th style="${thStyle}">${t('tokenUsage.tool_stats_col_agents')}</th>` : ''
 
-  el.innerHTML = `<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;min-width:300px">
+  el.innerHTML = `<div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;min-width:400px">
     <thead><tr>
       <th style="${thStyle}">${t('tokenUsage.tool_stats_col_tool')}</th>
       <th style="${thStyle.replace('text-align:left','text-align:right')}">${t('tokenUsage.tool_stats_col_calls')}</th>
       <th style="${thStyle}"></th>
+      <th style="${thStyle}">${t('tokenUsage.tool_stats_col_server')}</th>
+      <th style="${thStyle.replace('text-align:left','text-align:right')}">${t('tokenUsage.tool_stats_col_cost')}</th>
       ${agentHeader}
     </tr></thead>
     <tbody>${rows}</tbody>
