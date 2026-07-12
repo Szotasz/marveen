@@ -1,3 +1,0 @@
-{
-  "_doc": "Default capability tags per agent. The fleet manifest endpoint (GET /.well-known/fleetq) reads these as the fallback; an agent's agent-config.json 'capabilities' field overrides when present."
-}

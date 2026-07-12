@@ -7,7 +7,7 @@ import { loadOrCreateDashboardToken, checkBearerToken } from './web/dashboard-au
 import { isBlockedCrossOriginWrite, originMatchesServedHost } from './web/csrf-origin.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
-import { AGENTS_BASE_DIR, listAgentNames, bootstrapCapabilities } from './web/agent-config.js'
+import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
 import { ensureAgentHooks, ensureAgentStalenessHook, ensureDefaultScheduledTasks, agentSettingsPath } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
@@ -67,7 +67,6 @@ const WEB_DIR = join(PROJECT_ROOT, 'web')
 
 function ensureDirs() {
   mkdirSync(AGENTS_BASE_DIR, { recursive: true })
-  bootstrapCapabilities()
 }
 
 export function startWebServer(port = 3420): http.Server {

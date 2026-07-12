@@ -544,7 +544,3 @@ export function writeAgentCapabilities(name: string, capabilities: string[]): vo
   config.capabilities = capabilities
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
-
-// No-op kept for API compatibility; persona-based derivation is always live so
-// there is nothing to bootstrap at startup anymore.
-export function bootstrapCapabilities(): void { /* intentionally empty */ }
