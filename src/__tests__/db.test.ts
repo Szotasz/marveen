@@ -105,7 +105,7 @@ describe('buildFtsMatchExpression', () => {
     // No bare *, no doubled **.
     expect(out).not.toMatch(/\*\*/)
     expect(out).not.toMatch(/(^| )\*/)
-    expect(out).toBe('foo* bar* baz* quxzap*')
+    expect(out).toBe('foo* bar* baz* qux* zap*')
   })
 
   it('caps at 20 tokens', () => {
