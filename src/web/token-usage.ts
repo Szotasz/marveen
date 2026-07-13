@@ -77,6 +77,12 @@ interface ParsedCall {
   cacheCreationTokens: number
   contentPreview: string
   toolName: string | null
+  /** Coarse task label derived (deterministically, at ingest time) from the
+   *  triggering user turn -- scheduled-task name, delegation type, or "ad-hoc".
+   *  Null when the triggering turn carried no recognizable marker. Forward-only:
+   *  rows ingested before this field existed stay null (the user-turn context
+   *  needed to derive it is not stored, so it can't be back-filled). */
+  taskTitle: string | null
   /** The API message id (msg_...). One assistant turn that calls a tool is
    *  written to the transcript as SEVERAL `assistant` lines sharing this id --
    *  a text block (tool_name=null) plus one line per tool_use block -- and EACH
@@ -96,6 +102,39 @@ interface ParsedCall {
  * message id (older transcripts) pass through untouched. Pure + order-stable
  * for unit testing.
  */
+/**
+ * Derive a coarse task label from a triggering `user` turn's text. Deterministic,
+ * keyword/marker-based -- no model call. Returns null when the turn carries no
+ * recognizable marker, so the caller KEEPS the previous label (an unmarked
+ * mid-turn injection must not blank out the real task). Priority: scheduled-task
+ * name (cleanest signal) > inter-agent delegation (coarse category) > channel
+ * (user-initiated ad-hoc). Rules live here so they are easy to adjust in one
+ * place if our labeling needs change.
+ */
+export function deriveTaskTitle(userText: string): string | null {
+  if (!userText) return null
+  const sched = userText.match(/<scheduled-task source="scheduled-task:([^"]+)"/)
+  if (sched) return sched[1]
+  if (/\[Uzenet @|\[Üzenet @|<trusted-peer source="agent:/.test(userText)) {
+    const t = userText.toLowerCase()
+    if (t.includes('review') || t.includes('ellenor') || t.includes('ellenőr') || t.includes('tervek vs')) return 'review'
+    if (t.includes('kanban')) return 'kanban'
+    return 'delegalt-feladat'
+  }
+  if (/<channel source=/.test(userText)) return 'ad-hoc'
+  return null
+}
+
+/** Pull the plain text out of a transcript message's `content` (string or the
+ *  array-of-blocks shape), for marker detection. */
+function messageText(content: any): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content.map((b: any) => (typeof b?.text === 'string' ? b.text : (typeof b?.content === 'string' ? b.content : ''))).join('\n')
+  }
+  return ''
+}
+
 export function collapseByMessageId(calls: ParsedCall[]): ParsedCall[] {
   const byId = new Map<string, ParsedCall>()
   const out: ParsedCall[] = []
@@ -114,6 +153,7 @@ export function collapseByMessageId(calls: ParsedCall[]): ParsedCall[] {
     ex.cacheCreationTokens = Math.max(ex.cacheCreationTokens, c.cacheCreationTokens)
     if (!ex.toolName && c.toolName) ex.toolName = c.toolName
     if (!ex.contentPreview && c.contentPreview) ex.contentPreview = c.contentPreview
+    if (!ex.taskTitle && c.taskTitle) ex.taskTitle = c.taskTitle
   }
   return out
 }
@@ -126,6 +166,9 @@ async function parseJsonlFile(
   const calls: ParsedCall[] = []
   let lineNum = 0
   let sessionId = ''
+  // The task label of the most recent recognizable trigger, carried forward
+  // onto the assistant calls it produced (updated only on a recognized marker).
+  let currentTaskTitle: string | null = null
 
   const rl = createInterface({
     input: createReadStream(filePath, { encoding: 'utf-8' }),
@@ -142,6 +185,14 @@ async function parseJsonlFile(
 
     if (obj.sessionId) {
       sessionId = obj.sessionId
+    }
+
+    // User turns carry the triggering markers (scheduled-task / delegation /
+    // channel) -- derive the task label here and carry it forward.
+    if (obj.type === 'user') {
+      const derived = deriveTaskTitle(messageText(obj.message?.content))
+      if (derived) currentTaskTitle = derived
+      continue
     }
 
     if (obj.type !== 'assistant' || !obj.message?.usage) continue
@@ -183,6 +234,7 @@ async function parseJsonlFile(
       cacheCreationTokens: (u.cache_creation_input_tokens || 0),
       contentPreview: preview,
       toolName,
+      taskTitle: currentTaskTitle,
       messageId: obj.message?.id || null,
     })
   }
@@ -202,8 +254,8 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
   const setCursor = db.prepare('INSERT OR REPLACE INTO token_usage_cursors (file_path, last_line, last_size) VALUES (?, ?, ?)')
   const insertCall = db.prepare(`
     INSERT OR IGNORE INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens,
-      cache_read_tokens, cache_creation_tokens, content_preview, tool_name)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      cache_read_tokens, cache_creation_tokens, content_preview, tool_name, task_title)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   for (const source of sources) {
@@ -227,7 +279,7 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
                 c.agent, c.sessionId, c.timestamp,
                 c.inputTokens, c.outputTokens,
                 c.cacheReadTokens, c.cacheCreationTokens,
-                c.contentPreview || null, c.toolName,
+                c.contentPreview || null, c.toolName, c.taskTitle || null,
               )
             }
             setCursor.run(file, linesRead, fileSize)
