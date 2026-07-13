@@ -9256,6 +9256,15 @@ const skillDetailOverlay = document.getElementById('skillDetailOverlay')
 let globalSkills = []
 let skillsActiveFilter = 'all'
 let skillsSearchQuery = ''
+let skillsActiveCategory = 'all'
+
+function deriveSkillCategory(name) {
+  // Use the first dash-separated segment as the category group.
+  // "fleet-dashboard-api" -> "fleet", "morning-chain" -> "morning",
+  // "handoff" -> "handoff"
+  const seg = name.split(':').pop() || name  // strip plugin prefix
+  return seg.split('-')[0] || seg
+}
 
 // Simple inline markdown renderer -- no external dependencies.
 // Handles: headings, bold, italic, code blocks, inline code, lists, hr, links.
@@ -9400,7 +9409,8 @@ async function loadGlobalSkills() {
   if (searchEl) {
     searchEl.addEventListener('input', () => {
       skillsSearchQuery = searchEl.value.toLowerCase().trim()
-      renderGlobalSkills()
+      renderSkillsSidebar()
+      renderGlobalSkillsGrid()
     })
   }
 
@@ -9412,7 +9422,9 @@ async function loadGlobalSkills() {
       filterBtns.querySelectorAll('.skills-filter-btn').forEach(b => b.classList.remove('active'))
       btn.classList.add('active')
       skillsActiveFilter = btn.dataset.filter || 'all'
-      renderGlobalSkills()
+      skillsActiveCategory = 'all'
+      renderSkillsSidebar()
+      renderGlobalSkillsGrid()
     })
   }
 
@@ -9441,9 +9453,45 @@ function getSkillIcon(name) {
   return '\u2699\uFE0F'
 }
 
-function renderGlobalSkills() {
-  skillsGrid.innerHTML = ''
+function renderSkillsSidebar() {
+  const sidebar = document.getElementById('skillsCategorySidebar')
+  if (!sidebar) return
 
+  // Count per category across source-filtered skills
+  const sourceFiltered = skillsActiveFilter === 'all'
+    ? globalSkills
+    : globalSkills.filter(s => s.source === skillsActiveFilter)
+
+  const catCounts = new Map()
+  for (const s of sourceFiltered) {
+    const cat = deriveSkillCategory(s.name)
+    catCounts.set(cat, (catCounts.get(cat) || 0) + 1)
+  }
+
+  const cats = [...catCounts.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+
+  sidebar.innerHTML = `
+    <div class="skills-cat-title">${t('skills.category.title')}</div>
+    <button class="skills-cat-btn${skillsActiveCategory === 'all' ? ' active' : ''}" data-cat="all">
+      ${t('skills.filter.all')} <span class="skills-cat-count">${sourceFiltered.length}</span>
+    </button>
+    ${cats.map(([cat, count]) => `
+      <button class="skills-cat-btn${skillsActiveCategory === cat ? ' active' : ''}" data-cat="${escapeHtml(cat)}">
+        ${escapeHtml(cat)} <span class="skills-cat-count">${count}</span>
+      </button>
+    `).join('')}
+  `
+
+  sidebar.addEventListener('click', (e) => {
+    const btn = e.target.closest('.skills-cat-btn')
+    if (!btn) return
+    skillsActiveCategory = btn.dataset.cat || 'all'
+    renderSkillsSidebar()
+    renderGlobalSkillsGrid()
+  })
+}
+
+function renderGlobalSkills() {
   const withSkillMd = globalSkills.filter(s => s.description)
   const userCount = globalSkills.filter(s => s.source === 'user').length
   const pluginCount = globalSkills.filter(s => s.source === 'plugin').length
@@ -9455,9 +9503,18 @@ function renderGlobalSkills() {
     <div class="stat-card"><div class="stat-value" style="color:var(--success)">${withSkillMd.length}</div><div class="stat-label">${t('skills.stat.documented')}</div></div>
   `
 
-  // Apply filter + search
+  skillsActiveCategory = 'all'
+  renderSkillsSidebar()
+  renderGlobalSkillsGrid()
+}
+
+function renderGlobalSkillsGrid() {
+  skillsGrid.innerHTML = ''
+
+  // Apply source filter + category filter + search
   const filtered = globalSkills.filter(s => {
     if (skillsActiveFilter !== 'all' && s.source !== skillsActiveFilter) return false
+    if (skillsActiveCategory !== 'all' && deriveSkillCategory(s.name) !== skillsActiveCategory) return false
     if (!skillsSearchQuery) return true
     const haystack = [s.name, s.label, s.description, ...(s.keywords || [])].join(' ').toLowerCase()
     return haystack.includes(skillsSearchQuery)

@@ -5428,6 +5428,78 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   flex-wrap: wrap;
 }
 
+.skills-body-wrap {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.skills-category-sidebar {
+  width: 160px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: sticky;
+  top: 80px;
+}
+
+.skills-cat-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  padding: 4px 10px 8px;
+}
+
+.skills-cat-btn {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: all var(--transition);
+  gap: 6px;
+}
+
+.skills-cat-btn:hover {
+  background: var(--bg-input);
+  color: var(--text);
+}
+
+.skills-cat-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.skills-cat-count {
+  font-size: 11px;
+  background: var(--bg-input);
+  border-radius: 999px;
+  padding: 1px 6px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.skills-cat-btn.active .skills-cat-count {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.skills-main-area {
+  flex: 1;
+  min-width: 0;
+}
+
 .skills-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
@@ -5687,6 +5759,8 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   .catalog-filter-btn { padding: 5px 10px; font-size: 12px; }
   .skills-grid { grid-template-columns: 1fr; }
   .skills-stats { gap: 8px; }
+  .skills-body-wrap { flex-direction: column; }
+  .skills-category-sidebar { width: 100%; flex-direction: row; flex-wrap: wrap; position: static; }
   .autonomy-grid { gap: 8px; }
   .autonomy-row { flex-wrap: wrap; gap: 10px; }
   .autonomy-row-label { min-width: unset; flex: 1 1 100%; }

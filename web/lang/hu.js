@@ -672,6 +672,7 @@ window._i18n.hu = {
   'skills.keywords.label':       'Kulcsszavak:',
   'skills.agents.label':         'Agensek:',
   'skills.agents.count':         'ágens',
+  'skills.category.title':       'Kategóriák',
   'skills.health.ok':            'OK',
   'skills.health.nodesc':        'Hiányzó leírás',
   'skills.health.empty':         'Üres',
