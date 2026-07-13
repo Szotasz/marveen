@@ -66,4 +66,35 @@ describe('detectReauthNeeded', () => {
     ].join('\n')
     expect(detectReauthNeeded(pane).needsReauth).toBe(true)
   })
+
+  it('does NOT fire when the marker is QUOTED in an agent self-report', () => {
+    // The exact false-positive: an agent quoted the phrase in its own status report
+    // ("...te futtatod, mert a sandboxom (sandbox \"Not logged in\")"), it hit
+    // the live tail, and the badge fired despite the agent working normally.
+    const pane = [
+      '  jelentes: az enforcement-probat te futtatod (sandbox "Not logged in")',
+      '❯',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt',
+    ].join('\n')
+    expect(detectReauthNeeded(pane).needsReauth).toBe(false)
+  })
+
+  it('STILL fires on a real bare banner not preceded by a quote/paren', () => {
+    const pane = [
+      ...Array.from({ length: 5 }, (_, i) => `... work line ${i} ...`),
+      'Not logged in',
+      '❯',
+    ].join('\n')
+    expect(detectReauthNeeded(pane).needsReauth).toBe(true)
+  })
+
+  it('fires when a BARE banner and a quoted mention BOTH appear in the tail', () => {
+    // One occurrence is prose (quoted), one is a real banner -> must still fire.
+    const pane = [
+      '  note: the string was ("Not logged in") earlier',
+      'Not logged in',
+      '❯',
+    ].join('\n')
+    expect(detectReauthNeeded(pane).needsReauth).toBe(true)
+  })
 })

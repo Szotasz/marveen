@@ -39,6 +39,30 @@ function tailOf(pane: string, n: number): string {
   return lines.slice(Math.max(0, lines.length - n)).join('\n')
 }
 
+// A real Claude Code auth banner is printed bare ("Not logged in", "Please run
+// /login"). When the SAME phrase appears QUOTED or PARENTHESISED it is prose --
+// an agent quoting/describing the marker (e.g. a status report reading
+// `... (sandbox "Not logged in")`), which landed in the live tail and falsely
+// badged the agent as logged-out. Treat a marker
+// match as prose (NOT a banner) when the text immediately before it ends in an
+// opening quote/paren/bracket/backtick (optional trailing whitespace allowed).
+const QUOTE_OR_OPEN_BEFORE_RX = /["'`„“”‚‘’(\[{]\s*$/u
+
+// True if EVERY occurrence of `rx` in `tail` is quote/paren-preceded (prose).
+// A single bare (unquoted) occurrence means it is a real banner.
+function allOccurrencesQuoted(tail: string, rx: RegExp): boolean {
+  const g = new RegExp(rx.source, rx.flags.includes('g') ? rx.flags : rx.flags + 'g')
+  let match: RegExpExecArray | null
+  let sawAny = false
+  while ((match = g.exec(tail)) !== null) {
+    sawAny = true
+    const before = tail.slice(0, match.index)
+    if (!QUOTE_OR_OPEN_BEFORE_RX.test(before)) return false // a bare occurrence
+    if (match.index === g.lastIndex) g.lastIndex++ // guard against zero-width
+  }
+  return sawAny
+}
+
 /**
  * Inspect a captured pane and decide whether the session needs re-auth.
  * Returns { needsReauth:false } for a null/empty pane (capture failed / not
@@ -50,7 +74,10 @@ export function detectReauthNeeded(pane: string | null | undefined): ReauthState
   if (!pane) return { needsReauth: false }
   const tail = tailOf(pane, TAIL_LINES)
   for (const m of REAUTH_MARKERS) {
-    if (m.rx.test(tail)) return { needsReauth: true, reason: m.reason }
+    if (!m.rx.test(tail)) continue
+    // Fire only if at least one occurrence is a BARE banner, not a quoted/
+    // parenthesised mention (an agent describing the phrase in its own output).
+    if (!allOccurrencesQuoted(tail, m.rx)) return { needsReauth: true, reason: m.reason }
   }
   return { needsReauth: false }
 }
