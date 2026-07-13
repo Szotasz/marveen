@@ -365,13 +365,42 @@ export function scaffoldAgentDir(name: string) {
   }
 }
 
+// HTML comment markers that delimit the auto-generated fleet roster block.
+// Using HTML comments means they are invisible to the LLM when the CLAUDE.md
+// is read as plain text, but are stable enough for regex replacement.
+// Do NOT change the marker strings without a coordinated migration: existing
+// CLAUDE.md files already contain them and ensureFleetRosterSection() relies
+// on exact string matching for idempotent replacement.
 const FLEET_ROSTER_BEGIN = '<!-- BEGIN GENERATED: fleet-roster (auto-generated, do not edit by hand) -->'
 const FLEET_ROSTER_END = '<!-- END GENERATED: fleet-roster -->'
 
+// Non-greedy ([\\s\\S]*?) so the regex stops at the FIRST occurrence of the
+// end-marker. A greedy match would span from BEGIN all the way to the LAST
+// END in the file, eating unrelated content in between.
 const FLEET_ROSTER_BLOCK_RE = new RegExp(
   `${FLEET_ROSTER_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${FLEET_ROSTER_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
+// Builds the text body that goes between the BEGIN/END markers.
+// Single source of truth -- called by both generateClaudeMd() (initial
+// generation) and ensureFleetRosterSection() (idempotent update on respawn).
+//
+// Threat model for capability tags:
+// - Capability strings come from two external-input paths: the Bearer-gated
+//   PUT /api/agents/:name/capabilities endpoint and user-editable persona
+//   frontmatter. Both can contain arbitrary text.
+// - Each tag ends up embedded in every PEER agent's CLAUDE.md, so a poisoned
+//   capability could inject instructions into the prompt of another agent.
+// - sanitizeCapabilityTag() DROPS (does not normalise) any value outside
+//   /^[a-z0-9][a-z0-9-]{0,31}$/. No character substitution is allowed:
+//   replace(/[^a-z0-9-]/g, '-') would silently turn "IGNORE ALL PREVIOUS
+//   INSTRUCTIONS" into "ignore-all-previous-instructio" -- still 32 chars,
+//   still passes the regex. DROP closes this path entirely.
+//
+// Why MAIN_AGENT_ID is always prepended:
+// - listAgentNames() reads the agents/ directory; the main agent has no
+//   subdirectory there (it lives in the project root). Without explicit
+//   prepending, the main agent would be absent from every peer's roster.
 function buildFleetRosterBody(selfName: string): string {
   let agentNames: string[]
   try {
@@ -380,6 +409,7 @@ function buildFleetRosterBody(selfName: string): string {
     agentNames = []
   }
 
+  // Ensure the main agent appears even though it has no agents/ subdirectory.
   const names = agentNames.includes(MAIN_AGENT_ID)
     ? agentNames
     : [MAIN_AGENT_ID, ...agentNames]
@@ -418,6 +448,19 @@ function buildFleetRosterBody(selfName: string): string {
   ].join('\n')
 }
 
+// Idempotently ensures the fleet roster block is present and current in the
+// agent's CLAUDE.md. Called on every startAgentProcess() so that existing
+// agents receive the block automatically on respawn -- no manual migration.
+//
+// Idempotency contract (five rules, in order):
+//   1. No CLAUDE.md present  → skip entirely (e.g. main agent or fresh install).
+//   2. Marker block present  → replace ONLY the block; content outside the
+//      markers is never touched.
+//   3. No marker block       → append block after existing content (first run).
+//   4. Computed content identical to existing → return immediately; no disk
+//      write, no mtime change (safe to call on every respawn).
+//   5. Any write             → goes through atomicWriteFileSync to avoid a
+//      torn file if the process is killed mid-write.
 export function ensureFleetRosterSection(name: string): void {
   const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
