@@ -11433,6 +11433,12 @@ function tuMcpServerFromTool(toolName) {
   return parts.length >= 3 ? parts[1] : null
 }
 
+function tuMcpGroupKey(toolName) {
+  if (!toolName || !toolName.startsWith('mcp__')) return toolName
+  const parts = toolName.split('__')
+  return parts.length >= 3 ? 'mcp__' + parts[1] : toolName
+}
+
 function tuFormatTokens(n) {
   if (n == null || isNaN(n)) return '0'
   if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B'
@@ -12233,13 +12239,14 @@ function renderTuToolStats(data) {
     return
   }
 
-  // Aggregate per-model rows into one entry per tool_name
+  // Aggregate per-model rows into one entry per tool (MCP tools grouped by server)
   const byTool = new Map()
   for (const row of data) {
-    let entry = byTool.get(row.tool_name)
+    const key = tuMcpGroupKey(row.tool_name)
+    let entry = byTool.get(key)
     if (!entry) {
-      entry = { tool_name: row.tool_name, count: 0, agentSet: new Set(), costUSD: 0 }
-      byTool.set(row.tool_name, entry)
+      entry = { tool_name: key, count: 0, agentSet: new Set(), costUSD: 0 }
+      byTool.set(key, entry)
     }
     entry.count += row.count || 0
     ;(row.agents || '').split(',').forEach(a => { const s = a.trim(); if (s) entry.agentSet.add(s) })

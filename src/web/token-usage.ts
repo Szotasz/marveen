@@ -343,7 +343,7 @@ export function getModelDistribution(from?: number, to?: number, agent?: string)
   if (!hasModelCol.n) return []
 
   let sql = `
-    SELECT COALESCE(model, '(unknown)') as model,
+    SELECT model,
       COUNT(*) as count,
       SUM(input_tokens) as totalInput,
       SUM(output_tokens) as totalOutput,
@@ -351,12 +351,16 @@ export function getModelDistribution(from?: number, to?: number, agent?: string)
       SUM(cache_creation_tokens) as totalCacheCreation
     FROM token_usage
   `
-  const conditions: string[] = []
+  const conditions: string[] = [
+    "model IS NOT NULL",
+    "model != ''",
+    "model != '<synthetic>'",
+  ]
   const params: any[] = []
   if (from) { conditions.push('timestamp >= ?'); params.push(from) }
   if (to) { conditions.push('timestamp <= ?'); params.push(to) }
   if (agent) { conditions.push('agent = ?'); params.push(agent) }
-  if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ')
+  sql += ' WHERE ' + conditions.join(' AND ')
   sql += ' GROUP BY model ORDER BY count DESC'
 
   return db.prepare(sql).all(...params) as ModelDistEntry[]
