@@ -340,6 +340,11 @@ if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
     else
       echo -e "  ${GREEN}✓${NC} Már a legfrissebb verzión vagy ($NEW_VERSION)"
     fi
+    # This "no new commit, dist fresh" branch is a genuine SUCCESS. Without this
+    # the EXIT trap's write_result() would emit the default RESULT_STATUS="failed"
+    # for the most common healthy run, and the dashboard would falsely show a
+    # failed/rolled-back update. (The other branches set status explicitly.)
+    RESULT_STATUS="success"
     exit 0
   else
     # --reseed-fleet / --regen-claudemd are explicit refresh requests, so they
