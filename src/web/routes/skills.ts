@@ -1,6 +1,6 @@
-import { existsSync, readdirSync, mkdirSync, writeFileSync, unlinkSync, rmSync, statSync, lstatSync } from 'node:fs'
-import { join, sep } from 'node:path'
-import { homedir } from 'node:os'
+import { createReadStream, existsSync, readdirSync, mkdirSync, writeFileSync, unlinkSync, rmSync, statSync, lstatSync } from 'node:fs'
+import { join, sep, basename } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
@@ -12,24 +12,32 @@ import { readBody, json } from '../http-helpers.js'
 import { sanitizeSkillName, shellEscape } from '../sanitize.js'
 import type { RouteContext } from './types.js'
 
-function parseSkillDescription(content: string): string {
+function parseFrontmatterField(content: string, field: string): string {
   const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---/)
   if (!fmMatch) return ''
   const fm = fmMatch[1]
-  const descLine = fm.match(/^description:\s*(.+)/im)
-  if (!descLine) return ''
-  let val = descLine[1].trim()
+  const line = fm.match(new RegExp(`^${field}:\\s*(.+)`, 'im'))
+  if (!line) return ''
+  let val = line[1].trim()
   if (val.startsWith('"')) {
-    const quoted = val.match(/^"(.*)"/)
-    if (quoted) return quoted[1].trim()
-    return val.replace(/^"/, '').replace(/"$/, '').trim()
+    const q = val.match(/^"(.*)"/)
+    return q ? q[1].trim() : val.replace(/^"|"$/g, '').trim()
   }
   if (val.startsWith("'")) {
-    const quoted = val.match(/^'(.*)'/)
-    if (quoted) return quoted[1].trim()
-    return val.replace(/^'/, '').replace(/'$/, '').trim()
+    const q = val.match(/^'(.*)'/)
+    return q ? q[1].trim() : val.replace(/^'|'$/g, '').trim()
   }
   return val
+}
+
+function parseSkillDescription(content: string): string {
+  return parseFrontmatterField(content, 'description')
+}
+
+function parseSkillKeywords(content: string): string[] {
+  const raw = parseFrontmatterField(content, 'keywords')
+  if (!raw) return []
+  return raw.split(',').map(k => k.trim()).filter(Boolean)
 }
 
 function getSkillAgents(skillDirName: string): string[] {
@@ -50,7 +58,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       label: string
       description: string
       agents: string[]
+      keywords: string[]
       path: string
+      mtime: number
       source: 'user' | 'plugin'
       pluginPackage?: string
     }
@@ -67,12 +77,17 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       for (const dir of dirs) {
         const skillMdPath = join(USER_SKILLS_DIR, dir, 'SKILL.md')
         if (!existsSync(skillMdPath)) continue
+        const content = readFileOr(skillMdPath, '')
+        let mtime = 0
+        try { mtime = statSync(skillMdPath).mtimeMs } catch { /* no-op */ }
         skills.push({
           name: dir,
           label: dir,
-          description: parseSkillDescription(readFileOr(skillMdPath, '')),
-          agents: [],
+          description: parseSkillDescription(content),
+          keywords: parseSkillKeywords(content),
+          agents: getSkillAgents(dir),
           path: join(USER_SKILLS_DIR, dir),
+          mtime,
           source: 'user',
         })
       }
@@ -104,12 +119,17 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
               shortPluginIdx = lastIdx - 1
             }
             const shortPlugin = packagePath[shortPluginIdx] || 'plugin'
+            const pluginContent = readFileOr(skillMdPath, '')
+            let pluginMtime = 0
+            try { pluginMtime = statSync(skillMdPath).mtimeMs } catch { /* no-op */ }
             skills.push({
               name: pluginPackage ? `${pluginPackage}:${sd}` : sd,
               label: `${shortPlugin}:${sd}`,
-              description: parseSkillDescription(readFileOr(skillMdPath, '')),
+              description: parseSkillDescription(pluginContent),
+              keywords: parseSkillKeywords(pluginContent),
               agents: [],
               path: skillDirPath,
+              mtime: pluginMtime,
               source: 'plugin',
               pluginPackage,
             })
@@ -136,6 +156,36 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // Export must be matched before the generic /:name detail route, otherwise
+  // the detail handler intercepts GET /api/skills/export as skillName="export".
+  if (path === '/api/skills/export' && method === 'GET') {
+    const USER_SKILLS_DIR = join(homedir(), '.claude', 'skills')
+    if (!existsSync(USER_SKILLS_DIR)) {
+      json(res, { error: 'No user skills directory' }, 404)
+      return true
+    }
+    const tmpZip = join(tmpdir(), `skills-export-${randomUUID()}.zip`)
+    try {
+      execSync(
+        `cd ${shellEscape(USER_SKILLS_DIR)} && zip -r ${shellEscape(tmpZip)} . --include "*/SKILL.md" --include "*/references/*"`,
+        { timeout: 15000 }
+      )
+      const stat = statSync(tmpZip)
+      res.setHeader('Content-Type', 'application/zip')
+      res.setHeader('Content-Disposition', 'attachment; filename="skills-export.zip"')
+      res.setHeader('Content-Length', stat.size)
+      const stream = createReadStream(tmpZip)
+      stream.on('end', () => { try { unlinkSync(tmpZip) } catch { /* no-op */ } })
+      stream.on('error', () => { try { unlinkSync(tmpZip) } catch { /* no-op */ } })
+      stream.pipe(res)
+    } catch (err) {
+      try { unlinkSync(tmpZip) } catch { /* no-op */ }
+      logger.error({ err }, 'Skills export failed')
+      json(res, { error: 'Export failed' }, 500)
+    }
+    return true
+  }
+
   const globalSkillDetailMatch = path.match(/^\/api\/skills\/([^/]+)$/)
   if (globalSkillDetailMatch && method === 'GET') {
     const skillName = decodeURIComponent(globalSkillDetailMatch[1])
@@ -155,12 +205,16 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       const content = readFileOr(skillMdPath, '')
       const files: string[] = []
       try { for (const entry of readdirSync(skillDir)) files.push(entry) } catch { /* no-op */ }
+      let pluginDetailMtime = 0
+      try { pluginDetailMtime = statSync(skillMdPath).mtimeMs } catch { /* no-op */ }
       json(res, {
         name: skillName,
         description: parseSkillDescription(content),
+        keywords: parseSkillKeywords(content),
         content,
         agents: [],
         path: skillDir,
+        mtime: pluginDetailMtime,
         files,
         source: 'plugin',
         pluginPackage: pluginPath,
@@ -179,6 +233,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const skillMdPath = join(skillDir, 'SKILL.md')
     const content = readFileOr(skillMdPath, '')
     const description = parseSkillDescription(content)
+    const keywords = parseSkillKeywords(content)
+    let userDetailMtime = 0
+    try { userDetailMtime = statSync(skillMdPath).mtimeMs } catch { /* no-op */ }
 
     const files: string[] = []
     try {
@@ -188,9 +245,11 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     json(res, {
       name: skillName,
       description,
+      keywords,
       content,
       agents: getSkillAgents(skillName),
       path: skillDir,
+      mtime: userDetailMtime,
       files,
       source: 'user',
     })
@@ -356,6 +415,30 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     }
 
     logger.info({ skillName, agents: targetAgents }, 'Skill assignment updated')
+    json(res, { ok: true })
+    return true
+  }
+
+  const globalSkillPutMatch = path.match(/^\/api\/skills\/([^/]+)$/)
+  if (globalSkillPutMatch && method === 'PUT') {
+    const skillName = decodeURIComponent(globalSkillPutMatch[1])
+    if (skillName.includes(':')) {
+      json(res, { error: 'Plugin skills cannot be edited' }, 403)
+      return true
+    }
+    const GLOBAL_SKILLS_DIR = join(homedir(), '.claude', 'skills')
+    const skillDir = join(GLOBAL_SKILLS_DIR, skillName)
+    if (!skillDir.startsWith(GLOBAL_SKILLS_DIR + sep)) {
+      json(res, { error: 'Invalid skill name' }, 400)
+      return true
+    }
+    if (!existsSync(skillDir)) { json(res, { error: 'Skill not found' }, 404); return true }
+    const skillMdPath = join(skillDir, 'SKILL.md')
+    const body = await readBody(req)
+    const { content } = JSON.parse(body.toString()) as { content: string }
+    if (typeof content !== 'string') { json(res, { error: 'content is required' }, 400); return true }
+    atomicWriteFileSync(skillMdPath, content)
+    logger.info({ skillName }, 'Skill updated via dashboard')
     json(res, { ok: true })
     return true
   }

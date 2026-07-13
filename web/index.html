@@ -445,18 +445,39 @@
             <h1>Skillek</h1>
             <p class="subtitle" data-i18n="skills.page_subtitle">A Claude Code által látott skillek (user mappa + plugin cache)</p>
           </div>
-          <button class="btn-primary btn-compact" id="skillsPageNewBtn" data-i18n="skills.btn.new_skill">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-            </svg>
-            Új skill
-          </button>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn-secondary btn-compact" id="skillsExportBtn" data-i18n="skills.btn.export">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              Exportálás
+            </button>
+            <button class="btn-primary btn-compact" id="skillsPageNewBtn" data-i18n="skills.btn.new_skill">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+              Új skill
+            </button>
+          </div>
         </div>
         <div class="info-box" id="skillsInfoBox">
           Minden itt listázott skill automatikusan elérhető minden sub-agent számára, mert ugyanabban a HOME-ban futnak, mint a fő session.
           A Claude CLI beépített slash-parancsai (init, review, security-review, loop, schedule, stb.) mindig elérhetők,
           de itt nem szerepelnek, mert a `claude` binárisban élnek és nem fájlrendszeri források.
           Új skillt a jobb felső "Új skill" gombbal tudsz létrehozni vagy importálni.
+        </div>
+        <div class="skills-toolbar">
+          <div class="skills-search-wrap">
+            <svg class="skills-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <input type="text" id="skillsSearch" class="skills-search" data-i18n-placeholder="skills.search.placeholder" placeholder="Keresés...">
+          </div>
+          <div class="skills-filter-btns" id="skillsFilterBtns">
+            <button class="skills-filter-btn active" data-filter="all" data-i18n="skills.filter.all">Összes</button>
+            <button class="skills-filter-btn" data-filter="user" data-i18n="skills.filter.user">User</button>
+            <button class="skills-filter-btn" data-filter="plugin" data-i18n="skills.filter.plugin">Plugin</button>
+          </div>
         </div>
       </div>
       <div class="skills-stats" id="skillsStats"></div>
@@ -2831,14 +2852,27 @@
     <div class="modal modal-wide">
       <div class="modal-header">
         <h2 id="skillDetailTitle">Skill reszletek</h2>
-        <button class="modal-close" id="skillDetailClose">&times;</button>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn-secondary btn-compact" id="skillDetailEditBtn" data-i18n="skills.btn.edit">Szerkesztés</button>
+          <button class="modal-close" id="skillDetailClose">&times;</button>
+        </div>
       </div>
       <div class="modal-body">
         <div class="skill-detail-desc" id="skillDetailDesc"></div>
         <div class="skill-detail-meta" id="skillDetailMeta"></div>
-        <div class="skill-detail-content-wrap">
-          <label class="form-label-sm">SKILL.md tartalom</label>
-          <div class="skill-detail-content" id="skillDetailContent"></div>
+        <div class="skill-detail-keywords" id="skillDetailKeywords" hidden></div>
+        <div class="skill-detail-agents-coverage" id="skillDetailAgentsCoverage" hidden></div>
+        <div class="skill-detail-content-wrap" id="skillDetailContentWrap">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <label class="form-label-sm" style="margin:0">SKILL.md tartalom</label>
+            <span class="skill-detail-health" id="skillDetailHealth"></span>
+          </div>
+          <div class="skill-detail-content skill-detail-rendered" id="skillDetailContent"></div>
+          <textarea class="skill-detail-editor" id="skillDetailEditor" hidden rows="20" spellcheck="false"></textarea>
+          <div class="skill-detail-edit-actions" id="skillDetailEditActions" hidden>
+            <button class="btn-primary btn-compact" id="skillDetailSaveBtn" data-i18n="skills.btn.save">Mentés</button>
+            <button class="btn-secondary btn-compact" id="skillDetailCancelEditBtn" data-i18n="skills.btn.cancel_edit">Mégse</button>
+          </div>
         </div>
       </div>
     </div>
