@@ -11,6 +11,12 @@ if [[ -f "$SCRIPT_DIR/_vtools.py" ]]; then
 else
   DEST="$HOME/.local/share/marveen-voice"
 fi
+# Graceful skip when the (opt-in) voice stack is not installed: a missing venv
+# must read as "nothing to test", not as a weekly false-alarm regression.
+if [[ ! -x "$DEST/venv/bin/python" ]]; then
+  echo "skip: voice stack not installed (no venv at $DEST)"
+  exit 0
+fi
 VOICE_ARG="${1:-imre}"
 if [[ $# -gt 0 ]]; then shift; fi
 TEXT="${*:-Ez egy heti hangteszt, minden rendben van.}"
