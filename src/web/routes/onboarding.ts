@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
+import { homedir, userInfo } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { PROJECT_ROOT, STORE_DIR } from '../../config.js'
 import { logger } from '../../logger.js'
@@ -8,7 +8,6 @@ import { resolveFromPath } from '../../platform.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { channelStateDir } from '../../channel-provider.js'
 import { sessionExistsOnHost } from '../agent-process.js'
-import { readClaudeCodeOauthJson } from '../claude-credentials.js'
 import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
 import { json, readBody } from '../http-helpers.js'
@@ -43,9 +42,22 @@ function readEnvValue(key: string): string | null {
 // in the login Keychain and writes NO ~/.claude/.credentials.json, so a fully
 // authenticated fleet looked logged-out to the wizard and the dashboard nagged
 // for a token that would have created a second, drifting credential path.
-// readClaudeCodeOauthJson() already fails closed (null off macOS / on any
-// lookup error), so a Keychain ACL that refused `security` just falls back to
-// the previous behaviour.
+// The probe is presence-only: no `-w`, so the credential secret itself never
+// enters this process just to answer a yes/no question. It fails closed (false
+// off macOS / on any lookup error), so a Keychain ACL that refused `security`
+// just falls back to the previous behaviour.
+function keychainHasClaudeCredentials(): boolean {
+  if (process.platform !== 'darwin') return false
+  try {
+    execFileSync(
+      '/usr/bin/security',
+      ['find-generic-password', '-s', 'Claude Code-credentials', '-a', userInfo().username],
+      { timeout: 3000, stdio: 'ignore' },
+    )
+    return true
+  } catch { return false }
+}
+
 function claudeAuthPresent(): boolean {
   if (readEnvValue('CLAUDE_CODE_OAUTH_TOKEN')) return true
   if (readEnvValue('ANTHROPIC_API_KEY')) return true
@@ -56,7 +68,7 @@ function claudeAuthPresent(): boolean {
     if (d?.claudeAiOauth?.accessToken) return true
     if (d?.apiKey) return true
   } catch { /* no / unreadable credentials.json */ }
-  return readClaudeCodeOauthJson() !== null
+  return keychainHasClaudeCredentials()
 }
 
 function telegramConfigured(): boolean {
