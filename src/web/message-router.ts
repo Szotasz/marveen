@@ -5,6 +5,8 @@ import {
   getPendingMessages,
   markMessageDelivered,
   markMessageFailed,
+  createAgentMessage,
+  type AgentMessage,
 } from '../db.js'
 import { readAgentRemoteHost, readAgentVoiceConfig } from './agent-config.js'
 import {
@@ -31,6 +33,53 @@ const JANITOR_PARKED_MIN_AGE_MS = 45 * 1000
 // Log "skipping, target not ready" at most once per message id so a busy
 // receiver over many 5s ticks does not spam the log.
 const routerLoggedMisses: Set<number> = new Set()
+// Per-message consecutive tmux-inject-failure counter. A send that THROWS
+// (send-keys hit the pane at a bad instant -- e.g. the receiver was mid-turn /
+// momentarily un-ready despite passing the readiness check) used to instant-
+// fail the message with NO retry and NO signal: the sender believed it handed
+// off, the target never got it, and inter-agent comms silently wedged (2026-07-13
+// incident: FXShark->DrCode collector finding lost). Now an inject throw is
+// treated as transient -- retry across ticks -- and only a message that fails
+// MAX_INJECT_FAILURES times in a row is finally marked failed AND surfaced to
+// the orchestrator, so a handoff failure is never silent.
+const routerInjectFailures: Map<number, number> = new Map()
+const MAX_INJECT_FAILURES = 3
+
+/**
+ * Pure decision: has a message exhausted its tmux-inject retries?
+ *
+ * A single inject throw is usually transient (the pane briefly un-ready); we
+ * retry it across router ticks like a busy target, instead of the old instant-
+ * fail-with-no-retry. Only give up after failCount reaches maxFailures.
+ */
+export function shouldGiveUpOnInject(failCount: number, maxFailures: number): boolean {
+  return failCount >= maxFailures
+}
+
+/**
+ * Never-silent handoff-failure signal. When a sub-agent message is finally
+ * abandoned (target gone for the full window) or exhausts its inject retries,
+ * enqueue a note to the MAIN agent (the orchestrator) so the failure surfaces
+ * for re-send / investigation instead of vanishing. Safe against recursion: the
+ * note is addressed to the main agent, which drains via the pull model and
+ * never hits this inject path.
+ */
+function notifyOrchestratorOfFailedHandoff(msg: AgentMessage, reason: string): void {
+  try {
+    // A failed message to the main agent can't happen (pull model), but guard
+    // anyway so we never loop a notification back onto itself.
+    if (msg.to_agent === MAIN_AGENT_ID) return
+    const preview = (msg.content ?? '').slice(0, 220)
+    createAgentMessage(
+      'system',
+      MAIN_AGENT_ID,
+      `[handoff-failure] Inter-agent message (id ${msg.id}) ${msg.from_agent} -> ${msg.to_agent} could NOT be delivered: ${reason}. Consider re-sending or checking the target agent. Content preview: ${preview}`,
+    )
+    logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, reason }, 'handoff-failure surfaced to orchestrator')
+  } catch (err) {
+    logger.warn({ err, id: msg.id }, 'Failed to enqueue handoff-failure notification')
+  }
+}
 // Wakeup cooldown for the main agent: the router fires at most one
 // sendPromptToSession wakeup per COOLDOWN_MS window to avoid spamming the
 // channels session. 45s gives enough headroom that a normal turn (typically
@@ -136,6 +185,8 @@ export async function runMessageRouterTick(): Promise<void> {
         if (!markMessageFailed(msg.id, 'Abandoned: target session absent for full retry window')) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
+        notifyOrchestratorOfFailedHandoff(msg, 'target session was absent for the entire retry window')
+        routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
         continue
       }
@@ -227,13 +278,26 @@ export async function runMessageRouterTick(): Promise<void> {
         if (!markMessageDelivered(msg.id)) {
           logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
         }
+        routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
         logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, category: isChannelInbound ? 'channel-inbound' : trusted ? 'trusted-peer' : 'untrusted' }, 'Agent message delivered')
       } catch (err) {
-        logger.warn({ err, id: msg.id }, 'Failed to deliver agent message')
-        if (!markMessageFailed(msg.id, 'Failed to inject into tmux session')) {
+        // An inject throw is usually transient (pane un-ready at the instant of
+        // send-keys). Retry across ticks instead of the old silent instant-fail;
+        // only give up after MAX_INJECT_FAILURES consecutive throws, and then
+        // surface the failure to the orchestrator so it is never silent.
+        const failCount = (routerInjectFailures.get(msg.id) ?? 0) + 1
+        routerInjectFailures.set(msg.id, failCount)
+        if (!shouldGiveUpOnInject(failCount, MAX_INJECT_FAILURES)) {
+          logger.warn({ err, id: msg.id, failCount }, 'Failed to inject agent message, will retry next tick')
+          continue
+        }
+        logger.error({ err, id: msg.id, failCount }, 'Failed to inject agent message after retries, giving up')
+        if (!markMessageFailed(msg.id, `Failed to inject into tmux session after ${failCount} attempts`)) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
+        notifyOrchestratorOfFailedHandoff(msg, `tmux inject failed ${failCount}x`)
+        routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
       }
     }
