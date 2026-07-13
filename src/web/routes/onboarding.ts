@@ -8,6 +8,7 @@ import { resolveFromPath } from '../../platform.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { channelStateDir } from '../../channel-provider.js'
 import { sessionExistsOnHost } from '../agent-process.js'
+import { readClaudeCodeOauthJson } from '../claude-credentials.js'
 import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
 import { json, readBody } from '../http-helpers.js'
@@ -34,8 +35,17 @@ function readEnvValue(key: string): string | null {
   return null
 }
 
-// True auth presence -- an env OAuth token / API key, OR a real credentials.json
-// OAuth credential. NOT merely "the .env line exists" (it could be empty).
+// True auth presence -- an env OAuth token / API key, a real credentials.json
+// OAuth credential, or (macOS) the login Keychain credential. NOT merely "the
+// .env line exists" (it could be empty).
+//
+// The Keychain leg matters: on macOS Claude Code stores the subscription login
+// in the login Keychain and writes NO ~/.claude/.credentials.json, so a fully
+// authenticated fleet looked logged-out to the wizard and the dashboard nagged
+// for a token that would have created a second, drifting credential path.
+// readClaudeCodeOauthJson() already fails closed (null off macOS / on any
+// lookup error), so a Keychain ACL that refused `security` just falls back to
+// the previous behaviour.
 function claudeAuthPresent(): boolean {
   if (readEnvValue('CLAUDE_CODE_OAUTH_TOKEN')) return true
   if (readEnvValue('ANTHROPIC_API_KEY')) return true
@@ -46,7 +56,7 @@ function claudeAuthPresent(): boolean {
     if (d?.claudeAiOauth?.accessToken) return true
     if (d?.apiKey) return true
   } catch { /* no / unreadable credentials.json */ }
-  return false
+  return readClaudeCodeOauthJson() !== null
 }
 
 function telegramConfigured(): boolean {
