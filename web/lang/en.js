@@ -445,6 +445,7 @@ window._i18n.en = {
   'skills.mtime.title':          'Last modified',
   'skills.keywords.label':       'Keywords:',
   'skills.agents.label':         'Agents:',
+  'skills.agents.count':         'agents',
   'skills.health.ok':            'OK',
   'skills.health.nodesc':        'Missing description',
   'skills.health.empty':         'Empty',

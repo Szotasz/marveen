@@ -9488,10 +9488,11 @@ function renderGlobalSkills() {
     const kws = (skill.keywords || []).slice(0, 3)
     const kwTags = kws.map(k => `<span class="skill-keyword-tag">${escapeHtml(k)}</span>`).join('')
 
-    // Agent coverage
+    // Agent coverage -- global skills are available to all fleet agents via
+    // shared HOME; show a compact count badge instead of listing every name.
     const agents = skill.agents || []
     const agentBadges = agents.length > 0
-      ? agents.map(a => `<span class="skills-agent-badge">${escapeHtml(a)}</span>`).join('')
+      ? `<span class="skills-agent-badge skill-agent-count" title="${escapeHtml(agents.join(', '))}">&#x1F916; ${agents.length} ${t('skills.agents.count')}</span>`
       : ''
 
     // Mtime

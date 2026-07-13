@@ -671,6 +671,7 @@ window._i18n.hu = {
   'skills.mtime.title':          'Utolsó módosítás',
   'skills.keywords.label':       'Kulcsszavak:',
   'skills.agents.label':         'Agensek:',
+  'skills.agents.count':         'ágens',
   'skills.health.ok':            'OK',
   'skills.health.nodesc':        'Hiányzó leírás',
   'skills.health.empty':         'Üres',

@@ -74,6 +74,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
         if (f.startsWith('.')) return false
         try { return statSync(join(USER_SKILLS_DIR, f)).isDirectory() } catch { return false }
       })
+      // Global user skills are available to every agent via shared HOME --
+      // no per-agent copy exists. Show all fleet agent names as coverage.
+      const allAgents = listAgentNames()
       for (const dir of dirs) {
         const skillMdPath = join(USER_SKILLS_DIR, dir, 'SKILL.md')
         if (!existsSync(skillMdPath)) continue
@@ -85,7 +88,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
           label: dir,
           description: parseSkillDescription(content),
           keywords: parseSkillKeywords(content),
-          agents: getSkillAgents(dir),
+          agents: allAgents,
           path: join(USER_SKILLS_DIR, dir),
           mtime,
           source: 'user',
