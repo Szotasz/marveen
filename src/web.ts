@@ -1,6 +1,7 @@
 import http from 'node:http'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { execSync, execFileSync } from 'node:child_process'
 import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID } from './config.js'
 import { loadOrCreateDashboardToken, checkBearerToken } from './web/dashboard-auth.js'
@@ -408,7 +409,7 @@ export function startWebServer(port = 3420): http.Server {
   // user-global ~/.claude/settings.json leaves stale absolute paths behind
   // once the worktree is deleted. A failing (exit 2) UserPromptSubmit hook
   // then BLOCKS every prompt and deafens the main agent (2026-07-11 incident).
-  const hookDecision = shouldRegisterHooks({ projectRoot: PROJECT_ROOT, webOnly })
+  const hookDecision = shouldRegisterHooks({ projectRoot: PROJECT_ROOT, webOnly, tmpDir: tmpdir() })
   if (!hookDecision.register) {
     logger.info({ reason: hookDecision.reason, projectRoot: PROJECT_ROOT }, 'Hook registration skipped')
   } else {

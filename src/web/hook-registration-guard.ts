@@ -71,21 +71,51 @@ export function isWorktreeRoot(
   return (deps.isGitFile ?? gitEntryIsFile)(projectRoot)
 }
 
+// Temp-dir prefixes that mark a checkout as transient. A plain `git clone` under
+// a temp dir (NOT a git worktree, so isWorktreeRoot misses it) is exactly the
+// canary / second-instance case: 2026-07-13 a develop canary started from
+// /private/tmp/marveen-work registered hooks into the USER-GLOBAL settings.json
+// with /tmp-rooted paths -- the same deaf-agent trap isWorktreeRoot was added to
+// prevent, one class wider. A real install never runs from a temp dir, so
+// skipping here can never suppress a legitimate owner's registration.
+const TEMP_ROOT_PREFIXES = ['/tmp/', '/private/tmp/', '/var/folders/', '/private/var/folders/']
+
+// Is the project root under a temporary directory (a transient second instance
+// -- canary, throwaway clone -- that does not own the user's settings)? The
+// tmpDir dependency is injectable so the OS tmpdir is included and the logic is
+// unit-testable without touching the environment.
+export function isTemporaryRoot(
+  projectRoot: string,
+  deps: { tmpDir?: string } = {},
+): boolean {
+  const normalized = normalizeSeparators(projectRoot)
+  const prefixes = [...TEMP_ROOT_PREFIXES]
+  if (deps.tmpDir) {
+    const t = normalizeSeparators(deps.tmpDir).replace(/\/+$/, '') + '/'
+    prefixes.push(t)
+  }
+  return prefixes.some((p) => normalized.startsWith(p))
+}
+
 export interface HookRegistrationDecision {
   register: boolean
   reason?: string
 }
 
 // Central decision: may this instance register hooks into settings.json?
-// Skips worktree checkouts (temporary PROJECT_ROOT) and WEB_ONLY staging
-// instances (not the install that owns the user's settings).
+// Skips worktree checkouts, temp-dir clones (both temporary PROJECT_ROOTs), and
+// WEB_ONLY staging instances (not the install that owns the user's settings).
 export function shouldRegisterHooks(opts: {
   projectRoot: string
   webOnly: boolean
   isGitFile?: (root: string) => boolean
+  tmpDir?: string
 }): HookRegistrationDecision {
   if (isWorktreeRoot(opts.projectRoot, { isGitFile: opts.isGitFile })) {
     return { register: false, reason: 'project root is a git worktree checkout (temporary path)' }
+  }
+  if (isTemporaryRoot(opts.projectRoot, { tmpDir: opts.tmpDir })) {
+    return { register: false, reason: 'project root is under a temp dir (transient second instance)' }
   }
   if (opts.webOnly) {
     return { register: false, reason: 'WEB_ONLY staging mode' }
