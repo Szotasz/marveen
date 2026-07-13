@@ -6514,7 +6514,11 @@ body {
 /* === Network / camera reachability check === */
 .network-check { max-width: 560px; }
 .network-check-row { display: flex; gap: 8px; align-items: center; }
-.network-check-row .input { flex: 1; min-width: 0; }
+/* Override the global .btn-primary { width:100% } so the button does not steal
+   the whole row and collapse the input (matches the .task-detail-buttons
+   .btn-primary { width:auto } precedent). */
+.network-check-row .btn-primary { width: auto; margin-top: 0; flex: none; }
+.network-check-row .input { flex: 1; min-width: 200px; }
 .network-hint { margin-top: 12px; font-size: 12px; line-height: 1.5; }
 .network-result {
   margin-top: 16px;
