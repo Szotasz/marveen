@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { execFileSync, execSync } from 'node:child_process'
 import type { Server as HttpServer } from 'node:http'
 import { STORE_DIR, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
-import { initDatabase } from './db.js'
+import { initDatabase, backfillEmbeddings } from './db.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
 import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
 import { ensureHeartbeatAgent, shouldBootHeartbeatAgent, HEARTBEAT_AGENT_NAME } from './web/heartbeat-agent-scaffold.js'
@@ -407,6 +407,12 @@ async function main(): Promise<void> {
   // Database
   initDatabase()
   logger.info('Adatbazis inicializalva')
+
+  // Backfill embeddings for memories saved before Ollama was available.
+  // Fire-and-forget: a missing or slow Ollama instance must not block startup.
+  backfillEmbeddings().then(count => {
+    if (count > 0) logger.info({ count }, 'Embedding backfill befejezve')
+  }).catch(err => logger.warn({ err }, 'Embedding backfill hiba (Ollama nem elerheto)'))
 
   // Memory decay (24h cycle)
   runDecaySweep()
