@@ -364,6 +364,16 @@ if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
     else
       echo -e "  ${GREEN}✓${NC} Már a legfrissebb verzión vagy ($NEW_VERSION)"
     fi
+    # Report SUCCESS explicitly. RESULT_STATUS defaults to "failed" (line 22)
+    # and is only flipped to a success verdict by the detached restart
+    # finalizer (_finish success ...). This happy path exits 0 WITHOUT
+    # restarting, so without setting the status here the EXIT trap's
+    # write_result records {status:"failed",phase:"pull",code:0} -- a false
+    # failure that the dashboard shows as "update failed" every time the box
+    # is already current. Set the real outcome before the clean exit.
+    RESULT_STATUS="success"
+    RESULT_PHASE="up-to-date"
+    RESULT_MSG="Mar a legfrissebb verzion ($NEW_VERSION); nincs teendo."
     # Nothing to pull, but an auto-stash may still be sitting on top of HEAD
     # (dashboard's "stash + update" run against an already-current checkout).
     # Without this, the operator's local files stay stashed with no restore.
