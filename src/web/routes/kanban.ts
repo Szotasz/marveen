@@ -40,10 +40,10 @@ export function kanbanMoveInstructions(id: string, target: string): string {
   // Escalation target when blocked: sub-agents hand back to the main agent
   // (their delegator), who triages and only escalates to the operator when
   // the block genuinely needs a human decision. Only the main agent itself
-  // escalates directly to OWNER_NAME (Ender explicit correction, 2026-07-02:
-  // "ha megoldja pl. rocket az egyik feladatot akkor tegye vissza rád és ne
-  // rám" -- sub-agent completions/blocks route through Tars, not straight to
-  // the operator).
+  // escalates directly to OWNER_NAME -- sub-agent completions/blocks route
+  // through the main agent, not straight to the operator (operator feedback,
+  // 2026-07-02: a finished/blocked delegated card goes back to the delegator,
+  // not to the human).
   const isMainAgent = target === MAIN_AGENT_ID
   const escalateTo = isMainAgent ? OWNER_NAME : MAIN_AGENT_ID
   return [
