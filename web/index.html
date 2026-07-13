@@ -841,6 +841,63 @@
           <button class="btn-secondary btn-compact" id="migrateNewBtn" style="margin-top:16px" data-i18n="migrate.btn.new">Új költöztetés</button>
         </div>
       </div>
+
+      <!-- === Teljes flotta migráció === -->
+      <div class="fleet-section">
+        <div class="fleet-section-header">
+          <h2 class="fleet-section-title" data-i18n="fleet.section_title">Teljes flotta migráció</h2>
+          <p class="fleet-section-desc" data-i18n="fleet.section_desc">Az összes ügynök, memória, kanban és beállítás egyetlen JSON-ban.</p>
+        </div>
+
+        <div class="fleet-warning">
+          <span class="fleet-warning-icon">⚠️</span>
+          <span data-i18n="fleet.warning">Az import kizárólag üres/friss telepítésre való, nem merge-re. Google/Gmail OAuth és a dashboard-token nem utazik: a célgépen re-auth szükséges.</span>
+        </div>
+
+        <div class="fleet-cards">
+          <!-- Export -->
+          <div class="fleet-card">
+            <h3 class="fleet-card-title" data-i18n="fleet.export.title">Export</h3>
+            <p class="fleet-card-desc" data-i18n="fleet.export.desc">A teljes flotta egy JSON-ban. Jelszó megadásával a vault-titkok is (titkosítva).</p>
+            <div class="form-group" style="margin-bottom:12px">
+              <label for="fleetExportPassword" data-i18n="fleet.vault_password_label">Vault jelszó (opcionális)</label>
+              <input type="password" id="fleetExportPassword" data-i18n-ph="fleet.vault_password_ph" placeholder="Ha üresen hagyod, titkok nélkül exportál">
+            </div>
+            <button class="btn-primary btn-compact" id="fleetExportBtn">
+              <span class="btn-text" data-i18n="fleet.export.btn">Letöltés (JSON)</span>
+              <span class="btn-loading" hidden><span class="spinner"></span> <span data-i18n="fleet.export.loading">Exportálás...</span></span>
+            </button>
+          </div>
+
+          <!-- Import -->
+          <div class="fleet-card">
+            <h3 class="fleet-card-title" data-i18n="fleet.import.title">Import</h3>
+            <p class="fleet-card-desc" data-i18n="fleet.import.desc">Tallózz egy korábban exportált fleet-export-*.json fájlt.</p>
+            <div class="form-group" style="margin-bottom:12px">
+              <label for="fleetImportFile" data-i18n="fleet.import.file_label">Fleet JSON fájl</label>
+              <input type="file" id="fleetImportFile" accept="application/json,.json" class="fleet-file-input">
+            </div>
+            <div class="form-group" style="margin-bottom:12px">
+              <label for="fleetImportPassword" data-i18n="fleet.vault_password_label">Vault jelszó (opcionális)</label>
+              <input type="password" id="fleetImportPassword" data-i18n-ph="fleet.import_vault_password_ph" placeholder="Ha üresen hagyod, titkok nélkül importál">
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn-secondary btn-compact" id="fleetDryRunBtn">
+                <span class="btn-text" data-i18n="fleet.import.dryrun_btn">Ellenőrzés (dry-run)</span>
+                <span class="btn-loading" hidden><span class="spinner"></span> <span data-i18n="fleet.import.dryrun_loading">Ellenőrzés...</span></span>
+              </button>
+              <button class="btn-primary btn-compact" id="fleetApplyBtn" disabled>
+                <span class="btn-text" data-i18n="fleet.import.apply_btn">Végrehajtás (apply)</span>
+                <span class="btn-loading" hidden><span class="spinner"></span> <span data-i18n="fleet.import.apply_loading">Importálás...</span></span>
+              </button>
+            </div>
+
+            <!-- Dry-run result -->
+            <div id="fleetDryRunResult" hidden></div>
+          </div>
+        </div>
+
+      </div>
     </div>
 
     <!-- === Docs Page === -->

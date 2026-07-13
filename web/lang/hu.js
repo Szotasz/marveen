@@ -1503,4 +1503,43 @@ window._i18n.hu = {
   'agents.deepseek_link': 'API kulcs hozzáadása',
   'agents.deepseek_hint_post': 'a Vault oldalon.',
   'channel.btn.slack_manifest': 'Slack App létrehozása (manifest)',
+
+  // --- Fleet Migration ---
+  'fleet.section_title':          'Teljes flotta migráció',
+  'fleet.section_desc':           'Az összes ügynök, memória, kanban és beállítás egyetlen JSON-ban.',
+  'fleet.warning':                'Az import kizárólag üres/friss telepítésre való, nem merge-re. Google/Gmail OAuth és a dashboard-token nem utazik: a célgépen re-auth szükséges.',
+  'fleet.vault_password_label':   'Vault jelszó (opcionális)',
+  'fleet.vault_password_ph':      'Ha üresen hagyod, titkok nélkül exportál',
+  'fleet.import_vault_password_ph': 'Ha üresen hagyod, titkok nélkül importál',
+
+  'fleet.export.title':           'Export',
+  'fleet.export.desc':            'A teljes flotta egy JSON-ban. Jelszó megadásával a vault-titkok is (titkosítva).',
+  'fleet.export.btn':             'Letöltés (JSON)',
+  'fleet.export.loading':         'Exportálás...',
+  'fleet.export.success':         'Export letöltve.',
+  'fleet.export.error':           'Export hiba',
+
+  'fleet.import.title':           'Import',
+  'fleet.import.desc':            'Tallózz egy korábban exportált fleet-export-*.json fájlt.',
+  'fleet.import.file_label':      'Fleet JSON fájl',
+  'fleet.import.dryrun_btn':      'Ellenőrzés (dry-run)',
+  'fleet.import.dryrun_loading':  'Ellenőrzés...',
+  'fleet.import.apply_btn':       'Végrehajtás (apply)',
+  'fleet.import.apply_loading':   'Importálás...',
+  'fleet.import.no_file':         'Válassz egy fleet JSON fájlt.',
+  'fleet.import.invalid_json':    'A fájl nem érvényes JSON.',
+  'fleet.import.dryrun_ok':       'Dry-run sikeres, apply engedélyezve.',
+  'fleet.import.dryrun_errors':   'Hibák az importban:',
+  'fleet.import.apply_confirm':   'Biztos vagy benne? Az import felülírja a meglévő ügynök-konfigurációkat. Ez kizárólag üres/friss telepítésre való.',
+  'fleet.import.apply_success':   'Import sikeresen elvégezve.',
+  'fleet.import.error':           'Import hiba',
+
+  'fleet.stat.main_agent':        'Fő ügynök',
+  'fleet.stat.agents':            'Al-ügynökök',
+  'fleet.stat.memories':          'Memóriák',
+  'fleet.stat.kanban':            'Kanban kártyák',
+  'fleet.stat.skills':            'Globális skillek',
+  'fleet.stat.tasks':             'Ütemezett feladatok',
+  'fleet.stat.agent_names':       'Ügynökök',
+
 }

@@ -1506,4 +1506,43 @@ window._i18n.en = {
   'agents.deepseek_link': 'Add API key',
   'agents.deepseek_hint_post': 'on the Vault page.',
   'channel.btn.slack_manifest': 'Create Slack App (manifest)',
+
+  // --- Fleet Migration ---
+  'fleet.section_title':          'Full fleet migration',
+  'fleet.section_desc':           'All agents, memories, kanban and settings in a single JSON.',
+  'fleet.warning':                'Import is for empty/fresh installations only, not merge. Google/Gmail OAuth and dashboard-token are not included: re-auth required on the target machine.',
+  'fleet.vault_password_label':   'Vault password (optional)',
+  'fleet.vault_password_ph':      'Leave empty to export without secrets',
+  'fleet.import_vault_password_ph': 'Leave empty to import without secrets',
+
+  'fleet.export.title':           'Export',
+  'fleet.export.desc':            'Full fleet in one JSON. Supply a password to include vault secrets (encrypted).',
+  'fleet.export.btn':             'Download (JSON)',
+  'fleet.export.loading':         'Exporting...',
+  'fleet.export.success':         'Export downloaded.',
+  'fleet.export.error':           'Export error',
+
+  'fleet.import.title':           'Import',
+  'fleet.import.desc':            'Browse a previously exported fleet-export-*.json file.',
+  'fleet.import.file_label':      'Fleet JSON file',
+  'fleet.import.dryrun_btn':      'Check (dry-run)',
+  'fleet.import.dryrun_loading':  'Checking...',
+  'fleet.import.apply_btn':       'Execute (apply)',
+  'fleet.import.apply_loading':   'Importing...',
+  'fleet.import.no_file':         'Select a fleet JSON file.',
+  'fleet.import.invalid_json':    'The file is not valid JSON.',
+  'fleet.import.dryrun_ok':       'Dry-run successful, apply enabled.',
+  'fleet.import.dryrun_errors':   'Errors in import:',
+  'fleet.import.apply_confirm':   'Are you sure? Import will overwrite existing agent configs. This is for empty/fresh installations only.',
+  'fleet.import.apply_success':   'Import completed successfully.',
+  'fleet.import.error':           'Import error',
+
+  'fleet.stat.main_agent':        'Main agent',
+  'fleet.stat.agents':            'Sub-agents',
+  'fleet.stat.memories':          'Memories',
+  'fleet.stat.kanban':            'Kanban cards',
+  'fleet.stat.skills':            'Global skills',
+  'fleet.stat.tasks':             'Scheduled tasks',
+  'fleet.stat.agent_names':       'Agents',
+
 }
