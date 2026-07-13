@@ -9583,6 +9583,24 @@ const CHAT_SYSTEM_AGENTS = new Set(['heartbeat','telegram-coordinator','channel-
 // recognizes its real owner. Empty until _marveen resolves (no false match).
 function chatOwnerName() { return window._marveen?.ownerName || '' }
 
+// The main agent's display name (BOT_NAME). mainAgentId() is the routing id
+// (e.g. "marveen") used for matching, avatar lookups and API calls; this is
+// what the user should SEE. Sourced from the backend (/api/marveen -> name,
+// mirrored into _brandTokens.bot by initSidebarBrand), so a renamed install
+// shows its real bot name. Falls back to the id before _marveen resolves.
+// Regression #519/#520: keep the four Messages-view display points routing the
+// main agent id through chatDisplayName -- a later refactor once stripped this
+// and leaked the raw routing id again. Guarded by messages-view-display-name.test.ts.
+function mainAgentDisplayName() {
+  return window._marveen?.name || window._brandTokens?.bot || mainAgentId()
+}
+// Map a routing agent id to its user-facing label: the main agent's id becomes
+// its BOT_NAME display name; every other agent already carries a human name as
+// its id, so it passes through unchanged.
+function chatDisplayName(name) {
+  return name === mainAgentId() ? mainAgentDisplayName() : name
+}
+
 function chatLastSeenKey(agentName) { return 'chat_last_seen_' + agentName }
 function chatGetLastSeen(agentName) { return parseInt(localStorage.getItem(chatLastSeenKey(agentName)) || '0', 10) }
 function chatMarkSeen(agentName, maxId) {
@@ -9655,7 +9673,7 @@ async function loadChatAgentList() {
       const isSelected = name === chatSelectedAgent ? ' selected' : ''
       const dimmed = info ? '' : ' style="opacity:0.5"'
       const unread = chatIsUnread(name, info)
-      const displayName = owner && name === owner ? owner + ' (te)' : name
+      const displayName = owner && name === owner ? owner + ' (te)' : chatDisplayName(name)
       return `<div class="chat-agent-item${isSelected}${unread ? ' unread' : ''}" data-agent="${escapeHtml(name)}"${dimmed}>
         <div class="chat-agent-avatar">${chatAvatarHtml(name, 40)}</div>
         <div class="chat-agent-info">
@@ -9699,7 +9717,7 @@ async function loadChatThread(agentName) {
   chatThreadState.loading = false
 
   const owner = chatOwnerName()
-  const threadDisplayName = owner && agentName === owner ? owner + ' (te)' : agentName
+  const threadDisplayName = owner && agentName === owner ? owner + ' (te)' : chatDisplayName(agentName)
 
   panel.innerHTML = `
     <div class="chat-thread-header">
@@ -9712,7 +9730,7 @@ async function loadChatThread(agentName) {
     <div class="chat-bubbles" id="chatBubbles"><div class="chat-loading-indicator" id="chatLoadingTop" style="display:none;text-align:center;padding:8px;font-size:11px;color:var(--text-muted)">${t('messages.loading')}</div></div>
     <div class="chat-compose">
       <div class="chat-compose-row">
-        <textarea id="chatComposeText" class="chat-compose-input" rows="2" placeholder="${t('messages.placeholder', { agent: escapeHtml(agentName) })}"></textarea>
+        <textarea id="chatComposeText" class="chat-compose-input" rows="2" placeholder="${t('messages.placeholder', { agent: escapeHtml(chatDisplayName(agentName)) })}"></textarea>
         <button class="btn-primary btn-compact chat-send-btn" id="chatSendBtn">${t('messages.send_btn')}</button>
       </div>
     </div>
@@ -9752,7 +9770,10 @@ async function loadChatThread(agentName) {
 
 function buildBubbleHtml(m) {
   const isOutgoing = m.from_agent === mainAgentId()
+  // senderName stays the routing id (avatar lookup keys off it); senderLabel is
+  // what the user sees, so the main agent reads as its BOT_NAME, not "marveen".
   const senderName = isOutgoing ? mainAgentId() : m.from_agent
+  const senderLabel = chatDisplayName(senderName)
   const when = m.created_at ? new Date(m.created_at * 1000).toLocaleString('hu-HU', {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : ''
   const statusMetaRaw = MSG_STATUS_META[m.status] || { label: m.status || '', cls: 'badge' }
   const statusMeta = { ...statusMetaRaw, label: typeof statusMetaRaw.label === 'function' ? statusMetaRaw.label() : statusMetaRaw.label }
@@ -9760,7 +9781,7 @@ function buildBubbleHtml(m) {
     ${!isOutgoing ? `<div class="chat-bubble-avatar">${chatAvatarHtml(senderName, 28)}</div>` : ''}
     <div class="chat-bubble ${isOutgoing ? 'bubble-out' : 'bubble-in'}">
       <div class="bubble-meta">
-        ${!isOutgoing ? `<span class="bubble-sender">${escapeHtml(senderName)}</span>` : ''}
+        ${!isOutgoing ? `<span class="bubble-sender">${escapeHtml(senderLabel)}</span>` : ''}
         <span class="bubble-id-chip">#${m.id}</span>
         <span class="badge ${statusMeta.cls}" style="font-size:10px">${escapeHtml(statusMeta.label)}</span>
       </div>
