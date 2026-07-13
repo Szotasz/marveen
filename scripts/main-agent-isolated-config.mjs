@@ -20,10 +20,20 @@ import { fileURLToPath } from 'node:url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const projectRoot = join(__dirname, '..')
 
-const { ensureMainAgentIsolatedConfigDir } = await import(
+const { ensureMainAgentIsolatedConfigDir, resolveMainAgentConfigDir } = await import(
   join(projectRoot, 'dist', 'web', 'agent-process.js')
 )
 
-const provider = process.argv[2] || undefined
-const dir = ensureMainAgentIsolatedConfigDir(provider)
-if (dir) process.stdout.write(dir + '\n')
+// Output contract (consumed by scripts/channels.sh): "<mode>\t<path>", or nothing
+// at all when neither path applies. The mode decides how the caller authenticates
+// the agent: an `explicit` dir carries its OWN .credentials.json (login already
+// done there -- do NOT inject the fleet token, that would swap the identity),
+// while an `isolated` dir carries none and needs the fleet setup-token exported.
+const explicit = resolveMainAgentConfigDir()
+if (explicit) {
+  process.stdout.write(`explicit\t${explicit}\n`)
+} else {
+  const provider = process.argv[2] || undefined
+  const dir = ensureMainAgentIsolatedConfigDir(provider)
+  if (dir) process.stdout.write(`isolated\t${dir}\n`)
+}

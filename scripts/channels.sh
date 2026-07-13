@@ -215,31 +215,47 @@ MODEL_FLAG=""
 # dist/web/agent-process.js) and authenticates the main agent from the fleet
 # setup-token instead.
 #
-# The ON/OFF decision lives ENTIRELY in the helper (ensureMainAgentIsolatedConfigDir):
-# it reads the effective MAIN_AGENT_ISOLATED_CONFIG setting (dashboard toggle in
+# The decision lives ENTIRELY in the helper, which prints "<mode>\t<path>" (or
+# nothing) and covers the two mutually exclusive ways the main agent can get its
+# own CLAUDE_CONFIG_DIR:
+#
+#   explicit -- MAIN_AGENT_CONFIG_DIR points at an EXISTING dir the operator has
+#     already logged into (the bot has its OWN Claude account, separate from the
+#     fleet's). That dir carries its own .credentials.json, so we must NOT inject
+#     the fleet token: doing so would authenticate the bot as the fleet. Works on
+#     every platform.
+#   isolated -- MAIN_AGENT_ISOLATED_CONFIG=1 on macOS with a fleet setup-token:
+#     the helper provisions a credential-less dir and we export the fleet token
+#     (same code path as the sub-agents), so the bot stops depending on the
+#     rotating Keychain OAuth session.
+#
+# Both settings resolve through the settings-store (dashboard toggle in
 # store/config-overrides.json OR a hand-set .env key -- resolution override>.env>
-# default '0') plus the fleet-token gate. So on macOS we ALWAYS call the helper;
-# it prints a path only when isolation is enabled AND a valid fleet token exists,
-# otherwise CFG_ENV stays EMPTY and the agent keeps the shared root. Strict no-op
-# for existing installs (non-macOS, setting off, no fleet token, or no dist build).
+# default), and explicit wins over isolated. When neither applies the helper
+# prints nothing, CFG_ENV stays EMPTY and the agent keeps the shared ~/.claude --
+# strict no-op for existing installs (no setting, no fleet token, no dist build).
 CFG_ENV=""
-if [ "$(uname)" = "Darwin" ]; then
-  mkdir -p "$INSTALL_DIR/store" 2>/dev/null || true
-  _node_bin="$(command -v node || true)"
-  if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
-    _iso_cfg="$("$_node_bin" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$CHANNEL_PROVIDER" 2>>"$INSTALL_DIR/store/channels-failures.log" || true)"
-    if [ -n "$_iso_cfg" ] && [ -d "$_iso_cfg" ]; then
+mkdir -p "$INSTALL_DIR/store" 2>/dev/null || true
+_node_bin="$(command -v node || true)"
+if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
+  _cfg_line="$("$_node_bin" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$CHANNEL_PROVIDER" 2>>"$INSTALL_DIR/store/channels-failures.log" || true)"
+  _cfg_mode="${_cfg_line%%	*}"
+  _cfg_dir="${_cfg_line#*	}"
+  if [ -n "$_cfg_line" ] && [ -d "$_cfg_dir" ]; then
+    if [ "$_cfg_mode" = "explicit" ]; then
+      CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && "
+    else
       # Seed the token from the SAME 0600 file the isolated dir is gated on, so
       # the config dir and the active token always match (the isolated dir carries
       # no .credentials.json). $(cat) is evaluated in the launched shell so the
       # secret never lands in the argv/`ps` command string.
-      CFG_ENV="export CLAUDE_CONFIG_DIR='$_iso_cfg' && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$INSTALL_DIR/store/.claude-oauth-token')\" && "
-      echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent isolated CLAUDE_CONFIG_DIR=$_iso_cfg" >> "$INSTALL_DIR/store/channels-failures.log"
+      CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$INSTALL_DIR/store/.claude-oauth-token')\" && "
     fi
-    unset _iso_cfg
+    echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent $_cfg_mode CLAUDE_CONFIG_DIR=$_cfg_dir" >> "$INSTALL_DIR/store/channels-failures.log"
   fi
-  unset _node_bin
+  unset _cfg_line _cfg_mode _cfg_dir
 fi
+unset _node_bin
 
 # Régi session takarítás
 $TMUX kill-session -t "$SESSION" 2>/dev/null
