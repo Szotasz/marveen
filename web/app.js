@@ -11429,8 +11429,10 @@ function tuGetColor(agent) {
 function tuMcpServerFromTool(toolName) {
   if (!toolName || !toolName.startsWith('mcp__')) return null
   const parts = toolName.split('__')
-  // parts: ['mcp', '<server>', '<tool>'] -- server may contain single underscores
-  return parts.length >= 3 ? parts[1] : null
+  // parts: ['mcp', '<server>', '<tool>'] for a full tool name, or
+  // ['mcp', '<server>'] for a tuMcpGroupKey() group key -- without accepting
+  // the 2-part form, every grouped MCP row would be mislabelled as builtin.
+  return parts.length >= 2 && parts[1] ? parts[1] : null
 }
 
 function tuMcpGroupKey(toolName) {
