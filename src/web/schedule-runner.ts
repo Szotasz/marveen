@@ -516,6 +516,11 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
   })()
 }
 
+// Tick interval for the schedule runner. 15 s gives 4x faster inter-agent
+// message delivery and scheduled-task triggering; each tick is a cheap
+// SQLite SELECT so the load is negligible.
+export const SCHEDULE_TICK_MS = 15_000
+
 export function startScheduleRunner(): NodeJS.Timeout {
   // Reload the persisted last-run times so a restart inside a task's catch-up
   // window does not re-fire an already-run task.
@@ -549,7 +554,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
     const now = Date.now()
     // Scan the real interval elapsed since the previous tick (30 min on the
     // first tick), not a fixed 60s window -- a late/dropped tick must not let a
-    // sparse daily cron's single occurrence slip through a gap unscanned.
+    // sparse daily cron's single occurrence slip through a gap unscanned (#621).
     const fromMs = lastCheckMs
 
     // Retry tasks that were busy-skipped on earlier ticks (persisted in
@@ -706,5 +711,5 @@ export function startScheduleRunner(): NodeJS.Timeout {
 
   // Run immediately on start (catches missed tasks)
   setTimeout(runCheck, 5000)
-  return setInterval(runCheck, 60000)
+  return setInterval(runCheck, SCHEDULE_TICK_MS)
 }
