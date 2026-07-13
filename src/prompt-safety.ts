@@ -53,6 +53,31 @@ export function sanitizeAgentIdent(raw: string): string {
   return String(raw ?? '').replace(/[^a-zA-Z0-9_-]/g, '')
 }
 
+// Capability tag injected into agent CLAUDE.md files. Accepts only lowercase
+// alphanumeric + hyphen (conservative whitelist) to prevent a malicious
+// capability string from becoming a prompt-injection vector when embedded in
+// another agent's system prompt.
+//
+// Threat model: PUT /api/agents/:name/capabilities is Bearer-token-accessible
+// and persona frontmatter is user-editable. Both are external-input paths.
+// A value like "IGNORE ALL PREVIOUS INSTRUCTIONS..." could silently flow into
+// every peer agent's CLAUDE.md during scaffold.
+//
+// We do NOT normalise (no character substitution): a tag that does not match
+// the whitelist is DROPPED entirely rather than transformed. This closes the
+// smuggling path where replace(/[^a-z0-9-]/g, '-') would turn
+// "IGNORE ALL PREVIOUS INSTRUCTIONS" into "ignore-all-previous-instructio"
+// (still 32 chars, still matches /^[a-z0-9][a-z0-9-]{0,31}$/).
+// Only trim() + toLowerCase() are allowed because they do not change which
+// character class a byte belongs to.
+const CAPABILITY_TAG_RE = /^[a-z0-9][a-z0-9-]{0,31}$/
+export const CAPABILITY_TAG_MAX_PER_AGENT = 12
+
+export function sanitizeCapabilityTag(raw: string): string | null {
+  const t = String(raw ?? '').toLowerCase().trim()
+  return CAPABILITY_TAG_RE.test(t) ? t : null
+}
+
 // Assembled source attribute: accepts "prefix:name" (e.g. "agent:dev3",
 // "memory-record", "gcal"). Returns "unknown" for empty input so we never
 // emit a confusing source="" attribute into the wrap.

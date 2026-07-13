@@ -5,8 +5,9 @@ import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WE
 import { channelStateDir } from '../channel-provider.js'
 import { runAgent } from '../agent.js'
 import { atomicWriteFileSync } from './atomic-write.js'
-import { agentDir, agentConfigRoot } from './agent-config.js'
+import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities } from './agent-config.js'
 import { resolveProfilePlaceholders, type ProfileTemplate } from './profiles.js'
+import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
 
 // Identity values the template substitution injects. Pulled out so the
 // substitution is a pure, parameterizable function (the runtime binds these to
@@ -364,6 +365,84 @@ export function scaffoldAgentDir(name: string) {
   }
 }
 
+const FLEET_ROSTER_BEGIN = '<!-- BEGIN GENERATED: fleet-roster (auto-generated, do not edit by hand) -->'
+const FLEET_ROSTER_END = '<!-- END GENERATED: fleet-roster -->'
+
+const FLEET_ROSTER_BLOCK_RE = new RegExp(
+  `${FLEET_ROSTER_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${FLEET_ROSTER_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+function buildFleetRosterBody(selfName: string): string {
+  let agentNames: string[]
+  try {
+    agentNames = listAgentNames()
+  } catch {
+    agentNames = []
+  }
+
+  const names = agentNames.includes(MAIN_AGENT_ID)
+    ? agentNames
+    : [MAIN_AGENT_ID, ...agentNames]
+
+  const lines: string[] = []
+  for (const agentName of names) {
+    if (agentName === selfName) continue
+
+    let rawCaps: string[]
+    try {
+      rawCaps = readAgentCapabilities(agentName)
+    } catch {
+      rawCaps = []
+    }
+
+    const caps = rawCaps
+      .map(sanitizeCapabilityTag)
+      .filter((c): c is string => c !== null)
+      .slice(0, CAPABILITY_TAG_MAX_PER_AGENT)
+
+    const capsStr = caps.length > 0 ? caps.join(', ') : '-'
+    lines.push(`- **${agentName}** (agent_id: ${agentName}): ${capsStr}`)
+  }
+
+  const roster = lines.length > 0 ? lines.join('\n') : '(nincs regisztrált ágens)'
+
+  return [
+    '## A flotta többi agense',
+    '',
+    'Ez a lista automatikusan generálódik az ágens indulásakor, ez a mérvadó és naprakész forrás.',
+    'Ha a fenti szövegben régebbi, kézzel írt felsorolás szerepel, ezt a szekciót vedd figyelembe.',
+    '',
+    roster,
+    '',
+    'Ha egy kérés egyértelműen más szakterületére esik, jelezd vagy delegáld inter-agent üzenettel a megfelelő ágensnek.',
+  ].join('\n')
+}
+
+export function ensureFleetRosterSection(name: string): void {
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const body = buildFleetRosterBody(name)
+  const block = `${FLEET_ROSTER_BEGIN}\n${body}\n${FLEET_ROSTER_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  let updated: string
+  if (FLEET_ROSTER_BLOCK_RE.test(existing)) {
+    updated = existing.replace(FLEET_ROSTER_BLOCK_RE, block)
+  } else {
+    updated = existing.trimEnd() + '\n\n' + block + '\n'
+  }
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
 export async function generateClaudeMd(name: string, description: string, model: string): Promise<string> {
   // Distribution-safe default-drive line: only emit a concrete folder when this
   // install has one configured (OWNER_DRIVE_FOLDER). A fresh install with no
@@ -506,6 +585,11 @@ Output ONLY the markdown content, no code fences.`
   if (cleaned.startsWith('```')) {
     cleaned = cleaned.replace(/^```\w*\n?/, '').replace(/\n?```$/, '')
   }
+  // Append the marker-delimited fleet roster block using the same
+  // buildFleetRosterBody() as ensureFleetRosterSection() -- single source of truth.
+  // Appended after LLM output so the model never sees or can rewrite it.
+  const body = buildFleetRosterBody(name)
+  cleaned = cleaned.trimEnd() + '\n\n' + FLEET_ROSTER_BEGIN + '\n' + body + '\n' + FLEET_ROSTER_END + '\n'
   return cleaned
 }
 
