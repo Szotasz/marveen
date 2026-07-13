@@ -5250,7 +5250,8 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-top: 16px;
+  margin-top: 0;
+  margin-bottom: 16px;
   flex-wrap: wrap;
 }
 
