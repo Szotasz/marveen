@@ -130,6 +130,10 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
         <span class="sb-label">Státusz</span>
       </a>
+      <a href="#" class="sb-link" data-page="network">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+        <span class="sb-label">Hálózat</span>
+      </a>
       <a href="#" class="sb-link" data-page="autonomy">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
         <span class="sb-label">Autonómia</span>
@@ -879,6 +883,24 @@
       <div class="status-incidents">
         <h3>Incidensek</h3>
         <div class="status-incident-list" id="statusIncidentList"></div>
+      </div>
+    </div>
+
+    <!-- === Network / Camera Check Page === -->
+    <div class="page" id="networkPage" hidden>
+      <div class="page-header">
+        <h1 data-i18n="network.page_title">Hálózat</h1>
+        <p class="subtitle" data-i18n="network.page_subtitle">Kamera elérhetőség-ellenőrzés a helyi hálózaton</p>
+      </div>
+      <div class="network-check">
+        <div class="network-check-row">
+          <input type="text" id="cameraIpInput" class="input" placeholder="192.168.x.x"
+            data-i18n-placeholder="network.ip_placeholder" autocomplete="off" spellcheck="false"
+            inputmode="numeric" maxlength="15">
+          <button class="btn-primary" id="cameraCheckBtn" data-i18n="network.check_btn">Ellenőrzés</button>
+        </div>
+        <div id="cameraCheckResult" class="network-result" hidden></div>
+        <p class="muted network-hint" data-i18n="network.hint">Elérhetőség-teszt: azt mutatja, válaszol-e az eszköz a hálózaton, nem azt, hogy hibátlanul működik-e.</p>
       </div>
     </div>
 

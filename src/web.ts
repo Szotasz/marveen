@@ -53,6 +53,7 @@ import { tryHandleIdeas } from './web/routes/ideas.js'
 import { tryHandleToolLog } from './web/routes/tool-log.js'
 import { tryHandleSettings } from './web/routes/settings.js'
 import { tryHandleAuditLog } from './web/routes/audit-log.js'
+import { tryHandleCameraCheck } from './web/routes/camera-check.js'
 import { tryHandleStatic } from './web/routes/static.js'
 import { tryHandleVoice } from './web/routes/voice.js'
 import { tryHandleVaultSsh } from './web/routes/vault-ssh.js'
@@ -186,6 +187,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleVaultSshKeys(routeCtx)) return
       if (await tryHandleVaultSsh(routeCtx)) return
       if (await tryHandleAuditLog(routeCtx)) return
+      if (await tryHandleCameraCheck(routeCtx)) return
       if (await tryHandleStatic(routeCtx, WEB_DIR)) return
 
       res.writeHead(404)

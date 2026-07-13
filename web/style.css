@@ -6510,3 +6510,21 @@ body {
 .onb-list { font-size: 13px; color: var(--text-muted); padding-left: 18px; line-height: 1.7; }
 .onb-pending { margin: 10px 0; }
 .onb-pending-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+
+/* === Network / camera reachability check === */
+.network-check { max-width: 560px; }
+.network-check-row { display: flex; gap: 8px; align-items: center; }
+.network-check-row .input { flex: 1; min-width: 0; }
+.network-hint { margin-top: 12px; font-size: 12px; line-height: 1.5; }
+.network-result {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.network-result.ok { background: var(--success-soft); border-color: var(--success); color: var(--success); }
+.network-result.warn { background: rgba(200, 150, 40, 0.12); border-color: #c8963c; color: #a8791f; }
+.network-result.err { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }

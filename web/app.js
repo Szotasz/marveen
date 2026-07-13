@@ -277,6 +277,7 @@ function switchPage(pageId) {
   if (pageId === 'migrate') loadMigrateAgents()
   if (pageId === 'docs') loadDocs()
   if (pageId === 'status') loadStatus()
+  if (pageId === 'network') resetCameraCheck()
   if (pageId === 'recall') loadRecallPage()
   if (pageId === 'bgTasks') loadBgTasksPage()
   if (pageId === 'vault') loadVaultPage()
@@ -329,7 +330,7 @@ const NAV_I18N = {
   messages: 'nav.messages', tasks: 'nav.tasks', memories: 'nav.memories',
   recall: 'nav.recall', naplo: 'nav.recall', bgTasks: 'nav.bgTasks',
   skills: 'nav.skills', connectors: 'nav.connectors', migrate: 'nav.migrate',
-  docs: 'nav.docs', status: 'nav.status', autonomy: 'nav.autonomy',
+  docs: 'nav.docs', status: 'nav.status', network: 'nav.network', autonomy: 'nav.autonomy',
   settings: 'nav.settings', vault: 'nav.vault', tokenUsage: 'nav.tokenUsage',
   ideas: 'nav.ideas', updates: 'nav.updates',
 }
@@ -8661,6 +8662,109 @@ async function loadStatus() {
     overallEl.textContent = 'Nem sikerult betolteni a statuszt'
   }
 }
+
+// ============================================================
+// === Network / Camera reachability check ===
+// ============================================================
+
+// Clear the result badge when (re)entering the page so a stale verdict from a
+// previous check is never shown against a fresh input.
+function resetCameraCheck() {
+  const resultEl = document.getElementById('cameraCheckResult')
+  if (resultEl) {
+    resultEl.hidden = true
+    resultEl.textContent = ''
+    resultEl.className = 'network-result'
+  }
+}
+
+// Render a probe verdict. All server-provided values reach the DOM via
+// textContent only -- never innerHTML -- so a hostile/garbled response can
+// never inject markup.
+function renderCameraResult(data) {
+  const resultEl = document.getElementById('cameraCheckResult')
+  if (!resultEl) return
+  let cls, text
+  if (data && data.online && data.reason === 'isapi') {
+    cls = 'ok'
+    const ms = Number.isFinite(data.latencyMs) ? Math.round(data.latencyMs) : null
+    text = ms !== null ? t('network.result.isapi', { ms }) : t('network.result.isapi_noms')
+  } else if (data && data.online) {
+    cls = 'warn'
+    text = t('network.result.online_no_web')
+  } else {
+    cls = 'err'
+    text = t('network.result.offline')
+  }
+  resultEl.className = 'network-result ' + cls
+  resultEl.textContent = text
+  resultEl.hidden = false
+}
+
+async function runCameraCheck() {
+  const input = document.getElementById('cameraIpInput')
+  const btn = document.getElementById('cameraCheckBtn')
+  const resultEl = document.getElementById('cameraCheckResult')
+  if (!input || !btn || !resultEl) return
+
+  const ip = (input.value || '').trim()
+  if (!ip) {
+    resultEl.className = 'network-result err'
+    resultEl.textContent = t('network.result.empty')
+    resultEl.hidden = false
+    return
+  }
+
+  btn.disabled = true
+  resultEl.className = 'network-result'
+  resultEl.textContent = t('network.checking')
+  resultEl.hidden = false
+
+  try {
+    const res = await fetch('/api/camera-check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (res.status === 429) {
+      resultEl.className = 'network-result warn'
+      resultEl.textContent = t('network.result.busy')
+      resultEl.hidden = false
+      return
+    }
+    if (res.status === 400) {
+      resultEl.className = 'network-result err'
+      resultEl.textContent = data && data.error === 'not-private'
+        ? t('network.result.not_private')
+        : t('network.result.invalid_ip')
+      resultEl.hidden = false
+      return
+    }
+    if (!res.ok) {
+      resultEl.className = 'network-result err'
+      resultEl.textContent = t('network.result.error')
+      resultEl.hidden = false
+      return
+    }
+    renderCameraResult(data)
+  } catch (e) {
+    resultEl.className = 'network-result err'
+    resultEl.textContent = t('network.result.error')
+    resultEl.hidden = false
+  } finally {
+    btn.disabled = false
+  }
+}
+
+;(() => {
+  const btn = document.getElementById('cameraCheckBtn')
+  const input = document.getElementById('cameraIpInput')
+  if (btn) btn.addEventListener('click', runCameraCheck)
+  if (input) input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); runCameraCheck() }
+  })
+})()
 
 // ============================================================
 // === Memory Import ===
