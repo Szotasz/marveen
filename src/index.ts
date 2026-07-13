@@ -448,14 +448,19 @@ async function main(): Promise<void> {
   // sub-agent that reads the operator's calendar and DB, and a gated-off
   // machine (e.g. a dev box) must not fight the production host over the
   // channel.
+  // Linux credentials-guard, once at boot before any agent starts (opt-in,
+  // default OFF, no-op on macOS). Retires the rotating credentials.json so
+  // even the systemd-managed main channels agent comes up on the stable
+  // setup-token; startAgentProcess re-runs it per launch for self-healing.
+  // Was previously nested inside the heartbeat-agent boot branch below, so on
+  // any install with the heartbeat sub-agent disabled (the common case) this
+  // never ran at boot at all (found 2026-07-13 while diagnosing recurring
+  // dead-token incidents).
+  renameSharedCredentialsIfSafe()
+
   if (shouldBootHeartbeatAgent({ respawnEnabled: RESPAWN_ENABLED, agentEnabled: HEARTBEAT_AGENT_ENABLED })) {
     ensureHeartbeatAgent()
     logger.info({ agent: HEARTBEAT_AGENT_NAME }, 'Heartbeat agent scaffold ensured (channel-less, dashboard-hidden)')
-    // Linux credentials-guard, once at boot before any agent starts (opt-in,
-    // default OFF, no-op on macOS). Retires the rotating credentials.json so
-    // even the systemd-managed main channels agent comes up on the stable
-    // setup-token; startAgentProcess re-runs it per launch for self-healing.
-    renameSharedCredentialsIfSafe()
     const heartbeatStart = startAgentProcess(HEARTBEAT_AGENT_NAME)
     if (heartbeatStart.ok) {
       logger.info({ agent: HEARTBEAT_AGENT_NAME }, 'Heartbeat agent started')

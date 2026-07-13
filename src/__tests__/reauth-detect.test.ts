@@ -106,4 +106,24 @@ describe('detectReauthNeeded', () => {
     expect(r.needsReauth).toBe(true)
     expect(r.reason).toMatch(/not logged in/i)
   })
+
+  it('does NOT fire when a prior escalation message is quoted back into the pane (self-loop)', () => {
+    // Reproduces the 2026-07-13 bug: the owner pastes the healer's own alert
+    // (which embeds the raw marker text) back into the chat, and it re-matches.
+    const pane = [
+      ...Array.from({ length: 10 }, (_, i) => `... work line ${i} ...`),
+      '🔐 A(z) bigme ágens halott OAuth tokent jelez (Please run /login) több mint ~9 perce.',
+      'Manuális browser /login kell a dashboardon (az ügynök kártyáján a "Bejelentkezés" gomb), automatikusan nem gyógyítható.',
+    ].join('\n')
+    expect(detectReauthNeeded(pane).needsReauth).toBe(false)
+  })
+
+  it('does NOT fire on the quiet-hours morning summary quoted back either', () => {
+    const pane = [
+      '🔐 Reggeli token-összegzés: az éjszakai csendes sáv (23:00-06:00) alatt elnyomott riasztások. MOST IS halott tokent jelez:',
+      '• bigme: Invalid authentication credentials (401) (~45 perce)',
+      'Manuális browser /login kell a dashboardon (az ügynök kártyáján a "Bejelentkezés" gomb).',
+    ].join('\n')
+    expect(detectReauthNeeded(pane).needsReauth).toBe(false)
+  })
 })

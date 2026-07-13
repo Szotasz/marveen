@@ -34,6 +34,20 @@ const REAUTH_MARKERS: { rx: RegExp; reason: string }[] = [
 // markers from reading reauth-detect.ts and would have falsely badged.)
 const TAIL_LINES = 15
 
+// Self-quote guard (found 2026-07-13: 5 false escalations in ~18h, each
+// shortly after the alert text was pasted back into the chat). The healer's
+// own escalation message embeds the raw marker `reason` string verbatim, e.g.
+// "... jelez (Please run /login) ...". Once that message is quoted back into
+// the pane -- the owner forwarding it, the dashboard rendering it, or the
+// agent discussing the bug -- it re-matches REAUTH_MARKERS against its own
+// alert and re-fires, forever. These substrings are unique to
+// buildEscalationMessage / buildQuietSummaryMessage in reauth-healer.ts and
+// never appear in a real Claude Code CLI auth failure.
+const ESCALATION_QUOTE_MARKERS: RegExp[] = [
+  /ágens halott OAuth tokent jelez/i,
+  /Manuális browser \/login kell a dashboardon/i,
+]
+
 function tailOf(pane: string, n: number): string {
   const lines = pane.split('\n')
   return lines.slice(Math.max(0, lines.length - n)).join('\n')
@@ -74,11 +88,13 @@ function liveStatusRegion(pane: string): string | null {
  * running) -- absence of evidence is not evidence of an auth problem. Scans the
  * live status region when the pane has Claude Code's input box, else falls back
  * to the last TAIL_LINES, so scrollback that merely mentions the markers does
- * not trigger a false badge.
+ * not trigger a false badge. A region that is itself a quote of a prior
+ * escalation message is also excluded (see ESCALATION_QUOTE_MARKERS).
  */
 export function detectReauthNeeded(pane: string | null | undefined): ReauthState {
   if (!pane) return { needsReauth: false }
   const region = liveStatusRegion(pane) ?? tailOf(pane, TAIL_LINES)
+  if (ESCALATION_QUOTE_MARKERS.some((rx) => rx.test(region))) return { needsReauth: false }
   for (const m of REAUTH_MARKERS) {
     if (m.rx.test(region)) return { needsReauth: true, reason: m.reason }
   }
