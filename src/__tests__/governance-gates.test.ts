@@ -264,3 +264,32 @@ describe('self-pace-gate stripGitCommitMessages (commit-message false-positive g
     expect(selfPaceDecision('Bash', { command: `git commit -m "$(crontab -r)"` }).deny).toBe(true)
   })
 })
+
+// --- backtick command substitution: the boundary anchor recognises `...` the
+// same as $(...), so a scheduler binary inside a legacy backtick substitution is
+// caught (was a documented pre-existing denylist gap: $() denied, backtick not).
+describe('self-pace-gate backtick command-substitution boundary', () => {
+  it('denies a bare backtick scheduler substitution', () => {
+    expect(selfPaceDecision('Bash', { command: 'git status `crontab -r`' }).deny).toBe(true)
+  })
+  it('denies an assignment via backtick substitution', () => {
+    expect(selfPaceDecision('Bash', { command: 'X=`crontab -r`' }).deny).toBe(true)
+  })
+  it('denies a backtick substitution after a commit message (message blanked, op remains)', () => {
+    expect(selfPaceDecision('Bash', { command: 'git commit -m "a" `crontab -r`' }).deny).toBe(true)
+  })
+  it('denies a backtick launchctl load', () => {
+    expect(selfPaceDecision('Bash', { command: 'echo `launchctl load x`' }).deny).toBe(true)
+  })
+  it('parity with $(): both substitution forms of the same op are denied', () => {
+    expect(selfPaceDecision('Bash', { command: 'git status $(crontab -r)' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: 'git status `crontab -r`' }).deny).toBe(true)
+  })
+  it('does not over-fire: a backtick substitution of a NON-scheduler binary is allowed', () => {
+    expect(selfPaceDecision('Bash', { command: 'echo `date`' }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: 'FILES=`ls -1`' }).deny).toBe(false)
+  })
+  it('still allows a legit read-listing inside a substitution (crontab -l)', () => {
+    expect(selfPaceDecision('Bash', { command: 'echo `crontab -l`' }).deny).toBe(false)
+  })
+})

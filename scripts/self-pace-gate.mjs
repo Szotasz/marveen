@@ -63,10 +63,15 @@ const SELF_PACE_BASH_PATTERNS = [
 // "netstat" / "crontab-helper.sh"; (?!\s*=) so a bare NAME=value assignment
 // (`at=$(...)`) is not mistaken for the `at` binary.
 const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:\S*/)?`
-const SCHEDULER_RX = new RegExp(String.raw`(^|[;&|(]\s*)${SCHED_PREFIX}(crontab|launchctl|systemd-run|batch|at)\b(?!-)(?!\s*=)`, 'i')
+// The command-boundary anchor includes `(` so a $(...) command substitution
+// (`X=$(crontab -)`) is caught, AND a backtick so a legacy `...` substitution
+// (`X=`crontab -r``) is caught too -- both run the enclosed command in a shell
+// context, so a scheduler binary immediately inside either is a real self-pace.
+const SCHED_BOUNDARY = '[;&|(`]'
+const SCHEDULER_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(crontab|launchctl|systemd-run|batch|at)\b(?!-)(?!\s*=)`, 'i')
 // ...but allow a pure READ-listing of one's own schedule (parity with the store /
 // schedule-API read exemptions): crontab -l, launchctl list/print, atq.
-const SCHEDULER_READ_RX = new RegExp(String.raw`(^|[;&|(]\s*)${SCHED_PREFIX}(crontab\s+-l\b|launchctl\s+(?:list|print|dumpstate|blame|examine)\b|atq\b)`, 'i')
+const SCHEDULER_READ_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(crontab\s+-l\b|launchctl\s+(?:list|print|dumpstate|blame|examine)\b|atq\b)`, 'i')
 
 // The Claude self-schedule store. Blocked for WRITE on any route (a Bash write,
 // or the native Write/Edit/NotebookEdit tool); a read/grep is legit diagnostics.
@@ -91,9 +96,9 @@ const HTTP_WRITE_RX = /(-X\s*(POST|PUT|PATCH|DELETE)|--request\s+(POST|PUT|PATCH
 //     `git commit -m "fix; crontab -r"`) splits and could false-deny. Rare
 //     enough (the quoted ; must be immediately followed by a blocked binary at a
 //     segment start) that a full shell-tokenizer is not warranted here.
-//   - Backtick / $(...) substitution that assigns a scheduler result
-//     (`X=$(crontab -)`) can slip; the exotic-route tail is the documented
-//     denylist limit, covered by the ScheduleWakeup/Cron* tool-deny layer.
+//   - A $(...) or backtick substitution that assigns a scheduler result
+//     (`X=$(crontab -)`, `X=`crontab -``) is caught by SCHEDULER_RX's boundary
+//     anchor, which now includes both `(` and the backtick.
 export function splitSegments(command) {
   return String(command ?? '')
     .replace(/\\\r?\n/g, ' ')
@@ -112,12 +117,10 @@ export function splitSegments(command) {
 // single-quoted '...', ANSI-C $'...', and double-quoted "..." WITHOUT
 // $(...)/backtick. A payload that can run a command substitution (double-quoted
 // with $(...) / backticks) is left intact so a real command-substitution payload
-// is not blanked. A `$(...)` payload is then still denied by SCHEDULER_RX (its `(`
-// sits at a command boundary the anchor recognises); a backtick one leans on the
-// ScheduleWakeup/Cron* runtime tool-deny layer, since SCHEDULER_RX's boundary
-// anchor omits the backtick -- a pre-existing denylist limit (see splitSegments
-// notes), not something this payload-strip introduces. The data FLAG itself is
-// kept, so HTTP-write detection (-d /
+// is not blanked. Such a payload is then still denied by SCHEDULER_RX, whose
+// boundary anchor recognises both `$(` and the backtick as a command boundary,
+// so a scheduler binary inside either substitution form is caught. The data FLAG
+// itself is kept, so HTTP-write detection (-d /
 // --data) is unchanged; the URL and method args live OUTSIDE the payload, so a
 // real WRITE to /api/schedules is still denied.
 //
