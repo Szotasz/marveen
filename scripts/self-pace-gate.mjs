@@ -139,6 +139,29 @@ export function stripDataPayloads(seg) {
   )
 }
 
+// Blank out git commit/tag/stash -m/--message LITERAL text before self-pace
+// matching. A commit message is prose, NEVER a shell invocation, so a trigger
+// token that only appears INSIDE the message must not false-deny (2026-07-13,
+// DrCode: a long `git commit -m "...batch...; at..."` blocked twice, the short
+// one passed -- the message text was split as shell segments). Same principle
+// and same literal-only quote handling as stripDataPayloads: single-quoted,
+// ANSI-C $'...', and double-quoted WITHOUT $(...)/backtick are blanked; a
+// double-quoted message that CAN command-substitute (`git commit -m "$(crontab
+// -r)"`) is left intact so SCHEDULER_RX still catches the real substitution.
+// Scoped to git commit/tag/stash so a `-m` on an unrelated binary is untouched.
+export function stripGitCommitMessages(command) {
+  const cmd = String(command ?? '')
+  if (!/\bgit\b[\s\S]*\b(commit|tag|stash)\b/i.test(cmd)) return cmd
+  return cmd.replace(
+    /((?:^|\s)(?:-m|--message)(?:\s+|=))('[^']*'|\$'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/gi,
+    (full, flag, arg) => {
+      const dq = arg.startsWith('"')
+      if (dq && (arg.includes('$(') || arg.includes('`'))) return full // may substitute -> keep
+      return flag + (dq ? '""' : "''") // literal message -> blank the content
+    },
+  )
+}
+
 // Pure decision: does this tool call set up self-pace / self-injection?
 export function gateDecision(toolName, toolInput) {
   const name = String(toolName ?? '')
@@ -156,7 +179,7 @@ export function gateDecision(toolName, toolInput) {
     // it), so the URL/method args still match but the body text never does. A
     // separator OUTSIDE the payload still splits, so `curl -d '' x ; crontab -r`
     // is still caught.
-    const safeCommand = stripDataPayloads(String(toolInput?.command ?? ''))
+    const safeCommand = stripDataPayloads(stripGitCommitMessages(String(toolInput?.command ?? '')))
     // Per-segment so an unrelated token elsewhere in a compound command cannot
     // turn a legit read (store inspection, schedule-API GET) into a false deny.
     for (const seg of splitSegments(safeCommand)) {
