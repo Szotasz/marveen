@@ -833,7 +833,10 @@ export function buildFtsMatchExpression(query: string): string {
   const MAX_TOKEN_LEN = 64
   const sanitized = query
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, '')
+    // Replace punctuation with a space (not delete) so "rank-check" / "serper.dev"
+    // tokenize the same way unicode61 indexed them (rank + check), instead of
+    // fusing into a single unfindable token "rankcheck".
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .trim()
   if (!sanitized) return ''
   const tokens = sanitized
@@ -1016,7 +1019,10 @@ export function updateMemory(id: number, content: string, category?: string, age
 
 export function appendDailyLog(agentId: string, content: string): void {
   const now = Math.floor(Date.now() / 1000)
-  const today = new Date().toISOString().split('T')[0]
+  // Budapest calendar day, not UTC -- otherwise an entry written 00:00-02:00
+  // local time lands on the previous day and the "ma" recall query misses it.
+  // en-CA formats as YYYY-MM-DD.
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Budapest' })
   db.prepare('INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES (?, ?, ?, ?)').run(agentId, today, content, now)
 }
 

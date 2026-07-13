@@ -476,7 +476,13 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   if (connectorAssignMatch && method === 'POST') {
     const connectorName = decodeURIComponent(connectorAssignMatch[1])
     const body = await readBody(req)
-    const { agents: targetAgents, allAgents: visibleAgents } = JSON.parse(body.toString()) as { agents: string[], allAgents?: string[] }
+    const { agents: rawTargetAgents, allAgents: rawVisibleAgents } = JSON.parse(body.toString()) as { agents: string[], allAgents?: string[] }
+
+    // Only ever touch .mcp.json of real, known agents -- a caller-supplied name
+    // like "../../../../tmp/evil" must never reach join()+atomicWriteFileSync.
+    const knownAgents = new Set(listAgentNames())
+    const targetAgents = (Array.isArray(rawTargetAgents) ? rawTargetAgents : []).filter(a => knownAgents.has(a))
+    const visibleAgents = Array.isArray(rawVisibleAgents) ? rawVisibleAgents.filter(a => knownAgents.has(a)) : undefined
 
     if (connectorName.startsWith('plugin:')) {
       json(res, { ok: true, note: 'plugin:* connectors are global to every agent -- nothing to assign.' })

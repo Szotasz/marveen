@@ -111,7 +111,7 @@ import {
   loadProfileTemplate,
   resolveProfilePlaceholders,
 } from '../profiles.js'
-import { sanitizeAgentName } from '../sanitize.js'
+import { sanitizeAgentName, safeJoin } from '../sanitize.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json, serveFile } from '../http-helpers.js'
 import {
@@ -1360,8 +1360,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       const access = JSON.parse(readFileOr(accessPath, '{}'))
       if (kind === 'user') {
         access.allowFrom = (access.allowFrom || []).filter((s: string) => s !== id)
-        const approvedFile = join(chDir, 'approved', id)
-        try { if (existsSync(approvedFile)) unlinkSync(approvedFile) } catch { /* ignore */ }
+        // safeJoin blocks a traversal id (e.g. "..%2F..%2Ftmp%2Fvictim") from
+        // escaping the approved/ dir into an arbitrary unlinkSync target.
+        try {
+          const approvedFile = safeJoin(join(chDir, 'approved'), id)
+          if (existsSync(approvedFile)) unlinkSync(approvedFile)
+        } catch { /* ignore missing file or rejected traversal */ }
       } else {
         if (access.groups) delete access.groups[id]
       }
