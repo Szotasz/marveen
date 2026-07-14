@@ -462,6 +462,16 @@ if [ -x "$INSTALL_DIR/scripts/sync-hooks.sh" ]; then
   bash "$INSTALL_DIR/scripts/sync-hooks.sh" || echo -e "  FIGYELEM: sync-hooks.sh nem-nulla exit; manualisan ellenorizd."
 fi
 
+# Graphify tudasgraf regeneralasa (best-effort). A web/icons/graphify-graph.html
+# gitignore-olt runtime artifact, ezert friss checkout utan hianyzik -> a dashboard
+# Graphify panelje 404-ezne. Ez a script ujraepiti a friss src/-bol (tree-sitter
+# AST + lokalis ollama nevadas, nulla API-koltseg); graphify/ollama hianyaban
+# gracefully kilep, a deployt nem tori.
+if [ -x "$INSTALL_DIR/scripts/regen-graphify.sh" ]; then
+  echo -e "  Graphify graf frissitese (hatterben)..."
+  setsid bash "$INSTALL_DIR/scripts/regen-graphify.sh" </dev/null >>"$INSTALL_DIR/store/regen-graphify.log" 2>&1 &
+fi
+
 # Seed skills & scheduled tasks (idempotent: skip existing)
 # Source .env for template variables needed by seed-scheduled-tasks
 MAIN_AGENT_ID=""

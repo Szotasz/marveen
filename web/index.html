@@ -102,6 +102,10 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3C7.5 3 4 6.5 4 11v4l-2 3h4v2a3 3 0 0 0 3 3h1a3 3 0 0 0 3-3v0a3 3 0 0 0 3 3h1a3 3 0 0 0 3-3v-2h4l-2-3v-4c0-4.5-3.5-8-8-8z"/></svg>
         <span class="sb-label">Memória</span>
       </a>
+      <a href="#" class="sb-link" data-page="graphify">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><line x1="7" y1="7" x2="10.5" y2="16"/><line x1="17" y1="7" x2="13.5" y2="16"/><line x1="7.3" y1="6" x2="16.7" y2="6"/></svg>
+        <span class="sb-label">Graphify</span>
+      </a>
       <a href="#" class="sb-link" data-page="naplo">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
         <span class="sb-label">Napló</span>
@@ -1685,6 +1689,16 @@
       </div>
 
       <div id="costsContent"></div>
+    </div>
+
+    <!-- Graphify page -->
+    <div class="page" id="graphifyPage" hidden>
+      <div class="page-header">
+        <h1>Graphify</h1>
+        <p class="subtitle">Marveen <code>src/</code> kódbázis interaktív tudásgráf. D3 force-directed, tree-sitter AST (2123 node, 6165 edge)</p>
+      </div>
+      <iframe id="graphifyFrame" data-src="/icons/graphify-graph.html" title="Marveen Graphify graph" loading="lazy"
+        style="width:100%;height:calc(100vh - 190px);min-height:480px;border:1px solid var(--border,#333);border-radius:8px;background:#fff"></iframe>
     </div>
 
     <!-- Naplo page -->

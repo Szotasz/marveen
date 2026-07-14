@@ -290,6 +290,11 @@ function switchPage(pageId) {
   if (pageId === 'ideas') loadIdeasPage()
   if (pageId === 'archived') loadArchivedPage()
   if (pageId === 'naplo') loadNaplo()
+  // Graphify: lazy-load the ~2.5MB standalone graph iframe only on first entry.
+  if (pageId === 'graphify') {
+    const gf = document.getElementById('graphifyFrame')
+    if (gf && !gf.src) gf.src = gf.dataset.src
+  }
 }
 
 // Mobile off-canvas sidebar toggle. No-op visual effect on desktop (the
