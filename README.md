@@ -75,6 +75,12 @@ cd marveen
 ./install.sh
 ```
 
+Alapértelmezés szerint a dashboard a 3420-as porton indul (`http://localhost:3420`). Egyedi port beállításához:
+
+```bash
+./install-linux.sh --port 3421   # vagy: WEB_PORT=3421 ./install-linux.sh
+```
+
 ### Windows (WSL)
 
 ```powershell

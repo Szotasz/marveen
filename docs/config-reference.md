@@ -397,7 +397,7 @@ A főbb konfigurációs változók a launchd plist-ben (`~/Library/LaunchAgents/
 | `ALLOWED_CHAT_ID` | Az egyetlen engedélyezett Telegram chat ID |
 | `SLACK_BOT_TOKEN` | Slack bot token (ha Slack provider) |
 | `SLACK_CHANNEL_ID` | Slack csatorna ID |
-| `WEB_PORT` | Dashboard port (alapértelmezett: 3420) |
+| `WEB_PORT` | Dashboard port (alapértelmezett: 3420). Telepítéskor megadható a `--port <N>` CLI flaggel (`./install-linux.sh --port 3421`) vagy env-változóként (`WEB_PORT=3421 ./install.sh`). |
 | `ANTHROPIC_API_KEY` | Claude API kulcs |
 | `OWNER_NAME` | A tulajdonos neve (pl. "Jónás Gergő") |
 | `BOT_NAME` | A főágens neve (pl. "Jarvis") |

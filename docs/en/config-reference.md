@@ -377,7 +377,7 @@ Key configuration variables live in the launchd plist (`~/Library/LaunchAgents/c
 | `ALLOWED_CHAT_ID` | The single allowed Telegram chat ID |
 | `SLACK_BOT_TOKEN` | Slack bot token (if Slack provider) |
 | `SLACK_CHANNEL_ID` | Slack channel ID |
-| `WEB_PORT` | Dashboard port (default: 3420) |
+| `WEB_PORT` | Dashboard port (default: 3420). Can be set at install time via the `--port <N>` CLI flag (`./install-linux.sh --port 3421`) or as an env variable (`WEB_PORT=3421 ./install.sh`). |
 | `ANTHROPIC_API_KEY` | Claude API key |
 | `OWNER_NAME` | Owner name (e.g. "Jónás Gergő") |
 | `BOT_NAME` | Main agent name (e.g. "Jarvis") |

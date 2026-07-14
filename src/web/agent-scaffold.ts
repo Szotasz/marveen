@@ -67,6 +67,81 @@ export function agentSettingsPath(name: string): string {
   return join(agentDir(name), '.claude', 'settings.json')
 }
 
+// Volatile tmpfs prefixes: a hook command referencing these directories is
+// transient and must NOT be written into the shared ~/.claude/settings.json.
+// When the /tmp directory disappears on the next reboot the referenced script
+// is gone, python3/node exits non-zero, and Claude Code blocks every prompt --
+// the 2026-07-14 silent fleet-freeze incident.
+const _TMP_PREFIXES = ['/tmp/', '/var/tmp/', '/private/tmp/', '/dev/shm/']
+
+// Shared hook-entry type used by ensureAgentHooks and upgradeLegacyHookCommands.
+type HookEntry = { hooks?: Array<{ command?: string; timeout?: number; [k: string]: unknown }> }
+
+/**
+ * Returns true when the command is unsafe to register in shared settings:
+ *   (a) it references a path under a volatile tmpfs directory, OR
+ *   (b) the script path it references does not currently exist on disk.
+ *
+ * Exported for unit tests. Used as a registration guard in all hook-injection
+ * functions so that a scratchpad / staging checkout can never pollute the
+ * fleet's shared ~/.claude/settings.json with stale paths.
+ */
+export function isUnsafeHookCommand(command: string): boolean {
+  if (_TMP_PREFIXES.some((p) => command.includes(p))) return true
+  const m = command.match(/\/[^\s'"]+\.(?:py|mjs|js|sh)\b/)
+  if (m && !existsSync(m[0])) return true
+  return false
+}
+
+/** Extracts the script file basename from a hook command string (e.g. "staleness-guard.py"). */
+function _hookScriptBasename(command: string): string | null {
+  const m = command.match(/\/([^/\s'"]+\.(?:py|mjs|js|sh))\b/)
+  return m ? m[1] : null
+}
+
+/**
+ * In-place upgrade: for each hook command in tplHooks, if an existing hook in
+ * existingHooks references the same script basename but in a different form
+ * (e.g. bare `python3 /path/staleness-guard.py` vs the fail-open wrapper), the
+ * existing command is replaced with the template form. No-op when the command
+ * already matches exactly (idempotent).
+ *
+ * This runs as the first pass inside ensureAgentHooks so that legacy bare
+ * commands are upgraded automatically on every startup without any manual steps
+ * -- satisfying the zero-touch migration requirement for upstream distribution.
+ *
+ * Exported for unit testing.
+ */
+export function upgradeLegacyHookCommands(
+  existingHooks: Record<string, unknown>,
+  tplHooks: Record<string, unknown>,
+): boolean {
+  let changed = false
+  for (const [event, tplEntries] of Object.entries(tplHooks)) {
+    const existEntries = existingHooks[event]
+    if (!Array.isArray(existEntries)) continue
+    for (const tplEntry of tplEntries as HookEntry[]) {
+      for (const tplHook of tplEntry.hooks ?? []) {
+        if (!tplHook.command || isUnsafeHookCommand(tplHook.command)) continue
+        const tplBn = _hookScriptBasename(tplHook.command)
+        if (!tplBn) continue
+        for (const existEntry of existEntries as HookEntry[]) {
+          for (const existHook of existEntry.hooks ?? []) {
+            if (!existHook.command) continue
+            const existBn = _hookScriptBasename(existHook.command)
+            if (existBn === tplBn && existHook.command !== tplHook.command) {
+              existHook.command = tplHook.command
+              if (tplHook.timeout != null) existHook.timeout = tplHook.timeout
+              changed = true
+            }
+          }
+        }
+      }
+    }
+  }
+  return changed
+}
+
 // Idempotent migration: every agent's settings.json should carry the
 // PreCompact hook (memory save + skill reflection). Pre-refactor agents
 // were scaffolded before scaffoldAgentDir seeded the template, so their
@@ -90,15 +165,19 @@ export function ensureAgentHooks(name: string): boolean {
     try { existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { /* overwrite */ }
   }
   const tplHooks = tpl.hooks as Record<string, unknown>
-  type HookEntry = { hooks?: Array<{ command?: string; timeout?: number; [k: string]: unknown }> }
   if (existing.hooks) {
     // Merge strategy:
+    //   0. Upgrade pass: in-place replace any legacy bare hook commands with the
+    //      fail-open wrapper form (basename-matched). This runs before the add pass
+    //      so the exact-match dedup in step 2 sees the upgraded commands and skips
+    //      them -- avoiding the double-entry bug where the wrapper is added alongside
+    //      the old bare command.
     //   1. If a hook event is entirely missing: add it wholesale.
     //   2. If the event exists: add any template hook commands not yet present
     //      as a new hook group entry (preserves existing hooks like telegram_progress.py).
     //   3. Sync the timeout of any command hook whose command matches but timeout differs.
     const existingHooks = existing.hooks as Record<string, unknown>
-    let changed = false
+    let changed = upgradeLegacyHookCommands(existingHooks, tplHooks)
     for (const [event, handlers] of Object.entries(tplHooks)) {
       if (!existingHooks[event]) {
         existingHooks[event] = handlers
@@ -111,9 +190,9 @@ export function ensureAgentHooks(name: string): boolean {
           existEntries.flatMap((e) => (e.hooks ?? []).map((h) => h.command).filter(Boolean)),
         )
         for (const tplEntry of tplEntries) {
-          // Add hooks that are missing (as a new group entry, preserving sibling hooks).
+          // Add hooks that are missing AND safe to register (registration guard).
           const newHooks = (tplEntry.hooks ?? []).filter(
-            (h) => h.command && !existingCommands.has(h.command),
+            (h) => h.command && !existingCommands.has(h.command) && !isUnsafeHookCommand(h.command),
           )
           if (newHooks.length > 0) {
             existEntries.push({ ...tplEntry, hooks: newHooks })
@@ -136,7 +215,16 @@ export function ensureAgentHooks(name: string): boolean {
     }
     if (!changed) return false
   } else {
-    existing.hooks = tplHooks
+    // No hooks yet: seed from template, filtering unsafe commands before writing.
+    const safeHooks: Record<string, unknown> = {}
+    for (const [event, entries] of Object.entries(tplHooks)) {
+      const safeEntries = (entries as HookEntry[]).map((entry) => ({
+        ...entry,
+        hooks: (entry.hooks ?? []).filter((h) => !h.command || !isUnsafeHookCommand(h.command)),
+      })).filter((entry) => (entry.hooks?.length ?? 0) > 0)
+      if (safeEntries.length > 0) safeHooks[event] = safeEntries
+    }
+    existing.hooks = safeHooks
   }
   // For the main agent, ~/.claude already exists; sub-agents need the dir created.
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
@@ -152,7 +240,13 @@ export function ensureAgentHooks(name: string): boolean {
 // <channel ts="..."> message was delivered long after it was sent (a lagged /
 // re-delivered message that may be stale), so it re-confirms before irreversible
 // actions. Re-running is a no-op once the entry exists (matched by command path).
-const STALENESS_HOOK_CMD = `python3 ${join(PROJECT_ROOT, 'scripts', 'hooks', 'staleness-guard.py')}`
+// Fail-open wrapper: if the script file is missing (e.g. after a /tmp checkout is
+// cleaned up), the bash test exits 0 instead of letting python3 exit non-zero and
+// blocking the prompt. Intentional policy blocks (the script exists and returns
+// non-zero) are still propagated via exec. The script path appears twice so the
+// guard regex below can still match it.
+const _stalenessScript = join(PROJECT_ROOT, 'scripts', 'hooks', 'staleness-guard.py')
+const STALENESS_HOOK_CMD = `bash -c '[ -f ${_stalenessScript} ] && exec python3 ${_stalenessScript}; exit 0'`
 
 export function ensureAgentStalenessHook(name: string): boolean {
   // agentSettingsPath() maps MAIN_AGENT_ID to ~/.claude/settings.json; using
@@ -170,6 +264,8 @@ export function ensureAgentStalenessHook(name: string): boolean {
   // Idempotency: already wired if any command entry references the guard script.
   const already = JSON.stringify(ups).includes('staleness-guard.py')
   if (already) return false
+  // Registration guard: don't write a /tmp or non-existent path into shared settings.
+  if (isUnsafeHookCommand(STALENESS_HOOK_CMD)) return false
   ups.push({ hooks: [{ type: 'command', command: STALENESS_HOOK_CMD, timeout: 10 }] })
   hooks.UserPromptSubmit = ups
   settings.hooks = hooks
@@ -232,6 +328,8 @@ export function injectEmailSendGate(existing: Record<string, unknown>): void {
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
   const command = `node ${join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs')}`
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
   const entry = {
     matcher: 'Bash|send_email',
     hooks: [{ type: 'command', command, timeout: 10 }],
@@ -265,6 +363,8 @@ export function injectSelfPaceGate(existing: Record<string, unknown>): void {
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
   const command = `node ${join(PROJECT_ROOT, 'scripts', 'self-pace-gate.mjs')}`
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
   const entry = {
     // Write|Edit|NotebookEdit are included so the gate actually fires on the
     // native-file route to the self-schedule store (gateDecision blocks a Write
