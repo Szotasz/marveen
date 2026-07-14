@@ -600,6 +600,20 @@ export function initDatabase(dbPathOverride?: string): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tool_log_session ON tool_call_log(session_id, created_at)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tool_log_ts ON tool_call_log(created_at)`)
 
+  // --- Skill Usage Log (persistent, no prune -- feeds dream-engine skill health) ---
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS skill_usage (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id TEXT NOT NULL,
+      skill_name TEXT NOT NULL,
+      trigger_type TEXT NOT NULL CHECK(trigger_type IN ('tool_call', 'skill_read')),
+      session_id TEXT,
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_skill_usage_agent ON skill_usage(agent_id, created_at)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_skill_usage_skill ON skill_usage(skill_name, created_at)`)
+
   // --- Config Change Log (audit trail for /api/settings writes) ---
   // Background-only: no UI surfaces this table yet (product decision). For
   // secret settings, callers must pass null for old_value/new_value -- this
@@ -2277,6 +2291,73 @@ export function analyzeWorkflowCandidates(sinceSecs = 3600, minToolCalls = 5, ga
 export function pruneToolCallLog(olderThanSecs = 86400): void {
   const cutoff = Math.floor(Date.now() / 1000) - olderThanSecs
   db.prepare('DELETE FROM tool_call_log WHERE created_at < ?').run(cutoff)
+}
+
+// --- Skill Usage Log ---
+
+export interface SkillUsageRow {
+  id: number
+  agent_id: string
+  skill_name: string
+  trigger_type: 'tool_call' | 'skill_read'
+  session_id: string | null
+  created_at: number
+}
+
+export interface SkillUsageStatRow {
+  skill_name: string
+  call_count: number
+  read_count: number
+  total_count: number
+  agent_count: number
+  last_used_at: number
+}
+
+export function logSkillUsage(
+  agentId: string,
+  skillName: string,
+  triggerType: 'tool_call' | 'skill_read',
+  sessionId?: string | null,
+): void {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(
+    'INSERT INTO skill_usage (agent_id, skill_name, trigger_type, session_id, created_at) VALUES (?, ?, ?, ?, ?)',
+  ).run(agentId, skillName, triggerType, sessionId ?? null, now)
+}
+
+export function getSkillUsageRows(opts: {
+  since?: number
+  agentId?: string
+  skillName?: string
+  limit?: number
+}): SkillUsageRow[] {
+  const { since, agentId, skillName, limit = 500 } = opts
+  const cutoff = since ? Math.floor(Date.now() / 1000) - since : 0
+  const conditions: string[] = ['created_at >= ?']
+  const params: unknown[] = [cutoff]
+  if (agentId) { conditions.push('agent_id = ?'); params.push(agentId) }
+  if (skillName) { conditions.push('skill_name = ?'); params.push(skillName) }
+  params.push(limit)
+  return db.prepare(
+    `SELECT * FROM skill_usage WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC LIMIT ?`,
+  ).all(...params) as SkillUsageRow[]
+}
+
+export function getSkillUsageStats(sinceSecs?: number): SkillUsageStatRow[] {
+  const cutoff = sinceSecs ? Math.floor(Date.now() / 1000) - sinceSecs : 0
+  return db.prepare(`
+    SELECT
+      skill_name,
+      SUM(CASE WHEN trigger_type = 'tool_call' THEN 1 ELSE 0 END) AS call_count,
+      SUM(CASE WHEN trigger_type = 'skill_read' THEN 1 ELSE 0 END) AS read_count,
+      COUNT(*) AS total_count,
+      COUNT(DISTINCT agent_id) AS agent_count,
+      MAX(created_at) AS last_used_at
+    FROM skill_usage
+    WHERE created_at >= ?
+    GROUP BY skill_name
+    ORDER BY total_count DESC
+  `).all(cutoff) as SkillUsageStatRow[]
 }
 
 // --- Config Change Log ---
