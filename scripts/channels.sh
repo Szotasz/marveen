@@ -153,6 +153,15 @@ export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HO
 # documented sandbox escape hatch. Harmless for non-root (guarded by uid check).
 [ "$(id -u)" = "0" ] && export IS_SANDBOX=1
 
+# AVX-less x86 host: the install pinned a Node-based claude (cli.js entrypoint,
+# see install-linux.sh CLAUDE_PIN) because the Bun standalone binary SIGILLs
+# without AVX. The auto-updater would swap the pin for the latest Bun binary on
+# first run, killing every session -- disable it here so all agent sessions
+# inherit the guard via tmux. No-op on AVX-capable and ARM hosts.
+if grep -qE '^flags[[:space:]]*:' /proc/cpuinfo 2>/dev/null && ! grep -qiw avx /proc/cpuinfo 2>/dev/null; then
+  export DISABLE_AUTOUPDATER=1
+fi
+
 # Disable Claude Code's "Prompt Suggestions" (the grayed-out/DIM suggested command
 # shown in the input box, picked from git history / conversation). For headless
 # agent sessions it is pure noise AND it caused a false-positive incident: the
