@@ -7,11 +7,13 @@ notifications, so scripts/channel-inbound-tee.mjs persists them to a local JSONL
 inbox. This hook pulls that local queue into the next prompt, using the same
 <channel> framing the --channels path would have produced.
 
-This template is shared with the main agent. Main --channels sessions already
-receive notifications directly, and they normally do not have TELEGRAM_STATE_DIR
-set to a per-agent channel directory; when no local derived inbox exists this
-hook exits silently. All errors are fail-open so prompt submission is never
-blocked.
+This template is shared with the main agent. The MAIN --channels session
+receives Telegram notifications natively and has no local derived inbox to drain;
+draining there would widen the main session's injection surface (the deliberately
+minimal path hardened after the phantom-injection incident). So this hook is
+guarded to the SUB-agents only: the agent_id is derived from the session cwd
+(mirroring inbox-drain.py, inverted) and the MAIN agent exits immediately. All
+errors are fail-open so prompt submission is never blocked.
 """
 import glob
 import html
@@ -19,6 +21,9 @@ import json
 import os
 import sys
 import tempfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ledger_lib  # noqa: E402
 
 
 PREFIX = "[Telegram inbox drain -- %d fuggoben levo uzenet erkezett mikozben a session masszal foglalkozott:]"
@@ -187,6 +192,16 @@ def main():
     payload = _load_payload()
     if payload is None:
         sys.exit(0)
+    # MAIN-agent guard (mirrors inbox-drain.py, inverted). The main --channels
+    # session gets Telegram natively and must not have a file-drop injected into
+    # its prompt; only sub-agents (which load the plugin via mcp.json and drop the
+    # plugin's notifications) drain here. agent_id is derived from the session cwd.
+    try:
+        agent_id = ledger_lib.agent_id_from_cwd(payload.get("cwd") if isinstance(payload, dict) else None)
+        if agent_id == ledger_lib.main_agent_id():
+            sys.exit(0)
+    except Exception:
+        pass  # fail-open: a resolution error must never block prompt submission
     try:
         drain(payload)
     except Exception:

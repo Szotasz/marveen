@@ -34,7 +34,7 @@ import {
 } from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
-import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT } from '../config.js'
+import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT, SUBAGENT_INBOX_TEE } from '../config.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { loadProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
@@ -782,8 +782,15 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // fresh bun stdio server per agent, each with its own TELEGRAM_STATE_DIR. The
     // stdio tee wrapper restores inbound delivery by persisting notifications to a
     // local inbox that the UserPromptSubmit drain hook pulls into context.
+    //
+    // OPT-IN / DEFAULT OFF (SUBAGENT_INBOX_TEE). This mcp.json+tee swap is a
+    // delivery-path change: it writes inbound message content to a local inbox
+    // file for the drain hook to pull. With the flag off, telegram sub-agents
+    // keep the upstream `--channels` path unchanged and nothing is written to
+    // disk. Only opt in together with the channel-inbox-drain hook + (optionally)
+    // SUBAGENT_TELEGRAM_WAKE_ENABLED.
     let useMcpJsonForChannel = false
-    if (hasChannel && agentProvider === 'telegram' && name !== MAIN_AGENT_ID) {
+    if (SUBAGENT_INBOX_TEE && hasChannel && agentProvider === 'telegram' && name !== MAIN_AGENT_ID) {
       try {
         const pluginCacheDir = join(homedir(), '.claude', 'plugins', 'cache', 'claude-plugins-official', 'telegram')
         const versions = existsSync(pluginCacheDir)
@@ -923,7 +930,14 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     const channelSetup = hasChannel
       ? `export ${stateEnvVar}="${agentChannelDir}"${auditLogEnv} && `
       : ''
-    const channelFlag = hasChannel ? `--channels plugin:${provider.pluginId}` : ''
+    // When the per-agent mcp.json+tee path is active (SUBAGENT_INBOX_TEE), the
+    // plugin is already loaded as a plain MCP server, so ALSO passing --channels
+    // would register the plugin a SECOND way -- a duplicate poller racing the tee
+    // process over the same getUpdates slot. Suppress --channels in that case and
+    // rely solely on mcp.json (enabledPlugins is already forced false above for
+    // the same reason). Every other agent (non-telegram, main, or flag off) keeps
+    // the --channels launch path unchanged.
+    const channelFlag = hasChannel && !useMcpJsonForChannel ? `--channels plugin:${provider.pluginId}` : ''
     // Channel-plugin MCP-registration guard (2026-06-23): the telegram/slack/etc.
     // channel plugin registers as a stdio MCP server loaded via --channels. Claude
     // Code connects stdio MCP servers in batches of MCP_SERVER_CONNECTION_BATCH_SIZE
