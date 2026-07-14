@@ -217,6 +217,9 @@ describe('pruneStaleHookEntries', () => {
     expect(KNOWN_HOOK_SCRIPTS).toContain('voice-reply-directive.py')
     expect(KNOWN_HOOK_SCRIPTS).toContain('taskstate-replay.py')
     expect(KNOWN_HOOK_SCRIPTS).toContain('staleness-guard.py')
+    // channel-inbox-drain.py is app-registered (templates/settings.json.template),
+    // so a missing-file entry must be prunable-as-ours, not treated as foreign.
+    expect(KNOWN_HOOK_SCRIPTS).toContain('channel-inbox-drain.py')
   })
 })
 

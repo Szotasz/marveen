@@ -254,6 +254,30 @@ export const HEARTBEAT_START_HOUR = parseInt(env['HEARTBEAT_START_HOUR'] ?? '9',
 export const HEARTBEAT_AGENT_ENABLED =
   ['1', 'true', 'yes', 'on'].includes((cfg('HEARTBEAT_AGENT_ENABLED') ?? '').trim().toLowerCase())
 
+// Sub-agent Telegram inbox delivery-path tee (opt-in, DEFAULT OFF).
+// When enabled, a telegram sub-agent loads the channel plugin via a per-agent
+// mcp.json wrapped in the inbound-tee (scripts/channel-inbound-tee.mjs), which
+// persists each inbound notification to <state>/inbox-pending.jsonl for the
+// channel-inbox-drain UserPromptSubmit hook to pull into the next turn. This
+// swaps the default `--channels` delivery path, so it is DEFAULT OFF: an install
+// that does not opt in keeps the exact upstream `--channels` behaviour and never
+// writes message content to disk. Enable with SUBAGENT_INBOX_TEE=1 (required for
+// SUBAGENT_TELEGRAM_WAKE_ENABLED to have an inbox to wake on).
+export const SUBAGENT_INBOX_TEE =
+  ['1', 'true', 'yes', 'on'].includes((cfg('SUBAGENT_INBOX_TEE') ?? '').trim().toLowerCase())
+
+// Sub-agent Telegram inbox wake-nudge (opt-in, DEFAULT OFF).
+// The message-router can nudge an idle sub-agent whose derived Telegram inbox
+// (<state>/inbox-pending.jsonl) has stuck inbound messages, so its drain hook
+// fires and claims the backlog. This is the ACTIVE tail of the SUBAGENT_INBOX_TEE
+// delivery path: the tee writer and the UserPromptSubmit drain hook now ship in
+// this repo, but both are gated -- with SUBAGENT_INBOX_TEE off no inbox file is
+// produced and this watcher is a no-op even when enabled. Ships DISABLED so an
+// upstream install sees zero behaviour change and pays no per-tick cost; enable
+// with SUBAGENT_TELEGRAM_WAKE_ENABLED=1 (alongside SUBAGENT_INBOX_TEE=1).
+export const SUBAGENT_TELEGRAM_WAKE_ENABLED =
+  ['1', 'true', 'yes', 'on'].includes((cfg('SUBAGENT_TELEGRAM_WAKE_ENABLED') ?? '').trim().toLowerCase())
+
 // Google Calendar account the heartbeat summarises (next 2h). Empty (the
 // default) means the agent uses whatever calendar its MCP server is
 // authenticated as, so no personal address is baked into the shipped
