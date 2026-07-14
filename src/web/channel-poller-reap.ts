@@ -89,6 +89,107 @@ export interface ReapResult {
   source: { fromBotPid: number | null; fromEnvScan: number[] }
 }
 
+// ---------------------------------------------------------------------------
+// Down-verdict forensics (2026-07-14).
+//
+// The watchdog restarted agents ~10x/day on a "channel plugin down" verdict,
+// and the restart DESTROYS the evidence: the poller is reaped, the session is
+// respawned, and the post-mortem log says only "down -- auto-restarting". So
+// the interesting question -- did the poller really die, or did the tree-walk
+// lose a live one? -- could not be answered from the logs at all.
+//
+// This captures the state at the MOMENT the verdict is formed, before anything
+// is torn down: is a poller process for this chanDir alive at all, is it in the
+// claude process tree, and does bot.pid still point at it. One WARN per
+// down-spell, so it costs a ps per spell, not per sweep.
+
+export interface PollerEvidenceRow {
+  pid: number
+  ppid: number
+  // Whether claudePid is an ancestor of this pid. FALSE with a live pid is the
+  // interesting case: the poller exists but hangs outside the tree the liveness
+  // probe walks (reparented / attached to a previous claude).
+  inClaudeTree: boolean
+}
+
+export interface PollerEvidence {
+  botPid: number | null
+  botPidAlive: boolean
+  // Pollers found by env-var scan, i.e. every process started against this
+  // channel state dir regardless of parentage.
+  envScanPids: number[]
+  rows: PollerEvidenceRow[]
+  // The verdict this evidence supports, spelled out so the log line is readable
+  // without re-deriving it:
+  //   'no-poller'      -> nothing alive: the plugin really did die.
+  //   'orphaned'       -> a live poller exists but is NOT under claude.
+  //   'in-tree'        -> a live poller IS under claude: the probe was WRONG.
+  interpretation: 'no-poller' | 'orphaned' | 'in-tree'
+}
+
+// Pure core: exported for tests (no ps, no fs).
+export function buildPollerEvidence(
+  procs: ProcRow[],
+  botPid: number | null,
+  envScanPids: number[],
+  claudePid: number,
+): PollerEvidence {
+  const byPid = new Map<number, ProcRow>()
+  for (const p of procs) byPid.set(p.pid, p)
+
+  const isUnderClaude = (pid: number): boolean => {
+    let cur = pid
+    const seen = new Set<number>()
+    for (let hops = 0; hops < 8; hops++) {
+      if (cur === claudePid) return true
+      if (seen.has(cur)) break
+      seen.add(cur)
+      const next = byPid.get(cur)?.ppid
+      if (next === undefined || next === cur || next <= 1) break
+      cur = next
+    }
+    return false
+  }
+
+  const candidates = new Set<number>(envScanPids)
+  if (botPid != null) candidates.add(botPid)
+
+  const rows: PollerEvidenceRow[] = []
+  for (const pid of candidates) {
+    const row = byPid.get(pid)
+    if (!row) continue // not in the ps snapshot -> dead
+    rows.push({ pid, ppid: row.ppid, inClaudeTree: isUnderClaude(pid) })
+  }
+
+  const interpretation: PollerEvidence['interpretation'] = rows.length === 0
+    ? 'no-poller'
+    : rows.some((r) => r.inClaudeTree) ? 'in-tree' : 'orphaned'
+
+  return {
+    botPid,
+    botPidAlive: botPid != null && byPid.has(botPid),
+    envScanPids,
+    rows,
+    interpretation,
+  }
+}
+
+// Collect the evidence for one agent. Call this ONCE per down-spell, at the
+// first down observation, BEFORE any teardown.
+export function collectPollerEvidence(
+  provider: ChannelProviderType,
+  agentDirPath: string,
+  claudePid: number,
+): PollerEvidence {
+  const chanDir = channelStateDir(provider, agentDirPath)
+  return buildPollerEvidence(
+    snapshotProcs(),
+    readBotPid(chanDir),
+    listPollerPidsByStateDir(STATE_ENV_VAR[provider], chanDir),
+    claudePid,
+  )
+}
+
 /**
  * Reap every channel-plugin poller process associated with this agent.
  * Combines bot.pid (cheap, supervised pid) with a `ps eww -e` env-var scan

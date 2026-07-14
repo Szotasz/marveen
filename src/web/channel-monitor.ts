@@ -21,7 +21,7 @@ import {
   ensureMainAgentIsolatedConfigDir,
   FLEET_OAUTH_TOKEN_PATH,
 } from './agent-process.js'
-import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
+import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence } from './channel-poller-reap.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
 import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPluginAbsent } from './channel-plugin-unlock.js'
 import {
@@ -1380,7 +1380,24 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
       if (t.isMarveen) {
         if (shouldEscalateMarveenDown()) handleMarveenDown()
       } else {
-        if (!agentDownSince.has(t.session)) agentDownSince.set(t.session, Date.now())
+        if (!agentDownSince.has(t.session)) {
+          agentDownSince.set(t.session, Date.now())
+          // First down observation of this spell: capture WHY before anything is
+          // torn down. Without this the restart destroys the evidence and the
+          // log can only say "down" -- which is exactly why the 10x/day churn
+          // went undiagnosed. Once per spell, not per sweep.
+          try {
+            const evidence = collectPollerEvidence(t.provider, agentDir(t.agentName!), claudePid)
+            logger.warn({ agent: t.agentName, provider: t.provider, claudePid, ...evidence },
+              evidence.interpretation === 'in-tree'
+                ? 'Plugin-down FORENSICS: a live poller IS in the claude tree -- the liveness probe is wrong, not the plugin'
+                : evidence.interpretation === 'orphaned'
+                  ? 'Plugin-down FORENSICS: a live poller exists but is OUTSIDE the claude tree (reparented / left over from a previous claude)'
+                  : 'Plugin-down FORENSICS: no poller process alive for this channel dir -- the plugin really did exit')
+          } catch (err) {
+            logger.warn({ err, agent: t.agentName }, 'Plugin-down forensics failed (continuing)')
+          }
+        }
         const lastRestart = agentLastRestart.get(t.agentName!)
         const failures = agentRestartFailures.get(t.agentName!) ?? 0
         // If the unlock probe confirmed the plugin ABSENT from /mcp (never
