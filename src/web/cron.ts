@@ -11,12 +11,32 @@ import { APP_TZ } from '../config.js'
 // each install pin its own IANA zone; unset falls back to the host's zone
 // (Intl reflects the OS/TZ env at process start), matching the pre-fix
 // behaviour for installs where host tz already equals the operator's.
-// One install-wide zone (config.APP_TZ = SCHEDULER_TZ || process zone), shared
-// with every human-facing time render so cron and display never diverge.
+//
+// The trap that bit us 2026-07-13..15: when NEITHER SCHEDULER_TZ nor TZ is set
+// in the process env, Intl resolves to UTC. Under a wrong zone a fixed-time
+// cron ("30 7 * * *") has its prev() shifted by the UTC offset, so at the
+// operator's 07:30 the previous occurrence is ~a day away and it never lands
+// in the one-minute match window -- while interval crons ("*/15 * * * *")
+// constrain only the minute field, stay tz-invariant, and keep firing. The
+// result is a SILENT partial outage: heartbeats run, daily tasks never do.
+// resolveCronTz reports which source won so the scheduler can log it loudly at
+// startup instead of failing invisibly (see startScheduleRunner).
+export type CronTzSource = 'SCHEDULER_TZ' | 'TZ' | 'system-default'
+
+export function resolveCronTz(env: NodeJS.ProcessEnv = process.env): { tz: string; source: CronTzSource } {
+  if (env.SCHEDULER_TZ) return { tz: env.SCHEDULER_TZ, source: 'SCHEDULER_TZ' }
+  if (env.TZ) return { tz: env.TZ, source: 'TZ' }
+  return { tz: Intl.DateTimeFormat().resolvedOptions().timeZone, source: 'system-default' }
+}
+
+// The effective zone is config.APP_TZ (SCHEDULER_TZ via config-overrides.json >
+// .env > host zone), so a dashboard-set zone is honored and cron/display never
+// diverge; resolveCronTz() above stays as the startup source-reporter (see
+// startScheduleRunner) so the operator sees which layer won.
 const CRON_TZ = APP_TZ
 
-export function computeNextRun(cronExpression: string): number {
-  const expr = CronExpressionParser.parse(cronExpression, { tz: CRON_TZ })
+export function computeNextRun(cronExpression: string, tz: string = CRON_TZ): number {
+  const expr = CronExpressionParser.parse(cronExpression, { tz })
   return Math.floor(expr.next().getTime() / 1000)
 }
 
@@ -40,9 +60,9 @@ export function isValidCronShape(cron: unknown): cron is string {
   }
 }
 
-export function cronMatchesNow(cron: string, catchUpMs: number = 60000): boolean {
+export function cronMatchesNow(cron: string, catchUpMs: number = 60000, tz: string = CRON_TZ): boolean {
   try {
-    const expr = CronExpressionParser.parse(cron, { tz: CRON_TZ })
+    const expr = CronExpressionParser.parse(cron, { tz })
     const prev = expr.prev()
     const prevTime = prev.getTime()
     const now = Date.now()

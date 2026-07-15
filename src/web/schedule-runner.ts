@@ -25,7 +25,7 @@ import {
   SCHEDULED_TASK_PREAMBLE,
   wrapScheduledTask,
 } from '../prompt-safety.js'
-import { cronMatchesNow } from './cron.js'
+import { cronMatchesNow, resolveCronTz } from './cron.js'
 import {
   listScheduledTasks,
   SCHEDULED_TASKS_DIR,
@@ -520,6 +520,24 @@ export function startScheduleRunner(): NodeJS.Timeout {
   // Reload the persisted last-run times so a restart inside a task's catch-up
   // window does not re-fire an already-run task.
   loadScheduleLastRun()
+
+  // Surface the effective cron timezone at startup. A silent UTC fallback (no
+  // SCHEDULER_TZ/TZ in the env) shifts every fixed-time cron off its intended
+  // minute so daily tasks never fire while interval tasks still do -- a partial
+  // outage that is otherwise invisible until someone notices the missing
+  // briefing (2026-07-13..15). Logging the source turns it into a grep-able
+  // signal; the warn fires only on the actively-dangerous UTC-by-default case.
+  const { tz: cronTz, source: cronTzSource } = resolveCronTz()
+  logger.info({ cronTz, cronTzSource }, 'schedule-runner: cron timezone in effect')
+  if (cronTzSource === 'system-default' && cronTz === 'UTC') {
+    logger.warn(
+      { cronTz },
+      'schedule-runner: cron timezone fell back to UTC (no SCHEDULER_TZ/TZ set) -- ' +
+        'fixed-time crons like "30 7 * * *" match at UTC wall-clock, not the operator zone, ' +
+        'so daily tasks may silently never fire while interval tasks still do. Set SCHEDULER_TZ or TZ.',
+    )
+  }
+
   let firstRun = true
 
   function runCheck() {
