@@ -9,7 +9,7 @@ A Telegram kommunikációt a Claude Code Channels kezeli -- ez a projekt a hátt
 - **Memória rendszer**: Hot/Warm/Cold tier rendszer kulcsszavas kereséssel (SQLite)
 - **Kanban tábla**: feladatkezelés SQLite-ban
 - **Heartbeat monitor**: csendes háttérellenőrzés (naptár, email, kanban)
-- **Web dashboard**: http://localhost:3420 -- memória, kanban, ágens, ütemezés admin
+- **Web dashboard**: http://localhost:{{WEB_PORT}} -- memória, kanban, ágens, ütemezés admin
 - **Napi napló**: automatikus összefoglaló az emlékekből
 - **Inter-agent kommunikáció**: ágensek közötti üzenetváltás
 
@@ -102,7 +102,7 @@ A dashboard `/api/*` végpontjai Bearer tokennel védettek. A token a
 
 Memória mentés:
 ```bash
-curl -s -X POST http://localhost:3420/api/memories \
+curl -s -X POST http://localhost:{{WEB_PORT}}/api/memories \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $(cat store/.dashboard-token)" \
   -d '{"agent_id":"{{MAIN_AGENT_ID}}","content":"MIT","category":"CATEGORY","keywords":"kulcsszó1, kulcsszó2"}'
@@ -110,7 +110,7 @@ curl -s -X POST http://localhost:3420/api/memories \
 
 Napi napló (append-only):
 ```bash
-curl -s -X POST http://localhost:3420/api/daily-log \
+curl -s -X POST http://localhost:{{WEB_PORT}}/api/daily-log \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $(cat store/.dashboard-token)" \
   -d '{"agent_id":"{{MAIN_AGENT_ID}}","content":"## HH:MM -- Téma\nMi történt, mi lett az eredmény"}'
@@ -119,7 +119,7 @@ curl -s -X POST http://localhost:3420/api/daily-log \
 Keresés (mielőtt válaszolsz, nézd meg van-e releváns emlék):
 ```bash
 curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  "http://localhost:3420/api/memories?agent={{MAIN_AGENT_ID}}&q=KULCSSZÓ&category=warm"
+  "http://localhost:{{WEB_PORT}}/api/memories?agent={{MAIN_AGENT_ID}}&q=KULCSSZÓ&category=warm"
 ```
 
 ## Kanban tábla
@@ -137,7 +137,7 @@ Az ütemezett feladatok a `~/.claude/scheduled-tasks/` mappában élnek, fájl-a
 ### Feladat létrehozása API-n keresztül
 
 ```bash
-curl -s -X POST http://localhost:3420/api/schedules \
+curl -s -X POST http://localhost:{{WEB_PORT}}/api/schedules \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $(cat store/.dashboard-token)" \
   -d '{"name": "feladat-nev", "description": "Rövid leírás", "prompt": "A részletes prompt amit végre kell hajtani", "schedule": "0 8 * * *", "agent": "{{MAIN_AGENT_ID}}", "type": "heartbeat"}'
@@ -156,7 +156,7 @@ curl -s -X POST http://localhost:3420/api/schedules \
 ### Fontos:
 - A feladat csak akkor fut le, ha a te tmux session-öd fut
 - NE írd közvetlenül az SQLite scheduled_tasks táblát - az egy régi API
-- A dashboardon (http://localhost:3420) vizuálisan is kezelheted az ütemezéseket
+- A dashboardon (http://localhost:{{WEB_PORT}}) vizuálisan is kezelheted az ütemezéseket
 
 ## Inter-agent kommunikáció
 
@@ -167,7 +167,7 @@ Az ágensek közvetlenül tudnak egymásnak üzenni egy közös SQLite üzenetso
 Ha delegálni akarsz egy feladatot másik ágensnek, használd az API-t:
 
 ```bash
-curl -s -X POST http://localhost:3420/api/messages \
+curl -s -X POST http://localhost:{{WEB_PORT}}/api/messages \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $(cat store/.dashboard-token)" \
   -d '{"from": "{{MAIN_AGENT_ID}}", "to": "TARGET_AGENT", "content": "Feladat leírása."}'
@@ -180,7 +180,7 @@ A rendszer automatikusan:
 
 ### Fontos szabályok
 - Csak futó ágensnek lehet üzenni (tmux session kell hozzá)
-- Az elérhető ágensek listája: `curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" http://localhost:3420/api/agents`
+- Az elérhető ágensek listája: `curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" http://localhost:{{WEB_PORT}}/api/agents`
 
 ### Sub-ágens ismeretlen-sender ping kezelése (auto-approval, default-deny)
 

@@ -11,6 +11,7 @@ These files are managed by the dashboard and change at runtime. They are not che
 | File | Editable | Description |
 |------|----------|-------------|
 | `store/.dashboard-token` | no | Dashboard Bearer token -- required for all `/api/*` calls |
+| `store/federation.json` | dashboard UI (Federation page) | Federation config: enabled, systemId, peers[] with per-peer inbound/outbound tokens (0600) -- see docs/en/federation.md |
 | `store/autonomy-config.json` | dashboard UI | Heartbeat autonomy levels by category (1=notify, 2=propose, 3=autonomous) |
 | `store/dashboard-settings.json` | dashboard UI | GitHub repo integration, update settings |
 | `store/agents-desired.json` | dashboard UI | Which sub-agents to keep alive (auto-restart list) |
@@ -377,7 +378,7 @@ Key configuration variables live in the launchd plist (`~/Library/LaunchAgents/c
 | `ALLOWED_CHAT_ID` | The single allowed Telegram chat ID |
 | `SLACK_BOT_TOKEN` | Slack bot token (if Slack provider) |
 | `SLACK_CHANNEL_ID` | Slack channel ID |
-| `WEB_PORT` | Dashboard port (default: 3420) |
+| `WEB_PORT` | Dashboard port (default: 3420). Can be set at install time via the `--port <N>` CLI flag (`./install-linux.sh --port 3421`) or as an env variable (`WEB_PORT=3421 ./install.sh`). |
 | `ANTHROPIC_API_KEY` | Claude API key |
 | `OWNER_NAME` | Owner name (e.g. "Jónás Gergő") |
 | `BOT_NAME` | Main agent name (e.g. "Jarvis") |

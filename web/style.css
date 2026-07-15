@@ -6666,3 +6666,26 @@ body {
 .onb-list { font-size: 13px; color: var(--text-muted); padding-left: 18px; line-height: 1.7; }
 .onb-pending { margin: 10px 0; }
 .onb-pending-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+/* === Federation (round 2): federated agent cards -- NOT the SSH "remote" feature === */
+.federated-agent-card {
+  cursor: default;
+  border-style: dashed;
+}
+.federated-agent-card:hover {
+  transform: none;
+  box-shadow: none;
+}
+.federated-agent-card .agent-name,
+.federated-agent-card .agent-desc {
+  color: var(--text-muted);
+}
+.federated-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft, rgba(217, 119, 87, 0.1));
+  padding: 1px 6px;
+  border-radius: 8px;
+  margin-left: 6px;
+  vertical-align: middle;
+}

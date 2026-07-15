@@ -112,6 +112,18 @@ function agentBackend(): 'worker' | 'sdk' {
   return (process.env.MARVEEN_AGENT_BACKEND || 'worker').toLowerCase() === 'sdk' ? 'sdk' : 'worker'
 }
 
+export interface RunAgentOpts {
+  // Per-call budget override (both backends). The global default is 20min --
+  // far too generous to let a wedged 2-sentence generation hold the single
+  // serialized worker away from heartbeats/digests/scaffolds.
+  timeoutMs?: number
+  // On timeout, return { text: null, error: 'timeout...' } instead of the
+  // human-facing apology TEXT the SDK path historically produced. Callers
+  // that CACHE or PERSIST the result (capability summaries) must set this:
+  // the apology would otherwise be stored as if it were generated content.
+  timeoutAsError?: boolean
+}
+
 export async function runAgent(
   message: string,
   sessionId?: string,
@@ -119,7 +131,9 @@ export async function runAgent(
   allowTools = false,
   cwd: string = PROJECT_ROOT,
   env?: Record<string, string | undefined>,
+  opts: RunAgentOpts = {},
 ): Promise<{ text: string | null; newSessionId?: string; error?: string }> {
+  const timeoutMs = opts.timeoutMs ?? AGENT_TIMEOUT_MS
   if (agentBackend() === 'worker') {
     // The interactive worker is a single shared session with its own fixed,
     // isolated, NEUTRAL cwd/config -- so the SDK-era per-call cwd/env isolation
@@ -129,7 +143,7 @@ export async function runAgent(
     // and avoids any load-order coupling.
     if (sessionId) logger.warn('runAgent(worker): resume/sessionId not supported on worker backend, ignoring')
     const { runViaWorker } = await import('./web/agent-worker.js')
-    const { text, error, authFailed } = await runViaWorker(message, AGENT_TIMEOUT_MS)
+    const { text, error, authFailed } = await runViaWorker(message, timeoutMs)
     // authFailed = the worker could not recover its subscription auth even after
     // a reseed + clear-keychain + restart + retry. Fall through to the SDK path
     // so the call still completes (API billing) instead of dying silently (the
@@ -145,9 +159,9 @@ export async function runAgent(
   const typingInterval = onTyping ? setInterval(onTyping, TYPING_REFRESH_MS) : undefined
   const abortController = new AbortController()
   const timeout = setTimeout(() => {
-    logger.warn({ timeoutMs: AGENT_TIMEOUT_MS }, 'Agent timeout, megszakitas...')
+    logger.warn({ timeoutMs }, 'Agent timeout, megszakitas...')
     abortController.abort()
-  }, AGENT_TIMEOUT_MS)
+  }, timeoutMs)
 
   const claudeCodeBin = resolveClaudeCodeBin()
 
@@ -185,8 +199,15 @@ export async function runAgent(
   } catch (err: any) {
     if (err?.name === 'AbortError' || abortController.signal.aborted) {
       logger.warn('Agent megszakitva timeout miatt')
-      const mins = Math.round(AGENT_TIMEOUT_MS / 60000)
-      resultText = `A feldolgozas tullepte a ${mins} perces idokorlatot. Probald rovidebben megfogalmazni, vagy bontsd tobb lepesre.`
+      const mins = Math.round(timeoutMs / 60000)
+      if (opts.timeoutAsError) {
+        // Structured timeout for callers that persist the result: the apology
+        // text below reads as content and would be cached/shipped verbatim.
+        resultText = null
+        blockedReason = `timeout after ${mins}min`
+      } else {
+        resultText = `A feldolgozas tullepte a ${mins} perces idokorlatot. Probald rovidebben megfogalmazni, vagy bontsd tobb lepesre.`
+      }
     } else {
       logger.error({ err }, 'Agent hiba')
       throw err instanceof Error ? err : new Error(String(err))

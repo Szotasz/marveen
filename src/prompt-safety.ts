@@ -48,6 +48,14 @@ const SECURITY_TAG_RX = new RegExp(
 // still finds every occurrence in audit logs.
 const STRIPPED_SENTINEL = `[[SECURITY_TAG_REMOVED_${randomBytes(4).toString('hex')}]]`
 
+/** Neutralize security-framing tags in free text that reaches an agent's
+ *  context OUTSIDE a wrap (e.g. peer-supplied catalog text rendered into the
+ *  routing directory). Same regex + sentinel as the wrappers -- never
+ *  duplicated at call sites. */
+export function scrubSecurityTags(raw: string): string {
+  return raw.replace(SECURITY_TAG_RX, STRIPPED_SENTINEL)
+}
+
 // Raw agent identifier: no ':' allowed (the router builds "agent:NAME" itself).
 export function sanitizeAgentIdent(raw: string): string {
   return String(raw ?? '').replace(/[^a-zA-Z0-9_-]/g, '')
@@ -76,6 +84,22 @@ export const CAPABILITY_TAG_MAX_PER_AGENT = 12
 export function sanitizeCapabilityTag(raw: string): string | null {
   const t = String(raw ?? '').toLowerCase().trim()
   return CAPABILITY_TAG_RE.test(t) ? t : null
+}
+
+// Self-declared origin_note label injected into a message's delivery PREFIX
+// (outside the <untrusted> wrapper), e.g. `self-tagged origin:"worker-fast"`.
+// Because it lands in the trusted framing text, a raw value containing quotes,
+// brackets, angle brackets, colons or newlines could break out and forge a
+// `[Uzenet @owner-tol -- trusted team member]:` line -> cross-agent prompt
+// injection. Whitelist to a safe label charset (word chars, space, and a few
+// separators), collapse whitespace, cap length; empty result -> null (no tag).
+export function sanitizeOriginNote(raw: string | null | undefined): string | null {
+  const cleaned = String(raw ?? '')
+    .replace(/[^a-zA-Z0-9 _.\-/]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 60)
+  return cleaned.length > 0 ? cleaned : null
 }
 
 // Assembled source attribute: accepts "prefix:name" (e.g. "agent:dev3",

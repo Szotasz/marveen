@@ -1543,6 +1543,32 @@ let reconcileBurstInProgress = false
 const AGENT_RECONCILE_STAGGER_MS = 15000
 function delay(ms: number): Promise<void> { return new Promise((r) => setTimeout(r, ms)) }
 
+// --- Commit 3 v1: fleet memory gate (safe-mode) ---
+// Before starting a desired-but-down agent, ask scripts/fleet-memory-gate.sh
+// whether the current MemAvailable + running-agent count allow it. The reconcile
+// storm (every agent respawning at once after a user-manager re-init) drove the
+// 7.4 GiB WSL VM to a 6.9G peak and an OOM poweroff (2026-07-09); this defers
+// non-core starts under memory pressure. The gate exits 0 = allow, 10 = block
+// (safe-mode band / hard pause / cap); it NEVER kills or restarts anything.
+// FAIL-OPEN: any error/timeout allows the start, so a broken gate can never
+// freeze the fleet (worst case = pre-Commit-3 behaviour). The kill-switch
+// MARVEEN_MEM_GATE_DISABLE=1 is honoured inside the script.
+const MEM_GATE_SCRIPT = join(PROJECT_ROOT, 'scripts', 'fleet-memory-gate.sh')
+function memGateAllowsStart(agentName: string): boolean {
+  try {
+    execFileSync('/bin/bash', [MEM_GATE_SCRIPT, '--check', agentName], { timeout: 5000, stdio: 'ignore' })
+    return true // exit 0 -> allow
+  } catch (err: unknown) {
+    const status = (err as { status?: number } | null)?.status
+    if (status === 10) {
+      logger.warn({ agent: agentName }, 'Memory gate blocked agent start (safe-mode / hard pause / cap) -- deferring')
+      return false
+    }
+    logger.debug({ err, agent: agentName }, 'Memory gate check errored -- failing open (allow)')
+    return true
+  }
+}
+
 async function reconcileDesiredAgents(): Promise<void> {
   if (reconcileBurstInProgress) return
   const desired = getDesiredAgents()
@@ -1555,6 +1581,7 @@ async function reconcileDesiredAgents(): Promise<void> {
       if (isAgentRunning(name)) continue
       const last = agentLastRestart.get(name)
       if (last != null && Date.now() - last < AGENT_RESTART_GRACE_MS) continue
+      if (!memGateAllowsStart(name)) continue   // Commit 3 v1: safe-mode / memory gate
       logger.warn({ agent: name }, 'Desired agent not running -- auto-starting (reconcile)')
       try {
         const r = startAgentProcess(name)

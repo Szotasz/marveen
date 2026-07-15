@@ -168,8 +168,23 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const cardId = decodeURIComponent(cardLabelsMatch[1])
     if (!getKanbanCard(cardId)) { json(res, { error: 'Kártya nem található' }, 404); return true }
     const body = await readBody(req)
-    const { labelId } = JSON.parse(body.toString()) as { labelId?: string }
-    if (!labelId || !getLabel(labelId)) { json(res, { error: 'Címke nem található' }, 404); return true }
+    // Accept `id` as an alias for `labelId` -- API callers reasonably send either,
+    // since GET /api/kanban/labels returns objects keyed by `id`, not `labelId`.
+    const parsed = JSON.parse(body.toString()) as { labelId?: string; id?: string }
+    const labelId = parsed.labelId ?? parsed.id
+    if (!labelId) { json(res, { error: 'labelId mező kötelező' }, 400); return true }
+    if (!getLabel(labelId)) {
+      // Common mistake: sending the label's `name` where an `id` is expected -- GET
+      // /api/kanban/labels lists both, so this is an easy mix-up. Point at the real id
+      // instead of a bare "not found" that reads as if the label doesn't exist at all.
+      const byName = listLabels().find((l) => l.name === labelId)
+      if (byName) {
+        json(res, { error: `Címke nem található id alapján -- a "${labelId}" egy név, nem id. Használd az id-t: ${byName.id}` }, 404)
+        return true
+      }
+      json(res, { error: 'Címke nem található' }, 404)
+      return true
+    }
     addLabelToCard(cardId, labelId)
     json(res, { ok: true })
     return true

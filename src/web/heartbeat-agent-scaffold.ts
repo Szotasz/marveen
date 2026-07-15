@@ -44,7 +44,9 @@ import {
   WEB_PORT,
   HEARTBEAT_CALENDAR_ACCOUNT,
   APP_TZ,
+  DASHBOARD_PUBLIC_URL,
 } from '../config.js'
+import { resolveDashboardOrigin } from './agent-scaffold.js'
 import { logger } from '../logger.js'
 
 const HEARTBEAT_AGENT_NAME = 'heartbeat'
@@ -107,7 +109,7 @@ export function currentHeartbeatIdentity(): HeartbeatIdentity {
     botName: BOT_NAME,
     mainAgentId: MAIN_AGENT_ID,
     storeDir: STORE_DIR,
-    dashboardOrigin: `http://localhost:${WEB_PORT}`,
+    dashboardOrigin: resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT),
     calendarAccount: HEARTBEAT_CALENDAR_ACCOUNT,
   }
 }

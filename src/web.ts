@@ -19,6 +19,7 @@ import { startChannelPluginMonitor } from './web/channel-monitor.js'
 import { startInboundProber } from './web/inbound-probe.js'
 import { startChannelHealthMonitor } from './web/channel-health-monitor.js'
 import { startStuckInputWatcher } from './web/stuck-input-watcher.js'
+import { startInboxNudgeWatcher } from './web/inbox-nudge-watcher.js'
 import { startStuckToolCallWatcher } from './web/stuck-tool-call-watcher.js'
 import { startReauthHealer } from './web/reauth-healer.js'
 import { startAutoRestartRunner } from './web/auto-restart-runner.js'
@@ -28,6 +29,11 @@ import { collectTokenUsage } from './web/token-usage.js'
 import { logger } from './logger.js'
 import { tryHandleProfiles } from './web/routes/profiles.js'
 import { tryHandleMessages } from './web/routes/messages.js'
+import { tryHandleFederation } from './web/routes/federation.js'
+import { identifyFederationCaller } from './web/federation/config.js'
+import { startFederationPoller } from './web/federation/poller.js'
+import { startCapabilitySummaryRunner } from './web/federation/capability-runner.js'
+import { ensureFederationClaudeMdSection } from './web/federation/onboarding.js'
 import { tryHandleAgentTerminal } from './web/routes/agent-terminal.js'
 import { tryHandleAgentConversation } from './web/routes/agent-conversation.js'
 import { tryHandleAgentTaskState } from './web/routes/agent-taskstate.js'
@@ -142,14 +148,42 @@ export function startWebServer(port = 3420): http.Server {
     // /.well-known/fleetq exposes the agent roster; protect it with the same
     // Bearer token as /api/* so LAN-exposed instances don't leak fleet topology.
     const isFleetManifest = path === '/.well-known/fleetq' && method === 'GET'
+    let fedPeerForCtx: string | null = null
     if ((path.startsWith('/api/') && !isPublicApi) || isFleetManifest) {
       const headerOk = checkBearerToken(req.headers.authorization, DASHBOARD_TOKEN)
       const queryOk = isSseStream && checkBearerToken(`Bearer ${url.searchParams.get('token') ?? ''}`, DASHBOARD_TOKEN)
-      if (!headerOk && !queryOk) {
+      // Scoped per-peer federation tokens (round 2): valid EXCLUSIVELY for
+      // the two federation wire endpoints (exact path+method), and only
+      // while federation is enabled. identifyFederationCaller tries each
+      // configured peer's inboundToken with the same timing-safe comparator
+      // (N is small single digits) and returns the matching peer id -- the
+      // caller IDENTITY, which the inbox uses to bind the claimed sender
+      // prefix. Everything is fail-closed: the helper never throws (this
+      // gate runs outside the dispatcher try{}), a disabled/invalid config
+      // identifies nobody, and short/empty stored tokens are skipped before
+      // comparison (an empty expected token would make checkBearerToken
+      // accept "Bearer " + whitespace). A disabled peer presents to its
+      // partner as a plain 401 -- deliberately indistinguishable from a
+      // token mismatch (revoked-token holders learn nothing). The peers
+      // config endpoints are NOT in this whitelist: dashboard-token-only.
+      const isFedPath =
+        (path === '/api/federation/manifest' && method === 'GET') ||
+        (path === '/api/federation/inbox' && method === 'POST')
+      let fedCaller: string | null = null
+      if (isFedPath && !headerOk && !queryOk) {
+        fedCaller = identifyFederationCaller(req.headers.authorization, checkBearerToken)
+        if (fedCaller === null) {
+          // 401s are otherwise silent; federation-endpoint auth failures are
+          // the brute-force surface, make them visible.
+          logger.warn({ path, method }, 'federation: rejected wire-endpoint auth')
+        }
+      }
+      if (!headerOk && !queryOk && fedCaller === null) {
         res.writeHead(401, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'Unauthorized' }))
         return
       }
+      if (fedCaller !== null) fedPeerForCtx = fedCaller
     }
 
     // The mobile-login QR needs a URL the phone can actually reach. When the
@@ -162,10 +196,11 @@ export function startWebServer(port = 3420): http.Server {
     }
 
     try {
-      const routeCtx: RouteContext = { req, res, path, method, url }
+      const routeCtx: RouteContext = { req, res, path, method, url, fedPeer: fedPeerForCtx }
 
       if (await tryHandleProfiles(routeCtx)) return
       if (await tryHandleMessages(routeCtx)) return
+      if (await tryHandleFederation(routeCtx)) return
       if (await tryHandleDailyLog(routeCtx)) return
       if (await tryHandleMemories(routeCtx)) return
       if (await tryHandleMigrate(routeCtx)) return
@@ -359,6 +394,9 @@ export function startWebServer(port = 3420): http.Server {
   const stuckToolCallInterval = webOnly ? undefined : startStuckToolCallWatcher()
   if (!webOnly) logger.info('Stuck-tool-call watcher started (30s poll, 35s offset)')
 
+  const inboxNudgeInterval = webOnly ? undefined : startInboxNudgeWatcher()
+  if (!webOnly) logger.info('Inbox nudge watcher started (20s poll, 55s offset)')
+
   const reauthHealerInterval = webOnly ? undefined : startReauthHealer()
   if (!webOnly && reauthHealerInterval) logger.info('Reauth healer started (3min poll, 90s offset)')
 
@@ -373,6 +411,12 @@ export function startWebServer(port = 3420): http.Server {
 
   const updateCheckerInterval = webOnly ? undefined : startUpdateChecker()
   if (!webOnly) logger.info('Update checker started (15min poll)')
+
+  const federationPollerInterval = webOnly ? undefined : startFederationPoller()
+  if (!webOnly) logger.info('Federation manifest poller started (10min poll, 25s offset)')
+
+  const capabilityRunnerInterval = webOnly ? undefined : startCapabilitySummaryRunner()
+  if (!webOnly) logger.info('Capability summary runner started (5min poll, 65s offset; idle while federation is off)')
 
   // Collect token usage from JSONL transcripts every hour so the run-history
   // token estimates stay fresh without requiring a manual dashboard visit.
@@ -403,6 +447,14 @@ export function startWebServer(port = 3420): http.Server {
   // Warm the Marveen bot username cache so /api/marveen returns @username on
   // the first dashboard load. Re-fetched lazily otherwise.
   refreshMarveenBotUsername().catch(() => {})
+
+  // Reconcile the federation onboarding block in the main agent's CLAUDE.md
+  // EARLY (before the channels session may read the file) and only on live
+  // instances: a WEB_ONLY staging copy must never rewrite the persona file
+  // (do NOT copy the hook backfill's ungated placement). The ensure heals
+  // the two known loss vectors: update.sh --regen-claudemd and a stale
+  // dashboard-editor buffer PUT.
+  if (!webOnly) ensureFederationClaudeMdSection()
 
   // Backfill the PreCompact hook into existing agents' settings.json so the
   // auto-skill / auto-memory flow runs on context compaction. No-op if the
@@ -468,11 +520,14 @@ export function startWebServer(port = 3420): http.Server {
     if (costsSyncInterval) clearInterval(costsSyncInterval)
     clearInterval(stuckInputInterval)
     clearInterval(stuckToolCallInterval)
+    if (inboxNudgeInterval) clearInterval(inboxNudgeInterval)
     if (reauthHealerInterval) clearInterval(reauthHealerInterval)
     clearInterval(autoRestartInterval)
     clearInterval(modelFallbackInterval)
     clearInterval(contextGuardInterval)
     clearInterval(updateCheckerInterval)
+    if (federationPollerInterval) clearInterval(federationPollerInterval)
+    if (capabilityRunnerInterval) clearInterval(capabilityRunnerInterval)
     clearInterval(tokenCollectInterval)
     return origClose(cb)
   }

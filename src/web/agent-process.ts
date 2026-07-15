@@ -1247,8 +1247,8 @@ export function sendPromptToSession(
   session: string,
   text: string,
   host: string | null = null,
-  opts: { waitForIdle?: boolean } = {},
-): void {
+  opts: { waitForIdle?: boolean; onBusyTimeout?: 'send' | 'abort'; idleTimeoutMs?: number } = {},
+): 'sent' | 'aborted-busy' {
   dismissSurveyModalIfPresent(session, host)
   dismissResumeSummaryModalIfPresent(session, host)
 
@@ -1268,8 +1268,21 @@ export function sendPromptToSession(
   // against a session that stays busy for hours (the overnight 275-retry loop).
   // Eating the 12s idle wait here would defeat that contract -- the whole point
   // of forceSend is to inject regardless and let Claude Code queue it.
+  // opts.onBusyTimeout selects what a timed-out idle wait means. The default
+  // 'send' keeps the historical contract (a session that never idles must
+  // still receive its prompt eventually -- router/scheduler messages MUST
+  // deliver). 'abort' is for OPTIONAL prompts (the inbox-nudge watcher): a
+  // nudge typed into a busy pane would park in the input box, and a parked
+  // multi-row line on the MAIN channels session has no automatic recovery --
+  // better to send nothing and let the caller retry on its own cadence.
+  // opts.idleTimeoutMs lets such callers use a short budget instead of the
+  // default 12s (they already confirmed idleness moments ago).
   const waitForIdle = opts.waitForIdle !== false
-  if (waitForIdle && !waitForPaneIdle(session, host)) {
+  if (waitForIdle && !waitForPaneIdle(session, host, opts.idleTimeoutMs)) {
+    if (opts.onBusyTimeout === 'abort') {
+      logger.info({ session }, 'sendPromptToSession: pane busy past idle budget; aborting per caller policy (no keystrokes sent)')
+      return 'aborted-busy'
+    }
     logger.warn({ session }, 'sendPromptToSession: pane still busy after wait-until-idle budget; sending best-effort')
   }
 
@@ -1372,6 +1385,7 @@ export function sendPromptToSession(
       break
     }
   }
+  return 'sent'
 }
 
 // How long to wait between the two capture samples when the first one

@@ -14,6 +14,7 @@ vi.mock('../config.js', () => ({
   CHANNEL_PROVIDER: 'telegram',
   WEB_PORT: 3420,
   OWNER_DRIVE_FOLDER: '',
+  DASHBOARD_PUBLIC_URL: '',
 }))
 
 vi.mock('../web/agent-config.js', () => ({

@@ -4,10 +4,16 @@ import { resolveAgentChannelStateDir } from './voice-directive.js'
 import {
   getPendingMessages,
   markMessageDelivered,
+  markMessageDone,
   markMessageFailed,
+  markPendingFederatedFailed,
+  setMessageResult,
   createAgentMessage,
   type AgentMessage,
 } from '../db.js'
+import { isQualifiedId } from './federation/address.js'
+import { sendFederatedMessage } from './federation/bridge.js'
+import { getFederationConfig, abandonWindowMsForPeer } from './federation/config.js'
 import { readAgentRemoteHost, readAgentVoiceConfig } from './agent-config.js'
 import {
   agentSessionName,
@@ -87,6 +93,48 @@ function notifyOrchestratorOfFailedHandoff(msg: AgentMessage, reason: string): v
 let lastMainAgentWakeupMs = 0
 const MAIN_AGENT_WAKEUP_COOLDOWN_MS = 45 * 1000
 
+// Bounce a terminal federated-delivery failure back to the SENDER's inbox as
+// a local 'system' notice, so a delegating agent learns its task never
+// arrived (otherwise the failure only flips a DB row nobody reads, and the
+// delegation directive's "the answer will arrive on your inbox" waits
+// forever). The notice is always LOCAL (from_agent is slash-free -- bridge.ts
+// refuses to forward a qualified sender), so it can never cross the bridge or
+// loop. Fired only once, right after the terminal markMessageFailed.
+function notifyDelegationFailed(msg: AgentMessage, error: string): void {
+  try {
+    createAgentMessage(
+      'system',
+      msg.from_agent,
+      `A(z) ${msg.to_agent} címre küldött föderált üzeneted (#${msg.id}) véglegesen meghiúsult: ${error.slice(0, 200)}. ` +
+      'Ne delegáld újra automatikusan — jelezd a tulajdonosnak, vagy válaszolj magad a kérőnek.',
+    )
+  } catch (err) {
+    logger.warn({ err, id: msg.id }, 'federated failure notice could not be created')
+  }
+}
+
+// ---- session-stuck detection (card 2922e380 thread a) ------------------------
+// When a session EXISTS but is never ready (menu-blocked / context-saturated /
+// parked input the janitor can't clear), track how long it has been continuously
+// stuck. After STUCK_ESCALATE_MS, escalate to warning-level logs so the existing
+// revival tooling (channel-monitor, stuck-input-watcher) can act before the
+// message backlog grows large. State cleared when session becomes ready or absent.
+const STUCK_ESCALATE_MS = 10 * 60 * 1000  // 10 min continuously stuck -> escalate
+const agentStuckSince = new Map<string, number>()  // agent -> first tick stuck (Date.now)
+
+// ---- reconnect-backlog batching (card 2922e380 thread b) --------------------
+// When a session was absent and reconnects, old pending messages are summarized
+// into ONE batch delivery instead of FIFO-bursting them one by one (the pattern
+// that made the Mason incident read like churn). Only triggers when there are
+// more than BATCH_THRESHOLD messages and the oldest is > BATCH_AGE_MS old.
+const RECONNECT_BATCH_THRESHOLD = 5
+const RECONNECT_BATCH_AGE_MS = 30 * 60 * 1000    // oldest > 30 min
+// Agents that were absent on the previous tick. When they reappear, check for
+// old backlog and batch it on the first delivery attempt.
+const agentWasAbsent = new Set<string>()
+// Agents we already batched this reconnect (one-shot per reconnect cycle).
+const agentBatchedThisReconnect = new Set<string>()
+
 /**
  * Pure decision: should a pending inter-agent message be abandoned?
  *
@@ -113,6 +161,89 @@ let _tickRunning = false
 
 // Max messages drained per 5s tick; a larger backlog rolls to the next tick.
 export const MAX_MESSAGES_PER_TICK = 25
+// Federated (slash-qualified to_agent) messages get their own, smaller
+// per-tick budget: each attempt is an HTTPS round-trip with a 5s timeout
+// inside the serialized tick, so the cap bounds how long federation can hold
+// the tick (~15s worst case). Backoff-skipped messages don't count.
+const MAX_FEDERATED_PER_TICK = 3
+
+// Deliver pending FEDERATED messages over the HTTPS bridge. Kept separate
+// from the local queue on purpose: qualified rows never consume the local
+// 25-message budget (and vice versa), so a down peer cannot starve local
+// tmux delivery -- and a local backlog cannot starve the bridge.
+export async function deliverFederatedBatch(federated: AgentMessage[], now: number): Promise<void> {
+  let attempts = 0
+  let abandons = 0
+  const fedCfg = getFederationConfig()
+  for (const msg of federated) {
+    const ageMs = now - msg.created_at * 1000
+    // The local queue's shouldAbandon() is session-existence-based and
+    // meaningless here; mirror its window against wall-clock age instead.
+    // The window is PER PEER (config abandonWindowMinutes, default 60): a
+    // laptop peer that sleeps for hours can be given a longer patience.
+    const abandonMs = abandonWindowMsForPeer(fedCfg, msg.to_agent.split('/')[0])
+    if (ageMs > abandonMs) {
+      // Cap abandon+notify actions per tick like the send budget: a large
+      // backlog to a long-down peer must not fail+bounce hundreds of rows
+      // (and fan out hundreds of notices) in a single tick. The rest roll to
+      // the next tick.
+      if (abandons >= MAX_FEDERATED_PER_TICK) continue
+      abandons++
+      logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent, ageMs }, 'Federated message abandoned: peer unreachable for full retry window')
+      // Status-guarded: only bounce a notice when THIS call closed a still-
+      // pending row (a concurrent disable/removal purge may have failed it).
+      if (markPendingFederatedFailed(msg.id, 'Abandoned: peer unreachable for full retry window')) {
+        notifyDelegationFailed(msg, 'a társ a teljes türelmi ablakban elérhetetlen volt')
+      } else {
+        logger.warn({ id: msg.id }, 'markPendingFederatedFailed affected 0 rows (already closed concurrently)')
+      }
+      routerLoggedMisses.delete(msg.id)
+      continue
+    }
+    if (attempts >= MAX_FEDERATED_PER_TICK) continue
+    let result: Awaited<ReturnType<typeof sendFederatedMessage>>
+    try {
+      result = await sendFederatedMessage(msg, now)
+    } catch (err) {
+      // sendFederatedMessage classifies its own errors; this is a belt for
+      // the unexpected -- never let one row kill the batch.
+      result = { kind: 'retry', error: String(err) }
+    }
+    if (result.kind === 'skipped') continue // peer in backoff: no network attempt made
+    attempts++
+    if (result.kind === 'delivered') {
+      const marked = markMessageDelivered(msg.id)
+      if (marked && result.remoteId) {
+        setMessageResult(msg.id, `fed:${msg.to_agent.split('/')[0]}:${result.remoteId}`)
+      }
+      if (!marked) {
+        // The row was concurrently closed (bulk-fail on disable/removal, or
+        // a manual PUT) while the send was in flight. The peer DID accept it
+        // -- at-least-once semantics; the receiver's ref-dedup absorbs any
+        // replay. Do NOT overwrite the closer's result text.
+        logger.warn({ fedOut: true, id: msg.id, to: msg.to_agent }, 'Federated message concurrently closed during send; peer accepted (at-least-once)')
+      }
+      routerLoggedMisses.delete(msg.id)
+      logger.info({ fedOut: true, id: msg.id, from: msg.from_agent, to: msg.to_agent, remoteId: result.remoteId }, 'Federated message delivered to peer inbox')
+    } else if (result.kind === 'failed') {
+      logger.warn({ fedOut: true, id: msg.id, to: msg.to_agent, error: result.error }, 'Federated message failed (terminal)')
+      // Status-guarded: bounce the failure notice only if this call closed a
+      // still-pending row (not a row a concurrent purge already failed).
+      if (markPendingFederatedFailed(msg.id, result.error)) {
+        notifyDelegationFailed(msg, result.error)
+      } else {
+        logger.warn({ id: msg.id }, 'markPendingFederatedFailed affected 0 rows (already closed concurrently)')
+      }
+      routerLoggedMisses.delete(msg.id)
+    } else {
+      // retry: row stays pending; log once per message id, not per tick.
+      if (!routerLoggedMisses.has(msg.id)) {
+        logger.warn({ fedOut: true, id: msg.id, to: msg.to_agent, error: result.error }, 'Federated message delivery failed, will retry')
+        routerLoggedMisses.add(msg.id)
+      }
+    }
+  }
+}
 
 export function startMessageRouter(): NodeJS.Timeout {
   return setInterval(async () => {
@@ -128,20 +259,159 @@ export function startMessageRouter(): NodeJS.Timeout {
   }, 5000)
 }
 
+// Per-receiver batched-message-id set for the CURRENT tick. Built by the
+// pre-pass reconnect detector; consumed by the main loop to skip messages
+// that were already summarized into a batch delivery.
+let batchedMsgIdsThisTick: Set<number> = new Set()
+
+/**
+ * Summarize old pending messages for a reconnected agent into one batch delivery.
+ * Marks the batched messages as 'done' and creates a single summary message that
+ * the router will deliver on the next tick.
+ *
+ * Only called from the reconnect pre-pass, once per reconnect cycle per agent.
+ */
+function batchDeliverBacklog(agent: string, agentPending: AgentMessage[], now: number): void {
+  // Split: messages older than BATCH_AGE_MS get batched; recent ones stay for
+  // individual delivery. The age threshold is measured against the message's
+  // own created_at, not the youngest in the batch.
+  const old: typeof agentPending = []
+  const recent: typeof agentPending = []
+  for (const m of agentPending) {
+    const age = now - m.created_at * 1000
+    if (age > RECONNECT_BATCH_AGE_MS) {
+      old.push(m)
+    } else {
+      recent.push(m)
+    }
+  }
+  if (old.length === 0) return
+
+  // Build a summary: who sent what, when (oldest first).
+  const lines: string[] = [
+    `[BACKLOG-SUMMARY] ${old.length} inter-agent message(s) received while you were away:`,
+    '',
+  ]
+  const senders = new Map<string, number>()
+  for (const m of old) {
+    const sender = m.from_agent || 'unknown'
+    senders.set(sender, (senders.get(sender) ?? 0) + 1)
+    const dt = new Date(m.created_at * 1000).toISOString().replace('T', ' ').slice(0, 19)
+    const preview = m.content.length > 120 ? m.content.slice(0, 120) + '…' : m.content
+    lines.push(`[${dt}] ${sender}: ${preview}`)
+  }
+  lines.push('')
+  const senderSummary = Array.from(senders.entries())
+    .map(([s, n]) => `${s} (${n})`)
+    .join(', ')
+  lines.push(`Summary: ${old.length} old message(s) from ${senderSummary}. Check the message log for full details.`)
+
+  const summaryContent = lines.join('\n')
+  // Mark all batched messages as done. Use markMessageDone so they transition
+  // cleanly (with COALESCE backfill for delivered_at if needed).
+  for (const m of old) {
+    markMessageDone(m.id, `batched into backlog summary for ${agent}`)
+    batchedMsgIdsThisTick.add(m.id)
+  }
+  // Create ONE new pending message with the summary. It will be picked up by
+  // the router on the next tick and delivered normally (or via PULL if main agent).
+  createAgentMessage('system', agent, summaryContent)
+  logger.info({
+    agent,
+    batchedCount: old.length,
+    recentRemaining: recent.length,
+    oldestBatched: old[0]?.created_at,
+  }, 'message-router: reconnect-backlog batched — summary message created')
+}
+
 // One router pass: drain up to MAX_MESSAGES_PER_TICK pending inter-agent
 // messages and inject each into its target tmux session. Extracted from the
 // setInterval body so it can be exercised directly in unit tests (the
 // _tickRunning re-entrancy guard stays in startMessageRouter, around the call).
 export async function runMessageRouterTick(): Promise<void> {
+    // Reset per-tick batched-message tracker.
+    batchedMsgIdsThisTick = new Set()
     // Cap work per tick: process at most MAX_MESSAGES_PER_TICK messages, the
     // rest roll to the next 5s tick. Bounds a single tick's wall-time so a
     // backlog (e.g. after a delivery stall) can never make one tick run long
     // and starve the event loop -- the slow-tick half of the progressive-hang
     // pattern. Ordering is preserved (oldest first) so nothing is starved.
-    const pending = getPendingMessages().slice(0, MAX_MESSAGES_PER_TICK)
+    //
+    // Federated (slash-qualified) recipients are split out FIRST: they must
+    // never reach the local path (agentSessionName / readAgentRemoteHost would
+    // treat "sys/agent" as a nested filesystem path) and they have their own
+    // budget so neither queue can starve the other.
+    const allPending = getPendingMessages()
+    const localPending: AgentMessage[] = []
+    const federatedPending: AgentMessage[] = []
+    for (const m of allPending) (isQualifiedId(m.to_agent) ? federatedPending : localPending).push(m)
+    const pending = localPending.slice(0, MAX_MESSAGES_PER_TICK)
     const now = Date.now()
+    // ---- update absent/present tracking for all receivers in this tick ----
+    // Rebuild the stuck-detector's view of which agents are absent RIGHT NOW.
+    // Shared across all messages to the same agent (one sessionExistsOnHost call
+    // per unique receiver per tick, not per message). Cache the results so the
+    // main loop can reuse them instead of re-calling sessionExistsOnHost.
+    const receiversInTick = new Set<string>()
+    for (const m of pending) {
+      if (m.to_agent !== MAIN_AGENT_ID) receiversInTick.add(m.to_agent)
+    }
+    const absentNow = new Set<string>()
+    const presentNow = new Set<string>()
+    // agent -> {exists: bool, host, session} cached lookup for the main loop.
+    const agentSessionCache = new Map<string, {host: string | null, session: string, exists: boolean}>()
+    for (const agent of receiversInTick) {
+      const host = readAgentRemoteHost(agent)
+      const session = agentSessionName(agent)
+      const exists = sessionExistsOnHost(host, session)
+      agentSessionCache.set(agent, { host, session, exists })
+      if (exists) {
+        presentNow.add(agent)
+      } else {
+        absentNow.add(agent)
+      }
+    }
+    // Reconnect detection: agent was absent on the last tick, now present.
+    for (const agent of presentNow) {
+      if (agentWasAbsent.has(agent) && !agentBatchedThisReconnect.has(agent)) {
+        // Check if this agent qualifies for backlog batching.
+        const agentPending = getPendingMessages(agent)
+        if (agentPending.length > RECONNECT_BATCH_THRESHOLD) {
+          const oldestAge = now - agentPending[0].created_at * 1000
+          if (oldestAge > RECONNECT_BATCH_AGE_MS) {
+            logger.warn({ agent, pendingCount: agentPending.length, oldestAgeMs: oldestAge },
+              'message-router: reconnect-backlog batch — summarizing old messages')
+            batchDeliverBacklog(agent, agentPending, now)
+            agentBatchedThisReconnect.add(agent)
+          }
+        }
+      }
+    }
+    // Maintain absent-set: agents absent now will be checked next tick for reconnect.
+    for (const agent of absentNow) {
+      agentWasAbsent.add(agent)
+      agentBatchedThisReconnect.delete(agent) // reset batched flag on new absence
+      agentStuckSince.delete(agent)           // absent = not stuck, just gone
+    }
+    for (const agent of presentNow) {
+      agentWasAbsent.delete(agent)
+    }
+
+    // Federated (slash-qualified) recipients delivered over the HTTPS bridge,
+    // on their own budget so neither queue starves the other.
+    await deliverFederatedBatch(federatedPending, now)
+
     let mainAgentWakeupFiredThisTick = false
     for (const msg of pending) {
+      // Skip messages already batched by the reconnect pre-pass: they are
+      // 'done' in the DB now but still appear in our snapshot slice.
+      if (batchedMsgIdsThisTick.has(msg.id)) continue
+      // Per-message fault isolation: a throw from any helper (e.g. safeJoin
+      // on a '..'-bearing to_agent) previously escaped the whole tick through
+      // the catch-less try/finally, aborting delivery for every younger
+      // message and retrying the same poison row forever -- permanent
+      // head-of-line blockage of ALL local delivery. Mark it failed instead.
+      try {
       const ageMs = now - msg.created_at * 1000
       // The main agent runs in `${MAIN_AGENT_ID}-channels`, not `agent-${name}`,
       // so agentSessionName() would miss it and strand every sub-agent → main
@@ -172,13 +442,13 @@ export async function runMessageRouterTick(): Promise<void> {
         }
         continue
       }
-      const session = agentSessionName(msg.to_agent)
-      // Remote sub-agents run their tmux session on the laptop; resolve the host
-      // so the existence/readiness checks and the send all cross the ssh
-      // boundary. Local agents (and the main channels agent) stay host=null.
-      const host = isMainAgent ? null : readAgentRemoteHost(msg.to_agent)
-
-      const sessionExists = sessionExistsOnHost(host, session)
+      // Use cached session data from the pre-pass (one sessionExistsOnHost call
+      // per unique receiver per tick). Fall back to a direct call for agents not
+      // in the pending set (shouldn't happen, but safe).
+      const cached = agentSessionCache.get(msg.to_agent)
+      const session = cached?.session ?? agentSessionName(msg.to_agent)
+      const host = isMainAgent ? null : cached?.host ?? readAgentRemoteHost(msg.to_agent)
+      const sessionExists = cached?.exists ?? sessionExistsOnHost(host, session)
 
       if (shouldAbandon(sessionExists, ageMs, MESSAGE_ABANDON_WINDOW_MS)) {
         logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent, ageMs }, 'Agent message abandoned: target session absent for full retry window')
@@ -200,6 +470,23 @@ export async function runMessageRouterTick(): Promise<void> {
       }
 
       if (!isSessionReadyForPrompt(session, host)) {
+        // ---- session-stuck detection (card 2922e380 thread a) ----
+        // Track how long this session has been continuously not-ready.
+        const stuckStart = agentStuckSince.get(msg.to_agent)
+        if (!stuckStart) {
+          agentStuckSince.set(msg.to_agent, now)
+        } else if (now - stuckStart > STUCK_ESCALATE_MS) {
+          // Session has been continuously stuck past the escalation threshold.
+          // Log at warn level so monitoring/revival tooling can act — the
+          // stuck-input-watcher and channel-monitor pick these patterns up.
+          logger.warn({
+            to: msg.to_agent, session,
+            stuckDurationMs: now - stuckStart,
+            pendingMsgCount: pending.filter(m => m.to_agent === msg.to_agent).length,
+          }, 'message-router: session STUCK — continuously not-ready past escalation threshold')
+          // Reset timer so we don't spam every tick; re-escalate after another window.
+          agentStuckSince.set(msg.to_agent, now)
+        }
         // Stale-parked-input janitor: a non-submitted line stuck in the input
         // box (e.g. a weak local model that typed its heartbeat reply into the
         // box instead of ending the turn) keeps isSessionReadyForPrompt false
@@ -219,6 +506,9 @@ export async function runMessageRouterTick(): Promise<void> {
         }
         continue
       }
+
+      // Session is ready — clear stuck tracking.
+      agentStuckSince.delete(msg.to_agent)
 
       // Classify (channel-inbound / trusted-peer / untrusted) + reject an empty
       // from_agent -- SINGLE SOURCE in agent-message-wrap so the router and the
@@ -271,7 +561,7 @@ export async function runMessageRouterTick(): Promise<void> {
         // wrap (trusted/untrusted) carries the raw content. Single-source frame.
         // msgId passed so receiving agents can write back via PUT /api/messages/:id.
         const content = isChannelInbound ? deliveryContent : msg.content
-        const { prefix, wrapped } = wrapAgentMessageForDelivery(category, safeFromAgent, msg.from_agent, content, msg.id)
+        const { prefix, wrapped } = wrapAgentMessageForDelivery(category, safeFromAgent, msg.from_agent, content, msg.id, msg.origin_note)
         // Inline preamble so a fresh session (post hard-restart) doesn't miss
         // the context that explains the tag semantics.
         sendPromptToSession(session, prefix + wrapped, host)
@@ -280,7 +570,7 @@ export async function runMessageRouterTick(): Promise<void> {
         }
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
-        logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, category: isChannelInbound ? 'channel-inbound' : trusted ? 'trusted-peer' : 'untrusted' }, 'Agent message delivered')
+        logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, category }, 'Agent message delivered')
       } catch (err) {
         // An inject throw is usually transient (pane un-ready at the instant of
         // send-keys). Retry across ticks instead of the old silent instant-fail;
@@ -298,6 +588,13 @@ export async function runMessageRouterTick(): Promise<void> {
         }
         notifyOrchestratorOfFailedHandoff(msg, `tmux inject failed ${failCount}x`)
         routerInjectFailures.delete(msg.id)
+        routerLoggedMisses.delete(msg.id)
+      }
+      } catch (err) {
+        logger.warn({ err, id: msg.id, to: msg.to_agent }, 'Agent message processing threw; marking failed so the queue cannot wedge')
+        if (!markMessageFailed(msg.id, `Delivery error: ${String(err).slice(0, 200)}`)) {
+          logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
+        }
         routerLoggedMisses.delete(msg.id)
       }
     }

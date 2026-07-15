@@ -10,6 +10,11 @@ export interface RouteContext {
   path: string
   method: string
   url: URL
+  /** Federation caller identity, set by the auth gate when a peer's inbound
+   *  token authenticated this request. Absent/undefined and null both mean
+   *  "not a federation-token caller" (e.g. dashboard token) -- handlers must
+   *  treat the two identically. */
+  fedPeer?: string | null
 }
 
 export type RouteHandler = (ctx: RouteContext) => Promise<boolean>
