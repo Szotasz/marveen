@@ -21,7 +21,7 @@ import {
   ensureMainAgentIsolatedConfigDir,
   FLEET_OAUTH_TOKEN_PATH,
 } from './agent-process.js'
-import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
+import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence } from './channel-poller-reap.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
 import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPluginAbsent } from './channel-plugin-unlock.js'
 import {
@@ -40,7 +40,7 @@ import { readLastIngestionTimestamp, TRANSCRIPT_DIR } from './inbound-probe.js'
 import { decideDownAgentAction, AGENT_MAX_RESTART_ATTEMPTS, parseEtimeToSeconds } from './agent-restart-policy.js'
 // getClaudePidForSession + hasChannelPluginAlive live in the shared liveness
 // module so the standalone channel-coordinator reuses the exact same probe.
-import { getClaudePidForSession, hasChannelPluginAlive } from '../channel-coordinator/liveness.js'
+import { getClaudePidForSession, hasChannelPluginAlive, probeChannelPluginLiveness } from '../channel-coordinator/liveness.js'
 import { getDesiredAgents } from './agent-desired-state.js'
 
 const TMUX = resolveFromPath('tmux')
@@ -72,6 +72,10 @@ function resolveAgentProvider(name: string): ChannelProviderType {
 
 const agentDownSince: Map<string, number> = new Map()
 const agentLastRestart: Map<string, number> = new Map()
+// Sessions whose busy-deferral cap has already been reported to the operator, so
+// the alert fires once per down-spell instead of every sweep. Cleared when the
+// plugin recovers (or when the agent is restarted after it goes idle).
+const agentBusyDeferAlerted: Set<string> = new Set()
 // Consecutive watchdog restarts (keyed by agent name) that did NOT bring the
 // plugin back up. Drives exponential back-off so a plugin that crashes on every
 // launch (e.g. a broken third-party channel plugin) is not restarted on a fixed
@@ -137,6 +141,20 @@ const AGENT_MAX_RESTART_GRACE_MS = 60 * 60 * 1000 // 1h
 // the plugin only after a slow session load). Never restart a process younger
 // than this on a "plugin down" reading, or the watchdog crash-loops it.
 const AGENT_STARTUP_GRACE_MS = 180_000
+// A single "down" sample is a suspicion, not a verdict: the probe walks a
+// process tree and can miss a poller that is mid-respawn, and ps can time out
+// on a loaded box. The sweep runs every 60s, so requiring the down-spell to
+// persist this long means at least two consecutive down observations before any
+// restart. Measured cost of the old single-sample rule (2026-07-14): 10 agent
+// hard-restarts in one day, one of them on a plugin that reported healthy again
+// a minute later without ever being restarted -- it was never down.
+const AGENT_DOWN_CONFIRM_MS = 150_000
+// A restart is a FRESH session: it destroys the work in flight. While the agent
+// is actively generating, defer -- a down channel does not stop it working, it
+// only stops it hearing. But a permanently busy agent with a dead channel is
+// deaf, which is exactly what the watchdog exists to catch, so past this cap the
+// watchdog stops choosing and asks the operator.
+const AGENT_BUSY_DEFER_MAX_MS = 30 * 60 * 1000 // 30m
 // When the unlock probe has confirmed the plugin ABSENT from /mcp (never
 // loaded, not merely Failed/disabled), a fresh restart cannot bring it back --
 // it comes up absent again, and each restart wipes the agent's session context
@@ -1328,8 +1346,16 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
         }
         continue
       }
-      const alive = hasChannelPluginAlive(claudePid, t.provider, t.agentName)
-      if (alive) {
+      const liveness = probeChannelPluginLiveness(claudePid, t.provider, t.agentName)
+      if (liveness === 'unknown') {
+        // The PROBE failed (ps timed out, state dir unreadable) -- that is not
+        // evidence about the plugin. Leave every counter untouched (down-since,
+        // failure budget, main escalation) and re-probe on the next sweep, so a
+        // hiccup in our own monitoring can never hard-restart a healthy agent.
+        logger.debug({ session: t.session, provider: t.provider }, 'Channel-plugin liveness unknown (probe failed) -- no action this sweep')
+        continue
+      }
+      if (liveness === 'alive') {
         if (t.isMarveen) {
           handleMarveenUp()
           // Process-alive does NOT prove the inbound MCP pipe is healthy (the
@@ -1344,6 +1370,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // down-spell starts again at the base grace.
           agentRestartFailures.delete(t.agentName!)
           clearPersistedAgentFailures(t.agentName!)
+          agentBusyDeferAlerted.delete(t.session)
           // Retire any stale absent verdict too, so a future down-spell starts
           // with the full restart budget rather than the absent-capped one.
           clearPluginAbsent(t.session)
@@ -1353,7 +1380,24 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
       if (t.isMarveen) {
         if (shouldEscalateMarveenDown()) handleMarveenDown()
       } else {
-        if (!agentDownSince.has(t.session)) agentDownSince.set(t.session, Date.now())
+        if (!agentDownSince.has(t.session)) {
+          agentDownSince.set(t.session, Date.now())
+          // First down observation of this spell: capture WHY before anything is
+          // torn down. Without this the restart destroys the evidence and the
+          // log can only say "down" -- which is exactly why the 10x/day churn
+          // went undiagnosed. Once per spell, not per sweep.
+          try {
+            const evidence = collectPollerEvidence(t.provider, agentDir(t.agentName!), claudePid)
+            logger.warn({ agent: t.agentName, provider: t.provider, claudePid, ...evidence },
+              evidence.interpretation === 'in-tree'
+                ? 'Plugin-down FORENSICS: a live poller IS in the claude tree -- the liveness probe is wrong, not the plugin'
+                : evidence.interpretation === 'orphaned'
+                  ? 'Plugin-down FORENSICS: a live poller exists but is OUTSIDE the claude tree (reparented / left over from a previous claude)'
+                  : 'Plugin-down FORENSICS: no poller process alive for this channel dir -- the plugin really did exit')
+          } catch (err) {
+            logger.warn({ err, agent: t.agentName }, 'Plugin-down forensics failed (continuing)')
+          }
+        }
         const lastRestart = agentLastRestart.get(t.agentName!)
         const failures = agentRestartFailures.get(t.agentName!) ?? 0
         // If the unlock probe confirmed the plugin ABSENT from /mcp (never
@@ -1365,6 +1409,13 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
         const maxRestartAttempts = absentConfirmed
           ? PLUGIN_ABSENT_MAX_RESTART_ATTEMPTS
           : AGENT_MAX_RESTART_ATTEMPTS
+        const msDown = Date.now() - (agentDownSince.get(t.session) ?? Date.now())
+        // Busy-guard input: a pane that is generating must not be hard-restarted
+        // out from under its own work. An unreadable pane reads 'unknown', which
+        // is NOT busy -- we only defer on positive evidence of work in flight.
+        const agentPane = capturePane(t.session)
+        const agentPaneState = agentPane != null ? detectPaneState(agentPane) : null
+        const agentBusy = shouldDeferKeepaliveRespawn(agentPaneState)
         const action = decideDownAgentAction({
           processAgeMs: getProcessAgeMs(claudePid),
           msSinceLastRestart: lastRestart != null ? Date.now() - lastRestart : null,
@@ -1372,9 +1423,29 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           restartGraceMs: AGENT_RESTART_GRACE_MS,
           consecutiveFailures: failures,
           maxRestartGraceMs: AGENT_MAX_RESTART_GRACE_MS,
+          msDown,
+          downConfirmMs: AGENT_DOWN_CONFIRM_MS,
+          agentBusy,
+          busyDeferMaxMs: AGENT_BUSY_DEFER_MAX_MS,
         }, maxRestartAttempts)
+        if (action === 'alert-busy') {
+          // The channel has been down past the deferral cap while the agent kept
+          // working. Killing it would destroy live work; deferring further would
+          // leave it deaf. Ask the operator once, then keep deferring.
+          if (!agentBusyDeferAlerted.has(t.session)) {
+            logger.error({ agent: t.agentName, provider: t.provider, msDown }, 'Agent channel plugin down past busy-defer cap -- agent still working, alerting operator instead of killing it')
+            sendAlert(`⚠️ A(z) ${t.agentName} agens ${t.provider} csatornaja ${Math.round(msDown / 60000)} perce halott, de az agens KOZBEN DOLGOZIK. Nem inditom ujra (a restart FRISS session -- elveszne a folyamatban levo munkaja). Dontsd el: varjuk meg amig vegez (akkor magatol ujraindul), vagy kezzel allitsd meg. Session: ${t.session}.`)
+            agentBusyDeferAlerted.add(t.session)
+          }
+          continue
+        }
         if (action === 'skip') {
-          logger.debug({ agent: t.agentName, provider: t.provider, failures }, 'Channel plugin probe reports down but agent is within startup/restart back-off -- deferring')
+          logger.debug({ agent: t.agentName, provider: t.provider, failures, msDown, agentBusy, paneState: agentPaneState },
+            agentBusy
+              ? 'Channel plugin down but agent is BUSY -- deferring restart until it goes idle (never kill work in flight)'
+              : msDown < AGENT_DOWN_CONFIRM_MS
+                ? 'Channel plugin reported down once -- awaiting confirmation on the next sweep before restarting'
+                : 'Channel plugin probe reports down but agent is within startup/restart back-off -- deferring')
           continue
         }
         if (action === 'alert') {
@@ -1390,6 +1461,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           agentRestartFailures.set(t.agentName!, failures + 1)
           savePersistedAgentFailures(t.agentName!, failures + 1)
           agentDownSince.delete(t.session)
+          agentBusyDeferAlerted.delete(t.session)
           continue
         }
         const agentProvider = resolveAgentProvider(t.agentName!)
@@ -1425,6 +1497,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           startAgentProcess(t.agentName!, { fresh: true })
           agentLastRestart.set(t.agentName!, Date.now())
           agentDownSince.delete(t.session)
+          agentBusyDeferAlerted.delete(t.session)
           // Count this restart as failed until a later sweep sees the plugin
           // alive (which resets the counter). Repeated failures back off the
           // next restart exponentially instead of churning every base-grace.

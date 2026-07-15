@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER } from '../config.js'
+import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ } from '../config.js'
 import { channelStateDir } from '../channel-provider.js'
 import { runAgent } from '../agent.js'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -585,13 +585,13 @@ Minden kontextus-tömörítés előtt (PreCompact hook) automatikusan vizsgáld 
 
 ## Időkezelés
 
-MINDIG a megfelelő lokális időt használd (Europe/Budapest CEST/CET).
+MINDIG az install időzónáját használd: **${APP_TZ}** (a teljes telepítés ebben az EGY zónában dolgozik: ütemezés ÉS megjelenítés).
 
-- **Jelenlegi idő**: \`date\` Bash első lépés időponti feladatoknál (heartbeat, naptár-művelet, scheduled-task analízis)
-- **Channel message \`ts\`**: UTC-ben jön (postfix \`Z\`), átkonvertálni Europe/Budapest-re (CEST = UTC+2 nyáron, CET = UTC+1 télen)
-- **Google Calendar list_events \`dateTime\`**: már lokál ISO 8601 (\`+02:00\` offset Budapestnek), OK
+- **Jelenlegi idő**: \`date\` Bash első lépés időponti feladatoknál (heartbeat, naptár-művelet, scheduled-task analízis) — a rendszeróra is ${APP_TZ}
+- **Channel message \`ts\`**: UTC-ben jön (postfix \`Z\`), átkonvertálni ${APP_TZ}-re
+- **Google Calendar list_events \`dateTime\`**: már lokál ISO 8601 offszettel, OK
 - **SQLite \`unixepoch()\`**: UTC, humán-megjelenítéshez \`localtime\` modifier kell
-- **Cron expressions** (scheduled-tasks task-config.json): node lokális TZ, Europe/Budapest
+- **Cron expressions** (scheduled-tasks + fleet-timer): a scheduler ${APP_TZ} időben értelmezi (SCHEDULER_TZ); a fleet-timer \`once --at\` = ${APP_TZ} fali óra
 
 Heartbeat-eknél és minden időpontot kezelő feladatnál kötelező: \`date\` Bash parancs az elemzés ELŐTT.
 

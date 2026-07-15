@@ -274,11 +274,12 @@ export PATH="$HOME/.local/bin:$PATH"
 # binary cannot wedge the installer).
 _claude_runs() { command -v claude >/dev/null 2>&1 && timeout 25 claude --version </dev/null >/dev/null 2>&1; }
 
-# Pinned Node-based fallback for AVX-less hosts. @2.0.76 ships bin=cli.js (a
-# `#!/usr/bin/env node` entrypoint) that runs without AVX; npm-latest (2.1.x)
-# still bundles the Bun ELF binary, so DO NOT use latest here. Verified on the
-# AVX-less pilot VPS.
-CLAUDE_PIN="2.0.76"
+# Pinned Node-based fallback for AVX-less hosts. @2.1.110 is the LAST version
+# that ships bin=cli.js (a `#!/usr/bin/env node` entrypoint) running without
+# AVX -- 2.1.120+ bundles only the Bun ELF binary, so DO NOT use latest here.
+# Unlike the old 2.0.76 pin, 2.1.110 also understands `--channels`, which
+# channels.sh requires to boot the bot. Verified on the AVX-less pilot VPS.
+CLAUDE_PIN="2.1.110"
 
 if _claude_runs; then
   ok "claude mar telepitve es fut: $(claude --version 2>/dev/null || echo 'ok')"
@@ -289,6 +290,11 @@ else
   if grep -qE '^flags[[:space:]]*:' /proc/cpuinfo 2>/dev/null && ! grep -qiw avx /proc/cpuinfo 2>/dev/null; then
     warn "A CPU nem tamogatja az AVX-et; a hivatalos installer Bun-binaryja elszallna (SIGILL)."
     echo -e "  ${DIM}Pinnelt Node-verzio telepitese: @${CLAUDE_PIN} (nehany legfrissebb Claude Code fix kimaradhat, de fut AVX nelkul).${NC}"
+    # The auto-updater would replace the pinned Node cli.js with the latest
+    # Bun binary on first run -> SIGILL. Disable it persistently (rc files for
+    # interactive shells; channels.sh exports it for the agent sessions).
+    ensure_in_rc 'DISABLE_AUTOUPDATER' 'export DISABLE_AUTOUPDATER=1'
+    export DISABLE_AUTOUPDATER=1
     if command -v npm >/dev/null 2>&1; then
       npm install -g "@anthropic-ai/claude-code@${CLAUDE_PIN}" || warn "npm install sikertelen (@${CLAUDE_PIN})."
     else

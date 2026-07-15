@@ -5,7 +5,7 @@ import { homedir, userInfo } from 'node:os'
 import { createHash } from 'node:crypto'
 import { resolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
-import { PROJECT_ROOT } from '../config.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import {
   capturePane,
   isSessionReadyForPrompt,
@@ -40,7 +40,10 @@ import { notifyChannel } from '../notify.js'
 
 const TMUX = resolveFromPath('tmux')
 
-const WORKER_SESSION = process.env.MARVEEN_WORKER_SESSION || 'marveen-worker'
+// Session name keys off MAIN_AGENT_ID so notify.sh's "${MAIN_AGENT_ID}-worker"
+// branch matches on renamed installs (BOT_NAME != Marveen). Default installs are
+// unchanged: MAIN_AGENT_ID falls back to 'marveen' -> 'marveen-worker' as before.
+const WORKER_SESSION = process.env.MARVEEN_WORKER_SESSION || `${MAIN_AGENT_ID}-worker`
 // MUST be OUTSIDE PROJECT_ROOT so Claude Code's upward CLAUDE.md discovery never
 // finds Marveen's persona CLAUDE.md -- one-shot generations (scaffold CLAUDE.md/
 // SOUL.md for a NEW agent, memory digests) must be UNTINTED. The caller prompt

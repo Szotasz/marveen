@@ -40,6 +40,14 @@ function cfg(key: string): string | undefined {
   return env[key]
 }
 
+// The single timezone for this install -- drives BOTH cron scheduling (cron.ts)
+// AND every human-facing time render (heartbeat, daily-log, memory labels, etc.).
+// One env var (SCHEDULER_TZ) so the whole box shares one zone; falls back to the
+// process zone (the TZ env / OS) when unset. Replaces the ~15 hardcoded
+// 'Europe/Budapest' literals -- change the zone in ONE place, and an update that
+// re-introduces a hardcoded literal is caught by a single grep, not a full review.
+export const APP_TZ = cfg('SCHEDULER_TZ') || Intl.DateTimeFormat().resolvedOptions().timeZone
+
 export const TELEGRAM_BOT_TOKEN = env['TELEGRAM_BOT_TOKEN'] ?? ''
 export const ALLOWED_CHAT_ID = env['ALLOWED_CHAT_ID'] ?? ''
 

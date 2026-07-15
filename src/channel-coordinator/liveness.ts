@@ -129,9 +129,38 @@ export function decideHasPluginAlive(ctx: PluginAliveContext): boolean {
   return false
 }
 
-export function hasChannelPluginAlive(claudePid: number, providerType: ChannelProviderType, agentName?: string): boolean {
+// Tri-state liveness verdict. 'unknown' means the PROBE failed (ps timed out on
+// a loaded box, the state dir was unreadable, ...) -- not that the plugin is
+// down. Collapsing that into 'down' let a hiccup in the monitor's own probe
+// hard-restart a healthy agent and destroy its session context, so the caller
+// must treat 'unknown' as "no information" and leave the agent alone.
+export type PluginLiveness = 'alive' | 'down' | 'unknown'
+
+export function probeChannelPluginLiveness(
+  claudePid: number,
+  providerType: ChannelProviderType,
+  agentName?: string,
+): PluginLiveness {
+  let psOutput: string
   try {
-    const psOutput = execFileSync('/bin/ps', ['-axo', 'pid,ppid,command'], { timeout: 3000, encoding: 'utf-8' })
+    // Parity with the reaper's snapshotProcs: `-ww` (never truncate a command,
+    // the poller match lives deep in a long path), an 8MB buffer (the default
+    // 1MB is only ~3x the measured fleet-wide ps output, and blowing it makes
+    // execFileSync THROW) and a 5s timeout. A probe that throws is a probe that
+    // knows nothing -- and knowing nothing used to mean "restart the agent".
+    // Keep the HEADER form (`-o pid,ppid,command`, not `-o pid=,...`):
+    // decideHasPluginAlive drops the first line as the header, so a headerless
+    // output would silently lose the first process row.
+    psOutput = execFileSync('/bin/ps', ['-axww', '-o', 'pid,ppid,command'], {
+      timeout: 5000,
+      encoding: 'utf-8',
+      maxBuffer: 8 * 1024 * 1024,
+    })
+  } catch (err) {
+    logger.warn({ err, claudePid, agentName, providerType }, 'Channel-plugin liveness probe failed (ps) -- verdict unknown, not restarting')
+    return 'unknown'
+  }
+  try {
     const stateDir = agentName
       ? channelStateDir(providerType, agentDir(agentName))
       : channelStateDir(providerType)
@@ -141,7 +170,7 @@ export function hasChannelPluginAlive(claudePid: number, providerType: ChannelPr
       const parsed = parseInt(readFileSync(pidPath, 'utf-8').trim(), 10)
       if (Number.isFinite(parsed)) botPid = parsed
     }
-    return decideHasPluginAlive({
+    const alive = decideHasPluginAlive({
       psOutput,
       claudePid,
       providerType,
@@ -152,9 +181,19 @@ export function hasChannelPluginAlive(claudePid: number, providerType: ChannelPr
       },
       debugLog: (event, fields) => logger.debug(fields, event),
     })
-  } catch {
-    return false
+    return alive ? 'alive' : 'down'
+  } catch (err) {
+    logger.warn({ err, claudePid, agentName, providerType }, 'Channel-plugin liveness probe failed (state dir) -- verdict unknown, not restarting')
+    return 'unknown'
   }
+}
+
+// Boolean view for callers that only act on a positive verdict (a failed probe
+// and a genuinely absent plugin are both "not alive" to them). Anything that
+// RESTARTS on the negative answer must use probeChannelPluginLiveness instead,
+// so it can distinguish 'down' from 'unknown'.
+export function hasChannelPluginAlive(claudePid: number, providerType: ChannelProviderType, agentName?: string): boolean {
+  return probeChannelPluginLiveness(claudePid, providerType, agentName) === 'alive'
 }
 
 // --- coordinator-side decision layer ---

@@ -43,6 +43,7 @@ import {
   MAIN_AGENT_ID,
   WEB_PORT,
   HEARTBEAT_CALENDAR_ACCOUNT,
+  APP_TZ,
 } from '../config.js'
 import { logger } from '../logger.js'
 
@@ -180,7 +181,7 @@ When you receive the heartbeat prompt:
 2. **Format** the result as a single inter-agent message:
 
    \`\`\`
-   ## Heartbeat YYYY-MM-DD HH:MM (Europe/Budapest)
+   ## Heartbeat YYYY-MM-DD HH:MM (${APP_TZ})
 
    ### Calendar (next 2h)
    - HH:MM -- <summary> (<attendees>)

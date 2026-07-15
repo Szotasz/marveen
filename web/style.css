@@ -6463,6 +6463,156 @@ body {
   height: calc(52px + env(safe-area-inset-top));
   padding-top: env(safe-area-inset-top);
 }
+/* === Fleet Migration Section === */
+.fleet-section {
+  margin-top: 40px;
+  padding-top: 32px;
+  border-top: 1px solid var(--border);
+  max-width: 860px;
+}
+
+.fleet-section-header {
+  margin-bottom: 16px;
+}
+
+.fleet-section-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.fleet-section-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.fleet-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px 16px;
+  background: rgba(201, 160, 0, 0.1);
+  border: 1px solid rgba(201, 160, 0, 0.35);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 20px;
+}
+
+.fleet-warning-icon { flex-shrink: 0; }
+
+.fleet-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.fleet-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  box-shadow: var(--shadow-sm);
+}
+
+.fleet-card-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.fleet-card-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+
+.fleet-file-input {
+  display: block;
+  width: 100%;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.fleet-dry-run-result {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.fleet-dry-run-result.ok {
+  background: var(--info-soft);
+  border: 1px solid var(--info);
+}
+
+.fleet-dry-run-result.has-errors {
+  background: var(--danger-soft);
+  border: 1px solid var(--danger);
+}
+
+.fleet-dry-run-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.fleet-dry-run-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.fleet-dry-run-stat {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  text-align: center;
+}
+
+.fleet-dry-run-stat-value {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.fleet-dry-run-stat-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.fleet-dry-run-warnings {
+  color: #c9a000;
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+.fleet-dry-run-errors {
+  color: var(--danger);
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+.fleet-apply-result {
+  margin-top: 16px;
+  padding: 14px 16px;
+  background: var(--success-soft);
+  border: 1px solid var(--success);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.fleet-apply-result-title {
+  font-weight: 600;
+  color: var(--success);
+  margin-bottom: 6px;
+}
+
 @media (max-width: 768px) {
   /* Off-canvas drawer is position:fixed, so it ignores the <body> padding above.
    * When opened in portrait, keep its top brand below the notch and its footer

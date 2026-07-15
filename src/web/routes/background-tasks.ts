@@ -6,6 +6,7 @@ import {
   type BackgroundTask,
 } from '../../db.js'
 import { resolveFromPath } from '../../platform.js'
+import { APP_TZ } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
@@ -15,7 +16,7 @@ const CLAUDE = resolveFromPath('claude')
 const MAX_CONCURRENT = 3
 const TIMEOUT_MS = 30 * 60 * 1000
 
-const TZ = 'Europe/Budapest'
+const TZ = APP_TZ  // install zone (config.APP_TZ); was hardcoded Europe/Budapest
 
 function bgSessionName(id: string): string {
   return `bg-${id}`

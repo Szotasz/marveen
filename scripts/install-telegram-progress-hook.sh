@@ -31,6 +31,20 @@ SRC_DIR="$(cd "$(dirname "$0")" && pwd)/hooks"
 DEST_DIR="$HOME/.claude/hooks"
 SETTINGS="$HOME/.claude/settings.json"
 
+# The watchdog unit/label name keys off SERVICE_ID, matching install-linux.sh's
+# ${SERVICE_ID}-dashboard/-channels units and the macOS com.${SERVICE_ID}.*
+# launchd labels. Derive it from the install .env so a renamed install
+# (BOT_NAME != Marveen) does NOT get an orphaned marveen-* unit left behind.
+INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -f "$INSTALL_DIR/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$INSTALL_DIR/.env"
+  set +a
+fi
+SERVICE_ID="${SERVICE_ID:-${MAIN_AGENT_ID:-marveen}}"
+BOT_NAME="${BOT_NAME:-Marveen}"
+
 SUBMIT_HOOK="$DEST_DIR/telegram_progress.py"
 STOP_HOOK="$DEST_DIR/telegram_progress_clear.py"
 REPLY_HOOK="$DEST_DIR/telegram_progress_reply_clear.py"
@@ -137,7 +151,7 @@ PYEOF
 OS="$(uname -s)"
 if [ "$OS" = "Darwin" ]; then
   PLIST_DIR="$HOME/Library/LaunchAgents"
-  LABEL="com.marveen.telegram-progress-watchdog"
+  LABEL="com.${SERVICE_ID}.telegram-progress-watchdog"
   PLIST="$PLIST_DIR/$LABEL.plist"
   LOG="$HOME/.claude/channels/telegram-progress-watchdog.log"
   mkdir -p "$PLIST_DIR" "$HOME/.claude/channels"
@@ -176,11 +190,11 @@ PLISTEOF
 else
   # Linux: systemd user service + timer
   UNIT_DIR="$HOME/.config/systemd/user"
-  SVC="marveen-telegram-progress-watchdog"
+  SVC="${SERVICE_ID}-telegram-progress-watchdog"
   mkdir -p "$UNIT_DIR"
   cat > "$UNIT_DIR/$SVC.service" <<UNITEOF
 [Unit]
-Description=Marveen Telegram progress-indicator watchdog (sentry)
+Description=${BOT_NAME} Telegram progress-indicator watchdog (sentry)
 
 [Service]
 Type=oneshot

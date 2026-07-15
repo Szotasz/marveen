@@ -9,6 +9,7 @@ import {
   DB_FILENAME,
   PROJECT_ROOT,
   OWNER_NAME,
+  APP_TZ,
 } from './config.js'
 import { getHeartbeatKanbanSummary, getActiveScheduledTaskCount } from './db.js'
 import { getCalendarEvents, type CalendarEvent } from './google-api.js'
@@ -379,7 +380,7 @@ function shouldNotify(data: HeartbeatData): boolean {
 // --- Agent prompt ---
 
 function buildAgentPrompt(data: HeartbeatData): string {
-  const timeStr = data.timestamp.toLocaleString('hu-HU', { timeZone: 'Europe/Budapest' })
+  const timeStr = data.timestamp.toLocaleString('hu-HU', { timeZone: APP_TZ })
 
   // Preamble first so the <untrusted> tag convention is established before any
   // attacker-controlled strings (calendar/kanban/email titles) appear.
@@ -397,7 +398,7 @@ function buildAgentPrompt(data: HeartbeatData): string {
   } else {
     for (const ev of data.calendar) {
       const start = ev.start?.dateTime
-        ? new Date(ev.start.dateTime).toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Budapest' })
+        ? new Date(ev.start.dateTime).toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit', timeZone: APP_TZ })
         : 'egesz napos'
       const attendeesRaw = ev.attendees?.map((a) => a.displayName || a.email).join(', ') || '-'
       const summaryWrapped = wrapUntrusted('gcal-event-summary', ev.summary ?? '(cim nelkul)')
@@ -428,7 +429,7 @@ function buildAgentPrompt(data: HeartbeatData): string {
   prompt += `- Aktiv utemezett feladatok: ${data.tasks.count}\n`
   if (data.tasks.nextRun) {
     const nextDate = new Date(data.tasks.nextRun * 1000)
-    prompt += `- Kovetkezo feladat: ${nextDate.toLocaleString('hu-HU', { timeZone: 'Europe/Budapest' })}\n`
+    prompt += `- Kovetkezo feladat: ${nextDate.toLocaleString('hu-HU', { timeZone: APP_TZ })}\n`
   }
 
   return prompt
@@ -542,8 +543,8 @@ function scheduleNext(delayMs: number): void {
     const nextDelayMs = msUntilNextHeartbeat()
     const nextRun = new Date(Date.now() + nextDelayMs)
     logger.info(
-      { nextRun: nextRun.toLocaleString('hu-HU', { timeZone: 'Europe/Budapest' }) },
-      `Heartbeat kovetkezo: ${nextRun.toLocaleTimeString('hu-HU', { timeZone: 'Europe/Budapest' })}`
+      { nextRun: nextRun.toLocaleString('hu-HU', { timeZone: APP_TZ }) },
+      `Heartbeat kovetkezo: ${nextRun.toLocaleTimeString('hu-HU', { timeZone: APP_TZ })}`
     )
     scheduleNext(nextDelayMs)
   }, delayMs)
@@ -553,8 +554,8 @@ export function initHeartbeat(): void {
   const delayMs = msUntilNextHeartbeat()
   const nextRun = new Date(Date.now() + delayMs)
   logger.info(
-    { nextRun: nextRun.toLocaleString('hu-HU', { timeZone: 'Europe/Budapest' }) },
-    `Heartbeat utemezve (kovetkezo: ${nextRun.toLocaleTimeString('hu-HU', { timeZone: 'Europe/Budapest' })})`
+    { nextRun: nextRun.toLocaleString('hu-HU', { timeZone: APP_TZ }) },
+    `Heartbeat utemezve (kovetkezo: ${nextRun.toLocaleTimeString('hu-HU', { timeZone: APP_TZ })})`
   )
   scheduleNext(delayMs)
 }
