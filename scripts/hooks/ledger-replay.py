@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """SessionStart hook: on every session start/resume (incl. a respawn's fresh
 session), inject the recent conversation CONTEXT for THIS agent -- up to the last
-DEFAULT_WINDOW turns (trimmed to DEFAULT_CHAR_BUDGET chars, ~4k tokens) in
-chronological order PLUS a highlighted OPEN QUESTION (the most recent
-inbound with no later reply). This is the deterministic mechanism: the fresh
-session does not need to REMEMBER anything; its context window already carries
-the conversation and the question to answer.
+DEFAULT_WINDOW turns (trimmed to DEFAULT_CHAR_BUDGET chars, ~4k tokens) PLUS a
+highlighted OPEN QUESTION (the most recent inbound with no later reply). This is
+the deterministic mechanism: the fresh session does not need to REMEMBER
+anything; its context window already carries the conversation and the question
+to answer.
+
+The block is ordered so its actionable core survives context-preview truncation
+(the harness may spill a large additionalContext to a file and inline only a
+small preview taken from the block START): mandatory directive first, then the
+open question, then the freshest turns, then older turns as backfill.
 
 Generic across the three channel agents -- agent_id is derived from cwd, so a
 session only ever replays its OWN chat. Outputs the SessionStart additionalContext
@@ -32,6 +37,13 @@ DEFAULT_CHAR_BUDGET = 16000
 # *reading* the loaded block -- addressed by the mandatory directive below.
 # Env override: LEDGER_CONTEXT_WINDOW.
 DEFAULT_WINDOW = 20
+
+# Of the (budget-trimmed) turns, how many most-recent ones get their own
+# highlighted "LEGFRISSEBB FORDULÓK" section at the TOP of the block; the rest
+# are appended below as older backfill. This is purely a display split so the
+# freshest, most relevant turns lead the block and survive any context-preview
+# truncation -- it does NOT change the window or the char budget.
+RECENT_TURNS_HIGHLIGHT = 5
 
 
 def _env_int(name, default):
@@ -87,14 +99,32 @@ def main():
         total -= len(transcript[0]) + 1
         transcript.pop(0)
 
+    # Split the (budget-trimmed) turns into the most-recent highlight window and
+    # the older backfill. The recent turns are the newest, so they are never the
+    # ones the budget guard drops.
+    if len(transcript) > RECENT_TURNS_HIGHLIGHT:
+        recent = transcript[-RECENT_TURNS_HIGHLIGHT:]
+        older = transcript[:-RECENT_TURNS_HIGHLIGHT]
+    else:
+        recent = transcript
+        older = []
+
+    # Order the block so the essence survives ANY context-preview truncation: the
+    # Claude Code harness may spill a large SessionStart additionalContext to a
+    # file and inline only a ~2KB preview taken from the BLOCK START. So the
+    # mandatory directive and the open question -- the actionable core -- lead the
+    # block, then the freshest turns, then the older backfill last. (Previously
+    # the directive and open question sat at the END, so on a large/chatty block
+    # they fell off the visible preview edge and the fresh session missed them.)
     parts = [
-        "BESZÉLGETÉS-FOLYTONOSSÁG (determinisztikus ledger). A kapcsolatod "
-        "újraindult egy friss sessionben, ami NEM emlékszik az élő beszélgetésre. "
-        "Az alábbi a legutóbbi beszélgetés-kontextus (időrendben), hogy onnan "
-        "folytasd ahol megszakadt:"
+        "KÖTELEZŐ: MIELŐTT bármely új bejövő üzenetre válaszolsz, dolgozd fel az "
+        "alábbi beszélgetés-kontextust. A kapcsolatod újraindult egy friss "
+        "sessionben, ami NEM emlékszik az élő beszélgetésre; a folytonosságot ez "
+        "a blokk adja. A benne szereplő döntések, megállapodások és folyamatban "
+        "lévő szálak ÉRVÉNYESEK és folytatandók. NE kérdezz vissza olyat, amit "
+        "lent már megbeszéltetek (pl. \"mihez kell ez?\", ha lent már eldőlt); a "
+        "betöltött kontextusból folytass, ne kezdd elölről."
     ]
-    if transcript:
-        parts.append("\n".join(transcript))
     if open_q:
         chat_id, message_id, text, ts = open_q
         snippet = (text or "").strip().replace("\n", " ")
@@ -102,21 +132,18 @@ def main():
             f'NYITOTT KÉRDÉS (még NEM válaszoltad meg): {owner} utolsó üzenete '
             f'(chat {chat_id}, message_id {message_id}): "{snippet}". Válaszolj rá '
             f'MOST a telegram reply tool (mcp__plugin_telegram_telegram__reply) '
-            f'meghívásával a megfelelő chat_id-re, a fenti kontextusból folytatva.'
+            f'meghívásával a megfelelő chat_id-re, a lenti kontextusból folytatva.'
         )
-
-    # Nyomatékos záró direktíva. A betöltés önmagában nem elég: egy friss session
-    # hajlamos a legfrissebb BEJÖVŐ ingerre (pl. egy most érkezett kép) ugrani és
-    # a fenti kontextust háttérként kezelni. Ez a sor kötelezővé teszi a
-    # feldolgozást MIELŐTT bármely új üzenetre reagálna, hogy ne kérdezzen vissza
-    # olyat, ami fent már eldőlt.
-    parts.append(
-        "KÖTELEZŐ: MIELŐTT bármely új bejövő üzenetre válaszolsz, dolgozd fel a "
-        "fenti beszélgetést. A benne szereplő döntések, megállapodások és "
-        "folyamatban lévő szálak ÉRVÉNYESEK és folytatandók. NE kérdezz vissza "
-        "olyat, amit fent már megbeszéltetek (pl. \"mihez kell ez?\", ha fent már "
-        "eldőlt); a betöltött kontextusból folytass, ne kezdd elölről."
-    )
+    if recent:
+        parts.append(
+            "LEGFRISSEBB FORDULÓK (időrendben, a beszélgetés vége -- innen "
+            "folytasd):\n" + "\n".join(recent)
+        )
+    if older:
+        parts.append(
+            "KORÁBBI HÁTTÉR (régebbi fordulók, csak kontextusnak, időrendben):\n"
+            + "\n".join(older)
+        )
 
     out = {
         "hookSpecificOutput": {
