@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { join } from 'node:path'
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID, PROJECT_ROOT, RESPAWN_ENABLED } from '../config.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT, RESPAWN_ENABLED, APP_TZ } from '../config.js'
 import { resolveFromPath } from '../platform.js'
 import { listAgentNames } from './agent-config.js'
 import { isAgentRunning, capturePane } from './agent-process.js'
@@ -130,7 +130,7 @@ async function sendBestEffortLogin(session: string): Promise<void> {
   }
 }
 
-// -- Quiet hours (23:00-06:00 Europe/Budapest) -------------------------------
+// -- Quiet hours (23:00-06:00 in the install zone, config.APP_TZ) ------------
 //
 // Overnight a dead token is not actionable: the fix is a manual browser
 // /login, and nobody does that at 03:00 -- but the healer used to re-alert
@@ -147,11 +147,11 @@ export function isQuietHour(hourLocal: number): boolean {
   return hourLocal >= QUIET_START_HOUR || hourLocal < QUIET_END_HOUR
 }
 
-// Local wall-clock hour in Europe/Budapest regardless of the host TZ (the
-// same explicit-TZ rule the rest of the fleet follows for time handling).
-export function budapestHour(nowMs: number): number {
+// Wall-clock hour in the install zone (config.APP_TZ) regardless of the host TZ,
+// the same explicit-TZ rule the whole fleet follows for time handling.
+export function localHour(nowMs: number): number {
   return parseInt(
-    new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Budapest', hour: '2-digit', hour12: false }).format(new Date(nowMs)),
+    new Intl.DateTimeFormat('en-GB', { timeZone: APP_TZ, hour: '2-digit', hour12: false }).format(new Date(nowMs)),
     10,
   )
 }
@@ -276,7 +276,7 @@ export function startReauthHealer(): NodeJS.Timeout | null {
   }
 
   function sweep(): void {
-    const quiet = isQuietHour(budapestHour(Date.now()))
+    const quiet = isQuietHour(localHour(Date.now()))
     // Main agent: escalate-only (no autonomous /login into a live always-on
     // conversation). capturePane returns null when it is down -> spell ends.
     try {

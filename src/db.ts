@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync } from 'node:fs'
-import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL } from './config.js'
+import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from './config.js'
 import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
@@ -1022,7 +1022,7 @@ export function appendDailyLog(agentId: string, content: string): void {
   // Budapest calendar day, not UTC -- otherwise an entry written 00:00-02:00
   // local time lands on the previous day and the "ma" recall query misses it.
   // en-CA formats as YYYY-MM-DD.
-  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Budapest' })
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: APP_TZ })
   db.prepare('INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES (?, ?, ?, ?)').run(agentId, today, content, now)
 }
 
@@ -1044,7 +1044,7 @@ export interface RecallResult {
 
 function toBudapestTs(dateStr: string, endOfDay: boolean): number {
   const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Europe/Budapest',
+    timeZone: APP_TZ,
     year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
   })

@@ -1,15 +1,16 @@
 import { describe, it, expect } from 'vitest'
 import {
   isQuietHour,
-  budapestHour,
+  localHour,
   routeEscalation,
   flushQuietSummary,
   buildQuietSummaryMessage,
   buildEscalationMessage,
   type QuietSuppressedEntry,
 } from '../web/reauth-healer.js'
+import { APP_TZ } from '../config.js'
 
-// Quiet hours (23:00-06:00 Europe/Budapest) for the reauth-healer escalation.
+// Quiet hours (23:00-06:00 in the install zone, APP_TZ) for the reauth-healer escalation.
 // Motivated by 2026-07-09 night: spock+scotty re-alerted every 30 minutes all
 // night about a dead token nobody could fix before morning. The probe keeps
 // running; ONLY notify.sh is held back, and the first sweep after 06:00 sends
@@ -22,7 +23,7 @@ const entry = (session: string, label = session, consecutiveDead = 10): QuietSup
   consecutiveDead,
 })
 
-describe('isQuietHour / budapestHour', () => {
+describe('isQuietHour / localHour', () => {
   it('23:00-05:59 csendes, 06:00-22:59 nem', () => {
     expect(isQuietHour(23)).toBe(true)
     expect(isQuietHour(0)).toBe(true)
@@ -32,13 +33,15 @@ describe('isQuietHour / budapestHour', () => {
     expect(isQuietHour(22)).toBe(false)
   })
 
-  it('budapestHour a host TZ-től függetlenül Europe/Budapest órát ad (CEST=UTC+2 nyáron)', () => {
-    // 2026-07-09T22:30:00Z = 2026-07-10 00:30 Budapest -> 0 (quiet)
-    expect(budapestHour(Date.UTC(2026, 6, 9, 22, 30))).toBe(0)
-    // 2026-07-10T04:05:00Z = 06:05 Budapest -> 6 (not quiet)
-    expect(budapestHour(Date.UTC(2026, 6, 10, 4, 5))).toBe(6)
-    // 2026-01-10T22:30:00Z = 23:30 Budapest (CET=UTC+1 télen) -> 23 (quiet)
-    expect(budapestHour(Date.UTC(2026, 0, 10, 22, 30))).toBe(23)
+  it('localHour a host TZ-től függetlenül az install-zóna (APP_TZ) óráját adja', () => {
+    // TZ-agnostic: localHour must equal an independent hour extraction in APP_TZ,
+    // whatever APP_TZ is (Europe/London on this install). No hardcoded zone -> a
+    // future SCHEDULER_TZ change does not break this test.
+    const hourIn = (ms: number) =>
+      parseInt(new Intl.DateTimeFormat('en-GB', { timeZone: APP_TZ, hour: '2-digit', hour12: false }).format(new Date(ms)), 10)
+    for (const ms of [Date.UTC(2026, 6, 9, 22, 30), Date.UTC(2026, 6, 10, 4, 5), Date.UTC(2026, 0, 10, 22, 30)]) {
+      expect(localHour(ms)).toBe(hourIn(ms))
+    }
   })
 })
 

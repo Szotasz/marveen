@@ -1,4 +1,5 @@
 import { CronExpressionParser } from 'cron-parser'
+import { APP_TZ } from '../config.js'
 
 // All scheduled-task cron expressions (SKILL.md/task-config.json, the
 // dashboard schedule editor) are authored in the operator's own wall-clock
@@ -10,7 +11,9 @@ import { CronExpressionParser } from 'cron-parser'
 // each install pin its own IANA zone; unset falls back to the host's zone
 // (Intl reflects the OS/TZ env at process start), matching the pre-fix
 // behaviour for installs where host tz already equals the operator's.
-const CRON_TZ = process.env.SCHEDULER_TZ || Intl.DateTimeFormat().resolvedOptions().timeZone
+// One install-wide zone (config.APP_TZ = SCHEDULER_TZ || process zone), shared
+// with every human-facing time render so cron and display never diverge.
+const CRON_TZ = APP_TZ
 
 export function computeNextRun(cronExpression: string): number {
   const expr = CronExpressionParser.parse(cronExpression, { tz: CRON_TZ })

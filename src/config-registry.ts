@@ -373,6 +373,17 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: true,
   },
+  // --- System module ---
+  {
+    key: 'SCHEDULER_TZ',
+    type: 'string',
+    default: '',
+    description: 'A telepítés időzónája (IANA, pl. Europe/Budapest). EGY zóna vezérli az ütemezést (cron) ÉS minden megjelenített időt (heartbeat, napi napló, memória-címkék). Üresen hagyva a gép saját időzónáját használja. A módosítás a szolgáltatás újraindításakor lép életbe.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+    valueSet: ['Europe/London', 'Europe/Budapest', 'UTC', 'Europe/Dublin', 'Europe/Berlin', 'Europe/Bucharest', 'America/New_York'],
+  },
 ]
 
 export function getSettingDefinition(key: string): SettingDefinition | undefined {
