@@ -25,7 +25,7 @@ import {
   SCHEDULED_TASK_PREAMBLE,
   wrapScheduledTask,
 } from '../prompt-safety.js'
-import { cronMatchesNow, resolveCronTz } from './cron.js'
+import { cronDueBetween, resolveCronTz } from './cron.js'
 import {
   listScheduledTasks,
   SCHEDULED_TASKS_DIR,
@@ -538,22 +538,26 @@ export function startScheduleRunner(): NodeJS.Timeout {
     )
   }
 
-  let firstRun = true
+  // Start of the window the next tick will scan. Seeded 30 min in the past so
+  // the first tick after a (re)start catches anything missed while the process
+  // was down; thereafter each tick advances it to its own `now`, so the scan
+  // windows are contiguous and non-overlapping -- see cronDueBetween.
+  let lastCheckMs = Date.now() - 30 * 60000
 
   function runCheck() {
     const tasks = listScheduledTasks()
     const now = Date.now()
-    // On first run after restart, catch up missed tasks from last 30 min
-    const isFirstRunTick = firstRun
-    const catchUp = isFirstRunTick ? 30 * 60000 : 60000
-    firstRun = false
+    // Scan the real interval elapsed since the previous tick (30 min on the
+    // first tick), not a fixed 60s window -- a late/dropped tick must not let a
+    // sparse daily cron's single occurrence slip through a gap unscanned.
+    const fromMs = lastCheckMs
 
     // Retry tasks that were busy-skipped on earlier ticks (persisted in
-    // pending_task_retries so they survive dashboard restart). cronMatchesNow
-    // only fires on an exact minute boundary, so without this the noon
-    // check skipped because the session was busy at 12:00:50 would never
-    // run that day. We NEVER abandon -- the operator can cancel from the
-    // UI if a retry has become obsolete.
+    // pending_task_retries so they survive dashboard restart). Each occurrence
+    // is scanned by exactly one tick's (fromMs, now] window, so once the noon
+    // occurrence's window has passed a busy-at-noon task would never run that
+    // day without this queue. We NEVER abandon -- the operator can cancel from
+    // the UI if a retry has become obsolete.
     const pendingRows = listPendingTaskRetries()
     const pendingKeys = new Set<string>()
     for (const row of pendingRows) {
@@ -604,19 +608,20 @@ export function startScheduleRunner(): NodeJS.Timeout {
 
     for (const task of tasks) {
       if (!task.enabled) continue
-      if (!cronMatchesNow(task.schedule, catchUp)) continue
+      if (!cronDueBetween(task.schedule, fromMs, now)) continue
 
-      // Prevent double-firing: skip if already ran within the catch-up window
+      // Prevent double-firing across a restart: skip if the task already ran at
+      // or after the start of this scan window (its occurrence is already
+      // recorded, so re-scanning the catch-up window must not fire it again).
       const lastRun = scheduleLastRun.get(task.name) || 0
-      if (now - lastRun < catchUp) continue
+      if (lastRun >= fromMs) continue
 
-      // This tick only matched because of the enlarged first-run catch-up
-      // window, not the normal ~1-tick tolerance -- i.e. the task's own
-      // scheduled minute was missed (process was down/restarting) and it is
-      // only firing now as a catch-up. Recorded further down via
-      // attemptFireTask's lateCatchUpMs param so the run-history shows it.
-      const lateCatchUpMs = isFirstRunTick && catchUp > 60000 && !cronMatchesNow(task.schedule, 60000)
-        ? catchUp
+      // If the occurrence is NOT within a single normal tick of `now`, this tick
+      // is firing it late as a catch-up (process was down/restarting or a tick
+      // was dropped). Recorded via attemptFireTask's lateCatchUpMs param so the
+      // run-history flags it as a late fire rather than an on-time one.
+      const lateCatchUpMs = !cronDueBetween(task.schedule, now - 60000, now)
+        ? now - fromMs
         : undefined
 
       // type='command' tasks run a raw shell command directly -- no LLM, no
@@ -691,6 +696,12 @@ export function startScheduleRunner(): NodeJS.Timeout {
         }
       }
     }
+
+    // Advance the scan window so the next tick starts exactly where this one
+    // ended. Unconditional (even on busy-skip/error, which the pending-retry
+    // queue owns) so the windows stay contiguous and no occurrence is scanned
+    // twice or skipped.
+    lastCheckMs = now
   }
 
   // Run immediately on start (catches missed tasks)

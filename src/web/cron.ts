@@ -60,14 +60,38 @@ export function isValidCronShape(cron: unknown): cron is string {
   }
 }
 
-export function cronMatchesNow(cron: string, catchUpMs: number = 60000, tz: string = CRON_TZ): boolean {
+// True if a scheduled occurrence of `cron` falls in the half-open window
+// (fromMs, toMs]. Driven by the ACTUAL elapsed time between scheduler ticks
+// rather than a fixed 60s window: Node timers only ever fire late (never
+// early), so a fixed-width window equal to the nominal tick interval drifts
+// until a sparse cron's single occurrence lands in a gap no tick's window
+// covers -- silently missed for the day, while a "*/15" cron with 96 daily
+// occurrences survives (the 2026-07-13..15 outage). Feeding the real
+// (previous-tick, now] interval makes the windows contiguous and
+// non-overlapping: every occurrence is covered by exactly one tick, so even a
+// multi-minute tick gap cannot swallow a daily task. prev() returns only the
+// most recent occurrence, so a long outage yields at most one catch-up fire,
+// never a burst.
+export function cronDueBetween(cron: string, fromMs: number, toMs: number, tz: string = CRON_TZ): boolean {
   try {
-    const expr = CronExpressionParser.parse(cron, { tz })
-    const prev = expr.prev()
-    const prevTime = prev.getTime()
-    const now = Date.now()
-    return (now - prevTime) < catchUpMs
+    // `toMs + 1`: cron-parser's prev() returns the last occurrence STRICTLY
+    // before currentDate, so an occurrence landing exactly on the tick boundary
+    // (O === toMs) would be excluded here AND excluded next tick (O === fromMs,
+    // the `> fromMs` is strict) -- a rare "silently lost" occurrence. Nudging
+    // currentDate one ms past toMs makes the window a true half-open (fromMs,
+    // toMs], so a boundary occurrence fires exactly once, never twice.
+    const expr = CronExpressionParser.parse(cron, { tz, currentDate: new Date(toMs + 1) })
+    return expr.prev().getTime() > fromMs
   } catch {
     return false
   }
+}
+
+// Back-compat shim faithful to the old fixed-window semantics -- "did an
+// occurrence happen in the last catchUpMs". Kept for callers/tests that ask
+// the question that way; the scheduler loop itself uses cronDueBetween with
+// the real inter-tick interval.
+export function cronMatchesNow(cron: string, catchUpMs: number = 60000, tz: string = CRON_TZ): boolean {
+  const now = Date.now()
+  return cronDueBetween(cron, now - catchUpMs, now, tz)
 }
