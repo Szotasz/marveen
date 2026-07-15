@@ -984,6 +984,7 @@ window._i18n.hu = {
   'settings.module.heartbeat':   'Heartbeat',
   'settings.module.audit':       'Audit',
   'settings.module.channels':    'Csatornák',
+  'settings.module.autonomy':    'Autonómia',
   'settings.col.key':            'Kulcs',
   'settings.col.value':          'Érték',
   'settings.col.description':    'Leírás',
@@ -1017,6 +1018,12 @@ window._i18n.hu = {
   'settings.desc.IDEA_STALE_DAYS':             'Ennyi napnyi mozdulatlanság után kap "Elavult" jelzést egy "új" státuszú ötlet.',
   'settings.desc.AUDIT_LOG_RETENTION_DAYS':    'Az audit napló (config-változások, ötletláda-audit, store-fájl események) megőrzési ideje napokban. Régebbi bejegyzések a napi sweepkor törlődnek.',
   'settings.desc.AUDIT_LOG_MAX_ENTRIES':       'Az audit napló összes forrásra vetített maximális bejegyzésszáma. Az API lekérések ennél soha nem adnak vissza többet (forrásanként egyéni limit: AUDIT_LOG_MAX_ENTRIES / 3).',
+  'settings.desc.TOKEN_USAGE_RETENTION_DAYS':  'A token-használati napló megőrzési ideje napokban. A napi sweep ennél régebbi sorokat törli. A modell-javaslat az utolsó 30 napot nézi.',
+  'settings.desc.SCHEDULER_TZ':               'A telepítés időzónája (IANA, pl. Europe/Budapest). Vezérli az ütemezést (cron) és minden megjelenített időt. Üresen hagyva a gép saját időzónáját használja.',
+  'settings.desc.MAIN_AGENT_CONFIG_DIR':       'A fő channels-agent explicit CLAUDE_CONFIG_DIR-je (pl. ~/.claude-bot). Saját Claude-login esetén kell; üresen hagyva a közös ~/.claude-t használja.',
+  'settings.desc.KANBAN_ARCHIVED_MAX_ROWS':    'Az archivált kártyák maximálisan megőrzött száma. Az ennél régebbi archivált kártyák a sweep során törlődnek.',
+  'settings.desc.HEARTBEAT_CALENDAR_ACCOUNT':  'Google Calendar fiók neve/e-mailje a heartbeat naptár-összefoglalóhoz. Üresen hagyva a heartbeat nem kérdez le naptáreseményeket.',
+  'settings.desc.HEARTBEAT_CALENDAR_ID':       'Google Calendar naptár-azonosítója a heartbeat összefoglalóhoz (pl. primary). Üresen hagyva a heartbeat nem kérdez le naptáreseményeket.',
 
   // --- Vault ---
   'vault.page_title':            'Vault',

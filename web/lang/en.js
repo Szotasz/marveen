@@ -677,6 +677,7 @@ window._i18n.en = {
   'settings.module.heartbeat':   'Heartbeat',
   'settings.module.audit':       'Audit',
   'settings.module.channels':    'Channels',
+  'settings.module.autonomy':    'Autonomy',
   'settings.col.key':            'Key',
   'settings.col.value':          'Value',
   'settings.col.description':    'Description',
@@ -710,6 +711,12 @@ window._i18n.en = {
   'settings.desc.IDEA_STALE_DAYS':             'Days of inactivity after which a "new" status idea receives a "Stale" indicator.',
   'settings.desc.AUDIT_LOG_RETENTION_DAYS':    'Retention period in days for the audit log (config changes, idea box audit, store file events). Older entries are deleted during the daily sweep.',
   'settings.desc.AUDIT_LOG_MAX_ENTRIES':       'Maximum number of entries in the audit log across all sources. API requests never return more than this (per-source limit: AUDIT_LOG_MAX_ENTRIES / 3).',
+  'settings.desc.TOKEN_USAGE_RETENTION_DAYS':  'Retention period in days for the token usage log. The daily sweep deletes rows older than this. The model suggestion looks at the last 30 days.',
+  'settings.desc.SCHEDULER_TZ':               'Installation timezone (IANA, e.g. Europe/Budapest). Controls scheduling (cron) and all displayed times. Empty = use the system timezone.',
+  'settings.desc.MAIN_AGENT_CONFIG_DIR':       'Explicit CLAUDE_CONFIG_DIR for the main channels agent (e.g. ~/.claude-bot). Required when the bot has its own Claude login; empty = use the shared ~/.claude.',
+  'settings.desc.KANBAN_ARCHIVED_MAX_ROWS':    'Maximum number of archived cards to retain. Older archived cards beyond this limit are deleted during the sweep.',
+  'settings.desc.HEARTBEAT_CALENDAR_ACCOUNT':  'Google Calendar account name/email for the heartbeat calendar summary. Empty = heartbeat does not fetch calendar events.',
+  'settings.desc.HEARTBEAT_CALENDAR_ID':       'Google Calendar ID for the heartbeat summary (e.g. primary). Empty = heartbeat does not fetch calendar events.',
 
   // --- Vault ---
   'vault.page_title':            'Vault',

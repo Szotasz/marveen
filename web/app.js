@@ -11301,17 +11301,15 @@ async function cancelBgTask(id) {
 
 document.getElementById('refreshAutonomyBtn').addEventListener('click', loadAutonomy)
 
-async function loadAutonomy() {
-  const grid = document.getElementById('autonomyGrid')
-  const footer = document.getElementById('autonomyUpdatedAt')
-  grid.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${t('autonomy.loading')}</p>`
+async function renderAutonomyContent(gridEl, footerEl) {
+  gridEl.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${t('autonomy.loading')}</p>`
 
   try {
     const res = await fetch('/api/autonomy')
     if (!res.ok) throw new Error('fetch failed')
     const config = await res.json()
 
-    grid.innerHTML = ''
+    gridEl.innerHTML = ''
     for (const cat of config.categories) {
       const isCapped = !cat.locked && cat.maxLevel < 3
       const row = document.createElement('div')
@@ -11350,19 +11348,28 @@ async function loadAutonomy() {
         row.appendChild(cap)
       }
       row.appendChild(levels)
-      grid.appendChild(row)
+      gridEl.appendChild(row)
     }
 
-    if (config.updated_at > 0) {
-      const d = new Date(config.updated_at * 1000)
-      footer.textContent = t('autonomy.last_modified', { date: d.toLocaleString('hu-HU') })
-    } else {
-      footer.textContent = t('autonomy.not_modified')
+    if (footerEl) {
+      if (config.updated_at > 0) {
+        const d = new Date(config.updated_at * 1000)
+        footerEl.textContent = t('autonomy.last_modified', { date: d.toLocaleString('hu-HU') })
+      } else {
+        footerEl.textContent = t('autonomy.not_modified')
+      }
     }
   } catch (err) {
-    grid.innerHTML = `<p style="color:var(--danger)">${t('autonomy.error')}</p>`
-    footer.textContent = ''
+    gridEl.innerHTML = `<p style="color:var(--danger)">${t('autonomy.error')}</p>`
+    if (footerEl) footerEl.textContent = ''
   }
+}
+
+async function loadAutonomy() {
+  await renderAutonomyContent(
+    document.getElementById('autonomyGrid'),
+    document.getElementById('autonomyUpdatedAt')
+  )
 }
 
 async function setAutonomyLevel(key, level) {
@@ -11377,7 +11384,13 @@ async function setAutonomyLevel(key, level) {
       showToast(data.error || 'Hiba')
       return
     }
-    loadAutonomy()
+    // Refresh all visible autonomy grids
+    const pageGrid = document.getElementById('autonomyGrid')
+    const pageFooter = document.getElementById('autonomyUpdatedAt')
+    if (pageGrid) renderAutonomyContent(pageGrid, pageFooter)
+    const tabGrid = document.getElementById('settingsAutonomyGrid')
+    const tabFooter = document.getElementById('settingsAutonomyUpdatedAt')
+    if (tabGrid) renderAutonomyContent(tabGrid, tabFooter)
   } catch {
     showToast(t('kanban.toast.save_error'))
   }
@@ -11397,7 +11410,7 @@ window.addEventListener('beforeunload', (e) => {
 // entry never requires a frontend change just to render a sane heading.
 function settingsModuleLabel(mod) {
   const key = `settings.module.${mod}`
-  const known = { kanban: true, system: true, heartbeat: true, audit: true, ideabox: true, channels: true }
+  const known = { kanban: true, system: true, heartbeat: true, audit: true, ideabox: true, channels: true, autonomy: true }
   return known[mod] ? t(key) : (mod.charAt(0).toUpperCase() + mod.slice(1))
 }
 
@@ -11431,9 +11444,15 @@ function markSettingDirty(key, input, originalValue, type, errorEl) {
   updateSettingsSaveBar()
 }
 
+const SETTINGS_ACTIVE_TAB_KEY = 'settings-active-tab'
+
 async function loadSettings() {
-  const container = document.getElementById('settingsGroups')
-  container.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${t('settings.loading')}</p>`
+  const tabNav = document.getElementById('settingsTabNav')
+  const tabPanels = document.getElementById('settingsTabPanels')
+  if (!tabNav || !tabPanels) return
+
+  tabNav.innerHTML = `<span style="color:var(--text-muted);font-size:13px;padding:12px 0;display:inline-block">${t('settings.loading')}</span>`
+  tabPanels.innerHTML = ''
   settingsDirty.clear()
   updateSettingsSaveBar()
 
@@ -11448,28 +11467,99 @@ async function loadSettings() {
       byModule.get(s.module).push(s)
     }
 
-    container.innerHTML = ''
+    tabNav.innerHTML = ''
+    tabPanels.innerHTML = ''
+
     if (byModule.size === 0) {
-      container.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${t('settings.empty')}</p>`
+      tabPanels.innerHTML = `<p style="padding:24px;color:var(--text-muted);font-size:13px">${t('settings.empty')}</p>`
       return
     }
 
+    const allModules = [...byModule.keys(), 'autonomy']
+    const savedTab = localStorage.getItem(SETTINGS_ACTIVE_TAB_KEY) || allModules[0]
+    const activeTab = allModules.includes(savedTab) ? savedTab : allModules[0]
+
+    // Build a tab button + panel for each settings module
     for (const [mod, defs] of byModule) {
+      const btn = document.createElement('button')
+      btn.className = 'tab-btn' + (mod === activeTab ? ' active' : '')
+      btn.dataset.tab = mod
+      btn.textContent = settingsModuleLabel(mod)
+      btn.addEventListener('click', () => activateSettingsTab(mod))
+      tabNav.appendChild(btn)
+
+      const panel = document.createElement('div')
+      panel.className = 'tab-panel'
+      panel.id = `settings-panel-${mod}`
+      panel.hidden = mod !== activeTab
+
       const group = document.createElement('div')
       group.className = 'settings-group'
-
-      const heading = document.createElement('h3')
-      heading.className = 'settings-group-title'
-      heading.textContent = settingsModuleLabel(mod)
-      group.appendChild(heading)
-
       for (const def of defs) {
         group.appendChild(buildSettingRow(def))
       }
-      container.appendChild(group)
+      panel.appendChild(group)
+      tabPanels.appendChild(panel)
+    }
+
+    // Autonomy tab
+    {
+      const mod = 'autonomy'
+      const btn = document.createElement('button')
+      btn.className = 'tab-btn' + (mod === activeTab ? ' active' : '')
+      btn.dataset.tab = mod
+      btn.textContent = settingsModuleLabel(mod)
+      btn.addEventListener('click', () => activateSettingsTab(mod))
+      tabNav.appendChild(btn)
+
+      const panel = document.createElement('div')
+      panel.className = 'tab-panel'
+      panel.id = `settings-panel-${mod}`
+      panel.hidden = mod !== activeTab
+
+      const legend = document.createElement('div')
+      legend.className = 'autonomy-legend'
+      legend.innerHTML = `
+        <div class="autonomy-legend-item"><span class="autonomy-level-dot" style="background:var(--text-muted)"></span><span><strong>1</strong> ${t('autonomy.level.1')}</span></div>
+        <div class="autonomy-legend-item"><span class="autonomy-level-dot" style="background:var(--accent)"></span><span><strong>2</strong> ${t('autonomy.level.2')}</span></div>
+        <div class="autonomy-legend-item"><span class="autonomy-level-dot" style="background:var(--success)"></span><span><strong>3</strong> ${t('autonomy.level.3')}</span></div>
+      `
+      panel.appendChild(legend)
+
+      const grid = document.createElement('div')
+      grid.className = 'autonomy-grid'
+      grid.id = 'settingsAutonomyGrid'
+      panel.appendChild(grid)
+
+      const footer = document.createElement('p')
+      footer.className = 'autonomy-footer'
+      footer.id = 'settingsAutonomyUpdatedAt'
+      panel.appendChild(footer)
+
+      tabPanels.appendChild(panel)
+
+      if (mod === activeTab) {
+        renderAutonomyContent(grid, footer)
+      }
     }
   } catch (err) {
-    container.innerHTML = `<p style="color:var(--danger)">${t('settings.error')}</p>`
+    tabPanels.innerHTML = `<p style="padding:24px;color:var(--danger)">${t('settings.error')}</p>`
+  }
+}
+
+function activateSettingsTab(mod) {
+  document.querySelectorAll('#settingsTabNav .tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === mod)
+  })
+  document.querySelectorAll('#settingsTabPanels .tab-panel').forEach(panel => {
+    panel.hidden = panel.id !== `settings-panel-${mod}`
+  })
+  localStorage.setItem(SETTINGS_ACTIVE_TAB_KEY, mod)
+
+  if (mod === 'autonomy') {
+    const grid = document.getElementById('settingsAutonomyGrid')
+    const footer = document.getElementById('settingsAutonomyUpdatedAt')
+    if (grid && !grid.innerHTML.trim()) renderAutonomyContent(grid, footer)
   }
 }
 
