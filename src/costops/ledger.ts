@@ -9,6 +9,7 @@
 import type Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
 import type { CostOpsConfig, CostConfidence } from './config.js'
+import { getTokenCostEstimate, type PricingConfig, type TokenCostEstimate } from './pricing.js'
 
 // ---- month math (UTC, deterministic given `now`) ---------------------------
 
@@ -81,7 +82,7 @@ export const RENDER_NOT_COVERED: string[] = [
 // manual fallback, per source's provider: provider_api_actual > provider_plan_estimate
 // > local_usage > manual/estimate. A provider that HAS a provider-derived line drops
 // its manual/estimate lines from operational (they become fallback/comparison only),
-// so manual + provider are never double-counted (e.g. Render: plan 37080 wins over manual 40000).
+// so manual + provider are never double-counted (e.g. a provider-plan estimate wins over a manual entry for the same source).
 export const OPERATIONAL_TIER: Record<string, number> = {
   actual_invoice: 4, provider_api: 4, billing_export: 4,
   provider_plan_estimate: 3,
@@ -481,9 +482,6 @@ export function getCostSummary(
   const pricing = opts.pricing ?? { version: 1, currency: config.currency, models: {} }
   const token_cost_estimate = getTokenCostEstimate(db, pricing, opts.pricingExists ?? false, win.start, win.end)
   const estimated_total_with_token_cost = round2(current_spend + token_cost_estimate.total_estimated_huf)
-
-  // v0.3 per-source estimate-vs-actual reconciliation
-  const reconcile: Array<{ source_id: string; estimate: number; actual: number; variance: number; resolved_confidence: string }> = []
 
   // v0.3/v0.5 provider sync status: the latest run per provider + last ok/failed +
   // derived status (ok / stale / failed / no_data) + data age + period coverage.

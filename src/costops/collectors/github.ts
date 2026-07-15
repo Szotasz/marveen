@@ -74,8 +74,8 @@ export function mapGitHubUsage(
   }]
 }
 
-/** The account whose billing is read. */
-export const GITHUB_BILLING_USER = 'iszzu80-dev'
+/** The account whose billing is read. Set via COSTOPS_GITHUB_BILLING_USER env var. */
+export const GITHUB_BILLING_USER = process.env.COSTOPS_GITHUB_BILLING_USER || ''
 
 export function makeGitHubCollector(user: string = GITHUB_BILLING_USER): ProviderCollector {
   return {

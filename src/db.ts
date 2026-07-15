@@ -722,6 +722,8 @@ export function initDatabase(dbPathOverride?: string): void {
   // Migrations for columns added after initial release
   try { db.exec('ALTER TABLE token_usage ADD COLUMN thinking_tokens INTEGER NOT NULL DEFAULT 0') } catch { /* already exists */ }
   try { db.exec('ALTER TABLE token_usage ADD COLUMN model TEXT') } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE token_usage ADD COLUMN provider TEXT') } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE token_usage ADD COLUMN model_source TEXT') } catch { /* already exists */ }
 
   // Deduplicate existing rows before creating unique index
   try {
