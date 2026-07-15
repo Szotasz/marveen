@@ -10505,19 +10505,25 @@ function wireOnboarding(step) {
     const loadPending = async () => {
       try {
         const p = await (await fetch(`/api/agents/${encodeURIComponent(mainAgentId())}/channels/telegram/pending`)).json()
-        const list = Array.isArray(p) ? p : (p.pending || [])
+        // Backend contract: [{code, senderId, chatId, createdAt, expiresAt}].
+        // `code` is the approve key (the same code the bot sent the user) --
+        // POSTing anything else gets a 400 and the pairing never completes.
+        const now = Date.now()
+        const list = (Array.isArray(p) ? p : (p.pending || [])).filter((x) => x && x.code && (!x.expiresAt || x.expiresAt > now))
         const box = document.getElementById('onbPending')
         if (!box) return
         if (!list.length) { box.innerHTML = `<span class="onb-hint">${escapeHtml(t('onboarding.step3.no_pending'))}</span>`; return }
         box.innerHTML = list.map((x) => {
-          const id = escapeHtml(String(x.id || x.chatId || x.userId || ''))
-          const label = escapeHtml(String(x.name || x.username || id))
-          return `<div class="onb-pending-row"><span>${label}</span><button class="btn-primary btn-compact onb-approve" data-id="${id}">${escapeHtml(t('onboarding.step3.approve_btn'))}</button></div>`
+          const code = escapeHtml(String(x.code))
+          const label = escapeHtml(String(x.senderId || x.chatId || '?')) + ' · ' + code
+          return `<div class="onb-pending-row"><span>${label}</span><button class="btn-primary btn-compact onb-approve" data-code="${code}">${escapeHtml(t('onboarding.step3.approve_btn'))}</button></div>`
         }).join('')
         box.querySelectorAll('.onb-approve').forEach((b) => b.addEventListener('click', async () => {
           b.disabled = true
           try {
-            await fetch(`/api/agents/${encodeURIComponent(mainAgentId())}/channels/telegram/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: b.dataset.id }) })
+            const res = await fetch(`/api/agents/${encodeURIComponent(mainAgentId())}/channels/telegram/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: b.dataset.code }) })
+            const d = await res.json().catch(() => ({}))
+            if (!res.ok) { b.disabled = false; onbMsg(d.error || t('onboarding.error'), true); return }
             onbMsg(t('onboarding.step3.approved'))
             setTimeout(refreshOnboarding, 1500)
           } catch (e) { b.disabled = false; onbMsg((e && e.message) || t('onboarding.error'), true) }

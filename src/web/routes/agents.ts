@@ -1227,7 +1227,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
       const approvedDir = join(chDir, 'approved')
       mkdirSync(approvedDir, { recursive: true })
-      writeFileSync(join(approvedDir, entry.senderId), '')
+      // Marker contents = chatId, per the plugin's /telegram:access pair
+      // contract (the channel server polls approved/ to send the "Paired!"
+      // confirmation; current server keys off the filename, the chatId
+      // contents keep us aligned with the documented format).
+      writeFileSync(join(approvedDir, entry.senderId), String(entry.chatId ?? ''))
 
       logger.info({ name, provider, senderId: entry.senderId, code }, 'Channel pairing approved')
       json(res, { ok: true, senderId: entry.senderId })
