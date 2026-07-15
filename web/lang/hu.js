@@ -1363,6 +1363,14 @@ window._i18n.hu = {
   'updates.toast.status_timeout':'A frissítés állapota nem érkezett meg időben. Nézd meg a store/update.log fájlt.',
 
   // --- Onboarding wizard ---
+  'onboarding.identity.tab':     'Név',
+  'onboarding.identity.desc':    'Nevezd el az asszisztensed, és add meg a saját neved. Ezt később is átírhatod.',
+  'onboarding.identity.agent_label': 'Az asszisztens neve',
+  'onboarding.identity.owner_label': 'A te neved',
+  'onboarding.identity.hint':    'A megjelenített nevet állítod: a rendszer belső azonosítóit ez nem érinti.',
+  'onboarding.identity.save_btn': 'Mentés és tovább',
+  'onboarding.identity.empty':   'Mindkét név megadása kötelező.',
+  'onboarding.identity.saved':   'Név elmentve.',
   'onboarding.title':            'Marveen beállítása',
   'onboarding.subtitle':         'Fejezd be a beállítást innen, a dashboardból, SSH nélkül.',
   'onboarding.saving':           'Mentés...',

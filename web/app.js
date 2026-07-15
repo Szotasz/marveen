@@ -10366,9 +10366,10 @@ async function fetchOnboardingStatus() {
   try { return await (await fetch('/api/onboarding/status')).json() } catch { return null }
 }
 function onboardingCurrentStep(s) {
-  if (!s.claudeAuthPresent || !s.agentsRunning) return 1
-  if (!s.telegramConfigured) return 2
-  if (!s.paired) return 3
+  if (!s.identityConfirmed) return 1
+  if (!s.claudeAuthPresent || !s.agentsRunning) return 2
+  if (!s.telegramConfigured) return 3
+  if (!s.paired) return 4
   return 0
 }
 async function initOnboarding() {
@@ -10394,14 +10395,25 @@ function renderOnboarding(s) {
     el.classList.toggle('done', n < step)
   })
   const body = document.getElementById('onboardingBody')
-  if (step === 1) body.innerHTML = onbStep1Html(s)
-  else if (step === 2) body.innerHTML = onbStep2Html()
+  if (step === 1) body.innerHTML = onbIdentityHtml(s)
+  else if (step === 2) body.innerHTML = onbStep1Html(s)
+  else if (step === 3) body.innerHTML = onbStep2Html()
   else body.innerHTML = onbStep3Html()
   wireOnboarding(step)
 }
 function onbMsg(text, isErr) {
   const el = document.getElementById('onbMsg')
   if (el) { el.textContent = text; el.className = 'onb-msg' + (isErr ? ' err' : ' ok') }
+}
+function onbIdentityHtml(s) {
+  return `<p>${escapeHtml(t('onboarding.identity.desc'))}</p>`
+    + `<label class="form-label-sm">${escapeHtml(t('onboarding.identity.agent_label'))}</label>`
+    + `<input id="onbAgentName" type="text" class="onb-input" maxlength="40" value="${escapeHtml(s.currentAgentName || '')}" autocomplete="off">`
+    + `<label class="form-label-sm">${escapeHtml(t('onboarding.identity.owner_label'))}</label>`
+    + `<input id="onbOwnerName" type="text" class="onb-input" maxlength="60" value="${escapeHtml(s.currentOwnerName || '')}" autocomplete="off">`
+    + `<div class="onb-hint">${escapeHtml(t('onboarding.identity.hint'))}</div>`
+    + `<button class="btn-primary btn-compact" id="onbIdentityBtn">${escapeHtml(t('onboarding.identity.save_btn'))}</button>`
+    + `<div id="onbMsg" class="onb-msg"></div>`
 }
 function onbStep1Html(s) {
   return `<p>${escapeHtml(t('onboarding.step1.desc'))}</p>`
@@ -10433,6 +10445,23 @@ function onbStep3Html() {
 }
 function wireOnboarding(step) {
   if (step === 1) {
+    const idBtn = document.getElementById('onbIdentityBtn')
+    if (idBtn) idBtn.addEventListener('click', async () => {
+      const agentName = (document.getElementById('onbAgentName').value || '').trim()
+      const ownerName = (document.getElementById('onbOwnerName').value || '').trim()
+      if (!agentName || !ownerName) { onbMsg(t('onboarding.identity.empty'), true); return }
+      idBtn.disabled = true; onbMsg(t('onboarding.saving'))
+      try {
+        const res = await fetch('/api/onboarding/identity', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agentName, ownerName }) })
+        const d = await res.json().catch(() => ({}))
+        if (!res.ok) { idBtn.disabled = false; onbMsg(d.error || t('onboarding.error'), true); return }
+        onbMsg(t('onboarding.identity.saved'))
+        await refreshOnboarding()
+      } catch (e) { idBtn.disabled = false; onbMsg((e && e.message) || t('onboarding.error'), true) }
+    })
+    return
+  }
+  if (step === 2) {
     const authBtn = document.getElementById('onbAuthBtn')
     if (authBtn) authBtn.addEventListener('click', async () => {
       const token = (document.getElementById('onbToken').value || '').trim()
@@ -10457,7 +10486,7 @@ function wireOnboarding(step) {
         setTimeout(refreshOnboarding, 2500)
       } catch (e) { launchBtn.disabled = false; onbMsg((e && e.message) || t('onboarding.error'), true) }
     })
-  } else if (step === 2) {
+  } else if (step === 3) {
     const botBtn = document.getElementById('onbBotBtn')
     if (botBtn) botBtn.addEventListener('click', async () => {
       const botToken = (document.getElementById('onbBotToken').value || '').trim()
@@ -10471,7 +10500,7 @@ function wireOnboarding(step) {
         setTimeout(refreshOnboarding, 2000)
       } catch (e) { botBtn.disabled = false; onbMsg((e && e.message) || t('onboarding.error'), true) }
     })
-  } else if (step === 3) {
+  } else if (step === 4) {
     const refreshBtn = document.getElementById('onbRefreshBtn')
     const loadPending = async () => {
       try {

@@ -1365,6 +1365,14 @@ window._i18n.en = {
   'updates.toast.status_timeout':'Update status did not arrive in time. Check store/update.log.',
 
   // --- Onboarding wizard ---
+  'onboarding.identity.tab':     'Name',
+  'onboarding.identity.desc':    'Name your assistant and tell it your name. You can change these later.',
+  'onboarding.identity.agent_label': 'Assistant name',
+  'onboarding.identity.owner_label': 'Your name',
+  'onboarding.identity.hint':    'This sets the displayed name only: internal system ids are not affected.',
+  'onboarding.identity.save_btn': 'Save and continue',
+  'onboarding.identity.empty':   'Both names are required.',
+  'onboarding.identity.saved':   'Name saved.',
   'onboarding.title':            'Set up Marveen',
   'onboarding.subtitle':         'Finish setup here, from the dashboard, no SSH needed.',
   'onboarding.saving':           'Saving...',
