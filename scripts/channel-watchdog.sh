@@ -7,10 +7,11 @@
 # is down. It is the COARSE net (total-pipe-death / session-wedge); the
 # dashboard's userbot inbound-probe handles the finer inbound-only deafness.
 #
-# Signal: store/.channel-keepalive mtime. The keep-alive scheduled task does a
-# real Telegram MCP edit_message round-trip every ~6 min and touches that file
-# on success, so a stale file means the session's MCP pipe is no longer doing
-# round-trips (wedged / deaf).
+# Signal: store/.channel-keepalive mtime. Two token-free producers keep it
+# fresh: channel-monitor advances it on organic inbound, and the idle-path
+# channel-keepalive-probe.sh timer touches it every ~3 min while the telegram
+# poller is alive under the channels session. A stale file therefore means the
+# session's channel pipe is genuinely down (wedged / deaf), not merely quiet.
 #
 # Recovery: `tmux respawn-pane` of ONLY the <id>-channels pane -- the precise,
 # fleet-safe restart of just the main channels session. (Historically a

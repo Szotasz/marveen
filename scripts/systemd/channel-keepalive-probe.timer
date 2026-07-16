@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the Marveen token-free channel keepalive probe every 3 minutes
+
+[Timer]
+# Fires well inside channel-watchdog's 15-min staleness threshold so an idle
+# but healthy session never ages into a false respawn. Offset from the watchdog
+# so the probe refreshes freshness before the watchdog judges it.
+OnBootSec=90s
+OnUnitActiveSec=3min
+AccuracySec=20s
+
+[Install]
+WantedBy=timers.target
