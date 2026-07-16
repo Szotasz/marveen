@@ -36,13 +36,25 @@ SETTINGS="$HOME/.claude/settings.json"
 # launchd labels. Derive it from the install .env so a renamed install
 # (BOT_NAME != Marveen) does NOT get an orphaned marveen-* unit left behind.
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-if [ -f "$INSTALL_DIR/.env" ]; then
-  set -a
-  # shellcheck disable=SC1091
-  . "$INSTALL_DIR/.env"
-  set +a
-fi
-SERVICE_ID="${SERVICE_ID:-${MAIN_AGENT_ID:-marveen}}"
+# Read a single key from a .env file without sourcing it.
+# Sourcing executes the file: an unquoted value with spaces (e.g. OWNER_NAME=Foo Bar)
+# causes bash to run the trailing word as a command; a $(...) value runs arbitrary code.
+# This function uses grep + pure string manipulation -- no eval, no subshell execution.
+read_env() {
+  [ -f "$INSTALL_DIR/.env" ] || return 0
+  local v
+  v="$(grep -E "^${1}=" "$INSTALL_DIR/.env" | tail -1)" || return 0
+  v="${v#*=}"
+  case "$v" in
+    '"'*) v="${v#\"}"; v="${v%\"}" ;;
+    "'"*) v="${v#\'}"; v="${v%\'}" ;;
+  esac
+  printf '%s' "$v"
+}
+SERVICE_ID="$(read_env SERVICE_ID)"
+MAIN_AGENT_ID_ENV="$(read_env MAIN_AGENT_ID)"
+BOT_NAME="$(read_env BOT_NAME)"
+SERVICE_ID="${SERVICE_ID:-${MAIN_AGENT_ID_ENV:-marveen}}"
 BOT_NAME="${BOT_NAME:-Marveen}"
 
 SUBMIT_HOOK="$DEST_DIR/telegram_progress.py"
