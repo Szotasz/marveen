@@ -10,7 +10,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { isEgressBlocked } from '../../scripts/hooks/egress-gate.mjs'
+import { isEgressBlocked, loadRuntimeAllowlist } from '../../scripts/hooks/egress-gate.mjs'
 import {
   injectEgressGate,
   ensureEgressGate,
@@ -136,6 +136,108 @@ describe('isEgressBlocked', () => {
     // Empty url should not block (fail-open for malformed input)
     expect(isEgressBlocked('WebFetch', { url: '' })).toBe(false)
     expect(isEgressBlocked('WebFetch', {})).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 2b. Runtime allowlist: isEgressBlocked with runtimeList parameter
+// ---------------------------------------------------------------------------
+describe('isEgressBlocked -- runtime allowlist', () => {
+  it('allows a URL that matches a runtime prefix', () => {
+    const rt = { prefixes: ['https://docs.example.com/api/'], domains: [] }
+    expect(isEgressBlocked('WebFetch', { url: 'https://docs.example.com/api/v1/ref' }, rt)).toBe(false)
+  })
+
+  it('blocks a URL that does NOT match the runtime prefix (prefix must be exact start)', () => {
+    const rt = { prefixes: ['https://docs.example.com/api/'], domains: [] }
+    // Wrong path: starts with domain but not the specific prefix
+    expect(isEgressBlocked('WebFetch', { url: 'https://docs.example.com/other/' }, rt)).toBe(true)
+  })
+
+  it('allows a URL whose hostname exactly matches a runtime domain', () => {
+    const rt = { domains: ['docs.anthropic.com'], prefixes: [] }
+    expect(isEgressBlocked('WebFetch', { url: 'https://docs.anthropic.com/reference/messages' }, rt)).toBe(false)
+  })
+
+  it('allows a subdomain of a runtime domain', () => {
+    const rt = { domains: ['anthropic.com'], prefixes: [] }
+    expect(isEgressBlocked('WebFetch', { url: 'https://docs.anthropic.com/reference' }, rt)).toBe(false)
+    expect(isEgressBlocked('WebFetch', { url: 'https://status.anthropic.com/' }, rt)).toBe(false)
+  })
+
+  it('does NOT allow a domain that merely contains the runtime domain as a substring (path/query trick)', () => {
+    // "evil.com/?x=docs.anthropic.com" must NOT match domain "docs.anthropic.com"
+    const rt = { domains: ['docs.anthropic.com'], prefixes: [] }
+    expect(isEgressBlocked('WebFetch', { url: 'https://evil.com/?x=docs.anthropic.com' }, rt)).toBe(true)
+  })
+
+  it('does NOT allow a domain that has the allowed domain as a suffix segment (superdomain attack)', () => {
+    // "evilanthropic.com" must NOT match domain "anthropic.com"
+    const rt = { domains: ['anthropic.com'], prefixes: [] }
+    expect(isEgressBlocked('WebFetch', { url: 'https://evilanthropiccom.io/' }, rt)).toBe(true)
+    // "notanthropic.com" must not match via suffix coincidence
+    expect(isEgressBlocked('WebFetch', { url: 'https://notanthropic.com/' }, rt)).toBe(true)
+  })
+
+  it('blocks a non-allowlisted URL even with a runtime domain list (hardcoded list still guards)', () => {
+    // When the runtime list is present but the URL matches neither it nor the built-in list,
+    // the URL must be blocked. Missing file -> empty runtime list -> hardcoded list still enforced.
+    const rt = { domains: ['trusted.example.com'], prefixes: [] }
+    expect(isEgressBlocked('WebFetch', { url: 'https://untrusted.example.com/data' }, rt)).toBe(true)
+    // Hardcoded entries still work with a non-empty runtime list present
+    expect(isEgressBlocked('WebFetch', { url: 'https://api.github.com/repos/x/y' }, rt)).toBe(false)
+  })
+
+  it('treats an empty runtimeList as no extra allowance (default parameter)', () => {
+    // Calling with explicit empty lists is the same as calling with no runtimeList at all
+    expect(isEgressBlocked('WebFetch', { url: 'https://random.example.com' }, { domains: [], prefixes: [] })).toBe(true)
+    expect(isEgressBlocked('WebFetch', { url: 'https://random.example.com' })).toBe(true)
+  })
+
+  it('handles an unparseable URL in domain-match path (fail-safe: block)', () => {
+    const rt = { domains: ['example.com'], prefixes: [] }
+    // "not-a-url" is not a valid URL; new URL() throws, which must block rather than throw
+    expect(isEgressBlocked('WebFetch', { url: 'not-a-valid-url' }, rt)).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 2c. loadRuntimeAllowlist: fail-open file I/O
+// ---------------------------------------------------------------------------
+describe('loadRuntimeAllowlist', () => {
+  it('exports loadRuntimeAllowlist as a function', () => {
+    expect(typeof loadRuntimeAllowlist).toBe('function')
+  })
+
+  it('returns empty domain/prefix lists when the file does not exist (fail-open)', () => {
+    // The test environment does not have store/egress-allowlist.json, so it must
+    // fail-open: return empty lists, not throw.
+    const result = loadRuntimeAllowlist()
+    expect(result).toHaveProperty('domains')
+    expect(result).toHaveProperty('prefixes')
+    expect(Array.isArray(result.domains)).toBe(true)
+    expect(Array.isArray(result.prefixes)).toBe(true)
+  })
+
+  it('egress-gate.mjs exports loadRuntimeAllowlist (source check)', () => {
+    const src = readFileSync(join(REPO_ROOT, 'scripts', 'hooks', 'egress-gate.mjs'), 'utf8')
+    expect(src).toContain('export function loadRuntimeAllowlist(')
+  })
+
+  it('egress-gate.mjs references RUNTIME_ALLOWLIST_PATH (store/egress-allowlist.json)', () => {
+    const src = readFileSync(join(REPO_ROOT, 'scripts', 'hooks', 'egress-gate.mjs'), 'utf8')
+    expect(src).toContain('egress-allowlist.json')
+  })
+
+  it('store/egress-allowlist.json is NOT committed (store/ is gitignored)', () => {
+    // This file must never be committed upstream -- it is operator-managed at runtime.
+    // Verify it's in .gitignore (or absent from the git index).
+    const gitignore = readFileSync(join(REPO_ROOT, '.gitignore'), 'utf8')
+    const storeIgnored = gitignore.split('\n').some((line) => {
+      const trimmed = line.trim()
+      return trimmed === 'store/' || trimmed === 'store' || trimmed === '/store/' || trimmed === '/store'
+    })
+    expect(storeIgnored).toBe(true)
   })
 })
 
