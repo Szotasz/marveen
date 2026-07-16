@@ -4844,6 +4844,14 @@ document.getElementById('scheduleType').addEventListener('change', () => {
   }
 })
 
+// Resolved once at page load: the server's actual bind port (WEB_PORT), not
+// window.location.port which reflects the browser-side URL (e.g. 8443 for a
+// tailscale-serve HTTPS PWA) and would be wrong in agent curl prompts.
+let __serverPort = 3420
+fetch('/api/network-info').then(r => r.ok ? r.json() : {}).then(info => {
+  if (info.port) __serverPort = info.port
+}).catch(() => {})
+
 // Heartbeat templates
 const HEARTBEAT_TEMPLATES = {
   calendar: {
@@ -4858,7 +4866,7 @@ const HEARTBEAT_TEMPLATES = {
   },
   kanban: {
     desc: () => t('tasks.heartbeat.tpl.kanban'),
-    prompt: 'Ellenorizd a kanban tablat (curl -s http://localhost:3420/api/kanban). Ha van olyan kartya aminek ma jar le a hatrideje vagy urgent prioritasu es meg nincs done, szolj Telegramon. Ha minden rendben, ne irj semmit.',
+    prompt: () => `Ellenorizd a kanban tablat (curl -s http://localhost:${__serverPort}/api/kanban). Ha van olyan kartya aminek ma jar le a hatrideje vagy urgent prioritasu es meg nincs done, szolj Telegramon. Ha minden rendben, ne irj semmit.`,
     schedule: '0 */2 * * *',
   },
   full: {
@@ -4872,7 +4880,7 @@ document.getElementById('heartbeatTemplate').addEventListener('change', () => {
   const tpl = HEARTBEAT_TEMPLATES[document.getElementById('heartbeatTemplate').value]
   if (!tpl) return
   document.getElementById('scheduleDesc').value = typeof tpl.desc === 'function' ? tpl.desc() : tpl.desc
-  document.getElementById('schedulePrompt').value = tpl.prompt
+  document.getElementById('schedulePrompt').value = typeof tpl.prompt === 'function' ? tpl.prompt() : tpl.prompt
   document.getElementById('scheduleCustomCron').value = tpl.schedule
   scheduleFrequency.value = 'custom'
   customScheduleGroup.hidden = false
