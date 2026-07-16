@@ -65,7 +65,10 @@ def token(sd):
 
 
 def api(tok, method, payload):
-    url = f"https://api.telegram.org/bot{tok}/{method}"
+    # Base is overridable (TELEGRAM_API_BASE) so tests can point it at a local
+    # stub; defaults to the real Bot API, so production is unchanged.
+    base = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org").rstrip("/")
+    url = f"{base}/bot{tok}/{method}"
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data,
                                  headers={"Content-Type": "application/json"})

@@ -49,9 +49,13 @@ SUBMIT_HOOK="$DEST_DIR/telegram_progress.py"
 STOP_HOOK="$DEST_DIR/telegram_progress_clear.py"
 REPLY_HOOK="$DEST_DIR/telegram_progress_reply_clear.py"
 WATCHDOG="$DEST_DIR/telegram_progress_watchdog.py"
+# Agent-invoked CLI (not a settings.json hook): the Bot API fallback sender that
+# clears the placeholder on manual delivery so the Stop hook never re-sends.
+FALLBACK_SEND="$DEST_DIR/telegram_fallback_send.py"
 
 for f in telegram_progress.py telegram_progress_clear.py \
-         telegram_progress_reply_clear.py telegram_progress_watchdog.py; do
+         telegram_progress_reply_clear.py telegram_progress_watchdog.py \
+         telegram_fallback_send.py; do
   if [ ! -f "$SRC_DIR/$f" ]; then
     echo "❌ Source hook not found: $SRC_DIR/$f" >&2
     exit 1
@@ -63,7 +67,8 @@ cp "$SRC_DIR/telegram_progress.py"             "$SUBMIT_HOOK"
 cp "$SRC_DIR/telegram_progress_clear.py"       "$STOP_HOOK"
 cp "$SRC_DIR/telegram_progress_reply_clear.py" "$REPLY_HOOK"
 cp "$SRC_DIR/telegram_progress_watchdog.py"    "$WATCHDOG"
-chmod +x "$SUBMIT_HOOK" "$STOP_HOOK" "$REPLY_HOOK" "$WATCHDOG"
+cp "$SRC_DIR/telegram_fallback_send.py"        "$FALLBACK_SEND"
+chmod +x "$SUBMIT_HOOK" "$STOP_HOOK" "$REPLY_HOOK" "$WATCHDOG" "$FALLBACK_SEND"
 echo "✓ Hooks installed in $DEST_DIR"
 
 if [ ! -f "$SETTINGS" ]; then
