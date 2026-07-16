@@ -300,12 +300,17 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // hooks. Re-applied on every spawn (this function regenerates settings.json),
   // so they survive respawns. (a) email-send block -- outbound email routes
   // through the main agent. (b) self-pace block -- no ScheduleWakeup/Cron*/Bash
-  // self-injection. The MAIN_AGENT_ID is exempt from both. Merge/deploy is NOT
-  // gated: the operator authorizes those autonomously (so test/deploy runs are
-  // never blocked); the actual incident vector -- an agent answering its OWN
-  // posed question -- is covered by the self-pace block + the #0 CLAUDE.md doctrine.
+  // self-injection. (c) egress gate -- WebFetch calls that are not on the known
+  // API allowlist are hard-blocked and logged; arbitrary web content must go
+  // through the quarantine-reader sub-agent. The MAIN_AGENT_ID is exempt from
+  // (a) and (b) but NOT from (c) -- every agent can be hijacked via an injected
+  // WebFetch call, including the main one. Merge/deploy is NOT gated: the operator
+  // authorizes those autonomously (so test/deploy runs are never blocked); the
+  // actual incident vector -- an agent answering its OWN posed question -- is
+  // covered by the self-pace block + the #0 CLAUDE.md doctrine.
   if (agentGetsEmailGate(name)) injectEmailSendGate(existing)
   if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
+  injectEgressGate(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
 
@@ -379,6 +384,79 @@ export function injectSelfPaceGate(existing: Record<string, unknown>): void {
   ]
 }
 
+// Idempotently wire the egress-gate PreToolUse hook (hard-blocks WebFetch to
+// any URL not on the known API allowlist, logs blocked calls). Applied to ALL
+// agents including MAIN_AGENT_ID -- the hook defends against prompt-injection
+// that exfiltrates data via an outbound WebFetch, and the main agent faces the
+// same risk as sub-agents. Same dedupe shape as the other gate injectors.
+export function injectEgressGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = `node ${join(PROJECT_ROOT, 'scripts', 'hooks', 'egress-gate.mjs')}`
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'WebFetch',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('egress-gate.mjs')),
+    entry,
+  ]
+}
+
+// Idempotent migration: ensure every agent's settings.json carries the egress
+// gate hook. Called at server startup (alongside ensureAgentStalenessHook) so
+// the hook is applied to both existing and newly-created agents without a full
+// respawn. Returns true if the file was updated, false if already wired.
+export function ensureEgressGate(name: string): boolean {
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const command = `node ${join(PROJECT_ROOT, 'scripts', 'hooks', 'egress-gate.mjs')}`
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  // Idempotency: already wired if any entry references the egress-gate script.
+  if (JSON.stringify(ptu).includes('egress-gate.mjs')) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectEgressGate(settings)
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
+// Deploy the quarantine-reader sub-agent definition to an agent's
+// .claude/agents/ directory. The template lives in templates/agents/ (tracked
+// in git); sub-agent definitions under agents/ are gitignored at runtime.
+// Idempotent: only writes when the file is absent or the template is newer.
+// Returns true if the file was written, false if already up-to-date.
+export function ensureQuarantineReader(name: string): boolean {
+  const tplPath = join(PROJECT_ROOT, 'templates', 'sub-agents', 'quarantine-reader.md')
+  if (!existsSync(tplPath)) return false
+  let destDir: string
+  if (name === MAIN_AGENT_ID) {
+    destDir = join(homedir(), '.claude', 'agents')
+  } else {
+    destDir = join(agentDir(name), '.claude', 'agents')
+  }
+  mkdirSync(destDir, { recursive: true })
+  const destPath = join(destDir, 'quarantine-reader.md')
+  // Idempotency: already deployed when file exists and matches the template.
+  if (existsSync(destPath)) {
+    try {
+      if (readFileSync(destPath, 'utf-8') === readFileSync(tplPath, 'utf-8')) return false
+    } catch { /* fall through to re-write */ }
+  }
+  copyFileSync(tplPath, destPath)
+  return true
+}
+
 // Copy the repo's `scheduled-tasks/<task>/task-config.json` to the
 // destination with the `agent` field rewritten to the host's
 // MAIN_AGENT_ID. The repo-side configs ship with `"agent": "marveen"`
@@ -447,8 +525,14 @@ export function scaffoldAgentDir(name: string) {
   const dir = agentDir(name)
   mkdirSync(join(dir, '.claude', 'skills'), { recursive: true })
   mkdirSync(join(dir, '.claude', 'hooks'), { recursive: true })
+  mkdirSync(join(dir, '.claude', 'agents'), { recursive: true })
   mkdirSync(channelStateDir(CHANNEL_PROVIDER, dir), { recursive: true })
   mkdirSync(join(dir, 'memory'), { recursive: true })
+
+  // Deploy the quarantine-reader sub-agent definition from the template so every
+  // scaffolded agent can use it for safe web/RSS fetching without calling WebFetch
+  // directly in the main context (where untrusted content would run as instructions).
+  ensureQuarantineReader(name)
 
   // Initialize empty files if they don't exist
   const memoryMd = join(dir, 'memory', 'MEMORY.md')

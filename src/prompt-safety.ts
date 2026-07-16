@@ -119,6 +119,34 @@ export function wrapUntrusted(source: string, content: string | null | undefined
   return `<untrusted source="${safeSource}">\n${scrubbed}\n</untrusted>`
 }
 
+// Generate a per-fetch nonce for datamarking web-fetched content. The nonce is
+// included in the <untrusted> tag so that if an injection attempt exfiltrates
+// content (e.g. by appending it to a URL), the nonce in the exfiltrated data
+// traces back to the specific fetch that was the injection vector. The nonce is
+// NOT a secret: its value is visible in the prompt. Its purpose is attribution.
+export function generateFetchNonce(): string {
+  return randomBytes(6).toString('hex')
+}
+
+// Wrap web-fetched content with a per-fetch nonce embedded in the tag. Use
+// this instead of wrapUntrusted for any content obtained via WebFetch or the
+// quarantine sub-agent. The nonce appears in prompt context; if the fetched
+// content triggers an exfiltration tool call, the tool input will carry the
+// nonce, pointing to the exact fetch that delivered the injected payload.
+export function wrapUntrustedFetch(
+  url: string,
+  content: string | null | undefined,
+  nonce: string,
+): string {
+  if (content == null) return ''
+  const text = String(content)
+  if (text.length === 0) return ''
+  const scrubbed = text.replace(SECURITY_TAG_RX, STRIPPED_SENTINEL)
+  // Strip chars that could break out of an XML attribute; nonce is already hex.
+  const safeUrl = url.replace(/[^a-zA-Z0-9.:/_?&=%-]/g, '').slice(0, 256)
+  return `<untrusted source="web-fetch:${safeUrl}" fetch-nonce="${nonce}">\n${scrubbed}\n</untrusted>`
+}
+
 export function wrapTrustedPeer(source: string, content: string | null | undefined): string {
   if (content == null) return ''
   const text = String(content)
