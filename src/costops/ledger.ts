@@ -326,7 +326,7 @@ export function getCostSummary(
   const lines = db.prepare(`
     SELECT source_id, billed_cost, charge_category, confidence, data_freshness
     FROM cost_line_items
-    WHERE charge_period_start < @end AND charge_period_end > @start
+    WHERE charge_period_start < @end AND charge_period_end > @start AND voided_at IS NULL
   `).all({ start: win.start, end: win.end }) as LineRow[]
 
   let current_spend = 0
@@ -431,7 +431,7 @@ export function getCostSummary(
   const prevWin = monthWindow(win.start - 86400)
   const prevRows = db.prepare(`
     SELECT source_id, billed_cost, charge_category, confidence, data_freshness
-    FROM cost_line_items WHERE charge_period_start < @end AND charge_period_end > @start
+    FROM cost_line_items WHERE charge_period_start < @end AND charge_period_end > @start AND voided_at IS NULL
   `).all({ start: prevWin.start, end: prevWin.end }) as LineRow[]
   let previous_month: CostSummary['previous_month'] = null
   if (prevRows.length > 0) {
