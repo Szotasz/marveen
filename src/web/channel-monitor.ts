@@ -19,6 +19,8 @@ import {
   stopAgentProcess,
   scheduleIdentitySetup,
   ensureMainAgentIsolatedConfigDir,
+  ensureSharedClaudeOnboarded,
+  hasFleetOauthToken,
   FLEET_OAUTH_TOKEN_PATH,
 } from './agent-process.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence } from './channel-poller-reap.js'
@@ -498,6 +500,15 @@ export function buildMainSessionRespawnCmd(opts: {
    * the shared root (unchanged behaviour for installs with isolation off).
    */
   isolatedConfigDir?: string | null
+  /**
+   * When true (fleet setup-token file present) and there is NO isolated config
+   * dir, the respawn still exports CLAUDE_CODE_OAUTH_TOKEN from the fleet token
+   * file. On Linux the isolatedConfigDir is always null (macOS-only), so before
+   * this leg a wizard-entered token never reached a respawned main session at
+   * all -- it fell back to ~/.claude/.credentials.json (2026-07-15 bootcamp,
+   * bug 2 latent path). Keeps main + sub-agents on the SAME auth source.
+   */
+  fleetToken?: boolean
 }): string {
   return [
     'export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"',
@@ -514,7 +525,9 @@ export function buildMainSessionRespawnCmd(opts: {
     // token is read at launch via $(cat) so the secret never lands in argv/`ps`.
     ...(opts.isolatedConfigDir
       ? [`&& export CLAUDE_CONFIG_DIR='${opts.isolatedConfigDir}' && export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')"`]
-      : []),
+      : opts.fleetToken
+        ? [`&& export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')"`]
+        : []),
     '&&', opts.claudePath,
     ...(opts.continueSession ? ['--continue'] : []),
     '--dangerously-skip-permissions',
@@ -560,6 +573,11 @@ export async function resumeMarveenSession(): Promise<boolean> {
       logger.warn({ err }, 'resumeMarveenSession: detached-claude reap failed (continuing)')
     }
 
+    // A respawn onto the shared ~/.claude parks on the first-run "Select login
+    // method" picker when ~/.claude.json lost hasCompletedOnboarding (2026-07-15
+    // bootcamp mass-"/login"); idempotent re-seed before every respawn.
+    ensureSharedClaudeOnboarded()
+
     const claudeCmd = buildMainSessionRespawnCmd({
       claudePath: CLAUDE,
       pluginId: provider.pluginId,
@@ -570,6 +588,7 @@ export async function resumeMarveenSession(): Promise<boolean> {
       // rotating Keychain and 401s. Returns null when isolation is off/no token,
       // preserving the prior shared-root behaviour.
       isolatedConfigDir: ensureMainAgentIsolatedConfigDir(),
+      fleetToken: hasFleetOauthToken(),
     })
     execFileSync(TMUX, ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
 
@@ -762,6 +781,8 @@ export function createMainChannelsSession(): boolean {
 function respawnMarveenSessionFresh(): boolean {
   const provider = getProvider(getMainAgentProvider())
   try {
+    // Same first-run-picker guard as resumeMarveenSession.
+    ensureSharedClaudeOnboarded()
     const claudeCmd = buildMainSessionRespawnCmd({
       claudePath: CLAUDE,
       pluginId: provider.pluginId,
@@ -771,6 +792,7 @@ function respawnMarveenSessionFresh(): boolean {
       // respawn also skips channels.sh, so it must carry the isolated config
       // itself or it 401s on the rotating macOS Keychain. null when off/no token.
       isolatedConfigDir: ensureMainAgentIsolatedConfigDir(),
+      fleetToken: hasFleetOauthToken(),
     })
     execFileSync(TMUX, ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
     logger.warn({ provider: provider.type }, 'Hard restart: marveen session respawned fresh (no --continue)')

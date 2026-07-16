@@ -50,6 +50,28 @@ describe('buildMainSessionRespawnCmd', () => {
     expect(buildMainSessionRespawnCmd({ ...base, continueSession: true })).toContain('--continue')
     expect(buildMainSessionRespawnCmd({ ...base, continueSession: false })).not.toContain('--continue')
   })
+
+  // 2026-07-15 bootcamp bug 2 latent path: on Linux isolatedConfigDir is always
+  // null, so a wizard-entered fleet token NEVER reached a respawned main
+  // session -- it silently fell back to ~/.claude/.credentials.json. The
+  // fleetToken leg closes that: token export WITHOUT a config-dir override.
+  it('exports the fleet token (no CLAUDE_CONFIG_DIR) when fleetToken is set and isolation is off', () => {
+    const cmd = buildMainSessionRespawnCmd({ ...base, continueSession: false, fleetToken: true })
+    expect(cmd).toContain('export CLAUDE_CODE_OAUTH_TOKEN="$(cat ')
+    expect(cmd).not.toContain('CLAUDE_CONFIG_DIR')
+  })
+
+  it('exports BOTH the isolated config dir and the token when isolation is on (unchanged macOS contract)', () => {
+    const cmd = buildMainSessionRespawnCmd({ ...base, continueSession: false, isolatedConfigDir: '/tmp/iso', fleetToken: true })
+    expect(cmd).toContain("export CLAUDE_CONFIG_DIR='/tmp/iso'")
+    expect(cmd).toContain('export CLAUDE_CODE_OAUTH_TOKEN="$(cat ')
+  })
+
+  it('exports no auth env at all without a fleet token or isolation (unchanged legacy contract)', () => {
+    const cmd = buildMainSessionRespawnCmd({ ...base, continueSession: false })
+    expect(cmd).not.toContain('CLAUDE_CODE_OAUTH_TOKEN')
+    expect(cmd).not.toContain('CLAUDE_CONFIG_DIR')
+  })
 })
 
 // CONTRACT: the post-resume guard (CC 2.1.193) escalates to a fresh respawn iff
