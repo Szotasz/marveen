@@ -9,6 +9,7 @@ import {
   readSummarySource,
   summarySourceHash,
   containsPrivateData,
+  ownerScrubNeedle,
   pickStaleAgents,
   failureBackoffMs,
   generateOneSummary,
@@ -56,9 +57,29 @@ describe('roleSpecificHead', () => {
 })
 
 describe('containsPrivateData (deterministic outbound scrub)', () => {
-  it('catches the owner name case-insensitively, including inflected forms', () => {
-    expect(containsPrivateData(`This agent helps ${OWNER_NAME} with tasks`)).toBe('owner name')
-    expect(containsPrivateData(`Segit ${OWNER_NAME.toUpperCase()}nak mindenben`)).toBe('owner name')
+  // OWNER_NAME is a boot-time const, so the integration expectation depends on
+  // whether this environment has a real owner configured; the pure needle
+  // tests below pin BOTH branches deterministically.
+  const ownerConfigured = ownerScrubNeedle(OWNER_NAME) !== ''
+
+  it('catches a CONFIGURED owner name case-insensitively (incl. inflected forms); never the distribution placeholder', () => {
+    if (ownerConfigured) {
+      expect(containsPrivateData(`This agent helps ${OWNER_NAME} with tasks`)).toBe('owner name')
+      expect(containsPrivateData(`Segit ${OWNER_NAME.toUpperCase()}nak mindenben`)).toBe('owner name')
+    } else {
+      // Placeholder install: the generic word "owner" must NOT scrub -- fixed
+      // template text like "owner channels" would false-positive and suppress
+      // every capability summary (PR #629 regression).
+      expect(containsPrivateData('Coordinates the fleet and the owner channels')).toBe(null)
+    }
+  })
+
+  it('ownerScrubNeedle: placeholder maps to empty (skipped), a real name passes through', () => {
+    expect(ownerScrubNeedle('Owner')).toBe('')
+    expect(ownerScrubNeedle('  owner  ')).toBe('')
+    expect(ownerScrubNeedle('Szabolcs')).toBe('Szabolcs')
+    expect(ownerScrubNeedle('')).toBe('')
+    expect(ownerScrubNeedle('Owner', 'CustomPlaceholder')).toBe('Owner')
   })
 
   it('catches internal system literals and the token path', () => {

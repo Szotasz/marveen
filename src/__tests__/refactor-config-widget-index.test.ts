@@ -24,13 +24,17 @@ describe('OWNER_NAME default value', () => {
   it('does not fall back to a personal name', () => {
     // Read the raw source to catch the literal default without side-effecting
     // the running config (which may have OWNER_NAME set in the environment).
+    // The default is routed through the exported OWNER_NAME_PLACEHOLDER const
+    // (the federation scrubber needs to recognise it), so assert both the
+    // placeholder literal and the wiring.
     const src = readFileSync(join(REPO_ROOT, 'src', 'config.ts'), 'utf8')
-    const match = src.match(/OWNER_NAME\s*=\s*env\['OWNER_NAME'\]\s*\?\?\s*'([^']+)'/)
-    expect(match, 'OWNER_NAME ?? fallback not found in config.ts').toBeTruthy()
-    const defaultValue = match![1]
+    const placeholderMatch = src.match(/OWNER_NAME_PLACEHOLDER\s*=\s*'([^']+)'/)
+    expect(placeholderMatch, 'OWNER_NAME_PLACEHOLDER literal not found in config.ts').toBeTruthy()
+    const defaultValue = placeholderMatch![1]
     expect(defaultValue).toBe('Owner')
     // Explicitly reject the old hardcoded personal name so a revert is caught.
     expect(defaultValue).not.toBe('Szabolcs')
+    expect(src).toMatch(/OWNER_NAME\s*=\s*env\['OWNER_NAME'\]\s*\?\?\s*OWNER_NAME_PLACEHOLDER/)
   })
 })
 

@@ -55,7 +55,13 @@ export const SLACK_BOT_TOKEN = env['SLACK_BOT_TOKEN'] ?? ''
 export const SLACK_APP_TOKEN = env['SLACK_APP_TOKEN'] ?? ''
 export const SLACK_CHANNEL_ID = env['SLACK_CHANNEL_ID'] ?? ''
 
-export const OWNER_NAME = env['OWNER_NAME'] ?? 'Owner'
+// Distribution placeholder for an unconfigured owner name. Exported so
+// consumers that treat the owner name as PRIVATE data (federation outbound
+// scrub) can tell "a real configured name" apart from this generic English
+// word -- scrubbing the literal word "owner" false-positives on fixed template
+// text like "owner channels".
+export const OWNER_NAME_PLACEHOLDER = 'Owner'
+export const OWNER_NAME = env['OWNER_NAME'] ?? OWNER_NAME_PLACEHOLDER
 // Shared Google Drive folder ID the fleet writes deliverables into. Empty by
 // default (distribution-safe: no owner-specific folder is baked into a fresh
 // install's generated agent CLAUDE.md); set OWNER_DRIVE_FOLDER in .env to wire
