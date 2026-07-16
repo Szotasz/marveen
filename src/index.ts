@@ -16,7 +16,7 @@ import { runDecaySweep, runDailyDigest } from './memory.js'
 import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
 import { ensureHeartbeatAgent, shouldBootHeartbeatAgent, HEARTBEAT_AGENT_NAME } from './web/heartbeat-agent-scaffold.js'
 import { startAgentProcess } from './web/agent-process.js'
-import { renameSharedCredentialsIfSafe } from './web/claude-credentials-guard.js'
+import { renameSharedCredentialsIfSafe, fleetTokenBootPass } from './web/claude-credentials-guard.js'
 import { startWebServer } from './web.js'
 import { logger } from './logger.js'
 import { startInviteMonitor, stopInviteMonitor } from './web/channel-invites.js'
@@ -495,6 +495,19 @@ async function main(): Promise<void> {
   // never ran at boot at all (found 2026-07-13 while diagnosing recurring
   // dead-token incidents).
   renameSharedCredentialsIfSafe()
+
+  // Fleet-token boot pass, DEFERRED and fire-and-forget: it live-probes a
+  // credential (one real `claude -p` call, up to 60s) so it must never block
+  // boot. Backfills store/.claude-oauth-token from a terminal-pasted
+  // `claude setup-token` (which lands only in ~/.claude/.credentials.json and
+  // silently disables per-agent isolation AND the rename guard -- 2026-07-15
+  // bootcamp root gap), validates a never-verified existing fleet token, and
+  // quarantines one the probe proves dead.
+  setTimeout(() => {
+    fleetTokenBootPass()
+      .then((result) => logger.info({ result }, 'credentials-guard: fleet-token boot pass'))
+      .catch((err) => logger.warn({ err }, 'credentials-guard: fleet-token boot pass failed'))
+  }, 15_000)
 
   if (shouldBootHeartbeatAgent({ respawnEnabled: RESPAWN_ENABLED, agentEnabled: HEARTBEAT_AGENT_ENABLED })) {
     ensureHeartbeatAgent()

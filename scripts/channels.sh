@@ -31,6 +31,14 @@ if [ -f "$INSTALL_DIR/.env" ]; then
   _api_key="$(grep -E '^ANTHROPIC_API_KEY=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
   [ -n "$_api_key" ] && export ANTHROPIC_API_KEY="$_api_key"
   _oauth="$(grep -E '^CLAUDE_CODE_OAUTH_TOKEN=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
+  # Fallback: the fleet setup-token file (written by the wizard / auth.sh /
+  # the boot-time credentials sync). Keeps the MAIN agent on the same stable
+  # token the sub-agents launch with, instead of the rotating
+  # ~/.claude/.credentials.json, even when .env carries no auth key
+  # (2026-07-15 bootcamp: terminal-pasted setup-token never reached .env).
+  if [ -z "$_oauth" ] && [ -s "$INSTALL_DIR/store/.claude-oauth-token" ]; then
+    _oauth="$(cat "$INSTALL_DIR/store/.claude-oauth-token")"
+  fi
   [ -n "$_oauth" ] && export CLAUDE_CODE_OAUTH_TOKEN="$_oauth"
   unset _api_key _oauth
 fi
@@ -265,6 +273,30 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   unset _cfg_line _cfg_mode _cfg_dir
 fi
 unset _node_bin
+
+# Re-seed hasCompletedOnboarding in the SHARED ~/.claude.json BEFORE launching
+# the main claude. If the key was lost (2026-07-15 bootcamp incident), the
+# fresh TUI parks on the first-run "Select login method" picker -- and the
+# first-run guard below would blindly Enter it into a browser sign-in screen
+# no headless box can complete. Atomic tmp+rename; an unparseable file is left
+# for Claude Code to recover. Mirrors ensureSharedClaudeOnboarded() (the
+# in-process respawn paths); this covers the channels.sh cold-boot path.
+if command -v node >/dev/null 2>&1; then
+  node -e '
+    const fs = require("fs")
+    const p = require("path").join(require("os").homedir(), ".claude.json")
+    try {
+      let j = {}
+      if (fs.existsSync(p)) j = JSON.parse(fs.readFileSync(p, "utf-8"))
+      if (j.hasCompletedOnboarding !== true) {
+        j.hasCompletedOnboarding = true
+        const t = p + ".tmp-" + process.pid
+        fs.writeFileSync(t, JSON.stringify(j, null, 2) + "\n", { mode: 0o600 })
+        fs.renameSync(t, p)
+      }
+    } catch (e) { /* unparseable/unwritable: leave for Claude Code */ }
+  ' 2>/dev/null || true
+fi
 
 # Régi session takarítás
 $TMUX kill-session -t "$SESSION" 2>/dev/null

@@ -20,6 +20,7 @@ import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, rea
 import { resolveAgentConfigDir } from './claude-plans.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
+import { atomicWriteFileSync } from './atomic-write.js'
 import {
   buildTmuxInvocation,
   buildSshExec,
@@ -487,6 +488,42 @@ function provisionIsolatedConfigDir(
   }
 }
 
+// Guarantee hasCompletedOnboarding in the SHARED ~/.claude.json.
+//
+// 2026-07-15 bootcamp field incident (root-caused live on the reference VPS):
+// the key vanished from ~/.claude.json within ~1h of install despite
+// install-linux.sh seeding it, so EVERY fresh (re)spawn of an agent on the
+// shared config root parked on Claude Code's first-run "Select login method"
+// picker -- looking exactly like a mass /login ejection -- while the on-disk
+// credential was valid the whole time (the picker is gated ONLY on this flag;
+// even a valid CLAUDE_CODE_OAUTH_TOKEN env does not bypass it, see the
+// provisionIsolatedConfigDir comment above). Isolated config dirs already get
+// this guarantee at provision time; this closes the same gap for the shared
+// root. Called before every main-session respawn and sub-agent launch.
+//
+// The write is ATOMIC (tmp + rename): a non-atomic rewrite racing a live
+// Claude Code process is the leading suspect for how the key got clobbered in
+// the first place. An unparseable file is left alone -- Claude Code owns its
+// recovery, and overwriting would destroy MCP/project state.
+export function ensureSharedClaudeOnboarded(dotClaudePath: string = join(homedir(), '.claude.json')): boolean {
+  try {
+    if (!existsSync(dotClaudePath)) {
+      atomicWriteFileSync(dotClaudePath, JSON.stringify({ hasCompletedOnboarding: true }, null, 2) + '\n', { mode: 0o600 })
+      logger.info({ dotClaudePath }, 'shared-config: created ~/.claude.json with hasCompletedOnboarding')
+      return true
+    }
+    const cur = JSON.parse(readFileSync(dotClaudePath, 'utf-8')) as Record<string, unknown>
+    if (cur.hasCompletedOnboarding === true) return false
+    cur.hasCompletedOnboarding = true
+    atomicWriteFileSync(dotClaudePath, JSON.stringify(cur, null, 2) + '\n', { mode: 0o600 })
+    logger.warn({ dotClaudePath }, 'shared-config: re-seeded missing hasCompletedOnboarding (prevents the first-run "Select login method" picker)')
+    return true
+  } catch (err) {
+    logger.warn({ err, dotClaudePath }, 'shared-config: could not guarantee hasCompletedOnboarding (unparseable or unwritable ~/.claude.json)')
+    return false
+  }
+}
+
 function resolveAgentProvider(name: string): ChannelProviderType {
   const perAgent = readAgentChannelProvider(name)
   if (perAgent === 'slack' || perAgent === 'telegram' || perAgent === 'discord' || perAgent === 'googlechat' || perAgent === 'teams') return perAgent
@@ -669,6 +706,11 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
   // the rotating ~/.claude/.credentials.json; idempotent, so calling it per
   // start also self-heals if Claude Code recreates the file on a refresh.
   renameSharedCredentialsIfSafe(CLAUDE)
+
+  // Shared-root agents park on the first-run "Select login method" picker when
+  // ~/.claude.json lost hasCompletedOnboarding (2026-07-15 bootcamp incident);
+  // idempotent re-seed before every launch.
+  ensureSharedClaudeOnboarded()
 
 
   if (isAgentRunning(name)) return { ok: false, error: 'Agent is already running' }

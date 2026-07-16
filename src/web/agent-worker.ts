@@ -11,6 +11,8 @@ import {
   isSessionReadyForPrompt,
   sendPromptToSession,
   sessionExistsOnHost,
+  hasFleetOauthToken,
+  FLEET_OAUTH_TOKEN_PATH,
 } from './agent-process.js'
 import { readClaudeCodeOauthJson } from './claude-credentials.js'
 import { detectPaneState } from '../pane-state.js'
@@ -308,8 +310,21 @@ export function ensureWorkerCwd(ctx: WorkerCtx = ctxSlow): void {
 
   const realClaude = join(homedir(), '.claude')
   if (existsSync(realClaude)) {
+    // With a fleet setup-token present the worker authenticates from the
+    // CLAUDE_CODE_OAUTH_TOKEN env injected at launch (env strictly overrides
+    // the credentials file anyway); symlinking the shared rotating
+    // ~/.claude/.credentials.json would re-join the worker to the very
+    // cross-process refresh race the fleet token exists to avoid (the Linux
+    // #537 failure family; 2026-07-15 bootcamp). Without a fleet token the
+    // symlink stays -- it is then the worker's only auth source.
+    const skipSharedCreds = hasFleetOauthToken()
+    if (skipSharedCreds) {
+      const credsLink = join(ctx.configDir, '.credentials.json')
+      if (lstatSyncSafe(credsLink)?.isSymbolicLink()) rmSync(credsLink, { force: true })
+    }
     for (const entry of readdirSync(realClaude)) {
       if (WORKER_CONFIG_SKIP.has(entry)) continue
+      if (skipSharedCreds && entry === '.credentials.json') continue
       const linkPath = join(ctx.configDir, entry)
       const target = join(realClaude, entry)
       let needsLink = true
@@ -415,7 +430,11 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
   ensureWorkerCwd(ctx)
   // Detached session; launch claude via a login shell so PATH + the config-dir
   // env are set. The model suffix ([1m]) is single-quoted so it is not globbed.
+  // Fleet setup-token (when present) via $(cat) at launch so the secret never
+  // lands in argv/`ps` -- same pattern as startAgentProcess. Keeps the worker
+  // on the stable token instead of the shared rotating credentials file.
   const launch =
+    (hasFleetOauthToken() ? `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shArg(FLEET_OAUTH_TOKEN_PATH)})"; ` : '') +
     `export CLAUDE_CONFIG_DIR=${shArg(ctx.configDir)}; ` +
     `cd ${shArg(ctx.home)} && ` +
     `claude --dangerously-skip-permissions --model ${shArg(WORKER_MODEL)}`

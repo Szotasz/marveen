@@ -126,4 +126,60 @@ describe('detectReauthNeeded', () => {
     ].join('\n')
     expect(detectReauthNeeded(pane).needsReauth).toBe(false)
   })
+
+  // 2026-07-15 bootcamp "mass /login": the pane was NOT an auth failure but
+  // Claude Code's first-run picker (hasCompletedOnboarding lost from
+  // ~/.claude.json). It blocks the agent identically, so it must badge.
+  it('detects the first-run "Select login method" onboarding picker', () => {
+    const pane = [
+      ' Welcome to Claude Code',
+      '',
+      ' Select login method:',
+      '',
+      ' ❯ 1. Claude account with subscription',
+      '   2. Anthropic Console account',
+    ].join('\n')
+    const r = detectReauthNeeded(pane)
+    expect(r.needsReauth).toBe(true)
+    expect(r.reason).toMatch(/onboarding picker/i)
+  })
+
+  it('does NOT fire on a chat that merely mentions the picker in scrollback', () => {
+    const pane = [
+      '❯ a "Select login method" képernyőről beszéltünk',
+      ...Array.from({ length: 20 }, (_, i) => `... work line ${i} ...`),
+      '──────────────────────────────────────────────────────────────────────',
+      '❯ ',
+      '──────────────────────────────────────────────────────────────────────',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(detectReauthNeeded(pane).needsReauth).toBe(false)
+  })
+})
+
+// Second first-run-gate marker: the state a blind Enter on the picker advances
+// into (observed live 2026-07-16: channels.sh's first-run guard selected
+// option 1 and parked the session on the browser sign-in screen).
+describe('detectReauthNeeded: browser sign-in screen', () => {
+  it('detects the sign-in URL screen', () => {
+    const pane = [
+      ' Use the url below to sign in:',
+      '',
+      ' https://claude.ai/oauth/authorize?code=...',
+      '',
+      ' Paste code here if prompted >',
+    ].join('\n')
+    const r = detectReauthNeeded(pane)
+    expect(r.needsReauth).toBe(true)
+    expect(r.reason).toMatch(/sign-in screen/i)
+  })
+
+  it('does NOT re-fire on the healer escalation quoting the picker reason (self-loop regression)', () => {
+    const pane = [
+      ...Array.from({ length: 10 }, (_, i) => `... work line ${i} ...`),
+      '🔐 A(z) boni ágens halott OAuth tokent jelez (First-run onboarding picker (Select login method)) több mint ~9 perce.',
+      'Manuális browser /login kell a dashboardon (az ügynök kártyáján a "Bejelentkezés" gomb), automatikusan nem gyógyítható.',
+    ].join('\n')
+    expect(detectReauthNeeded(pane).needsReauth).toBe(false)
+  })
 })
