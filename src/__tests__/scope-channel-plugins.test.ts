@@ -147,11 +147,18 @@ describe('spawn-time enable decision (ownChannelProviderForScope + scopeChannelP
 describe('spawn-time scoping is gated on the own token, not the explicit provider field', () => {
   const SRC = readFileSync(join(__dirname, '../web/agent-process.ts'), 'utf-8')
 
-  it('the scopeChannelPlugins call argument is ownChannelProviderForScope(...)', () => {
+  it('the scopeChannelPlugins source is gated on ownChannelProviderForScope(...), not readAgentChannelProvider', () => {
+    // The per-agent mcp.json feature (35fdef8) routes the scope through a local
+    // `scopeProvider` (null on the mcp.json path, ownChannelProviderForScope(...)
+    // otherwise) instead of inlining the argument. The regression-locked invariant
+    // is unchanged: the provider still comes from the own-token gate, never from
+    // readAgentChannelProvider. Check the scopeProvider definition that feeds the call.
+    const defIdx = SRC.indexOf('const scopeProvider')
     const callIdx = SRC.indexOf('s.enabledPlugins = scopeChannelPlugins(')
-    expect(callIdx).toBeGreaterThan(0)
-    const arg = SRC.slice(callIdx, callIdx + 120)
-    expect(arg).toMatch(/ownChannelProviderForScope\(/)
-    expect(arg).not.toMatch(/readAgentChannelProvider\(/)
+    expect(defIdx).toBeGreaterThan(0)
+    expect(callIdx).toBeGreaterThan(defIdx)
+    const def = SRC.slice(defIdx, callIdx)
+    expect(def).toMatch(/ownChannelProviderForScope\(/)
+    expect(def).not.toMatch(/readAgentChannelProvider\(/)
   })
 })

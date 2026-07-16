@@ -32,21 +32,34 @@ import {
 // against sub-agent sessions for heartbeats (sendPromptToSession, idle-gated) --
 // only the trigger differs, which is why the risk is low.
 //
-// OPT-IN / DEFAULT-OFF: gated by SUBAGENT_TELEGRAM_WAKE_ENABLED (default false).
-// The inbound-tee writer (scripts/channel-inbound-tee.mjs) and drain hook
-// (scripts/hooks/channel-inbox-drain.py) that produce/consume inbox-pending.jsonl
-// are included in this PR. An upstream install that does not opt in pays zero
-// per-tick cost and sees no behaviour change.
+// OPT-IN / DEFAULT-OFF: gated by SUBAGENT_TELEGRAM_WAKE_ENABLED. The inbound-tee
+// writer and drain hook that produce/consume inbox-pending.jsonl ship in this
+// repo but are themselves gated behind SUBAGENT_INBOX_TEE (default off), so with
+// that path disabled there is no inbox file to wake on and this is a no-op
+// regardless. Shipping it disabled means an upstream install pays zero per-tick
+// cost and sees no behaviour change until BOTH flags are opted in.
 
 // How long the pending inbox must have sat untouched before the first wake-nudge.
 // Measured as now - mtime(inbox-pending.jsonl): the age of the LAST inbound. A
 // fresh file means a message just arrived (let the natural drain try first, or
 // let a burst finish arriving before we nudge once for the whole batch).
 const SUB_TELEGRAM_WAKE_MIN_AGE_MS = 25 * 1000
-// Minimum gap between wake-nudges per agent. One nudge starts a turn whose drain
+// Base gap between wake-nudges per agent. One nudge starts a turn whose drain
 // claims the WHOLE pending file, so re-nudging sooner just piles redundant
-// prompts on a session already handling its inbox.
+// prompts on a session already handling its inbox. This is the FIRST-retry gap;
+// the effective gap grows exponentially with the per-agent attempt count (see
+// backoff below).
 const SUB_TELEGRAM_WAKE_DEBOUNCE_MS = 60 * 1000
+// Backoff cap: the exponential gap never exceeds this, so a stuck session is
+// probed at most ~twice an hour rather than every minute.
+const SUB_TELEGRAM_WAKE_MAX_DEBOUNCE_MS = 30 * 60 * 1000
+// Max wake-nudges spent on ONE stuck inbox before giving up. A session that
+// never drains after this many nudges is not going to; further nudges just spam
+// it every backoff window forever (the failure mode called out in review). The
+// budget is per DISTINCT backlog: when a NEW inbound arrives (the inbox file's
+// mtime advances) the attempt counter resets, so a genuinely new message always
+// gets a fresh round of nudges.
+const SUB_TELEGRAM_WAKE_MAX_ATTEMPTS = 5
 // Content-free wake prompt. The channel-inbox-drain UserPromptSubmit hook
 // PREPENDS the claimed (already security-framed) <channel> messages above this
 // line, so the nudge is only a trailing trigger -- it must never carry inbound
@@ -54,19 +67,24 @@ const SUB_TELEGRAM_WAKE_DEBOUNCE_MS = 60 * 1000
 const SUB_TELEGRAM_WAKE_NUDGE =
   '[telegram-wake] Bejövő Telegram üzenet(ek) várnak; a drain hook behúzta őket a kontextusba fentebb. Dolgozd fel és válaszolj.'
 
-// Max consecutive nudges before backoff kicks in. After MAX_NUDGE_ATTEMPTS
-// consecutive nudges with no drain observed, the debounce window is multiplied
-// by 2^(attempts - MAX_NUDGE_ATTEMPTS) up to MAX_BACKOFF_MS. A successful drain
-// (inbox disappears or shrinks) resets the counter.
-const MAX_NUDGE_ATTEMPTS = 3
-const MAX_BACKOFF_MS = 30 * 60 * 1000 // 30 min ceiling
+// Per-agent wake state (module-scoped). `attempts` counts nudges spent on the
+// CURRENT stuck backlog; `inboxMtimeMs` is the mtime we last acted on, used to
+// detect a fresh inbound (mtime advance) and reset the attempt budget.
+interface SubWakeState {
+  lastWakeAt: number
+  attempts: number
+  inboxMtimeMs: number
+}
+const _subWakeState = new Map<string, SubWakeState>()
 
-// Last wake-nudge timestamp per agent name (module-scoped debounce state).
-const _lastSubWakeAt = new Map<string, number>()
-// Consecutive nudge counter per agent (for backoff).
-const _nudgeAttempts = new Map<string, number>()
-// Last known inbox size per agent (to detect a drain between nudges).
-const _lastInboxSize = new Map<string, number>()
+/**
+ * Compute the effective backoff gap for the Nth wake attempt: base * 2^attempts,
+ * capped at maxMs. attempts=0 -> base (unchanged first-retry behaviour). Pure.
+ */
+export function wakeBackoffMs(attempts: number, baseMs: number, maxMs: number): number {
+  const grown = baseMs * Math.pow(2, Math.max(0, attempts))
+  return Math.min(grown, maxMs)
+}
 
 /**
  * Pure decision: should the watcher send a wake-nudge to a sub-agent's session
@@ -75,10 +93,17 @@ const _lastInboxSize = new Map<string, number>()
  *   - the inbox has pending content (nothing to drain otherwise);
  *   - it has sat untouched longer than minAgeMs (let a fresh arrival drain via a
  *     natural turn / let a burst settle first);
- *   - the debounce window since the last nudge for THIS agent has elapsed;
+ *   - the per-agent attempt budget is not yet exhausted (a never-draining session
+ *     is not nudged forever -- it resumes only when a new inbound resets attempts);
+ *   - the backoff window since the last nudge for THIS agent has elapsed (the gap
+ *     grows exponentially with attempts);
  *   - the session exists (nothing to wake otherwise);
  *   - it is idle (never inject a prompt mid-turn -- that is the race the main
  *     wake-nudge was designed to avoid).
+ *
+ * `attempts`/`maxAttempts`/`maxDebounceMs` are optional and default to the
+ * pre-backoff behaviour (attempts 0, no cap on tries, no debounce cap), so
+ * existing callers/tests are unchanged.
  */
 export function shouldWakeForTelegramInbox(params: {
   inboxAgeMs: number
@@ -89,11 +114,18 @@ export function shouldWakeForTelegramInbox(params: {
   sessionIdle: boolean
   minAgeMs: number
   debounceMs: number
+  attempts?: number
+  maxAttempts?: number
+  maxDebounceMs?: number
 }): boolean {
   const { inboxAgeMs, hasPending, now, lastWakeAt, sessionExists, sessionIdle, minAgeMs, debounceMs } = params
+  const attempts = params.attempts ?? 0
+  const maxAttempts = params.maxAttempts ?? Infinity
+  const maxDebounceMs = params.maxDebounceMs ?? Infinity
   if (!hasPending) return false
   if (inboxAgeMs <= minAgeMs) return false
-  if (now - lastWakeAt < debounceMs) return false
+  if (attempts >= maxAttempts) return false // budget exhausted for this backlog
+  if (now - lastWakeAt < wakeBackoffMs(attempts, debounceMs, maxDebounceMs)) return false
   if (!sessionExists) return false
   if (!sessionIdle) return false
   return true
@@ -134,26 +166,28 @@ export function maybeWakeSubAgentsForTelegram(now: number): void {
         size = st.size
         mtimeMs = st.mtimeMs
       } catch {
-        continue // no inbox file -> nothing pending for this agent
+        _subWakeState.delete(name) // no inbox file -> drop stale state, start fresh next time
+        continue
       }
-      if (size === 0) continue
+      if (size === 0) {
+        _subWakeState.delete(name) // drained/empty -> reset the attempt budget
+        continue
+      }
       const inboxAgeMs = now - mtimeMs
       // Cheap gates before any tmux I/O (mirrors maybeWakeMainAgent).
       if (inboxAgeMs <= SUB_TELEGRAM_WAKE_MIN_AGE_MS) continue
-      const lastWakeAt = _lastSubWakeAt.get(name) ?? 0
-      const attempts = _nudgeAttempts.get(name) ?? 0
-      const lastSize = _lastInboxSize.get(name)
-      // If the inbox shrank since the last nudge, the drain is working -- reset.
-      if (lastSize !== undefined && size < lastSize) {
-        _nudgeAttempts.set(name, 0)
+
+      // Per-agent backoff state. A NEW inbound (the tee appended, so mtime
+      // advanced past what we last acted on) is a distinct backlog: reset the
+      // attempt budget so a fresh message always earns a fresh round of nudges.
+      let state = _subWakeState.get(name)
+      if (!state || state.inboxMtimeMs !== mtimeMs) {
+        state = { lastWakeAt: state?.lastWakeAt ?? 0, attempts: 0, inboxMtimeMs: mtimeMs }
+        _subWakeState.set(name, state)
       }
-      const effectiveAttempts = _nudgeAttempts.get(name) ?? 0
-      const backoffFactor = effectiveAttempts > MAX_NUDGE_ATTEMPTS
-        ? Math.min(Math.pow(2, effectiveAttempts - MAX_NUDGE_ATTEMPTS), MAX_BACKOFF_MS / SUB_TELEGRAM_WAKE_DEBOUNCE_MS)
-        : 1
-      const effectiveDebounce = Math.min(SUB_TELEGRAM_WAKE_DEBOUNCE_MS * backoffFactor, MAX_BACKOFF_MS)
-      if (now - lastWakeAt < effectiveDebounce) continue
-      _lastInboxSize.set(name, size)
+      // Budget + backoff cheap gates (no tmux I/O yet).
+      if (state.attempts >= SUB_TELEGRAM_WAKE_MAX_ATTEMPTS) continue
+      if (now - state.lastWakeAt < wakeBackoffMs(state.attempts, SUB_TELEGRAM_WAKE_DEBOUNCE_MS, SUB_TELEGRAM_WAKE_MAX_DEBOUNCE_MS)) continue
 
       const host = readAgentRemoteHost(name)
       const session = agentSessionName(name)
@@ -167,26 +201,27 @@ export function maybeWakeSubAgentsForTelegram(now: number): void {
         inboxAgeMs,
         hasPending: true,
         now,
-        lastWakeAt,
+        lastWakeAt: state.lastWakeAt,
         sessionExists,
         sessionIdle,
         minAgeMs: SUB_TELEGRAM_WAKE_MIN_AGE_MS,
         debounceMs: SUB_TELEGRAM_WAKE_DEBOUNCE_MS,
+        attempts: state.attempts,
+        maxAttempts: SUB_TELEGRAM_WAKE_MAX_ATTEMPTS,
+        maxDebounceMs: SUB_TELEGRAM_WAKE_MAX_DEBOUNCE_MS,
       })) continue
 
       sendPromptToSession(session, SUB_TELEGRAM_WAKE_NUDGE, host)
-      _lastSubWakeAt.set(name, now)
-      _nudgeAttempts.set(name, (effectiveAttempts) + 1)
-      logger.info({ agent: name, session, ageMs: Math.round(inboxAgeMs), attempt: effectiveAttempts + 1, backoffFactor }, 'telegram-inbox-wake: nudged idle sub-agent (pending inbox)')
+      state.lastWakeAt = now
+      state.attempts += 1
+      logger.info({ agent: name, session, ageMs: Math.round(inboxAgeMs), attempt: state.attempts }, 'telegram-inbox-wake: nudged idle sub-agent (pending inbox)')
     } catch (err) {
       logger.warn({ err, agent: name }, 'telegram-inbox-wake: wake check failed')
     }
   }
 }
 
-// Test-only: reset the per-agent debounce state between unit tests.
+// Test-only: reset the per-agent wake state between unit tests.
 export function _resetSubWakeStateForTest(): void {
-  _lastSubWakeAt.clear()
-  _nudgeAttempts.clear()
-  _lastInboxSize.clear()
+  _subWakeState.clear()
 }
