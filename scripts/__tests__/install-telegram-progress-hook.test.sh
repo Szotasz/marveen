@@ -145,14 +145,14 @@ echo "(f) MAIN_AGENT_ID fallback"
 CASE="$TMP/case-f"
 mkdir -p "$CASE"
 cat > "$CASE/.env" <<'EOF'
-MAIN_AGENT_ID=jarvis
-BOT_NAME=JarvisBot
+MAIN_AGENT_ID=myagent
+BOT_NAME=MyBot
 EOF
 OUT="$(run_env_parse "$CASE")"
 EXIT=$?
-assert_zero "MAIN_AGENT_ID fallback: exits 0"                          $EXIT
-assert_eq   "MAIN_AGENT_ID fallback: SERVICE_ID resolves to jarvis" \
-            "SERVICE_ID=jarvis" "$(echo "$OUT" | grep '^SERVICE_ID=')"
+assert_zero "MAIN_AGENT_ID fallback: exits 0"                           $EXIT
+assert_eq   "MAIN_AGENT_ID fallback: SERVICE_ID resolves to myagent" \
+            "SERVICE_ID=myagent" "$(echo "$OUT" | grep '^SERVICE_ID=')"
 
 # ---------------------------------------------------------------------------
 # (g) Hook files are copied when the full script runs (behaviour preserved)
