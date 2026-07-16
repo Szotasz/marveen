@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { EventEmitter } from 'node:events'
@@ -7,7 +7,12 @@ import { initDatabase, createAgentMessage, getAgentMessage, getPendingMessages }
 import { deliverFederatedBatch } from '../web/message-router.js'
 import { tryHandleMessages } from '../web/routes/messages.js'
 import { _setFederationStoreDirForTest, reloadFederationForTest } from '../web/federation/config.js'
+import { AGENTS_BASE_DIR } from '../web/agent-config.js'
 import type { RouteContext } from '../web/routes/types.js'
+
+// Fixture agent directories required by the from-auth check in /api/messages.
+// 'localboss' is the fictional test sender used throughout this suite.
+const FIXTURE_AGENTS = ['localboss']
 
 const TMP = mkdtempSync(join(tmpdir(), 'fed-feedback-test-'))
 const IN_TOKEN = 'b'.repeat(64)
@@ -45,6 +50,11 @@ async function postMessage(body: unknown): Promise<{ statusCode: number; json: a
 beforeAll(() => {
   process.env.NODE_ENV = 'test'
   initDatabase(':memory:')
+  // Create minimal fixture agent directories so isKnownAgent() recognises the
+  // test senders. These are torn down in afterAll.
+  for (const name of FIXTURE_AGENTS) {
+    mkdirSync(join(AGENTS_BASE_DIR, name), { recursive: true })
+  }
 })
 
 beforeEach(() => {
@@ -55,6 +65,9 @@ beforeEach(() => {
 
 afterAll(() => {
   rmSync(TMP, { recursive: true, force: true })
+  for (const name of FIXTURE_AGENTS) {
+    rmSync(join(AGENTS_BASE_DIR, name), { recursive: true, force: true })
+  }
 })
 
 describe('POST /api/messages colon-form to guard (L5)', () => {

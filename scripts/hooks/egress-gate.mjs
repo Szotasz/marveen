@@ -23,6 +23,11 @@
 //
 // The log is separate from the main Marveen log so operators can grep it
 // independently: `tail -f store/egress-blocked.log`
+//
+// Scope: this guard covers the Claude Code WebFetch tool only. It does NOT
+// intercept WebSearch, curl/Bash network calls, or MCP-server outbound
+// requests. Those channels are out of scope for this hook mechanism and require
+// separate controls if needed.
 
 import { readFileSync, appendFileSync, mkdirSync } from 'node:fs'
 import { realpathSync } from 'node:fs'
