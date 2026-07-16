@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { SETTINGS_REGISTRY, getSettingDefinition, validateSettingValue } from '../config-registry.js'
 
 describe('heartbeat calendar settings', () => {
@@ -8,7 +11,7 @@ describe('heartbeat calendar settings', () => {
     expect(def?.module).toBe('heartbeat')
     expect(def?.type).toBe('string')
     expect(def?.secret).toBe(false)
-    expect(def?.requiresRestart).toBe(false)
+    expect(def?.requiresRestart).toBe(true)
     expect(def?.default).toBe('')
   })
 
@@ -18,7 +21,7 @@ describe('heartbeat calendar settings', () => {
     expect(def?.module).toBe('heartbeat')
     expect(def?.type).toBe('string')
     expect(def?.secret).toBe(false)
-    expect(def?.requiresRestart).toBe(false)
+    expect(def?.requiresRestart).toBe(true)
     expect(def?.default).toBe('')
   })
 
@@ -58,5 +61,20 @@ describe('heartbeat calendar settings', () => {
     for (const key of calKeys) {
       expect(getSettingDefinition(key)?.secret, `${key} must not be secret`).toBe(false)
     }
+  })
+})
+
+// Wiring regression guard: the two calendar keys are consumed as boot-time
+// consts, so they MUST resolve through cfg() (config-overrides.json layer) --
+// a bare env[] read makes the Settings UI a dead control (the dashboard shows
+// the saved value while the heartbeat never sees it).
+describe('heartbeat calendar settings wiring (config.ts)', () => {
+  it('both keys read through cfg(), not bare env[]', () => {
+    const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+    const src = readFileSync(join(repoRoot, 'src', 'config.ts'), 'utf8')
+    expect(src).toMatch(/HEARTBEAT_CALENDAR_ACCOUNT\s*=\s*\(cfg\('HEARTBEAT_CALENDAR_ACCOUNT'\)/)
+    expect(src).toMatch(/HEARTBEAT_CALENDAR_ID\s*=\s*\(cfg\('HEARTBEAT_CALENDAR_ID'\)/)
+    expect(src).not.toMatch(/env\['HEARTBEAT_CALENDAR_ACCOUNT'\]/)
+    expect(src).not.toMatch(/env\['HEARTBEAT_CALENDAR_ID'\]/)
   })
 })

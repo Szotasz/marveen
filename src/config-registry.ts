@@ -304,7 +304,9 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     description: 'Google Calendar fiók neve/e-mailje a heartbeat naptár-összefoglalóhoz. Üresen hagyva a heartbeat nem kérdez le naptáreseményeket.',
     module: 'heartbeat',
     secret: false,
-    requiresRestart: false,
+    // Consumed as a boot-time const (src/config.ts) -- a saved override takes
+    // effect on the next restart, and the UI must say so.
+    requiresRestart: true,
   },
   {
     key: 'HEARTBEAT_CALENDAR_ID',
@@ -313,7 +315,8 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     description: 'Google Calendar naptár-azonosítója a heartbeat összefoglalóhoz (pl. primary). Üresen hagyva a heartbeat nem kérdez le naptáreseményeket.',
     module: 'heartbeat',
     secret: false,
-    requiresRestart: false,
+    // Boot-time const, see HEARTBEAT_CALENDAR_ACCOUNT above.
+    requiresRestart: true,
   },
   {
     key: 'IDEA_BREAKDOWN_MAX_SUBTASKS',
