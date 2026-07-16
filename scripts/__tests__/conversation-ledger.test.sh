@@ -33,7 +33,11 @@ run_hook() {
     local hook="$1"
     local db="$2"
     shift 2
+    # OWNER_NAME is pinned to 'Gyula' so the replay's inbound prefix is
+    # deterministic regardless of the install's .env (assertions below grep for
+    # "Gyula:"). Same reasoning as pinning MAIN_AGENT_ID.
     LEDGER_DB_PATH="$db" LEDGER_OWNER_CHAT="8517922966" MAIN_AGENT_ID="marveen" \
+        OWNER_NAME="Gyula" \
         python3 "$HOOKS_DIR/$hook" "$@"
 }
 
@@ -264,6 +268,72 @@ if printf '%s' "$N_CTX" | grep -q "MSG_NUM_1" || printf '%s' "$N_CTX" | grep -q 
     fail "replay: N-limit did not drop the oldest turns"
 else
     pass "replay: N-limit drops turns beyond the window"
+fi
+
+# ---------------------------------------------------------------------------
+# (d2) BYTE-BUDGET SELF-TRIM -- the FINAL payload stays under the harness cap,
+#      dropping oldest turns while the freshest END survives uncut.
+#      Regression guard for the ~11KB harness preview-truncation bug: the hook
+#      must self-measure real UTF-8 bytes (accents included) and keep the whole
+#      json.dumps(...) blob under LEDGER_CONTEXT_BYTE_BUDGET.
+# ---------------------------------------------------------------------------
+echo ""
+echo "(d2) Byte-budget self-trim"
+
+# Byte size of a replay hook's raw stdout (the exact blob the harness measures).
+payload_bytes() { LC_ALL=C wc -c < "$1" | tr -d ' '; }
+
+DB_BB="$TMPDIR_BASE/bb.db"
+# 40 chatty turns with accented (2-byte UTF-8) content -> well over any KB cap.
+for i in $(seq 1 40); do
+    emit_inbound 8517922966 "$i" "UZENET_${i} árvíztűrő tükörfúrógép őőőűűű ééé ááá visszavisszhang" \
+        | run_hook ledger-capture.py "$DB_BB"
+done
+# The very last turn carries a unique marker we must NOT lose to preview-truncation.
+emit_inbound 8517922966 999 "LEGFRISSEBB_VEG_MARKER a friss veg amit latni kell" \
+    | run_hook ledger-capture.py "$DB_BB"
+
+# Force a tight budget (4096 B) AND a wide window (no N-limit interference) so the
+# byte loop is what actually trims. LEGFRISSEBB marker must survive; oldest drops.
+LEDGER_CONTEXT_BYTE_BUDGET=4096 LEDGER_CONTEXT_WINDOW=100 \
+    run_hook ledger-replay.py "$DB_BB" < <(emit_session) > "$TMPDIR_BASE/bb.json"
+
+BB_BYTES="$(payload_bytes "$TMPDIR_BASE/bb.json")"
+if [ "$BB_BYTES" -le 4096 ]; then
+    pass "byte-budget: final payload ($BB_BYTES B) stays under the 4096 B budget"
+else
+    fail "byte-budget: payload $BB_BYTES B exceeds the 4096 B budget"
+fi
+
+BB_CTX="$(ctx_of "$TMPDIR_BASE/bb.json")"
+if printf '%s' "$BB_CTX" | grep -q "LEGFRISSEBB_VEG_MARKER"; then
+    pass "byte-budget: freshest END survives the trim"
+else
+    fail "byte-budget: freshest END was dropped (preview-truncation regression)"
+fi
+if printf '%s' "$BB_CTX" | grep -q "UZENET_1 "; then
+    fail "byte-budget: oldest turn should have been trimmed but is present"
+else
+    pass "byte-budget: oldest turns dropped first (freshest-end reorder preserved)"
+fi
+# Closing directive (KÖTELEZŐ) must always survive -- it is rebuilt into every payload.
+if printf '%s' "$BB_CTX" | grep -q "KÖTELEZŐ:"; then
+    pass "byte-budget: mandatory directive present in the trimmed payload"
+else
+    fail "byte-budget: mandatory directive lost during trim"
+fi
+
+# Single oversized freshest turn: snippet cap keeps even a lone huge turn under
+# budget (no drop-to-empty). Build a >8KB single message.
+DB_BB2="$TMPDIR_BASE/bb2.db"
+HUGE="$(python3 -c 'print("Q" + "óőűá"*3000 + "_VEGE")')"
+emit_inbound 8517922966 1 "$HUGE" | run_hook ledger-capture.py "$DB_BB2"
+LEDGER_CONTEXT_BYTE_BUDGET=8192 run_hook ledger-replay.py "$DB_BB2" < <(emit_session) > "$TMPDIR_BASE/bb2.json"
+BB2_BYTES="$(payload_bytes "$TMPDIR_BASE/bb2.json")"
+if [ "$BB2_BYTES" -le 8192 ] && [ "$BB2_BYTES" -gt 0 ]; then
+    pass "byte-budget: a lone oversized turn is snippet-capped under budget ($BB2_BYTES B)"
+else
+    fail "byte-budget: lone oversized turn not bounded ($BB2_BYTES B)"
 fi
 
 # ---------------------------------------------------------------------------
