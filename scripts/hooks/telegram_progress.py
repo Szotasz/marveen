@@ -85,6 +85,11 @@ def main():
         return
     prompt = ev.get("prompt") or ""
     sid = ev.get("session_id") or "default"
+    # Stash the transcript path so the standalone watchdog (which gets no hook
+    # event) can read the agent's final answer + detect a hung reply tool call
+    # for a placeholder that never got cleared. Absent on some CC versions ->
+    # the watchdog just falls back to its generic-error behavior.
+    transcript_path = ev.get("transcript_path") or ""
     sd = state_dir()
 
     blocks = re.findall(r'<channel\b[^>]*\bsource="[^"]*telegram[^"]*"[^>]*>', prompt)
@@ -116,7 +121,10 @@ def main():
             resp = api(tok, "sendMessage", {"chat_id": chat_id, "text": PLACEHOLDER})
             pmid = resp.get("result", {}).get("message_id")
             if pmid:
-                pending.append({"chat_id": chat_id, "message_id": pmid})
+                entry = {"chat_id": chat_id, "message_id": pmid}
+                if transcript_path:
+                    entry["transcript_path"] = transcript_path
+                pending.append(entry)
         except Exception as e:
             log(sd, f"[submit] placeholder failed: {e}")
 
