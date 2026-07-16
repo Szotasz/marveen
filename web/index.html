@@ -63,7 +63,7 @@
       <div class="sidebar-brand-mark" id="sidebarBrandMark">M</div>
       <div class="sidebar-brand-text">
         <div class="sidebar-brand-name" id="sidebarBrandName">Marveen</div>
-        <div class="sidebar-brand-sub" id="sidebarBrandSub">online</div>
+        <div class="sidebar-brand-sub">online</div>
       </div>
     </div>
     <nav class="sidebar-nav">
@@ -159,7 +159,7 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="12" r="3"/><circle cx="19" cy="12" r="3"/><path d="M8 12h8"/><path d="M12 9v-3"/><path d="M12 15v3"/></svg>
         <span class="sb-label">Föderáció</span>
       </a>
-      <a href="#" class="sb-link" data-page="updates" id="updatesNavLink">
+      <a href="#" class="sb-link" data-page="updates">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
         <span class="sb-label">Frissítések</span>
         <span class="updates-badge sb-badge" id="updatesBadge" hidden></span>
@@ -226,7 +226,7 @@
     <!-- === Kanban Page === -->
     <div class="page" id="kanbanPage" hidden>
       <!-- View switcher: board vs gantt (top, always visible) -->
-      <div id="kanbanViewSwitcher" style="display:flex;align-items:center;gap:6px;margin-bottom:10px;">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;">
         <button class="view-btn active" id="kanbanViewBoard" style="width:auto;padding:0 12px;" data-i18n="kanban.view.board">Tábla</button>
         <button class="view-btn" id="kanbanViewGantt" style="width:auto;padding:0 12px;" data-i18n="kanban.view.gantt">Idővonal</button>
       </div>
@@ -250,9 +250,9 @@
 
       <!-- Gantt-specific filter row (hidden when board active) -->
       <div id="kanbanGanttFilters" style="display:none;margin-bottom:12px;align-items:center;gap:6px;flex-wrap:wrap;">
-        <button class="view-btn active" id="ganttPeriodWeek" style="width:auto;padding:0 10px;" data-period="week" data-i18n="kanban.gantt.filter.period_week">Ezen hét</button>
-        <button class="view-btn" id="ganttPeriodMonth" style="width:auto;padding:0 10px;" data-period="month" data-i18n="kanban.gantt.filter.period_month">Hónap</button>
-        <button class="view-btn" id="ganttPeriodQuarter" style="width:auto;padding:0 10px;" data-period="quarter" data-i18n="kanban.gantt.filter.period_quarter">Negyedév</button>
+        <button class="view-btn active" style="width:auto;padding:0 10px;" data-period="week" data-i18n="kanban.gantt.filter.period_week">Ezen hét</button>
+        <button class="view-btn" style="width:auto;padding:0 10px;" data-period="month" data-i18n="kanban.gantt.filter.period_month">Hónap</button>
+        <button class="view-btn" style="width:auto;padding:0 10px;" data-period="quarter" data-i18n="kanban.gantt.filter.period_quarter">Negyedév</button>
         <label style="display:flex;align-items:center;gap:5px;font-size:13px;color:var(--muted);margin-left:10px;cursor:pointer;">
           <input type="checkbox" id="ganttOverdueOnly" style="cursor:pointer;">
           <span data-i18n="kanban.gantt.filter.overdue_only">Csak lejárt/közelgő</span>
@@ -1234,7 +1234,7 @@
           <div class="stat-label" data-i18n="vault.stat.total">Tarolt kulcs</div>
         </div>
         <div class="stat-card">
-          <div class="stat-value" id="vaultStatEncryption">AES-256</div>
+          <div class="stat-value">AES-256</div>
           <div class="stat-label" data-i18n="vault.stat.encryption">Titkositas</div>
         </div>
         <div class="stat-card">
@@ -1242,7 +1242,7 @@
           <div class="stat-label" data-i18n="vault.stat.bindings">Kotes</div>
         </div>
         <div class="stat-card">
-          <div class="stat-value" id="vaultStatStorage">Helyi</div>
+          <div class="stat-value">Helyi</div>
           <div class="stat-label" data-i18n="vault.stat.storage">Tarolas</div>
         </div>
       </div>
@@ -1624,7 +1624,7 @@
         <div class="page-header-row" style="flex-wrap:wrap">
           <div style="flex:1;min-width:200px">
             <h1>Token Monitor</h1>
-            <p class="subtitle" id="tokenUsageSubtitle" data-i18n="tokenUsage.page_subtitle">Ügynök token-fogyasztás nyomon követése</p>
+            <p class="subtitle" data-i18n="tokenUsage.page_subtitle">Ügynök token-fogyasztás nyomon követése</p>
           </div>
           <div class="tu-header-controls" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <select id="tuPeriod" class="input-compact" style="width:auto">
@@ -1652,7 +1652,7 @@
 
       <div class="overview-card" style="margin-bottom:16px">
         <h3 data-i18n="tokenUsage.timeline_title">Idővonal</h3>
-        <div id="tuTimelineChart" style="height:370px;position:relative;overflow:hidden">
+        <div style="height:370px;position:relative;overflow:hidden">
           <canvas id="tuCanvas"></canvas>
         </div>
       </div>
@@ -2173,7 +2173,7 @@
             </div>
           </div>
           <div class="agent-process-control" id="agentProcessControl">
-            <div class="process-status" id="processStatus">
+            <div class="process-status">
               <span class="process-dot" id="processDot"></span>
               <span id="processLabel" data-i18n="agents.detail.stopped">Leállva</span>
               <span class="process-uptime" id="processUptime"></span>
@@ -2347,7 +2347,7 @@
             </div>
             <button class="btn-secondary btn-compact agent-save-section" id="saveAuthModeBtn" style="margin-top:12px" data-i18n="common.btn.save">Mentés</button>
           </div>
-          <div class="form-group" id="voiceConfigGroup">
+          <div class="form-group">
             <label>Válaszmód (hang/szöveg)</label>
             <!-- shown when toolkit is NOT installed -->
             <div id="voiceNotInstalledBanner" hidden>

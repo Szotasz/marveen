@@ -315,15 +315,6 @@ window._i18n.en = {
   'agents.team.auto_approve_hint':  'If unchecked, the lead only suggests and you approve on Telegram.',
   'agents.team.trusted_label':      'Explicit trusted contacts (optional)',
   'agents.team.trusted_hint':       'The router decides by default based on report relationships and delegation lists. Add extra agents here manually -- e.g. a cross-team partner without a hierarchical relationship but whose messages should be trusted.',
-  'agents.btn.new':              'New agent',
-  'agents.btn.model_analysis':   'Model analysis',
-  'agents.card.start':           'Start',
-  'agents.card.stop':            'Stop',
-  'agents.card.starting':        'Starting...',
-  'agents.card.stopping':        'Stopping...',
-  'agents.toast.start_error':    'Start error',
-  'agents.toast.stop_error':     'Stop error',
-  'agents.toast.save_error':     'Error saving',
   'agents.toast.avatar_error':   'Error saving avatar',
 
   // --- Activity ---
@@ -639,8 +630,6 @@ window._i18n.en = {
   // --- Autonomy ---
   'autonomy.page_title':         'Autonomy',
   'autonomy.page_subtitle':      'Heartbeat graduated autonomy levels',
-  'autonomy.btn.refresh':        'Refresh',
-  'autonomy.level.1':            '1 Notify only',
   'autonomy.level.2':            '2 Propose, awaits approval',
   'autonomy.level.3':            '3 Autonomous, reports after',
 
@@ -835,7 +824,6 @@ window._i18n.en = {
 
   // --- Updates ---
   'updates.page_title':          'Updates',
-  'updates.page_subtitle':        'version check',
   'updates.brand_subtitle':        '{brand} version check',
   'conversation.modal_title':      'Conversation',
   'updates.checking':             'Checking...',
@@ -850,8 +838,6 @@ window._i18n.en = {
   'activity.badge.main':			'main',
   'activity.empty':			'No agents.',
   'activity.error_load':			'Failed to load activity',
-  'activity.no_output':			'no recent output',
-  'activity.session_stopped':			'session not running',
   'activity.updated':			'Updated: {time}',
   'agents.api_key.missing':			'No API key configured',
   'agents.api_key.ok':			'API key configured in vault',
@@ -860,7 +846,6 @@ window._i18n.en = {
   'agents.error.apply':			'Error applying changes',
   'agents.error.auth_network':			'Network error starting auth flow',
   'agents.error.restart':			'Failed to restart agent',
-  'agents.load_error':			'Failed to load agent',
   'agents.main_badge':			'main assistant',
   'agents.model.all_ok':			'All agents have the right model.',
   'agents.model.analyzing':			'Analyzing...',
@@ -957,7 +942,6 @@ window._i18n.en = {
   'agents.model.title':            'Model analysis -- {n} agents',
   'agents.model.cards_confirm':    'Create {n} Kanban cards for model changes?',
   'agents.model.creating_cards':   'Creating...',
-  'agents.model.cards_done':       '{n} cards created',
   'agents.claude_md_saved':        'CLAUDE.md saved',
   'agents.soul_md_saved':          'SOUL.md saved',
   'agents.restart_failed':         'Failed to start restart',
@@ -973,16 +957,8 @@ window._i18n.en = {
   'agents.toast.plan_error':       'Failed to save plan',
   'agents.toast.profile_saved_restart': 'Profile saved (restart required)',
   'agents.toast.profile_error':    'Error saving profile',
-  'agents.toast.model_active':     'New model active: {model}',
-  'agents.toast.restarted':        'Restarted: {model}',
-  'agents.toast.error_msg':        'Error: {msg}',
   'agents.btn.reconnect':          'Reconnecting...',
   'agents.btn.running':            'Running...',
-  'agents.channel.conversation':   'Conversation',
-
-  'agents.status.connected':			'Connected',
-  'agents.status.disconnected':			'Not connected',
-  'agents.status.restarting':			'Restarting',
   'agents.status.running':			'Running',
   'agents.status.stopped':			'Stopped',
   'autonomy.cap_label':			'Max level {n}',
@@ -1211,8 +1187,6 @@ window._i18n.en = {
   'agents.auth.btn_starting':    'Starting...',
   'agents.auth.btn_confirming':  'Confirming...',
   'agents.auth.btn_confirm':     'Auth done → Confirm',
-  'agents.not_found':            'Not found',
-
   // --- Mobile login localhost warning ---
   'mobile_login.localhost_warn': "Mobile login works over your machine's local network (LAN) IP. You opened the dashboard on localhost and no usable LAN address was found. Open the dashboard on your machine's LAN IP (e.g. http://192.168.x.x:3420) and try mobile login from there.",
 

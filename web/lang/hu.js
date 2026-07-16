@@ -318,9 +318,6 @@ window._i18n.hu = {
   'agents.main_badge':             'fo asszisztens',
   'agents.status.running':         'Fut',
   'agents.status.stopped':         'Leállva',
-  'agents.status.connected':       'Csatlakozva',
-  'agents.status.disconnected':    'Nincs bekötve',
-  'agents.status.restarting':      'Újraindítás',
   'agents.reauth.reason':          'Újrabejelentkezés szükséges',
   'agents.btn.conversation':       'Beszélgetés',
   'agents.model.analyzing':        'Elemzés...',
@@ -340,16 +337,6 @@ window._i18n.hu = {
   'agents.error.restart':          'Agent újraindítása sikertelen',
   'agents.error.apply':            'Hiba az alkalmazás során',
   'agents.error.auth_network':     'Hálózati hiba az auth-flow indításakor',
-  'agents.load_error':             'Ügynök betöltése sikertelen',
-  'agents.btn.new':              'Új ügynök',
-  'agents.btn.model_analysis':   'Modell elemzés',
-  'agents.card.start':           'Indítás',
-  'agents.card.stop':            'Leállítás',
-  'agents.card.starting':        'Indítás...',
-  'agents.card.stopping':        'Leállítás...',
-  'agents.toast.start_error':    'Indítási hiba',
-  'agents.toast.stop_error':     'Leállítási hiba',
-  'agents.toast.save_error':     'Hiba a mentés során',
   'agents.toast.avatar_error':   'Hiba az avatar mentése során',
   'agents.status.online':          'Online',
   'agents.status.offline':         'Offline',
@@ -434,7 +421,6 @@ window._i18n.hu = {
   'agents.model.title':            'Modell elemzés -- {n} ágens',
   'agents.model.cards_confirm':    '{n} kanban kártya létrehozása a modell-változtatásokhoz?',
   'agents.model.creating_cards':   'Létrehozás...',
-  'agents.model.cards_done':       '{n} kártya létrehozva',
   'agents.claude_md_saved':        'CLAUDE.md mentve',
   'agents.soul_md_saved':          'SOUL.md mentve',
   'agents.restart_failed':         'Az újraindítás indítása sikertelen',
@@ -450,14 +436,8 @@ window._i18n.hu = {
   'agents.toast.plan_error':       'Hiba a plan mentésekor',
   'agents.toast.profile_saved_restart': 'Profil mentve (újraindítás szükséges)',
   'agents.toast.profile_error':    'Hiba a profil mentésekor',
-  'agents.toast.model_active':     'Új modell aktív: {model}',
-  'agents.toast.restarted':        'Újraindítva: {model}',
-  'agents.toast.error_msg':        'Hiba: {msg}',
   'agents.btn.reconnect':          'Újracsatlakozás...',
   'agents.btn.running':            'Futtatás...',
-  'agents.channel.conversation':   'Beszélgetés',
-
-
   // --- Activity ---
   'activity.page_title':         'Aktivitás',
   'activity.page_subtitle':      'Mit csinál épp minden ügynök: élő nézet, 3 mp-enként frissül',
@@ -465,8 +445,6 @@ window._i18n.hu = {
   'activity.updated':            'Frissítve: {time}',
   'activity.error_load':         'Nem sikerült lekérni az aktivitást',
   'activity.empty':              'Nincs ügynök.',
-  'activity.no_output':          'nincs friss kimenet',
-  'activity.session_stopped':    'a session nem fut',
   'activity.badge.main':         'fő',
   'activity.loading':            'Betöltés…',
   'activity.state.working':      'dolgozik',
@@ -940,8 +918,6 @@ window._i18n.hu = {
   'autonomy.last_modified':      'Utolsó módosítás: {date}',
   'autonomy.not_modified':       'Még nem módosított',
   'autonomy.error':              'Nem sikerült betölteni az autonómia konfigot.',
-  'autonomy.btn.refresh':        'Frissítés',
-  'autonomy.level.1':            '1 Csak jelez',
   'autonomy.level.2':            '2 Javasol, jóváhagyásra vár',
   'autonomy.level.3':            '3 Autonóm, utólag jelent',
 
@@ -1142,7 +1118,6 @@ window._i18n.hu = {
 
   // --- Updates ---
   'updates.page_title':          'Frissítések',
-  'updates.page_subtitle':        'verzió ellenőrzés',
   'updates.brand_subtitle':        '{brand} verzió ellenőrzés',
   'conversation.modal_title':      'Beszélgetés',
   'updates.checking':             'Ellenőrzés...',
@@ -1209,8 +1184,6 @@ window._i18n.hu = {
   'agents.auth.btn_starting':    'Indítás...',
   'agents.auth.btn_confirming':  'Megerősítés...',
   'agents.auth.btn_confirm':     'Auth kész → Megerősít',
-  'agents.not_found':            'Nem található',
-
   // --- Mobile login localhost warning ---
   'mobile_login.localhost_warn': 'A mobil-belépés a géped helyi hálózati (LAN) IP-jén működik. Most localhoston nyitottad meg a dashboardot, és nem találtam használható LAN-címet. Nyisd meg a dashboardot a géped LAN-IP-jén (pl. http://192.168.x.x:3420), és onnan próbáld a mobil-belépést.',
 

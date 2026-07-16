@@ -784,10 +784,13 @@ export function initDatabase(dbPathOverride?: string): void {
   // no-op and never adds ssh_key_id -- indexing it before this ALTER TABLE
   // runs throws "no such column: ssh_key_id" and crashes startup entirely
   // (2026-07-01 incident: dashboard 502'd, crash-looped on every restart).
-  try { db.exec('ALTER TABLE vault_ssh_servers ADD COLUMN key_type TEXT') } catch { /* pre-existing */ }
-  try { db.exec('ALTER TABLE vault_ssh_servers ADD COLUMN fingerprint TEXT') } catch { /* pre-existing */ }
-  try { db.exec('ALTER TABLE vault_ssh_servers ADD COLUMN vault_key_id TEXT') } catch { /* pre-existing */ }
-  try { db.exec('ALTER TABLE vault_ssh_servers ADD COLUMN key_expires_at INTEGER') } catch { /* pre-existing */ }
+  // Drop legacy per-server key columns that are no longer written or read.
+  // On older installs these were added via ALTER TABLE; fresh installs never had them.
+  // SQLite 3.35+ is required; try-catch makes this a no-op on either scenario.
+  try { db.exec('ALTER TABLE vault_ssh_servers DROP COLUMN key_type') } catch { /* column absent or SQLite pre-3.35 */ }
+  try { db.exec('ALTER TABLE vault_ssh_servers DROP COLUMN fingerprint') } catch { /* column absent or SQLite pre-3.35 */ }
+  try { db.exec('ALTER TABLE vault_ssh_servers DROP COLUMN vault_key_id') } catch { /* column absent or SQLite pre-3.35 */ }
+  try { db.exec('ALTER TABLE vault_ssh_servers DROP COLUMN key_expires_at') } catch { /* column absent or SQLite pre-3.35 */ }
   try { db.exec('ALTER TABLE vault_ssh_servers ADD COLUMN ssh_key_id TEXT REFERENCES vault_ssh_keys(id)') } catch { /* already exists */ }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_vault_ssh_servers_key ON vault_ssh_servers(ssh_key_id)`)
 
@@ -2116,7 +2119,7 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
   }
 }
 
-export function cosineSimilarity(a: number[], b: number[]): number {
+function cosineSimilarity(a: number[], b: number[]): number {
   let dotProduct = 0, normA = 0, normB = 0
   for (let i = 0; i < a.length; i++) {
     dotProduct += a[i] * b[i]
@@ -2126,7 +2129,7 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB))
 }
 
-export function vectorSearch(agentId: string, queryEmbedding: number[], limit: number = 10): Memory[] {
+function vectorSearch(agentId: string, queryEmbedding: number[], limit: number = 10): Memory[] {
   const rows = db.prepare(
     "SELECT * FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared')"
   ).all(agentId) as Memory[]
@@ -2762,8 +2765,8 @@ export function deleteVaultSshKey(id: string): { deleted: boolean; unassigned: n
 // --- Vault SSH Servers ---
 // Stores server metadata. The ssh_key_id FK points to vault_ssh_keys (nullable;
 // null = no key assigned = keyStatus "missing"). Legacy per-server key columns
-// (vault_key_id, key_type, fingerprint, key_expires_at) are kept in the schema
-// for backward compatibility but are no longer the source of truth.
+// (vault_key_id, key_type, fingerprint, key_expires_at) have been removed via
+// DROP COLUMN migration above.
 
 export interface VaultSshServer {
   id: string
