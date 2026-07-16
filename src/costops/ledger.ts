@@ -319,7 +319,7 @@ export function getCostSummary(
   db: Database.Database,
   config: CostOpsConfig,
   now: number,
-  opts: { monthKey?: string; configExists?: boolean; configErrors?: string[] } = {},
+  opts: { monthKey?: string; configExists?: boolean; configErrors?: string[]; pricing?: PricingConfig; pricingExists?: boolean } = {},
 ): CostSummary {
   const win = monthWindow(now, opts.monthKey)
 
