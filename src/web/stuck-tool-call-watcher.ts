@@ -141,7 +141,7 @@ export function shouldDeferForRecentRespawn(
   return lastRespawnMs > 0 && nowMs - lastRespawnMs < graceMs
 }
 
-function checkSession(label: string, session: string): void {
+async function checkSession(label: string, session: string): Promise<void> {
   const pane = capturePane(session)
   const sig = pane == null ? null : stuckToolCallSignature(pane)
 
@@ -230,7 +230,7 @@ function checkSession(label: string, session: string): void {
     // pane-attribution detached-claude reap FIRST, breaking the
     // orphan->409->freeze doom-loop that the launchctl/channels.sh env-grep reap
     // never cleaned (the loop's launchctl path never reaped the main orphans).
-    const ok = resumeMarveenSession()
+    const ok = await resumeMarveenSession()
     if (!ok) {
       logger.error({ label, session }, 'stuck-tool-call-watcher: respawn-pane recovery failed')
     }
@@ -238,13 +238,13 @@ function checkSession(label: string, session: string): void {
 }
 
 export function startStuckToolCallWatcher(): NodeJS.Timeout {
-  function sweep() {
+  async function sweep() {
     try {
-      checkSession('main', MAIN_CHANNELS_SESSION)
+      await checkSession('main', MAIN_CHANNELS_SESSION)
     } catch (err) {
       logger.debug({ err }, 'stuck-tool-call-watcher: main session check error')
     }
   }
-  setTimeout(sweep, INITIAL_DELAY_MS)
-  return setInterval(sweep, INTERVAL_MS)
+  setTimeout(() => { void sweep() }, INITIAL_DELAY_MS)
+  return setInterval(() => { void sweep() }, INTERVAL_MS)
 }

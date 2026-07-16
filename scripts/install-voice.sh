@@ -134,6 +134,7 @@ _step "[5/5] Installing fleet helper scripts"
 cp "$VOICE_SRC/_vtools.py" "$DEST/_vtools.py"
 cp "$VOICE_SRC/stt.sh"     "$DEST/stt.sh"
 cp "$VOICE_SRC/tts.sh"     "$DEST/tts.sh"
+cp "$VOICE_SRC/canary.sh"  "$DEST/canary.sh"
 chmod +x "$DEST/stt.sh" "$DEST/tts.sh" "$DEST/_vtools.py"
 _pass "stt.sh, tts.sh, _vtools.py deployed"
 

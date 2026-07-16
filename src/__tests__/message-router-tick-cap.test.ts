@@ -6,10 +6,10 @@
 // never make one tick run long and starve the event loop -- the slow-tick half
 // of the progressive-hang pattern.
 //
-// We feed 30 pending messages, all addressed to a SUB-agent whose tmux session
-// does not exist, and assert sessionExistsOnHost -- the first per-message probe
-// past the main-agent skip -- fires exactly MAX_MESSAGES_PER_TICK (25) times.
-// The remaining 5 are left untouched for the next tick.
+// Since card 2922e380, sessionExistsOnHost is called once per unique receiver
+// in the pre-pass and cached for the main loop (not once per message). The work
+// cap is verified by the slice() bound: at most MAX_MESSAGES_PER_TICK messages
+// enter the loop per tick, regardless of backlog size.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -22,7 +22,8 @@ vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
 }))
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   MAIN_AGENT_ID: 'orin',
   // message-router imports maybeWakeSubAgentsForTelegram, which reads this flag
   // from config; keep it OFF so the wake watcher early-returns and this test
@@ -31,9 +32,14 @@ vi.mock('../config.js', () => ({
 }))
 
 vi.mock('../db.js', () => ({
-  getPendingMessages: () => mockGetPendingMessages(),
+  getPendingMessages: (toAgent?: string) => {
+    if (toAgent) return [] // per-agent query for reconnect pre-pass
+    return mockGetPendingMessages()
+  },
   markMessageDelivered: (...a: unknown[]) => mockMarkDelivered(...a),
   markMessageFailed: (...a: unknown[]) => mockMarkFailed(...a),
+  markMessageDone: (..._a: unknown[]) => true,
+  createAgentMessage: (..._a: unknown[]) => ({ id: 999 }),
 }))
 
 vi.mock('../web/voice-directive.js', () => ({
@@ -93,9 +99,11 @@ describe('message router per-tick work cap', () => {
 
     await runMessageRouterTick()
 
-    // Each processed message probes sessionExistsOnHost exactly once before the
-    // absent-session `continue`; the 5-message backlog is never touched.
-    expect(mockSessionExistsOnHost).toHaveBeenCalledTimes(MAX_MESSAGES_PER_TICK)
+    // sessionExistsOnHost is called once per unique receiver (cached since card 2922e380).
+    expect(mockSessionExistsOnHost).toHaveBeenCalledTimes(1)
+    // Messages are fresh (within abandon window) and session is absent, so they
+    // are NOT marked failed — they remain pending for the next tick.
+    expect(mockMarkFailed).not.toHaveBeenCalled()
   })
 
   it('processes all messages when the backlog is under the cap', async () => {
@@ -103,6 +111,7 @@ describe('message router per-tick work cap', () => {
 
     await runMessageRouterTick()
 
-    expect(mockSessionExistsOnHost).toHaveBeenCalledTimes(10)
+    expect(mockSessionExistsOnHost).toHaveBeenCalledTimes(1)
+    expect(mockMarkFailed).not.toHaveBeenCalled()
   })
 })

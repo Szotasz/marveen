@@ -10,6 +10,7 @@ import {
   decideSubmitFollowup,
   decidePaneErrorAlert,
   stuckInputSignature,
+  parkedPasteSignature,
   decideStuckInputRecovery,
   parkedChannelInput,
   parkedInputText,
@@ -2018,5 +2019,78 @@ describe('paneShowsContextSaturation', () => {
   it('is false on empty/null-ish input', () => {
     expect(paneShowsContextSaturation('')).toBe(false)
     expect(paneShowsContextSaturation('   \n  ')).toBe(false)
+  })
+})
+
+describe('parkedPasteSignature (stuck [Pasted text #N] recovery)', () => {
+  it('returns a stable signature for a parked placeholder (current build, idle footer)', () => {
+    const sig = parkedPasteSignature(PENDING_PASTE)
+    expect(sig).not.toBeNull()
+    expect(sig).toContain('[Pasted text #1')
+  })
+
+  it('recovers the older build shape too (paste again to expand, no idle footer)', () => {
+    // The 'typing'-gated stuckInputSignature is null here (placeholder reads as
+    // busy), which is exactly the gap this function fills.
+    expect(stuckInputSignature(PENDING_PASTE_REALISTIC)).toBeNull()
+    expect(parkedPasteSignature(PENDING_PASTE_REALISTIC)).not.toBeNull()
+  })
+
+  it('recovers the real wrapped-stub production shape', () => {
+    expect(parkedPasteSignature(PENDING_PASTE_WRAPPED_REAL_SHAPE)).not.toBeNull()
+    expect(parkedPasteSignature(PENDING_PASTE_WRAPPED_DIGIT_SPLIT)).not.toBeNull()
+  })
+
+  it('is null when NO placeholder is parked (plain typing / idle / empty)', () => {
+    expect(parkedPasteSignature(TYPING_PARKED)).toBeNull()
+    expect(parkedPasteSignature('')).toBeNull()
+    expect(parkedPasteSignature('   \n  ')).toBeNull()
+  })
+
+  it('does NOT misfire on a placeholder quoted only in scrollback', () => {
+    expect(parkedPasteSignature(PASTE_ECHO_IN_SCROLLBACK_ONLY)).toBeNull()
+  })
+
+  it('is null while a live busy indicator is present (genuine in-progress paste)', () => {
+    // Placeholder in the box AND a live spinner/token line just above it: the
+    // turn is actually running, so recovery must NOT pre-empt it.
+    const busyPaste = [
+      '  Beaming… (12s · ↓ 3.1k tokens · esc to interrupt)',
+      SEP,
+      '❯ [Pasted text #7 +512 chars]',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(parkedPasteSignature(busyPaste)).toBeNull()
+  })
+
+  it('is null when a token-counter busy tail is present without a spinner label', () => {
+    const busyTail = [
+      '  (52s · ↓ 2.6k tokens · esc to interrupt)',
+      SEP,
+      '❯ [Pasted text #9]',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(parkedPasteSignature(busyTail)).toBeNull()
+  })
+
+  it('sanitized real incident shape: finished turn + parked paste -> recoverable', () => {
+    // Mirrors the observed Aura capture: a past-tense "Baked for Ns" stamp (NOT
+    // a live busy indicator) above the idle hint, with the scheduled-task notice
+    // collapsed into a paste stub in the box.
+    const auraShape = [
+      '● Kihagytam a delelotti nudge-ot, mert ma mar boven volt interakcio.',
+      '',
+      '✻ Baked for 33s',
+      '                    new task? /clear to save 108.3k tokens',
+      SEP,
+      '❯ SCHEDULED TASK NOTICE -- the next <scheduled-task source="..."> [Pasted text',
+      '  #2 +1 lines]',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(stuckInputSignature(auraShape)).toBeNull()
+    expect(parkedPasteSignature(auraShape)).not.toBeNull()
   })
 })

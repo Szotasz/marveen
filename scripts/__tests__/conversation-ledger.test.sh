@@ -207,7 +207,13 @@ fi
 if printf '%s' "$CW_CTX" | python3 -c '
 import sys
 s = sys.stdin.read()
-a, b, c = s.find("ELSO_UZENET"), s.find("VALASZ_KOZEP"), s.find("MASODIK_UZENET")
+# The transcript turns live in the "LEGFRISSEBB FORDULOK" section; the newest
+# message also appears earlier in the open-question block at the top (the #623
+# reorder puts the directive + open question first). Scope the chronological
+# check to the transcript section so the open-question echo does not skew it.
+i = s.find("LEGFRISSEBB FORDUL")
+sec = s[i:] if i != -1 else s
+a, b, c = sec.find("ELSO_UZENET"), sec.find("VALASZ_KOZEP"), sec.find("MASODIK_UZENET")
 sys.exit(0 if (a != -1 and b != -1 and c != -1 and a < b < c) else 1)
 '; then
     pass "replay: context window is in chronological order"

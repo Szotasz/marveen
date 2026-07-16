@@ -1,5 +1,6 @@
 import {
   readFileSync,
+  readlinkSync,
   unlinkSync,
   mkdirSync,
   openSync,
@@ -9,13 +10,13 @@ import {
 import { join } from 'node:path'
 import { execFileSync, execSync } from 'node:child_process'
 import type { Server as HttpServer } from 'node:http'
-import { STORE_DIR, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
-import { initDatabase } from './db.js'
+import { PROJECT_ROOT, STORE_DIR, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
+import { initDatabase, backfillEmbeddings } from './db.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
 import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
 import { ensureHeartbeatAgent, shouldBootHeartbeatAgent, HEARTBEAT_AGENT_NAME } from './web/heartbeat-agent-scaffold.js'
 import { startAgentProcess } from './web/agent-process.js'
-import { renameSharedCredentialsIfSafe } from './web/claude-credentials-guard.js'
+import { renameSharedCredentialsIfSafe, fleetTokenBootPass } from './web/claude-credentials-guard.js'
 import { startWebServer } from './web.js'
 import { logger } from './logger.js'
 import { startInviteMonitor, stopInviteMonitor } from './web/channel-invites.js'
@@ -60,6 +61,36 @@ const SHUTDOWN_HARD_KILL_MS = 5000
 // those files would get SIGKILLed on startup.
 const DASHBOARD_BINARY_PATTERN = /(?:^|[\s/])(?:dist\/index\.js|src\/index\.ts)(?:\s|$)/
 
+// Own-install affinity guard for the takeover kill. The binary pattern alone
+// matches ANY Marveen dashboard argv of the same UID -- including a SECOND
+// install's live process (federation makes multi-install machines a supported
+// reality, and dev/test copies always existed). Only processes that belong to
+// THIS install may be taken over: an absolute argv must contain PROJECT_ROOT,
+// a relative argv ("node dist/index.js" via npm start) must have its cwd
+// inside PROJECT_ROOT. A process we cannot attribute is left alone -- failing
+// to reclaim our own port surfaces as EADDRINUSE (handled downstream), while
+// killing a stranger's dashboard would be silent data-plane damage.
+function processCwd(pid: number): string | null {
+  try {
+    // Linux: cheap and exact.
+    return readlinkSync(`/proc/${pid}/cwd`)
+  } catch { /* not Linux or no access; try lsof (macOS) */ }
+  try {
+    const raw = execSync(`lsof -a -p ${pid} -d cwd -Fn 2>/dev/null || true`, { timeout: 2000, encoding: 'utf-8' })
+    const line = raw.split('\n').find((l) => l.startsWith('n'))
+    return line ? line.slice(1) : null
+  } catch {
+    return null
+  }
+}
+
+function argvBelongsToThisInstall(argv: string, pid: number): boolean {
+  // Boundary-suffixed so /path/marveen never matches /path/marveen2.
+  if (argv.includes(PROJECT_ROOT + '/')) return true
+  const cwd = processCwd(pid)
+  return cwd !== null && (cwd === PROJECT_ROOT || cwd.startsWith(PROJECT_ROOT + '/'))
+}
+
 // Build the I/O surface used by process-lock.ts. Kept here so the pure
 // module stays testable with a mock ctx and never imports node:child_process
 // or node:fs directly.
@@ -98,6 +129,7 @@ function buildProcessLockContext(): ProcessLockContext {
           if (pid === process.pid) continue
           if (uid != null && rowUid !== uid) continue
           if (!pattern.test(argv)) continue
+          if (!argvBelongsToThisInstall(argv, pid)) continue
           out.push(pid)
         }
         return out
@@ -408,6 +440,12 @@ async function main(): Promise<void> {
   initDatabase()
   logger.info('Adatbazis inicializalva')
 
+  // Backfill embeddings for memories saved before Ollama was available.
+  // Fire-and-forget: a missing or slow Ollama instance must not block startup.
+  backfillEmbeddings().then(count => {
+    if (count > 0) logger.info({ count }, 'Embedding backfill befejezve')
+  }).catch(err => logger.warn({ err }, 'Embedding backfill hiba (Ollama nem elerheto)'))
+
   // Memory decay (24h cycle)
   runDecaySweep()
   decayInterval = setInterval(runDecaySweep, 24 * 60 * 60 * 1000)
@@ -448,14 +486,32 @@ async function main(): Promise<void> {
   // sub-agent that reads the operator's calendar and DB, and a gated-off
   // machine (e.g. a dev box) must not fight the production host over the
   // channel.
+  // Linux credentials-guard, once at boot before any agent starts (opt-in,
+  // default OFF, no-op on macOS). Retires the rotating credentials.json so
+  // even the systemd-managed main channels agent comes up on the stable
+  // setup-token; startAgentProcess re-runs it per launch for self-healing.
+  // Was previously nested inside the heartbeat-agent boot branch below, so on
+  // any install with the heartbeat sub-agent disabled (the common case) this
+  // never ran at boot at all (found 2026-07-13 while diagnosing recurring
+  // dead-token incidents).
+  renameSharedCredentialsIfSafe()
+
+  // Fleet-token boot pass, DEFERRED and fire-and-forget: it live-probes a
+  // credential (one real `claude -p` call, up to 60s) so it must never block
+  // boot. Backfills store/.claude-oauth-token from a terminal-pasted
+  // `claude setup-token` (which lands only in ~/.claude/.credentials.json and
+  // silently disables per-agent isolation AND the rename guard -- 2026-07-15
+  // bootcamp root gap), validates a never-verified existing fleet token, and
+  // quarantines one the probe proves dead.
+  setTimeout(() => {
+    fleetTokenBootPass()
+      .then((result) => logger.info({ result }, 'credentials-guard: fleet-token boot pass'))
+      .catch((err) => logger.warn({ err }, 'credentials-guard: fleet-token boot pass failed'))
+  }, 15_000)
+
   if (shouldBootHeartbeatAgent({ respawnEnabled: RESPAWN_ENABLED, agentEnabled: HEARTBEAT_AGENT_ENABLED })) {
     ensureHeartbeatAgent()
     logger.info({ agent: HEARTBEAT_AGENT_NAME }, 'Heartbeat agent scaffold ensured (channel-less, dashboard-hidden)')
-    // Linux credentials-guard, once at boot before any agent starts (opt-in,
-    // default OFF, no-op on macOS). Retires the rotating credentials.json so
-    // even the systemd-managed main channels agent comes up on the stable
-    // setup-token; startAgentProcess re-runs it per launch for self-healing.
-    renameSharedCredentialsIfSafe()
     const heartbeatStart = startAgentProcess(HEARTBEAT_AGENT_NAME)
     if (heartbeatStart.ok) {
       logger.info({ agent: HEARTBEAT_AGENT_NAME }, 'Heartbeat agent started')

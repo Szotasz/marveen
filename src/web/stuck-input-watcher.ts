@@ -7,6 +7,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { recoverStuckInputForSession, sendAlert } from './channel-monitor.js'
 import {
   stuckInputSignature,
+  parkedPasteSignature,
   decideStuckInputRecovery,
   type StuckInputState,
   type StuckInputThresholds,
@@ -78,6 +79,57 @@ const NO_STATE: StuckInputState = { parkedSig: null, firstSeenAt: null, lastReco
 
 const watchState = new Map<string, StuckInputState>()
 
+// Backstop for a PARKED `[Pasted text #N]` placeholder -- a long inbound prompt
+// (e.g. a scheduled-task notice > ~700 chars) the TUI collapsed into a paste
+// stub whose trailing Enter was swallowed. detectPaneState reads a placeholder
+// as 'busy' (correct for the scheduler: don't pile a second prompt on), so the
+// 'typing'-gated recovery in checkLocalSession / bareEnterRecovery NEVER fires
+// for it and the stub sat parked until a manual keystroke. This runs FIRST per
+// session: a placeholder and a typing-parked box are mutually exclusive (a
+// placeholder forces detectPaneState -> 'busy', so stuckInputSignature is null),
+// so handling the paste case here and skipping the normal path on the same tick
+// cannot double-act on one session.
+//
+// Recovery is a BARE Enter only -- a placeholder submits on a single Enter even
+// though it renders across multiple visual rows, and the collapsed paste body is
+// not recoverable from the pane (clear + re-inject would DESTROY it). A bare
+// Enter submits the real pasted content verbatim, exactly what the manual
+// keystroke does. Host-aware, so a remote sub-agent is covered too. Time-gated
+// through the shared decideStuckInputRecovery so a healthy paste that submits on
+// its own within the confirm window is never Enter-spammed.
+//
+// Returns true when a parked-paste spell is active (recovered or still inside
+// its confirm/dedup window) so the caller SKIPS the normal recovery this tick;
+// false when there is no parked paste (caller runs the normal 'typing' path).
+function recoverParkedPaste(
+  label: string,
+  session: string,
+  host: string | null,
+  thresholds: StuckInputThresholds,
+): boolean {
+  const pane = captureParkedInputView(session, host)
+  const sig = pane == null ? null : parkedPasteSignature(pane)
+  if (sig == null) return false
+
+  const prev = watchState.get(session) ?? NO_STATE
+  const { recover, next } = decideStuckInputRecovery(sig, prev, Date.now(), thresholds)
+  watchState.set(session, next)
+
+  if (recover) {
+    logger.info(
+      { label, session, attempt: next.attempts },
+      'stuck-input-watcher: parked paste placeholder persisted past confirm window, sending recovery Enter',
+    )
+    sendEnterToSession(session, host)
+  } else if (next.attempts >= thresholds.maxAttempts && prev.attempts < thresholds.maxAttempts) {
+    logger.warn(
+      { label, session },
+      'stuck-input-watcher: paste placeholder still parked after max recovery Enters, giving up for this spell',
+    )
+  }
+  return true
+}
+
 // Bare-Enter recovery (host-aware). Used for the MAIN session (host null) and
 // for REMOTE sub-agents, where the local-tmux clear+re-inject is not
 // available. channel-monitor owns the clear+re-inject escalation for these.
@@ -138,9 +190,9 @@ function bareEnterRecovery(label: string, session: string, host: string | null):
 // this flag), only the ghost-risky plain-text branch is closed. Local
 // sub-agents pass TRUE: the env-var strips their ghost at the source, so their
 // plain re-inject (an inter-agent message the TUI failed to submit) is safe.
-function checkLocalSession(label: string, session: string, alertOnGiveUp: boolean, allowPlainReinject: boolean): void {
+async function checkLocalSession(label: string, session: string, alertOnGiveUp: boolean, allowPlainReinject: boolean): Promise<void> {
   const prev = watchState.get(session) ?? NO_STATE
-  const next = recoverStuckInputForSession(session, prev, LOCAL_FAST_THRESHOLDS, allowPlainReinject)
+  const next = await recoverStuckInputForSession(session, prev, LOCAL_FAST_THRESHOLDS, allowPlainReinject)
 
   if (next.parkedSig === null) {
     watchState.delete(session)
@@ -158,7 +210,7 @@ function checkLocalSession(label: string, session: string, alertOnGiveUp: boolea
 }
 
 export function startStuckInputWatcher(): NodeJS.Timeout {
-  function sweep() {
+  async function sweep() {
     // The main agent's channels session is named `<id>-channels`, not
     // `agent-<id>`, so isAgentRunning (which checks the agent- prefix)
     // does not apply. Check it directly; capturePane returns null when it
@@ -171,7 +223,12 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
     // (no prompt-suggestion env-var on the main session). The give-up alert +
     // the rate-limited hard restart stay owned by channel-monitor (alert=false).
     try {
-      checkLocalSession(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, false, false)
+      // Parked paste placeholder takes precedence (mutually exclusive with a
+      // typing-parked box); only run the normal 'typing' recovery when there is
+      // no stuck paste this tick.
+      if (!recoverParkedPaste(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, null, LOCAL_FAST_THRESHOLDS)) {
+        await checkLocalSession(MAIN_AGENT_ID, MAIN_CHANNELS_SESSION, false, false)
+      }
     } catch (err) {
       logger.debug({ err }, 'stuck-input-watcher: main agent check error')
     }
@@ -185,11 +242,17 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
       try {
         // Local sub-agents get the full robust escalation (with a give-up
         // alert); remote-host ones (no local tmux for clear+re-inject) stay on
-        // the host-aware bare Enter.
+        // the host-aware bare Enter. In both cases a parked paste placeholder is
+        // handled first via a time-gated bare Enter (the 'typing'-gated paths
+        // below never see it -- a placeholder reads as 'busy').
         if (host == null) {
-          checkLocalSession(name, session, true, true)
+          if (!recoverParkedPaste(name, session, null, LOCAL_FAST_THRESHOLDS)) {
+            await checkLocalSession(name, session, true, true)
+          }
         } else {
-          bareEnterRecovery(name, session, host)
+          if (!recoverParkedPaste(name, session, host, THRESHOLDS)) {
+            bareEnterRecovery(name, session, host)
+          }
         }
       } catch (err) {
         logger.debug({ err, agent: name }, 'stuck-input-watcher: agent check error')
@@ -197,6 +260,6 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
     }
   }
 
-  setTimeout(sweep, INITIAL_DELAY_MS)
-  return setInterval(sweep, INTERVAL_MS)
+  setTimeout(() => { void sweep() }, INITIAL_DELAY_MS)
+  return setInterval(() => { void sweep() }, INTERVAL_MS)
 }

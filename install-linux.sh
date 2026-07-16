@@ -89,6 +89,24 @@ ensure_block_in_rc() {
 
 INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# CLI flag parsing -- runs before the interactive wizard.
+# WEB_PORT can also be set as an env var (env var wins if --port is not given).
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --port|--web-port)
+      if [[ -z "${2:-}" || "${2}" == --* ]]; then
+        echo "Error: --port requires a numeric argument (e.g. --port 3421)" >&2; exit 1
+      fi
+      WEB_PORT="$2"; shift 2 ;;
+    --help|-h)
+      echo "Usage: $0 [--port <N>]"
+      echo "  --port <N>   Dashboard port (default: 3420). Also settable via WEB_PORT env var."
+      exit 0 ;;
+    *) echo "Unknown option: $1 (use --help for usage)" >&2; exit 1 ;;
+  esac
+done
+WEB_PORT="${WEB_PORT:-3420}"
+
 clear
 echo ""
 echo -e "${BOLD}  ▐▛███▜▌   Marveen${NC}"
@@ -274,11 +292,12 @@ export PATH="$HOME/.local/bin:$PATH"
 # binary cannot wedge the installer).
 _claude_runs() { command -v claude >/dev/null 2>&1 && timeout 25 claude --version </dev/null >/dev/null 2>&1; }
 
-# Pinned Node-based fallback for AVX-less hosts. @2.0.76 ships bin=cli.js (a
-# `#!/usr/bin/env node` entrypoint) that runs without AVX; npm-latest (2.1.x)
-# still bundles the Bun ELF binary, so DO NOT use latest here. Verified on the
-# AVX-less pilot VPS.
-CLAUDE_PIN="2.0.76"
+# Pinned Node-based fallback for AVX-less hosts. @2.1.110 is the LAST version
+# that ships bin=cli.js (a `#!/usr/bin/env node` entrypoint) running without
+# AVX -- 2.1.120+ bundles only the Bun ELF binary, so DO NOT use latest here.
+# Unlike the old 2.0.76 pin, 2.1.110 also understands `--channels`, which
+# channels.sh requires to boot the bot. Verified on the AVX-less pilot VPS.
+CLAUDE_PIN="2.1.110"
 
 if _claude_runs; then
   ok "claude mar telepitve es fut: $(claude --version 2>/dev/null || echo 'ok')"
@@ -289,6 +308,11 @@ else
   if grep -qE '^flags[[:space:]]*:' /proc/cpuinfo 2>/dev/null && ! grep -qiw avx /proc/cpuinfo 2>/dev/null; then
     warn "A CPU nem tamogatja az AVX-et; a hivatalos installer Bun-binaryja elszallna (SIGILL)."
     echo -e "  ${DIM}Pinnelt Node-verzio telepitese: @${CLAUDE_PIN} (nehany legfrissebb Claude Code fix kimaradhat, de fut AVX nelkul).${NC}"
+    # The auto-updater would replace the pinned Node cli.js with the latest
+    # Bun binary on first run -> SIGILL. Disable it persistently (rc files for
+    # interactive shells; channels.sh exports it for the agent sessions).
+    ensure_in_rc 'DISABLE_AUTOUPDATER' 'export DISABLE_AUTOUPDATER=1'
+    export DISABLE_AUTOUPDATER=1
     if command -v npm >/dev/null 2>&1; then
       npm install -g "@anthropic-ai/claude-code@${CLAUDE_PIN}" || warn "npm install sikertelen (@${CLAUDE_PIN})."
     else
@@ -702,6 +726,7 @@ BOT_NAME=${BOT_NAME}
 BRAND_NAME=${BRAND_NAME}
 MAIN_AGENT_ID=${MAIN_AGENT_ID}
 SERVICE_ID=${SERVICE_ID}
+WEB_PORT=${WEB_PORT:-3420}
 ENVEOF
 )
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
@@ -721,6 +746,18 @@ if [ -n "${CLAUDE_AUTH_ENV_LINE:-}" ]; then
   echo "$CLAUDE_AUTH_ENV_LINE" >> "$INSTALL_DIR/.env"
 fi
 chmod 600 "$INSTALL_DIR/.env"
+# Fleet setup-token file: per-agent config-dir isolation and the credentials
+# guard are BOTH gated on store/.claude-oauth-token; without it every
+# sub-agent silently falls back to the shared rotating
+# ~/.claude/.credentials.json (2026-07-15 bootcamp bug family). Parity with
+# the dashboard wizard (/api/onboarding/claude-auth) and scripts/auth.sh.
+# Shape-gated (a garbage paste must not poison every sub-agent launch) and
+# written under umask 077 (no 644 window before a chmod).
+if [ -n "${OAUTH_TOKEN_INPUT:-}" ] && printf '%s' "$OAUTH_TOKEN_INPUT" | grep -Eq '^sk-ant-oat01-[A-Za-z0-9_-]{40,}$'; then
+  mkdir -p "$INSTALL_DIR/store"
+  (umask 077 && printf '%s' "$OAUTH_TOKEN_INPUT" > "$INSTALL_DIR/store/.claude-oauth-token")
+  ok "Fleet setup-token eltarolva (store/.claude-oauth-token) -- per-agent izolacio aktiv"
+fi
 ok ".env letrehozva (chmod 600)"
 
 # CLAUDE.md generalasa template-bol
@@ -730,6 +767,7 @@ if [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
     -e "s/{{CHAT_ID}}/$CHAT_ID/g" \
     -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
     -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
+    -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
     "$INSTALL_DIR/templates/CLAUDE.md.template" >"$INSTALL_DIR/CLAUDE.md"
   ok "CLAUDE.md generalva"
 else
@@ -1519,7 +1557,7 @@ if [ "$DO_MIGRATE" = "i" ]; then
   if [ -f "$INSTALL_DIR/scripts/migrate.sh" ]; then
     "$INSTALL_DIR/scripts/migrate.sh"
   else
-    warn "A migrate.sh nem talalhato. Hasznald a dashboardot: http://localhost:3420 -> Koltoztes"
+    warn "A migrate.sh nem talalhato. Hasznald a dashboardot: http://localhost:${WEB_PORT:-3420} -> Koltoztes"
   fi
 fi
 
@@ -1552,10 +1590,10 @@ if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
   DASH_TOKEN=$(cat "$INSTALL_DIR/store/.dashboard-token")
 fi
 if [ -n "$DASH_TOKEN" ]; then
-  echo -e "  ${BOLD}Dashboard:${NC} ${BLUE}http://localhost:3420/?token=${DASH_TOKEN}${NC}"
+  echo -e "  ${BOLD}Dashboard:${NC} ${BLUE}http://localhost:${WEB_PORT:-3420}/?token=${DASH_TOKEN}${NC}"
   echo -e "  ${DIM}$(_t dash.token_hint)${NC}"
 else
-  echo -e "  ${BOLD}Dashboard:${NC} http://localhost:3420"
+  echo -e "  ${BOLD}Dashboard:${NC} http://localhost:${WEB_PORT:-3420}"
   echo -e "  ${DIM}(A tokenes URL-t a szerver logban talalod)${NC}"
 fi
 echo ""

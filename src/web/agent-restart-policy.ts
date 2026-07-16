@@ -37,6 +37,27 @@ export interface AgentRestartDecisionInput {
   // long-down plugin occasionally (it may recover after an external fix) rather
   // than backing off unboundedly. Omitted = no cap beyond the exponent.
   maxRestartGraceMs?: number
+  // How long the plugin has been CONTINUOUSLY observed down in this spell, in
+  // milliseconds (0 on the first down sweep). A single down observation is not
+  // proof: the probe walks a process tree and can miss a poller that is mid-
+  // respawn, and a loaded machine can time the ps call out. Observed 2026-07-14:
+  // a down verdict at 19:33 whose restart FAILED, yet the plugin reported healthy
+  // again at 19:34 -- it was never dead. Restarting on one sample cost agents
+  // their whole session context ~10x that day. Omitted = no confirmation window
+  // (legacy single-sample behaviour).
+  msDown?: number
+  // A down-spell must last at least this long before any restart, so a transient
+  // miss heals on the next sweep instead of nuking the agent. Omitted = 0.
+  downConfirmMs?: number
+  // True when the agent's pane is actively generating (busy/typing). Restarting
+  // then throws away in-flight work, and the agent CAN still work with a down
+  // channel -- it just cannot receive messages. Defer to the idle window.
+  agentBusy?: boolean
+  // Cap on busy-deferral. A permanently busy agent with a dead channel is deaf,
+  // which is the failure mode the watchdog exists to prevent, so past this the
+  // decision escalates to the operator ('alert-busy') rather than deferring for
+  // ever OR killing the work. Omitted = defer indefinitely while busy.
+  busyDeferMaxMs?: number
 }
 
 // The restart grace after applying exponential back-off for repeated failed
@@ -76,7 +97,7 @@ export function shouldAutoRestartDownAgent(input: AgentRestartDecisionInput): bo
   return true
 }
 
-export type DownAgentAction = 'restart' | 'alert' | 'skip'
+export type DownAgentAction = 'restart' | 'alert' | 'alert-busy' | 'skip'
 
 // Hard cap on consecutive watchdog restarts that never bring the plugin back
 // up. The exponential back-off above only SLOWS the churn; on its own a plugin
@@ -100,6 +121,10 @@ export const AGENT_MAX_RESTART_ATTEMPTS = 5
 // acts on 'alert', so subsequent ticks fall through to 'skip' and the alert
 // fires exactly once per down-spell (the counter is reset when the plugin
 // recovers, re-arming the alert for any future spell).
+// 'alert-busy' is the same escalation for a different cause: the plugin stayed
+// down past the busy-deferral cap while the agent kept working, so the watchdog
+// refuses to choose between killing live work and leaving the agent deaf, and
+// asks the operator instead.
 export function decideDownAgentAction(
   input: AgentRestartDecisionInput,
   maxRestartAttempts: number,
@@ -110,7 +135,19 @@ export function decideDownAgentAction(
   if (maxRestartAttempts > 0 && failures >= maxRestartAttempts) {
     return failures === maxRestartAttempts ? 'alert' : 'skip'
   }
-  return shouldAutoRestartDownAgent(input) ? 'restart' : 'skip'
+  // Confirmation window: one down sample is a suspicion, not a verdict.
+  const msDown = Number.isFinite(input.msDown) ? (input.msDown as number) : 0
+  const downConfirmMs = Number.isFinite(input.downConfirmMs) ? (input.downConfirmMs as number) : 0
+  if (msDown < downConfirmMs) return 'skip'
+  if (!shouldAutoRestartDownAgent(input)) return 'skip'
+  // Busy-guard: the restart is a FRESH session, so it destroys whatever the
+  // agent is generating right now. Wait for idle; escalate if that never comes.
+  if (input.agentBusy) {
+    const cap = input.busyDeferMaxMs
+    if (cap != null && Number.isFinite(cap) && msDown >= cap) return 'alert-busy'
+    return 'skip'
+  }
+  return 'restart'
 }
 
 // Parse the elapsed-time string from `ps -o etime=` into seconds.

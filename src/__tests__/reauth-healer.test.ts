@@ -95,3 +95,43 @@ describe('decideReauthAction', () => {
     expect(last.escalate).toBe(true)
   })
 })
+
+// 2026-07-16 first-run gate (bootcamp): the "Select login method" picker /
+// browser sign-in screen is NOT a dead token. A /login send-keys there is
+// actively harmful (Enter accepts a login method -> browser OAuth on a VALID
+// credential); the heal is a sub-agent restart, which re-seeds the flag.
+describe('decideReauthAction: first-run gate', () => {
+  const gated = { consecutiveDead: 2, lastActionAtMs: null } as ReauthHealerState
+
+  it('suppresses /login send-keys and restarts instead (sub-agent, at threshold)', () => {
+    const d = decideReauthAction(base({ isFirstRunGate: true, prev: gated }), T)
+    expect(d.sendKeys).toBe(false)
+    expect(d.restartAgent).toBe(true)
+    expect(d.escalate).toBe(true)
+  })
+
+  it('restart works headless too (canInteractiveLogin false)', () => {
+    const d = decideReauthAction(base({ isFirstRunGate: true, canInteractiveLogin: false, prev: gated }), T)
+    expect(d.sendKeys).toBe(false)
+    expect(d.restartAgent).toBe(true)
+  })
+
+  it('main agent: never restarted, never send-keys -- escalate-only', () => {
+    const d = decideReauthAction(base({ isFirstRunGate: true, isMain: true, prev: gated }), T)
+    expect(d.sendKeys).toBe(false)
+    expect(d.restartAgent).toBe(false)
+    expect(d.escalate).toBe(true)
+  })
+
+  it('a genuine 401 (not first-run gate) keeps the legacy behavior: send-keys, no restart', () => {
+    const d = decideReauthAction(base({ prev: gated }), T)
+    expect(d.sendKeys).toBe(true)
+    expect(d.restartAgent).toBe(false)
+  })
+
+  it('below threshold: no restart', () => {
+    const d = decideReauthAction(base({ isFirstRunGate: true, prev: NO_REAUTH_STATE }), T)
+    expect(d.restartAgent).toBe(false)
+    expect(d.escalate).toBe(false)
+  })
+})

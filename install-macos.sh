@@ -13,6 +13,25 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# CLI flag parsing -- runs before the interactive wizard.
+# WEB_PORT can also be set as an env var (env var wins if --port is not given).
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --port|--web-port)
+      if [[ -z "${2:-}" || "${2}" == --* ]]; then
+        echo "Error: --port requires a numeric argument (e.g. --port 3421)" >&2; exit 1
+      fi
+      WEB_PORT="$2"; shift 2 ;;
+    --help|-h)
+      echo "Usage: $0 [--port <N>]"
+      echo "  --port <N>   Dashboard port (default: 3420). Also settable via WEB_PORT env var."
+      exit 0 ;;
+    *) echo "Unknown option: $1 (use --help for usage)" >&2; exit 1 ;;
+  esac
+done
+WEB_PORT="${WEB_PORT:-3420}"
+
 INSTALL_STEP="init"
 
 # shellcheck source=install-lang.sh
@@ -428,6 +447,7 @@ BOT_NAME=${BOT_NAME}
 BRAND_NAME=${BRAND_NAME}
 MAIN_AGENT_ID=${MAIN_AGENT_ID}
 SERVICE_ID=${SERVICE_ID}
+WEB_PORT=${WEB_PORT:-3420}
 ENVEOF
 )
 # Append provider-specific tokens
@@ -453,6 +473,7 @@ if [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
       -e "s/{{CHAT_ID}}/$CHAT_ID/g" \
       -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
       -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
+      -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
       "$INSTALL_DIR/templates/CLAUDE.md.template" > "$INSTALL_DIR/CLAUDE.md"
   echo -e "  ${GREEN}✓${NC} $(_t macos.claude_md_generated)"
 else
@@ -1004,10 +1025,10 @@ if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
   DASH_TOKEN=$(cat "$INSTALL_DIR/store/.dashboard-token")
 fi
 if [ -n "$DASH_TOKEN" ]; then
-  echo -e "  ${BOLD}Dashboard:${NC} ${BLUE}http://localhost:3420/?token=${DASH_TOKEN}${NC}"
+  echo -e "  ${BOLD}Dashboard:${NC} ${BLUE}http://localhost:${WEB_PORT:-3420}/?token=${DASH_TOKEN}${NC}"
   echo -e "  ${DIM}$(_t dash.token_hint)${NC}"
 else
-  echo -e "  ${BOLD}Dashboard:${NC} http://localhost:3420"
+  echo -e "  ${BOLD}Dashboard:${NC} http://localhost:${WEB_PORT:-3420}"
   echo -e "  ${DIM}$(_t dash.no_token_hint)${NC}"
 fi
 echo -e "  ${BOLD}Telegram:${NC} $(_t telegram.write_hint)"

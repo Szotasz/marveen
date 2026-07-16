@@ -110,7 +110,7 @@ function performRestart(name: string): void {
   }
 }
 
-function checkAgent(name: string, nowMs: number): void {
+async function checkAgent(name: string, nowMs: number): Promise<void> {
   const cfg = readContextGuardConfig(name)
   const state = guardStates.get(name) ?? INITIAL_GUARD_STATE
 
@@ -136,12 +136,15 @@ function checkAgent(name: string, nowMs: number): void {
   // Only pay for the tmux/transcript probes a decision can actually use.
   const needPct = state.phase === 'idle' || state.phase === 'await-handoff'
   const pane = running && needPct ? capturePane(session) : null
+  const sessionReady = running && state.phase === 'await-ready'
+    ? await isSessionReadyForPrompt(session)
+    : false
   const inputs: GuardInputs = {
     nowMs,
     running,
     pct: running && needPct ? measurePct(name, cfg.limitTokens) : null,
     paneIdle: pane !== null ? paneLooksIdle(pane) : false,
-    sessionReady: running && state.phase === 'await-ready' ? isSessionReadyForPrompt(session) : false,
+    sessionReady,
     handoffMtime: needPct ? handoffMtime(name) : null,
   }
 
@@ -155,14 +158,14 @@ function checkAgent(name: string, nowMs: number): void {
   try {
     switch (decision.action) {
       case 'request-handoff':
-        sendPromptToSession(session, handoffPrompt(pctRound ?? 0, handoffPathFor(name)))
+        await sendPromptToSession(session, handoffPrompt(pctRound ?? 0, handoffPathFor(name)))
         break
       case 'restart':
         performRestart(name)
         break
       case 'inject-resume': {
         const hadHandoff = inputs.handoffMtime !== null || handoffMtime(name) !== null
-        sendPromptToSession(session, resumePrompt(name, handoffPathFor(name), hadHandoff))
+        await sendPromptToSession(session, resumePrompt(name, handoffPathFor(name), hadHandoff))
         break
       }
     }
@@ -192,11 +195,11 @@ export function getContextGuardStatus(): Array<{
 }
 
 export function startContextGuardRunner(): NodeJS.Timeout {
-  function sweep() {
+  async function sweep() {
     const now = Date.now()
-    try { checkAgent(MAIN_AGENT_ID, now) } catch (err) { logger.debug({ err }, 'context-guard: main check error') }
+    try { await checkAgent(MAIN_AGENT_ID, now) } catch (err) { logger.debug({ err }, 'context-guard: main check error') }
     for (const name of listAgentNames()) {
-      try { checkAgent(name, now) } catch (err) { logger.debug({ err, agent: name }, 'context-guard: agent check error') }
+      try { await checkAgent(name, now) } catch (err) { logger.debug({ err, agent: name }, 'context-guard: agent check error') }
     }
   }
   setTimeout(sweep, INITIAL_DELAY_MS)

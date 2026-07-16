@@ -25,7 +25,7 @@ import {
   SCHEDULED_TASK_PREAMBLE,
   wrapScheduledTask,
 } from '../prompt-safety.js'
-import { cronMatchesNow } from './cron.js'
+import { cronDueBetween, resolveCronTz } from './cron.js'
 import {
   listScheduledTasks,
   SCHEDULED_TASKS_DIR,
@@ -181,7 +181,19 @@ function mcpMissingReason(taskName: string, agentName: string): string {
 //      required server is dead.
 // Both are fail-open: a broken script or an unreadable MCP state never
 // blocks the task.
-function attemptFireTask(task: ScheduledTask, agentName: string, now: number, preCheckPrefix?: string): 'fired' | 'busy' | 'missing' | 'starting' | 'error' | 'mcp-missing' {
+//
+// lateCatchUpMs is set by the caller when this tick only matched because of
+// the enlarged restart catch-up window (see startScheduleRunner) -- i.e. the
+// task missed its normal tick and is only firing now as a catch-up; it is
+// recorded as a distinct 'fired_late' run status further down instead of
+// silently folding into 'fired'.
+async function attemptFireTask(
+  task: ScheduledTask,
+  agentName: string,
+  now: number,
+  preCheckPrefix?: string,
+  lateCatchUpMs?: number,
+): Promise<'fired' | 'busy' | 'missing' | 'starting' | 'error' | 'mcp-missing'> {
   const isMainAgent = agentName === MAIN_AGENT_ID
   // Allow per-task session override via targetSession config field.
   // Falls back to the standard agent session name derivation.
@@ -228,7 +240,7 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number, pr
   // still land on a 100%-context session. Left open deliberately -- forceSend's
   // contract is "always eventually land, never silently drop", and a saturated
   // session needs a separate delivery policy, tracked as future work.
-  if (!task.forceSend && !isSessionReadyForPrompt(session, host)) {
+  if (!task.forceSend && !(await isSessionReadyForPrompt(session, host))) {
     logger.warn({ task: task.name, agent: agentName, session }, 'Schedule target session busy or has pending input, will retry')
     return 'busy'
   }
@@ -310,10 +322,27 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number, pr
     // task aimed at a long-busy session would block on the 12s idle wait every
     // tick -- defeating the very purpose of forceSend (inject regardless, let
     // Claude Code queue it). All non-forceSend tasks keep the gate ON.
-    sendPromptToSession(session, fullPrompt, host, { waitForIdle: !task.forceSend })
+    await sendPromptToSession(session, fullPrompt, host, { waitForIdle: !task.forceSend })
     scheduleLastRun.set(task.name, now)
     persistScheduleLastRun()
-    appendTaskRun(task.name, agentName, 'fired')
+    // A lateCatchUpMs value means this tick only matched because of the
+    // enlarged first-run catch-up window (see startScheduleRunner), i.e. the
+    // task missed its normal tick (e.g. the process was down/restarting at
+    // the scheduled minute) and is only firing now as a catch-up. Recording
+    // a distinct status -- instead of silently folding it into 'fired' --
+    // means the existing per-task run-history view (dashboard schedule
+    // history) surfaces exactly which tasks were missed and had to be
+    // caught up, without any new alert/polling path that could race other
+    // running tasks. Read-only w.r.t. everything else in this function.
+    if (lateCatchUpMs != null) {
+      appendTaskRun(task.name, agentName, 'fired_late')
+      logger.warn(
+        { task: task.name, agent: agentName, session, lateCatchUpMinutes: Math.round(lateCatchUpMs / 60000) },
+        'Scheduled task fired via restart catch-up window -- missed its normal tick',
+      )
+    } else {
+      appendTaskRun(task.name, agentName, 'fired')
+    }
     logger.info({ task: task.name, agent: agentName, session }, 'Scheduled task fired')
 
     // Post-send verify: if the agent started a new turn during our chunk
@@ -325,7 +354,7 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number, pr
     const marker = task.type === 'heartbeat'
       ? `[Heartbeat: ${task.name}]`
       : `[Utemezett feladat: ${task.name}]`
-    const resubmit = (attempt: number) => {
+    const resubmit = async (attempt: number): Promise<void> => {
       try {
         // Host-aware so a remote agent's post-send stuck-check + recovery Enter
         // hit the laptop session, not a (nonexistent) local one.
@@ -344,8 +373,8 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number, pr
           // its cooldown fired), fall back to one more bare Enter. waitForIdle
           // is off because the box is 'typing', not idle -- the pre-flight gate
           // would otherwise burn its whole budget and time out every attempt.
-          if (clearStaleParkedInput(session, host)) {
-            sendPromptToSession(session, fullPrompt, host, { waitForIdle: false })
+          if (await clearStaleParkedInput(session, host)) {
+            await sendPromptToSession(session, fullPrompt, host, { waitForIdle: false })
             logger.info({ task: task.name, session, attempt }, 'Scheduled prompt re-injected after swallowed Enter')
           } else {
             sendEnterToSession(session, host)
@@ -353,12 +382,12 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number, pr
         } else {
           sendEnterToSession(session, host)
         }
-        setTimeout(() => resubmit(attempt + 1), 3000)
+        setTimeout(() => { void resubmit(attempt + 1) }, 3000)
       } catch (err) {
         logger.warn({ err, task: task.name }, 'Post-send resubmit failed')
       }
     }
-    setTimeout(() => resubmit(0), 2000)
+    setTimeout(() => { void resubmit(0) }, 2000)
     return 'fired'
   } catch (err) {
     logger.warn({ err, task: task.name }, 'Failed to fire scheduled task')
@@ -372,10 +401,10 @@ function attemptFireTask(task: ScheduledTask, agentName: string, now: number, pr
 // for it). Reuses attemptFireTask, so a stopped agent is auto-started and the
 // prompt is queued for delivery exactly like a real cron fire. Returns a
 // per-target summary string for the API/UI.
-export function runScheduledTaskNow(
+export async function runScheduledTaskNow(
   taskName: string,
   opts: { allowDisabled?: boolean } = {},
-): { ok: boolean; result?: string; error?: string } {
+): Promise<{ ok: boolean; result?: string; error?: string }> {
   const task = listScheduledTasks().find(t => t.name === taskName)
   if (!task) return { ok: false, error: 'Schedule not found' }
   // allowDisabled: for on-demand-only tasks that are intentionally kept
@@ -390,7 +419,7 @@ export function runScheduledTaskNow(
 
   const summary: string[] = []
   for (const agentName of targets) {
-    const result = attemptFireTask(task, agentName, now)
+    const result = await attemptFireTask(task, agentName, now)
     // A manual run ALWAYS wants delivery: an auto-started ('starting') or a
     // busy session both get a queued retry that lands once the session is
     // ready. We deliberately do NOT consult skipIfBusy here -- that flag trims
@@ -487,25 +516,66 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
   })()
 }
 
+// Tick interval for the schedule runner. 15 s gives 4x faster inter-agent
+// message delivery and scheduled-task triggering; each tick is a cheap
+// SQLite SELECT so the load is negligible.
+export const SCHEDULE_TICK_MS = 15_000
+
 export function startScheduleRunner(): NodeJS.Timeout {
   // Reload the persisted last-run times so a restart inside a task's catch-up
   // window does not re-fire an already-run task.
   loadScheduleLastRun()
-  let firstRun = true
 
-  function runCheck() {
+  // Surface the effective cron timezone at startup. A silent UTC fallback (no
+  // SCHEDULER_TZ/TZ in the env) shifts every fixed-time cron off its intended
+  // minute so daily tasks never fire while interval tasks still do -- a partial
+  // outage that is otherwise invisible until someone notices the missing
+  // briefing (2026-07-13..15). Logging the source turns it into a grep-able
+  // signal; the warn fires only on the actively-dangerous UTC-by-default case.
+  const { tz: cronTz, source: cronTzSource } = resolveCronTz()
+  logger.info({ cronTz, cronTzSource }, 'schedule-runner: cron timezone in effect')
+  if (cronTzSource === 'system-default' && cronTz === 'UTC') {
+    logger.warn(
+      { cronTz },
+      'schedule-runner: cron timezone fell back to UTC (no SCHEDULER_TZ/TZ set) -- ' +
+        'fixed-time crons like "30 7 * * *" match at UTC wall-clock, not the operator zone, ' +
+        'so daily tasks may silently never fire while interval tasks still do. Set SCHEDULER_TZ or TZ.',
+    )
+  }
+
+  // Start of the window the next tick will scan. Seeded 30 min in the past so
+  // the first tick after a (re)start catches anything missed while the process
+  // was down; thereafter each tick advances it to its own `now`, so the scan
+  // windows are contiguous and non-overlapping -- see cronDueBetween.
+  let lastCheckMs = Date.now() - 30 * 60000
+
+  let tickRunning = false
+  async function runCheck() {
+    // Re-entrancy guard: runCheck is now async (it awaits the tmux-driving
+    // sends), and setInterval fires on a fixed cadence regardless of whether the
+    // previous invocation has resolved. Without this guard two ticks could
+    // overlap and double-fire a task (or double-advance lastCheckMs). Skip a
+    // tick that lands while the prior one is still in flight; the next tick's
+    // scan window is contiguous so nothing is missed.
+    if (tickRunning) {
+      logger.debug('schedule-runner: previous tick still running, skipping this tick')
+      return
+    }
+    tickRunning = true
+    try {
     const tasks = listScheduledTasks()
     const now = Date.now()
-    // On first run after restart, catch up missed tasks from last 30 min
-    const catchUp = firstRun ? 30 * 60000 : 60000
-    firstRun = false
+    // Scan the real interval elapsed since the previous tick (30 min on the
+    // first tick), not a fixed 60s window -- a late/dropped tick must not let a
+    // sparse daily cron's single occurrence slip through a gap unscanned (#621).
+    const fromMs = lastCheckMs
 
     // Retry tasks that were busy-skipped on earlier ticks (persisted in
-    // pending_task_retries so they survive dashboard restart). cronMatchesNow
-    // only fires on an exact minute boundary, so without this the noon
-    // check skipped because the session was busy at 12:00:50 would never
-    // run that day. We NEVER abandon -- the operator can cancel from the
-    // UI if a retry has become obsolete.
+    // pending_task_retries so they survive dashboard restart). Each occurrence
+    // is scanned by exactly one tick's (fromMs, now] window, so once the noon
+    // occurrence's window has passed a busy-at-noon task would never run that
+    // day without this queue. We NEVER abandon -- the operator can cancel from
+    // the UI if a retry has become obsolete.
     const pendingRows = listPendingTaskRetries()
     const pendingKeys = new Set<string>()
     for (const row of pendingRows) {
@@ -539,7 +609,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
       }
 
       const view = toPendingRetryView(row, now)
-      const result = attemptFireTask(taskDef, row.agent_name, now, retryPc.prefix)
+      const result = await attemptFireTask(taskDef, row.agent_name, now, retryPc.prefix)
       if (result === 'fired' || result === 'missing') {
         deletePendingTaskRetry(row.task_name, row.agent_name)
         continue
@@ -556,11 +626,21 @@ export function startScheduleRunner(): NodeJS.Timeout {
 
     for (const task of tasks) {
       if (!task.enabled) continue
-      if (!cronMatchesNow(task.schedule, catchUp)) continue
+      if (!cronDueBetween(task.schedule, fromMs, now)) continue
 
-      // Prevent double-firing: skip if already ran within the catch-up window
+      // Prevent double-firing across a restart: skip if the task already ran at
+      // or after the start of this scan window (its occurrence is already
+      // recorded, so re-scanning the catch-up window must not fire it again).
       const lastRun = scheduleLastRun.get(task.name) || 0
-      if (now - lastRun < catchUp) continue
+      if (lastRun >= fromMs) continue
+
+      // If the occurrence is NOT within a single normal tick of `now`, this tick
+      // is firing it late as a catch-up (process was down/restarting or a tick
+      // was dropped). Recorded via attemptFireTask's lateCatchUpMs param so the
+      // run-history flags it as a late fire rather than an on-time one.
+      const lateCatchUpMs = !cronDueBetween(task.schedule, now - 60000, now)
+        ? now - fromMs
+        : undefined
 
       // type='command' tasks run a raw shell command directly -- no LLM, no
       // tmux, no target agent. They self-manage failure streaks + Telegram
@@ -600,7 +680,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         // If already queued for retry from an earlier tick, leave it to
         // the retry handler -- don't re-queue or double-fire.
         if (pendingKeys.has(key)) continue
-        const result = attemptFireTask(task, agentName, now, cronPc.prefix)
+        const result = await attemptFireTask(task, agentName, now, cronPc.prefix, lateCatchUpMs)
         if (result === 'starting') {
           // Agent was auto-started this tick. ALWAYS enqueue the retry that
           // delivers the prompt once the session is ready -- skipIfBusy must
@@ -634,9 +714,18 @@ export function startScheduleRunner(): NodeJS.Timeout {
         }
       }
     }
+
+    // Advance the scan window so the next tick starts exactly where this one
+    // ended. Unconditional (even on busy-skip/error, which the pending-retry
+    // queue owns) so the windows stay contiguous and no occurrence is scanned
+    // twice or skipped.
+    lastCheckMs = now
+    } finally {
+      tickRunning = false
+    }
   }
 
   // Run immediately on start (catches missed tasks)
-  setTimeout(runCheck, 5000)
-  return setInterval(runCheck, 60000)
+  setTimeout(() => { void runCheck() }, 5000)
+  return setInterval(() => { void runCheck() }, SCHEDULE_TICK_MS)
 }

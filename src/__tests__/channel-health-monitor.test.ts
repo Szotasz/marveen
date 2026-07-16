@@ -1,8 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
+// The health monitor runs the (synchronous, blocking) MCP reconnect in a
+// DETACHED child process so it can never starve the dashboard event loop, so we
+// assert on spawn(), not on an inline attemptChannelMcpReconnect call.
+const { mockSpawn } = vi.hoisted(() => ({ mockSpawn: vi.fn() }))
 vi.mock('node:child_process', () => ({
   execFileSync: vi.fn(),
   execSync: vi.fn(),
+  spawn: mockSpawn,
 }))
 
 vi.mock('../platform.js', () => ({
@@ -70,6 +75,8 @@ describe('startChannelHealthMonitor', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.useFakeTimers()
+    // Fake detached child: the monitor calls .once('exit'|'error', ...) + .unref().
+    mockSpawn.mockReturnValue({ once: vi.fn(), unref: vi.fn() })
   })
 
   afterEach(() => {
@@ -88,12 +95,11 @@ describe('startChannelHealthMonitor', () => {
 
     vi.advanceTimersByTime(46_000)
 
-    expect(mockReconnect).not.toHaveBeenCalled()
+    expect(mockSpawn).not.toHaveBeenCalled()
     clearInterval(timer)
   })
 
-  it('triggers reconnect when pane shows plugin failure', () => {
-    mockReconnect.mockReturnValue({ ok: false, message: 'test' })
+  it('spawns a detached reconnect worker when pane shows plugin failure', () => {
     const timer = startChannelHealthMonitor()
     mockCapturePane.mockReturnValue(
       'plugin:telegram:telegram  ✘ failed\nsome other output',
@@ -101,7 +107,12 @@ describe('startChannelHealthMonitor', () => {
 
     vi.advanceTimersByTime(46_000)
 
-    expect(mockReconnect).toHaveBeenCalled()
+    // Off-main-loop: a detached child (reconnect-cli.js) is spawned instead of
+    // calling attemptChannelMcpReconnect inline (event-loop starvation fix).
+    expect(mockSpawn).toHaveBeenCalled()
+    const [, args] = mockSpawn.mock.calls[0]
+    expect(String(args[0])).toContain('reconnect-cli')
+    expect(args[1]).toBe('marveen')
     clearInterval(timer)
   })
 })

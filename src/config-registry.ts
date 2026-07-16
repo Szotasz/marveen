@@ -298,6 +298,27 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    key: 'HEARTBEAT_CALENDAR_ACCOUNT',
+    type: 'string',
+    default: '',
+    description: 'Google Calendar fiók neve/e-mailje a heartbeat naptár-összefoglalóhoz. Üresen hagyva a heartbeat nem kérdez le naptáreseményeket.',
+    module: 'heartbeat',
+    secret: false,
+    // Consumed as a boot-time const (src/config.ts) -- a saved override takes
+    // effect on the next restart, and the UI must say so.
+    requiresRestart: true,
+  },
+  {
+    key: 'HEARTBEAT_CALENDAR_ID',
+    type: 'string',
+    default: '',
+    description: 'Google Calendar naptár-azonosítója a heartbeat összefoglalóhoz (pl. primary). Üresen hagyva a heartbeat nem kérdez le naptáreseményeket.',
+    module: 'heartbeat',
+    secret: false,
+    // Boot-time const, see HEARTBEAT_CALENDAR_ACCOUNT above.
+    requiresRestart: true,
+  },
+  {
     key: 'IDEA_BREAKDOWN_MAX_SUBTASKS',
     type: 'int',
     default: 10,
@@ -363,6 +384,26 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'channels',
     secret: false,
     requiresRestart: true,
+  },
+  {
+    key: 'MAIN_AGENT_CONFIG_DIR',
+    type: 'string',
+    default: '',
+    description: 'A fő channels-agent explicit CLAUDE_CONFIG_DIR-je (pl. ~/.claude-bot). Akkor kell, ha a botnak SAJÁT Claude-loginja van, külön a flottáétól: a MAIN_AGENT_ISOLATED_CONFIG erre nem alkalmas, mert az a fleet setup-tokenből hitelesít, tehát a flotta identitását adja a botnak (és token nélkül no-op). Üresen hagyva a fő agent a közös ~/.claude-ot használja (alapértelmezés). Ha a megadott könyvtár nem létezik, a beállítás no-op és figyelmeztetést logol. Elsőbbséget élvez a MAIN_AGENT_ISOLATED_CONFIG-gal szemben. A módosítás a channels session újraindításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  // --- System module ---
+  {
+    key: 'SCHEDULER_TZ',
+    type: 'string',
+    default: '',
+    description: 'A telepítés időzónája (IANA, pl. Europe/Budapest). EGY zóna vezérli az ütemezést (cron) ÉS minden megjelenített időt (heartbeat, napi napló, memória-címkék). Üresen hagyva a gép saját időzónáját használja. A módosítás a szolgáltatás újraindításakor lép életbe.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+    valueSet: ['Europe/London', 'Europe/Budapest', 'UTC', 'Europe/Dublin', 'Europe/Berlin', 'Europe/Bucharest', 'America/New_York'],
   },
 ]
 

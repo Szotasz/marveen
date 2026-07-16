@@ -98,7 +98,7 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
         return true
       }
     } catch { /* no marker yet */ }
-    const fired = runScheduledTaskNow(DIAGNOSE_TASK, { allowDisabled: true })
+    const fired = await runScheduledTaskNow(DIAGNOSE_TASK, { allowDisabled: true })
     if (!fired.ok) {
       logger.warn({ err: fired.error }, 'post-rollback diagnosis could not be fired')
       json(res, { error: fired.error || 'Could not start the diagnosis agent.', reason: 'fire-failed' }, 500)

@@ -72,7 +72,7 @@ describe("channel-monitor: self-healing vanished main session", () => {
     // watcher-triggered resume. The 2026-06-08 false-positive loop respawned
     // the session 13 times in 8h because every fresh respawn left a residual
     // TUI footer the watcher then re-classified as a wedge.
-    const start = src.indexOf("export function resumeMarveenSession")
+    const start = src.indexOf("export async function resumeMarveenSession")
     expect(start, "resumeMarveenSession not found").toBeGreaterThan(0)
     // Slice generously to the next top-level export so the assertion catches
     // a stamp call anywhere inside the function, not just before the next "\n}\n".

@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync } from 'node:fs'
-import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL } from './config.js'
+import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from './config.js'
 import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
@@ -67,6 +67,13 @@ export function initDatabase(dbPathOverride?: string): void {
   }
   db = new Database(dbPath)
   db.pragma('journal_mode = WAL')
+  // Performance pragmas: safe with WAL, applied after journal_mode is set.
+  // cache_size: negative value = kibibytes; -65536 → 64 MB page cache.
+  // mmap_size: memory-mapped I/O in bytes; 256 MB. Skipped for :memory: (no file to map).
+  // synchronous = NORMAL: safe under WAL (only full-fsync skipped, not the WAL checkpoint).
+  db.pragma('cache_size = -65536')
+  if (!isMemory) db.pragma('mmap_size = 268435456')
+  db.pragma('synchronous = NORMAL')
   if (!isMemory) tightenDbPermissions(dbPath)
 
   db.exec(`
@@ -420,6 +427,49 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_messages_status ON agent_messages(status, to_agent)`)
+  // Composite index for thread-listing queries that filter on (from_agent, to_agent) without a status
+  // predicate -- the status index above does not cover these and causes full table scans at scale.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_messages_thread ON agent_messages(from_agent, to_agent, created_at)`)
+  // Card 06f062e4: the bus has no sender authentication -- from_agent is
+  // self-declared and every sub-agent spawned under a parent shares that
+  // parent's from_agent string, invisibly to the parent session and its
+  // siblings (the 2026-07-12 self-fill-sweep incident's root cause: a
+  // uat sub-session's message was indistinguishable from any other uat
+  // session's, producing an unpinnable ~15-message contradictory dispute).
+  // This does NOT add authentication (that needs per-agent bus credentials,
+  // a bigger cross-fleet rollout, tracked separately) -- it's the cheap
+  // half: an OPTIONAL, caller-supplied free-text tag a sub-agent can set to
+  // distinguish itself from siblings sharing its parent identity, carried
+  // through to delivery so a human/agent reading the message has SOMETHING
+  // to go on. Self-declared, so it's an attributability aid, not a trust
+  // boundary -- do not treat a present origin_note as proof of anything.
+  try {
+    db.exec('ALTER TABLE agent_messages ADD COLUMN origin_note TEXT')
+  } catch {
+    // column already exists
+  }
+
+  // One-time L1 backfill: federation system ids are now stored lowercase, but
+  // rows written by a pre-L1 build (an install that federated with a
+  // display-cased id like "Teodor/agent") keep their old case. Left alone,
+  // thread grouping and conversation history key on the exact string and
+  // silently SPLIT such a peer into two threads once new lowercase rows
+  // arrive. Fold the SYSTEM prefix of qualified rows in place (the agent
+  // segment keeps its case -- it is the peer's namespace). Idempotent: an
+  // already-lowercase prefix compares equal and is skipped, so this is a
+  // safe no-op after the first run and on fresh installs.
+  db.exec(`
+    UPDATE agent_messages
+       SET from_agent = lower(substr(from_agent, 1, instr(from_agent, '/') - 1)) || substr(from_agent, instr(from_agent, '/'))
+     WHERE instr(from_agent, '/') > 0
+       AND substr(from_agent, 1, instr(from_agent, '/') - 1) <> lower(substr(from_agent, 1, instr(from_agent, '/') - 1))
+  `)
+  db.exec(`
+    UPDATE agent_messages
+       SET to_agent = lower(substr(to_agent, 1, instr(to_agent, '/') - 1)) || substr(to_agent, instr(to_agent, '/'))
+     WHERE instr(to_agent, '/') > 0
+       AND substr(to_agent, 1, instr(to_agent, '/') - 1) <> lower(substr(to_agent, 1, instr(to_agent, '/') - 1))
+  `)
 
   // --- Pending Channel Requests (Slack channel opt-in workflow) ---
   db.exec(`
@@ -504,6 +554,8 @@ export function initDatabase(dbPathOverride?: string): void {
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
       cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+      thinking_tokens INTEGER NOT NULL DEFAULT 0,
+      model TEXT,
       content_preview TEXT,
       tool_name TEXT,
       task_title TEXT,
@@ -513,6 +565,10 @@ export function initDatabase(dbPathOverride?: string): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_token_usage_agent ON token_usage(agent)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_token_usage_ts ON token_usage(timestamp)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_token_usage_agent_ts ON token_usage(agent, timestamp)`)
+  // Migrations for columns added after initial release
+  try { db.exec('ALTER TABLE token_usage ADD COLUMN thinking_tokens INTEGER NOT NULL DEFAULT 0') } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE token_usage ADD COLUMN model TEXT') } catch { /* already exists */ }
+
   // Deduplicate existing rows before creating unique index
   try {
     db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_token_usage_dedup ON token_usage(agent, session_id, timestamp, input_tokens, output_tokens)`)
@@ -593,6 +649,20 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tool_log_session ON tool_call_log(session_id, created_at)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tool_log_ts ON tool_call_log(created_at)`)
+
+  // --- Skill Usage Log (persistent, no prune -- feeds dream-engine skill health) ---
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS skill_usage (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id TEXT NOT NULL,
+      skill_name TEXT NOT NULL,
+      trigger_type TEXT NOT NULL CHECK(trigger_type IN ('tool_call', 'skill_read')),
+      session_id TEXT,
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_skill_usage_agent ON skill_usage(agent_id, created_at)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_skill_usage_skill ON skill_usage(skill_name, created_at)`)
 
   // --- Config Change Log (audit trail for /api/settings writes) ---
   // Background-only: no UI surfaces this table yet (product decision). For
@@ -714,10 +784,13 @@ export function initDatabase(dbPathOverride?: string): void {
   // no-op and never adds ssh_key_id -- indexing it before this ALTER TABLE
   // runs throws "no such column: ssh_key_id" and crashes startup entirely
   // (2026-07-01 incident: dashboard 502'd, crash-looped on every restart).
-  try { db.exec('ALTER TABLE vault_ssh_servers ADD COLUMN key_type TEXT') } catch { /* pre-existing */ }
-  try { db.exec('ALTER TABLE vault_ssh_servers ADD COLUMN fingerprint TEXT') } catch { /* pre-existing */ }
-  try { db.exec('ALTER TABLE vault_ssh_servers ADD COLUMN vault_key_id TEXT') } catch { /* pre-existing */ }
-  try { db.exec('ALTER TABLE vault_ssh_servers ADD COLUMN key_expires_at INTEGER') } catch { /* pre-existing */ }
+  // Drop legacy per-server key columns that are no longer written or read.
+  // On older installs these were added via ALTER TABLE; fresh installs never had them.
+  // SQLite 3.35+ is required; try-catch makes this a no-op on either scenario.
+  try { db.exec('ALTER TABLE vault_ssh_servers DROP COLUMN key_type') } catch { /* column absent or SQLite pre-3.35 */ }
+  try { db.exec('ALTER TABLE vault_ssh_servers DROP COLUMN fingerprint') } catch { /* column absent or SQLite pre-3.35 */ }
+  try { db.exec('ALTER TABLE vault_ssh_servers DROP COLUMN vault_key_id') } catch { /* column absent or SQLite pre-3.35 */ }
+  try { db.exec('ALTER TABLE vault_ssh_servers DROP COLUMN key_expires_at') } catch { /* column absent or SQLite pre-3.35 */ }
   try { db.exec('ALTER TABLE vault_ssh_servers ADD COLUMN ssh_key_id TEXT REFERENCES vault_ssh_keys(id)') } catch { /* already exists */ }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_vault_ssh_servers_key ON vault_ssh_servers(ssh_key_id)`)
 
@@ -827,7 +900,10 @@ export function buildFtsMatchExpression(query: string): string {
   const MAX_TOKEN_LEN = 64
   const sanitized = query
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, '')
+    // Replace punctuation with a space (not delete) so "rank-check" / "serper.dev"
+    // tokenize the same way unicode61 indexed them (rank + check), instead of
+    // fusing into a single unfindable token "rankcheck".
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .trim()
   if (!sanitized) return ''
   const tokens = sanitized
@@ -936,6 +1012,52 @@ export function getMemoriesForChat(chatId: string, limit = 10): Memory[] {
     .all(chatId, limit) as Memory[]
 }
 
+// --- In-process memory cache (TTL-based) ---
+//
+// Avoids a SQLite round-trip on every context-fetch by keeping the most
+// recently read agent memory lists in a Map for up to MEMORY_CACHE_TTL_MS.
+// Any write to the memories table for a given agent evicts that agent's entry.
+// The cache is intentionally coarse-grained (per agentId+limit) to stay
+// simple and safe under concurrent async paths.
+
+const MEMORY_CACHE_TTL_MS = 60_000
+
+interface MemoryCacheEntry {
+  value: Memory[]
+  expiresAt: number
+}
+
+const memoryCache = new Map<string, MemoryCacheEntry>()
+
+function memoryCacheGet(key: string): Memory[] | null {
+  const entry = memoryCache.get(key)
+  if (!entry || Date.now() > entry.expiresAt) {
+    memoryCache.delete(key)
+    return null
+  }
+  return entry.value
+}
+
+function memoryCacheSet(key: string, value: Memory[]): void {
+  memoryCache.set(key, { value, expiresAt: Date.now() + MEMORY_CACHE_TTL_MS })
+}
+
+function memoryCacheInvalidate(agentId: string): void {
+  for (const key of memoryCache.keys()) {
+    if (key.startsWith(`${agentId}:`)) memoryCache.delete(key)
+  }
+}
+
+/** Exposed for tests and diagnostics only. */
+export function clearMemoryCache(): void {
+  memoryCache.clear()
+}
+
+/** Exposed for tests only. */
+export function getMemoryCacheSize(): number {
+  return memoryCache.size
+}
+
 export function saveAgentMemory(
   agentId: string,
   content: string,
@@ -949,6 +1071,8 @@ export function saveAgentMemory(
   ).run(ALLOWED_CHAT_ID, null, content, 'semantic', now, now, agentId, category, autoGenerated ? 1 : 0, keywords ?? null)
   const id = Number(info.lastInsertRowid)
 
+  memoryCacheInvalidate(agentId)
+
   // Fire-and-forget: generate embedding asynchronously
   generateEmbedding(content + (keywords ? ' ' + keywords : '')).then(emb => {
     if (emb) {
@@ -960,9 +1084,14 @@ export function saveAgentMemory(
 }
 
 export function getAgentMemories(agentId: string, limit: number = 20): Memory[] {
-  return db.prepare(
+  const key = `${agentId}:${limit}`
+  const cached = memoryCacheGet(key)
+  if (cached) return cached
+  const result = db.prepare(
     "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') ORDER BY accessed_at DESC LIMIT ?"
   ).all(agentId, limit) as Memory[]
+  memoryCacheSet(key, result)
+  return result
 }
 
 export function searchAgentMemories(agentId: string, query: string, limit: number = 10): Memory[] {
@@ -1003,14 +1132,19 @@ export function updateMemory(id: number, content: string, category?: string, age
   if (agentId) { sets.push('agent_id = ?'); params.push(agentId) }
   if (keywords !== undefined) { sets.push('keywords = ?'); params.push(keywords) }
   params.push(id)
-  return db.prepare(`UPDATE memories SET ${sets.join(', ')} WHERE id = ?`).run(...params).changes > 0
+  const changed = db.prepare(`UPDATE memories SET ${sets.join(', ')} WHERE id = ?`).run(...params).changes > 0
+  if (changed && agentId) memoryCacheInvalidate(agentId)
+  return changed
 }
 
 // --- Daily logs ---
 
 export function appendDailyLog(agentId: string, content: string): void {
   const now = Math.floor(Date.now() / 1000)
-  const today = new Date().toISOString().split('T')[0]
+  // Budapest calendar day, not UTC -- otherwise an entry written 00:00-02:00
+  // local time lands on the previous day and the "ma" recall query misses it.
+  // en-CA formats as YYYY-MM-DD.
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: APP_TZ })
   db.prepare('INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES (?, ?, ?, ?)').run(agentId, today, content, now)
 }
 
@@ -1032,7 +1166,7 @@ export interface RecallResult {
 
 function toBudapestTs(dateStr: string, endOfDay: boolean): number {
   const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Europe/Budapest',
+    timeZone: APP_TZ,
     year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
   })
@@ -1608,17 +1742,22 @@ export interface AgentMessage {
   created_at: number
   delivered_at: number | null
   completed_at: number | null
+  // Card 06f062e4: optional, self-declared attributability tag (e.g. a
+  // sub-agent's own task/branch name) -- NOT an authentication mechanism,
+  // see the table-creation comment. Null for every caller that doesn't pass one.
+  origin_note: string | null
 }
 
-export function createAgentMessage(from: string, to: string, content: string): AgentMessage {
+export function createAgentMessage(from: string, to: string, content: string, originNote?: string | null): AgentMessage {
   const now = Math.floor(Date.now() / 1000)
   const info = db.prepare(
-    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at) VALUES (?, ?, ?, ?, ?)'
-  ).run(from, to, content, 'pending', now)
+    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(from, to, content, 'pending', now, originNote ?? null)
   return {
     id: Number(info.lastInsertRowid),
     from_agent: from, to_agent: to, content, status: 'pending',
     result: null, created_at: now, delivered_at: null, completed_at: null,
+    origin_note: originNote ?? null,
   }
 }
 
@@ -1631,9 +1770,48 @@ export function getPendingMessages(toAgent?: string): AgentMessage[] {
     .all() as AgentMessage[]
 }
 
+// Status-guarded (pending only): the federation removal path bulk-fails
+// pending rows CONCURRENTLY with an in-flight bridge send -- an unguarded
+// UPDATE would flip such a row failed->delivered after the fact. If the row
+// is no longer pending, this returns false and the caller must not record a
+// result either.
 export function markMessageDelivered(id: number): boolean {
   const now = Math.floor(Date.now() / 1000)
-  return db.prepare("UPDATE agent_messages SET status = 'delivered', delivered_at = ? WHERE id = ?").run(now, id).changes > 0
+  return db.prepare("UPDATE agent_messages SET status = 'delivered', delivered_at = ? WHERE id = ? AND status = 'pending'").run(now, id).changes > 0
+}
+
+// Supplementary result text WITHOUT a status change. The federation bridge
+// records the peer-assigned id on delivered rows ("fed:<peer>:<remote id>")
+// so a cross-system message can be traced without a schema migration.
+export function setMessageResult(id: number, result: string): boolean {
+  return db.prepare('UPDATE agent_messages SET result = ? WHERE id = ?').run(result, id).changes > 0
+}
+
+// Bulk-fail PENDING federated (slash-qualified to_agent) messages -- the
+// deterministic counterpart of the bridge's drip-fail on disable/removal.
+// ONE statement (claimPendingForAgent idiom: no SELECT-then-UPDATE window).
+// pending only: delivered/done/failed rows are conversation history.
+// Per-peer scoping compares the exact prefix segment via instr/substr -- a
+// LIKE pattern would treat '_' in a peer id as a wildcard ('te_dor' purging
+// 'teodor'). lower() on both sides: system ids are case-insensitive, and rows
+// written before the lowercase normalization may carry an uppercase prefix
+// that must still be purged with its peer (ASCII-only lower() is fine -- the
+// id charset is [a-zA-Z0-9_-]).
+export function failPendingFederatedMessages(peerId: string | undefined, reason: string): number[] {
+  const now = Math.floor(Date.now() / 1000)
+  const rows = peerId === undefined
+    ? db.prepare(
+        `UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ?
+           WHERE status = 'pending' AND instr(to_agent, '/') > 0
+         RETURNING id`,
+      ).all(reason, now) as Array<{ id: number }>
+    : db.prepare(
+        `UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ?
+           WHERE status = 'pending' AND instr(to_agent, '/') > 0
+             AND lower(substr(to_agent, 1, instr(to_agent, '/') - 1)) = lower(?)
+         RETURNING id`,
+      ).all(reason, now, peerId) as Array<{ id: number }>
+  return rows.map((r) => r.id)
 }
 
 // Atomically CLAIM (pending -> delivered) the oldest `limit` pending messages
@@ -1662,12 +1840,27 @@ export function claimPendingForAgent(toAgent: string, limit: number): AgentMessa
 
 export function markMessageDone(id: number, result?: string): boolean {
   const now = Math.floor(Date.now() / 1000)
-  return db.prepare("UPDATE agent_messages SET status = 'done', result = ?, completed_at = ? WHERE id = ?").run(result ?? null, now, id).changes > 0
+  // COALESCE: some done-transitions skip the delivered step entirely (e.g. a
+  // still-pending row marked done directly via PUT), so backfill delivered_at
+  // only when it was never set -- don't clobber a real earlier delivery time.
+  return db.prepare("UPDATE agent_messages SET status = 'done', result = ?, completed_at = ?, delivered_at = COALESCE(delivered_at, ?) WHERE id = ?").run(result ?? null, now, now, id).changes > 0
 }
 
 export function markMessageFailed(id: number, error?: string): boolean {
   const now = Math.floor(Date.now() / 1000)
   return db.prepare("UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ?").run(error ?? null, now, id).changes > 0
+}
+
+// Status-guarded fail for the federation bridge's terminal branches: it must
+// only fire (and only bounce a failure notice) when THIS call actually closed
+// a still-pending row. The unguarded markMessageFailed above would also
+// "succeed" on a row a concurrent disable/removal purge already failed
+// (result/completed_at change -> changes>0), producing a spurious second
+// notice. The drain-inbox path deliberately keeps the unguarded variant (it
+// fails an already-delivered row).
+export function markPendingFederatedFailed(id: number, error: string): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  return db.prepare("UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ? AND status = 'pending'").run(error, now, id).changes > 0
 }
 
 export function listAgentMessages(limit = 50): AgentMessage[] {
@@ -1926,7 +2119,7 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
   }
 }
 
-export function cosineSimilarity(a: number[], b: number[]): number {
+function cosineSimilarity(a: number[], b: number[]): number {
   let dotProduct = 0, normA = 0, normB = 0
   for (let i = 0; i < a.length; i++) {
     dotProduct += a[i] * b[i]
@@ -1936,7 +2129,7 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB))
 }
 
-export function vectorSearch(agentId: string, queryEmbedding: number[], limit: number = 10): Memory[] {
+function vectorSearch(agentId: string, queryEmbedding: number[], limit: number = 10): Memory[] {
   const rows = db.prepare(
     "SELECT * FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared')"
   ).all(agentId) as Memory[]
@@ -2267,6 +2460,73 @@ export function pruneToolCallLog(olderThanSecs = 86400): void {
   db.prepare('DELETE FROM tool_call_log WHERE created_at < ?').run(cutoff)
 }
 
+// --- Skill Usage Log ---
+
+export interface SkillUsageRow {
+  id: number
+  agent_id: string
+  skill_name: string
+  trigger_type: 'tool_call' | 'skill_read'
+  session_id: string | null
+  created_at: number
+}
+
+export interface SkillUsageStatRow {
+  skill_name: string
+  call_count: number
+  read_count: number
+  total_count: number
+  agent_count: number
+  last_used_at: number
+}
+
+export function logSkillUsage(
+  agentId: string,
+  skillName: string,
+  triggerType: 'tool_call' | 'skill_read',
+  sessionId?: string | null,
+): void {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(
+    'INSERT INTO skill_usage (agent_id, skill_name, trigger_type, session_id, created_at) VALUES (?, ?, ?, ?, ?)',
+  ).run(agentId, skillName, triggerType, sessionId ?? null, now)
+}
+
+export function getSkillUsageRows(opts: {
+  since?: number
+  agentId?: string
+  skillName?: string
+  limit?: number
+}): SkillUsageRow[] {
+  const { since, agentId, skillName, limit = 500 } = opts
+  const cutoff = since ? Math.floor(Date.now() / 1000) - since : 0
+  const conditions: string[] = ['created_at >= ?']
+  const params: unknown[] = [cutoff]
+  if (agentId) { conditions.push('agent_id = ?'); params.push(agentId) }
+  if (skillName) { conditions.push('skill_name = ?'); params.push(skillName) }
+  params.push(limit)
+  return db.prepare(
+    `SELECT * FROM skill_usage WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC LIMIT ?`,
+  ).all(...params) as SkillUsageRow[]
+}
+
+export function getSkillUsageStats(sinceSecs?: number): SkillUsageStatRow[] {
+  const cutoff = sinceSecs ? Math.floor(Date.now() / 1000) - sinceSecs : 0
+  return db.prepare(`
+    SELECT
+      skill_name,
+      SUM(CASE WHEN trigger_type = 'tool_call' THEN 1 ELSE 0 END) AS call_count,
+      SUM(CASE WHEN trigger_type = 'skill_read' THEN 1 ELSE 0 END) AS read_count,
+      COUNT(*) AS total_count,
+      COUNT(DISTINCT agent_id) AS agent_count,
+      MAX(created_at) AS last_used_at
+    FROM skill_usage
+    WHERE created_at >= ?
+    GROUP BY skill_name
+    ORDER BY total_count DESC
+  `).all(cutoff) as SkillUsageStatRow[]
+}
+
 // --- Config Change Log ---
 // Pass null for oldValue/newValue when the registry entry is secret:true --
 // this keeps secret values out of the audit trail entirely rather than
@@ -2505,8 +2765,8 @@ export function deleteVaultSshKey(id: string): { deleted: boolean; unassigned: n
 // --- Vault SSH Servers ---
 // Stores server metadata. The ssh_key_id FK points to vault_ssh_keys (nullable;
 // null = no key assigned = keyStatus "missing"). Legacy per-server key columns
-// (vault_key_id, key_type, fingerprint, key_expires_at) are kept in the schema
-// for backward compatibility but are no longer the source of truth.
+// (vault_key_id, key_type, fingerprint, key_expires_at) have been removed via
+// DROP COLUMN migration above.
 
 export interface VaultSshServer {
   id: string

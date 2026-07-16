@@ -66,4 +66,120 @@ describe('detectReauthNeeded', () => {
     ].join('\n')
     expect(detectReauthNeeded(pane).needsReauth).toBe(true)
   })
+
+  // Devy 2026-07-12: recovered agent still badged as broken. The stale
+  // "Not logged in" transcript result sits inside the 15-line tail, ABOVE a
+  // later "Login successful" -- but the live status line (above the input box)
+  // shows a healthy context readout. The status line is what tracks auth.
+  it('does NOT fire when a stale login failure is followed by a successful login', () => {
+    const pane = [
+      '  1 in_progress Devy kártya </scheduled-task>',
+      '  ⎿  Not logged in · Please run /login',
+      '✻ Crunched for 0s',
+      '❯ /login',
+      '  ⎿  Login interrupted',
+      '❯ /login',
+      '  ⎿  Login successful',
+      '                                        ~290k uncached · /clear to start fresh',
+      '──────────────────────────────────────────────────────────────── Devy ──',
+      '❯ ',
+      '────────────────────────────────────────────────────────────────────────',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
+    ].join('\n')
+    expect(detectReauthNeeded(pane).needsReauth).toBe(false)
+  })
+
+  // Finy 2026-07-12, the genuinely-broken twin of the case above: the SAME
+  // interrupted-login transcript, but the live status line still says so.
+  it('DOES fire when the live status line above the input box reports the failure', () => {
+    const pane = [
+      '  ⎿  Login interrupted',
+      '❯ /login',
+      '  ⎿  Login interrupted',
+      '                                            Not logged in · Run /login',
+      '────────────────────────────────────────────────────────────── Finy ──',
+      '❯ ',
+      '──────────────────────────────────────────────────────────────────────',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
+    ].join('\n')
+    const r = detectReauthNeeded(pane)
+    expect(r.needsReauth).toBe(true)
+    expect(r.reason).toMatch(/not logged in/i)
+  })
+
+  it('does NOT fire when a prior escalation message is quoted back into the pane (self-loop)', () => {
+    // Reproduces the 2026-07-13 bug: the owner pastes the healer's own alert
+    // (which embeds the raw marker text) back into the chat, and it re-matches.
+    const pane = [
+      ...Array.from({ length: 10 }, (_, i) => `... work line ${i} ...`),
+      '🔐 A(z) bigme ágens halott OAuth tokent jelez (Please run /login) több mint ~9 perce.',
+      'Manuális browser /login kell a dashboardon (az ügynök kártyáján a "Bejelentkezés" gomb), automatikusan nem gyógyítható.',
+    ].join('\n')
+    expect(detectReauthNeeded(pane).needsReauth).toBe(false)
+  })
+
+  it('does NOT fire on the quiet-hours morning summary quoted back either', () => {
+    const pane = [
+      '🔐 Reggeli token-összegzés: az éjszakai csendes sáv (23:00-06:00) alatt elnyomott riasztások. MOST IS halott tokent jelez:',
+      '• bigme: Invalid authentication credentials (401) (~45 perce)',
+      'Manuális browser /login kell a dashboardon (az ügynök kártyáján a "Bejelentkezés" gomb).',
+    ].join('\n')
+    expect(detectReauthNeeded(pane).needsReauth).toBe(false)
+  })
+
+  // 2026-07-15 bootcamp "mass /login": the pane was NOT an auth failure but
+  // Claude Code's first-run picker (hasCompletedOnboarding lost from
+  // ~/.claude.json). It blocks the agent identically, so it must badge.
+  it('detects the first-run "Select login method" onboarding picker', () => {
+    const pane = [
+      ' Welcome to Claude Code',
+      '',
+      ' Select login method:',
+      '',
+      ' ❯ 1. Claude account with subscription',
+      '   2. Anthropic Console account',
+    ].join('\n')
+    const r = detectReauthNeeded(pane)
+    expect(r.needsReauth).toBe(true)
+    expect(r.reason).toMatch(/onboarding picker/i)
+  })
+
+  it('does NOT fire on a chat that merely mentions the picker in scrollback', () => {
+    const pane = [
+      '❯ a "Select login method" képernyőről beszéltünk',
+      ...Array.from({ length: 20 }, (_, i) => `... work line ${i} ...`),
+      '──────────────────────────────────────────────────────────────────────',
+      '❯ ',
+      '──────────────────────────────────────────────────────────────────────',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(detectReauthNeeded(pane).needsReauth).toBe(false)
+  })
+})
+
+// Second first-run-gate marker: the state a blind Enter on the picker advances
+// into (observed live 2026-07-16: channels.sh's first-run guard selected
+// option 1 and parked the session on the browser sign-in screen).
+describe('detectReauthNeeded: browser sign-in screen', () => {
+  it('detects the sign-in URL screen', () => {
+    const pane = [
+      ' Use the url below to sign in:',
+      '',
+      ' https://claude.ai/oauth/authorize?code=...',
+      '',
+      ' Paste code here if prompted >',
+    ].join('\n')
+    const r = detectReauthNeeded(pane)
+    expect(r.needsReauth).toBe(true)
+    expect(r.reason).toMatch(/sign-in screen/i)
+  })
+
+  it('does NOT re-fire on the healer escalation quoting the picker reason (self-loop regression)', () => {
+    const pane = [
+      ...Array.from({ length: 10 }, (_, i) => `... work line ${i} ...`),
+      '🔐 A(z) boni ágens halott OAuth tokent jelez (First-run onboarding picker (Select login method)) több mint ~9 perce.',
+      'Manuális browser /login kell a dashboardon (az ügynök kártyáján a "Bejelentkezés" gomb), automatikusan nem gyógyítható.',
+    ].join('\n')
+    expect(detectReauthNeeded(pane).needsReauth).toBe(false)
+  })
 })

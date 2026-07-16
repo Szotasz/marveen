@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { parseDateExpression } from '../web/routes/recall.js'
 
-// Pin "today" to 2026-05-19 (Tuesday) Europe/Budapest for deterministic tests
+// Pin "today" to 2026-05-19 (Tuesday) in the install zone for deterministic tests
 const FAKE_TODAY = '2026-05-19'
 
 vi.mock('../web/routes/recall.js', async (importOriginal) => {

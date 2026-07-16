@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process'
 import { join } from 'node:path'
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID, PROJECT_ROOT, RESPAWN_ENABLED } from '../config.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT, RESPAWN_ENABLED, APP_TZ } from '../config.js'
 import { resolveFromPath } from '../platform.js'
 import { listAgentNames } from './agent-config.js'
-import { isAgentRunning, capturePane } from './agent-process.js'
+import { isAgentRunning, capturePane, startAgentProcess } from './agent-process.js'
+import { quarantineFleetTokenIfDead } from './claude-credentials-guard.js'
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { detectReauthNeeded } from './reauth-detect.js'
@@ -53,6 +54,15 @@ export interface ReauthHealerInput {
    * we escalate-only and never inject /login.
    */
   canInteractiveLogin: boolean
+  /**
+   * The pane shows Claude Code's FIRST-RUN gate (the "Select login method"
+   * picker, or the browser sign-in screen it advances into), not a dead token.
+   * A /login send-keys is actively harmful there: on the picker the trailing
+   * Enter accepts a login method and launches a browser OAuth flow on a
+   * session whose credential is VALID (2026-07-15 bootcamp). The heal is a
+   * restart -- startAgentProcess re-seeds hasCompletedOnboarding.
+   */
+  isFirstRunGate?: boolean
   prev: ReauthHealerState
   nowMs: number
 }
@@ -64,6 +74,7 @@ export interface ReauthHealerThresholds {
 
 export interface ReauthHealerDecision {
   sendKeys: boolean   // best-effort autonomous /login (sub-agents only)
+  restartAgent: boolean // first-run-gate heal: restart the sub-agent (re-seeds the onboarding flag)
   escalate: boolean   // notify.sh alert to the owner
   next: ReauthHealerState
 }
@@ -78,11 +89,11 @@ export const NO_REAUTH_STATE: ReauthHealerState = { consecutiveDead: 0, lastActi
  * into the session every tick) and never fires for the main agent.
  */
 export function decideReauthAction(input: ReauthHealerInput, t: ReauthHealerThresholds): ReauthHealerDecision {
-  const { isDeadToken, sessionAlive, isMain, canInteractiveLogin, prev, nowMs } = input
+  const { isDeadToken, sessionAlive, isMain, canInteractiveLogin, isFirstRunGate, prev, nowMs } = input
 
   // Clean / not-applicable: end the spell, allow a fresh alert next time.
   if (!isDeadToken || !sessionAlive) {
-    return { sendKeys: false, escalate: false, next: NO_REAUTH_STATE }
+    return { sendKeys: false, restartAgent: false, escalate: false, next: NO_REAUTH_STATE }
   }
 
   const consecutiveDead = prev.consecutiveDead + 1
@@ -94,7 +105,13 @@ export function decideReauthAction(input: ReauthHealerInput, t: ReauthHealerThre
     // Autonomous /login only where it can actually help: a sub-agent, at a host
     // that can complete the browser step. On headless it would amplify the
     // cascade (rotates the shared token), so suppress it and escalate-only.
-    sendKeys: fireNow && !isMain && canInteractiveLogin,
+    // NEVER on the first-run gate: a /login there advances the picker into a
+    // browser OAuth flow on a valid credential.
+    sendKeys: fireNow && !isMain && canInteractiveLogin && isFirstRunGate !== true,
+    // First-run gate on a sub-agent: a restart heals it (startAgentProcess runs
+    // ensureSharedClaudeOnboarded first). Works headless -- no browser step.
+    // The main agent stays escalate-only; its monitored respawn paths re-seed.
+    restartAgent: fireNow && !isMain && isFirstRunGate === true,
     escalate: fireNow,
     next: {
       consecutiveDead,
@@ -130,7 +147,7 @@ async function sendBestEffortLogin(session: string): Promise<void> {
   }
 }
 
-// -- Quiet hours (23:00-06:00 Europe/Budapest) -------------------------------
+// -- Quiet hours (23:00-06:00 in the install zone, config.APP_TZ) ------------
 //
 // Overnight a dead token is not actionable: the fix is a manual browser
 // /login, and nobody does that at 03:00 -- but the healer used to re-alert
@@ -147,11 +164,11 @@ export function isQuietHour(hourLocal: number): boolean {
   return hourLocal >= QUIET_START_HOUR || hourLocal < QUIET_END_HOUR
 }
 
-// Local wall-clock hour in Europe/Budapest regardless of the host TZ (the
-// same explicit-TZ rule the rest of the fleet follows for time handling).
-export function budapestHour(nowMs: number): number {
+// Wall-clock hour in the install zone (config.APP_TZ) regardless of the host TZ,
+// the same explicit-TZ rule the whole fleet follows for time handling.
+export function localHour(nowMs: number): number {
   return parseInt(
-    new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Budapest', hour: '2-digit', hour12: false }).format(new Date(nowMs)),
+    new Intl.DateTimeFormat('en-GB', { timeZone: APP_TZ, hour: '2-digit', hour12: false }).format(new Date(nowMs)),
     10,
   )
 }
@@ -238,9 +255,11 @@ function checkSession(label: string, session: string, isMain: boolean, quiet: bo
   const sessionAlive = pane != null
   const reauth = detectReauthNeeded(pane)
   const prev = watchState.get(session) ?? NO_REAUTH_STATE
+  // The reasons produced by the two first-run-gate markers in reauth-detect.
+  const isFirstRunGate = /onboarding picker|sign-in screen/i.test(reauth.reason ?? '')
 
   const decision = decideReauthAction(
-    { isDeadToken: reauth.needsReauth, sessionAlive, isMain, canInteractiveLogin: hostCanInteractiveLogin(), prev, nowMs: Date.now() },
+    { isDeadToken: reauth.needsReauth, sessionAlive, isMain, canInteractiveLogin: hostCanInteractiveLogin(), isFirstRunGate, prev, nowMs: Date.now() },
     { threshold: DEAD_PROBE_THRESHOLD, cooldownMs: ESCALATION_COOLDOWN_MS },
   )
 
@@ -257,6 +276,10 @@ function checkSession(label: string, session: string, isMain: boolean, quiet: bo
     logger.warn({ label, session }, 'reauth-healer: confirmed dead token on live sub-agent -- best-effort /login send-keys')
     void sendBestEffortLogin(session)
   }
+  if (decision.restartAgent) {
+    logger.warn({ label, session, reason: reauth.reason }, 'reauth-healer: first-run gate on live sub-agent -- restarting it (re-seeds hasCompletedOnboarding)')
+    void restartFirstRunGatedAgent(label, session)
+  }
   if (decision.escalate) {
     logger.error({ label, session, reason: reauth.reason, quiet }, 'reauth-healer: dead OAuth token on live session -- escalating to owner')
     routeEscalation(
@@ -264,6 +287,35 @@ function checkSession(label: string, session: string, isMain: boolean, quiet: bo
       quiet,
       sendNotify,
     )
+    // A genuine 401 family failure while a fleet token exists: probe that token
+    // once and quarantine it if the probe proves it dead (server-side
+    // revocation). Without this there is NO recovery path -- every new launch
+    // re-injects the dead env token (which strictly overrides valid file
+    // creds), and a manual delete would be undone by the boot sync. Cadence is
+    // bounded by the escalation cooldown. Skipped for the first-run gate: the
+    // credential there is typically fine.
+    if (!isFirstRunGate) {
+      quarantineFleetTokenIfDead()
+        .then((r) => { if (r !== 'no-token') logger.warn({ label, result: r }, 'reauth-healer: fleet-token liveness check') })
+        .catch((err) => logger.debug({ err }, 'reauth-healer: fleet-token liveness check failed'))
+    }
+  }
+}
+
+// First-run-gate heal for a SUB-agent: kill the parked session (nothing is
+// in-flight -- the TUI is blocked pre-boot on the picker) and relaunch it;
+// startAgentProcess runs ensureSharedClaudeOnboarded before the fresh claude
+// starts, so the relaunch comes up past the gate.
+async function restartFirstRunGatedAgent(name: string, session: string): Promise<void> {
+  await new Promise<void>((resolve) => {
+    execFile(TMUX, ['kill-session', '-t', session], { timeout: 5000 }, () => resolve())
+  })
+  await sleep(1000)
+  try {
+    const r = startAgentProcess(name)
+    if (!r.ok) logger.warn({ name, error: r.error }, 'reauth-healer: first-run-gate relaunch failed')
+  } catch (err) {
+    logger.warn({ err, name }, 'reauth-healer: first-run-gate relaunch threw')
   }
 }
 
@@ -276,7 +328,7 @@ export function startReauthHealer(): NodeJS.Timeout | null {
   }
 
   function sweep(): void {
-    const quiet = isQuietHour(budapestHour(Date.now()))
+    const quiet = isQuietHour(localHour(Date.now()))
     // Main agent: escalate-only (no autonomous /login into a live always-on
     // conversation). capturePane returns null when it is down -> spell ends.
     try {

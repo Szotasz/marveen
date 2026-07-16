@@ -18,19 +18,32 @@ const SCHEDULE_RUNNER = readFileSync(join(__dirname, '../web/schedule-runner.ts'
 
 describe('sendPromptToSession waitForIdle gate', () => {
   it('sendPromptToSession accepts a waitForIdle option', () => {
-    const sigIdx = AGENT_PROCESS.indexOf('export function sendPromptToSession(')
+    const sigIdx = AGENT_PROCESS.indexOf('export async function sendPromptToSession(')
     expect(sigIdx).toBeGreaterThan(0)
-    const sig = AGENT_PROCESS.slice(sigIdx, sigIdx + 260)
-    expect(sig).toMatch(/opts:\s*\{\s*waitForIdle\?:\s*boolean\s*\}/)
+    const sig = AGENT_PROCESS.slice(sigIdx, sigIdx + 300)
+    // The opts bag grew onBusyTimeout/idleTimeoutMs for the inbox-nudge
+    // watcher (an OPTIONAL prompt aborts instead of best-effort-typing into a
+    // busy pane); waitForIdle stays the first, default-ON member.
+    expect(sig).toMatch(/opts:\s*\{\s*waitForIdle\?:\s*boolean;\s*onBusyTimeout\?:\s*'send'\s*\|\s*'abort';\s*idleTimeoutMs\?:\s*number\s*\}/)
   })
 
   it('the gate defaults ON (waitForIdle !== false) so all other callers keep it', () => {
     // The default must be ON: only an explicit waitForIdle:false opts out.
     expect(AGENT_PROCESS).toMatch(/const waitForIdle = opts\.waitForIdle !== false/)
     // And the wait is guarded by that flag, not called unconditionally.
-    expect(AGENT_PROCESS).toMatch(/if \(waitForIdle && !waitForPaneIdle\(session, host\)\)/)
+    // waitForPaneIdle is async now (off the event loop), so the gate awaits it.
+    expect(AGENT_PROCESS).toMatch(/if \(waitForIdle && !\(await waitForPaneIdle\(session, host, opts\.idleTimeoutMs\)\)\)/)
     // No unconditional `if (!waitForPaneIdle(` remains.
-    expect(AGENT_PROCESS).not.toMatch(/^\s*if \(!waitForPaneIdle\(session, host\)\) \{/m)
+    expect(AGENT_PROCESS).not.toMatch(/^\s*if \(!\(?await waitForPaneIdle\(session, host\)\)?\) \{/m)
+  })
+
+  it('onBusyTimeout defaults to the historical best-effort send; abort is explicit opt-in', () => {
+    // The abort branch must be gated on the EXPLICIT 'abort' value so every
+    // existing caller (router, scheduler, monitors) keeps must-deliver
+    // semantics, and it must return before any keystroke reaches the pane.
+    const abortIdx = AGENT_PROCESS.indexOf("if (opts.onBusyTimeout === 'abort') {")
+    expect(abortIdx).toBeGreaterThan(0)
+    expect(AGENT_PROCESS.slice(abortIdx, abortIdx + 300)).toContain("return 'aborted-busy'")
   })
 
   it('the forceSend scheduled-task path opts out of the idle wait', () => {

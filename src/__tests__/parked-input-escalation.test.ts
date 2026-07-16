@@ -61,23 +61,25 @@ beforeEach(() => {
 afterAll(() => { nowSpy.mockRestore() })
 
 describe('clearStaleParkedInput', () => {
-  it('NEVER auto-clears the main agent box, and (escalation muted) never notifies', () => {
-    for (let i = 0; i < 4; i++) { clearStaleParkedInput(MAIN_CHANNELS_SESSION); clock += COOLDOWN }
+  // clearStaleParkedInput is async now (its stable-confirm settle is a
+  // non-blocking `await delay(...)` off the event loop), so each call is awaited.
+  it('NEVER auto-clears the main agent box, and (escalation muted) never notifies', async () => {
+    for (let i = 0; i < 4; i++) { await clearStaleParkedInput(MAIN_CHANNELS_SESSION); clock += COOLDOWN }
     expect(clearKeystrokes().length).toBe(0)        // main box untouched by clearing keystrokes
     expect(vi.mocked(notifyChannel)).toHaveBeenCalledTimes(0) // muted (v1.18.3)
-  })
+  }, 20_000) // 4 sequential real 2s stable-confirm delays
 
-  it('attempts the Ctrl-U clear for a SUB-agent box with a REAL parked line', () => {
-    clearStaleParkedInput('subagent-zara-channels')
+  it('attempts the Ctrl-U clear for a SUB-agent box with a REAL parked line', async () => {
+    await clearStaleParkedInput('subagent-zara-channels')
     expect(clearKeystrokes().length).toBeGreaterThan(0)
-  })
+  }, 15_000) // real stable-confirm + Ctrl-U settle delays
 
-  it('DIM-GUARD: a dim ghost line is NOT treated as parked -> no clear (any agent)', () => {
+  it('DIM-GUARD: a dim ghost line is NOT treated as parked -> no clear (any agent)', async () => {
     h.eView = h.PARKED_DIM // the -e/dim-stripped view shows an empty box
-    clearStaleParkedInput('subagent-zara-channels')
+    await clearStaleParkedInput('subagent-zara-channels')
     expect(clearKeystrokes().length).toBe(0) // ghost stripped -> no parked text -> no action
     // and the main box likewise stays untouched + silent on a dim ghost
-    clearStaleParkedInput(MAIN_CHANNELS_SESSION)
+    await clearStaleParkedInput(MAIN_CHANNELS_SESSION)
     expect(vi.mocked(notifyChannel)).toHaveBeenCalledTimes(0)
   })
 })

@@ -45,8 +45,23 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       description?: string
       category?: string
       source?: string
+      impact?: number | null
+      effort?: number | null
     }
     if (!data.title) { json(res, { error: 'title required' }, 400); return true }
+    // Same 1-5 validation as PUT -- previously POST silently dropped these fields
+    let impact: number | null = null
+    if (data.impact !== undefined && data.impact !== null) {
+      const v = Math.round(Number(data.impact))
+      if (!Number.isFinite(v) || v < 1 || v > 5) { json(res, { error: 'impact must be 1-5 or null' }, 400); return true }
+      impact = v
+    }
+    let effort: number | null = null
+    if (data.effort !== undefined && data.effort !== null) {
+      const v = Math.round(Number(data.effort))
+      if (!Number.isFinite(v) || v < 1 || v > 5) { json(res, { error: 'effort must be 1-5 or null' }, 400); return true }
+      effort = v
+    }
     const id = randomUUID().slice(0, 8)
     createIdea({
       id,
@@ -56,8 +71,8 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       status: 'new',
       source: data.source ?? 'manual',
       kanban_id: null,
-      impact: null,
-      effort: null,
+      impact,
+      effort,
     })
     json(res, { ok: true, id })
     return true

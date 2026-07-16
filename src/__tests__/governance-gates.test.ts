@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision as selfPaceDecision, stripDataPayloads } from '../../scripts/self-pace-gate.mjs'
+import { gateDecision as selfPaceDecision, stripDataPayloads, stripGitCommitMessages } from '../../scripts/self-pace-gate.mjs'
 import {
   agentGetsGovernanceGates,
   injectSelfPaceGate,
@@ -231,5 +231,65 @@ describe('governance gate scaffold wiring', () => {
     // operator-confirmation-gate is intentionally NOT wired: merge/deploy is
     // operator-authorized autonomously; the self-decide vector is covered above.
     expect(pre.some((e) => JSON.stringify(e).includes('operator-confirmation-gate.mjs'))).toBe(false)
+  })
+})
+
+
+// --- stripGitCommitMessages: a `git commit -m` message is PROSE, never a shell
+// invocation, so a trigger token inside it must not false-deny (2026-07-13 DrCode
+// report: long commit blocked, short passed). Same literal-only quote handling as
+// stripDataPayloads; a $()/backtick double-quoted message is kept so a REAL
+// substitution stays gated. ---
+describe('self-pace-gate stripGitCommitMessages (commit-message false-positive guard)', () => {
+  it('blanks a single-quoted commit message', () => {
+    expect(stripGitCommitMessages(`git commit -m 'batch queue; at offset'`)).toBe(`git commit -m ''`)
+  })
+  it('blanks a double-quoted commit message with trigger words', () => {
+    expect(stripGitCommitMessages(`git commit -m "orchestration: tmux send-keys nem"`)).toBe(`git commit -m ""`)
+  })
+  it('keeps a $()-substituting double-quoted message intact (still gated downstream)', () => {
+    const cmd = `git commit -m "$(crontab -r)"`
+    expect(stripGitCommitMessages(cmd)).toBe(cmd)
+  })
+  it('leaves non-git -m flags untouched', () => {
+    const cmd = `mkdir -m 755 dir`
+    expect(stripGitCommitMessages(cmd)).toBe(cmd)
+  })
+  it('gateDecision: legit commit with trigger words in the message is ALLOWED', () => {
+    expect(selfPaceDecision('Bash', { command: `git commit -m "ETA; at offset; batch observe"` }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: `git commit -m "gui token-auth /api/schedules read-only"` }).deny).toBe(false)
+  })
+  it('gateDecision: a REAL self-pace after the commit (outside the message) is still DENIED', () => {
+    expect(selfPaceDecision('Bash', { command: `git commit -m "ok" ; crontab -r` }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: `git commit -m "$(crontab -r)"` }).deny).toBe(true)
+  })
+})
+
+// --- backtick command substitution: the boundary anchor recognises `...` the
+// same as $(...), so a scheduler binary inside a legacy backtick substitution is
+// caught (was a documented pre-existing denylist gap: $() denied, backtick not).
+describe('self-pace-gate backtick command-substitution boundary', () => {
+  it('denies a bare backtick scheduler substitution', () => {
+    expect(selfPaceDecision('Bash', { command: 'git status `crontab -r`' }).deny).toBe(true)
+  })
+  it('denies an assignment via backtick substitution', () => {
+    expect(selfPaceDecision('Bash', { command: 'X=`crontab -r`' }).deny).toBe(true)
+  })
+  it('denies a backtick substitution after a commit message (message blanked, op remains)', () => {
+    expect(selfPaceDecision('Bash', { command: 'git commit -m "a" `crontab -r`' }).deny).toBe(true)
+  })
+  it('denies a backtick launchctl load', () => {
+    expect(selfPaceDecision('Bash', { command: 'echo `launchctl load x`' }).deny).toBe(true)
+  })
+  it('parity with $(): both substitution forms of the same op are denied', () => {
+    expect(selfPaceDecision('Bash', { command: 'git status $(crontab -r)' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: 'git status `crontab -r`' }).deny).toBe(true)
+  })
+  it('does not over-fire: a backtick substitution of a NON-scheduler binary is allowed', () => {
+    expect(selfPaceDecision('Bash', { command: 'echo `date`' }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: 'FILES=`ls -1`' }).deny).toBe(false)
+  })
+  it('still allows a legit read-listing inside a substitution (crontab -l)', () => {
+    expect(selfPaceDecision('Bash', { command: 'echo `crontab -l`' }).deny).toBe(false)
   })
 })

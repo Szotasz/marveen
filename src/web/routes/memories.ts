@@ -1,10 +1,10 @@
 import {
   saveAgentMemory, getAgentMemories, searchAgentMemories, getMemoryStats, updateMemory,
-  hybridSearch, backfillEmbeddings,
+  hybridSearch, backfillEmbeddings, clearMemoryCache,
   searchMemories, getMemoriesForChat, getDb,
   type Memory,
 } from '../../db.js'
-import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL } from '../../config.js'
+import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
@@ -95,8 +95,8 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     const formatted = results.map(m => ({
       ...m,
       embedding: undefined,
-      created_label: new Date(m.created_at * 1000).toLocaleString('hu-HU', { timeZone: 'Europe/Budapest' }),
-      accessed_label: new Date(m.accessed_at * 1000).toLocaleString('hu-HU', { timeZone: 'Europe/Budapest' }),
+      created_label: new Date(m.created_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
+      accessed_label: new Date(m.accessed_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
     }))
     json(res, formatted)
     return true
@@ -233,6 +233,9 @@ Respond ONLY with JSON, nothing else:
     const id = parseInt(memUpdateMatch[1], 10)
     const db2 = getDb()
     const changes = db2.prepare('DELETE FROM memories WHERE id = ?').run(id).changes
+    // Invalidate the in-process TTL cache so a deleted memory does not
+    // resurface in the agent-filtered list for the cache lifetime.
+    if (changes > 0) clearMemoryCache()
     if (changes > 0) { json(res, { ok: true }); return true }
     json(res, { error: 'Memory not found' }, 404)
     return true

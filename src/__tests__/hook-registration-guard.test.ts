@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   isWorktreeRoot,
+  isTemporaryRoot,
   shouldRegisterHooks,
   pruneStaleHookEntries,
   pruneStaleHooksFromSettingsFile,
@@ -49,6 +50,54 @@ describe('shouldRegisterHooks', () => {
     const d = shouldRegisterHooks({ projectRoot: '/opt/app', webOnly: true, isGitFile: notAGitFile })
     expect(d.register).toBe(false)
     expect(d.reason).toMatch(/WEB_ONLY/)
+  })
+  // 2026-07-13 canary incident: a plain `git clone` under /private/tmp is NOT a
+  // worktree (.git is a dir) and not WEB_ONLY, yet it registered hooks into the
+  // user-global settings.json -- the same deaf-agent trap, one class wider.
+  it('skips a plain clone under /private/tmp (canary/second-instance)', () => {
+    const d = shouldRegisterHooks({
+      projectRoot: '/private/tmp/marveen-work',
+      webOnly: false,
+      isGitFile: notAGitFile,
+    })
+    expect(d.register).toBe(false)
+    expect(d.reason).toMatch(/temp dir/)
+  })
+  it('skips a clone under /tmp', () => {
+    const d = shouldRegisterHooks({ projectRoot: '/tmp/marveen-work', webOnly: false, isGitFile: notAGitFile })
+    expect(d.register).toBe(false)
+  })
+  it('skips a clone under the injected OS tmpDir (e.g. macOS /var/folders/..)', () => {
+    const d = shouldRegisterHooks({
+      projectRoot: '/var/folders/xy/abc/T/marveen-clone',
+      webOnly: false,
+      isGitFile: notAGitFile,
+      tmpDir: '/var/folders/xy/abc/T',
+    })
+    expect(d.register).toBe(false)
+  })
+  it('still registers for a real install path that merely contains "tmp" mid-path', () => {
+    const d = shouldRegisterHooks({ projectRoot: '/home/user/mytmpapp', webOnly: false, isGitFile: notAGitFile })
+    expect(d.register).toBe(true)
+  })
+})
+
+describe('isTemporaryRoot', () => {
+  it('true for /tmp and /private/tmp prefixes', () => {
+    expect(isTemporaryRoot('/tmp/x')).toBe(true)
+    expect(isTemporaryRoot('/private/tmp/x')).toBe(true)
+    expect(isTemporaryRoot('/var/folders/a/b/T/x')).toBe(true)
+  })
+  it('false for a normal install root', () => {
+    expect(isTemporaryRoot('/Users/marvin/ClaudeClaw')).toBe(false)
+    expect(isTemporaryRoot('/opt/app')).toBe(false)
+  })
+  it('honours an injected OS tmpdir prefix (with or without trailing slash)', () => {
+    expect(isTemporaryRoot('/custom/tmp/clone', { tmpDir: '/custom/tmp' })).toBe(true)
+    expect(isTemporaryRoot('/custom/tmp/clone', { tmpDir: '/custom/tmp/' })).toBe(true)
+  })
+  it('does not match a path that merely contains a temp fragment mid-string', () => {
+    expect(isTemporaryRoot('/home/tmpish/app')).toBe(false)
   })
 })
 

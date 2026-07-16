@@ -4,8 +4,9 @@ import { homedir, platform, tmpdir } from 'node:os'
 import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID, BOT_NAME, PROJECT_ROOT } from '../../config.js'
-import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent } from '../../db.js'
+import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed } from '../../db.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
+import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
 import {
@@ -111,7 +112,7 @@ import {
   loadProfileTemplate,
   resolveProfilePlaceholders,
 } from '../profiles.js'
-import { sanitizeAgentName } from '../sanitize.js'
+import { sanitizeAgentName, safeJoin } from '../sanitize.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json, serveFile } from '../http-helpers.js'
 import {
@@ -1227,7 +1228,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
       const approvedDir = join(chDir, 'approved')
       mkdirSync(approvedDir, { recursive: true })
-      writeFileSync(join(approvedDir, entry.senderId), '')
+      // Marker contents = chatId, per the plugin's /telegram:access pair
+      // contract (the channel server polls approved/ to send the "Paired!"
+      // confirmation; current server keys off the filename, the chatId
+      // contents keep us aligned with the documented format).
+      writeFileSync(join(approvedDir, entry.senderId), String(entry.chatId ?? ''))
 
       logger.info({ name, provider, senderId: entry.senderId, code }, 'Channel pairing approved')
       json(res, { ok: true, senderId: entry.senderId })
@@ -1360,8 +1365,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       const access = JSON.parse(readFileOr(accessPath, '{}'))
       if (kind === 'user') {
         access.allowFrom = (access.allowFrom || []).filter((s: string) => s !== id)
-        const approvedFile = join(chDir, 'approved', id)
-        try { if (existsSync(approvedFile)) unlinkSync(approvedFile) } catch { /* ignore */ }
+        // safeJoin blocks a traversal id (e.g. "..%2F..%2Ftmp%2Fvictim") from
+        // escaping the approved/ dir into an arbitrary unlinkSync target.
+        try {
+          const approvedFile = safeJoin(join(chDir, 'approved'), id)
+          if (existsSync(approvedFile)) unlinkSync(approvedFile)
+        } catch { /* ignore missing file or rejected traversal */ }
       } else {
         if (access.groups) delete access.groups[id]
       }
@@ -1457,7 +1466,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const session = agentSessionName(name)
     const host = readAgentRemoteHost(name)
     try {
-      sendPromptToSession(session, '/login', host)
+      await sendPromptToSession(session, '/login', host)
       // Wait for Claude Code to render the auth URL (typically 3-6s)
       let authUrl: string | null = null
       for (let i = 0; i < 12; i++) {
@@ -1533,8 +1542,17 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const blocks: string[] = []
     for (const msg of claimed) {
       const cls = classifyAgentMessage(msg.from_agent, msg.to_agent)
-      if (!cls) continue // empty/invalid from_agent -> cannot frame safely; drop
-      const { prefix, wrapped } = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, msg.from_agent, msg.content, msg.id)
+      if (!cls) {
+        // The claim already flipped the row to 'delivered'; a silent skip
+        // here is invisible message loss (delivered in the DB, never shown
+        // to the agent, no log, no retry). Surface it like the router does.
+        logger.warn({ id: msg.id, rawFrom: msg.from_agent }, 'drain-inbox: message rejected, from_agent cannot be framed safely')
+        if (!markMessageFailed(msg.id, 'Invalid or empty from_agent')) {
+          logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
+        }
+        continue
+      }
+      const { prefix, wrapped } = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, msg.from_agent, msg.content, msg.id, msg.origin_note)
       blocks.push(prefix + wrapped)
     }
     json(res, { count: blocks.length, text: blocks.join('\n\n') })
@@ -1739,7 +1757,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       }
       writeAgentMemoryIsolation(name, data.memoryIsolation === true)
     }
-    if (data.claudeMd !== undefined) atomicWriteFileSync(join(configRoot, 'CLAUDE.md'), data.claudeMd)
+    if (data.claudeMd !== undefined) {
+      atomicWriteFileSync(join(configRoot, 'CLAUDE.md'), data.claudeMd)
+      // A stale dashboard-editor buffer can carry a pre-federation snapshot
+      // (or a block from a since-disabled state): reconcile the managed
+      // federation section right after the write, not just at boot -- the
+      // service runs for weeks between restarts. No-op for sub-agents.
+      if (name === MAIN_AGENT_ID) ensureFederationClaudeMdSection()
+    }
     if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)
     if (data.mcpJson !== undefined) atomicWriteFileSync(join(agentDir(name), '.mcp.json'), data.mcpJson)
     if (data.model !== undefined) writeAgentModel(name, data.model)

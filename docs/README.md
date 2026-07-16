@@ -14,6 +14,7 @@ Minden lap két szemszögből mutatja be a funkciót:
 | [Memória-rendszer](memory-system.md) | 3-tier (hot/warm/cold) FTS5 + napi salience decay + napi napló |
 | [Kanban + auto-breakdown](kanban.md) | Feladatkezelés LLM-es részfeladat-bontással |
 | [Ügynök-flotta + inter-agent kommunikáció](agent-fleet.md) | Több specializált ügynök közös üzenetsoron keresztül |
+| [Föderáció](federation.md) | Több Marveen-példány összekötése: rendszer-minősített címzés (`teodor/backend-dev`) + HTTPS-híd, dashboard-menü, per-társ tokenek, automatikus ügynök-felkészítés, **képesség-alapú auto-routing** (LLM-katalógus) + fő-ügynök auto-drain, beépített rollback — opt-in, fail-closed |
 | [Skill-factory (öntanulás)](skill-factory.md) | Visszatérő munkafolyamatokból újrahasznosítható skill-ek |
 | [Channels (Telegram / Slack)](channels.md) | Natív üzenetküldő-integráció proaktív értesítésekkel |
 | [Hangüzenetek (voice)](voice.md) | Per-agent STT+TTS: helyben futó hang oda-vissza Telegramon, ügynökönként állítható móddal |

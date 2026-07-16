@@ -1,9 +1,9 @@
 import { recallByDateRange, recallSearch, getDailyLogDates } from '../../db.js'
-import { MAIN_AGENT_ID } from '../../config.js'
+import { MAIN_AGENT_ID, APP_TZ } from '../../config.js'
 import { json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
-const TZ = 'Europe/Budapest'
+const TZ = APP_TZ  // install zone (config.APP_TZ); was hardcoded Europe/Budapest
 
 function todayBudapest(): string {
   return new Intl.DateTimeFormat('sv-SE', { timeZone: TZ }).format(new Date())

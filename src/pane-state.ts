@@ -922,6 +922,44 @@ export function stuckInputSignature(pane: string): string | null {
   return sig.length > 0 ? sig : null
 }
 
+// A stable signature of a PARKED `[Pasted text #N]` placeholder sitting in the
+// live input box that the trailing Enter never submitted, or null when there is
+// no such stuck paste. The paste-placeholder sibling of stuckInputSignature().
+//
+// It exists because detectPaneState() deliberately reads a paste placeholder as
+// 'busy' (so the scheduler / keepalive do not pile a second prompt onto it),
+// which makes stuckInputSignature() -- and the whole 'typing'-gated recovery
+// chain (parkedChannelInput, parkedInputText, recoverStuckInputForSession) --
+// return null for it. A long inbound prompt (e.g. a scheduled-task notice
+// > ~700 chars) that the TUI collapses into a `[Pasted text #N]` stub therefore
+// sat parked FOREVER, recoverable only by a manual keystroke (observed on
+// sub-agents repeatedly). This signature lets the stuck-input watcher time-gate
+// a BARE recovery Enter for it -- a placeholder submits on a SINGLE Enter even
+// though it renders across multiple visual rows, so it must never go through the
+// multi-row 'hold' guard, and its collapsed body is NOT recoverable from the
+// pane so clear + re-inject would destroy it.
+//
+// A live busy indicator (spinner / token counter / `esc to interrupt`) means a
+// genuine in-progress paste about to submit on its own -> returns null so a
+// healthy turn is never pre-empted; combined with the watcher's confirm window
+// (the SAME signature must persist for confirmMs) a paste that submits within a
+// second or two is never Enter-spammed. detectsPastePlaceholder() already scopes
+// the stub match to the live input box, so a `[Pasted text #N]` quoted in a
+// reply line or deep scrollback cannot trigger a false recovery.
+export function parkedPasteSignature(pane: string): string | null {
+  if (!pane || !pane.trim()) return null
+  const lines = pane.split('\n')
+  const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(busyRegion)) return null
+  }
+  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return null
+  if (!detectsPastePlaceholder(pane)) return null
+  const sig = pastePlaceholderRegion(pane).replace(/\s+/g, ' ').trim()
+  return sig.length > 0 ? sig : null
+}
+
 export interface ParkedChannelInput {
   /** True only when the parked block is captured intact -- opening
    * <channel source="plugin:..."> tag WITH a chat_id AND a closing

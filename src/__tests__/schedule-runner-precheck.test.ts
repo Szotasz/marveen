@@ -117,7 +117,7 @@ describe('schedule-runner pre-check integration (source-level)', () => {
   })
 
   it('passes preCheckPrefix to attemptFireTask in the cron loop', () => {
-    expect(SRC).toMatch(/attemptFireTask\(task, agentName, now, cronPc\.prefix\)/)
+    expect(SRC).toMatch(/attemptFireTask\(task, agentName, now, cronPc\.prefix, lateCatchUpMs\)/)
   })
 
   it('skips and records the run when pre-check returns skip in cron loop', () => {

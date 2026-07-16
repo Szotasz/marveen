@@ -63,10 +63,15 @@ const SELF_PACE_BASH_PATTERNS = [
 // "netstat" / "crontab-helper.sh"; (?!\s*=) so a bare NAME=value assignment
 // (`at=$(...)`) is not mistaken for the `at` binary.
 const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nice|builtin|time)\s+)*(?:\S*/)?`
-const SCHEDULER_RX = new RegExp(String.raw`(^|[;&|(]\s*)${SCHED_PREFIX}(crontab|launchctl|systemd-run|batch|at)\b(?!-)(?!\s*=)`, 'i')
+// The command-boundary anchor includes `(` so a $(...) command substitution
+// (`X=$(crontab -)`) is caught, AND a backtick so a legacy `...` substitution
+// (`X=`crontab -r``) is caught too -- both run the enclosed command in a shell
+// context, so a scheduler binary immediately inside either is a real self-pace.
+const SCHED_BOUNDARY = '[;&|(`]'
+const SCHEDULER_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(crontab|launchctl|systemd-run|batch|at)\b(?!-)(?!\s*=)`, 'i')
 // ...but allow a pure READ-listing of one's own schedule (parity with the store /
 // schedule-API read exemptions): crontab -l, launchctl list/print, atq.
-const SCHEDULER_READ_RX = new RegExp(String.raw`(^|[;&|(]\s*)${SCHED_PREFIX}(crontab\s+-l\b|launchctl\s+(?:list|print|dumpstate|blame|examine)\b|atq\b)`, 'i')
+const SCHEDULER_READ_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(crontab\s+-l\b|launchctl\s+(?:list|print|dumpstate|blame|examine)\b|atq\b)`, 'i')
 
 // The Claude self-schedule store. Blocked for WRITE on any route (a Bash write,
 // or the native Write/Edit/NotebookEdit tool); a read/grep is legit diagnostics.
@@ -91,9 +96,9 @@ const HTTP_WRITE_RX = /(-X\s*(POST|PUT|PATCH|DELETE)|--request\s+(POST|PUT|PATCH
 //     `git commit -m "fix; crontab -r"`) splits and could false-deny. Rare
 //     enough (the quoted ; must be immediately followed by a blocked binary at a
 //     segment start) that a full shell-tokenizer is not warranted here.
-//   - Backtick / $(...) substitution that assigns a scheduler result
-//     (`X=$(crontab -)`) can slip; the exotic-route tail is the documented
-//     denylist limit, covered by the ScheduleWakeup/Cron* tool-deny layer.
+//   - A $(...) or backtick substitution that assigns a scheduler result
+//     (`X=$(crontab -)`, `X=`crontab -``) is caught by SCHEDULER_RX's boundary
+//     anchor, which now includes both `(` and the backtick.
 export function splitSegments(command) {
   return String(command ?? '')
     .replace(/\\\r?\n/g, ' ')
@@ -112,12 +117,10 @@ export function splitSegments(command) {
 // single-quoted '...', ANSI-C $'...', and double-quoted "..." WITHOUT
 // $(...)/backtick. A payload that can run a command substitution (double-quoted
 // with $(...) / backticks) is left intact so a real command-substitution payload
-// is not blanked. A `$(...)` payload is then still denied by SCHEDULER_RX (its `(`
-// sits at a command boundary the anchor recognises); a backtick one leans on the
-// ScheduleWakeup/Cron* runtime tool-deny layer, since SCHEDULER_RX's boundary
-// anchor omits the backtick -- a pre-existing denylist limit (see splitSegments
-// notes), not something this payload-strip introduces. The data FLAG itself is
-// kept, so HTTP-write detection (-d /
+// is not blanked. Such a payload is then still denied by SCHEDULER_RX, whose
+// boundary anchor recognises both `$(` and the backtick as a command boundary,
+// so a scheduler binary inside either substitution form is caught. The data FLAG
+// itself is kept, so HTTP-write detection (-d /
 // --data) is unchanged; the URL and method args live OUTSIDE the payload, so a
 // real WRITE to /api/schedules is still denied.
 //
@@ -139,6 +142,29 @@ export function stripDataPayloads(seg) {
   )
 }
 
+// Blank out git commit/tag/stash -m/--message LITERAL text before self-pace
+// matching. A commit message is prose, NEVER a shell invocation, so a trigger
+// token that only appears INSIDE the message must not false-deny (2026-07-13,
+// DrCode: a long `git commit -m "...batch...; at..."` blocked twice, the short
+// one passed -- the message text was split as shell segments). Same principle
+// and same literal-only quote handling as stripDataPayloads: single-quoted,
+// ANSI-C $'...', and double-quoted WITHOUT $(...)/backtick are blanked; a
+// double-quoted message that CAN command-substitute (`git commit -m "$(crontab
+// -r)"`) is left intact so SCHEDULER_RX still catches the real substitution.
+// Scoped to git commit/tag/stash so a `-m` on an unrelated binary is untouched.
+export function stripGitCommitMessages(command) {
+  const cmd = String(command ?? '')
+  if (!/\bgit\b[\s\S]*\b(commit|tag|stash)\b/i.test(cmd)) return cmd
+  return cmd.replace(
+    /((?:^|\s)(?:-m|--message)(?:\s+|=))('[^']*'|\$'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/gi,
+    (full, flag, arg) => {
+      const dq = arg.startsWith('"')
+      if (dq && (arg.includes('$(') || arg.includes('`'))) return full // may substitute -> keep
+      return flag + (dq ? '""' : "''") // literal message -> blank the content
+    },
+  )
+}
+
 // Pure decision: does this tool call set up self-pace / self-injection?
 export function gateDecision(toolName, toolInput) {
   const name = String(toolName ?? '')
@@ -156,7 +182,7 @@ export function gateDecision(toolName, toolInput) {
     // it), so the URL/method args still match but the body text never does. A
     // separator OUTSIDE the payload still splits, so `curl -d '' x ; crontab -r`
     // is still caught.
-    const safeCommand = stripDataPayloads(String(toolInput?.command ?? ''))
+    const safeCommand = stripDataPayloads(stripGitCommitMessages(String(toolInput?.command ?? '')))
     // Per-segment so an unrelated token elsewhere in a compound command cannot
     // turn a legit read (store inspection, schedule-API GET) into a false deny.
     for (const seg of splitSegments(safeCommand)) {

@@ -31,6 +31,14 @@ if [ -f "$INSTALL_DIR/.env" ]; then
   _api_key="$(grep -E '^ANTHROPIC_API_KEY=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
   [ -n "$_api_key" ] && export ANTHROPIC_API_KEY="$_api_key"
   _oauth="$(grep -E '^CLAUDE_CODE_OAUTH_TOKEN=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
+  # Fallback: the fleet setup-token file (written by the wizard / auth.sh /
+  # the boot-time credentials sync). Keeps the MAIN agent on the same stable
+  # token the sub-agents launch with, instead of the rotating
+  # ~/.claude/.credentials.json, even when .env carries no auth key
+  # (2026-07-15 bootcamp: terminal-pasted setup-token never reached .env).
+  if [ -z "$_oauth" ] && [ -s "$INSTALL_DIR/store/.claude-oauth-token" ]; then
+    _oauth="$(cat "$INSTALL_DIR/store/.claude-oauth-token")"
+  fi
   [ -n "$_oauth" ] && export CLAUDE_CODE_OAUTH_TOKEN="$_oauth"
   unset _api_key _oauth
 fi
@@ -45,6 +53,73 @@ case "$CHANNEL_PROVIDER" in
   discord)  PLUGIN_ID="discord@claude-plugins-official" ;;
   *)        PLUGIN_ID="telegram@claude-plugins-official" ;;
 esac
+
+# Self-healing guard: ensure PLUGIN_ID is enabled in the PROJECT settings.json
+# before launch. A PR review-reset or branch-switch that reverts
+# .claude/settings.json can silently drop the entry and disable the channel
+# plugin, leaving Claude running with no active channel; this re-adds it.
+#
+# Deliberately PROJECT-SCOPED only ($INSTALL_DIR/.claude/settings.json). We do
+# NOT force-enable in the user-global ~/.claude/settings.json: that would make
+# EVERY Claude context (all sub-agent sessions) load the channel plugin, and a
+# provider that opens a single Socket-Mode connection (Slack) would then have
+# multiple sessions fighting over one workspace socket -- a duplicate-socket /
+# 409 hazard.
+_ensure_plugin_enabled() {
+  local settings_file="$1"
+  [ -f "$settings_file" ] || return 0
+  python3 - "$settings_file" "$PLUGIN_ID" <<'PYEOF'
+import json, os, sys, tempfile
+
+path, plugin_id = sys.argv[1], sys.argv[2]
+
+# SKIP-ON-PARSE-FAILURE: if the file is unreadable or not valid JSON (e.g. a
+# concurrent writer caught mid-write, or a genuinely corrupt file), NEVER fall
+# back to an empty object and write it back -- that would clobber the user's
+# hooks / model / permissions. Leave the file untouched; the next launch retries.
+try:
+    with open(path, "r") as f:
+        data = json.load(f)
+except (OSError, ValueError):
+    print("channels.sh: settings.json unreadable/invalid, guard skipped: %s" % path,
+          file=sys.stderr, flush=True)
+    sys.exit(0)
+
+if not isinstance(data, dict):
+    sys.exit(0)
+
+plugins = data.get("enabledPlugins")
+if not isinstance(plugins, dict):
+    plugins = {}
+    data["enabledPlugins"] = plugins
+
+if plugins.get(plugin_id) is True:
+    sys.exit(0)  # already enabled -> no write, no needless churn
+
+plugins[plugin_id] = True
+
+# ATOMIC write: serialize to a temp file in the SAME directory, then os.replace
+# (atomic rename on POSIX). A reader -- or the hook-registration guard (#565)
+# running concurrently -- never observes a half-written settings.json.
+dir_name = os.path.dirname(path) or "."
+fd, tmp = tempfile.mkstemp(dir=dir_name, prefix=".settings-", suffix=".tmp")
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+except BaseException:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
+
+print("channels.sh: enabled %s in %s" % (plugin_id, path), flush=True)
+PYEOF
+}
+_ensure_plugin_enabled "$INSTALL_DIR/.claude/settings.json"
+unset -f _ensure_plugin_enabled
 
 # ROOT-CAUSE NOTE (kali-linux WSL, claude-code 2.1.152, 2026-05-27):
 # Inbound MCP notifications from the `--channels` plugin go through a SECOND
@@ -85,6 +160,15 @@ export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HO
 # root-only host there is no non-root user to drop to, so opt into the
 # documented sandbox escape hatch. Harmless for non-root (guarded by uid check).
 [ "$(id -u)" = "0" ] && export IS_SANDBOX=1
+
+# AVX-less x86 host: the install pinned a Node-based claude (cli.js entrypoint,
+# see install-linux.sh CLAUDE_PIN) because the Bun standalone binary SIGILLs
+# without AVX. The auto-updater would swap the pin for the latest Bun binary on
+# first run, killing every session -- disable it here so all agent sessions
+# inherit the guard via tmux. No-op on AVX-capable and ARM hosts.
+if grep -qE '^flags[[:space:]]*:' /proc/cpuinfo 2>/dev/null && ! grep -qiw avx /proc/cpuinfo 2>/dev/null; then
+  export DISABLE_AUTOUPDATER=1
+fi
 
 # Disable Claude Code's "Prompt Suggestions" (the grayed-out/DIM suggested command
 # shown in the input box, picked from git history / conversation). For headless
@@ -148,30 +232,70 @@ MODEL_FLAG=""
 # dist/web/agent-process.js) and authenticates the main agent from the fleet
 # setup-token instead.
 #
-# The ON/OFF decision lives ENTIRELY in the helper (ensureMainAgentIsolatedConfigDir):
-# it reads the effective MAIN_AGENT_ISOLATED_CONFIG setting (dashboard toggle in
+# The decision lives ENTIRELY in the helper, which prints "<mode>\t<path>" (or
+# nothing) and covers the two mutually exclusive ways the main agent can get its
+# own CLAUDE_CONFIG_DIR:
+#
+#   explicit -- MAIN_AGENT_CONFIG_DIR points at an EXISTING dir the operator has
+#     already logged into (the bot has its OWN Claude account, separate from the
+#     fleet's). That dir carries its own .credentials.json, so we must NOT inject
+#     the fleet token: doing so would authenticate the bot as the fleet. Works on
+#     every platform.
+#   isolated -- MAIN_AGENT_ISOLATED_CONFIG=1 on macOS with a fleet setup-token:
+#     the helper provisions a credential-less dir and we export the fleet token
+#     (same code path as the sub-agents), so the bot stops depending on the
+#     rotating Keychain OAuth session.
+#
+# Both settings resolve through the settings-store (dashboard toggle in
 # store/config-overrides.json OR a hand-set .env key -- resolution override>.env>
-# default '0') plus the fleet-token gate. So on macOS we ALWAYS call the helper;
-# it prints a path only when isolation is enabled AND a valid fleet token exists,
-# otherwise CFG_ENV stays EMPTY and the agent keeps the shared root. Strict no-op
-# for existing installs (non-macOS, setting off, no fleet token, or no dist build).
+# default), and explicit wins over isolated. When neither applies the helper
+# prints nothing, CFG_ENV stays EMPTY and the agent keeps the shared ~/.claude --
+# strict no-op for existing installs (no setting, no fleet token, no dist build).
 CFG_ENV=""
-if [ "$(uname)" = "Darwin" ]; then
-  mkdir -p "$INSTALL_DIR/store" 2>/dev/null || true
-  _node_bin="$(command -v node || true)"
-  if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
-    _iso_cfg="$("$_node_bin" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$CHANNEL_PROVIDER" 2>>"$INSTALL_DIR/store/channels-failures.log" || true)"
-    if [ -n "$_iso_cfg" ] && [ -d "$_iso_cfg" ]; then
+mkdir -p "$INSTALL_DIR/store" 2>/dev/null || true
+_node_bin="$(command -v node || true)"
+if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
+  _cfg_line="$("$_node_bin" "$INSTALL_DIR/scripts/main-agent-isolated-config.mjs" "$CHANNEL_PROVIDER" 2>>"$INSTALL_DIR/store/channels-failures.log" || true)"
+  _cfg_mode="${_cfg_line%%	*}"
+  _cfg_dir="${_cfg_line#*	}"
+  if [ -n "$_cfg_line" ] && [ -d "$_cfg_dir" ]; then
+    if [ "$_cfg_mode" = "explicit" ]; then
+      CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && "
+    else
       # Seed the token from the SAME 0600 file the isolated dir is gated on, so
       # the config dir and the active token always match (the isolated dir carries
       # no .credentials.json). $(cat) is evaluated in the launched shell so the
       # secret never lands in the argv/`ps` command string.
-      CFG_ENV="export CLAUDE_CONFIG_DIR='$_iso_cfg' && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$INSTALL_DIR/store/.claude-oauth-token')\" && "
-      echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent isolated CLAUDE_CONFIG_DIR=$_iso_cfg" >> "$INSTALL_DIR/store/channels-failures.log"
+      CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$INSTALL_DIR/store/.claude-oauth-token')\" && "
     fi
-    unset _iso_cfg
+    echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent $_cfg_mode CLAUDE_CONFIG_DIR=$_cfg_dir" >> "$INSTALL_DIR/store/channels-failures.log"
   fi
-  unset _node_bin
+  unset _cfg_line _cfg_mode _cfg_dir
+fi
+unset _node_bin
+
+# Re-seed hasCompletedOnboarding in the SHARED ~/.claude.json BEFORE launching
+# the main claude. If the key was lost (2026-07-15 bootcamp incident), the
+# fresh TUI parks on the first-run "Select login method" picker -- and the
+# first-run guard below would blindly Enter it into a browser sign-in screen
+# no headless box can complete. Atomic tmp+rename; an unparseable file is left
+# for Claude Code to recover. Mirrors ensureSharedClaudeOnboarded() (the
+# in-process respawn paths); this covers the channels.sh cold-boot path.
+if command -v node >/dev/null 2>&1; then
+  node -e '
+    const fs = require("fs")
+    const p = require("path").join(require("os").homedir(), ".claude.json")
+    try {
+      let j = {}
+      if (fs.existsSync(p)) j = JSON.parse(fs.readFileSync(p, "utf-8"))
+      if (j.hasCompletedOnboarding !== true) {
+        j.hasCompletedOnboarding = true
+        const t = p + ".tmp-" + process.pid
+        fs.writeFileSync(t, JSON.stringify(j, null, 2) + "\n", { mode: 0o600 })
+        fs.renameSync(t, p)
+      }
+    } catch (e) { /* unparseable/unwritable: leave for Claude Code */ }
+  ' 2>/dev/null || true
 fi
 
 # Régi session takarítás

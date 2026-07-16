@@ -78,3 +78,78 @@ describe('renameSharedCredentialsIfSafe (flag/platform gates, no fs mutation)', 
     }
   })
 })
+
+// 2026-07-16 review blocker 1: the sk-ant-oat01 prefix ALONE does not
+// discriminate a long-lived setup-token from a rotating browser-login access
+// token (both can carry it). Promotion must be longevity-gated, or the boot
+// sync would flip healthy rotating-login installs into env-token mode and
+// self-inflict the bootcamp incident when the token rotates.
+describe('isPromotableSetupCredential', () => {
+  const NOW = 1_784_000_000_000
+  const DAY = 24 * 60 * 60 * 1000
+  const oat = 'sk-ant-oat01-' + 'A'.repeat(80)
+
+  it('promotes the bootcamp shape: oat01 + ~1-year expiry (refreshToken presence is irrelevant)', async () => {
+    const { isPromotableSetupCredential } = await import('../web/claude-credentials-guard.js')
+    expect(isPromotableSetupCredential({ accessToken: oat, expiresAt: NOW + 365 * DAY }, NOW)).toBe(true)
+  })
+
+  it('REJECTS a rotating-family oat01 with short expiry (hours/days)', async () => {
+    const { isPromotableSetupCredential } = await import('../web/claude-credentials-guard.js')
+    expect(isPromotableSetupCredential({ accessToken: oat, expiresAt: NOW + 8 * 60 * 60 * 1000 }, NOW)).toBe(false)
+    expect(isPromotableSetupCredential({ accessToken: oat, expiresAt: NOW + 30 * DAY }, NOW)).toBe(false)
+  })
+
+  it('rejects at exactly the boundary minus one, accepts at the 90-day boundary', async () => {
+    const { isPromotableSetupCredential, MIN_PROMOTABLE_LIFETIME_MS } = await import('../web/claude-credentials-guard.js')
+    expect(isPromotableSetupCredential({ accessToken: oat, expiresAt: NOW + MIN_PROMOTABLE_LIFETIME_MS }, NOW)).toBe(true)
+    expect(isPromotableSetupCredential({ accessToken: oat, expiresAt: NOW + MIN_PROMOTABLE_LIFETIME_MS - 1 }, NOW)).toBe(false)
+  })
+
+  it('rejects a non-setup-token prefix and a missing/absent expiresAt (conservative)', async () => {
+    const { isPromotableSetupCredential } = await import('../web/claude-credentials-guard.js')
+    expect(isPromotableSetupCredential({ accessToken: 'sk-ant-sid01-' + 'A'.repeat(80), expiresAt: NOW + 365 * DAY }, NOW)).toBe(false)
+    expect(isPromotableSetupCredential({ accessToken: oat }, NOW)).toBe(false)
+    expect(isPromotableSetupCredential({}, NOW)).toBe(false)
+  })
+})
+
+// 2026-07-16 live-verify FAIL on the reference VPS: `claude auth status` exits
+// 0 for a garbage token (it reports the auth SOURCE, it does not validate).
+// The real validator is a `claude -p` probe; this classifier turns its outcome
+// into ok / auth-rejected / inconclusive so callers never treat a network
+// flake as a dead credential.
+describe('classifyAuthProbe', () => {
+  it('ok: ran clean and answered OK', async () => {
+    const { classifyAuthProbe } = await import('../web/claude-credentials-guard.js')
+    expect(classifyAuthProbe({ ran: true, exitedNonZero: false, output: 'OK' })).toBe('ok')
+  })
+
+  it('auth-rejected: the live bug-3 signature (401 Invalid bearer token)', async () => {
+    const { classifyAuthProbe } = await import('../web/claude-credentials-guard.js')
+    expect(classifyAuthProbe({
+      ran: true, exitedNonZero: true,
+      output: 'Failed to authenticate. API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"Invalid bearer token"}}',
+    })).toBe('auth-rejected')
+  })
+
+  it('auth-rejected: invalid API key variant', async () => {
+    const { classifyAuthProbe } = await import('../web/claude-credentials-guard.js')
+    expect(classifyAuthProbe({ ran: true, exitedNonZero: true, output: 'Invalid API key' })).toBe('auth-rejected')
+  })
+
+  it('inconclusive: nonzero exit WITHOUT an auth signature (network flake) must not kill a credential', async () => {
+    const { classifyAuthProbe } = await import('../web/claude-credentials-guard.js')
+    expect(classifyAuthProbe({ ran: true, exitedNonZero: true, output: 'fetch failed: ETIMEDOUT' })).toBe('inconclusive')
+  })
+
+  it('inconclusive: the probe never ran (binary missing)', async () => {
+    const { classifyAuthProbe } = await import('../web/claude-credentials-guard.js')
+    expect(classifyAuthProbe({ ran: false, exitedNonZero: true, output: '' })).toBe('inconclusive')
+  })
+
+  it('inconclusive: clean exit with an unexpected answer (no OK)', async () => {
+    const { classifyAuthProbe } = await import('../web/claude-credentials-guard.js')
+    expect(classifyAuthProbe({ ran: true, exitedNonZero: false, output: 'I cannot comply' })).toBe('inconclusive')
+  })
+})
