@@ -5,6 +5,7 @@ import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from './c
 import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
+import { initCostOpsSchema } from './costops/schema.js'
 
 let db: Database.Database
 
@@ -604,9 +605,6 @@ export function initDatabase(dbPathOverride?: string): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_token_usage_agent_ts ON token_usage(agent, timestamp)`)
   // Migrations for columns added after initial release
   try { db.exec('ALTER TABLE token_usage ADD COLUMN thinking_tokens INTEGER NOT NULL DEFAULT 0') } catch { /* already exists */ }
-  try { db.exec('ALTER TABLE token_usage ADD COLUMN model TEXT') } catch { /* already exists */ }
-  try { db.exec('ALTER TABLE token_usage ADD COLUMN provider TEXT') } catch { /* already exists */ }
-  try { db.exec('ALTER TABLE token_usage ADD COLUMN model_source TEXT') } catch { /* already exists */ }
 
   // Deduplicate existing rows before creating unique index
   try {
@@ -744,53 +742,11 @@ export function initDatabase(dbPathOverride?: string): void {
   // Migration: add agent column to installs that created the table before this column existed.
   try { db.exec(`ALTER TABLE store_file_audit ADD COLUMN agent TEXT`) } catch { /* column already exists */ }
 
-  // --- CostOps (local cost ledger) ---
-  // Read-mostly, FOCUS-inspired. cost_sources = provider/subscription origin,
-  // cost_line_items = individual charge rows (estimate or provider-sourced).
-  // No secrets/account IDs stored raw. Budgets are config-driven (costops/config.ts's
-  // BudgetEntry, from store/costops-config.json) -- there is deliberately no separate
-  // `budgets` DB table: an earlier draft of this schema had one, but it was never
-  // read from or written to (config.budgets was always the actual source), so it was
-  // a dead, unused second source of truth. Removed rather than wired up, since the
-  // config file already covers this fully and a DB table would just be a sync burden
-  // for no benefit.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS cost_sources (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      provider TEXT NOT NULL,
-      source_type TEXT NOT NULL,
-      account_ref TEXT,
-      currency TEXT NOT NULL DEFAULT 'HUF',
-      active INTEGER NOT NULL DEFAULT 1,
-      notes TEXT,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    )
-  `)
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS cost_line_items (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      source_id TEXT NOT NULL REFERENCES cost_sources(id),
-      charge_period_start INTEGER NOT NULL,
-      charge_period_end INTEGER NOT NULL,
-      charge_category TEXT NOT NULL,
-      service_name TEXT,
-      usage_type TEXT,
-      consumed_quantity REAL,
-      consumed_unit TEXT,
-      billed_cost REAL NOT NULL,
-      effective_cost REAL,
-      currency TEXT NOT NULL DEFAULT 'HUF',
-      confidence TEXT NOT NULL,
-      data_freshness INTEGER NOT NULL,
-      source_ref TEXT,
-      dedup_key TEXT UNIQUE,
-      created_at INTEGER NOT NULL
-    )
-  `)
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_cost_line_items_period ON cost_line_items(charge_period_start, charge_period_end)`)
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_cost_line_items_source ON cost_line_items(source_id)`)
+  // LOCAL-FORK: costops seam (keep on rebase). All CostOps tables/columns/
+  // indexes live in src/costops/schema.ts's initCostOpsSchema(), not here --
+  // see docs/fork-upstream-policy.md §2a. This one call is the entire
+  // upstream-file footprint of the CostOps schema.
+  initCostOpsSchema(db)
 
   // --- Vault SSH Keys (shared pool) ---
   db.exec(`
@@ -821,41 +777,6 @@ export function initDatabase(dbPathOverride?: string): void {
       updated_at INTEGER NOT NULL
     )
   `)
-  // CostOps v0.3: provider cost-collector run history / sync status. No raw
-  // account id, no raw API response, no secret ever stored here.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS import_runs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      provider TEXT NOT NULL,
-      collector_name TEXT NOT NULL,
-      started_at INTEGER NOT NULL,
-      finished_at INTEGER,
-      status TEXT NOT NULL,
-      period_start INTEGER,
-      period_end INTEGER,
-      imported_count INTEGER NOT NULL DEFAULT 0,
-      error_code TEXT,
-      error_message_sanitized TEXT,
-      data_freshness_at INTEGER
-    )
-  `)
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_import_runs_provider ON import_runs(provider, started_at)`)
-  // v0.5: sanitized per-run detail (service_count, plan breakdown, not_covered) as JSON.
-  // NO raw service/account IDs -- the breakdown carries only type/plan labels + counts.
-  try { db.exec(`ALTER TABLE import_runs ADD COLUMN detail_json TEXT`) } catch { /* already exists */ }
-  // CostOps: provider prepaid-balance snapshots. For prepaid providers (e.g.
-  // DeepSeek) that expose remaining balance but not per-period cost, MTD spend
-  // is derived from the balance DROP across snapshots. No secret, no raw id.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS provider_balance_snapshots (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      provider TEXT NOT NULL,
-      currency TEXT NOT NULL,
-      balance REAL NOT NULL,
-      captured_at INTEGER NOT NULL
-    )
-  `)
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_balance_snapshots_provider ON provider_balance_snapshots(provider, captured_at)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_vault_ssh_servers_name ON vault_ssh_servers(name)`)
   // Migrations for installs that ran earlier schema versions. MUST run before
   // the ssh_key_id index below: on an install where vault_ssh_servers already
