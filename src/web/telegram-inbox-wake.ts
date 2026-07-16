@@ -140,7 +140,7 @@ export function shouldWakeForTelegramInbox(params: {
 // two capture-panes, so probing it for every agent every tick would pin the
 // event loop. Only an agent with a genuinely stuck, out-of-debounce inbox pays
 // for the session probe.
-export function maybeWakeSubAgentsForTelegram(now: number): void {
+export async function maybeWakeSubAgentsForTelegram(now: number): Promise<void> {
   // OPT-IN gate (DEFAULT OFF). Cheapest possible early-out: when disabled the
   // whole watcher is a single boolean check per tick and touches no filesystem.
   if (!SUBAGENT_TELEGRAM_WAKE_ENABLED) return
@@ -195,7 +195,7 @@ export function maybeWakeSubAgentsForTelegram(now: number): void {
       // isSessionReadyForPrompt already reports a widget-over-idle ('unknown')
       // pane as NOT ready, so a TodoWrite-widget session is conservatively left
       // alone rather than nudged mid-widget -- the safe default for injection.
-      const sessionIdle = sessionExists && isSessionReadyForPrompt(session, host)
+      const sessionIdle = sessionExists && await isSessionReadyForPrompt(session, host)
 
       if (!shouldWakeForTelegramInbox({
         inboxAgeMs,

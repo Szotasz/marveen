@@ -605,7 +605,7 @@ export async function runMessageRouterTick(): Promise<void> {
     // hook cannot pull without a turn. No-op unless SUBAGENT_TELEGRAM_WAKE_ENABLED
     // (default off); when enabled it is cheap statSync-gated so an empty fleet
     // costs one stat per agent and no tmux I/O.
-    maybeWakeSubAgentsForTelegram(now)
+    void maybeWakeSubAgentsForTelegram(now)
 }
 
 // ---- voice helpers (message-router level) ----------------------------------
