@@ -71,7 +71,7 @@ PORT="$(cat "$PORTFILE" 2>/dev/null)"
 if [ -z "$PORT" ]; then echo "FATAL: stub did not start"; exit 1; fi
 export TELEGRAM_API_BASE="http://127.0.0.1:$PORT"
 
-CHAT="8517922966"
+CHAT="10000000001"
 SID="TESTSID"
 
 # Per-case state dir with a token + a pending placeholder + a transcript whose
