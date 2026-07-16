@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-telegram_progress_watchdog.py — the "őrszem" (sentry) for the Telegram progress
+telegram_progress_watchdog.py -- the "őrszem" (sentry) for the Telegram progress
 indicator. Runs independently of the agent sessions (via launchd/systemd), so it
 can speak even when an agent is wedged or down.
 
@@ -12,11 +12,11 @@ wondering "is it working or broken?".
 
 Two delivery modes, best-effort per pending placeholder:
   - REAL ANSWER (preferred): if the agent's final answer is recoverable from the
-    transcript, deliver it for real (sendMessage) and remove the placeholder —
+    transcript, deliver it for real (sendMessage) and remove the placeholder --
     the same answer the Stop hook's guaranteed fallback would have sent, but
     without waiting for a turn end that may never come. This is the fix for the
     "reply tool dropped mid-turn -> round hangs -> Stop hook never fires ->
-    Csaba has to restart" freeze: the user gets the actual answer, restart-free.
+    the owner has to restart" freeze: the user gets the actual answer, restart-free.
   - GENERIC ERROR (fallback): if no answer is recoverable, rewrite the
     placeholder into a clear error (editMessageText), as before.
 
@@ -39,7 +39,7 @@ via TELEGRAM_API_BASE (tests point it at a local stub).
 import os, glob, json, time, subprocess, urllib.request
 
 # State dirs to scan: per-agent dirs under the fleet, plus the default dir.
-# No hardcoded user paths — derive from $HOME (override with MARVEEN_ROOT).
+# No hardcoded user paths -- derive from $HOME (override with MARVEEN_ROOT).
 FLEET_ROOT = os.environ.get("MARVEEN_ROOT") or os.path.expanduser("~/marveen")
 SCAN_GLOBS = [
     os.path.join(FLEET_ROOT, "agents", "*", ".claude", "channels", "telegram", "progress"),

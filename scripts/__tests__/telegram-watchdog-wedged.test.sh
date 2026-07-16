@@ -1,5 +1,5 @@
 #!/bin/bash
-# Contract tests for telegram_progress_watchdog.py — the wedged-turn sentry.
+# Contract tests for telegram_progress_watchdog.py -- the wedged-turn sentry.
 # Run: bash scripts/__tests__/telegram-watchdog-wedged.test.sh
 #
 # Locks the item-(b) fix: when a turn is WEDGED (agent up, but the reply MCP
@@ -55,7 +55,7 @@ PORT="$(cat "$PORTFILE" 2>/dev/null)"
 [ -z "$PORT" ] && { echo "FATAL: stub did not start"; exit 1; }
 API_BASE="http://127.0.0.1:$PORT"
 
-CHAT="8517922966"
+CHAT="10000000001"
 ANSWER="EZ_A_VALODI_VALASZ amit a usernek latnia kell"
 
 # Build a per-case agent state dir + transcript, then return the progress dir.
@@ -90,7 +90,7 @@ PY
 }
 pend_exists() { [ -f "$1/SID.json" ] && echo yes || echo no; }
 # REQLOG always exists (recreated per run); grep -c prints exactly one integer
-# line ("0" on no match) — no `|| echo 0` fallback (that would double the 0).
+# line ("0" on no match) -- no `|| echo 0` fallback (that would double the 0).
 count() { grep -c "^$1 " "$REQLOG" 2>/dev/null; }
 body_has() { grep -q "$1" "$REQLOG" && echo yes || echo no; }
 run_wd() { # force_up wedged_up_sec
