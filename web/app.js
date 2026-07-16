@@ -447,11 +447,6 @@ function renderStaticI18n() {
   if (overviewTeamMeta) overviewTeamMeta.textContent = t('overview.meta.live')
   const overviewActivityH3 = document.querySelector('#overviewPage .overview-grid .overview-card:nth-child(2) h3')
   if (overviewActivityH3) overviewActivityH3.textContent = t('overview.card.activity')
-  const overviewAgentH3 = document.querySelector('#overviewPage .overview-grid .overview-card:nth-child(3) h3')
-  if (overviewAgentH3) overviewAgentH3.textContent = t('overview.card.agent_activity')
-  const overviewAgentMeta = document.querySelector('#overviewPage .overview-grid .overview-card:nth-child(3) .overview-card-meta')
-  if (overviewAgentMeta) overviewAgentMeta.textContent = t('overview.meta.messages')
-
   // Kanban filter labels
   const kanbanProjectLabel = document.querySelector('label[for="kanbanProjectFilter"]')
   if (kanbanProjectLabel) kanbanProjectLabel.textContent = t('kanban.filter.project_label')

@@ -1559,9 +1559,7 @@ window._i18n.en = {
   'overview.stat.skills':        'Generated skills',
   'overview.card.team':          'Team',
   'overview.card.activity':      'Activity',
-  'overview.card.agent_activity':'Agent activity',
   'overview.meta.live':          'live status',
-  'overview.meta.messages':      "today's messages",
 
   // --- i18n finish (placeholders + inline-HTML) ---
   'connectors.cxhu.token_ph': 'connectors.hu token (from dashboard)',

@@ -1557,9 +1557,7 @@ window._i18n.hu = {
   'overview.stat.skills':        'Generált skillek',
   'overview.card.team':          'Csapat',
   'overview.card.activity':      'Aktivitás',
-  'overview.card.agent_activity':'Ügynök aktivitás',
   'overview.meta.live':          'élő állapot',
-  'overview.meta.messages':      'mai üzenetek',
   // --- i18n finish (placeholders + inline-HTML) ---
   'connectors.cxhu.token_ph': 'connectors.hu token (dashboardról)',
   'ideas.modal.title_ph': 'Rövid, egyértelmű cím',
