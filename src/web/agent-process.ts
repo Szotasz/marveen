@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { execSync, execFileSync } from 'node:child_process'
 import { OLLAMA_URL } from '../config.js'
-import { resolveFromPath } from '../platform.js'
+import { makeLazyBinResolver } from '../platform.js'
 import { logger } from '../logger.js'
 import {
   paneLooksIdle,
@@ -46,8 +46,12 @@ import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { notifyChannel } from '../notify.js'
 
-const TMUX = resolveFromPath('tmux')
-const CLAUDE = resolveFromPath('claude')
+// Lazy so a transient PATH gap at import time (e.g. the 04:00 auto-update
+// restart, where the finalizer omits the bin dir from PATH) cannot hard-crash
+// the dashboard boot and take the scheduler down with it. Resolution happens on
+// first use; see makeLazyBinResolver.
+const tmuxBin = makeLazyBinResolver('tmux')
+const claudeBin = makeLazyBinResolver('claude')
 
 // Shared async pacing helper. Replaces the blocking synchronous `/bin/sleep`
 // (execFileSync) pauses in the tmux-driving injection hot-path so a pacing wait
@@ -544,7 +548,7 @@ function runTmux(host: string | null, tmuxArgs: string[], opts: { timeout?: numb
   // call (idempotent, ~free). Without this a watcher-first remote call after a
   // marveen restart would lose connection multiplexing and re-handshake each tick.
   if (host) ensureControlDir()
-  const inv = buildTmuxInvocation(host, TMUX, tmuxArgs)
+  const inv = buildTmuxInvocation(host, tmuxBin(), tmuxArgs)
   // stdio: capture the child's stderr into the thrown error instead of letting
   // execFileSync's default inherit it to the parent stderr. A restarting agent
   // makes tmux emit `can't find session: agent-X` / `no server running`; without
@@ -555,7 +559,7 @@ function runTmux(host: string | null, tmuxArgs: string[], opts: { timeout?: numb
 
 function captureTmux(host: string | null, tmuxArgs: string[], opts: { timeout?: number } = {}): string {
   if (host) ensureControlDir()
-  const inv = buildTmuxInvocation(host, TMUX, tmuxArgs)
+  const inv = buildTmuxInvocation(host, tmuxBin(), tmuxArgs)
   // stdout piped (we return it); stderr piped too so tmux's `can't find session`
   // noise lands in err.stderr on failure rather than the parent stderr / dashboard.log.
   return execFileSync(inv.file, inv.args, { timeout: opts.timeout ?? (host ? 8000 : 3000), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
@@ -705,7 +709,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
   // and without the flag). Runs before launch so a valid setup-token retires
   // the rotating ~/.claude/.credentials.json; idempotent, so calling it per
   // start also self-heals if Claude Code recreates the file on a refresh.
-  renameSharedCredentialsIfSafe(CLAUDE)
+  renameSharedCredentialsIfSafe(claudeBin())
 
   // Shared-root agents park on the first-run "Select login method" picker when
   // ~/.claude.json lost hasCompletedOnboarding (2026-07-15 bootcamp incident);
@@ -776,7 +780,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // this agent's tmux session above, so its leftover claude is now detached;
     // pane attribution spares every live sibling and the main session.
     try {
-      reapDetachedChannelClaudes({ tmuxPath: TMUX })
+      reapDetachedChannelClaudes({ tmuxPath: tmuxBin() })
     } catch (err) {
       logger.warn({ err, name }, 'pre-launch detached-claude reap failed (continuing)')
     }
@@ -979,7 +983,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     const promptSuggestionEnv = 'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false && '
     // Single-quote `${model}` so values like `claude-opus-4-8[1m]` (1M-context
     // suffix) are not glob-expanded by the shell that tmux spawns the command in.
-    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${ollamaEnv}${deepseekEnv}cd "${dir}" && ${CLAUDE} ${continueFlag}${skipFlag}--model '${model}' ${channelFlag}`.trimEnd()
+    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${ollamaEnv}${deepseekEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model '${model}' ${channelFlag}`.trimEnd()
     runTmux(null, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir }, 'Agent tmux session started')
