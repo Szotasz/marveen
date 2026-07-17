@@ -296,7 +296,6 @@ function switchPage(pageId) {
   if (pageId === 'recall') loadRecallPage()
   if (pageId === 'bgTasks') loadBgTasksPage()
   if (pageId === 'vault') loadVaultPage()
-  if (pageId === 'autonomy') loadAutonomy()
   if (pageId === 'settings') loadSettings()
   if (pageId === 'updates') loadUpdates()
   if (pageId === 'team') { loadTeamGraph() }
@@ -347,7 +346,7 @@ const NAV_I18N = {
   messages: 'nav.messages', tasks: 'nav.tasks', memories: 'nav.memories',
   recall: 'nav.recall', naplo: 'nav.recall', bgTasks: 'nav.bgTasks',
   skills: 'nav.skills', connectors: 'nav.connectors', migrate: 'nav.migrate',
-  docs: 'nav.docs', status: 'nav.status', autonomy: 'nav.autonomy',
+  docs: 'nav.docs', status: 'nav.status',
   settings: 'nav.settings', vault: 'nav.vault', tokenUsage: 'nav.tokenUsage',
   ideas: 'nav.ideas', federation: 'nav.federation', updates: 'nav.updates', costs: 'nav.costs',
 }
@@ -385,7 +384,6 @@ const PAGE_HEADER_I18N = {
   statusPage:     { title: 'status.page_title',      sub: 'status.page_subtitle' },
   teamPage:       { title: 'team.page_title',        sub: 'team.page_subtitle' },
   messagesPage:   { title: 'messages.page_title',    sub: 'messages.page_subtitle' },
-  autonomyPage:   { title: 'autonomy.page_title',    sub: 'autonomy.page_subtitle' },
   settingsPage:   { title: 'settings.page_title',    sub: 'settings.page_subtitle' },
   ideasPage:      { title: 'ideas.page_title',       sub: 'ideas.page_subtitle' },
   vaultPage:      { title: 'vault.page_title',       sub: 'vault.page_subtitle' },
@@ -11302,8 +11300,6 @@ async function cancelBgTask(id) {
 // === Autonomy ===
 // ============================================================
 
-document.getElementById('refreshAutonomyBtn').addEventListener('click', loadAutonomy)
-
 async function renderAutonomyContent(gridEl, footerEl) {
   gridEl.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${t('autonomy.loading')}</p>`
 
@@ -11368,13 +11364,6 @@ async function renderAutonomyContent(gridEl, footerEl) {
   }
 }
 
-async function loadAutonomy() {
-  await renderAutonomyContent(
-    document.getElementById('autonomyGrid'),
-    document.getElementById('autonomyUpdatedAt')
-  )
-}
-
 async function setAutonomyLevel(key, level) {
   try {
     const res = await fetch('/api/autonomy', {
@@ -11387,10 +11376,7 @@ async function setAutonomyLevel(key, level) {
       showToast(data.error || 'Hiba')
       return
     }
-    // Refresh all visible autonomy grids
-    const pageGrid = document.getElementById('autonomyGrid')
-    const pageFooter = document.getElementById('autonomyUpdatedAt')
-    if (pageGrid) renderAutonomyContent(pageGrid, pageFooter)
+    // Refresh the settings tab autonomy grid if it is visible
     const tabGrid = document.getElementById('settingsAutonomyGrid')
     const tabFooter = document.getElementById('settingsAutonomyUpdatedAt')
     if (tabGrid) renderAutonomyContent(tabGrid, tabFooter)
@@ -11413,7 +11399,7 @@ window.addEventListener('beforeunload', (e) => {
 // entry never requires a frontend change just to render a sane heading.
 function settingsModuleLabel(mod) {
   const key = `settings.module.${mod}`
-  const known = { kanban: true, system: true, heartbeat: true, audit: true, ideabox: true, channels: true, autonomy: true }
+  const known = { kanban: true, system: true, heartbeat: true, audit: true, ideabox: true, channels: true }
   return known[mod] ? t(key) : (mod.charAt(0).toUpperCase() + mod.slice(1))
 }
 
@@ -11538,6 +11524,12 @@ async function loadSettings() {
       footer.className = 'autonomy-footer'
       footer.id = 'settingsAutonomyUpdatedAt'
       panel.appendChild(footer)
+
+      const refreshBtn = document.createElement('button')
+      refreshBtn.className = 'btn-secondary btn-compact'
+      refreshBtn.textContent = t('common.btn.refresh')
+      refreshBtn.addEventListener('click', () => renderAutonomyContent(grid, footer))
+      panel.appendChild(refreshBtn)
 
       tabPanels.appendChild(panel)
 

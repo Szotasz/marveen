@@ -82,7 +82,6 @@ window._i18n.hu = {
   'nav.migrate':      'Költöztetés',
   'nav.docs':         'Dokumentáció',
   'nav.status':       'Státusz',
-  'nav.autonomy':     'Autonómia',
   'nav.settings':     'Beállítások',
   'nav.vault':        'Vault',
   'nav.tokenUsage':   'Token Monitor',
@@ -910,8 +909,6 @@ window._i18n.hu = {
 
 
   // --- Autonomy ---
-  'autonomy.page_title':         'Autonómia',
-  'autonomy.page_subtitle':      'Heartbeat fokozatos autonómia szintek',
   'autonomy.loading':            'Betöltés...',
   'autonomy.lock_label':         'Biztonsági zár',
   'autonomy.cap_label':          'Max {n}. szint',

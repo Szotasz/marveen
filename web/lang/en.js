@@ -82,7 +82,6 @@ window._i18n.en = {
   'nav.migrate':      'Migrate',
   'nav.docs':         'Documentation',
   'nav.status':       'Status',
-  'nav.autonomy':     'Autonomy',
   'nav.settings':     'Settings',
   'nav.vault':        'Vault',
   'nav.tokenUsage':   'Token Monitor',
@@ -628,8 +627,6 @@ window._i18n.en = {
   'messages.select_agent':       'Select an agent',
 
   // --- Autonomy ---
-  'autonomy.page_title':         'Autonomy',
-  'autonomy.page_subtitle':      'Heartbeat graduated autonomy levels',
   'autonomy.level.2':            '2 Propose, awaits approval',
   'autonomy.level.3':            '3 Autonomous, reports after',
 
