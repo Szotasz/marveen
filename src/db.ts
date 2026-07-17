@@ -1019,6 +1019,19 @@ export function touchMemory(id: number): void {
   ).run(now, id)
 }
 
+// Mark a batch of memories as just-recalled (bumps accessed_at only). Used by
+// the agent-memory read endpoint so that accessed_at reflects real usage --
+// without this, agent memories keep accessed_at == created_at forever and any
+// "not accessed in N days" staleness check (e.g. the Dream Engine hygiene pass)
+// treats even freshly-recalled memories as stale. Salience is intentionally
+// left untouched here; this is a lightweight recency stamp, not a ranking bump.
+export function touchMemoriesAccessed(ids: number[]): void {
+  if (ids.length === 0) return
+  const now = Math.floor(Date.now() / 1000)
+  const placeholders = ids.map(() => '?').join(',')
+  db.prepare(`UPDATE memories SET accessed_at = ? WHERE id IN (${placeholders})`).run(now, ...ids)
+}
+
 export function decayMemories(): void {
   const oneWeekAgo = Math.floor(Date.now() / 1000) - 7 * 86400
   // Gentler decay: 0.5% per day, only for memories older than 1 week
