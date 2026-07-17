@@ -2499,6 +2499,11 @@ async function openMarveenDetail() {
   // doesn't carry over the previously opened sub-agent's selection.
   const marveenModelSelect = document.getElementById('editAgentModel')
   if (marveenModelSelect) marveenModelSelect.value = m.activeModel || m.model || ''
+  // Populate the model dropdown groups (auto/manual) AND surface the OpenRouter
+  // curation button -- this is the main agent, the only place curation lives.
+  // The select itself is read-only for Marveen, but the browse button (managing
+  // the shared manual list) is enabled here.
+  loadAvailableModels()
   // Surface the "channels restart" button -- destructive, but mobile-safe
   // when the Telegram plugin wedges and you're away from a terminal.
   document.getElementById('marveenRestartBtn').hidden = false
@@ -3395,8 +3400,16 @@ async function loadAvailableModels() {
     }
     // Browse popup = the curation UI (tick/untick which manual models exist).
     // MAIN AGENT ONLY -- sub-agents just pick from the curated dropdown above.
+    // The main agent opens via openMarveenDetail(), whose currentAgent comes
+    // from window._marveen and has NO `role` field -- so detect it by name too.
+    const mid = (typeof mainAgentId === 'function') ? mainAgentId() : ''
+    const isMainAgent = !!currentAgent && (
+      currentAgent.role === 'main' ||
+      currentAgent.name === mid ||
+      currentAgent.agentId === mid
+    )
     const orBtn = document.getElementById('openrouterBrowseBtn')
-    if (orBtn) orBtn.style.display = (data.openrouterConfigured && currentAgent && currentAgent.role === 'main') ? '' : 'none'
+    if (orBtn) orBtn.style.display = (data.openrouterConfigured && isMainAgent) ? '' : 'none'
   } catch { /* dashboard not available */ }
 }
 
