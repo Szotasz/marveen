@@ -9,7 +9,7 @@ import { isBlockedCrossOriginWrite, originMatchesServedHost } from './web/csrf-o
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureQuarantineReader, ensureDefaultScheduledTasks, agentSettingsPath } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureAgentStalenessHook, ensureEgressGate, ensureQuarantineReader, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
@@ -57,6 +57,7 @@ import { tryHandleUpdates } from './web/routes/updates.js'
 import { tryHandleOnboarding } from './web/routes/onboarding.js'
 import { tryHandleStatus } from './web/routes/status.js'
 import { tryHandleAutonomy } from './web/routes/autonomy.js'
+import { tryHandleApprovals, startApprovalTimeoutSweeper } from './web/routes/approvals.js'
 import { tryHandleTokenUsage } from './web/routes/token-usage.js'
 import { tryHandleCosts, startCostsSyncTask } from './web/routes/costs.js'
 import { tryHandleIdeas } from './web/routes/ideas.js'
@@ -223,6 +224,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleOnboarding(routeCtx)) return
       if (await tryHandleStatus(routeCtx)) return
       if (await tryHandleAutonomy(routeCtx)) return
+      if (await tryHandleApprovals(routeCtx)) return
       if (await tryHandleTokenUsage(routeCtx)) return
       if (await tryHandleCosts(routeCtx)) return
       if (await tryHandleIdeas(routeCtx)) return
@@ -420,6 +422,9 @@ export function startWebServer(port = 3420): http.Server {
 
   // Collect token usage from JSONL transcripts every hour so the run-history
   // token estimates stay fresh without requiring a manual dashboard visit.
+  // Sweep timed-out pending approvals every minute
+  const approvalTimeoutInterval = startApprovalTimeoutSweeper()
+
   const tokenCollectInterval = webOnly ? undefined : setInterval(() => {
     collectTokenUsage().catch(err => logger.warn({ err }, 'Periodic token usage collection failed'))
   }, 60 * 60 * 1000)
@@ -454,7 +459,10 @@ export function startWebServer(port = 3420): http.Server {
   // (do NOT copy the hook backfill's ungated placement). The ensure heals
   // the two known loss vectors: update.sh --regen-claudemd and a stale
   // dashboard-editor buffer PUT.
-  if (!webOnly) ensureFederationClaudeMdSection()
+  if (!webOnly) {
+    ensureFederationClaudeMdSection()
+    ensureAutonomySection(MAIN_AGENT_ID)
+  }
 
   // Backfill the PreCompact hook into existing agents' settings.json so the
   // auto-skill / auto-memory flow runs on context compaction. No-op if the
@@ -529,6 +537,7 @@ export function startWebServer(port = 3420): http.Server {
     clearInterval(autoRestartInterval)
     clearInterval(modelFallbackInterval)
     clearInterval(contextGuardInterval)
+    clearInterval(approvalTimeoutInterval)
     clearInterval(updateCheckerInterval)
     if (federationPollerInterval) clearInterval(federationPollerInterval)
     if (capabilityRunnerInterval) clearInterval(capabilityRunnerInterval)

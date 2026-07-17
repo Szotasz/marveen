@@ -57,7 +57,8 @@
       "label": "Email kuldes / valasz",
       "level": 1,
       "locked": false,
-      "maxLevel": 2
+      "maxLevel": 2,
+      "timeout_minutes": 30
     },
     {
       "key": "publish_content",

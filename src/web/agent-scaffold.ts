@@ -577,6 +577,12 @@ const FLEET_ROSTER_BLOCK_RE = new RegExp(
   `${FLEET_ROSTER_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${FLEET_ROSTER_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
+const AUTONOMY_BEGIN = '<!-- BEGIN GENERATED: autonomy-wiring (auto-generated, do not edit by hand) -->'
+const AUTONOMY_END = '<!-- END GENERATED: autonomy-wiring -->'
+const AUTONOMY_BLOCK_RE = new RegExp(
+  `${AUTONOMY_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${AUTONOMY_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
 // Builds the text body that goes between the BEGIN/END markers.
 // Single source of truth -- called by both generateClaudeMd() (initial
 // generation) and ensureFleetRosterSection() (idempotent update on respawn).
@@ -642,6 +648,68 @@ function buildFleetRosterBody(selfName: string): string {
     '',
     'Ha egy kérés egyértelműen más szakterületére esik, jelezd vagy delegáld inter-agent üzenettel a megfelelő ágensnek.',
   ].join('\n')
+}
+
+// Builds the autonomy-wiring section body. Static per agent name: the content
+// never changes based on runtime fleet state, but the curl examples embed the
+// resolved dashboard origin and the agent's own name so agents don't have to
+// guess.
+function buildAutonomyBody(name: string): string {
+  return [
+    '## Autonómia és jóváhagyás',
+    '',
+    'Az autonóm műveletek fokozatait a store/autonomy-config.json szabályozza (level: 1=csak jelez, 2=javasol+jóváhagyás, 3=autonóm+jelent). Mielőtt önállóan cselekszel, nézd meg az adott kategória szintjét.',
+    '',
+    '**Level 1 (csak jelez)**: küldj inter-agent értesítést a főágensnek, de NE végezd el a műveletet. Ezután ÁLLJ MEG.',
+    `curl -s -X POST ${dashboardOrigin}/api/messages -H "Content-Type: application/json" -H "Authorization: Bearer $(cat store/.dashboard-token)" -d "{\\"from\\":\\"${name}\\",\\"to\\":\\"${MAIN_AGENT_ID}\\",\\"content\\":\\"[FELHÍVÁS] CATEGORY_KEY: MIT akartam elvégezni, de level 1 miatt csak jelzek.\\"}"`,
+    '',
+    '**Level 2 (jóváhagyás szükséges)**: kérj jóváhagyást az API-n MIELŐTT cselekszel.',
+    '',
+    'Jóváhagyás kérése (POST):',
+    `curl -s -X POST ${dashboardOrigin}/api/approvals -H "Content-Type: application/json" -H "Authorization: Bearer $(cat store/.dashboard-token)" -d '{"agent_id":"${name}","category":"CATEGORY_KEY","action_description":"Mit tervezel elvégezni és miért","timeout_seconds":3600}'`,
+    'A válaszban kapott id-vel kérdezheted le a döntést.',
+    '',
+    'Döntés lekérdezése (GET, 60 mp-enként ismételve):',
+    `curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" "${dashboardOrigin}/api/approvals/<id>"`,
+    'status=approved -> végezd el a műveletet. status=rejected vagy status=timeout -> ne csináld, naplózd az okot.',
+    '',
+    '**Level 3 (autonóm)**: elvégzed a műveletet, majd utána jelented a főágensnek.',
+  ].join('\n')
+}
+
+// Idempotently ensures the autonomy-wiring block is present and current in the
+// agent's CLAUDE.md. Called on every startAgentProcess() alongside
+// ensureFleetRosterSection() so that existing agents receive the block
+// automatically on respawn without manual migration.
+//
+// Idempotency contract mirrors ensureFleetRosterSection (five rules apply).
+export function ensureAutonomySection(name: string): void {
+  // The main agent's CLAUDE.md lives at PROJECT_ROOT, not inside agents/<name>/.
+  // Sub-agents use agentDir(name)/CLAUDE.md as usual.
+  const claudeMdPath = name === MAIN_AGENT_ID
+    ? join(PROJECT_ROOT, 'CLAUDE.md')
+    : join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const body = buildAutonomyBody(name)
+  const block = `${AUTONOMY_BEGIN}\n${body}\n${AUTONOMY_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  let updated: string
+  if (AUTONOMY_BLOCK_RE.test(existing)) {
+    updated = existing.replace(AUTONOMY_BLOCK_RE, block)
+  } else {
+    updated = existing.trimEnd() + '\n\n' + block + '\n'
+  }
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
 }
 
 // Idempotently ensures the fleet roster block is present and current in the
@@ -824,11 +892,14 @@ Output ONLY the markdown content, no code fences.`
   if (cleaned.startsWith('```')) {
     cleaned = cleaned.replace(/^```\w*\n?/, '').replace(/\n?```$/, '')
   }
-  // Append the marker-delimited fleet roster block using the same
-  // buildFleetRosterBody() as ensureFleetRosterSection() -- single source of truth.
-  // Appended after LLM output so the model never sees or can rewrite it.
-  const body = buildFleetRosterBody(name)
-  cleaned = cleaned.trimEnd() + '\n\n' + FLEET_ROSTER_BEGIN + '\n' + body + '\n' + FLEET_ROSTER_END + '\n'
+  // Append marker-delimited sections after LLM output so the model can never
+  // see or rewrite them. Single source of truth: same builders as the
+  // ensure*Section() functions used on every subsequent respawn.
+  const fleetBody = buildFleetRosterBody(name)
+  const autonomyBody = buildAutonomyBody(name)
+  cleaned = cleaned.trimEnd()
+    + '\n\n' + FLEET_ROSTER_BEGIN + '\n' + fleetBody + '\n' + FLEET_ROSTER_END
+    + '\n\n' + AUTONOMY_BEGIN + '\n' + autonomyBody + '\n' + AUTONOMY_END + '\n'
   return cleaned
 }
 
