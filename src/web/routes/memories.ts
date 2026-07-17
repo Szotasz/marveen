@@ -63,7 +63,11 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/memories' && method === 'GET') {
     const q = url.searchParams.get('q')?.trim() || ''
-    const agentId = url.searchParams.get('agent') || ''
+    const agentIdAlias = url.searchParams.get('agent_id')
+    if (agentIdAlias && !url.searchParams.get('agent')) {
+      logger.warn({ agent_id: agentIdAlias }, '[DEPRECATED] GET /api/memories: use "agent" instead of "agent_id"')
+    }
+    const agentId = url.searchParams.get('agent') || agentIdAlias || ''
     const tier = url.searchParams.get('tier') || url.searchParams.get('category') || ''
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
     const mode = url.searchParams.get('mode') || 'fts'
