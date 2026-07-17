@@ -11177,11 +11177,25 @@ async function fetchOnboardingStatus() {
 function onboardingCurrentStep(s) {
   if (!s.identityConfirmed) return 1
   if (!s.claudeAuthPresent || !s.agentsRunning) return 2
-  if (!s.telegramConfigured) return 3
+  if (!s.channelConfigured) return 3
   if (!s.paired) return 4
   return 0
 }
+// Operator can dismiss the wizard (skip/close). A false positive must never
+// lock the dashboard, so the choice persists across reloads; normal UI still
+// covers any real setup that remains.
+const ONBOARDING_DISMISS_KEY = 'mvOnboardingDismissed'
+function onboardingDismissed() {
+  try { return localStorage.getItem(ONBOARDING_DISMISS_KEY) === '1' } catch { return false }
+}
+function dismissOnboarding() {
+  try { localStorage.setItem(ONBOARDING_DISMISS_KEY, '1') } catch { /* private mode */ }
+  const overlay = document.getElementById('onboardingOverlay')
+  if (overlay) { overlay.classList.remove('active'); overlay.hidden = true }
+  document.body.style.overflow = ''
+}
 async function initOnboarding() {
+  if (onboardingDismissed()) return
   const s = await fetchOnboardingStatus()
   if (!s || !s.needsOnboarding) return
   renderOnboarding(s)
@@ -11191,6 +11205,7 @@ async function refreshOnboarding() {
   if (s) renderOnboarding(s)
 }
 function renderOnboarding(s) {
+  if (onboardingDismissed()) return
   const overlay = document.getElementById('onboardingOverlay')
   if (!overlay) return
   const step = onboardingCurrentStep(s)
@@ -11349,6 +11364,10 @@ populateAvatarGrid()
 loadMemAgents()
 loadOverview()
 loadAvailableModels()
+{
+  const onbClose = document.getElementById('onboardingClose')
+  if (onbClose) onbClose.addEventListener('click', dismissOnboarding)
+}
 initOnboarding()
 
 // "DeepSeek API kulcs hozzáadása" link az agent edit panel-en --
