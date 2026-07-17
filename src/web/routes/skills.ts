@@ -5,7 +5,8 @@ import { randomUUID } from 'node:crypto'
 import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
-import { AGENTS_BASE_DIR, listAgentNames, readFileOr } from '../agent-config.js'
+import { AGENTS_BASE_DIR, listAgentNames, readFileOr, agentDir } from '../agent-config.js'
+import { MAIN_AGENT_ID } from '../../config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
@@ -156,6 +157,50 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       return (a.label || a.name).localeCompare(b.label || b.name)
     })
     json(res, skills)
+    return true
+  }
+
+  // Return all local (agent-specific) skills across the whole fleet.
+  // Must be matched before /:name so "local" is not treated as a skill name.
+  if (path === '/api/skills/local' && method === 'GET') {
+    type LocalSkillEntry = {
+      name: string
+      label: string
+      agentId: string
+      description: string
+      keywords: string[]
+      mtime: number
+      source: 'agent'
+    }
+    const result: LocalSkillEntry[] = []
+    for (const agentName of listAgentNames()) {
+      if (agentName === MAIN_AGENT_ID) continue
+      const skillsDir = join(agentDir(agentName), '.claude', 'skills')
+      if (!existsSync(skillsDir)) continue
+      let entries: string[] = []
+      try { entries = readdirSync(skillsDir) } catch { continue }
+      for (const entry of entries) {
+        if (entry.startsWith('.')) continue
+        const skillDirPath = join(skillsDir, entry)
+        try { if (!statSync(skillDirPath).isDirectory()) continue } catch { continue }
+        const skillMdPath = join(skillDirPath, 'SKILL.md')
+        if (!existsSync(skillMdPath)) continue
+        const content = readFileOr(skillMdPath, '')
+        let mtime = 0
+        try { mtime = statSync(skillMdPath).mtimeMs } catch { /* no-op */ }
+        result.push({
+          name: entry,
+          label: entry,
+          agentId: agentName,
+          description: parseSkillDescription(content),
+          keywords: parseSkillKeywords(content),
+          mtime,
+          source: 'agent',
+        })
+      }
+    }
+    result.sort((a, b) => a.agentId.localeCompare(b.agentId) || a.name.localeCompare(b.name))
+    json(res, result)
     return true
   }
 

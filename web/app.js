@@ -9538,6 +9538,7 @@ const skillsEmpty = document.getElementById('skillsEmpty')
 const skillDetailOverlay = document.getElementById('skillDetailOverlay')
 
 let globalSkills = []
+let localAgentSkills = []
 let skillsActiveFilter = 'all'
 let skillsSearchQuery = ''
 let skillsActiveCategory = 'all'
@@ -9678,8 +9679,12 @@ async function loadGlobalSkills() {
   skillsGrid.innerHTML = `<div class="connector-loading"><span class="spinner"></span> ${t('skills.loading')}</div>`
   skillsStats.innerHTML = ''
   try {
-    const res = await fetch('/api/skills')
-    globalSkills = await res.json()
+    const [globalRes, localRes] = await Promise.all([
+      fetch('/api/skills'),
+      fetch('/api/skills/local'),
+    ])
+    globalSkills = await globalRes.json()
+    localAgentSkills = localRes.ok ? await localRes.json() : []
     renderGlobalSkills()
   } catch (err) {
     console.error('Skills betoltes hiba:', err)
@@ -9784,6 +9789,7 @@ function renderGlobalSkills() {
     <div class="stat-card"><div class="stat-value">${globalSkills.length}</div><div class="stat-label">${t('skills.stat.total')}</div></div>
     <div class="stat-card"><div class="stat-value" style="color:var(--info)">${userCount}</div><div class="stat-label">${t('skills.stat.user')}</div></div>
     ${pluginCount ? `<div class="stat-card"><div class="stat-value" style="color:var(--accent)">${pluginCount}</div><div class="stat-label">${t('skills.stat.plugin')}</div></div>` : ''}
+    ${localAgentSkills.length ? `<div class="stat-card"><div class="stat-value" style="color:var(--warning)">${localAgentSkills.length}</div><div class="stat-label">${t('skills.stat.agent_local')}</div></div>` : ''}
     <div class="stat-card"><div class="stat-value" style="color:var(--success)">${withSkillMd.length}</div><div class="stat-label">${t('skills.stat.documented')}</div></div>
   `
 
@@ -9795,8 +9801,10 @@ function renderGlobalSkills() {
 function renderGlobalSkillsGrid() {
   skillsGrid.innerHTML = ''
 
-  // Apply source filter + category filter + search
-  const filtered = globalSkills.filter(s => {
+  const isAgentFilter = skillsActiveFilter === 'agent'
+
+  // When 'agent' filter is active, show only local agent skills; otherwise show global/plugin.
+  const filteredGlobal = isAgentFilter ? [] : globalSkills.filter(s => {
     if (skillsActiveFilter !== 'all' && s.source !== skillsActiveFilter) return false
     if (skillsActiveCategory !== 'all' && deriveSkillCategory(s.name) !== skillsActiveCategory) return false
     if (!skillsSearchQuery) return true
@@ -9804,39 +9812,44 @@ function renderGlobalSkillsGrid() {
     return haystack.includes(skillsSearchQuery)
   })
 
-  if (filtered.length === 0) {
+  // Local agent skills: always merged in for 'all' or filtered to 'agent'.
+  const filteredLocal = (skillsActiveFilter === 'all' || isAgentFilter) ? localAgentSkills.filter(s => {
+    if (skillsActiveCategory !== 'all' && deriveSkillCategory(s.name) !== skillsActiveCategory) return false
+    if (!skillsSearchQuery) return true
+    const haystack = [s.name, s.label, s.description, s.agentId, ...(s.keywords || [])].join(' ').toLowerCase()
+    return haystack.includes(skillsSearchQuery)
+  }) : []
+
+  const allFiltered = [...filteredGlobal, ...filteredLocal]
+
+  if (allFiltered.length === 0) {
     skillsEmpty.hidden = false
     return
   }
   skillsEmpty.hidden = true
 
-  const sourceLabels = { user: 'user', plugin: 'plugin' }
+  const sourceLabels = { user: 'user', plugin: 'plugin', agent: t('skills.filter.agent') }
 
-  for (const skill of filtered) {
+  const renderCard = (skill, isLocal) => {
     const card = document.createElement('div')
-    card.className = 'skills-card'
+    card.className = isLocal ? 'skills-card skills-card--local' : 'skills-card'
     const icon = getSkillIcon(skill.name)
-    const sourceBadge = skill.source
-      ? `<span class="connector-source-badge">${escapeHtml(sourceLabels[skill.source] || skill.source)}</span>`
-      : ''
+    const sourceBadge = isLocal
+      ? `<span class="connector-source-badge skills-badge--agent">${escapeHtml(skill.agentId)}</span>`
+      : (skill.source ? `<span class="connector-source-badge">${escapeHtml(sourceLabels[skill.source] || skill.source)}</span>` : '')
 
-    // Health indicator
     const hasDesc = !!skill.description
     const healthClass = hasDesc ? 'skill-health-ok' : 'skill-health-warn'
     const healthTitle = hasDesc ? t('skills.health.ok') : t('skills.health.nodesc')
 
-    // Keywords tags (up to 3)
     const kws = (skill.keywords || []).slice(0, 3)
     const kwTags = kws.map(k => `<span class="skill-keyword-tag">${escapeHtml(k)}</span>`).join('')
 
-    // Agent coverage -- global skills are available to all fleet agents via
-    // shared HOME; show a compact count badge instead of listing every name.
     const agents = skill.agents || []
     const agentBadges = agents.length > 0
       ? `<span class="skills-agent-badge skill-agent-count" title="${escapeHtml(agents.join(', '))}">&#x1F916; ${agents.length} ${t('skills.agents.count')}</span>`
       : ''
 
-    // Mtime
     const mtimeStr = skill.mtime ? formatMtime(skill.mtime) : ''
 
     const displayName = skill.label || skill.name
@@ -9858,9 +9871,13 @@ function renderGlobalSkillsGrid() {
         ${mtimeStr ? `<span class="skill-card-mtime" title="${t('skills.mtime.title')}">${escapeHtml(mtimeStr)}</span>` : ''}
       </div>` : ''}
     `
+    // Local skills open detail via global skill name (agentId is display only)
     card.addEventListener('click', () => openSkillDetail(skill.name, skill.label))
     skillsGrid.appendChild(card)
   }
+
+  for (const skill of filteredGlobal) renderCard(skill, false)
+  for (const skill of filteredLocal) renderCard(skill, true)
 }
 
 let _skillDetailCurrentName = null
