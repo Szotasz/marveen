@@ -173,7 +173,14 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       source: 'agent'
     }
     const result: LocalSkillEntry[] = []
-    for (const agentName of listAgentNames()) {
+    // Prepend MAIN_AGENT_ID explicitly: listAgentNames() scans AGENTS_BASE_DIR
+    // subdirectories, so the main agent (which lives in PROJECT_ROOT, not under
+    // agents/<id>/) is never returned by that call.
+    const subAgentNames = listAgentNames()
+    const allAgentNames = subAgentNames.includes(MAIN_AGENT_ID)
+      ? subAgentNames
+      : [MAIN_AGENT_ID, ...subAgentNames]
+    for (const agentName of allAgentNames) {
       // The main agent's local skills live at PROJECT_ROOT/.claude/skills (not
       // under agents/<id>/, which does not exist). Same pattern as CLAUDE.md path
       // resolution in ensureAutonomySection.
