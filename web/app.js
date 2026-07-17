@@ -3375,15 +3375,34 @@ async function loadAvailableModels() {
         g.appendChild(opt)
       }
     }
-    // Manual = the "OpenRouter" browse button (searchable popup over ALL models);
-    // only usable when the key is connected.
+    // Manual = the user-curated list -> "OpenRouter — kézi" optgroup in every
+    // select. Curated once (main agent's browse popup, checkboxes); assignable
+    // per agent here. Empty list -> group hidden.
+    const orManual = Array.isArray(data.openrouterManual) ? data.openrouterManual : []
+    openrouterCurated = new Set(orManual.map(m => m.id))
+    const manualGroups = [document.getElementById('openrouterManualGroup'), document.getElementById('agentModelOpenrouterManualGroup')]
+    for (const g of manualGroups) {
+      if (!g) continue
+      g.innerHTML = ''
+      if (orManual.length === 0) { g.style.display = 'none'; continue }
+      g.style.display = ''
+      for (const m of orManual) {
+        const opt = document.createElement('option')
+        opt.value = m.id
+        opt.textContent = `🔀 ${m.name || m.id}`
+        g.appendChild(opt)
+      }
+    }
+    // Browse popup = the curation UI (tick/untick which manual models exist).
+    // MAIN AGENT ONLY -- sub-agents just pick from the curated dropdown above.
     const orBtn = document.getElementById('openrouterBrowseBtn')
-    if (orBtn) orBtn.style.display = data.openrouterConfigured ? '' : 'none'
+    if (orBtn) orBtn.style.display = (data.openrouterConfigured && currentAgent && currentAgent.role === 'main') ? '' : 'none'
   } catch { /* dashboard not available */ }
 }
 
-// --- OpenRouter manual model picker (browse all ~340 models) ---
+// --- OpenRouter manual-list curation (tick models into the shared dropdown) ---
 let openrouterAllModels = null
+let openrouterCurated = new Set()  // ids currently in the curated manual list
 
 async function openOpenrouterModal() {
   const modal = document.getElementById('openrouterModal')
@@ -3405,11 +3424,20 @@ async function openOpenrouterModal() {
   if (searchEl) searchEl.value = ''
   if (freeEl) freeEl.checked = false
   try {
-    if (!openrouterAllModels) {
-      const res = await fetch('/api/openrouter/models')
-      if (!res.ok) throw new Error('fetch failed')
-      const data = await res.json()
+    // Load the full model list (cached) and the current curated set in parallel
+    // so the checkboxes render already ticked for the manual models in the list.
+    const [allRes, curRes] = await Promise.all([
+      openrouterAllModels ? Promise.resolve(null) : fetch('/api/openrouter/models'),
+      fetch('/api/openrouter/manual'),
+    ])
+    if (allRes) {
+      if (!allRes.ok) throw new Error('fetch failed')
+      const data = await allRes.json()
       openrouterAllModels = Array.isArray(data.models) ? data.models : []
+    }
+    if (curRes && curRes.ok) {
+      const cur = await curRes.json()
+      openrouterCurated = new Set((Array.isArray(cur.models) ? cur.models : []).map(m => m.id))
     }
     renderOpenrouterList()
   } catch {
@@ -3428,41 +3456,66 @@ function renderOpenrouterList() {
     if (!q) return true
     return (m.id + ' ' + m.name).toLowerCase().includes(q)
   })
-  if (countEl) countEl.textContent = `${rows.length} modell`
+  // Ticked (curated) models float to the top so the current selection is visible.
+  rows.sort((a, b) => {
+    const ca = openrouterCurated.has(a.id), cb = openrouterCurated.has(b.id)
+    if (ca !== cb) return ca ? -1 : 1
+    return a.id.localeCompare(b.id)
+  })
+  if (countEl) countEl.textContent = `${rows.length} modell · ${openrouterCurated.size} kézi listán`
   listEl.innerHTML = ''
   for (const m of rows.slice(0, 400)) {
-    const row = document.createElement('div')
+    const checked = openrouterCurated.has(m.id)
+    const row = document.createElement('label')
     row.className = 'openrouter-model-row'
-    row.style.cssText = 'padding:8px 10px;border-bottom:1px solid var(--border);cursor:pointer;font-size:13px'
+    row.style.cssText = 'display:flex;align-items:flex-start;gap:10px;padding:8px 10px;border-bottom:1px solid var(--border);cursor:pointer;font-size:13px'
     const price = m.free ? '<span style="color:var(--success,#16a34a);font-weight:600">ingyenes</span>'
       : `$${m.promptPrice.toFixed(2)}/$${m.completionPrice.toFixed(2)} /M`
     const ctx = m.contextLength ? ` · ${Math.round(m.contextLength / 1000)}k ctx` : ''
-    row.innerHTML = `<div style="font-weight:600">${escapeHtml(m.name)}</div>`
+    const cb = document.createElement('input')
+    cb.type = 'checkbox'
+    cb.checked = checked
+    cb.style.cssText = 'margin-top:3px;flex:0 0 auto'
+    cb.addEventListener('change', () => toggleCuratedModel(m.id, m.name, cb.checked))
+    const info = document.createElement('div')
+    info.style.cssText = 'flex:1 1 auto;min-width:0'
+    info.innerHTML = `<div style="font-weight:600">${escapeHtml(m.name)}</div>`
       + `<div style="color:var(--text-muted);font-size:11.5px"><code>${escapeHtml(m.id)}</code> · ${price}${ctx}</div>`
+    row.appendChild(cb)
+    row.appendChild(info)
     row.addEventListener('mouseenter', () => { row.style.background = 'var(--surface-hover, #f1f5f9)' })
     row.addEventListener('mouseleave', () => { row.style.background = '' })
-    row.addEventListener('click', () => selectOpenrouterModel(m.id))
     listEl.appendChild(row)
   }
   if (rows.length === 0) listEl.innerHTML = '<div style="padding:14px;color:var(--text-muted);font-size:13px">Nincs találat.</div>'
 }
 
-function selectOpenrouterModel(id) {
-  const sel = document.getElementById('editAgentModel')
-  if (sel) {
-    // Ensure the chosen id exists as an option, then select it.
-    let opt = Array.from(sel.options).find(o => o.value === id)
-    if (!opt) {
-      opt = document.createElement('option')
-      opt.value = id
-      opt.className = 'dynamic-model-opt'
-      opt.textContent = `🔀 ${id}`
-      sel.appendChild(opt)
-    }
-    sel.value = id
-    sel.dispatchEvent(new Event('change'))
+// Tick/untick a model into the curated manual list. Persists server-side, then
+// refreshes the shared dropdown so the "kézi" optgroup reflects the change.
+async function toggleCuratedModel(id, name, checked) {
+  // Optimistic local update so the checkbox + counter feel instant.
+  if (checked) openrouterCurated.add(id); else openrouterCurated.delete(id)
+  const countEl = document.getElementById('openrouterModalCount')
+  if (countEl) {
+    const total = countEl.textContent.split('·')[0].trim()
+    countEl.textContent = `${total} · ${openrouterCurated.size} kézi listán`
   }
-  closeOpenrouterModal()
+  try {
+    const res = await fetch('/api/openrouter/manual', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, name, checked }),
+    })
+    if (!res.ok) throw new Error('save failed')
+    const data = await res.json()
+    openrouterCurated = new Set((Array.isArray(data.models) ? data.models : []).map(m => m.id))
+    // Repopulate the dropdown "kézi" optgroups without disturbing selections.
+    loadAvailableModels()
+  } catch {
+    // Roll back the optimistic change on failure.
+    if (checked) openrouterCurated.delete(id); else openrouterCurated.add(id)
+    renderOpenrouterList()
+  }
 }
 
 function closeOpenrouterModal() {

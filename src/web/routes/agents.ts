@@ -9,7 +9,7 @@ import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-mess
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
-import { loadOpenRouterCatalog, fetchAllOpenRouterModels } from '../openrouter-models.js'
+import { loadOpenRouterCatalog, fetchAllOpenRouterModels, loadCuratedManual, addCuratedManual, removeCuratedManual } from '../openrouter-models.js'
 import {
   agentDir,
   agentConfigRoot,
@@ -504,8 +504,35 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
             })),
           }
         : null,
+      // User-curated manual models (ticked in the main agent's browse popup).
+      // Feeds the "OpenRouter — kézi" optgroup in every agent's model dropdown.
+      openrouterManual: hasOpenRouter ? loadCuratedManual() : [],
       openrouterConfigured: hasOpenRouter,
     })
+    return true
+  }
+
+  // Curated manual-model list read/toggle. Curation is main-agent-only in the UI
+  // (the browse popup is hidden for sub-agents), but the API just gates on the
+  // vault key; the ticked set is shared across all agents' dropdowns.
+  if (path === '/api/openrouter/manual' && method === 'GET') {
+    if (getSecret('openrouter-fleet-key') === null) {
+      json(res, { error: 'OpenRouter not configured' }, 403)
+      return true
+    }
+    json(res, { models: loadCuratedManual() })
+    return true
+  }
+  if (path === '/api/openrouter/manual' && method === 'POST') {
+    if (getSecret('openrouter-fleet-key') === null) {
+      json(res, { error: 'OpenRouter not configured' }, 403)
+      return true
+    }
+    const body = await readBody(req)
+    const { id, name, checked } = JSON.parse(body.toString()) as { id?: string; name?: string; checked?: boolean }
+    if (!id || typeof id !== 'string') { json(res, { error: 'id is required' }, 400); return true }
+    const models = checked ? addCuratedManual(id, name || id) : removeCuratedManual(id)
+    json(res, { ok: true, models })
     return true
   }
 

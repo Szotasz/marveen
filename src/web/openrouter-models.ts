@@ -17,13 +17,18 @@
 // openrouter-weekly-llm-research scheduled task). A hardcoded default keeps the
 // feature working before the first weekly refresh writes the file.
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
 
 export const AUTO_PREFIX = 'openrouter-auto:'
 export const OPENROUTER_MODELS_FILE = join(STORE_DIR, 'openrouter-models.json')
+// User-curated "manual" model list. The main agent's OpenRouter browse popup
+// ticks/unticks models here; the ticked set becomes the "OpenRouter — kézi"
+// optgroup available in EVERY agent's model dropdown. Curation (this file) is
+// deliberately separate from per-agent assignment (writeAgentModel).
+export const OPENROUTER_MANUAL_FILE = join(STORE_DIR, 'openrouter-manual.json')
 
 export interface OpenRouterTier {
   key: string
@@ -105,6 +110,53 @@ export async function fetchAllOpenRouterModels(nowMs: number): Promise<OpenRoute
   models.sort((a, b) => a.id.localeCompare(b.id))
   allModelsCache = { at: nowMs, models }
   return models
+}
+
+// --- User-curated manual model list ---
+// The ticked set from the main agent's browse popup. Persisted as a flat list
+// so the dropdown's "kézi" optgroup is identical for every agent, while each
+// agent still picks its own model from that shared set.
+
+export interface CuratedModel {
+  id: string
+  name: string
+}
+
+export function loadCuratedManual(): CuratedModel[] {
+  try {
+    if (existsSync(OPENROUTER_MANUAL_FILE)) {
+      const parsed = JSON.parse(readFileSync(OPENROUTER_MANUAL_FILE, 'utf-8')) as { models?: CuratedModel[] }
+      if (parsed && Array.isArray(parsed.models)) {
+        return parsed.models.filter(m => m && typeof m.id === 'string' && m.id)
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, 'openrouter curated-manual parse failed; using empty list')
+  }
+  return []
+}
+
+function saveCuratedManual(models: CuratedModel[]): void {
+  writeFileSync(OPENROUTER_MANUAL_FILE, JSON.stringify({ models }, null, 2))
+}
+
+// Add a model to the curated list (no-op if already present). Returns the new list.
+export function addCuratedManual(id: string, name: string): CuratedModel[] {
+  const list = loadCuratedManual()
+  if (!list.some(m => m.id === id)) {
+    list.push({ id, name: name || id })
+    list.sort((a, b) => a.id.localeCompare(b.id))
+    saveCuratedManual(list)
+  }
+  return list
+}
+
+// Remove a model from the curated list (no-op if absent). Returns the new list.
+export function removeCuratedManual(id: string): CuratedModel[] {
+  const list = loadCuratedManual()
+  const next = list.filter(m => m.id !== id)
+  if (next.length !== list.length) saveCuratedManual(next)
+  return next
 }
 
 // Resolve a stored model value to a concrete model id the launcher can use.
