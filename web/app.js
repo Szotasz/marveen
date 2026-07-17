@@ -3378,7 +3378,11 @@ async function openOpenrouterModal() {
   const freeEl = document.getElementById('openrouterModalFreeOnly')
   if (!modal || !listEl) return
   if (agentEl) agentEl.textContent = (currentAgent && (currentAgent.displayName || currentAgent.name)) || 'ágens'
+  // Two competing .modal-overlay CSS rules: one hides via [hidden], the other
+  // via opacity/visibility (toggled by .active). Set both so the modal shows
+  // regardless of which rule wins the cascade.
   modal.hidden = false
+  modal.classList.add('active')
   listEl.innerHTML = '<div style="padding:14px;color:var(--text-muted);font-size:13px">Modellek betöltése…</div>'
   if (searchEl) searchEl.value = ''
   if (freeEl) freeEl.checked = false
@@ -3439,13 +3443,17 @@ function selectOpenrouterModel(id) {
     sel.value = id
     sel.dispatchEvent(new Event('change'))
   }
+  closeOpenrouterModal()
+}
+
+function closeOpenrouterModal() {
   const modal = document.getElementById('openrouterModal')
-  if (modal) modal.hidden = true
+  if (modal) { modal.hidden = true; modal.classList.remove('active') }
 }
 
 document.getElementById('openrouterBrowseBtn')?.addEventListener('click', openOpenrouterModal)
-document.getElementById('openrouterModalClose')?.addEventListener('click', () => { document.getElementById('openrouterModal').hidden = true })
-document.getElementById('openrouterModalCancel')?.addEventListener('click', () => { document.getElementById('openrouterModal').hidden = true })
+document.getElementById('openrouterModalClose')?.addEventListener('click', closeOpenrouterModal)
+document.getElementById('openrouterModalCancel')?.addEventListener('click', closeOpenrouterModal)
 document.getElementById('openrouterModalSearch')?.addEventListener('input', renderOpenrouterList)
 document.getElementById('openrouterModalFreeOnly')?.addEventListener('change', renderOpenrouterList)
 
