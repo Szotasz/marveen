@@ -1,7 +1,8 @@
 // String-contract guard for local agent skills on the global Skills page.
 // Guards: (a) /api/skills/local route exists in skills.ts, (b) loadGlobalSkills
 // fetches both endpoints, (c) local cards get skills-card--local class,
-// (d) agent filter button is present, (e) i18n keys added in both locales.
+// (d) agent filter button is present, (e) i18n keys added in both locales,
+// (f) agent filter sidebar uses localAgentSkills, (g) documented stat removed.
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -63,5 +64,18 @@ describe('local agent skills on global Skills page', () => {
   it('i18n keys present in en.js', () => {
     expect(EN).toContain("'skills.filter.agent'")
     expect(EN).toContain("'skills.stat.agent_local'")
+  })
+
+  it('sidebar uses localAgentSkills for agent filter (categories stay populated)', () => {
+    // When the 'agent' filter is active, renderSkillsSidebar must draw from
+    // localAgentSkills -- not globalSkills -- so category labels don't disappear.
+    expect(APP).toMatch(/skillsActiveFilter === 'agent'[\s\S]{0,100}localAgentSkills/)
+  })
+
+  it('documented stat card and dead code removed', () => {
+    expect(APP).not.toContain('withSkillMd')
+    expect(APP).not.toContain("'skills.stat.documented'")
+    expect(HU).not.toContain("'skills.stat.documented'")
+    expect(EN).not.toContain("'skills.stat.documented'")
   })
 })

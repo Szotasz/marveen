@@ -680,7 +680,6 @@ window._i18n.hu = {
   'skills.stat.user':            'User (saját)',
   'skills.stat.plugin':          'Plugin',
   'skills.stat.agent_local':     'Ágens-saját',
-  'skills.stat.documented':      'Dokumentált',
   'skills.error':                'Hiba a betoltes soran',
   'skills.no_description':       'Nincs leírás',
   'skills.content_not_found':    '(SKILL.md nem található)',

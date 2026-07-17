@@ -467,7 +467,6 @@ window._i18n.en = {
   'skills.stat.user':            'User (own)',
   'skills.stat.plugin':          'Plugin',
   'skills.stat.agent_local':     'Agent-local',
-  'skills.stat.documented':      'Documented',
   'skills.error':                'Error loading',
   'skills.no_description':       'No description',
   'skills.content_not_found':    '(SKILL.md not found)',

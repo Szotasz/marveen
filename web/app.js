@@ -9746,10 +9746,13 @@ function renderSkillsSidebar() {
   const sidebar = document.getElementById('skillsCategorySidebar')
   if (!sidebar) return
 
-  // Count per category across source-filtered skills
-  const sourceFiltered = skillsActiveFilter === 'all'
-    ? globalSkills
-    : globalSkills.filter(s => s.source === skillsActiveFilter)
+  // For the 'agent' filter, category counts come from localAgentSkills so the
+  // sidebar stays populated. All other filters draw from globalSkills as before.
+  const sourceFiltered = skillsActiveFilter === 'agent'
+    ? localAgentSkills
+    : skillsActiveFilter === 'all'
+      ? globalSkills
+      : globalSkills.filter(s => s.source === skillsActiveFilter)
 
   const catCounts = new Map()
   for (const s of sourceFiltered) {
@@ -9781,7 +9784,6 @@ function renderSkillsSidebar() {
 }
 
 function renderGlobalSkills() {
-  const withSkillMd = globalSkills.filter(s => s.description)
   const userCount = globalSkills.filter(s => s.source === 'user').length
   const pluginCount = globalSkills.filter(s => s.source === 'plugin').length
 
@@ -9790,7 +9792,6 @@ function renderGlobalSkills() {
     <div class="stat-card"><div class="stat-value" style="color:var(--info)">${userCount}</div><div class="stat-label">${t('skills.stat.user')}</div></div>
     ${pluginCount ? `<div class="stat-card"><div class="stat-value" style="color:var(--accent)">${pluginCount}</div><div class="stat-label">${t('skills.stat.plugin')}</div></div>` : ''}
     ${localAgentSkills.length ? `<div class="stat-card"><div class="stat-value" style="color:var(--warning)">${localAgentSkills.length}</div><div class="stat-label">${t('skills.stat.agent_local')}</div></div>` : ''}
-    <div class="stat-card"><div class="stat-value" style="color:var(--success)">${withSkillMd.length}</div><div class="stat-label">${t('skills.stat.documented')}</div></div>
   `
 
   skillsActiveCategory = 'all'
