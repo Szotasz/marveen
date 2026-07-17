@@ -46,8 +46,9 @@ beforeAll(() => {
   initDatabase(':memory:')
   // agent-a memory -- canonical owner
   saveAgentMemory('agent-a', 'alpha contract detail', 'warm', 'contract')
-  // agent-b memory -- must NOT leak into agent-a queries
-  saveAgentMemory('agent-b', 'beta private data', 'warm', 'private')
+  // agent-b memory with overlapping keyword -- without the fix, the global search
+  // would return this row too, causing the same-results test to diverge.
+  saveAgentMemory('agent-b', 'alpha data owned by b', 'warm', 'contract')
 })
 
 afterAll(() => {
@@ -69,11 +70,12 @@ describe('GET /api/memories agent_id alias', () => {
   })
 
   it('?agent_id=agent-a does NOT return agent-b memories', async () => {
-    const { ctx, getBody } = makeCtx('/api/memories', { agent_id: 'agent-a', q: 'beta' })
+    // Both agents have 'alpha' content, so the global path would return both.
+    const { ctx, getBody } = makeCtx('/api/memories', { agent_id: 'agent-a', q: 'alpha' })
     await tryHandleMemories(ctx)
     const results = getBody() as any[]
-    // Without the fix, this returns agent-b's memory because the handler falls
-    // through to the global searchMemories() path.
+    // Without the fix, the handler falls through to global searchMemories() and
+    // agent-b's 'alpha data owned by b' row leaks in.
     const agentBLeaked = results.some((m: any) => m.agent_id === 'agent-b')
     expect(agentBLeaked).toBe(false)
   })
