@@ -9,7 +9,7 @@ import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-mess
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
-import { loadOpenRouterCatalog } from '../openrouter-models.js'
+import { loadOpenRouterCatalog, fetchAllOpenRouterModels } from '../openrouter-models.js'
 import {
   agentDir,
   agentConfigRoot,
@@ -506,6 +506,24 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         : null,
       openrouterConfigured: hasOpenRouter,
     })
+    return true
+  }
+
+  // Full OpenRouter model list for the manual "browse all" picker popup.
+  // Gated behind the vault key like the tier group. The upstream /models list
+  // is public; the module caches it for 6h.
+  if (path === '/api/openrouter/models' && method === 'GET') {
+    if (getSecret('openrouter-fleet-key') === null) {
+      json(res, { error: 'OpenRouter not configured' }, 403)
+      return true
+    }
+    try {
+      const models = await fetchAllOpenRouterModels(Date.now())
+      json(res, { models })
+    } catch (err) {
+      logger.warn({ err }, 'openrouter models list fetch failed')
+      json(res, { error: 'Could not fetch OpenRouter models' }, 502)
+    }
     return true
   }
 

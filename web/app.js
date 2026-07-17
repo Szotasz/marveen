@@ -3345,9 +3345,9 @@ async function loadAvailableModels() {
     // ids per tier). Backend gates the whole block behind the vault key, so a
     // null payload means OpenRouter is not connected -> keep the groups hidden.
     const or = data.openrouter
-    const autoGroups = [document.getElementById('openrouterAutoGroup'), document.getElementById('agentModelOpenrouterAutoGroup')]
-    const manualGroups = [document.getElementById('openrouterManualGroup'), document.getElementById('agentModelOpenrouterManualGroup')]
     const orTiers = or && Array.isArray(or.tiers) ? or.tiers : []
+    // Auto = one entry per tier in the dropdown (weekly-fresh recommendation).
+    const autoGroups = [document.getElementById('openrouterAutoGroup'), document.getElementById('agentModelOpenrouterAutoGroup')]
     for (const g of autoGroups) {
       if (!g) continue
       g.innerHTML = ''
@@ -3360,22 +3360,94 @@ async function loadAvailableModels() {
         g.appendChild(opt)
       }
     }
-    for (const g of manualGroups) {
-      if (!g) continue
-      g.innerHTML = ''
-      if (orTiers.length === 0) { g.style.display = 'none'; continue }
-      g.style.display = ''
-      for (const t of orTiers) {
-        for (const mid of (Array.isArray(t.manual) ? t.manual : [])) {
-          const opt = document.createElement('option')
-          opt.value = mid
-          opt.textContent = `${t.label.replace(/ —.*/, '')}: ${mid}`
-          g.appendChild(opt)
-        }
-      }
-    }
+    // Manual = the "OpenRouter" browse button (searchable popup over ALL models);
+    // only usable when the key is connected.
+    const orBtn = document.getElementById('openrouterBrowseBtn')
+    if (orBtn) orBtn.style.display = data.openrouterConfigured ? '' : 'none'
   } catch { /* dashboard not available */ }
 }
+
+// --- OpenRouter manual model picker (browse all ~340 models) ---
+let openrouterAllModels = null
+
+async function openOpenrouterModal() {
+  const modal = document.getElementById('openrouterModal')
+  const listEl = document.getElementById('openrouterModalList')
+  const agentEl = document.getElementById('openrouterModalAgent')
+  const searchEl = document.getElementById('openrouterModalSearch')
+  const freeEl = document.getElementById('openrouterModalFreeOnly')
+  if (!modal || !listEl) return
+  if (agentEl) agentEl.textContent = (currentAgent && (currentAgent.displayName || currentAgent.name)) || 'ágens'
+  modal.hidden = false
+  listEl.innerHTML = '<div style="padding:14px;color:var(--text-muted);font-size:13px">Modellek betöltése…</div>'
+  if (searchEl) searchEl.value = ''
+  if (freeEl) freeEl.checked = false
+  try {
+    if (!openrouterAllModels) {
+      const res = await fetch('/api/openrouter/models')
+      if (!res.ok) throw new Error('fetch failed')
+      const data = await res.json()
+      openrouterAllModels = Array.isArray(data.models) ? data.models : []
+    }
+    renderOpenrouterList()
+  } catch {
+    listEl.innerHTML = '<div style="padding:14px;color:var(--danger,#dc2626);font-size:13px">Nem sikerült betölteni az OpenRouter modelleket.</div>'
+  }
+}
+
+function renderOpenrouterList() {
+  const listEl = document.getElementById('openrouterModalList')
+  const countEl = document.getElementById('openrouterModalCount')
+  const q = (document.getElementById('openrouterModalSearch')?.value || '').toLowerCase().trim()
+  const freeOnly = !!document.getElementById('openrouterModalFreeOnly')?.checked
+  if (!listEl || !openrouterAllModels) return
+  const rows = openrouterAllModels.filter(m => {
+    if (freeOnly && !m.free) return false
+    if (!q) return true
+    return (m.id + ' ' + m.name).toLowerCase().includes(q)
+  })
+  if (countEl) countEl.textContent = `${rows.length} modell`
+  listEl.innerHTML = ''
+  for (const m of rows.slice(0, 400)) {
+    const row = document.createElement('div')
+    row.className = 'openrouter-model-row'
+    row.style.cssText = 'padding:8px 10px;border-bottom:1px solid var(--border);cursor:pointer;font-size:13px'
+    const price = m.free ? '<span style="color:var(--success,#16a34a);font-weight:600">ingyenes</span>'
+      : `$${m.promptPrice.toFixed(2)}/$${m.completionPrice.toFixed(2)} /M`
+    const ctx = m.contextLength ? ` · ${Math.round(m.contextLength / 1000)}k ctx` : ''
+    row.innerHTML = `<div style="font-weight:600">${escapeHtml(m.name)}</div>`
+      + `<div style="color:var(--text-muted);font-size:11.5px"><code>${escapeHtml(m.id)}</code> · ${price}${ctx}</div>`
+    row.addEventListener('mouseenter', () => { row.style.background = 'var(--surface-hover, #f1f5f9)' })
+    row.addEventListener('mouseleave', () => { row.style.background = '' })
+    row.addEventListener('click', () => selectOpenrouterModel(m.id))
+    listEl.appendChild(row)
+  }
+  if (rows.length === 0) listEl.innerHTML = '<div style="padding:14px;color:var(--text-muted);font-size:13px">Nincs találat.</div>'
+}
+
+function selectOpenrouterModel(id) {
+  const sel = document.getElementById('editAgentModel')
+  if (sel) {
+    // Ensure the chosen id exists as an option, then select it.
+    let opt = Array.from(sel.options).find(o => o.value === id)
+    if (!opt) {
+      opt = document.createElement('option')
+      opt.value = id
+      opt.textContent = `🔀 ${id}`
+      sel.appendChild(opt)
+    }
+    sel.value = id
+    sel.dispatchEvent(new Event('change'))
+  }
+  const modal = document.getElementById('openrouterModal')
+  if (modal) modal.hidden = true
+}
+
+document.getElementById('openrouterBrowseBtn')?.addEventListener('click', openOpenrouterModal)
+document.getElementById('openrouterModalClose')?.addEventListener('click', () => { document.getElementById('openrouterModal').hidden = true })
+document.getElementById('openrouterModalCancel')?.addEventListener('click', () => { document.getElementById('openrouterModal').hidden = true })
+document.getElementById('openrouterModalSearch')?.addEventListener('input', renderOpenrouterList)
+document.getElementById('openrouterModalFreeOnly')?.addEventListener('change', renderOpenrouterList)
 
 let modelRestartPollTimer = null
 let modelRestartPollName = null

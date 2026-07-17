@@ -807,6 +807,25 @@
         </div>
       </div>
 
+      <div class="modal-overlay" id="openrouterModal" hidden>
+        <div class="modal-content" style="max-width:660px">
+          <div class="modal-header">
+            <h3>🔀 OpenRouter modell (kézi)</h3>
+            <button class="modal-close" id="openrouterModalClose">&times;</button>
+          </div>
+          <div class="modal-body">
+            <p class="modal-desc">Válassz bármelyik OpenRouter modellt (<span id="openrouterModalAgent"></span>). A kiválasztás a modell-mezőbe kerül; utána Mentés + restart.</p>
+            <input type="text" id="openrouterModalSearch" placeholder="Keresés: név, provider, id..." style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);margin-bottom:8px">
+            <label style="font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:6px;margin-bottom:8px"><input type="checkbox" id="openrouterModalFreeOnly"> Csak ingyenes (:free)</label>
+            <div id="openrouterModalCount" style="font-size:11px;color:var(--text-muted);margin-bottom:4px"></div>
+            <div id="openrouterModalList" style="max-height:340px;overflow-y:auto;border:1px solid var(--border);border-radius:6px"></div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn-secondary" id="openrouterModalCancel">Mégse</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Gallery tab -->
       <div class="connector-tab-content" id="connectorGalleryTab" hidden>
         <div class="catalog-filters" id="catalogFilters">
@@ -2109,8 +2128,6 @@
               </optgroup>
               <optgroup label="🔀 OpenRouter — Auto (heti frissítésű ajánlott)" id="agentModelOpenrouterAutoGroup" style="display:none">
               </optgroup>
-              <optgroup label="🔀 OpenRouter — Kézi (tierenként)" id="agentModelOpenrouterManualGroup" style="display:none">
-              </optgroup>
             </select>
           </div>
           <div class="form-group">
@@ -2267,13 +2284,12 @@
               </optgroup>
               <optgroup label="🔀 OpenRouter — Auto (heti frissítésű ajánlott)" id="openrouterAutoGroup" style="display:none">
               </optgroup>
-              <optgroup label="🔀 OpenRouter — Kézi (tierenként)" id="openrouterManualGroup" style="display:none">
-              </optgroup>
               <optgroup label="🏠 Ollama (lokális)" id="ollamaModelGroup">
               </optgroup>
             </select>
             <button class="btn-secondary btn-compact agent-save-section" id="saveModelBtn" data-i18n="common.btn.save">Mentés</button>
             <button class="btn-secondary btn-compact" id="modelSuggestBtn" style="margin-left:6px" data-i18n="agents.settings.model_suggest_btn">Javaslat</button>
+            <button class="btn-secondary btn-compact" id="openrouterBrowseBtn" style="margin-left:6px;display:none" title="Válassz bármelyik OpenRouter modellt (kézi)">🔀 OpenRouter</button>
             <small id="deepseekHint" style="display:none;margin-top:6px;color:var(--text-muted);font-size:12px;line-height:1.4">
               <span data-i18n="agents.deepseek_hint_pre">DeepSeek-V4-Pro nincs konfigurálva.</span> <a href="#" id="deepseekConfigLink" data-i18n="agents.deepseek_link">API kulcs hozzáadása</a> <span data-i18n="agents.deepseek_hint_post">a Vault oldalon.</span>
             </small>

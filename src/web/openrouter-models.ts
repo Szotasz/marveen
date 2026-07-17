@@ -67,6 +67,46 @@ export function loadOpenRouterCatalog(): OpenRouterCatalog {
   return DEFAULT_CATALOG
 }
 
+// --- Full catalog for the manual picker ---
+// The dashboard "OpenRouter" browse popup lists every model so the operator can
+// pick/test any of them (not just the tier picks). OpenRouter's /models list is
+// public; we cache it in-memory to avoid re-fetching on every popup open.
+
+export interface OpenRouterModelInfo {
+  id: string
+  name: string
+  contextLength: number
+  promptPrice: number      // USD per 1M prompt tokens
+  completionPrice: number  // USD per 1M completion tokens
+  free: boolean
+}
+
+let allModelsCache: { at: number; models: OpenRouterModelInfo[] } | null = null
+const ALL_MODELS_TTL_MS = 6 * 60 * 60 * 1000 // 6h
+
+export async function fetchAllOpenRouterModels(nowMs: number): Promise<OpenRouterModelInfo[]> {
+  if (allModelsCache && nowMs - allModelsCache.at < ALL_MODELS_TTL_MS) return allModelsCache.models
+  const resp = await fetch('https://openrouter.ai/api/v1/models')
+  if (!resp.ok) throw new Error(`openrouter models fetch: HTTP ${resp.status}`)
+  const data = await resp.json() as { data?: Array<Record<string, unknown>> }
+  const models: OpenRouterModelInfo[] = (data.data ?? []).map(m => {
+    const pricing = (m.pricing ?? {}) as Record<string, string>
+    const prompt = parseFloat(pricing.prompt ?? '0') * 1_000_000
+    const completion = parseFloat(pricing.completion ?? '0') * 1_000_000
+    return {
+      id: String(m.id ?? ''),
+      name: String(m.name ?? m.id ?? ''),
+      contextLength: Number(m.context_length ?? 0),
+      promptPrice: Number.isFinite(prompt) ? prompt : 0,
+      completionPrice: Number.isFinite(completion) ? completion : 0,
+      free: prompt === 0 && completion === 0,
+    }
+  }).filter(m => m.id)
+  models.sort((a, b) => a.id.localeCompare(b.id))
+  allModelsCache = { at: nowMs, models }
+  return models
+}
+
 // Resolve a stored model value to a concrete model id the launcher can use.
 // `openrouter-auto:<tierKey>` -> that tier's current `auto` model. Anything
 // else is returned unchanged. Never throws.
