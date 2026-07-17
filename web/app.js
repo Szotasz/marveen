@@ -3339,6 +3339,41 @@ async function loadAvailableModels() {
       }
     }
     if (hint) hint.style.display = deepseekModels.length === 0 ? 'block' : 'none'
+
+    // OpenRouter: two optgroups per select (Auto = weekly-fresh tier
+    // recommendation, value `openrouter-auto:<tier>`; Manual = the 2 concrete
+    // ids per tier). Backend gates the whole block behind the vault key, so a
+    // null payload means OpenRouter is not connected -> keep the groups hidden.
+    const or = data.openrouter
+    const autoGroups = [document.getElementById('openrouterAutoGroup'), document.getElementById('agentModelOpenrouterAutoGroup')]
+    const manualGroups = [document.getElementById('openrouterManualGroup'), document.getElementById('agentModelOpenrouterManualGroup')]
+    const orTiers = or && Array.isArray(or.tiers) ? or.tiers : []
+    for (const g of autoGroups) {
+      if (!g) continue
+      g.innerHTML = ''
+      if (orTiers.length === 0) { g.style.display = 'none'; continue }
+      g.style.display = ''
+      for (const t of orTiers) {
+        const opt = document.createElement('option')
+        opt.value = t.autoId
+        opt.textContent = `${t.label} — auto (${t.auto})`
+        g.appendChild(opt)
+      }
+    }
+    for (const g of manualGroups) {
+      if (!g) continue
+      g.innerHTML = ''
+      if (orTiers.length === 0) { g.style.display = 'none'; continue }
+      g.style.display = ''
+      for (const t of orTiers) {
+        for (const mid of (Array.isArray(t.manual) ? t.manual : [])) {
+          const opt = document.createElement('option')
+          opt.value = mid
+          opt.textContent = `${t.label.replace(/ —.*/, '')}: ${mid}`
+          g.appendChild(opt)
+        }
+      }
+    }
   } catch { /* dashboard not available */ }
 }
 
