@@ -3377,6 +3377,9 @@ async function openOpenrouterModal() {
   const searchEl = document.getElementById('openrouterModalSearch')
   const freeEl = document.getElementById('openrouterModalFreeOnly')
   if (!modal || !listEl) return
+  // The modal markup lives inside the (hidden) connectors page; reparent it to
+  // <body> so it renders full-viewport regardless of which tab is active.
+  if (modal.parentElement !== document.body) document.body.appendChild(modal)
   if (agentEl) agentEl.textContent = (currentAgent && (currentAgent.displayName || currentAgent.name)) || 'ágens'
   // Two competing .modal-overlay CSS rules: one hides via [hidden], the other
   // via opacity/visibility (toggled by .active). Set both so the modal shows
