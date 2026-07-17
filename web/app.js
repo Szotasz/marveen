@@ -9872,8 +9872,7 @@ function renderGlobalSkillsGrid() {
         ${mtimeStr ? `<span class="skill-card-mtime" title="${t('skills.mtime.title')}">${escapeHtml(mtimeStr)}</span>` : ''}
       </div>` : ''}
     `
-    // Local skills open detail via global skill name (agentId is display only)
-    card.addEventListener('click', () => openSkillDetail(skill.name, skill.label))
+    card.addEventListener('click', () => openSkillDetail(skill.name, skill.label, skill.agentId || null))
     skillsGrid.appendChild(card)
   }
 
@@ -9882,6 +9881,7 @@ function renderGlobalSkillsGrid() {
 }
 
 let _skillDetailCurrentName = null
+let _skillDetailCurrentAgentId = null
 let _skillDetailIsPlugin = false
 
 function _skillDetailExitEdit() {
@@ -9895,8 +9895,9 @@ function _skillDetailExitEdit() {
   editBtn.disabled = false
 }
 
-async function openSkillDetail(skillName, displayLabel) {
+async function openSkillDetail(skillName, displayLabel, agentId = null) {
   _skillDetailCurrentName = skillName
+  _skillDetailCurrentAgentId = agentId
   _skillDetailExitEdit()
 
   document.getElementById('skillDetailTitle').textContent = displayLabel || skillName
@@ -9908,7 +9909,10 @@ async function openSkillDetail(skillName, displayLabel) {
   }
 
   try {
-    const res = await fetch(`/api/skills/${encodeURIComponent(skillName)}`)
+    const detailUrl = agentId
+      ? `/api/skills/${encodeURIComponent(skillName)}?agent=${encodeURIComponent(agentId)}`
+      : `/api/skills/${encodeURIComponent(skillName)}`
+    const res = await fetch(detailUrl)
     if (!res.ok) throw new Error('Failed to fetch skill detail')
     const detail = await res.json()
     _skillDetailIsPlugin = detail.source === 'plugin'
@@ -10029,7 +10033,10 @@ async function openSkillDetail(skillName, displayLabel) {
       const newContent = editor.value
       saveBtn.disabled = true
       try {
-        const res = await fetch(`/api/skills/${encodeURIComponent(_skillDetailCurrentName)}`, {
+        const putUrl = _skillDetailCurrentAgentId
+          ? `/api/skills/${encodeURIComponent(_skillDetailCurrentName)}?agent=${encodeURIComponent(_skillDetailCurrentAgentId)}`
+          : `/api/skills/${encodeURIComponent(_skillDetailCurrentName)}`
+        const res = await fetch(putUrl, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ content: newContent }),
