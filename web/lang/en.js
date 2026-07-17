@@ -462,7 +462,7 @@ window._i18n.en = {
 
   // --- Skills ---
   'skills.page_title':           'Skills',
-  'skills.page_subtitle':        'Skills visible to Claude Code (user folder + plugin cache)',
+  'skills.page_subtitle':        'Skills visible to Claude Code: global (user folder + plugin cache) and agent-local',
   'skills.stat.total':           'Total',
   'skills.stat.user':            'User (own)',
   'skills.stat.plugin':          'Plugin',

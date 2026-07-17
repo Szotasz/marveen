@@ -675,7 +675,7 @@ window._i18n.hu = {
 
   // --- Skills ---
   'skills.page_title':           'Skillek',
-  'skills.page_subtitle':        'A Claude Code által látott skillek (user mappa + plugin cache)',
+  'skills.page_subtitle':        'A Claude Code által látott skillek: globális (user mappa + plugin cache) és ágens-saját',
   'skills.stat.total':           'Összes',
   'skills.stat.user':            'User (saját)',
   'skills.stat.plugin':          'Plugin',
