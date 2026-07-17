@@ -2844,7 +2844,22 @@ async function openAgentDetail(agentName) {
   // Settings tab - load Ollama + DeepSeek models then set value
   loadAvailableModels()
   loadOllamaModels().then(() => {
-    document.getElementById('editAgentModel').value = currentAgent.activeModel || currentAgent.model || 'claude-opus-4-8[1m]'
+    const sel = document.getElementById('editAgentModel')
+    const mv = currentAgent.activeModel || currentAgent.model || 'claude-opus-4-8[1m]'
+    // The model <select> is one shared element reused per agent. A manual
+    // OpenRouter id (or openrouter-auto:tier) may not be among the static/auto
+    // options, so setting .value would silently show nothing. Inject THIS
+    // agent's model as a selectable option (cleaning any stale injected ones
+    // first) so every agent always displays its own model, per-agent.
+    Array.from(sel.querySelectorAll('option.dynamic-model-opt')).forEach(o => o.remove())
+    if (!Array.from(sel.options).some(o => o.value === mv)) {
+      const opt = document.createElement('option')
+      opt.value = mv
+      opt.className = 'dynamic-model-opt'
+      opt.textContent = mv.startsWith('openrouter-auto:') ? `🔀 ${mv}` : `🔀 ${mv}`
+      sel.appendChild(opt)
+    }
+    sel.value = mv
   })
   populateProfileSelect(
     document.getElementById('editAgentProfile'),
@@ -3440,6 +3455,7 @@ function selectOpenrouterModel(id) {
     if (!opt) {
       opt = document.createElement('option')
       opt.value = id
+      opt.className = 'dynamic-model-opt'
       opt.textContent = `🔀 ${id}`
       sel.appendChild(opt)
     }
