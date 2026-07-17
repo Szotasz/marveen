@@ -486,14 +486,14 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
     : null
   const text = (mcpMissing
     ? [
-        `[${BOT_NAME} scheduler] A(z) "${view.taskName}" (${view.agentName}) feladat NEM tud lefutni: a szukseges MCP szerver(ek) nem futnak a cel-sessionben: ${mcpMissing}.`,
-        `Elso probalkozas: ${firstAttempt} (${ageMinutes} perce).`,
-        'Amint az MCP szerver ujra el, a feladat magatol lefut; a dashboard /Utemezesek oldalan visszavonhato.',
+        `[${BOT_NAME} scheduler] A(z) "${view.taskName}" (${view.agentName}) feladat NEM tud lefutni: a szükséges MCP szerver(ek) nem futnak a cél-sessionben: ${mcpMissing}.`,
+        `Első próbálkozás: ${firstAttempt} (${ageMinutes} perce).`,
+        'Amint az MCP szerver újra elérhető, a feladat magától lefut; a dashboard /Ütemezések oldalán visszavonható.',
       ]
     : [
-        `[${BOT_NAME} scheduler] A(z) "${view.taskName}" (${view.agentName}) utemezett feladat ${ageMinutes} perce varakozik.`,
-        `Elso probalkozas: ${firstAttempt}.`,
-        'A rendszer tovabb probalkozik; a dashboard /Utemezesek oldalan visszavonhato.',
+        `[${BOT_NAME} scheduler] A(z) "${view.taskName}" (${view.agentName}) ütemezett feladat ${ageMinutes} perce várakozik.`,
+        `Első próbálkozás: ${firstAttempt}.`,
+        'A rendszer tovább próbálkozik; a dashboard /Ütemezések oldalán visszavonható.',
       ]).join('\n')
   ;(async () => {
     try {
