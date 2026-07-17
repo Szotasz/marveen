@@ -9,6 +9,7 @@ import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-mess
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
+import { loadOpenRouterCatalog } from '../openrouter-models.js'
 import {
   agentDir,
   agentConfigRoot,
@@ -470,6 +471,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   // both in the "new agent" wizard and the agent edit panel.
   if (path === '/api/models/available' && method === 'GET') {
     const hasDeepseek = getSecret('DEEPSEEK_API_KEY') !== null
+    // OpenRouter is gated behind the vault key, same as DeepSeek: surfacing the
+    // options without the key would let the operator pick a model that 401s.
+    const hasOpenRouter = getSecret('openrouter-fleet-key') !== null
+    const orCatalog = loadOpenRouterCatalog()
     json(res, {
       claude: [
         { id: 'claude-fable-5', label: 'Fable 5 (legújabb)' },
@@ -484,6 +489,22 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
           ]
         : [],
       deepseekConfigured: hasDeepseek,
+      // OpenRouter tiers for the model picker. `auto` per tier feeds the "Auto"
+      // mode (stored as `openrouter-auto:<tierKey>`, resolved weekly-fresh at
+      // launch); `manual` (2 ids) feeds the "Manual" mode.
+      openrouter: hasOpenRouter
+        ? {
+            updated: orCatalog.updated,
+            tiers: orCatalog.tiers.map(t => ({
+              key: t.key,
+              label: t.label,
+              autoId: `openrouter-auto:${t.key}`,
+              auto: t.auto,
+              manual: t.manual,
+            })),
+          }
+        : null,
+      openrouterConfigured: hasOpenRouter,
     })
     return true
   }
