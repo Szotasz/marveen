@@ -505,7 +505,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
           }
         : null,
       // User-curated manual models (ticked in the main agent's browse popup).
-      // Feeds the "OpenRouter — kézi" optgroup in every agent's model dropdown.
+      // Feeds the "OpenRouter - kézi" optgroup in every agent's model dropdown.
       openrouterManual: hasOpenRouter ? loadCuratedManual() : [],
       openrouterConfigured: hasOpenRouter,
     })

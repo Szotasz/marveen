@@ -3376,11 +3376,11 @@ async function loadAvailableModels() {
       for (const t of orTiers) {
         const opt = document.createElement('option')
         opt.value = t.autoId
-        opt.textContent = `${t.label} — auto (${t.auto})`
+        opt.textContent = `${t.label} - auto (${t.auto})`
         g.appendChild(opt)
       }
     }
-    // Manual = the user-curated list -> "OpenRouter — kézi" optgroup in every
+    // Manual = the user-curated list -> "OpenRouter - kézi" optgroup in every
     // select. Curated once (main agent's browse popup, checkboxes); assignable
     // per agent here. Empty list -> group hidden.
     const orManual = Array.isArray(data.openrouterManual) ? data.openrouterManual : []

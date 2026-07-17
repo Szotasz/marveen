@@ -25,7 +25,7 @@ import { logger } from '../logger.js'
 export const AUTO_PREFIX = 'openrouter-auto:'
 export const OPENROUTER_MODELS_FILE = join(STORE_DIR, 'openrouter-models.json')
 // User-curated "manual" model list. The main agent's OpenRouter browse popup
-// ticks/unticks models here; the ticked set becomes the "OpenRouter — kézi"
+// ticks/unticks models here; the ticked set becomes the "OpenRouter - kézi"
 // optgroup available in EVERY agent's model dropdown. Curation (this file) is
 // deliberately separate from per-agent assignment (writeAgentModel).
 export const OPENROUTER_MANUAL_FILE = join(STORE_DIR, 'openrouter-manual.json')
@@ -47,15 +47,15 @@ export interface OpenRouterCatalog {
 const DEFAULT_CATALOG: OpenRouterCatalog = {
   updated: '2026-07-13 (default)',
   tiers: [
-    { key: 'tier0', label: 'Tier 0 — Free / bulk', auto: 'meta-llama/llama-3.3-70b-instruct:free',
+    { key: 'tier0', label: 'Tier 0 - Free / bulk', auto: 'meta-llama/llama-3.3-70b-instruct:free',
       manual: ['meta-llama/llama-3.3-70b-instruct:free', 'qwen/qwen3-coder:free'] },
-    { key: 'tier1', label: 'Tier 1 — Workhorse', auto: 'deepseek/deepseek-chat-v3.1',
+    { key: 'tier1', label: 'Tier 1 - Workhorse', auto: 'deepseek/deepseek-chat-v3.1',
       manual: ['deepseek/deepseek-chat-v3.1', 'google/gemini-2.5-flash'] },
-    { key: 'tier2', label: 'Tier 2 — Code', auto: 'qwen/qwen3-coder',
+    { key: 'tier2', label: 'Tier 2 - Code', auto: 'qwen/qwen3-coder',
       manual: ['qwen/qwen3-coder', 'mistralai/codestral-2508'] },
-    { key: 'tier3', label: 'Tier 3 — Heavy reasoning', auto: 'anthropic/claude-sonnet-5',
+    { key: 'tier3', label: 'Tier 3 - Heavy reasoning', auto: 'anthropic/claude-sonnet-5',
       manual: ['anthropic/claude-sonnet-5', 'google/gemini-3.1-pro'] },
-    { key: 'tier4', label: 'Tier 4 — Vision', auto: 'google/gemini-2.5-flash',
+    { key: 'tier4', label: 'Tier 4 - Vision', auto: 'google/gemini-2.5-flash',
       manual: ['google/gemini-2.5-flash', 'qwen/qwen3-vl-30b-a3b-instruct'] },
   ],
 }
