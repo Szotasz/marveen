@@ -9550,94 +9550,6 @@ function deriveSkillCategory(name) {
   return seg.split('-')[0] || seg
 }
 
-// Simple inline markdown renderer -- no external dependencies.
-// Handles: headings, bold, italic, code blocks, inline code, lists, hr, links.
-function renderMarkdown(text) {
-  if (!text) return ''
-  const escHtml = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  const lines = text.split('\n')
-  let html = ''
-  let inCodeBlock = false
-  let codeAccum = ''
-  let codeLang = ''
-  let inList = false
-
-  const flushList = () => {
-    if (inList) { html += '</ul>'; inList = false }
-  }
-
-  const inlineRender = (raw) => {
-    let s = escHtml(raw)
-    // inline code
-    s = s.replace(/`([^`]+)`/g, '<code>$1</code>')
-    // bold
-    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    // italic (single *)
-    s = s.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>')
-    // links
-    s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-    return s
-  }
-
-  for (const line of lines) {
-    if (line.trim().startsWith('```')) {
-      if (inCodeBlock) {
-        html += `<pre><code class="language-${escHtml(codeLang)}">${escHtml(codeAccum.replace(/\n$/, ''))}</code></pre>`
-        codeAccum = ''
-        codeLang = ''
-        inCodeBlock = false
-      } else {
-        flushList()
-        codeLang = line.trim().slice(3).trim()
-        inCodeBlock = true
-      }
-      continue
-    }
-    if (inCodeBlock) { codeAccum += line + '\n'; continue }
-
-    const trimmed = line.trim()
-
-    if (/^---+$/.test(trimmed)) { flushList(); html += '<hr>'; continue }
-
-    const headingMatch = trimmed.match(/^(#{1,4})\s+(.+)/)
-    if (headingMatch) {
-      flushList()
-      const level = headingMatch[1].length
-      html += `<h${level}>${inlineRender(headingMatch[2])}</h${level}>`
-      continue
-    }
-
-    const listMatch = trimmed.match(/^[-*]\s+(.+)/)
-    if (listMatch) {
-      if (!inList) { html += '<ul>'; inList = true }
-      html += `<li>${inlineRender(listMatch[1])}</li>`
-      continue
-    }
-
-    const olMatch = trimmed.match(/^\d+\.\s+(.+)/)
-    if (olMatch) {
-      if (inList) { html += '</ul>'; inList = false }
-      html += `<li>${inlineRender(olMatch[1])}</li>`
-      continue
-    }
-
-    if (trimmed === '') {
-      flushList()
-      html += '<br>'
-      continue
-    }
-
-    flushList()
-    html += `<p>${inlineRender(trimmed)}</p>`
-  }
-
-  if (inCodeBlock) {
-    html += `<pre><code>${escHtml(codeAccum)}</code></pre>`
-  }
-  flushList()
-  return html
-}
-
 function formatMtime(ms) {
   if (!ms) return ''
   const d = new Date(ms)
@@ -14099,7 +14011,7 @@ function renderMarkdown(md) {
       i++
       while (i < lines.length && !/^```\s*$/.test(lines[i])) { code.push(lines[i]); i++ }
       i++
-      out.push('<pre><code>' + escapeHtml(code.join('\n')) + '</code></pre>')
+      out.push('<pre><code' + (fence[1] ? ' class="language-' + escapeHtml(fence[1]) + '"' : '') + '>' + escapeHtml(code.join('\n')) + '</code></pre>')
       continue
     }
     const h = line.match(/^(#{1,6})\s+(.*)$/)
@@ -14195,7 +14107,7 @@ async function openDoc(name) {
       '<div class="docs-content-toolbar">' +
         '<button class="btn-secondary btn-compact" id="docsDownloadBtn">' + t('docs.download_btn') + '</button>' +
       '</div>' +
-      '<div class="docs-rendered markdown-body">' + renderMarkdown(content) + '</div>'
+      '<div class="docs-rendered markdown-body md-rendered">' + renderMarkdown(content) + '</div>'
     const dl = document.getElementById('docsDownloadBtn')
     if (dl) dl.addEventListener('click', () => downloadMarkdown(name, content))
   } catch (e) {

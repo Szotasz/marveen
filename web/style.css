@@ -5422,6 +5422,12 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
 .skill-detail-rendered strong { font-weight: 700; }
 .skill-detail-rendered em { font-style: italic; }
 
+/* Shared marker class for all renderMarkdown() output containers.
+   Context-specific sizing lives in .skill-detail-rendered / .markdown-body. */
+.md-rendered code { font-family: 'SF Mono','Fira Code',ui-monospace,Menlo,monospace; }
+.md-rendered pre code { background: none; padding: 0; }
+.md-rendered :not(pre) > code { border-radius: 3px; padding: 1px 5px; }
+
 .skills-stats {
   display: flex;
   gap: 12px;
