@@ -252,6 +252,11 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     // When ?agent=<id> is supplied, resolve from that agent's local skills dir.
     const agentParam = ctx.url.searchParams.get('agent')
     if (agentParam) {
+      const validAgentIds = new Set([MAIN_AGENT_ID, ...listAgentNames()])
+      if (!validAgentIds.has(agentParam)) {
+        json(res, { error: 'Skill not found' }, 404)
+        return true
+      }
       const agentSkillsRoot = agentParam === MAIN_AGENT_ID
         ? join(PROJECT_ROOT, '.claude', 'skills')
         : join(agentDir(agentParam), '.claude', 'skills')
@@ -521,6 +526,11 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
 
     const agentPutParam = ctx.url.searchParams.get('agent')
     if (agentPutParam) {
+      const validPutAgentIds = new Set([MAIN_AGENT_ID, ...listAgentNames()])
+      if (!validPutAgentIds.has(agentPutParam)) {
+        json(res, { error: 'Skill not found' }, 404)
+        return true
+      }
       const agentSkillsRoot = agentPutParam === MAIN_AGENT_ID
         ? join(PROJECT_ROOT, '.claude', 'skills')
         : join(agentDir(agentPutParam), '.claude', 'skills')

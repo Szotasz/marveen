@@ -160,6 +160,16 @@ describe('GET /api/skills/:name?agent=<id> (agent-local detail)', () => {
     await tryHandleSkills(ctx)
     expect(out.status).toBe(404)
   })
+
+  it('rejects traversal-looking agent param with 404 not 500', async () => {
+    // Previously agentDir() threw for unknown/traversal agent ids -> generic 500.
+    // After whitelist validation, unknown ids return 404 before agentDir is called.
+    const { ctx, out } = fakeCtx(
+      `/api/skills/some-skill?agent=${encodeURIComponent('../../etc')}`,
+    )
+    await tryHandleSkills(ctx)
+    expect(out.status).toBe(404)
+  })
 })
 
 describe('PUT /api/skills/:name?agent=<id> (agent-local edit)', () => {
@@ -222,5 +232,15 @@ describe('PUT /api/skills/:name?agent=<id> (agent-local edit)', () => {
     )
     await tryHandleSkills(ctx)
     expect(out.status).toBe(400)
+  })
+
+  it('rejects traversal-looking agent param in PUT with 404 not 500', async () => {
+    const { ctx, out } = fakeCtxWithBody(
+      `/api/skills/some-skill?agent=${encodeURIComponent('../../etc')}`,
+      'PUT',
+      { content: 'evil' },
+    )
+    await tryHandleSkills(ctx)
+    expect(out.status).toBe(404)
   })
 })
