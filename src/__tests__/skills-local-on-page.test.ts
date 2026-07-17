@@ -21,6 +21,19 @@ describe('local agent skills on global Skills page', () => {
     expect(SKILLS).toContain("source: 'agent'")
   })
 
+  it('main agent is NOT skipped -- no bare continue after MAIN_AGENT_ID check', () => {
+    // Previously: `if (agentName === MAIN_AGENT_ID) continue` excluded 29 skills.
+    // The fix uses a PROJECT_ROOT branch instead of skipping entirely.
+    expect(SKILLS).not.toMatch(/if \(agentName === MAIN_AGENT_ID\) continue/)
+  })
+
+  it('main agent skills path uses PROJECT_ROOT not agentDir', () => {
+    // The main agent has no agents/<id>/ directory; its local skills live at
+    // PROJECT_ROOT/.claude/skills (same pattern as CLAUDE.md path resolution).
+    expect(SKILLS).toContain('PROJECT_ROOT')
+    expect(SKILLS).toMatch(/MAIN_AGENT_ID[\s\S]{0,200}PROJECT_ROOT/)
+  })
+
   it('loadGlobalSkills fetches both /api/skills and /api/skills/local', () => {
     expect(APP).toContain("fetch('/api/skills')")
     expect(APP).toContain("fetch('/api/skills/local')")

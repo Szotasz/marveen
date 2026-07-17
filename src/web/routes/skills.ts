@@ -6,7 +6,7 @@ import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { AGENTS_BASE_DIR, listAgentNames, readFileOr, agentDir } from '../agent-config.js'
-import { MAIN_AGENT_ID } from '../../config.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
@@ -174,8 +174,12 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     }
     const result: LocalSkillEntry[] = []
     for (const agentName of listAgentNames()) {
-      if (agentName === MAIN_AGENT_ID) continue
-      const skillsDir = join(agentDir(agentName), '.claude', 'skills')
+      // The main agent's local skills live at PROJECT_ROOT/.claude/skills (not
+      // under agents/<id>/, which does not exist). Same pattern as CLAUDE.md path
+      // resolution in ensureAutonomySection.
+      const skillsDir = agentName === MAIN_AGENT_ID
+        ? join(PROJECT_ROOT, '.claude', 'skills')
+        : join(agentDir(agentName), '.claude', 'skills')
       if (!existsSync(skillsDir)) continue
       let entries: string[] = []
       try { entries = readdirSync(skillsDir) } catch { continue }
