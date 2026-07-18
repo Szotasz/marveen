@@ -11,13 +11,29 @@
 // it force-restarts anyway -- taskstate + kanban + hot memories are the
 // fallback context.
 //
+// On top of the (opt-in) proactive tiers sits an ALWAYS-ON saturation net:
+// once a pane reads "100% context used", prompt dispatch refuses it and the
+// in-TUI auto-compact -- which only runs when a new turn starts -- can never
+// fire, so without external action the agent is wedged forever (samu,
+// 2026-07-18). The net fresh-restarts such a pane after a confirmation sweep.
+//
 // This module is dependency-free (no clock, tmux, or fs) so the state machine
 // is unit-testable. The I/O lives in src/web/context-guard-runner.ts.
 
 export interface ContextGuardConfig {
-  /** Master toggle. Default FALSE: the guard is opt-in per agent, so it never
-   *  double-restarts against the existing context-clean path (#525). */
+  /** Master toggle for the PROACTIVE tiers (actPct handoff / hardPct restart).
+   *  Default FALSE: opt-in per agent. (The original rationale -- avoiding a
+   *  double-restart against the #525 context-clean path -- is moot, #525 was
+   *  closed unmerged; the toggle stays because a proactive handoff/restart
+   *  cycle remains an operator choice.) */
   enabled: boolean
+  /** Saturation safety net: fresh-restart an agent whose pane shows "100%
+   *  context used". Default TRUE and independent of `enabled`, because a
+   *  saturated pane can NEVER recover on its own: prompt dispatch refuses it
+   *  (isSessionReadyForPrompt), so Claude Code's next-turn auto-compact never
+   *  gets a turn to run in -- a pull-model deadlock (samu, 2026-07-18: 34h
+   *  session wedged at 976k tokens, 20k+ dispatch refusals, zero compacts). */
+  saturationRestart: boolean
   /** Context fraction at which the handoff sequence starts. */
   actPct: number
   /** Context fraction at which we stop waiting for anything and force a fresh
@@ -34,6 +50,7 @@ export interface ContextGuardConfig {
 
 export const DEFAULT_CONTEXT_GUARD: ContextGuardConfig = {
   enabled: false,
+  saturationRestart: true,
   actPct: 0.90,
   hardPct: 0.97,
   limitTokens: null,
@@ -57,6 +74,7 @@ export function normalizeContextGuardConfig(raw: unknown): ContextGuardConfig {
   }
   return {
     enabled: o.enabled === true, // default-off (opt-in): only an explicit true enables
+    saturationRestart: o.saturationRestart !== false, // default-ON: only an explicit false disarms the net
     actPct,
     hardPct,
     limitTokens,
@@ -102,6 +120,8 @@ export interface GuardState {
   deadlineMs: number
   /** cooldown → when the guard re-arms. */
   cooldownUntilMs: number
+  /** Consecutive idle-phase sweeps that saw a saturated pane (debounce). */
+  saturatedStreak: number
 }
 
 export const INITIAL_GUARD_STATE: GuardState = {
@@ -109,7 +129,15 @@ export const INITIAL_GUARD_STATE: GuardState = {
   handoffMtimeAtRequest: null,
   deadlineMs: 0,
   cooldownUntilMs: 0,
+  saturatedStreak: 0,
 }
+
+/** Idle-phase sweeps that must agree the pane is saturated before the net
+ *  restarts (one sweep apart, so ~one runner interval of extra latency). A
+ *  genuinely saturated pane stays saturated forever; anything transient --
+ *  a scrollback quote scrolling through the footer region, a mid-render
+ *  frame -- clears by the next sweep. */
+export const SATURATION_CONFIRM_SWEEPS = 2
 
 export interface GuardInputs {
   nowMs: number
@@ -123,6 +151,8 @@ export interface GuardInputs {
   sessionReady: boolean
   /** Current HANDOFF.md mtime (ms), or null when the file does not exist. */
   handoffMtime: number | null
+  /** Pane footer shows context saturation ("100% context used" & co). */
+  paneSaturated: boolean
 }
 
 export type GuardActionType = 'none' | 'request-handoff' | 'restart' | 'inject-resume'
@@ -147,6 +177,7 @@ function cooldown(nowMs: number, cfg: ContextGuardConfig, reason: string): Guard
       handoffMtimeAtRequest: null,
       deadlineMs: 0,
       cooldownUntilMs: nowMs + cfg.cooldownMinutes * 60_000,
+      saturatedStreak: 0,
     },
   }
 }
@@ -160,6 +191,7 @@ function restartDecision(nowMs: number, reason: string): GuardDecision {
       handoffMtimeAtRequest: null,
       deadlineMs: nowMs + READY_TIMEOUT_MS,
       cooldownUntilMs: 0,
+      saturatedStreak: 0,
     },
   }
 }
@@ -177,7 +209,7 @@ export function decideGuard(
   const none = (reason: string, next: GuardState = state): GuardDecision =>
     ({ action: 'none', reason, nextState: next })
 
-  if (!cfg.enabled) return none('disabled', INITIAL_GUARD_STATE)
+  if (!cfg.enabled && !cfg.saturationRestart) return none('disabled', INITIAL_GUARD_STATE)
 
   switch (state.phase) {
     case 'cooldown': {
@@ -186,8 +218,20 @@ export function decideGuard(
     }
 
     case 'idle': {
-      if (!inputs.running) return none('not running')
-      if (inputs.pct === null) return none('context unmeasurable')
+      if (!inputs.running) return none('not running', INITIAL_GUARD_STATE)
+      // Saturation net first: it needs no pct (works even when the transcript
+      // is unreadable or the limit is miscalibrated) and outranks the
+      // proactive tiers -- a saturated pane is already past all of them.
+      if (cfg.saturationRestart && inputs.paneSaturated) {
+        const streak = state.saturatedStreak + 1
+        if (streak >= SATURATION_CONFIRM_SWEEPS) {
+          return restartDecision(nowMs, `pane saturated (100% context) for ${streak} sweeps -- unrecoverable without restart`)
+        }
+        return none('pane saturated, awaiting confirmation sweep', { ...state, saturatedStreak: streak })
+      }
+      const cleared = state.saturatedStreak > 0 ? { ...state, saturatedStreak: 0 } : state
+      if (!cfg.enabled) return none('proactive guard disabled (saturation net armed)', cleared)
+      if (inputs.pct === null) return none('context unmeasurable', cleared)
       if (inputs.pct >= cfg.hardPct) {
         // Deep in the danger zone: the pane may already be wedged behind an
         // error/modal, so do not spend a turn asking for a handoff.
@@ -202,17 +246,28 @@ export function decideGuard(
             handoffMtimeAtRequest: inputs.handoffMtime,
             deadlineMs: nowMs + cfg.handoffTimeoutMinutes * 60_000,
             cooldownUntilMs: 0,
+            saturatedStreak: 0,
           },
         }
       }
-      return none('below threshold')
+      return none('below threshold', cleared)
     }
 
     case 'await-handoff': {
+      if (!cfg.enabled) {
+        // Operator disabled the proactive guard mid-sequence; stand down.
+        return cooldown(nowMs, cfg, 'guard disabled during await-handoff')
+      }
       if (!inputs.running) {
         // Someone restarted/stopped the agent externally mid-sequence; a fresh
         // session has a small context, so stand down instead of restarting it.
         return cooldown(nowMs, cfg, 'agent stopped externally during await-handoff')
+      }
+      if (cfg.saturationRestart && inputs.paneSaturated) {
+        // The pane tipped over while we waited for the handoff: the agent can
+        // no longer act on the request, so restart now (no debounce -- the
+        // act-threshold pct already corroborates a near-full context).
+        return restartDecision(nowMs, 'pane saturated during await-handoff')
       }
       const handoffWritten =
         inputs.handoffMtime !== null &&
@@ -241,6 +296,7 @@ export function decideGuard(
             handoffMtimeAtRequest: null,
             deadlineMs: 0,
             cooldownUntilMs: nowMs + cfg.cooldownMinutes * 60_000,
+            saturatedStreak: 0,
           },
         }
       }

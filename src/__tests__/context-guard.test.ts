@@ -7,6 +7,7 @@ import {
   DEFAULT_CONTEXT_GUARD,
   INITIAL_GUARD_STATE,
   READY_TIMEOUT_MS,
+  SATURATION_CONFIRM_SWEEPS,
   type ContextGuardConfig,
   type GuardInputs,
   type GuardState,
@@ -25,6 +26,7 @@ function inputs(overrides: Partial<GuardInputs> = {}): GuardInputs {
     paneIdle: true,
     sessionReady: false,
     handoffMtime: null,
+    paneSaturated: false,
     ...overrides,
   }
 }
@@ -92,10 +94,97 @@ describe('decideGuard: idle', () => {
     expect(d.nextState.phase).toBe('await-ready')
   })
 
-  it('resets to initial state when disabled', () => {
-    const disabled = { ...CFG, enabled: false }
-    const stale: GuardState = { phase: 'await-handoff', handoffMtimeAtRequest: 1, deadlineMs: 2, cooldownUntilMs: 0 }
-    const d = decideGuard(stale, inputs({ pct: 0.99 }), disabled)
+  it('resets to initial state when fully disarmed (guard + net off)', () => {
+    const disarmed = { ...CFG, enabled: false, saturationRestart: false }
+    const stale: GuardState = { phase: 'await-handoff', handoffMtimeAtRequest: 1, deadlineMs: 2, cooldownUntilMs: 0, saturatedStreak: 0 }
+    const d = decideGuard(stale, inputs({ pct: 0.99, paneSaturated: true }), disarmed)
+    expect(d.action).toBe('none')
+    expect(d.nextState).toEqual(INITIAL_GUARD_STATE)
+  })
+
+  it('stands down a stale await-handoff into cooldown when the guard is disabled mid-sequence', () => {
+    const netOnly = { ...CFG, enabled: false }
+    const stale: GuardState = { phase: 'await-handoff', handoffMtimeAtRequest: 1, deadlineMs: 2, cooldownUntilMs: 0, saturatedStreak: 0 }
+    const d = decideGuard(stale, inputs({ pct: 0.99 }), netOnly)
+    expect(d.action).toBe('none')
+    expect(d.nextState.phase).toBe('cooldown')
+  })
+})
+
+describe('saturation net (samu 2026-07-18 stall)', () => {
+  // A saturated pane refuses prompt dispatch, so Claude Code's next-turn
+  // auto-compact can never run: only an external fresh restart recovers it.
+  const netOnly: ContextGuardConfig = { ...DEFAULT_CONTEXT_GUARD } // enabled:false, saturationRestart:true
+
+  it('is armed by default and survives garbage config', () => {
+    expect(DEFAULT_CONTEXT_GUARD.saturationRestart).toBe(true)
+    expect(normalizeContextGuardConfig(null).saturationRestart).toBe(true)
+    expect(normalizeContextGuardConfig({ saturationRestart: 0 }).saturationRestart).toBe(true)
+    expect(normalizeContextGuardConfig({ saturationRestart: false }).saturationRestart).toBe(false)
+  })
+
+  it('restarts a saturated pane after the confirmation sweep, even with the proactive guard off and pct null', () => {
+    let state = INITIAL_GUARD_STATE
+    for (let sweep = 1; sweep < SATURATION_CONFIRM_SWEEPS; sweep++) {
+      const d = decideGuard(state, inputs({ paneSaturated: true }), netOnly)
+      expect(d.action).toBe('none')
+      expect(d.nextState.saturatedStreak).toBe(sweep)
+      state = d.nextState
+    }
+    const final = decideGuard(state, inputs({ paneSaturated: true }), netOnly)
+    expect(final.action).toBe('restart')
+    expect(final.reason).toContain('saturated')
+    expect(final.nextState.phase).toBe('await-ready')
+  })
+
+  it('clears the streak when the pane recovers before confirmation', () => {
+    const first = decideGuard(INITIAL_GUARD_STATE, inputs({ paneSaturated: true }), netOnly)
+    expect(first.nextState.saturatedStreak).toBe(1)
+    const second = decideGuard(first.nextState, inputs({ paneSaturated: false }), netOnly)
+    expect(second.action).toBe('none')
+    expect(second.nextState.saturatedStreak).toBe(0)
+  })
+
+  it('outranks the proactive tiers when both would fire (no handoff request into a dead pane)', () => {
+    const state: GuardState = { ...INITIAL_GUARD_STATE, saturatedStreak: SATURATION_CONFIRM_SWEEPS - 1 }
+    const d = decideGuard(state, inputs({ pct: 0.91, paneSaturated: true }), CFG)
+    expect(d.action).toBe('restart')
+  })
+
+  it('restarts without debounce when saturation appears during await-handoff', () => {
+    const awaiting: GuardState = {
+      phase: 'await-handoff',
+      handoffMtimeAtRequest: 100,
+      deadlineMs: NOW + 60_000,
+      cooldownUntilMs: 0,
+      saturatedStreak: 0,
+    }
+    const d = decideGuard(awaiting, inputs({ paneSaturated: true, paneIdle: false }), CFG)
+    expect(d.action).toBe('restart')
+    expect(d.reason).toContain('saturated')
+  })
+
+  it('does nothing for a saturated pane when the net is explicitly disarmed', () => {
+    const disarmed = { ...DEFAULT_CONTEXT_GUARD, saturationRestart: false }
+    const d = decideGuard(INITIAL_GUARD_STATE, inputs({ paneSaturated: true }), disarmed)
+    expect(d.action).toBe('none')
+  })
+
+  it('respects cooldown after a net restart (no restart loop)', () => {
+    const cooling: GuardState = {
+      phase: 'cooldown',
+      handoffMtimeAtRequest: null,
+      deadlineMs: 0,
+      cooldownUntilMs: NOW + 60_000,
+      saturatedStreak: 0,
+    }
+    const d = decideGuard(cooling, inputs({ paneSaturated: true }), netOnly)
+    expect(d.action).toBe('none')
+    expect(d.nextState.phase).toBe('cooldown')
+  })
+
+  it('does not touch a stopped agent', () => {
+    const d = decideGuard(INITIAL_GUARD_STATE, inputs({ paneSaturated: true, running: false }), netOnly)
     expect(d.action).toBe('none')
     expect(d.nextState).toEqual(INITIAL_GUARD_STATE)
   })
@@ -107,6 +196,7 @@ describe('decideGuard: await-handoff', () => {
     handoffMtimeAtRequest: 100,
     deadlineMs: NOW + 60_000,
     cooldownUntilMs: 0,
+    saturatedStreak: 0,
   }
 
   it('restarts once the handoff is written and the pane is idle', () => {
@@ -158,6 +248,7 @@ describe('decideGuard: await-ready', () => {
     handoffMtimeAtRequest: null,
     deadlineMs: NOW + 60_000,
     cooldownUntilMs: 0,
+    saturatedStreak: 0,
   }
 
   it('injects the resume prompt when the session is ready, then cools down', () => {
@@ -186,6 +277,7 @@ describe('decideGuard: cooldown', () => {
     handoffMtimeAtRequest: null,
     deadlineMs: 0,
     cooldownUntilMs: NOW + 60_000,
+    saturatedStreak: 0,
   }
 
   it('suppresses everything during cooldown, even a huge pct', () => {

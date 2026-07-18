@@ -13,7 +13,7 @@ import {
   isSessionReadyForPrompt,
 } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
-import { paneLooksIdle } from '../pane-state.js'
+import { paneLooksIdle, paneShowsContextSaturation } from '../pane-state.js'
 import { readContextTokensFromProjectDir, readActiveModelFromProjectDir } from './active-model.js'
 import { readContextGuardConfig } from './context-guard-store.js'
 import {
@@ -28,8 +28,11 @@ import {
 // Fleet context guard (kanban #81): acts BEFORE a session drowns in its own
 // context. Sweep every agent (main included) every five minutes; at actPct ask the
 // agent to write HANDOFF.md, then fresh-restart it and inject a resume prompt
-// pointing at the handoff. See src/context-guard.ts for the why and the pure
-// state machine; this module is only the I/O, mirroring auto-restart-runner.
+// pointing at the handoff. The always-on saturation net additionally rescues a
+// pane already showing "100% context used" -- unreachable by prompt dispatch,
+// so nothing else can recover it (samu stall, 2026-07-18). See
+// src/context-guard.ts for the why and the pure state machine; this module is
+// only the I/O, mirroring auto-restart-runner.
 //
 // Remote-host agents are skipped: their transcripts live on the remote machine,
 // so the context size cannot be measured here (v1 limitation, logged once).
@@ -114,7 +117,10 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   const cfg = readContextGuardConfig(name)
   const state = guardStates.get(name) ?? INITIAL_GUARD_STATE
 
-  if (!cfg.enabled) {
+  // Fully disarmed only when BOTH the proactive tiers and the always-on
+  // saturation net are off; the net alone keeps the sweep alive so a
+  // 100%-context pane (which dispatch refuses to prompt) still gets rescued.
+  if (!cfg.enabled && !cfg.saturationRestart) {
     guardStates.delete(name)
     return
   }
@@ -142,10 +148,13 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   const inputs: GuardInputs = {
     nowMs,
     running,
-    pct: running && needPct ? measurePct(name, cfg.limitTokens) : null,
+    // The saturation net decides from the pane alone; only the proactive
+    // tiers need the (transcript-reading) pct probe.
+    pct: running && needPct && cfg.enabled ? measurePct(name, cfg.limitTokens) : null,
     paneIdle: pane !== null ? paneLooksIdle(pane) : false,
     sessionReady,
     handoffMtime: needPct ? handoffMtime(name) : null,
+    paneSaturated: pane !== null ? paneShowsContextSaturation(pane) : false,
   }
 
   const decision = decideGuard(state, inputs, cfg)
@@ -180,6 +189,7 @@ export function getContextGuardStatus(): Array<{
   phase: string
   pct: number | null
   enabled: boolean
+  saturationRestart: boolean
 }> {
   const names = [MAIN_AGENT_ID, ...listAgentNames()]
   return names.map((name) => {
@@ -190,6 +200,7 @@ export function getContextGuardStatus(): Array<{
       phase: guardStates.get(name)?.phase ?? 'idle',
       pct: cfg.enabled && !remote ? measurePct(name, cfg.limitTokens) : null,
       enabled: cfg.enabled,
+      saturationRestart: cfg.saturationRestart,
     }
   })
 }

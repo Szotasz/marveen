@@ -1593,9 +1593,13 @@ export function captureParkedInputView(session: string, host: string | null = nu
 //
 // A saturated pane ("100% context used") is refused up front: it can present
 // as perfectly idle, so without this a new prompt would be dispatched into a
-// session that cannot act on it. We only log/audit the refusal here; how (or
-// whether) to recover the session is left to the caller / operator tooling, so
-// this predicate stays a pure, dependency-free readiness check.
+// session that cannot act on it. We only log/audit the refusal here; recovery
+// is the context-guard runner's saturation net (fresh restart -- see
+// src/web/context-guard-runner.ts), so this predicate stays a pure,
+// dependency-free readiness check. NOTE the refusal is part of a deadlock by
+// design: Claude Code's auto-compact only runs when a new turn starts, and
+// this refusal is exactly what prevents a new turn -- so a saturated session
+// never self-heals and MUST be restarted from outside.
 export async function isSessionReadyForPrompt(session: string, host: string | null = null): Promise<boolean> {
   // Dim-ghost tolerant idle read: CC >=2.1.202 paints a dim placeholder into
   // the empty input box, which a plain capture reads as parked text. Only when
