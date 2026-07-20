@@ -98,7 +98,30 @@ export const OPERATIONAL_TIER: Record<string, number> = {
 const PROVIDER_DERIVED_MIN = 3  // provider_plan_estimate or higher = "provider-derived"
 const REAL_ACTUAL_MIN = 4       // actual_invoice / provider_api / billing_export = a REAL measured cost
 
-interface OpLine { source_id: string; provider: string; billed_cost: number; charge_category: string; confidence: string; data_freshness: number }
+interface OpLine { source_id: string; provider: string; billed_cost: number; charge_category: string; confidence: string; data_freshness: number; source_type?: string }
+
+/**
+ * Istvan's accounting rule (2026-07-20), for an EQUAL-tier collision between an
+ * actual_invoice and a provider_api/billing_export line on the same source:
+ *
+ *   PACKAGE / SUBSCRIPTION (and any recurring bill: saas, hosting, domain):
+ *     the invoice states which period it covers, so the INVOICE is the period
+ *     cost. Provider API numbers are only a stand-in until the invoice arrives.
+ *
+ *   TOP-UP / PREPAID USAGE (source_type 'usage'):
+ *     funding the account is a real payment but NOT the period's cost. Only what
+ *     was CONSUMED in the period belongs to it, and consumption is exactly what
+ *     the provider API reports. So the API figure wins.
+ *
+ * This replaces freshness as the primary tiebreak. Freshness only decides when
+ * the accounting rule cannot -- e.g. two lines of the same kind.
+ */
+const CONSUMPTION_SOURCE_TYPES = new Set(['usage'])
+const CONSUMPTION_CONF = new Set(['provider_api', 'billing_export'])
+
+function prefersConsumption(sourceType: string | undefined): boolean {
+  return CONSUMPTION_SOURCE_TYPES.has(String(sourceType || ''))
+}
 
 export interface OperationalResult {
   operational_spend: number
@@ -132,7 +155,23 @@ export function resolveOperational(lines: OpLine[], win: MonthWindow): Operation
       const ta = OPERATIONAL_TIER[a.confidence] || 0
       const tb = OPERATIONAL_TIER[b.confidence] || 0
       if (tb !== ta) return tb > ta ? b : a
-      return b.data_freshness > a.data_freshness ? b : a
+
+      // Equal tier -> the ACCOUNTING RULE decides before freshness.
+      const consume = prefersConsumption(a.source_type ?? b.source_type)
+      const aIsConsumption = CONSUMPTION_CONF.has(a.confidence)
+      const bIsConsumption = CONSUMPTION_CONF.has(b.confidence)
+      if (aIsConsumption !== bIsConsumption) {
+        if (consume) return bIsConsumption ? b : a          // top-up: consumption wins
+        return bIsConsumption ? a : b                        // package: the invoice wins
+      }
+
+      // Same kind of line -> fall back to freshness, but a stamp in the FUTURE
+      // cannot mean "fresher". A period-END date reaching data_freshness is a
+      // known data defect (card 320c477a) and must not decide anything.
+      const now = Date.now() / 1000
+      const fa = a.data_freshness > now ? -Infinity : a.data_freshness
+      const fb = b.data_freshness > now ? -Infinity : b.data_freshness
+      return fb > fa ? b : a
     }))
   }
   // which providers have a provider-derived (tier>=3) source, and which have a REAL
@@ -521,9 +560,11 @@ export function getCostSummary(
   // (manual + plan + provider actual), mapped to their provider, resolved so a
   // provider's manual is dropped once it has provider-derived data (no double count).
   const providerBySource = new Map(srcRows.map(r => [r.id, r.provider]))
+  const sourceTypeBySource = new Map(srcRows.map(r => [r.id, (r as { source_type?: string }).source_type]))
   const opLines: OpLine[] = lines.filter(l => !PENDING_CONF.has(l.confidence)).map(l => ({
     source_id: l.source_id, provider: providerBySource.get(l.source_id) || 'other',
     billed_cost: l.billed_cost, charge_category: l.charge_category, confidence: l.confidence, data_freshness: l.data_freshness,
+    source_type: sourceTypeBySource.get(l.source_id),
   }))
   const op = resolveOperational(opLines, win)
 
@@ -538,6 +579,7 @@ export function getCostSummary(
     const prevOp = resolveOperational(prevRows.filter(l => !PENDING_CONF.has(l.confidence)).map(l => ({
       source_id: l.source_id, provider: providerBySource.get(l.source_id) || 'other',
       billed_cost: l.billed_cost, charge_category: l.charge_category, confidence: l.confidence, data_freshness: l.data_freshness,
+      source_type: sourceTypeBySource.get(l.source_id),
     })), prevWin)
     previous_month = { month: prevWin.key, operational_spend: prevOp.operational_spend, by_provider: prevOp.provider_breakdown }
   }

@@ -100,4 +100,92 @@ describe('getCostSummary v0.4 operational fields', () => {
     expect(s.previous_month!.month).toBe(prevWin.key)
     expect(s.month_over_month_delta).toBe(500) // 2500 - 2000
   })
+  // Card 097d8355 -- Istvan's ruling 2026-07-20: on an EQUAL tier the FRESHER row
+  // is the current one. actual_invoice / provider_api / billing_export are all tier 4,
+  // so before the fix a strict `>` kept the INCUMBENT and a freshly ingested invoice
+  // was stored but never reached operational_spend.
+  it('on an equal tier the fresher row wins -- new invoice over older provider_api', () => {
+    const win = monthWindow(NOW)
+    const r = resolveOperational([
+      { source_id: 'render-usage', provider: 'render', billed_cost: 9000, charge_category: 'usage', confidence: 'provider_api', data_freshness: NOW - 86400 },
+      { source_id: 'render-usage', provider: 'render', billed_cost: 4200, charge_category: 'usage', confidence: 'actual_invoice', data_freshness: NOW },
+    ], win)
+    expect(r.operational_spend).toBe(4200)
+  })
+
+  // SUPERSEDED 2026-07-20 by Istvan's accounting rule (see the top-up / package
+  // tests below). This case originally asserted that a fresher provider_api beats
+  // an older actual_invoice on pure freshness. That is no longer the primary rule:
+  // with NO source_type known, we now default to the PACKAGE branch and the
+  // invoice wins. The default is deliberate -- an unknown source falling back to
+  // a real billed amount understates nothing, whereas defaulting to consumption
+  // would under-report, and an under-reported cost figure is the one nobody
+  // investigates. Freshness still decides between two lines of the SAME kind.
+  it('with no source_type, an equal tier defaults to the invoice (package rule)', () => {
+    const win = monthWindow(NOW)
+    const r = resolveOperational([
+      { source_id: 'render-usage', provider: 'render', billed_cost: 4200, charge_category: 'usage', confidence: 'actual_invoice', data_freshness: NOW - 86400 },
+      { source_id: 'render-usage', provider: 'render', billed_cost: 9000, charge_category: 'usage', confidence: 'provider_api', data_freshness: NOW },
+    ], win)
+    expect(r.operational_spend).toBe(4200)
+  })
+
+  // Freshness must NOT beat tier -- a fresh estimate never outranks a real actual.
+  it('a fresher LOWER-tier row does not win', () => {
+    const win = monthWindow(NOW)
+    const r = resolveOperational([
+      { source_id: 'render-usage', provider: 'render', billed_cost: 4200, charge_category: 'usage', confidence: 'actual_invoice', data_freshness: NOW - 86400 },
+      { source_id: 'render-usage', provider: 'render', billed_cost: 999, charge_category: 'usage', confidence: 'estimate', data_freshness: NOW },
+    ], win)
+    expect(r.operational_spend).toBe(4200)
+  })
+
+
+  // ── Istvan's accounting rule, 2026-07-20 ──────────────────────────────────
+  // Replaces freshness as the PRIMARY tiebreak for an equal-tier collision.
+  it('TOP-UP (source_type usage): consumption wins over the funding invoice', () => {
+    const win = monthWindow(NOW)
+    const r = resolveOperational([
+      { source_id: 'openai-api', provider: 'openai', billed_cost: 2286, charge_category: 'invoice', confidence: 'actual_invoice', data_freshness: NOW, source_type: 'usage' },
+      { source_id: 'openai-api', provider: 'openai', billed_cost: 20.51, charge_category: 'usage', confidence: 'provider_api', data_freshness: NOW - 86400, source_type: 'usage' },
+    ], win)
+    // funding the account is a real payment but NOT this period's cost
+    expect(r.operational_spend).toBe(20.51)
+  })
+
+  it('PACKAGE (source_type subscription): the invoice wins over the API figure', () => {
+    const win = monthWindow(NOW)
+    const r = resolveOperational([
+      { source_id: 'anthropic-max', provider: 'anthropic', billed_cost: 32400, charge_category: 'invoice', confidence: 'actual_invoice', data_freshness: NOW - 86400, source_type: 'subscription' },
+      { source_id: 'anthropic-max', provider: 'anthropic', billed_cost: 12, charge_category: 'usage', confidence: 'provider_api', data_freshness: NOW, source_type: 'subscription' },
+    ], win)
+    // the invoice states the period it covers; the API is only a stand-in until it arrives
+    expect(r.operational_spend).toBe(32400)
+  })
+
+  it('the accounting rule beats freshness in BOTH directions', () => {
+    const win = monthWindow(NOW)
+    // package, and the API row is the FRESHER one -> invoice still wins
+    const pkg = resolveOperational([
+      { source_id: 'x-sub', provider: 'x', billed_cost: 9000, charge_category: 'invoice', confidence: 'actual_invoice', data_freshness: NOW - 999999, source_type: 'saas' },
+      { source_id: 'x-sub', provider: 'x', billed_cost: 5, charge_category: 'usage', confidence: 'provider_api', data_freshness: NOW, source_type: 'saas' },
+    ], win)
+    expect(pkg.operational_spend).toBe(9000)
+    // top-up, and the INVOICE is the fresher one -> consumption still wins
+    const top = resolveOperational([
+      { source_id: 'y-api', provider: 'y', billed_cost: 9000, charge_category: 'invoice', confidence: 'actual_invoice', data_freshness: NOW, source_type: 'usage' },
+      { source_id: 'y-api', provider: 'y', billed_cost: 5, charge_category: 'usage', confidence: 'provider_api', data_freshness: NOW - 999999, source_type: 'usage' },
+    ], win)
+    expect(top.operational_spend).toBe(5)
+  })
+
+  // Card 320c477a: a period-END date reaching data_freshness must not win.
+  it('a FUTURE freshness stamp cannot beat a real one', () => {
+    const win = monthWindow(NOW)
+    const r = resolveOperational([
+      { source_id: 'z-api', provider: 'z', billed_cost: 100, charge_category: 'usage', confidence: 'provider_api', data_freshness: NOW },
+      { source_id: 'z-api', provider: 'z', billed_cost: 7, charge_category: 'usage', confidence: 'provider_api', data_freshness: NOW + 12 * 86400 },
+    ], win)
+    expect(r.operational_spend).toBe(100)
+  })
 })
