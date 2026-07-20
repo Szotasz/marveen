@@ -11,6 +11,7 @@
 import type Database from 'better-sqlite3'
 import { initForecastSchema } from './forecast.js'
 import { initFxSchema } from './fx.js'
+import { initAlertsSchema } from './alerts.js'
 
 export function initCostOpsSchema(db: Database.Database): void {
   // CostOps v0.2: model/provider enrichment on the CORE token_usage table
