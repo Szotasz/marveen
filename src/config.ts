@@ -40,14 +40,6 @@ function cfg(key: string): string | undefined {
   return env[key]
 }
 
-// The single timezone for this install -- drives BOTH cron scheduling (cron.ts)
-// AND every human-facing time render (heartbeat, daily-log, memory labels, etc.).
-// One env var (SCHEDULER_TZ) so the whole box shares one zone; falls back to the
-// process zone (the TZ env / OS) when unset. Replaces the ~15 hardcoded
-// 'Europe/Budapest' literals -- change the zone in ONE place, and an update that
-// re-introduces a hardcoded literal is caught by a single grep, not a full review.
-export const APP_TZ = cfg('SCHEDULER_TZ') || Intl.DateTimeFormat().resolvedOptions().timeZone
-
 export const TELEGRAM_BOT_TOKEN = env['TELEGRAM_BOT_TOKEN'] ?? ''
 export const ALLOWED_CHAT_ID = env['ALLOWED_CHAT_ID'] ?? ''
 
@@ -55,13 +47,7 @@ export const SLACK_BOT_TOKEN = env['SLACK_BOT_TOKEN'] ?? ''
 export const SLACK_APP_TOKEN = env['SLACK_APP_TOKEN'] ?? ''
 export const SLACK_CHANNEL_ID = env['SLACK_CHANNEL_ID'] ?? ''
 
-// Distribution placeholder for an unconfigured owner name. Exported so
-// consumers that treat the owner name as PRIVATE data (federation outbound
-// scrub) can tell "a real configured name" apart from this generic English
-// word -- scrubbing the literal word "owner" false-positives on fixed template
-// text like "owner channels".
-export const OWNER_NAME_PLACEHOLDER = 'Owner'
-export const OWNER_NAME = env['OWNER_NAME'] ?? OWNER_NAME_PLACEHOLDER
+export const OWNER_NAME = env['OWNER_NAME'] ?? 'Szabolcs'
 // Shared Google Drive folder ID the fleet writes deliverables into. Empty by
 // default (distribution-safe: no owner-specific folder is baked into a fresh
 // install's generated agent CLAUDE.md); set OWNER_DRIVE_FOLDER in .env to wire
@@ -278,37 +264,10 @@ export const HEARTBEAT_START_HOUR = parseInt(env['HEARTBEAT_START_HOUR'] ?? '9',
 export const HEARTBEAT_AGENT_ENABLED =
   ['1', 'true', 'yes', 'on'].includes((cfg('HEARTBEAT_AGENT_ENABLED') ?? '').trim().toLowerCase())
 
-// Sub-agent Telegram inbox delivery-path tee (opt-in, DEFAULT OFF).
-// When enabled, a telegram sub-agent loads the channel plugin via a per-agent
-// mcp.json wrapped in the inbound-tee (scripts/channel-inbound-tee.mjs), which
-// persists each inbound notification to <state>/inbox-pending.jsonl for the
-// channel-inbox-drain UserPromptSubmit hook to pull into the next turn. This
-// swaps the default `--channels` delivery path, so it is DEFAULT OFF: an install
-// that does not opt in keeps the exact upstream `--channels` behaviour and never
-// writes message content to disk. Enable with SUBAGENT_INBOX_TEE=1 (required for
-// SUBAGENT_TELEGRAM_WAKE_ENABLED to have an inbox to wake on).
-export const SUBAGENT_INBOX_TEE =
-  ['1', 'true', 'yes', 'on'].includes((cfg('SUBAGENT_INBOX_TEE') ?? '').trim().toLowerCase())
-
-// Sub-agent Telegram inbox wake-nudge (opt-in, DEFAULT OFF).
-// The message-router can nudge an idle sub-agent whose derived Telegram inbox
-// (<state>/inbox-pending.jsonl) has stuck inbound messages, so its drain hook
-// fires and claims the backlog. This is the ACTIVE tail of the SUBAGENT_INBOX_TEE
-// delivery path: the tee writer and the UserPromptSubmit drain hook now ship in
-// this repo, but both are gated -- with SUBAGENT_INBOX_TEE off no inbox file is
-// produced and this watcher is a no-op even when enabled. Ships DISABLED so an
-// upstream install sees zero behaviour change and pays no per-tick cost; enable
-// with SUBAGENT_TELEGRAM_WAKE_ENABLED=1 (alongside SUBAGENT_INBOX_TEE=1).
-export const SUBAGENT_TELEGRAM_WAKE_ENABLED =
-  ['1', 'true', 'yes', 'on'].includes((cfg('SUBAGENT_TELEGRAM_WAKE_ENABLED') ?? '').trim().toLowerCase())
-
 // Google Calendar account the heartbeat summarises (next 2h). Empty (the
 // default) means the agent uses whatever calendar its MCP server is
 // authenticated as, so no personal address is baked into the shipped
-// scaffold. Read through cfg() so a value saved from the Settings UI
-// (config-overrides.json) actually reaches these boot-time consts on the next
-// restart -- with a bare env[] read the dashboard showed the saved value while
-// the heartbeat silently never saw it.
-export const HEARTBEAT_CALENDAR_ACCOUNT = (cfg('HEARTBEAT_CALENDAR_ACCOUNT') ?? '').trim()
+// scaffold.
+export const HEARTBEAT_CALENDAR_ACCOUNT = (env['HEARTBEAT_CALENDAR_ACCOUNT'] ?? '').trim()
 export const HEARTBEAT_END_HOUR = parseInt(env['HEARTBEAT_END_HOUR'] ?? '23', 10)
-export const HEARTBEAT_CALENDAR_ID = (cfg('HEARTBEAT_CALENDAR_ID') ?? '').trim()
+export const HEARTBEAT_CALENDAR_ID = env['HEARTBEAT_CALENDAR_ID'] ?? ''
