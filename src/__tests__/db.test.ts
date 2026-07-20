@@ -79,6 +79,21 @@ describe('memories', () => {
   it('leepulesi soprest vegrehajt hiba nelkul', () => {
     expect(() => decayMemories()).not.toThrow()
   })
+
+  // Regresszio: a saveMemory sokaig csak INSERT-elt, embedding nelkul, ezert az
+  // ezen az uton irt sorok (pl. az ejszakai "[Napi naplo ...]" digest) tartosan
+  // vektorizalatlanul maradtak es kiestek a szemantikus keresesbol. A
+  // saveAgentMemory-hoz hasonloan itt is fire-and-forget embed fut; a teszt azt
+  // rogziti, hogy a hivas elinditja az embed-agat es nem dobja el a sort akkor
+  // sem, ha az embedding szolgaltatas (Ollama) nem elerheto.
+  it('saveMemory elinditja az embedding-agat es nem hasal el, ha nincs Ollama', async () => {
+    expect(() => saveMemory('mem-chat-embed', '[Napi naplo teszt] digest', 'episodic')).not.toThrow()
+    const mems = getMemoriesForChat('mem-chat-embed')
+    expect(mems.length).toBeGreaterThan(0)
+    expect(mems[0].content).toBe('[Napi naplo teszt] digest')
+    // a fire-and-forget agnak egy tick alatt sem szabad unhandled rejectiont dobnia
+    await new Promise(r => setTimeout(r, 50))
+  })
 })
 
 describe('buildFtsMatchExpression', () => {
