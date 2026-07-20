@@ -69,6 +69,18 @@ describe('markScheduledTaskKanbanWaiting', () => {
     expect(getKanbanCard('card-1')!.status).toBe('planned')
   })
 
+  it('does NOT create a new kanban card when no matching card exists', () => {
+    // Start with an empty board -- no card for 'task-without-board-entry'.
+    // This asserts the negative invariant: the scheduler must never silently
+    // materialize kanban cards. If it did, the board would fill with
+    // auto-generated entries for every stuck task that was never manually
+    // tracked. The fix-revert guard below locks this in place.
+    const result = markScheduledTaskKanbanWaiting('task-without-board-entry')
+
+    expect(result).toBeNull()
+    expect(findActiveKanbanCardByTitle('task-without-board-entry')).toBeUndefined()
+  })
+
   it('is a no-op for archived cards (does not revive them)', () => {
     createKanbanCard({ id: 'card-1', title: 'daily-digest', status: 'done' })
     archiveKanbanCard('card-1')
