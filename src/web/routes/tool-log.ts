@@ -13,9 +13,11 @@ export async function tryHandleToolLog(ctx: RouteContext): Promise<boolean> {
       tool_name: string
       input_summary?: string
       success?: boolean
+      agent_id?: string
+      trace_id?: string
     }
     if (!data.session_id || !data.tool_name) { json(res, { error: 'session_id and tool_name required' }, 400); return true }
-    logToolCall(data.session_id, data.tool_name, data.input_summary ?? null, data.success !== false)
+    logToolCall(data.session_id, data.tool_name, data.input_summary ?? null, data.success !== false, data.agent_id ?? null, data.trace_id ?? null)
     json(res, { ok: true })
     return true
   }

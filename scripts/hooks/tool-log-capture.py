@@ -5,8 +5,12 @@ import os
 import json
 import re
 import random
+import uuid
 import urllib.request
 import urllib.error
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ledger_lib  # noqa: E402
 
 
 def _project_root() -> str:
@@ -86,6 +90,7 @@ def main():
     session_id = payload.get('session_id') or ''
     tool_name = payload.get('tool_name') or ''
     tool_input = payload.get('tool_input') or {}
+    cwd = payload.get('cwd') or ''
     success = not bool(payload.get('tool_response', {}).get('is_error') if isinstance(payload.get('tool_response'), dict) else False)
 
     if not session_id or not tool_name:
@@ -103,6 +108,8 @@ def main():
         'tool_name': tool_name,
         'input_summary': _input_summary(tool_input, tool_name),
         'success': success,
+        'agent_id': ledger_lib.agent_id_from_cwd(cwd),
+        'trace_id': str(uuid.uuid4()),
     }).encode()
 
     headers = {
