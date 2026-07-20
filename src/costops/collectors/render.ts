@@ -23,6 +23,10 @@ export interface RenderPricing {
   version: number
   currency: string
   fx_usd_huf: number
+  // v0.8 (card 6f4d1332): toHuf() (email-ingest.ts) previously only knew USD -> EUR-denominated
+  // invoices came back unconvertible (null), even though EUR is the requirements' own worked
+  // example. 0 (unset) is treated the same as fx_usd_huf's existing "missing" convention.
+  fx_eur_huf: number
   plans: Record<string, Record<string, number>>  // type -> plan -> USD/month
 }
 
@@ -32,7 +36,7 @@ function hashRef(salt: string, raw: string): string {
 
 /** Load the local (gitignored) Render plan->price map. Missing -> zero-rate, flagged. */
 export function loadRenderPricing(): { pricing: RenderPricing; exists: boolean } {
-  const empty: RenderPricing = { version: 1, currency: 'HUF', fx_usd_huf: 0, plans: {} }
+  const empty: RenderPricing = { version: 1, currency: 'HUF', fx_usd_huf: 0, fx_eur_huf: 0, plans: {} }
   if (!existsSync(RENDER_PRICING_PATH)) {
     // write a safe zero-rate example next to the config for guidance (once)
     try {
@@ -49,6 +53,7 @@ export function loadRenderPricing(): { pricing: RenderPricing; exists: boolean }
         version: typeof raw.version === 'number' ? raw.version : 1,
         currency: typeof raw.currency === 'string' ? raw.currency : 'HUF',
         fx_usd_huf: typeof raw.fx_usd_huf === 'number' ? raw.fx_usd_huf : 0,
+        fx_eur_huf: typeof raw.fx_eur_huf === 'number' ? raw.fx_eur_huf : 0,
         plans: (raw.plans && typeof raw.plans === 'object') ? raw.plans as RenderPricing['plans'] : {},
       },
       exists: true,
@@ -63,6 +68,7 @@ const EXAMPLE_PRICING = {
   version: 1,
   currency: 'HUF',
   fx_usd_huf: 0,
+  fx_eur_huf: 0,
   plans: {
     web_service: { free: 0, starter: 0, standard: 0, pro: 0, pro_plus: 0, pro_max: 0, pro_ultra: 0 },
     private_service: { starter: 0, standard: 0, pro: 0 },
@@ -191,16 +197,26 @@ export function mapRenderPlanCost(
 }
 
 // v0.5: read the Render API key WITHOUT logging it. process.env first, then the
-// gitignored root .env. Returns null if absent (caller reports a config error).
+// gitignored root .env, then the devops-only relocation path (686a7823/0ff0a457:
+// moved out of the shared root .env so build-agent CLAUDE.md files, which never
+// reference this path, don't incidentally point at it). Returns null if absent
+// (caller reports a config error).
+function readKeyFromEnvFile(path: string): string | null {
+  try {
+    const envFile = readFileSync(path, 'utf-8')
+    const line = envFile.split('\n').find(l => l.startsWith('RENDER_API_KEY'))
+    if (line) return line.slice(line.indexOf('=') + 1).trim().replace(/^["']|["']$/g, '')
+  } catch { /* file missing */ }
+  return null
+}
+
 export function getRenderApiKey(): string | null {
   const fromEnv = process.env.RENDER_API_KEY
   if (fromEnv && fromEnv.trim()) return fromEnv.trim()
-  try {
-    const envFile = readFileSync(join(PROJECT_ROOT, '.env'), 'utf-8')
-    const line = envFile.split('\n').find(l => l.startsWith('RENDER_API_KEY'))
-    if (line) return line.slice(line.indexOf('=') + 1).trim().replace(/^["']|["']$/g, '')
-  } catch { /* no .env */ }
-  return null
+  return (
+    readKeyFromEnvFile(join(PROJECT_ROOT, '.env')) ??
+    readKeyFromEnvFile(join(PROJECT_ROOT, 'agents', 'devops', '.env.render'))
+  )
 }
 
 export interface RenderSyncResult {

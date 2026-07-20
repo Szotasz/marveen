@@ -10,7 +10,7 @@ import type { HttpGetJson } from '../costops/collectors/types.js'
 const NOW = Math.floor(Date.UTC(2026, 6, 15, 12, 0, 0) / 1000)
 
 const PRICING: RenderPricing = {
-  version: 1, currency: 'HUF', fx_usd_huf: 300,
+  version: 1, currency: 'HUF', fx_usd_huf: 300, fx_eur_huf: 390,
   plans: {
     web_service: { free: 0, starter: 7, standard: 25, pro: 85 },
     static_site: { free: 0 },
