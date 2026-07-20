@@ -5,7 +5,6 @@ import os
 import json
 import re
 import random
-import uuid
 import urllib.request
 import urllib.error
 
@@ -91,6 +90,13 @@ def main():
     tool_name = payload.get('tool_name') or ''
     tool_input = payload.get('tool_input') or {}
     cwd = payload.get('cwd') or ''
+    # CC provides tool_use_id (stable per-call ID shared with PreToolUse) and
+    # duration_ms (native wall-clock measurement, more accurate than hook-side
+    # timestamps because it excludes hook overhead).
+    tool_use_id = payload.get('tool_use_id') or None
+    duration_ms = payload.get('duration_ms')
+    if not isinstance(duration_ms, int):
+        duration_ms = None
     success = not bool(payload.get('tool_response', {}).get('is_error') if isinstance(payload.get('tool_response'), dict) else False)
 
     if not session_id or not tool_name:
@@ -109,7 +115,12 @@ def main():
         'input_summary': _input_summary(tool_input, tool_name),
         'success': success,
         'agent_id': ledger_lib.agent_id_from_cwd(cwd),
-        'trace_id': str(uuid.uuid4()),
+        # trace_id holds the CC-native tool_use_id: stable, unique per call,
+        # present in both Pre and PostToolUse payloads (empirically verified).
+        # No PreToolUse hook needed -- CC already gives us the correlation key
+        # and the latency measurement in one place.
+        'trace_id': tool_use_id,
+        'duration_ms': duration_ms,
     }).encode()
 
     headers = {
