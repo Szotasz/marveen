@@ -351,6 +351,8 @@ function confirmSettingsLeave() {
 }
 
 function switchPage(pageId) {
+  // 'team' is merged into 'agents'; any internal call still passing 'team' redirects.
+  if (pageId === 'team') { _agentsActiveView = 'tree'; pageId = 'agents' }
   // Guard unsaved settings before leaving the settings page
   if (!document.getElementById('settingsPage').hidden && pageId !== 'settings' && !confirmSettingsLeave()) return
   pages.forEach((p) => (p.hidden = p.id !== pageId + 'Page'))
@@ -368,7 +370,7 @@ function switchPage(pageId) {
   if (pageId === 'overview') loadOverview()
   if (pageId === 'kanban') { if (typeof _initGanttViewSwitcher === 'function') _initGanttViewSwitcher(); loadKanban(); startKanbanRefresh() }
   if (pageId === 'tasks') loadSchedules()
-  if (pageId === 'agents') { loadAgents(); startAgentsBusyPoll() }
+  if (pageId === 'agents') { loadAgents().then(() => _setAgentsView(_agentsActiveView || 'grid')); startAgentsBusyPoll() }
   if (pageId === 'memories') { loadMemAgents(); loadMemStats(); loadMemories() }
   if (pageId === 'skills') loadGlobalSkills()
   if (pageId === 'connectors') loadConnectors()
@@ -382,7 +384,7 @@ function switchPage(pageId) {
   if (pageId === 'approvals') loadApprovalsPage()
   if (pageId === 'settings') loadSettings()
   if (pageId === 'updates') loadUpdates()
-  if (pageId === 'team') { loadTeamGraph() }
+  // 'team' page is merged into 'agents' -- redirect for any lingering deep-links
   if (pageId === 'messages') loadMessagesPage()
   if (pageId === 'tokenUsage') loadTokenUsage()
   if (pageId === 'costs') loadCosts()
@@ -10318,7 +10320,7 @@ async function openSkillDetail(skillName, displayLabel, agentId = null) {
   }
 })()
 
-// === Team page ===
+// === Team org-chart (now embedded in Agents page, tree view) ===
 async function loadTeamGraph() {
   const container = document.getElementById('teamGraph')
   if (!container) return
@@ -10509,8 +10511,30 @@ function renderTeamGraph(container, data, opts = {}) {
   }
 }
 
-const refreshTeamBtn = document.getElementById('refreshTeamBtn')
-if (refreshTeamBtn) refreshTeamBtn.addEventListener('click', loadTeamGraph)
+// === Agents page: grid / org-chart view toggle ===
+// Persists the chosen view for the session so navigating away and back keeps
+// the last selection. Defaults to 'grid'.
+let _agentsActiveView = 'grid'
+
+function _setAgentsView(view) {
+  _agentsActiveView = view
+  const gridView = document.getElementById('agentsGridView')
+  const treeView = document.getElementById('agentsTreeView')
+  const gridBtn  = document.getElementById('agentsViewGrid')
+  const treeBtn  = document.getElementById('agentsViewTree')
+  if (!gridView || !treeView) return
+  const showGrid = view === 'grid'
+  gridView.hidden = !showGrid
+  treeView.hidden = showGrid
+  if (gridBtn) gridBtn.classList.toggle('active', showGrid)
+  if (treeBtn) treeBtn.classList.toggle('active', !showGrid)
+  if (!showGrid) loadTeamGraph()
+}
+
+const _agentsViewGridBtn = document.getElementById('agentsViewGrid')
+const _agentsViewTreeBtn = document.getElementById('agentsViewTree')
+if (_agentsViewGridBtn) _agentsViewGridBtn.addEventListener('click', () => _setAgentsView('grid'))
+if (_agentsViewTreeBtn) _agentsViewTreeBtn.addEventListener('click', () => _setAgentsView('tree'))
 
 // === Team: inter-agent message log + compose ===
 // View the /api/messages queue and let the operator send a message to an agent
@@ -14877,6 +14901,8 @@ function wireFederationPage() {
   function routeFromHash() {
     let pageId = decodeURIComponent((location.hash || '').replace(/^#/, ''))
     if (!pageId) pageId = new URLSearchParams(window.location.search).get('page') || ''
+    // 'team' page is merged into 'agents' (org-chart view toggle).
+    if (pageId === 'team') { pageId = 'agents'; _agentsActiveView = 'tree' }
     if (pageId && document.getElementById(pageId + 'Page')) switchPage(pageId)
   }
   window.addEventListener('hashchange', routeFromHash)

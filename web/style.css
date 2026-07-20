@@ -1307,6 +1307,19 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  align-items: center;
+}
+
+/* Agents page: grid / org-chart view toggle */
+.view-toggle {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.view-toggle-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 /* === Agent Grid === */
