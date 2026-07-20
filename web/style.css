@@ -6326,6 +6326,16 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
 }
 .activity-tail-empty { margin: 0; font-size: 12px; color: var(--text-muted); font-style: italic; }
 
+/* Live "working" tint on an agent's Terminal button (Agents page). Mirrors the
+   Activity page's green working badge, including the breathe pulse. The SVG uses
+   currentColor, so the icon greens with the label. */
+.agent-terminal-btn.agent-terminal-btn--busy {
+  background: rgba(34,197,94,0.15);
+  color: #16a34a;
+  border-color: #22c55e;
+  animation: badge-breathe 2s ease-in-out infinite;
+}
+
 /* === Messages / Chat page === */
 .chat-layout {
   display: flex;

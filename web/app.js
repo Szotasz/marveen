@@ -281,12 +281,15 @@ function switchPage(pageId) {
   // Activity page runs a live poll; stop it whenever we navigate away.
   if (pageId !== 'activity') stopActivityPoll()
   if (pageId === 'activity') startActivityPoll()
+  // Agents page tints each Terminal button green while that agent is working;
+  // same 3s poll + source as Activity. Stop it when we leave the page.
+  if (pageId !== 'agents') stopAgentsBusyPoll()
   // Kanban auto-refresh: start on enter, stop on leave.
   if (pageId !== 'kanban') stopKanbanRefresh()
   if (pageId === 'overview') loadOverview()
   if (pageId === 'kanban') { if (typeof _initGanttViewSwitcher === 'function') _initGanttViewSwitcher(); loadKanban(); startKanbanRefresh() }
   if (pageId === 'tasks') loadSchedules()
-  if (pageId === 'agents') loadAgents()
+  if (pageId === 'agents') { loadAgents(); startAgentsBusyPoll() }
   if (pageId === 'memories') { loadMemAgents(); loadMemStats(); loadMemories() }
   if (pageId === 'skills') loadGlobalSkills()
   if (pageId === 'connectors') loadConnectors()
@@ -2766,6 +2769,46 @@ function renderAgents() {
     agentsGrid.insertBefore(card, addBtn)
   }
   renderFederatedAgentCards(agentsGrid, addBtn)
+  // Re-apply the live busy tint right after a re-render (renderAgents rebuilds
+  // the cards from scratch, dropping the class), so it never blinks off while
+  // the page is open.
+  if (agentsBusyTimer) refreshAgentTerminalBusy()
+}
+
+// === Agents: live "working" tint on Terminal buttons ===
+// Reuse the Activity page's data source (/api/agents/activity, same 3s poll,
+// same working/idle state derived from the tmux pane) to turn an agent card's
+// Terminal button green while that agent is actively working, and clear it when
+// it goes idle or stops. No new backend -- just a second consumer of the same
+// endpoint. The main (Marveen) card matches on mainAgentId(); sub-agent cards
+// match on their data-name.
+let agentsBusyTimer = null
+function startAgentsBusyPoll() {
+  refreshAgentTerminalBusy()
+  if (agentsBusyTimer) clearInterval(agentsBusyTimer)
+  agentsBusyTimer = setInterval(refreshAgentTerminalBusy, 3000)
+}
+function stopAgentsBusyPoll() {
+  if (agentsBusyTimer) { clearInterval(agentsBusyTimer); agentsBusyTimer = null }
+}
+async function refreshAgentTerminalBusy() {
+  if (!agentsGrid) return
+  let entries
+  try {
+    const res = await fetch('/api/agents/activity')
+    if (!res.ok) return
+    entries = await res.json()
+  } catch { return }
+  if (!Array.isArray(entries)) return
+  const stateByName = new Map(entries.map((e) => [e.name, e.state]))
+  const mainId = mainAgentId()
+  agentsGrid.querySelectorAll('.agent-card:not(.add-card)').forEach((card) => {
+    const btn = card.querySelector('.agent-terminal-btn')
+    if (!btn) return
+    const id = card.classList.contains('marveen-card') ? mainId : card.dataset.name
+    const working = !!id && stateByName.get(id) === 'working'
+    btn.classList.toggle('agent-terminal-btn--busy', working)
+  })
 }
 
 // Federated (remote-system) agents from the manifest-poller cache. Kept in a
