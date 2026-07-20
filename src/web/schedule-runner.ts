@@ -46,6 +46,7 @@ import {
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { sendTelegramMessage } from './telegram.js'
 import { runCommandTask } from './command-task.js'
+import { paneShowsContextSaturation } from '../pane-state.js'
 
 // How many bare-Enter attempts the post-send resubmit tries before escalating
 // to a clear + re-inject, and the hard cap after which it gives up.
@@ -234,18 +235,28 @@ async function attemptFireTask(
   // will process it at the next idle slot. This prevents the infinite
   // retry loop observed when the target session stays busy for hours
   // (275 retries overnight in production).
-  //
-  // KNOWN FOLLOW-UP: forceSend also bypasses the context-saturation refusal
-  // now folded into isSessionReadyForPrompt(). A forceSend task can therefore
-  // still land on a 100%-context session. Left open deliberately -- forceSend's
-  // contract is "always eventually land, never silently drop", and a saturated
-  // session needs a separate delivery policy, tracked as future work.
   if (!task.forceSend && !(await isSessionReadyForPrompt(session, host))) {
     logger.warn({ task: task.name, agent: agentName, session }, 'Schedule target session busy or has pending input, will retry')
     return 'busy'
   }
 
   if (task.forceSend) {
+    // forceSend's contract is "always eventually land, never silently drop" --
+    // but injecting into a 100%-context session IS a silent drop with extra
+    // steps: the pane accepts the keystrokes and the wedged session never acts
+    // on them, and the context-guard's rescue restart then discards the queued
+    // input (2026-07-17: reggeli-napindito force-injected into a saturated
+    // marveen-channels and vanished without a trace). Closes the KNOWN
+    // FOLLOW-UP that previously lived here: saturation is the one busy-state
+    // forceSend must respect. Defer via the pending-retry queue (the caller
+    // maps 'busy' to a retry row, exempt from skipIfBusy for forceSend); the
+    // retry lands on the first tick after the session has been rescued. All
+    // other busy states keep the bypass.
+    const pane = capturePane(session, host)
+    if (pane != null && paneShowsContextSaturation(pane)) {
+      logger.warn({ task: task.name, agent: agentName, session }, 'forceSend target session is context-saturated (100%) -- deferring to retry queue instead of injecting into a wedged session')
+      return 'busy'
+    }
     logger.info({ task: task.name, agent: agentName, session }, 'forceSend=true, bypassing busy-state check')
   }
 
@@ -394,6 +405,22 @@ async function attemptFireTask(
     appendTaskRun(task.name, agentName, 'error')
     return 'error'
   }
+}
+
+// Injection priority within one tick: when several tasks are due in the same
+// scan window, the order of attemptFireTask calls decides who gets the target
+// session first -- and an injection takes seconds to a minute (readiness
+// double-sample, waitForIdle gate, chunked typing, post-send verify), so the
+// first task can push every later one well past its scheduled minute.
+// listScheduledTasks() returns directory (alphabetical) order, which let a
+// routine 30-min heartbeat outrank the operator-facing morning briefing every
+// day (2026-07-20: alkuszoktatas-feedback-figyelo injected first at 07:30 and
+// reggeli-napindito starved behind it). Rank: forceSend tasks (operator-marked
+// must-deliver) first, plain tasks next, heartbeats (short-cadence, typically
+// skipIfBusy) last. The sort is stable, so name order is kept within a rank.
+export function taskInjectionRank(t: Pick<ScheduledTask, 'forceSend' | 'type'>): number {
+  if (t.forceSend) return 0
+  return t.type === 'heartbeat' ? 2 : 1
 }
 
 // Manual "Run now": fire a scheduled task immediately, bypassing the cron
@@ -624,6 +651,12 @@ export function startScheduleRunner(): NodeJS.Timeout {
       if (stillPresent && view.alertDue) sendPendingRetryAlert(view, now)
     }
 
+    // Fire in injection-priority order, not directory order: with several
+    // tasks due in one window, each injection delays the next by seconds to a
+    // minute, so forceSend/task entries must reach the session before the
+    // routine heartbeats (see taskInjectionRank). listScheduledTasks() builds
+    // a fresh array every tick, so the in-place sort leaks nowhere.
+    tasks.sort((a, b) => taskInjectionRank(a) - taskInjectionRank(b))
     for (const task of tasks) {
       if (!task.enabled) continue
       if (!cronDueBetween(task.schedule, fromMs, now)) continue
@@ -689,7 +722,12 @@ export function startScheduleRunner(): NodeJS.Timeout {
           // pending-retry loop then sends as soon as Claude has booted.
           insertPendingTaskRetryIfNew(task.name, agentName, now, 'starting')
         } else if (result === 'busy') {
-          if (task.skipIfBusy) {
+          // A forceSend task only ever reports 'busy' from the context-
+          // saturation deferral inside attemptFireTask -- every other busy
+          // state is bypassed. Dropping that on skipIfBusy would turn the
+          // deferral into a silent loss, so forceSend is exempt from the
+          // skip and always queues the retry.
+          if (task.skipIfBusy && !task.forceSend) {
             // Opt-in skip for short-cadence tasks (e.g. 30-min heartbeats):
             // a single missed tick is harmless because the next one is
             // already on the way, and queueing them produces spurious

@@ -74,6 +74,12 @@ function resolveAgentProvider(name: string): ChannelProviderType {
 
 const agentDownSince: Map<string, number> = new Map()
 const agentLastRestart: Map<string, number> = new Map()
+// Agents already warned about a missing channel token, so the per-sweep probe
+// does not repeat the identical WARN every minute forever (observed 2026-07-20:
+// teamer, an agent with no channel token bound, emitted the same line ~1440x/day
+// and drowned the log). First detection warns; repeats drop to debug. Cleared
+// when a token appears so a later un-bind is announced again.
+const agentNoTokenWarned: Set<string> = new Set()
 // Sessions whose busy-deferral cap has already been reported to the operator, so
 // the alert fires once per down-spell instead of every sweep. Cleared when the
 // plugin recovers (or when the agent is restarted after it goes idle).
@@ -1506,9 +1512,18 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
         const stateDir = channelStateDir(agentProvider, agentDir(t.agentName!))
         const agentToken = readChannelToken(agentProvider, join(stateDir, '.env'))
         if (!agentToken) {
-          logger.warn({ agent: t.agentName, provider: agentProvider }, 'Agent has no channel token in state dir -- skipping restart to avoid token conflict')
+          // A token-less agent (never paired a channel) trips the down-probe on
+          // every sweep; the condition is permanent until an operator binds a
+          // token, so warn once and drop the repeats to debug.
+          if (!agentNoTokenWarned.has(t.agentName!)) {
+            agentNoTokenWarned.add(t.agentName!)
+            logger.warn({ agent: t.agentName, provider: agentProvider }, 'Agent has no channel token in state dir -- skipping restart to avoid token conflict (further occurrences logged at debug)')
+          } else {
+            logger.debug({ agent: t.agentName, provider: agentProvider }, 'Agent has no channel token in state dir -- skipping restart to avoid token conflict')
+          }
           continue
         }
+        agentNoTokenWarned.delete(t.agentName!)
         // Stagger: only one channel-down restart per CHANNEL_RESTART_STAGGER_MS
         // fleet-wide, so fresh sub-agent cold-boots serialise instead of racing.
         if (Date.now() - lastChannelAgentRestartAt < CHANNEL_RESTART_STAGGER_MS) {
