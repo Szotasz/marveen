@@ -408,6 +408,15 @@ nav { display: flex; gap: 4px; }
 .team-node:hover { border-color: var(--accent); transform: translateY(-1px); }
 .team-node.main { background: var(--accent-soft); border-color: var(--accent); }
 .team-node.leader { border-color: var(--accent); }
+/* Drag-and-drop reporting edit (Team page). */
+.team-node.team-draggable { cursor: grab; }
+.team-node.team-dragging { opacity: 0.45; cursor: grabbing; }
+.team-node.team-drop-target {
+  border-color: var(--accent);
+  border-style: dashed;
+  background: var(--accent-soft);
+  transform: translateY(-1px);
+}
 .team-node-avatar {
   width: 56px;
   height: 56px;

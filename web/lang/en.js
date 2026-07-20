@@ -637,7 +637,10 @@ window._i18n.en = {
   'team.page_title':             'Team',
   'team.page_subtitle':          'Who reports to whom and who delegates to whom',
   'team.btn.refresh':            'Refresh',
-  'team.hint':                   'Roles and reporting relationships can be edited on the agent detail > Team tab.',
+  'team.hint':                   'Drag an agent onto another to make it a subordinate. Roles and finer settings live on the agent detail > Team tab.',
+  'team.drop.saved':             '{child} now reports to {parent}',
+  'team.drop.cycle':             "Can't place a manager under its own subordinate.",
+  'team.drop.error':             'Failed to save the reporting change.',
 
   // --- Messages ---
   'messages.page_title':         'Messages',

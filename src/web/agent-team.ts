@@ -142,6 +142,36 @@ export function sanitizeTeamConfig(
   }
 }
 
+// Guard against reporting cycles before persisting a new reportsTo. Dragging a
+// manager under one of its own (transitive) reports in the Team graph would
+// otherwise create a loop (A reports to B, B reports to A), detaching the whole
+// subtree from the main agent -- the render only reaches nodes from MAIN, so a
+// cycle silently orphans everyone in it. Pure + reader-injected so it is
+// testable without touching disk.
+//
+// Semantics: `reportsTo` is the manager. Setting agentName.reportsTo =
+// proposedReportsTo forms the chain agentName -> proposedReportsTo -> (its
+// manager) -> ... A cycle exists iff walking that chain upward reaches
+// agentName again. MAIN never reports to anyone, so it terminates the walk.
+export function reportsToCreatesCycle(
+  agentName: string,
+  proposedReportsTo: string | null,
+  readTeam: (name: string) => Pick<TeamConfig, 'reportsTo'>,
+  mainAgentId: string,
+): boolean {
+  if (!proposedReportsTo || proposedReportsTo === mainAgentId) return false
+  if (proposedReportsTo === agentName) return true
+  let cursor: string | null = proposedReportsTo
+  const visited = new Set<string>()
+  while (cursor && cursor !== mainAgentId) {
+    if (cursor === agentName) return true
+    if (visited.has(cursor)) break  // pre-existing loop elsewhere; don't spin
+    visited.add(cursor)
+    cursor = readTeam(cursor).reportsTo
+  }
+  return false
+}
+
 // Removing an agent leaves dangling references in other agents' team configs.
 // Call this from the DELETE handler: members who reported to the removed leader
 // fall back to the main agent, and anyone who delegated to them drops the id.

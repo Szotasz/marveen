@@ -49,6 +49,7 @@ import {
   writeAgentTeam,
   sanitizeTeamConfig,
   cleanupTeamReferences,
+  reportsToCreatesCycle,
   type TeamConfig,
 } from '../agent-team.js'
 import {
@@ -1222,9 +1223,21 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         ? data.trustFrom.filter((x: unknown) => typeof x === 'string')
         : (current.trustFrom ?? []),
     }
+    // Reject a reportsTo that would create a reporting cycle (e.g. dragging a
+    // manager under its own report in the Team graph). Keep the current parent
+    // and flag it so the UI can explain why the drop was ignored.
+    let cycleRejected = false
+    if (
+      proposed.reportsTo &&
+      proposed.reportsTo !== current.reportsTo &&
+      reportsToCreatesCycle(name, proposed.reportsTo, readAgentTeam, MAIN_AGENT_ID)
+    ) {
+      proposed.reportsTo = current.reportsTo
+      cycleRejected = true
+    }
     const { team: next, warnings } = sanitizeTeamConfig(name, proposed)
     writeAgentTeam(name, next)
-    json(res, { ok: true, team: next, warnings })
+    json(res, { ok: true, team: next, warnings, cycleRejected })
     return true
   }
 
