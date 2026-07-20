@@ -1649,6 +1649,30 @@ export function getKanbanSeqByIdPrefix(prefix: string): number | null {
   return rows[0].seq
 }
 
+// Find an active (non-archived) kanban card by exact title match, or
+// undefined when none exists.
+export function findActiveKanbanCardByTitle(title: string): KanbanCard | undefined {
+  return db.prepare(
+    'SELECT rowid AS seq, * FROM kanban_cards WHERE title = ? AND archived_at IS NULL LIMIT 1'
+  ).get(title) as KanbanCard | undefined
+}
+
+// Move the first active kanban card whose title equals `taskName` to the
+// 'waiting' status, appending it at the end of the waiting column.
+// Returns the card id when a match was found and updated, null otherwise.
+// Used by the scheduled-task fire-timeout watchdog when alerting about a
+// potentially stuck task.
+export function markScheduledTaskKanbanWaiting(taskName: string): string | null {
+  const card = findActiveKanbanCardByTitle(taskName)
+  if (!card) return null
+  const maxResult = db.prepare(
+    "SELECT MAX(sort_order) as m FROM kanban_cards WHERE status = 'waiting' AND archived_at IS NULL"
+  ).get() as { m: number | null }
+  const sortOrder = (maxResult.m ?? 0) + 100
+  moveKanbanCard(card.id, 'waiting', sortOrder, 'scheduler')
+  return card.id
+}
+
 export function addKanbanComment(cardId: string, author: string, content: string): KanbanComment {
   const now = Math.floor(Date.now() / 1000)
   const info = db.prepare(
