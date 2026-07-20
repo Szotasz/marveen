@@ -46,12 +46,84 @@ import {
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { sendTelegramMessage } from './telegram.js'
 import { runCommandTask } from './command-task.js'
-import { paneShowsContextSaturation, detectsFirstRunGate } from '../pane-state.js'
+import { paneShowsContextSaturation, detectsFirstRunGate, detectPaneState, type PaneState } from '../pane-state.js'
 
 // How many bare-Enter attempts the post-send resubmit tries before escalating
 // to a clear + re-inject, and the hard cap after which it gives up.
 const RESUBMIT_BARE_ENTER_ATTEMPTS = 2
 const RESUBMIT_MAX_ATTEMPTS = 6
+
+// --- Post-fire timeout watchdog ---
+// After a task/heartbeat injection, we track the target session to detect the
+// case where the agent got stuck processing the injected prompt. This closes
+// the gap in the pending_task_retries path: that path only fires when a NEW
+// task tries to inject into a busy session; if no new task arrives, a stuck
+// agent can sit undetected indefinitely.
+//
+// The design is a fire-and-monitor pattern rather than Promise.race: tmux
+// injection is fire-and-forget (no callback when the agent finishes), so we
+// poll the pane state on every scheduler tick instead.
+//
+// Grace period: the agent takes a few seconds to pick up the injected prompt.
+// We skip checking until TASK_FIRE_GRACE_MS have elapsed to avoid a false
+// clear before the agent even starts.
+//
+// Timeout: if the session is STILL busy TASK_FIRE_TIMEOUT_MS after injection,
+// we send a one-shot Telegram alert. 'busy' is the specific signal -- 'unknown'
+// and 'error' are handled by the context-guard / stuck-tool-call-watcher so we
+// leave them alone here.
+//
+// Idle clear: if the pane returns to idle at any point, the task completed (or
+// the session was restarted) and the entry is cleared.
+//
+// Maximum tracking age: entries that age past TASK_FIRE_MAX_TRACK_MS are
+// evicted regardless, so a permanently stuck agent does not accumulate entries.
+export const TASK_FIRE_GRACE_MS = 30_000
+export const TASK_FIRE_TIMEOUT_MS = 300_000
+const TASK_FIRE_MAX_TRACK_MS = 6 * 60 * 60_000
+
+export interface TaskInflightEntry {
+  taskName: string
+  agentName: string
+  session: string
+  host: string | null
+  injectedAt: number
+  alerted: boolean
+}
+
+// Active task/heartbeat injections keyed by `${taskName}@${agentName}`.
+const taskInflightMap = new Map<string, TaskInflightEntry>()
+
+export type TaskTimeoutDecision = 'clear' | 'alert' | 'hold'
+
+// Pure: decide what the watchdog should do for a single in-flight entry this
+// tick. Exported so it can be unit-tested without tmux I/O.
+//
+// clear -- remove the entry (session idle = task done, or entry too stale)
+// alert -- send a one-shot Telegram alert (session busy past timeout threshold)
+// hold  -- no action this tick
+//
+// Rationale for non-busy states returning 'hold' instead of 'clear':
+//   - null (capture failed): no signal, conservative.
+//   - 'unknown': session may be restarting -- other watchdogs handle it.
+//   - 'error': thinking-block API error, channel-monitor owns that alert path.
+//   - 'typing': post-send resubmit loop is already active.
+// Clearing on these states would drop the entry before the 300s timeout can
+// fire, producing false-negative coverage for genuinely stuck tasks.
+export function decideTaskTimeout(
+  entry: Pick<TaskInflightEntry, 'injectedAt' | 'alerted'>,
+  paneState: PaneState | null,
+  now: number,
+  opts: { graceMs: number; timeoutMs: number; maxTrackMs: number },
+): TaskTimeoutDecision {
+  const elapsed = now - entry.injectedAt
+  if (elapsed >= opts.maxTrackMs) return 'clear'
+  if (paneState === 'idle') return 'clear'
+  if (entry.alerted) return 'hold'
+  if (elapsed < opts.graceMs) return 'hold'
+  if (paneState === 'busy' && elapsed >= opts.timeoutMs) return 'alert'
+  return 'hold'
+}
 
 export type ResubmitAction = 'none' | 'enter' | 'reinject' | 'giveup'
 
@@ -380,6 +452,21 @@ async function attemptFireTask(
     }
     logger.info({ task: task.name, agent: agentName, session }, 'Scheduled task fired')
 
+    // Register the injection in the post-fire timeout watchdog. The watchdog
+    // polls the target pane on each tick and alerts if the session stays busy
+    // past TASK_FIRE_TIMEOUT_MS. A new injection on the same key replaces the
+    // previous entry (task re-fired before the prior one completed -- e.g. a
+    // manual "run now" overlapping a cron tick; track the latest injection
+    // because the agent is processing that one).
+    taskInflightMap.set(`${task.name}@${agentName}`, {
+      taskName: task.name,
+      agentName,
+      session,
+      host,
+      injectedAt: now,
+      alerted: false,
+    })
+
     // Post-send verify: if the agent started a new turn during our chunk
     // stream, the Enter from sendPromptToSession might have landed while
     // the agent was thinking and Claude Code parked the bytes on the input
@@ -578,6 +665,42 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
   })()
 }
 
+// One-shot Telegram alert when a fired task/heartbeat has been continuously
+// busy past TASK_FIRE_TIMEOUT_MS. Follows the same token-resolution and
+// ALLOWED_CHAT_ID path as sendPendingRetryAlert: this is a system-level
+// scheduler alert, not a per-agent channel notification.
+function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void {
+  const ageMinutes = Math.floor(elapsedMs / 60000)
+  const envPath = join(PROJECT_ROOT, '.env')
+  const envContent = readFileOr(envPath, '')
+  const tokenMatch = envContent.match(/TELEGRAM_BOT_TOKEN=(.+)/)
+  let token = tokenMatch?.[1]?.trim()
+  if (!token) {
+    const channelEnv = readFileOr(join(homedir(), '.claude', 'channels', 'telegram', '.env'), '')
+    token = channelEnv.match(/TELEGRAM_BOT_TOKEN=(.+)/)?.[1]?.trim()
+  }
+  if (!token) {
+    logger.warn({ task: entry.taskName, agent: entry.agentName }, 'task-timeout alert suppressed: no TELEGRAM_BOT_TOKEN (config error)')
+    return
+  }
+  if (!ALLOWED_CHAT_ID.trim()) {
+    logger.warn({ task: entry.taskName, agent: entry.agentName }, 'task-timeout alert suppressed: empty ALLOWED_CHAT_ID (config error)')
+    return
+  }
+  const text = [
+    `[${BOT_NAME} scheduler] A(z) "${entry.taskName}" (${entry.agentName}) ütemezett feladat ${ageMinutes} perce fut -- lehetséges beakadás.`,
+    'Az ágensben megtekintheted; a dashboard /Ütemezések oldalán visszavonható ha kell.',
+  ].join('\n')
+  ;(async () => {
+    try {
+      await sendTelegramMessage(token, ALLOWED_CHAT_ID, text)
+      logger.info({ task: entry.taskName, agent: entry.agentName, ageMinutes }, 'task-timeout Telegram alert sent')
+    } catch (err) {
+      logger.warn({ err, task: entry.taskName, agent: entry.agentName }, 'task-timeout alert delivery failed')
+    }
+  })()
+}
+
 // Tick interval for the schedule runner. 15 s gives 4x faster inter-agent
 // message delivery and scheduled-task triggering; each tick is a cheap
 // SQLite SELECT so the load is negligible.
@@ -631,6 +754,26 @@ export function startScheduleRunner(): NodeJS.Timeout {
     // first tick), not a fixed 60s window -- a late/dropped tick must not let a
     // sparse daily cron's single occurrence slip through a gap unscanned (#621).
     const fromMs = lastCheckMs
+
+    // Post-fire timeout watchdog sweep: check every tracked in-flight injection
+    // to see if the target session is still busy. If so past TASK_FIRE_TIMEOUT_MS,
+    // send a one-shot alert. Clear entries when the session goes idle (task done)
+    // or the maximum tracking age is reached.
+    for (const [key, entry] of taskInflightMap) {
+      const pane = capturePane(entry.session, entry.host)
+      const state = pane != null ? detectPaneState(pane) : null
+      const decision = decideTaskTimeout(entry, state, now, {
+        graceMs: TASK_FIRE_GRACE_MS,
+        timeoutMs: TASK_FIRE_TIMEOUT_MS,
+        maxTrackMs: TASK_FIRE_MAX_TRACK_MS,
+      })
+      if (decision === 'clear') {
+        taskInflightMap.delete(key)
+      } else if (decision === 'alert') {
+        sendTaskTimeoutAlert(entry, now - entry.injectedAt)
+        entry.alerted = true
+      }
+    }
 
     // Retry tasks that were busy-skipped on earlier ticks (persisted in
     // pending_task_retries so they survive dashboard restart). Each occurrence
