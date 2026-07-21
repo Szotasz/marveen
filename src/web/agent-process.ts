@@ -83,7 +83,7 @@ export function scopeChannelPlugins(
   existing?: Record<string, boolean>,
 ): Record<string, boolean> {
   const out: Record<string, boolean> = { ...(existing ?? {}) }
-  const ownPlugin = explicitProvider ? CHANNEL_PLUGIN_IDS[explicitProvider] : undefined
+  const ownPlugin = explicitProvider ? CHANNEL_PLUGIN_IDS[explicitProvider as keyof typeof CHANNEL_PLUGIN_IDS] : undefined
   for (const pid of Object.values(CHANNEL_PLUGIN_IDS)) {
     out[pid] = pid === ownPlugin
   }
