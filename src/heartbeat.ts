@@ -17,6 +17,7 @@ import { runAgent } from './agent.js'
 import { notifyTelegram } from './notify.js'
 import { logger } from './logger.js'
 import { wrapUntrusted, UNTRUSTED_PREAMBLE } from './prompt-safety.js'
+import { CHANNEL_PLUGIN_IDS } from './web/plugin-ids.js'
 
 // Isolation cwd for the heartbeat sub-agent. Keep this OUT of PROJECT_ROOT
 // so the @anthropic-ai/claude-agent-sdk-spawned headless claude does NOT
@@ -59,11 +60,7 @@ const HEARTBEAT_CONFIG_DIR = join(HEARTBEAT_AGENT_CWD, '.claude-config')
 // its own bun poller against the same bot token -> 409 Conflict -> Marveen
 // channel down by 09:02:45. Project-scope `enabledPlugins: false` overrides
 // the user-scope `true` per Claude Code settings precedence.
-const HEARTBEAT_DISABLED_PLUGINS = [
-  'telegram@claude-plugins-official',
-  'slack-channel@marveen-marketplace',
-  'discord@claude-plugins-official',
-] as const
+const HEARTBEAT_DISABLED_PLUGINS = Object.values(CHANNEL_PLUGIN_IDS)
 
 interface ClaudeSettings {
   enabledPlugins?: Record<string, boolean>

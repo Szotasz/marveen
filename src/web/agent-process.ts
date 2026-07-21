@@ -62,17 +62,8 @@ export function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
 }
 
-// The fleet's channel plugins keyed by provider. A sub-agent must enable ONLY
-// its own provider's plugin; the others are forced off so it cannot spawn a
-// competing poller against the main agent's bot token (the dup-poller / 409
-// Conflict class). Keep in sync with the user-scope enabledPlugins ids.
-export const CHANNEL_PLUGIN_IDS: Record<string, string> = {
-  telegram: 'telegram@claude-plugins-official',
-  slack: 'slack-channel@marveen-marketplace',
-  discord: 'discord@claude-plugins-official',
-  googlechat: 'googlechat@claude-channel-googlechat',
-  teams: 'teams@marveen-marketplace',
-}
+import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
+export { CHANNEL_PLUGIN_IDS }
 
 // Pure: compute the enabledPlugins map for a sub-agent so that exactly its own
 // channel plugin is enabled and every other channel plugin is disabled.

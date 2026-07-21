@@ -8,6 +8,7 @@ import { createAgentMessage, listPendingChannelRequests, updateChannelRequestSta
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
+import { CHANNEL_PLUGIN_IDS } from '../plugin-ids.js'
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
 import { loadOpenRouterCatalog, fetchAllOpenRouterModels, loadCuratedManual, addCuratedManual, removeCuratedManual } from '../openrouter-models.js'
 import {
@@ -244,14 +245,7 @@ export function setAgentEnabledPlugins(name: string, provider: ChannelProviderTy
     try { existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { /* overwrite */ }
   }
   const plugins = (existing.enabledPlugins ?? {}) as Record<string, boolean>
-  const allPlugins: Record<ChannelProviderType, string> = {
-    telegram: 'telegram@claude-plugins-official',
-    slack: 'slack-channel@marveen-marketplace',
-    discord: 'discord@claude-plugins-official',
-    googlechat: 'googlechat@claude-channel-googlechat',
-    teams: 'teams@marveen-marketplace',
-  }
-  for (const [p, pluginKey] of Object.entries(allPlugins)) {
+  for (const [p, pluginKey] of Object.entries(CHANNEL_PLUGIN_IDS)) {
     plugins[pluginKey] = p === provider
   }
   existing.enabledPlugins = plugins
