@@ -45,13 +45,30 @@ done
 
 # --- Tmux sessions ---
 echo -e "\n${BOLD}Tmux sessions${RESET}"
-for sess in "${MAIN_AGENT_ID}-channels" "agent-heartbeat"; do
-  if tmux has-session -t "$sess" 2>/dev/null; then
-    ok "$sess: alive"
+if tmux has-session -t "${MAIN_AGENT_ID}-channels" 2>/dev/null; then
+  ok "${MAIN_AGENT_ID}-channels: alive"
+else
+  warn "${MAIN_AGENT_ID}-channels: not running"
+fi
+
+# The heartbeat SUB-AGENT (session agent-heartbeat) is opt-in and OFF by default
+# -- see the HEARTBEAT_AGENT_ENABLED gate in src/index.ts. Warning about a
+# missing session on an install that never asked for it is pure noise, so only
+# complain when it is actually switched on. The flag can come from .env or from
+# the dashboard's store/config-overrides.json.
+HB_AGENT=$(grep -E "^HEARTBEAT_AGENT_ENABLED=" .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "')
+if [ -z "$HB_AGENT" ] && [ -f store/config-overrides.json ]; then
+  HB_AGENT=$(python3 -c "import json,sys;print(json.load(open('store/config-overrides.json')).get('HEARTBEAT_AGENT_ENABLED',''))" 2>/dev/null)
+fi
+if [ "$HB_AGENT" = "1" ]; then
+  if tmux has-session -t "agent-heartbeat" 2>/dev/null; then
+    ok "agent-heartbeat: alive"
   else
-    warn "$sess: not running"
+    warn "agent-heartbeat: enabled but NOT running"
   fi
-done
+else
+  ok "agent-heartbeat: off by design (HEARTBEAT_AGENT_ENABLED not set)"
+fi
 
 # --- Channel health ---
 echo -e "\n${BOLD}Telegram bridge${RESET}"
