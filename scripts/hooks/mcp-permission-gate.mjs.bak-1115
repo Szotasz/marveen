@@ -1,0 +1,99 @@
+#!/usr/bin/env node
+// PreToolUse MCP permission gate for restricted fleet agents.
+//
+// PROBLEM (2026-07-20): the Bash safety gate silenced Bash prompts, but MCP tool
+// calls are a SEPARATE permission surface. A background agent driven over a chat
+// channel prompts on EVERY non-allowlisted MCP tool -- including replying to the
+// operator (mcp__plugin_telegram_telegram__reply). Getting a permission card just
+// to answer a message is absurd friction, and MCP tool names have no wildcard in
+// the settings allow-list, so hand-listing ~40 read tools is unmaintainable.
+//
+// FIX: classify MCP tools by intent.
+//   - channel communication (reply/react/edit/download on the chat plugin) -> ALLOW
+//   - clearly READ-ONLY tools (get/list/search/read/insights/...) -> ALLOW
+//   - WRITE / mutating tools (create/update/delete/send/activate/boost/...) -> DEFER
+//     (exit 0, no opinion) so the NORMAL prompt still fires -- a money-spending or
+//     outbound-write action SHOULD get a human tap. We never hard-deny here, so the
+//     gate can only REDUCE friction, never newly block a tool.
+//   - anything we cannot confidently classify -> DEFER (fail safe = prompt).
+//
+// Non-MCP tools (Bash, Read, Write, ...) are out of scope -> DEFER. Bash has its
+// own gate (bash-safety-gate.mjs); money-writes on Meta-Ads land on the prompt,
+// which is the intended approval point.
+
+import { readFileSync, realpathSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
+// Chat-channel plugin tools: the agent MUST be able to talk to its operator and
+// handle inbound attachments without a prompt. All are low-risk (messaging on the
+// operator's own channel).
+const CHANNEL_ALLOW = /^mcp__plugin_(telegram|slack|discord|googlechat|teams)[a-z_]*__(reply|react|edit_message|download_attachment|send|typing)/i
+
+// WRITE / mutating verbs. Checked FIRST so a tool that contains both (rare) is
+// treated as a write (fail safe -> prompt). Word boundary in the tool short-name
+// is EITHER '_' OR '-' (MCP servers vary: Meta-Ads uses snake_case, Canva uses
+// kebab-case like `create-design`) so `get_datasets` isn't caught by a stray
+// "set" but `create-design` IS caught. (2026-07-21: hyphenated Canva tools all
+// deferred because the boundary was underscore-only.)
+const WRITE_VERB = /(?:^|[_-])(create|update|delete|remove|destroy|activate|deactivate|enable|disable|boost|pause|resume|archive|respond|apply|label|unlabel|copy|move|send|add|set|upload|import|assign|revoke|approve|publish|merge|resize|comment|reply)(?:[_-]|$)/i
+
+// READ verbs. Only these auto-allow; everything else defers (prompt).
+const READ_VERB = /(?:^|[_-])(get|list|search|read|fetch|download|describe|preview|check|count|find|query|export|insights|report|reports|realtime|library|suggest|details|stats|quality|health|context|logs|log|benchmark|score|errors|error|article|articles|activity|eligibility|metadata|permissions|labels|drafts|threads|events|calendars|accounts|entities|images|videos|creatives|audience|audiences|conversions|datasets|dataset|media|pages|resolve|help)(?:[_-]|$)/i
+
+// The tool short-name is the segment after the LAST '__' (server-qualified name).
+export function shortName(toolName) {
+  const s = String(toolName ?? '')
+  const i = s.lastIndexOf('__')
+  return i >= 0 ? s.slice(i + 2) : s
+}
+
+// 'allow' -> auto-approve (no prompt); 'defer' -> no opinion (normal flow / prompt).
+// Canva creative agent (e.g. Lumen): design work IS the job -- create/generate/
+// edit/export in the user's OWN Canva account is low-risk and reversible, so
+// auto-allow it. Keep the human gate ONLY on outbound/irreversible actions
+// (publish a brand template, delete). Without this, a creative agent would prompt
+// the owner on every design op and couldn't work autonomously.
+const CANVA = /__claude_ai_Canva__/i
+const CANVA_GATED = /(?:^|[_-])(publish|delete|remove|destroy)(?:[_-]|$)/i
+
+export function decide(toolName) {
+  const name = String(toolName ?? '')
+  if (!name.startsWith('mcp__')) return 'defer'      // non-MCP: out of scope
+  if (CHANNEL_ALLOW.test(name)) return 'allow'        // talk to the operator freely
+  const sn = shortName(name)
+  if (CANVA.test(name)) return CANVA_GATED.test(sn) ? 'defer' : 'allow' // creative work -> allow; publish/delete -> gate
+  if (WRITE_VERB.test(sn)) return 'defer'             // mutation -> keep the prompt
+  if (READ_VERB.test(sn)) return 'allow'              // read-only -> no prompt
+  return 'defer'                                       // unknown -> fail safe (prompt)
+}
+
+function allow() {
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'allow',
+      permissionDecisionReason: 'read-only / channel MCP tool (mcp-permission-gate)',
+    },
+  }))
+  process.exit(0)
+}
+
+function isInvokedDirectly() {
+  try {
+    const self = realpathSync(fileURLToPath(import.meta.url))
+    const entry = process.argv[1] ? realpathSync(process.argv[1]) : ''
+    return self === entry
+  } catch {
+    return false
+  }
+}
+if (isInvokedDirectly()) {
+  let payload
+  try {
+    payload = JSON.parse(readFileSync(0, 'utf-8'))
+  } catch {
+    process.exit(0) // malformed/empty: defer, never crash the tool call
+  }
+  if (decide(payload?.tool_name) === 'allow') allow()
+  process.exit(0) // defer
+}

@@ -11,8 +11,11 @@ import {
   addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
   listArchivedKanbanCards,
   revertIdeaFromKanban,
+  registerKanbanAttachment, getKanbanAttachment, getAttachmentsForAllCards,
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
+import { verifyAttachmentPath, attachmentKind, safeContentType } from '../kanban-attachment-path.js'
+import { createReadStream } from 'node:fs'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
@@ -110,7 +113,22 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // instead of an N+1 per-card lookup, so the footer-pill UI gets
     // everything it needs in a single round trip.
     const labelsByCard = getLabelsForAllCards()
-    const cards = listKanbanCards().map((card) => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))
+    // Attachments come along in the same round trip, one query for the board.
+    // ONLY metadata: `path` is deliberately dropped here. The browser never learns
+    // a filesystem path, and cannot therefore ask for one -- the download endpoint
+    // takes an attachment id and looks the path up server-side.
+    const attByCard = getAttachmentsForAllCards()
+    const cards = listKanbanCards().map((card) => ({
+      ...card,
+      labels: labelsByCard.get(card.id) ?? [],
+      attachments: (attByCard.get(card.id) ?? []).map((a) => ({
+        id: a.id,
+        name: a.original_name,
+        size: a.size,
+        mime: a.mime,
+        kind: attachmentKind(a.mime),
+      })),
+    }))
     json(res, cards)
     return true
   }
@@ -201,6 +219,80 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/kanban-projects' && method === 'GET') {
     json(res, listKanbanProjects())
+    return true
+  }
+
+  // Stream one attachment's bytes. Takes an ATTACHMENT ID, never a path -- a
+  // handler that accepts a path is file disclosure to anyone who can reach it,
+  // which over HTTP is a wider door than any agent-facing helper. The path comes
+  // from the DB row and is STILL re-verified (realpath, mirror-root prefix with the
+  // trailing separator, regular file, size match) on the assumption the row itself
+  // could be wrong. Bearer-protected like every other /api/* route -- the browser
+  // reaches it through the dashboard's Bearer-injecting fetch, so no token ever
+  // appears in a URL.
+  const attachmentMatch = path.match(/^\/api\/kanban\/attachments\/([A-Za-z0-9_-]{1,64})$/)
+  if (attachmentMatch && method === 'GET') {
+    const row = getKanbanAttachment(attachmentMatch[1])
+    if (!row) {
+      json(res, { error: 'attachment not found' }, 404)
+      return true
+    }
+    const verdict = verifyAttachmentPath(row.path, { expectedSize: row.size })
+    if (!verdict.ok) {
+      // Loud, with the resolved path, because a refusal here means the DB and the
+      // disk disagree -- that is worth investigating, not silently 404-ing away.
+      logger.warn(`kanban attachment ${row.id} refused: ${verdict.reason} (row path: ${row.path})`)
+      json(res, { error: 'attachment not available' }, 404)
+      return true
+    }
+    res.writeHead(200, {
+      'Content-Type': safeContentType(row.mime),
+      'Content-Length': String(verdict.size),
+      // The name is caller-written text; it never goes into a header. The UI shows
+      // it (escaped) from the JSON metadata instead.
+      'Content-Disposition': 'inline',
+      'X-Content-Type-Options': 'nosniff',
+    })
+    createReadStream(verdict.path).pipe(res)
+    return true
+  }
+
+  // Register a mirrored file against a card. The adapter calls this once, when a
+  // file actually lands -- not on every poll.
+  const attachRegisterMatch = path.match(/^\/api\/kanban\/([A-Za-z0-9_-]+)\/attachments$/)
+  if (attachRegisterMatch && method === 'POST') {
+    const cardId = attachRegisterMatch[1]
+    if (!getKanbanCard(cardId)) {
+      json(res, { error: 'card not found' }, 404)
+      return true
+    }
+    const raw = await readBody(req)
+    let body: Record<string, unknown>
+    try { body = JSON.parse(raw.toString()) as Record<string, unknown> } catch { body = {} }
+    const original_name = String(body.original_name ?? '').trim()
+    const filePath = String(body.path ?? '')
+    if (!original_name || !filePath) {
+      json(res, { error: 'original_name and path required' }, 400)
+      return true
+    }
+    // Verify at REGISTRATION too, not only at serve time: a row that could never be
+    // served is not worth storing, and rejecting it here surfaces the problem to
+    // whoever is registering rather than to the person looking at the board later.
+    const verdict = verifyAttachmentPath(filePath)
+    if (!verdict.ok) {
+      json(res, { error: `path rejected: ${verdict.reason}` }, 400)
+      return true
+    }
+    const id = registerKanbanAttachment({
+      card_id: cardId,
+      source: typeof body.source === 'string' ? body.source : 'pm-bridge',
+      source_ref: body.source_ref == null ? null : String(body.source_ref),
+      original_name,
+      path: verdict.path,
+      size: verdict.size,
+      mime: body.mime == null ? null : String(body.mime),
+    })
+    json(res, { ok: true, id })
     return true
   }
 

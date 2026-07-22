@@ -4,6 +4,8 @@ import { gateDecision as selfPaceDecision, stripDataPayloads, stripGitCommitMess
 import {
   agentGetsGovernanceGates,
   injectSelfPaceGate,
+  injectSafetyGates,
+  SAFETY_GATES,
 } from '../web/agent-scaffold.js'
 import { MAIN_AGENT_ID } from '../config.js'
 
@@ -234,6 +236,64 @@ describe('governance gate scaffold wiring', () => {
   })
 })
 
+
+// --- safety gates: the five security PreToolUse hooks wired onto every sub-agent
+// (read/edit/bash/mcp/orchestration). New assertion set for the scaffold auto-wire
+// so a freshly-spawned bot is quiet + gated without any manual step. ---
+describe('safety-gate scaffold wiring', () => {
+  it('injectSafetyGates wires all five gates with the fleet-deployed matchers', () => {
+    const s: Record<string, unknown> = {}
+    injectSafetyGates(s)
+    const pre = ((s.hooks as Record<string, unknown>).PreToolUse as Array<{ matcher: string; hooks: Array<{ command: string }> }>)
+    expect(pre.length).toBe(5)
+    for (const g of SAFETY_GATES) {
+      const entry = pre.find((e) => JSON.stringify(e).includes(g.script))
+      expect(entry, `gate ${g.script} wired`).toBeTruthy()
+      expect(entry!.matcher).toBe(g.matcher)
+      expect(entry!.hooks[0].command).toContain(`scripts/hooks/${g.script}`)
+    }
+  })
+  it('is idempotent -- a respawn re-run does not duplicate any gate', () => {
+    const s: Record<string, unknown> = {}
+    injectSafetyGates(s)
+    injectSafetyGates(s)
+    const pre = ((s.hooks as Record<string, unknown>).PreToolUse as unknown[])
+    for (const g of SAFETY_GATES) {
+      expect(pre.filter((e) => JSON.stringify(e).includes(g.script)).length, g.script).toBe(1)
+    }
+  })
+  it('preserves other PreToolUse entries (self-pace) when wiring safety gates', () => {
+    const s: Record<string, unknown> = {}
+    injectSelfPaceGate(s)
+    injectSafetyGates(s)
+    const pre = ((s.hooks as Record<string, unknown>).PreToolUse as unknown[])
+    expect(pre.some((e) => JSON.stringify(e).includes('self-pace-gate.mjs'))).toBe(true)
+    expect(pre.length).toBe(6) // self-pace + 5 safety
+  })
+  it('each matcher fires only on its intended tools', () => {
+    const s: Record<string, unknown> = {}
+    injectSafetyGates(s)
+    const pre = ((s.hooks as Record<string, unknown>).PreToolUse as Array<{ matcher: string }>)
+    const matcherFor = (script: string) => pre.find((e) => JSON.stringify(e).includes(script))!.matcher
+    const fires = (script: string, tool: string) => new RegExp(`^(?:${matcherFor(script)})$`).test(tool)
+    expect(fires('bash-safety-gate.mjs', 'Bash')).toBe(true)
+    expect(fires('bash-safety-gate.mjs', 'Read')).toBe(false)
+    expect(fires('read-safety-gate.mjs', 'Read')).toBe(true)
+    expect(fires('edit-safety-gate.mjs', 'Write')).toBe(true)
+    expect(fires('edit-safety-gate.mjs', 'Edit')).toBe(true)
+    expect(fires('edit-safety-gate.mjs', 'NotebookEdit')).toBe(true)
+    expect(fires('mcp-permission-gate.mjs', 'mcp__telegram__reply')).toBe(true)
+    expect(fires('mcp-permission-gate.mjs', 'Bash')).toBe(false)
+    expect(fires('orchestration-safety-gate.mjs', 'Monitor')).toBe(true)
+    expect(fires('orchestration-safety-gate.mjs', 'TaskStop')).toBe(true)
+  })
+  it('safety gates are sub-agent scope: main agent exempt (same guard as governance)', () => {
+    // writeAgentSettingsFromProfile guards injectSafetyGates with agentGetsGovernanceGates(name),
+    // so a fresh sub-agent gets them and the owner-facing main agent does not.
+    expect(agentGetsGovernanceGates('lumen')).toBe(true)
+    expect(agentGetsGovernanceGates(MAIN_AGENT_ID)).toBe(false)
+  })
+})
 
 // --- stripGitCommitMessages: a `git commit -m` message is PROSE, never a shell
 // invocation, so a trigger token inside it must not false-deny (2026-07-13 DrCode

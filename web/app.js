@@ -1314,11 +1314,41 @@ function createCardEl(card, embeddedChildren = []) {
     embeddedHtml = `<div class="kanban-embedded-subtasks">${items}</div>`
   }
 
+  // Attachments (2026-07-22). Image types get a thumbnail, everything else an icon
+  // + name + size + download. The bytes are NOT loaded via <img src="/api/...">:
+  // an <img> cannot send the Bearer header, and putting the dashboard token in a
+  // URL would leak it into history, referrers and proxy logs. Instead the image is
+  // fetched through the Bearer-injecting window.fetch and shown as a blob URL, so
+  // the token never leaves the request header.
+  //
+  // Every piece of attachment text is escaped: original_name is written by whoever
+  // uploaded the file. That string already proved to be an attack surface twice
+  // today (header injection on the bridge, prompt injection in the dispatch text);
+  // on a web page it would be XSS.
+  let attachmentsHtml = ''
+  if (Array.isArray(card.attachments) && card.attachments.length > 0) {
+    const items = card.attachments.map((a) => {
+      const name = escapeHtml(a.name ?? '')
+      const size = formatAttachmentSize(a.size)
+      if (a.kind === 'image') {
+        return `<div class="kanban-att kanban-att-image" data-att-id="${escapeHtml(a.id)}" title="${name}">`
+          + `<img class="kanban-att-thumb" alt="${name}" data-att-src="${escapeHtml(a.id)}">`
+          + `<span class="kanban-att-name">${name}</span></div>`
+      }
+      return `<div class="kanban-att kanban-att-file" data-att-id="${escapeHtml(a.id)}" title="${name}">`
+        + `<span class="kanban-att-icon">📎</span>`
+        + `<span class="kanban-att-name">${name}</span>`
+        + `<span class="kanban-att-size">${escapeHtml(size)}</span></div>`
+    }).join('')
+    attachmentsHtml = `<div class="kanban-card-attachments">${items}</div>`
+  }
+
   el.innerHTML = `
     ${projectHtml}
     <div class="kanban-card-title">${seqHtml}${escapeHtml(card.title)}</div>
     <div class="kanban-card-footer">${assigneeHtml}${dueHtml}</div>
     ${labelsHtml}
+    ${attachmentsHtml}
     <div class="kanban-card-actions">
       <button class="card-breakdown-btn" title="${t('kanban.btn.breakdown')}" aria-label="${t('kanban.btn.breakdown')}">⚡</button>
     </div>
@@ -1360,6 +1390,12 @@ function createCardEl(card, embeddedChildren = []) {
 
   // Click -> detail
   el.addEventListener('click', () => showCardDetail(card))
+
+  // Thumbnails load after the card exists in the DOM: the fetch is async and must
+  // not block rendering the board.
+  if (Array.isArray(card.attachments) && card.attachments.some((a) => a.kind === 'image')) {
+    hydrateCardAttachments(el)
+  }
 
   return el
 }
@@ -9061,6 +9097,47 @@ document.getElementById('saveConnectorBtn').addEventListener('click', async () =
 })
 
 // === Helpers ===
+// --- Kanban card attachments -------------------------------------------------
+
+function formatAttachmentSize(n) {
+  const b = Number(n)
+  if (n == null || !Number.isFinite(b) || b < 0) return ''
+  if (b < 1024) return `${b} B`
+  if (b < 1024 * 1024) return `${Math.round(b / 1024)} kB`
+  return `${(b / (1024 * 1024)).toFixed(1)} MB`
+}
+
+// Load an attachment's bytes through the Bearer-injecting fetch and hand back an
+// object URL. The token stays in the request header -- it never reaches a URL, a
+// referrer or a log. Returns null on any failure; the caller leaves the icon in
+// place rather than showing a broken image.
+const _attBlobCache = new Map()
+async function attachmentBlobUrl(attId) {
+  if (_attBlobCache.has(attId)) return _attBlobCache.get(attId)
+  try {
+    const res = await fetch(`/api/kanban/attachments/${encodeURIComponent(attId)}`)
+    if (!res.ok) return null
+    const url = URL.createObjectURL(await res.blob())
+    _attBlobCache.set(attId, url)
+    return url
+  } catch {
+    return null
+  }
+}
+
+// Fill in thumbnails after the card is in the DOM. Failures are silent-but-visible:
+// the tile keeps its name and stops looking like a loading image.
+async function hydrateCardAttachments(root) {
+  const imgs = (root || document).querySelectorAll('img[data-att-src]')
+  for (const img of imgs) {
+    const id = img.getAttribute('data-att-src')
+    img.removeAttribute('data-att-src')
+    const url = await attachmentBlobUrl(id)
+    if (url) img.src = url
+    else img.closest('.kanban-att')?.classList.add('kanban-att-unavailable')
+  }
+}
+
 function escapeHtml(str) {
   const d = document.createElement('div')
   d.textContent = str

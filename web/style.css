@@ -7010,3 +7010,50 @@ body {
   margin-left: 6px;
   vertical-align: middle;
 }
+
+/* --- Kanban card attachments (2026-07-22) ---------------------------------- */
+/* Thumbnails are loaded as blob URLs by hydrateCardAttachments(); until then the
+   <img> has no src, so it must not collapse the tile or flash a broken icon. */
+.kanban-card-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.kanban-att {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 6px;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--muted, #999);
+  background: var(--panel, rgba(255, 255, 255, 0.03));
+}
+.kanban-att-image {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 3px;
+}
+.kanban-att-thumb {
+  display: block;
+  width: 92px;
+  height: 62px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: var(--border, #2a2a2a);
+}
+.kanban-att-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 120px;
+}
+.kanban-att-size { opacity: 0.7; }
+/* The fetch failed or the server refused the file: keep the name, drop the empty
+   image box, and say so rather than showing a broken-image glyph. */
+.kanban-att-unavailable .kanban-att-thumb { display: none; }
+.kanban-att-unavailable::before { content: "⚠ "; opacity: 0.8; }

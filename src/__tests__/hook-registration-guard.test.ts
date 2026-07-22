@@ -220,6 +220,18 @@ describe('pruneStaleHookEntries', () => {
     // channel-inbox-drain.py is app-registered (templates/settings.json.template),
     // so a missing-file entry must be prunable-as-ours, not treated as foreign.
     expect(KNOWN_HOOK_SCRIPTS).toContain('channel-inbox-drain.py')
+    // Every app-registered PreToolUse gate must be prunable-as-ours too, so a
+    // missing gate script self-heals instead of leaving a dead (failing) hook.
+    for (const gate of [
+      'egress-gate.mjs',
+      'read-safety-gate.mjs',
+      'edit-safety-gate.mjs',
+      'orchestration-safety-gate.mjs',
+      'bash-safety-gate.mjs',
+      'mcp-permission-gate.mjs',
+    ]) {
+      expect(KNOWN_HOOK_SCRIPTS).toContain(gate)
+    }
   })
 })
 

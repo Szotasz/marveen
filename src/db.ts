@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3'
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync } from 'node:fs'
 import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from './config.js'
@@ -178,6 +179,31 @@ export function initDatabase(dbPathOverride?: string): void {
     // column already exists
   }
   db.exec('CREATE INDEX IF NOT EXISTS idx_kanban_parent ON kanban_cards(parent_id)')
+  // Card attachments (2026-07-22). A separate table rather than a JSON column on
+  // the card: it can be queried from either side, and the UNIQUE is what makes a
+  // repeated register call idempotent -- the same guarantee the file-level dedup
+  // gives the adapter, one layer up.
+  //
+  // `path` is an absolute path under the attachment mirror. It is NEVER sent to a
+  // browser and never accepted from one: the serving endpoint takes an attachment
+  // id and re-verifies this path (see web/kanban-attachment-path.ts).
+  //
+  // Reverting this feature is a DROP of this one table; nothing existing is touched.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS kanban_card_attachments (
+      id            TEXT PRIMARY KEY,
+      card_id       TEXT NOT NULL REFERENCES kanban_cards(id) ON DELETE CASCADE,
+      source        TEXT NOT NULL DEFAULT 'pm-bridge',
+      source_ref    TEXT,
+      original_name TEXT NOT NULL,
+      path          TEXT NOT NULL,
+      size          INTEGER,
+      mime          TEXT,
+      created_at    INTEGER NOT NULL,
+      UNIQUE(card_id, source, source_ref)
+    )
+  `)
+  db.exec('CREATE INDEX IF NOT EXISTS idx_kanban_att_card ON kanban_card_attachments(card_id)')
   // Migration: add dispatched_at to kanban_cards (kanban -> agent dispatch
   // once-only guard). Older installs created the table without it.
   try {
@@ -1603,6 +1629,74 @@ export function deleteKanbanCard(id: string): boolean {
     db.prepare('UPDATE kanban_cards SET parent_id = NULL WHERE parent_id = ?').run(cardId)
     return db.prepare('DELETE FROM kanban_cards WHERE id = ?').run(cardId).changes > 0
   })(id) as boolean
+}
+
+// --- Card attachments --------------------------------------------------------
+
+export interface KanbanCardAttachment {
+  id: string
+  card_id: string
+  source: string
+  source_ref: string | null
+  original_name: string
+  path: string
+  size: number | null
+  mime: string | null
+  created_at: number
+}
+
+/**
+ * Register a mirrored file against a card. Idempotent by (card_id, source,
+ * source_ref): the adapter may call this again after a restart or a re-fetch and
+ * must not accumulate duplicate rows. Returns the row id.
+ */
+export function registerKanbanAttachment(a: {
+  card_id: string
+  source?: string
+  source_ref?: string | null
+  original_name: string
+  path: string
+  size?: number | null
+  mime?: string | null
+}): string {
+  const source = a.source ?? 'pm-bridge'
+  const ref = a.source_ref ?? null
+  const existing = db
+    .prepare('SELECT id FROM kanban_card_attachments WHERE card_id = ? AND source = ? AND source_ref IS ?')
+    .get(a.card_id, source, ref) as { id: string } | undefined
+  if (existing) {
+    // Same logical attachment seen again -- refresh the mutable facts (a re-upload
+    // can change name/size/path) rather than inserting a second row.
+    db.prepare(
+      'UPDATE kanban_card_attachments SET original_name = ?, path = ?, size = ?, mime = ? WHERE id = ?'
+    ).run(a.original_name, a.path, a.size ?? null, a.mime ?? null, existing.id)
+    return existing.id
+  }
+  const id = randomUUID().slice(0, 8)
+  db.prepare(
+    `INSERT INTO kanban_card_attachments
+       (id, card_id, source, source_ref, original_name, path, size, mime, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(id, a.card_id, source, ref, a.original_name, a.path, a.size ?? null, a.mime ?? null, Math.floor(Date.now() / 1000))
+  return id
+}
+
+export function getKanbanAttachment(id: string): KanbanCardAttachment | undefined {
+  return db.prepare('SELECT * FROM kanban_card_attachments WHERE id = ?').get(id) as KanbanCardAttachment | undefined
+}
+
+/** All attachments, grouped by card -- one query for the whole board (no N+1). */
+export function getAttachmentsForAllCards(): Map<string, KanbanCardAttachment[]> {
+  const rows = db
+    .prepare('SELECT * FROM kanban_card_attachments ORDER BY created_at ASC, id ASC')
+    .all() as KanbanCardAttachment[]
+  const byCard = new Map<string, KanbanCardAttachment[]>()
+  for (const r of rows) {
+    const list = byCard.get(r.card_id)
+    if (list) list.push(r)
+    else byCard.set(r.card_id, [r])
+  }
+  return byCard
 }
 
 export function getKanbanComments(cardId: string): KanbanComment[] {

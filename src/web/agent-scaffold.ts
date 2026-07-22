@@ -311,6 +311,10 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   if (agentGetsEmailGate(name)) injectEmailSendGate(existing)
   if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
   injectEgressGate(existing)
+  // (d) safety gates -- the five PreToolUse hooks (read/edit/bash/mcp/
+  // orchestration) that gate risky calls without prompting the operator for
+  // every one. Sub-agent scope, same main-exempt rule as (a)/(b).
+  if (agentGetsGovernanceGates(name)) injectSafetyGates(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
 
@@ -427,6 +431,80 @@ export function ensureEgressGate(name: string): boolean {
   if (isUnsafeHookCommand(command)) return false
   injectEgressGate(settings)
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
+// --- Safety hard-gates (the five security PreToolUse gates) ------------------
+// read/edit/bash/mcp/orchestration gates that let a sub-agent run risky tools
+// WITHOUT prompting the operator for every call, while still hard-blocking the
+// dangerous forms. Zsolt requires them on every fleet bot. Scope is SUB-AGENT
+// ONLY: the main agent (the owner-facing trusted agent) is exempt -- same rule
+// as the self-pace / email gates -- and its root settings.json carries none.
+// Matchers mirror the wiring already deployed by hand on the existing bots.
+export const SAFETY_GATES: ReadonlyArray<{ matcher: string; script: string }> = [
+  { matcher: 'Read', script: 'read-safety-gate.mjs' },
+  { matcher: 'Write|Edit|NotebookEdit', script: 'edit-safety-gate.mjs' },
+  { matcher: 'Monitor|TaskOutput|TaskStop', script: 'orchestration-safety-gate.mjs' },
+  { matcher: 'Bash', script: 'bash-safety-gate.mjs' },
+  { matcher: 'mcp__.*', script: 'mcp-permission-gate.mjs' },
+]
+
+// Idempotently wire one PreToolUse gate whose command runs a scripts/hooks/
+// script. Drops any prior entry referencing the same script (respawn re-run)
+// before re-adding, so the hook never accumulates duplicates; other PreToolUse
+// entries are preserved. Same discipline + registration guard as injectEgressGate.
+function injectHookGate(existing: Record<string, unknown>, matcher: string, script: string): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = `node ${join(PROJECT_ROOT, 'scripts', 'hooks', script)}`
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher,
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes(script)),
+    entry,
+  ]
+}
+
+// Named per-gate wrappers so each is individually referenceable and unit-testable.
+export function injectReadSafetyGate(existing: Record<string, unknown>): void { injectHookGate(existing, 'Read', 'read-safety-gate.mjs') }
+export function injectEditSafetyGate(existing: Record<string, unknown>): void { injectHookGate(existing, 'Write|Edit|NotebookEdit', 'edit-safety-gate.mjs') }
+export function injectOrchestrationSafetyGate(existing: Record<string, unknown>): void { injectHookGate(existing, 'Monitor|TaskOutput|TaskStop', 'orchestration-safety-gate.mjs') }
+export function injectBashSafetyGate(existing: Record<string, unknown>): void { injectHookGate(existing, 'Bash', 'bash-safety-gate.mjs') }
+export function injectMcpPermissionGate(existing: Record<string, unknown>): void { injectHookGate(existing, 'mcp__.*', 'mcp-permission-gate.mjs') }
+
+// Wire all five safety gates. Called from writeAgentSettingsFromProfile (spawn)
+// and ensureSafetyGates (startup sweep), so both new and existing sub-agents get
+// them without a full respawn.
+export function injectSafetyGates(existing: Record<string, unknown>): void {
+  for (const g of SAFETY_GATES) injectHookGate(existing, g.matcher, g.script)
+}
+
+// Idempotent startup migration: ensure a sub-agent's settings.json carries all
+// five safety gates. Mirror of ensureEgressGate, but SUB-AGENT SCOPE -- the main
+// agent is exempt. Returns true if the file was updated (any gate was missing).
+export function ensureSafetyGates(name: string): boolean {
+  if (name === MAIN_AGENT_ID) return false
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const serialized = JSON.stringify(ptu)
+  // Idempotency: no-op only when ALL five are already present.
+  if (SAFETY_GATES.every((g) => serialized.includes(g.script))) return false
+  injectSafetyGates(settings)
+  mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
 }
