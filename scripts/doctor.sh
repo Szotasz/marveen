@@ -17,13 +17,29 @@ MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
 
 echo -e "\n${BOLD}Marveen Doctor${RESET}: $(date '+%Y-%m-%d %H:%M:%S')\n"
 
-# --- Systemd services ---
+# --- Services (systemd on Linux, launchd on macOS) ---
 echo -e "${BOLD}Services${RESET}"
-for svc in "${MAIN_AGENT_ID}-channels" "${MAIN_AGENT_ID}-dashboard"; do
-  if systemctl --user is-active "$svc.service" &>/dev/null; then
-    ok "$svc: running"
+for component in channels dashboard; do
+  if [ "$(uname -s)" = "Darwin" ]; then
+    # launchd label convention: com.<MAIN_AGENT_ID>.<component>
+    label="com.${MAIN_AGENT_ID}.${component}"
+    # `launchctl list` prints "PID Status Label"; a literal "-" PID means loaded
+    # but not currently running.
+    pid="$(launchctl list 2>/dev/null | awk -v l="$label" '$3 == l {print $1}')"
+    if [ -n "$pid" ] && [ "$pid" != "-" ]; then
+      ok "$label: running (pid $pid)"
+    elif [ -n "$pid" ]; then
+      fail "$label: loaded but NOT running"
+    else
+      fail "$label: not loaded"
+    fi
   else
-    fail "$svc: NOT running"
+    svc="${MAIN_AGENT_ID}-${component}"
+    if systemctl --user is-active "$svc.service" &>/dev/null; then
+      ok "$svc: running"
+    else
+      fail "$svc: NOT running"
+    fi
   fi
 done
 
@@ -73,7 +89,13 @@ fi
 echo -e "\n${BOLD}Keepalive${RESET}"
 KA_FILE="store/.channel-keepalive"
 if [ -f "$KA_FILE" ]; then
-  KA_AGE=$(( $(date +%s) - $(stat -c "%Y" "$KA_FILE") ))
+  # GNU stat uses -c "%Y", BSD/macOS stat uses -f "%m"
+  if [ "$(uname -s)" = "Darwin" ]; then
+    KA_MTIME=$(stat -f "%m" "$KA_FILE")
+  else
+    KA_MTIME=$(stat -c "%Y" "$KA_FILE")
+  fi
+  KA_AGE=$(( $(date +%s) - KA_MTIME ))
   if [ "$KA_AGE" -lt 600 ]; then
     ok "channel-keepalive: refreshed ${KA_AGE}s ago"
   elif [ "$KA_AGE" -lt 1200 ]; then
