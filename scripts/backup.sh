@@ -61,6 +61,13 @@ add_if() {
 }
 
 # repo/ group (relative to REPO_ROOT)
+# The MAIN agent's persona. The sub-agents' CLAUDE.md/SOUL.md are picked up by the
+# `find agents` sweep below, but the ROOT pair is gitignored (.gitignore:36) and was
+# not swept -- so every sub-agent's identity was backed up and the main agent's was
+# not. Found 2026-07-22 by asking which files are in NEITHER set: what survives is
+# the union of "tracked in git" and "in the archive", so anything in neither is gone.
+add_if "${REPOLIST}" "${REPO_ROOT}" CLAUDE.md
+add_if "${REPOLIST}" "${REPO_ROOT}" SOUL.md
 add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db
 add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db-shm
 add_if "${REPOLIST}" "${REPO_ROOT}" store/claudeclaw.db-wal
