@@ -404,6 +404,69 @@ export function detectsBlockingMenu(pane: string): boolean {
   return MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion)
 }
 
+// Claude Code FIRST-RUN gates: the interactive dialogs a brand-new install
+// parks on before the prompt ever renders -- the per-project "Do you trust the
+// files in this folder?" consent, the --dangerously-skip-permissions "Bypass
+// Permissions mode" acceptance, the "Select login method" picker, the theme
+// picker and the onboarding welcome screen. A sub-agent session stuck on one
+// of these is the fresh-install failure mode behind "scheduled tasks pile up
+// on the agents" (Oligo2000 VPS, 2026-07-22): the pane has no idle footer and
+// no busy signal, so detectPaneState reads 'unknown', isSessionReadyForPrompt
+// stays false forever, every scheduled task defers into pending_task_retries,
+// and a forceSend task types its prompt blindly into the dialog.
+//
+// These gates need their own detector (distinct from detectsBlockingMenu)
+// because the RECOVERY differs: a /mcp-style modal pops back to the prompt on
+// Escape, but on the trust/bypass dialogs Escape means "No, exit" -- it QUITS
+// the TUI and the session respawns straight back into the same dialog. The
+// monitor must answer them the way scripts/channels.sh's startup guard does
+// (trust -> "1" Enter, bypass -> "2" Enter) and must only ALERT on the login
+// picker (nobody can log in on the operator's behalf).
+//
+// Guards against a healthy session that merely quotes the dialog text follow
+// detectsBlockingMenu's discipline: a busy pane is never a gate, and a visible
+// idle footer means the real prompt is live (capture-pane -p sees only the
+// visible screen, so a quoted phrase always coexists with the live footer).
+export type FirstRunGateKind = 'trust' | 'bypass-permissions' | 'login' | 'theme' | 'welcome'
+
+// Ordered: the login picker and theme screen render UNDER the "Welcome to
+// Claude Code" banner, so the more specific matches must win before the
+// generic welcome fallback.
+const FIRST_RUN_GATES: Array<{ kind: FirstRunGateKind; rx: RegExp }> = [
+  { kind: 'trust', rx: /Do you trust the files in this folder\?/ },
+  { kind: 'bypass-permissions', rx: /Bypass Permissions mode/ },
+  { kind: 'login', rx: /Select login method/ },
+  { kind: 'theme', rx: /Choose the text style/ },
+  { kind: 'welcome', rx: /Welcome to Claude Code/ },
+]
+
+/**
+ * Classify the pane as a Claude Code first-run gate, or null when it is a
+ * normal (busy / idle / typing) surface. Pure + dependency-free.
+ */
+export function detectsFirstRunGate(pane: string): FirstRunGateKind | null {
+  if (!pane || !pane.trim()) return null
+  const lines = pane.split('\n')
+  const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(busyRegion)) return null
+  }
+  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return null
+  if (IDLE_FOOTER_RX.test(pane)) return null
+  for (const g of FIRST_RUN_GATES) {
+    if (!g.rx.test(pane)) continue
+    // The welcome banner also heads the NORMAL fresh-session layout (logo +
+    // model + cwd + empty input box, footer not yet rendered). A ❯ prompt
+    // glyph means an input box exists -- that pane is usable, not a gate.
+    // The trust/bypass/login dialogs use ❯ only as their option selector and
+    // are matched above, before this fallback.
+    if (g.kind === 'welcome' && pane.includes('❯')) continue
+    return g.kind
+  }
+  return null
+}
+
 export interface DetectPaneStateOptions {
   /** If true, the 'typing' state (text parked in input box) is
    * merged into 'busy'. Default false -- callers that care about

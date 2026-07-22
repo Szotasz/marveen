@@ -22,12 +22,13 @@ import {
   ensureSharedClaudeOnboarded,
   hasFleetOauthToken,
   FLEET_OAUTH_TOKEN_PATH,
+  answerFirstRunGates,
 } from './agent-process.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence } from './channel-poller-reap.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
 import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPluginAbsent } from './channel-plugin-unlock.js'
 import {
-  detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, type PaneErrorAlertState, type PaneState,
+  detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, detectsFirstRunGate, type PaneErrorAlertState, type PaneState,
   stuckInputSignature, decideStuckInputRecovery, parkedChannelInput,
   parkedInputText, shouldClearTruncatedPreamble,
   parkedInputRowCount, submitLanded, decideStuckInputAction,
@@ -1315,7 +1316,16 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
     // never fires and the Escape is not re-sent every tick.
     for (const t of targets) {
       const pane = capturePane(t.session)
-      const inMenu = pane != null && detectsBlockingMenu(pane)
+      // First-run gates (fresh-install folder-trust / bypass acceptance /
+      // login picker) are detected SEPARATELY from generic blocking menus,
+      // because the recovery differs: Escape on the trust/bypass dialogs
+      // selects "No, exit" and QUITS the TUI -- the session respawns straight
+      // back into the same dialog (respawn loop), which is the fresh-install
+      // "scheduled tasks pile up" incident (Oligo2000 VPS, 2026-07-22). These
+      // panes get the channels.sh-style dialog answers instead; only the
+      // login picker is alert-only (nobody can log in on the operator's behalf).
+      const firstRunGate = pane != null ? detectsFirstRunGate(pane) : null
+      const inMenu = firstRunGate != null || (pane != null && detectsBlockingMenu(pane))
       const prev = paneMenuState.get(t.session) ?? { firstSeenAt: null, lastAlertAt: null, lastErrorAt: null }
       const decision = decidePaneErrorAlert(inMenu, prev, Date.now(), {
         confirmMs: MENU_RECOVER_CONFIRM_MS,
@@ -1329,13 +1339,26 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
       }
       if (decision.alert) {
         const label = t.isMarveen ? BOT_NAME : (t.agentName ?? t.session)
-        logger.warn({ session: t.session, agent: label }, 'Session parked in a blocking interactive menu -- sending Escape to recover')
-        try {
-          execFileSync(TMUX, ['send-keys', '-t', t.session, 'Escape'], { timeout: 5000 })
-        } catch (err) {
-          logger.warn({ err, session: t.session }, 'Menu-recovery Escape failed')
+        if (firstRunGate === 'login') {
+          logger.warn({ session: t.session, agent: label }, 'Session parked on the Claude Code login picker -- operator login needed, alerting (no keystrokes sent)')
+          sendAlert(`🔑 A(z) ${label} agentnek Claude-belépés kell (első indítás, "Select login method" képernyő). Lépj be: tmux attach -t ${t.session}, majd válaszd ki a belépési módot. Addig az ütemezett feladatai és üzenetei várakoznak, belépés után maguktól kézbesítődnek.`)
+        } else if (firstRunGate) {
+          logger.warn({ session: t.session, agent: label, gate: firstRunGate }, 'Session parked on a Claude Code first-run dialog -- answering the dialog chain')
+          const res = await answerFirstRunGates(t.session)
+          if (res === 'login') {
+            sendAlert(`🔑 A(z) ${label} agent első-indítási dialogjait továbbléptettem, de Claude-belépés kell ("Select login method"). Lépj be: tmux attach -t ${t.session}. Utána minden várakozó feladat magától kézbesítődik.`)
+          } else {
+            sendAlert(`🧭 A(z) ${label} session a Claude Code első-indítási képernyőjén parkolt (${firstRunGate}); automatikusan továbbléptettem. A várakozó ütemezett feladatok a következő körben kézbesítődnek.`)
+          }
+        } else {
+          logger.warn({ session: t.session, agent: label }, 'Session parked in a blocking interactive menu -- sending Escape to recover')
+          try {
+            execFileSync(TMUX, ['send-keys', '-t', t.session, 'Escape'], { timeout: 5000 })
+          } catch (err) {
+            logger.warn({ err, session: t.session }, 'Menu-recovery Escape failed')
+          }
+          sendAlert(`⌨️ A(z) ${label} session beragadt egy interaktiv menube (pl. /mcp) es nem dolgozott fel uzeneteket. Kikuldtem egy Escape-et, visszateritettem a prompthoz. Ha ismetlodik: tmux attach -t ${t.session}`)
         }
-        sendAlert(`⌨️ A(z) ${label} session beragadt egy interaktiv menube (pl. /mcp) es nem dolgozott fel uzeneteket. Kikuldtem egy Escape-et, visszateritettem a prompthoz. Ha ismetlodik: tmux attach -t ${t.session}`)
       }
     }
 

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { execSync, execFileSync } from 'node:child_process'
@@ -15,6 +15,8 @@ import {
   stripGhostSuggestion,
   paneShowsContextSaturation,
   idleConsideringDimGhost,
+  detectsFirstRunGate,
+  type FirstRunGateKind,
 } from '../pane-state.js'
 import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentMemoryIsolation } from './agent-config.js'
 import { resolveAgentConfigDir } from './claude-plans.js'
@@ -544,6 +546,65 @@ export function ensureSharedClaudeOnboarded(dotClaudePath: string = join(homedir
   }
 }
 
+// Pre-accept the PER-PROJECT first-run consent for an agent's working dir in
+// the config root the session will boot from. Claude Code keys the "Do you
+// trust the files in this folder?" dialog on projects[<cwd>].hasTrustDialogAccepted
+// in <config root>/.claude.json -- a GLOBAL hasCompletedOnboarding does not
+// cover it. The main session gets this via the channels.sh startup guard and
+// the generation workers stamp it themselves (agent-worker.ts), but a normal
+// sub-agent launch never did: on the ORIGIN fleet every agents/<name> dir was
+// trusted interactively long ago, so the gap only bites on a FRESH install,
+// where every newly created agent parks on the trust dialog forever and its
+// scheduled tasks pile up as pending retries (Oligo2000 VPS, 2026-07-22).
+//
+// Stamps both the given dir and its realpath (macOS /var vs /private/var,
+// symlinked homes) since Claude Code keys trust by the resolved path. Write is
+// atomic and only performed on actual change, so a live Claude Code process
+// racing us never sees a torn file and an already-stamped launch is a no-op.
+export function stampProjectTrustForDir(dotClaudePath: string, projectDir: string): boolean {
+  try {
+    let data: Record<string, unknown> = {}
+    if (existsSync(dotClaudePath)) {
+      data = JSON.parse(readFileSync(dotClaudePath, 'utf-8')) as Record<string, unknown>
+    }
+    const dirs = new Set<string>([projectDir])
+    try { dirs.add(realpathSync(projectDir)) } catch { /* dir may not resolve yet */ }
+    const projects: Record<string, unknown> =
+      (data.projects && typeof data.projects === 'object' && !Array.isArray(data.projects))
+        ? data.projects as Record<string, unknown>
+        : {}
+    let changed = false
+    if (data.hasCompletedOnboarding !== true) {
+      data.hasCompletedOnboarding = true
+      changed = true
+    }
+    for (const dir of dirs) {
+      const base = (projects[dir] && typeof projects[dir] === 'object')
+        ? projects[dir] as Record<string, unknown>
+        : {}
+      if (base.hasTrustDialogAccepted === true && base.hasCompletedProjectOnboarding === true) continue
+      projects[dir] = {
+        ...base,
+        hasTrustDialogAccepted: true,
+        hasCompletedProjectOnboarding: true,
+        projectOnboardingSeenCount: Math.max(1, Number(base.projectOnboardingSeenCount) || 0),
+      }
+      changed = true
+    }
+    if (!changed) return false
+    data.projects = projects
+    atomicWriteFileSync(dotClaudePath, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
+    logger.info({ dotClaudePath, projectDir }, 'project-trust: stamped folder-trust consent for agent dir')
+    return true
+  } catch (err) {
+    // Unparseable/unwritable file: leave it to Claude Code (same policy as
+    // ensureSharedClaudeOnboarded). The scheduler's first-run gate + the
+    // channel-monitor's dialog answering remain the runtime backstop.
+    logger.warn({ err, dotClaudePath, projectDir }, 'project-trust: could not stamp trust flags (agent may park on the folder-trust dialog)')
+    return false
+  }
+}
+
 function resolveAgentProvider(name: string): ChannelProviderType {
   const perAgent = readAgentChannelProvider(name)
   if (perAgent === 'slack' || perAgent === 'telegram' || perAgent === 'discord' || perAgent === 'googlechat' || perAgent === 'teams') return perAgent
@@ -992,6 +1053,15 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
         maybeAlertSharedConfigCollision(name)
       }
     }
+    // Per-project trust pre-seed in the config root this session will ACTUALLY
+    // use (isolated CLAUDE_CONFIG_DIR when set, shared ~/.claude.json
+    // otherwise). Without it a fresh install's first launch of each agent
+    // parks on the "Do you trust the files in this folder?" dialog -- see
+    // stampProjectTrustForDir.
+    stampProjectTrustForDir(
+      claudeConfigDir ? join(claudeConfigDir, '.claude.json') : join(homedir(), '.claude.json'),
+      dir,
+    )
     const claudeConfigEnv = claudeConfigDir ? `export CLAUDE_CONFIG_DIR="${claudeConfigDir}" && ` : ''
     // `--continue` requires an existing session; on a brand-new agent the
     // Claude Code projects directory does not yet exist and `claude` exits
@@ -1196,6 +1266,60 @@ export async function dismissResumeSummaryModalIfPresent(session: string, host: 
   } catch (err) {
     logger.warn({ err, session }, 'Failed to probe/dismiss resume-from-summary modal')
   }
+}
+
+// Walk a session out of the Claude Code FIRST-RUN dialog chain (folder-trust,
+// bypass-permissions acceptance, theme picker, welcome screen), answering each
+// dialog exactly the way scripts/channels.sh's startup guard does for the main
+// session: trust -> "1" Enter (Yes, proceed), bypass -> "2" Enter (Yes, I
+// accept), theme/welcome -> Enter (accept default / continue). The login
+// picker is NEVER answered -- nobody can authenticate on the operator's
+// behalf -- so it is returned for the caller to alert on.
+//
+// Escape is deliberately NOT used anywhere here: on the trust/bypass dialogs
+// Escape selects "No, exit" and quits the TUI, which is exactly the
+// respawn-loop failure the channel-monitor's generic menu recovery would cause
+// on these panes (hence the detectsFirstRunGate carve-out at its call site).
+//
+// Bounded walk: the chain is at most a handful of dialogs; each answered
+// dialog gets a settle delay before the re-capture. Returns 'cleared' when at
+// least one dialog was answered and none remains, 'login' when the login
+// picker is (or becomes) the blocker, 'unchanged' when no gate was present.
+const FIRST_RUN_ANSWER_MAX_STEPS = 6
+const FIRST_RUN_ANSWER_SETTLE_MS = 1500
+
+export async function answerFirstRunGates(
+  session: string,
+  host: string | null = null,
+): Promise<'cleared' | 'login' | 'unchanged'> {
+  let acted = false
+  for (let i = 0; i < FIRST_RUN_ANSWER_MAX_STEPS; i++) {
+    const pane = capturePane(session, host)
+    const gate: FirstRunGateKind | null = pane != null ? detectsFirstRunGate(pane) : null
+    if (gate == null) return acted ? 'cleared' : 'unchanged'
+    if (gate === 'login') return 'login'
+    try {
+      if (gate === 'trust') {
+        runTmux(host, ['send-keys', '-t', session, '1'], { timeout: 5000 })
+        await delay(150)
+        runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+      } else if (gate === 'bypass-permissions') {
+        runTmux(host, ['send-keys', '-t', session, '2'], { timeout: 5000 })
+        await delay(150)
+        runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+      } else {
+        // theme / welcome: Enter accepts the highlighted default and moves on.
+        runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+      }
+    } catch (err) {
+      logger.warn({ err, session, gate }, 'first-run gate: answer keystroke failed')
+      return acted ? 'cleared' : 'unchanged'
+    }
+    acted = true
+    logger.info({ session, gate, step: i }, 'first-run gate: answered dialog')
+    await delay(FIRST_RUN_ANSWER_SETTLE_MS)
+  }
+  return acted ? 'cleared' : 'unchanged'
 }
 
 // Post-(re)start identity setup. Every freshly spawned Claude Code session is
