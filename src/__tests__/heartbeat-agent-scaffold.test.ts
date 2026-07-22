@@ -99,6 +99,13 @@ describe('renderHeartbeatClaudeMd', () => {
     expect(out).toContain('You are headless')
   })
 
+  it('excludes done cards from the urgent-title kanban query (card 776e800a)', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    // A done card can still carry priority='urgent' -- the title lookup
+    // must filter it out, or closed issues get reported as active forever.
+    expect(out).toContain("priority='urgent' AND status != 'done'")
+  })
+
   it('is fully driven by the identity -- distinct configs render distinctly', () => {
     const a = renderHeartbeatClaudeMd(ID)
     const b = renderHeartbeatClaudeMd({

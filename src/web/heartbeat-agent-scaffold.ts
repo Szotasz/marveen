@@ -172,7 +172,10 @@ When you receive the heartbeat prompt:
      \`sqlite3 ${id.storeDir}/claudeclaw.db "SELECT status, COUNT(*)
      FROM kanban_cards WHERE archived_at IS NULL GROUP BY status"\`
      for counts, and grab the titles of cards where
-     \`priority='urgent'\` or \`status='waiting'\`.
+     \`archived_at IS NULL AND priority='urgent' AND status != 'done'\`
+     (a card can be \`urgent\` priority but already \`done\` -- exclude
+     those, or you will report closed issues as active every hour)
+     or \`archived_at IS NULL AND status='waiting'\`.
    - **Scheduled tasks** -- count active rows in
      \`scheduled_tasks\` table; record \`next_run_at\` for the
      earliest upcoming one.
