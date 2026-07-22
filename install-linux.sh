@@ -206,8 +206,33 @@ if [ -n "$MISSING_PKGS" ]; then
   echo -e "  Telepites sudo-val ($PKG_MANAGER)..."
   if [ "$PKG_MANAGER" = "apt" ]; then
     if echo "$MISSING_PKGS" | grep -q nodejs; then
+      # A nodesource setup-script curl-t igenyel, de csupasz VPS-en (Debian
+      # netinst) a curl maga is hianyozhat -- ilyenkor eloszor azt telepitjuk,
+      # kulonben a repo-lepes neman kimarad, a disztro sajat (regebbi) nodejs-e
+      # telepul, es Debianon az npm (kulon csomag) le se jon -> [1/7] fail.
+      if ! command -v curl &>/dev/null; then
+        sudo apt-get update -qq || true
+        sudo apt-get install -y curl -qq || true
+        hash -r
+      fi
       echo -e "  Node.js v22 repo hozzaadasa (nodesource)..."
-      curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - >/dev/null 2>&1
+      # A setup-scriptet valtozoba toltjuk es a curl exit-kodjat kulon nezzuk:
+      # a 'curl | sudo bash -' pipeline exit-kodja a bash-e lenne (ures stdin-en
+      # 0), igy a curl-hiba nem latszana es a fallback sosem aktivalodna.
+      NODESOURCE_OK=false
+      if command -v curl &>/dev/null; then
+        NODESOURCE_SETUP="$(curl -fsSL https://deb.nodesource.com/setup_22.x 2>/dev/null || true)"
+        if [ -n "$NODESOURCE_SETUP" ] && echo "$NODESOURCE_SETUP" | sudo -E bash - >/dev/null 2>&1; then
+          NODESOURCE_OK=true # a nodesource nodejs csomag node+npm-et egyben hozza
+        fi
+      fi
+      if [ "$NODESOURCE_OK" = false ]; then
+        # Fallback: disztro sajat nodejs-e. Debianon az npm kulon csomag,
+        # a nodesource-bundle-lel ellentetben nem jon a nodejs-sel magatol.
+        warn "nodesource repo hozzaadasa sikertelen -- a disztro sajat nodejs + npm csomagjat telepitem."
+        sudo apt-get update -qq
+        MISSING_PKGS="$MISSING_PKGS npm"
+      fi
     else
       sudo apt-get update -qq
     fi
