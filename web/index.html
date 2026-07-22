@@ -1963,6 +1963,15 @@
   </div>
 
   <!-- Modal: Kanban kártya részletek -->
+  <!-- Attachment lightbox: a big picture and nothing else. Closed by Escape or a
+       backdrop click. The <img> src is a blob URL, never the API path. -->
+  <div class="lightbox-overlay" id="attLightbox" hidden>
+    <figure class="lightbox-figure">
+      <img id="attLightboxImg" alt="">
+      <figcaption id="attLightboxCaption"></figcaption>
+    </figure>
+  </div>
+
   <div class="modal-overlay" id="cardDetailOverlay">
     <div class="modal modal-wide">
       <div class="modal-header">
@@ -1976,6 +1985,7 @@
           <select id="parentSelect" style="flex:1; width:100%; padding:5px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px" title="Szülő feladat módosítása"></select>
         </div>
         <div class="card-detail-desc" id="cardDetailDesc"></div>
+        <div class="card-detail-attachments" id="cardDetailAttachments"></div>
         <div class="card-detail-labels">
           <h4 data-i18n="kanban.modal.labels_title">Címkék</h4>
           <div class="label-pill-list" id="cardLabelList"></div>

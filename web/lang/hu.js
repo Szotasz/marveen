@@ -210,6 +210,8 @@ window._i18n.hu = {
   'kanban.modal.author_label':   'Szerző',
   'kanban.modal.parent_label':   'Szülő',
   'kanban.modal.labels_title':   'Cimkék',
+  'kanban.modal.attachments_title': 'Mellékletek',
+  'kanban.modal.attachment_open':   'Kattints a nagy nézethez',
   'kanban.modal.comment_author_label': 'Komment szerzője:',
   'kanban.modal.subtasks_title': 'Subtask-ok',
   'kanban.modal.archive_btn':    'Archiválás',

@@ -7057,3 +7057,56 @@ body {
    image box, and say so rather than showing a broken-image glyph. */
 .kanban-att-unavailable .kanban-att-thumb { display: none; }
 .kanban-att-unavailable::before { content: "⚠ "; opacity: 0.8; }
+
+/* --- Attachments in the card detail view + lightbox (2026-07-22) ------------ */
+.card-detail-attachments { margin-top: 12px; }
+.card-detail-att-list { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
+.detail-att {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.detail-att-image { flex-direction: column; align-items: flex-start; gap: 4px; padding: 5px; }
+.detail-att-preview {
+  display: block;
+  max-width: 260px;
+  max-height: 180px;
+  border-radius: 5px;
+  background: var(--border, #2a2a2a);
+}
+.detail-att-name { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.detail-att-size { opacity: 0.7; }
+.detail-att-unavailable { opacity: 0.6; cursor: default; }
+
+/* Lightbox: a big picture and nothing else. */
+.lightbox-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.85);
+  padding: 24px;
+}
+.lightbox-overlay[hidden] { display: none; }
+.lightbox-figure { margin: 0; max-width: 100%; max-height: 100%; text-align: center; }
+.lightbox-figure img {
+  max-width: 92vw;
+  max-height: 84vh;
+  object-fit: contain;
+  border-radius: 6px;
+  /* The picture itself must not close the box -- only the backdrop does. */
+  cursor: default;
+}
+.lightbox-figure figcaption {
+  margin-top: 10px;
+  color: #ddd;
+  font-size: 13px;
+  word-break: break-all;
+}

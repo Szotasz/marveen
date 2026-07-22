@@ -717,6 +717,10 @@ async function loadKanban() {
       fetch('/api/kanban-projects'),
       fetch('/api/kanban/labels'),
     ])
+    // The old cards (and their <img> elements) are about to be replaced, so this is
+    // the moment their blob URLs stop being referenced -- free them here rather than
+    // on lightbox close, where the thumbnail still needs the same URL.
+    releaseAttachmentBlobs()
     kanbanCards = await cardsRes.json()
     kanbanAssignees = await assigneesRes.json()
     kanbanProjects = await projectsRes.json()
@@ -1640,6 +1644,118 @@ async function renderCardLabelsSection(card) {
 }
 
 // === Card detail ===
+// --- Attachment lightbox -----------------------------------------------------
+// Deliberately minimal: one big picture, Escape or a backdrop click to close.
+// No gallery navigation, no zoom, no download button -- if that is wanted later it
+// can be added, but building it now would be inventing scope.
+//
+// The image is the SAME blob URL the thumbnail already holds, so opening a picture
+// repeatedly costs nothing and there is no second allocation to leak. (That is why
+// closing the lightbox does NOT revoke: the URL still belongs to the thumbnail.
+// The revoke happens when the board is re-rendered -- see releaseAttachmentBlobs.)
+function openAttachmentLightbox(blobUrl, name) {
+  const box = document.getElementById('attLightbox')
+  const img = document.getElementById('attLightboxImg')
+  const cap = document.getElementById('attLightboxCaption')
+  if (!box || !img || !cap) return
+  img.src = blobUrl
+  // textContent, not innerHTML: the filename is written by whoever uploaded it.
+  img.alt = name
+  cap.textContent = name
+  box.hidden = false
+}
+
+function closeAttachmentLightbox() {
+  const box = document.getElementById('attLightbox')
+  if (!box || box.hidden) return
+  box.hidden = true
+  const img = document.getElementById('attLightboxImg')
+  if (img) img.removeAttribute('src')
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeAttachmentLightbox()
+})
+document.addEventListener('click', (e) => {
+  const box = document.getElementById('attLightbox')
+  // Backdrop only -- a click on the picture itself must not close it.
+  if (box && !box.hidden && e.target === box) closeAttachmentLightbox()
+})
+
+// Free every cached blob URL. Called when the board is re-rendered, which is the
+// moment the old URLs actually become garbage: the card elements holding them are
+// about to be thrown away. Doing this on lightbox close instead would revoke a URL
+// the thumbnail is still using.
+function releaseAttachmentBlobs() {
+  for (const url of _attBlobCache.values()) {
+    try { URL.revokeObjectURL(url) } catch { /* already gone */ }
+  }
+  _attBlobCache.clear()
+}
+
+// Render a card's attachments into the detail modal: images big-ish and clickable,
+// everything else a plain row that downloads on click.
+async function renderDetailAttachments(card) {
+  const host = document.getElementById('cardDetailAttachments')
+  if (!host) return
+  host.innerHTML = ''
+  const atts = Array.isArray(card.attachments) ? card.attachments : []
+  if (!atts.length) return
+
+  const h4 = document.createElement('h4')
+  h4.textContent = t('kanban.modal.attachments_title')
+  host.appendChild(h4)
+
+  const list = document.createElement('div')
+  list.className = 'card-detail-att-list'
+  host.appendChild(list)
+
+  for (const a of atts) {
+    const row = document.createElement('div')
+    row.className = a.kind === 'image' ? 'detail-att detail-att-image' : 'detail-att detail-att-file'
+
+    if (a.kind === 'image') {
+      const img = document.createElement('img')
+      img.className = 'detail-att-preview'
+      img.alt = a.name ?? ''                       // textContent-equivalent: no markup path
+      img.title = t('kanban.modal.attachment_open')
+      row.appendChild(img)
+      const cap = document.createElement('span')
+      cap.className = 'detail-att-name'
+      cap.textContent = a.name ?? ''
+      row.appendChild(cap)
+      const url = await attachmentBlobUrl(a.id)
+      if (url) {
+        img.src = url
+        row.addEventListener('click', () => openAttachmentLightbox(url, a.name ?? ''))
+      } else {
+        row.classList.add('detail-att-unavailable')
+      }
+    } else {
+      const icon = document.createElement('span')
+      icon.className = 'detail-att-icon'
+      icon.textContent = '📎'
+      const nm = document.createElement('span')
+      nm.className = 'detail-att-name'
+      nm.textContent = a.name ?? ''
+      const sz = document.createElement('span')
+      sz.className = 'detail-att-size'
+      sz.textContent = formatAttachmentSize(a.size)
+      row.append(icon, nm, sz)
+      // Non-image: click downloads, same as before. No lightbox.
+      row.addEventListener('click', async () => {
+        const url = await attachmentBlobUrl(a.id)
+        if (!url) return
+        const link = document.createElement('a')
+        link.href = url
+        link.download = a.name ?? 'attachment'
+        link.click()
+      })
+    }
+    list.appendChild(row)
+  }
+}
+
 async function showCardDetail(card) {
   // Running number (#N) in the title bar, plus the stable hex id in the meta.
   const seqPrefix = card.seq != null ? `#${card.seq} ` : ''
@@ -1733,6 +1849,7 @@ async function showCardDetail(card) {
   })
 
   document.getElementById('cardDetailDesc').textContent = card.description || ''
+  renderDetailAttachments(card)
 
   renderCardLabelsSection(card)
 
