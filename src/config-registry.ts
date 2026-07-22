@@ -375,6 +375,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  {
+    key: 'CANVA_CLIENT_ID',
+    type: 'string',
+    default: '',
+    description: 'A Canva Connect integráció publikus client id-je (pl. OC-AZ-...). NEM titok: a Canva ezt beleírja az authorize URL-be, tehát a böngésző címsorában is látszik. A hozzá tartozó client secret NEM ide megy, hanem a Vaultba CANVA_CLIENT_SECRET néven -- azzal cserélünk kódot tokenre, és az kompromittálódás esetén az egész integrációt nyitja. Üresen hagyva a Canva-feltöltés nem működik (a helper hangos hibával áll meg, nem csendben).',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+  },
   // --- Channels module ---
   {
     key: 'MAIN_AGENT_ISOLATED_CONFIG',
