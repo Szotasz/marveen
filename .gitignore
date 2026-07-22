@@ -82,3 +82,8 @@ scripts/support-mail/no-support-reply.html
 # Python bytecode cache
 __pycache__/
 *.pyc
+
+# Runtime state, not source: the dashboard writes the active UI language here.
+# It was swept into a commit on 2026-07-22; left in history (rewriting a shared
+# tree with running services costs more than it fixes), but not tracked from now on.
+.lang
