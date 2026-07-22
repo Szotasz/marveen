@@ -26,6 +26,18 @@ describe('gateDecision', () => {
     expect(bash('swaks --to a@b.c --server smtp').deny).toBe(true)
   })
 
+  it('blocks the graph-mail.ts CLI send path (PR #668) and direct sendMail() calls', () => {
+    const bash = (command: string) => gateDecision('Bash', { command })
+    expect(bash('tsx scripts/graph-mail.ts send --to a@b.hu --subject x --body y').deny).toBe(true)
+    expect(bash('npx tsx scripts/graph-mail.ts send --to a@b.hu --subject x --body y').deny).toBe(true)
+    expect(bash(`node -e "require('./src/graph-mail.js').sendMail({to:'a@b.hu'})"`).deny).toBe(true)
+    // read-only graph-mail subcommands are NOT send-shaped, so they pass through
+    // this gate untouched (they still can't do anything a sub-agent shouldn't:
+    // verify/list only read the scoped mailbox)
+    expect(bash('tsx scripts/graph-mail.ts verify').deny).toBe(false)
+    expect(bash('tsx scripts/graph-mail.ts list --unread').deny).toBe(false)
+  })
+
   it('allows ordinary Bash that does not send mail', () => {
     const bash = (command: string) => gateDecision('Bash', { command })
     expect(bash('git status').deny).toBe(false)
