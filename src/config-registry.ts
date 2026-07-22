@@ -386,6 +386,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    key: 'MAIN_AGENT_CHROME',
+    type: 'boolean',
+    default: '0',
+    description: 'A fő channels-agent induljon-e a Claude in Chrome integrációval (--chrome). Alapértelmezésben KI. Bekapcsolva a fő agent vezérelheti a gépen futó Chrome-ot (kattintás, űrlapkitöltés, képernyőkép) azokon az oldalakon, amikre a bővítményben külön engedélyt kapott. Kell hozzá a Claude for Chrome BŐVÍTMÉNY is, azt a tulajdonos telepíti. Bővítmény nélkül a flag méréssel igazoltan NEM akadályozza az indulást (a CLI ugyanúgy elindul és válaszol), csak a böngésző-rész nem működik. Kikapcsolva szigorú no-op: a parancssor bájtra ugyanaz, mint korábban. A módosítás a channels session újraindításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
     key: 'MAIN_AGENT_CONFIG_DIR',
     type: 'string',
     default: '',

@@ -272,6 +272,27 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   fi
   unset _cfg_line _cfg_mode _cfg_dir
 fi
+
+# Claude in Chrome for the MAIN agent (OPT-IN, default OFF).
+#
+# Off -> CHROME_FLAG stays EMPTY and the launched command line is byte-identical
+# to before: a strict no-op for every existing install. On -> `--chrome ` is added
+# at BOTH build sites below. Both matter: the second is the resume/relaunch path,
+# and patching only the first would make the flag vanish silently after a restart
+# -- the kind of fault nobody notices until they wonder why the browser stopped
+# working.
+#
+# The Claude for Chrome EXTENSION is a separate, owner-side install. Measured on
+# CLI 2.1.217 with the extension ABSENT: `claude --chrome -p ...` started and
+# answered exactly like the control run, so a missing extension does not wedge the
+# agent. (Measured in one-shot -p mode. If the interactive channels mode ever adds
+# a chrome-specific first-run dialog, the dialog auto-accept guard further down is
+# where it would be handled.)
+CHROME_FLAG=""
+if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/settings-store.js" ]; then
+  CHROME_FLAG="$("$_node_bin" "$INSTALL_DIR/scripts/main-agent-chrome-flag.mjs" 2>>"$INSTALL_DIR/store/channels-failures.log" || true)"
+fi
+
 unset _node_bin
 
 # Re-seed hasCompletedOnboarding in the SHARED ~/.claude.json BEFORE launching
@@ -392,7 +413,7 @@ $TMUX set-environment -g CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION false 2>/dev/null 
 # otherwise new-session below fails with "duplicate session".
 $TMUX kill-session -t "$SESSION" 2>/dev/null || true
 $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
-  "${MCP_BATCH_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}"
+  "${MCP_BATCH_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}${CHROME_FLAG}--channels plugin:${PLUGIN_ID}"
 
 # Session startup guard: a Claude Code first-run dialogusait auto-accept-eljuk
 # kulonben a headless session orokre parkolna a prompton es a Telegram plugin
@@ -433,7 +454,7 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
         # entry); see the PR description / card 7EB18437.
         [ -e "$INSTALL_DIR/CLAUDE.md" ] && ln -sf "$INSTALL_DIR/CLAUDE.md" "$_CHANNELS_STARTDIR/CLAUDE.md" 2>/dev/null || true
         $TMUX new-session -d -s "$SESSION" -c "$_CHANNELS_STARTDIR" \
-          "${MCP_BATCH_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}"
+          "${MCP_BATCH_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}${CHROME_FLAG}--channels plugin:${PLUGIN_ID}"
         unset _CHANNELS_STARTDIR
       fi
       continue
