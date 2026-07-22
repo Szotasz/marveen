@@ -124,13 +124,25 @@ for key in MAIN_AGENT_ID BOT_NAME TELEGRAM_BOT_TOKEN ALLOWED_CHAT_ID; do
   val=$(grep -E "^${key}=" .env 2>/dev/null | head -1 | cut -d= -f2-)
   if [ -n "$val" ]; then ok "$key: present"; else fail "$key: MISSING"; fi
 done
-# Auth: API key OR OAuth token is enough
+# Auth: mirrors claudeAuthPresent() in src/web/routes/onboarding.ts -- there are
+# five legs, and only the first two live in .env. Checking .env alone reported a
+# perfectly authenticated macOS install (Keychain leg) as broken.
+# The Keychain probe is presence-only (no `-w`), so the secret never leaves it.
 API_KEY=$(grep -E "^ANTHROPIC_API_KEY=" .env 2>/dev/null | head -1 | cut -d= -f2-)
 OAUTH=$(grep -E "^CLAUDE_CODE_OAUTH_TOKEN=" .env 2>/dev/null | head -1 | cut -d= -f2-)
-if [ -n "$API_KEY" ] || [ -n "$OAUTH" ]; then
-  ok "Claude auth: present ($([ -n "$API_KEY" ] && echo 'API key' || echo 'OAuth'))"
+if [ -n "$API_KEY" ]; then
+  ok "Claude auth: present (.env API key)"
+elif [ -n "$OAUTH" ]; then
+  ok "Claude auth: present (.env OAuth token)"
+elif [ -s "$HOME/.claude/.credentials.json" ]; then
+  ok "Claude auth: present (~/.claude/.credentials.json)"
+elif [ -s "store/.claude-oauth-token" ]; then
+  ok "Claude auth: present (fleet setup-token in store/)"
+elif [ "$(uname -s)" = "Darwin" ] && /usr/bin/security find-generic-password \
+     -s "Claude Code-credentials" -a "$(id -un)" >/dev/null 2>&1; then
+  ok "Claude auth: present (macOS Keychain)"
 else
-  fail "Claude auth: neither ANTHROPIC_API_KEY nor CLAUDE_CODE_OAUTH_TOKEN"
+  fail "Claude auth: no credential found (env, credentials.json, fleet token, Keychain)"
 fi
 
 # --- Claude headless auth (official: long-lived setup-token) ---
@@ -139,6 +151,9 @@ if grep -qE '^CLAUDE_CODE_OAUTH_TOKEN="?sk-ant-oat01-' .env 2>/dev/null; then
   ok "Headless token: long-lived setup-token configured (CLAUDE_CODE_OAUTH_TOKEN, ~1 year)"
 elif grep -qE '^CLAUDE_CODE_OAUTH_TOKEN=' .env 2>/dev/null; then
   warn "CLAUDE_CODE_OAUTH_TOKEN set, but not sk-ant-oat01- format (may be the wrong type)"
+elif [ "$(uname -s)" = "Darwin" ] && /usr/bin/security find-generic-password \
+     -s "Claude Code-credentials" -a "$(id -un)" >/dev/null 2>&1; then
+  ok "Headless token: not set, but the macOS Keychain holds a Claude login (interactive sessions are fine; only add a setup-token if you run agents headless)"
 else
   warn "CLAUDE_CODE_OAUTH_TOKEN missing -- run: claude setup-token, then put it in .env"
 fi
