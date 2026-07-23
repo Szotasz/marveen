@@ -716,12 +716,19 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const data = JSON.parse(body.toString()) as {
       vaultSecretId: string
-      envVar: string
+      envVar?: string
       serverName?: string
       targets?: Array<{ mcpFilePath: string, serverName: string }>
+      // Remote-server header binding: the secret is injected into the request
+      // header (e.g. Authorization) via headersHelper instead of an env var.
+      headerName?: string
+      headerScheme?: string
     }
-    if (!data.vaultSecretId || !data.envVar) {
-      json(res, { error: 'vaultSecretId and envVar required' }, 400)
+    // A binding is either env-var based (local/stdio servers) or header based
+    // (remote http/sse servers). Header bindings key on the header name.
+    const bindingKey = data.headerName?.trim() || data.envVar?.trim()
+    if (!data.vaultSecretId || !bindingKey) {
+      json(res, { error: 'vaultSecretId and (envVar or headerName) required' }, 400)
       return true
     }
 
@@ -760,7 +767,12 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'No targets found for this server' }, 400)
       return true
     }
-    addBinding({ vaultSecretId: data.vaultSecretId, envVar: data.envVar, targets })
+    const binding: any = { vaultSecretId: data.vaultSecretId, envVar: bindingKey, targets }
+    if (data.headerName?.trim()) {
+      binding.headerName = data.headerName.trim()
+      binding.headerScheme = data.headerScheme?.trim() ?? 'Bearer'
+    }
+    addBinding(binding)
     const syncResult = syncSecret(data.vaultSecretId)
     json(res, { ok: true, synced: syncResult.updated, errors: syncResult.errors })
     return true
