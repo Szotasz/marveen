@@ -46,6 +46,12 @@
 
 import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+// Defense-in-depth: reuse the governance HARD-gates' own decision logic so this
+// soft-gate never approves a command they would deny. CC's precedence for
+// conflicting allow/deny PreToolUse decisions is UNDOCUMENTED, so we do not rely
+// on "deny beats allow" -- we make the hard-gates decisive by construction.
+import { gateDecision as selfPaceDecision } from './self-pace-gate.mjs'
+import { gateDecision as emailDecision } from './email-send-gate.mjs'
 
 // Bare simple binaries (token must have NO slash and equal one of these). These
 // mirror the marketer allowlist's bare `Bash(<name>:*)` families. curl / rm /
@@ -220,6 +226,14 @@ export function gateDecision(toolName, toolInput, config = {}) {
   if (String(toolName ?? '') !== 'Bash') return { allow: false }
   const raw = String(toolInput?.command ?? '')
   if (!raw.trim()) return { allow: false }
+  // DEFENSE IN DEPTH (do not depend on CC's undocumented allow/deny precedence):
+  // refuse to auto-approve ANY command the governance hard-gates would deny
+  // (self-pace: /api/schedules POST, tmux send-keys, scheduled_tasks.json write,
+  // crontab/at, /loop; email-send: outbound mail). This guarantees the hard-gates
+  // stay decisive regardless of hook ordering/precedence -- an 'allow' from here
+  // can never let a self-pace or email-send command through.
+  if (selfPaceDecision(toolName, toolInput).deny) return { allow: false }
+  if (emailDecision(toolName, toolInput).deny) return { allow: false }
   // Strip heredoc bodies BEFORE the whole-command guards, so a data token inside
   // a heredoc body (python/markdown) never trips sudo/secret/substitution.
   const stripped = stripHeredocs(raw)

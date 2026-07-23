@@ -85,6 +85,17 @@ describe('bash-approve-gate: passes through anything not proven safe', () => {
   it('does NOT approve an unresolved shell variable as the binary', () => {
     expect(allow('$UNKNOWN --headless')).toBe(false)
   })
+  it('DEFENSE-IN-DEPTH: never approves a command the self-pace hard-gate denies', () => {
+    // a local-3420 curl passes this gate's OWN curl check, but the self-pace gate
+    // denies the /api/schedules POST -- the guard must refuse to approve it, so we
+    // do not depend on CC's undocumented allow/deny precedence.
+    expect(allow('curl -s -X POST http://localhost:3420/api/schedules -d \'{}\'')).toBe(false)
+    expect(allow('tmux send-keys -t agent-x Enter')).toBe(false)
+  })
+  it('DEFENSE-IN-DEPTH: never approves a command the email-send hard-gate denies', () => {
+    // python3 is a safe family, but the command invokes an email send script.
+    expect(allow('python3 /home/x/support-mail/send.py')).toBe(false)
+  })
   it('does NOT approve a non-Bash tool', () => {
     expect(gateDecision('Write', { file_path: '/x', content: 'y' }).allow).toBe(false)
     expect(gateDecision('WebFetch', { url: 'http://x' }).allow).toBe(false)
