@@ -311,6 +311,15 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   if (agentGetsEmailGate(name)) injectEmailSendGate(existing)
   if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
   injectEgressGate(existing)
+  // Bash auto-approve soft-gate: ONLY the marketer profile (a strict, web-reading
+  // agent whose presentation workflow otherwise prompts on var/heredoc/compound
+  // command forms the static allowlist matcher cannot reach). Scoped to marketer,
+  // NOT fleet-wide -- see agentGetsBashApproveGate. Grants nothing beyond the
+  // marketer allowlist families; it only makes matching robust.
+  if (agentGetsBashApproveGate(name, profile)) {
+    const resolvedAllow = profile.filesystem.allow.map(p => resolveProfilePlaceholders(p, ctx))
+    injectBashApproveGate(existing, bashApproveRmRoots(resolvedAllow))
+  }
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
 
@@ -380,6 +389,55 @@ export function injectSelfPaceGate(existing: Record<string, unknown>): void {
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
   hooks.PreToolUse = [
     ...prev.filter((e) => !JSON.stringify(e).includes('self-pace-gate.mjs')),
+    entry,
+  ]
+}
+
+// Which agents get the Bash auto-approve SOFT-gate: ONLY a marketer-profile
+// sub-agent. Deliberately NOT fleet-wide (unlike the two hard-gates): the gate's
+// safe families ARE the marketer allowlist families, so applying them to a
+// narrower strict profile (researcher = ls/cat only; developer-junior) would
+// auto-approve commands those profiles never granted -- a privilege escalation.
+// Permissive profiles do not need it (they launch with
+// --dangerously-skip-permissions, so an 'allow' is a no-op). Keyed on the repo
+// profile-template id (a shipped constant, distribution-safe), not an
+// install-specific agent name. Pure + exported for unit tests.
+export function agentGetsBashApproveGate(name: string, profile: ProfileTemplate): boolean {
+  return name !== MAIN_AGENT_ID && profile.id === 'marketer'
+}
+
+// The write-roots under which the gate may auto-approve `rm` -- exactly the
+// directories the profile already grants Write() to (least privilege: rm only
+// where the agent can already write). Derived from the RESOLVED allow list
+// (placeholders already expanded). Trailing /** or /* is stripped to the dir.
+export function bashApproveRmRoots(resolvedAllow: string[]): string[] {
+  return resolvedAllow
+    .map((p) => p.match(/^Write\((.+)\)$/))
+    .filter((m): m is RegExpMatchArray => m !== null)
+    .map((m) => m[1].replace(/\/\*+$/, ''))
+}
+
+// Idempotently wire the bash-approve-gate PreToolUse hook. The install-specific
+// rm write-roots travel as a base64url JSON argv token so the standalone script
+// needs no config.ts import (base64url has no / + = -- safe inside the command
+// string and past isUnsafeHookCommand's path regex). Same dedupe discipline as
+// the hard-gates: drop any prior entry for this script before re-adding.
+export function injectBashApproveGate(existing: Record<string, unknown>, rmRoots: string[]): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const scriptPath = join(PROJECT_ROOT, 'scripts', 'bash-approve-gate.mjs')
+  const cfg = Buffer.from(JSON.stringify({ rmRoots }), 'utf-8').toString('base64url')
+  const command = `node ${scriptPath} ${cfg}`
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('bash-approve-gate.mjs')),
     entry,
   ]
 }
