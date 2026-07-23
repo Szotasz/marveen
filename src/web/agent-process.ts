@@ -16,6 +16,7 @@ import {
   paneShowsContextSaturation,
   idleConsideringDimGhost,
   detectsFirstRunGate,
+  detectsModelConsentDialog,
   type FirstRunGateKind,
 } from '../pane-state.js'
 import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentMemoryIsolation } from './agent-config.js'
@@ -605,6 +606,51 @@ export function stampProjectTrustForDir(dotClaudePath: string, projectDir: strin
   }
 }
 
+// Pre-stamp the Fable overage-consent acknowledgment in a config root's
+// .claude.json so the "Fable 5 now uses usage credits" dialog never renders.
+//
+// Root cause chain (2026-07-23, card b71fc541): a config root without
+// fableOverageConsentV2[<orgUuid>] parks the first Fable 5 turn on a TUI
+// dialog whose DEFAULT option is "Switch to Sonnet 5 and continue". The
+// fleet's own blind Enters (identity /name, sendPromptToSession retry-Enter)
+// accept that default, silently switching the session to Sonnet while
+// agent-config still says claude-fable-5 -- the long-unexplained
+// model/activeModel drift. Fleet policy (owner decision 2026-07-23): the
+// fleet stays on Fable 5, so the consent is pre-acknowledged the same way
+// onboarding/trust flags already are (see stampProjectTrustForDir above).
+//
+// Claude Code keys the consent on oauthAccount.organizationUuid (or
+// "acct:<accountUuid>" for org-less accounts) in the SAME .claude.json. A
+// file without an oauthAccount (brand-new config root that has never
+// authenticated) is left alone -- there is nothing to key the consent on;
+// the runtime dialog-answer backstop (dismissModelConsentDialogIfPresent)
+// covers that first session and this stamp catches up on the next launch.
+// Write is atomic and change-only, mirroring ensureSharedClaudeOnboarded.
+export function stampFableOverageConsent(dotClaudePath: string): boolean {
+  try {
+    if (!existsSync(dotClaudePath)) return false
+    const data = JSON.parse(readFileSync(dotClaudePath, 'utf-8')) as Record<string, unknown>
+    const oauth = (data.oauthAccount && typeof data.oauthAccount === 'object' && !Array.isArray(data.oauthAccount))
+      ? data.oauthAccount as Record<string, unknown>
+      : null
+    const orgUuid = typeof oauth?.organizationUuid === 'string' && oauth.organizationUuid ? oauth.organizationUuid : null
+    const acctUuid = typeof oauth?.accountUuid === 'string' && oauth.accountUuid ? oauth.accountUuid : null
+    const key = orgUuid ?? (acctUuid ? `acct:${acctUuid}` : null)
+    if (!key) return false
+    const consent = (data.fableOverageConsentV2 && typeof data.fableOverageConsentV2 === 'object' && !Array.isArray(data.fableOverageConsentV2))
+      ? data.fableOverageConsentV2 as Record<string, unknown>
+      : {}
+    if (consent[key] === true) return false
+    data.fableOverageConsentV2 = { ...consent, [key]: true }
+    atomicWriteFileSync(dotClaudePath, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
+    logger.info({ dotClaudePath }, 'fable-consent: pre-stamped fableOverageConsentV2 (prevents the usage-credit model-switch dialog)')
+    return true
+  } catch (err) {
+    logger.warn({ err, dotClaudePath }, 'fable-consent: could not stamp consent (runtime dialog-answer backstop remains)')
+    return false
+  }
+}
+
 function resolveAgentProvider(name: string): ChannelProviderType {
   const perAgent = readAgentChannelProvider(name)
   if (perAgent === 'slack' || perAgent === 'telegram' || perAgent === 'discord' || perAgent === 'googlechat' || perAgent === 'teams') return perAgent
@@ -1062,6 +1108,12 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
       claudeConfigDir ? join(claudeConfigDir, '.claude.json') : join(homedir(), '.claude.json'),
       dir,
     )
+    // Same target file: pre-acknowledge the Fable usage-credit consent so the
+    // model-switch dialog (default: Sonnet) never renders -- see
+    // stampFableOverageConsent for the drift root-cause chain.
+    stampFableOverageConsent(
+      claudeConfigDir ? join(claudeConfigDir, '.claude.json') : join(homedir(), '.claude.json'),
+    )
     const claudeConfigEnv = claudeConfigDir ? `export CLAUDE_CONFIG_DIR="${claudeConfigDir}" && ` : ''
     // `--continue` requires an existing session; on a brand-new agent the
     // Claude Code projects directory does not yet exist and `claude` exits
@@ -1268,6 +1320,31 @@ export async function dismissResumeSummaryModalIfPresent(session: string, host: 
   }
 }
 
+// Runtime backstop for the model overage-consent dialog ("Fable 5 now uses
+// usage credits" -- see detectsModelConsentDialog in pane-state.ts for the
+// full anatomy and the drift root cause). The stampFableOverageConsent
+// pre-seed normally prevents the dialog entirely; this handler covers the
+// windows the seed cannot reach (a config root that had no oauthAccount yet,
+// a future consent-key version bump). Unlike the generic dismissals above it
+// must NOT send a bare Enter: the dialog's default option SWITCHES the model
+// to Sonnet. It actively selects option 1 ("Continue with <configured
+// model>") -- number first, then confirm, mirroring answerFirstRunGates. The
+// keystrokes only ever fire when the specific dialog is visibly on screen
+// (pure detector, quoted-text-proof), so this adds no blind-injection surface.
+export async function dismissModelConsentDialogIfPresent(session: string, host: string | null = null): Promise<void> {
+  try {
+    const pane = captureTmux(host, ['capture-pane', '-t', session, '-p'])
+    if (!detectsModelConsentDialog(pane)) return
+    runTmux(host, ['send-keys', '-t', session, '1'], { timeout: 5000 })
+    await delay(150)
+    runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+    await delay(300)
+    logger.info({ session }, 'Answered model usage-credit consent dialog: kept the configured model (option 1, never the switch default)')
+  } catch (err) {
+    logger.warn({ err, session }, 'Failed to probe/answer model usage-credit consent dialog')
+  }
+}
+
 // Walk a session out of the Claude Code FIRST-RUN dialog chain (folder-trust,
 // bypass-permissions acceptance, theme picker, welcome screen), answering each
 // dialog exactly the way scripts/channels.sh's startup guard does for the main
@@ -1349,6 +1426,7 @@ export async function scheduleIdentitySetup(session: string, displayName: string
       try {
         await dismissSurveyModalIfPresent(session, host)
         await dismissResumeSummaryModalIfPresent(session, host)
+        await dismissModelConsentDialogIfPresent(session, host)
       } catch (err) {
         logger.warn({ err, session }, 'Post-restart modal dismiss failed')
       }
@@ -1511,6 +1589,7 @@ export async function sendPromptToSession(
 ): Promise<'sent' | 'aborted-busy'> {
   await dismissSurveyModalIfPresent(session, host)
   await dismissResumeSummaryModalIfPresent(session, host)
+  await dismissModelConsentDialogIfPresent(session, host)
 
   // Pre-flight wait-until-idle (root-cause gate). Placed here -- inside
   // sendPromptToSession, AFTER the modal dismissals (a modal keeps the pane

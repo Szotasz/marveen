@@ -467,6 +467,47 @@ export function detectsFirstRunGate(pane: string): FirstRunGateKind | null {
   return null
 }
 
+// Claude Code model overage-consent dialog (first observed 2026-07-23; the
+// confirmed root cause of the "agent-config says claude-fable-5 but the
+// session runs Sonnet 5" activeModel drift). When a config root's
+// .claude.json lacks fableOverageConsentV2[<org>], the first Fable 5 turn
+// parks the TUI on:
+//   Fable 5 now uses usage credits
+//     1. Continue with Fable 5
+//   ❯ 2. Switch to Sonnet 5 and continue
+//   Enter to confirm · Esc to cancel
+// with the DEFAULT CURSOR ON THE SWITCH OPTION. Any blind Enter reaching the
+// pane (the post-spawn identity /name, sendPromptToSession's retry-Enter,
+// a human reflex) silently switches the session to Sonnet. The dialog is
+// detected here (pure, unit-testable) and answered in agent-process.ts by
+// actively selecting option 1 ("Continue with <model>") -- never the switch
+// default. Matchers are model-name-agnostic so a future "<other model> now
+// uses usage credits" variant is covered without a new detector.
+//
+// Guards follow detectsFirstRunGate's discipline: a busy pane is never the
+// dialog, and a visible idle footer means the real prompt is live -- so a
+// reply/inter-agent message that merely QUOTES the dialog text (which
+// happened the very day this shipped) can never trigger a keystroke. The
+// confirm hint must sit in the live footer region, not anywhere in the pane.
+const MODEL_CONSENT_TITLE_RX = /(?:now uses|runs on|requires) usage credits/
+const MODEL_CONSENT_CONTINUE_RX = /1\.\s*Continue with /
+const MODEL_CONSENT_CONFIRM_RX = /Enter to confirm/
+
+export function detectsModelConsentDialog(pane: string): boolean {
+  if (!pane || !pane.trim()) return false
+  const lines = pane.split('\n')
+  const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(busyRegion)) return false
+  }
+  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
+  if (IDLE_FOOTER_RX.test(pane)) return false
+  return MODEL_CONSENT_TITLE_RX.test(pane)
+    && MODEL_CONSENT_CONTINUE_RX.test(pane)
+    && MODEL_CONSENT_CONFIRM_RX.test(footerRegion)
+}
+
 export interface DetectPaneStateOptions {
   /** If true, the 'typing' state (text parked in input box) is
    * merged into 'busy'. Default false -- callers that care about
