@@ -1562,6 +1562,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   const startMatch = path.match(/^\/api\/agents\/([^/]+)\/start$/)
   if (startMatch && method === 'POST') {
     const name = decodeURIComponent(startMatch[1])
+    if (isMainChannelsAgent(name)) {
+      json(res, { error: 'Main agent lifecycle is service-managed; use /api/marveen/restart for recovery' }, 400)
+      return true
+    }
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
     // Optional { "fresh": true } body -> no `--continue`. Required for channel
     // agents on Claude Code 2.1.193, where a `--continue` resume does not load
@@ -1580,6 +1584,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   const stopMatch = path.match(/^\/api\/agents\/([^/]+)\/stop$/)
   if (stopMatch && method === 'POST') {
     const name = decodeURIComponent(stopMatch[1])
+    if (isMainChannelsAgent(name)) {
+      json(res, { error: 'Main agent lifecycle is service-managed; use /api/marveen/restart for recovery' }, 400)
+      return true
+    }
     const result = stopAgentProcess(name)
     // Explicit stop clears intent so the monitor will not resurrect it.
     removeDesiredAgent(name)
@@ -1807,6 +1815,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   if (agentMatch && method === 'PUT') {
     const name = decodeURIComponent(agentMatch[1])
     if (!isKnownAgent(name)) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (isMainChannelsAgent(name)) {
+      json(res, { error: 'Main agent configuration is read-only through the dashboard API' }, 400)
+      return true
+    }
     const body = await readBody(req)
     const configRoot = agentConfigRoot(name)
     const data = JSON.parse(body.toString()) as {

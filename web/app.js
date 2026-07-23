@@ -2831,6 +2831,10 @@ function openFederatedThread(qualifiedId) {
 
 // === Agent Detail ===
 async function openAgentDetail(agentName) {
+  if (agentName === mainAgentId()) {
+    return openMarveenDetail()
+  }
+
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(agentName)}`)
     if (!res.ok) throw new Error('Not found')
@@ -3415,8 +3419,8 @@ async function loadAvailableModels() {
     }
     // Browse popup = the curation UI (tick/untick which manual models exist).
     // MAIN AGENT ONLY -- sub-agents just pick from the curated dropdown above.
-    // The main agent opens via openMarveenDetail(), whose currentAgent comes
-    // from window._marveen and has NO `role` field -- so detect it by name too.
+    // Keep the name checks for compatibility with legacy /api/marveen payloads
+    // that predate the explicit role field.
     const mid = (typeof mainAgentId === 'function') ? mainAgentId() : ''
     const isMainAgent = !!currentAgent && (
       currentAgent.role === 'main' ||

@@ -1748,6 +1748,8 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   color: var(--text-secondary);
   line-height: 1.5;
 }
+/* The class display rule outranks the browser's [hidden] default. */
+.tg-notice[hidden] { display: none; }
 .tg-notice svg { flex-shrink: 0; margin-top: 1px; color: var(--accent); }
 .tg-notice code {
   background: var(--bg-code);
@@ -2282,6 +2284,8 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   margin-top: 0;
   white-space: nowrap;
 }
+/* Keep compact controls out of layout when JavaScript marks them hidden. */
+.btn-compact[hidden] { display: none; }
 
 .btn-secondary {
   padding: 10px 20px;

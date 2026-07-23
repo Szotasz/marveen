@@ -48,4 +48,13 @@ describe('dashboard modal CSS contract', () => {
     ).not.toBeNull()
     expect(body!).toMatch(/width\s*:\s*auto/i)
   })
+
+  it.each(['.btn-compact[hidden]', '.tg-notice[hidden]'])(
+    '%s stays out of layout when hidden',
+    (selector) => {
+      const body = ruleBody(`${selector} {`)
+      expect(body, `missing ${selector} override in web/style.css`).not.toBeNull()
+      expect(body!).toMatch(/display\s*:\s*none/i)
+    },
+  )
 })
