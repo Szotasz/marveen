@@ -222,15 +222,17 @@ MODEL_FLAG=""
 # tmux command-string round-trip without the inner shell glob-expanding `[1m]`.
 [ -n "$MAIN_MODEL" ] && MODEL_FLAG="--model '$MAIN_MODEL' "
 
-# macOS main-agent config isolation (OPT-IN, default OFF).
+# Main-agent config isolation (OPT-IN, default OFF).
 #
-# By default the main channels agent keeps the shared ~/.claude and, on macOS,
-# authenticates from the ROTATING Keychain OAuth session -- which periodically
-# expires and 401s the main bot ("Please run /login"), while the isolated
-# sub-agents (long-lived fleet setup-token) never do. The helper provisions an
-# isolated CLAUDE_CONFIG_DIR (same code path as the sub-agents, via
-# dist/web/agent-process.js) and authenticates the main agent from the fleet
-# setup-token instead.
+# By default the main channels agent keeps the shared ~/.claude and
+# authenticates from whatever on-process credential refreshes that shared root
+# -- the ROTATING macOS Keychain OAuth session, or (Linux) the shared
+# ~/.claude/.credentials.json -- both periodically expire and 401 the main bot
+# ("Please run /login"), while the isolated sub-agents (long-lived fleet
+# setup-token) never do (confirmed root cause of the 2026-07-23 marveen-channels
+# silent outage). The helper provisions an isolated CLAUDE_CONFIG_DIR (same code
+# path as the sub-agents, via dist/web/agent-process.js) and authenticates the
+# main agent from the fleet setup-token instead.
 #
 # The decision lives ENTIRELY in the helper, which prints "<mode>\t<path>" (or
 # nothing) and covers the two mutually exclusive ways the main agent can get its
@@ -241,10 +243,10 @@ MODEL_FLAG=""
 #     fleet's). That dir carries its own .credentials.json, so we must NOT inject
 #     the fleet token: doing so would authenticate the bot as the fleet. Works on
 #     every platform.
-#   isolated -- MAIN_AGENT_ISOLATED_CONFIG=1 on macOS with a fleet setup-token:
-#     the helper provisions a credential-less dir and we export the fleet token
-#     (same code path as the sub-agents), so the bot stops depending on the
-#     rotating Keychain OAuth session.
+#   isolated -- MAIN_AGENT_ISOLATED_CONFIG=1 (any platform) with a fleet
+#     setup-token: the helper provisions a credential-less dir and we export the
+#     fleet token (same code path as the sub-agents), so the bot stops depending
+#     on the rotating/shared on-disk credential.
 #
 # Both settings resolve through the settings-store (dashboard toggle in
 # store/config-overrides.json OR a hand-set .env key -- resolution override>.env>
@@ -359,9 +361,20 @@ fi
 # never reaches the channels claude -> "Not logged in" until the hourly restart.
 # Setting it -g makes the launch order irrelevant. Safe to share globally: every
 # agent uses the same Claude login (unlike the channel tokens scrubbed above,
-# which DO conflict and are -u'd). `|| true` tolerates "no server yet" -- in that
-# case new-session creates the server from this shell's exported env, which is
-# already correct.
+# which DO conflict and are -u'd).
+#
+# `start-server` first, because the "no server yet -> new-session inherits this
+# shell's env" assumption below is only safe when NOTHING ELSE creates the
+# server in between. At boot it does: systemd starts marveen-channels and
+# marveen-dashboard in the same second, and the dashboard's worker sessions win
+# the race about half the time. Then `set-environment -g` silently no-ops (no
+# server), the dashboard creates the server WITHOUT the token, and our
+# new-session inherits that empty global env instead of this shell's -- the
+# channels claude comes up "Not logged in - Please run /login" and the Telegram
+# plugin dies in a restart loop, on a headless box where /login is impossible.
+# Creating the server ourselves makes set-environment -g always land, which is
+# what the fix intended. start-server is idempotent and cheap.
+$TMUX start-server 2>/dev/null || true
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
   $TMUX set-environment -g CLAUDE_CODE_OAUTH_TOKEN "$CLAUDE_CODE_OAUTH_TOKEN" 2>/dev/null || true
 fi

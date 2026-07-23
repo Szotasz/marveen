@@ -1,17 +1,21 @@
 #!/usr/bin/env node
-// Provision (idempotently) the MAIN channels-agent's isolated CLAUDE_CONFIG_DIR
-// on macOS, then print its path on stdout so scripts/channels.sh can export it.
+// Provision (idempotently) the MAIN channels-agent's isolated CLAUDE_CONFIG_DIR,
+// on any platform once the setting is on and a fleet token exists, then print
+// its path on stdout so scripts/channels.sh can export it.
 //
-// Why: the main agent otherwise keeps the shared ~/.claude and, on macOS,
-// authenticates from the ROTATING Keychain OAuth session -- which periodically
-// expires and 401s the main bot (a manual /login is then needed). An isolated
+// Why: the main agent otherwise keeps the shared ~/.claude and authenticates
+// from whatever on-process credential refreshes that shared root -- the
+// ROTATING macOS Keychain OAuth session, or (Linux) the shared
+// ~/.claude/.credentials.json -- both periodically expire and 401 the main bot
+// (a manual /login is then needed), see the 2026-07-23 outage. An isolated
 // config dir (no .credentials.json) makes it authenticate from the long-lived
 // fleet setup-token via CLAUDE_CODE_OAUTH_TOKEN, exactly like the sub-agents.
 //
-// Prints NOTHING (and exits 0) when isolation is not applicable -- non-macOS, no
-// fleet token (store/.claude-oauth-token), or ~/.claude absent -- so the caller
-// simply keeps the shared root. Mirrors vault-resolve.mjs: dynamic import from
-// the compiled dist so there is a single source of truth (agent-process.ts).
+// Prints NOTHING (and exits 0) when isolation is not applicable -- setting off,
+// no fleet token (store/.claude-oauth-token), or ~/.claude absent -- so the
+// caller simply keeps the shared root. Mirrors vault-resolve.mjs: dynamic
+// import from the compiled dist so there is a single source of truth
+// (agent-process.ts).
 //
 // Usage: node scripts/main-agent-isolated-config.mjs [provider]
 import { join, dirname } from 'node:path'

@@ -301,25 +301,33 @@ export function ensureIsolatedChannelConfigDir(
 }
 
 // The main channels agent (started by scripts/channels.sh, cwd = PROJECT_ROOT)
-// normally keeps the shared ~/.claude by design. On macOS that means it
-// authenticates from the ROTATING Keychain OAuth session, which periodically
-// expires and 401s the main bot (a manual /login is then needed) -- while the
-// isolated sub-agents, which authenticate from the long-lived fleet setup-token,
-// never do. This gives the main agent the SAME isolated CLAUDE_CONFIG_DIR as the
-// sub-agents so it too authenticates from CLAUDE_CODE_OAUTH_TOKEN and never
-// touches the rotating Keychain.
+// normally keeps the shared ~/.claude by design. That means it authenticates
+// from whatever on-process credential refreshes that shared root -- the
+// ROTATING macOS Keychain OAuth session, or (Linux) the shared
+// ~/.claude/.credentials.json, which self-refreshes on its own ~8h cycle --
+// either way, a periodic-401 risk: the refresh can hit a transient error and
+// never retry, and Claude Code prefers an on-disk .credentials.json over an
+// otherwise-valid CLAUDE_CODE_OAUTH_TOKEN env var (claude-credentials-guard.ts),
+// so a stale file wins even with a live token sitting right next to it
+// (confirmed root cause of the 2026-07-23 marveen-channels silent outage,
+// PLAN.md GAP 1). The isolated sub-agents, which authenticate from the
+// long-lived fleet setup-token via an isolated CLAUDE_CONFIG_DIR carrying no
+// .credentials.json at all, never hit this. This gives the main agent the SAME
+// isolated CLAUDE_CONFIG_DIR as the sub-agents so it too authenticates from
+// CLAUDE_CODE_OAUTH_TOKEN and never touches a rotating on-disk credential.
 //
 // Deliberately narrow and OPT-IN (default OFF), so nothing changes for existing
 // installs unless the operator turns it on:
-//   - macOS only -- on Linux the main agent's rotating credentials.json is
-//     handled by the separate credentials-guard; the Keychain-expiry motive is
-//     macOS-specific. This does NOT touch shouldAlertSharedConfigCollision's
-//     darwin early-return (a different failure mode: plugin-slot collision).
+//   - any platform -- the provisioning itself (provisionIsolatedConfigDir) is
+//     100% filesystem-based and already proven identical on every platform via
+//     the sub-agent path; there is no macOS-specific step here. This does NOT
+//     touch shouldAlertSharedConfigCollision's darwin early-return (a different,
+//     genuinely macOS-specific failure mode: plugin-slot collision).
 //   - gated on the MAIN_AGENT_ISOLATED_CONFIG setting via the settings-store, so
 //     BOTH the dashboard toggle (config-overrides.json) AND a hand-set .env key
 //     take effect (resolution: override > .env > default '0'). channels.sh no
-//     longer parses the flag itself -- it always calls the helper on macOS and
-//     this function is the single gate.
+//     longer parses the flag itself -- it always calls the helper and this
+//     function is the single gate.
 //   - gated on the fleet OAuth token (no token -> no isolation, since the
 //     isolated dir carries no .credentials.json -- identical gate to the
 //     sub-agent path in startAgentProcess);
@@ -328,7 +336,6 @@ export function ensureMainAgentIsolatedConfigDir(
   provider?: string,
   platform: NodeJS.Platform = process.platform,
 ): string | null {
-  if (platform !== 'darwin') return null
   let enabled = false
   try { enabled = String(getEffectiveSettingValue('MAIN_AGENT_ISOLATED_CONFIG')) === '1' } catch { enabled = false }
   if (!enabled) return null

@@ -75,6 +75,7 @@ export interface ReauthHealerThresholds {
 export interface ReauthHealerDecision {
   sendKeys: boolean   // best-effort autonomous /login (sub-agents only)
   restartAgent: boolean // first-run-gate heal: restart the sub-agent (re-seeds the onboarding flag)
+  restartMain: boolean // GAP 1 landed: a dead-token main respawn now legitimately fixes it (main only)
   escalate: boolean   // notify.sh alert to the owner
   next: ReauthHealerState
 }
@@ -93,7 +94,7 @@ export function decideReauthAction(input: ReauthHealerInput, t: ReauthHealerThre
 
   // Clean / not-applicable: end the spell, allow a fresh alert next time.
   if (!isDeadToken || !sessionAlive) {
-    return { sendKeys: false, restartAgent: false, escalate: false, next: NO_REAUTH_STATE }
+    return { sendKeys: false, restartAgent: false, restartMain: false, escalate: false, next: NO_REAUTH_STATE }
   }
 
   const consecutiveDead = prev.consecutiveDead + 1
@@ -110,8 +111,18 @@ export function decideReauthAction(input: ReauthHealerInput, t: ReauthHealerThre
     sendKeys: fireNow && !isMain && canInteractiveLogin && isFirstRunGate !== true,
     // First-run gate on a sub-agent: a restart heals it (startAgentProcess runs
     // ensureSharedClaudeOnboarded first). Works headless -- no browser step.
-    // The main agent stays escalate-only; its monitored respawn paths re-seed.
     restartAgent: fireNow && !isMain && isFirstRunGate === true,
+    // Main agent, genuine dead-token (not first-run gate): once GAP 1 lands, the
+    // main session authenticates from the long-lived fleet setup-token via an
+    // isolated CLAUDE_CONFIG_DIR, so a fresh process either picks the still-good
+    // token back up or (if the fleet token itself is dead) the quarantine logic
+    // already fired by the `escalate` branch demotes it before the next launch --
+    // either way a restart is now a legitimate fix, not a no-op. No
+    // canInteractiveLogin gate: a main restart never sends /login keys, so the
+    // headless cascade risk that gates sendKeys does not apply here. Stays
+    // escalate-only on the first-run gate (a restart there is handled by the
+    // existing monitored respawn paths, which already re-seed onboarding).
+    restartMain: fireNow && isMain && isFirstRunGate !== true,
     escalate: fireNow,
     next: {
       consecutiveDead,
@@ -296,7 +307,27 @@ function checkSession(label: string, session: string, isMain: boolean, quiet: bo
     // credential there is typically fine.
     if (!isFirstRunGate) {
       quarantineFleetTokenIfDead()
-        .then((r) => { if (r !== 'no-token') logger.warn({ label, result: r }, 'reauth-healer: fleet-token liveness check') })
+        .then((r) => {
+          if (r !== 'no-token') logger.warn({ label, result: r }, 'reauth-healer: fleet-token liveness check')
+          // Restart the main agent AFTER the fleet-token liveness check above has
+          // had a chance to quarantine a proven-dead token -- ordered inside this
+          // .then() per PLAN.md GAP 2a, so a fresh process launched by the restart
+          // cannot re-read a token that is only now being quarantined. Dynamic
+          // import (matches inbound-probe.ts:318) to avoid a circular module
+          // dependency with channel-monitor.ts.
+          if (decision.restartMain) {
+            import('./channel-monitor.js').then(({ hardRestartMarveenChannels, lastMainRespawnAt }) => {
+              const RESPAWN_GRACE_MS = 15 * 60 * 1000 // mirror channel-monitor.ts's KEEPALIVE_RESPAWN_GRACE_MS
+              const now = Date.now()
+              if (lastMainRespawnAt() > 0 && now - lastMainRespawnAt() < RESPAWN_GRACE_MS) {
+                logger.info('reauth-healer: main dead-token restart skipped -- within cross-path respawn grace')
+                return
+              }
+              const r2 = hardRestartMarveenChannels()
+              logger.warn({ ok: r2.ok }, 'reauth-healer: main dead-token restart triggered')
+            }).catch((err) => logger.debug({ err }, 'reauth-healer: main dead-token restart import failed'))
+          }
+        })
         .catch((err) => logger.debug({ err }, 'reauth-healer: fleet-token liveness check failed'))
     }
   }
