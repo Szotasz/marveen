@@ -498,7 +498,10 @@ export async function runMessageRouterTick(): Promise<void> {
           from: msg.from_agent,
           content: prefix + wrapped,
           ts: msg.created_at * 1000,
-          taskId: msg.task_id,
+          // Regular inter-agent messages have no task association in this
+          // schema (only enqueueCodexScheduledPrompt sets a taskId, for
+          // scheduled-task delivery). Grouping stays null here.
+          taskId: null,
           sourceMessageId: msg.id,
         })
         if (!markMessageDelivered(msg.id)) {
