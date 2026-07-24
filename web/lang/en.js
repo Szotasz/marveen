@@ -81,6 +81,7 @@ window._i18n.en = {
   'nav.connectors':   'MCP',
   'nav.migrate':      'Migrate',
   'nav.docs':         'Documentation',
+  'nav.research':     'Research',
   'nav.status':       'Status',
   'nav.approvals':    'Approvals',
   'nav.settings':     'Settings',
@@ -581,6 +582,16 @@ window._i18n.en = {
   'docs.empty_content':          'No documents to display.',
   'docs.download_btn':           '⬇ Download .md',
   'docs.open_error':             'Failed to open',
+
+  // --- Research ---
+  'research.page_title':         'Research',
+  'research.page_subtitle':      "Each agent's research/ folder in readable form",
+  'research.loading':            'Loading...',
+  'research.select_hint':        'Select a document from the list on the left.',
+  'research.list_load_error':    'Failed to load the list',
+  'research.empty_list':         'No research documents found.',
+  'research.empty_content':      'No documents to display.',
+  'research.open_error':         'Failed to open',
 
   // --- Status ---
   'status.page_title':           'Status',

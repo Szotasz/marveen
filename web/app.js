@@ -361,6 +361,7 @@ function switchPage(pageId) {
   if (pageId === 'connectors') loadConnectors()
   if (pageId === 'migrate') loadMigrateAgents()
   if (pageId === 'docs') loadDocs()
+  if (pageId === 'research') loadResearch()
   if (pageId === 'status') loadStatus()
   if (pageId === 'recall') loadRecallPage()
   if (pageId === 'bgTasks') loadBgTasksPage()
@@ -417,6 +418,7 @@ const NAV_I18N = {
   recall: 'nav.recall', naplo: 'nav.recall', bgTasks: 'nav.bgTasks',
   skills: 'nav.skills', connectors: 'nav.connectors', migrate: 'nav.migrate',
   approvals: 'nav.approvals',
+  docs: 'nav.docs', research: 'nav.research', status: 'nav.status', autonomy: 'nav.autonomy',
   settings: 'nav.settings', vault: 'nav.vault', tokenUsage: 'nav.tokenUsage',
   ideas: 'nav.ideas', federation: 'nav.federation', updates: 'nav.updates', costs: 'nav.costs',
 }
@@ -451,6 +453,7 @@ const PAGE_HEADER_I18N = {
   connectorsPage: { title: 'connectors.page_title',  sub: 'connectors.page_subtitle' },
   migratePage:    { title: 'migrate.page_title',     sub: 'migrate.page_subtitle' },
   docsPage:       { title: 'docs.page_title',        sub: 'docs.page_subtitle' },
+  researchPage:   { title: 'research.page_title',    sub: 'research.page_subtitle' },
   statusPage:     { title: 'status.page_title',      sub: 'status.page_subtitle' },
   teamPage:       { title: 'team.page_title',        sub: 'team.page_subtitle' },
   messagesPage:   { title: 'messages.page_title',    sub: 'messages.page_subtitle' },
@@ -14833,6 +14836,72 @@ function downloadMarkdown(name, content) {
     setTimeout(() => URL.revokeObjectURL(url), 1000)
   } catch (e) {
     showToast(t('common.toast.download_failed', { msg: String(e && e.message || e) }))
+  }
+}
+
+// === Research (read-only viewer for each agent's research/ folder) ===
+// Mirrors the Docs tab above, but the API groups docs by agent
+// ([{agent, docs:[{name,title,updated}]}]), so the list needs a per-agent
+// header and each item's dataset carries both agent+name for the detail
+// fetch. Reuses escapeHtml/escapeAttr/renderMarkdown/downloadMarkdown as-is.
+async function loadResearch() {
+  const listEl = document.getElementById('researchList')
+  const contentEl = document.getElementById('researchContent')
+  if (!listEl) return
+  listEl.innerHTML = '<p class="muted">' + t('research.loading') + '</p>'
+  let groups = []
+  try {
+    const res = await fetch('/api/research')
+    groups = await res.json()
+    if (!Array.isArray(groups)) groups = []
+  } catch (e) {
+    listEl.innerHTML = '<p class="muted">' + t('research.list_load_error') + ': ' + escapeHtml(String(e.message || e)) + '</p>'
+    return
+  }
+  if (!groups.length) {
+    listEl.innerHTML = '<p class="muted">' + t('research.empty_list') + '</p>'
+    if (contentEl) contentEl.innerHTML = '<p class="muted">' + t('research.empty_content') + '</p>'
+    return
+  }
+  listEl.innerHTML = groups.map(g =>
+    '<div class="docs-list-group-label">' + escapeHtml(g.agent) + '</div>' +
+    g.docs.map(d =>
+      '<a href="#" class="docs-list-item" data-agent="' + escapeAttr(g.agent) + '" data-doc="' + escapeAttr(d.name) + '">' +
+        '<span class="docs-list-title">' + escapeHtml(d.title || d.name) + '</span>' +
+        (d.updated ? '<span class="docs-list-date">' + escapeHtml(d.updated) + '</span>' : '') +
+      '</a>'
+    ).join('')
+  ).join('')
+  listEl.querySelectorAll('.docs-list-item').forEach(a => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault()
+      listEl.querySelectorAll('.docs-list-item').forEach(x => x.classList.remove('active'))
+      a.classList.add('active')
+      openResearchDoc(a.dataset.agent, a.dataset.doc)
+    })
+  })
+  const first = listEl.querySelector('.docs-list-item')
+  if (first) { first.classList.add('active'); openResearchDoc(first.dataset.agent, first.dataset.doc) }
+}
+
+async function openResearchDoc(agent, name) {
+  const contentEl = document.getElementById('researchContent')
+  if (!contentEl) return
+  contentEl.innerHTML = '<p class="muted">' + t('research.loading') + '</p>'
+  try {
+    const res = await fetch('/api/research/' + encodeURIComponent(agent) + '/' + encodeURIComponent(name))
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const doc = await res.json()
+    const content = doc.content || ''
+    contentEl.innerHTML =
+      '<div class="docs-content-toolbar">' +
+        '<button class="btn-secondary btn-compact" id="researchDownloadBtn">' + t('docs.download_btn') + '</button>' +
+      '</div>' +
+      '<div class="docs-rendered markdown-body">' + renderMarkdown(content) + '</div>'
+    const dl = document.getElementById('researchDownloadBtn')
+    if (dl) dl.addEventListener('click', () => downloadMarkdown(name, content))
+  } catch (e) {
+    contentEl.innerHTML = '<p class="muted">' + t('research.open_error') + ': ' + escapeHtml(String(e.message || e)) + '</p>'
   }
 }
 

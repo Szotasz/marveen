@@ -6587,6 +6587,15 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   color: var(--text-muted, #888);
   font-variant-numeric: tabular-nums;
 }
+.docs-list-group-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #888);
+  padding: 10px 12px 2px;
+}
+.docs-list-group-label:first-child { padding-top: 0; }
 .docs-list-item:hover { background: var(--surface-2, rgba(127,127,127,0.08)); }
 .docs-list-item.active {
   background: var(--surface-2, rgba(127,127,127,0.12));

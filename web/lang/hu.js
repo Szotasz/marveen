@@ -81,6 +81,7 @@ window._i18n.hu = {
   'nav.connectors':   'MCP',
   'nav.migrate':      'Költöztetés',
   'nav.docs':         'Dokumentáció',
+  'nav.research':     'Kutatás',
   'nav.status':       'Státusz',
   'nav.approvals':    'Jóváhagyások',
   'nav.settings':     'Beállítások',
@@ -832,6 +833,16 @@ window._i18n.hu = {
   'docs.empty_content':          'Nincs megjeleníthető dokumentum.',
   'docs.download_btn':           '⬇ .md letöltés',
   'docs.open_error':             'Nem sikerült megnyitni',
+
+  // --- Research ---
+  'research.page_title':         'Kutatás',
+  'research.page_subtitle':      'Ágensek research/ mappái, olvasható formában',
+  'research.loading':            'Betöltés...',
+  'research.select_hint':        'Válassz egy dokumentumot a bal oldali listából.',
+  'research.list_load_error':    'Nem sikerült betölteni a listát',
+  'research.empty_list':         'Nincs kutatási anyag.',
+  'research.empty_content':      'Nincs megjeleníthető dokumentum.',
+  'research.open_error':         'Nem sikerült megnyitni',
 
   // --- Status ---
   'status.page_title':           'Státusz',
