@@ -814,6 +814,39 @@ export function initDatabase(dbPathOverride?: string): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, requested_at)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_agent ON approvals(agent_id, requested_at)`)
 
+  // --- Dashboard browser login (OPTIONAL; the bearer token stays primary) ---
+  // Zero rows here = exactly the token-only behavior. A row is created only when
+  // the operator opts in (Settings card or the dashboard-user CLI). No seeded
+  // credentials -- the byte-copy-fresh-install rule forbids any default user.
+  // password_hash is a PHC string (see web/password-hash.ts). username is
+  // UNIQUE COLLATE NOCASE so logins are case-insensitive.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS dashboard_users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      password_hash TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      disabled INTEGER NOT NULL DEFAULT 0
+    )
+  `)
+  // Browser login sessions. NOT named `sessions` -- that table already maps
+  // Telegram chats to Claude session ids. Only sha256(session_id) is stored, so
+  // a DB leak does not hand out live sessions. Rows survive dashboard restarts;
+  // the in-memory cache in web/auth-sessions.ts rehydrates from here lazily.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS auth_sessions (
+      id_hash TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      username TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      last_seen_at INTEGER NOT NULL,
+      user_agent TEXT,
+      remote_note TEXT
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id)`)
+
   // One-shot migration from the old JSON file (which had a read-modify-write
   // race). Import rows if they exist, then rename the file so we don't keep
   // re-importing. Wrapped in a transaction so a crash mid-import is safe.
@@ -876,6 +909,57 @@ export function incrementSessionCount(chatId: string): number {
 
 export function clearSession(chatId: string): void {
   db.prepare('DELETE FROM sessions WHERE chat_id = ?').run(chatId)
+}
+
+// --- Dashboard users (optional browser login) ---
+
+export interface DashboardUser {
+  id: number
+  username: string
+  password_hash: string
+  created_at: number
+  updated_at: number
+  disabled: number
+}
+
+export type DashboardUserPublic = Omit<DashboardUser, 'password_hash'>
+
+export function createDashboardUser(username: string, passwordHash: string): DashboardUser {
+  const now = Math.floor(Date.now() / 1000)
+  const info = db
+    .prepare('INSERT INTO dashboard_users (username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?)')
+    .run(username, passwordHash, now, now)
+  return { id: Number(info.lastInsertRowid), username, password_hash: passwordHash, created_at: now, updated_at: now, disabled: 0 }
+}
+
+export function getDashboardUser(username: string): DashboardUser | undefined {
+  return db
+    .prepare('SELECT * FROM dashboard_users WHERE username = ? COLLATE NOCASE')
+    .get(username) as DashboardUser | undefined
+}
+
+export function listDashboardUsers(): DashboardUserPublic[] {
+  return db
+    .prepare('SELECT id, username, created_at, updated_at, disabled FROM dashboard_users ORDER BY username COLLATE NOCASE')
+    .all() as DashboardUserPublic[]
+}
+
+// enabled-only count feeds `login_available`; total count feeds `setup_required`.
+export function countDashboardUsers(includeDisabled = false): number {
+  const sql = includeDisabled
+    ? 'SELECT COUNT(*) AS c FROM dashboard_users'
+    : 'SELECT COUNT(*) AS c FROM dashboard_users WHERE disabled = 0'
+  return (db.prepare(sql).get() as { c: number }).c
+}
+
+export function updateDashboardUserPassword(userId: number, passwordHash: string): void {
+  db.prepare('UPDATE dashboard_users SET password_hash = ?, updated_at = ? WHERE id = ?')
+    .run(passwordHash, Math.floor(Date.now() / 1000), userId)
+}
+
+export function deleteDashboardUser(username: string): boolean {
+  const info = db.prepare('DELETE FROM dashboard_users WHERE username = ? COLLATE NOCASE').run(username)
+  return info.changes > 0
 }
 
 // --- Memória ---
