@@ -7,11 +7,19 @@
 // Usage:
 //   npm run remote-enroll -- "ssh-ed25519 <base64 key> marveen-remote:<uuid>"
 //   npm run remote-enroll -- --host 203.0.113.10 --port 2222 "<public key line>"
+//   npm run remote-enroll -- --no-dashboard-token "<public key line>"
+//
+// The bundle includes the dashboard bearer token (store/.dashboard-token) by
+// default so the connecting app can authenticate against the dashboard. Such a
+// bundle is a SECRET: hand it over on a private channel only, never by email.
+// Pass --no-dashboard-token to emit a token-free bundle (the device user must
+// then obtain the dashboard access URL out of band).
 
 import { readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { homedir, hostname, userInfo, networkInterfaces } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   validatePublicKeyLine,
   buildRestrictedLine,
@@ -28,16 +36,19 @@ interface Args {
   keyLine?: string
   host?: string
   port: number
+  includeDashboardToken: boolean
 }
 
 function parseArgs(argv: string[]): Args {
-  const out: Args = { port: 22 }
+  const out: Args = { port: 22, includeDashboardToken: true }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--host') {
       const v = argv[++i]
       if (!v) fail('--host requires a value')
       out.host = v
+    } else if (a === '--no-dashboard-token') {
+      out.includeDashboardToken = false
     } else if (a === '--port') {
       const v = argv[++i]
       if (!v) fail('--port requires a value')
@@ -102,6 +113,25 @@ function obtainHostKey(): { body: string; source: string } | null {
   })
 }
 
+/**
+ * Read the dashboard bearer token the same way the running dashboard resolves
+ * it: DASHBOARD_TOKEN env first, then store/.dashboard-token relative to the
+ * repo root (this script lives in scripts/). Returns null when neither exists;
+ * enrollment still succeeds, the bundle just carries no token.
+ */
+function readDashboardToken(): string | null {
+  const fromEnv = process.env.DASHBOARD_TOKEN?.trim()
+  if (fromEnv) return fromEnv
+  const scriptDir = dirname(fileURLToPath(import.meta.url))
+  const tokenPath = join(scriptDir, '..', 'store', '.dashboard-token')
+  try {
+    const cached = readFileSync(tokenPath, 'utf8').trim()
+    return cached.length > 0 ? cached : null
+  } catch {
+    return null
+  }
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2))
   if (args.keyLine === undefined) {
@@ -160,6 +190,23 @@ async function main(): Promise<void> {
     sshUser: userInfo().username,
     installId: parsed.installId,
     hostKey: resolved.body,
+  }
+
+  if (args.includeDashboardToken) {
+    const dashboardToken = readDashboardToken()
+    if (dashboardToken === null) {
+      process.stderr.write(
+        'warning: no dashboard token found (DASHBOARD_TOKEN env or store/.dashboard-token); ' +
+          'emitting a token-free bundle. The device will need the dashboard access URL out of band.\n',
+      )
+    } else {
+      bundleInput.dashboardToken = dashboardToken
+      process.stderr.write(
+        'NOTE: this bundle contains the dashboard access token. Treat it as a secret: ' +
+          'hand it over on a private channel, never by email or shared chat. ' +
+          'Use --no-dashboard-token to emit a token-free bundle.\n',
+      )
+    }
   }
 
   const encoded = encodeBundle(buildBundle(bundleInput))

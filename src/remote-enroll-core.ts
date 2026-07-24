@@ -284,6 +284,10 @@ export interface ConnectionBundleInput {
   /** Omitted from the bundle entirely when undefined. */
   hostKey?: string
   installId: string
+  /** Dashboard bearer token. Omitted when undefined. A bundle carrying this
+   * field is a SECRET: it grants dashboard access to anyone holding it, so it
+   * must be transported over a private channel, never email or chat logs. */
+  dashboardToken?: string
 }
 
 export interface ConnectionBundle {
@@ -296,16 +300,17 @@ export interface ConnectionBundle {
   remotePort: number
   hostKey?: string
   installId: string
+  dashboardToken?: string
 }
 
 /**
  * Build the connection bundle object. The hostKey field is optional at the
  * wire level, but the consuming side requires it -- the CLI therefore refuses
  * to emit a bundle without one (see resolveHostKey). Field order matches the
- * documented format.
+ * documented format: hostKey before installId, dashboardToken last.
  */
 export function buildBundle(input: ConnectionBundleInput): ConnectionBundle {
-  const bundle: ConnectionBundle = {
+  return {
     format: BUNDLE_FORMAT,
     kind: 'connection',
     displayName: input.displayName,
@@ -313,23 +318,10 @@ export function buildBundle(input: ConnectionBundleInput): ConnectionBundle {
     sshPort: input.sshPort,
     sshUser: input.sshUser,
     remotePort: REMOTE_PORT,
+    ...(input.hostKey !== undefined ? { hostKey: input.hostKey } : {}),
     installId: input.installId,
+    ...(input.dashboardToken !== undefined ? { dashboardToken: input.dashboardToken } : {}),
   }
-  if (input.hostKey !== undefined) {
-    // Insert hostKey before installId to match the documented field order.
-    return {
-      format: bundle.format,
-      kind: bundle.kind,
-      displayName: bundle.displayName,
-      host: bundle.host,
-      sshPort: bundle.sshPort,
-      sshUser: bundle.sshUser,
-      remotePort: bundle.remotePort,
-      hostKey: input.hostKey,
-      installId: bundle.installId,
-    }
-  }
-  return bundle
 }
 
 /** Encode a bundle as a single-line base64 string. */

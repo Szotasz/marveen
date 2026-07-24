@@ -230,6 +230,38 @@ describe('bundle', () => {
     expect(json).not.toContain('hostKey')
     expect(decoded.remotePort).toBe(3420)
   })
+
+  it('carries dashboardToken as the last field when provided', () => {
+    const bundle = buildBundle({
+      displayName: 'my-host',
+      host: '203.0.113.5',
+      sshPort: 22,
+      sshUser: 'operator',
+      hostKey: 'HOSTKEYB64',
+      installId: base.installId,
+      dashboardToken: 'a1b2c3d4-token',
+    })
+    const encoded = encodeBundle(bundle)
+    const decoded = decodeBundle(encoded)
+    expect(decoded.dashboardToken).toBe('a1b2c3d4-token')
+    // Documented field order: dashboardToken after installId.
+    const keys = Object.keys(JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')))
+    expect(keys.indexOf('dashboardToken')).toBe(keys.length - 1)
+    expect(keys.indexOf('hostKey')).toBeLessThan(keys.indexOf('installId'))
+  })
+
+  it('omits dashboardToken entirely when absent', () => {
+    const bundle = buildBundle({
+      displayName: 'my-host',
+      host: 'my-host.local',
+      sshPort: 22,
+      sshUser: 'operator',
+      hostKey: 'HOSTKEYB64',
+      installId: base.installId,
+    })
+    const json = Buffer.from(encodeBundle(bundle), 'base64').toString('utf8')
+    expect(json).not.toContain('dashboardToken')
+  })
 })
 
 describe('parseKeyscanEd25519', () => {
