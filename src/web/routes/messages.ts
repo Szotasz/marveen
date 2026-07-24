@@ -9,7 +9,7 @@ import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID } from '../../channel-coordinator/ingest.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
-import { readBody, json } from '../http-helpers.js'
+import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
@@ -152,7 +152,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       messages = listAgentMessages(limit)
     }
 
-    json(res, messages)
+    jsonMaybeGzip(req, res, messages)
     return true
   }
 

@@ -115,7 +115,7 @@ import {
 } from '../profiles.js'
 import { sanitizeAgentName, safeJoin } from '../sanitize.js'
 import { parseMultipart } from '../multipart.js'
-import { readBody, json, serveFile } from '../http-helpers.js'
+import { readBody, json, jsonMaybeGzip, serveFile } from '../http-helpers.js'
 import {
   exportAgentBundle,
   importAgentBundle,
@@ -555,7 +555,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   }
 
   if (path === '/api/agents' && method === 'GET') {
-    json(res, listAgentSummaries())
+    jsonMaybeGzip(req, res, listAgentSummaries())
     return true
   }
 
@@ -623,7 +623,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       entries.push({ name, isMain: false, running, state, tail: tailOf(pane) })
     }
 
-    json(res, entries)
+    jsonMaybeGzip(req, res, entries)
     return true
   }
 
@@ -808,7 +808,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   if (avatarUploadMatch && method === 'GET') {
     const name = decodeURIComponent(avatarUploadMatch[1])
     const avatarPath = findAvatarForAgent(name)
-    if (avatarPath) { serveFile(req, res, avatarPath); return true }
+    // 1h client cache: see /api/marveen/avatar for the staleness trade-off.
+    if (avatarPath) { serveFile(req, res, avatarPath, { cacheSeconds: 3600 }); return true }
     res.writeHead(404); res.end()
     return true
   }
@@ -1191,7 +1192,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         : (n.id === MAIN_AGENT_ID ? null : MAIN_AGENT_ID)
       if (reports) edges.push({ from: reports, to: n.id })
     }
-    json(res, { nodes, edges, mainAgentId: MAIN_AGENT_ID })
+    jsonMaybeGzip(req, res, { nodes, edges, mainAgentId: MAIN_AGENT_ID })
     return true
   }
 

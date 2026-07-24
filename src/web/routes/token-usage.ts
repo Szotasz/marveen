@@ -7,12 +7,12 @@ import {
   getToolStats,
   correlateWithKanban,
 } from '../token-usage.js'
-import { json } from '../http-helpers.js'
+import { json, jsonMaybeGzip } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleTokenUsage(ctx: RouteContext): Promise<boolean> {
-  const { res, path, method, url } = ctx
+  const { req, res, path, method, url } = ctx
 
   if (path === '/api/token-usage/collect' && method === 'POST') {
     try {
@@ -33,7 +33,7 @@ export async function tryHandleTokenUsage(ctx: RouteContext): Promise<boolean> {
       from ? parseInt(from) : undefined,
       to ? parseInt(to) : undefined,
     )
-    json(res, summary)
+    jsonMaybeGzip(req, res, summary)
     return true
   }
 

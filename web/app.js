@@ -1,3 +1,13 @@
+// === Avatar cache-busting epoch ===
+// Avatar URLs used to carry ?t=Date.now() on every render, which defeated the
+// browser cache and re-downloaded ~1MB per avatar on each rerender (brutal on
+// slow remote links). Instead the URLs are stable (server sends max-age +
+// ETag) until an avatar is actually changed in THIS session, which bumps the
+// epoch and re-busts every avatar URL rendered afterwards.
+let _avatarEpoch = 0
+function bumpAvatarEpoch() { _avatarEpoch = Date.now() }
+function avatarBust() { return _avatarEpoch ? `?t=${_avatarEpoch}` : '' }
+
 // === i18n runtime ===
 // Priority: localStorage['marveen.lang'] > DASHBOARD_LANG (server default, read
 // from /api/settings on init) > 'hu' (hardcoded fallback).
@@ -2547,7 +2557,7 @@ async function openMarveenDetail() {
   document.getElementById('agentDetailTitle').textContent = displayName
   const avatar = document.getElementById('agentDetailAvatar')
   avatar.className = 'detail-avatar gradient-1'
-  avatar.innerHTML = `<img src="/api/marveen/avatar?t=${Date.now()}" alt="${escapeHtml(displayName)}">`
+  avatar.innerHTML = `<img src="/api/marveen/avatar${avatarBust()}" alt="${escapeHtml(displayName)}">`
   document.getElementById('agentDetailName').textContent = displayName
   document.getElementById('agentDetailDesc').textContent = m.description || ''
   document.getElementById('agentDetailModel').textContent = m.model || '-'
@@ -2733,7 +2743,7 @@ function renderAgents() {
     mCard.className = 'agent-card marveen-card'
     mCard.innerHTML = `
       <div class="agent-card-top">
-        <div class="agent-avatar gradient-1"><img src="/api/marveen/avatar?t=${Date.now()}" alt="${escapeHtml(displayName)}"></div>
+        <div class="agent-avatar gradient-1"><img src="/api/marveen/avatar${avatarBust()}" alt="${escapeHtml(displayName)}"></div>
         <div class="agent-card-info">
           <div class="agent-name">${escapeHtml(displayName)} <span class="marveen-badge">${t('agents.main_badge')}</span></div>
           <div class="agent-desc">${escapeHtml(m.description || '')}</div>
@@ -2775,7 +2785,7 @@ function renderAgents() {
     const initial = label.charAt(0).toUpperCase()
     const gradientClass = getAvatarGradient(agent.name)
     const avatarHtml = (agent.hasImage || agent.hasAvatar)
-      ? `<img src="/api/agents/${encodeURIComponent(agent.name)}/avatar?t=${Date.now()}" alt="${escapeHtml(label)}">`
+      ? `<img src="/api/agents/${encodeURIComponent(agent.name)}/avatar${avatarBust()}" alt="${escapeHtml(label)}">`
       : initial
 
     const modelClass = agent.model && agent.model !== 'inherit' ? agent.model : ''
@@ -3073,8 +3083,9 @@ function populateDetailAvatarGrid() {
         })
         if (!res.ok) throw new Error()
         showToast(t('agents.toast.avatar_updated'))
+        bumpAvatarEpoch()
         // Update the detail avatar display
-        document.getElementById('agentDetailAvatar').innerHTML = `<img src="/api/agents/${encodeURIComponent(currentAgent.name)}/avatar?t=${Date.now()}" alt="">`
+        document.getElementById('agentDetailAvatar').innerHTML = `<img src="/api/agents/${encodeURIComponent(currentAgent.name)}/avatar${avatarBust()}" alt="">`
         document.getElementById('detailAvatarGallery').hidden = true
         loadAgents()
       } catch {
@@ -3107,7 +3118,8 @@ document.getElementById('avatarChangeBtn').addEventListener('click', () => {
           })
           if (!res.ok) throw new Error()
           showToast(t('agents.toast.avatar_updated'))
-          const imgUrl = isMarveen ? `/api/marveen/avatar?t=${Date.now()}` : `/api/agents/${encodeURIComponent(currentAgent.name)}/avatar?t=${Date.now()}`
+          bumpAvatarEpoch()
+          const imgUrl = isMarveen ? `/api/marveen/avatar${avatarBust()}` : `/api/agents/${encodeURIComponent(currentAgent.name)}/avatar${avatarBust()}`
           document.getElementById('agentDetailAvatar').innerHTML = `<img src="${imgUrl}" alt="">`
           gallery.hidden = true
           loadAgents()
@@ -3181,7 +3193,8 @@ document.getElementById('avatarChangeBtn').addEventListener('click', () => {
       const res = await fetch(endpoint, { method: 'POST', body: form })
       if (!res.ok) throw new Error()
       showToast(t('agents.toast.avatar_uploaded'))
-      const imgUrl = isMarveen ? `/api/marveen/avatar?t=${Date.now()}` : `/api/agents/${encodeURIComponent(currentAgent.name)}/avatar?t=${Date.now()}`
+      bumpAvatarEpoch()
+      const imgUrl = isMarveen ? `/api/marveen/avatar${avatarBust()}` : `/api/agents/${encodeURIComponent(currentAgent.name)}/avatar${avatarBust()}`
       document.getElementById('agentDetailAvatar').innerHTML = `<img src="${imgUrl}" alt="">`
       document.getElementById('detailAvatarGallery').hidden = true
       resetAvatarUpload()
@@ -5453,7 +5466,7 @@ function makeScheduleRow(task) {
 
     row.innerHTML = `
       <div class="schedule-agent-avatar">
-        <img src="${agent.avatar}?t=${Date.now()}" alt="" onerror="this.style.display='none'">
+        <img src="${agent.avatar}${avatarBust()}" alt="" onerror="this.style.display='none'">
       </div>
       <div class="schedule-info">
         <div class="schedule-title">
@@ -5641,7 +5654,7 @@ function renderTimeline(tasks) {
     row.innerHTML = `
       <div class="timeline-agent">
         <div class="timeline-agent-avatar">
-          <img src="${agent.avatar}?t=${Date.now()}" alt="" onerror="this.style.display='none'">
+          <img src="${agent.avatar}${avatarBust()}" alt="" onerror="this.style.display='none'">
         </div>
         <span class="timeline-agent-name">${escapeHtml(agent.label || agent.name)}</span>
       </div>
@@ -5661,7 +5674,7 @@ function renderTimeline(tasks) {
         marker.className = 'timeline-marker' + (task.enabled ? '' : ' disabled')
         marker.style.left = `calc(${pct}% - 16px)`
         marker.innerHTML = `
-          <img src="${agent.avatar}?t=${Date.now()}" alt="" onerror="this.style.display='none'">
+          <img src="${agent.avatar}${avatarBust()}" alt="" onerror="this.style.display='none'">
           <div class="timeline-marker-tooltip">${escapeHtml(task.description || task.name)} - ${h.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}</div>
         `
         marker.addEventListener('click', () => openEditSchedule(task))
@@ -5795,7 +5808,7 @@ function renderWeekView(data) {
         }
 
         card.innerHTML = `
-          <div class="week-task-avatar"><img src="${agent.avatar}?t=${Date.now()}" alt=""></div>
+          <div class="week-task-avatar"><img src="${agent.avatar}${avatarBust()}" alt=""></div>
           <div class="week-task-info">
             <div class="week-task-time">${timeLabel}</div>
             <div class="week-task-name">${escapeHtml(task.description || task.name)}</div>
@@ -10291,8 +10304,8 @@ function renderTeamGraph(container, data) {
     const roleLabel = node.role === 'main' ? t('team.role.main') : (node.role === 'leader' ? t('team.role.leader') : t('team.role.member'))
     const running = node.running ? t('team.running') : t('team.stopped')
     const avatarUrl = node.id === mainAgentId
-      ? `/api/marveen/avatar?t=${Date.now()}`
-      : `/api/agents/${encodeURIComponent(node.id)}/avatar?t=${Date.now()}`
+      ? `/api/marveen/avatar${avatarBust()}`
+      : `/api/agents/${encodeURIComponent(node.id)}/avatar${avatarBust()}`
     div.innerHTML = `
       <div class="team-node-avatar"><img src="${avatarUrl}" alt="${escapeHtml(node.label || node.id)}" onerror="this.style.display='none'"></div>
       <div class="team-node-name">${escapeHtml(node.label || node.id)}</div>
@@ -10429,8 +10442,8 @@ function chatAvatarHtml(agentName, size = 32) {
   const hasAvatar = chatAgentHasAvatar.get(lower)
   if (!hasAvatar) return chatMonogramEl(agentName, size)
   const src = lower === mainAgentId().toLowerCase()
-    ? `/api/marveen/avatar?t=${Date.now()}`
-    : `/api/agents/${encodeURIComponent(lower)}/avatar?t=${Date.now()}`
+    ? `/api/marveen/avatar${avatarBust()}`
+    : `/api/agents/${encodeURIComponent(lower)}/avatar${avatarBust()}`
   return `<img class="chat-avatar" src="${src}" width="${size}" height="${size}" alt="${escapeHtml(agentName)}" data-agent-name="${escapeHtml(agentName)}" onerror="chatImgError(this)">`
 }
 
@@ -10945,7 +10958,7 @@ async function loadOverview() {
 async function initSidebarBrand() {
   try {
     const img = document.createElement('img')
-    img.src = '/api/marveen/avatar?t=' + Date.now()
+    img.src = '/api/marveen/avatar' + avatarBust()
     img.onload = () => {
       const mark = document.getElementById('sidebarBrandMark')
       if (mark) { mark.textContent = ''; mark.appendChild(img) }
