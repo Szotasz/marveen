@@ -9,6 +9,7 @@
     "dev": "tsx src/index.ts",
     "setup": "tsx scripts/setup.ts",
     "status": "tsx scripts/status.ts",
+    "remote-enroll": "tsx scripts/remote-access-enroll.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "syntax-check": "node --check web/app.js web/sw.js",

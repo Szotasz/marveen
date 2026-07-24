@@ -224,6 +224,32 @@ ssh macmini "/opt/homebrew/bin/tmux kill-session -t monitor" && \
 
 A script automatikusan felderíti a futó `agent-*` és `marveen-channels` session-öket. A monitor session törlése nem érinti az ágens session-öket -- csak a linked-window referenciákat szünteti meg.
 
+### Remote access key enrollment
+
+A helper that lets an operator enroll a single device's SSH public key with a tightly restricted `authorized_keys` entry, then hands back a copyable connection bundle. Each device carries its own revocation id (`marveen-remote:<uuid>`) so access can be replaced or removed per device.
+
+Run it with the public key line as a single quoted argument:
+
+```bash
+npm run remote-enroll -- "ssh-ed25519 <base64 key> marveen-remote:<uuid>"
+# optional flags:
+npm run remote-enroll -- --host 203.0.113.10 --port 2222 "ssh-ed25519 <base64 key> marveen-remote:<uuid>"
+```
+
+The public key line must be exactly three fields (type, key, comment) with no `authorized_keys` options and no extra fields. Only `ssh-ed25519` keys are accepted, and the comment must be `marveen-remote:<uuid>` (uuid v4).
+
+It appends (or replaces, when the same id is re-enrolled) this restricted line to the invoking user's `~/.ssh/authorized_keys`:
+
+```
+restrict,port-forwarding,permitopen="127.0.0.1:3420",command="/bin/false" ssh-ed25519 <base64 key> marveen-remote:<uuid>
+```
+
+`restrict` disables pty, agent, and X11 forwarding; the forced command is `/bin/false`; and the only endpoint the key may open is `127.0.0.1:3420`. The write is atomic (temp file plus rename) and guarded by an `authorized_keys.lock` file so concurrent runs cannot corrupt the list. `~/.ssh` is created 0700 and `authorized_keys` 0600 when missing; if either already exists with looser permissions the tool warns instead of changing them silently.
+
+After enrolling, it prints a base64 connection bundle between clearly marked delimiters. The bundle carries the host, SSH port and user, the fixed remote port (3420), the device id, and the machine's `ssh-ed25519` host key when readable. When the host key is not readable the field is omitted and the connecting device falls back to a first-use fingerprint confirmation. When `--host` is not given, the tool prints a hint to verify the resolved address is the one the device will reach.
+
+To revoke a device, delete the line whose comment matches its id (`marveen-remote:<uuid>`) from `~/.ssh/authorized_keys`.
+
 ### Frissítés
 ```bash
 ./update.sh
