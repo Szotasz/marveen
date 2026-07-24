@@ -137,24 +137,93 @@ function mainAgentId() {
       if (!urlToken) sessionToken = ''
       if (!window.__marveenAuthPrompted) {
         window.__marveenAuthPrompted = true
-        // An installed (home-screen) PWA has its own localStorage, separate from
-        // Safari's, and the manifest start_url has no ?token=, so the very first
-        // standalone launch is token-less and 401s. There is no address bar to
-        // paste a ?token= URL into either. Offer an in-app paste field that
-        // writes the token to the app's own storage, then reload.
-        const isStandalone = window.navigator.standalone === true ||
-          (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
-        if (isStandalone) {
-          showStandaloneTokenPrompt(TOKEN_KEY)
-        } else {
-          alert(
-            'Dashboard authentication failed. Check the server log for the access URL ' +
-            '(look for "Dashboard access URL" with ?token=...), then reopen it in your browser.'
-          )
-        }
+        handleAuthFailure()
       }
     }
     return res
+  }
+
+  // On a 401, ask the public status probe whether a username+password login is
+  // available on this instance. If so, show the login overlay; otherwise fall
+  // back to the existing token flows (PWA paste field or the console-URL alert).
+  async function handleAuthFailure() {
+    let status = null
+    try {
+      const r = await originalFetch('/api/auth/status')
+      if (r.ok) status = await r.json()
+    } catch { /* offline or probe failed -- fall through to token flows */ }
+    if (status && status.login_available) {
+      showLoginOverlay()
+      return
+    }
+    // An installed (home-screen) PWA has its own localStorage, separate from
+    // Safari's, and the manifest start_url has no ?token=, so the very first
+    // standalone launch is token-less and 401s. There is no address bar to paste
+    // a ?token= URL into either. Offer an in-app paste field that writes the
+    // token to the app's own storage, then reload.
+    const isStandalone = window.navigator.standalone === true ||
+      (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
+    if (isStandalone) {
+      showStandaloneTokenPrompt(TOKEN_KEY)
+    } else {
+      alert(
+        'Dashboard authentication failed. Check the server log for the access URL ' +
+        '(look for "Dashboard access URL" with ?token=...), then reopen it in your browser.'
+      )
+    }
+  }
+
+  // Full-screen username+password login overlay. Posts to /api/auth/login; on
+  // success the browser has the mv_session cookie and we reload authenticated.
+  function showLoginOverlay() {
+    if (document.getElementById('mv-login-overlay')) return
+    const tr = (k, fallback) => (typeof window.t === 'function' ? window.t(k) : fallback) || fallback
+    const overlay = document.createElement('div')
+    overlay.id = 'mv-login-overlay'
+    overlay.className = 'mv-auth-overlay'
+    overlay.innerHTML =
+      '<form class="mv-auth-card" id="mv-login-form">' +
+        '<h2>' + tr('auth.login.title', 'Sign in') + '</h2>' +
+        '<p class="mv-auth-desc">' + tr('auth.login.desc', 'Enter your dashboard username and password.') + '</p>' +
+        '<input id="mv-login-user" type="text" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="' + tr('auth.login.username', 'Username') + '">' +
+        '<input id="mv-login-pass" type="password" autocomplete="current-password" placeholder="' + tr('auth.login.password', 'Password') + '">' +
+        '<button type="submit" id="mv-login-submit">' + tr('auth.login.submit', 'Sign in') + '</button>' +
+        '<div class="mv-auth-err" id="mv-login-err"></div>' +
+      '</form>'
+    document.body.appendChild(overlay)
+    const form = overlay.querySelector('#mv-login-form')
+    const userEl = overlay.querySelector('#mv-login-user')
+    const passEl = overlay.querySelector('#mv-login-pass')
+    const errEl = overlay.querySelector('#mv-login-err')
+    const submitEl = overlay.querySelector('#mv-login-submit')
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault()
+      errEl.textContent = ''
+      const username = (userEl.value || '').trim()
+      const password = passEl.value || ''
+      if (!username || !password) { errEl.textContent = tr('auth.login.err_empty', 'Enter a username and password.'); return }
+      submitEl.disabled = true
+      try {
+        const r = await originalFetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password }),
+        })
+        if (r.ok) { window.location.reload(); return }
+        if (r.status === 429) {
+          let retry = 0
+          try { retry = (await r.json()).retry_after_s || 0 } catch { /* ignore */ }
+          errEl.textContent = tr('auth.login.err_throttled', 'Too many attempts. Try again later.') + (retry ? ' (' + retry + 's)' : '')
+        } else {
+          errEl.textContent = tr('auth.login.err_invalid', 'Invalid credentials.')
+        }
+      } catch {
+        errEl.textContent = tr('auth.login.err_network', 'Network error.')
+      } finally {
+        submitEl.disabled = false
+      }
+    })
+    setTimeout(() => userEl.focus(), 50)
   }
 
   // Full-screen, one-time token paste for installed PWAs (see the 401 handler).
@@ -12171,6 +12240,161 @@ function markSettingDirty(key, input, originalValue, type, errorEl) {
 
 const SETTINGS_ACTIVE_TAB_KEY = 'settings-active-tab'
 
+// === Dashboard browser login (optional) ===
+// The card in the Settings page lets the operator opt into a username+password
+// login (in addition to the always-available access token). All copy is framed
+// around the existing public remote-access surfaces (Tailscale Serve, LAN,
+// mobile QR) -- no other transport is referenced.
+
+async function fetchAuthStatus() {
+  try {
+    const r = await fetch('/api/auth/status')
+    return r.ok ? await r.json() : null
+  } catch {
+    return null
+  }
+}
+
+async function renderAuthCard() {
+  const body = document.getElementById('authCardBody')
+  if (!body) return
+  const status = await fetchAuthStatus()
+  if (!status) { body.innerHTML = `<p class="auth-muted">${t('auth.card.unavailable')}</p>`; return }
+  if (status.setup_required) { renderCreateLoginForm(body); return }
+  if (status.method === 'session') { renderSessionPanel(body, status); return }
+  renderTokenModePanel(body)
+}
+
+function renderCreateLoginForm(body) {
+  body.innerHTML =
+    `<p class="auth-muted">${t('auth.card.setup_desc')}</p>` +
+    `<div class="auth-form">` +
+      `<input id="authNewUser" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" placeholder="${t('auth.login.username')}">` +
+      `<input id="authNewPass" type="password" autocomplete="new-password" placeholder="${t('auth.card.new_password')}">` +
+      `<input id="authNewPass2" type="password" autocomplete="new-password" placeholder="${t('auth.card.repeat_password')}">` +
+      `<button class="btn-primary" id="authCreateBtn">${t('auth.card.create')}</button>` +
+      `<div class="auth-form-msg" id="authCreateMsg"></div>` +
+    `</div>`
+  document.getElementById('authCreateBtn').addEventListener('click', async () => {
+    const msg = document.getElementById('authCreateMsg')
+    const username = (document.getElementById('authNewUser').value || '').trim()
+    const p1 = document.getElementById('authNewPass').value || ''
+    const p2 = document.getElementById('authNewPass2').value || ''
+    msg.className = 'auth-form-msg'
+    if (!username || !p1) { msg.classList.add('err'); msg.textContent = t('auth.login.err_empty'); return }
+    if (p1 !== p2) { msg.classList.add('err'); msg.textContent = t('auth.card.err_mismatch'); return }
+    try {
+      const r = await fetch('/api/auth/users', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password: p1 }),
+      })
+      const data = await r.json().catch(() => ({}))
+      if (r.ok) { msg.classList.add('ok'); msg.textContent = t('auth.card.created'); renderAuthCard(); initAuthBanner() }
+      else { msg.classList.add('err'); msg.textContent = data.error || t('auth.card.err_generic') }
+    } catch { msg.classList.add('err'); msg.textContent = t('auth.login.err_network') }
+  })
+}
+
+function renderSessionPanel(body, status) {
+  body.innerHTML =
+    `<p class="auth-muted">${t('auth.card.signed_in_as', { user: escapeHtml(status.user) })}</p>` +
+    `<div class="auth-form">` +
+      `<input id="authCurPass" type="password" autocomplete="current-password" placeholder="${t('auth.card.current_password')}">` +
+      `<input id="authChgPass" type="password" autocomplete="new-password" placeholder="${t('auth.card.new_password')}">` +
+      `<input id="authChgPass2" type="password" autocomplete="new-password" placeholder="${t('auth.card.repeat_password')}">` +
+      `<button class="btn-primary" id="authChgBtn">${t('auth.card.change_password')}</button>` +
+      `<div class="auth-form-msg" id="authChgMsg"></div>` +
+    `</div>` +
+    `<div class="auth-sessions" id="authSessions"></div>` +
+    `<div class="auth-actions">` +
+      `<button class="btn-secondary btn-compact" id="authLogoutAllBtn">${t('auth.card.logout_all')}</button>` +
+      `<button class="btn-secondary btn-compact" id="authLogoutBtn">${t('auth.card.logout')}</button>` +
+    `</div>`
+  document.getElementById('authChgBtn').addEventListener('click', async () => {
+    const msg = document.getElementById('authChgMsg')
+    const cur = document.getElementById('authCurPass').value || ''
+    const p1 = document.getElementById('authChgPass').value || ''
+    const p2 = document.getElementById('authChgPass2').value || ''
+    msg.className = 'auth-form-msg'
+    if (p1 !== p2) { msg.classList.add('err'); msg.textContent = t('auth.card.err_mismatch'); return }
+    try {
+      const r = await fetch('/api/auth/password', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ current_password: cur, new_password: p1 }),
+      })
+      const data = await r.json().catch(() => ({}))
+      if (r.ok) { msg.classList.add('ok'); msg.textContent = t('auth.card.password_changed') }
+      else { msg.classList.add('err'); msg.textContent = data.error || t('auth.card.err_generic') }
+    } catch { msg.classList.add('err'); msg.textContent = t('auth.login.err_network') }
+  })
+  document.getElementById('authLogoutBtn').addEventListener('click', async () => {
+    try { await fetch('/api/auth/logout', { method: 'POST' }) } catch { /* ignore */ }
+    window.location.reload()
+  })
+  document.getElementById('authLogoutAllBtn').addEventListener('click', async () => {
+    try { await fetch('/api/auth/logout-all', { method: 'POST' }) } catch { /* ignore */ }
+    window.location.reload()
+  })
+  renderAuthSessions()
+}
+
+async function renderAuthSessions() {
+  const el = document.getElementById('authSessions')
+  if (!el) return
+  try {
+    const r = await fetch('/api/auth/sessions')
+    if (!r.ok) { el.innerHTML = ''; return }
+    const { sessions } = await r.json()
+    if (!sessions || !sessions.length) { el.innerHTML = ''; return }
+    el.innerHTML = `<div class="auth-sessions-title">${t('auth.card.active_sessions')}</div>` +
+      sessions.map((s) => {
+        const last = new Date(s.lastSeenAt * 1000).toLocaleString()
+        const ua = escapeHtml(s.userAgent || '-')
+        return `<div class="auth-session-row"><code>${escapeHtml(s.idHashPrefix)}</code><span>${last}</span><span class="auth-session-ua">${ua}</span></div>`
+      }).join('')
+  } catch { el.innerHTML = '' }
+}
+
+function renderTokenModePanel(body) {
+  body.innerHTML =
+    `<p class="auth-muted">${t('auth.card.token_mode')}</p>`
+}
+
+// Dismissible setup banner: shown only when the operator is authed via the token
+// and has not yet created a browser login. Dismissal persists per browser.
+const AUTH_BANNER_DISMISS_KEY = 'marveen.auth-banner-dismissed'
+
+async function initAuthBanner() {
+  const banner = document.getElementById('authSetupBanner')
+  if (!banner) return
+  let dismissed = false
+  try { dismissed = localStorage.getItem(AUTH_BANNER_DISMISS_KEY) === '1' } catch { /* storage blocked */ }
+  const status = await fetchAuthStatus()
+  const show = !!status && status.authenticated && status.method === 'token' && status.setup_required && !dismissed
+  banner.hidden = !show
+}
+
+function wireAuthBanner() {
+  const banner = document.getElementById('authSetupBanner')
+  if (!banner) return
+  const dismiss = document.getElementById('authBannerDismiss')
+  const go = document.getElementById('authBannerGoBtn')
+  if (dismiss) dismiss.addEventListener('click', () => {
+    try { localStorage.setItem(AUTH_BANNER_DISMISS_KEY, '1') } catch { /* storage blocked */ }
+    banner.hidden = true
+  })
+  if (go) go.addEventListener('click', () => {
+    if (typeof switchPage === 'function') switchPage('settings')
+    const link = document.querySelector('.sb-link[data-page="settings"]')
+    if (link) { document.querySelectorAll('.sb-link').forEach((l) => l.classList.remove('active')); link.classList.add('active') }
+  })
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  wireAuthBanner()
+  initAuthBanner()
+})
+
 async function loadSettings() {
   const tabNav = document.getElementById('settingsTabNav')
   const tabPanels = document.getElementById('settingsTabPanels')
@@ -12180,6 +12404,8 @@ async function loadSettings() {
   tabPanels.innerHTML = ''
   settingsDirty.clear()
   updateSettingsSaveBar()
+
+  renderAuthCard()
 
   try {
     const res = await fetch('/api/settings')
@@ -13916,8 +14142,13 @@ function openTerminalModal(agentName) {
     paintedPane = latestPane
     term.write('\x1b[3J\x1b[2J\x1b[H' + latestPane)
   }
+  // EventSource cannot set an Authorization header. In token mode we pass the
+  // token via ?token=; in password-login (session-cookie) mode there is no
+  // token, so we open a plain URL and the browser attaches the mv_session
+  // cookie automatically -- the gate's cookie branch covers the SSE path.
   const token = localStorage.getItem('marveen-dashboard-token') || ''
-  const sse = new EventSource(`/api/agents/${encodeURIComponent(agentName)}/pane/stream?token=${encodeURIComponent(token)}`)
+  const streamBase = `/api/agents/${encodeURIComponent(agentName)}/pane/stream`
+  const sse = new EventSource(token ? `${streamBase}?token=${encodeURIComponent(token)}` : streamBase)
   sse.onmessage = (e) => {
     try {
       const msg = JSON.parse(e.data)

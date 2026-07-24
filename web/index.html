@@ -184,6 +184,18 @@
   </aside>
 
   <main>
+    <!-- Non-blocking, dismissible banner shown when the operator is authed via
+         the token but has not yet created a browser (username+password) login.
+         Motivated by the existing remote-access surfaces (Tailscale Serve,
+         DASHBOARD_PUBLIC_URL / LAN, mobile QR). Populated by initAuthBanner(). -->
+    <div id="authSetupBanner" class="auth-setup-banner" hidden>
+      <span data-i18n="auth.banner.text">Add a username+password login for browser access.</span>
+      <span class="auth-setup-banner-actions">
+        <button class="btn-secondary btn-compact" id="authBannerGoBtn" data-i18n="auth.banner.action">Set up login</button>
+        <button class="auth-setup-banner-close" id="authBannerDismiss" aria-label="Dismiss">&times;</button>
+      </span>
+    </div>
+
     <!-- === Overview Page (default) === -->
     <div class="page" id="overviewPage">
       <div class="overview-stats">
@@ -1110,6 +1122,14 @@
             Frissítés
           </button>
         </div>
+      </div>
+
+      <!-- Dashboard browser login (optional). Rendered by renderAuthCard():
+           create the first login when none exists, else change password + list
+           active sessions and log out. -->
+      <div class="card auth-card" id="authCard" style="margin-bottom:16px">
+        <h3 data-i18n="auth.card.title">Dashboard login</h3>
+        <div id="authCardBody"></div>
       </div>
 
       <nav class="tab-nav" id="settingsTabNav" style="margin-bottom:0"></nav>
