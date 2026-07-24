@@ -192,18 +192,88 @@ export function mergeAuthorizedKeys(
 }
 
 /**
- * Extract the base64 body (second whitespace field) of an OpenSSH public key
- * file such as /etc/ssh/ssh_host_ed25519_key.pub. Returns null when the
- * content does not look like a public key line.
+ * Extract the base64 body (second whitespace field) of an OpenSSH ed25519
+ * public key file such as /etc/ssh/ssh_host_ed25519_key.pub. The type field
+ * must be ssh-ed25519 -- only that key type is pinned -- and the body must be
+ * canonical base64. Returns null otherwise.
  */
 export function parseHostKeyPub(content: string): string | null {
   const line = content.trim()
   if (line.length === 0) return null
   const fields = line.split(/\s+/)
   if (fields.length < 2) return null
+  if (fields[0] !== ACCEPTED_KEY_TYPE) return null
   const body = fields[1]
   if (!isCanonicalBase64(body)) return null
   return body
+}
+
+/**
+ * Known locations of the sshd ed25519 host public key. The Linux path is the
+ * OpenSSH default; macOS keeps /etc under /private (usually symlinked, but the
+ * symlink is not guaranteed), and Homebrew / local builds use their own
+ * prefixes.
+ */
+export const HOST_KEY_PUB_CANDIDATES = [
+  '/etc/ssh/ssh_host_ed25519_key.pub',
+  '/private/etc/ssh/ssh_host_ed25519_key.pub',
+  '/opt/homebrew/etc/ssh/ssh_host_ed25519_key.pub',
+  '/usr/local/etc/ssh/ssh_host_ed25519_key.pub',
+]
+
+/**
+ * Extract the ed25519 key body from `ssh-keyscan -t ed25519` output. Keyscan
+ * lines are `<host> <type> <base64>`; comment lines start with '#'. Returns
+ * null when no valid ed25519 line is present.
+ */
+export function parseKeyscanEd25519(output: string): string | null {
+  for (const raw of output.split('\n')) {
+    const line = raw.trim()
+    if (line.length === 0 || line.startsWith('#')) continue
+    const fields = line.split(/\s+/)
+    if (fields.length < 3) continue
+    if (fields[1] !== ACCEPTED_KEY_TYPE) continue
+    if (isCanonicalBase64(fields[2])) return fields[2]
+  }
+  return null
+}
+
+export interface HostKeySources {
+  /** Read a file's content, or return null when unreadable/absent. */
+  readFile: (path: string) => string | null
+  /** Run ssh-keyscan against loopback and return its stdout, or null. */
+  keyscan: () => string | null
+}
+
+export interface ResolvedHostKey {
+  body: string
+  /** Where the key came from: a candidate path, or 'ssh-keyscan'. */
+  source: string
+}
+
+/**
+ * Obtain the machine's ed25519 host key body: first from the known public-key
+ * file locations, then by asking the running SSH server itself via
+ * ssh-keyscan. Returns null only when every source fails, which callers must
+ * treat as a hard error -- a connection bundle without a host key is not
+ * accepted by the consuming side.
+ */
+export function resolveHostKey(
+  sources: HostKeySources,
+  candidates: readonly string[] = HOST_KEY_PUB_CANDIDATES,
+): ResolvedHostKey | null {
+  for (const path of candidates) {
+    const content = sources.readFile(path)
+    if (content === null) continue
+    const body = parseHostKeyPub(content)
+    if (body !== null) return { body, source: path }
+  }
+  const output = sources.keyscan()
+  if (output !== null) {
+    const body = parseKeyscanEd25519(output)
+    if (body !== null) return { body, source: 'ssh-keyscan' }
+  }
+  return null
 }
 
 export interface ConnectionBundleInput {
@@ -229,10 +299,10 @@ export interface ConnectionBundle {
 }
 
 /**
- * Build the connection bundle object. The hostKey field is included only when
- * a host key was available; when absent the connecting device falls back to a
- * first-use fingerprint confirmation. Field order matches the documented
- * format.
+ * Build the connection bundle object. The hostKey field is optional at the
+ * wire level, but the consuming side requires it -- the CLI therefore refuses
+ * to emit a bundle without one (see resolveHostKey). Field order matches the
+ * documented format.
  */
 export function buildBundle(input: ConnectionBundleInput): ConnectionBundle {
   const bundle: ConnectionBundle = {

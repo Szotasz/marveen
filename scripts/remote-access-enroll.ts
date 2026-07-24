@@ -9,6 +9,7 @@
 //   npm run remote-enroll -- --host 203.0.113.10 --port 2222 "<public key line>"
 
 import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { homedir, hostname, userInfo, networkInterfaces } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -16,13 +17,12 @@ import {
   buildRestrictedLine,
   buildBundle,
   encodeBundle,
-  parseHostKeyPub,
+  resolveHostKey,
+  HOST_KEY_PUB_CANDIDATES,
   RemoteEnrollError,
   type ConnectionBundleInput,
 } from '../src/remote-enroll-core.js'
 import { enrollAuthorizedKey } from '../src/remote-enroll-fs.js'
-
-const HOST_KEY_PUB_PATH = '/etc/ssh/ssh_host_ed25519_key.pub'
 
 interface Args {
   keyLine?: string
@@ -74,13 +74,32 @@ function primaryIPv4(): string | null {
   return null
 }
 
-function readHostKeyBody(): string | null {
-  try {
-    const content = readFileSync(HOST_KEY_PUB_PATH, 'utf8')
-    return parseHostKeyPub(content)
-  } catch {
-    return null
-  }
+/**
+ * Obtain the machine's ed25519 host key: known public-key file locations
+ * first, then ssh-keyscan against loopback (covers hosts -- macOS among them
+ * -- where the running SSH server's key is not at the conventional path).
+ */
+function obtainHostKey(): { body: string; source: string } | null {
+  return resolveHostKey({
+    readFile: (path) => {
+      try {
+        return readFileSync(path, 'utf8')
+      } catch {
+        return null
+      }
+    },
+    keyscan: () => {
+      try {
+        return execFileSync('ssh-keyscan', ['-T', '5', '-t', 'ed25519', '127.0.0.1'], {
+          encoding: 'utf8',
+          timeout: 15000,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        })
+      } catch {
+        return null
+      }
+    },
+  })
 }
 
 async function main(): Promise<void> {
@@ -113,15 +132,21 @@ async function main(): Promise<void> {
     `${result.action === 'replaced' ? 'Replaced' : 'Added'} restricted entry for marveen-remote:${parsed.installId} in ${result.authorizedKeysPath}\n`,
   )
 
-  // Assemble the connection bundle.
+  // Assemble the connection bundle. The consuming side requires the host key,
+  // so a bundle without one would be unusable -- fail hard instead of emitting
+  // it silently. (The enrolled authorized_keys entry above is harmless on its
+  // own and stays; re-running after fixing the SSH server replaces it by id.)
   const explicitHost = args.host
   const host = explicitHost ?? primaryIPv4() ?? hostname()
-  const hostKey = readHostKeyBody()
-  if (hostKey === null) {
-    process.stderr.write(
-      `warning: ${HOST_KEY_PUB_PATH} is not readable; the connecting device will fall back to a first-use fingerprint confirmation\n`,
+  const resolved = obtainHostKey()
+  if (resolved === null) {
+    fail(
+      'could not obtain this machine\'s ssh-ed25519 host key ' +
+        `(checked ${HOST_KEY_PUB_CANDIDATES.join(', ')} and ssh-keyscan on 127.0.0.1). ` +
+        'Ensure the SSH server is running (on macOS: System Settings > General > Sharing > Remote Login), then re-run.',
     )
   }
+  process.stderr.write(`host key: ${resolved.source}\n`)
   if (!explicitHost) {
     process.stderr.write(
       `hint: host resolved to "${host}". Verify this is the address the device will reach; override with --host if needed.\n`,
@@ -134,8 +159,8 @@ async function main(): Promise<void> {
     sshPort: args.port,
     sshUser: userInfo().username,
     installId: parsed.installId,
+    hostKey: resolved.body,
   }
-  if (hostKey !== null) bundleInput.hostKey = hostKey
 
   const encoded = encodeBundle(buildBundle(bundleInput))
 

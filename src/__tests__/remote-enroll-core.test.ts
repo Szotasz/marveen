@@ -9,6 +9,9 @@ import {
   decodeBundle,
   RemoteEnrollError,
   RESTRICT_OPTIONS,
+  parseKeyscanEd25519,
+  resolveHostKey,
+  HOST_KEY_PUB_CANDIDATES,
   type ParsedKey,
 } from '../remote-enroll-core.js'
 
@@ -178,6 +181,11 @@ describe('parseHostKeyPub', () => {
   it('returns null when the body is not base64', () => {
     expect(parseHostKeyPub('ssh-ed25519 %%% root@host')).toBeNull()
   })
+  it('returns null for a non-ed25519 type field', () => {
+    const body = makeEd25519Base64(0x11)
+    expect(parseHostKeyPub(`ssh-rsa ${body} root@host`)).toBeNull()
+    expect(parseHostKeyPub('garbage that is not a key line')).toBeNull()
+  })
 })
 
 describe('bundle', () => {
@@ -221,5 +229,95 @@ describe('bundle', () => {
     const json = Buffer.from(encoded, 'base64').toString('utf8')
     expect(json).not.toContain('hostKey')
     expect(decoded.remotePort).toBe(3420)
+  })
+})
+
+describe('parseKeyscanEd25519', () => {
+  const body = makeEd25519Base64(0x51)
+
+  it('extracts the key body from keyscan output', () => {
+    const out = `# 127.0.0.1:22 SSH-2.0-OpenSSH_9.9\n127.0.0.1 ssh-ed25519 ${body}\n`
+    expect(parseKeyscanEd25519(out)).toBe(body)
+  })
+
+  it('skips comment lines, blank lines, and other key types', () => {
+    const out = [
+      '# comment',
+      '',
+      `127.0.0.1 ssh-rsa ${body}`,
+      `127.0.0.1 ecdsa-sha2-nistp256 ${body}`,
+      `127.0.0.1 ssh-ed25519 ${body}`,
+    ].join('\n')
+    expect(parseKeyscanEd25519(out)).toBe(body)
+  })
+
+  it('returns null when no ed25519 line is present', () => {
+    expect(parseKeyscanEd25519('')).toBeNull()
+    expect(parseKeyscanEd25519('# only comments\n')).toBeNull()
+    expect(parseKeyscanEd25519(`127.0.0.1 ssh-rsa ${body}`)).toBeNull()
+  })
+
+  it('rejects a non-base64 key body', () => {
+    expect(parseKeyscanEd25519('127.0.0.1 ssh-ed25519 not-base64!!')).toBeNull()
+  })
+})
+
+describe('resolveHostKey', () => {
+  const body = makeEd25519Base64(0x52)
+  const pubFile = `ssh-ed25519 ${body} root@host\n`
+
+  it('prefers the first readable candidate path', () => {
+    const reads: string[] = []
+    const resolved = resolveHostKey(
+      {
+        readFile: (p) => {
+          reads.push(p)
+          return p === '/b' ? pubFile : null
+        },
+        keyscan: () => {
+          throw new Error('keyscan must not run when a file matches')
+        },
+      },
+      ['/a', '/b', '/c'],
+    )
+    expect(resolved).toEqual({ body, source: '/b' })
+    // Stops at the first hit; /c is never read.
+    expect(reads).toEqual(['/a', '/b'])
+  })
+
+  it('falls back to ssh-keyscan when no candidate file is readable', () => {
+    const resolved = resolveHostKey(
+      {
+        readFile: () => null,
+        keyscan: () => `127.0.0.1 ssh-ed25519 ${body}\n`,
+      },
+      ['/a'],
+    )
+    expect(resolved).toEqual({ body, source: 'ssh-keyscan' })
+  })
+
+  it('skips an unparseable candidate file and still falls back', () => {
+    const resolved = resolveHostKey(
+      {
+        readFile: () => 'garbage that is not a key line',
+        keyscan: () => `localhost ssh-ed25519 ${body}\n`,
+      },
+      ['/a'],
+    )
+    expect(resolved).toEqual({ body, source: 'ssh-keyscan' })
+  })
+
+  it('returns null when every source fails', () => {
+    expect(
+      resolveHostKey({ readFile: () => null, keyscan: () => null }, ['/a']),
+    ).toBeNull()
+    expect(
+      resolveHostKey({ readFile: () => null, keyscan: () => '# nothing\n' }, ['/a']),
+    ).toBeNull()
+  })
+
+  it('ships macOS locations among the default candidates', () => {
+    expect(HOST_KEY_PUB_CANDIDATES).toContain('/etc/ssh/ssh_host_ed25519_key.pub')
+    expect(HOST_KEY_PUB_CANDIDATES).toContain('/private/etc/ssh/ssh_host_ed25519_key.pub')
   })
 })
