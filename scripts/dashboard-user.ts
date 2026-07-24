@@ -7,8 +7,8 @@
 //   npm run dashboard-user -- remove <username>
 //   npm run dashboard-user -- sessions:clear [<username>]
 //
-// The operator has SSH access to the box by definition, so this doubles as the
-// forgot-password recovery path. Passwords are read interactively (twice, muted)
+// The operator can always run commands on the machine hosting the install, so
+// this doubles as the forgot-password recovery path. Passwords are read interactively (twice, muted)
 // or from stdin with --password-stdin for automation. No new dependencies:
 // node:readline for the prompt, the app's own db + password-hash modules.
 
