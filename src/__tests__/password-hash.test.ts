@@ -32,10 +32,9 @@ describe('hashPassword / verifyPassword', () => {
   it('verifies against the STORED params, not the current defaults', async () => {
     // A hash minted with a different (valid) work factor must still verify: the
     // verifier must read ln/r/p from the PHC string. Hand-craft a low-cost hash.
-    const { scrypt } = await import('node:crypto')
-    const { promisify } = await import('node:util')
+    const { scryptSync } = await import('node:crypto')
     const salt = Buffer.from('0123456789abcdef')
-    const key = (await promisify(scrypt)('legacy-pass-01', salt, 32, { N: 2 ** 14, r: 8, p: 1, maxmem: 128 * 1024 * 1024 } as never)) as Buffer
+    const key = scryptSync('legacy-pass-01', salt, 32, { N: 2 ** 14, r: 8, p: 1, maxmem: 128 * 1024 * 1024 })
     const phc = `$scrypt$ln=14,r=8,p=1$${salt.toString('base64')}$${key.toString('base64')}`
     expect(await verifyPassword('legacy-pass-01', phc)).toBe(true)
     expect(await verifyPassword('nope', phc)).toBe(false)

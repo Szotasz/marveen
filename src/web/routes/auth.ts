@@ -48,7 +48,8 @@ const INVALID_CREDENTIALS = { error: 'Invalid credentials' }
 
 // Set Secure only when the request arrived over https (Tailscale Serve sets
 // x-forwarded-proto). The primary transport is plain http://127.0.0.1 where an
-// unconditional Secure attribute would make Safari/WKWebView drop the cookie.
+// unconditional Secure attribute would make Safari drop the cookie (Chrome
+// exempts 127.0.0.1 as trustworthy; Safari's behavior there is inconsistent).
 function isHttps(req: http.IncomingMessage): boolean {
   const xf = req.headers['x-forwarded-proto']
   const v = Array.isArray(xf) ? xf[0] : xf
