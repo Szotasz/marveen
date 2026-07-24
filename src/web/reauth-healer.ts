@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT, RESPAWN_ENABLED, APP_TZ } from '../config.js'
 import { resolveFromPath } from '../platform.js'
-import { listAgentNames } from './agent-config.js'
+import { listAgentNames, readAgentRuntime } from './agent-config.js'
 import { isAgentRunning, capturePane, startAgentProcess } from './agent-process.js'
 import { quarantineFleetTokenIfDead } from './claude-credentials-guard.js'
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
@@ -369,6 +369,11 @@ export function startReauthHealer(): NodeJS.Timeout | null {
     }
     for (const name of listAgentNames()) {
       const session = resolveAgentSession(name)
+      if (readAgentRuntime(name) !== 'claude-tui') {
+        watchState.delete(session)
+        quietSuppressed.delete(session)
+        continue
+      }
       if (!isAgentRunning(name)) {
         watchState.delete(session)
         quietSuppressed.delete(session)

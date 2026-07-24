@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, SERVICE_ID } from '../config.js'
-import { listAgentNames, readAgentRemoteHost } from './agent-config.js'
+import { listAgentNames, readAgentRemoteHost, readAgentRuntime } from './agent-config.js'
 import {
   agentRunState,
   agentSessionName,
@@ -77,6 +77,9 @@ function performRestart(name: string, cfg: AutoRestartConfig): void {
 }
 
 function checkAgent(name: string, nowMs: number): void {
+  // The idle detector is Claude-TUI-specific. A codex-exec session is a
+  // long-lived queue worker and must not be restarted based on pane chrome.
+  if (name !== MAIN_AGENT_ID && readAgentRuntime(name) !== 'claude-tui') return
   const cfg = readAutoRestartConfig(name)
   if (!cfg.enabled) {
     lastRestart.delete(name) // re-seed cleanly if re-enabled later

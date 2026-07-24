@@ -2115,7 +2115,7 @@
             <label for="agentModel" data-i18n="agents.detail.model_label">Modell</label>
             <select id="agentModel">
               <option value="inherit" data-i18n="agents.model.inherit">Öröklött (alapértelmezett)</option>
-              <optgroup label="☁️ Claude (felhő)">
+              <optgroup label="☁️ Claude (felhő)" data-provider-key="claude">
                 <option value="claude-fable-5" data-i18n="agents.model.fable5">Fable 5 (legújabb)</option>
                 <option value="claude-opus-4-8[1m]" data-i18n="agents.model.opus48">Opus 4.8 (1M kontextus, alapértelmezett)</option>
                 <option value="claude-sonnet-5" data-i18n="agents.model.sonnet5">Sonnet 5 (legújabb Sonnet, Opus-közeli)</option>
@@ -2129,6 +2129,10 @@
               <optgroup label="🔀 OpenRouter - kézi" id="agentModelOpenrouterManualGroup" style="display:none">
               </optgroup>
             </select>
+          </div>
+          <div class="form-group" id="agentModelEffortGroup" hidden>
+            <label for="agentModelEffort" data-i18n="agents.detail.effort_label">Reasoning effort</label>
+            <select id="agentModelEffort"></select>
           </div>
           <div class="form-group">
             <label for="agentProfile" data-i18n="agents.wizard.profile_label">Biztonsági profil</label>
@@ -2274,7 +2278,7 @@
           <div class="form-group">
             <label for="editAgentModel" data-i18n="agents.detail.model_label">Modell</label>
             <select id="editAgentModel">
-              <optgroup label="☁️ Claude (felhő)">
+              <optgroup label="☁️ Claude (felhő)" data-provider-key="claude">
                 <option value="claude-fable-5" data-i18n="agents.model.fable5">Fable 5 (legújabb)</option>
                 <option value="claude-opus-4-8[1m]" data-i18n="agents.model.opus48">Opus 4.8 (1M kontextus, alapértelmezett)</option>
                 <option value="claude-sonnet-5" data-i18n="agents.model.sonnet5">Sonnet 5 (legújabb Sonnet, Opus-közeli)</option>
@@ -2296,6 +2300,10 @@
             <small id="deepseekHint" style="display:none;margin-top:6px;color:var(--text-muted);font-size:12px;line-height:1.4">
               <span data-i18n="agents.deepseek_hint_pre">DeepSeek-V4-Pro nincs konfigurálva.</span> <a href="#" id="deepseekConfigLink" data-i18n="agents.deepseek_link">API kulcs hozzáadása</a> <span data-i18n="agents.deepseek_hint_post">a Vault oldalon.</span>
             </small>
+            <div id="editAgentModelEffortGroup" style="margin-top:10px" hidden>
+              <label for="editAgentModelEffort" data-i18n="agents.detail.effort_label">Reasoning effort</label>
+              <select id="editAgentModelEffort"></select>
+            </div>
             <div id="modelSuggestionResult" style="display:none;margin-top:8px;font-size:12.5px;padding:8px 10px;border-radius:6px;background:var(--surface-hover);color:var(--text-muted)"></div>
           </div>
           <div class="form-group" id="autoRestartGroup">

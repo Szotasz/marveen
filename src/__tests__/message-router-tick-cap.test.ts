@@ -48,6 +48,7 @@ vi.mock('../web/voice-directive.js', () => ({
 
 vi.mock('../web/agent-config.js', () => ({
   readAgentRemoteHost: () => null,
+  readAgentRuntime: () => 'claude-tui',
   readAgentVoiceConfig: () => ({ responseMode: 'text' }),
 }))
 

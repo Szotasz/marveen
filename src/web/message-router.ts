@@ -14,7 +14,7 @@ import {
 import { isQualifiedId } from './federation/address.js'
 import { sendFederatedMessage } from './federation/bridge.js'
 import { getFederationConfig, abandonWindowMsForPeer } from './federation/config.js'
-import { readAgentRemoteHost, readAgentVoiceConfig } from './agent-config.js'
+import { readAgentRemoteHost, readAgentRuntime, readAgentVoiceConfig } from './agent-config.js'
 import {
   agentSessionName,
   isSessionReadyForPrompt,
@@ -26,6 +26,7 @@ import { setLastInboundModality } from './voice-modality.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
+import { enqueueCodexEnvelope } from './codex-agent-inbox.js'
 
 // A message that cannot be delivered within this window (target session never
 // exists / stays busy) is marked failed so it stops clogging the pending
@@ -467,6 +468,45 @@ export async function runMessageRouterTick(): Promise<void> {
           logger.warn({ id: msg.id, to: msg.to_agent, session }, 'Agent message target session not running, will retry')
           routerLoggedMisses.add(msg.id)
         }
+        continue
+      }
+
+      // codex-exec is a headless file-queue runtime, not a foreign TUI driven
+      // through Claude-specific pane scraping and send-keys. Once its tmux loop
+      // exists, hand the wrapped message to its durable inbox and atomically
+      // mark the bus row delivered. A router retry after a crash is idempotent:
+      // enqueueCodexEnvelope uses the source message id as its filename.
+      // Optional-call keeps older test/plugin mocks that predate the additive
+      // runtime reader on the legacy Claude path.
+      if (readAgentRuntime?.(msg.to_agent) === 'codex-exec') {
+        const cls = classifyAgentMessage(msg.from_agent, msg.to_agent)
+        if (!cls) {
+          logger.warn({ id: msg.id, rawFrom: msg.from_agent }, 'Codex agent message rejected: from_agent empty after sanitize')
+          markMessageFailed(msg.id, 'Invalid or empty from_agent')
+          continue
+        }
+        const { prefix, wrapped } = wrapAgentMessageForDelivery(
+          cls.category,
+          cls.safeFrom,
+          msg.from_agent,
+          msg.content,
+          msg.id,
+          msg.origin_note,
+        )
+        enqueueCodexEnvelope(msg.to_agent, {
+          id: String(msg.id),
+          from: msg.from_agent,
+          content: prefix + wrapped,
+          ts: msg.created_at * 1000,
+          taskId: msg.task_id,
+          sourceMessageId: msg.id,
+        })
+        if (!markMessageDelivered(msg.id)) {
+          logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows after Codex inbox enqueue')
+        }
+        routerInjectFailures.delete(msg.id)
+        routerLoggedMisses.delete(msg.id)
+        logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, 'Agent message delivered to Codex inbox')
         continue
       }
 

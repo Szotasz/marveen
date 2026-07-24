@@ -32,7 +32,7 @@ import {
   SCHEDULED_TASKS_DIR,
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
-import { listAgentNames, readFileOr, readAgentRemoteHost } from './agent-config.js'
+import { listAgentNames, readFileOr, readAgentRemoteHost, readAgentRuntime } from './agent-config.js'
 import {
   agentSessionName,
   isAgentRunning,
@@ -48,6 +48,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { sendTelegramMessage } from './telegram.js'
 import { runCommandTask } from './command-task.js'
 import { paneShowsContextSaturation, detectsFirstRunGate, detectPaneState, type PaneState } from '../pane-state.js'
+import { enqueueCodexScheduledPrompt } from './codex-agent-inbox.js'
 
 // How many bare-Enter attempts the post-send resubmit tries before escalating
 // to a clear + re-inject, and the hard cap after which it gives up.
@@ -279,6 +280,7 @@ async function attemptFireTask(
   // existence/readiness checks and the send cross the ssh boundary. A custom
   // targetSession override and the main channels agent stay local (host=null).
   const host = (task.targetSession || isMainAgent) ? null : readAgentRemoteHost(agentName)
+  const isCodexRuntime = !isMainAgent && !task.targetSession && readAgentRuntime?.(agentName) === 'codex-exec'
 
   if (!sessionExistsOnHost(host, session)) {
     // Auto-start the agent, then deliver on a later tick. A daily batch agent
@@ -308,7 +310,7 @@ async function attemptFireTask(
   // will process it at the next idle slot. This prevents the infinite
   // retry loop observed when the target session stays busy for hours
   // (275 retries overnight in production).
-  if (!task.forceSend && !(await isSessionReadyForPrompt(session, host))) {
+  if (!isCodexRuntime && !task.forceSend && !(await isSessionReadyForPrompt(session, host))) {
     // Distinguish a first-run gate (fresh-install folder-trust / login picker
     // parked forever) from an ordinary busy turn: the retry row's reason then
     // drives a first-run-specific operator alert instead of a generic
@@ -326,6 +328,7 @@ async function attemptFireTask(
   }
 
   if (task.forceSend) {
+    if (!isCodexRuntime) {
     // forceSend's contract is "always eventually land, never silently drop" --
     // but injecting into a 100%-context session IS a silent drop with extra
     // steps: the pane accepts the keystrokes and the wedged session never acts
@@ -355,6 +358,7 @@ async function attemptFireTask(
       return 'first-run'
     }
     logger.info({ task: task.name, agent: agentName, session }, 'forceSend=true, bypassing busy-state check')
+    }
   }
 
   // MCP manifest pre-check (requires.mcp_servers, Roitman 22.5): a required
@@ -430,7 +434,11 @@ async function attemptFireTask(
     // task aimed at a long-busy session would block on the 12s idle wait every
     // tick -- defeating the very purpose of forceSend (inject regardless, let
     // Claude Code queue it). All non-forceSend tasks keep the gate ON.
-    await sendPromptToSession(session, fullPrompt, host, { waitForIdle: !task.forceSend })
+    if (isCodexRuntime) {
+      enqueueCodexScheduledPrompt(agentName, fullPrompt, `schedule:${task.name}`, now)
+    } else {
+      await sendPromptToSession(session, fullPrompt, host, { waitForIdle: !task.forceSend })
+    }
     scheduleLastRun.set(task.name, now)
     persistScheduleLastRun()
     // A lateCatchUpMs value means this tick only matched because of the
@@ -452,6 +460,10 @@ async function attemptFireTask(
       appendTaskRun(task.name, agentName, 'fired')
     }
     logger.info({ task: task.name, agent: agentName, session }, 'Scheduled task fired')
+
+    // The headless dispatcher owns execution and reply/error handling. There
+    // is no Claude pane to inspect or re-submit after the durable enqueue.
+    if (isCodexRuntime) return 'fired'
 
     // Register the injection in the post-fire timeout watchdog. The watchdog
     // polls the target pane on each tick and alerts if the session stays busy

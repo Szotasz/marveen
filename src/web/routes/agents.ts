@@ -20,6 +20,8 @@ import {
   resolveModelId,
   readAgentModel,
   writeAgentModel,
+  readAgentModelConfig,
+  writeAgentModelSelection,
   readAgentDisplayName,
   writeAgentDisplayName,
   readAgentSecurityProfile,
@@ -43,6 +45,7 @@ import {
   KNOWN_VOICE_MODELS,
   type AuthMode,
 } from '../agent-config.js'
+import { availableProviderCatalog, type EffortLevel, type ProviderRuntime } from '../model-providers.js'
 import { readClaudePlans, resolveAgentConfigDir } from '../claude-plans.js'
 import {
   readAgentTeam,
@@ -320,6 +323,10 @@ interface AgentSummary {
   displayName: string
   description: string
   model: string
+  provider: string
+  runtime: ProviderRuntime
+  modelEffort: EffortLevel | null
+  sandbox: 'read-only' | null
   activeModel: string | null
   runningSince: number | null
   authMode: AuthMode
@@ -383,17 +390,28 @@ function getAgentSummary(name: string): AgentSummary {
   const running = runState === 'running'
   const session = running ? agentSessionName(name) : undefined
   const runningSince = running ? getAgentRunningSince(name) : null
+  const modelConfig = readAgentModelConfig(name)
 
   // Reauth badge: only meaningful for a running session (a stopped agent has
   // no pane to inspect). One capture-pane per running agent on the list poll.
-  const reauth = running ? detectReauthNeeded(capturePane(agentSessionName(name))) : { needsReauth: false }
+  const reauth = running && modelConfig.runtime === 'claude-tui'
+    ? detectReauthNeeded(capturePane(agentSessionName(name)))
+    : { needsReauth: false }
 
   return {
     name,
     displayName: readAgentDisplayName(name),
     description: extractDescriptionFromClaudeMd(claudeMd),
-    model: readAgentModel(name),
-    activeModel: running ? readActiveModelFromProjectDir(dir, runningSince ?? undefined, resolveAgentConfigDir(name).configDir ?? undefined) : null,
+    model: modelConfig.model,
+    provider: modelConfig.provider,
+    runtime: modelConfig.runtime,
+    modelEffort: modelConfig.modelEffort,
+    sandbox: modelConfig.sandbox,
+    activeModel: running
+      ? modelConfig.runtime === 'codex-exec'
+        ? modelConfig.model
+        : readActiveModelFromProjectDir(dir, runningSince ?? undefined, resolveAgentConfigDir(name).configDir ?? undefined)
+      : null,
     runningSince,
     authMode: readAgentAuthMode(name),
     securityProfile: readAgentSecurityProfile(name),
@@ -412,7 +430,9 @@ function getAgentSummary(name: string): AgentSummary {
     session,
     hasAvatar: findAvatarForAgent(name) !== null,
     autoRestart: readAutoRestartConfig(name),
-    contextTokens: running ? readContextTokensFromProjectDir(dir, resolveAgentConfigDir(name).configDir ?? undefined) : null,
+    contextTokens: running && modelConfig.runtime === 'claude-tui'
+      ? readContextTokensFromProjectDir(dir, resolveAgentConfigDir(name).configDir ?? undefined)
+      : null,
     needsReauth: reauth.needsReauth,
     reauthReason: reauth.reason,
   }
@@ -470,24 +490,18 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   // pick a model that 401s on first prompt. The frontend renders this list
   // both in the "new agent" wizard and the agent edit panel.
   if (path === '/api/models/available' && method === 'GET') {
-    const hasDeepseek = getSecret('DEEPSEEK_API_KEY') !== null
+    const providers = availableProviderCatalog()
+    const claudeProvider = providers.find(p => p.key === 'claude')
+    const deepseekProvider = providers.find(p => p.key === 'deepseek')
+    const hasDeepseek = deepseekProvider?.configured === true
     // OpenRouter is gated behind the vault key, same as DeepSeek: surfacing the
     // options without the key would let the operator pick a model that 401s.
     const hasOpenRouter = getSecret('openrouter-fleet-key') !== null
     const orCatalog = loadOpenRouterCatalog()
     json(res, {
-      claude: [
-        { id: 'claude-fable-5', label: 'Fable 5 (legújabb)' },
-        { id: 'claude-opus-4-8[1m]', label: 'Opus 4.8 (1M kontextus, alapértelmezett)' },
-        { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
-        { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 (leggyorsabb)' },
-      ],
-      deepseek: hasDeepseek
-        ? [
-            { id: 'deepseek-v4-pro', label: 'DeepSeek-V4-Pro (1M kontextus, erősebb)' },
-            { id: 'deepseek-v4-flash', label: 'DeepSeek-V4-Flash (1M kontextus, gyorsabb/olcsóbb)' },
-          ]
-        : [],
+      providers,
+      claude: claudeProvider?.models ?? [],
+      deepseek: hasDeepseek ? deepseekProvider?.models ?? [] : [],
       deepseekConfigured: hasDeepseek,
       // OpenRouter tiers for the model picker. `auto` per tier feeds the "Auto"
       // mode (stored as `openrouter-auto:<tierKey>`, resolved weekly-fresh at
@@ -719,7 +733,22 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   if (path === '/api/agents' && method === 'POST') {
     const body = await readBody(req)
     const data = JSON.parse(body.toString())
-    const { description, model: rawModel, profile: rawProfile } = data as { name: string; description: string; model?: string; profile?: string }
+    const {
+      description,
+      model: rawModel,
+      profile: rawProfile,
+      provider: rawProvider,
+      runtime: rawRuntime,
+      modelEffort: rawModelEffort,
+    } = data as {
+      name: string
+      description: string
+      model?: string
+      profile?: string
+      provider?: string
+      runtime?: ProviderRuntime
+      modelEffort?: EffortLevel | null
+    }
     const rawName = typeof data.name === 'string' ? data.name.trim() : ''
     const name = sanitizeAgentName(rawName)
     const model = resolveModelId(rawModel || DEFAULT_MODEL)
@@ -730,7 +759,19 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (existsSync(agentDir(name))) { json(res, { error: 'Agent already exists' }, 409); return true }
 
     scaffoldAgentDir(name)
-    writeAgentModel(name, model)
+    let selectedModel
+    try {
+      selectedModel = writeAgentModelSelection(name, {
+        model,
+        provider: rawProvider,
+        runtime: rawRuntime,
+        modelEffort: rawModelEffort,
+      })
+    } catch (err) {
+      rmSync(agentDir(name), { recursive: true, force: true })
+      json(res, { error: err instanceof Error ? err.message : String(err) }, 400)
+      return true
+    }
     writeAgentSecurityProfile(name, profileId)
     writeAgentSettingsFromProfile(name, loadProfileTemplate(profileId))
     if (rawName && rawName !== name) writeAgentDisplayName(name, rawName)
@@ -738,7 +779,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     logger.info({ name, description }, 'Generating agent CLAUDE.md and SOUL.md...')
     try {
       const [claudeMd, soulMd] = await Promise.all([
-        generateClaudeMd(name, description, model),
+        // Persona scaffolding still uses Claude's established generator even
+        // when the resulting agent will run headlessly through Codex.
+        generateClaudeMd(name, description, selectedModel.runtime === 'codex-exec' ? DEFAULT_MODEL : model),
         generateSoulMd(name, description),
       ])
       atomicWriteFileSync(join(agentDir(name), 'CLAUDE.md'), claudeMd)
@@ -1824,6 +1867,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const data = JSON.parse(body.toString()) as {
       claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string
       authMode?: AuthMode; apiKey?: string; claudePlan?: string; memoryIsolation?: boolean
+      provider?: string; runtime?: ProviderRuntime; modelEffort?: EffortLevel | null
     }
     if (data.memoryIsolation !== undefined) {
       // The main agent's cwd IS the install repo root, which is already a git
@@ -1845,7 +1889,19 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }
     if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)
     if (data.mcpJson !== undefined) atomicWriteFileSync(join(agentDir(name), '.mcp.json'), data.mcpJson)
-    if (data.model !== undefined) writeAgentModel(name, data.model)
+    if (data.model !== undefined) {
+      try {
+        writeAgentModelSelection(name, {
+          model: data.model,
+          provider: data.provider,
+          runtime: data.runtime,
+          modelEffort: data.modelEffort,
+        })
+      } catch (err) {
+        json(res, { error: err instanceof Error ? err.message : String(err) }, 400)
+        return true
+      }
+    }
     if (data.authMode !== undefined) {
       writeAgentAuthMode(name, data.authMode)
       if (data.authMode === 'api' && typeof data.apiKey === 'string' && data.apiKey.trim()) {

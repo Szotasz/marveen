@@ -1,6 +1,6 @@
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
-import { listAgentNames, readAgentRemoteHost } from './agent-config.js'
+import { listAgentNames, readAgentRemoteHost, readAgentRuntime } from './agent-config.js'
 import { isAgentRunning, captureParkedInputView, sendEnterToSession } from './agent-process.js'
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
@@ -233,6 +233,10 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
       logger.debug({ err }, 'stuck-input-watcher: main agent check error')
     }
     for (const name of listAgentNames()) {
+      if (readAgentRuntime(name) !== 'claude-tui') {
+        watchState.delete(resolveAgentSession(name))
+        continue
+      }
       if (!isAgentRunning(name)) {
         watchState.delete(resolveAgentSession(name))
         continue

@@ -3,7 +3,7 @@ import { statSync } from 'node:fs'
 import { join } from 'node:path'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, SERVICE_ID, PROJECT_ROOT } from '../config.js'
-import { listAgentNames, agentDir, readAgentModel, readAgentClaudeConfigDir, readAgentRemoteHost } from './agent-config.js'
+import { listAgentNames, agentDir, readAgentModel, readAgentClaudeConfigDir, readAgentRemoteHost, readAgentRuntime } from './agent-config.js'
 import {
   agentRunState,
   agentSessionName,
@@ -114,6 +114,10 @@ function performRestart(name: string): void {
 }
 
 async function checkAgent(name: string, nowMs: number): Promise<void> {
+  if (name !== MAIN_AGENT_ID && readAgentRuntime(name) !== 'claude-tui') {
+    guardStates.delete(name)
+    return
+  }
   const cfg = readContextGuardConfig(name)
   const state = guardStates.get(name) ?? INITIAL_GUARD_STATE
 
@@ -195,12 +199,13 @@ export function getContextGuardStatus(): Array<{
   return names.map((name) => {
     const cfg = readContextGuardConfig(name)
     const remote = name !== MAIN_AGENT_ID && !!readAgentRemoteHost(name)
+    const claudeRuntime = name === MAIN_AGENT_ID || readAgentRuntime(name) === 'claude-tui'
     return {
       agent: name,
       phase: guardStates.get(name)?.phase ?? 'idle',
-      pct: cfg.enabled && !remote ? measurePct(name, cfg.limitTokens) : null,
-      enabled: cfg.enabled,
-      saturationRestart: cfg.saturationRestart,
+      pct: cfg.enabled && !remote && claudeRuntime ? measurePct(name, cfg.limitTokens) : null,
+      enabled: claudeRuntime && cfg.enabled,
+      saturationRestart: claudeRuntime && cfg.saturationRestart,
     }
   })
 }

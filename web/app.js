@@ -2080,6 +2080,54 @@ let wizardStep = 1
 let generatedClaudeMd = ''
 let generatedSoulMd = ''
 let wizardCreatedName = ''
+let modelProviderRegistry = []
+
+function selectedModelMetadata(selectEl) {
+  const option = selectEl && selectEl.options[selectEl.selectedIndex]
+  if (!option) return null
+  const provider = option.dataset.provider
+  const runtime = option.dataset.runtime
+  const registryProvider = modelProviderRegistry.find(p => p.key === provider)
+  if (!provider || !runtime || !registryProvider) return null
+  return { provider, runtime, effortLevels: registryProvider.effortLevels || [] }
+}
+
+function updateModelEffortSelector(modelSelect, group, effortSelect, selectedEffort) {
+  if (!modelSelect || !group || !effortSelect) return
+  const meta = selectedModelMetadata(modelSelect)
+  const levels = meta && Array.isArray(meta.effortLevels) ? meta.effortLevels : []
+  group.hidden = levels.length === 0
+  effortSelect.innerHTML = ''
+  if (levels.length === 0) return
+  for (const level of levels) {
+    const opt = document.createElement('option')
+    opt.value = level
+    opt.textContent = t(`agents.effort.${level}`)
+    effortSelect.appendChild(opt)
+  }
+  effortSelect.value = levels.includes(selectedEffort) ? selectedEffort : levels[levels.length - 1]
+}
+
+function updateWizardModelEffort(selectedEffort) {
+  updateModelEffortSelector(
+    agentModel,
+    document.getElementById('agentModelEffortGroup'),
+    document.getElementById('agentModelEffort'),
+    selectedEffort,
+  )
+}
+
+function updateEditModelEffort(selectedEffort) {
+  updateModelEffortSelector(
+    document.getElementById('editAgentModel'),
+    document.getElementById('editAgentModelEffortGroup'),
+    document.getElementById('editAgentModelEffort'),
+    selectedEffort,
+  )
+}
+
+agentModel.addEventListener('change', () => updateWizardModelEffort(null))
+document.getElementById('editAgentModel').addEventListener('change', () => updateEditModelEffort(null))
 
 // === Modal helpers ===
 function openModal(overlay) {
@@ -2222,7 +2270,7 @@ function resetWizard() {
   agentName.value = ''
   agentDesc.value = ''
   agentModel.value = 'inherit'
-  loadAvailableModels()
+  loadAvailableModels().then(() => updateWizardModelEffort(null))
   selectedAvatar = null
   selectedAvatarFile = null
   document.querySelectorAll('#avatarGrid .avatar-grid-item').forEach(i => i.classList.remove('selected'))
@@ -2275,6 +2323,17 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
         name,
         description: desc,
         model: agentModel.value,
+        ...(() => {
+          const meta = selectedModelMetadata(agentModel)
+          if (!meta) return {}
+          return {
+            provider: meta.provider,
+            runtime: meta.runtime,
+            modelEffort: meta.effortLevels.length
+              ? document.getElementById('agentModelEffort').value
+              : null,
+          }
+        })(),
         profile: document.getElementById('agentProfile').value,
       }),
     })
@@ -2575,6 +2634,8 @@ function applyMarveenReadonlyMode(readOnly) {
   }
   const modelSelect = document.getElementById('editAgentModel')
   if (modelSelect) modelSelect.disabled = readOnly
+  const effortSelect = document.getElementById('editAgentModelEffort')
+  if (effortSelect) effortSelect.disabled = readOnly
   for (const id of hideButtonIds) {
     const btn = document.getElementById(id)
     if (btn) btn.hidden = readOnly
@@ -2866,8 +2927,7 @@ async function openAgentDetail(agentName) {
   document.getElementById('agentDetailChStatus').innerHTML = `<span class="tg-status"><span class="tg-dot ${chConnected ? 'connected' : 'disconnected'}"></span>${chConnected ? t('agents.channel.connected') : t('agents.channel.disconnected')}</span>`
 
   // Settings tab - load Ollama + DeepSeek models then set value
-  loadAvailableModels()
-  loadOllamaModels().then(() => {
+  Promise.all([loadAvailableModels(), loadOllamaModels()]).then(() => {
     const sel = document.getElementById('editAgentModel')
     const mv = currentAgent.activeModel || currentAgent.model || 'claude-opus-4-8[1m]'
     // The model <select> is one shared element reused per agent. A manual
@@ -2880,10 +2940,13 @@ async function openAgentDetail(agentName) {
       const opt = document.createElement('option')
       opt.value = mv
       opt.className = 'dynamic-model-opt'
-      opt.textContent = mv.startsWith('openrouter-auto:') ? `🔀 ${mv}` : `🔀 ${mv}`
+      opt.textContent = currentAgent.provider ? `${currentAgent.provider} · ${mv}` : mv
+      if (currentAgent.provider) opt.dataset.provider = currentAgent.provider
+      if (currentAgent.runtime) opt.dataset.runtime = currentAgent.runtime
       sel.appendChild(opt)
     }
     sel.value = mv
+    updateEditModelEffort(currentAgent.modelEffort || null)
   })
   populateProfileSelect(
     document.getElementById('editAgentProfile'),
@@ -3344,6 +3407,8 @@ async function loadOllamaModels() {
       const opt = document.createElement('option')
       opt.value = m.name
       opt.textContent = `${m.name} (${m.size})`
+      opt.dataset.provider = 'ollama'
+      opt.dataset.runtime = 'claude-tui'
       group.appendChild(opt)
     }
   } catch { /* Ollama not available */ }
@@ -3358,7 +3423,40 @@ async function loadAvailableModels() {
     const res = await fetch('/api/models/available')
     if (!res.ok) return
     const data = await res.json()
+    modelProviderRegistry = Array.isArray(data.providers) ? data.providers : []
+
+    // Registry-native providers are rendered generically. Existing specialized
+    // OpenRouter and Ollama groups remain below because their model catalogs
+    // are dynamic, but adding another static provider/model is now a backend
+    // registry edit rather than a new frontend branch.
+    for (const select of [document.getElementById('agentModel'), document.getElementById('editAgentModel')]) {
+      if (!select) continue
+      Array.from(select.querySelectorAll('optgroup.registry-provider-group')).forEach(group => group.remove())
+      for (const provider of modelProviderRegistry) {
+        if (provider.key === 'deepseek' || provider.key === 'openrouter' || provider.key === 'ollama') continue
+        let group = select.querySelector(`optgroup[data-provider-key="${provider.key}"]`)
+        if (!group) {
+          group = document.createElement('optgroup')
+          group.className = 'registry-provider-group'
+          group.dataset.providerKey = provider.key
+          select.appendChild(group)
+        }
+        group.label = `${provider.label} · ${provider.runtime}`
+        group.innerHTML = ''
+        const models = provider.configured && Array.isArray(provider.models) ? provider.models : []
+        group.style.display = models.length ? '' : 'none'
+        for (const model of models) {
+          const opt = document.createElement('option')
+          opt.value = model.id
+          opt.textContent = `${provider.label} · ${model.label}`
+          opt.dataset.provider = provider.key
+          opt.dataset.runtime = provider.runtime
+          group.appendChild(opt)
+        }
+      }
+    }
     const deepseekModels = Array.isArray(data.deepseek) ? data.deepseek : []
+    const deepseekProvider = modelProviderRegistry.find(p => p.key === 'deepseek')
     const editGroup = document.getElementById('deepseekModelGroup')
     const wizardGroup = document.getElementById('agentModelDeepseekGroup')
     const hint = document.getElementById('deepseekHint')
@@ -3373,7 +3471,9 @@ async function loadAvailableModels() {
       for (const m of deepseekModels) {
         const opt = document.createElement('option')
         opt.value = m.id
-        opt.textContent = m.label
+        opt.textContent = `${deepseekProvider?.label || 'DeepSeek'} · ${m.label}`
+        opt.dataset.provider = 'deepseek'
+        opt.dataset.runtime = deepseekProvider?.runtime || 'claude-tui'
         group.appendChild(opt)
       }
     }
@@ -3396,6 +3496,8 @@ async function loadAvailableModels() {
         const opt = document.createElement('option')
         opt.value = t.autoId
         opt.textContent = `${t.label} - auto (${t.auto})`
+        opt.dataset.provider = 'openrouter'
+        opt.dataset.runtime = 'claude-tui'
         g.appendChild(opt)
       }
     }
@@ -3414,6 +3516,8 @@ async function loadAvailableModels() {
         const opt = document.createElement('option')
         opt.value = m.id
         opt.textContent = `🔀 ${m.name || m.id}`
+        opt.dataset.provider = 'openrouter'
+        opt.dataset.runtime = 'claude-tui'
         g.appendChild(opt)
       }
     }
@@ -3429,6 +3533,8 @@ async function loadAvailableModels() {
     )
     const orBtn = document.getElementById('openrouterBrowseBtn')
     if (orBtn) orBtn.style.display = (data.openrouterConfigured && isMainAgent) ? '' : 'none'
+    updateWizardModelEffort(null)
+    updateEditModelEffort(currentAgent?.modelEffort || null)
   } catch { /* dashboard not available */ }
 }
 
@@ -3624,16 +3730,28 @@ function startModelRestartPolling(name, expectedModel, triggeredAt) {
 
 document.getElementById('saveModelBtn').addEventListener('click', async () => {
   if (!currentAgent || currentAgent.role === 'main') return
-  const newModel = document.getElementById('editAgentModel').value
+  const modelSelect = document.getElementById('editAgentModel')
+  const newModel = modelSelect.value
+  const meta = selectedModelMetadata(modelSelect)
+  const modelEffort = meta?.effortLevels.length
+    ? document.getElementById('editAgentModelEffort').value
+    : null
   const name = currentAgent.name
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(name)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: newModel }),
+      body: JSON.stringify({
+        model: newModel,
+        ...(meta ? { provider: meta.provider, runtime: meta.runtime } : {}),
+        modelEffort,
+      }),
     })
     if (!res.ok) throw new Error()
     currentAgent.model = newModel
+    currentAgent.provider = meta?.provider || currentAgent.provider
+    currentAgent.runtime = meta?.runtime || currentAgent.runtime
+    currentAgent.modelEffort = modelEffort
     const triggeredAt = Math.floor(Date.now() / 1000)
     document.getElementById('agentDetailModelRestarting').hidden = false
     document.getElementById('processLabel').textContent = t('agents.process_label')

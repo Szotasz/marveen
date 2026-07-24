@@ -4,6 +4,13 @@ import { homedir } from 'node:os'
 import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { safeJoin } from './sanitize.js'
+import {
+  getModelProviderByKey,
+  providerSupportsEffort,
+  resolveModelProvider,
+  type EffortLevel,
+  type ProviderRuntime,
+} from './model-providers.js'
 
 export const AGENTS_BASE_DIR = join(PROJECT_ROOT, 'agents')
 
@@ -16,6 +23,7 @@ export const MODEL_ALIASES: Record<string, string> = {
   'sonnet-5': 'claude-sonnet-5',
   'sonnet5': 'claude-sonnet-5',
   'haiku': 'claude-haiku-4-5-20251001',
+  'fable': 'claude-fable-5',
   'inherit': DEFAULT_MODEL,
 }
 
@@ -72,6 +80,120 @@ export function writeAgentModel(name: string, model: string): void {
   try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
   config.model = model
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
+export interface AgentModelConfig {
+  model: string
+  provider: string
+  runtime: ProviderRuntime
+  modelEffort: EffortLevel | null
+  sandbox: 'read-only' | null
+}
+
+const VALID_PROVIDER_RUNTIMES = new Set<ProviderRuntime>(['claude-tui', 'codex-exec'])
+
+/**
+ * Resolve the additive multi-provider fields from agent-config.json.
+ *
+ * A bare legacy `model` remains sufficient: provider and runtime are inferred
+ * using the registry, and every previously-supported model shape resolves to
+ * `claude-tui`. Explicit provider/runtime fields are only needed for ambiguous
+ * future model ids and for making a non-default runtime visible in config.
+ */
+export function resolveAgentModelConfig(rawConfigJson: string): AgentModelConfig {
+  let config: Record<string, unknown> = {}
+  try {
+    const parsed = JSON.parse(rawConfigJson)
+    if (parsed && typeof parsed === 'object') config = parsed as Record<string, unknown>
+  } catch { /* use backwards-compatible defaults */ }
+
+  const rawModel = typeof config.model === 'string' && config.model.trim()
+    ? config.model.trim()
+    : DEFAULT_MODEL
+  const model = resolveModelId(rawModel)
+  const explicitProvider = typeof config.provider === 'string'
+    ? getModelProviderByKey(config.provider.trim())
+    : null
+  const provider = explicitProvider ?? resolveModelProvider(model)
+  const explicitRuntime = typeof config.runtime === 'string' &&
+    VALID_PROVIDER_RUNTIMES.has(config.runtime as ProviderRuntime)
+      ? config.runtime as ProviderRuntime
+      : null
+  // A mismatched runtime is treated as malformed config and fails closed to
+  // the provider's registered runtime. This prevents a Claude model from
+  // accidentally entering the Codex dispatcher (or vice versa).
+  const runtime = explicitRuntime === provider.runtime ? explicitRuntime : provider.runtime
+  const modelEffort = providerSupportsEffort(provider, config.modelEffort)
+    ? config.modelEffort
+    : null
+  return {
+    model,
+    provider: provider.key,
+    runtime,
+    modelEffort,
+    // codex-exec v1 intentionally has no write-capable config value. Even a
+    // malformed local `sandbox` field cannot widen the runtime.
+    sandbox: runtime === 'codex-exec' ? 'read-only' : null,
+  }
+}
+
+export function readAgentModelConfig(name: string): AgentModelConfig {
+  return resolveAgentModelConfig(readFileOr(join(agentDir(name), 'agent-config.json'), '{}'))
+}
+
+export function readAgentProvider(name: string): string {
+  return readAgentModelConfig(name).provider
+}
+
+export function readAgentRuntime(name: string): ProviderRuntime {
+  return readAgentModelConfig(name).runtime
+}
+
+export function readAgentModelEffort(name: string): EffortLevel | null {
+  return readAgentModelConfig(name).modelEffort
+}
+
+export function writeAgentModelSelection(
+  name: string,
+  selection: {
+    model: string
+    provider?: string
+    runtime?: ProviderRuntime
+    modelEffort?: EffortLevel | null
+  },
+): AgentModelConfig {
+  const model = resolveModelId(selection.model.trim() || DEFAULT_MODEL)
+  const provider = selection.provider
+    ? getModelProviderByKey(selection.provider)
+    : resolveModelProvider(model)
+  if (!provider) throw new Error(`Unknown model provider: ${selection.provider}`)
+  if (selection.runtime !== undefined && selection.runtime !== provider.runtime) {
+    throw new Error(`Runtime ${selection.runtime} is not valid for provider ${provider.key}`)
+  }
+  if (selection.modelEffort != null && !providerSupportsEffort(provider, selection.modelEffort)) {
+    throw new Error(`Effort ${selection.modelEffort} is not supported by provider ${provider.key}`)
+  }
+
+  const configPath = join(agentDir(name), 'agent-config.json')
+  let config: Record<string, unknown> = {}
+  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  config.model = model
+  if (selection.provider !== undefined) config.provider = provider.key
+  else delete config.provider
+  if (selection.runtime !== undefined) config.runtime = provider.runtime
+  else delete config.runtime
+  if (selection.modelEffort != null) config.modelEffort = selection.modelEffort
+  else delete config.modelEffort
+  if (provider.runtime === 'codex-exec') config.sandbox = 'read-only'
+  else delete config.sandbox
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+  return {
+    model,
+    provider: provider.key,
+    runtime: provider.runtime,
+    modelEffort: selection.modelEffort ?? null,
+    sandbox: provider.runtime === 'codex-exec' ? 'read-only' : null,
+  }
 }
 
 export function readAgentDisplayName(name: string): string {

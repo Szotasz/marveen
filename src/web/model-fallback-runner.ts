@@ -8,6 +8,7 @@ import {
   listAgentNames,
   readAgentRemoteHost,
   readAgentModel,
+  readAgentRuntime,
   writeAgentModel,
   resolveModelId,
   DEFAULT_MODEL,
@@ -89,6 +90,7 @@ function restartFor(name: string): void {
 }
 
 function checkAgent(name: string, nowMs: number, revertAfterMs: number, chain: string[]): void {
+  if (name !== MAIN_AGENT_ID && readAgentRuntime(name) !== 'claude-tui') return
   // Sub-agents must be up; the main session is launchd-managed (always present).
   if (name !== MAIN_AGENT_ID && agentRunState(name) !== 'running') return
 
