@@ -10,6 +10,7 @@ import {
   MAIN_AGENT_ID,
   ALLOWED_CHAT_ID,
   BOT_NAME,
+  APP_TZ_INVALID,
 } from '../config.js'
 import {
   appendTaskRun,
@@ -734,6 +735,19 @@ export function startScheduleRunner(): NodeJS.Timeout {
       'schedule-runner: cron timezone fell back to UTC (no SCHEDULER_TZ/TZ set) -- ' +
         'fixed-time crons like "30 7 * * *" match at UTC wall-clock, not the operator zone, ' +
         'so daily tasks may silently never fire while interval tasks still do. Set SCHEDULER_TZ or TZ.',
+    )
+  }
+  // A configured-but-unparseable zone is the failure mode BELOW the one above:
+  // cron-parser throws on every expression, the throw is caught as "not due",
+  // and the outage is total and silent rather than partial. config.ts already
+  // dropped back to the process zone so the scheduler keeps running -- say so
+  // loudly, with the rejected value, because nothing else in the system will.
+  if (APP_TZ_INVALID) {
+    logger.warn(
+      { rejectedTz: APP_TZ_INVALID, cronTz },
+      `schedule-runner: SCHEDULER_TZ="${APP_TZ_INVALID}" is not a usable timezone -- ` +
+        `ignored, scheduling on "${cronTz}" instead. Fix the value (e.g. "Europe/Budapest") ` +
+        'and restart, or every fixed-time cron runs on the wrong wall clock.',
     )
   }
 

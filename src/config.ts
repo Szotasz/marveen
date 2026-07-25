@@ -1,3 +1,4 @@
+import { CronExpressionParser } from 'cron-parser'
 import { hostname } from 'node:os'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -51,8 +52,56 @@ function cfg(key: string): string | undefined {
 // process.env there cannot distinguish the two, because cfg() layers
 // config-overrides.json over .env and neither lands in process.env. See
 // resolveCronTz in web/cron.ts.
-export const SCHEDULER_TZ_CONFIGURED = cfg('SCHEDULER_TZ')
-export const APP_TZ = SCHEDULER_TZ_CONFIGURED || Intl.DateTimeFormat().resolvedOptions().timeZone
+//
+// A MISSPELLED zone is worse than an unset one. cron-parser throws on every
+// parse with an unknown tz ("CronDate: unhandled timestamp: Invalid Date"),
+// cronDueBetween's catch turns that throw into "not due", and so EVERY
+// scheduled task silently never fires -- a total outage with no error, no
+// warning, and a startup report that still looks healthy (it would name the
+// configured-but-invalid zone as the winning source). The dashboard Settings
+// path is fenced -- SCHEDULER_TZ carries a valueSet that validateSettingValue
+// enforces -- but a hand-edited .env or a hand-written config-overrides.json
+// reaches here unchecked, and hand-editing .env is the documented way to set
+// the zone. So validate once at boot, keep scheduling on the process zone
+// (degraded but alive, exactly the unset-value behaviour) and hand the
+// rejected value to the startup report rather than scheduling into a void.
+function isUsableCronTz(tz: string): boolean {
+  // Probe with the ACTUAL consumer, not with Intl. The two disagree on inputs
+  // like "+02:00" -- newer ICU accepts offset strings, older rejects them --
+  // so an Intl guard answers a different question than the code it protects,
+  // engine-dependently. That divergence between a check and its subject is the
+  // exact failure class this patch exists to remove; reproducing it inside the
+  // fix would be self-defeating. Whatever cron-parser can schedule against is
+  // by definition usable here.
+  try {
+    CronExpressionParser.parse('0 0 * * *', { tz }).next()
+    return true
+  } catch {
+    return false
+  }
+}
+
+export function resolveAppTz(
+  configured: string | undefined,
+  systemTz: string = Intl.DateTimeFormat().resolvedOptions().timeZone,
+): { tz: string; configured?: string; invalid?: string } {
+  if (!configured) return { tz: systemTz }
+  if (!isUsableCronTz(configured)) return { tz: systemTz, invalid: configured }
+  return { tz: configured, configured }
+}
+
+const appTz = resolveAppTz(cfg('SCHEDULER_TZ'))
+// Only a zone that survived validation counts as "an operator pinned this":
+// reporting a rejected value here would tell the operator that the zone the
+// scheduler just refused is the one in effect, and would also mask the
+// UTC-fallback warning below it (source would read 'SCHEDULER_TZ', never
+// 'system-default').
+export const SCHEDULER_TZ_CONFIGURED = appTz.configured
+export const APP_TZ = appTz.tz
+// The configured zone that was REJECTED, if any -- undefined on the healthy
+// path. config.ts is imported too early to own a logger (logger imports config
+// -> circular), so the loud reporting lives in startScheduleRunner.
+export const APP_TZ_INVALID = appTz.invalid
 
 export const TELEGRAM_BOT_TOKEN = env['TELEGRAM_BOT_TOKEN'] ?? ''
 export const ALLOWED_CHAT_ID = env['ALLOWED_CHAT_ID'] ?? ''
