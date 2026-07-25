@@ -1125,6 +1125,41 @@ export function parkedInputText(pane: string): string | null {
   return flat.length > 0 ? flat : null
 }
 
+// Machine-origin wrappers the delivery paths prepend to injected prompts.
+// A parked input STARTING with one of these cannot be a human's hand-typed
+// draft, so the recovery stack may act on it (clear a scheduled tick, or
+// hard-restart a wedged pane) without risking a human's work-in-progress.
+// Anchored to the box START on purpose: a human draft that merely QUOTES a
+// wrapper deeper in the text stays protected.
+const MACHINE_ORIGIN_PREFIXES = [
+  /^SCHEDULED TASK NOTICE/,
+  /^<scheduled-task[\s>]/,
+  /^TEAM MEMBER NOTICE/,
+  /^\[Uzenet @/,
+  /^<channel\s+source="plugin:/,
+] as const
+
+// True when the live input box holds parked ('typing') text that is
+// identifiably machine-injected (see MACHINE_ORIGIN_PREFIXES). Pure.
+export function parkedMachineOriginInput(pane: string): boolean {
+  const flat = parkedInputText(pane)
+  if (flat == null) return false
+  return MACHINE_ORIGIN_PREFIXES.some((rx) => rx.test(flat))
+}
+
+// True when the parked text is a scheduled-task injection (the scheduler's
+// wrapper or a bare <scheduled-task> block). Scheduled tasks are (near
+// always) RECURRING: dropping one parked tick is harmless -- the next
+// schedule fire re-delivers the same instruction -- while re-injecting is
+// NOT safe (the TUI truncates long box content mid-text, so the visible
+// capture may be missing lines even when the closing tag is visible).
+// The safe recovery for a parked tick is therefore clear-only.
+export function parkedScheduledTaskInput(pane: string): boolean {
+  const flat = parkedInputText(pane)
+  if (flat == null) return false
+  return /^SCHEDULED TASK NOTICE/.test(flat) || /^<scheduled-task[\s>]/.test(flat)
+}
+
 // How many VISUAL rows the live input box content occupies, ignoring the
 // bare prompt glyph and blank padding. The caller uses this to choose the
 // right submit keystroke: a MULTI-row parked input must NOT be submitted with
@@ -1284,6 +1319,7 @@ export type StuckInputAction =
   | 'reinject-block'   // clear + verbatim re-inject the COMPLETE <channel> block (chat_id-safe)
   | 'reinject-plain'   // clear + re-inject collapsed parked text (sub-agents only)
   | 'clear-preamble'   // clear a truncated/stale safety preamble, never re-inject
+  | 'clear-scheduled'  // clear a parked scheduled-task tick, never re-inject (next fire re-delivers)
   | 'enter'            // a single bare Enter -- ONLY safe at rowCount <= 1
   | 'hold'             // do nothing this tick (multi-row truncated / truncation-guard)
 
@@ -1303,6 +1339,9 @@ export interface StuckInputActionFacts {
   allowPlainReinject: boolean
   /** parkedInputText(pane) != null -- there is collapsed text to re-inject. */
   hasPlainText: boolean
+  /** parkedScheduledTaskInput(pane): a scheduled-task tick is parked. Clear-only
+   * is safe on ANY session (the next schedule fire re-delivers). */
+  scheduledTaskBlock: boolean
 }
 
 /**
@@ -1331,6 +1370,13 @@ export function decideStuckInputAction(f: StuckInputActionFacts): StuckInputActi
   if (f.allowPlainReinject && f.hasPlainText && !f.blockTruncated) {
     return f.escalate || multiRow ? 'reinject-plain' : 'enter'
   }
+  // Parked scheduled-task tick (main session reaches here: no plain re-inject).
+  // Clear-only -- re-injecting risks TUI mid-text truncation corrupting the
+  // instruction, while a dropped tick is re-delivered by the next schedule
+  // fire. Single-row still tries the harmless Enter first.
+  if (f.scheduledTaskBlock) {
+    return f.escalate || multiRow ? 'clear-scheduled' : 'enter'
+  }
   // Truncated safety preamble: clear only (never re-inject a stale preamble).
   if (f.truncatedPreamble && f.escalate) return 'clear-preamble'
   // Truncated <channel> block: hold a multi-row (Enter would corrupt; re-inject
@@ -1338,6 +1384,29 @@ export function decideStuckInputAction(f: StuckInputActionFacts): StuckInputActi
   if (f.blockTruncated) return multiRow ? 'hold' : 'enter'
   // Default swallowed-Enter remedy -- never on multi-row.
   return multiRow ? 'hold' : 'enter'
+}
+
+// Would the soft stuck-input recovery have ANY submitting/clearing move for
+// the MAIN session's parked input at full escalation, or is it wedged in the
+// no-remedy 'hold' branch? Used by the hard-restart busy-guard: a 'typing'
+// pane whose soft recovery still has a move keeps deferring the destructive
+// restart (soft path wins without context loss); a no-remedy hold must NOT
+// defer forever or the channel goes permanently mute (2026-07-25 hermes
+// incident: parked multi-row scheduled-task -> hold + 'typing' deferred both
+// the stuck-input hard restart AND the keepalive-staleness respawn).
+export function parkedMainInputHasRemedy(pane: string): boolean {
+  const block = parkedChannelInput(pane)
+  const facts: StuckInputActionFacts = {
+    escalate: true,
+    rowCount: parkedInputRowCount(pane),
+    blockComplete: block != null && block.complete && block.block != null,
+    blockTruncated: block != null && !block.complete,
+    truncatedPreamble: shouldClearTruncatedPreamble(pane),
+    allowPlainReinject: false,
+    hasPlainText: false,
+    scheduledTaskBlock: parkedScheduledTaskInput(pane),
+  }
+  return decideStuckInputAction(facts) !== 'hold'
 }
 
 // =============================================================================

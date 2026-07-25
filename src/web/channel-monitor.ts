@@ -32,6 +32,7 @@ import {
   stuckInputSignature, decideStuckInputRecovery, parkedChannelInput,
   parkedInputText, shouldClearTruncatedPreamble,
   parkedInputRowCount, submitLanded, decideStuckInputAction,
+  parkedScheduledTaskInput, parkedMachineOriginInput, parkedMainInputHasRemedy,
   type StuckInputState, type StuckInputThresholds, type StuckInputAction,
   type StuckInputActionFacts,
 } from '../pane-state.js'
@@ -251,14 +252,29 @@ export function decideStuckInputRestart(
 // actively recovering ('typing') -- give soft recovery time to submit instead
 // of nuking the session. A session that is genuinely DEAD (not even soft-
 // recovering) is still caught by the keepalive-staleness watchdog (~18min), the
-// pre-#452 backstop. This narrows the hard restart to unreadable/error panes and
-// leaves the routine parked-input case to the non-destructive soft path.
-// Reuses shouldDeferKeepaliveRespawn (single source of truth for busy/typing).
+// pre-#452 backstop.
+//
+// DEADLOCK CARVE-OUT (2026-07-25 hermes incident): the blanket 'typing' defer
+// muted the channel PERMANENTLY when the parked text had NO soft remedy (a
+// multi-row non-<channel> block on the main session -> decideStuckInputAction
+// 'hold' forever) -- the keepalive backstop defers on the same 'typing' signal,
+// so nothing ever recovered. A 'typing' pane therefore no longer defers when
+// BOTH hold: (1) the parked text is identifiably machine-injected (a known
+// delivery wrapper prefix -- never a human draft mid-composition), and (2) the
+// soft recovery has no move for it ('hold'). Everything else keeps deferring:
+// genuine 'busy', a human-looking draft, and any parked text soft recovery can
+// still submit/clear on its own.
 export function applyStuckRestartBusyGuard(
   paneState: PaneState | null,
   decision: 'restart' | 'alert' | 'skip',
+  opts?: { machineOrigin: boolean; softRemedy: boolean },
 ): 'restart' | 'alert' | 'skip' {
-  return shouldDeferKeepaliveRespawn(paneState) ? 'skip' : decision
+  if (paneState === 'busy') return 'skip'
+  if (paneState === 'typing') {
+    const unrecoverable = opts != null && opts.machineOrigin && !opts.softRemedy
+    return unrecoverable ? decision : 'skip'
+  }
+  return decision
 }
 
 // Session-agnostic stuck-input recovery: capture the pane, and if a channel
@@ -305,6 +321,7 @@ export async function recoverStuckInputForSession(
       truncatedPreamble: shouldClearTruncatedPreamble(pane),
       allowPlainReinject,
       hasPlainText: allowPlainReinject && parkedInputText(pane) != null,
+      scheduledTaskBlock: parkedScheduledTaskInput(pane),
     }
     const action = decideStuckInputAction(facts)
     await performStuckInputAction(session, action, pane, block, sig, attempt)
@@ -349,6 +366,10 @@ async function performStuckInputAction(
       }
       case 'clear-preamble':
         logger.warn({ session, attempt }, 'Stuck input -- truncated safety preamble, clearing buffer (no re-inject)')
+        await clearInputBuffer(session)
+        break
+      case 'clear-scheduled':
+        logger.warn({ session, attempt }, 'Stuck input -- parked scheduled-task tick, clearing buffer (no re-inject; next schedule fire re-delivers)')
         await clearInputBuffer(session)
         break
       case 'enter':
@@ -919,13 +940,23 @@ function maybeRestartWedgedMainChannel(state: StuckInputState): void {
   // blocks a genuine recovery.
   const paneContent = capturePane(MAIN_CHANNELS_SESSION)
   const paneState = paneContent != null ? detectPaneState(paneContent) : null
+  // Deadlock carve-out facts: read from the ghost-stripped parked view (same
+  // view the soft recovery uses) so a dim autocomplete hint never counts.
+  const parkedView = paneState === 'typing' ? captureParkedInputView(MAIN_CHANNELS_SESSION) : null
+  const machineOrigin = parkedView != null && parkedMachineOriginInput(parkedView)
+  const softRemedy = parkedView != null && parkedMainInputHasRemedy(parkedView)
   const action = applyStuckRestartBusyGuard(paneState, decideStuckInputRestart(
     parked, state.attempts, MAIN_STUCK_THRESHOLDS.maxAttempts,
     Date.now(), lastStuckRestartAt, stuckRestartCount,
     STUCK_RESTART_MIN_INTERVAL_MS, STUCK_RESTART_MAX_CONSECUTIVE,
-  ))
+  ), { machineOrigin, softRemedy })
   if (action === 'skip' && shouldDeferKeepaliveRespawn(paneState)) {
-    logger.info({ paneState, attempts: state.attempts }, 'Stuck-input restart deferred -- main pane is busy (working, not wedged)')
+    logger.info(
+      { paneState, attempts: state.attempts, machineOrigin, softRemedy },
+      paneState === 'busy'
+        ? 'Stuck-input restart deferred -- main pane is busy (working, not wedged)'
+        : 'Stuck-input restart deferred -- parked input still recoverable or possibly a human draft',
+    )
   }
   if (action === 'skip') return
   if (action === 'alert') {
