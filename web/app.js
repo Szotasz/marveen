@@ -418,7 +418,7 @@ const NAV_I18N = {
   recall: 'nav.recall', naplo: 'nav.recall', bgTasks: 'nav.bgTasks',
   skills: 'nav.skills', connectors: 'nav.connectors', migrate: 'nav.migrate',
   approvals: 'nav.approvals',
-  docs: 'nav.docs', research: 'nav.research', status: 'nav.status', autonomy: 'nav.autonomy',
+  docs: 'nav.docs', research: 'nav.research', status: 'nav.status',
   settings: 'nav.settings', vault: 'nav.vault', tokenUsage: 'nav.tokenUsage',
   ideas: 'nav.ideas', federation: 'nav.federation', updates: 'nav.updates', costs: 'nav.costs',
 }
