@@ -10864,6 +10864,20 @@ async function renderTraceWaterfall(traceId) {
   const body = document.getElementById('traceWaterfallBody')
   const badge = document.getElementById('traceStatusBadge')
   if (!body) return
+
+  // Re-render when the resize handle moves the panel boundary (debounced 60ms)
+  if (body._traceObsId !== traceId) {
+    if (body._traceResizeObs) body._traceResizeObs.disconnect()
+    let _rTimer = null
+    const ro = new ResizeObserver(() => {
+      clearTimeout(_rTimer)
+      _rTimer = setTimeout(() => renderTraceWaterfall(traceId), 60)
+    })
+    ro.observe(body)
+    body._traceResizeObs = ro
+    body._traceObsId = traceId
+  }
+
   try {
     const res = await fetch(`/api/traces/${encodeURIComponent(traceId)}`)
     if (!res.ok) throw new Error(res.status)
@@ -10878,9 +10892,10 @@ async function renderTraceWaterfall(traceId) {
     const totalMs = Math.max(maxRaw - minMs, 1)
     const now = Date.now()
 
-    // Layout constants
-    const LABEL_W = 110, ROW_H = 26, AXIS_H = 18, PAD_R = 8
-    const svgW = 600 // will be 100% via CSS
+    // Layout: measure actual container so bars fill the full width and height
+    const svgW = body.clientWidth || 600
+    const LABEL_W = 110, AXIS_H = 18, PAD_R = 8
+    const ROW_H = Math.max(24, Math.floor((body.clientHeight - AXIS_H) / spans.length))
     const barArea = svgW - LABEL_W - PAD_R
     const svgH = spans.length * ROW_H + AXIS_H
 
