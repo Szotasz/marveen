@@ -58,6 +58,21 @@ export function currentGitHead(): string {
   }
 }
 
+// Branch this checkout actually follows. update.sh pulls `origin/<this>`, so
+// the update check must compare against the same ref -- hardcoding `main` made
+// every non-release checkout (e.g. `develop`) report a phantom "new version"
+// that the update button could never deliver, while staying silent about the
+// commits that WERE coming. Falls back to `main` on a detached HEAD, which is
+// also the branch update.sh tells the operator to check out in that state.
+export function trackedBranch(): string {
+  try {
+    const b = execFileSync('/usr/bin/git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' }).trim()
+    return b && b !== 'HEAD' ? b : 'main'
+  } catch {
+    return 'main'
+  }
+}
+
 export function parseGitHubRemote(): string {
   try {
     const url = execFileSync('/usr/bin/git', ['config', '--get', 'remote.origin.url'], { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' }).trim()
@@ -146,14 +161,14 @@ export function groupByRelease(commits: UpdateCommit[], fullMessages: string[]):
   return out.concat(groups)
 }
 
-// Merge-base of local HEAD with the upstream tracking ref (origin/main, which
-// parseGitHubRemote maps to the GitHub remote). For a customised fork this is
+// Merge-base of local HEAD with the upstream tracking ref (origin/<tracked
+// branch>, which parseGitHubRemote maps to the GitHub remote). For a customised fork this is
 // the fork point -- an actual upstream commit -- so it can be compared on
 // GitHub even though the local HEAD itself never landed there. Empty string
 // when there is no local upstream ref.
 function upstreamMergeBase(): string {
   try {
-    return execFileSync('/usr/bin/git', ['merge-base', 'HEAD', 'origin/main'], { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' }).trim()
+    return execFileSync('/usr/bin/git', ['merge-base', 'HEAD', `origin/${trackedBranch()}`], { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' }).trim()
   } catch {
     return ''
   }
@@ -176,14 +191,15 @@ export async function refreshUpdateStatus(): Promise<UpdateStatus> {
     return status
   }
   try {
-    // 1) find HEAD of default branch (main) via the commits endpoint
-    const latestRes = await fetch(`https://api.github.com/repos/${remote}/commits/main`, {
+    // 1) find HEAD of the branch this checkout follows via the commits endpoint
+    const branch = trackedBranch()
+    const latestRes = await fetch(`https://api.github.com/repos/${remote}/commits/${encodeURIComponent(branch)}`, {
       headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'marveen-update-check' },
       signal: AbortSignal.timeout(TOOL_TIMEOUTS['github']),
     })
-    if (!latestRes.ok) throw new Error(`GitHub /commits/main -> ${latestRes.status}`)
+    if (!latestRes.ok) throw new Error(`GitHub /commits/${branch} -> ${latestRes.status}`)
     const latestJson = await latestRes.json() as { sha?: string }
-    if (!latestJson.sha) throw new Error('No sha on commits/main response')
+    if (!latestJson.sha) throw new Error(`No sha on commits/${branch} response`)
     status.latest = latestJson.sha
 
     if (status.latest === current) {
@@ -225,7 +241,7 @@ export async function refreshUpdateStatus(): Promise<UpdateStatus> {
   return status
 }
 
-// Polls the GitHub repo's main branch for new commits and compares to the
+// Polls the GitHub branch this checkout follows for new commits and compares to the
 // local HEAD. Lets the dashboard show a "new version available" badge
 // without anyone having to SSH in and run update.sh.
 export function startUpdateChecker(): NodeJS.Timeout {
