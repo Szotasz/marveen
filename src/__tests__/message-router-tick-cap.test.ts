@@ -40,6 +40,10 @@ vi.mock('../db.js', () => ({
   markMessageFailed: (...a: unknown[]) => mockMarkFailed(...a),
   markMessageDone: (..._a: unknown[]) => true,
   createAgentMessage: (..._a: unknown[]) => ({ id: 999 }),
+  // card def5a189: OTel trace stubs -- no-ops in this test
+  stampMessageTrace: (..._a: unknown[]) => false,
+  upsertOtelSpan: (..._a: unknown[]) => undefined,
+  closeOtelSpan: (..._a: unknown[]) => false,
 }))
 
 vi.mock('../web/voice-directive.js', () => ({

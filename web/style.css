@@ -7198,3 +7198,65 @@ body {
 }
 .auth-session-row code { color: var(--text); }
 .auth-session-ua { margin-left: auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* === OTel Trace Waterfall (card def5a189) === */
+.chat-upper-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 180px;
+  overflow: hidden;
+}
+.trace-resize-handle {
+  height: 5px;
+  background: var(--border);
+  cursor: row-resize;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+.trace-resize-handle:hover, .trace-resize-handle.dragging { background: var(--accent); }
+.trace-waterfall-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 140px;
+  overflow: hidden;
+  border-top: 1px solid var(--border);
+  background: var(--bg-card);
+}
+.trace-waterfall-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  background: var(--bg-card);
+}
+.trace-waterfall-title { font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.trace-select { font-size: 12px; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); max-width: 320px; flex: 1; }
+.trace-status-badge { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 8px; }
+.trace-status-ok { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+.trace-status-error { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); }
+.trace-status-running { background: color-mix(in srgb, #f59e0b 15%, transparent); color: #f59e0b; }
+.trace-waterfall-body {
+  flex: 1;
+  overflow: auto;
+  position: relative;
+}
+.trace-waterfall-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 80px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+/* Waterfall SVG rows */
+.trace-wf-svg { display: block; width: 100%; }
+.trace-wf-row-bg:nth-child(odd) { fill: color-mix(in srgb, var(--text) 3%, transparent); }
+.trace-wf-label { font-size: 11px; fill: var(--text); font-family: monospace; }
+.trace-wf-bar { rx: 3; }
+.trace-wf-bar-running { stroke: #f59e0b; stroke-width: 1.5; stroke-dasharray: 4 2; }
+.trace-wf-bar-error { opacity: 0.85; }
+.trace-wf-axis-line { stroke: var(--border); }
+.trace-wf-axis-label { font-size: 9px; fill: var(--text-muted); }
+.trace-bottleneck { stroke: var(--danger); stroke-width: 1.5; stroke-dasharray: 3 2; }

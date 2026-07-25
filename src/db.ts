@@ -448,6 +448,13 @@ export function initDatabase(dbPathOverride?: string): void {
   } catch {
     // column already exists
   }
+  // Card def5a189: distributed trace context propagated by message-router middleware.
+  // trace_id: root trace identifier spanning an entire agent chain (e.g. morning-chain).
+  // span_id: this message's own span identifier (nanoid).
+  // parent_span_id: sender's span_id -- links child back to parent in the waterfall.
+  try { db.exec('ALTER TABLE agent_messages ADD COLUMN trace_id TEXT') } catch { /* exists */ }
+  try { db.exec('ALTER TABLE agent_messages ADD COLUMN span_id TEXT') } catch { /* exists */ }
+  try { db.exec('ALTER TABLE agent_messages ADD COLUMN parent_span_id TEXT') } catch { /* exists */ }
 
   // One-time L1 backfill: federation system ids are now stored lowercase, but
   // rows written by a pre-L1 build (an install that federated with a
@@ -851,6 +858,35 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id)`)
+
+  // --- OTel Distributed Tracing (card def5a189) ---
+  // SQLite-native span store. No external OTel SDK: spans are written via
+  // /api/spans and the message-router middleware injects trace context into
+  // agent_messages rows transparently (agents don't need to know about tracing).
+  // trace_id: root identifier shared across the entire chain (generated once
+  //   by the message-router for the root message, inherited by all children).
+  // span_id: per-message unique id (nanoid).
+  // parent_span_id: null for root; sender's span_id for downstream messages.
+  // The tool_call_log.trace_id column (added by #274) holds the Claude Code
+  // native tool_use_id (per-call span) -- a DIFFERENT, narrower concept. The
+  // waterfall UI joins otel_spans (inter-agent latency) with tool_call_log
+  // (intra-agent tool timing) via agent_id + time overlap.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS otel_spans (
+      trace_id        TEXT NOT NULL,
+      span_id         TEXT NOT NULL,
+      parent_span_id  TEXT,
+      agent_id        TEXT NOT NULL,
+      operation       TEXT NOT NULL,
+      start_ms        INTEGER NOT NULL,
+      end_ms          INTEGER,
+      status          TEXT NOT NULL DEFAULT 'ok' CHECK(status IN ('ok','error','timeout','running')),
+      attributes      TEXT,
+      PRIMARY KEY (trace_id, span_id)
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_otel_spans_trace ON otel_spans(trace_id, start_ms)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_otel_spans_agent ON otel_spans(agent_id, start_ms)`)
 
   // One-shot migration from the old JSON file (which had a read-modify-write
   // race). Import rows if they exist, then rename the file so we don't keep
@@ -1892,18 +1928,31 @@ export interface AgentMessage {
   // sub-agent's own task/branch name) -- NOT an authentication mechanism,
   // see the table-creation comment. Null for every caller that doesn't pass one.
   origin_note: string | null
+  // Card def5a189: distributed trace context (message-router middleware).
+  trace_id: string | null
+  span_id: string | null
+  parent_span_id: string | null
 }
 
-export function createAgentMessage(from: string, to: string, content: string, originNote?: string | null): AgentMessage {
+export function createAgentMessage(
+  from: string,
+  to: string,
+  content: string,
+  originNote?: string | null,
+  traceCtx?: { trace_id: string; span_id: string; parent_span_id: string | null } | null,
+): AgentMessage {
   const now = Math.floor(Date.now() / 1000)
   const info = db.prepare(
-    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(from, to, content, 'pending', now, originNote ?? null)
+    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null)
   return {
     id: Number(info.lastInsertRowid),
     from_agent: from, to_agent: to, content, status: 'pending',
     result: null, created_at: now, delivered_at: null, completed_at: null,
     origin_note: originNote ?? null,
+    trace_id: traceCtx?.trace_id ?? null,
+    span_id: traceCtx?.span_id ?? null,
+    parent_span_id: traceCtx?.parent_span_id ?? null,
   }
 }
 
@@ -3063,11 +3112,99 @@ export function listApprovals(opts: {
   return db.prepare(`SELECT * FROM approvals ${where} ORDER BY requested_at DESC LIMIT ?`).all(...params) as Approval[]
 }
 
+// Stamp trace context onto an agent_messages row that was created without one.
+// Called by the message-router tick BEFORE delivery so the span is stamped
+// exactly once (pending rows only -- delivered/done rows are already closed).
+export function stampMessageTrace(
+  id: number,
+  traceId: string,
+  spanId: string,
+  parentSpanId: string | null,
+): boolean {
+  return db.prepare(`
+    UPDATE agent_messages
+       SET trace_id = ?, span_id = ?, parent_span_id = ?
+     WHERE id = ? AND status = 'pending' AND trace_id IS NULL
+  `).run(traceId, spanId, parentSpanId, id).changes > 0
+}
+
 export function expireTimedOutApprovals(): number {
   const now = Math.floor(Date.now() / 1000)
   return db.prepare(`
     UPDATE approvals SET status = 'timeout', resolved_at = ?
     WHERE status = 'pending' AND timeout_at IS NOT NULL AND timeout_at <= ?
   `).run(now, now).changes
+}
+
+// --- OTel Distributed Tracing (card def5a189) ---
+
+export interface OtelSpan {
+  trace_id: string
+  span_id: string
+  parent_span_id: string | null
+  agent_id: string
+  operation: string
+  start_ms: number
+  end_ms: number | null
+  status: 'ok' | 'error' | 'timeout' | 'running'
+  attributes: string | null
+}
+
+export function upsertOtelSpan(span: Omit<OtelSpan, 'end_ms' | 'status'> & { end_ms?: number | null; status?: OtelSpan['status'] }): void {
+  db.prepare(`
+    INSERT INTO otel_spans (trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms, status, attributes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (trace_id, span_id) DO UPDATE SET
+      end_ms = excluded.end_ms,
+      status = excluded.status,
+      attributes = COALESCE(excluded.attributes, otel_spans.attributes)
+  `).run(
+    span.trace_id, span.span_id, span.parent_span_id ?? null,
+    span.agent_id, span.operation, span.start_ms,
+    span.end_ms ?? null, span.status ?? 'running', span.attributes ?? null,
+  )
+}
+
+export function closeOtelSpan(traceId: string, spanId: string, endMs: number, status: OtelSpan['status']): boolean {
+  return db.prepare(`
+    UPDATE otel_spans SET end_ms = ?, status = ? WHERE trace_id = ? AND span_id = ?
+  `).run(endMs, status, traceId, spanId).changes > 0
+}
+
+export function getOtelTrace(traceId: string): OtelSpan[] {
+  return db.prepare('SELECT * FROM otel_spans WHERE trace_id = ? ORDER BY start_ms ASC')
+    .all(traceId) as OtelSpan[]
+}
+
+export interface OtelTraceSummary {
+  trace_id: string
+  root_operation: string
+  root_agent: string
+  start_ms: number
+  end_ms: number | null
+  span_count: number
+  status: string
+}
+
+export function listOtelTraces(limit = 50): OtelTraceSummary[] {
+  return db.prepare(`
+    SELECT
+      s.trace_id,
+      s.operation  AS root_operation,
+      s.agent_id   AS root_agent,
+      s.start_ms,
+      (SELECT MAX(end_ms) FROM otel_spans WHERE trace_id = s.trace_id) AS end_ms,
+      (SELECT COUNT(*)    FROM otel_spans WHERE trace_id = s.trace_id) AS span_count,
+      CASE
+        WHEN EXISTS (SELECT 1 FROM otel_spans WHERE trace_id = s.trace_id AND status = 'error')   THEN 'error'
+        WHEN EXISTS (SELECT 1 FROM otel_spans WHERE trace_id = s.trace_id AND status = 'timeout') THEN 'timeout'
+        WHEN EXISTS (SELECT 1 FROM otel_spans WHERE trace_id = s.trace_id AND status = 'running') THEN 'running'
+        ELSE 'ok'
+      END AS status
+    FROM otel_spans s
+    WHERE s.parent_span_id IS NULL
+    ORDER BY s.start_ms DESC
+    LIMIT ?
+  `).all(limit) as OtelTraceSummary[]
 }
 

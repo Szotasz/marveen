@@ -1700,4 +1700,13 @@ window._i18n.en = {
   'auth.card.active_sessions':    'Active sessions',
   'auth.card.token_mode':         'You are using token access. A browser login is configured.',
 
+  'trace.loading':                'Loading...',
+  'trace.no_traces':              'No traces for this agent',
+  'trace.no_spans':               'No spans in this trace',
+  'trace.load_error':             'Failed to load trace',
+  'trace.status.ok':              'OK',
+  'trace.status.error':           'Error',
+  'trace.status.running':         'Running',
+  'trace.status.timeout':         'Timeout',
+
 }

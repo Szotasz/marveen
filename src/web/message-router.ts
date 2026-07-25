@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { resolveAgentChannelStateDir } from './voice-directive.js'
@@ -9,6 +10,9 @@ import {
   markPendingFederatedFailed,
   setMessageResult,
   createAgentMessage,
+  stampMessageTrace,
+  upsertOtelSpan,
+  closeOtelSpan,
   type AgentMessage,
 } from '../db.js'
 import { isQualifiedId } from './federation/address.js'
@@ -154,6 +158,31 @@ const agentBatchedThisReconnect = new Set<string>()
  */
 export function shouldAbandon(sessionExists: boolean, ageMs: number, windowMs: number): boolean {
   return !sessionExists && ageMs > windowMs
+}
+
+// ---- Distributed trace context (card def5a189) ------------------------------
+// In-memory map of the last trace context delivered TO each agent. When the
+// agent subsequently sends a new message (no explicit trace_id), the router
+// stamps it with this context so the whole chain shares one root trace_id.
+// Reset on restart (acceptable -- traces only split across restarts, not within).
+const deliveredTraceCtx = new Map<string, { trace_id: string; span_id: string }>()
+
+function generateTraceId(): string { return randomUUID() }
+function generateSpanId(): string { return randomUUID().replace(/-/g, '').slice(0, 16) }
+
+// Stamps a trace context onto an unstamped pending message, using either an
+// inherited context (propagation) or a freshly generated root trace.
+function stampTraceOnMessage(msg: AgentMessage, nowMs: number): { trace_id: string; span_id: string; parent_span_id: string | null } {
+  const inherited = deliveredTraceCtx.get(msg.from_agent)
+  const trace_id = inherited?.trace_id ?? generateTraceId()
+  const span_id  = generateSpanId()
+  const parent_span_id = inherited?.span_id ?? null
+  const stamped = stampMessageTrace(msg.id, trace_id, span_id, parent_span_id)
+  if (stamped) {
+    const operation = `${msg.from_agent}->${msg.to_agent}`
+    upsertOtelSpan({ trace_id, span_id, parent_span_id, agent_id: msg.from_agent, operation, start_ms: nowMs, attributes: null })
+  }
+  return { trace_id, span_id, parent_span_id }
 }
 
 // Checks for pending messages every 5 seconds and injects them into target
@@ -511,9 +540,8 @@ export async function runMessageRouterTick(): Promise<void> {
       // Session is ready — clear stuck tracking.
       agentStuckSince.delete(msg.to_agent)
 
-      // Classify (channel-inbound / trusted-peer / untrusted) + reject an empty
-      // from_agent -- SINGLE SOURCE in agent-message-wrap so the router and the
-      // main-agent pull endpoint frame messages identically (no security drift).
+      // Trace context (card def5a189): stamp if not yet set. channel-inbound
+      // messages (user → agent) are excluded -- only inter-agent spans.
       const cls = classifyAgentMessage(msg.from_agent, msg.to_agent)
       if (!cls) {
         logger.warn({ id: msg.id, rawFrom: msg.from_agent }, 'Agent message rejected: from_agent empty after sanitize')
@@ -526,6 +554,17 @@ export async function runMessageRouterTick(): Promise<void> {
       const { category, safeFrom: safeFromAgent } = cls
       const isChannelInbound = category === 'channel-inbound'
       const trusted = category === 'trusted-peer'
+
+      // Stamp trace context onto inter-agent messages (not channel-inbound).
+      // Uses the in-memory deliveredTraceCtx to inherit from the last delivered
+      // message's span -- this is the middleware propagation (no agent-side protocol).
+      let traceCtx: { trace_id: string; span_id: string } | null = null
+      if (!isChannelInbound) {
+        const effective = msg.trace_id && msg.span_id
+          ? { trace_id: msg.trace_id, span_id: msg.span_id }
+          : stampTraceOnMessage(msg, now)
+        traceCtx = effective
+      }
 
       // Voice auto-mode: if this is a channel-inbound voice message, run STT
       // and update the last-inbound-modality flag. The decision (STT or not)
@@ -569,9 +608,14 @@ export async function runMessageRouterTick(): Promise<void> {
         if (!markMessageDelivered(msg.id)) {
           logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
         }
+        // Propagate trace context: the receiving agent inherits this trace_id
+        // and span_id so its next outbound message continues the same chain.
+        if (traceCtx) {
+          deliveredTraceCtx.set(msg.to_agent, traceCtx)
+        }
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
-        logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, category }, 'Agent message delivered')
+        logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, category, traceId: traceCtx?.trace_id }, 'Agent message delivered')
       } catch (err) {
         // An inject throw is usually transient (pane un-ready at the instant of
         // send-keys). Retry across ticks instead of the old silent instant-fail;

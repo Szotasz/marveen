@@ -1696,4 +1696,13 @@ window._i18n.hu = {
   'auth.card.active_sessions':    'Aktív munkamenetek',
   'auth.card.token_mode':         'Token-alapú elérést használsz. Egy böngészős belépés be van állítva.',
 
+  'trace.loading':                'Betöltés...',
+  'trace.no_traces':              'Nincs trace ehhez az ágenshez',
+  'trace.no_spans':               'Nincs span ebben a trace-ben',
+  'trace.load_error':             'Trace betöltési hiba',
+  'trace.status.ok':              'OK',
+  'trace.status.error':           'Hiba',
+  'trace.status.running':         'Fut',
+  'trace.status.timeout':         'Timeout',
+
 }

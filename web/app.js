@@ -10739,18 +10739,31 @@ async function loadChatThread(agentName) {
   const threadDisplayName = owner && agentName === owner ? owner + ' (te)' : chatDisplayName(agentName)
 
   panel.innerHTML = `
-    <div class="chat-thread-header">
-      ${chatAvatarHtml(agentName, 32)}
-      <span class="chat-thread-title">${escapeHtml(threadDisplayName)}</span>
-      <button class="btn-secondary btn-compact" style="margin-left:auto" onclick="loadChatThread('${escapeHtml(agentName)}')">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-      </button>
+    <div class="chat-upper-pane" id="chatUpperPane" style="flex:1 1 55%;min-height:180px">
+      <div class="chat-thread-header">
+        ${chatAvatarHtml(agentName, 32)}
+        <span class="chat-thread-title">${escapeHtml(threadDisplayName)}</span>
+        <button class="btn-secondary btn-compact" style="margin-left:auto" onclick="loadChatThread('${escapeHtml(agentName)}')">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        </button>
+      </div>
+      <div class="chat-bubbles" id="chatBubbles"><div class="chat-loading-indicator" id="chatLoadingTop" style="display:none;text-align:center;padding:8px;font-size:11px;color:var(--text-muted)">${t('messages.loading')}</div></div>
+      <div class="chat-compose">
+        <div class="chat-compose-row">
+          <textarea id="chatComposeText" class="chat-compose-input" rows="2" placeholder="${t('messages.placeholder', { agent: escapeHtml(chatDisplayName(agentName)) })}"></textarea>
+          <button class="btn-primary btn-compact chat-send-btn" id="chatSendBtn">${t('messages.send_btn')}</button>
+        </div>
+      </div>
     </div>
-    <div class="chat-bubbles" id="chatBubbles"><div class="chat-loading-indicator" id="chatLoadingTop" style="display:none;text-align:center;padding:8px;font-size:11px;color:var(--text-muted)">${t('messages.loading')}</div></div>
-    <div class="chat-compose">
-      <div class="chat-compose-row">
-        <textarea id="chatComposeText" class="chat-compose-input" rows="2" placeholder="${t('messages.placeholder', { agent: escapeHtml(chatDisplayName(agentName)) })}"></textarea>
-        <button class="btn-primary btn-compact chat-send-btn" id="chatSendBtn">${t('messages.send_btn')}</button>
+    <div class="trace-resize-handle" id="traceResizeHandle"></div>
+    <div class="trace-waterfall-panel" id="traceWaterfallPanel" style="flex:0 0 45%;min-height:140px">
+      <div class="trace-waterfall-header">
+        <span class="trace-waterfall-title">Trace</span>
+        <select class="trace-select" id="traceSelect"><option value="">-- ${t('trace.loading')} --</option></select>
+        <span id="traceStatusBadge"></span>
+      </div>
+      <div class="trace-waterfall-body" id="traceWaterfallBody">
+        <div class="trace-waterfall-empty">${t('trace.no_traces')}</div>
       </div>
     </div>
   `
@@ -10784,6 +10797,143 @@ async function loadChatThread(agentName) {
         fetchChatPage(agentName, chatThreadState.minLoadedId, CHAT_LOAD_MORE, 'prepend')
       }
     })
+  }
+
+  // Resize handle: drag to split chat / waterfall vertically
+  initTraceResizeHandle()
+
+  // Load trace waterfall for this agent
+  loadTraceWaterfall(agentName)
+}
+
+// --- Trace Waterfall (card def5a189) ---
+const AGENT_COLORS = ['#d97757','#00C2A8','#818cf8','#22c55e','#f59e0b','#ec4899','#06b6d4','#a855f7']
+function agentColor(name) {
+  return AGENT_COLORS[name.split('').reduce((a,c) => a + c.charCodeAt(0), 0) % AGENT_COLORS.length]
+}
+
+function initTraceResizeHandle() {
+  const handle = document.getElementById('traceResizeHandle')
+  const upper  = document.getElementById('chatUpperPane')
+  const lower  = document.getElementById('traceWaterfallPanel')
+  if (!handle || !upper || !lower) return
+  let dragging = false, startY = 0, startUpper = 0
+  handle.addEventListener('mousedown', e => {
+    dragging = true; startY = e.clientY; startUpper = upper.offsetHeight
+    handle.classList.add('dragging'); e.preventDefault()
+  })
+  window.addEventListener('mousemove', e => {
+    if (!dragging) return
+    const dy = e.clientY - startY
+    const newH = Math.max(120, startUpper + dy)
+    upper.style.flex = `0 0 ${newH}px`
+  })
+  window.addEventListener('mouseup', () => {
+    if (dragging) { dragging = false; handle.classList.remove('dragging') }
+  })
+}
+
+async function loadTraceWaterfall(agentName) {
+  const sel = document.getElementById('traceSelect')
+  const body = document.getElementById('traceWaterfallBody')
+  if (!sel || !body) return
+  try {
+    const res = await fetch('/api/traces?limit=100')
+    if (!res.ok) throw new Error(res.status)
+    const all = await res.json()
+    // Show traces that involve this agent (as root or any span)
+    const relevant = all.filter(tr => tr.root_agent === agentName)
+    sel.innerHTML = relevant.length === 0
+      ? `<option value="">${t('trace.no_traces')}</option>`
+      : relevant.map(tr => {
+          const dt = tr.start_ms ? new Date(tr.start_ms).toLocaleString('hu-HU', {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : ''
+          const dur = tr.end_ms && tr.start_ms ? `${((tr.end_ms - tr.start_ms)/1000).toFixed(1)}s` : '...'
+          return `<option value="${escapeHtml(tr.trace_id)}">[${dt}] ${escapeHtml(tr.root_operation)} ${dur} (${tr.span_count} span)</option>`
+        }).join('')
+    sel.addEventListener('change', () => {
+      if (sel.value) renderTraceWaterfall(sel.value)
+      else body.innerHTML = `<div class="trace-waterfall-empty">${t('trace.no_traces')}</div>`
+    })
+    if (relevant.length > 0) renderTraceWaterfall(relevant[0].trace_id)
+  } catch {
+    body.innerHTML = `<div class="trace-waterfall-empty">${t('trace.load_error')}</div>`
+  }
+}
+
+async function renderTraceWaterfall(traceId) {
+  const body = document.getElementById('traceWaterfallBody')
+  const badge = document.getElementById('traceStatusBadge')
+  if (!body) return
+  try {
+    const res = await fetch(`/api/traces/${encodeURIComponent(traceId)}`)
+    if (!res.ok) throw new Error(res.status)
+    const { spans } = await res.json()
+    if (!spans || !spans.length) {
+      body.innerHTML = `<div class="trace-waterfall-empty">${t('trace.no_spans')}</div>`
+      return
+    }
+    // Compute time range
+    const minMs = Math.min(...spans.map(s => s.start_ms))
+    const maxRaw = Math.max(...spans.map(s => s.end_ms || s.start_ms + 1))
+    const totalMs = Math.max(maxRaw - minMs, 1)
+    const now = Date.now()
+
+    // Layout constants
+    const LABEL_W = 110, ROW_H = 26, AXIS_H = 18, PAD_R = 8
+    const svgW = 600 // will be 100% via CSS
+    const barArea = svgW - LABEL_W - PAD_R
+    const svgH = spans.length * ROW_H + AXIS_H
+
+    // Badge
+    const hasError = spans.some(s => s.status === 'error')
+    const hasRunning = spans.some(s => s.status === 'running')
+    if (badge) {
+      const cls = hasError ? 'trace-status-error' : hasRunning ? 'trace-status-running' : 'trace-status-ok'
+      const lbl = hasError ? t('trace.status.error') : hasRunning ? t('trace.status.running') : t('trace.status.ok')
+      badge.innerHTML = `<span class="trace-status-badge ${cls}">${lbl}</span>`
+    }
+
+    // Find bottleneck span (longest duration)
+    const durations = spans.map(s => (s.end_ms || now) - s.start_ms)
+    const maxDur = Math.max(...durations)
+
+    let rows = ''
+    spans.forEach((s, i) => {
+      const y = i * ROW_H + AXIS_H
+      const startOff = s.start_ms - minMs
+      const dur = (s.end_ms || now) - s.start_ms
+      const x = LABEL_W + (startOff / totalMs) * barArea
+      const w = Math.max(3, (dur / totalMs) * barArea)
+      const color = agentColor(s.agent_id)
+      const isBottleneck = dur === maxDur && spans.length > 1
+      const isRunning = s.status === 'running'
+      const isError = s.status === 'error'
+      const label = s.agent_id.length > 13 ? s.agent_id.slice(0,12) + '…' : s.agent_id
+      const durLabel = dur >= 1000 ? `${(dur/1000).toFixed(1)}s` : `${dur}ms`
+      rows += `<rect class="trace-wf-row-bg" x="0" y="${y}" width="${svgW}" height="${ROW_H}"/>`
+      rows += `<text class="trace-wf-label" x="6" y="${y + ROW_H*0.65}">${escapeHtml(label)}</text>`
+      rows += `<rect class="trace-wf-bar${isRunning?' trace-wf-bar-running':''}${isError?' trace-wf-bar-error':''}"
+        x="${x.toFixed(1)}" y="${(y+4).toFixed(1)}" width="${w.toFixed(1)}" height="${ROW_H-8}"
+        rx="3" fill="${isError ? 'var(--danger)' : color}" opacity="${isError?0.7:0.85}"/>`
+      if (isBottleneck) {
+        rows += `<line class="trace-bottleneck" x1="${(x+w).toFixed(1)}" y1="${AXIS_H}" x2="${(x+w).toFixed(1)}" y2="${svgH}"/>`
+      }
+      rows += `<text class="trace-wf-axis-label" x="${Math.min(x+w+3,svgW-30).toFixed(1)}" y="${(y+ROW_H*0.65).toFixed(1)}" fill="${color}">${durLabel}</text>`
+    })
+
+    // Axis ticks (4 ticks)
+    let axis = ''
+    for (let i = 0; i <= 4; i++) {
+      const xPos = LABEL_W + (i / 4) * barArea
+      const msVal = (i / 4) * totalMs
+      const lbl = msVal >= 1000 ? `${(msVal/1000).toFixed(1)}s` : `${Math.round(msVal)}ms`
+      axis += `<line class="trace-wf-axis-line" x1="${xPos.toFixed(1)}" y1="${AXIS_H}" x2="${xPos.toFixed(1)}" y2="${svgH}"/>`
+      axis += `<text class="trace-wf-axis-label" x="${xPos.toFixed(1)}" y="${AXIS_H-4}" text-anchor="middle">${lbl}</text>`
+    }
+
+    body.innerHTML = `<svg class="trace-wf-svg" viewBox="0 0 ${svgW} ${svgH}" style="height:${svgH}px">${axis}${rows}</svg>`
+  } catch {
+    body.innerHTML = `<div class="trace-waterfall-empty">${t('trace.load_error')}</div>`
   }
 }
 

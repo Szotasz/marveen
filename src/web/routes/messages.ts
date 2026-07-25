@@ -3,6 +3,7 @@ import {
   getAgentConversation, getAgentConversationThreads,
   getKanbanSeqByIdPrefix,
   markMessageDone, markMessageFailed, getAgentMessage,
+  closeOtelSpan,
   type AgentMessage,
 } from '../../db.js'
 import { logger } from '../../logger.js'
@@ -167,12 +168,16 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     else if (newStatus === 'failed') ok = markMessageFailed(id, result)
 
     if (ok) {
+      const done = getAgentMessage(id)
+      // Close the OTel span now that the message has a terminal status.
+      if (done?.trace_id && done?.span_id) {
+        closeOtelSpan(done.trace_id, done.span_id, Date.now(), newStatus === 'done' ? 'ok' : 'error')
+      }
       // Notify the delegator: create a reverse message from executor → delegator so
       // they learn the result without polling. Use a sentinel prefix to break
       // ping-pong chains (the delegator might write back, which would trigger
       // markMessageDone on this notification; we skip creating ANOTHER notification
       // when the original content is already a completion report).
-      const done = getAgentMessage(id)
       if (done && done.from_agent !== done.to_agent && !done.content.startsWith('[Eredmény]')) {
         const summary = result ? result.slice(0, 500) : '(nincs eredmény)'
         createAgentMessage(
