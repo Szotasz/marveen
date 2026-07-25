@@ -240,6 +240,7 @@ window._i18n.hu = {
   'kanban.toast.subtask_deleted': 'Alfeladat törölve',
   'kanban.toast.parent_updated': 'Szülő módosítva',
   'kanban.toast.parent_unset':   'Szülő leválasztva',
+  'kanban.toast.status_updated': 'Állapot frissítve',
   'kanban.toast.assignee_updated': 'Felelős frissítve',
   'kanban.toast.comment_no_author': 'Válassz szerzőt a megjegyzéshez',
   'kanban.toast.comment_failed': 'Megjegyzés nem mentődött: {msg}',

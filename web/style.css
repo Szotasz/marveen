@@ -717,6 +717,48 @@ main {
   border-radius: var(--radius-sm);
 }
 
+/* Touch drag drop bar. Raised only while a long-press drag is in progress:
+   on a phone the columns stack, so the next column is ~2000px below the fold
+   and there is nothing on screen to drop onto. Fixed to the bottom edge so
+   the drop target is always within thumb reach, whatever the scroll position. */
+.kanban-touch-dropbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 9998; /* under the dragged ghost (9999), over the board */
+  display: flex;
+  gap: 6px;
+  padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
+  background: var(--bg-card);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -6px 20px rgba(0, 0, 0, .25);
+}
+.kanban-drop-target {
+  flex: 1;
+  min-width: 0;
+  padding: 12px 4px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The column the card is already in -- a valid drop (it just reorders), but
+   dimmed so the eye goes to the other four. */
+.kanban-drop-target.is-current {
+  opacity: .5;
+}
+.kanban-drop-target.drag-over {
+  background: var(--accent-soft);
+  border-style: solid;
+  border-color: var(--accent);
+  color: var(--text);
+}
+
 /* === Kanban Card === */
 .kanban-card {
   background: var(--bg-card);

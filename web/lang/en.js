@@ -240,6 +240,7 @@ window._i18n.en = {
   'kanban.toast.subtask_deleted': 'Subtask deleted',
   'kanban.toast.parent_updated': 'Parent updated',
   'kanban.toast.parent_unset':   'Parent removed',
+  'kanban.toast.status_updated': 'Status updated',
   'kanban.toast.assignee_updated': 'Assignee updated',
   'kanban.toast.comment_no_author': 'Select an author for the comment',
   'kanban.toast.comment_failed': 'Comment not saved: {msg}',
