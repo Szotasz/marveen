@@ -46,7 +46,13 @@ function cfg(key: string): string | undefined {
 // process zone (the TZ env / OS) when unset. Replaces the ~15 hardcoded
 // 'Europe/Budapest' literals -- change the zone in ONE place, and an update that
 // re-introduces a hardcoded literal is caught by a single grep, not a full review.
-export const APP_TZ = cfg('SCHEDULER_TZ') || Intl.DateTimeFormat().resolvedOptions().timeZone
+// Exported separately so the scheduler's startup reporter can tell "an operator
+// pinned this zone" apart from "we fell back to the host zone" -- reading
+// process.env there cannot distinguish the two, because cfg() layers
+// config-overrides.json over .env and neither lands in process.env. See
+// resolveCronTz in web/cron.ts.
+export const SCHEDULER_TZ_CONFIGURED = cfg('SCHEDULER_TZ')
+export const APP_TZ = SCHEDULER_TZ_CONFIGURED || Intl.DateTimeFormat().resolvedOptions().timeZone
 
 export const TELEGRAM_BOT_TOKEN = env['TELEGRAM_BOT_TOKEN'] ?? ''
 export const ALLOWED_CHAT_ID = env['ALLOWED_CHAT_ID'] ?? ''

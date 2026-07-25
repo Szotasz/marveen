@@ -1,5 +1,5 @@
 import { CronExpressionParser } from 'cron-parser'
-import { APP_TZ } from '../config.js'
+import { APP_TZ, SCHEDULER_TZ_CONFIGURED } from '../config.js'
 
 // All scheduled-task cron expressions (SKILL.md/task-config.json, the
 // dashboard schedule editor) are authored in the operator's own wall-clock
@@ -23,17 +23,49 @@ import { APP_TZ } from '../config.js'
 // startup instead of failing invisibly (see startScheduleRunner).
 export type CronTzSource = 'SCHEDULER_TZ' | 'TZ' | 'system-default'
 
-export function resolveCronTz(env: NodeJS.ProcessEnv = process.env): { tz: string; source: CronTzSource } {
-  if (env.SCHEDULER_TZ) return { tz: env.SCHEDULER_TZ, source: 'SCHEDULER_TZ' }
-  if (env.TZ) return { tz: env.TZ, source: 'TZ' }
-  return { tz: Intl.DateTimeFormat().resolvedOptions().timeZone, source: 'system-default' }
+// The reporter MUST resolve over the same layers APP_TZ does, or it lies about
+// the very thing it exists to surface. The earlier env-only version read
+// process.env directly and so diverged in both directions:
+//
+//  - FALSE ALARM: SCHEDULER_TZ set in .env (or config-overrides.json) never
+//    reaches process.env, so it reported system-default/UTC and fired the
+//    "fell back to UTC" warning while CRON_TZ was already the operator zone.
+//    An operator who had correctly configured the install was told, on every
+//    boot, that scheduling was broken.
+//  - MISSED ALARM: SCHEDULER_TZ exported into process.env is NOT read by
+//    cfg() (which layers config-overrides.json over .env), so APP_TZ stayed on
+//    the host zone -- yet the reporter announced 'SCHEDULER_TZ' and suppressed
+//    the warning, hiding a real misconfiguration.
+//
+// Hence `configuredTz` comes from the config layer (config.SCHEDULER_TZ_CONFIGURED)
+// and the host zone is passed in, mirroring `APP_TZ = cfg('SCHEDULER_TZ') || Intl`
+// branch for branch. Kept pure so both directions are testable without env
+// mutation; effectiveCronTz() below binds the real values.
+export function resolveCronTz(
+  configuredTz: string | undefined,
+  env: NodeJS.ProcessEnv,
+  systemTz: string,
+): { tz: string; source: CronTzSource } {
+  if (configuredTz) return { tz: configuredTz, source: 'SCHEDULER_TZ' }
+  // Below this point APP_TZ is the host zone either way; env.TZ only explains
+  // WHY the host zone is what it is, so the tz reported stays `systemTz`.
+  if (env.TZ) return { tz: systemTz, source: 'TZ' }
+  return { tz: systemTz, source: 'system-default' }
 }
 
 // The effective zone is config.APP_TZ (SCHEDULER_TZ via config-overrides.json >
 // .env > host zone), so a dashboard-set zone is honored and cron/display never
-// diverge; resolveCronTz() above stays as the startup source-reporter (see
+// diverge; effectiveCronTz() below is the startup source-reporter (see
 // startScheduleRunner) so the operator sees which layer won.
 const CRON_TZ = APP_TZ
+
+export function effectiveCronTz(): { tz: string; source: CronTzSource } {
+  return resolveCronTz(
+    SCHEDULER_TZ_CONFIGURED,
+    process.env,
+    Intl.DateTimeFormat().resolvedOptions().timeZone,
+  )
+}
 
 export function computeNextRun(cronExpression: string, tz: string = CRON_TZ): number {
   const expr = CronExpressionParser.parse(cronExpression, { tz })

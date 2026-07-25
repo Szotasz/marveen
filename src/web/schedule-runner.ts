@@ -26,7 +26,7 @@ import {
   SCHEDULED_TASK_PREAMBLE,
   wrapScheduledTask,
 } from '../prompt-safety.js'
-import { cronDueBetween, resolveCronTz } from './cron.js'
+import { cronDueBetween, effectiveCronTz } from './cron.js'
 import {
   listScheduledTasks,
   SCHEDULED_TASKS_DIR,
@@ -726,7 +726,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
   // outage that is otherwise invisible until someone notices the missing
   // briefing (2026-07-13..15). Logging the source turns it into a grep-able
   // signal; the warn fires only on the actively-dangerous UTC-by-default case.
-  const { tz: cronTz, source: cronTzSource } = resolveCronTz()
+  const { tz: cronTz, source: cronTzSource } = effectiveCronTz()
   logger.info({ cronTz, cronTzSource }, 'schedule-runner: cron timezone in effect')
   if (cronTzSource === 'system-default' && cronTz === 'UTC') {
     logger.warn(

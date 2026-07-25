@@ -23,22 +23,46 @@ const TZ = 'Europe/Budapest' // CEST (UTC+2) on 2026-07-15, no DST transition
 const ms = (utc: string) => Date.parse(utc)
 
 describe('resolveCronTz source precedence', () => {
-  it('prefers SCHEDULER_TZ over TZ', () => {
-    expect(resolveCronTz({ SCHEDULER_TZ: 'Europe/Budapest', TZ: 'UTC' })).toEqual({
+  it('prefers the configured SCHEDULER_TZ over the host zone', () => {
+    expect(resolveCronTz('Europe/Budapest', { TZ: 'UTC' }, 'UTC')).toEqual({
       tz: 'Europe/Budapest',
       source: 'SCHEDULER_TZ',
     })
   })
 
   it('falls back to TZ when SCHEDULER_TZ is absent', () => {
-    expect(resolveCronTz({ TZ: 'Europe/Budapest' })).toEqual({ tz: 'Europe/Budapest', source: 'TZ' })
+    expect(resolveCronTz(undefined, { TZ: 'Europe/Budapest' }, 'Europe/Budapest')).toEqual({
+      tz: 'Europe/Budapest',
+      source: 'TZ',
+    })
   })
 
   it('falls back to the system default when neither SCHEDULER_TZ nor TZ is set', () => {
-    const r = resolveCronTz({})
-    expect(r.source).toBe('system-default')
-    expect(typeof r.tz).toBe('string')
-    expect(r.tz.length).toBeGreaterThan(0)
+    expect(resolveCronTz(undefined, {}, 'UTC')).toEqual({ tz: 'UTC', source: 'system-default' })
+  })
+
+  // The reporter exists to tell the operator whether scheduling is on the
+  // intended zone. Reading process.env alone made it wrong in BOTH directions;
+  // these two lock the fix.
+
+  it('does not cry wolf when SCHEDULER_TZ comes from .env instead of process.env', () => {
+    // config-overrides.json / .env are read by cfg(), never exported into
+    // process.env -- so a correctly configured install used to be told on every
+    // boot that it had "fallen back to UTC" while CRON_TZ was already Budapest.
+    expect(resolveCronTz('Europe/Budapest', {}, 'UTC')).toEqual({
+      tz: 'Europe/Budapest',
+      source: 'SCHEDULER_TZ',
+    })
+  })
+
+  it('still warns when SCHEDULER_TZ is only exported into process.env', () => {
+    // cfg() does not read process.env, so APP_TZ stays on the host zone here.
+    // Reporting 'SCHEDULER_TZ' would suppress the warning on an install whose
+    // scheduling really is running on UTC.
+    expect(resolveCronTz(undefined, { SCHEDULER_TZ: 'Europe/Budapest' }, 'UTC')).toEqual({
+      tz: 'UTC',
+      source: 'system-default',
+    })
   })
 })
 
