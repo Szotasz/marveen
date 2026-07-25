@@ -7104,6 +7104,12 @@ body {
   background: var(--accent-soft);
   font-size: 13px;
 }
+/* The `display: flex` above is an author rule, so it outranks the UA's
+   [hidden] { display: none } -- without this override the banner stays on
+   screen even when initAuthBanner()/the dismiss button set el.hidden = true,
+   making the close button look dead. Same fix as .kanban-board[hidden] etc. */
+.auth-setup-banner[hidden] { display: none; }
+
 .auth-setup-banner-actions {
   display: flex;
   align-items: center;
