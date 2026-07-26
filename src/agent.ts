@@ -181,7 +181,9 @@ export async function runAgent(
 
     for await (const event of events) {
       if (event.type === 'system' && 'subtype' in event && (event as any).subtype === 'init') {
-        newSessionId = (event as any).sessionId as string
+        // SDK 0.3 renamed sessionId -> session_id (snake_case); accept both for
+        // forward and backward compatibility (snake_case preferred per 0.3).
+        newSessionId = ((event as any).session_id ?? (event as any).sessionId) as string
       }
       if (event.type === 'result') {
         const c = classifyAgentResult(event as any)
