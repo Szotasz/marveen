@@ -9,10 +9,12 @@
 //
 // Precedence (first match wins):
 //   1. Authorization: Bearer <dashboard token>   -> { kind: 'token' }
-//   2. SSE pane-stream ?token=<dashboard token>   -> { kind: 'token' }  (path-scoped)
-//   3. Federation inbound token, endpoint-scoped  -> { kind: 'federation', peer }
-//   4. mv_session cookie                          -> { kind: 'session', user }
-//   5. none of the above                          -> { kind: 'none' }
+//   2. Authorization: Bearer <device key>        -> { kind: 'device', device, deviceId }
+//   3. SSE pane-stream ?token=<dashboard token>   -> { kind: 'token' }  (path-scoped)
+//   4. SSE pane-stream ?token=<device key>        -> { kind: 'device' } (path-scoped)
+//   5. Federation inbound token, endpoint-scoped  -> { kind: 'federation', peer }
+//   6. mv_session cookie                          -> { kind: 'session', user }
+//   7. none of the above                          -> { kind: 'none' }
 //
 // requiresAuth() is the separate "is this path gated at all" predicate: public
 // probes (auth status, login, avatars) return false; everything under /api/ and
@@ -22,9 +24,11 @@ import type http from 'node:http'
 import { checkBearerToken } from './dashboard-auth.js'
 import { identifyFederationCaller } from './federation/config.js'
 import { resolveSession } from './auth-sessions.js'
+import { resolveDeviceKey } from './auth-device-keys.js'
 
 export type AuthResult =
   | { kind: 'token' }
+  | { kind: 'device'; device: string; deviceId: number }
   | { kind: 'federation'; peer: string }
   | { kind: 'session'; user: string }
   | { kind: 'none' }
@@ -79,19 +83,34 @@ export function resolveAuth(
   // 1. Bearer header -- unchanged, highest precedence.
   if (checkBearerToken(req.headers.authorization, dashboardToken)) return { kind: 'token' }
 
-  // 2. SSE pane stream ?token= (EventSource cannot set an Authorization header).
-  if (isSsePaneStream(path, method) && checkBearerToken(`Bearer ${url.searchParams.get('token') ?? ''}`, dashboardToken)) {
-    return { kind: 'token' }
+  // 2. Bearer device key. Runs only after the dashboard token failed to match,
+  //    so the token lane stays byte-identical; resolveDeviceKey's prefix check
+  //    makes this a no-op for every non-key bearer (and with zero device_keys
+  //    rows the whole step never resolves -- fresh installs unaffected).
+  const bearerMatch = /^Bearer\s+(.+)$/.exec(req.headers.authorization ?? '')
+  if (bearerMatch) {
+    const dk = resolveDeviceKey(bearerMatch[1]!.trim())
+    if (dk) return { kind: 'device', device: dk.name, deviceId: dk.id }
   }
 
-  // 3. Scoped per-peer federation tokens: valid ONLY on the two wire endpoints,
+  // 3. SSE pane stream ?token= (EventSource cannot set an Authorization header):
+  //    dashboard token first, then device key -- a device must be able to open
+  //    the pane stream too, or the dashboard would look half-broken on it.
+  if (isSsePaneStream(path, method)) {
+    const qtoken = url.searchParams.get('token') ?? ''
+    if (checkBearerToken(`Bearer ${qtoken}`, dashboardToken)) return { kind: 'token' }
+    const dk = resolveDeviceKey(qtoken)
+    if (dk) return { kind: 'device', device: dk.name, deviceId: dk.id }
+  }
+
+  // 4. Scoped per-peer federation tokens: valid ONLY on the two wire endpoints,
   //    and only while federation is enabled (identifyFederationCaller fail-closes).
   if (isFederationWireEndpoint(path, method)) {
     const peer = identifyFederationCaller(req.headers.authorization, checkBearerToken)
     if (peer !== null) return { kind: 'federation', peer }
   }
 
-  // 4. Browser-login session cookie.
+  // 5. Browser-login session cookie.
   const cookieValue = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
   if (cookieValue) {
     const session = resolveSession(cookieValue)

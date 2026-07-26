@@ -41,6 +41,11 @@ import {
   runDummyVerify,
 } from '../login-throttle.js'
 import {
+  createDeviceKey,
+  listDeviceKeys,
+  revokeDeviceKey,
+} from '../auth-device-keys.js'
+import {
   createDashboardUser,
   getDashboardUser,
   listDashboardUsers,
@@ -98,17 +103,28 @@ const FORBIDDEN_KIND = { error: 'Forbidden for this credential type' }
 // deliberately: a logged-in operator managing users is the existing behavior.
 const USER_ADMIN_KINDS = ['token', 'session'] as const
 
-// { authenticated, method, user, login_available, setup_required }.
+// Who may mint/list/revoke device keys. Deliberately the SAME operator set --
+// and deliberately NOT 'device': a device key that could mint further keys
+// would turn one leaked device into unlimited, unexpiring access.
+const DEVICE_KEY_ADMIN_KINDS = ['token', 'session'] as const
+
+const DEVICE_KEY_NAME_RE = /^[\p{L}\p{N} ._-]{1,64}$/u
+const DEVICE_KEY_MAX_EXPIRY_DAYS = 3650
+
+// { authenticated, method, user, device, login_available, setup_required }.
 // authenticated keeps its exact old meaning for token callers (existing probes
-// parse only that field): a valid bearer -> authenticated:true.
+// parse only that field): a valid bearer -> authenticated:true. A device key is
+// an authenticated principal too (method:'device', device:<key name>).
 function statusPayload(auth: RouteContext['auth']) {
-  const authenticated = auth?.kind === 'token' || auth?.kind === 'session'
-  const method = auth?.kind === 'token' ? 'token' : auth?.kind === 'session' ? 'session' : null
+  const authenticated = auth?.kind === 'token' || auth?.kind === 'session' || auth?.kind === 'device'
+  const method = authenticated ? auth!.kind : null
   const user = auth?.kind === 'session' ? auth.user ?? null : null
+  const device = auth?.kind === 'device' ? auth.device ?? null : null
   return {
     authenticated,
     method,
     user,
+    device,
     login_available: countDashboardUsers(false) >= 1,
     setup_required: countDashboardUsers(true) === 0,
   }
@@ -301,6 +317,65 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     const created = createDashboardUser(username, hash)
     logger.info({ username: created.username }, 'dashboard user created')
     json(res, { ok: true, user: { id: created.id, username: created.username } }, 201)
+    return true
+  }
+
+  if (path === '/api/auth/device-keys' && method === 'GET') {
+    if (!kindAllowed(auth, DEVICE_KEY_ADMIN_KINDS)) {
+      json(res, FORBIDDEN_KIND, 403)
+      return true
+    }
+    json(res, { keys: listDeviceKeys() })
+    return true
+  }
+
+  if (path === '/api/auth/device-keys' && method === 'POST') {
+    if (!kindAllowed(auth, DEVICE_KEY_ADMIN_KINDS)) {
+      json(res, FORBIDDEN_KIND, 403)
+      return true
+    }
+    let body: Record<string, unknown>
+    try {
+      body = await parseJsonBody(req)
+    } catch {
+      json(res, { error: 'Invalid JSON' }, 400)
+      return true
+    }
+    const name = str(body.name).trim()
+    if (!DEVICE_KEY_NAME_RE.test(name)) {
+      json(res, { error: 'Invalid device name (1-64 chars: letters, digits, space, . _ -)' }, 400)
+      return true
+    }
+    // Expiry is opt-in: absent/0 means the key lives until revoked.
+    let expiresInDays: number | undefined
+    if (body.expires_in_days !== undefined && body.expires_in_days !== null && body.expires_in_days !== 0) {
+      const n = Number(body.expires_in_days)
+      if (!Number.isFinite(n) || n <= 0 || n > DEVICE_KEY_MAX_EXPIRY_DAYS) {
+        json(res, { error: `Invalid expires_in_days (1-${DEVICE_KEY_MAX_EXPIRY_DAYS})` }, 400)
+        return true
+      }
+      expiresInDays = n
+    }
+    const minted = createDeviceKey(name, { expiresInDays })
+    logger.info({ id: minted.id, name: minted.name, expiresAt: minted.expiresAt }, 'device key minted')
+    // `key` is the one and only disclosure of the raw credential.
+    json(res, { ok: true, id: minted.id, name: minted.name, key: minted.key, created_at: minted.createdAt, expires_at: minted.expiresAt }, 201)
+    return true
+  }
+
+  const deviceKeyMatch = /^\/api\/auth\/device-keys\/(\d+)$/.exec(path)
+  if (deviceKeyMatch && method === 'DELETE') {
+    if (!kindAllowed(auth, DEVICE_KEY_ADMIN_KINDS)) {
+      json(res, FORBIDDEN_KIND, 403)
+      return true
+    }
+    const id = Number(deviceKeyMatch[1])
+    if (!revokeDeviceKey(id)) {
+      json(res, { error: 'Device key not found' }, 404)
+      return true
+    }
+    logger.info({ id }, 'device key revoked')
+    json(res, { ok: true })
     return true
   }
 

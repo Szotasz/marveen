@@ -13022,9 +13022,100 @@ async function renderAuthCard() {
   if (!body) return
   const status = await fetchAuthStatus()
   if (!status) { body.innerHTML = `<p class="auth-muted">${t('auth.card.unavailable')}</p>`; return }
-  if (status.setup_required) { renderCreateLoginForm(body); return }
-  if (status.method === 'session') { renderSessionPanel(body, status); return }
-  renderTokenModePanel(body)
+  if (status.setup_required) { renderCreateLoginForm(body) }
+  else if (status.method === 'session') { renderSessionPanel(body, status) }
+  else renderTokenModePanel(body)
+  // Device keys are managed by token/session operators only (a device key
+  // itself gets 403 from the management endpoints, so don't render the panel).
+  if (status.method === 'token' || status.method === 'session') renderDeviceKeysSection(body)
+}
+
+// === Per-device keys (mint/list/revoke) ===
+// A device key is a revocable per-device credential (Bridge, phone). The raw
+// key is displayed exactly once, right after minting.
+
+function renderDeviceKeysSection(body) {
+  const wrap = document.createElement('div')
+  wrap.className = 'auth-device-keys'
+  wrap.id = 'authDeviceKeys'
+  wrap.innerHTML =
+    `<div class="auth-sessions-title">${t('auth.devices.title')}</div>` +
+    `<p class="auth-muted">${t('auth.devices.desc')}</p>` +
+    `<div id="authDeviceKeyList"></div>` +
+    `<div class="auth-form auth-device-mint">` +
+      `<input id="authDevName" type="text" autocapitalize="off" spellcheck="false" maxlength="64" placeholder="${t('auth.devices.name_placeholder')}">` +
+      `<input id="authDevExpiry" type="number" min="1" max="3650" placeholder="${t('auth.devices.expiry_placeholder')}">` +
+      `<button class="btn-secondary" id="authDevMintBtn">${t('auth.devices.mint')}</button>` +
+      `<div class="auth-form-msg" id="authDevMsg"></div>` +
+      `<div id="authDevMinted" hidden></div>` +
+    `</div>`
+  body.appendChild(wrap)
+  document.getElementById('authDevMintBtn').addEventListener('click', mintDeviceKey)
+  refreshDeviceKeyList()
+}
+
+async function refreshDeviceKeyList() {
+  const el = document.getElementById('authDeviceKeyList')
+  if (!el) return
+  try {
+    const r = await fetch('/api/auth/device-keys')
+    if (!r.ok) { el.innerHTML = ''; return }
+    const { keys } = await r.json()
+    if (!keys || !keys.length) { el.innerHTML = `<p class="auth-muted">${t('auth.devices.empty')}</p>`; return }
+    el.innerHTML = keys.map((k) => {
+      const created = new Date(k.createdAt * 1000).toLocaleDateString()
+      const lastUsed = k.lastUsedAt ? new Date(k.lastUsedAt * 1000).toLocaleString() : t('auth.devices.never_used')
+      const expires = k.expiresAt ? ` &middot; ${t('auth.devices.expires', { date: new Date(k.expiresAt * 1000).toLocaleDateString() })}` : ''
+      return `<div class="auth-session-row auth-device-row" data-key-id="${k.id}">` +
+        `<span class="auth-device-name">${escapeHtml(k.name)}</span>` +
+        `<span class="auth-device-meta">${created} &middot; ${t('auth.devices.last_used', { date: lastUsed })}${expires}</span>` +
+        `<button class="btn-secondary btn-compact auth-device-revoke" data-key-id="${k.id}">${t('auth.devices.revoke')}</button>` +
+      `</div>`
+    }).join('')
+    el.querySelectorAll('.auth-device-revoke').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        if (!confirm(t('auth.devices.revoke_confirm'))) return
+        try { await fetch(`/api/auth/device-keys/${btn.dataset.keyId}`, { method: 'DELETE' }) } catch { /* ignore */ }
+        refreshDeviceKeyList()
+      })
+    })
+  } catch { el.innerHTML = '' }
+}
+
+async function mintDeviceKey() {
+  const msg = document.getElementById('authDevMsg')
+  const minted = document.getElementById('authDevMinted')
+  const name = (document.getElementById('authDevName').value || '').trim()
+  const expiryRaw = document.getElementById('authDevExpiry').value
+  msg.className = 'auth-form-msg'
+  minted.hidden = true
+  if (!name) { msg.classList.add('err'); msg.textContent = t('auth.devices.err_name'); return }
+  const payload = { name }
+  if (expiryRaw) payload.expires_in_days = Number(expiryRaw)
+  try {
+    const r = await fetch('/api/auth/device-keys', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const data = await r.json().catch(() => ({}))
+    if (!r.ok) { msg.classList.add('err'); msg.textContent = data.error || t('auth.card.err_generic'); return }
+    document.getElementById('authDevName').value = ''
+    document.getElementById('authDevExpiry').value = ''
+    minted.hidden = false
+    minted.innerHTML =
+      `<p class="auth-muted">${t('auth.devices.minted_hint')}</p>` +
+      `<div class="auth-form auth-device-minted-row">` +
+        `<input id="authDevMintedKey" type="text" readonly value="${escapeHtml(data.key)}" onclick="this.select()">` +
+        `<button class="btn-secondary btn-compact" id="authDevCopyBtn">${t('auth.devices.copy')}</button>` +
+      `</div>`
+    document.getElementById('authDevCopyBtn').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(data.key)
+        document.getElementById('authDevCopyBtn').textContent = t('auth.devices.copied')
+      } catch { document.getElementById('authDevMintedKey').select() }
+    })
+    refreshDeviceKeyList()
+  } catch { msg.classList.add('err'); msg.textContent = t('auth.login.err_network') }
 }
 
 function renderCreateLoginForm(body) {
