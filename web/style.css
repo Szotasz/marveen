@@ -7253,6 +7253,13 @@ body {
 }
 .auth-session-row code { color: var(--text); }
 .auth-session-ua { margin-left: auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.auth-device-keys { margin-top: 18px; }
+.auth-device-name { color: var(--text); font-weight: 600; }
+.auth-device-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.auth-device-row .auth-device-revoke { margin-left: auto; flex-shrink: 0; }
+.auth-device-mint { margin-top: 10px; }
+.auth-device-minted-row { flex-direction: row; max-width: none; }
+.auth-device-minted-row input { flex: 1; font-family: var(--mono, monospace); font-size: 12px; }
 
 /* === OTel Trace Waterfall (card def5a189) === */
 .chat-upper-pane {

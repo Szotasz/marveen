@@ -859,6 +859,23 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id)`)
 
+  // Per-device dashboard keys (AUTHPLAN1 #1). One row per enrolled device
+  // (Bridge install, phone) so a single device can be revoked without rotating
+  // the shared dashboard token. Only sha256(key) is stored -- the raw value is
+  // shown once at mint time. expires_at is OPT-IN (null = lives until revoked;
+  // a rarely used phone must not die silently). Zero rows = feature off; the
+  // auth gate falls through exactly as before, so fresh installs see no change.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS device_keys (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      key_hash TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      last_used_at INTEGER,
+      expires_at INTEGER
+    )
+  `)
+
   // --- OTel Distributed Tracing (card def5a189) ---
   // SQLite-native span store. No external OTel SDK: spans are written via
   // /api/spans and the message-router middleware injects trace context into

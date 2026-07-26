@@ -1188,8 +1188,10 @@
 
       <!-- Dashboard browser login (optional). Rendered by renderAuthCard():
            create the first login when none exists, else change password + list
-           active sessions and log out. -->
-      <div class="card auth-card" id="authCard" style="margin-bottom:16px">
+           active sessions and log out. Starts hidden; loadSettings() moves it
+           into the Security tab panel and unhides it there (it stays here,
+           unhidden in place, only in the empty-registry fallback). -->
+      <div class="card auth-card" id="authCard" style="margin-bottom:16px" hidden>
         <h3 data-i18n="auth.card.title">Dashboard login</h3>
         <div id="authCardBody"></div>
       </div>

@@ -6,16 +6,28 @@
 //   npm run dashboard-user -- list
 //   npm run dashboard-user -- remove <username>
 //   npm run dashboard-user -- sessions:clear [<username>]
+//   npm run dashboard-user -- security:reset
 //
-// The operator can always run commands on the machine hosting the install, so
-// this doubles as the forgot-password recovery path. Passwords are read interactively (twice, muted)
+// THIS IS THE BREAK-GLASS PATH. It talks to SQLite directly -- no HTTP, no
+// auth gate -- so it works even when the web login is misconfigured, throttled
+// or unreachable. The operator can always run commands on the machine hosting
+// the install, so "I can run this CLI" is the root credential.
+//
+// security:reset is the panic lever: it revokes EVERY device key and clears
+// EVERY browser session in one step (future login-enforcement toggles will be
+// cleared here too). Passwords and users are untouched; the bearer token keeps
+// working. See docs/dashboard-auth-recovery.md.
+//
+// Passwords are read interactively (twice, muted)
 // or from stdin with --password-stdin for automation. No new dependencies:
 // node:readline for the prompt, the app's own db + password-hash modules.
 
 import { createInterface } from 'node:readline'
-import { initDatabase, getDb, createDashboardUser, getDashboardUser, listDashboardUsers, deleteDashboardUser, updateDashboardUserPassword } from '../src/db.js'
+import { initDatabase, getDb, createDashboardUser, getDashboardUser, listDashboardUsers, deleteDashboardUser, updateDashboardUserPassword, logConfigChange } from '../src/db.js'
 import { hashPassword, assertPasswordPolicy, PasswordPolicyError } from '../src/web/password-hash.js'
 import { revokeAllForUser } from '../src/web/auth-sessions.js'
+import { securityReset } from '../src/web/security-reset.js'
+import { notifySecurityEvent } from '../src/notify.js'
 
 function usage(): never {
   process.stderr.write(
@@ -24,7 +36,8 @@ function usage(): never {
     '  dashboard-user reset-password <username> [--password-stdin]\n' +
     '  dashboard-user list\n' +
     '  dashboard-user remove <username>\n' +
-    '  dashboard-user sessions:clear [<username>]\n',
+    '  dashboard-user sessions:clear [<username>]\n' +
+    '  dashboard-user security:reset      # revoke ALL device keys + clear ALL browser sessions\n',
   )
   process.exit(2)
 }
@@ -113,6 +126,10 @@ async function main(): Promise<void> {
       const hash = await hashPassword(pw)
       updateDashboardUserPassword(user.id, hash)
       revokeAllForUser(user.id)
+      // Same audit + channel ping as the HTTP break-glass: a password reset
+      // that skipped the current-password proof must always leave a trace.
+      logConfigChange('security.break_glass_password_reset', null, user.username, 'cli')
+      await notifySecurityEvent(`🔑 Jelszó-reset a dashboard CLI-ből (break-glass): "${user.username}". Ha nem te voltál, a gépen fut valami a nevedben.`)
       process.stdout.write(`Password reset for "${username}"; all their sessions were revoked.\n`)
       break
     }
@@ -140,6 +157,15 @@ async function main(): Promise<void> {
       deleteDashboardUser(username)
       const remaining = listDashboardUsers().length
       process.stdout.write(`Removed "${username}".${remaining === 0 ? ' No users left -- back to token-only mode.' : ''}\n`)
+      break
+    }
+    case 'security:reset': {
+      const r = securityReset('cli')
+      await notifySecurityEvent(`🚨 Biztonsági reset futott a dashboard CLI-ből: ${r.deviceKeysRevoked} eszközkulcs visszavonva, ${r.sessionsCleared} böngésző-munkamenet törölve. A hozzáférési token és a jelszavak változatlanok.`)
+      process.stdout.write(
+        `Security reset done: ${r.deviceKeysRevoked} device key(s) revoked, ${r.sessionsCleared} browser session(s) cleared.\n` +
+        'Passwords and the dashboard token are untouched. Devices must be re-enrolled with new keys.\n',
+      )
       break
     }
     case 'sessions:clear': {

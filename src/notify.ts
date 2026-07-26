@@ -26,3 +26,16 @@ export async function notifyChannel(text: string): Promise<void> {
 
 // Backward-compatible alias
 export const notifyTelegram = notifyChannel
+
+// Security-event notification (break-glass password reset, security:reset).
+// Unlike notifyChannel, a missing channel config is an EXPECTED state here
+// (fresh installs, channel-less deployments), so it stays fully silent -- the
+// recovery path must never depend on, or be noisy about, Telegram being wired.
+export async function notifySecurityEvent(text: string): Promise<void> {
+  if (!CHANNEL_TOKEN || !CHANNEL_CHAT_ID) return
+  try {
+    await notifyChannel(text)
+  } catch {
+    /* never let a notification failure break the recovery action itself */
+  }
+}
