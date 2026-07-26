@@ -33,9 +33,7 @@ A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás
 
 ## Miben tér el ez a fork az eredeti Marveen aktuális állapotától
 
-*Állapot: upstream `7bb6360` vs fork `2039768`, 2026-07-26*
-
-### A fork többlete
+*Állapot: upstream `7bb6360` vs fork `2039768`, 2026-07-27*
 
 Változások, amelyek a forkban megvannak, az upstreamben nincsenek:
 
@@ -45,21 +43,10 @@ Változások, amelyek a forkban megvannak, az upstreamben nincsenek:
 - **Dependabot** -- automatikus függőség-frissítés + számos már bemergelve: TypeScript 7, vitest 4, pino 10, @types/node 26, hono, postcss, body-parser, fast-uri, pyasn1
 - **claude-agent-sdk 0.3 session_id fix** -- snake_case/camelCase dual-olvasás, teszttel bizonyítva
 
-### Az upstreamből még nem átvett
-
-Változások, amelyek az upstreamben megvannak, a forkba még nem kerültek be (szelektív cherry-pick döntés szükséges):
-
-- **Auth-hardening sorozat (#723-726)**:
-  - `fix(auth)`: explicit credential-kind allowlists hozzáférést adó végpontokon (#723)
-  - `feat(auth)`: per-device dashboard-kulcsok (device_keys) -- kibocsátás/listázás/visszavonás + gate-integráció (#724)
-  - `feat(settings)`: Security tab az auth-kártyával (#725)
-  - `feat(auth)`: recovery paths -- security:reset CLI, break-glass audit + channel-riasztás (#726)
-
 <!-- ONGOING: Minden jövőbeli fork-PR leadásakor (Zack -> Jarvis) frissítsd ezt a szakaszt
      a friss git log alapján:
        git fetch upstream && git fetch origin
        git log upstream/develop..origin/develop --oneline   # fork többlet
-       git log origin/develop..upstream/develop --oneline   # upstream többlet
      Az "Állapot:" sorban frissítsd az SHA-kat és a dátumot. -->
 
 Marveen egy AI asszisztens keretrendszer, ami Claude Code-ra épül. Saját AI csapatot építhetsz, akik Telegramon vagy Slacken kommunikálnak veled, önállóan dolgoznak, és egymással is együttműködnek.
