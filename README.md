@@ -15,6 +15,40 @@
 
 > **Fork.** Ez a repó a [Szotasz/marveen](https://github.com/Szotasz/marveen) önálló forkja, amely `fork-point` (2026-07-26, baseline: upstream `55ecbc6`) óta függetlenül fejlődik. Az upstream javításokat szelektíven vesszük át (`git fetch upstream` + cherry-pick). Hozzájárulásokat ehhez a forkhoz várunk PR-ként. Az AI által generált monolitikus kódot felhagyva, modularizált verzió alkotása a célom, amelyben nagyságrendekkel kisebb tokenhasználatot emészt fel magának a keretrendszernek a használata.
 
+## A cett hozzájárulásai az eredeti Marveen repóhoz
+
+A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás Gergő (cett) 56 commitot küldött be. Az alábbiakban funkcionális csoportosításban:
+
+- **Elosztott nyomkövetés** -- OpenTelemetry trace-waterfall az inter-agent üzenetekhez: teljes kérés-lánc követhetővé válik a dashboardon (#705)
+- **Prompt-injection védelem** -- quarantine sub-ágens, egress-gate, from-auth azonosítás, content-nonce; a fleet automatikusan elkülöníti az ismeretlen forrásból érkező utasításokat (#633)
+- **HITL (human-in-the-loop) jóváhagyás** -- jóváhagyási primitív autonóm műveletekhez (#644), autonómia-szint beállítások per-kategória (#627)
+- **Skills rendszer** -- Skills-oldal újratervezés, ágens-lokális skillek megjelenítése, `skill_usage` követési tábla PostToolUse hook-kal, per-ágens merged skill-index (#604, #649, #607, #643)
+- **Dashboard -- Agents & Team** -- Agents és Team képernyők egyesítése egyetlen nézetté view toggle-lal (#669); központi Beállítások-felület v2 config-registry + override API-val (#393, #398); Napló/audit-log oldal konfig-változások, idea-státusz, eseménynapló (#400); HU/EN nyelvváltó teljes UI-lokalizációval (#419)
+- **Kanban bővítések** -- Gantt/timeline nézet határidős kártyákhoz (#497); címkék és szűrők (#392); archivált kártyák dedikált nézet visszaállítással (#406); swimlane-nézet (#389); oszloponkénti WIP-limit badge (#388); card-aging vizuális jelzés (#386); alfeladat-beágyazás (#381)
+- **Ideabox** -- comment-threadek, impact/effort pontozás, státuszszűrő, életciklus (audit, stale, reversal, definition-of-done) (#397)
+- **Token- és költségmonitor** -- per-modell pontos költség, MCP-szerver/eszköz oszlopok, model-backfill upsert (#573)
+- **Fleet-infrastruktúra** -- `/.well-known/fleetq` capability manifest Bearer auth-tal (#569); fleet-roster scaffold automatikus generálása a CLAUDE.md-be (#584); `DASHBOARD_PUBLIC_URL` elosztott ágensekhez (#600); dual worker sessions (#602)
+- **Ütemezés és megbízhatóság** -- scheduled-task fire-timeout (#665); heartbeat-precheck (#482); per-tool kimenő HTTP-határidő (#561); watchdog restart-flapping javítás (#483)
+- **Tool-call audit metadata** (#667); plugin-id centralizálás (#673); telepítő: Go + bumblebee auto-install (#432); frontend smoke-test + syntax-gate CI (#423)
+
+## Miben tér el ez a fork az eredeti Marveen aktuális állapotától
+
+*Állapot: upstream `7bb6360` vs fork `2039768`, 2026-07-27*
+
+Változások, amelyek a forkban megvannak, az upstreamben nincsenek:
+
+- **Dashboard overview-redesign** (#282) -- 5-zónás layout, KPI-konsistencia-fix, zóna-sorrend Jónás visszajelzése alapján
+- **Repo governance** -- `.github/CODEOWNERS` (@cett default reviewer), dupla copyright a LICENSE-ben, README fork-jelölés és modularizációs indoklás, SECURITY.md valódi security policy-ként újraírva
+- **CI/CD pipeline** -- GitHub Actions workflow (build + typecheck + test); CI-safe teszt-env (dist/** kizárás vitest-ből, claude/tmux stub-ok); Node.js 22 (deprecation-warning elhárítás)
+- **Dependabot** -- automatikus függőség-frissítés + számos már bemergelve: TypeScript 7, vitest 4, pino 10, @types/node 26, hono, postcss, body-parser, fast-uri, pyasn1
+- **claude-agent-sdk 0.3 session_id fix** -- snake_case/camelCase dual-olvasás, teszttel bizonyítva
+
+<!-- ONGOING: Minden jövőbeli fork-PR leadásakor (Zack -> Jarvis) frissítsd ezt a szakaszt
+     a friss git log alapján:
+       git fetch upstream && git fetch origin
+       git log upstream/develop..origin/develop --oneline   # fork többlet
+     Az "Állapot:" sorban frissítsd az SHA-kat és a dátumot. -->
+
 Marveen egy AI asszisztens keretrendszer, ami Claude Code-ra épül. Saját AI csapatot építhetsz, akik Telegramon vagy Slacken kommunikálnak veled, önállóan dolgoznak, és egymással is együttműködnek.
 
 ## Funkciók
