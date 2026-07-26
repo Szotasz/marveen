@@ -8,7 +8,7 @@ import {
 } from '../agent-config.js'
 import { readAgentTeam } from '../agent-team.js'
 import { isAgentRunning } from '../agent-process.js'
-import { json, jsonMaybeGzip } from '../http-helpers.js'
+import { jsonMaybeGzip } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
 // Count "real" user turns (operator prompts, Telegram messages) in every
@@ -57,6 +57,23 @@ function countUserTurns(fromMs: number, toMs: number = Number.POSITIVE_INFINITY)
   return total
 }
 
+// Estimate AI token cost in USD from token counts and model name.
+// Uses approximate Anthropic public pricing; returns 0 for unknown models.
+function estimateTokenCostUsd(inputTokens: number, outputTokens: number, model: string | null): number {
+  const m = (model ?? '').toLowerCase()
+  let inRate: number
+  let outRate: number
+  if (m.includes('opus')) {
+    inRate = 15 / 1_000_000; outRate = 75 / 1_000_000
+  } else if (m.includes('haiku')) {
+    inRate = 0.25 / 1_000_000; outRate = 1.25 / 1_000_000
+  } else {
+    // sonnet and unknown models
+    inRate = 3 / 1_000_000; outRate = 15 / 1_000_000
+  }
+  return inputTokens * inRate + outputTokens * outRate
+}
+
 export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -69,10 +86,13 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     const memStats = db0.prepare("SELECT COUNT(*) as c FROM memories").get() as { c: number }
     const memCats = db0.prepare("SELECT COUNT(DISTINCT category) as c FROM memories").get() as { c: number }
 
+    const nowMs = Date.now()
     const startOfDay = new Date()
     startOfDay.setHours(0, 0, 0, 0)
     const startTs = startOfDay.getTime()
     const yesterday = startTs - 24 * 60 * 60 * 1000
+    const fourHoursAgo = nowMs - 4 * 60 * 60 * 1000
+
     const schedToday = countTaskRunsBetween(startTs)
     const schedYesterday = countTaskRunsBetween(yesterday, startTs)
     const userTurns = countUserTurns(startTs)
@@ -96,61 +116,153 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
       }
     }
 
-    const activity: Array<{ icon: string; text: string; at: number }> = []
+    // Per-agent last-active timestamp from token_usage (ms epoch)
+    const lastActiveMap = new Map<string, number>()
     try {
-      const memRows = db0.prepare("SELECT content, created_at, agent_id FROM memories ORDER BY created_at DESC LIMIT 6").all() as { content: string; created_at: number; agent_id: string }[]
+      const rows = db0.prepare(
+        "SELECT agent, MAX(timestamp) as last_active FROM token_usage GROUP BY agent"
+      ).all() as { agent: string; last_active: number }[]
+      for (const r of rows) lastActiveMap.set(r.agent, r.last_active)
+    } catch { /* ignore */ }
+
+    // Daily token count and estimated USD cost from token_usage
+    let tokensToday = 0
+    let costTodayUsd = 0
+    try {
+      const startSec = Math.floor(startTs / 1000)
+      const tokenRows = db0.prepare(
+        "SELECT input_tokens, output_tokens, model FROM token_usage WHERE timestamp >= ?"
+      ).all(startSec) as { input_tokens: number; output_tokens: number; model: string | null }[]
+      for (const r of tokenRows) {
+        tokensToday += r.input_tokens + r.output_tokens
+        costTodayUsd += estimateTokenCostUsd(r.input_tokens, r.output_tokens, r.model)
+      }
+    } catch { /* ignore */ }
+
+    // Pending approvals count
+    let pendingApprovals = 0
+    try {
+      const pa = db0.prepare("SELECT COUNT(*) as c FROM approvals WHERE status='pending'").get() as { c: number }
+      pendingApprovals = pa.c
+    } catch { /* ignore */ }
+
+    // Error/timeout spans in last 4h (start_ms is in milliseconds)
+    let errors4h = 0
+    try {
+      const errRow = db0.prepare(
+        "SELECT COUNT(*) as c FROM otel_spans WHERE status IN ('error','timeout') AND start_ms >= ?"
+      ).get(fourHoursAgo) as { c: number }
+      errors4h = errRow.c
+    } catch { /* ignore */ }
+
+    // Undelivered inter-agent messages (pending = not yet delivered to recipient session)
+    let unreadMessages = 0
+    try {
+      const umRow = db0.prepare("SELECT COUNT(*) as c FROM agent_messages WHERE status='pending'").get() as { c: number }
+      unreadMessages = umRow.c
+    } catch { /* ignore */ }
+
+    // Stuck scheduled tasks: active tasks whose next_run was more than 10 minutes ago
+    let stuckTasks = 0
+    try {
+      const tenMinAgo = Math.floor((nowMs - 10 * 60 * 1000) / 1000)
+      const stRow = db0.prepare(
+        "SELECT COUNT(*) as c FROM scheduled_tasks WHERE status='active' AND next_run < ?"
+      ).get(tenMinAgo) as { c: number }
+      stuckTasks = stRow.c
+    } catch { /* ignore */ }
+
+    // Activity feed: last 4h, include agent_id for frontend filtering
+    const activity: Array<{ icon: string; text: string; at: number; agent: string }> = []
+    try {
+      const fourHAgoSec = Math.floor(fourHoursAgo / 1000)
+      const memRows = db0.prepare(
+        "SELECT content, created_at, agent_id FROM memories WHERE created_at >= ? ORDER BY created_at DESC LIMIT 20"
+      ).all(fourHAgoSec) as { content: string; created_at: number; agent_id: string }[]
       for (const r of memRows) {
         activity.push({
           icon: 'memory',
-          text: `${r.agent_id}: ${r.content.slice(0, 80)}${r.content.length > 80 ? '…' : ''}`,
+          text: `${r.content.slice(0, 80)}${r.content.length > 80 ? '…' : ''}`,
           at: r.created_at * 1000,
+          agent: r.agent_id,
         })
       }
     } catch { /* ignore */ }
     try {
-      const msgRows = db0.prepare("SELECT from_agent, to_agent, content, created_at FROM agent_messages ORDER BY created_at DESC LIMIT 4").all() as { from_agent: string; to_agent: string; content: string; created_at: number }[]
+      const fourHAgoSec = Math.floor(fourHoursAgo / 1000)
+      const msgRows = db0.prepare(
+        "SELECT from_agent, to_agent, content, created_at FROM agent_messages WHERE created_at >= ? ORDER BY created_at DESC LIMIT 15"
+      ).all(fourHAgoSec) as { from_agent: string; to_agent: string; content: string; created_at: number }[]
       for (const r of msgRows) {
         activity.push({
           icon: 'delegate',
-          text: `${r.from_agent} → ${r.to_agent}: ${r.content.slice(0, 60)}${r.content.length > 60 ? '…' : ''}`,
+          text: `→ ${r.to_agent}: ${r.content.slice(0, 60)}${r.content.length > 60 ? '…' : ''}`,
           at: r.created_at * 1000,
+          agent: r.from_agent,
+        })
+      }
+    } catch { /* ignore */ }
+    // Approval events in last 4h
+    try {
+      const fourHAgoSec = Math.floor(fourHoursAgo / 1000)
+      const aprRows = db0.prepare(
+        "SELECT agent_id, action_description, status, created_at FROM approvals WHERE created_at >= ? ORDER BY created_at DESC LIMIT 10"
+      ).all(fourHAgoSec) as { agent_id: string; action_description: string; status: string; created_at: number }[]
+      for (const r of aprRows) {
+        activity.push({
+          icon: 'approval',
+          text: `[${r.status}] ${r.action_description.slice(0, 60)}${r.action_description.length > 60 ? '…' : ''}`,
+          at: r.created_at * 1000,
+          agent: r.agent_id,
         })
       }
     } catch { /* ignore */ }
     activity.sort((a, b) => b.at - a.at)
 
-    const agentsForTeam: Array<{ id: string; label: string; role: string; running: boolean; hasAvatar: boolean; avatarUrl: string }> = []
+    // Build agents list with last_active timestamp
+    const agentsForGrid: Array<{
+      id: string; label: string; role: string; running: boolean;
+      hasAvatar: boolean; avatarUrl: string; lastActive: number | null
+    }> = []
     const mainHasAvatar = [
       join(PROJECT_ROOT, 'store', 'marveen-avatar.png'),
       join(PROJECT_ROOT, 'store', 'marveen-avatar.jpg'),
     ].some(existsSync)
-    agentsForTeam.push({
+    agentsForGrid.push({
       id: MAIN_AGENT_ID,
       label: BOT_NAME,
       role: 'main',
       running: true,
       hasAvatar: mainHasAvatar,
       avatarUrl: `/api/marveen/avatar`,
+      lastActive: lastActiveMap.get(MAIN_AGENT_ID) ?? null,
     })
     for (const a of subAgents) {
       const team = readAgentTeam(a)
-      agentsForTeam.push({
+      agentsForGrid.push({
         id: a,
         label: readAgentDisplayName(a),
         role: team.role,
         running: isAgentRunning(a),
         hasAvatar: existsSync(join(agentDir(a), 'avatar.png')),
         avatarUrl: `/api/agents/${encodeURIComponent(a)}/avatar`,
+        lastActive: lastActiveMap.get(a) ?? null,
       })
     }
+
     jsonMaybeGzip(req, res, {
-      agents: { total, running },
+      agents: { total, running, list: agentsForGrid },
       tasksToday,
       tasksYesterday,
       memories: { count: memStats.c, categories: memCats.c },
       skills: { count: skillCount, today: skillsToday },
-      team: agentsForTeam,
-      activity: activity.slice(0, 8),
+      tokensToday,
+      costTodayUsd: Math.round(costTodayUsd * 10000) / 10000,
+      pendingApprovals,
+      errors4h,
+      unreadMessages,
+      stuckTasks,
+      activity: activity.slice(0, 30),
     })
     return true
   }
