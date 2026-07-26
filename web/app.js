@@ -1,3 +1,9 @@
+// S-1 POC (issue #3): first ES module import. showToast extracted to
+// web/modules/toast.js; app.js is now a type="module" script so this
+// import is valid. All other app.js symbols stay in module scope for now
+// (no regressions since index.html has zero inline event handlers).
+import { showToast } from './modules/toast.js'
+
 // === Avatar cache-busting epoch ===
 // Avatar URLs used to carry ?t=Date.now() on every render, which defeated the
 // browser cache and re-downloaded ~1MB per avatar on each rerender (brutal on
@@ -2388,7 +2394,7 @@ const skillModalOverlay = document.getElementById('skillModalOverlay')
 const agentName = document.getElementById('agentName')
 const agentDesc = document.getElementById('agentDesc')
 const agentModel = document.getElementById('agentModel')
-const toast = document.getElementById('toast')
+// toast DOM ref moved to web/modules/toast.js (S-1 POC)
 
 const AVATARS = [
   '01_robot.png', '02_wizard_girl.png', '03_knight.png', '04_ninja.png',
@@ -2716,12 +2722,7 @@ document.getElementById('wizardCreateBtn').addEventListener('click', async () =>
   }
 })
 
-// === Toast ===
-function showToast(msg, duration = 3000) {
-  toast.textContent = msg
-  toast.classList.add('visible')
-  setTimeout(() => toast.classList.remove('visible'), duration)
-}
+// showToast is imported from web/modules/toast.js (S-1 POC, issue #3)
 
 // === Agents API ===
 async function loadAgents() {
