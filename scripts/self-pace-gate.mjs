@@ -50,8 +50,18 @@ const SELF_PACE_BASH_PATTERNS = [
   /\btmux\b[\s\S]*\b(send-keys|paste-buffer|run-shell|set-buffer)\b/i,
   // self-backgrounding that relaunches claude (nohup/setsid/disown + claude)
   /\b(nohup|setsid|disown)\b[\s\S]*\bclaude\b/i,
-  // the loop slash-skill driven from a shell
-  /\bclaude\b[\s\S]*\/loop\b/i,
+  // the loop slash-skill driven from a shell. `/loop` must be in SLASH-COMMAND
+  // position -- a standalone token (segment-start / whitespace / quote before it,
+  // whitespace / quote / end after it) -- never a PATH segment. The old
+  // `\/loop\b` fired on any `loop`-prefixed path component whenever `.claude` was
+  // in the same command (\bclaude\b matches the `.claude` in every memory/skill
+  // path), so reading `.../memory/loop-stop-...md` or `~/.claude/skills/loop/...`
+  // was denied (measured 2026-07-26, found by pg: Heli denied a harmless memory
+  // read). Same bug class as the at/batch and launchctl fixes below: a keyword in
+  // a PATH collided with a call pattern; the fix is to match the invocation SHAPE.
+  // Every real form stays denied: `claude /loop 5m`, `claude -p "/loop x"`,
+  // `claude '/loop'`, bare `claude /loop`.
+  /\bclaude\b[\s\S]*(?:^|[\s'"])\/loop(?=[\s'"]|$)/i,
 ]
 
 // OS-level schedulers + delayed exec (cron / launchd / systemd / at / batch): the
@@ -68,7 +78,43 @@ const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nic
 // (`X=`crontab -r``) is caught too -- both run the enclosed command in a shell
 // context, so a scheduler binary immediately inside either is a real self-pace.
 const SCHED_BOUNDARY = '[;&|(`]'
-const SCHEDULER_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(crontab|launchctl|systemd-run|batch|at)\b(?!-)(?!\s*=)`, 'i')
+// `at` and `batch` are also ordinary English words, and splitSegments splits on
+// NEWLINES -- so a PROSE line inside a multi-line commit body ("at least 80% of
+// entries", "batch size is 50") lands at a segment start and looked exactly like
+// the at(1)/batch(1) binaries. Measured 2026-07-25 (found by JogAsz): a heredoc
+// commit message was denied for the words "at least"; the identical command
+// passed after rewording that one line. The `-m "$(...)"` form is deliberately
+// NOT blanked by stripGitCommitMessages (a real substitution could hide there),
+// so the body does reach the splitter -- the fix belongs here, not there.
+//
+// For these two words ONLY, also require something that looks like an actual
+// invocation: end of segment (a bare `batch` reads stdin -- still a real vector),
+// a flag, an input redirect, or an at(1) TIMESPEC (which at(1) requires anyway,
+// so a real submit can never omit it). crontab/launchctl/systemd-run keep the
+// plain match: they are not English words, so prose cannot collide with them.
+const AT_INVOCATION = String.raw`(?=\s*$|\s+-|\s*<|\s+(?:now|noon|midnight|teatime|today|tomorrow|next\b|\+\s*\d|\d{1,2}:\d{2}|\d{3,4}\b|\d{1,2}\s*(?:am|pm)\b|\d{1,2}[./]\d{1,2}|(?:mon|tue|wed|thu|fri|sat|sun)|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)))`
+// `launchctl` needed the SAME narrowing, for a different reason than at/batch, and
+// the comment above ("not English words, so prose cannot collide") was measured
+// wrong on 2026-07-26 (found by Hacker). It is not an English word -- but the
+// fleet's own heartbeats ORDER every agent to report `launchctl list | grep
+// com.jarvis.channels` output, so a launchd JOB LABEL appears in prose constantly.
+// splitSegments splits on `;`, so a report line "...; launchctl com.jarvis.channels
+// PID 555" put `launchctl <label>` at a segment start and it read as a real
+// invocation. His status message was denied; the finding is systemic, not his.
+//
+// The narrowing mirrors AT_INVOCATION: instead of enumerating dangerous
+// subcommands (a denylist -- miss one and it is a hole), require the SHAPE of a
+// real invocation. Every launchctl self-pace vector (load/bootstrap/submit/
+// kickstart/start/enable/...) takes a SUBCOMMAND word first, so demand that the
+// next token could be one: a bare lowercase word, no dot and no slash. A job
+// label (`com.jarvis.channels`) and a path both fail that and pass through as
+// prose. End-of-segment and a flag stay DENIED -- a bare `launchctl` is
+// interactive, still a real vector.
+const LAUNCHCTL_SUBCOMMAND = String.raw`(?=\s*$|\s+-|\s+[a-z][a-z-]*(?:\s|$))`
+const SCHEDULER_RX = new RegExp(
+  String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(?:(?:crontab|systemd-run)\b(?!-)(?!\s*=)|launchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|(?:batch|at)\b(?!-)(?!\s*=)${AT_INVOCATION})`,
+  'i',
+)
 // ...but allow a pure READ-listing of one's own schedule (parity with the store /
 // schedule-API read exemptions): crontab -l, launchctl list/print, atq.
 const SCHEDULER_READ_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(crontab\s+-l\b|launchctl\s+(?:list|print|dumpstate|blame|examine)\b|atq\b)`, 'i')

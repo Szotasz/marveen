@@ -36,6 +36,43 @@ describe('self-pace-gate gateDecision', () => {
   it('does NOT misfire "at" on a substring (netstat / cat)', () => {
     expect(selfPaceDecision('Bash', { command: 'cat file.txt && netstat -an' }).deny).toBe(false)
   })
+  // Regression (2026-07-25, found by JogAsz): splitSegments splits on NEWLINES, so
+  // every prose line of a multi-line commit body became its own "segment". A line
+  // starting with the English words "at" / "batch" then looked like the at(1) /
+  // batch(1) binaries and false-denied a plain `git commit`. The `-m "$(...)"`
+  // form is deliberately NOT blanked by stripGitCommitMessages (a real command
+  // substitution could hide there), so the body does reach the splitter.
+  it('does NOT misfire on PROSE starting with "at"/"batch" in a heredoc commit body', () => {
+    const body = (line: string) => `git commit -m "$(cat <<'EOF'\nfix(lib): parser tweak\n\n${line}\nEOF\n)"`
+    for (const line of [
+      'at least 80% of parsed entries must carry a date',
+      'at most 3 retries before giving up',
+      'at runtime the parser reads the header',
+      'at the same time we clear the cache',
+      'batch size is 50 by default',
+    ]) {
+      expect(selfPaceDecision('Bash', { command: body(line) }).deny).toBe(false)
+    }
+  })
+  it('STILL denies a real at/batch submit (timespec, flag, redirect, bare batch)', () => {
+    for (const cmd of [
+      'at now + 1 minute',
+      'at 14:00',
+      'at tomorrow',
+      'at -f /tmp/x.sh now',
+      'batch',
+      'batch < /tmp/x.sh',
+      'echo hi ; at now + 5 min',
+      '/usr/bin/at now',
+    ]) {
+      expect(selfPaceDecision('Bash', { command: cmd }).deny).toBe(true)
+    }
+  })
+  it('STILL denies a real command substitution hidden in a commit message', () => {
+    expect(selfPaceDecision('Bash', { command: 'git commit -m "$(crontab -r)"' }).deny).toBe(true)
+    // unquoted heredoc delimiter DOES expand -> must stay caught
+    expect(selfPaceDecision('Bash', { command: 'git commit -m "$(cat <<EOF\nfix\n$(at now)\nEOF\n)"' }).deny).toBe(true)
+  })
   it('denies a WRITE to the self-schedule store (redirect)', () => {
     expect(selfPaceDecision('Bash', { command: 'echo "{}" > ~/.claude/scheduled_tasks.json' }).deny).toBe(true)
   })
@@ -178,6 +215,26 @@ describe('self-pace-gate compound-command false-positives', () => {
     expect(selfPaceDecision('Bash', { command: '(crontab -l; echo job) | crontab -' }).deny).toBe(true)
     expect(selfPaceDecision('Bash', { command: 'crontab -r' }).deny).toBe(true)
     expect(selfPaceDecision('Bash', { command: 'launchctl submit -l self -- node x.mjs' }).deny).toBe(true)
+  })
+  // Measured false positive, 2026-07-26 (found by Hacker): the heartbeats ORDER every
+  // agent to report `launchctl list | grep com.jarvis.channels` output, so a launchd
+  // job LABEL shows up in prose constantly. splitSegments splits on `;`, which put
+  // `launchctl <label>` at a segment start and it read as a real invocation -- a status
+  // report was denied. Same shape as the at/batch "at least" case, different binary.
+  // The narrowing requires the SHAPE of an invocation (a bare lowercase subcommand
+  // word), not a denylist of subcommands.
+  it('does NOT deny a launchd job LABEL appearing in prose (no subcommand follows)', () => {
+    expect(selfPaceDecision('Bash', { command: 'echo hello; launchctl com.jarvis.channels PID 555' }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: 'launchctl com.marveen.dashboard is up' }).deny).toBe(false)
+  })
+  it('STILL denies every real launchctl form after that narrowing', () => {
+    // a subcommand word follows -> real invocation
+    expect(selfPaceDecision('Bash', { command: 'launchctl load ~/Library/LaunchAgents/x.plist' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: 'launchctl kickstart -k gui/501/com.jarvis.channels' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: 'launchctl bootout gui/501' }).deny).toBe(true)
+    // a bare `launchctl` is interactive, and a flag form is an invocation: both stay denied
+    expect(selfPaceDecision('Bash', { command: 'launchctl' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: 'launchctl -h' }).deny).toBe(true)
   })
   it('denies scheduler WRITE behind a sudo/env/PATH/absolute-path wrapper', () => {
     expect(selfPaceDecision('Bash', { command: 'sudo crontab -r' }).deny).toBe(true)
