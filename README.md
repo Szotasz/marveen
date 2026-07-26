@@ -33,7 +33,7 @@ A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás
 
 ## Miben tér el ez a fork az eredeti Marveen aktuális állapotától
 
-*Állapot: upstream `7bb6360` vs fork `2039768`, 2026-07-27*
+*Állapot: upstream `7bb6360` vs fork `HEAD`, 2026-07-27*
 
 Változások, amelyek a forkban megvannak, az upstreamben nincsenek:
 
@@ -42,6 +42,7 @@ Változások, amelyek a forkban megvannak, az upstreamben nincsenek:
 - **CI/CD pipeline** -- GitHub Actions workflow (build + typecheck + test); CI-safe teszt-env (dist/** kizárás vitest-ből, claude/tmux stub-ok); Node.js 22 (deprecation-warning elhárítás)
 - **Dependabot** -- automatikus függőség-frissítés + számos már bemergelve: TypeScript 7, vitest 4, pino 10, @types/node 26, hono, postcss, body-parser, fast-uri, pyasn1
 - **claude-agent-sdk 0.3 session_id fix** -- snake_case/camelCase dual-olvasás, teszttel bizonyítva
+- **Kód-refaktor (#5)** -- legacy Telegram-route takarítás (`matchChannelRoute` és a két standalone DELETE-handler legacyMatch-e törölve); OAuth-segéd konszolidálás (`readClaudeCodeOauthJson` privát másolata eltávolítva `heartbeat.ts`-ből, a megosztott `claude-credentials.ts` implementáció importálva); 6 eddig hardkódolt env-kulcs a Beállítások-registrybe vezetve: `OWNER_NAME`, `BOT_NAME`, `HEARTBEAT_INTERVAL_MS`, `KANBAN_LABEL_COLORS`, `ALERT_THRESHOLD_MS`, `DEFAULT_REVERT_AFTER_MINUTES`
 
 <!-- ONGOING: Minden jövőbeli fork-PR leadásakor (Zack -> Jarvis) frissítsd ezt a szakaszt
      a friss git log alapján:
