@@ -15,6 +15,22 @@
 
 export type AutoRestartMode = 'fresh' | 'continue'
 
+/** How the MAIN channels session is restarted on this host. */
+export type MainRestartMechanism = 'launchd' | 'tmux-respawn'
+
+/**
+ * Pick the main-session restart mechanism from what the host actually has.
+ *
+ * The predicate is the launchctl BINARY, not process.platform: the bug this
+ * replaces was not "wrong OS" but "the binary this code exec'd unconditionally
+ * does not exist here", and the binary is what decides whether the call can
+ * work at all. Kept here, in the dependency-free module, so it is unit-testable
+ * without a filesystem -- same reason the due-logic lives here.
+ */
+export function mainRestartMechanism(launchctlPresent: boolean): MainRestartMechanism {
+  return launchctlPresent ? 'launchd' : 'tmux-respawn'
+}
+
 export interface AutoRestartConfig {
   /** Master toggle. When false the agent is never auto-restarted. */
   enabled: boolean

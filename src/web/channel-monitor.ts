@@ -597,6 +597,57 @@ export function buildMainSessionRespawnCmd(opts: {
   ].join(' ')
 }
 
+// FRESH respawn of the main channels session, for hosts with no launchd.
+//
+// Exported for the scheduled auto-restart (auto-restart-runner.ts), whose macOS
+// leg is `launchctl kickstart`. On Linux that binary does not exist, so before
+// this the main agent's nightly restart threw ENOENT on every due tick and had
+// NEVER run -- silently, because the only symptom was a log line.
+//
+// Deliberately NOT resumeMarveenSession() with a flag: that path is built around
+// --continue (resume-summary modal dismissal, post-resume plugin guard) and none
+// of it applies to a fresh start. What IS shared -- the two reaps, the onboarding
+// re-seed, the respawn command builder, the identity + plugin-unlock follow-ups --
+// is called here too, so the two paths cannot drift on the parts that matter.
+export function respawnMainSessionFresh(): void {
+  const provider = getProvider(getMainAgentProvider())
+  // Same rationale as the resume path: respawn-pane -k kills the parent claude
+  // but leaves grandchild pollers alive, and two pollers on one bot token race
+  // for getUpdates (409). Reap BEFORE respawning, never after.
+  try {
+    reapChannelOrphans(provider.type, PROJECT_ROOT)
+  } catch (err) {
+    logger.warn({ err }, 'respawnMainSessionFresh: pre-respawn reap failed (continuing)')
+  }
+  try {
+    reapDetachedChannelClaudes({ tmuxPath: TMUX })
+  } catch (err) {
+    logger.warn({ err }, 'respawnMainSessionFresh: detached-claude reap failed (continuing)')
+  }
+  ensureSharedClaudeOnboarded()
+
+  const claudeCmd = buildMainSessionRespawnCmd({
+    claudePath: CLAUDE,
+    pluginId: provider.pluginId,
+    extraPluginIds: readExtraChannelPluginIds(),
+    model: readConfiguredMainModel(),
+    // The main session always starts a new conversation -- this is the whole
+    // point of the nightly restart (drop the accumulated context).
+    continueSession: false,
+    isolatedConfigDir: ensureMainAgentIsolatedConfigDir(),
+    fleetToken: hasFleetOauthToken(),
+  })
+  execFileSync(TMUX, ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
+
+  logger.warn({ provider: provider.type }, 'Main session respawned FRESH (scheduled auto-restart)')
+  // The respawned claude is a brand-new process: it has neither the /name
+  // identity nor a guaranteed-loaded channel plugin. Both follow-ups mirror the
+  // resume path; skipping them is how a restarted session comes back nameless
+  // or with the plugin stuck in `◯ disabled`.
+  void scheduleIdentitySetup(MAIN_CHANNELS_SESSION, BOT_NAME)
+  schedulePluginUnlockAfterRespawn(MAIN_CHANNELS_SESSION, provider.type)
+}
+
 // Exported so the stuck-tool-call-watcher recovers a wedged main session via
 // this respawn-pane path (reap + `tmux respawn-pane -k --continue`) INSTEAD of
 // the launchctl hard-restart. respawn-pane replaces only the claude process in
