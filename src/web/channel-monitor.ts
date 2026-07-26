@@ -638,6 +638,14 @@ export function respawnMainSessionFresh(): void {
     fleetToken: hasFleetOauthToken(),
   })
   execFileSync(TMUX, ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
+  // Stamp IMMEDIATELY after the respawn, before the scheduling follow-ups.
+  // The stamp is a coordination contract, not bookkeeping: five watchers read
+  // lastMainRespawnAt() / store/.channel-last-respawn and suppress themselves
+  // during the grace window -- including the systemd-timer channel-watchdog,
+  // a separate process that can ONLY see the file. Without it, the ~35-90s
+  // cold-boot window while plugins unlock looks to them like a dead session,
+  // and they can respawn on top of one that is still coming up.
+  writeRespawnStamp()
 
   logger.warn({ provider: provider.type }, 'Main session respawned FRESH (scheduled auto-restart)')
   // The respawned claude is a brand-new process: it has neither the /name
