@@ -2,6 +2,6 @@
 # Generated from: .watchdog-venv/bin/pip freeze | grep -iE 'telethon|pyaes|rsa|pyasn1'
 # Install: pip install -r scripts/watchdog-requirements.txt
 pyaes==1.6.1
-pyasn1==0.6.3
+pyasn1==0.6.4
 rsa==4.9.1
 Telethon==1.43.2
