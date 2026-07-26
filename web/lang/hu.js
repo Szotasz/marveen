@@ -1066,6 +1066,12 @@ window._i18n.hu = {
   'settings.desc.KANBAN_ARCHIVED_MAX_ROWS':    'Az archivált kártyák maximálisan megőrzött száma. Az ennél régebbi archivált kártyák a sweep során törlődnek.',
   'settings.desc.HEARTBEAT_CALENDAR_ACCOUNT':  'Google Calendar fiók neve/e-mailje a heartbeat naptár-összefoglalóhoz. Üresen hagyva a heartbeat nem kérdez le naptáreseményeket.',
   'settings.desc.HEARTBEAT_CALENDAR_ID':       'Google Calendar naptár-azonosítója a heartbeat összefoglalóhoz (pl. primary). Üresen hagyva a heartbeat nem kérdez le naptáreseményeket.',
+  'settings.desc.OWNER_NAME':                  'A rendszer gazdájának neve. A heartbeat összefoglalókban és az automatikusan generált CLAUDE.md sablonokban jelenik meg. Üresen hagyva: "Owner".',
+  'settings.desc.BOT_NAME':                    'A főágens megjelenített neve (pl. "Marveen"). Alapértelmezi a BRAND_NAME értékét is, ha az nincs külön beállítva.',
+  'settings.desc.HEARTBEAT_INTERVAL_MS':       'A heartbeat ellenőrzési ciklus időköze milliszekundumban. Alapértelmezetten 3 600 000 ms (1 óra). Minimum 300 000 ms (5 perc).',
+  'settings.desc.KANBAN_LABEL_COLORS':         'A kanban kártyák címkéihez elérhető HEX-színek vesszővel elválasztva. A dashboard ezeket kínálja választhatóként a szabad szöveges bevitel helyett.',
+  'settings.desc.ALERT_THRESHOLD_MS':          'Mennyi ideig várhat egy sikertelen ütemezett feladat újrapróbálkozásra, mielőtt Telegram-értesítés megy ki. Alapértelmezetten 3 600 000 ms (1 óra). A próbálkozás az értesítés után is folytatódik.',
+  'settings.desc.DEFAULT_REVERT_AFTER_MINUTES': 'Mennyi perccel az utolsó rate-limit esemény után álljon vissza az ágens az elsődleges modellre a modell-fallback mechanizmusban. Alapértelmezetten 330 perc (5,5 óra).',
 
   // --- Vault ---
   'vault.page_title':            'Vault',
