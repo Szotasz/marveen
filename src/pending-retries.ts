@@ -27,7 +27,7 @@
  * operator via Telegram. The retry itself continues forever: this is the
  * alerting threshold, not an abandon threshold.
  */
-export const ALERT_THRESHOLD_MS = 60 * 60 * 1000
+export const ALERT_THRESHOLD_MS = Number(process.env['ALERT_THRESHOLD_MS']) || 60 * 60 * 1000
 
 /**
  * Decide whether the alerting layer should fire a Telegram notification

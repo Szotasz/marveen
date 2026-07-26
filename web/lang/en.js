@@ -770,6 +770,12 @@ window._i18n.en = {
   'settings.desc.KANBAN_ARCHIVED_MAX_ROWS':    'Maximum number of archived cards to retain. Older archived cards beyond this limit are deleted during the sweep.',
   'settings.desc.HEARTBEAT_CALENDAR_ACCOUNT':  'Google Calendar account name/email for the heartbeat calendar summary. Empty = heartbeat does not fetch calendar events.',
   'settings.desc.HEARTBEAT_CALENDAR_ID':       'Google Calendar ID for the heartbeat summary (e.g. primary). Empty = heartbeat does not fetch calendar events.',
+  'settings.desc.OWNER_NAME':                  'The name of the system owner. Shown in heartbeat summaries and auto-generated CLAUDE.md templates. Defaults to "Owner" when not set.',
+  'settings.desc.BOT_NAME':                    'Display name of the main agent (e.g. "Marveen"). Also used as the default for BRAND_NAME if that is not set separately.',
+  'settings.desc.HEARTBEAT_INTERVAL_MS':       'Heartbeat check cycle interval in milliseconds. Default: 3,600,000 ms (1 hour). Minimum: 300,000 ms (5 minutes).',
+  'settings.desc.KANBAN_LABEL_COLORS':         'Comma-separated HEX colours available for Kanban card labels. The dashboard offers these as swatches instead of a free-text colour input.',
+  'settings.desc.ALERT_THRESHOLD_MS':          'How long a failed scheduled task may wait for a retry before a Telegram alert is sent. Default: 3,600,000 ms (1 hour). Retries continue after the alert.',
+  'settings.desc.DEFAULT_REVERT_AFTER_MINUTES': 'Minutes after the last rate-limit event before the agent reverts to the primary model in the model-fallback mechanism. Default: 330 minutes (5.5 hours).',
 
   // --- Vault ---
   'vault.page_title':            'Vault',

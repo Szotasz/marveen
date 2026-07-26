@@ -312,7 +312,7 @@ export const RESPAWN_ENABLED =
         : true
 
 // Heartbeat
-export const HEARTBEAT_INTERVAL_MS = 60 * 60 * 1000 // 1 hour
+export const HEARTBEAT_INTERVAL_MS = Number(env['HEARTBEAT_INTERVAL_MS']) || 60 * 60 * 1000
 export const HEARTBEAT_START_HOUR = parseInt(env['HEARTBEAT_START_HOUR'] ?? '9', 10)
 
 // Dedicated channel-less `heartbeat` sub-agent (hourly summary worker).
