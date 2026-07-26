@@ -3,6 +3,7 @@ import {
   normalizeContextGuardConfig,
   contextLimitForModel,
   calibrateLimit,
+  CALIBRATION_OVERSHOOT_TOLERANCE,
   decideGuard,
   DEFAULT_CONTEXT_GUARD,
   INITIAL_GUARD_STATE,
@@ -70,6 +71,68 @@ describe('contextLimitForModel / calibrateLimit', () => {
     expect(calibrateLimit(489_000, 200_000)).toBe(500_000) // tars 2026-07-09
     expect(calibrateLimit(900_000, 200_000)).toBe(1_000_000)
     expect(calibrateLimit(300_000, 1_000_000)).toBe(1_000_000)
+  })
+
+  // A full 200k window is OBSERVED slightly above 200k: the measured quantity is
+  // input+cache_read+cache_creation of the last request, which overshoots the
+  // nominal window. Measured 2026-07-26 across 11 saturated sessions (main agent
+  // + heimdall), the largest overshoot was 213175/200000 = 1.066x. A tolerance
+  // that does not cover that turns a saturated session into a "43% full" one.
+  it('does NOT step up for a merely-overshooting full window (regression)', () => {
+    // The exact production case: the pane showed "100% context used" while the
+    // guard logged pct: 43, because the denominator had jumped to 500k.
+    expect(calibrateLimit(213_175, 200_000)).toBe(200_000)
+    // The whole measured saturation range must stay on the 200k denominator.
+    for (const observed of [194_226, 198_544, 204_082, 207_942, 208_132, 213_175]) {
+      expect(calibrateLimit(observed, 200_000)).toBe(200_000)
+    }
+  })
+
+  it('keeps a saturated session ABOVE the act/hard thresholds', () => {
+    // The property that actually matters: whatever the calibration decides, a
+    // session at genuine exhaustion must not read below the acting thresholds.
+    for (const observed of [180_000, 194_000, 204_082, 213_175]) {
+      const pct = observed / calibrateLimit(observed, 200_000)
+      expect(pct).toBeGreaterThanOrEqual(DEFAULT_CONTEXT_GUARD.actPct)
+    }
+    expect(213_175 / calibrateLimit(213_175, 200_000))
+      .toBeGreaterThanOrEqual(DEFAULT_CONTEXT_GUARD.hardPct)
+  })
+
+  it('still steps up when the observation is too big to be an overshoot', () => {
+    // Counter-example, or the fix would reinstate the nonsense pct > 1 restart
+    // storm the calibration was built for: tars ran at 489k on a model we would
+    // have guessed 200k for -- 2.4x the base, not a 7% accounting overshoot.
+    expect(calibrateLimit(489_000, 200_000)).toBe(500_000)
+    expect(489_000 / calibrateLimit(489_000, 200_000)).toBeLessThanOrEqual(1)
+    expect(calibrateLimit(300_000, 200_000)).toBe(500_000)
+    // A genuine 1M window at 85% must not be forced down onto 500k.
+    expect(calibrateLimit(850_000, 1_000_000)).toBe(1_000_000)
+    expect(calibrateLimit(850_000, 200_000)).toBe(1_000_000)
+  })
+
+  it('pins the step-up boundary (documents the residual, does not hide it)', () => {
+    // The tolerance is a deliberate trade, so its exact edge is pinned here.
+    // Below the edge we keep the smaller denominator -- which means a window
+    // that really IS a tier we did not guess reads as over-full until it grows
+    // past the edge. That is the accepted cost: over-full is loud and
+    // self-correcting, an inflated denominator is silent (see the regression
+    // case above). No fleet model is configured onto a 500k window today.
+    const edge = 200_000 * CALIBRATION_OVERSHOOT_TOLERANCE
+    expect(calibrateLimit(edge, 200_000)).toBe(200_000)
+    expect(calibrateLimit(edge + 1, 200_000)).toBe(500_000)
+    // The edge must sit above every measured full-window overshoot ...
+    expect(edge).toBeGreaterThan(213_175)
+    // ... and stay well below the 200k/500k geometric midpoint, so a step-up is
+    // never a coin flip between two tiers.
+    expect(edge).toBeLessThan(Math.sqrt(200_000 * 500_000))
+  })
+
+  it('leaves the top tier to report pct > 1 (no tier above to step to)', () => {
+    // Above the largest known tier there is nothing to calibrate to, so the
+    // overshoot must surface as pct > 1 and let hardPct fire.
+    expect(calibrateLimit(1_200_000, 1_000_000)).toBe(1_000_000)
+    expect(1_200_000 / calibrateLimit(1_200_000, 1_000_000)).toBeGreaterThan(1)
   })
 })
 

@@ -95,17 +95,52 @@ export function contextLimitForModel(model: string | null | undefined): number {
 }
 
 /**
- * If the observed context tokens exceed the assumed limit, the assumption is
- * wrong (e.g. tars ran at 489k on a model we would have guessed 200k for).
- * Step up to the next tier that contains the observation instead of producing
- * a nonsense pct > 1 that would trigger a spurious restart storm.
+ * How far the OBSERVED context may exceed a limit while still being explained by
+ * that limit rather than disproving it.
+ *
+ * The observation is the sum of input + cache_read + cache_creation tokens of a
+ * session's last request, which overshoots the nominal window: measured
+ * 2026-07-26 across 11 sessions that Claude Code itself had flagged "100%
+ * context used" (main agent 194226/204285/207942/208132/213175, heimdall
+ * 178536/179772/182648/188129/191286/198544 -- all on 200k-window models), the
+ * largest overshoot was 213175/200000 = 1.066x. The previous tolerance was
+ * effectively 1.0204x (`limit >= observed * 0.98`), i.e. NARROWER than the real
+ * overshoot, so a genuinely-full 200k session crossed it at 204082 observed
+ * tokens and the denominator jumped to 500k -- reporting 43% for a session the
+ * CLI had just declared full, and putting actPct (0.9) and hardPct (0.97) out of
+ * reach for the rest of that session's life. This value is deliberately ~2x the
+ * measured overshoot so a full window is never mistaken for a bigger one.
+ */
+export const CALIBRATION_OVERSHOOT_TOLERANCE = 1.25
+
+/**
+ * If the observed context tokens exceed the assumed limit by more than an
+ * accounting overshoot can explain, the assumption is wrong (e.g. tars ran at
+ * 489k -- 2.4x -- on a model we would have guessed 200k for). Step up to the
+ * smallest tier that can hold the observation, instead of producing a nonsense
+ * pct > 1 that would trigger a spurious restart storm.
+ *
+ * The tolerance direction is chosen deliberately. Under-estimating the limit
+ * reports a too-high pct and costs at most a premature (but LOUD, logged, and
+ * self-correcting) handoff/restart; over-estimating it goes SILENTLY blind and
+ * costs the whole session with no handoff at all -- which is what happened on
+ * 2026-07-26. When in doubt we keep the smaller denominator.
+ *
+ * Residual, stated rather than hidden: a session whose real window is a tier we
+ * did not guess is measured against the smaller tier until it exceeds it by the
+ * tolerance -- e.g. a genuine 500k window observed in 200000..250000 reads as
+ * over-full and may be restarted once before it grows past the step-up point.
+ * No model in the fleet is configured that way today (every agent resolves to a
+ * 200k window; only the `[1m]` suffix selects a larger one), and `limitTokens`
+ * pins the denominator explicitly when an operator knows better.
  */
 export function calibrateLimit(observedTokens: number, baseLimit: number): number {
+  const explains = (limit: number): boolean =>
+    observedTokens <= limit * CALIBRATION_OVERSHOOT_TOLERANCE
   let limit = baseLimit
   for (const tier of CONTEXT_LIMIT_TIERS) {
-    if (limit >= observedTokens * 0.98) break
+    if (explains(limit)) break
     if (tier > limit) limit = tier
-    if (limit >= observedTokens * 0.98) break
   }
   return limit
 }
