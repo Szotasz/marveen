@@ -1,8 +1,9 @@
-import { execFileSync } from 'node:child_process'
 import { statSync } from 'node:fs'
 import { join } from 'node:path'
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID, SERVICE_ID, PROJECT_ROOT } from '../config.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
+import { hardRestartMarveenChannels, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS } from './channel-monitor.js'
+import { shouldDeferForRecentRespawn } from './stuck-tool-call-watcher.js'
 import { listAgentNames, agentDir, readAgentModel, readAgentClaudeConfigDir, readAgentRemoteHost } from './agent-config.js'
 import {
   agentRunState,
@@ -105,9 +106,22 @@ function measurePct(name: string, cfgLimit: number | null): number | null {
 
 function performRestart(name: string): void {
   if (name === MAIN_AGENT_ID) {
-    // launchd-managed; channels.sh always starts fresh, KeepAlive respawns it.
-    const uid = typeof process.getuid === 'function' ? process.getuid() : ''
-    execFileSync('/bin/launchctl', ['kickstart', '-k', `gui/${uid}/com.${SERVICE_ID}.channels`], { timeout: 10_000 })
+    // Platform-correct main-session restart. This was a hardcoded
+    // `/bin/launchctl kickstart`, which exists only on macOS: on Linux every
+    // rescue died instantly with `spawnSync /bin/launchctl ENOENT`, caught by
+    // checkAgent's catch and buried in a single WARN. Measured on 2026-07-26:
+    // the main agent sat at 100% context from 09:47, the saturation net -- the
+    // only mechanism that can rescue a pane prompt dispatch refuses -- fired
+    // four times and failed every time, and main was unreachable for ~2h until
+    // a hand restart.
+    //
+    // hardRestartMarveenChannels() is the existing helper the channel-monitor
+    // down-cascade already uses: it keeps the launchd path for macOS installs
+    // (and warns + falls back to a pane respawn if the plist is absent), uses
+    // respawn-pane-FRESH on Linux -- fresh is exactly what the guard wants --
+    // and writes the shared respawn stamp so the other respawners defer to us.
+    const res = hardRestartMarveenChannels()
+    if (!res.ok) throw new Error(res.error ?? 'main channels hard restart failed')
   } else {
     restartAgentProcess(name, { fresh: true })
   }
@@ -158,6 +172,41 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   }
 
   const decision = decideGuard(state, inputs, cfg)
+
+  // Post-respawn grace for the main session. Making the Linux restart path work
+  // (above) also makes it repeatable: measured on 2026-07-26, the saturation net
+  // fresh-restarted main five times in one morning, so the agent lost its
+  // conversation roughly every half hour. Two causes of a redundant restart,
+  // both covered by the same stamp: a session that is still BOOTING can read as
+  // saturated/idle again on the next sweep, and ANOTHER respawner (the
+  // channel-monitor down-cascade, the auto-restart runner, channel-watchdog.sh)
+  // may have just restarted main for its own reasons.
+  //
+  // Same mechanism every other respawner already shares -- lastMainRespawnAt()
+  // plus MARVEEN_POST_RESPAWN_GRACE_MS -- so there is no new tunable and no new
+  // number; see the identical gate in stuck-tool-call-watcher.ts. Main only: the
+  // stamp describes the main channels session, and a sub-agent restart is
+  // cheap and independently coordinated.
+  //
+  // The state must NOT advance here. decideGuard() has already produced
+  // nextState = await-ready; committing that while skipping the restart would
+  // leave the machine believing main was restarted, and the next sweep would
+  // inject a "continue from your handoff" resume prompt into the SAME saturated
+  // pane -- the guard would consume its own recovery and never retry. Keeping
+  // the previous state means the next sweep re-decides, and the restart happens
+  // once the grace has elapsed.
+  if (decision.action === 'restart' && name === MAIN_AGENT_ID) {
+    const lastRespawn = lastMainRespawnAt()
+    if (shouldDeferForRecentRespawn(lastRespawn, nowMs)) {
+      logger.info(
+        { name, sinceRespawnMs: lastRespawn ? nowMs - lastRespawn : null, graceMs: MARVEEN_POST_RESPAWN_GRACE_MS },
+        'context-guard: recent main respawn within grace, deferring restart (avoid restart loop / boot churn)',
+      )
+      guardStates.set(name, state)
+      return
+    }
+  }
+
   guardStates.set(name, decision.nextState)
   if (decision.action === 'none') return
 
