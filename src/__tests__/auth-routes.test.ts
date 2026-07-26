@@ -72,6 +72,10 @@ function cookieToken(res: MockRes): string {
 }
 
 const TOKEN_AUTH: RouteContext['auth'] = { kind: 'token' }
+// Simulates a FUTURE credential kind (e.g. per-device keys) that the AuthResult
+// union does not carry yet: the allowlists must default-deny it everywhere.
+const DEVICE_AUTH = { kind: 'device' } as unknown as RouteContext['auth']
+const FEDERATION_AUTH: RouteContext['auth'] = { kind: 'federation', peer: 'test-peer' }
 const GOOD_PW = 'super-secret-pw'
 
 async function seedUser(username: string, password = GOOD_PW): Promise<void> {
@@ -279,5 +283,53 @@ describe('users CRUD', () => {
     expect(del.res.statusCode).toBe(200)
     expect(getDashboardUser('alice')).toBeUndefined()
     expect(resolveSession(token)).toBeNull()
+  })
+
+  it('still allows a SESSION principal to manage users (existing behavior)', async () => {
+    await seedUser('alice')
+    const SESSION_AUTH: RouteContext['auth'] = { kind: 'session', user: 'alice' }
+    const created = await call('POST', '/api/auth/users', { auth: SESSION_AUTH, body: { username: 'bob', password: GOOD_PW } })
+    expect(created.res.statusCode).toBe(201)
+    const list = await call('GET', '/api/auth/users', { auth: SESSION_AUTH })
+    expect((list.json().users as unknown[]).length).toBe(2)
+    const del = await call('DELETE', '/api/auth/users/bob', { auth: SESSION_AUTH })
+    expect(del.res.statusCode).toBe(200)
+  })
+})
+
+describe('credential-kind allowlists (default-deny for future kinds)', () => {
+  // The access-granting endpoints must reject every kind that is not
+  // explicitly listed. 'device' stands in for any future AuthResult kind;
+  // 'federation' is path-scoped in resolveAuth and can never reach these
+  // routes, but the handler must not rely on that (defence in depth).
+  const deniedKinds: Array<{ name: string; auth: RouteContext['auth'] }> = [
+    { name: 'future device kind', auth: DEVICE_AUTH },
+    { name: 'federation kind', auth: FEDERATION_AUTH },
+    { name: 'missing principal', auth: undefined },
+  ]
+
+  for (const { name, auth } of deniedKinds) {
+    it(`denies ${name} on users GET/POST/DELETE and break-glass password reset`, async () => {
+      await seedUser('alice')
+      const list = await call('GET', '/api/auth/users', { auth })
+      expect(list.res.statusCode).toBe(403)
+      const create = await call('POST', '/api/auth/users', { auth, body: { username: 'mallory', password: GOOD_PW } })
+      expect(create.res.statusCode).toBe(403)
+      expect(getDashboardUser('mallory')).toBeUndefined()
+      const del = await call('DELETE', '/api/auth/users/alice', { auth })
+      expect(del.res.statusCode).toBe(403)
+      expect(getDashboardUser('alice')).toBeDefined()
+      const reset = await call('POST', '/api/auth/password', { auth, body: { username: 'alice', new_password: 'stolen-reset-pw' } })
+      expect(reset.res.statusCode).toBe(403)
+      // the old password must still work after the denied reset attempt
+      const login = await call('POST', '/api/auth/login', { body: { username: 'alice', password: GOOD_PW } })
+      expect(login.res.statusCode).toBe(200)
+    })
+  }
+
+  it('keeps the token break-glass reset working (allowlist did not over-tighten)', async () => {
+    await seedUser('alice')
+    const reset = await call('POST', '/api/auth/password', { auth: TOKEN_AUTH, body: { username: 'alice', new_password: 'legit-reset-pw' } })
+    expect(reset.res.statusCode).toBe(200)
   })
 })

@@ -9,6 +9,14 @@
 // and resetting a password are reachable with a valid bearer, so there is never
 // an unauthenticated first-run setup page (which would be a claim-the-admin race
 // on loopback).
+//
+// Principal discipline: every handler that grants or removes access checks the
+// caller's auth kind against an EXPLICIT allowlist. Only 'token' and 'session'
+// can reach these paths today (federation tokens are endpoint-scoped inside
+// resolveAuth and never resolve here), but the allowlists exist so any future
+// AuthResult kind -- e.g. per-device keys -- is denied by default. What a new
+// credential type may do here must be a review decision, not the accident of
+// an else-branch.
 
 import type http from 'node:http'
 import { readBody, json } from '../http-helpers.js'
@@ -76,6 +84,19 @@ async function parseJsonBody(req: http.IncomingMessage): Promise<Record<string, 
 function str(v: unknown): string {
   return typeof v === 'string' ? v : ''
 }
+
+// Explicit principal allowlist. Compares on the kind string so tests can
+// exercise kinds the AuthResult union does not carry yet; anything not listed
+// (including undefined auth, which the gate should have 401'd already) fails.
+function kindAllowed(auth: RouteContext['auth'], kinds: readonly string[]): boolean {
+  return auth !== undefined && kinds.includes(auth.kind)
+}
+
+const FORBIDDEN_KIND = { error: 'Forbidden for this credential type' }
+
+// Who may manage dashboard users (list/create/delete). 'session' is included
+// deliberately: a logged-in operator managing users is the existing behavior.
+const USER_ADMIN_KINDS = ['token', 'session'] as const
 
 // { authenticated, method, user, login_available, setup_required }.
 // authenticated keeps its exact old meaning for token callers (existing probes
@@ -209,14 +230,19 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
         json(res, INVALID_CREDENTIALS, 401)
         return true
       }
-    } else {
+    } else if (auth?.kind === 'token') {
       // Bearer break-glass: may omit current_password but must name the target.
+      // EXPLICITLY token-only -- a reset without the current password is the
+      // strongest action here and must never leak to weaker credential kinds.
       const username = str(body.username)
       user = username ? getDashboardUser(username) : undefined
       if (!user) {
         json(res, { error: 'User not found' }, 404)
         return true
       }
+    } else {
+      json(res, FORBIDDEN_KIND, 403)
+      return true
     }
 
     try {
@@ -235,11 +261,19 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/auth/users' && method === 'GET') {
+    if (!kindAllowed(auth, USER_ADMIN_KINDS)) {
+      json(res, FORBIDDEN_KIND, 403)
+      return true
+    }
     json(res, { users: listDashboardUsers() })
     return true
   }
 
   if (path === '/api/auth/users' && method === 'POST') {
+    if (!kindAllowed(auth, USER_ADMIN_KINDS)) {
+      json(res, FORBIDDEN_KIND, 403)
+      return true
+    }
     let body: Record<string, unknown>
     try {
       body = await parseJsonBody(req)
@@ -272,6 +306,10 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
 
   const delMatch = /^\/api\/auth\/users\/([^/]+)$/.exec(path)
   if (delMatch && method === 'DELETE') {
+    if (!kindAllowed(auth, USER_ADMIN_KINDS)) {
+      json(res, FORBIDDEN_KIND, 403)
+      return true
+    }
     const username = decodeURIComponent(delMatch[1]!)
     const user = getDashboardUser(username)
     if (!user) {
