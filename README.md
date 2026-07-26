@@ -13,6 +13,8 @@
 
 > AI csapatod, ami fut amíg te alszol.
 
+> **Fork.** Ez a repó a [Szotasz/marveen](https://github.com/Szotasz/marveen) önálló forkja, amely `fork-point` (2026-07-26, baseline: upstream `55ecbc6`) óta függetlenül fejlődik. Az upstream javításokat szelektíven vesszük át (`git fetch upstream` + cherry-pick). Hozzájárulásokat ehhez a forkhoz várunk PR-ként.
+
 Marveen egy AI asszisztens keretrendszer, ami Claude Code-ra épül. Saját AI csapatot építhetsz, akik Telegramon vagy Slacken kommunikálnak veled, önállóan dolgoznak, és egymással is együttműködnek.
 
 ## Funkciók
