@@ -25,7 +25,7 @@ export const DEFAULT_MODEL_CHAIN: readonly string[] = [
 
 // Revert only well after the typical 5-hour plan window so we do not climb back
 // to the primary just to re-trip the same limit. Configurable.
-export const DEFAULT_REVERT_AFTER_MINUTES = 330
+export const DEFAULT_REVERT_AFTER_MINUTES = Number(process.env['DEFAULT_REVERT_AFTER_MINUTES']) || 330
 
 export interface ModelFallbackConfig {
   /** Master toggle. When false no agent is ever auto-switched. */
