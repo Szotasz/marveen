@@ -7329,10 +7329,6 @@ body {
   border-radius: var(--radius);
   margin-bottom: 14px;
   flex-wrap: wrap;
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  box-shadow: var(--shadow-sm);
 }
 .fh-bar.fh-warn { border-color: #f59e0b; background: rgba(245,158,11,0.06); }
 .fh-bar.fh-danger { border-color: var(--danger); background: var(--danger-soft); }

@@ -211,7 +211,42 @@
     <!-- === Overview Page (default) === -->
     <div class="page" id="overviewPage">
 
-      <!-- Zone 1: Fleet Health bar (sticky, full-width) -->
+      <!-- Zone 1: Attention Required (hidden when empty, collapsible) -->
+      <div class="attention-section" id="attentionSection" hidden>
+        <div class="attention-header" id="attentionHeader">
+          <span class="attention-title">Figyelem szükséges</span>
+          <span class="attention-badge" id="attentionBadge">0</span>
+          <button class="attention-toggle" id="attentionToggle" aria-label="Összecsukolás">&#x25B2;</button>
+        </div>
+        <div class="attention-body" id="attentionBody"></div>
+      </div>
+
+      <!-- Zone 2: KPI strip (5 clickable cards) -->
+      <div class="kpi-strip">
+        <a class="kpi-item" href="#kanban">
+          <span class="kpi-value" id="kpiTasks">—</span>
+          <span class="kpi-label">Feladatok ma</span>
+          <span class="kpi-trend" id="kpiTasksTrend"></span>
+        </a>
+        <a class="kpi-item" href="#tokenUsage">
+          <span class="kpi-value" id="kpiCost">—</span>
+          <span class="kpi-label">Költség ma</span>
+        </a>
+        <a class="kpi-item" href="#memories">
+          <span class="kpi-value" id="kpiMemories">—</span>
+          <span class="kpi-label">Memóriák</span>
+        </a>
+        <a class="kpi-item" href="#skills">
+          <span class="kpi-value" id="kpiSkills">—</span>
+          <span class="kpi-label">Skillek</span>
+        </a>
+        <a class="kpi-item" href="#tokenUsage">
+          <span class="kpi-value" id="kpiTokens">—</span>
+          <span class="kpi-label">Token ma</span>
+        </a>
+      </div>
+
+      <!-- Zone 3: Fleet Health bar (informational strip) -->
       <div class="fh-bar" id="fleetHealthBar">
         <div class="fh-item" id="fhAgents">
           <span class="fh-dot" id="fhDot"></span>
@@ -235,52 +270,17 @@
         </div>
       </div>
 
-      <!-- Zone 2: Attention Required (hidden when empty, collapsible) -->
-      <div class="attention-section" id="attentionSection" hidden>
-        <div class="attention-header" id="attentionHeader">
-          <span class="attention-title">Figyelem szükséges</span>
-          <span class="attention-badge" id="attentionBadge">0</span>
-          <button class="attention-toggle" id="attentionToggle" aria-label="Összecsukolás">&#x25B2;</button>
-        </div>
-        <div class="attention-body" id="attentionBody"></div>
-      </div>
-
-      <!-- Zone 3: Compact agent grid -->
+      <!-- Zone 4: Compact agent grid -->
       <div class="ov-section-title">Ágensek</div>
       <div class="agents-mini-grid" id="agentsMiniGrid"></div>
 
-      <!-- Zone 4: Activity feed with agent filter pills -->
+      <!-- Zone 5: Activity feed with agent filter pills -->
       <div class="ov-activity-header">
         <span class="ov-section-title">Aktivitás (utolsó 4h)</span>
         <div class="ov-activity-pills" id="ovActivityPills"></div>
       </div>
       <div class="ov-activity-feed" id="ovActivityFeed">
         <div class="ov-activity-empty">Nincs aktivitás az elmúlt 4 órában.</div>
-      </div>
-
-      <!-- Zone 5: KPI strip (bottom, compact, clickable links) -->
-      <div class="kpi-strip">
-        <a class="kpi-item" href="#kanban">
-          <span class="kpi-value" id="kpiTasks">—</span>
-          <span class="kpi-label">Feladatok ma</span>
-          <span class="kpi-trend" id="kpiTasksTrend"></span>
-        </a>
-        <a class="kpi-item" href="#tokenUsage">
-          <span class="kpi-value" id="kpiCost">—</span>
-          <span class="kpi-label">Költség ma</span>
-        </a>
-        <a class="kpi-item" href="#memories">
-          <span class="kpi-value" id="kpiMemories">—</span>
-          <span class="kpi-label">Memóriák</span>
-        </a>
-        <a class="kpi-item" href="#skills">
-          <span class="kpi-value" id="kpiSkills">—</span>
-          <span class="kpi-label">Skillek</span>
-        </a>
-        <a class="kpi-item" href="#tokenUsage">
-          <span class="kpi-value" id="kpiTokens">—</span>
-          <span class="kpi-label">Token ma</span>
-        </a>
       </div>
 
     </div>
