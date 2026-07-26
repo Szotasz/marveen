@@ -1,7 +1,6 @@
 import { statSync, mkdirSync, writeFileSync, existsSync, readFileSync, symlinkSync, readdirSync, lstatSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir, userInfo } from 'node:os'
-import { execFileSync } from 'node:child_process'
+import { homedir } from 'node:os'
 import { getEffectiveSettingValue } from './settings-store.js'
 import {
   HEARTBEAT_CALENDAR_ID,
@@ -18,6 +17,7 @@ import { notifyTelegram } from './notify.js'
 import { logger } from './logger.js'
 import { wrapUntrusted, UNTRUSTED_PREAMBLE } from './prompt-safety.js'
 import { CHANNEL_PLUGIN_IDS } from './web/plugin-ids.js'
+import { readClaudeCodeOauthJson } from './web/claude-credentials.js'
 
 // Isolation cwd for the heartbeat sub-agent. Keep this OUT of PROJECT_ROOT
 // so the @anthropic-ai/claude-agent-sdk-spawned headless claude does NOT
@@ -221,64 +221,6 @@ function ensureHeartbeatWorkerCwd(): void {
 
 function lstatSyncSafe(p: string): ReturnType<typeof lstatSync> | null {
   try { return lstatSync(p) } catch { return null }
-}
-
-// Read the Claude Code credentials JSON from the macOS Keychain and write
-// it to the isolated CLAUDE_CONFIG_DIR's `.credentials.json` so the
-// SDK-spawned claude finds the standard auth file there.
-//
-// On macOS, Claude Code stores the FULL credentials JSON in the login
-// Keychain under service='Claude Code-credentials', account=<unix user>.
-// There is NO ~/.claude/.credentials.json file to symlink. Without auth
-// in CLAUDE_CONFIG_DIR, the sub-agent treats it as a fresh install
-// ("Not logged in -- Please run /login") and exits before sending the
-// heartbeat (verified live 13:00 hb of 2026-06-02).
-//
-// IMPORTANT (Marveen 2026-06-02 review with live test): the `security -w`
-// output is the FULL credentials JSON, NOT a bare bearer token:
-//   { "claudeAiOauth": { accessToken, refreshToken, expiresAt, ... },
-//     "mcpOAuth": { ... } }
-// (~809 bytes). We MUST write the whole blob -- the refreshToken inside
-// is what lets the sub-agent renew its session without us. An earlier
-// attempt to drop the JSON into CLAUDE_CODE_OAUTH_TOKEN (env-var) failed
-// with 401 because that env expects a bare access token (sk-ant-oat...).
-// The config-dir .credentials.json path is the one Claude Code expects
-// on Linux installs and Marveen's live A/B test confirmed it succeeds.
-//
-// SECURITY:
-//   - `security` is invoked via execFileSync so the JSON never traverses
-//     a shell string.
-//   - stdio = ['ignore', 'pipe', 'ignore'] keeps it off stderr.
-//   - The catch block logs ONLY a bare message; `err` is NEVER passed to
-//     the logger (some macOS auth errors echo a fragment of the lookup
-//     key, and we never want that anywhere near our log stream).
-//   - The .credentials.json file is written with mode 0600 (owner rw),
-//     same as how Claude Code creates it on Linux.
-//   - Local file lifetime: until the next ensureHeartbeatWorkerCwd
-//     rewrites it. We re-write it every tick so a rotated Keychain
-//     token reaches the sub-agent within an hour.
-//
-// Returns the JSON string on success, null on failure or non-darwin.
-// On Linux, the existing symlink loop captures ~/.claude/.credentials.json
-// so this function intentionally does nothing.
-function readClaudeCodeOauthJson(): string | null {
-  if (process.platform !== 'darwin') return null
-  try {
-    const out = execFileSync(
-      '/usr/bin/security',
-      ['find-generic-password', '-s', 'Claude Code-credentials', '-a', userInfo().username, '-w'],
-      { timeout: 3000, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
-    ).trim()
-    if (!out) return null
-    return out
-  } catch {
-    // Intentionally NOT logging `err` -- some macOS auth errors echo a
-    // fragment of the lookup key. Bare message is enough; the operator
-    // can reproduce manually with the documented `security
-    // find-generic-password ...` command.
-    logger.warn('Heartbeat: failed to read Claude Code credentials from Keychain (sub-agent will run logged-out)')
-    return null
-  }
 }
 
 // --- Data types ---

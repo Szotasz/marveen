@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { existsSync, readFileSync, statSync, mkdirSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
 // Contract tests for the 2026-06-02 13:00 hb-fire regression chain:
@@ -13,66 +13,74 @@ import { join } from 'node:path'
 //     path Claude Code's Linux installs use natively and the path the
 //     SDK config-dir code honours. Marveen verified this approach
 //     succeeds (exit 0, request authenticated).
+//
+// Refactor note (issue #5): readClaudeCodeOauthJson() was consolidated
+// from a private heartbeat.ts copy into src/web/claude-credentials.ts.
+// The security contracts and the ensureHeartbeatWorkerCwd assertions
+// are split across the two source files accordingly.
 
-const SRC = readFileSync(join(__dirname, '../heartbeat.ts'), 'utf-8')
+// Security contracts -- enforced on the canonical implementation in claude-credentials.ts
+const SRC_CREDS = readFileSync(join(__dirname, '../web/claude-credentials.ts'), 'utf-8')
+
+// Heartbeat-level contracts -- call site in ensureHeartbeatWorkerCwd
+const SRC_HEARTBEAT = readFileSync(join(__dirname, '../heartbeat.ts'), 'utf-8')
 
 describe('heartbeat OAuth bridge from Keychain to .credentials.json (#250 follow-up)', () => {
-  it('helper is renamed to read the FULL credentials JSON (not just a token)', () => {
-    // Name signals the contract: we return the JSON blob, not a parsed
-    // accessToken. The refreshToken inside is what lets the sub-agent
-    // renew without us re-reading the Keychain every hour.
-    expect(SRC).toMatch(/function readClaudeCodeOauthJson\(\)/)
+  it('helper is defined in claude-credentials.ts (consolidated from heartbeat.ts per issue #5)', () => {
+    // The implementation lives in the shared module; heartbeat.ts imports it.
+    expect(SRC_CREDS).toMatch(/function readClaudeCodeOauthJson\(\)/)
+    expect(SRC_HEARTBEAT).toMatch(/readClaudeCodeOauthJson/)
   })
 
   it('shells out to /usr/bin/security via execFileSync (no shell, no string interpolation)', () => {
-    expect(SRC).toMatch(/execFileSync\(\s*'\/usr\/bin\/security'/)
-    expect(SRC).toMatch(/find-generic-password/)
-    expect(SRC).toMatch(/Claude Code-credentials/)
+    expect(SRC_CREDS).toMatch(/execFileSync\(\s*'\/usr\/bin\/security'/)
+    expect(SRC_CREDS).toMatch(/find-generic-password/)
+    expect(SRC_CREDS).toMatch(/Claude Code-credentials/)
   })
 
   it('runs ONLY on darwin -- returns null on linux so the symlinked .credentials.json carries auth', () => {
-    expect(SRC).toMatch(/process\.platform !== 'darwin'/)
+    expect(SRC_CREDS).toMatch(/process\.platform !== 'darwin'/)
   })
 
   it('uses stdio:[ignore, pipe, ignore] so stderr cannot capture/leak the JSON', () => {
-    expect(SRC).toMatch(/stdio:\s*\['ignore',\s*'pipe',\s*'ignore'\]/)
+    expect(SRC_CREDS).toMatch(/stdio:\s*\['ignore',\s*'pipe',\s*'ignore'\]/)
   })
 
   it('refuses to log the JSON value or even the error detail (error may echo lookup key)', () => {
     // Slice from the function header to its first `^}` at column zero
     // so the assertion does not bleed into the next function.
-    const start = SRC.indexOf('function readClaudeCodeOauthJson')
+    const start = SRC_CREDS.indexOf('function readClaudeCodeOauthJson')
     expect(start).toBeGreaterThan(0)
-    const closeIdx = SRC.indexOf('\n}\n', start)
+    const closeIdx = SRC_CREDS.indexOf('\n}\n', start)
     expect(closeIdx).toBeGreaterThan(start)
-    const body = SRC.slice(start, closeIdx)
+    const body = SRC_CREDS.slice(start, closeIdx)
     expect(body).not.toMatch(/logger\.[a-z]+\(\s*\{\s*err\b/)
   })
 
   it('writes the JSON to $HEARTBEAT_CONFIG_DIR/.credentials.json (NOT to an env var)', () => {
-    expect(SRC).toMatch(/\.credentials\.json/)
+    expect(SRC_HEARTBEAT).toMatch(/\.credentials\.json/)
     // The env-var injection attempt was proved wrong (Marveen 13:00-13:20
     // A/B test: bare JSON in CLAUDE_CODE_OAUTH_TOKEN -> 401 "Invalid
     // bearer token"). The token name may still appear in comments
     // documenting the dead path; what must NOT exist is an assignment
     // to the runAgent env carrying that name.
-    expect(SRC).not.toMatch(/CLAUDE_CODE_OAUTH_TOKEN\s*[:=]/)
+    expect(SRC_HEARTBEAT).not.toMatch(/CLAUDE_CODE_OAUTH_TOKEN\s*[:=]/)
   })
 
   it('writes the credentials file with mode 0600 (owner-only read/write)', () => {
-    expect(SRC).toMatch(/mode:\s*0o600/)
+    expect(SRC_HEARTBEAT).toMatch(/mode:\s*0o600/)
   })
 
   it('still passes CLAUDE_CONFIG_DIR to runAgent (the #250 isolation gate stays in force)', () => {
-    expect(SRC).toMatch(/CLAUDE_CONFIG_DIR:\s*HEARTBEAT_CONFIG_DIR/)
+    expect(SRC_HEARTBEAT).toMatch(/CLAUDE_CONFIG_DIR:\s*HEARTBEAT_CONFIG_DIR/)
   })
 
   it('credentials write happens inside ensureHeartbeatWorkerCwd, AFTER the symlink tree is built', () => {
     // Both the symlink loop and the credentials write must live in the
     // same setup function so a missing dir is created exactly once.
-    const start = SRC.indexOf('function ensureHeartbeatWorkerCwd')
-    const closeIdx = SRC.indexOf('\n}\n', start)
-    const body = SRC.slice(start, closeIdx)
+    const start = SRC_HEARTBEAT.indexOf('function ensureHeartbeatWorkerCwd')
+    const closeIdx = SRC_HEARTBEAT.indexOf('\n}\n', start)
+    const body = SRC_HEARTBEAT.slice(start, closeIdx)
     expect(body).toMatch(/symlinkSync/)
     expect(body).toMatch(/readClaudeCodeOauthJson\(\)/)
     expect(body).toMatch(/\.credentials\.json/)
