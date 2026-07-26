@@ -210,43 +210,79 @@
 
     <!-- === Overview Page (default) === -->
     <div class="page" id="overviewPage">
-      <div class="overview-stats">
-        <div class="overview-stat">
-          <div class="overview-stat-label" data-i18n="overview.stat.agents">Aktív ügynökök</div>
-          <div class="overview-stat-value" id="statAgents">—</div>
-          <div class="overview-stat-sub" id="statAgentsSub"></div>
+
+      <!-- Zone 1: Attention Required (hidden when empty, collapsible) -->
+      <div class="attention-section" id="attentionSection" hidden>
+        <div class="attention-header" id="attentionHeader">
+          <span class="attention-title">Figyelem szükséges</span>
+          <span class="attention-badge" id="attentionBadge">0</span>
+          <button class="attention-toggle" id="attentionToggle" aria-label="Összecsukolás">&#x25B2;</button>
         </div>
-        <div class="overview-stat">
-          <div class="overview-stat-label" data-i18n="overview.stat.tasks">Ma futott feladat</div>
-          <div class="overview-stat-value" id="statTasks">—</div>
-          <div class="overview-stat-sub" id="statTasksSub"></div>
+        <div class="attention-body" id="attentionBody"></div>
+      </div>
+
+      <!-- Zone 2: KPI strip (5 clickable cards) -->
+      <div class="kpi-strip">
+        <a class="kpi-item" href="#kanban">
+          <span class="kpi-value" id="kpiTasks">—</span>
+          <span class="kpi-label">Feladatok ma</span>
+          <span class="kpi-trend" id="kpiTasksTrend"></span>
+        </a>
+        <a class="kpi-item" href="#tokenUsage">
+          <span class="kpi-value" id="kpiCost">—</span>
+          <span class="kpi-label">Költség ma</span>
+        </a>
+        <a class="kpi-item" href="#memories">
+          <span class="kpi-value" id="kpiMemories">—</span>
+          <span class="kpi-label">Memóriák</span>
+        </a>
+        <a class="kpi-item" href="#skills">
+          <span class="kpi-value" id="kpiSkills">—</span>
+          <span class="kpi-label">Skillek</span>
+        </a>
+        <a class="kpi-item" href="#tokenUsage">
+          <span class="kpi-value" id="kpiTokens">—</span>
+          <span class="kpi-label">Token ma</span>
+        </a>
+      </div>
+
+      <!-- Zone 3: Fleet Health bar (informational strip) -->
+      <div class="fh-bar" id="fleetHealthBar">
+        <div class="fh-item" id="fhAgents">
+          <span class="fh-dot" id="fhDot"></span>
+          <span class="fh-value" id="fhAgentsText">—</span>
+          <span class="fh-label">agens</span>
         </div>
-        <div class="overview-stat">
-          <div class="overview-stat-label" data-i18n="overview.stat.memories">Memória</div>
-          <div class="overview-stat-value" id="statMemories">—</div>
-          <div class="overview-stat-sub" id="statMemoriesSub"></div>
+        <span class="fh-divider"></span>
+        <div class="fh-item" id="fhApprovals">
+          <span class="fh-value" id="fhApprovalsText">—</span>
+          <span class="fh-label">jóváhagyás</span>
         </div>
-        <div class="overview-stat">
-          <div class="overview-stat-label" data-i18n="overview.stat.skills">Generált skillek</div>
-          <div class="overview-stat-value" id="statSkills">—</div>
-          <div class="overview-stat-sub" id="statSkillsSub"></div>
+        <span class="fh-divider"></span>
+        <div class="fh-item" id="fhCost">
+          <span class="fh-value" id="fhCostText">—</span>
+          <span class="fh-label">cost ma</span>
+        </div>
+        <span class="fh-divider"></span>
+        <div class="fh-item" id="fhErrors">
+          <span class="fh-value" id="fhErrorsText">—</span>
+          <span class="fh-label">hiba (4h)</span>
         </div>
       </div>
-      <div class="overview-grid">
-        <div class="overview-card">
-          <div class="overview-card-head">
-            <h3 data-i18n="overview.card.team">Csapat</h3>
-            <span class="overview-card-meta" id="overviewTeamMeta" data-i18n="overview.meta.live">élő állapot</span>
-          </div>
-          <div class="team-graph overview-team-graph" id="overviewTeamGrid"></div>
-        </div>
-        <div class="overview-card">
-          <div class="overview-card-head">
-            <h3 data-i18n="overview.card.activity">Aktivitás</h3>
-          </div>
-          <div class="overview-activity" id="overviewActivity"></div>
-        </div>
+
+      <!-- Zone 4: Compact agent grid -->
+      <div class="ov-section-title">Ágensek</div>
+      <div class="agents-mini-grid" id="agentsMiniGrid"></div>
+
+      <!-- Zone 5: Activity feed with agent filter pills -->
+      <div class="ov-activity-header">
+        <span class="ov-section-title">Aktivitás (utolsó 4h)</span>
+        <div class="ov-activity-pills" id="ovActivityPills"></div>
       </div>
+      <div class="ov-activity-feed" id="ovActivityFeed">
+        <div class="ov-activity-empty">Nincs aktivitás az elmúlt 4 órában.</div>
+      </div>
+
     </div>
 
     <!-- === Kanban Page === -->
