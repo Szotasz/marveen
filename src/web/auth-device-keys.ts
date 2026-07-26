@@ -107,7 +107,16 @@ export function resolveDeviceKey(raw: string): DeviceKeyPrincipal | null {
   }
   if (entry.lastUsedAt === null || now - entry.lastUsedAt >= LAST_USED_DEBOUNCE_SEC) {
     entry.lastUsedAt = now
-    getDb().prepare('UPDATE device_keys SET last_used_at = ? WHERE key_hash = ?').run(now, keyHash)
+    const res = getDb().prepare('UPDATE device_keys SET last_used_at = ? WHERE key_hash = ?').run(now, keyHash)
+    // The debounced write doubles as an existence check: zero changed rows
+    // means the key was revoked OUTSIDE this process (dashboard-user
+    // security:reset runs in its own process and cannot reach this cache), so
+    // an out-of-band revocation takes effect here within <=60s instead of
+    // lingering until the next restart.
+    if (res.changes === 0) {
+      cache.delete(keyHash)
+      return null
+    }
   }
   return { id: entry.id, name: entry.name }
 }
@@ -153,3 +162,7 @@ export function sweepExpiredDeviceKeys(): number {
 export function _clearDeviceKeyCacheForTest(): void {
   cache.clear()
 }
+
+// Test seam: direct cache access, so tests can age a last_used stamp across
+// the debounce window without sleeping.
+export const _cacheForTest = cache

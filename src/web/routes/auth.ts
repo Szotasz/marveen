@@ -52,7 +52,9 @@ import {
   countDashboardUsers,
   updateDashboardUserPassword,
   deleteDashboardUser,
+  logConfigChange,
 } from '../../db.js'
+import { notifySecurityEvent } from '../../notify.js'
 import type { RouteContext } from './types.js'
 
 const LOGIN_BODY_MAX_BYTES = 8 * 1024
@@ -272,6 +274,16 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     // Revoke every other session of this user; keep the caller's own if present.
     const presented = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
     revokeAllForUser(user.id, presented ?? undefined)
+    if (auth?.kind === 'token') {
+      // Break-glass reset (no current_password proven): leave a durable audit
+      // row and ping the operator's channel. Only the username goes into the
+      // trail, never credential material. Fire-and-forget: the reset must
+      // succeed with or without a wired channel (notifySecurityEvent is
+      // silent when none is configured).
+      logConfigChange('security.break_glass_password_reset', null, user.username, 'token')
+      logger.warn({ username: user.username }, 'break-glass password reset via bearer token')
+      void notifySecurityEvent(`🔑 Break-glass jelszó-reset a dashboardon: "${user.username}" jelszavát a hozzáférési tokennel állították át. Ha nem te voltál, futtasd: npm run dashboard-user -- security:reset`)
+    }
     json(res, { ok: true })
     return true
   }

@@ -22,6 +22,7 @@ Minden lap két szemszögből mutatja be a funkciót:
 | [Skool CLI](skool-cli.md) | Közösségi platform kezelése parancssorból (API nélkül) |
 | [connectors.hu](connectors-hu.md) | Üzleti API-átjáró (NAV, Billingo, Wise, fal.ai) MCP-n |
 | [Vault & titkosítás](vault.md) | Titkosított titok-tár (AES-256-GCM) OS-kulcstárral |
+| [Belépés-visszaút & vészreset](dashboard-auth-recovery.md) | Elfelejtett jelszó, kizárás, `security:reset` pánikgomb -- HTTP-független break-glass CLI |
 | [Dream-engine](dream-engine.md) | Éjszakai tudás-konszolidáció + reggeli prioritás-javaslatok |
 | [Proaktív hírszerző (intel registry)](intel-registry.md) | Óránkénti gyűjtő + napi brief közös SQLite tény-registry-vel, dedup + tény-életciklus |
 | [Háttér-feladatok](background-tasks.md) | Leválasztott, hosszú feladatok futtatása + értesítés |

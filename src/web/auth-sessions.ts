@@ -100,7 +100,15 @@ export function resolveSession(cookieValue: string): ResolvedSession | null {
   }
   if (now - entry.lastSeenAt >= LAST_SEEN_DEBOUNCE_SEC) {
     entry.lastSeenAt = now
-    getDb().prepare('UPDATE auth_sessions SET last_seen_at = ? WHERE id_hash = ?').run(now, idHash)
+    const res = getDb().prepare('UPDATE auth_sessions SET last_seen_at = ? WHERE id_hash = ?').run(now, idHash)
+    // Zero changed rows = the session row was deleted OUTSIDE this process
+    // (dashboard-user sessions:clear / security:reset run in their own process
+    // and cannot reach this cache). Honor the revocation within <=60s instead
+    // of serving the cached session until the next restart.
+    if (res.changes === 0) {
+      cache.delete(idHash)
+      return null
+    }
   }
   return { userId: entry.userId, username: entry.username }
 }
@@ -122,6 +130,14 @@ export function revokeAllForUser(userId: number, exceptCookieValue?: string | nu
   } else {
     getDb().prepare('DELETE FROM auth_sessions WHERE user_id = ?').run(userId)
   }
+}
+
+// Revoke EVERY browser session at once (break-glass security reset). Cache and
+// table go together -- a DB-only delete would leave cached sessions resolving
+// until the next restart.
+export function revokeAllSessions(): number {
+  cache.clear()
+  return getDb().prepare('DELETE FROM auth_sessions').run().changes
 }
 
 export function listUserSessions(userId: number): UserSessionInfo[] {
@@ -151,3 +167,7 @@ export function sweepExpiredSessions(): number {
 export function _clearSessionCacheForTest(): void {
   cache.clear()
 }
+
+// Test seam: direct cache access, so tests can age a last_seen stamp across
+// the debounce window without sleeping.
+export const _cacheForTest = cache
