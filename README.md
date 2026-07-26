@@ -43,6 +43,7 @@ Változások, amelyek a forkban megvannak, az upstreamben nincsenek:
 - **Dependabot** -- automatikus függőség-frissítés + számos már bemergelve: TypeScript 7, vitest 4, pino 10, @types/node 26, hono, postcss, body-parser, fast-uri, pyasn1
 - **claude-agent-sdk 0.3 session_id fix** -- snake_case/camelCase dual-olvasás, teszttel bizonyítva
 - **Kód-refaktor (#5)** -- legacy Telegram-route takarítás (`matchChannelRoute` és a két standalone DELETE-handler legacyMatch-e törölve); OAuth-segéd konszolidálás (`readClaudeCodeOauthJson` privát másolata eltávolítva `heartbeat.ts`-ből, a megosztott `claude-credentials.ts` implementáció importálva); 6 eddig hardkódolt env-kulcs a Beállítások-registrybe vezetve: `OWNER_NAME`, `BOT_NAME`, `HEARTBEAT_INTERVAL_MS`, `KANBAN_LABEL_COLORS`, `ALERT_THRESHOLD_MS`, `DEFAULT_REVERT_AFTER_MINUTES`
+- **DB séma-verziózás (#5)** -- `src/migrations/0001_baseline.sql` teljes séma-snapshot (34 tábla, végső oszlopkészlettel); `src/db-migrations.ts` migration runner (`applyMigrations`, per-migrációs tranzakció, checksum-ellenőrzés, otel_spans sentinel bootstrap meglévő telepítéseknél); `initDatabase()` refaktorálva: 830 sornyi inline DDL kiváltva egyetlen `applyMigrations(db)` hívással
 
 <!-- ONGOING: Minden jövőbeli fork-PR leadásakor (Zack -> Jarvis) frissítsd ezt a szakaszt
      a friss git log alapján:
