@@ -71,6 +71,20 @@ SESSION="${MAIN_AGENT_ID}-channels"
 # respawn the same CLAUDE_CONFIG_DIR the main agent is actually running under.
 CHANNEL_PROVIDER="$(grep -E '^CHANNEL_PROVIDER=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
 CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"
+# Extra co-listen plugins, derived EXACTLY as channels.sh does (see the
+# EXTRA_CHANNELS block there). Without this a watchdog respawn silently drops
+# every secondary provider: the session comes back on the primary channel only,
+# so outbound still works (the MCP tool is loaded) but inbound on the extras is
+# dropped with "server not in --channels list" -- a HALF-mute that looks healthy
+# to any liveness probe watching the primary. Observed in practice: a watchdog
+# respawn dropped the secondary inbound for ~20 minutes while the primary kept
+# working, so neither the probes nor the agent itself noticed.
+CHANNEL_PLUGINS_EXTRA="$(grep -E '^CHANNEL_PLUGINS_EXTRA=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+EXTRA_CHANNELS=""
+for _p in $CHANNEL_PLUGINS_EXTRA; do
+  [ -n "$_p" ] && EXTRA_CHANNELS="$EXTRA_CHANNELS plugin:$_p"
+done
+unset _p
 
 # NB: use TMUX_BIN, not TMUX -- the latter is tmux's own env var (socket,pid,
 # session); assigning the binary path to it corrupts server-socket detection.
@@ -185,7 +199,7 @@ fi
 
 # Full PATH with .bun/bin -- without it the respawned bun telegram bridge does
 # not come up and the session is channel-less.
-RESPAWN_CMD="export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false && ${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:telegram@claude-plugins-official"
+RESPAWN_CMD="export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false && ${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${CHANNEL_PROVIDER}@claude-plugins-official${EXTRA_CHANNELS}"
 
 reason="keepalive stale ${age}s"
 [ "$STALE" != true ] && reason=""

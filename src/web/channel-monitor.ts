@@ -504,6 +504,31 @@ function readConfiguredMainModel(): string {
   }
 }
 
+// Secondary channel plugins the main session co-listens on, read from .env
+// CHANNEL_PLUGINS_EXTRA (space-separated plugin ids) exactly as scripts/channels.sh
+// derives its EXTRA_CHANNELS. Kept OUT of buildMainSessionRespawnCmd so that stays
+// pure for the contract test; every respawn call site must pass the result through.
+//
+// Why this exists: a respawn that omits the extras comes up on the PRIMARY provider
+// only, which is a HALF-mute -- outbound still works (the plugin's MCP reply tool is
+// loaded) while inbound on every secondary provider is silently dropped ("server not
+// in --channels list"). Liveness probes watch the primary, so nothing looks wrong.
+// Observed in practice: a context-saturation hard restart dropped the secondary
+// inbound for ~20 minutes while the primary channel kept working normally.
+export function readExtraChannelPluginIds(projectRoot: string = PROJECT_ROOT): string[] {
+  try {
+    const envPath = join(projectRoot, '.env')
+    if (!existsSync(envPath)) return []
+    const line = readFileSync(envPath, 'utf-8')
+      .split('\n')
+      .find((l) => l.startsWith('CHANNEL_PLUGINS_EXTRA='))
+    if (!line) return []
+    return line.slice('CHANNEL_PLUGINS_EXTRA='.length).trim().split(/\s+/).filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
 // Build the claude command used to (re)spawn the main channels session via
 // `tmux respawn-pane`. Pure + exported so the contract test can LOCK the
 // presence of the `$HOME/.bun/bin` PATH export (without it the respawned bun
@@ -537,6 +562,12 @@ export function buildMainSessionRespawnCmd(opts: {
    * bug 2 latent path). Keeps main + sub-agents on the SAME auth source.
    */
   fleetToken?: boolean
+  /**
+   * Secondary plugin ids to co-listen on alongside `pluginId`, from
+   * readExtraChannelPluginIds(). Omitting them is what silently half-mutes every
+   * non-primary channel after a recovery respawn -- see that helper's comment.
+   */
+  extraPluginIds?: string[]
 }): string {
   return [
     'export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"',
@@ -562,7 +593,7 @@ export function buildMainSessionRespawnCmd(opts: {
     // Single-quote the model id so a value like `claude-opus-4-8[1m]` is not
     // glob-expanded by the shell that tmux respawn-pane spawns the command in.
     ...(opts.model ? ['--model', `'${opts.model}'`] : []),
-    `--channels plugin:${opts.pluginId}`,
+    [`--channels plugin:${opts.pluginId}`, ...(opts.extraPluginIds ?? []).map((p) => `plugin:${p}`)].join(' '),
   ].join(' ')
 }
 
@@ -609,6 +640,7 @@ export async function resumeMarveenSession(): Promise<boolean> {
     const claudeCmd = buildMainSessionRespawnCmd({
       claudePath: CLAUDE,
       pluginId: provider.pluginId,
+      extraPluginIds: readExtraChannelPluginIds(),
       model: readConfiguredMainModel(),
       continueSession: true,
       // Parity with channels.sh: a recovery respawn must also land on the
@@ -814,6 +846,7 @@ function respawnMarveenSessionFresh(): boolean {
     const claudeCmd = buildMainSessionRespawnCmd({
       claudePath: CLAUDE,
       pluginId: provider.pluginId,
+      extraPluginIds: readExtraChannelPluginIds(),
       model: readConfiguredMainModel(),
       continueSession: false,
       // Same channels.sh-bypass concern as resumeMarveenSession: this fresh
