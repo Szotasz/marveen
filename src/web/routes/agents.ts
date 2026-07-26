@@ -166,18 +166,14 @@ function parseChannelProvider(raw: string): ChannelProviderType | null {
   return null
 }
 
-// Match both new /channels/:provider/ and legacy /telegram/ URL patterns.
-// Returns [agentName, provider] or null. Legacy routes always resolve to 'telegram'.
+// Match /channels/:provider/ URL patterns. Returns [agentName, provider] or null.
 function matchChannelRoute(path: string, suffix: string): [string, ChannelProviderType] | null {
-  const newPattern = new RegExp(`^/api/agents/([^/]+)/channels/(telegram|slack|discord|googlechat|teams)${suffix}$`)
-  const newMatch = path.match(newPattern)
-  if (newMatch) {
-    const provider = parseChannelProvider(newMatch[2])
-    if (provider) return [decodeURIComponent(newMatch[1]), provider]
+  const pattern = new RegExp(`^/api/agents/([^/]+)/channels/(telegram|slack|discord|googlechat|teams)${suffix}$`)
+  const match = path.match(pattern)
+  if (match) {
+    const provider = parseChannelProvider(match[2])
+    if (provider) return [decodeURIComponent(match[1]), provider]
   }
-  const legacyPattern = new RegExp(`^/api/agents/([^/]+)/telegram${suffix}$`)
-  const legacyMatch = path.match(legacyPattern)
-  if (legacyMatch) return [decodeURIComponent(legacyMatch[1]), 'telegram']
   return null
 }
 
@@ -1396,14 +1392,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     return true
   }
 
-  // DELETE /api/agents/:name/channels/:provider/invites/:token (legacy: /telegram/invites/:token)
+  // DELETE /api/agents/:name/channels/:provider/invites/:token
   const inviteRevokeNewMatch = path.match(/^\/api\/agents\/([^/]+)\/channels\/(telegram|slack|discord)\/invites\/(.+)$/)
-  const inviteRevokeLegacyMatch = path.match(/^\/api\/agents\/([^/]+)\/telegram\/invites\/(.+)$/)
   const inviteRevokeMatch = inviteRevokeNewMatch
     ? { name: decodeURIComponent(inviteRevokeNewMatch[1]), provider: inviteRevokeNewMatch[2] as ChannelProviderType, token: decodeURIComponent(inviteRevokeNewMatch[3]) }
-    : inviteRevokeLegacyMatch
-      ? { name: decodeURIComponent(inviteRevokeLegacyMatch[1]), provider: 'telegram' as ChannelProviderType, token: decodeURIComponent(inviteRevokeLegacyMatch[2]) }
-      : null
+    : null
   if (inviteRevokeMatch && method === 'DELETE') {
     const { name, provider, token } = inviteRevokeMatch
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
@@ -1417,14 +1410,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     return true
   }
 
-  // DELETE /api/agents/:name/channels/:provider/allowed/:type/:id (legacy: /telegram/allowed/:type/:id)
+  // DELETE /api/agents/:name/channels/:provider/allowed/:type/:id
   const allowedRemoveNewMatch = path.match(/^\/api\/agents\/([^/]+)\/channels\/(telegram|slack|discord)\/allowed\/(user|group)\/(.+)$/)
-  const allowedRemoveLegacyMatch = path.match(/^\/api\/agents\/([^/]+)\/telegram\/allowed\/(user|group)\/(.+)$/)
   const allowedRemoveMatch = allowedRemoveNewMatch
     ? { name: decodeURIComponent(allowedRemoveNewMatch[1]), provider: allowedRemoveNewMatch[2] as ChannelProviderType, kind: allowedRemoveNewMatch[3], id: decodeURIComponent(allowedRemoveNewMatch[4]) }
-    : allowedRemoveLegacyMatch
-      ? { name: decodeURIComponent(allowedRemoveLegacyMatch[1]), provider: 'telegram' as ChannelProviderType, kind: allowedRemoveLegacyMatch[2], id: decodeURIComponent(allowedRemoveLegacyMatch[3]) }
-      : null
+    : null
   if (allowedRemoveMatch && method === 'DELETE') {
     const { name, provider, kind, id } = allowedRemoveMatch
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) {
