@@ -312,6 +312,21 @@ export function stripDataPayloads(seg) {
 // double-quoted message that CAN command-substitute (`git commit -m "$(crontab
 // -r)"`) is left intact so SCHEDULER_RX still catches the real substitution.
 // Scoped to git commit/tag/stash so a `-m` on an unrelated binary is untouched.
+// Heredoc bodies are DATA, not commands. A worker writing a real commit message
+// through `git commit -F - <<EOF … EOF` had the turn denied because one prose
+// line happened to start with "at " -- which SCHEDULER_RX reads as the `at`
+// scheduler at a segment start. The body never reaches a shell as commands, so
+// blank it before any pattern runs. Quoted (<<'EOF') and unquoted markers both,
+// and <<- for tab-indented bodies.
+export function stripHeredocBodies(command) {
+  const cmd = String(command ?? '')
+  if (!/<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*/.test(cmd)) return cmd
+  return cmd.replace(
+    /(<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2)([\s\S]*?)(^\s*\3\s*$)/gm,
+    (_full, open, _q, _marker, _body, close) => `${open}\n${close}`,
+  )
+}
+
 export function stripGitCommitMessages(command) {
   const cmd = String(command ?? '')
   if (!/\bgit\b[\s\S]*\b(commit|tag|stash)\b/i.test(cmd)) return cmd
@@ -363,7 +378,7 @@ export function gateDecision(toolName, toolInput) {
     // it), so the URL/method args still match but the body text never does. A
     // separator OUTSIDE the payload still splits, so `curl -d '' x ; crontab -r`
     // is still caught.
-    const safeCommand = stripDataPayloads(stripGitCommitMessages(String(toolInput?.command ?? '')))
+    const safeCommand = stripDataPayloads(stripGitCommitMessages(stripHeredocBodies(String(toolInput?.command ?? ''))))
     // Per-segment so an unrelated token elsewhere in a compound command cannot
     // turn a legit read (store inspection, schedule-API GET) into a false deny.
     const naiveSegs = splitSegments(safeCommand)
