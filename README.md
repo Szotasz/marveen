@@ -33,7 +33,7 @@ A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás
 
 ## Miben tér el ez a fork az eredeti Marveen aktuális állapotától
 
-*Állapot: upstream `7bb6360` vs fork `HEAD`, 2026-07-27*
+*Állapot: upstream `b2d669d` vs fork `HEAD`, 2026-07-27*
 
 Változások, amelyek a forkban megvannak, az upstreamben nincsenek:
 
@@ -44,6 +44,7 @@ Változások, amelyek a forkban megvannak, az upstreamben nincsenek:
 - **claude-agent-sdk 0.3 session_id fix** -- snake_case/camelCase dual-olvasás, teszttel bizonyítva
 - **Kód-refaktor (#5)** -- legacy Telegram-route takarítás (`matchChannelRoute` és a két standalone DELETE-handler legacyMatch-e törölve); OAuth-segéd konszolidálás (`readClaudeCodeOauthJson` privát másolata eltávolítva `heartbeat.ts`-ből, a megosztott `claude-credentials.ts` implementáció importálva); 6 eddig hardkódolt env-kulcs a Beállítások-registrybe vezetve: `OWNER_NAME`, `BOT_NAME`, `HEARTBEAT_INTERVAL_MS`, `KANBAN_LABEL_COLORS`, `ALERT_THRESHOLD_MS`, `DEFAULT_REVERT_AFTER_MINUTES`
 - **DB séma-verziózás (#5)** -- `src/migrations/0001_baseline.sql` teljes séma-snapshot (34 tábla, végső oszlopkészlettel); `src/db-migrations.ts` migration runner (`applyMigrations`, per-migrációs tranzakció, checksum-ellenőrzés, otel_spans sentinel bootstrap meglévő telepítéseknél); `initDatabase()` refaktorálva: 830 sornyi inline DDL kiváltva egyetlen `applyMigrations(db)` hívással
+- **Frontend modularizáció (#3)** -- a monolitikus `web/app.js` (13000+ sor) szétbontva: 1299 sornyi váz (boot + routing + közös utilok) + 24 önálló ES-modul a `web/modules/` alatt (kanban, agents, memories, schedules, settings, connectors, skills, messages, token-usage, overview, federation, ideas, approvals, migrate, updates, onboarding, recall/bg-tasks, docs/research, status/costs, i18n, app-core, agent-modals, kanban-dnd, toast); a `web/index.html` `type="module"` betöltéssel, a statikus szerver (`src/web/routes/static.ts`) path-traversal-guardolt `/modules/*.js` kiszolgálóval; oldalanként/funkciónként darabolva, minden lépés külön autentikált headless-smoke-kal verifikálva
 
 <!-- ONGOING: Minden jövőbeli fork-PR leadásakor (Zack -> Jarvis) frissítsd ezt a szakaszt
      a friss git log alapján:
