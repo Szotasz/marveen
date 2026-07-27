@@ -10,10 +10,12 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const APP      = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
-const APP_CORE = readFileSync(join(__dirname, '../../web/modules/app-core.js'), 'utf-8')
-const HTML     = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
-const CSS      = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
+const APP        = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
+// Agents view + channel management extracted to agents.js in S-6 modularization.
+const AGENTS_MOD = readFileSync(join(__dirname, '../../web/modules/agents.js'), 'utf-8')
+const APP_CORE   = readFileSync(join(__dirname, '../../web/modules/app-core.js'), 'utf-8')
+const HTML       = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
+const CSS        = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
 
 describe('federation UI wiring', () => {
   it('sidebar has the federation nav item AFTER the ideabox item', () => {
@@ -45,18 +47,23 @@ describe('federation UI wiring', () => {
   })
 
   it('the federation status fetches are failure-proof (must never blank Agents/Messages)', () => {
-    const guarded = APP.match(/fetch\('\/api\/federation\/status'\)\.then\(\(r\) => \(r\.ok \? r\.json\(\) : null\)\)\.catch\(\(\) => null\)/g) || []
+    // loadAgents is in agents.js (S-6); loadChatAgentList is in app.js
+    const combined = AGENTS_MOD + APP
+    const guarded = combined.match(/fetch\('\/api\/federation\/status'\)\.then\(\(r\) => \(r\.ok \? r\.json\(\) : null\)\)\.catch\(\(\) => null\)/g) || []
     expect(guarded.length).toBeGreaterThanOrEqual(2) // loadAgents + loadChatAgentList
   })
 
   it('federated agents live in a SEPARATE store from the local `agents` global', () => {
-    expect(APP).toContain('let federatedPeerStatus = []')
+    // federatedPeerStatus extracted to agents.js in S-6 modularization.
+    expect(AGENTS_MOD).toContain('let federatedPeerStatus = []')
     // the team editor's candidate source must stay the local list only:
-    expect(APP).not.toMatch(/agents\.push\(.*federated/i)
+    const combined = AGENTS_MOD + APP
+    expect(combined).not.toMatch(/agents\.push\(.*federated/i)
   })
 
   it('manifest-derived strings render as text nodes via escapeHtml, never in attributes', () => {
-    const cardFn = APP.slice(APP.indexOf('function renderFederatedAgentCards'), APP.indexOf('function openFederatedThread'))
+    // renderFederatedAgentCards is in agents.js after S-6 extraction.
+    const cardFn = AGENTS_MOD.slice(AGENTS_MOD.indexOf('function renderFederatedAgentCards'), AGENTS_MOD.indexOf('function openFederatedThread'))
     expect(cardFn).toContain('escapeHtml(fa.displayName)')
     expect(cardFn).toContain('escapeHtml(fa.model)')
     // No template interpolation inside an HTML attribute in the federated card
