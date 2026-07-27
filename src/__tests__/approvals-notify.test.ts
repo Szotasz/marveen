@@ -122,3 +122,51 @@ describe('approvals self-approval guard', () => {
     expect(patchOut.body.status).toBe('approved')
   })
 })
+
+// A decision that is answered but never announced is the failure this whole
+// feature exists to remove: the owner clicks, the answer lands in the database,
+// and whoever asked keeps waiting. The click has to BE the message.
+describe('decision answered notification', () => {
+  beforeEach(() => {
+    initDatabase(':memory:')
+  })
+
+  async function createDecision() {
+    const { ctx } = fakePost('/api/approvals', {
+      agent_id: 'agent-b',
+      category: 'product_decision',
+      action_description: 'Which way?',
+      options: [
+        { key: 'a', label: 'Option A' },
+        { key: 'b', label: 'Option B' },
+      ],
+    })
+    await tryHandleApprovals(ctx)
+    return getPendingMessages('agent-a').at(-1)!.content.match(/id=(\S+)/)![1]
+  }
+
+  it('announces the chosen option to MAIN_AGENT_ID', async () => {
+    const id = await createDecision()
+    const { ctx } = fakePost(`/api/approvals/${id}/decide`, { chosen_key: 'b', decided_by: 'Viktor' })
+    expect(await tryHandleApprovals(ctx)).toBe(true)
+
+    const last = getPendingMessages('agent-a').at(-1)!
+    expect(last.content).toContain('[DECISION_ANSWERED]')
+    expect(last.content).toContain('answer=b (Option B)')
+    expect(last.content).toContain('by=Viktor')
+  })
+
+  it('announces a none-of-the-above answer with its reason', async () => {
+    const id = await createDecision()
+    const { ctx } = fakePost(`/api/approvals/${id}/decide`, {
+      reject: true,
+      decided_by: 'Viktor',
+      note: 'neither fits',
+    })
+    await tryHandleApprovals(ctx)
+
+    const last = getPendingMessages('agent-a').at(-1)!
+    expect(last.content).toContain('answer=NONE_OF_THE_ABOVE')
+    expect(last.content).toContain('note=neither fits')
+  })
+})

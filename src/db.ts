@@ -940,6 +940,55 @@ export function initDatabase(dbPathOverride?: string): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_otel_spans_trace ON otel_spans(trace_id, start_ms)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_otel_spans_agent ON otel_spans(agent_id, start_ms)`)
 
+  // Migration: multiple-choice decisions on top of the binary HITL approval.
+  // The owner's complaint that drove this: a single-threaded chat is unusable
+  // as a decision log -- a question that belongs to a card must be answered
+  // and recorded ON the card, by clicking, not by typing prose into Telegram.
+  // So an approval can now carry `options` (a JSON array of choices) and
+  // resolve to 'decided' with the chosen key. `card_id` anchors it to the card
+  // it belongs to; NULL means a standalone question. Rejecting stays
+  // meaningful for option-decisions too -- it is the "none of these" answer.
+  // SQLite can't ALTER a CHECK constraint, so the table is rebuilt when the
+  // current schema lacks 'decided'. Idempotent on fresh DBs.
+  try {
+    const apSchema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='approvals'").get() as { sql: string } | undefined
+    if (apSchema?.sql && !apSchema.sql.includes("'decided'")) {
+      db.exec(`
+        CREATE TABLE approvals_new (
+          id TEXT PRIMARY KEY,
+          agent_id TEXT NOT NULL,
+          category TEXT NOT NULL,
+          action_description TEXT NOT NULL,
+          action_payload TEXT,
+          status TEXT NOT NULL DEFAULT 'pending'
+            CHECK(status IN ('pending','approved','rejected','timeout','decided')),
+          timeout_at INTEGER,
+          telegram_message_id INTEGER,
+          requested_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          resolved_at INTEGER,
+          resolved_by TEXT,
+          card_id TEXT,
+          options TEXT,
+          chosen_key TEXT,
+          chosen_note TEXT
+        );
+        INSERT INTO approvals_new
+          (id, agent_id, category, action_description, action_payload, status,
+           timeout_at, telegram_message_id, requested_at, resolved_at, resolved_by)
+          SELECT id, agent_id, category, action_description, action_payload, status,
+                 timeout_at, telegram_message_id, requested_at, resolved_at, resolved_by
+          FROM approvals;
+        DROP TABLE approvals;
+        ALTER TABLE approvals_new RENAME TO approvals;
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, requested_at)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_agent ON approvals(agent_id, requested_at)`)
+    }
+  } catch (err) {
+    logger.warn({ err }, 'approvals decision-options migration failed -- continuing')
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_card ON approvals(card_id, status)`)
+
   // One-shot migration from the old JSON file (which had a read-modify-write
   // race). Import rows if they exist, then rename the file so we don't keep
   // re-importing. Wrapped in a transaction so a crash mid-import is safe.
@@ -3161,18 +3210,51 @@ export function deleteVaultSshServer(id: string): boolean {
 
 // --- Approvals (HITL) ---
 
+// One choice offered to the owner. `key` is the stable identifier an agent
+// branches on; `label` is what the owner clicks. `detail` is the one-line
+// consequence, so a choice can be made without reading back the conversation.
+export interface DecisionOption {
+  key: string
+  label: string
+  detail?: string
+}
+
 export interface Approval {
   id: string
   agent_id: string
   category: string
   action_description: string
   action_payload: string | null
-  status: 'pending' | 'approved' | 'rejected' | 'timeout'
+  status: 'pending' | 'approved' | 'rejected' | 'timeout' | 'decided'
   timeout_at: number | null
   telegram_message_id: number | null
   requested_at: number
   resolved_at: number | null
   resolved_by: string | null
+  // Multiple-choice extension. `options` is a JSON-encoded DecisionOption[];
+  // NULL means a classic binary approve/reject request.
+  card_id: string | null
+  options: string | null
+  chosen_key: string | null
+  chosen_note: string | null
+}
+
+// Parse the stored `options` JSON defensively: a malformed or non-array value
+// degrades to "no options" (a binary approval) rather than breaking the board.
+export function parseDecisionOptions(raw: string | null): DecisionOption[] {
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (o): o is DecisionOption =>
+        !!o && typeof o === 'object' &&
+        typeof (o as DecisionOption).key === 'string' &&
+        typeof (o as DecisionOption).label === 'string',
+    )
+  } catch {
+    return []
+  }
 }
 
 export function createApproval(params: {
@@ -3182,11 +3264,15 @@ export function createApproval(params: {
   action_description: string
   action_payload?: string | null
   timeout_at?: number | null
+  card_id?: string | null
+  options?: DecisionOption[] | null
 }): Approval {
   const now = Math.floor(Date.now() / 1000)
+  const options = params.options?.length ? JSON.stringify(params.options) : null
   db.prepare(`
-    INSERT INTO approvals (id, agent_id, category, action_description, action_payload, timeout_at, requested_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO approvals (id, agent_id, category, action_description, action_payload,
+                           timeout_at, requested_at, card_id, options)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     params.id,
     params.agent_id,
@@ -3195,6 +3281,8 @@ export function createApproval(params: {
     params.action_payload ?? null,
     params.timeout_at ?? null,
     now,
+    params.card_id ?? null,
+    options,
   )
   return {
     id: params.id,
@@ -3208,7 +3296,53 @@ export function createApproval(params: {
     requested_at: now,
     resolved_at: null,
     resolved_by: null,
+    card_id: params.card_id ?? null,
+    options,
+    chosen_key: null,
+    chosen_note: null,
   }
+}
+
+// Record the owner picking one of the offered options. Returns false if the
+// request is already resolved (so a double click, or a click racing the
+// timeout sweeper, can't overwrite an answer) or if `chosenKey` is not one of
+// the offered options -- an answer outside the menu is a bug, not a choice.
+export function decideApproval(
+  id: string,
+  chosenKey: string,
+  decidedBy: string,
+  note?: string | null,
+): boolean {
+  const row = getApproval(id)
+  if (!row || row.status !== 'pending') return false
+  if (!parseDecisionOptions(row.options).some(o => o.key === chosenKey)) return false
+  const now = Math.floor(Date.now() / 1000)
+  return db.prepare(`
+    UPDATE approvals
+    SET status = 'decided', resolved_at = ?, resolved_by = ?, chosen_key = ?, chosen_note = ?
+    WHERE id = ? AND status = 'pending'
+  `).run(now, decidedBy, chosenKey, note ?? null, id).changes > 0
+}
+
+// "None of the above" -- the owner rejects every offered option, optionally
+// saying why. Kept distinct from `decided` so the board can show that the menu
+// itself was wrong, which is a signal worth seeing.
+export function rejectDecision(id: string, decidedBy: string, note?: string | null): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  return db.prepare(`
+    UPDATE approvals
+    SET status = 'rejected', resolved_at = ?, resolved_by = ?, chosen_note = ?
+    WHERE id = ? AND status = 'pending'
+  `).run(now, decidedBy, note ?? null, id).changes > 0
+}
+
+// Pending decisions for one card, oldest first (answer them in the order they
+// were asked). Used by the card detail view.
+export function listCardDecisions(cardId: string, opts: { pendingOnly?: boolean } = {}): Approval[] {
+  const where = opts.pendingOnly ? "AND status = 'pending'" : ''
+  return db.prepare(
+    `SELECT * FROM approvals WHERE card_id = ? ${where} ORDER BY requested_at ASC`,
+  ).all(cardId) as Approval[]
 }
 
 export function getApproval(id: string): Approval | undefined {

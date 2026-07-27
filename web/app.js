@@ -1975,6 +1975,126 @@ async function renderCardLabelsSection(card) {
   }
 }
 
+// === Card decisions ===
+// A question an agent put to the owner, answered by clicking one of the
+// offered options. It lives on the card (not in the chat thread) so "what was
+// decided, when, by whom, and why" stays retrievable next to the work itself.
+async function renderCardDecisions(cardId) {
+  const section = document.getElementById('cardDecisionsSection')
+  const list = document.getElementById('cardDecisionsList')
+  if (!section || !list) return
+  let decisions = []
+  try {
+    const res = await fetch(`/api/kanban/${encodeURIComponent(cardId)}/decisions`)
+    if (!res.ok) throw new Error('fetch failed')
+    decisions = await res.json()
+  } catch {
+    section.style.display = 'none'
+    return
+  }
+  if (!decisions.length) {
+    section.style.display = 'none'
+    return
+  }
+  section.style.display = ''
+  list.innerHTML = ''
+
+  for (const d of decisions) {
+    const item = document.createElement('div')
+    item.className = `decision-item decision-${d.status}`
+    const asked = new Date(d.requested_at * 1000).toLocaleString('hu-HU')
+
+    if (d.status === 'pending') {
+      const opts = (d.options || [])
+        .map(
+          (o) => `
+          <button class="btn-secondary decision-option" data-id="${escapeHtml(d.id)}" data-key="${escapeHtml(o.key)}">
+            <span class="decision-option-label">${escapeHtml(o.label)}</span>
+            ${o.detail ? `<span class="decision-option-detail">${escapeHtml(o.detail)}</span>` : ''}
+          </button>`,
+        )
+        .join('')
+      item.innerHTML = `
+        <div class="decision-head">
+          <span class="decision-badge decision-badge-open">${t('kanban.decision.pending')}</span>
+          <span class="decision-asker">${escapeHtml(d.agent_id)}</span>
+          <span class="decision-date">${asked}</span>
+        </div>
+        <div class="decision-question">${escapeHtml(d.action_description)}</div>
+        <div class="decision-options">${opts}</div>
+        <div class="decision-none-row">
+          <input type="text" class="decision-note" data-id="${escapeHtml(d.id)}"
+                 placeholder="${escapeHtml(t('kanban.decision.note_placeholder'))}">
+          <button class="btn-secondary decision-reject" data-id="${escapeHtml(d.id)}">${escapeHtml(t('kanban.decision.none'))}</button>
+        </div>
+      `
+    } else {
+      // Answered: show what was chosen and why, so the card reads as a log.
+      const chosen = (d.options || []).find((o) => o.key === d.chosen_key)
+      const answer =
+        d.status === 'rejected'
+          ? t('kanban.decision.answered_none')
+          : escapeHtml(chosen ? chosen.label : d.chosen_key || '?')
+      const decidedAt = d.resolved_at ? new Date(d.resolved_at * 1000).toLocaleString('hu-HU') : ''
+      item.innerHTML = `
+        <div class="decision-head">
+          <span class="decision-badge decision-badge-done">${t('kanban.decision.answered')}</span>
+          <span class="decision-asker">${escapeHtml(d.agent_id)}</span>
+          <span class="decision-date">${asked}</span>
+        </div>
+        <div class="decision-question">${escapeHtml(d.action_description)}</div>
+        <div class="decision-answer">
+          <strong>${answer}</strong>
+          <span class="decision-answer-meta">${escapeHtml(d.resolved_by || '')} &middot; ${decidedAt}</span>
+        </div>
+        ${d.chosen_note ? `<div class="decision-answer-note">${escapeHtml(d.chosen_note)}</div>` : ''}
+      `
+    }
+    list.appendChild(item)
+  }
+
+  // Sending the note along with the click is what keeps this a one-action
+  // answer: the owner never has to type unless they want to add a reason.
+  const noteFor = (id) => {
+    const el = list.querySelector(`.decision-note[data-id="${CSS.escape(id)}"]`)
+    return el && el.value.trim() ? el.value.trim() : null
+  }
+  const submit = async (id, payload, btn) => {
+    const buttons = list.querySelectorAll(`[data-id="${CSS.escape(id)}"]`)
+    buttons.forEach((b) => { if (b.tagName === 'BUTTON') b.disabled = true })
+    try {
+      const res = await fetch(`/api/approvals/${encodeURIComponent(id)}/decide`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // Who answered is part of the record, so it must be the real owner of
+        // THIS install (OWNER_NAME -> window._marveen.ownerName), never a
+        // baked-in name -- a renamed install would otherwise log the wrong
+        // person as having made the decision.
+        body: JSON.stringify({ decided_by: chatOwnerName() || 'owner', ...payload }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        showToast(err.error || t('kanban.decision.error'))
+        buttons.forEach((b) => { if (b.tagName === 'BUTTON') b.disabled = false })
+        return
+      }
+      showToast(t('kanban.decision.saved'))
+      renderCardDecisions(cardId)
+    } catch {
+      showToast(t('kanban.decision.error'))
+      buttons.forEach((b) => { if (b.tagName === 'BUTTON') b.disabled = false })
+    }
+    if (btn) { /* button is re-rendered below */ }
+  }
+
+  list.querySelectorAll('.decision-option').forEach((btn) => {
+    btn.onclick = () => submit(btn.dataset.id, { chosen_key: btn.dataset.key, note: noteFor(btn.dataset.id) }, btn)
+  })
+  list.querySelectorAll('.decision-reject').forEach((btn) => {
+    btn.onclick = () => submit(btn.dataset.id, { reject: true, note: noteFor(btn.dataset.id) }, btn)
+  })
+}
+
 // === Card detail ===
 async function showCardDetail(card) {
   // Running number (#N) in the title bar, plus the stable hex id in the meta.
@@ -2155,6 +2275,8 @@ async function showCardDetail(card) {
   } else {
     parentMetaItem.style.display = 'none'
   }
+
+  renderCardDecisions(card.id)
 
   // Load comments
   try {
