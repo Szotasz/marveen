@@ -279,6 +279,7 @@ window._i18n.en = {
   'archived.modal.title':        'Archived card',
   'archived.meta.archived_at':   'Archived',
   'archived.btn.restore_to_board': 'Restore to board',
+  'archived.backToKanban':       'Back to Kanban',
   'archived.error.http':         'Error: {status}',
 
   // --- Agents ---

@@ -279,6 +279,7 @@ window._i18n.hu = {
   'archived.modal.title':        'Archivált kártya',
   'archived.meta.archived_at':   'Archiválva',
   'archived.btn.restore_to_board': 'Visszaállítás a táblára',
+  'archived.backToKanban':       'Vissza a Kanbanra',
   'archived.error.http':         'Hiba: {status}',
 
   // --- Agents ---
