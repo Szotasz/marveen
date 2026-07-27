@@ -15,6 +15,8 @@ const APP        = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
 const AGENTS_MOD = readFileSync(join(__dirname, '../../web/modules/agents.js'), 'utf-8')
 // Messages/chat section extracted to messages.js in S-10 modularization.
 const MESSAGES_MOD = readFileSync(join(__dirname, '../../web/modules/messages.js'), 'utf-8')
+// Federation page extracted to federation.js in S-13b modularization.
+const FEDERATION_MOD = readFileSync(join(__dirname, '../../web/modules/federation.js'), 'utf-8')
 const APP_CORE   = readFileSync(join(__dirname, '../../web/modules/app-core.js'), 'utf-8')
 const HTML       = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
 const CSS        = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
@@ -32,27 +34,29 @@ describe('federation UI wiring', () => {
     expect(HTML).toContain('id="federationPage"')
     // router dispatch: page is registered in app.js via registerPage()
     expect(APP).toMatch(/registerPage\('federation'/)
-    expect(APP).toMatch(/async function loadFederationPage\(/)
+    // loader implementation lives in federation.js after S-13b modularization
+    expect(FEDERATION_MOD).toMatch(/async function loadFederationPage\(/)
     // nav key and page-header i18n map live in app-core.js after S-3 modularization
     expect(APP_CORE).toContain("federation: 'nav.federation'")
     expect(APP_CORE).toContain('federationPage: {')
   })
 
   it('frontend consumes the round-2 endpoints', () => {
-    expect(APP).toContain('/api/federation/status')
-    expect(APP).toContain('/api/federation/peers')
-    expect(APP).toContain('/api/federation/refresh')
-    expect(APP).toContain('/api/federation/enabled')
-    expect(APP).toContain('/api/federation/remove')
-    expect(APP).toContain('/inbound-token')
-    expect(APP).toContain('/rotate-inbound-token')
+    // endpoints live in federation.js after S-13b modularization
+    expect(FEDERATION_MOD).toContain('/api/federation/status')
+    expect(FEDERATION_MOD).toContain('/api/federation/peers')
+    expect(FEDERATION_MOD).toContain('/api/federation/refresh')
+    expect(FEDERATION_MOD).toContain('/api/federation/enabled')
+    expect(FEDERATION_MOD).toContain('/api/federation/remove')
+    expect(FEDERATION_MOD).toContain('/inbound-token')
+    expect(FEDERATION_MOD).toContain('/rotate-inbound-token')
   })
 
   it('the federation status fetches are failure-proof (must never blank Agents/Messages)', () => {
-    // loadAgents is in agents.js (S-6); loadChatAgentList is in app.js
-    const combined = AGENTS_MOD + APP
+    // loadAgents is in agents.js (S-6); loadFederationPage is in federation.js (S-13b)
+    const combined = AGENTS_MOD + FEDERATION_MOD
     const guarded = combined.match(/fetch\('\/api\/federation\/status'\)\.then\(\(r\) => \(r\.ok \? r\.json\(\) : null\)\)\.catch\(\(\) => null\)/g) || []
-    expect(guarded.length).toBeGreaterThanOrEqual(2) // loadAgents + loadChatAgentList
+    expect(guarded.length).toBeGreaterThanOrEqual(2) // loadAgents + loadFederationPage
   })
 
   it('federated agents live in a SEPARATE store from the local `agents` global', () => {
@@ -85,8 +89,9 @@ describe('federation UI wiring', () => {
     expect(HTML).toContain('id="federationApplyBtn"')
     expect(HTML).not.toContain('id="federationRefreshBtn"')
     expect(HTML).toContain('data-i18n="federation.btn.apply"')
-    expect(APP).toMatch(/async function fedApplyToMainAgent/)
-    const fn = APP.slice(APP.indexOf('function fedApplyToMainAgent'), APP.indexOf('async function fedRefreshAndReload'))
+    // implementation lives in federation.js after S-13b modularization
+    expect(FEDERATION_MOD).toMatch(/async function fedApplyToMainAgent/)
+    const fn = FEDERATION_MOD.slice(FEDERATION_MOD.indexOf('function fedApplyToMainAgent'), FEDERATION_MOD.indexOf('async function fedRefreshAndReload'))
     expect(fn).toContain("confirm(t('federation.confirm.apply'))")
     // Server-side apply endpoint -- NOT the client-agent-id-dependent restart
     // (which 404'd when window._marveen was not loaded on the federation page).
@@ -94,16 +99,17 @@ describe('federation UI wiring', () => {
     expect(fn).not.toMatch(/fetch\(`\/api\/agents\//)
     // Status auto-refreshes after config mutations (enable, peer add) instead
     // of a manual refresh button.
-    expect(APP).toMatch(/async function fedRefreshAndReload/)
-    expect(APP).toContain("document.getElementById('federationApplyBtn')")
+    expect(FEDERATION_MOD).toMatch(/async function fedRefreshAndReload/)
+    expect(FEDERATION_MOD).toContain("document.getElementById('federationApplyBtn')")
   })
 
   it('the per-peer capability-share checkbox is wired to a PATCH (L5)', () => {
-    expect(APP).toContain('fed-share-cap')
-    expect(APP).toContain('shareCapabilitySummaries')
-    expect(APP).toMatch(/async function fedToggleShareCap/)
+    // implementation lives in federation.js after S-13b modularization
+    expect(FEDERATION_MOD).toContain('fed-share-cap')
+    expect(FEDERATION_MOD).toContain('shareCapabilitySummaries')
+    expect(FEDERATION_MOD).toMatch(/async function fedToggleShareCap/)
     // Reads its checked state from the peerView flag, mirrors the master switch.
-    expect(APP).toContain('peer.shareCapabilitySummaries')
+    expect(FEDERATION_MOD).toContain('peer.shareCapabilitySummaries')
   })
 
   it('the pending-to-main hint is gated on pending status AND the main-agent recipient (L2)', () => {
@@ -120,13 +126,14 @@ describe('federation UI wiring', () => {
   })
 
   it('the routing-mode selector is wired to /api/federation/routing-mode for all three modes', () => {
-    expect(APP).toContain('name="fedRoutingMode"')
-    expect(APP).toContain('/api/federation/routing-mode')
-    expect(APP).toContain("['strong', 'catalog-first', 'advisory']")
+    // implementation lives in federation.js after S-13b modularization
+    expect(FEDERATION_MOD).toContain('name="fedRoutingMode"')
+    expect(FEDERATION_MOD).toContain('/api/federation/routing-mode')
+    expect(FEDERATION_MOD).toContain("['strong', 'catalog-first', 'advisory']")
     // reads the current mode from the peers view and renders label + hint per mode
-    expect(APP).toContain('view.routingMode')
-    expect(APP).toContain("federation.routing.mode.' + m + '.label")
-    expect(APP).toContain("federation.routing.mode.' + m + '.hint")
+    expect(FEDERATION_MOD).toContain('view.routingMode')
+    expect(FEDERATION_MOD).toContain("federation.routing.mode.' + m + '.label")
+    expect(FEDERATION_MOD).toContain("federation.routing.mode.' + m + '.hint")
   })
 
   it('nav + core keys exist in BOTH language files', async () => {
