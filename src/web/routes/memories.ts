@@ -89,11 +89,15 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
         results = db2.prepare('SELECT * FROM memories WHERE content LIKE ? ORDER BY accessed_at DESC LIMIT ?').all(`%${q}%`, limit) as Memory[]
       }
     } else if (agentId) {
-      results = getAgentMemories(agentId, limit)
+      // Category goes into the query, not a post-filter: see getAgentMemories.
+      results = getAgentMemories(agentId, limit, tier || undefined)
     } else {
       results = getMemoriesForChat(ALLOWED_CHAT_ID, limit)
     }
 
+    // Still needed for the search branches above, which rank by relevance and
+    // cannot push the category down into their own LIMIT. A no-op for the
+    // plain agent listing, which already filtered in SQL.
     if (tier) results = results.filter(m => m.category === tier)
 
     // A search query (q) is a genuine recall: stamp the surfaced memories as

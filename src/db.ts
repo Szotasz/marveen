@@ -1196,9 +1196,13 @@ export function getMemoriesForChat(chatId: string, limit = 10): Memory[] {
 //
 // Avoids a SQLite round-trip on every context-fetch by keeping the most
 // recently read agent memory lists in a Map for up to MEMORY_CACHE_TTL_MS.
-// Any write to the memories table for a given agent evicts that agent's entry.
-// The cache is intentionally coarse-grained (per agentId+limit) to stay
-// simple and safe under concurrent async paths.
+// Writers are responsible for evicting what they invalidate: saveAgentMemory
+// and updateMemory evict the affected agent(s), and a write touching a
+// 'shared' memory clears everything, because a shared row appears in EVERY
+// agent's list (see getAgentMemories). Miss an eviction and the listing serves
+// pre-write data for up to a minute, with nothing in the response to show it.
+// The cache is intentionally coarse-grained (per agentId+limit+category) to
+// stay simple and safe under concurrent async paths.
 
 const MEMORY_CACHE_TTL_MS = 60_000
 
@@ -1263,13 +1267,22 @@ export function saveAgentMemory(
   return { id }
 }
 
-export function getAgentMemories(agentId: string, limit: number = 20): Memory[] {
-  const key = `${agentId}:${limit}`
+// The category filter belongs in SQL, ahead of the LIMIT. Filtering the rows
+// afterwards would answer "the <category> ones among the N most recently
+// accessed memories" instead of "the N most recent <category> memories", so an
+// older-but-still-active memory would drop out of the list with no truncation
+// signal -- invisible to the caller, and worst right after a restart.
+export function getAgentMemories(agentId: string, limit: number = 20, category?: string): Memory[] {
+  const key = `${agentId}:${limit}:${category ?? ''}`
   const cached = memoryCacheGet(key)
   if (cached) return cached
-  const result = db.prepare(
-    "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') ORDER BY accessed_at DESC LIMIT ?"
-  ).all(agentId, limit) as Memory[]
+  const result = (category
+    ? db.prepare(
+        "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ? ORDER BY accessed_at DESC LIMIT ?"
+      ).all(agentId, category, limit)
+    : db.prepare(
+        "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') ORDER BY accessed_at DESC LIMIT ?"
+      ).all(agentId, limit)) as Memory[]
   memoryCacheSet(key, result)
   return result
 }
@@ -1306,6 +1319,12 @@ export function getMemoryStats(): { total: number; byAgent: Record<string, numbe
 
 export function updateMemory(id: number, content: string, category?: string, agentId?: string, keywords?: string): boolean {
   const now = Math.floor(Date.now() / 1000)
+  // Read the row's CURRENT owner and category before writing. The agentId
+  // parameter is optional and means "reassign to this agent", so it is absent
+  // on the ordinary edit -- it cannot be used to decide whose cache went
+  // stale. Only the row itself knows that.
+  const before = db.prepare('SELECT agent_id, category FROM memories WHERE id = ?').get(id) as
+    { agent_id: string | null; category: string | null } | undefined
   const sets: string[] = ['content = ?', 'accessed_at = ?']
   const params: unknown[] = [content, now]
   if (category) { sets.push('category = ?'); params.push(category) }
@@ -1313,7 +1332,16 @@ export function updateMemory(id: number, content: string, category?: string, age
   if (keywords !== undefined) { sets.push('keywords = ?'); params.push(keywords) }
   params.push(id)
   const changed = db.prepare(`UPDATE memories SET ${sets.join(', ')} WHERE id = ?`).run(...params).changes > 0
-  if (changed && agentId) memoryCacheInvalidate(agentId)
+  if (changed) {
+    if (before?.category === 'shared' || category === 'shared') {
+      // A shared row is listed for every agent, so evicting one owner is not
+      // enough. Same blunt call the DELETE route makes, for the same reason.
+      clearMemoryCache()
+    } else {
+      if (before?.agent_id) memoryCacheInvalidate(before.agent_id)
+      if (agentId && agentId !== before?.agent_id) memoryCacheInvalidate(agentId)
+    }
+  }
   return changed
 }
 
