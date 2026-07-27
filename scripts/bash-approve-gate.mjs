@@ -23,9 +23,9 @@
 // wins over an 'allow' from this one, so an approval here can never override a
 // governance block.
 //
-// LEAST PRIVILEGE -- this gate grants NOTHING beyond the families already in the
-// marketer allowlist; it only makes matching robust across var/heredoc/compound
-// forms, and it is STRICTER than the profile in three places:
+// LEAST PRIVILEGE -- this gate grants NOTHING beyond the families the marketer
+// profile intends; it only makes matching robust across var/heredoc/compound
+// forms, and it is STRICTER than a raw allowlist in three places:
 //   - curl is approved ONLY for localhost:3420 / 127.0.0.1:3420 (external curl
 //     is an exfiltration surface -> falls through to a prompt),
 //   - rm is approved ONLY under the agent's own write-roots (passed in via argv)
@@ -33,9 +33,16 @@
 //   - sudo anywhere, any secret path (.env/.ssh/.aws/.gnupg), or a command
 //     substitution ($(...) / backticks) we cannot statically classify -> never
 //     approved (pass through).
+// CRITICAL: curl and rm are DELIBERATELY NOT in the marketer.json allowlist as
+// bare `Bash(curl:*)` / `Bash(rm:*)` entries. CC's native static matcher runs
+// BEFORE this hook and would auto-approve any curl/rm on a bare-entry match,
+// making the localhost / write-root narrowing below dead code. Keeping them OUT
+// of the raw allowlist forces every curl/rm through this gate, which is their
+// SOLE approval path -- so the narrowing is actually enforced. Do NOT re-add the
+// bare entries. (Security review, PR #681: Szabi/Szotasz.)
 // ALL segments of a compound command must be safe, or the whole command passes
-// through. The safe families below are EXACTLY the marketer allowlist families
-// (templates/profiles/marketer.json) -- keep them in sync; this gate is wired
+// through. The other safe families below mirror the marketer allowlist families
+// (templates/profiles/marketer.json) -- keep those in sync; this gate is wired
 // ONLY onto the marketer profile (agent-scaffold.ts), never fleet-wide, so a
 // narrower strict profile (researcher, developer-junior) is never broadened.
 //
@@ -170,14 +177,83 @@ export function resolveBinary(seg, vars) {
   return { bin, rest: toks.slice(idx + 1) }
 }
 
-// curl is safe ONLY when every target is localhost:3420 / 127.0.0.1:3420.
+// Blank the quoted VALUE argument of curl flags that carry a header/string value
+// (NOT a request target), so a dotted token inside such a value -- a Bearer token
+// with dots, a `-H "Host: x.com"`, a referer/user-agent -- is never misread as a
+// curl target when we tokenize below. `-d`/`--data` payloads are handled
+// separately by stripDataPayloads. Positional URL targets are never quoted WITH
+// spaces, so they survive tokenization untouched.
+const CURL_VALUE_FLAG_RX =
+  /((?:^|\s)(?:-H|--header|-A|--user-agent|-e|--referer|-b|--cookie|-u|--user|-F|--form|-w|--write-out)(?:\s+|=))('[^']*'|"(?:[^"\\]|\\.)*")/gi
+export function stripFlagValues(seg) {
+  return String(seg ?? '').replace(CURL_VALUE_FLAG_RX, (full, flag) => flag + "''")
+}
+
+// Flags whose FOLLOWING token is a value, not a request target (so it must be
+// skipped when scanning for hosts). Covers the header/string flags above plus the
+// method/output/timeout family. `-d`/`--data` values were already blanked.
+const CURL_VALUE_FLAGS = new Set([
+  '-H', '--header', '-d', '--data', '--data-raw', '--data-binary', '--data-ascii',
+  '--data-urlencode', '-X', '--request', '-o', '--output', '-A', '--user-agent',
+  '-e', '--referer', '-b', '--cookie', '-c', '--cookie-jar', '-u', '--user',
+  '-F', '--form', '-T', '--upload-file', '-w', '--write-out', '-m', '--max-time',
+  '--connect-timeout', '--retry', '--cacert', '--cert', '--key', '-K', '--config',
+])
+// Proxy / host-remap flags can silently redirect a "local" URL off-host. We never
+// auto-approve a curl that uses one -> fall through to a prompt.
+const CURL_PROXY_FLAGS = new Set([
+  '-x', '--proxy', '--proxy-user', '--preproxy', '--connect-to', '--resolve',
+])
+
+// A token is a curl request target if it carries a scheme (`scheme://...`) or
+// looks like a bare host (`localhost`, an IPv4, or a dotted domain), each with an
+// optional `:port` and `/path`. curl defaults a bare host to http://, so a
+// schema-less `evil.com` IS a fetch target and must be classified.
+function isCurlTarget(tok) {
+  const t = tok.replace(/^['"]|['"]$/g, '')
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) return true
+  return /^(?:localhost|(?:\d{1,3}\.){3}\d{1,3}|[a-z0-9-]+(?:\.[a-z0-9-]+)+)(?::\d+)?(?:[/?#].*)?$/i.test(t)
+}
+// Extract the host[:port] authority from a target token: drop any scheme, keep
+// the authority up to the first /?#, then drop userinfo (`user:pass@host` -- the
+// real host is AFTER the @, a classic `localhost:3420@evil.com` SSRF trick).
+function curlHost(tok) {
+  let t = tok.replace(/^['"]|['"]$/g, '').replace(/^[a-z][a-z0-9+.-]*:\/\//i, '')
+  t = t.split(/[/?#]/)[0]
+  const at = t.lastIndexOf('@')
+  if (at !== -1) t = t.slice(at + 1)
+  return t
+}
+const CURL_LOCAL_HOST_RX = /^(?:localhost|127\.0\.0\.1):3420$/i
+
+// curl is safe ONLY when it has at least one request target and EVERY target
+// resolves to localhost:3420 / 127.0.0.1:3420 over http(s). This parses the host
+// out of each target token -- scheme URLs AND schema-less bare hosts alike -- so
+// `curl evil.com` (no scheme) is blocked, not just `curl http://evil.com`.
 export function curlLocalOnly(seg) {
-  const s = stripDataPayloads(seg)
-  const LOCAL = /(?:https?:\/\/)?(?:localhost|127\.0\.0\.1):3420(?![0-9])/i
-  if (!LOCAL.test(s)) return false
-  const schemeUrls = s.match(/\bhttps?:\/\/[^\s'"]+/gi) || []
-  for (const u of schemeUrls) {
-    if (!/^https?:\/\/(?:localhost|127\.0\.0\.1):3420(?![0-9])/i.test(u)) return false
+  const s = stripFlagValues(stripDataPayloads(seg))
+  const toks = s.split(/\s+/).filter(Boolean)
+  const targets = []
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i]
+    if (t === '--url') { // `--url X` -- X is a target, not a skip-value
+      const v = toks[i + 1]
+      i++
+      if (v && v !== "''" && v !== '""') targets.push(v)
+      continue
+    }
+    if (t.startsWith('-')) {
+      if (CURL_PROXY_FLAGS.has(t)) return false
+      if (CURL_VALUE_FLAGS.has(t)) i++ // its value is not a target
+      continue
+    }
+    if (isCurlTarget(t)) targets.push(t) // the `curl` binary token is not target-like
+  }
+  if (targets.length === 0) return false
+  for (const t of targets) {
+    const scheme = t.replace(/^['"]/, '').match(/^([a-z][a-z0-9+.-]*):\/\//i)
+    if (scheme && !/^https?$/i.test(scheme[1])) return false // file://, ftp://, ...
+    if (!CURL_LOCAL_HOST_RX.test(curlHost(t))) return false
   }
   return true
 }

