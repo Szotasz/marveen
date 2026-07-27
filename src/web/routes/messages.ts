@@ -13,6 +13,7 @@ import { COORDINATOR_AGENT_ID } from '../../channel-coordinator/ingest.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
 import { OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
+import { isAgentRunning } from '../agent-process.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
@@ -206,6 +207,22 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
     const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote)
     logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note }, 'Agent message created')
+    // A LOCAL recipient that is not running never receives this: the router
+    // retries for a while and then abandons it, and the failure notice goes to
+    // the MAIN agent, not to the sender. The caller therefore sees a plain 200
+    // and believes it delegated. Federated addresses already get an actionable
+    // error at creation time (see above) -- give the local path the same
+    // courtesy, as a non-breaking warning field rather than a status change, so
+    // existing callers keep working.
+    if (!storedTo.includes('/') && !isAgentRunning(sanitizeAgentIdent(storedTo))) {
+      logger.warn({ id: msg.id, to: msg.to_agent }, 'Agent message queued for a STOPPED agent -- likely to be abandoned')
+      json(res, {
+        ...msg,
+        targetRunning: false,
+        warning: `'${msg.to_agent}' nem fut -- indítsd el (POST /api/agents/${msg.to_agent}/start), várd meg amíg feláll, és küldd újra. Egy leállított ügynöknek küldött üzenet nem várakozik, hanem elveszik.`,
+      })
+      return true
+    }
     json(res, msg)
     return true
   }
