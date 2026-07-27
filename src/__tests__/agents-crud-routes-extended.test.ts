@@ -133,6 +133,7 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
     agentConfigRoot: vi.fn().mockImplementation((name: string) => name === 'test-agent' ? TEST_AGENT_DIR : `/tmp/agents/${name}`),
     readFileOr: vi.fn().mockReturnValue(''),
     findAvatarForAgent: vi.fn().mockReturnValue(null),
+    readAgentRemoteHost: vi.fn().mockReturnValue(null),
     resolveModelId: vi.fn().mockImplementation((s: string) => s),
     DEFAULT_MODEL: 'claude-opus-4-8[1m]',
     readAgentTeam: vi.fn().mockReturnValue({ role: 'member', reportsTo: null, delegatesTo: [], autoDelegation: false, trustFrom: [], trustSources: [] }),
@@ -412,5 +413,176 @@ describe('agents-crud routes (extended)', () => {
     expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
     expect(statusCode()).toBe(200)
     expect((responseBody() as any).ok).toBe(true)
+  })
+
+  it('GET /api/agents/test-agent/team returns team config for known agent', async () => {
+    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/test-agent/team' })
+    expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+    expect(statusCode()).toBe(200)
+    const body = responseBody() as any
+    expect(body.role).toBe('member')
+  })
+
+  it('GET /api/agents/activity returns running state for main agent', async () => {
+    const { capturePane } = await import('../web/agent-process.js')
+    vi.mocked(capturePane).mockReturnValueOnce('$ cmd\nsome output line')
+    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity' })
+    expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+    expect(statusCode()).toBe(200)
+    const body = responseBody() as any
+    expect(Array.isArray(body)).toBe(true)
+    expect(body[0].running).toBe(true)
+    expect(body[0].state).toBe('idle') // detectPaneState mock returns 'idle'
+    expect(body[0].tail.length).toBeGreaterThan(0)
+  })
+
+  it('GET /api/agents/activity returns running state for sub-agent', async () => {
+    const agentConfig = await import('../web/agent-config.js')
+    const helpers = await import('../web/routes/agents-helpers.js')
+    const { capturePane } = await import('../web/agent-process.js')
+    vi.mocked(agentConfig.listAgentNames).mockReturnValueOnce(['test-agent'])
+    vi.mocked(helpers.agentRunStateCached).mockReturnValueOnce('running')
+    vi.mocked(capturePane)
+      .mockReturnValueOnce(null)                    // main agent: not running
+      .mockReturnValueOnce('$ task\nresult here')   // sub-agent pane
+    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity' })
+    expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+    expect(statusCode()).toBe(200)
+    const body = responseBody() as any
+    const subEntry = body.find((e: any) => e.name === 'test-agent')
+    expect(subEntry).toBeDefined()
+    expect(subEntry.running).toBe(true)
+    expect(subEntry.tail.length).toBeGreaterThan(0)
+  })
+
+  it('POST /api/agents/:name/avatar uses gallery avatar from webDir', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { mkdtempSync, mkdirSync, writeFileSync } = require('node:fs')
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { join: pjoin } = require('node:path')
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { tmpdir } = require('node:os')
+    const testWd = mkdtempSync(pjoin(tmpdir(), 'web-avatar-'))
+    mkdirSync(pjoin(testWd, 'avatars'), { recursive: true })
+    writeFileSync(pjoin(testWd, 'avatars', 'gal.png'), Buffer.from('PNG'))
+    const { ctx, statusCode, responseBody } = makeCtx({
+      method: 'POST', path: '/api/agents/test-agent/avatar',
+      body: JSON.stringify({ galleryAvatar: 'gal.png' }),
+    })
+    ;(ctx.req as any).headers['content-type'] = 'application/json'
+    expect(await tryHandleAgentsCrud(ctx, testWd)).toBe(true)
+    expect(statusCode()).toBe(200)
+    expect((responseBody() as any).ok).toBe(true)
+  })
+
+  it('GET /api/agents/:name/avatar serves existing avatar file', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { writeFileSync } = require('node:fs')
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { join: pjoin } = require('node:path')
+    const avatarPath = pjoin(TEST_AGENT_DIR, 'avatar-serve.png')
+    writeFileSync(avatarPath, Buffer.from('\x89PNG'))
+    const agentConfig = await import('../web/agent-config.js')
+    vi.mocked(agentConfig.findAvatarForAgent).mockReturnValueOnce(avatarPath)
+    const { ctx, statusCode } = makeCtx({ method: 'GET', path: '/api/agents/test-agent/avatar' })
+    expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+    expect(statusCode()).toBe(200)
+  })
+
+  it('GET /api/agents/activity shows unreachable state for sub-agent', async () => {
+    const agentConfig = await import('../web/agent-config.js')
+    const helpers = await import('../web/routes/agents-helpers.js')
+    vi.mocked(agentConfig.listAgentNames).mockReturnValueOnce(['test-agent'])
+    vi.mocked(helpers.agentRunStateCached).mockReturnValueOnce('unreachable')
+    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity' })
+    expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+    expect(statusCode()).toBe(200)
+    const body = responseBody() as any
+    const sub = body.find((e: any) => e.name === 'test-agent')
+    expect(sub).toBeDefined()
+    expect(sub.state).toBe('unreachable')
+    expect(sub.running).toBe(false)
+  })
+
+  it('POST /api/agents/model-suggest with real kanban and token data', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { writeFileSync, mkdirSync } = require('node:fs')
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { join: pjoin } = require('node:path')
+    // Write a fake .mcp.json so mcpServerCount returns > 0
+    writeFileSync(pjoin(TEST_AGENT_DIR, '.mcp.json'), JSON.stringify({ mcpServers: { 'test-server': {} } }))
+
+    const agentConfig = await import('../web/agent-config.js')
+    const tokenUsage = await import('../web/token-usage.js')
+    const schedIO = await import('../web/scheduled-tasks-io.js')
+    const db = await import('../db.js')
+
+    vi.mocked(agentConfig.listAgentNames).mockReturnValueOnce(['test-agent'])
+    vi.mocked(tokenUsage.getTokenSummary).mockReturnValueOnce([
+      { agent: 'test-agent', totalCalls: 10, totalInput: 50000, totalOutput: 5000, totalCacheRead: 0, totalCacheWrite: 0 },
+    ] as any)
+    vi.mocked(db.getDb).mockReturnValueOnce({
+      prepare: vi.fn().mockReturnValue({
+        all: vi.fn().mockReturnValue([
+          { assignee: 'test-agent', priority: 'urgent', cnt: 2 },
+          { assignee: 'test-agent', priority: 'low', cnt: 1 },
+        ]),
+      }),
+    } as any)
+    vi.mocked(schedIO.listScheduledTasks).mockReturnValueOnce([
+      { name: 'task-a', schedule: '*/30 * * * *', agent: 'test-agent', enabled: true, description: '', prompt: '', createdAt: 0, type: 'task', skipIfBusy: false, forceSend: false },
+      { name: 'task-b', schedule: '0 * * * *', agent: 'test-agent', enabled: true, description: '', prompt: '', createdAt: 0, type: 'heartbeat', skipIfBusy: false, forceSend: false },
+      { name: 'task-c', schedule: '0 */6 * * *', agent: 'test-agent', enabled: true, description: '', prompt: '', createdAt: 0, type: 'task', skipIfBusy: false, forceSend: false },
+      { name: 'task-d', schedule: 'short', agent: 'test-agent', enabled: false, description: '', prompt: '', createdAt: 0, type: 'task', skipIfBusy: false, forceSend: false },
+    ] as any)
+
+    const { ctx, statusCode, responseBody } = makeCtx({ method: 'POST', path: '/api/agents/model-suggest', body: '{}' })
+    expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+    expect(statusCode()).toBe(200)
+    const body = responseBody() as any
+    expect(Array.isArray(body.results)).toBe(true)
+  })
+
+  it('GET /api/agents/activity shows unknown when sub-agent is running but pane is null', async () => {
+    const agentConfig = await import('../web/agent-config.js')
+    const helpers = await import('../web/routes/agents-helpers.js')
+    const { capturePane } = await import('../web/agent-process.js')
+    vi.mocked(agentConfig.listAgentNames).mockReturnValueOnce(['test-agent'])
+    vi.mocked(helpers.agentRunStateCached).mockReturnValueOnce('running')
+    vi.mocked(capturePane)
+      .mockReturnValueOnce(null) // main agent not running
+      .mockReturnValueOnce(null) // sub-agent running but pane null
+    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity' })
+    expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+    expect(statusCode()).toBe(200)
+    const body = responseBody() as any
+    const sub = body.find((e: any) => e.name === 'test-agent')
+    expect(sub).toBeDefined()
+    expect(sub.running).toBe(true)
+    expect(sub.state).toBe('unknown')
+  })
+
+  it('GET /api/agents/activity shows working when detectPaneState returns busy', async () => {
+    const { capturePane } = await import('../web/agent-process.js')
+    const { detectPaneState } = await import('../pane-state.js')
+    vi.mocked(capturePane).mockReturnValueOnce('$ long running task...')
+    vi.mocked(detectPaneState).mockReturnValueOnce('busy')
+    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity' })
+    expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+    expect(statusCode()).toBe(200)
+    const body = responseBody() as any
+    expect(body[0].state).toBe('working')
+  })
+
+  it('GET /api/agents/activity returns raw state for non-standard pane state', async () => {
+    const { capturePane } = await import('../web/agent-process.js')
+    const { detectPaneState } = await import('../pane-state.js')
+    vi.mocked(capturePane).mockReturnValueOnce('error output')
+    vi.mocked(detectPaneState).mockReturnValueOnce('error')
+    const { ctx, statusCode, responseBody } = makeCtx({ method: 'GET', path: '/api/agents/activity' })
+    expect(await tryHandleAgentsCrud(ctx, WEB_DIR)).toBe(true)
+    expect(statusCode()).toBe(200)
+    const body = responseBody() as any
+    expect(body[0].state).toBe('error')
   })
 })

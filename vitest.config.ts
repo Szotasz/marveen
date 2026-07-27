@@ -23,17 +23,16 @@ export default defineConfig({
     // and cannot be instrumented by vitest (would show 0% and break the gate).
     include: ['src/**/*.ts'],
     exclude: ['src/__tests__/**', 'dist/**'],
-    // Thresholds ratcheted to measured F2a baseline (2026-07-27: stmts 48%,
-    // branches 48%, functions 53%, lines 49%) after adding unit/contract tests
-    // for dispatcher, auto-restart-store, context-guard-store, agent-desired-state,
-    // active-model, channel-invites, store-watcher, channel-monitor (contract),
-    // agents-crud and agents-process routes.
+    // Thresholds ratcheted to F3b measured baseline (2026-07-27: stmts 65%,
+    // branches 63%, functions 66%, lines 66%) after adding route-handler unit
+    // tests for agents-channels, agents-crud (extended), marveen, scheduled-tasks-io,
+    // skills (extended).
     // Measured with include:['src/**/*.ts'], exclude:['src/__tests__/**','dist/**'].
     thresholds: {
-      statements: 48,
-      branches: 48,
-      functions: 53,
-      lines: 49,
+      statements: 65,
+      branches: 63,
+      functions: 66,
+      lines: 66,
     },
   },
 })
