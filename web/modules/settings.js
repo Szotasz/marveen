@@ -10,6 +10,9 @@ function escapeHtml(str) {
 
 let _wireBranchDriftBanner = null
 let _authBannerWired = false
+// Incremented on every loadSettings() call so that a stale in-flight run can
+// detect that a newer call has taken over and abort before touching the DOM.
+let _loadGen = 0
 export function initSettings({ wireBranchDriftBanner } = {}) {
   _wireBranchDriftBanner = wireBranchDriftBanner
 }
@@ -406,6 +409,8 @@ export async function loadSettings() {
   wireAuthBanner()
   initAuthBanner()
 
+  const gen = ++_loadGen
+
   const tabNav = document.getElementById('settingsTabNav')
   const tabPanels = document.getElementById('settingsTabPanels')
   if (!tabNav || !tabPanels) return
@@ -430,6 +435,10 @@ export async function loadSettings() {
     const res = await fetch('/api/settings')
     if (!res.ok) throw new Error('fetch failed')
     const { settings } = await res.json()
+
+    // A newer loadSettings() call started while we were fetching: bail out to
+    // avoid clobbering the DOM that the newer call is building.
+    if (gen !== _loadGen) return
 
     const byModule = new Map()
     for (const s of settings) {
