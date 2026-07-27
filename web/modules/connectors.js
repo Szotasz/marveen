@@ -1,12 +1,7 @@
+import { escapeHtml, mainAgentId } from './util.js'
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
 
-function mainAgentId() { return window._marveen?.agentId || 'marveen' }
-function escapeHtml(str) {
-  const d = document.createElement('div')
-  d.textContent = str
-  return d.innerHTML.replace(/"/g, '&quot;').replace(/\'\'/g, '&#39;')
-}
 
 let _openModal = null, _closeModal = null
 export function initConnectors({ openModal, closeModal } = {}) {

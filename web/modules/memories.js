@@ -1,8 +1,7 @@
+import { escapeHtml, mainAgentId } from './util.js'
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
 
-function mainAgentId() { return window._marveen?.agentId || 'marveen' }
-function escapeHtml(str) { const d = document.createElement('div'); d.appendChild(document.createTextNode(String(str ?? ''))); return d.innerHTML }
 
 let _openModal = null, _closeModal = null
 export function initMemories({ openModal, closeModal } = {}) {

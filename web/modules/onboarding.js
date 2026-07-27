@@ -1,16 +1,9 @@
+import { escapeHtml, mainAgentId } from './util.js'
 import { t } from './i18n.js'
 import { showToast } from './toast.js'
 import { agentApiName } from './agents.js'
 
-function escapeHtml(str) {
-  const d = document.createElement('div')
-  d.textContent = str
-  return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;')
-}
 
-function mainAgentId() {
-  return window._marveen?.agentId || 'marveen'
-}
 
 // ============================================================
 // === First-run onboarding wizard ===

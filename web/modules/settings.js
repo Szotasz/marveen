@@ -1,12 +1,8 @@
+import { escapeHtml } from './util.js'
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
 import { switchPage } from './app-core.js'
 
-function escapeHtml(str) {
-  const d = document.createElement('div')
-  d.textContent = str
-  return d.innerHTML.replace(/"/g, '&quot;').replace(/\'\'/g, '&#39;')
-}
 
 let _wireBranchDriftBanner = null
 let _authBannerWired = false

@@ -14,6 +14,7 @@
 //   federatedAgentEntries()    -- used by Messages page sidebar
 //   avatarBust()               -- cache-buster query string for avatar URLs
 
+import { escapeHtml, mainAgentId } from './util.js'
 import { showToast } from './toast.js'
 import { t, getLang } from './i18n.js'
 import { switchPage } from './app-core.js'
@@ -26,13 +27,7 @@ function bumpAvatarEpoch() { _avatarEpoch = Date.now() }
 export function avatarBust() { return _avatarEpoch ? `?t=${_avatarEpoch}` : '' }
 
 // ─── Local utilities ─────────────────────────────────────────────────────────
-function mainAgentId() { return window._marveen?.agentId || 'marveen' }
 
-function escapeHtml(str) {
-  const d = document.createElement('div')
-  d.appendChild(document.createTextNode(String(str ?? '')))
-  return d.innerHTML
-}
 
 // ─── DI callbacks (injected by initAgents) ───────────────────────────────────
 let _openModal = null

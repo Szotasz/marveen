@@ -1,13 +1,8 @@
+import { escapeHtml, mainAgentId } from './util.js'
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
 import { avatarBust } from './agents.js'
 
-function mainAgentId() { return window._marveen?.agentId || 'marveen' }
-function escapeHtml(str) {
-  const d = document.createElement('div')
-  d.textContent = str
-  return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;')
-}
 
 // === Team: inter-agent message log + compose ===
 // View the /api/messages queue and let the operator send a message to an agent
