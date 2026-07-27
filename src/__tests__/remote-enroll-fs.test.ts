@@ -12,7 +12,7 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { enrollAuthorizedKey } from '../remote-enroll-fs.js'
+import { enrollAuthorizedKey, removeEnrolledKey, removeBridgeSshAccess } from '../remote-enroll-fs.js'
 import { buildRestrictedLine, validatePublicKeyLine } from '../remote-enroll-core.js'
 
 const UUID = '3f2504e0-4f89-41d3-9a0c-0305e82c3301'
@@ -137,5 +137,79 @@ describe('enrollAuthorizedKey (filesystem)', () => {
     })
     expect(res.action).toBe('added')
     expect(existsSync(lockPath)).toBe(false)
+  })
+})
+
+describe('removeEnrolledKey (filesystem)', () => {
+  let root: string
+  let sshDir: string
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'remote-revoke-'))
+    sshDir = join(root, '.ssh')
+    mkdirSync(sshDir, { mode: 0o700 })
+  })
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('removes the marveen-remote line and preserves others', async () => {
+    const authPath = join(sshDir, 'authorized_keys')
+    writeFileSync(authPath, `ssh-rsa AAAA a@h\n${RESTRICTED}\n`, { mode: 0o600 })
+    const res = await removeEnrolledKey({ sshDir, installId: UUID })
+    expect(res.removed).toBe(true)
+    expect(readFileSync(authPath, 'utf8')).toBe('ssh-rsa AAAA a@h\n')
+  })
+
+  it('returns removed:false when the line is absent (idempotent)', async () => {
+    const authPath = join(sshDir, 'authorized_keys')
+    writeFileSync(authPath, 'ssh-rsa AAAA a@h\n', { mode: 0o600 })
+    const res = await removeEnrolledKey({ sshDir, installId: UUID })
+    expect(res.removed).toBe(false)
+    expect(readFileSync(authPath, 'utf8')).toBe('ssh-rsa AAAA a@h\n')
+  })
+
+  it('returns removed:false when authorized_keys does not exist', async () => {
+    const res = await removeEnrolledKey({ sshDir, installId: UUID })
+    expect(res.removed).toBe(false)
+  })
+
+  it('leaves no temp files and removes the lockfile after removal', async () => {
+    const authPath = join(sshDir, 'authorized_keys')
+    writeFileSync(authPath, RESTRICTED + '\n', { mode: 0o600 })
+    await removeEnrolledKey({ sshDir, installId: UUID })
+    const entries = readdirSync(sshDir)
+    expect(entries.some((e) => e.endsWith('.tmp'))).toBe(false)
+    expect(entries).not.toContain('authorized_keys.lock')
+  })
+})
+
+describe('enroll -> revoke regression (F0 security gap)', () => {
+  let root: string
+  let sshDir: string
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'revoke-regression-'))
+    sshDir = join(root, '.ssh')
+  })
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('enroll then removeBridgeSshAccess removes the authorized_keys entry', async () => {
+    await enrollAuthorizedKey({ sshDir, restrictedLine: RESTRICTED, installId: UUID })
+    const authPath = join(sshDir, 'authorized_keys')
+    expect(readFileSync(authPath, 'utf8')).toContain(`marveen-remote:${UUID}`)
+
+    const removed = await removeBridgeSshAccess(UUID, { sshDir })
+    expect(removed).toBe(true)
+    expect(readFileSync(authPath, 'utf8')).not.toContain(`marveen-remote:${UUID}`)
+  })
+
+  it('removeBridgeSshAccess is idempotent on a second call', async () => {
+    await enrollAuthorizedKey({ sshDir, restrictedLine: RESTRICTED, installId: UUID })
+    await removeBridgeSshAccess(UUID, { sshDir })
+    const second = await removeBridgeSshAccess(UUID, { sshDir })
+    expect(second).toBe(false)
   })
 })

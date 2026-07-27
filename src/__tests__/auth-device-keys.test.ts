@@ -127,6 +127,7 @@ describe('mint + storage discipline', () => {
       createdAt: expect.any(Number),
       lastUsedAt: null,
       expiresAt: null,
+      installId: null,
     })
   })
 })

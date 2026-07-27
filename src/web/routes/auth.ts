@@ -42,9 +42,11 @@ import {
 } from '../login-throttle.js'
 import {
   createDeviceKey,
+  getDeviceKey,
   listDeviceKeys,
   revokeDeviceKey,
 } from '../auth-device-keys.js'
+import { removeBridgeSshAccess, sshDirOverride } from '../../remote-enroll-fs.js'
 import {
   createDashboardUser,
   getDashboardUser,
@@ -112,6 +114,7 @@ const DEVICE_KEY_ADMIN_KINDS = ['token', 'session'] as const
 
 const DEVICE_KEY_NAME_RE = /^[\p{L}\p{N} ._-]{1,64}$/u
 const DEVICE_KEY_MAX_EXPIRY_DAYS = 3650
+const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 // { authenticated, method, user, device, login_available, setup_required }.
 // authenticated keeps its exact old meaning for token callers (existing probes
@@ -368,10 +371,19 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       }
       expiresInDays = n
     }
-    const minted = createDeviceKey(name, { expiresInDays })
-    logger.info({ id: minted.id, name: minted.name, expiresAt: minted.expiresAt }, 'device key minted')
+    // install_id links this key to an SSH authorized_keys entry for joint revocation.
+    let installId: string | undefined
+    if (body.install_id !== undefined && body.install_id !== null) {
+      if (typeof body.install_id !== 'string' || !UUID_V4_RE.test(body.install_id)) {
+        json(res, { error: 'install_id must be a UUID v4' }, 400)
+        return true
+      }
+      installId = body.install_id
+    }
+    const minted = createDeviceKey(name, { expiresInDays, installId })
+    logger.info({ id: minted.id, name: minted.name, expiresAt: minted.expiresAt, installId: minted.installId ?? undefined }, 'device key minted')
     // `key` is the one and only disclosure of the raw credential.
-    json(res, { ok: true, id: minted.id, name: minted.name, key: minted.key, created_at: minted.createdAt, expires_at: minted.expiresAt }, 201)
+    json(res, { ok: true, id: minted.id, name: minted.name, key: minted.key, created_at: minted.createdAt, expires_at: minted.expiresAt, install_id: minted.installId }, 201)
     return true
   }
 
@@ -382,12 +394,27 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const id = Number(deviceKeyMatch[1])
-    if (!revokeDeviceKey(id)) {
+    const key = getDeviceKey(id)
+    if (!key || !revokeDeviceKey(id)) {
       json(res, { error: 'Device key not found' }, 404)
       return true
     }
-    logger.info({ id }, 'device key revoked')
-    json(res, { ok: true })
+    // Bridge-paired key: revoke means BOTH halves at once -- the dashboard
+    // key (above) and the SSH authorized_keys line. Idempotent on the SSH
+    // side; a failure there must not resurrect the already-revoked key, so it
+    // is reported, not rolled back.
+    let sshRemoved: boolean | undefined
+    if (key.installId) {
+      try {
+        sshRemoved = await removeBridgeSshAccess(key.installId)
+      } catch (err) {
+        logger.error({ err, id, installId: key.installId }, 'device key revoked but authorized_keys removal failed')
+        sshRemoved = false
+      }
+      logConfigChange('security.bridge_revoke', null, `${key.name} (${key.installId}) ssh_removed=${sshRemoved}${sshDirOverride() ? ' sshdir_override=1' : ''}`, auth!.kind)
+    }
+    logger.info({ id, name: key.name, installId: key.installId ?? undefined, sshRemoved }, 'device key revoked')
+    json(res, { ok: true, ...(key.installId ? { ssh_removed: sshRemoved } : {}) })
     return true
   }
 
