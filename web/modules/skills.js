@@ -1,6 +1,7 @@
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
 import { agentApiName } from './agents.js'
+import { renderMarkdown } from './docs-research.js'
 
 function mainAgentId() { return window._marveen?.agentId || 'marveen' }
 function escapeHtml(str) {
