@@ -472,6 +472,23 @@ if [ -x "$INSTALL_DIR/scripts/sync-hooks.sh" ]; then
   bash "$INSTALL_DIR/scripts/sync-hooks.sh" || echo -e "  FIGYELEM: sync-hooks.sh nem-nulla exit; manualisan ellenorizd."
 fi
 
+# Morning-timer unit repair (Linux only). Earlier installers wrote
+# Requires=<unit>.service into the timer's [Unit] section, which makes every
+# activation of the timer unit (each systemd user-manager start, not just the
+# 07:27 elapse) start the briefing service immediately -- restart churn then
+# multiplies the morning briefing (customer report 2026-07-26: 5 deliveries in
+# one day). Idempotent: strips the line wherever it is still present.
+if [ -d "$HOME/.config/systemd/user" ]; then
+  for morn_timer in "$HOME/.config/systemd/user/"*-morning.timer; do
+    [ -f "$morn_timer" ] || continue
+    if grep -q '^Requires=.*-morning\.service' "$morn_timer"; then
+      sed -i.marveen-bak '/^Requires=.*-morning\.service/d' "$morn_timer" && rm -f "${morn_timer}.marveen-bak"
+      systemctl --user daemon-reload 2>/dev/null || true
+      echo -e "  Reggeli-napindito timer javitva (Requires= a [Unit]-bol eltavolitva): $(basename "$morn_timer")"
+    fi
+  done
+fi
+
 # Seed skills & scheduled tasks (idempotent: skip existing)
 # Source .env for template variables needed by seed-scheduled-tasks
 MAIN_AGENT_ID=""

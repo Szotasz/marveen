@@ -1333,10 +1333,16 @@ ${TZ_LINE}
 EOF
 
 # ${MORN_UNIT}.timer
+# NO Requires=/Wants= on the service here: a [Unit] dependency on the
+# triggered service makes EVERY activation of the timer unit (each systemd
+# user-manager start, not just the 07:27 elapse) queue an immediate start of
+# the briefing service. Under user-manager restart churn that multiplied the
+# morning briefing (customer report 2026-07-26: 5 deliveries in one day).
+# The [Timer] section binds to ${MORN_UNIT}.service by name on elapse, which
+# is the only coupling a timer needs.
 cat >"$SYSTEMD_DIR/${MORN_UNIT}.timer" <<EOF
 [Unit]
 Description=${BOT_NAME} Reggeli Napindito Timer
-Requires=${MORN_UNIT}.service
 
 [Timer]
 OnCalendar=*-*-* 07:27:00
