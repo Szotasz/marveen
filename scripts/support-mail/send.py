@@ -2,7 +2,7 @@
 """Send an email FROM the configured support mailbox via SMTP (implicit TLS:465).
 
 Usage:
-  python3 send.py --to a@b.hu --subject "..." --body "..." [--cc you@example.com] [--html]
+  python3 send.py --to someone@example.com --subject "..." --body "..." [--cc you@example.com] [--html]
 Body can also be piped on stdin if --body is omitted.
 Mailbox / hosts come from config (.env); password is pulled from the vault at
 runtime (never stored/printed). --html sends the body as an HTML alternative.
