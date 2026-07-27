@@ -19,6 +19,7 @@ vi.mock('../config.js', () => ({
   PROJECT_ROOT: TMP_ROOT,
   STORE_DIR: join(TMP_ROOT, 'store'),
   MAIN_AGENT_ID: 'marveen',
+  DEFAULT_AGENT_MODEL: 'claude-opus-4-8[1m]',
 }))
 
 vi.mock('../web/agent-config.js', async (importOriginal) => {

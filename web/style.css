@@ -7300,6 +7300,17 @@ body {
 .auth-device-mint { margin-top: 10px; }
 .auth-device-minted-row { flex-direction: row; max-width: none; }
 .auth-device-minted-row input { flex: 1; font-family: var(--mono, monospace); font-size: 12px; }
+.auth-device-warn { margin-bottom: 8px; }
+.auth-device-bridge-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  vertical-align: middle;
+}
+.auth-bridge-enroll { margin-top: 18px; }
 
 /* === OTel Trace Waterfall (card def5a189) === */
 .chat-upper-pane {
@@ -7634,4 +7645,45 @@ body {
   .agents-mini-grid { grid-template-columns: 1fr 1fr; }
   .kpi-strip { flex-wrap: wrap; }
   .kpi-item { min-width: 45%; border-bottom: 1px solid var(--border); }
+}
+
+/* === Collapsible sidebar groups === */
+.sb-group { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
+.sb-group-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.sb-group-header:hover { color: var(--text); background: var(--accent-soft); }
+.sb-group-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.sb-group-chevron { flex-shrink: 0; transition: transform var(--transition); }
+.sb-group.open .sb-group-chevron { transform: rotate(90deg); }
+.sb-group-items { display: flex; flex-direction: column; gap: 2px; }
+.sb-group:not(.open) .sb-group-items { display: none; }
+
+/* Docs pinned to the sidebar bottom, just above the lang/theme row. Sits
+ * outside the scrolling .sidebar-nav (flex:1), so it stays visible however
+ * long the open group list gets. Separator reuses the .sidebar-footer
+ * border-top pattern. */
+.sidebar-docs {
+  padding-top: 12px;
+  padding-bottom: 12px;
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
 }

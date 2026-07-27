@@ -33,7 +33,8 @@ import {
   SCHEDULED_TASKS_DIR,
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
-import { listAgentNames, readFileOr, readAgentRemoteHost } from './agent-config.js'
+import { listAgentNames, readFileOr, readAgentRemoteHost, agentDir } from './agent-config.js'
+import { channelStateDir } from '../channel-provider.js'
 import {
   agentSessionName,
   isAgentRunning,
@@ -203,6 +204,62 @@ function persistScheduleLastRun(): void {
 //   exit 0, stdout non-empty → run LLM with stdout as context prefix
 //   exit 0, stdout empty     → run LLM normally
 //   non-zero exit            → log warning, run LLM anyway (fail-open)
+// --- Bound-channel chat id resolution for scheduled-task prompts ---
+//
+// The prompt prefix used to carry a "chat_id: 0" sentinel meaning "the running
+// agent's own bound channel". The convention belonged to an earlier channel
+// implementation; the official Telegram plugin (0.0.6) knows nothing about it:
+// its reply tool calls assertAllowedChat(chat_id) first, "0" is never on the
+// allowlist, so every non-heartbeat scheduled task threw at delivery time
+// (Zara, 2026-07-27; all 32 task-configs affected -- none carries a chat_id).
+// The sentinel's INTENT stays correct (a sub-agent's result must go to its own
+// owner, never the boss's chat), so the fix resolves the concrete chat id at
+// prompt-build time from the same place the plugin enforces it: the agent's
+// own channel access.json allowlist.
+
+/** Pure core: first DM allowlist entry, else first allowed group, else null. */
+export function chatIdFromAccessConfig(raw: unknown): string | null {
+  if (!raw || typeof raw !== 'object') return null
+  const o = raw as Record<string, unknown>
+  if (Array.isArray(o.allowFrom) && o.allowFrom.length > 0) {
+    const first = o.allowFrom[0]
+    if (typeof first === 'string' && first.trim()) return first.trim()
+    if (typeof first === 'number') return String(first)
+  }
+  if (o.groups && typeof o.groups === 'object') {
+    const keys = Object.keys(o.groups as Record<string, unknown>)
+    if (keys.length > 0) return keys[0]
+  }
+  return null
+}
+
+/** The agent's own bound Telegram chat, or null when no binding exists.
+ *  Reads <agent channels dir>/telegram/access.json -- the exact file the
+ *  plugin's assertAllowedChat enforces, so a resolved id is deliverable by
+ *  construction. Deliberately NOT falling back to ALLOWED_CHAT_ID: that is
+ *  the boss's chat, and pointing a sub-agent's result there is the precise
+ *  bug the old sentinel existed to avoid. */
+export function resolveBoundChatId(agentName: string): string | null {
+  const dir = agentName === MAIN_AGENT_ID
+    ? channelStateDir('telegram')
+    : channelStateDir('telegram', agentDir(agentName))
+  try {
+    const raw = JSON.parse(readFileSync(join(dir, 'access.json'), 'utf-8')) as Record<string, unknown>
+    const chosen = chatIdFromAccessConfig(raw)
+    // "First allowlist entry" is a HEURISTIC, not a stated fact: access.json
+    // has no owner field, so with 2+ entries a reordering would silently
+    // redirect scheduled-task results to another person -- the exact failure
+    // class the old sentinel guarded against, now throw-free and thus
+    // invisible. The warn turns a silent misdirection into a searchable log
+    // line; behaviour is unchanged.
+    const candidates = Array.isArray(raw?.allowFrom) ? raw.allowFrom.length : 0
+    if (chosen && candidates > 1) {
+      logger.warn({ agent: agentName, candidates, chosen }, 'bound-chat resolution is ambiguous: multiple DM allowlist entries, using the first')
+    }
+    return chosen
+  } catch { return null }
+}
+
 export function runPreCheck(task: ScheduledTask): { skip: boolean; prefix?: string } {
   if (!task.preCheck) return { skip: false }
   const scriptPath = isAbsolute(task.preCheck)
@@ -401,14 +458,24 @@ async function attemptFireTask(
       // heartbeat prompts.
       prefix = `[Heartbeat: ${task.name}] `
     } else {
-      // Target the RUNNING agent's own bound channel (chat_id: 0), NOT the
-      // global ALLOWED_CHAT_ID. The latter is the main/admin chat; injecting it
-      // here pointed every sub-agent's task result at the boss's chat instead of
-      // its own owner (e.g. attilamarveenja -> Papp Attila). chat_id: 0 is the
-      // established "bound channel" convention (template-identity-hygiene), so it
-      // resolves per-agent and stays correct for the main agent too. The
-      // system-level pending-retry alert below still uses ALLOWED_CHAT_ID.
-      prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el Telegramon (chat_id: 0, reply tool). `
+      // Target the RUNNING agent's own bound channel, NOT the global
+      // ALLOWED_CHAT_ID. The latter is the main/admin chat; injecting it here
+      // pointed every sub-agent's task result at the boss's chat instead of its
+      // own owner (e.g. attilamarveenja -> Papp Attila). The old "chat_id: 0"
+      // sentinel encoded the same intent, but the official Telegram plugin
+      // rejects it (assertAllowedChat: "0" is never allowlisted), so the
+      // binding is resolved to a CONCRETE id here at prompt-build time. No
+      // binding -> no Telegram instruction at all: better to skip delivery
+      // than to deliver to the wrong chat, and the warn below makes the
+      // config gap visible. The system-level pending-retry alert further
+      // down still uses ALLOWED_CHAT_ID by design.
+      const boundChatId = resolveBoundChatId(agentName)
+      if (boundChatId) {
+        prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el Telegramon (chat_id: ${boundChatId}, reply tool). `
+      } else {
+        logger.warn({ task: task.name, agent: agentName }, 'scheduled task: agent has no bound telegram chat (access.json missing/empty) -- prompt omits the Telegram delivery instruction')
+        prefix = `[Utemezett feladat: ${task.name}] `
+      }
     }
     // A scheduled task body is the agent's OWN task, authored by the operator
     // (SKILL.md on disk, or the bearer-gated /api/schedules editor -- both

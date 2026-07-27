@@ -1,13 +1,16 @@
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, DEFAULT_AGENT_MODEL } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { safeJoin } from './sanitize.js'
 
 export const AGENTS_BASE_DIR = join(PROJECT_ROOT, 'agents')
 
-export const DEFAULT_MODEL = 'claude-opus-4-8[1m]'
+// Install-wide default (DEFAULT_AGENT_MODEL: config-overrides.json > .env >
+// distribution default). Re-exported under the historical name so the many
+// call sites -- and the 'inherit' alias below -- keep working unchanged.
+export const DEFAULT_MODEL = DEFAULT_AGENT_MODEL
 
 // Map short model names to full Claude model IDs (backwards compat with old configs)
 export const MODEL_ALIASES: Record<string, string> = {

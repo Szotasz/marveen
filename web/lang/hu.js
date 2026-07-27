@@ -88,6 +88,11 @@ window._i18n.hu = {
   'nav.vault':        'Vault',
   'nav.tokenUsage':   'Token Monitor',
   'nav.ideas':        'Ötletláda',
+  'nav.group.team':        'Csapat',
+  'nav.group.knowledge':   'Tudás',
+  'nav.group.stats':       'Statisztikák',
+  'nav.group.system':      'Rendszer',
+  'nav.group.connections': 'Kapcsolatok',
   // --- Federation ---
   'nav.federation':                    'Föderáció',
   'federation.page_title':             'Föderáció',
@@ -279,6 +284,7 @@ window._i18n.hu = {
   'archived.modal.title':        'Archivált kártya',
   'archived.meta.archived_at':   'Archiválva',
   'archived.btn.restore_to_board': 'Visszaállítás a táblára',
+  'archived.backToKanban':       'Vissza a Kanbanra',
   'archived.error.http':         'Hiba: {status}',
 
   // --- Agents ---
@@ -1571,6 +1577,7 @@ window._i18n.hu = {
   // --- Kanban Gantt/idővonal nézet ---
   'kanban.view.board':              'Tábla',
   'kanban.view.gantt':              'Idővonal',
+  'kanban.view.archived':           'Archiváltak',
   'kanban.gantt.filter.period_week':    'Ezen hét',
   'kanban.gantt.filter.period_month':   'Hónap',
   'kanban.gantt.filter.period_quarter': 'Negyedév',
@@ -1719,6 +1726,20 @@ window._i18n.hu = {
   'auth.devices.revoke':           'Visszavonás',
   'auth.devices.revoke_confirm':   'Visszavonod ezt az eszközkulcsot? Az eszköz azonnal elveszti a hozzáférést.',
   'auth.devices.err_name':         'Adj nevet az eszköznek.',
+  'auth.devices.bridge_badge':     'Bridge',
+  'auth.devices.revoke_ssh_warning': 'Az eszközkulcs visszavonva, de az SSH-bejegyzést nem sikerült törölni -- az eszköz az alagutat még ki tudja nyitni. Töröld kézzel az ~/.ssh/authorized_keys megfelelő marveen-remote sorát (részletek: docs/dashboard-auth-recovery.md).',
+
+  'auth.bridge.title':             'Bridge-párosítás',
+  'auth.bridge.desc':              'Illeszd be a Bridge alkalmazásban megjelenő kulcs-sort (ssh-ed25519 ... marveen-remote:...), adj nevet az eszköznek, és a kapott csomagot másold vissza a Bridge-be. Az eszköz saját, külön visszavonható kulcsot kap.',
+  'auth.bridge.key_placeholder':   'ssh-ed25519 ... marveen-remote:...',
+  'auth.bridge.name_placeholder':  'Eszköz neve (pl. Szabi laptopja)',
+  'auth.bridge.enroll':            'Párosítás',
+  'auth.bridge.confirm':           'Párosítod "{name}" eszközt? SSH-alagút + saját eszközkulcs hozzáférést kap a dashboardhoz.',
+  'auth.bridge.working':           'Párosítás folyamatban...',
+  'auth.bridge.paired':            'Eszköz párosítva.',
+  'auth.bridge.repaired':          'Eszköz újrapárosítva (a korábbi kulcsa visszavonva).',
+  'auth.bridge.bundle_hint':       'Másold ki most, és illeszd be a Bridge-be -- a csomag többé nem jeleníthető meg. Cél-cím: {host}.',
+  'auth.bridge.err_empty':         'A kulcs-sor és az eszköznév is kötelező.',
 
   'trace.loading':                'Betöltés...',
   'trace.no_traces':              'Nincs trace ehhez az ágenshez',

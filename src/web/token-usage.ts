@@ -32,7 +32,7 @@ function discoverAgentSources(): AgentTranscriptSource[] {
     try { stat = statSync(full) } catch { continue }
     if (!stat.isDirectory()) continue
 
-    const agentMatch = entry.match(/-agents-([a-z]+)$/)
+    const agentMatch = entry.match(/-agents-([a-z0-9-]+)$/)
     if (agentMatch) {
       sources.push({ agent: agentMatch[1], projectDir: full })
     } else if (entry === mainDirName) {

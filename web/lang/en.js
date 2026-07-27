@@ -88,6 +88,11 @@ window._i18n.en = {
   'nav.vault':        'Vault',
   'nav.tokenUsage':   'Token Monitor',
   'nav.ideas':        'Ideas',
+  'nav.group.team':        'Team',
+  'nav.group.knowledge':   'Knowledge',
+  'nav.group.stats':       'Statistics',
+  'nav.group.system':      'System',
+  'nav.group.connections': 'Connections',
   // --- Federation ---
   'nav.federation':                    'Federation',
   'federation.page_title':             'Federation',
@@ -279,6 +284,7 @@ window._i18n.en = {
   'archived.modal.title':        'Archived card',
   'archived.meta.archived_at':   'Archived',
   'archived.btn.restore_to_board': 'Restore to board',
+  'archived.backToKanban':       'Back to Kanban',
   'archived.error.http':         'Error: {status}',
 
   // --- Agents ---
@@ -1574,6 +1580,7 @@ window._i18n.en = {
   // --- Kanban Gantt/timeline view ---
   'kanban.view.board':              'Board',
   'kanban.view.gantt':              'Timeline',
+  'kanban.view.archived':           'Archived',
   'kanban.gantt.filter.period_week':    'This week',
   'kanban.gantt.filter.period_month':   'Month',
   'kanban.gantt.filter.period_quarter': 'Quarter',
@@ -1723,6 +1730,20 @@ window._i18n.en = {
   'auth.devices.revoke':           'Revoke',
   'auth.devices.revoke_confirm':   'Revoke this device key? The device loses access immediately.',
   'auth.devices.err_name':         'Give the device a name.',
+  'auth.devices.bridge_badge':     'Bridge',
+  'auth.devices.revoke_ssh_warning': 'Device key revoked, but the SSH entry could not be removed -- the device can still open the tunnel. Delete the matching marveen-remote line from ~/.ssh/authorized_keys manually (details: docs/dashboard-auth-recovery.md).',
+
+  'auth.bridge.title':             'Bridge pairing',
+  'auth.bridge.desc':              'Paste the key line shown by the Bridge app (ssh-ed25519 ... marveen-remote:...), name the device, then copy the returned bundle back into the Bridge. The device gets its own, individually revocable key.',
+  'auth.bridge.key_placeholder':   'ssh-ed25519 ... marveen-remote:...',
+  'auth.bridge.name_placeholder':  'Device name (e.g. work laptop)',
+  'auth.bridge.enroll':            'Pair device',
+  'auth.bridge.confirm':           'Pair "{name}"? It will get SSH-tunnel + its own device-key access to the dashboard.',
+  'auth.bridge.working':           'Pairing...',
+  'auth.bridge.paired':            'Device paired.',
+  'auth.bridge.repaired':          'Device re-paired (its previous key was revoked).',
+  'auth.bridge.bundle_hint':       'Copy it now and paste it into the Bridge -- the bundle cannot be displayed again. Target host: {host}.',
+  'auth.bridge.err_empty':         'Both the key line and the device name are required.',
 
   'trace.loading':                'Loading...',
   'trace.no_traces':              'No traces for this agent',

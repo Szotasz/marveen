@@ -1,3 +1,4 @@
+import { DISTRIBUTION_DEFAULT_AGENT_MODEL } from './config-registry.js'
 import { CronExpressionParser } from 'cron-parser'
 import { hostname } from 'node:os'
 import { existsSync, readFileSync } from 'node:fs'
@@ -357,3 +358,12 @@ export const SUBAGENT_TELEGRAM_WAKE_ENABLED =
 export const HEARTBEAT_CALENDAR_ACCOUNT = (cfg('HEARTBEAT_CALENDAR_ACCOUNT') ?? '').trim()
 export const HEARTBEAT_END_HOUR = parseInt(env['HEARTBEAT_END_HOUR'] ?? '23', 10)
 export const HEARTBEAT_CALENDAR_ID = (cfg('HEARTBEAT_CALENDAR_ID') ?? '').trim()
+
+// The model new agents are scaffolded with, and the model the background worker
+// sessions run. One key so an install that standardises on a newer model does
+// not have to patch three separate literals in src/ (which an update would then
+// clobber). Deliberately NOT applied to existing agents: agent-config.json keeps
+// whatever model it was created with, so raising this never silently
+// reconfigures a running fleet.
+export const DEFAULT_AGENT_MODEL =
+  cfg('DEFAULT_AGENT_MODEL') || DISTRIBUTION_DEFAULT_AGENT_MODEL

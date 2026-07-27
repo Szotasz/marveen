@@ -179,7 +179,10 @@ async function renderAuthCard() {
   else renderTokenModePanel(body)
   // Device keys are managed by token/session operators only (a device key
   // itself gets 403 from the management endpoints, so don't render the panel).
-  if (status.method === 'token' || status.method === 'session') renderDeviceKeysSection(body)
+  if (status.method === 'token' || status.method === 'session') {
+    renderDeviceKeysSection(body)
+    renderBridgeEnrollSection(body)
+  }
 }
 
 // === Per-device keys (mint/list/revoke) ===
@@ -193,6 +196,7 @@ function renderDeviceKeysSection(body) {
   wrap.innerHTML =
     `<div class="auth-sessions-title">${t('auth.devices.title')}</div>` +
     `<p class="auth-muted">${t('auth.devices.desc')}</p>` +
+    `<div class="auth-form-msg err auth-device-warn" id="authDeviceKeyWarn" hidden></div>` +
     `<div id="authDeviceKeyList"></div>` +
     `<div class="auth-form auth-device-mint">` +
       `<input id="authDevName" type="text" autocapitalize="off" spellcheck="false" maxlength="64" placeholder="${t('auth.devices.name_placeholder')}">` +
@@ -218,8 +222,9 @@ async function refreshDeviceKeyList() {
       const created = new Date(k.createdAt * 1000).toLocaleDateString()
       const lastUsed = k.lastUsedAt ? new Date(k.lastUsedAt * 1000).toLocaleString() : t('auth.devices.never_used')
       const expires = k.expiresAt ? ` &middot; ${t('auth.devices.expires', { date: new Date(k.expiresAt * 1000).toLocaleDateString() })}` : ''
+      const bridge = k.installId ? ` <span class="auth-device-bridge-badge">${t('auth.devices.bridge_badge')}</span>` : ''
       return `<div class="auth-session-row auth-device-row" data-key-id="${k.id}">` +
-        `<span class="auth-device-name">${escapeHtml(k.name)}</span>` +
+        `<span class="auth-device-name">${escapeHtml(k.name)}${bridge}</span>` +
         `<span class="auth-device-meta">${created} &middot; ${t('auth.devices.last_used', { date: lastUsed })}${expires}</span>` +
         `<button class="btn-secondary btn-compact auth-device-revoke" data-key-id="${k.id}">${t('auth.devices.revoke')}</button>` +
       `</div>`
@@ -227,8 +232,24 @@ async function refreshDeviceKeyList() {
     el.querySelectorAll('.auth-device-revoke').forEach((btn) => {
       btn.addEventListener('click', async () => {
         if (!confirm(t('auth.devices.revoke_confirm'))) return
-        try { await fetch(`/api/auth/device-keys/${btn.dataset.keyId}`, { method: 'DELETE' }) } catch { /* ignore */ }
-        refreshDeviceKeyList()
+        // A Bridge-paired revoke means BOTH halves (dashboard key + ssh line).
+        // The key is dead either way, but ssh_removed:false means the
+        // authorized_keys line survived (fs error) and the device can still
+        // open the tunnel -- the ONE outcome the UI must never hide.
+        const warnBefore = document.getElementById('authDeviceKeyWarn')
+        if (warnBefore) warnBefore.hidden = true
+        let sshWarn = false
+        try {
+          const r = await fetch(`/api/auth/device-keys/${btn.dataset.keyId}`, { method: 'DELETE' })
+          const data = await r.json().catch(() => ({}))
+          if (r.ok && data.ssh_removed === false) sshWarn = true
+        } catch { /* ignore -- the list refresh below shows the real state */ }
+        await refreshDeviceKeyList()
+        const warnEl = document.getElementById('authDeviceKeyWarn')
+        if (warnEl && sshWarn) {
+          warnEl.hidden = false
+          warnEl.textContent = t('auth.devices.revoke_ssh_warning')
+        }
       })
     })
   } catch { el.innerHTML = '' }
@@ -265,6 +286,70 @@ async function mintDeviceKey() {
         await navigator.clipboard.writeText(data.key)
         document.getElementById('authDevCopyBtn').textContent = t('auth.devices.copied')
       } catch { document.getElementById('authDevMintedKey').select() }
+    })
+    refreshDeviceKeyList()
+  } catch { msg.classList.add('err'); msg.textContent = t('auth.login.err_network') }
+}
+
+// === Bridge pairing (AUTHPLAN1 #2) ===
+// Paste the public-key line shown by the Bridge app -> one confirm -> the
+// server writes the restricted SSH entry + mints a per-device key -> the
+// returned bundle (shown once, copyable) goes back into the Bridge.
+
+function renderBridgeEnrollSection(body) {
+  const wrap = document.createElement('div')
+  wrap.className = 'auth-device-keys auth-bridge-enroll'
+  wrap.id = 'authBridgeEnroll'
+  wrap.innerHTML =
+    `<div class="auth-sessions-title">${t('auth.bridge.title')}</div>` +
+    `<p class="auth-muted">${t('auth.bridge.desc')}</p>` +
+    `<div class="auth-form">` +
+      `<input id="authBridgeKeyLine" type="text" autocapitalize="off" spellcheck="false" placeholder="${t('auth.bridge.key_placeholder')}">` +
+      `<input id="authBridgeName" type="text" autocapitalize="off" spellcheck="false" maxlength="64" placeholder="${t('auth.bridge.name_placeholder')}">` +
+      `<button class="btn-secondary" id="authBridgeEnrollBtn">${t('auth.bridge.enroll')}</button>` +
+      `<div class="auth-form-msg" id="authBridgeMsg"></div>` +
+      `<div id="authBridgeBundle" hidden></div>` +
+    `</div>`
+  body.appendChild(wrap)
+  document.getElementById('authBridgeEnrollBtn').addEventListener('click', bridgeEnrollFromUi)
+}
+
+async function bridgeEnrollFromUi() {
+  const msg = document.getElementById('authBridgeMsg')
+  const out = document.getElementById('authBridgeBundle')
+  const keyLine = (document.getElementById('authBridgeKeyLine').value || '').trim()
+  const name = (document.getElementById('authBridgeName').value || '').trim()
+  msg.className = 'auth-form-msg'
+  msg.textContent = ''
+  out.hidden = true
+  if (!keyLine || !name) { msg.classList.add('err'); msg.textContent = t('auth.bridge.err_empty'); return }
+  // The confirm step: pairing grants the device SSH-tunnel + dashboard access.
+  if (!confirm(t('auth.bridge.confirm', { name }))) return
+  msg.textContent = t('auth.bridge.working')
+  try {
+    const r = await fetch('/api/security/bridge-enroll', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key_line: keyLine, name }),
+    })
+    const data = await r.json().catch(() => ({}))
+    if (!r.ok) { msg.classList.add('err'); msg.textContent = data.error || t('auth.card.err_generic'); return }
+    msg.classList.add('ok')
+    msg.textContent = (data.action === 'replaced' ? t('auth.bridge.repaired') : t('auth.bridge.paired')) +
+      (data.warnings && data.warnings.length ? ` (${data.warnings.join('; ')})` : '')
+    document.getElementById('authBridgeKeyLine').value = ''
+    document.getElementById('authBridgeName').value = ''
+    out.hidden = false
+    out.innerHTML =
+      `<p class="auth-muted">${t('auth.bridge.bundle_hint', { host: escapeHtml(data.host || '') })}</p>` +
+      `<div class="auth-form auth-device-minted-row">` +
+        `<input id="authBridgeBundleVal" type="text" readonly value="${escapeHtml(data.bundle)}" onclick="this.select()">` +
+        `<button class="btn-secondary btn-compact" id="authBridgeCopyBtn">${t('auth.devices.copy')}</button>` +
+      `</div>`
+    document.getElementById('authBridgeCopyBtn').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(data.bundle)
+        document.getElementById('authBridgeCopyBtn').textContent = t('auth.devices.copied')
+      } catch { document.getElementById('authBridgeBundleVal').select() }
     })
     refreshDeviceKeyList()
   } catch { msg.classList.add('err'); msg.textContent = t('auth.login.err_network') }
