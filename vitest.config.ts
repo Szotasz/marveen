@@ -23,15 +23,17 @@ export default defineConfig({
     // and cannot be instrumented by vitest (would show 0% and break the gate).
     include: ['src/**/*.ts'],
     exclude: ['src/__tests__/**', 'dist/**'],
-    // Thresholds set at current measured baseline (2026-07-27: stmts 46%,
-    // branches 47%, functions 51%, lines 47%) to activate the gate without
-    // blocking CI on day 1. Ramp toward 90% in subsequent sprints (F2/F3).
+    // Thresholds ratcheted to measured F2a baseline (2026-07-27: stmts 48%,
+    // branches 48%, functions 53%, lines 49%) after adding unit/contract tests
+    // for dispatcher, auto-restart-store, context-guard-store, agent-desired-state,
+    // active-model, channel-invites, store-watcher, channel-monitor (contract),
+    // agents-crud and agents-process routes.
     // Measured with include:['src/**/*.ts'], exclude:['src/__tests__/**','dist/**'].
     thresholds: {
-      statements: 46,
-      branches: 47,
-      functions: 51,
-      lines: 47,
+      statements: 48,
+      branches: 48,
+      functions: 53,
+      lines: 49,
     },
   },
 })
