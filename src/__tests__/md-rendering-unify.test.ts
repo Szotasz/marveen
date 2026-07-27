@@ -11,6 +11,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const APP          = readFileSync(join(__dirname, '../../web/app.js'),                   'utf-8')
 // Docs + research viewer extracted to docs-research.js in S-14b modularization.
 const DOCS_MOD     = readFileSync(join(__dirname, '../../web/modules/docs-research.js'), 'utf-8')
+const SKILLS_MOD   = readFileSync(join(__dirname, '../../web/modules/skills.js'),        'utf-8')
 const HTML         = readFileSync(join(__dirname, '../../web/index.html'),               'utf-8')
 const CSS          = readFileSync(join(__dirname, '../../web/style.css'),                'utf-8')
 
@@ -22,6 +23,16 @@ describe('md rendering unification', () => {
     expect(matches!.length).toBe(1)
     // Must no longer exist in app.js
     expect(APP).not.toMatch(/^function renderMarkdown\b/m)
+    // …and be exported so other modules can share it.
+    expect(DOCS_MOD).toMatch(/export\s*\{\s*renderMarkdown\s*\}/)
+  })
+
+  it('skills.js imports renderMarkdown (regression: empty skill content)', () => {
+    // skills.js uses renderMarkdown() for the SKILL.md preview. Without an
+    // import it throws ReferenceError at click time and the content field
+    // stays blank (the #3 modularization left this reference dangling).
+    expect(SKILLS_MOD).toMatch(/import\s*\{[^}]*\brenderMarkdown\b[^}]*\}\s*from\s*'\.\/docs-research\.js'/)
+    expect(SKILLS_MOD).toContain('renderMarkdown(')
   })
 
   it('renderMarkdown emits language class on fenced code blocks', () => {

@@ -87,6 +87,11 @@ function renderMarkdown(md) {
   return out.join('\n')
 }
 
+// Shared with the Skills modal (skills.js) so both render markdown identically.
+// Exported as a separate statement to keep the `function renderMarkdown`
+// definition line intact (guarded by md-rendering-unify.test.ts).
+export { renderMarkdown }
+
 // Download a doc's raw markdown as a .md file (client-side Blob, no server).
 function downloadMarkdown(name, content) {
   try {
