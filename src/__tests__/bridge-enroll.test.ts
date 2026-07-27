@@ -245,6 +245,24 @@ describe('POST /api/security/bridge-enroll (HTTP)', () => {
 })
 
 describe('DELETE /api/auth/device-keys/:id for a paired key', () => {
+  it('reports ssh_removed:false when the authorized_keys side fails (partial revoke)', async () => {
+    const { line } = makeKeyLine()
+    const outcome = await bridgeEnroll({ keyLine: line, name: 'Half' }, testDeps())
+    // Simulate the fs failure the UI must warn about: the line is already gone
+    // (file deleted out-of-band), so removal cannot succeed.
+    rmSync(join(sshDir, 'authorized_keys'), { force: true })
+    process.env.MARVEEN_SSH_DIR = sshDir
+    const r = await call(tryHandleAuth, 'DELETE', `/api/auth/device-keys/${outcome.deviceKeyId}`, { auth: { kind: 'token' } })
+    expect(r.statusCode).toBe(200)
+    // The key itself is revoked (dead) even though the ssh half failed...
+    expect(listDeviceKeys()).toHaveLength(0)
+    // ...and the response says so EXPLICITLY -- this is the field the UI
+    // renders as the visible partial-revoke warning.
+    expect(r.json().ssh_removed).toBe(false)
+    const audit = getDb().prepare("SELECT new_value FROM config_change_log WHERE key='security.bridge_revoke'").all() as { new_value: string }[]
+    expect(audit[0]!.new_value).toContain('ssh_removed=false')
+  })
+
   it('drops the authorized_keys line together with the key', async () => {
     const { line, installId } = makeKeyLine()
     const outcome = await bridgeEnroll({ keyLine: line, name: 'Pair' }, testDeps())
