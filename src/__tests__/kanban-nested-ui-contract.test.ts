@@ -93,6 +93,14 @@ describe('kanban 3-level UI: CSS classes', () => {
     expect(STYLE_CSS).toContain('.kanban-embedded-grandchildren')
   })
 
+  it('has [hidden] override for .kanban-embedded-grandchildren to beat display:flex cascade', () => {
+    // Without this rule the collapse toggle sets hidden=true but the element
+    // stays visible because display:flex (specificity 0,1,0) overrides the UA
+    // [hidden] default (display:none). The attribut selector bumps to 0,2,0.
+    expect(STYLE_CSS).toContain('.kanban-embedded-grandchildren[hidden]')
+    expect(STYLE_CSS).toMatch(/\.kanban-embedded-grandchildren\[hidden\]\s*\{[^}]*display\s*:\s*none/)
+  })
+
   it('defines .kanban-depth-2 style', () => {
     expect(STYLE_CSS).toContain('.kanban-depth-2')
   })
