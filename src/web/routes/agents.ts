@@ -104,11 +104,6 @@ import type { AgentRunState } from '../ssh-tmux.js'
 import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
 import { detectPaneState } from '../../pane-state.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
-import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
-import { readContextGuardConfig, writeContextGuardConfig } from '../context-guard-store.js'
-import { getContextGuardStatus } from '../context-guard-runner.js'
-import type { AutoRestartConfig } from '../../auto-restart.js'
-import { setStoreWriteActor } from '../../store-watcher.js'
 import { attemptChannelMcpReconnect } from '../channel-mcp-reconnect.js'
 import { getChannelHealth } from '../channel-health-monitor.js'
 import {
@@ -768,10 +763,6 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     return true
   }
 
-  // PUT /api/agents/:name/auto-restart -- set the per-agent auto-restart config.
-  // Accepts the main orchestrator id too (auto-restart applies to it as well).
-  // The body is normalized server-side, so a partial/garbled payload is coerced
-  // to a safe config rather than rejected.
   if (await tryHandleAgentsProcess(ctx)) return true
 
   if (path === '/api/team/graph' && method === 'GET') {
