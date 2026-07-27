@@ -7,7 +7,7 @@ import { tryHandleAgents } from '../web/routes/agents.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const agentsSource = readFileSync(join(__dirname, '..', 'web', 'routes', 'agents.ts'), 'utf8')
+const agentsSource = readFileSync(join(__dirname, '..', 'web', 'routes', 'agents-process.ts'), 'utf8')
 // openAgentDetail was extracted to web/modules/agents.js in S-6 modularization.
 const appSource = readFileSync(join(__dirname, '..', '..', 'web', 'modules', 'agents.js'), 'utf8')
 
