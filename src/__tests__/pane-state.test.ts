@@ -42,6 +42,30 @@ const IDLE_STRICT = [
   '  ? for shortcuts',
 ].join('\n')
 
+// Permission-mode footers OTHER than bypass. Every one of these is a real
+// `tmux capture-pane -p` tail copied verbatim from a running fleet session on
+// 2026-07-27 (the ⏵⏵/⏸ glyphs and the `·` separators are the actual bytes, not
+// retyped lookalikes) -- retyping them by hand is how the previous fix passed
+// its own tests while still missing the mode that was losing messages.
+//
+// The delivery bug: an agent parked in `accept edits on` read as 'unknown', so
+// the router refused to inject and four messages to it were swallowed without
+// an error, while bypass-mode agents received everything.
+const modeFooter = (tail: string) => ['', SEP, '❯ ', SEP, tail].join('\n')
+
+const IDLE_ACCEPT_EDITS = modeFooter('  ⏵⏵ accept edits on (shift+tab to cycle) · ← for agents')
+const IDLE_PLAN_MODE = modeFooter('  ⏸ plan mode on (shift+tab to cycle) · ← for agents')
+const IDLE_AUTO_MODE = modeFooter('  ⏵⏵ auto mode on (shift+tab to cycle)')
+const IDLE_MANUAL_MODE = modeFooter('  ⏵ manual mode on (shift+tab to cycle)')
+const IDLE_BYPASS_FLEETVIEW = modeFooter('  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents')
+// No shift+tab hint at all: the tail alone has to carry it.
+const IDLE_ACCEPT_EDITS_TAIL_ONLY = modeFooter('  ⏵⏵ accept edits on · 1 monitor · ← for agents')
+
+// The tail is what keeps prose out. Scrollback quoting a footer phrase without
+// the UI chrome must NOT read as idle -- otherwise a pasted log line parks the
+// router on a busy agent.
+const NOT_A_FOOTER_QUOTED = ['', SEP, '❯ ', SEP, '  valaki azt írta: bypass permissions on'].join('\n')
+
 const BUSY_FULL_FOOTER = [
   '✢ Combobulating… (52s · ↓ 2.6k tokens · thinking some more)',
   '',
@@ -391,6 +415,25 @@ describe('detectPaneState', () => {
   it('detects idle on strict-mode footer ("? for shortcuts")', () => {
     expect(detectPaneState(IDLE_STRICT)).toBe('idle')
   })
+
+  // Every permission mode must read as idle, not just bypass. Before this,
+  // anything else classified as 'unknown' and the router silently skipped it.
+  it.each([
+    ['accept edits', IDLE_ACCEPT_EDITS],
+    ['plan mode', IDLE_PLAN_MODE],
+    ['auto mode', IDLE_AUTO_MODE],
+    ['manual mode', IDLE_MANUAL_MODE],
+    ['bypass with the FleetView tail', IDLE_BYPASS_FLEETVIEW],
+    ['accept edits with no shift+tab hint', IDLE_ACCEPT_EDITS_TAIL_ONLY],
+  ])('detects idle on the %s footer', (_label, pane) => {
+    expect(detectPaneState(pane)).toBe('idle')
+    expect(isReadyForPrompt(pane)).toBe(true)
+  })
+
+  it('does not read a quoted footer phrase without the UI tail as idle', () => {
+    expect(detectPaneState(NOT_A_FOOTER_QUOTED)).not.toBe('idle')
+  })
+
 
   it('detects idle when the footer shows the multi-shell indicator', () => {
     // Regression: Claude Code rewrites "(shift+tab to cycle)" to
