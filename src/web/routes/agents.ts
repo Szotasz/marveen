@@ -1,13 +1,7 @@
 import type { RouteContext } from './types.js'
 import { tryHandleAgentsModels } from './agents-models.js'
 import { tryHandleAgentsProcess } from './agents-process.js'
-import {
-  tryHandleAgentsChannels,
-  isManagedSettingsReady,
-  getManagedSettingsSudoCommand,
-  setAgentEnabledPlugins,
-  resetAgentEnabledPlugins,
-} from './agents-channels.js'
+import { tryHandleAgentsChannels } from './agents-channels.js'
 import { tryHandleAgentsCrud } from './agents-crud.js'
 
 // Re-exports for backward compatibility (tests import from this module)
