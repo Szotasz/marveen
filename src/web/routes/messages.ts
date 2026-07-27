@@ -4,6 +4,7 @@ import {
   getKanbanSeqByIdPrefix,
   markMessageDone, markMessageFailed, getAgentMessage,
   closeOtelSpan,
+  getPendingBacklogByAgent,
   type AgentMessage,
 } from '../../db.js'
 import { logger } from '../../logger.js'
@@ -139,6 +140,14 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   // each with its count + most-recent message, recency computed per-peer.
   if (path === '/api/messages/threads' && method === 'GET') {
     json(res, getAgentConversationThreads())
+    return true
+  }
+
+  // Backlog per agent: count + how long the oldest has been waiting. Cheap
+  // enough to curl on a schedule; the point is that a growing queue behind a
+  // busy agent becomes visible BEFORE someone mistakes it for lost messages.
+  if (path === '/api/messages/backlog' && method === 'GET') {
+    json(res, getPendingBacklogByAgent())
     return true
   }
 

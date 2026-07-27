@@ -2059,6 +2059,28 @@ export function markMessageDelivered(id: number): boolean {
   return db.prepare("UPDATE agent_messages SET status = 'delivered', delivered_at = ? WHERE id = ? AND status = 'pending'").run(now, id).changes > 0
 }
 
+// Per-agent backlog: how many messages are waiting, and how old the oldest one
+// is. The queue only surfaces when somebody opens a pane and notices, which is
+// how an 18-row backlog went unseen on 2026-07-27 and got mistaken for data
+// loss. Age matters more than count: three messages from a minute ago is a busy
+// agent working normally, one message from two hours ago is an agent that is
+// never going to pick it up.
+export type AgentBacklog = { agent: string; pending: number; oldestAgeSeconds: number }
+
+export function getPendingBacklogByAgent(): AgentBacklog[] {
+  const now = Math.floor(Date.now() / 1000)
+  const rows = db.prepare(
+    `SELECT to_agent AS agent, COUNT(*) AS pending, MIN(created_at) AS oldest
+       FROM agent_messages
+      WHERE status = 'pending'
+      GROUP BY to_agent`,
+  ).all() as { agent: string; pending: number; oldest: number }[]
+  return rows
+    .map(r => ({ agent: r.agent, pending: r.pending, oldestAgeSeconds: Math.max(0, now - r.oldest) }))
+    // oldest-first: whoever has been waiting longest is the one worth looking at
+    .sort((a, b) => b.oldestAgeSeconds - a.oldestAgeSeconds)
+}
+
 // Close a pending backlog that is NOT going to be delivered -- stale rows an
 // operator does not want the router to replay (an old thank-you note, a legal
 // warning whose content has since changed). Separate from markMessageDelivered
