@@ -21,9 +21,17 @@ export async function tryHandleAgentsModels(ctx: RouteContext): Promise<boolean>
     const hasOpenRouter = getSecret('openrouter-fleet-key') !== null
     const orCatalog = loadOpenRouterCatalog()
     json(res, {
+      // NOTE: loadAvailableModels() in web/modules consumes only `deepseek` and
+      // `openrouter` from this payload -- the Claude options are static <option>
+      // elements in web/index.html (wizard + edit panel). The `claude` array is
+      // therefore an API-only listing today; keep it in sync with those options so
+      // a client that does read it (or a future refactor that drops the static
+      // markup) does not silently offer a stale set.
       claude: [
-        { id: 'claude-fable-5', label: 'Fable 5 (legújabb)' },
-        { id: 'claude-opus-4-8[1m]', label: 'Opus 4.8 (1M kontextus, alapértelmezett)' },
+        { id: 'claude-opus-5', label: 'Opus 5 (legújabb Opus)' },
+        { id: 'claude-sonnet-5', label: 'Sonnet 5' },
+        { id: 'claude-fable-5', label: 'Fable 5' },
+        { id: 'claude-opus-4-8[1m]', label: 'Opus 4.8 (1M kontextus)' },
         { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
         { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 (leggyorsabb)' },
       ],

@@ -5,7 +5,7 @@ import { homedir, userInfo } from 'node:os'
 import { createHash } from 'node:crypto'
 import { resolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT, DEFAULT_AGENT_MODEL } from '../config.js'
 import {
   capturePane,
   isSessionReadyForPrompt,
@@ -42,7 +42,11 @@ import { notifyChannel } from '../notify.js'
 
 const TMUX = resolveFromPath('tmux')
 
-const WORKER_MODEL = process.env.MARVEEN_WORKER_MODEL || 'claude-opus-4-8[1m]'
+// MARVEEN_WORKER_MODEL stays a process-level escape hatch (systemd
+// `Environment=`), but the .env-backed DEFAULT_AGENT_MODEL is what an operator
+// can actually set: readEnvFile() returns a plain object and never populates
+// process.env, so a MARVEEN_WORKER_MODEL line in .env was silently ignored.
+const WORKER_MODEL = process.env.MARVEEN_WORKER_MODEL || DEFAULT_AGENT_MODEL
 
 // How long to wait for a freshly launched worker to reach an idle prompt.
 const WORKER_BOOT_TIMEOUT_MS = 90_000

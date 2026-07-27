@@ -1,3 +1,9 @@
+// The model a fresh install runs when DEFAULT_AGENT_MODEL is unset. Kept here
+// (a zero-import module) so the registry default and the boot-time constant in
+// config.ts cannot drift apart -- bumping the distribution default is a
+// one-line change in exactly one place.
+export const DISTRIBUTION_DEFAULT_AGENT_MODEL = 'claude-opus-4-8[1m]'
+
 // Single source of truth for settings the dashboard's "Beallitasok" page can
 // show and edit. Each entry describes one .env-backed config key: its type
 // (drives the input widget + validation), default, human description, the
@@ -461,6 +467,23 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: false,
+  },
+  {
+    key: 'DEFAULT_AGENT_MODEL',
+    type: 'string',
+    default: DISTRIBUTION_DEFAULT_AGENT_MODEL,
+    description: 'Az új ügynökök alapértelmezett modellje, egyben a háttér-worker sessionök modellje. Meglévő ügynökök NEM változnak: akinek az agent-config.json-jában konkrét modell van, az marad. A módosítás a szolgáltatás újraindításakor lép életbe.',
+    module: 'agents',
+    secret: false,
+    requiresRestart: true,
+    valueSet: [
+      'claude-opus-5',
+      'claude-sonnet-5',
+      'claude-fable-5',
+      'claude-opus-4-8[1m]',
+      'claude-sonnet-4-6',
+      'claude-haiku-4-5-20251001',
+    ],
   },
 ]
 
