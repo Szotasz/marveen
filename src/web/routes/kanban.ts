@@ -245,8 +245,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanMoveMatch && method === 'POST') {
     const id = decodeURIComponent(kanbanMoveMatch[1])
     const body = await readBody(req)
-    const { status, sort_order, actor } = JSON.parse(body.toString())
-    if (moveKanbanCard(id, status, sort_order ?? 0, actor)) {
+    const { status, sort_order, actor, orderedIds } = JSON.parse(body.toString())
+    if (moveKanbanCard(id, status, sort_order ?? 0, actor, Array.isArray(orderedIds) ? orderedIds : undefined)) {
       // Wake the assigned agent once when the card enters in_progress.
       if (status === 'in_progress') fireKanbanDispatch(id)
       json(res, { ok: true })

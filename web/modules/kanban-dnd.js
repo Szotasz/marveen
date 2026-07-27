@@ -44,16 +44,18 @@ export function wireKanbanColumnDnD(col) {
     const cardId = e.dataTransfer.getData('text/plain')
     const newStatus = col.dataset.status
 
-    // Calculate sort_order based on position
-    const cards = [...col.querySelectorAll('.kanban-card')]
-    const idx = cards.findIndex((c) => c.dataset.id === cardId)
-    let sortOrder = idx
+    // The dragover handler already moved the card element to its new position
+    // via insertBefore, so the DOM reflects the desired visual order. Collect
+    // all card ids in that order and send them as orderedIds so the backend
+    // renumbers the full column in one transaction (fixes cards always landing
+    // at the bottom when other cards have conflicting or negative sort_orders).
+    const orderedIds = [...col.querySelectorAll('.kanban-card')].map(el => el.dataset.id)
 
     try {
       await fetch(`/api/kanban/${encodeURIComponent(cardId)}/move`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: newStatus, sort_order: sortOrder }),
+        body: JSON.stringify({ status: newStatus, sort_order: orderedIds.indexOf(cardId), orderedIds }),
       })
       loadKanban()
     } catch {
@@ -197,17 +199,22 @@ async function kanbanTouchEnd(e) {
   // Read the drop position BEFORE endTouchDrag drops the .dragging class --
   // getDragAfterElement excludes .dragging, which is what keeps the card from
   // counting itself when it is dropped back into its own column.
-  let sortOrder = 0
   let newStatus = null
+  let orderedIds = []
   if (chip) {
-    // Dropped on the status bar: no position information, so append.
+    // Dropped on the status bar: append the card to the end of the target column.
     newStatus = chip.dataset.status
-    sortOrder = document.querySelectorAll(`.kanban-col-body[data-status="${newStatus}"] .kanban-card`).length
+    const existingIds = [...document.querySelectorAll(`.kanban-col-body[data-status="${newStatus}"] .kanban-card:not(.dragging)`)].map(el => el.dataset.id)
+    orderedIds = [...existingIds, cardId]
   } else if (col) {
+    // Dropped on a column body: compute the target position using the same helper
+    // the desktop dragover uses, then build the ordered list with the card inserted.
     newStatus = col.dataset.status
     const after = getDragAfterElement(col, p.clientY)
     const others = [...col.querySelectorAll('.kanban-card:not(.dragging)')]
-    sortOrder = after ? others.indexOf(after) : others.length
+    const othersIds = others.map(el => el.dataset.id)
+    const insertPos = after ? others.indexOf(after) : others.length
+    orderedIds = [...othersIds.slice(0, insertPos), cardId, ...othersIds.slice(insertPos)]
   }
   endTouchDrag()
   // Released outside any target: treat as a cancelled drag, not a move.
@@ -218,7 +225,7 @@ async function kanbanTouchEnd(e) {
     const r = await fetch(`/api/kanban/${encodeURIComponent(cardId)}/move`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: newStatus, sort_order: sortOrder }),
+      body: JSON.stringify({ status: newStatus, sort_order: orderedIds.indexOf(cardId), orderedIds }),
     })
     if (!r.ok) throw new Error('move failed')
     loadKanban()

@@ -849,11 +849,40 @@ export function getChildCards(parentId: string): KanbanCard[] {
   return db.prepare('SELECT * FROM kanban_cards WHERE parent_id = ? AND archived_at IS NULL ORDER BY sort_order ASC').all(parentId) as KanbanCard[]
 }
 
-export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrder: number, actor?: string): boolean {
+export function moveKanbanCard(
+  id: string,
+  status: KanbanCard['status'],
+  sortOrder: number,
+  actor?: string,
+  orderedIds?: string[]
+): boolean {
   const now = Math.floor(Date.now() / 1000)
   // Read the previous status first so we only record an audit event on a real
   // status transition (not a pure sort_order reorder within the same column).
   const prev = (db.prepare('SELECT status FROM kanban_cards WHERE id=?').get(id) as { status: string } | undefined)?.status
+
+  if (orderedIds && orderedIds.length > 0) {
+    // Transactional renumber: status update + full column sort_order renumber in
+    // one shot so every card in the target column gets a clean 0..N sequence.
+    // Only the moved card's updated_at changes (sort_order is presentation-only).
+    let changed = false
+    db.transaction(() => {
+      changed = db.prepare(
+        'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
+      ).run(status, orderedIds.indexOf(id), now, id).changes > 0
+      if (changed && prev !== undefined && prev !== status) {
+        db.prepare(
+          'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)'
+        ).run(id, prev, status, actor ?? null, now)
+      }
+      const updateOrder = db.prepare('UPDATE kanban_cards SET sort_order=? WHERE id=?')
+      orderedIds.forEach((cardId, i) => updateOrder.run(i, cardId))
+    })()
+    return changed
+  }
+
+  // Legacy path: single-card sort_order update (used by schedule-runner and
+  // callers that don't supply the full column order).
   const changed = db.prepare(
     'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
   ).run(status, sortOrder, now, id).changes > 0
