@@ -28,6 +28,11 @@ let _currentPage = null
 let _navLinks = null
 let _pages = null
 
+// Optional hook: called after every page switch with the resolved pageId.
+// Used by sidebar group logic (app.js) to auto-open the active group.
+let _pageSwitchHook = null
+export function setPageSwitchHook(fn) { _pageSwitchHook = fn }
+
 /** Register lifecycle hooks for a page. leave({ to }) can return false to abort navigation. */
 export function registerPage(name, { enter = null, leave = null } = {}) {
   _pageRegistry.set(name, { enter, leave })
@@ -61,6 +66,7 @@ export function switchPage(pageId) {
 
   _currentPage = pageId
   _pageRegistry.get(pageId)?.enter?.()
+  _pageSwitchHook?.(pageId)
 }
 
 // ── i18n: nav labels ──────────────────────────────────────────────────────────

@@ -88,6 +88,11 @@ window._i18n.en = {
   'nav.vault':        'Vault',
   'nav.tokenUsage':   'Token Monitor',
   'nav.ideas':        'Ideas',
+  'nav.group.team':        'Team',
+  'nav.group.knowledge':   'Knowledge',
+  'nav.group.stats':       'Statistics',
+  'nav.group.system':      'System',
+  'nav.group.connections': 'Connections',
   // --- Federation ---
   'nav.federation':                    'Federation',
   'federation.page_title':             'Federation',

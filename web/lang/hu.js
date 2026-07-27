@@ -88,6 +88,11 @@ window._i18n.hu = {
   'nav.vault':        'Vault',
   'nav.tokenUsage':   'Token Monitor',
   'nav.ideas':        'Ötletláda',
+  'nav.group.team':        'Csapat',
+  'nav.group.knowledge':   'Tudás',
+  'nav.group.stats':       'Statisztikák',
+  'nav.group.system':      'Rendszer',
+  'nav.group.connections': 'Kapcsolatok',
   // --- Federation ---
   'nav.federation':                    'Föderáció',
   'federation.page_title':             'Föderáció',
