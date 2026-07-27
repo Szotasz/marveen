@@ -467,8 +467,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   // Claude IDs are static. DeepSeek is gated behind a vault secret because
   // the agent-process launcher reads the key from there at start time --
   // surfacing the option in the UI without the key would let the operator
-  // pick a model that 401s on first prompt. The frontend renders this list
-  // both in the "new agent" wizard and the agent edit panel.
+  // pick a model that 401s on first prompt.
+  //
+  // NOTE: loadAvailableModels() in web/app.js consumes only `deepseek` and
+  // `openrouter` from this payload -- the Claude options are static <option>
+  // elements in web/index.html (wizard + edit panel). The `claude` array is
+  // therefore an API-only listing today; keep it in sync with those options so
+  // a client that does read it (or a future refactor that drops the static
+  // markup) does not silently offer a stale set.
   if (path === '/api/models/available' && method === 'GET') {
     const hasDeepseek = getSecret('DEEPSEEK_API_KEY') !== null
     // OpenRouter is gated behind the vault key, same as DeepSeek: surfacing the
@@ -477,8 +483,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const orCatalog = loadOpenRouterCatalog()
     json(res, {
       claude: [
-        { id: 'claude-fable-5', label: 'Fable 5 (legújabb)' },
-        { id: 'claude-opus-4-8[1m]', label: 'Opus 4.8 (1M kontextus, alapértelmezett)' },
+        { id: 'claude-opus-5', label: 'Opus 5 (legújabb Opus)' },
+        { id: 'claude-sonnet-5', label: 'Sonnet 5' },
+        { id: 'claude-fable-5', label: 'Fable 5' },
+        { id: 'claude-opus-4-8[1m]', label: 'Opus 4.8 (1M kontextus)' },
         { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
         { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 (leggyorsabb)' },
       ],
