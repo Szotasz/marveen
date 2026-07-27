@@ -7663,3 +7663,16 @@ body {
 .sb-group.open .sb-group-chevron { transform: rotate(90deg); }
 .sb-group-items { display: flex; flex-direction: column; gap: 2px; }
 .sb-group:not(.open) .sb-group-items { display: none; }
+
+/* Docs pinned to the sidebar bottom, just above the lang/theme row. Sits
+ * outside the scrolling .sidebar-nav (flex:1), so it stays visible however
+ * long the open group list gets. Separator reuses the .sidebar-footer
+ * border-top pattern. */
+.sidebar-docs {
+  padding-top: 12px;
+  padding-bottom: 12px;
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
