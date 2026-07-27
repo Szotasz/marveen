@@ -12,8 +12,8 @@ import { dirname, join } from 'node:path'
 // their wiring at the four render sites, so any future refactor that strips them
 // fails CI instead of shipping the regression again.
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const appJsPath = join(__dirname, '..', '..', 'web', 'app.js')
-const src = readFileSync(appJsPath, 'utf8')
+// Messages section extracted to web/modules/messages.js in S-10 modularization.
+const src = readFileSync(join(__dirname, '..', '..', 'web', 'modules', 'messages.js'), 'utf8')
 
 // Pull a top-level `function name(...) { ... }` body out of the source by brace
 // matching, so we can evaluate the real shipped helper (not a copy) in isolation.
@@ -36,7 +36,7 @@ function loadHelpers(win: Record<string, unknown>, mainId: string) {
   const displayFn = extractFn('mainAgentDisplayName')
   const chatFn = extractFn('chatDisplayName')
   if (!displayFn || !chatFn) {
-    throw new Error('mainAgentDisplayName/chatDisplayName missing from web/app.js -- #520 fix reverted')
+    throw new Error('mainAgentDisplayName/chatDisplayName missing from web/modules/messages.js -- #520 fix reverted')
   }
   const body = `
     function mainAgentId() { return MAIN_ID }

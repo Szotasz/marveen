@@ -9,7 +9,8 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const APP     = readFileSync(join(__dirname, '../../web/app.js'),         'utf-8')
+// Skills page logic extracted to web/modules/skills.js in S-10 modularization.
+const APP     = readFileSync(join(__dirname, '../../web/modules/skills.js'), 'utf-8')
 const HTML    = readFileSync(join(__dirname, '../../web/index.html'),     'utf-8')
 const CSS     = readFileSync(join(__dirname, '../../web/style.css'),      'utf-8')
 const HU      = readFileSync(join(__dirname, '../../web/lang/hu.js'),     'utf-8')

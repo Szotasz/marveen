@@ -13,6 +13,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const APP        = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
 // Agents view + channel management extracted to agents.js in S-6 modularization.
 const AGENTS_MOD = readFileSync(join(__dirname, '../../web/modules/agents.js'), 'utf-8')
+// Messages/chat section extracted to messages.js in S-10 modularization.
+const MESSAGES_MOD = readFileSync(join(__dirname, '../../web/modules/messages.js'), 'utf-8')
 const APP_CORE   = readFileSync(join(__dirname, '../../web/modules/app-core.js'), 'utf-8')
 const HTML       = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
 const CSS        = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
@@ -105,7 +107,9 @@ describe('federation UI wiring', () => {
   })
 
   it('the pending-to-main hint is gated on pending status AND the main-agent recipient (L2)', () => {
-    const bubbleFn = APP.slice(APP.indexOf('function buildBubbleHtml'), APP.indexOf('function fetchChatPage'))
+    // buildBubbleHtml extracted to messages.js in S-10
+    const src = MESSAGES_MOD
+    const bubbleFn = src.slice(src.indexOf('function buildBubbleHtml'), src.indexOf('function fetchChatPage'))
     const hintIdx = bubbleFn.indexOf("t('messages.pending_main_hint')")
     expect(hintIdx).toBeGreaterThan(-1)
     // The guard must sit in the same expression: only a PENDING message
