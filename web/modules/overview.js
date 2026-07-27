@@ -1,10 +1,6 @@
+import { escapeHtml } from './util.js'
 import { t } from './i18n.js'
 
-function escapeHtml(str) {
-  const d = document.createElement('div')
-  d.appendChild(document.createTextNode(String(str ?? '')))
-  return d.innerHTML
-}
 
 // ============================================================
 // === Activity (live agent status) ===

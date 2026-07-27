@@ -1,11 +1,7 @@
+import { escapeHtml } from './util.js'
 import { t } from './i18n.js'
 import { showToast } from './toast.js'
 
-function escapeHtml(str) {
-  const d = document.createElement('div')
-  d.textContent = str
-  return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;')
-}
 
 // ============================================================
 // === Költöztetés (Migration) ===

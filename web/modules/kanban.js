@@ -14,6 +14,7 @@
 //   wireCardTouch            -- wireKanbanCardTouchDnD from app.js DnD block (extracted in S-5)
 //   loadIdeasPage            -- app.js page loader, called by breakdown accept in idea mode
 
+import { escapeHtml } from './util.js'
 import { t, getLang } from './i18n.js'
 import { showToast } from './toast.js'
 
@@ -88,11 +89,6 @@ export function initKanban({ openModal, closeModal, wireColumn, wireCardTouch, l
 }
 
 // ── Utility ───────────────────────────────────────────────────────────────────
-function escapeHtml(str) {
-  const d = document.createElement('div')
-  d.textContent = str
-  return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;')
-}
 
 // === Kanban auto-refresh ===
 let kanbanRefreshTimer = null

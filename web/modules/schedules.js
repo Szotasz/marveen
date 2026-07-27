@@ -6,18 +6,13 @@
 //   openEditSchedule(task) -- open the edit modal for an existing schedule
 //   getScheduleCron()    -- read the cron expression from the modal form
 
+import { escapeHtml, mainAgentId } from './util.js'
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
 import { avatarBust } from './agents.js'
 
 // ─── Local utilities ─────────────────────────────────────────────────────────
-function mainAgentId() { return window._marveen?.agentId || 'marveen' }
 
-function escapeHtml(str) {
-  const d = document.createElement('div')
-  d.appendChild(document.createTextNode(String(str ?? '')))
-  return d.innerHTML
-}
 
 function pauseIcon() {
   return '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>'

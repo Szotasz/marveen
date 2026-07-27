@@ -1,14 +1,9 @@
+import { escapeHtml, mainAgentId } from './util.js'
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
 import { agentApiName } from './agents.js'
 import { renderMarkdown } from './docs-research.js'
 
-function mainAgentId() { return window._marveen?.agentId || 'marveen' }
-function escapeHtml(str) {
-  const d = document.createElement('div')
-  d.textContent = str
-  return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;')
-}
 
 let _openModal = null, _closeModal = null
 export function initSkills({ openModal, closeModal } = {}) {

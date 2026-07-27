@@ -1,9 +1,6 @@
+import { escapeHtml } from './util.js'
 import { t } from './i18n.js'
 import { showToast } from './toast.js'
-
-function escapeHtmlUpdates(s) {
-  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
-}
 
 // ============================================================
 // === Updates page ===
@@ -54,7 +51,7 @@ function updateBranchDriftUI(status) {
   const textEl = document.getElementById('branchDriftBannerText')
   if (textEl) {
     textEl.innerHTML =
-      `${t('branch_drift.banner.text', { branch: `<strong>${escapeHtmlUpdates(branch)}</strong>` })} ` +
+      `${t('branch_drift.banner.text', { branch: `<strong>${escapeHtml(branch)}</strong>` })} ` +
       `<code>${BRANCH_HEAL_COMMAND}</code>`
   }
   banner.hidden = false
@@ -82,7 +79,7 @@ function renderBranchNotice(status) {
   } else {
     el.className = 'updates-branch-notice warn'
     el.innerHTML =
-      `${t('branch_drift.notice.off_main', { branch: `<code>${escapeHtmlUpdates(branch)}</code>` })}<br>` +
+      `${t('branch_drift.notice.off_main', { branch: `<code>${escapeHtml(branch)}</code>` })}<br>` +
       `${t('branch_drift.notice.heal')} <code>${BRANCH_HEAL_COMMAND}</code>`
   }
   el.hidden = false
@@ -118,7 +115,7 @@ export async function loadUpdates() {
     const lat = (data.latest || '').slice(0, 7) || '–'
     if (data.error) {
       summary.className = 'updates-summary error'
-      summary.innerHTML = `<strong>${t('updates.check_failed')}:</strong> ${escapeHtmlUpdates(data.error)}<br>${t('updates.current_label')} <code>${cur}</code>`
+      summary.innerHTML = `<strong>${t('updates.check_failed')}:</strong> ${escapeHtml(data.error)}<br>${t('updates.current_label')} <code>${cur}</code>`
       applyBtn.hidden = true
     } else if (data.behind === 0) {
       summary.className = 'updates-summary up-to-date'
@@ -129,20 +126,20 @@ export async function loadUpdates() {
       const versions = (data.releases || []).filter((r) => r.version)
       if (versions.length > 0) {
         // Version-centric: "N uj verzio elerheto (v1.21.0)".
-        summary.innerHTML = `<strong>${t('updates.versions_available', { n: versions.length })}</strong> <code>${escapeHtmlUpdates(versions[0].version)}</code>`
+        summary.innerHTML = `<strong>${t('updates.versions_available', { n: versions.length })}</strong> <code>${escapeHtml(versions[0].version)}</code>`
       } else {
         // Pre-release: unreleased commits but no new version tag yet.
-        summary.innerHTML = `<strong>${t('updates.changes_available')}</strong> ${t('updates.available_on', { remote: `<code>${escapeHtmlUpdates(data.remote)}</code>` })}`
+        summary.innerHTML = `<strong>${t('updates.changes_available')}</strong> ${t('updates.available_on', { remote: `<code>${escapeHtml(data.remote)}</code>` })}`
       }
       applyBtn.hidden = false
     }
     const commitCard = (c) => `
         <div class="updates-commit">
           <div class="updates-commit-head">
-            <span>${escapeHtmlUpdates(c.short)} · ${escapeHtmlUpdates(c.author)}</span>
-            <span>${escapeHtmlUpdates((c.date || '').slice(0, 10))}</span>
+            <span>${escapeHtml(c.short)} · ${escapeHtml(c.author)}</span>
+            <span>${escapeHtml((c.date || '').slice(0, 10))}</span>
           </div>
-          <div class="updates-commit-msg">${escapeHtmlUpdates(c.message)}</div>
+          <div class="updates-commit-msg">${escapeHtml(c.message)}</div>
         </div>`
     if (data.releases && data.releases.length) {
       // Version-centric: the human-language summary per version is the primary
@@ -151,9 +148,9 @@ export async function loadUpdates() {
       // thing the operator sees.
       list.innerHTML = data.releases.map((rel) => {
         const isUpcoming = !rel.version
-        const label = isUpcoming ? t('updates.group.upcoming') : escapeHtmlUpdates(rel.version)
+        const label = isUpcoming ? t('updates.group.upcoming') : escapeHtml(rel.version)
         const human = rel.summary
-          ? escapeHtmlUpdates(rel.summary)
+          ? escapeHtml(rel.summary)
           : (isUpcoming ? t('updates.upcoming_note') : '')
         return `
         <div class="updates-version">
@@ -189,15 +186,15 @@ async function renderDiagnoseOffer() {
   if (data.needsHuman) {
     box.hidden = false
     box.className = 'updates-diagnose needs-human'
-    box.innerHTML = `<strong>${escapeHtmlUpdates(t('updates.diagnose.title'))}</strong><p>${escapeHtmlUpdates(t('updates.diagnose.needs_human'))}</p>`
+    box.innerHTML = `<strong>${escapeHtml(t('updates.diagnose.title'))}</strong><p>${escapeHtml(t('updates.diagnose.needs_human'))}</p>`
     return
   }
   if (!data.canDiagnose) { box.hidden = true; box.innerHTML = ''; return }
   box.hidden = false
   box.className = 'updates-diagnose'
-  box.innerHTML = `<strong>${escapeHtmlUpdates(t('updates.diagnose.title'))}</strong>`
-    + `<p>${escapeHtmlUpdates(t('updates.diagnose.body'))}</p>`
-    + `<button class="btn-secondary btn-compact" id="updatesDiagnoseBtn">${escapeHtmlUpdates(t('updates.diagnose.btn'))}</button>`
+  box.innerHTML = `<strong>${escapeHtml(t('updates.diagnose.title'))}</strong>`
+    + `<p>${escapeHtml(t('updates.diagnose.body'))}</p>`
+    + `<button class="btn-secondary btn-compact" id="updatesDiagnoseBtn">${escapeHtml(t('updates.diagnose.btn'))}</button>`
   document.getElementById('updatesDiagnoseBtn').addEventListener('click', runDiagnose)
 }
 
