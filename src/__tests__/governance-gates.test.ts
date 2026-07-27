@@ -94,6 +94,24 @@ describe('self-pace-gate gateDecision', () => {
   it('denies a shell-driven /loop', () => {
     expect(selfPaceDecision('Bash', { command: 'claude /loop "keep polling"' }).deny).toBe(true)
   })
+  // Two forms the slash-command-position match regressed on (upstream review,
+  // 2026-07-27): both EXECUTE `claude /loop` in bash but the char before `/loop`
+  // was `\` / end-of-`$IFS`, not in the [\s'"] class. Fixed by normalising the
+  // segment (resolve `\X`->`X`, `$IFS`->space) before the pattern runs.
+  it('denies a /loop hidden by a backslash-escaped slash (claude \\/loop)', () => {
+    expect(selfPaceDecision('Bash', { command: 'claude \\/loop "keep polling"' }).deny).toBe(true)
+  })
+  it('denies a /loop hidden by $IFS word-splitting (claude$IFS/loop)', () => {
+    expect(selfPaceDecision('Bash', { command: 'claude$IFS/loop 5m' }).deny).toBe(true)
+  })
+  it('denies the /lo\\op mid-token backslash form (side effect of the same fix)', () => {
+    expect(selfPaceDecision('Bash', { command: 'claude /lo\\op' }).deny).toBe(true)
+  })
+  it('ALLOWS reading a memory path with a loop- prefix (normalisation keeps prose through)', () => {
+    // `.claude` matches \bclaude\b and the name starts `loop-`, but `/loop` is not
+    // in slash-command position (a `-` follows), so it must still pass.
+    expect(selfPaceDecision('Bash', { command: 'cat ~/.claude/memory/loop-stop-vs-truncation.md' }).deny).toBe(false)
+  })
   it('ALLOWS a normal Bash command', () => {
     expect(selfPaceDecision('Bash', { command: 'git status && ls -la' }).deny).toBe(false)
   })

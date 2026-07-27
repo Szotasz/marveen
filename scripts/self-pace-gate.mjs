@@ -211,6 +211,27 @@ export function stripGitCommitMessages(command) {
   )
 }
 
+// Normalise two shell-level obfuscations that bash resolves at EXEC time, so an
+// invocation whose SHAPE is a real self-pace cannot dodge the slash-command match
+// with quoting the shell undoes anyway. Measured end-to-end through the gate hook
+// (upstream review, 2026-07-27): `claude \/loop` and `claude$IFS/loop` BOTH run
+// `claude /loop` in bash but slipped the `(?:^|[\s'"])\/loop` match -- the char
+// before `/loop` was `\` and `S` (end of `$IFS`), neither in the [\s'"] class.
+// The fix is NOT to widen that class (that would let more prose through); it is to
+// resolve what the shell resolves before matching: `$IFS`/`${IFS}` word-splits to
+// a space, and a backslash escape `\X` collapses to `X`. Side effect: also closes
+// `claude /lo\op`. Applied ONLY to the self-pace bash patterns below; the
+// scheduler/store/API checks keep the raw segment (upstream measured them clean,
+// and this PR is scoped to these two loop regressions). This cannot introduce a
+// false positive: collapsing escapes / dropping `$IFS` never synthesises the
+// literal `tmux`+send-keys, `nohup`+claude, or `claude`+`/loop` tokens out of
+// prose -- it only removes an evasion.
+export function normalizeShellEvasion(seg) {
+  return String(seg ?? '')
+    .replace(/\$\{IFS\}|\$IFS\b/g, ' ') // $IFS / ${IFS} -> the space it expands to
+    .replace(/\\(.)/g, '$1') // \X -> X (bash unescape of a backslash-escaped char)
+}
+
 // Pure decision: does this tool call set up self-pace / self-injection?
 export function gateDecision(toolName, toolInput) {
   const name = String(toolName ?? '')
@@ -232,7 +253,10 @@ export function gateDecision(toolName, toolInput) {
     // Per-segment so an unrelated token elsewhere in a compound command cannot
     // turn a legit read (store inspection, schedule-API GET) into a false deny.
     for (const seg of splitSegments(safeCommand)) {
-      if (SELF_PACE_BASH_PATTERNS.some((re) => re.test(seg))) return { deny: true }
+      // Match the self-pace bash patterns against the shell-normalised segment so a
+      // `\/loop` / `$IFS/loop` evasion (which bash resolves to `/loop` at exec) is
+      // still caught; the scheduler/store/API checks below use the RAW seg (scoped).
+      if (SELF_PACE_BASH_PATTERNS.some((re) => re.test(normalizeShellEvasion(seg)))) return { deny: true }
       // scheduler binaries: deny the exec/submit forms, allow pure read-listing
       if (SCHEDULER_RX.test(seg) && !SCHEDULER_READ_RX.test(seg)) return { deny: true }
       // self-schedule store: block WRITE only (a read/grep is legit diagnostics)
