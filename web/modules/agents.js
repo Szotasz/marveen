@@ -41,10 +41,12 @@ let _loadSkills = null
 let _openTerminalModal = null
 let _openConversationModal = null
 let _setChatSelectedAgent = null
+let _showSudoModal = null
 
 export function initAgents({
   openModal, closeModal, loadSkills,
   openTerminalModal, openConversationModal, setChatSelectedAgent,
+  showSudoModal,
 } = {}) {
   _openModal = openModal
   _closeModal = closeModal
@@ -52,6 +54,7 @@ export function initAgents({
   _openTerminalModal = openTerminalModal
   _openConversationModal = openConversationModal
   _setChatSelectedAgent = setChatSelectedAgent
+  _showSudoModal = showSudoModal
 }
 
 // ─── Federated peer status ────────────────────────────────────────────────────
@@ -2427,7 +2430,7 @@ document.getElementById('chConnectBtn').addEventListener('click', async () => {
     if (res.status === 409) {
       const err = await res.json()
       if (err.error === 'managed-settings-missing') {
-        showSudoModal(err.sudoCommand)
+        _showSudoModal?.(err.sudoCommand)
         return
       }
     }
