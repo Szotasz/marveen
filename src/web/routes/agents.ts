@@ -2085,8 +2085,16 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
   // GET /api/agents/:name/voice-config
   const voiceConfigMatch = path.match(/^\/api\/agents\/([^/]+)\/voice-config$/)
+  // The dashboard's agent list carries the main agent under its DISPLAY name
+  // ("Marveen"), while the config lives under MAIN_AGENT_ID ("marveen"). The
+  // exact-match check 404'd the capitalized form, and the modal's early return
+  // then left the PREVIOUS agent's values in the DOM -- Viktor saw edina1's
+  // voice settings inside Marveen's modal, and his saves never landed. Resolve
+  // the main agent case-insensitively; sub-agent dirs stay exact-match.
+  const canonicalVoiceAgent = (raw: string): string =>
+    raw.toLowerCase() === MAIN_AGENT_ID.toLowerCase() ? MAIN_AGENT_ID : raw
   if (voiceConfigMatch && method === 'GET') {
-    const name = decodeURIComponent(voiceConfigMatch[1])
+    const name = canonicalVoiceAgent(decodeURIComponent(voiceConfigMatch[1]))
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
     json(res, { ...readAgentVoiceConfig(name), availableVoices: Array.from(KNOWN_VOICE_MODELS) })
     return true
@@ -2095,7 +2103,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   // PUT /api/agents/:name/voice-config
   // Body: { responseMode?: 'text'|'voice'|'auto', voiceModel?: string }
   if (voiceConfigMatch && method === 'PUT') {
-    const name = decodeURIComponent(voiceConfigMatch[1])
+    const name = canonicalVoiceAgent(decodeURIComponent(voiceConfigMatch[1]))
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
     const body = await readBody(req)
     let data: { responseMode?: string; voiceModel?: string }

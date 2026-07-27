@@ -4508,7 +4508,13 @@ async function loadVoiceConfig(agentName) {
     if (controls) controls.hidden = false
 
     const r = await fetch(`/api/agents/${encodeURIComponent(agentName)}/voice-config`)
-    if (!r.ok) return
+    if (!r.ok) {
+      // Never leave the PREVIOUS agent's values on screen: a failed load once
+      // showed edina1's voice settings inside Marveen's modal. Hide the
+      // controls instead of lying.
+      if (controls) controls.hidden = true
+      return
+    }
     const cfg = await r.json()
     voiceModelSel.innerHTML = (cfg.availableVoices || []).map(v =>
       `<option value="${v}"${v === cfg.voiceModel ? ' selected' : ''}>${v}</option>`
