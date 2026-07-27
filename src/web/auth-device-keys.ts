@@ -40,6 +40,9 @@ export interface DeviceKeyInfo {
   createdAt: number
   lastUsedAt: number | null
   expiresAt: number | null
+  /** SSH enrollment id (marveen-remote:<uuid>) for Bridge-paired keys; null
+   *  for keys minted outside the pairing flow. */
+  installId: string | null
 }
 
 export interface MintedDeviceKey extends DeviceKeyInfo {
@@ -64,20 +67,29 @@ function nowSec(): number {
   return Math.floor(Date.now() / 1000)
 }
 
+type DbRow = { id: number; name: string; created_at: number; last_used_at: number | null; expires_at: number | null; install_id: string | null }
+
+function rowToInfo(r: DbRow): DeviceKeyInfo {
+  return { id: r.id, name: r.name, createdAt: r.created_at, lastUsedAt: r.last_used_at, expiresAt: r.expires_at, installId: r.install_id }
+}
+
+const INFO_COLUMNS = 'id, name, created_at, last_used_at, expires_at, install_id'
+
 // Mint a new key. The raw value exists only in the returned object; the row
 // stores its hash. expiresInDays is opt-in -- omitted means the key lives until
 // revoked.
-export function createDeviceKey(name: string, opts: { expiresInDays?: number } = {}): MintedDeviceKey {
+export function createDeviceKey(name: string, opts: { expiresInDays?: number; installId?: string } = {}): MintedDeviceKey {
   const raw = KEY_PREFIX + randomBytes(32).toString('base64url')
   const keyHash = sha256hex(raw)
   const now = nowSec()
   const expiresAt = opts.expiresInDays ? now + Math.floor(opts.expiresInDays * 24 * 60 * 60) : null
+  const installId = opts.installId ?? null
   const info = getDb()
-    .prepare('INSERT INTO device_keys (key_hash, name, created_at, last_used_at, expires_at) VALUES (?, ?, ?, ?, ?)')
-    .run(keyHash, name, now, null, expiresAt)
+    .prepare('INSERT INTO device_keys (key_hash, name, created_at, last_used_at, expires_at, install_id) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(keyHash, name, now, null, expiresAt, installId)
   const id = Number(info.lastInsertRowid)
   cache.set(keyHash, { id, name, lastUsedAt: null, expiresAt })
-  return { id, name, createdAt: now, lastUsedAt: null, expiresAt, key: raw }
+  return { id, name, createdAt: now, lastUsedAt: null, expiresAt, installId, key: raw }
 }
 
 function removeByHash(keyHash: string): void {
@@ -123,9 +135,21 @@ export function resolveDeviceKey(raw: string): DeviceKeyPrincipal | null {
 
 export function listDeviceKeys(): DeviceKeyInfo[] {
   const rows = getDb()
-    .prepare('SELECT id, name, created_at, last_used_at, expires_at FROM device_keys ORDER BY created_at DESC')
-    .all() as { id: number; name: string; created_at: number; last_used_at: number | null; expires_at: number | null }[]
-  return rows.map((r) => ({ id: r.id, name: r.name, createdAt: r.created_at, lastUsedAt: r.last_used_at, expiresAt: r.expires_at }))
+    .prepare(`SELECT ${INFO_COLUMNS} FROM device_keys ORDER BY created_at DESC`)
+    .all() as DbRow[]
+  return rows.map(rowToInfo)
+}
+
+export function getDeviceKey(id: number): DeviceKeyInfo | null {
+  const row = getDb().prepare(`SELECT ${INFO_COLUMNS} FROM device_keys WHERE id = ?`).get(id) as DbRow | undefined
+  return row ? rowToInfo(row) : null
+}
+
+/** Bridge re-pairing: find the key minted by a previous enrollment of the same
+ *  device (same marveen-remote:<uuid>), so it can be replaced, not duplicated. */
+export function findDeviceKeyByInstallId(installId: string): DeviceKeyInfo | null {
+  const row = getDb().prepare(`SELECT ${INFO_COLUMNS} FROM device_keys WHERE install_id = ?`).get(installId) as DbRow | undefined
+  return row ? rowToInfo(row) : null
 }
 
 // Revocation is immediate: the row and any cached entry go together, so the

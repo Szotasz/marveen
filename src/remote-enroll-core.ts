@@ -191,6 +191,31 @@ export function mergeAuthorizedKeys(
   return { content, action: replaced ? 'replaced' : 'added' }
 }
 
+export interface RemoveResult {
+  content: string
+  removed: boolean
+}
+
+/**
+ * Remove the line carrying `marveen-remote:<installId>` from authorized_keys
+ * content (the revoke counterpart of mergeAuthorizedKeys). Every other line is
+ * preserved byte-for-byte. `removed:false` means no such line existed -- the
+ * caller decides whether that is an error or an idempotent no-op. An empty
+ * result stays empty (no lone trailing newline is invented).
+ */
+export function removeAuthorizedKey(existing: string, installId: string): RemoveResult {
+  const target = `${COMMENT_PREFIX}${installId}`
+  const lines = existing.length ? existing.split('\n') : []
+  if (lines.length > 0 && lines[lines.length - 1] === '') {
+    lines.pop()
+  }
+  const out = lines.filter((line) => lineComment(line) !== target)
+  const removed = out.length !== lines.length
+  let content = out.join('\n')
+  if (content.length > 0 && !content.endsWith('\n')) content += '\n'
+  return { content, removed }
+}
+
 /**
  * Extract the base64 body (second whitespace field) of an OpenSSH ed25519
  * public key file such as /etc/ssh/ssh_host_ed25519_key.pub. The type field

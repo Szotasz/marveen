@@ -18,7 +18,9 @@ import {
   chmodSync,
 } from 'node:fs'
 import { join } from 'node:path'
-import { mergeAuthorizedKeys, type MergeAction } from './remote-enroll-core.js'
+import { mergeAuthorizedKeys, removeAuthorizedKey, type MergeAction } from './remote-enroll-core.js'
+import { homedir } from 'node:os'
+import { logger } from './logger.js'
 
 const SSH_DIR_MODE = 0o700
 const AUTH_KEYS_MODE = 0o600
@@ -138,6 +140,28 @@ function releaseLock(fd: number, lockPath: string): void {
   }
 }
 
+function writeAtomic(sshDir: string, authPath: string, content: string): void {
+  const tmpPath = join(sshDir, `.${AUTH_KEYS_NAME}.${process.pid}.${Date.now()}.tmp`)
+  const tfd = openSync(tmpPath, 'wx', AUTH_KEYS_MODE)
+  try {
+    writeSync(tfd, content)
+    fsyncSync(tfd)
+  } finally {
+    closeSync(tfd)
+  }
+  chmodSync(tmpPath, AUTH_KEYS_MODE)
+  try {
+    renameSync(tmpPath, authPath)
+  } catch (err) {
+    try {
+      unlinkSync(tmpPath)
+    } catch {
+      /* ignore */
+    }
+    throw err
+  }
+}
+
 /**
  * Enroll (append or replace-by-id) the restricted line into
  * <sshDir>/authorized_keys with an atomic read-modify-write guarded by an
@@ -174,32 +198,88 @@ export async function enrollAuthorizedKey(opts: EnrollOptions): Promise<EnrollRe
     }
 
     const { content, action } = mergeAuthorizedKeys(existing, restrictedLine, installId)
-
-    // Atomic write: temp file in the same directory (same filesystem), 0600,
-    // fsync, then rename over the target.
-    const tmpPath = join(sshDir, `.${AUTH_KEYS_NAME}.${process.pid}.${Date.now()}.tmp`)
-    const tfd = openSync(tmpPath, 'wx', AUTH_KEYS_MODE)
-    try {
-      writeSync(tfd, content)
-      fsyncSync(tfd)
-    } finally {
-      closeSync(tfd)
-    }
-    // Enforce mode explicitly in case umask trimmed the create mode.
-    chmodSync(tmpPath, AUTH_KEYS_MODE)
-    try {
-      renameSync(tmpPath, authPath)
-    } catch (err) {
-      try {
-        unlinkSync(tmpPath)
-      } catch {
-        /* ignore */
-      }
-      throw err
-    }
-
+    writeAtomic(sshDir, authPath, content)
     return { action, authorizedKeysPath: authPath, warnings }
   } finally {
     releaseLock(fd, lockPath)
   }
+}
+
+/** MARVEEN_SSH_DIR is a test seam for isolated e2e instances (a scratch
+ * server must never write the real ~/.ssh). It lives in a production code
+ * path, so if it ever leaks into a real environment (inherited env, copied
+ * .env, launchd plist) enrollment would silently write elsewhere and pairing
+ * would "succeed but not work". Every use is therefore loudly logged and
+ * flagged into the audit row (see sshDirOverride() callers). */
+export function sshDirOverride(): string | null {
+  return process.env.MARVEEN_SSH_DIR || null
+}
+
+export function resolveSshDir(): string {
+  const override = sshDirOverride()
+  if (override) {
+    logger.warn({ sshDir: override }, 'MARVEEN_SSH_DIR override active -- authorized_keys writes are redirected (test seam; must be unset in production)')
+    return override
+  }
+  return join(homedir(), '.ssh')
+}
+
+export interface RemoveEnrolledOptions {
+  sshDir: string
+  installId: string
+  lockRetries?: number
+  lockRetryDelayMs?: number
+  staleLockMs?: number
+  sleep?: (ms: number) => Promise<void>
+}
+
+export interface RemoveEnrolledResult {
+  removed: boolean
+  authorizedKeysPath: string
+}
+
+/**
+ * Remove the marveen-remote:<installId> line from <sshDir>/authorized_keys --
+ * the revoke counterpart of enrollAuthorizedKey, under the same lock and
+ * atomic-replace discipline. A missing file or missing line reports
+ * removed:false (idempotent: revoking twice must not fail).
+ */
+export async function removeEnrolledKey(opts: RemoveEnrolledOptions): Promise<RemoveEnrolledResult> {
+  const {
+    sshDir,
+    installId,
+    lockRetries = 20,
+    lockRetryDelayMs = 100,
+    staleLockMs = 15000,
+    sleep = defaultSleep,
+  } = opts
+  const authPath = join(sshDir, AUTH_KEYS_NAME)
+  const lockPath = join(sshDir, LOCK_NAME)
+
+  if (!existsSync(authPath)) return { removed: false, authorizedKeysPath: authPath }
+
+  const fd = await acquireLock(lockPath, lockRetries, lockRetryDelayMs, staleLockMs, sleep)
+  try {
+    if (!existsSync(authPath)) return { removed: false, authorizedKeysPath: authPath }
+    const existing = readFileSync(authPath, 'utf8')
+    const { content, removed } = removeAuthorizedKey(existing, installId)
+    if (removed) writeAtomic(sshDir, authPath, content)
+    return { removed, authorizedKeysPath: authPath }
+  } finally {
+    releaseLock(fd, lockPath)
+  }
+}
+
+/**
+ * Revoke the SSH side of a device key pairing: drop the authorized_keys line
+ * for the installId. Called by the device-key DELETE endpoint for keys that
+ * carry an install_id; idempotent (removed:false when the line is already gone).
+ */
+export async function removeBridgeSshAccess(
+  installId: string,
+  deps?: { sshDir?: string },
+): Promise<boolean> {
+  const sshDir = deps?.sshDir ?? resolveSshDir()
+  const result = await removeEnrolledKey({ sshDir, installId })
+  return result.removed
 }
