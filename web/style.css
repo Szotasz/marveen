@@ -852,6 +852,36 @@ main {
   flex-shrink: 0;
 }
 
+.kanban-embedded-grandchildren {
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+}
+/* display:flex above wins over UA [hidden]{display:none} -- explicit override required. */
+.kanban-embedded-grandchildren[hidden] { display: none; }
+.kanban-embedded-subtask.kanban-depth-2 {
+  font-size: 11px;
+  padding: 3px 6px;
+  background: var(--bg-input);
+  border-color: var(--border);
+  margin-left: 14px;
+}
+.kanban-subtask-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 10px;
+  color: var(--text-muted);
+  padding: 0 2px;
+  margin-left: auto;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.kanban-subtask-toggle:hover { color: var(--accent); }
+.kanban-embedded-subtask { flex-wrap: wrap; }
+
 .kanban-card:hover {
   border-color: var(--accent);
   box-shadow: var(--shadow-sm);
@@ -859,6 +889,16 @@ main {
 .kanban-card.dragging {
   opacity: 0.4;
   transform: rotate(2deg);
+}
+.kanban-card.drop-target-parent {
+  outline: 2px dashed var(--accent);
+  outline-offset: 2px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-card));
+}
+.kanban-card.drop-target-invalid {
+  outline: 2px dashed var(--danger, #e53e3e);
+  outline-offset: 2px;
+  cursor: no-drop;
 }
 .kanban-card-project {
   display: inline-block;
