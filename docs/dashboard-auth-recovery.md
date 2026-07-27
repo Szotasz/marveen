@@ -46,13 +46,18 @@ szükséges.
 A Biztonság fülön párosított Bridge-eszköz kulcsának visszavonása
 (`Visszavonás` gomb, vagy `DELETE /api/auth/device-keys/<id>`) EGYBEN vonja
 vissza a két hozzáférés-felet: az eszközkulcsot ÉS az `authorized_keys`-ből az
-eszköz SSH-sorát. A visszavonás az ÚJ kapcsolatokra azonnali: új alagút a
-törölt sorral már nem nyitható, és az eszközkulcs is azonnal érvénytelen. Egy
-MÁR FELÉPÜLT alagút viszont a következő bontásig (app-újraindítás,
-hálózatváltás, alvás) életben maradhat, mert az SSH a futó kapcsolatokat nem
-ellenőrzi újra. Ha azonnali elvágás kell, állítsd le a Bridge appot az
-eszközön, vagy zárd le a szerveren az eszköz élő SSH-kapcsolatát. Az eszköz ettől nem "kizárt felhasználó": újra-párosítással
-(új kulcs-sor beillesztése) bármikor visszahozható. A `security:reset` a
+eszköz SSH-sorát. Az eszközkulcs AZONNAL megszűnik, tehát a
+dashboard-hozzáférés rögtön záródik; a törölt SSH-sorral új alagút sem
+nyitható. Egy MÁR FELÉPÜLT ssh-alagút viszont a következő bontásig
+(app-újraindítás, hálózatváltás, alvás) életben maradhat, mert az sshd a futó
+kapcsolatokat nem ellenőrzi újra. Ha azonnali vágás kell, állítsd le a Bridge
+appot az eszközön, vagy zárd le a szerveren az eszköz élő SSH-kapcsolatát.
+Ha az SSH-sor törlése hibára fut, a felület külön figyelmeztetést mutat --
+ilyenkor a sort kézzel töröld: a Marveent futtató user
+`~/.ssh/authorized_keys` fájljából vedd ki az eszköz
+`marveen-remote:<install-id>` kommentű sorát. Az eszköz ettől nem "kizárt
+felhasználó": újra-párosítással (új kulcs-sor beillesztése) bármikor
+visszahozható. A `security:reset` a
 párosított kulcsokat is visszavonja, de az SSH-sorokat nem bántja -- azok a
 kulcs nélkül csak egy zárt alagutat adnak, és a következő párosítás
 install-id alapján felülírja őket.
