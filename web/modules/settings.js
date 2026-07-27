@@ -9,6 +9,7 @@ function escapeHtml(str) {
 }
 
 let _wireBranchDriftBanner = null
+let _authBannerWired = false
 export function initSettings({ wireBranchDriftBanner } = {}) {
   _wireBranchDriftBanner = wireBranchDriftBanner
 }
@@ -202,7 +203,7 @@ function renderDeviceKeysSection(body) {
       `<div id="authDevMinted" hidden></div>` +
     `</div>`
   body.appendChild(wrap)
-  document.getElementById('authDevMintBtn').addEventListener('click', mintDeviceKey)
+  wrap.querySelector('#authDevMintBtn')?.addEventListener('click', mintDeviceKey)
   refreshDeviceKeyList()
 }
 
@@ -380,6 +381,8 @@ async function initAuthBanner() {
 }
 
 function wireAuthBanner() {
+  if (_authBannerWired) return
+  _authBannerWired = true
   const banner = document.getElementById('authSetupBanner')
   if (!banner) return
   const dismiss = document.getElementById('authBannerDismiss')
@@ -397,15 +400,12 @@ function wireAuthBanner() {
   })
 }
 
-// ES modules are deferred and run after DOM is ready -- call directly instead
-// of registering a DOMContentLoaded listener (which would never fire).
-wireAuthBanner()
-initAuthBanner()
-// _wireBranchDriftBanner is injected via initSettings({wireBranchDriftBanner})
-// called before this module's top-level code runs, so this is safe.
-// (Actual wiring is now in loadSettings where _wireBranchDriftBanner?.() runs.)
 
 export async function loadSettings() {
+  // Wire banner buttons once; refresh banner visibility on every settings open.
+  wireAuthBanner()
+  initAuthBanner()
+
   const tabNav = document.getElementById('settingsTabNav')
   const tabPanels = document.getElementById('settingsTabPanels')
   if (!tabNav || !tabPanels) return
