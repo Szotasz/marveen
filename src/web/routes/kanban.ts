@@ -4,7 +4,7 @@ import {
   listKanbanCards, createKanbanCard, updateKanbanCard,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
   getKanbanComments, addKanbanComment, getKanbanCardEvents, listKanbanProjects,
-  getKanbanCard, getChildCards, getDb,
+  getKanbanCard, getChildCards, getSubtree, reparentKanbanCard, propagateStatus, getDb,
   createAgentMessage, markKanbanCardDispatched,
   getKanbanSeqByIdPrefix,
   listLabels, getLabel, createLabel, updateLabel, deleteLabel,
@@ -218,7 +218,12 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const data = JSON.parse(body.toString())
     const id = randomUUID().slice(0, 8)
-    createKanbanCard({ id, ...data })
+    try {
+      createKanbanCard({ id, ...data })
+    } catch (err) {
+      json(res, { error: (err as Error).message }, 400)
+      return true
+    }
     json(res, { ok: true, id })
     return true
   }
@@ -247,8 +252,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { status, sort_order, actor, orderedIds } = JSON.parse(body.toString())
     if (moveKanbanCard(id, status, sort_order ?? 0, actor, Array.isArray(orderedIds) ? orderedIds : undefined)) {
-      // Wake the assigned agent once when the card enters in_progress.
       if (status === 'in_progress') fireKanbanDispatch(id)
+      propagateStatus(id)
       json(res, { ok: true })
       return true
     }
@@ -336,6 +341,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const parentId = decodeURIComponent(acceptMatch[1])
     const parent = getKanbanCard(parentId)
     if (!parent) { json(res, { error: 'Szülő kártya nem található' }, 404); return true }
+    if (parent.depth >= 2) { json(res, { error: 'Szülő kártya már maximális mélységen van (depth 2)' }, 400); return true }
     const body = await readBody(req)
     const { subtasks } = JSON.parse(body.toString()) as {
       subtasks: Array<{ title: string; description: string; assignee: string | null; priority: string }>
@@ -371,6 +377,35 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (childrenMatch && method === 'GET') {
     const parentId = decodeURIComponent(childrenMatch[1])
     json(res, getChildCards(parentId))
+    return true
+  }
+
+  // GET /api/kanban/:id/subtree -- full descendant tree via WITH RECURSIVE CTE.
+  // Returns all non-archived descendants including the root card itself,
+  // ordered by depth then sort_order.
+  const subtreeMatch = path.match(/^\/api\/kanban\/([^/]+)\/subtree$/)
+  if (subtreeMatch && method === 'GET') {
+    const cardId = decodeURIComponent(subtreeMatch[1])
+    if (!getKanbanCard(cardId)) { json(res, { error: 'Kártya nem található' }, 404); return true }
+    json(res, getSubtree(cardId))
+    return true
+  }
+
+  // PATCH /api/kanban/:id/parent -- reparent a card (cross-parent DnD and
+  // "Áthelyezés" menu). Body: { parent_id: string | null }.
+  // Validates depth constraint, cascades depth, triggers status propagation.
+  const parentPatchMatch = path.match(/^\/api\/kanban\/([^/]+)\/parent$/)
+  if (parentPatchMatch && method === 'PATCH') {
+    const id = decodeURIComponent(parentPatchMatch[1])
+    const body = await readBody(req)
+    const { parent_id } = JSON.parse(body.toString()) as { parent_id: string | null }
+    const result = reparentKanbanCard(id, parent_id ?? null)
+    if (!result.ok) {
+      const status = result.error?.includes('not found') ? 404 : 400
+      json(res, { error: result.error }, status)
+      return true
+    }
+    json(res, { ok: true })
     return true
   }
 

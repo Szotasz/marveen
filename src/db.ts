@@ -765,6 +765,10 @@ export interface KanbanCard {
   priority: 'low' | 'normal' | 'high' | 'urgent'
   project: string | null
   parent_id: string | null
+  // Denormalized depth in the card tree: 0 = top-level, 1 = subtask, 2 = sub-subtask.
+  // Maintained by createKanbanCard, updateKanbanCard, and reparentKanbanCard.
+  // Max allowed depth is 2 (enforced at application layer).
+  depth: number
   due_date: number | null
   sort_order: number
   created_at: number
@@ -819,18 +823,28 @@ export function createKanbanCard(card: {
 }): void {
   const now = Math.floor(Date.now() / 1000)
   const status = card.status ?? 'planned'
+
+  // Compute depth from parent; enforce max 2 (3 levels: 0, 1, 2).
+  let depth = 0
+  if (card.parent_id) {
+    const parent = getKanbanCard(card.parent_id)
+    if (!parent) throw new Error(`Parent card not found: ${card.parent_id}`)
+    depth = parent.depth + 1
+    if (depth > 2) throw new Error('Cannot create card: exceeds max depth of 3 levels')
+  }
+
   const maxRow = db.prepare(
     'SELECT MAX(sort_order) as m FROM kanban_cards WHERE status = ? AND archived_at IS NULL'
   ).get(status) as { m: number | null }
   const sortOrder = (maxRow?.m ?? -1) + 1
 
   db.prepare(
-    `INSERT INTO kanban_cards (id, title, description, status, assignee, priority, project, parent_id, due_date, sort_order, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO kanban_cards (id, title, description, status, assignee, priority, project, parent_id, depth, due_date, sort_order, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     card.id, card.title, card.description ?? null, status,
     card.assignee ?? null, card.priority ?? 'normal',
-    card.project ?? null, card.parent_id ?? null, card.due_date ?? null, sortOrder, now, now
+    card.project ?? null, card.parent_id ?? null, depth, card.due_date ?? null, sortOrder, now, now
   )
 }
 
@@ -838,15 +852,137 @@ export function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'i
   const card = getKanbanCard(id)
   if (!card) return false
   const now = Math.floor(Date.now() / 1000)
-  const f = { ...card, ...fields, updated_at: now }
-  return db.prepare(
-    `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
+
+  // When parent_id changes, recompute depth and validate the constraint.
+  let newDepth = card.depth
+  const parentChanging = 'parent_id' in fields && fields.parent_id !== card.parent_id
+  if (parentChanging) {
+    if (fields.parent_id) {
+      const newParent = getKanbanCard(fields.parent_id)
+      if (!newParent) return false
+      newDepth = newParent.depth + 1
+      // Ensure no descendant would exceed depth 2 after the move.
+      if (newDepth + getSubtreeHeight(id) > 2) return false
+    } else {
+      newDepth = 0
+    }
+  }
+
+  const f = { ...card, ...fields, depth: newDepth, updated_at: now }
+  const ok = db.prepare(
+    `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, depth=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
      WHERE id=?`
-  ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+  ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.depth, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+
+  if (ok && parentChanging) cascadeDepth(id, newDepth)
+  return ok
 }
 
 export function getChildCards(parentId: string): KanbanCard[] {
   return db.prepare('SELECT * FROM kanban_cards WHERE parent_id = ? AND archived_at IS NULL ORDER BY sort_order ASC').all(parentId) as KanbanCard[]
+}
+
+// Recursively update the depth of all descendants of parentId.
+// Called after any parent_id change so the denormalized depth stays consistent.
+function cascadeDepth(parentId: string, parentDepth: number): void {
+  const children = db.prepare('SELECT id FROM kanban_cards WHERE parent_id = ?').all(parentId) as { id: string }[]
+  for (const child of children) {
+    db.prepare('UPDATE kanban_cards SET depth = ? WHERE id = ?').run(parentDepth + 1, child.id)
+    cascadeDepth(child.id, parentDepth + 1)
+  }
+}
+
+// Returns the full subtree rooted at cardId (including the root card itself),
+// ordered by depth then sort_order. Archived descendants are excluded.
+export function getSubtree(cardId: string): KanbanCard[] {
+  return db.prepare(`
+    WITH RECURSIVE subtree(id) AS (
+      SELECT id FROM kanban_cards WHERE id = ?
+      UNION ALL
+      SELECT c.id FROM kanban_cards c JOIN subtree s ON c.parent_id = s.id
+    )
+    SELECT rowid AS seq, kc.* FROM kanban_cards kc
+    WHERE kc.id IN (SELECT id FROM subtree) AND kc.archived_at IS NULL
+    ORDER BY kc.depth ASC, kc.sort_order ASC
+  `).all(cardId) as KanbanCard[]
+}
+
+// Returns the height of the subtree rooted at cardId: 0 means the card is a
+// leaf, 1 means it has children but no grandchildren, 2 means it has grandchildren.
+// Used to validate depth constraints when reparenting.
+export function getSubtreeHeight(cardId: string): number {
+  const children = db.prepare(
+    'SELECT id FROM kanban_cards WHERE parent_id = ? AND archived_at IS NULL'
+  ).all(cardId) as { id: string }[]
+  if (children.length === 0) return 0
+  return 1 + Math.max(...children.map(c => getSubtreeHeight(c.id)))
+}
+
+// Reparent a card to a new parent (or to top-level when newParentId is null).
+// Validates the depth constraint: target.depth + 1 + subtreeHeight(id) <= 2.
+// Cascades depth to all descendants and triggers status propagation on both
+// the old and new parent.
+export function reparentKanbanCard(id: string, newParentId: string | null): { ok: boolean; error?: string } {
+  const card = getKanbanCard(id)
+  if (!card) return { ok: false, error: 'Card not found' }
+  if (newParentId === id) return { ok: false, error: 'Card cannot be its own parent' }
+
+  let newDepth = 0
+  if (newParentId) {
+    const newParent = getKanbanCard(newParentId)
+    if (!newParent) return { ok: false, error: 'Parent card not found' }
+    newDepth = newParent.depth + 1
+    const sh = getSubtreeHeight(id)
+    if (newDepth + sh > 2) return { ok: false, error: 'Reparenting would exceed max depth of 3 levels' }
+  } else {
+    const sh = getSubtreeHeight(id)
+    if (sh > 2) return { ok: false, error: 'Subtree too deep to move to top-level (descendants would exceed depth 2)' }
+  }
+
+  const oldParentId = card.parent_id
+  const now = Math.floor(Date.now() / 1000)
+  db.transaction(() => {
+    db.prepare('UPDATE kanban_cards SET parent_id=?, depth=?, updated_at=? WHERE id=?').run(newParentId, newDepth, now, id)
+    cascadeDepth(id, newDepth)
+  })()
+
+  if (oldParentId) propagateStatusForParent(oldParentId)
+  if (newParentId) propagateStatusForParent(newParentId)
+
+  return { ok: true }
+}
+
+// Re-evaluates a parent card's status based on its children and auto-updates
+// if needed, then bubbles up to the grandparent. Rules:
+//   - All children done AND parent not done -> auto-set parent to done.
+//   - Some children not done AND parent is done -> auto-revert to in_progress.
+//   - Manual status changes override: this only fires on child status events.
+function propagateStatusForParent(parentId: string): void {
+  const parent = getKanbanCard(parentId)
+  if (!parent || parent.archived_at) return
+  const children = getChildCards(parentId)
+  if (children.length === 0) return
+  const now = Math.floor(Date.now() / 1000)
+  const allDone = children.every(c => c.status === 'done')
+  if (allDone && parent.status !== 'done') {
+    const prev = parent.status
+    db.prepare("UPDATE kanban_cards SET status='done', updated_at=? WHERE id=?").run(now, parent.id)
+    db.prepare("INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, 'done', 'auto', ?)").run(parent.id, prev, now)
+    if (parent.parent_id) propagateStatusForParent(parent.parent_id)
+  } else if (!allDone && parent.status === 'done') {
+    const prev = parent.status
+    db.prepare("UPDATE kanban_cards SET status='in_progress', updated_at=? WHERE id=?").run(now, parent.id)
+    db.prepare("INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, 'in_progress', 'auto', ?)").run(parent.id, prev, now)
+    if (parent.parent_id) propagateStatusForParent(parent.parent_id)
+  }
+}
+
+// Called from route handlers after a card's status changes so the parent
+// hierarchy is kept consistent automatically.
+export function propagateStatus(cardId: string): void {
+  const card = getKanbanCard(cardId)
+  if (!card || !card.parent_id) return
+  propagateStatusForParent(card.parent_id)
 }
 
 export function moveKanbanCard(
@@ -965,25 +1101,34 @@ export function listKanbanProjects(): string[] {
 }
 
 export function deleteKanbanCard(id: string): boolean {
-  // Wrapped in a transaction to ensure atomicity: all mutations succeed
-  // together or none of them do. Steps in FK-safe order:
-  //   1. Delete comments that reference this card (FK: kanban_comments.card_id).
-  //   2. Delete this card's label associations (FK: kanban_card_labels.card_id)
-  //      -- the labels themselves stay in the registry, only the link goes.
-  //   3. Null-out child cards that reference this card as their parent
-  //      (FK: kanban_cards.parent_id). Setting parent_id = NULL keeps the
-  //      children alive as root-level cards rather than leaving them with a
-  //      dangling reference. FK enforcement is currently OFF by default
-  //      (better-sqlite3 default), but the dangling parent_id is still a
-  //      data bug -- orphaned children do not appear under any parent and
-  //      are invisible in hierarchy views.
+  // Wrapped in a transaction to ensure atomicity. Steps in FK-safe order:
+  //   1. Delete comments referencing this card (FK: kanban_comments.card_id).
+  //   2. Delete this card's label associations (FK: kanban_card_labels.card_id).
+  //   3. Promote children to the deleted card's parent (grandparent adoption):
+  //      if the deleted card has a parent, its children inherit that parent
+  //      and get depth = grandparent.depth + 1; if the deleted card is
+  //      top-level, children become top-level (parent_id = NULL, depth = 0).
+  //      Grandchildren are depth-cascaded accordingly.
   //   4. Delete the card itself.
-  return db.transaction((cardId: string) => {
-    db.prepare('DELETE FROM kanban_comments WHERE card_id = ?').run(cardId)
-    db.prepare('DELETE FROM kanban_card_labels WHERE card_id = ?').run(cardId)
-    db.prepare('UPDATE kanban_cards SET parent_id = NULL WHERE parent_id = ?').run(cardId)
-    return db.prepare('DELETE FROM kanban_cards WHERE id = ?').run(cardId).changes > 0
-  })(id) as boolean
+  const card = getKanbanCard(id)
+  if (!card) return false
+  const grandparentId = card.parent_id
+  const grandparentDepth = grandparentId ? (getKanbanCard(grandparentId)?.depth ?? 0) : -1
+  const now = Math.floor(Date.now() / 1000)
+
+  return db.transaction(() => {
+    db.prepare('DELETE FROM kanban_comments WHERE card_id = ?').run(id)
+    db.prepare('DELETE FROM kanban_card_labels WHERE card_id = ?').run(id)
+    const children = db.prepare('SELECT id FROM kanban_cards WHERE parent_id = ?').all(id) as { id: string }[]
+    for (const child of children) {
+      const newChildDepth = grandparentDepth + 1  // -1+1=0 when grandparent is null
+      db.prepare('UPDATE kanban_cards SET parent_id=?, depth=?, updated_at=? WHERE id=?').run(
+        grandparentId, newChildDepth, now, child.id
+      )
+      cascadeDepth(child.id, newChildDepth)
+    }
+    return db.prepare('DELETE FROM kanban_cards WHERE id = ?').run(id).changes > 0
+  })() as boolean
 }
 
 export function getKanbanComments(cardId: string): KanbanComment[] {
