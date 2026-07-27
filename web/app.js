@@ -16470,6 +16470,12 @@ async function openResearchDoc(agent, name) {
     boardBtn.addEventListener('click', activateBoard)
     ganttBtn.addEventListener('click', activateGantt)
 
+    // Archived button: navigates AWAY to the archived page (its sidebar entry
+    // was removed -- this button is now the entry point). It never takes the
+    // 'active' state here because leaving the kanban page hides the row.
+    const archivedBtn = document.getElementById('kanbanViewArchived')
+    if (archivedBtn) archivedBtn.addEventListener('click', () => switchPage('archived'))
+
     // Period buttons
     document.querySelectorAll('#kanbanGanttFilters [data-period]').forEach(btn => {
       btn.addEventListener('click', () => {

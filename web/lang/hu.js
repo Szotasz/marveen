@@ -1565,6 +1565,7 @@ window._i18n.hu = {
   // --- Kanban Gantt/idővonal nézet ---
   'kanban.view.board':              'Tábla',
   'kanban.view.gantt':              'Idővonal',
+  'kanban.view.archived':           'Archiváltak',
   'kanban.gantt.filter.period_week':    'Ezen hét',
   'kanban.gantt.filter.period_month':   'Hónap',
   'kanban.gantt.filter.period_quarter': 'Negyedév',

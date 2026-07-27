@@ -1568,6 +1568,7 @@ window._i18n.en = {
   // --- Kanban Gantt/timeline view ---
   'kanban.view.board':              'Board',
   'kanban.view.gantt':              'Timeline',
+  'kanban.view.archived':           'Archived',
   'kanban.gantt.filter.period_week':    'This week',
   'kanban.gantt.filter.period_month':   'Month',
   'kanban.gantt.filter.period_quarter': 'Quarter',
