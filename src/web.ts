@@ -77,8 +77,53 @@ import { tryHandleVaultSsh } from './web/routes/vault-ssh.js'
 import { tryHandleFleet } from './web/routes/fleet.js'
 import { tryHandleVaultSshKeys } from './web/routes/vault-ssh-keys.js'
 import type { RouteContext } from './web/routes/types.js'
+import { RouteDispatcher } from './web/routes/dispatcher.js'
 
 const WEB_DIR = join(PROJECT_ROOT, 'web')
+
+const dispatcher = new RouteDispatcher()
+  .add(tryHandleAuth)
+  .add(tryHandleProfiles)
+  .add(tryHandleMessages)
+  .add(tryHandleFederation)
+  .add(tryHandleDailyLog)
+  .add(tryHandleMemories)
+  .add(tryHandleMigrate)
+  .add(tryHandleKanban)
+  .add(tryHandleSchedules)
+  .add(tryHandleConnectorsHu)
+  .add(tryHandleConnectors)
+  .add(tryHandleDocs)
+  .add(tryHandleResearch)
+  .add(tryHandleAgentsSkills)
+  .add(tryHandleSkills)
+  .add(tryHandleAgentTerminal)
+  .add(tryHandleAgentConversation)
+  .add(tryHandleAgentTaskState)
+  .add(ctx => tryHandleAgents(ctx, WEB_DIR))
+  .add(ctx => tryHandleMarveen(ctx, WEB_DIR))
+  .add(tryHandleBackgroundTasks)
+  .add(tryHandleRecall)
+  .add(tryHandleOverview)
+  .add(tryHandleUpdates)
+  .add(tryHandleOnboarding)
+  .add(tryHandleStatus)
+  .add(tryHandleAutonomy)
+  .add(tryHandleApprovals)
+  .add(tryHandleTokenUsage)
+  .add(tryHandleCosts)
+  .add(tryHandleIdeas)
+  .add(tryHandleSpans)
+  .add(tryHandleToolLog)
+  .add(tryHandleSkillUsage)
+  .add(tryHandleSettings)
+  .add(tryHandleVoice)
+  .add(tryHandleVaultSshKeys)
+  .add(tryHandleVaultSsh)
+  .add(tryHandleAuditLog)
+  .add(tryHandleFleetQ)
+  .add(tryHandleFleet)
+  .add(ctx => tryHandleStatic(ctx, WEB_DIR))
 
 function ensureDirs() {
   mkdirSync(AGENTS_BASE_DIR, { recursive: true })
@@ -169,48 +214,7 @@ export function startWebServer(port = 3420): http.Server {
     try {
       const routeCtx: RouteContext = { req, res, path, method, url, fedPeer: fedPeerForCtx, auth: ctxAuth }
 
-      if (await tryHandleAuth(routeCtx)) return
-      if (await tryHandleProfiles(routeCtx)) return
-      if (await tryHandleMessages(routeCtx)) return
-      if (await tryHandleFederation(routeCtx)) return
-      if (await tryHandleDailyLog(routeCtx)) return
-      if (await tryHandleMemories(routeCtx)) return
-      if (await tryHandleMigrate(routeCtx)) return
-      if (await tryHandleKanban(routeCtx)) return
-      if (await tryHandleSchedules(routeCtx)) return
-      if (await tryHandleConnectorsHu(routeCtx)) return
-      if (await tryHandleConnectors(routeCtx)) return
-      if (await tryHandleDocs(routeCtx)) return
-      if (await tryHandleResearch(routeCtx)) return
-      if (await tryHandleAgentsSkills(routeCtx)) return
-      if (await tryHandleSkills(routeCtx)) return
-      if (await tryHandleAgentTerminal(routeCtx)) return
-      if (await tryHandleAgentConversation(routeCtx)) return
-      if (await tryHandleAgentTaskState(routeCtx)) return
-      if (await tryHandleAgents(routeCtx, WEB_DIR)) return
-      if (await tryHandleMarveen(routeCtx, WEB_DIR)) return
-      if (await tryHandleBackgroundTasks(routeCtx)) return
-      if (await tryHandleRecall(routeCtx)) return
-      if (await tryHandleOverview(routeCtx)) return
-      if (await tryHandleUpdates(routeCtx)) return
-      if (await tryHandleOnboarding(routeCtx)) return
-      if (await tryHandleStatus(routeCtx)) return
-      if (await tryHandleAutonomy(routeCtx)) return
-      if (await tryHandleApprovals(routeCtx)) return
-      if (await tryHandleTokenUsage(routeCtx)) return
-      if (await tryHandleCosts(routeCtx)) return
-      if (await tryHandleIdeas(routeCtx)) return
-      if (await tryHandleSpans(routeCtx)) return
-      if (await tryHandleToolLog(routeCtx)) return
-      if (await tryHandleSkillUsage(routeCtx)) return
-      if (await tryHandleSettings(routeCtx)) return
-      if (await tryHandleVoice(routeCtx)) return
-      if (await tryHandleVaultSshKeys(routeCtx)) return
-      if (await tryHandleVaultSsh(routeCtx)) return
-      if (await tryHandleAuditLog(routeCtx)) return
-      if (await tryHandleFleetQ(routeCtx)) return
-      if (await tryHandleFleet(routeCtx)) return
-      if (await tryHandleStatic(routeCtx, WEB_DIR)) return
+      if (await dispatcher.dispatch(routeCtx)) return
 
       res.writeHead(404)
       res.end('Not found')
