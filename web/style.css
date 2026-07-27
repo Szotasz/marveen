@@ -7300,6 +7300,17 @@ body {
 .auth-device-mint { margin-top: 10px; }
 .auth-device-minted-row { flex-direction: row; max-width: none; }
 .auth-device-minted-row input { flex: 1; font-family: var(--mono, monospace); font-size: 12px; }
+.auth-device-warn { margin-bottom: 8px; }
+.auth-device-bridge-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  vertical-align: middle;
+}
+.auth-bridge-enroll { margin-top: 18px; }
 
 /* === OTel Trace Waterfall (card def5a189) === */
 .chat-upper-pane {

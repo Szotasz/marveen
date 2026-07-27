@@ -76,6 +76,7 @@ import { tryHandleVoice } from './web/routes/voice.js'
 import { tryHandleVaultSsh } from './web/routes/vault-ssh.js'
 import { tryHandleFleet } from './web/routes/fleet.js'
 import { tryHandleVaultSshKeys } from './web/routes/vault-ssh-keys.js'
+import { tryHandleSecurity } from './web/routes/security.js'
 import type { RouteContext } from './web/routes/types.js'
 import { RouteDispatcher } from './web/routes/dispatcher.js'
 
@@ -83,6 +84,7 @@ const WEB_DIR = join(PROJECT_ROOT, 'web')
 
 const dispatcher = new RouteDispatcher()
   .add(tryHandleAuth)
+  .add(tryHandleSecurity)
   .add(tryHandleProfiles)
   .add(tryHandleMessages)
   .add(tryHandleFederation)
