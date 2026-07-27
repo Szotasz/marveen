@@ -8,7 +8,7 @@ import {
   initAgents, loadAgents, startAgentsBusyPoll, stopAgentsBusyPoll, openMarveenDetail,
   setAgentsView, getAgentsActiveView, setAgentsActiveView,
   getFederatedPeerStatus, setFederatedPeerStatus, federatedAgentEntries,
-  avatarBust,
+  avatarBust, agentApiName, populateAvatarGrid, loadAvailableModels,
 } from './modules/agents.js'
 
 // avatarBust() is imported from ./modules/agents.js (avatar epoch owned there).

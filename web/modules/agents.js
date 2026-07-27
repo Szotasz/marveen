@@ -94,7 +94,7 @@ let currentAgent = null
 // their name; the main agent's detail object carries name:'marveen' for legacy
 // UI checks but its real agent-dir id is agentId (MAIN_AGENT_ID, e.g.
 // 'gorcsevivan') -- the /api/agents/<id>/skills endpoints need that real id.
-function agentApiName() {
+export function agentApiName() {
   return currentAgent ? (currentAgent.agentId || currentAgent.name) : ''
 }
 let wizardStep = 1
@@ -128,7 +128,7 @@ document.addEventListener('keydown', (e) => {
 })
 
 // === Avatar Gallery ===
-function populateAvatarGrid() {
+export function populateAvatarGrid() {
   const grid = document.getElementById('avatarGrid')
   grid.innerHTML = ''
   for (const avatar of AVATARS) {
@@ -1397,7 +1397,7 @@ async function loadOllamaModels() {
 // panel. Backend gates the list behind a vault entry, so an empty array
 // here means the operator has not configured an API key yet -- in that
 // case we hide the optgroup and surface a hint pointing to the Vault page.
-async function loadAvailableModels() {
+export async function loadAvailableModels() {
   try {
     const res = await fetch('/api/models/available')
     if (!res.ok) return
