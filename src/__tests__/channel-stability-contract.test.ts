@@ -103,7 +103,7 @@ describe('P2#4 — independent systemd-timer watchdog', () => {
 })
 
 describe('P2#5 — dashboard restart routes the main agent through respawn-pane (no /remote-control, no systemctl)', () => {
-  const agents = read('src/web/routes/agents.ts')
+  const agents = read('src/web/routes/agents-process.ts')
   it('the restart route delegates the main agent to hardRestartMarveenChannels', () => {
     expect(agents).toMatch(/isMainChannelsAgent\(name\)/)
     expect(agents).toMatch(/hardRestartMarveenChannels\(\)/)
