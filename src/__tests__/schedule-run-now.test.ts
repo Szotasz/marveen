@@ -10,7 +10,8 @@ import { join } from 'node:path'
 
 const RUNNER = readFileSync(join(__dirname, '../web/schedule-runner.ts'), 'utf-8')
 const ROUTE = readFileSync(join(__dirname, '../web/routes/schedules.ts'), 'utf-8')
-const APP = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
+// Schedule row rendering extracted to web/modules/schedules.js in S-7 modularization.
+const APP = readFileSync(join(__dirname, '../../web/modules/schedules.js'), 'utf-8')
 
 describe('Run now: runner exports an immediate-fire entry point', () => {
   it('schedule-runner exports runScheduledTaskNow', () => {
