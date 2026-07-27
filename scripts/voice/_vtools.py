@@ -27,10 +27,30 @@ import os
 import re
 import sys
 import json
+import socket
 import subprocess
 import tempfile
 import urllib.request
 import urllib.parse
+
+# api.telegram.org publishes an AAAA record that is not routable from every host, and
+# Python's urllib has no happy-eyeballs fallback: each fresh connection stalls on the
+# IPv6 attempt before dropping to IPv4. MEASURED 2026-07-27 on the Marveen box: getFile
+# took 25.1s with IPv6 allowed vs 0.0s IPv4-only, and a full transcribe ran 2m43s of
+# which only 5.5s was CPU. That silently blew the dashboard's 60s STT timeout, so
+# /api/voice/directive returned transcript=null and voice messages reached the agent
+# untranscribed -- a failure with no error anywhere, just a missing transcript.
+_orig_getaddrinfo = socket.getaddrinfo
+
+
+def _getaddrinfo_ipv4(host, port, family=0, *args, **kwargs):
+    return _orig_getaddrinfo(host, port, socket.AF_INET, *args, **kwargs)
+
+
+socket.getaddrinfo = _getaddrinfo_ipv4
+# urlretrieve() takes no timeout kwarg -- bound it here so a stalled download can never
+# hang unbounded again.
+socket.setdefaulttimeout(60)
 
 # Resolved relative to this file so PREFIX-based installs work correctly.
 VENV_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "venv", "bin", "python")
@@ -44,7 +64,20 @@ def _token(state_dir):
     return m.group(1).strip().strip('"').strip("'")
 
 
+def _whisper(path):
+    from faster_whisper import WhisperModel
+    m = WhisperModel("small", device="cpu", compute_type="int8")
+    segs, _ = m.transcribe(path, language="hu", beam_size=5)
+    print(" ".join(s.text.strip() for s in segs).strip())
+
+
 def transcribe(file_id, state_dir):
+    # Accept an already-downloaded local file as well as a Telegram file_id: the channel
+    # plugin's download_attachment tool hands back a PATH, and feeding that to getFile as
+    # a file_id fails with HTTP 400 (hit live 2026-07-27).
+    if os.path.isfile(file_id):
+        _whisper(file_id)
+        return
     token = _token(state_dir)
     d = json.load(urllib.request.urlopen(
         f"https://api.telegram.org/bot{token}/getFile?file_id={urllib.parse.quote(file_id)}",
@@ -54,10 +87,7 @@ def transcribe(file_id, state_dir):
     os.close(fd)
     try:
         urllib.request.urlretrieve(f"https://api.telegram.org/file/bot{token}/{fp}", out)
-        from faster_whisper import WhisperModel
-        m = WhisperModel("small", device="cpu", compute_type="int8")
-        segs, _ = m.transcribe(out, language="hu", beam_size=5)
-        print(" ".join(s.text.strip() for s in segs).strip())
+        _whisper(out)
     finally:
         try:
             os.unlink(out)
