@@ -8,21 +8,26 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const APP  = readFileSync(join(__dirname, '../../web/app.js'),     'utf-8')
-const HTML = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
-const CSS  = readFileSync(join(__dirname, '../../web/style.css'),  'utf-8')
+const APP          = readFileSync(join(__dirname, '../../web/app.js'),                   'utf-8')
+// Docs + research viewer extracted to docs-research.js in S-14b modularization.
+const DOCS_MOD     = readFileSync(join(__dirname, '../../web/modules/docs-research.js'), 'utf-8')
+const HTML         = readFileSync(join(__dirname, '../../web/index.html'),               'utf-8')
+const CSS          = readFileSync(join(__dirname, '../../web/style.css'),                'utf-8')
 
 describe('md rendering unification', () => {
-  it('app.js has exactly one renderMarkdown function definition', () => {
-    const matches = APP.match(/^function renderMarkdown\b/gm)
+  it('docs-research.js has exactly one renderMarkdown function definition', () => {
+    // renderMarkdown moved from app.js to docs-research.js in S-14b
+    const matches = DOCS_MOD.match(/^function renderMarkdown\b/gm)
     expect(matches).not.toBeNull()
     expect(matches!.length).toBe(1)
+    // Must no longer exist in app.js
+    expect(APP).not.toMatch(/^function renderMarkdown\b/m)
   })
 
   it('renderMarkdown emits language class on fenced code blocks', () => {
     // The fence branch must include class="language-... in its output push
-    expect(APP).toContain('class="language-')
-    expect(APP).toMatch(/class="language-' \+ escapeHtml\(fence\[1\]\)/)
+    expect(DOCS_MOD).toContain('class="language-')
+    expect(DOCS_MOD).toMatch(/class="language-' \+ escapeHtml\(fence\[1\]\)/)
   })
 
   it('skill detail container has md-rendered class', () => {
@@ -31,7 +36,8 @@ describe('md rendering unification', () => {
   })
 
   it('docs page container gets md-rendered class', () => {
-    expect(APP).toContain('"docs-rendered markdown-body md-rendered"')
+    // openDoc lives in docs-research.js after S-14b
+    expect(DOCS_MOD).toContain('"docs-rendered markdown-body md-rendered"')
   })
 
   it('style.css defines .md-rendered with code/pre rules', () => {
