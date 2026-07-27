@@ -67,3 +67,46 @@ describe('readEnvFile', () => {
     expect(result['B']).toBeUndefined()
   })
 })
+
+describe('updateEnvFile', () => {
+  it('no-op when all values are empty', async () => {
+    writeFileSync(testEnvPath, 'FOO=bar\n')
+    const { updateEnvFile, readEnvFile } = await import('../env.js')
+    updateEnvFile({ FOO: '' })
+    expect(readEnvFile()['FOO']).toBe('bar')
+  })
+
+  it('creates .env if missing and appends new key', async () => {
+    try { unlinkSync(testEnvPath) } catch {}
+    const { updateEnvFile, readEnvFile } = await import('../env.js')
+    updateEnvFile({ NEW_KEY: 'newval' })
+    expect(readEnvFile()['NEW_KEY']).toBe('newval')
+  })
+
+  it('updates existing key preserving other lines', async () => {
+    writeFileSync(testEnvPath, 'FOO=old\nBAR=keep\n')
+    const { updateEnvFile, readEnvFile } = await import('../env.js')
+    updateEnvFile({ FOO: 'new' })
+    const result = readEnvFile()
+    expect(result['FOO']).toBe('new')
+    expect(result['BAR']).toBe('keep')
+  })
+
+  it('appends key not yet in file', async () => {
+    writeFileSync(testEnvPath, 'A=1\n')
+    const { updateEnvFile, readEnvFile } = await import('../env.js')
+    updateEnvFile({ B: '2' })
+    const result = readEnvFile()
+    expect(result['A']).toBe('1')
+    expect(result['B']).toBe('2')
+  })
+
+  it('preserves comments and blank lines', async () => {
+    writeFileSync(testEnvPath, '# comment\nFOO=bar\n\nBAZ=qux\n')
+    const { updateEnvFile, readEnvFile } = await import('../env.js')
+    updateEnvFile({ FOO: 'updated' })
+    const result = readEnvFile()
+    expect(result['FOO']).toBe('updated')
+    expect(result['BAZ']).toBe('qux')
+  })
+})
