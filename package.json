@@ -12,6 +12,7 @@
     "remote-enroll": "tsx scripts/remote-access-enroll.ts",
     "dashboard-user": "tsx scripts/dashboard-user.ts",
     "test": "vitest run",
+    "coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "syntax-check": "node --check web/app.js web/sw.js",
     "smoke": "playwright test --config=playwright.config.ts"
@@ -30,6 +31,7 @@
     "@playwright/test": "^1.62.0",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^26.1.1",
+    "@vitest/coverage-v8": "^4.1.10",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
