@@ -10,7 +10,8 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const APP  = readFileSync(join(__dirname, '../../web/app.js'),      'utf-8')
+// Settings/autonomy logic extracted to web/modules/settings.js in S-11 modularization.
+const APP  = readFileSync(join(__dirname, '../../web/modules/settings.js'), 'utf-8')
 const HTML = readFileSync(join(__dirname, '../../web/index.html'),  'utf-8')
 const HU   = readFileSync(join(__dirname, '../../web/lang/hu.js'),  'utf-8')
 const EN   = readFileSync(join(__dirname, '../../web/lang/en.js'),  'utf-8')
