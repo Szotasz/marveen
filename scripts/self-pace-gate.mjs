@@ -291,6 +291,26 @@ export function maskInertLiterals(command) {
 // blank the out-of-band `; crontab -r` and let a real self-pace command slip.
 // ANSI-C $'...' DOES process \', so that branch keeps the \\. escape form; "..."
 // keeps it too (backslash is special inside bash double quotes).
+// Human prose in a command-argument position is DATA, not commands. The heredoc
+// fix closed one wrapper; this closes the rest of the family: a PR body, a PR
+// comment, a release note. The failure mode is identical -- a sentence like
+// "runs at the same time" reads as the `at` scheduler at a segment start, and
+// the better the prose, the likelier it contains words like at / cron /
+// schedule. Same literal-only rule as the other strippers: a double-quoted
+// value with $( or ` may substitute, so it is left alone.
+const PROSE_FLAGS = String.raw`--body|--message|--notes|--title|--subject|-b|-m|-t`
+
+export function stripProseArguments(seg) {
+  return String(seg ?? '').replace(
+    new RegExp(String.raw`((?:^|\s)(?:${PROSE_FLAGS})(?:\s+|=))('[^']*'|\$'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")`, 'gi'),
+    (full, flag, arg) => {
+      const dq = arg.startsWith('"')
+      if (dq && (arg.includes('$(') || arg.includes('`'))) return full
+      return flag + (dq ? '""' : "''")
+    },
+  )
+}
+
 export function stripDataPayloads(seg) {
   return String(seg ?? '').replace(
     /((?:^|\s)(?:-d|--data(?:-(?:raw|binary|ascii|urlencode))?)(?:\s+|=))('[^']*'|\$'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/gi,
@@ -378,7 +398,7 @@ export function gateDecision(toolName, toolInput) {
     // it), so the URL/method args still match but the body text never does. A
     // separator OUTSIDE the payload still splits, so `curl -d '' x ; crontab -r`
     // is still caught.
-    const safeCommand = stripDataPayloads(stripGitCommitMessages(stripHeredocBodies(String(toolInput?.command ?? ''))))
+    const safeCommand = stripProseArguments(stripDataPayloads(stripGitCommitMessages(stripHeredocBodies(String(toolInput?.command ?? '')))))
     // Per-segment so an unrelated token elsewhere in a compound command cannot
     // turn a legit read (store inspection, schedule-API GET) into a false deny.
     const naiveSegs = splitSegments(safeCommand)
