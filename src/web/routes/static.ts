@@ -30,6 +30,31 @@ function assetVersion(webDir: string, fileName: string): string {
   }
 }
 
+// Pure HTML rewrite step: injects ?v= cache-busting tokens and bakes the brand
+// name into the iOS title meta. Exported for unit testing.
+export function rewriteIndexHtml(html: string, appVer: string, cssVer: string, brandName: string): string {
+  return html
+    .replace(
+      // Matches <script src="/app.js"> AND <script type="module" src="/app.js">
+      // (any attributes between <script and src=). The \b prevents partial
+      // word matches; [^>]* skips over type="module" or similar attributes.
+      /(<script\b[^>]*\ssrc=")\/app\.js(")/,
+      `$1/app.js?v=${appVer}$2`,
+    )
+    .replace(
+      /(<link\s+rel="stylesheet"\s+href=")\/style\.css(")/,
+      `$1/style.css?v=${cssVer}$2`,
+    )
+    .replace(
+      /(<meta name="apple-mobile-web-app-title" content=")[^"]*(">)/,
+      `$1${escapeAttr(brandName)}$2`,
+    )
+}
+
+// Regex that validates a web/modules/*.js filename (path-traversal guard).
+// Only bare alphanumeric+hyphen+underscore names ending in .js are accepted.
+export const MODULE_FILENAME_PATTERN = /^[a-zA-Z0-9_-]+\.js$/
+
 function serveIndexHtml(ctx: RouteContext, webDir: string): void {
   const { req, res } = ctx
   try {
@@ -44,25 +69,12 @@ function serveIndexHtml(ctx: RouteContext, webDir: string): void {
       res.end()
       return
     }
-    const html = readFileSync(filePath, 'utf-8')
-      .replace(
-        /(<script\s+src=")\/app\.js(")/,
-        `$1/app.js?v=${assetVersion(webDir, 'app.js')}$2`,
-      )
-      // style.css gets the same ?v= cache-busting as app.js so both can be
-      // served with a long max-age (see tryHandleStatic below).
-      .replace(
-        /(<link\s+rel="stylesheet"\s+href=")\/style\.css(")/,
-        `$1/style.css?v=${assetVersion(webDir, 'style.css')}$2`,
-      )
-      // Bake the iOS home-screen label into apple-mobile-web-app-title so an
-      // installed PWA shows the configured main-agent name (BRAND_NAME), not the
-      // bundled "Marveen" default. Done server-side (not JS) so it is reliable
-      // at "Add to Home Screen" time regardless of script timing.
-      .replace(
-        /(<meta name="apple-mobile-web-app-title" content=")[^"]*(">)/,
-        `$1${escapeAttr(BRAND_NAME)}$2`,
-      )
+    const html = rewriteIndexHtml(
+      readFileSync(filePath, 'utf-8'),
+      assetVersion(webDir, 'app.js'),
+      assetVersion(webDir, 'style.css'),
+      BRAND_NAME,
+    )
     res.writeHead(200, {
       'Content-Type': MIME['.html'],
       ETag: etag,
@@ -149,6 +161,22 @@ export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promis
     const iconFile = path.replace('/icons/', '')
     const iconPath = join(webDir, 'icons', iconFile)
     if (existsSync(iconPath)) { serveFile(req, res, iconPath, { cacheSeconds: 3600 }); return true }
+    res.writeHead(404); res.end()
+    return true
+  }
+
+  // ES modules extracted from app.js during modularization (issue #3).
+  // Path-traversal guard: only bare filenames matching [a-zA-Z0-9_-]+.js
+  // are accepted -- no slashes, no dots, no encoded characters.
+  if (path.startsWith('/modules/')) {
+    const moduleFile = path.slice('/modules/'.length)
+    if (MODULE_FILENAME_PATTERN.test(moduleFile)) {
+      const modulePath = join(webDir, 'modules', moduleFile)
+      if (existsSync(modulePath)) {
+        serveFile(req, res, modulePath, { cacheSeconds: 86400 })
+        return true
+      }
+    }
     res.writeHead(404); res.end()
     return true
   }
