@@ -54,7 +54,7 @@ import { detectPaneState } from '../../pane-state.js'
 import { loadProfileTemplate, resolveProfilePlaceholders } from '../profiles.js'
 import { sanitizeAgentName } from '../sanitize.js'
 import { parseMultipart } from '../multipart.js'
-import { readBody, json, jsonMaybeGzip, serveFile } from '../http-helpers.js'
+import { readBody, readJsonBody, json, jsonMaybeGzip, serveFile } from '../http-helpers.js'
 import {
   exportAgentBundle,
   importAgentBundle,
@@ -68,7 +68,7 @@ import type { RouteContext } from './types.js'
 import { suggestForAgent, type AgentSignals } from '../model-suggest.js'
 import { getTokenSummary } from '../token-usage.js'
 import { listScheduledTasks } from '../scheduled-tasks-io.js'
-import { remotePaneCache, agentRunStateCached, getAgentDetail, listAgentSummaries } from './agents-helpers.js'
+import { remotePaneCache, agentRunStateCached, getAgentDetail, listAgentSummaries, assertAgentExists } from './agents-helpers.js'
 
 export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path, method } = ctx
@@ -227,9 +227,8 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
   }
 
   if (path === '/api/agents' && method === 'POST') {
-    const body = await readBody(req)
-    const data = JSON.parse(body.toString())
-    const { description, model: rawModel, profile: rawProfile } = data as { name: string; description: string; model?: string; profile?: string }
+    const data = await readJsonBody<{ name: string; description: string; model?: string; profile?: string }>(req)
+    const { description, model: rawModel, profile: rawProfile } = data
     const rawName = typeof data.name === 'string' ? data.name.trim() : ''
     const name = sanitizeAgentName(rawName)
     const model = resolveModelId(rawModel || DEFAULT_MODEL)
@@ -279,7 +278,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
   const avatarUploadMatch = path.match(/^\/api\/agents\/([^/]+)\/avatar$/)
   if (avatarUploadMatch && method === 'POST') {
     const name = decodeURIComponent(avatarUploadMatch[1])
-    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!assertAgentExists(name, res)) return true
 
     const body = await readBody(req)
     const contentType = req.headers['content-type'] || ''
@@ -327,7 +326,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
   const secGetMatch = path.match(/^\/api\/agents\/([^/]+)\/security$/)
   if (secGetMatch && method === 'GET') {
     const name = decodeURIComponent(secGetMatch[1])
-    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!assertAgentExists(name, res)) return true
     const profileId = readAgentSecurityProfile(name)
     const profile = loadProfileTemplate(profileId)
     const placeholders = { HOME: homedir(), AGENT_DIR: agentDir(name) }
@@ -344,9 +343,8 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
 
   if (secGetMatch && method === 'PUT') {
     const name = decodeURIComponent(secGetMatch[1])
-    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
-    const body = await readBody(req)
-    const data = JSON.parse(body.toString()) as { profile?: string }
+    if (!assertAgentExists(name, res)) return true
+    const data = await readJsonBody<{ profile?: string }>(req)
     const requested = (data.profile || '').trim()
     if (!requested) { json(res, { error: 'profile is required' }, 400); return true }
     const profile = loadProfileTemplate(requested)
@@ -402,16 +400,15 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
   const teamMatch = path.match(/^\/api\/agents\/([^/]+)\/team$/)
   if (teamMatch && method === 'GET') {
     const name = decodeURIComponent(teamMatch[1])
-    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!assertAgentExists(name, res)) return true
     json(res, readAgentTeam(name))
     return true
   }
 
   if (teamMatch && method === 'PUT') {
     const name = decodeURIComponent(teamMatch[1])
-    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
-    const body = await readBody(req)
-    const data = JSON.parse(body.toString())
+    if (!assertAgentExists(name, res)) return true
+    const data = await readJsonBody<Record<string, unknown>>(req)
     const current = readAgentTeam(name)
     const proposed: TeamConfig = {
       role: data.role === 'leader' ? 'leader' : (data.role === 'member' ? 'member' : current.role),
@@ -494,7 +491,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
       json(res, { error: 'The main agent cannot be exported as a bundle; use scripts/backup.sh for a whole-host move.' }, 400)
       return true
     }
-    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!assertAgentExists(name, res)) return true
     const includeSecrets = /[?&]secrets=(1|true)\b/.test(req.url || '')
     const work = mkdtempSync(join(tmpdir(), 'marveen-agent-dl-'))
     const outPath = join(work, bundleFilename(name))
@@ -630,12 +627,11 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
       json(res, { error: 'Main agent configuration is read-only through the dashboard API' }, 400)
       return true
     }
-    const body = await readBody(req)
     const configRoot = agentConfigRoot(name)
-    const data = JSON.parse(body.toString()) as {
+    const data = await readJsonBody<{
       claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string
       authMode?: AuthMode; apiKey?: string; claudePlan?: string; memoryIsolation?: boolean
-    }
+    }>(req)
     if (data.memoryIsolation !== undefined) {
       // The main agent's cwd IS the install repo root, which is already a git
       // root: a memory boundary there is meaningless, and exposing the knob

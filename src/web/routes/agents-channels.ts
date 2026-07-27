@@ -47,12 +47,13 @@ import {
 import { attemptChannelMcpReconnect } from '../channel-mcp-reconnect.js'
 import { getChannelHealth } from '../channel-health-monitor.js'
 import { safeJoin } from '../sanitize.js'
-import { readBody, json } from '../http-helpers.js'
+import { readBody, readJsonBody, json } from '../http-helpers.js'
 import {
   matchChannelRoute,
   resolveAccessPath,
   validateDiscordChannelId,
   findBotTokenDuplicate,
+  assertAgentExists,
 } from './agents-helpers.js'
 import type { RouteContext } from './types.js'
 
@@ -145,7 +146,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
   const manifestMatch = path.match(/^\/api\/agents\/([^/]+)\/channels\/slack\/manifest$/)
   if (manifestMatch && method === 'GET') {
     const name = decodeURIComponent(manifestMatch[1])
-    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!assertAgentExists(name, res)) return true
     const displayName = readAgentDisplayName(name) || name
     json(res, {
       manifest: generateSlackAppManifest(displayName),
@@ -158,7 +159,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
   const smokeTestMatch = path.match(/^\/api\/agents\/([^/]+)\/channels\/slack\/smoke-test$/)
   if (smokeTestMatch && method === 'POST') {
     const name = decodeURIComponent(smokeTestMatch[1])
-    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!assertAgentExists(name, res)) return true
     const provider = readAgentChannelProvider(name) as ChannelProviderType
     if (provider !== 'slack') { json(res, { error: 'Nem Slack provider' }, 400); return true }
     const scriptPath = join(agentDir(name), '..', '..', 'scripts', 'smoke-test-slack-channel.sh')
@@ -214,7 +215,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
   const testMatch = matchChannelRoute(path, '/test')
   if (testMatch && method === 'POST') {
     const [name, provider] = testMatch
-    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!assertAgentExists(name, res)) return true
     const stateDir = channelStateDir(provider, agentDir(name))
     const envPath = join(stateDir, '.env')
     const token = readChannelToken(provider, envPath) || (provider === 'telegram' ? parseTelegramToken(name) : null)
@@ -372,7 +373,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
   // DELETE /api/agents/:name/channels/:provider (legacy: /telegram) -- remove
   if (setupMatch && method === 'DELETE') {
     const [name, provider] = setupMatch
-    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!assertAgentExists(name, res)) return true
     const stateDir = channelStateDir(provider, agentDir(name))
     const envFile = join(stateDir, '.env')
     const accessFile = join(stateDir, 'access.json')
@@ -420,8 +421,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
       return true
     }
 
-    const body = await readBody(req)
-    const { code } = JSON.parse(body.toString()) as { code: string }
+    const { code } = await readJsonBody<{ code: string }>(req)
     if (!code?.trim()) { json(res, { error: 'Code is required' }, 400); return true }
 
     const chDir = name === MAIN_AGENT_ID
@@ -677,7 +677,7 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
   const authInitMatch = path.match(/^\/api\/agents\/([^/]+)\/auth\/init$/)
   if (authInitMatch && method === 'POST') {
     const name = decodeURIComponent(authInitMatch[1])
-    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!assertAgentExists(name, res)) return true
     if (!isAgentRunning(name)) { json(res, { error: 'Agent is not running' }, 400); return true }
     const session = agentSessionName(name)
     const host = readAgentRemoteHost(name)

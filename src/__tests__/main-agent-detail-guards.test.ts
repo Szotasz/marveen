@@ -64,7 +64,7 @@ describe('main-agent detail and lifecycle guards', () => {
     const stopBlock = sourceBetween(agentsSource, 'const stopMatch', '// Main-agent inbox PULL')
 
     expect(startBlock.indexOf('isMainChannelsAgent(name)')).toBeGreaterThan(-1)
-    expect(startBlock.indexOf('isMainChannelsAgent(name)')).toBeLessThan(startBlock.indexOf('existsSync(agentDir(name))'))
+    expect(startBlock.indexOf('isMainChannelsAgent(name)')).toBeLessThan(startBlock.indexOf('assertAgentExists(name,'))
     expect(startBlock.indexOf('isMainChannelsAgent(name)')).toBeLessThan(startBlock.indexOf('startAgentProcess(name'))
 
     expect(stopBlock.indexOf('isMainChannelsAgent(name)')).toBeGreaterThan(-1)

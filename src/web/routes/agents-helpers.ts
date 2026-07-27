@@ -43,6 +43,8 @@ import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig } from '../auto-restart-store.js'
 import type { AutoRestartConfig } from '../../auto-restart.js'
+import { json } from '../http-helpers.js'
+import type http from 'node:http'
 
 export const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'discord', 'googlechat', 'teams'])
 
@@ -274,4 +276,13 @@ export function getAgentDetail(name: string): AgentDetail {
 
 export function listAgentSummaries(): AgentSummary[] {
   return listAgentNames().map(getAgentSummary)
+}
+
+// Shared guard: returns true when the agent exists, false (+ 404 response) when
+// it does not. Usage: `if (!assertAgentExists(name, res)) return true`
+// Replaces the ~15 inline `if (!existsSync(agentDir(name))) { json(res, …, 404); return true }` copies.
+export function assertAgentExists(name: string, res: http.ServerResponse): boolean {
+  if (existsSync(agentDir(name))) return true
+  json(res, { error: 'Agent not found' }, 404)
+  return false
 }
