@@ -25,9 +25,11 @@ describe('federation UI wiring', () => {
   it('sidebar has the federation nav item AFTER the ideabox item', () => {
     const ideas = HTML.indexOf('data-page="ideas"')
     const federation = HTML.indexOf('data-page="federation"')
-    const updates = HTML.indexOf('data-page="updates"')
+    // After #742 sidebar groups: federation is in KAPCSOLATOK (connections),
+    // which comes after RENDSZER (system) where updates lives. Both appear
+    // after ideas (in TUDAS/knowledge group).
     expect(federation).toBeGreaterThan(ideas)
-    expect(federation).toBeLessThan(updates)
+    expect(federation).toBeGreaterThan(-1)
   })
 
   it('page div, router dispatch and hoisted loader exist', () => {

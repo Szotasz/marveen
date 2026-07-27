@@ -25,6 +25,7 @@ function inputs(overrides: Partial<GuardInputs> = {}): GuardInputs {
     pct: null,
     running: true,
     paneIdle: true,
+    paneBusy: false,
     sessionReady: false,
     handoffMtime: null,
     paneSaturated: false,
@@ -62,7 +63,8 @@ describe('normalizeContextGuardConfig', () => {
 describe('contextLimitForModel / calibrateLimit', () => {
   it('recognizes the 1M suffix, defaults 200k', () => {
     expect(contextLimitForModel('claude-opus-4-8[1m]')).toBe(1_000_000)
-    expect(contextLimitForModel('claude-fable-5')).toBe(200_000)
+    expect(contextLimitForModel('claude-fable-5')).toBe(1_000_000)
+    expect(contextLimitForModel('claude-sonnet-5')).toBe(200_000)
     expect(contextLimitForModel(null)).toBe(200_000)
   })
 

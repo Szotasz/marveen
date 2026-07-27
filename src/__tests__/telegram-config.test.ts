@@ -43,6 +43,7 @@ vi.mock('node:os', async (importOriginal) => {
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: FAKE_HOME,
   ALLOWED_CHAT_ID: '999888777',
+  DEFAULT_AGENT_MODEL: 'claude-opus-4-8[1m]',
 }))
 
 vi.mock('../web/agent-config.js', async (importOriginal) => {
