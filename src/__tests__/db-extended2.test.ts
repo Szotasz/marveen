@@ -300,7 +300,7 @@ describe('scheduled task functions', () => {
 
 describe('kanban extended functions', () => {
   it('listKanbanCardsSummary returns cards with required fields', () => {
-    createKanbanCard({ id: 'db2-card-1', title: 'Test card', status: 'planned', priority: 'normal', assignee: null, parent_id: null, project: null })
+    createKanbanCard({ id: 'db2-card-1', title: 'Test card', status: 'planned', priority: 'normal' })
     const summary = listKanbanCardsSummary()
     expect(Array.isArray(summary)).toBe(true)
     const card = summary.find(c => c.id === 'db2-card-1')
@@ -335,7 +335,7 @@ describe('kanban extended functions', () => {
   })
 
   it('listKanbanProjects returns project list', () => {
-    createKanbanCard({ id: 'db2-card-2', title: 'Project card', status: 'planned', priority: 'high', assignee: null, parent_id: null, project: 'my-project' })
+    createKanbanCard({ id: 'db2-card-2', title: 'Project card', status: 'planned', priority: 'high', project: 'my-project' })
     const projects = listKanbanProjects()
     expect(projects).toContain('my-project')
   })

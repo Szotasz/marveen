@@ -98,12 +98,12 @@ const BASE_CFG: FederationConfig = {
     {
       id: 'peer-a',
       baseUrl: 'https://peer-a.example.com',
-      trust: 'standard',
+      trust: 'untrusted',
       outboundToken: 'outbound-token-1234567890',
       inboundToken: 'inbound-token-1234567890',
     },
   ],
-  routingMode: 'direct',
+  routingMode: 'catalog-first',
 }
 
 const BASE_DEPS = {

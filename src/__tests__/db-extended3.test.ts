@@ -299,7 +299,7 @@ describe('pruneToolCallLog', () => {
 describe('queryAuditLog with idea source', () => {
   beforeAll(() => {
     const ideaId = 'idea-audit-' + Date.now().toString(16)
-    createIdea({ id: ideaId, title: 'Audit test idea', description: 'desc', category: 'Fejlesztes', status: 'new', source: 'test', impact: 3, effort: 2 })
+    createIdea({ id: ideaId, title: 'Audit test idea', description: 'desc', category: 'Fejlesztes', status: 'new', source: 'test', impact: 3, effort: 2, kanban_id: null })
     logIdeaStatusChange(ideaId, null, 'new', 'test-actor', 'test note')
   })
 
@@ -380,7 +380,7 @@ describe('queryAuditLog with multiple sources', () => {
 describe('updateIdea patch branches', () => {
   it('updates all optional patch fields', () => {
     const id = 'idea-patch-' + Date.now().toString(16)
-    createIdea({ id, title: 'Patch test idea', category: 'Fejlesztes', status: 'new', source: 'test', impact: 2, effort: 2 })
+    createIdea({ id, title: 'Patch test idea', description: null, category: 'Fejlesztes', status: 'new', source: 'test', impact: 2, effort: 2, kanban_id: null })
     const ok = updateIdea(id, {
       title: 'Updated Title',
       description: 'New description',

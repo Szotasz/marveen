@@ -190,6 +190,7 @@ describe('upsertOtelSpan / closeOtelSpan / getOtelTrace / listOtelTraces', () =>
       agent_id: 'test-rick',
       operation: 'test-op',
       start_ms: Date.now(),
+      attributes: null,
     })
     const trace = getOtelTrace(traceId)
     expect(trace.length).toBe(1)
@@ -207,6 +208,7 @@ describe('upsertOtelSpan / closeOtelSpan / getOtelTrace / listOtelTraces', () =>
       start_ms: Date.now(),
       end_ms: Date.now() + 100,
       status: 'ok',
+      attributes: null,
     })
     const trace = getOtelTrace(traceId)
     expect(trace[0].status).toBe('ok')
@@ -221,6 +223,7 @@ describe('upsertOtelSpan / closeOtelSpan / getOtelTrace / listOtelTraces', () =>
       agent_id: 'test-rick',
       operation: 'child-op',
       start_ms: Date.now(),
+      attributes: null,
     })
     const ok = closeOtelSpan(traceId, 'span-b', Date.now() + 50, 'ok')
     expect(ok).toBe(true)

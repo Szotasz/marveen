@@ -310,10 +310,11 @@ describe('agents-crud routes (extended)', () => {
 
   it('GET /api/agents/export-all triggers export and returns archive', async () => {
     const bundle = await import('../web/agent-bundle.js')
-    vi.mocked(bundle.exportAllAgentsBundle).mockImplementationOnce((_agents, path) => {
+    vi.mocked(bundle.exportAllAgentsBundle).mockImplementationOnce((outPath, _names) => {
       // Write a tiny file so the serveFile call works
       const { writeFileSync } = require('node:fs')
-      writeFileSync(path, Buffer.from('PK'))
+      writeFileSync(outPath, Buffer.from('PK'))
+      return { schemaVersion: 1, kind: 'fleet', agents: [], includesSecrets: false }
     })
     const ctx = makeCtx({ method: 'GET', path: '/api/agents/export-all' })
     expect(await tryHandleAgentsCrud(ctx.ctx, WEB_DIR)).toBe(true)

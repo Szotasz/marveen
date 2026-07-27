@@ -23,13 +23,15 @@ export default defineConfig({
     // and cannot be instrumented by vitest (would show 0% and break the gate).
     include: ['src/**/*.ts'],
     exclude: ['src/__tests__/**', 'dist/**'],
-    // Thresholds ratcheted to F3b measured baseline (2026-07-27: stmts 65%,
-    // branches 63%, functions 66%, lines 66%) after adding route-handler unit
-    // tests for agents-channels, agents-crud (extended), marveen, scheduled-tasks-io,
-    // skills (extended).
+    // Thresholds ratcheted to F3b measured baseline (2026-07-27) after adding
+    // route-handler unit tests for agents-channels, agents-crud (extended),
+    // marveen, scheduled-tasks-io, skills (extended).
+    // Stmts at 64% (not 65%) after fixing wrong vi.mock paths in batch-1 tests:
+    // incorrect '../../channel-provider.js' now correctly mocks the module,
+    // removing accidental side-effect coverage from the real channel-provider.ts.
     // Measured with include:['src/**/*.ts'], exclude:['src/__tests__/**','dist/**'].
     thresholds: {
-      statements: 65,
+      statements: 64,
       branches: 63,
       functions: 66,
       lines: 66,

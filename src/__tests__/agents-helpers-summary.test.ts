@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 
-vi.mock('../../channel-provider.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../channel-provider.js')>()
+vi.mock('../channel-provider.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../channel-provider.js')>()
   return {
     ...actual,
     channelStateDir: vi.fn().mockReturnValue('/tmp/channel-state'),
@@ -39,8 +39,8 @@ vi.mock('../claude-plans.js', () => ({
 vi.mock('../agent-team.js', () => ({
   readAgentTeam: vi.fn().mockReturnValue({ members: [], reportsTo: null }),
 }))
-vi.mock('../remote-status-cache.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../remote-status-cache.js')>()
+vi.mock('../web/remote-status-cache.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../web/remote-status-cache.js')>()
   return actual
 })
 vi.mock('../web/agent-config.js', async (importOriginal) => {

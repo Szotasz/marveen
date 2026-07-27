@@ -2,8 +2,8 @@ import { describe, it, expect, vi } from 'vitest'
 
 // Most imports in agents-helpers.ts are unused in the pure-function tests below.
 // We mock the ones that would trigger DB/process/shell side-effects at import time.
-vi.mock('../../channel-provider.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../channel-provider.js')>()
+vi.mock('../channel-provider.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../channel-provider.js')>()
   return {
     ...actual,
     channelStateDir: vi.fn().mockReturnValue('/tmp/channel-state'),
