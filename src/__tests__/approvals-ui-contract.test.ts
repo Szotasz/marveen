@@ -11,10 +11,12 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const APP      = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
-const APP_CORE = readFileSync(join(__dirname, '../../web/modules/app-core.js'), 'utf-8')
-const HTML     = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
-const CSS      = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
+const APP          = readFileSync(join(__dirname, '../../web/app.js'),                'utf-8')
+// Approvals logic extracted to approvals.js in S-14d modularization.
+const APPROVALS_MOD = readFileSync(join(__dirname, '../../web/modules/approvals.js'), 'utf-8')
+const APP_CORE     = readFileSync(join(__dirname, '../../web/modules/app-core.js'),   'utf-8')
+const HTML         = readFileSync(join(__dirname, '../../web/index.html'),             'utf-8')
+const CSS          = readFileSync(join(__dirname, '../../web/style.css'),              'utf-8')
 
 describe('approvals UI wiring', () => {
   it('sidebar has the approvals nav item AFTER autonomy and BEFORE settings', () => {
@@ -29,28 +31,30 @@ describe('approvals UI wiring', () => {
     expect(HTML).toContain('id="approvalsPage"')
     // router dispatch: page is registered in app.js via registerPage()
     expect(APP).toMatch(/registerPage\('approvals'/)
-    expect(APP).toMatch(/async function loadApprovalsPage\(/)
+    // loader lives in the module after S-14d; must NOT be defined in app.js
+    expect(APPROVALS_MOD).toMatch(/export async function loadApprovalsPage\(/)
+    expect(APP).not.toMatch(/^async function loadApprovalsPage\(/m)
     // nav key and page-header i18n map live in app-core.js after S-3 modularization
     expect(APP_CORE).toContain("approvals: 'nav.approvals'")
     expect(APP_CORE).toContain('approvalsPage:')
   })
 
   it('frontend consumes the correct API endpoints', () => {
-    expect(APP).toContain('/api/approvals?limit=')
-    expect(APP).toContain('/api/approvals/')
-    expect(APP).toContain("method: 'PATCH'")
+    // API calls moved to approvals.js in S-14d
+    expect(APPROVALS_MOD).toContain('/api/approvals?limit=')
+    expect(APPROVALS_MOD).toContain('/api/approvals/')
+    expect(APPROVALS_MOD).toContain("method: 'PATCH'")
   })
 
   it('dashboard resolved_by is a source label, not an agent id -- avoids tripping self-approval guard', () => {
     // The PATCH body must use a neutral source label so the server-side guard
     // (resolved_by === agent_id -> 403) is never triggered by the dashboard itself.
-    expect(APP).toContain("resolved_by: 'dashboard'")
+    expect(APPROVALS_MOD).toContain("resolved_by: 'dashboard'")
     // Must NOT send an agent id as resolved_by from the approve/reject buttons.
-    // The _resolveApproval function is the only code path that calls PATCH; verify
-    // it contains the safe label and does not interpolate an agent id instead.
-    const resolveIdx = APP.indexOf('async function _resolveApproval(')
-    const nextFn = APP.indexOf('\nasync function ', resolveIdx + 1)
-    const fnBody = APP.slice(resolveIdx, nextFn > resolveIdx ? nextFn : resolveIdx + 2000)
+    // _resolveApproval is the only code path that calls PATCH; verify it uses the safe label.
+    const resolveIdx = APPROVALS_MOD.indexOf('async function _resolveApproval(')
+    const nextFn = APPROVALS_MOD.indexOf('\nasync function ', resolveIdx + 1)
+    const fnBody = APPROVALS_MOD.slice(resolveIdx, nextFn > resolveIdx ? nextFn : resolveIdx + 2000)
     expect(fnBody).toContain("resolved_by: 'dashboard'")
     expect(fnBody).not.toMatch(/resolved_by:\s*[`'"][a-z]+-[a-z]/i) // no agent-id pattern (e.g. "agent-b", "agent-x")
   })
@@ -62,30 +66,32 @@ describe('approvals UI wiring', () => {
   })
 
   it('pending row highlight uses warning color variable', () => {
-    expect(APP).toContain('var(--warning)')
+    // moved to approvals.js in S-14d
+    expect(APPROVALS_MOD).toContain('var(--warning)')
   })
 
   it('timeout countdown renders for pending rows with timeout_at', () => {
-    expect(APP).toContain('approvals-countdown')
-    expect(APP).toMatch(/data-timeout.*timeout_at/)
+    // moved to approvals.js in S-14d
+    expect(APPROVALS_MOD).toContain('approvals-countdown')
+    expect(APPROVALS_MOD).toMatch(/data-timeout.*timeout_at/)
   })
 
   it('sidebar badge element exists and is hidden by default', () => {
     expect(HTML).toContain('id="approvalsPendingBadge"')
     expect(HTML).toMatch(/approvalsPendingBadge[^>]*hidden/)
     expect(CSS).toContain('.approvals-pending-badge')
-    // Badge hidden attribute is toggled in JS when pending count changes
-    expect(APP).toContain('approvalsPendingBadge')
-    expect(APP).toMatch(/badge\.hidden\s*=\s*counts\.pending\s*===\s*0/)
+    // Badge hidden attribute is toggled in JS (now in approvals.js) when pending count changes
+    expect(APPROVALS_MOD).toContain('approvalsPendingBadge')
+    expect(APPROVALS_MOD).toMatch(/badge\.hidden\s*=\s*counts\.pending\s*===\s*0/)
   })
 
   it('pending notice banner exists, hidden by default, shown only when pending > 0', () => {
     expect(HTML).toContain('id="approvalsPendingBanner"')
     expect(HTML).toMatch(/approvalsPendingBanner[^>]*hidden/)
     expect(CSS).toContain('.approvals-pending-banner')
-    // JS must set banner.hidden = true when no pending, false otherwise
-    expect(APP).toMatch(/banner\.hidden\s*=\s*true/)
-    expect(APP).toMatch(/banner\.hidden\s*=\s*false/)
+    // JS (now in approvals.js) must set banner.hidden = true when no pending, false otherwise
+    expect(APPROVALS_MOD).toMatch(/banner\.hidden\s*=\s*true/)
+    expect(APPROVALS_MOD).toMatch(/banner\.hidden\s*=\s*false/)
     // Banner appears ABOVE the stat cards (earlier in the page div)
     const bannerIdx = HTML.indexOf('id="approvalsPendingBanner"')
     const statsIdx  = HTML.indexOf('id="approvalsStats"')
@@ -94,10 +100,10 @@ describe('approvals UI wiring', () => {
   })
 
   it('resolved_at timestamp is rendered alongside resolved_by in non-pending rows', () => {
-    // The resolved_at field must appear in the table cell for completed rows
-    expect(APP).toContain('resolved_at')
+    // The resolved_at field must appear in the table cell for completed rows (in approvals.js)
+    expect(APPROVALS_MOD).toContain('resolved_at')
     // Rendered as a secondary line inside the same cell as resolved_by
-    expect(APP).toMatch(/resolved_by.*resolved_at|resolved_at.*resolved_by/s)
+    expect(APPROVALS_MOD).toMatch(/resolved_by.*resolved_at|resolved_at.*resolved_by/s)
   })
 
   it('nav + core i18n keys exist in BOTH language files', async () => {
