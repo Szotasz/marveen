@@ -22,16 +22,20 @@ const { TEST_AGENT_DIR, DEL_AGENT_DIR } = vi.hoisted(() => {
   return { TEST_AGENT_DIR: dir, DEL_AGENT_DIR: delDir }
 })
 
-vi.mock('../web/routes/agents-helpers.js', () => ({
-  listAgentSummaries: vi.fn().mockReturnValue([]),
-  remotePaneCache: { getOrRefresh: vi.fn().mockReturnValue(null) },
-  agentRunStateCached: vi.fn().mockReturnValue('stopped'),
-  getAgentDetail: vi.fn().mockReturnValue({ name: 'test-agent', model: 'claude-haiku-4-5' }),
-  remoteRunStateCache: { getOrRefresh: vi.fn().mockReturnValue('stopped') },
-  VALID_PROVIDERS: new Set(['telegram', 'slack', 'discord']),
-  parseChannelProvider: vi.fn().mockReturnValue(null),
-  validateDiscordChannelId: vi.fn().mockReturnValue({ ok: true }),
-}))
+vi.mock('../web/routes/agents-helpers.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../web/routes/agents-helpers.js')>()
+  return {
+    ...actual,
+    listAgentSummaries: vi.fn().mockReturnValue([]),
+    remotePaneCache: { getOrRefresh: vi.fn().mockReturnValue(null) },
+    agentRunStateCached: vi.fn().mockReturnValue('stopped'),
+    getAgentDetail: vi.fn().mockReturnValue({ name: 'test-agent', model: 'claude-haiku-4-5' }),
+    remoteRunStateCache: { getOrRefresh: vi.fn().mockReturnValue('stopped') },
+    VALID_PROVIDERS: new Set(['telegram', 'slack', 'discord']),
+    parseChannelProvider: vi.fn().mockReturnValue(null),
+    validateDiscordChannelId: vi.fn().mockReturnValue({ ok: true }),
+  }
+})
 vi.mock('../db.js', () => ({
   createAgentMessage: vi.fn(),
   getDb: vi.fn().mockReturnValue({

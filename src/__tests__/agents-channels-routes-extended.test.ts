@@ -78,19 +78,23 @@ vi.mock('../web/channel-mcp-reconnect.js', () => ({
 vi.mock('../web/channel-health-monitor.js', () => ({
   getChannelHealth: vi.fn().mockReturnValue({ status: 'ok', provider: 'telegram' }),
 }))
-vi.mock('../web/routes/agents-helpers.js', () => ({
-  matchChannelRoute: vi.fn().mockImplementation((path: string, suffix: string) => {
-    const pattern = new RegExp(`^/api/agents/([^/]+)/channels/(telegram|slack|discord|googlechat|teams)${suffix}$`)
-    const match = path.match(pattern)
-    if (match) return [decodeURIComponent(match[1]), match[2]]
-    return null
-  }),
-  resolveAccessPath: vi.fn().mockReturnValue('/tmp/ch-ext-state/access.json'),
-  validateDiscordChannelId: vi.fn().mockReturnValue({ ok: true }),
-  findBotTokenDuplicate: vi.fn().mockReturnValue(null),
-  parseChannelProvider: vi.fn().mockImplementation((s: string) => ['telegram', 'slack', 'discord', 'googlechat', 'teams'].includes(s) ? s : null),
-  VALID_PROVIDERS: new Set(['telegram', 'slack', 'discord', 'googlechat', 'teams']),
-}))
+vi.mock('../web/routes/agents-helpers.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../web/routes/agents-helpers.js')>()
+  return {
+    ...actual,
+    matchChannelRoute: vi.fn().mockImplementation((path: string, suffix: string) => {
+      const pattern = new RegExp(`^/api/agents/([^/]+)/channels/(telegram|slack|discord|googlechat|teams)${suffix}$`)
+      const match = path.match(pattern)
+      if (match) return [decodeURIComponent(match[1]), match[2]]
+      return null
+    }),
+    resolveAccessPath: vi.fn().mockReturnValue('/tmp/ch-ext-state/access.json'),
+    validateDiscordChannelId: vi.fn().mockReturnValue({ ok: true }),
+    findBotTokenDuplicate: vi.fn().mockReturnValue(null),
+    parseChannelProvider: vi.fn().mockImplementation((s: string) => ['telegram', 'slack', 'discord', 'googlechat', 'teams'].includes(s) ? s : null),
+    VALID_PROVIDERS: new Set(['telegram', 'slack', 'discord', 'googlechat', 'teams']),
+  }
+})
 vi.mock('../db.js', () => ({
   listPendingChannelRequests: vi.fn().mockReturnValue([]),
   updateChannelRequestStatus: vi.fn().mockReturnValue(true),

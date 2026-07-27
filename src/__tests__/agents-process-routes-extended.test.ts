@@ -39,11 +39,15 @@ vi.mock('../db.js', () => ({
   markMessageFailed: vi.fn(),
   getDb: vi.fn(),
 }))
-vi.mock('../web/routes/agents-helpers.js', () => ({
-  remoteRunStateCache: { getOrRefresh: vi.fn().mockReturnValue('stopped'), invalidate: vi.fn() },
-  remotePaneCache: { getOrRefresh: vi.fn().mockReturnValue(null), invalidate: vi.fn() },
-  agentRunStateCached: vi.fn().mockReturnValue('stopped'),
-}))
+vi.mock('../web/routes/agents-helpers.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../web/routes/agents-helpers.js')>()
+  return {
+    ...actual,
+    remoteRunStateCache: { getOrRefresh: vi.fn().mockReturnValue('stopped'), invalidate: vi.fn() },
+    remotePaneCache: { getOrRefresh: vi.fn().mockReturnValue(null), invalidate: vi.fn() },
+    agentRunStateCached: vi.fn().mockReturnValue('stopped'),
+  }
+})
 vi.mock('../web/agent-message-wrap.js', () => ({
   classifyAgentMessage: vi.fn().mockReturnValue({ category: 'peer', safeFrom: 'rick' }),
   wrapAgentMessageForDelivery: vi.fn().mockReturnValue('[Wrapped message]'),
