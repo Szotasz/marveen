@@ -11,9 +11,10 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const APP  = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
-const HTML = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
-const CSS  = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
+const APP      = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
+const APP_CORE = readFileSync(join(__dirname, '../../web/modules/app-core.js'), 'utf-8')
+const HTML     = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
+const CSS      = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
 
 describe('approvals UI wiring', () => {
   it('sidebar has the approvals nav item AFTER autonomy and BEFORE settings', () => {
@@ -26,10 +27,12 @@ describe('approvals UI wiring', () => {
 
   it('page div, router dispatch, loader function and nav key exist', () => {
     expect(HTML).toContain('id="approvalsPage"')
-    expect(APP).toMatch(/pageId === 'approvals'/)
+    // router dispatch: page is registered in app.js via registerPage()
+    expect(APP).toMatch(/registerPage\('approvals'/)
     expect(APP).toMatch(/async function loadApprovalsPage\(/)
-    expect(APP).toContain("approvals: 'nav.approvals'")
-    expect(APP).toContain('approvalsPage:')
+    // nav key and page-header i18n map live in app-core.js after S-3 modularization
+    expect(APP_CORE).toContain("approvals: 'nav.approvals'")
+    expect(APP_CORE).toContain('approvalsPage:')
   })
 
   it('frontend consumes the correct API endpoints', () => {

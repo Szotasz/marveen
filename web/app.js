@@ -1,6 +1,7 @@
 // ES module imports (issue #3 modularization). app.js is type="module".
 import { showToast } from './modules/toast.js'
 import { t, setLang, getLang, onLangChange } from './modules/i18n.js'
+import { registerPage, registerAlias, switchPage, boot, renderNav, renderStaticI18n } from './modules/app-core.js'
 
 // === Avatar cache-busting epoch ===
 // Avatar URLs used to carry ?t=Date.now() on every render, which defeated the
@@ -264,269 +265,9 @@ themeToggle.addEventListener('click', () => {
   onLangChange(syncLangBtn)
 })()
 
-// Re-render navigation and the active page whenever the language changes
-// (covers both explicit setLang() calls and the async DASHBOARD_LANG update).
-// renderNav / renderStaticI18n / switchPage are function declarations -- hoisted
-// within this module so this callback is safe to register before their definitions.
-onLangChange(() => {
-  renderNav()
-  renderStaticI18n()
-  const activeLink = document.querySelector('.sb-link.active[data-page]')
-  if (activeLink) switchPage(activeLink.dataset.page)
-})
-
 // === Page switching ===
-const navLinks = document.querySelectorAll('.sb-link[data-page], .nav-link[data-page]')
-const pages = document.querySelectorAll('.page')
-
-function confirmSettingsLeave() {
-  if (settingsDirty.size === 0) return true
-  return window.confirm(t('settings.unsaved_warning'))
-}
-
-function switchPage(pageId) {
-  // 'team' is merged into 'agents'; any internal call still passing 'team' redirects.
-  if (pageId === 'team') { _agentsActiveView = 'tree'; pageId = 'agents' }
-  // Guard unsaved settings before leaving the settings page
-  if (!document.getElementById('settingsPage').hidden && pageId !== 'settings' && !confirmSettingsLeave()) return
-  pages.forEach((p) => (p.hidden = p.id !== pageId + 'Page'))
-  navLinks.forEach((l) => l.classList.toggle('active', l.dataset.page === pageId))
-  // Kanban needs full-width layout (overrides main's max-width: 1200px)
-  document.querySelector('main').classList.toggle('kanban-active', pageId === 'kanban')
-  // Activity page runs a live poll; stop it whenever we navigate away.
-  if (pageId !== 'activity') stopActivityPoll()
-  if (pageId === 'activity') startActivityPoll()
-  // Agents page tints each Terminal button green while that agent is working;
-  // same 3s poll + source as Activity. Stop it when we leave the page.
-  if (pageId !== 'agents') stopAgentsBusyPoll()
-  // Kanban auto-refresh: start on enter, stop on leave.
-  if (pageId !== 'kanban') stopKanbanRefresh()
-  if (pageId === 'overview') loadOverview()
-  if (pageId === 'kanban') { if (typeof _initGanttViewSwitcher === 'function') _initGanttViewSwitcher(); loadKanban(); startKanbanRefresh() }
-  if (pageId === 'tasks') loadSchedules()
-  if (pageId === 'agents') { loadAgents().then(() => _setAgentsView(_agentsActiveView || 'grid')); startAgentsBusyPoll() }
-  if (pageId === 'memories') { loadMemAgents(); loadMemStats(); loadMemories() }
-  if (pageId === 'skills') loadGlobalSkills()
-  if (pageId === 'connectors') loadConnectors()
-  if (pageId === 'migrate') loadMigrateAgents()
-  if (pageId === 'docs') loadDocs()
-  if (pageId === 'research') loadResearch()
-  if (pageId === 'status') loadStatus()
-  if (pageId === 'recall') loadRecallPage()
-  if (pageId === 'bgTasks') loadBgTasksPage()
-  if (pageId === 'vault') loadVaultPage()
-  if (pageId === 'approvals') loadApprovalsPage()
-  if (pageId === 'settings') loadSettings()
-  if (pageId === 'updates') loadUpdates()
-  // 'team' page is merged into 'agents' -- redirect for any lingering deep-links
-  if (pageId === 'messages') loadMessagesPage()
-  if (pageId === 'tokenUsage') loadTokenUsage()
-  if (pageId === 'costs') loadCosts()
-  if (pageId === 'ideas') loadIdeasPage()
-  if (pageId === 'archived') loadArchivedPage()
-  if (pageId === 'naplo') loadNaplo()
-  if (pageId === 'federation') loadFederationPage()
-}
-
-// Mobile off-canvas sidebar toggle. No-op visual effect on desktop (the
-// hamburger/backdrop are display:none there); on narrow screens it slides the
-// sidebar in over a backdrop.
-const sidebarEl = document.querySelector('.sidebar')
-const sidebarBackdrop = document.getElementById('sidebarBackdrop')
-const mobileMenuBtn = document.getElementById('mobileMenuBtn')
-function setSidebarOpen(open) {
-  if (sidebarEl) sidebarEl.classList.toggle('open', open)
-  if (sidebarBackdrop) sidebarBackdrop.classList.toggle('open', open)
-  if (mobileMenuBtn) mobileMenuBtn.setAttribute('aria-expanded', open ? 'true' : 'false')
-}
-if (mobileMenuBtn) mobileMenuBtn.addEventListener('click', () => setSidebarOpen(!sidebarEl.classList.contains('open')))
-if (sidebarBackdrop) sidebarBackdrop.addEventListener('click', () => setSidebarOpen(false))
-
-navLinks.forEach((link) => {
-  link.addEventListener('click', (e) => {
-    e.preventDefault()
-    const pageId = link.dataset.page
-    // Same hash won't fire 'hashchange', so re-render manually; otherwise let the
-    // hashchange listener drive switchPage so the URL stays the single source of truth.
-    if (location.hash.slice(1) === pageId) switchPage(pageId)
-    else location.hash = pageId
-    setSidebarOpen(false) // close the drawer after navigating on mobile
-  })
-})
-
-
-// ============================================================
-// === i18n nav + static element rendering ===
-// ============================================================
-
-// Map: data-page value -> nav i18n key.
-const NAV_I18N = {
-  overview: 'nav.overview', kanban: 'nav.kanban', archived: 'nav.archived',
-  agents: 'nav.agents', activity: 'nav.activity', team: 'nav.team',
-  messages: 'nav.messages', tasks: 'nav.tasks', memories: 'nav.memories',
-  recall: 'nav.recall', naplo: 'nav.recall', bgTasks: 'nav.bgTasks',
-  skills: 'nav.skills', connectors: 'nav.connectors', migrate: 'nav.migrate',
-  approvals: 'nav.approvals',
-  docs: 'nav.docs', research: 'nav.research', status: 'nav.status',
-  settings: 'nav.settings', vault: 'nav.vault', tokenUsage: 'nav.tokenUsage',
-  ideas: 'nav.ideas', federation: 'nav.federation', updates: 'nav.updates', costs: 'nav.costs',
-}
-
-function renderNav() {
-  document.querySelectorAll('.sb-link[data-page] .sb-label').forEach((span) => {
-    const page = span.closest('[data-page]')?.dataset?.page
-    if (page && NAV_I18N[page]) span.textContent = t(NAV_I18N[page])
-  })
-}
-
-// Map: element ID -> i18n key, for static HTML elements not handled by page render fns.
-const STATIC_I18N_MAP = {
-  // Kanban column headers
-  'countPlanned':   null,  // dynamic count, skip
-  // Overview
-  'overviewTeamMeta': 'overview.card.team_meta',
-  // Docs
-  'docsContent': null,  // rendered by JS
-}
-
-// Simpler approach: update known static text nodes directly by selector.
-// Page id -> { title key, subtitle key (or null) }
-const PAGE_HEADER_I18N = {
-  agentsPage:     { title: 'agents.page_title',     sub: 'agents.page_subtitle' },
-  activityPage:   { title: 'activity.page_title',   sub: 'activity.page_subtitle' },
-  tasksPage:      { title: 'tasks.page_title',       sub: 'tasks.page_subtitle' },
-  skillsPage:     { title: 'skills.page_title',      sub: 'skills.page_subtitle' },
-  memoriesPage:   { title: 'memories.page_title',    sub: 'memories.page_subtitle' },
-  recallPage:     { title: 'recall.page_title',      sub: 'recall.page_subtitle' },
-  bgTasksPage:    { title: 'bgTasks.page_title',     sub: 'bgTasks.page_subtitle' },
-  connectorsPage: { title: 'connectors.page_title',  sub: 'connectors.page_subtitle' },
-  migratePage:    { title: 'migrate.page_title',     sub: 'migrate.page_subtitle' },
-  docsPage:       { title: 'docs.page_title',        sub: 'docs.page_subtitle' },
-  researchPage:   { title: 'research.page_title',    sub: 'research.page_subtitle' },
-  statusPage:     { title: 'status.page_title',      sub: 'status.page_subtitle' },
-  teamPage:       { title: 'team.page_title',        sub: 'team.page_subtitle' },
-  messagesPage:   { title: 'messages.page_title',    sub: 'messages.page_subtitle' },
-  settingsPage:   { title: 'settings.page_title',    sub: 'settings.page_subtitle' },
-  ideasPage:      { title: 'ideas.page_title',       sub: 'ideas.page_subtitle' },
-  vaultPage:      { title: 'vault.page_title',       sub: 'vault.page_subtitle' },
-  tokenUsagePage: { title: 'tokenUsage.page_title',  sub: 'tokenUsage.page_subtitle' },
-  updatesPage:    { title: 'updates.page_title',     sub: null },
-  naploPage:      { title: 'naplo.page_title',       sub: 'naplo.page_subtitle' },
-  costsPage:      { title: 'costs.page_title',       sub: 'costs.page_subtitle' },
-  federationPage: { title: 'federation.page_title',  sub: 'federation.page_subtitle' },
-  approvalsPage:  { title: 'approvals.page_title',   sub: 'approvals.page_subtitle' },
-}
-
-function renderStaticI18n() {
-  // Page headers + subtitles
-  for (const [pageId, keys] of Object.entries(PAGE_HEADER_I18N)) {
-    const pageEl = document.getElementById(pageId)
-    if (!pageEl) continue
-    const h1 = pageEl.querySelector('.page-header h1')
-    if (h1 && keys.title) h1.textContent = t(keys.title)
-    const sub = pageEl.querySelector('.page-header .subtitle')
-    if (sub && keys.sub) sub.textContent = t(keys.sub)
-  }
-  // Kanban column titles
-  const colTitles = document.querySelectorAll('.kanban-col-title')
-  const statusKeys = ['kanban.col.planned', 'kanban.col.in_progress', 'kanban.col.waiting', 'kanban.col.testing', 'kanban.col.done']
-  const statuses = ['planned', 'in_progress', 'waiting', 'testing', 'done']
-  colTitles.forEach((el) => {
-    const status = el.closest('[data-status]')?.dataset?.status
-    if (status) {
-      const idx = statuses.indexOf(status)
-      if (idx !== -1) el.textContent = t(statusKeys[idx])
-    }
-  })
-  // Docs hints
-  const docsHint = document.getElementById('docsContent')
-  if (docsHint && docsHint.querySelector('p.muted')) {
-    docsHint.querySelector('p.muted').textContent = t('docs.select_hint')
-  }
-  // Messages empty state
-  const chatEmpty = document.querySelector('.chat-thread-empty p')
-  if (chatEmpty) chatEmpty.textContent = t('messages.select_agent')
-  // Team hint
-  const teamHint = document.querySelector('#teamPage > p')
-  if (teamHint) teamHint.textContent = t('team.hint')
-
-  // Overview stat labels (siblings of statAgents, statTasks, statMemories, statSkills)
-  const statLabelKeys = ['overview.stat.agents', 'overview.stat.tasks', 'overview.stat.memories', 'overview.stat.skills']
-  const statValueIds = ['statAgents', 'statTasks', 'statMemories', 'statSkills']
-  statValueIds.forEach((id, i) => {
-    const valEl = document.getElementById(id)
-    if (valEl) {
-      const labelEl = valEl.parentElement?.querySelector('.overview-stat-label')
-      if (labelEl) labelEl.textContent = t(statLabelKeys[i])
-    }
-  })
-
-  // Overview card headers
-  const overviewTeamH3 = document.querySelector('#overviewPage .overview-grid .overview-card:nth-child(1) h3')
-  if (overviewTeamH3) overviewTeamH3.textContent = t('overview.card.team')
-  const overviewTeamMeta = document.getElementById('overviewTeamMeta')
-  if (overviewTeamMeta) overviewTeamMeta.textContent = t('overview.meta.live')
-  const overviewActivityH3 = document.querySelector('#overviewPage .overview-grid .overview-card:nth-child(2) h3')
-  if (overviewActivityH3) overviewActivityH3.textContent = t('overview.card.activity')
-  // Kanban filter labels
-  const kanbanProjectLabel = document.querySelector('label[for="kanbanProjectFilter"]')
-  if (kanbanProjectLabel) kanbanProjectLabel.textContent = t('kanban.filter.project_label')
-  const kanbanGroupLabel = document.querySelector('label[for="kanbanGroupBy"]')
-  if (kanbanGroupLabel) kanbanGroupLabel.textContent = t('kanban.filter.group_label')
-
-  // Kanban project filter "Mind" option (first option)
-  const kanbanProjectFilter = document.getElementById('kanbanProjectFilter')
-  if (kanbanProjectFilter?.options[0]) kanbanProjectFilter.options[0].text = t('kanban.filter.all_projects')
-
-  // Kanban group-by options
-  const kanbanGroupBy = document.getElementById('kanbanGroupBy')
-  if (kanbanGroupBy) {
-    const opts = kanbanGroupBy.options
-    if (opts[0]) opts[0].text = t('kanban.filter.group_none')
-    if (opts[1]) opts[1].text = t('kanban.filter.group_assignee')
-    if (opts[2]) opts[2].text = t('kanban.filter.group_priority')
-  }
-
-  // Generic data-i18n sweep for static HTML elements
-  document.querySelectorAll('[data-i18n]').forEach(el => {
-    const val = t(el.dataset.i18n)
-    if (el.children.length === 0) {
-      el.textContent = val
-    } else {
-      const nodes = [...el.childNodes]
-      for (let i = nodes.length - 1; i >= 0; i--) {
-        if (nodes[i].nodeType === 3 && nodes[i].textContent.trim()) {
-          nodes[i].textContent = ' ' + val
-          break
-        }
-      }
-    }
-  })
-  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
-    el.placeholder = t(el.dataset.i18nPlaceholder)
-  })
-  document.querySelectorAll('[data-i18n-title]').forEach(el => {
-    el.title = t(el.dataset.i18nTitle)
-  })
-  document.querySelectorAll('[data-i18n-aria-label]').forEach(el => {
-    el.setAttribute('aria-label', t(el.dataset.i18nAriaLabel))
-  })
-  // Elements whose translation contains inline markup (strong/code/a): set innerHTML.
-  document.querySelectorAll('[data-i18n-html]').forEach(el => {
-    el.innerHTML = t(el.dataset.i18nHtml)
-  })
-}
-
-// Initial render on page load.
-document.addEventListener('DOMContentLoaded', () => {
-  renderNav()
-  renderStaticI18n()
-}, { once: true })
-// Fallback if DOMContentLoaded already fired (scripts deferred).
-if (document.readyState !== 'loading') {
-  renderNav()
-  renderStaticI18n()
-}
+// switchPage, registerPage, registerAlias are imported from web/modules/app-core.js.
+// Page lifecycle hooks are registered at the bottom of this file, just before boot().
 
 // ============================================================
 // === Activity (live agent status) ===
@@ -11586,7 +11327,7 @@ async function initSidebarBrand() {
         bot: m.name || brand || 'Marveen',
         agentId: m.agentId || 'marveen',
       }
-      if (typeof renderStaticI18n === 'function') renderStaticI18n()
+      renderStaticI18n()
       if (brand) {
         document.title = brand
         const appleTitle = document.querySelector('meta[name="apple-mobile-web-app-title"]')
@@ -13168,7 +12909,7 @@ function wireAuthBanner() {
   if (go) go.addEventListener('click', () => {
     // Land on the Security tab, where the auth card lives now.
     try { localStorage.setItem(SETTINGS_ACTIVE_TAB_KEY, 'security') } catch { /* storage blocked */ }
-    if (typeof switchPage === 'function') switchPage('settings')
+    switchPage('settings')
     const link = document.querySelector('.sb-link[data-page="settings"]')
     if (link) { document.querySelectorAll('.sb-link').forEach((l) => l.classList.remove('active')); link.classList.add('active') }
   })
@@ -15503,17 +15244,45 @@ function wireFederationPage() {
   overlay?.addEventListener('click', (e) => { if (e.target === overlay) closeModal(overlay) })
 }
 
-;(() => {
-  function routeFromHash() {
-    let pageId = decodeURIComponent((location.hash || '').replace(/^#/, ''))
-    if (!pageId) pageId = new URLSearchParams(window.location.search).get('page') || ''
-    // 'team' page is merged into 'agents' (org-chart view toggle).
-    if (pageId === 'team') { pageId = 'agents'; _agentsActiveView = 'tree' }
-    if (pageId && document.getElementById(pageId + 'Page')) switchPage(pageId)
-  }
-  window.addEventListener('hashchange', routeFromHash)
-  routeFromHash()
-})()
+// ── Page registration + boot ──────────────────────────────────────────────────
+// Alias: '#team' hash -> 'agents' page, tree view. Must be registered before boot()
+// so the alias is available when routeFromHash() resolves the initial URL.
+registerAlias('team', 'agents', () => { _agentsActiveView = 'tree' })
+
+registerPage('overview',  { enter: loadOverview })
+registerPage('kanban',    { enter: () => { window._initGanttViewSwitcher?.(); loadKanban(); startKanbanRefresh() }, leave: stopKanbanRefresh })
+registerPage('activity',  { enter: startActivityPoll, leave: stopActivityPoll })
+registerPage('agents',    { enter: () => { loadAgents().then(() => _setAgentsView(_agentsActiveView || 'grid')); startAgentsBusyPoll() }, leave: stopAgentsBusyPoll })
+registerPage('memories',  { enter: () => { loadMemAgents(); loadMemStats(); loadMemories() } })
+registerPage('tasks',     { enter: loadSchedules })
+registerPage('skills',    { enter: loadGlobalSkills })
+registerPage('connectors',{ enter: loadConnectors })
+registerPage('migrate',   { enter: loadMigrateAgents })
+registerPage('docs',      { enter: loadDocs })
+registerPage('research',  { enter: loadResearch })
+registerPage('status',    { enter: loadStatus })
+registerPage('recall',    { enter: loadRecallPage })
+registerPage('bgTasks',   { enter: loadBgTasksPage })
+registerPage('vault',     { enter: loadVaultPage })
+registerPage('approvals', { enter: loadApprovalsPage })
+registerPage('settings',  {
+  enter: loadSettings,
+  // Abort navigation away from settings if there are unsaved changes.
+  leave: () => settingsDirty.size === 0 || window.confirm(t('settings.unsaved_warning')) || false,
+})
+registerPage('updates',   { enter: loadUpdates })
+registerPage('messages',  { enter: loadMessagesPage })
+registerPage('tokenUsage',{ enter: loadTokenUsage })
+registerPage('costs',     { enter: loadCosts })
+registerPage('ideas',     { enter: loadIdeasPage })
+registerPage('archived',  { enter: () => loadArchivedPage() })
+registerPage('naplo',     { enter: () => loadNaplo() })
+registerPage('federation',{ enter: loadFederationPage })
+
+// Boot: wires up DOM (nav clicks, sidebar, hashchange listener), translates nav/static
+// elements, and performs the initial URL-hash route. Must run after DOM is ready.
+document.addEventListener('DOMContentLoaded', boot, { once: true })
+if (document.readyState !== 'loading') boot()
 
 // ============================================================
 // === Docs (read-only viewer for the project's docs/ folder) ===

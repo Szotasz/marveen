@@ -10,9 +10,10 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const APP = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
-const HTML = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
-const CSS = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
+const APP      = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
+const APP_CORE = readFileSync(join(__dirname, '../../web/modules/app-core.js'), 'utf-8')
+const HTML     = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
+const CSS      = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
 
 describe('federation UI wiring', () => {
   it('sidebar has the federation nav item AFTER the ideabox item', () => {
@@ -25,10 +26,12 @@ describe('federation UI wiring', () => {
 
   it('page div, router dispatch and hoisted loader exist', () => {
     expect(HTML).toContain('id="federationPage"')
-    expect(APP).toMatch(/pageId === 'federation'/)
+    // router dispatch: page is registered in app.js via registerPage()
+    expect(APP).toMatch(/registerPage\('federation'/)
     expect(APP).toMatch(/async function loadFederationPage\(/)
-    expect(APP).toContain("federation: 'nav.federation'")
-    expect(APP).toContain('federationPage: {')
+    // nav key and page-header i18n map live in app-core.js after S-3 modularization
+    expect(APP_CORE).toContain("federation: 'nav.federation'")
+    expect(APP_CORE).toContain('federationPage: {')
   })
 
   it('frontend consumes the round-2 endpoints', () => {
