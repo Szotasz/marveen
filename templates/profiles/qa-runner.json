@@ -1,0 +1,50 @@
+{
+  "id": "qa-runner",
+  "label": "QA / tesztfuttató (futtat, forrást nem szerkeszt)",
+  "description": "Teszt, lint, typecheck, build és loggyűjtés a projekt repókban. Olvashat és futtathat, de a forrásfájlokat nem szerkesztheti -- a hibát jelenti, nem javítja.",
+  "permissionMode": "strict",
+  "filesystem": {
+    "allow": [
+      "Read(${AGENT_DIR}/**)",
+      "Write(${AGENT_DIR}/**)",
+      "Edit(${AGENT_DIR}/**)",
+      "Read(${HOME}/projects/**)",
+      "Read(/tmp/**)",
+      "Write(/tmp/**)",
+      "Bash(npm:*)",
+      "Bash(pnpm:*)",
+      "Bash(npx:*)",
+      "Bash(node:*)",
+      "Bash(python3:*)",
+      "Bash(pytest:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(find:*)",
+      "Bash(wc:*)",
+      "Bash(jq:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git status:*)",
+      "Bash(curl:*)"
+    ],
+    "deny": [
+      "Write(${HOME}/projects/**)",
+      "Edit(${HOME}/projects/**)",
+      "Read(${HOME}/.ssh/**)",
+      "Read(${HOME}/.aws/**)",
+      "Read(${HOME}/.gnupg/**)",
+      "Read(${HOME}/.vault/**)",
+      "Read(${HOME}/.secrets/**)",
+      "Read(**/.env)",
+      "Bash(sudo:*)",
+      "Bash(rm -rf:*)",
+      "Bash(git push:*)",
+      "Bash(git commit:*)",
+      "Bash(git reset:*)"
+    ]
+  }
+}
