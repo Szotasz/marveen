@@ -5,6 +5,7 @@ import { PROJECT_ROOT, ALLOWED_CHAT_ID } from '../config.js'
 import { logger } from '../logger.js'
 import { agentDir, readFileOr, findAvatarForAgent } from './agent-config.js'
 import { TOOL_TIMEOUTS } from '../tool-timeouts.js'
+import { markIfTestRun } from '../test-run-marker.js'
 
 export function readAgentTelegramConfig(name: string): { hasTelegram: boolean; botUsername?: string } {
   const envPath = join(agentDir(name), '.claude', 'channels', 'telegram', '.env')
@@ -109,10 +110,13 @@ export async function refreshMarveenBotUsername(): Promise<void> {
 }
 
 export async function sendTelegramMessage(token: string, chatId: string, text: string): Promise<void> {
+  // Test-run marking happens HERE too, not only in notifyChannel: this path
+  // reads its token from .env FILES (schedule-runner alerts), so blanking
+  // CHANNEL_TOKEN/CHANNEL_CHAT_ID in a test's environment does not stop it.
   const resp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text }),
+    body: JSON.stringify({ chat_id: chatId, text: markIfTestRun(text) }),
     signal: AbortSignal.timeout(TOOL_TIMEOUTS['telegram']),
   })
   // fetch does not throw on 4xx -- a wrong chat_id or revoked token resolves
@@ -130,7 +134,7 @@ export async function sendTelegramPhoto(token: string, chatId: string, photoPath
   const boundary = '----FormBoundary' + Date.now()
   const parts: Buffer[] = []
   parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n`))
-  parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}\r\n`))
+  parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${markIfTestRun(caption)}\r\n`))
   parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="photo"; filename="avatar.png"\r\nContent-Type: image/png\r\n\r\n`))
   parts.push(fileData)
   parts.push(Buffer.from(`\r\n--${boundary}--\r\n`))

@@ -59,6 +59,15 @@ if [ -n "$SENDER" ] && [ "$SENDER" != "$MAIN_AGENT_ID" ]; then
 ${MESSAGE}"
 fi
 
+# Test-run marker: a test runner (vitest exports VITEST to every child
+# process; NODE_ENV=test for other runners) that reaches this script sends a
+# REAL message with the production token read from .env -- so it must be
+# labelled, not suppressed (the owner wants proof the alert path works).
+# Mirrors src/test-run-marker.ts.
+if [ -n "${VITEST:-}" ] || [ "${NODE_ENV:-}" = "test" ]; then
+  MESSAGE="[TESZT] ${MESSAGE}"
+fi
+
 curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
   -d "chat_id=${CHAT_ID}" \
   -d "text=${MESSAGE}" \
