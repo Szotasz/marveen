@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   detectPaneState,
+  detectPermissionMode,
   detectsThinkingBlockError,
   detectsBlockingMenu,
   detectsPastePlaceholder,
@@ -401,6 +402,36 @@ const ERROR_NARROW_WRAP = [
   SEP,
   '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
 ].join('\n')
+
+// The mode the footer advertises, surfaced for the dashboard. Every mode is
+// still 'idle' for delivery -- this only answers "and what happens after it
+// arrives?", which is what nobody could see when an agent sat in an ask-first
+// mode for hours looking healthy.
+describe('detectPermissionMode', () => {
+  it.each([
+    ['bypass permissions', IDLE_BYPASS_FLEETVIEW],
+    ['accept edits', IDLE_ACCEPT_EDITS],
+    ['plan mode', IDLE_PLAN_MODE],
+    ['auto mode', IDLE_AUTO_MODE],
+    ['manual mode', IDLE_MANUAL_MODE],
+    ['accept edits', IDLE_ACCEPT_EDITS_TAIL_ONLY],
+  ])('reads %s off the footer', (expected, pane) => {
+    expect(detectPermissionMode(pane)).toBe(expected)
+  })
+
+  it('calls the no-banner footer "default" (asks about everything)', () => {
+    expect(detectPermissionMode(IDLE_STRICT)).toBe('default')
+  })
+
+  it('returns null when there is no footer to read', () => {
+    expect(detectPermissionMode('')).toBeNull()
+    expect(detectPermissionMode('csak valami szöveg')).toBeNull()
+  })
+
+  it('does not invent a mode from a quoted footer phrase', () => {
+    expect(detectPermissionMode(NOT_A_FOOTER_QUOTED)).toBeNull()
+  })
+})
 
 describe('detectPaneState', () => {
   it('returns unknown for empty input', () => {

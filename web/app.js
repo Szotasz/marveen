@@ -748,6 +748,16 @@ function renderActivity(entries) {
     const meta = { ...metaRaw, label: typeof metaRaw.label === 'function' ? metaRaw.label() : metaRaw.label }
     const tail = (a.tail || []).map((l) => escapeHtml(l)).join('\n')
     const mainBadge = a.isMain ? '<span class="act-main-badge">' + t('activity.badge.main') + '</span>' : ''
+    // Permission-mode chip. Shown for every mode EXCEPT the ones that let the
+    // agent work on its own -- inverted on purpose: an unfamiliar mode is
+    // exactly the one worth surfacing, so a future Claude Code mode shows up
+    // here instead of hiding behind a list nobody remembered to extend.
+    // Without this an agent parked in an ask-first mode renders as plain
+    // 'idle', which is how one sat unusable for hours on 2026-07-27.
+    const AUTONOMOUS_MODES = ['bypass permissions', 'accept edits', 'auto mode']
+    const modeChip = a.mode && !AUTONOMOUS_MODES.includes(a.mode)
+      ? '<span class="act-mode-badge" title="' + escapeHtml(t('activity.tooltip.mode', { mode: a.mode })) + '">' + escapeHtml(a.mode) + '</span>'
+      : ''
     const canOpen = !!a.running
     const termIcon = canOpen
       ? '<svg class="act-term-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" title="' + t('activity.tooltip.terminal') + '"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>'
@@ -757,6 +767,7 @@ function renderActivity(entries) {
         '<div class="activity-card-head">' +
           '<span class="activity-name">' + escapeHtml(a.name) + mainBadge + '</span>' +
           '<span style="display:flex;align-items:center;gap:8px">' +
+            modeChip +
             termIcon +
             '<span class="activity-badge ' + meta.cls + '" title="' + escapeHtml(meta.tip || '') + '">' + meta.label + '</span>' +
           '</span>' +
