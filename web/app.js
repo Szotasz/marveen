@@ -315,9 +315,9 @@ const SIDEBAR_GROUPS_LS_KEY = 'marveen.sidebarGroups'
 // naplo under system) or relabeling a group is a one-line change right here.
 const SIDEBAR_GROUPS = [
   { key: 'team',        labelKey: 'nav.group.team',        pages: ['agents', 'activity', 'messages', 'tasks', 'bgTasks'] },
-  { key: 'knowledge',   labelKey: 'nav.group.knowledge',   pages: ['memories', 'naplo', 'skills', 'research', 'ideas'] },
+  { key: 'knowledge',   labelKey: 'nav.group.knowledge',   pages: ['memories', 'skills', 'research', 'ideas'] },
   { key: 'stats',       labelKey: 'nav.group.stats',       pages: ['costs', 'tokenUsage'] },
-  { key: 'system',      labelKey: 'nav.group.system',      pages: ['status', 'updates', 'settings', 'vault'] },
+  { key: 'system',      labelKey: 'nav.group.system',      pages: ['status', 'naplo', 'updates', 'settings', 'vault'] },
   { key: 'connections', labelKey: 'nav.group.connections', pages: ['connectors', 'federation', 'migrate'] },
 ]
 const sidebarGroupEls = document.querySelectorAll('.sb-group[data-group]')
