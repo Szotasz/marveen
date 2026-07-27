@@ -76,12 +76,26 @@ POLICY
   cat "$TASK_FILE"
 } > "$PROMPT_FILE"
 
-CMD="cd '$WORKDIR' && codex exec -m '$MODEL' -c model_reasoning_effort=$EFFORT \
-  --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
-  -o '$OUT' \"\$(cat '$PROMPT_FILE')\"; echo; echo '--- REVIEW KESZ: $OUT ---'"
+# The prompt goes in on STDIN and the command lives in a runner FILE -- an
+# earlier version string-built the command and wrapped it in nested double
+# quotes, which closed the outer quote early: the prompt was word-split into
+# `bash -lc` positional parameters, codex started with an EMPTY prompt and
+# answered something generic. A 54-byte "review" that looks like a real answer
+# is worse than a crash, so there is no quoting left to get wrong.
+RUNNER="$OUTDIR/$PROJECT-$STAMP.sh"
+{
+  echo '#!/usr/bin/env bash'
+  echo "cd $(printf %q "$WORKDIR") || exit 1"
+  printf 'codex exec -m %q -c model_reasoning_effort=%q \\\n' "$MODEL" "$EFFORT"
+  printf '  --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \\\n'
+  printf '  -o %q - < %q\n' "$OUT" "$PROMPT_FILE"
+  echo 'status=$?'
+  printf 'echo; echo "--- REVIEW KESZ (exit $status): %s ---"\n' "$OUT"
+} > "$RUNNER"
+chmod +x "$RUNNER"
 
 tmux kill-session -t "$SESSION" 2>/dev/null
-tmux new-session -d -s "$SESSION" -c "$WORKDIR" "bash -lc \"$CMD\""
+tmux new-session -d -s "$SESSION" -c "$WORKDIR" "$RUNNER"
 
 echo "session: $SESSION"
 echo "model:   $MODEL (effort: $EFFORT)"
