@@ -1,8 +1,6 @@
-// S-1 POC (issue #3): first ES module import. showToast extracted to
-// web/modules/toast.js; app.js is now a type="module" script so this
-// import is valid. All other app.js symbols stay in module scope for now
-// (no regressions since index.html has zero inline event handlers).
+// ES module imports (issue #3 modularization). app.js is type="module".
 import { showToast } from './modules/toast.js'
+import { t, setLang, getLang, onLangChange } from './modules/i18n.js'
 
 // === Avatar cache-busting epoch ===
 // Avatar URLs used to carry ?t=Date.now() on every render, which defeated the
@@ -14,84 +12,8 @@ let _avatarEpoch = 0
 function bumpAvatarEpoch() { _avatarEpoch = Date.now() }
 function avatarBust() { return _avatarEpoch ? `?t=${_avatarEpoch}` : '' }
 
-// === i18n runtime ===
-// Priority: localStorage['marveen.lang'] > DASHBOARD_LANG (server default, read
-// from /api/settings on init) > 'hu' (hardcoded fallback).
-// Rick's spec (kanban card 209696a9): t(key,params), window._i18n={hu,en},
-// window._lang; {name} interpolation; EN-fallback then key; dev-mode warning.
-;(() => {
-  const LS_KEY = 'marveen.lang'
-  const VALID = new Set(['hu', 'en'])
+// t(), setLang(), getLang(), onLangChange() are imported from web/modules/i18n.js
 
-  // Brand tokens ({brand} = product/brand name, {bot} = main agent display
-  // name, {agentId} = canonical slug) are filled from /api/marveen once it
-  // resolves (see initSidebarBrand). Until then these defaults keep a stock
-  // install byte-identical. Explicit params passed to t() still win over them.
-  window._brandTokens = window._brandTokens || { brand: 'Marveen', bot: 'Marveen', agentId: 'marveen' }
-
-  window.t = function t(key, params = {}) {
-    const lang = window._lang || 'hu'
-    const str =
-      window._i18n?.[lang]?.[key] ??
-      window._i18n?.['en']?.[key] ??
-      key
-    if (str === key && localStorage.getItem('marveen.dev') === '1') {
-      console.warn('[i18n] missing key:', key)
-    }
-    const vals = { ...window._brandTokens, ...params }
-    return str.replace(/\{(\w+)\}/g, (_, k) => (vals[k] != null ? vals[k] : `{${k}}`))
-  }
-
-  function applyLang(lang) {
-    window._lang = VALID.has(lang) ? lang : 'hu'
-  }
-
-  // Initialise from localStorage; server default fetched async below.
-  applyLang(localStorage.getItem(LS_KEY) || 'hu')
-
-  // Fetch server default (DASHBOARD_LANG) and apply only if localStorage not
-  // set. Deferred to a MICROTASK: this IIFE evaluates before the fetch-wrapper
-  // IIFE installs the Bearer-injecting window.fetch, so an eager call here
-  // went out with the native fetch, got 401 from the /api gate, and the
-  // server default was silently dead code. Microtasks run after the whole
-  // classic script has evaluated, when window.fetch is the wrapped version.
-  queueMicrotask(() => {
-    fetch('/api/settings')
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (!data || localStorage.getItem(LS_KEY)) return
-        const entry = (data.settings || []).find(s => s.key === 'DASHBOARD_LANG')
-        if (!entry || !VALID.has(entry.value) || entry.value === window._lang) return
-        // Apply WITHOUT persisting (localStorage must keep overriding the
-        // server default), and re-run the render dance: the initial
-        // DOMContentLoaded render almost always beats this response, so a
-        // plain applyLang would leave the page painted in the old language.
-        applyLang(entry.value)
-        if (typeof renderNav === 'function') renderNav()
-        if (typeof renderStaticI18n === 'function') renderStaticI18n()
-        const activeLink = document.querySelector('.sb-link.active[data-page]')
-        if (activeLink && typeof switchPage === 'function') switchPage(activeLink.dataset.page)
-      })
-      .catch(() => {})
-  })
-
-  window.setLang = function setLang(lang) {
-    if (!VALID.has(lang)) return
-    window._lang = lang
-    localStorage.setItem(LS_KEY, lang)
-    renderNav()
-    // Static elements (kanban column titles, hints, empty states) are otherwise
-    // only translated at DOMContentLoaded -- re-apply them on every switch so the
-    // currently-open page updates live, not just after a manual reload.
-    if (typeof renderStaticI18n === 'function') renderStaticI18n()
-    // Re-render the active page by re-triggering the switchPage handler.
-    const activeLink = document.querySelector('.sb-link.active[data-page]')
-    if (activeLink) {
-      const pageId = activeLink.dataset.page
-      if (typeof switchPage === 'function') switchPage(pageId)
-    }
-  }
-})()
 
 // === Dashboard auth bootstrap ===
 // The server prints an URL like http://127.0.0.1:3420/?token=XXX on startup.
@@ -331,21 +253,27 @@ themeToggle.addEventListener('click', () => {
   const btn = document.getElementById('langToggle')
   if (!btn) return
   function syncLangBtn() {
-    btn.textContent = (window._lang || 'hu').toUpperCase()
+    btn.textContent = getLang().toUpperCase()
   }
   syncLangBtn()
   btn.addEventListener('click', () => {
-    const next = (window._lang || 'hu') === 'hu' ? 'en' : 'hu'
-    window.setLang(next)
-    syncLangBtn()
+    setLang(getLang() === 'hu' ? 'en' : 'hu')
   })
-  // Keep button in sync when setLang is called from elsewhere (e.g. /api/settings async load).
-  const _origSetLang = window.setLang
-  window.setLang = function setLang(lang) {
-    _origSetLang(lang)
-    syncLangBtn()
-  }
+  // Keep button in sync when language changes from any source (DASHBOARD_LANG, etc.).
+  // onLangChange fires after setLang() and after the async DASHBOARD_LANG update.
+  onLangChange(syncLangBtn)
 })()
+
+// Re-render navigation and the active page whenever the language changes
+// (covers both explicit setLang() calls and the async DASHBOARD_LANG update).
+// renderNav / renderStaticI18n / switchPage are function declarations -- hoisted
+// within this module so this callback is safe to register before their definitions.
+onLangChange(() => {
+  renderNav()
+  renderStaticI18n()
+  const activeLink = document.querySelector('.sb-link.active[data-page]')
+  if (activeLink) switchPage(activeLink.dataset.page)
+})
 
 // === Page switching ===
 const navLinks = document.querySelectorAll('.sb-link[data-page], .nav-link[data-page]')
