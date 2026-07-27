@@ -25,6 +25,7 @@ function inputs(overrides: Partial<GuardInputs> = {}): GuardInputs {
     pct: null,
     running: true,
     paneIdle: true,
+    paneBusy: false,
     sessionReady: false,
     handoffMtime: null,
     paneSaturated: false,
@@ -60,10 +61,29 @@ describe('normalizeContextGuardConfig', () => {
 })
 
 describe('contextLimitForModel / calibrateLimit', () => {
-  it('recognizes the 1M suffix, defaults 200k', () => {
+  it('recognizes the 1M suffix and the measured 1M families, defaults 200k', () => {
     expect(contextLimitForModel('claude-opus-4-8[1m]')).toBe(1_000_000)
-    expect(contextLimitForModel('claude-fable-5')).toBe(200_000)
+    // Host-measured 1M families (2026-07-27: fable-5 hit 976k, opus-4-8
+    // 985k-999k, opus-5 979k live) -- the blanket-200k guess restarted
+    // working agents at ~21% real usage.
+    expect(contextLimitForModel('claude-fable-5')).toBe(1_000_000)
+    expect(contextLimitForModel('fable-5')).toBe(1_000_000)
+    expect(contextLimitForModel('claude-mythos-5')).toBe(1_000_000)
+    expect(contextLimitForModel('claude-opus-4-8')).toBe(1_000_000)
+    expect(contextLimitForModel('claude-opus-4-6')).toBe(1_000_000)
+    expect(contextLimitForModel('claude-opus-5')).toBe(1_000_000)
+    expect(contextLimitForModel('claude-opus-5[1m]')).toBe(1_000_000)
+    // Sonnet stays 200k: never observed above 198k on this host. Haiku 200k
+    // by spec; unknown models stay conservative (calibration steps them up).
+    expect(contextLimitForModel('claude-sonnet-5')).toBe(200_000)
+    expect(contextLimitForModel('claude-haiku-4-5')).toBe(200_000)
+    expect(contextLimitForModel('claude-opus-4-5')).toBe(200_000)
+    expect(contextLimitForModel('deepseek-v4-pro')).toBe(200_000)
     expect(contextLimitForModel(null)).toBe(200_000)
+  })
+
+  it('defaults the handoff timeout to 20 minutes (6 was shorter than a working turn)', () => {
+    expect(DEFAULT_CONTEXT_GUARD.handoffTimeoutMinutes).toBe(20)
   })
 
   it('steps the limit up when the observation disproves the base', () => {
@@ -149,6 +169,13 @@ describe('decideGuard: idle', () => {
     expect(d.nextState.phase).toBe('await-handoff')
     expect(d.nextState.handoffMtimeAtRequest).toBe(123)
     expect(d.nextState.deadlineMs).toBe(NOW + CFG.handoffTimeoutMinutes * 60_000)
+  })
+
+  it('defers the idle-phase hard-tier restart while the agent is mid-turn', () => {
+    const d = decideGuard(INITIAL_GUARD_STATE, inputs({ pct: 0.99, paneBusy: true, paneIdle: false }), CFG)
+    expect(d.action).toBe('none')
+    expect(d.reason).toContain('deferring')
+    expect(d.nextState.phase).toBe('idle')
   })
 
   it('skips straight to restart at hardPct', () => {
@@ -294,6 +321,38 @@ describe('decideGuard: await-handoff', () => {
 
   it('force-restarts at hardPct even without a handoff', () => {
     const d = decideGuard(awaiting, inputs({ pct: 0.99, paneIdle: false }), CFG)
+    expect(d.action).toBe('restart')
+  })
+
+  // 2026-07-27: the guard force-restarted samu MID-TURN twice ("pane still
+  // busy" at 08:38, restart at 08:43), killing dispatched instructions with
+  // the session. A restart must never cut a live turn: while the pane shows
+  // a POSITIVE busy signal, both the hard tier and the timeout defer -- the
+  // deadline stays in the past, so the first not-busy sweep restarts.
+  it('defers the hard-threshold restart while the agent is mid-turn', () => {
+    const d = decideGuard(awaiting, inputs({ pct: 0.99, paneBusy: true }), CFG)
+    expect(d.action).toBe('none')
+    expect(d.reason).toContain('deferring')
+    expect(d.nextState.phase).toBe('await-handoff')
+  })
+
+  it('defers the timeout restart while the agent is mid-turn, fires once the turn ends', () => {
+    const busy = decideGuard(awaiting, inputs({ nowMs: NOW + 61_000, paneBusy: true }), CFG)
+    expect(busy.action).toBe('none')
+    expect(busy.nextState.phase).toBe('await-handoff')
+    // next sweep, turn over: the already-elapsed deadline fires immediately
+    const idle = decideGuard(busy.nextState, inputs({ nowMs: NOW + 90_000, paneBusy: false }), CFG)
+    expect(idle.action).toBe('restart')
+  })
+
+  it('saturation outranks the mid-turn deferral (a saturated pane cannot finish its turn)', () => {
+    const d = decideGuard(awaiting, inputs({ paneSaturated: true, paneBusy: true }), CFG)
+    expect(d.action).toBe('restart')
+    expect(d.reason).toContain('saturated')
+  })
+
+  it('a wedged pane (neither idle nor busy) is still restarted on timeout', () => {
+    const d = decideGuard(awaiting, inputs({ nowMs: NOW + 61_000, paneIdle: false, paneBusy: false }), CFG)
     expect(d.action).toBe('restart')
   })
 

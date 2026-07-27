@@ -55,7 +55,13 @@ export const DEFAULT_CONTEXT_GUARD: ContextGuardConfig = {
   hardPct: 0.97,
   limitTokens: null,
   cooldownMinutes: 15,
-  handoffTimeoutMinutes: 6,
+  // 20 minutes, raised from 6 (2026-07-27): a working agent mid-turn cannot
+  // stop to write a handoff, and 6 minutes was shorter than a normal
+  // tool-heavy turn -- the timeout fired straight into a force-restart while
+  // the agent was actively working. Restarts now also defer while the pane is
+  // positively busy (see decideGuard), so this timeout only disciplines an
+  // IDLE agent that ignored the handoff request.
+  handoffTimeoutMinutes: 20,
 }
 
 /** Coerce arbitrary parsed JSON into a safe, fully-populated config. */
@@ -88,9 +94,35 @@ export function normalizeContextGuardConfig(raw: unknown): ContextGuardConfig {
 // it up when the OBSERVED context proves the base wrong.
 export const CONTEXT_LIMIT_TIERS = [200_000, 500_000, 1_000_000] as const
 
-/** Base context window inferred from the model id. Conservative: unknown → 200k. */
+/**
+ * Base context window inferred from the model id.
+ *
+ * The `[1m]` suffix is an explicit operator opt-in and always wins. Beyond
+ * that, the current Fable/Mythos/Opus families run 1M windows in Claude Code
+ * WITHOUT the suffix -- verified from live sources, not assumed: the Models
+ * API reports 1M for all of them, and this host's own transcripts show
+ * sessions genuinely reaching it (measured 2026-07-27: fable-5 976k, geri
+ * fable-5 911k, opus-4-8 985k-999k, opus-5 979k). The previous blanket-200k
+ * guess made the guard read a fable-5 session at 21% real usage as "106%
+ * full" and force-restart working agents all day (17 hard-threshold events
+ * on 2026-07-27, two of them killing samu mid-task and losing dispatched
+ * instructions).
+ *
+ * Sonnet stays at 200k deliberately: this host has never observed a sonnet
+ * session above 198k (sonnet-5 max 197,885 across 14 days), so 200k is the
+ * evidenced effective window there. Haiku is 200k by spec. Unknown models
+ * stay conservative at 200k -- calibrateLimit and the runner's persisted
+ * high-water mark step the denominator up from live evidence, and
+ * over-estimating would blind the proactive tiers (the 2026-07-26 failure
+ * mode), while under-estimating is loud and self-correcting.
+ */
+const ONE_MILLION_FAMILIES = [/fable-\d/, /mythos-\d/, /opus-4-[6-9]/, /opus-[5-9]\b/]
+
 export function contextLimitForModel(model: string | null | undefined): number {
-  if (typeof model === 'string' && model.includes('[1m]')) return 1_000_000
+  if (typeof model !== 'string') return 200_000
+  const m = model.toLowerCase()
+  if (m.includes('[1m]')) return 1_000_000
+  if (ONE_MILLION_FAMILIES.some(rx => rx.test(m))) return 1_000_000
   return 200_000
 }
 
@@ -182,6 +214,12 @@ export interface GuardInputs {
   running: boolean
   /** Pane looks idle (safe to restart without cutting a turn). */
   paneIdle: boolean
+  /** Pane shows a POSITIVE mid-turn signal (spinner / esc-to-interrupt /
+   *  token counter). Distinct from `!paneIdle`: a wedged pane behind an
+   *  error banner is neither idle nor busy, and must NOT be treated as
+   *  working -- deferring on `!paneIdle` would protect wedged panes from
+   *  the restart that is their only way out. */
+  paneBusy: boolean
   /** Session is ready to receive a prompt (post-restart readiness). */
   sessionReady: boolean
   /** Current HANDOFF.md mtime (ms), or null when the file does not exist. */
@@ -269,7 +307,16 @@ export function decideGuard(
       if (inputs.pct === null) return none('context unmeasurable', cleared)
       if (inputs.pct >= cfg.hardPct) {
         // Deep in the danger zone: the pane may already be wedged behind an
-        // error/modal, so do not spend a turn asking for a handoff.
+        // error/modal, so do not spend a turn asking for a handoff. But a
+        // POSITIVELY busy pane is working, not wedged -- restarting it cuts
+        // a live turn and destroys any queued/parked input with it (Szabi,
+        // 2026-07-27: agents restarted mid-work, dispatched instructions
+        // lost). Defer while busy; the sweep re-decides every interval, and
+        // a turn that tips into saturation is caught by the saturation net
+        // above, which deliberately ignores the busy signal.
+        if (inputs.paneBusy) {
+          return none(`hard threshold (${Math.round(inputs.pct * 100)}%) but agent mid-turn -- deferring restart`, cleared)
+        }
         return restartDecision(nowMs, `hard threshold (${Math.round(inputs.pct * 100)}% >= ${Math.round(cfg.hardPct * 100)}%)`)
       }
       if (inputs.pct >= cfg.actPct) {
@@ -310,10 +357,17 @@ export function decideGuard(
       if (handoffWritten && inputs.paneIdle) {
         return restartDecision(nowMs, 'handoff written')
       }
+      // Same mid-turn deferral as the idle-phase hard tier: neither the hard
+      // threshold nor the handoff timeout may cut a live turn. The deadline
+      // stays in the past while we defer, so the restart fires on the first
+      // sweep that finds the pane no longer busy; a turn that saturates
+      // mid-flight is caught by the paneSaturated branch above.
       if (inputs.pct !== null && inputs.pct >= cfg.hardPct) {
+        if (inputs.paneBusy) return none('hard threshold during await-handoff but agent mid-turn -- deferring restart')
         return restartDecision(nowMs, 'hard threshold during await-handoff')
       }
       if (nowMs >= state.deadlineMs) {
+        if (inputs.paneBusy) return none('handoff timeout but agent mid-turn -- deferring restart')
         // No handoff in time (agent wedged or ignored the prompt). Restart
         // anyway: taskstate + kanban + hot memories are the fallback context.
         return restartDecision(nowMs, 'handoff timeout -- force restart')

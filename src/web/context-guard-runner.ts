@@ -1,4 +1,4 @@
-import { statSync } from 'node:fs'
+import { statSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
@@ -14,9 +14,10 @@ import {
   isSessionReadyForPrompt,
 } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
-import { paneLooksIdle, paneShowsContextSaturation } from '../pane-state.js'
+import { detectPaneState, paneShowsContextSaturation } from '../pane-state.js'
 import { readContextTokensFromProjectDir, readActiveModelFromProjectDir } from './active-model.js'
 import { readContextGuardConfig } from './context-guard-store.js'
+import { createAgentMessage } from '../db.js'
 import {
   decideGuard,
   contextLimitForModel,
@@ -46,6 +47,40 @@ const INTERVAL_MS = 300_000
 // request, and cooldown prevents restart loops within a run.
 const guardStates = new Map<string, GuardState>()
 const remoteSkipLogged = new Set<string>()
+
+// Per-agent observed-context high-water mark, persisted across dashboard
+// restarts. calibrateLimit alone is memoryless: the moment the guard
+// restarts an agent, the fresh session's observation shrinks back below the
+// tier step-up point, the denominator falls back to the base guess, and a
+// miscalibrated agent gets restarted at the same false "over-full" reading
+// every cycle -- the evidence that would have corrected the limit is
+// destroyed by the very restart it triggered. Persisting the per-(agent,
+// model) maximum breaks that loop: once a session has proven the window is
+// bigger, the proof survives restarts. Keyed by model so a real model
+// downgrade (e.g. fable-5 -> haiku) does not inherit a 1M denominator.
+const HIGHWATER_PATH = join(PROJECT_ROOT, 'store', 'context-guard-highwater.json')
+type HighwaterMap = Record<string, { model: string; tokens: number }>
+
+function readHighwater(): HighwaterMap {
+  try {
+    const parsed = JSON.parse(readFileSync(HIGHWATER_PATH, 'utf-8'))
+    return (parsed && typeof parsed === 'object') ? parsed as HighwaterMap : {}
+  } catch { return {} }
+}
+
+let highwater: HighwaterMap | null = null
+
+function observedHighwater(name: string, model: string, observedNow: number): number {
+  if (highwater === null) highwater = readHighwater()
+  const entry = highwater[name]
+  const prior = entry && entry.model === model ? entry.tokens : 0
+  if (observedNow > prior) {
+    highwater[name] = { model, tokens: observedNow }
+    try { writeFileSync(HIGHWATER_PATH, JSON.stringify(highwater, null, 2)) }
+    catch (err) { logger.warn({ err }, 'context-guard: highwater persist failed') }
+  }
+  return Math.max(observedNow, prior)
+}
 
 function sessionFor(name: string): string {
   return name === MAIN_AGENT_ID ? MAIN_CHANNELS_SESSION : agentSessionName(name)
@@ -96,10 +131,13 @@ function measurePct(name: string, cfgLimit: number | null): number | null {
   if (cfgLimit) {
     limit = cfgLimit
   } else {
-    const model = name === MAIN_AGENT_ID
+    const model = (name === MAIN_AGENT_ID
       ? readActiveModelFromProjectDir(PROJECT_ROOT)
-      : readAgentModel(name)
-    limit = calibrateLimit(tokens, contextLimitForModel(model))
+      : readAgentModel(name)) ?? ''
+    // Calibrate against the persisted per-(agent, model) maximum, not just
+    // the live reading: a fresh post-restart session must not un-learn a
+    // window the previous session already proved (see HighwaterMap above).
+    limit = calibrateLimit(observedHighwater(name, model, tokens), contextLimitForModel(model))
   }
   return tokens / limit
 }
@@ -159,13 +197,19 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   const sessionReady = running && state.phase === 'await-ready'
     ? await isSessionReadyForPrompt(session)
     : false
+  // One classification, two distinct signals: 'idle' (safe to restart) and
+  // 'busy' (positively mid-turn -- restarts defer). A pane that is neither
+  // (error banner, modal, unknown surface) is treated as NOT busy, so a
+  // wedged pane still gets the restart that is its only way out.
+  const paneState = pane !== null ? detectPaneState(pane) : 'unknown'
   const inputs: GuardInputs = {
     nowMs,
     running,
     // The saturation net decides from the pane alone; only the proactive
     // tiers need the (transcript-reading) pct probe.
     pct: running && needPct && cfg.enabled ? measurePct(name, cfg.limitTokens) : null,
-    paneIdle: pane !== null ? paneLooksIdle(pane) : false,
+    paneIdle: paneState === 'idle',
+    paneBusy: paneState === 'busy',
     sessionReady,
     handoffMtime: needPct ? handoffMtime(name) : null,
     paneSaturated: pane !== null ? paneShowsContextSaturation(pane) : false,
@@ -218,9 +262,39 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
       case 'request-handoff':
         await sendPromptToSession(session, handoffPrompt(pctRound ?? 0, handoffPathFor(name)))
         break
-      case 'restart':
+      case 'restart': {
+        // A forced restart must never be silent: the supervisor has to know
+        // that prompts delivered to the OLD session (queued steering input,
+        // parked text, the handoff request itself) may have died with it
+        // (2026-07-27: two dispatched instructions lost this way). Snapshot
+        // the pane first for post-mortem, then restart, then report on the
+        // inter-agent queue -- the channel supervisors actually read.
+        let snapshotPath: string | null = null
+        try {
+          const finalPane = pane ?? capturePane(session)
+          if (finalPane) {
+            snapshotPath = join(PROJECT_ROOT, 'store', `context-guard-last-pane-${name}.txt`)
+            writeFileSync(snapshotPath, finalPane)
+          }
+        } catch (err) {
+          logger.warn({ err, name }, 'context-guard: pre-restart pane snapshot failed')
+        }
         performRestart(name)
+        try {
+          createAgentMessage(
+            name,
+            MAIN_AGENT_ID,
+            `[CONTEXT-GUARD] Ujrainditottam a(z) "${name}" agentet -- ok: ${decision.reason}` +
+            (pctRound !== null ? ` (kontextus ~${pctRound}%)` : '') +
+            `. A regi sessionbe az utolso percekben kuldott uzenetek/utasitasok ELVESZHETTEK -- ellenorizd es kuldd ujra oket.` +
+            (snapshotPath ? ` Pane-snapshot a restart elotti allapotrol: ${snapshotPath}` : ''),
+            'context-guard restart notice',
+          )
+        } catch (err) {
+          logger.warn({ err, name }, 'context-guard: restart notice message failed')
+        }
         break
+      }
       case 'inject-resume': {
         const hadHandoff = inputs.handoffMtime !== null || handoffMtime(name) !== null
         await sendPromptToSession(session, resumePrompt(name, handoffPathFor(name), hadHandoff))
