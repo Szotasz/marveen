@@ -70,6 +70,26 @@ describe('updateMemory cache invalidation', () => {
 })
 
 // ---------------------------------------------------------------------------
+// 1b. The create path owes the same guarantee as the update path
+// ---------------------------------------------------------------------------
+describe('saveAgentMemory cache invalidation', () => {
+  it('invalidates every agent when a NEW shared memory is created', () => {
+    const OWNER = 'shared-create-owner'
+    const READER = 'shared-create-reader'
+    // The reader warms its list before the shared memory exists.
+    const before = getAgentMemories(READER, 50)
+    expect(before.some(m => m.content === 'Fleet-wide announcement')).toBe(false)
+
+    saveAgentMemory(OWNER, 'Fleet-wide announcement', 'shared', 'ann')
+
+    // A shared row is listed for every agent, so evicting only the author
+    // leaves every other agent serving a list that is missing it -- with
+    // nothing in the response to signal the omission.
+    expect(getAgentMemories(READER, 50).some(m => m.content === 'Fleet-wide announcement')).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // 2. Category filtering must happen before the LIMIT, not after
 // ---------------------------------------------------------------------------
 describe('getAgentMemories category filtering', () => {
