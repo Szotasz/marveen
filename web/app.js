@@ -424,6 +424,7 @@ function escapeHtml(str) {
   // attributes, where a surviving " would allow an attribute breakout.
   return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 }
+const esc = escapeHtml
 
 // loadOverview, formatRelative, fmtTokensShort moved to web/modules/overview.js (S-13a)
 
