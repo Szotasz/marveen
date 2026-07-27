@@ -18,7 +18,7 @@ import { hardRestartMarveenChannels } from '../channel-monitor.js'
 import { claimPendingForAgent, markMessageFailed } from '../../db.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { readBody, json } from '../http-helpers.js'
-import { remoteRunStateCache, remotePaneCache } from './agents-helpers.js'
+import { remoteRunStateCache, remotePaneCache, assertAgentExists } from './agents-helpers.js'
 import type { RouteContext } from './types.js'
 
 // Max inter-agent messages a single main-agent inbox drain returns. The rest
@@ -76,7 +76,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
   if (remoteCfgMatch && method === 'PUT') {
     const name = decodeURIComponent(remoteCfgMatch[1])
     if (name === MAIN_AGENT_ID) { json(res, { error: 'Main agent is always local' }, 400); return true }
-    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!assertAgentExists(name, res)) return true
     const body = await readBody(req)
     let data: { host?: string; workdir?: string }
     try { data = JSON.parse(body.toString() || '{}') } catch { json(res, { error: 'invalid JSON' }, 400); return true }
@@ -96,7 +96,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
       json(res, { error: 'Main agent lifecycle is service-managed; use /api/marveen/restart for recovery' }, 400)
       return true
     }
-    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!assertAgentExists(name, res)) return true
     // Optional { "fresh": true } body -> no `--continue`. Required for channel
     // agents on Claude Code 2.1.193, where a `--continue` resume does not load
     // the --channels plugin MCP server (agent comes up deaf).
@@ -177,7 +177,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
       json(res, { error: r.error || 'Restart failed' }, 500)
       return true
     }
-    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!assertAgentExists(name, res)) return true
     // Optional { "fresh": true } body -> no `--continue` (see /start note).
     let restartFresh = false
     try { restartFresh = JSON.parse((await readBody(req)).toString() || '{}').fresh === true } catch {}
@@ -190,7 +190,7 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
   const statusMatch = path.match(/^\/api\/agents\/([^/]+)\/status$/)
   if (statusMatch && method === 'GET') {
     const name = decodeURIComponent(statusMatch[1])
-    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!assertAgentExists(name, res)) return true
     json(res, getAgentProcessInfo(name))
     return true
   }

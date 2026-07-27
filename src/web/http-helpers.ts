@@ -53,6 +53,14 @@ export function readBody(
   })
 }
 
+// Reads the full request body and parses it as JSON. Replaces the repeated
+// `const body = await readBody(req); const data = JSON.parse(body.toString())`
+// pattern across route handlers.
+export async function readJsonBody<T>(req: http.IncomingMessage): Promise<T> {
+  const body = await readBody(req)
+  return JSON.parse(body.toString()) as T
+}
+
 export function json(res: http.ServerResponse, data: unknown, status = 200): void {
   // Cache-Control: private, no-store prevents CDN / proxy caching of API
   // responses that may contain user-specific data or session state. Without
