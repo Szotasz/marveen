@@ -419,16 +419,24 @@ function renderKanban() {
     visibleCardIds.add(card.id)
   }
 
-  // A subtask is "embedded" when its parent is visible AND both share the same
-  // column. Embedded subtasks are hidden as standalone cards and rendered
-  // inside the parent card instead. Filter state of the subtask itself is
-  // intentionally ignored so it always shows under its visible parent.
+  // A card is "embedded" when it renders inside its ancestor root card on the
+  // board (not as a standalone column card). Depth-1 cards are embedded when
+  // their root parent is visible and shares the same column status.
+  // Depth-2 cards are always embedded under their embedded depth-1 parent
+  // (regardless of status match) so grandchildren never float as standalone
+  // column cards.
   const embeddedSubtaskIds = new Set()
+  // Pass 1: depth-1 (direct subtasks)
   for (const card of kanbanCards) {
     if (!card.parent_id) continue
     const parent = cardById.get(card.parent_id)
     if (!parent || !visibleCardIds.has(parent.id)) continue
     if (parent.status === card.status) embeddedSubtaskIds.add(card.id)
+  }
+  // Pass 2: depth-2 (grandchildren) -- always embedded under an embedded depth-1
+  for (const card of kanbanCards) {
+    if (!card.parent_id) continue
+    if (embeddedSubtaskIds.has(card.parent_id)) embeddedSubtaskIds.add(card.id)
   }
 
   const grouped = { planned: [], in_progress: [], waiting: [], testing: [], done: [] }
@@ -457,10 +465,7 @@ function renderKanban() {
       cards.sort((a, b) => a.sort_order - b.sort_order)
 
       for (const card of cards) {
-        const embeddedChildren = kanbanCards
-          .filter(c => c.parent_id === card.id && embeddedSubtaskIds.has(c.id))
-          .sort((a, b) => a.sort_order - b.sort_order)
-        col.appendChild(createCardEl(card, embeddedChildren))
+        col.appendChild(createCardEl(card, buildEmbeddedSubtrees(card.id, embeddedSubtaskIds)))
       }
     }
     // Hide/show flat-board columns based on visibility set
@@ -596,10 +601,7 @@ function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {
 
       const cards = laneCardsByStatus[def.status].sort((a, b) => a.sort_order - b.sort_order)
       for (const card of cards) {
-        const embeddedChildren = kanbanCards
-          .filter(c => c.parent_id === card.id && embeddedSubtaskIds.has(c.id))
-          .sort((a, b) => a.sort_order - b.sort_order)
-        colBody.appendChild(createCardEl(card, embeddedChildren))
+        colBody.appendChild(createCardEl(card, buildEmbeddedSubtrees(card.id, embeddedSubtaskIds)))
       }
       _wireColumn?.(colBody)
 
@@ -678,7 +680,31 @@ function updateSubtaskBadges(embeddedSubtaskIds) {
   }
 }
 
-function createCardEl(card, embeddedChildren = []) {
+// Returns the height of the subtree rooted at cardId using the in-memory
+// kanbanCards list (0 = leaf, 1 = has children, 2 = has grandchildren).
+// Used by the DnD depth guard to validate cross-parent drops.
+function subtreeHeightLocal(cardId) {
+  const children = kanbanCards.filter(c => c.parent_id === cardId)
+  if (children.length === 0) return 0
+  return 1 + Math.max(...children.map(c => subtreeHeightLocal(c.id)))
+}
+
+// Builds the nested embedded-subtree structure for a card's board rendering.
+// Returns an array of { card, children } where `children` are the depth-2
+// grandchildren (already filtered to embeddedSubtaskIds).
+function buildEmbeddedSubtrees(parentId, embeddedSubtaskIds) {
+  return kanbanCards
+    .filter(c => c.parent_id === parentId && embeddedSubtaskIds.has(c.id))
+    .sort((a, b) => a.sort_order - b.sort_order)
+    .map(child => ({
+      card: child,
+      children: kanbanCards
+        .filter(gc => gc.parent_id === child.id && embeddedSubtaskIds.has(gc.id))
+        .sort((a, b) => a.sort_order - b.sort_order),
+    }))
+}
+
+function createCardEl(card, embeddedTrees = []) {
   const el = document.createElement('div')
   el.className = 'kanban-card'
   el.dataset.id = card.id
@@ -761,17 +787,33 @@ function createCardEl(card, embeddedChildren = []) {
     }
   }
 
-  // Embedded subtasks: rendered as mini-cards below a divider when the subtask
-  // shares the same column as this parent card.
+  // Embedded subtasks: rendered as mini-cards below a divider. Depth-1
+  // children are shown directly; depth-2 grandchildren are nested inside
+  // their depth-1 parent with extra indentation and a collapse toggle.
+  function assigneeChip(card) {
+    const raw = card.assignee ? String(card.assignee).trim() : ''
+    if (!raw) return ''
+    const found = kanbanAssignees.find(a => a.name.toLowerCase() === raw.toLowerCase())
+    const label = found ? (found.displayName || found.name) : raw
+    return `<span class="kanban-embedded-assignee">${escapeHtml(label)}</span>`
+  }
   let embeddedHtml = ''
-  if (embeddedChildren.length > 0) {
-    const items = embeddedChildren.map(c => {
-      const rawCa = c.assignee ? String(c.assignee).trim() : ''
-      const ca = rawCa ? kanbanAssignees.find(a => a.name.toLowerCase() === rawCa.toLowerCase()) : null
-      const caLabel = ca ? (ca.displayName || ca.name) : rawCa
-      const caHtml = caLabel ? `<span class="kanban-embedded-assignee">${escapeHtml(caLabel)}</span>` : ''
+  if (embeddedTrees.length > 0) {
+    const items = embeddedTrees.map(({ card: c, children: grandchildren }) => {
       const cSeq = c.seq != null ? `<span class="kanban-embedded-seq">#${c.seq}</span> ` : ''
-      return `<div class="kanban-embedded-subtask" data-id="${escapeHtml(c.id)}">${cSeq}${escapeHtml(c.title)}${caHtml}</div>`
+      const hasGc = grandchildren.length > 0
+      const toggleHtml = hasGc
+        ? `<button class="kanban-subtask-toggle" type="button" aria-expanded="true" title="Összecsuk/kinyit">▼</button>`
+        : ''
+      const gcHtml = hasGc
+        ? `<div class="kanban-embedded-grandchildren">` +
+          grandchildren.map(gc => {
+            const gcSeq = gc.seq != null ? `<span class="kanban-embedded-seq">#${gc.seq}</span> ` : ''
+            return `<div class="kanban-embedded-subtask kanban-depth-2" data-id="${escapeHtml(gc.id)}">${gcSeq}${escapeHtml(gc.title)}${assigneeChip(gc)}</div>`
+          }).join('') +
+          `</div>`
+        : ''
+      return `<div class="kanban-embedded-subtask" data-id="${escapeHtml(c.id)}">${cSeq}${escapeHtml(c.title)}${assigneeChip(c)}${toggleHtml}${gcHtml}</div>`
     }).join('')
     embeddedHtml = `<div class="kanban-embedded-subtasks">${items}</div>`
   }
@@ -803,13 +845,78 @@ function createCardEl(card, embeddedChildren = []) {
     })
   })
 
-  // Click on embedded subtask -> open that subtask's detail (don't bubble to parent)
+  // Click on any embedded subtask (depth-1 or depth-2) -> open that card's detail.
+  // stopPropagation prevents the parent card's click handler from also firing.
   el.querySelectorAll('.kanban-embedded-subtask').forEach(subEl => {
     subEl.addEventListener('click', (e) => {
+      if (e.target.closest('.kanban-subtask-toggle')) return  // handled by toggle
       e.stopPropagation()
       const child = kanbanCards.find(c => c.id === subEl.dataset.id)
       if (child) showCardDetail(child)
     })
+  })
+
+  // Collapse/expand toggle for depth-1 items that have depth-2 grandchildren.
+  el.querySelectorAll('.kanban-subtask-toggle').forEach(toggleBtn => {
+    toggleBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const subtaskEl = toggleBtn.closest('.kanban-embedded-subtask')
+      const gcContainer = subtaskEl?.querySelector('.kanban-embedded-grandchildren')
+      if (!gcContainer) return
+      const expanding = gcContainer.hidden
+      gcContainer.hidden = !expanding
+      toggleBtn.textContent = expanding ? '▼' : '▶'
+      toggleBtn.setAttribute('aria-expanded', expanding ? 'true' : 'false')
+    })
+  })
+
+  // Cross-parent DnD: dropping a dragged card ON this card reparents it.
+  // Depth guard: target.depth + 1 + subtreeHeight(dragged) must be <= 2.
+  el.addEventListener('dragover', (e) => {
+    const dragging = document.querySelector('.kanban-card.dragging')
+    if (!dragging || dragging.dataset.id === card.id) return
+    if (card.depth >= 2) return  // can't add children to depth-2
+    const sh = subtreeHeightLocal(dragging.dataset.id)
+    if (card.depth + 1 + sh > 2) {
+      // Valid to intercept but can't reparent: show no-drop without letting column handle it
+      e.preventDefault()
+      e.stopPropagation()
+      e.dataTransfer.dropEffect = 'none'
+      el.classList.add('drop-target-invalid')
+      return
+    }
+    e.preventDefault()
+    e.stopPropagation()
+    e.dataTransfer.dropEffect = 'link'
+    el.classList.add('drop-target-parent')
+  })
+
+  el.addEventListener('dragleave', (e) => {
+    if (!el.contains(e.relatedTarget)) {
+      el.classList.remove('drop-target-parent', 'drop-target-invalid')
+    }
+  })
+
+  el.addEventListener('drop', async (e) => {
+    el.classList.remove('drop-target-parent', 'drop-target-invalid')
+    const cardId = e.dataTransfer.getData('text/plain')
+    if (!cardId || cardId === card.id) return
+    if (card.depth >= 2) return
+    const sh = subtreeHeightLocal(cardId)
+    if (card.depth + 1 + sh > 2) return
+    e.preventDefault()
+    e.stopPropagation()
+    try {
+      const r = await fetch(`/api/kanban/${encodeURIComponent(cardId)}/parent`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parent_id: card.id }),
+      })
+      if (!r.ok) { const err = await r.json().catch(() => ({})); showToast(err.error || t('kanban.toast.move_error')); return }
+      loadKanban()
+    } catch {
+      showToast(t('kanban.toast.move_error'))
+    }
   })
 
   // Drag events
@@ -1284,17 +1391,20 @@ async function showCardDetail(card) {
     }
   }
 
-  // Load children (subtasks) — only top-level tasks have children (no subtask of subtask)
+  // Load the full descendant tree (up to 3 levels) for the subtask section.
+  // depth < 2: this card can have children; show the add-subtask form.
+  const canAddSubtask = card.depth < 2
   try {
-    const childRes = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/children`)
-    const children = await childRes.json()
+    const subtreeRes = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/subtree`)
+    const subtreeCards = await subtreeRes.json()
+    // subtreeCards[0] is the root (card itself); the rest are descendants.
+    const descendants = Array.isArray(subtreeCards) ? subtreeCards.slice(1) : []
+
     const section = document.getElementById('cardChildrenSection')
     const list = document.getElementById('cardChildrenList')
     const addSubtaskSection = document.getElementById('cardAddSubtaskSection')
-    const isTask = !card.parent_id
 
-    // #113: Show add-subtask form only for top-level tasks that are not done
-    if (isTask && card.status !== 'done') {
+    if (canAddSubtask && card.status !== 'done') {
       addSubtaskSection.style.display = ''
       const titleInput = document.getElementById('newSubtaskTitle')
       titleInput.value = ''
@@ -1306,7 +1416,11 @@ async function showCardDetail(card) {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ title, parent_id: card.id, status: card.status, priority: card.priority, project: card.project || null, assignee: null }),
           })
-          if (!r.ok) { showToast(t('kanban.toast.subtask_error')); return }
+          if (!r.ok) {
+            const err = await r.json().catch(() => ({}))
+            showToast(err.error || t('kanban.toast.subtask_error'))
+            return
+          }
           showToast(t('kanban.toast.subtask_created'))
           loadKanban()
           showCardDetail(card)
@@ -1316,22 +1430,41 @@ async function showCardDetail(card) {
       addSubtaskSection.style.display = 'none'
     }
 
-    const statusLabelsShort = { planned: t('kanban.status.planned'), in_progress: t('kanban.status.in_progress'), testing: t('kanban.status.testing'), waiting: t('kanban.status.waiting_short'), done: t('kanban.status.done') }
-    if (children.length > 0 || isTask) {
+    if (descendants.length > 0 || canAddSubtask) {
       section.style.display = ''
       list.innerHTML = ''
-      // #114: Delete button per subtask — only shown when the parent card is not done
-      const canDeleteChild = card.status !== 'done'
-      for (const ch of children) {
+
+      // Build parent->children map for tree rendering
+      const childrenByParent = new Map()
+      for (const d of descendants) {
+        const pid = d.parent_id
+        if (!childrenByParent.has(pid)) childrenByParent.set(pid, [])
+        childrenByParent.get(pid).push(d)
+      }
+
+      const statusLabelsShort = {
+        planned: t('kanban.status.planned'),
+        in_progress: t('kanban.status.in_progress'),
+        testing: t('kanban.status.testing'),
+        waiting: t('kanban.status.waiting_short'),
+        done: t('kanban.status.done'),
+      }
+
+      // Renders one card row and its children recursively (max 2 levels of nesting).
+      function renderSubtaskRow(ch, indentLevel) {
+        const canDeleteChild = card.status !== 'done'
+        const indent = indentLevel * 18  // px per level
         const div = document.createElement('div')
-        div.className = 'comment-item'
-        div.style.cssText = 'cursor:pointer; display:flex; justify-content:space-between; align-items:center; gap:8px'
+        div.className = 'comment-item kanban-subtree-row'
+        div.style.cssText = `cursor:pointer; display:flex; justify-content:space-between; align-items:flex-start; gap:8px; padding-left:${indent}px`
+
         const info = document.createElement('div')
         info.style.flex = '1'
-        info.innerHTML = `<div><strong>${escapeHtml(ch.title)}</strong> <span style="color:var(--text-muted)">[${statusLabelsShort[ch.status] || ch.status}]</span></div>
-          <div style="font-size:0.85em;color:var(--text-muted)">${ch.assignee ? escapeHtml(ch.assignee) : ''}${ch.description ? ' -- ' + escapeHtml(ch.description).slice(0, 80) : ''}</div>`
+        info.innerHTML = `<div><strong>${escapeHtml(ch.title)}</strong> <span style="color:var(--text-muted);font-size:0.85em">[${statusLabelsShort[ch.status] || ch.status}]</span></div>` +
+          (ch.assignee || ch.description ? `<div style="font-size:0.85em;color:var(--text-muted)">${ch.assignee ? escapeHtml(ch.assignee) : ''}${ch.description ? ' — ' + escapeHtml(ch.description).slice(0, 60) : ''}</div>` : '')
         info.onclick = () => { _closeModal?.(cardDetailOverlay); showCardDetail(ch) }
         div.appendChild(info)
+
         if (canDeleteChild) {
           const delBtn = document.createElement('button')
           delBtn.className = 'btn-danger btn-compact'
@@ -1351,7 +1484,15 @@ async function showCardDetail(card) {
           div.appendChild(delBtn)
         }
         list.appendChild(div)
+
+        // Recurse for grandchildren (depth-2 only; max depth is 2 so no further nesting)
+        const grandchildren = childrenByParent.get(ch.id) || []
+        for (const gc of grandchildren) renderSubtaskRow(gc, indentLevel + 1)
       }
+
+      // Render direct children of the current card
+      const directChildren = childrenByParent.get(card.id) || []
+      for (const ch of directChildren) renderSubtaskRow(ch, 0)
     } else {
       section.style.display = 'none'
     }
