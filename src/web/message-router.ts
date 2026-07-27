@@ -71,6 +71,29 @@ export function shouldGiveUpOnInject(failCount: number, maxFailures: number): bo
  * note is addressed to the main agent, which drains via the pull model and
  * never hits this inject path.
  */
+// A stuck session blocks EVERY pending message to that agent, silently. The
+// warn log above never reached anyone on 2026-07-27 (2.5h stall found by hand),
+// so the stall goes to the main agent's inbox too. Rate limit comes from the
+// caller: it fires at most once per STUCK_ESCALATE_MS window per agent.
+//
+// Pure part exported for tests: returns the alert text, or null when no alert
+// may be sent (the main agent must never alert itself about itself).
+export function formatStuckSessionAlert(agent: string, mainAgentId: string, session: string, stuckMs: number, pendingCount: number): string | null {
+  if (agent === mainAgentId) return null
+  return `[session-stuck] Agent '${agent}' (tmux ${session}) has been not-ready for ${Math.round(stuckMs / 60000)} min with ${pendingCount} pending message(s) queued. Run the delivery-stall diagnosis: check the pane (busy vs idle vs full context) and restart the agent if it is wedged.`
+}
+
+function notifyOrchestratorOfStuckSession(agent: string, session: string, stuckMs: number, pendingCount: number): void {
+  try {
+    const alert = formatStuckSessionAlert(agent, MAIN_AGENT_ID, session, stuckMs, pendingCount)
+    if (!alert) return
+    createAgentMessage('system', MAIN_AGENT_ID, alert)
+    logger.info({ agent, session, stuckMs, pendingCount }, 'session-stuck surfaced to orchestrator')
+  } catch (err) {
+    logger.warn({ err, agent }, 'Failed to enqueue session-stuck notification')
+  }
+}
+
 function notifyOrchestratorOfFailedHandoff(msg: AgentMessage, reason: string): void {
   try {
     // A failed message to the main agent can't happen (pull model), but guard
@@ -480,11 +503,17 @@ export async function runMessageRouterTick(): Promise<void> {
           // Session has been continuously stuck past the escalation threshold.
           // Log at warn level so monitoring/revival tooling can act — the
           // stuck-input-watcher and channel-monitor pick these patterns up.
+          const pendingMsgCount = pending.filter(m => m.to_agent === msg.to_agent).length
           logger.warn({
             to: msg.to_agent, session,
             stuckDurationMs: now - stuckStart,
-            pendingMsgCount: pending.filter(m => m.to_agent === msg.to_agent).length,
+            pendingMsgCount,
           }, 'message-router: session STUCK — continuously not-ready past escalation threshold')
+          // Card 0a641b52: a log line nobody reads is not an alert. Surface the
+          // stall to the main agent's inbox so it can run the delivery-stall
+          // diagnosis (pane state, full context, restart). The escalation-window
+          // reset below doubles as the notification cooldown.
+          notifyOrchestratorOfStuckSession(msg.to_agent, session, now - stuckStart, pendingMsgCount)
           // Reset timer so we don't spam every tick; re-escalate after another window.
           agentStuckSince.set(msg.to_agent, now)
         }
