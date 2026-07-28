@@ -956,8 +956,12 @@ async function openAgentDetail(agentName) {
   // Skills tab
   await _loadSkills?.(currentAgent.name)
 
-  // MCP scope tab
-  await loadMcpScope(currentAgent)
+  // MCP scope tab -- wrapped so a render failure never blocks the modal
+  try {
+    await loadMcpScope(currentAgent)
+  } catch (err) {
+    console.error('MCP scope tab load failed:', err)
+  }
 
   // Process control
   updateProcessControl(currentAgent)
@@ -2448,14 +2452,22 @@ async function loadMcpScope(agent) {
 
   for (const serverKey of serverKeys) {
     // Match server key to catalog: try exact id match or prefix match
-    const catalogEntry = catalogMap[serverKey] ||
-      Object.values(catalogMap).find((e) => serverKey.startsWith(e.id))
-    const serverScope = currentScope ? currentScope[serverKey] : undefined
-    const section = renderMcpServerSection(serverKey, catalogEntry, serverScope)
-    serverListEl.appendChild(section)
+    try {
+      const catalogEntry = catalogMap[serverKey] ||
+        Object.values(catalogMap).find((e) => serverKey.startsWith(e.id))
+      const serverScope = currentScope ? currentScope[serverKey] : undefined
+      const section = renderMcpServerSection(serverKey, catalogEntry, serverScope)
+      serverListEl.appendChild(section)
+    } catch (err) {
+      console.error(`MCP scope: failed to render server "${serverKey}":`, err)
+    }
   }
 
-  wireCustomToolInputs(serverListEl)
+  try {
+    wireCustomToolInputs(serverListEl)
+  } catch (err) {
+    console.error('MCP scope: wireCustomToolInputs failed:', err)
+  }
 }
 
 document.getElementById('saveMcpScopeBtn').addEventListener('click', async () => {
