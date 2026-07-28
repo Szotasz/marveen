@@ -2,6 +2,7 @@ import {
   saveAgentMemory, getAgentMemories, searchAgentMemories, getMemoryStats, updateMemory,
   hybridSearch, backfillEmbeddings, clearMemoryCache,
   searchMemories, getMemoriesForChat, getDb, touchMemoriesAccessed,
+  recordMemoryRead, recordMemoryReadBatch, getStaleMemories, getMemoryVersions,
   type Memory,
 } from '../../db.js'
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from '../../config.js'
@@ -101,7 +102,12 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     // e.g. the dashboard browsing all memories) is NOT a recall and must not
     // refresh accessed_at -- otherwise every poll would keep everything "fresh"
     // and defeat staleness detection.
-    if (q && results.length) touchMemoriesAccessed(results.map(m => m.id))
+    if (q && results.length) {
+      const ids = results.map(m => m.id)
+      touchMemoriesAccessed(ids)
+      // Record span reads for search recall so stale-read detection works.
+      if (agentId) recordMemoryReadBatch(agentId, ids, 'search')
+    }
 
     const formatted = results.map(m => ({
       ...m,
@@ -230,9 +236,56 @@ Respond ONLY with JSON, nothing else:
     return true
   }
 
-  const memUpdateMatch = path.match(/^\/api\/memories\/(\d+)$/)
-  if (memUpdateMatch && method === 'PUT') {
-    const id = parseInt(memUpdateMatch[1], 10)
+  // POST /api/memories/read-event -- explicit read-trace (heartbeat / direct)
+  if (path === '/api/memories/read-event' && method === 'POST') {
+    const body = await readBody(req)
+    const { agent_id, memory_id, context } = JSON.parse(body.toString()) as {
+      agent_id: string; memory_id: number; context?: string
+    }
+    if (!agent_id || !memory_id) { json(res, { error: 'agent_id and memory_id required' }, 400); return true }
+    const ctx = (['heartbeat', 'search', 'direct'].includes(context ?? ''))
+      ? context as 'heartbeat' | 'search' | 'direct'
+      : 'direct'
+    recordMemoryRead(agent_id, memory_id, ctx)
+    json(res, { ok: true })
+    return true
+  }
+
+  // GET /api/memories/stale?agent_id=X -- memories updated after agent's last read
+  if (path === '/api/memories/stale' && method === 'GET') {
+    const agentId = url.searchParams.get('agent_id') || url.searchParams.get('agent') || ''
+    if (!agentId) { json(res, { error: 'agent_id required' }, 400); return true }
+    const stale = getStaleMemories(agentId)
+    json(res, stale.map(m => ({ ...m, embedding: undefined })))
+    return true
+  }
+
+  // GET /api/memories/:id/versions -- version history for a single memory
+  const memVersionsMatch = path.match(/^\/api\/memories\/(\d+)\/versions$/)
+  if (memVersionsMatch && method === 'GET') {
+    const id = parseInt(memVersionsMatch[1], 10)
+    json(res, getMemoryVersions(id))
+    return true
+  }
+
+  const memIdMatch = path.match(/^\/api\/memories\/(\d+)$/)
+  if (memIdMatch && method === 'GET') {
+    const id = parseInt(memIdMatch[1], 10)
+    const includeVersions = url.searchParams.get('include') === 'versions'
+    const db2 = getDb()
+    const mem = db2.prepare('SELECT * FROM memories WHERE id = ?').get(id) as Memory | undefined
+    if (!mem) { json(res, { error: 'Memory not found' }, 404); return true }
+    const { embedding: _emb, ...rest } = mem
+    const agentId = url.searchParams.get('agent_id') || url.searchParams.get('agent') || ''
+    if (agentId) recordMemoryRead(agentId, id, 'direct')
+    const payload: Record<string, unknown> = { ...rest }
+    if (includeVersions) payload.versions = getMemoryVersions(id)
+    json(res, payload)
+    return true
+  }
+
+  if (memIdMatch && method === 'PUT') {
+    const id = parseInt(memIdMatch[1], 10)
     const body = await readBody(req)
     const { content, category, tier, agent_id, keywords } = JSON.parse(body.toString()) as { content: string; category?: string; tier?: string; agent_id?: string; keywords?: string }
     if (updateMemory(id, content, tier || category, agent_id, keywords)) { json(res, { ok: true }); return true }
@@ -240,8 +293,8 @@ Respond ONLY with JSON, nothing else:
     return true
   }
 
-  if (memUpdateMatch && method === 'DELETE') {
-    const id = parseInt(memUpdateMatch[1], 10)
+  if (memIdMatch && method === 'DELETE') {
+    const id = parseInt(memIdMatch[1], 10)
     const db2 = getDb()
     const changes = db2.prepare('DELETE FROM memories WHERE id = ?').run(id).changes
     // Invalidate the in-process TTL cache so a deleted memory does not

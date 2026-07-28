@@ -228,11 +228,31 @@ export interface Memory {
   salience: number
   created_at: number
   accessed_at: number
+  updated_at: number | null
   agent_id: string
   category: string  // 'hot' | 'warm' | 'cold' | 'shared'
   auto_generated: number
   keywords: string | null
   embedding: string | null
+}
+
+export interface SpanRead {
+  id: number
+  agent_id: string
+  memory_id: number
+  read_at: number
+  context: 'heartbeat' | 'search' | 'direct' | null
+}
+
+export interface MemoryVersion {
+  id: number
+  memory_id: number
+  content: string
+  category: string
+  keywords: string | null
+  changed_at: number
+  changed_by: string
+  change_type: 'create' | 'update' | 'category_change'
 }
 
 export function saveMemory(
@@ -496,17 +516,83 @@ export function getMemoryStats(): { total: number; byAgent: Record<string, numbe
   return { total, byAgent, byTier, withEmbedding }
 }
 
-export function updateMemory(id: number, content: string, category?: string, agentId?: string, keywords?: string): boolean {
+export function updateMemory(
+  id: number,
+  content: string,
+  category?: string,
+  agentId?: string,
+  keywords?: string,
+  modifiedBy?: string,
+): boolean {
   const now = Math.floor(Date.now() / 1000)
-  const sets: string[] = ['content = ?', 'accessed_at = ?']
-  const params: unknown[] = [content, now]
+  const sets: string[] = ['content = ?', 'accessed_at = ?', 'updated_at = ?']
+  const params: unknown[] = [content, now, now]
   if (category) { sets.push('category = ?'); params.push(category) }
   if (agentId) { sets.push('agent_id = ?'); params.push(agentId) }
   if (keywords !== undefined) { sets.push('keywords = ?'); params.push(keywords) }
+  // modifiedBy is stored via the trigger's changed_by field; pass it through
+  // agent_id so the trigger can pick it up via NEW.agent_id fallback.
+  // When caller supplies a distinct modifiedBy, we temporarily surface it there.
+  if (modifiedBy && modifiedBy !== agentId) {
+    sets.push('agent_id = ?'); params.push(modifiedBy)
+  }
   params.push(id)
   const changed = db.prepare(`UPDATE memories SET ${sets.join(', ')} WHERE id = ?`).run(...params).changes > 0
   if (changed && agentId) memoryCacheInvalidate(agentId)
   return changed
+}
+
+// --- Span tracing ---
+
+export function recordMemoryRead(
+  agentId: string,
+  memoryId: number,
+  context: 'heartbeat' | 'search' | 'direct',
+): void {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(
+    'INSERT INTO span_reads (agent_id, memory_id, read_at, context) VALUES (?, ?, ?, ?)'
+  ).run(agentId, memoryId, now, context)
+}
+
+// Record reads for a batch of memory ids in a single transaction.
+export function recordMemoryReadBatch(
+  agentId: string,
+  memoryIds: number[],
+  context: 'heartbeat' | 'search' | 'direct',
+): void {
+  if (memoryIds.length === 0) return
+  const now = Math.floor(Date.now() / 1000)
+  const stmt = db.prepare(
+    'INSERT INTO span_reads (agent_id, memory_id, read_at, context) VALUES (?, ?, ?, ?)'
+  )
+  const tx = db.transaction(() => {
+    for (const id of memoryIds) stmt.run(agentId, id, now, context)
+  })
+  tx()
+}
+
+// Returns memories that are stale for the given agent:
+// updated_at > agent's last span_read.read_at (or never read at all).
+export function getStaleMemories(agentId: string): Memory[] {
+  return db.prepare(`
+    SELECT m.* FROM memories m
+    LEFT JOIN (
+      SELECT memory_id, MAX(read_at) AS last_read
+      FROM span_reads
+      WHERE agent_id = ?
+      GROUP BY memory_id
+    ) sr ON sr.memory_id = m.id
+    WHERE (m.agent_id = ? OR m.category = 'shared')
+      AND m.updated_at > COALESCE(sr.last_read, 0)
+    ORDER BY m.updated_at DESC
+  `).all(agentId, agentId) as Memory[]
+}
+
+export function getMemoryVersions(memoryId: number): MemoryVersion[] {
+  return db.prepare(
+    'SELECT * FROM memory_versions WHERE memory_id = ? ORDER BY changed_at DESC'
+  ).all(memoryId) as MemoryVersion[]
 }
 
 // --- Daily logs ---
