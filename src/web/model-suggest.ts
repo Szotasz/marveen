@@ -265,7 +265,7 @@ export function classifyPersona(
   // Default: Sonnet is the balanced general-purpose choice
   return {
     suggestedModel: 'claude-sonnet-5',
-    reason: 'Általános célú ágens -- Sonnet 4.6 ajánlott (egyensúly minőség és sebesség között).',
+    reason: 'Általános célú ágens -- Sonnet 5 ajánlott (egyensúly minőség és sebesség között).',
     changeAdvised: true, // caller compares to currentModel to decide final changeAdvised
   }
 }

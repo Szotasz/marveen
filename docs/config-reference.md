@@ -280,7 +280,7 @@ Minden sub-ágens mappája gitignore-olt (`agents/` mappa), így a titkos kulcso
 
 ```json
 {
-  "model": "claude-sonnet-4-6",
+  "model": "claude-sonnet-5",
   "profileId": "developer-senior",
   "memoryIsolation": false,
   "team": {

@@ -280,7 +280,7 @@ Every sub-agent's directory is gitignored (`agents/` folder), keeping secrets sa
 
 ```json
 {
-  "model": "claude-sonnet-4-6",
+  "model": "claude-sonnet-5",
   "profileId": "developer-senior",
   "team": {
     "role": "member",
