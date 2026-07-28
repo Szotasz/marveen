@@ -103,6 +103,7 @@ import {
   agentSessionName,
   sendPromptToSession,
   capturePane,
+  sessionExistsOnHost,
 } from '../agent-process.js'
 import { addDesiredAgent, removeDesiredAgent } from '../agent-desired-state.js'
 import { RemoteStatusCache } from '../remote-status-cache.js'
@@ -432,6 +433,17 @@ interface AgentDetail extends AgentSummary {
   hasApiKey: boolean
 }
 
+// The main agent's model lives in PROJECT_ROOT/.claude/settings.json (the
+// launcher reads it from there), not in an agents/<name>/agent-config.json.
+function readMainAgentModel(): string {
+  try {
+    const cfg = JSON.parse(readFileOr(join(PROJECT_ROOT, '.claude', 'settings.json'), '{}'))
+    return resolveModelId(cfg.model || DEFAULT_MODEL)
+  } catch {
+    return DEFAULT_MODEL
+  }
+}
+
 function getAgentSummary(name: string): AgentSummary {
   const dir = agentDir(name)
   const configRoot = agentConfigRoot(name)
@@ -453,15 +465,25 @@ function getAgentSummary(name: string): AgentSummary {
   // never blocks on a sleeping laptop's ssh timeout. `running` is derived from
   // it; `unreachable` reads as not-running but is surfaced distinctly so the UI
   // does not show a still-alive remote agent as "stopped".
+  //
+  // The MAIN agent lives in `${MAIN_AGENT_ID}-channels`, not `agent-<name>`,
+  // and its model comes from PROJECT_ROOT/.claude/settings.json, not
+  // agents/<name>/agent-config.json. Without this branch the detail modal
+  // showed the main agent as stopped, channel-less and on the DEFAULT model
+  // (card #95 -- "semmi változás" after every fix, because the overview tiles
+  // were lying about the main agent).
+  const isMain = isMainChannelsAgent(name)
   const remote = readAgentRemoteConfig(name)
-  const runState = agentRunStateCached(name, remote.host != null)
+  const runState = isMain
+    ? (sessionExistsOnHost(null, MAIN_CHANNELS_SESSION) ? 'running' : 'stopped')
+    : agentRunStateCached(name, remote.host != null)
   const running = runState === 'running'
-  const session = running ? agentSessionName(name) : undefined
-  const runningSince = running ? getAgentRunningSince(name) : null
+  const session = running ? (isMain ? MAIN_CHANNELS_SESSION : agentSessionName(name)) : undefined
+  const runningSince = running && !isMain ? getAgentRunningSince(name) : null
 
   // Reauth badge: only meaningful for a running session (a stopped agent has
   // no pane to inspect). One capture-pane per running agent on the list poll.
-  const reauth = running ? detectReauthNeeded(capturePane(agentSessionName(name))) : { needsReauth: false }
+  const reauth = running ? detectReauthNeeded(capturePane(isMain ? MAIN_CHANNELS_SESSION : agentSessionName(name))) : { needsReauth: false }
 
   return {
     name,
@@ -471,7 +493,7 @@ function getAgentSummary(name: string): AgentSummary {
     modelProfile: typeof agentModelConfig.modelProfile === 'string' ? agentModelConfig.modelProfile : null,
     modelSource: modelResolution.source,
     modelProfileError: modelResolution.error ?? null,
-    activeModel: running ? readActiveModelFromProjectDir(dir, runningSince ?? undefined, resolveAgentConfigDir(name).configDir ?? undefined) : null,
+    activeModel: running ? readActiveModelFromProjectDir(isMain ? PROJECT_ROOT : dir, runningSince ?? undefined, isMain ? undefined : resolveAgentConfigDir(name).configDir ?? undefined) : null,
     runningSince,
     authMode: readAgentAuthMode(name),
     securityProfile: readAgentSecurityProfile(name),
@@ -490,7 +512,7 @@ function getAgentSummary(name: string): AgentSummary {
     session,
     hasAvatar: findAvatarForAgent(name) !== null,
     autoRestart: readAutoRestartConfig(name),
-    contextTokens: running ? readContextTokensFromProjectDir(dir, resolveAgentConfigDir(name).configDir ?? undefined) : null,
+    contextTokens: running ? readContextTokensFromProjectDir(isMain ? PROJECT_ROOT : dir, isMain ? undefined : resolveAgentConfigDir(name).configDir ?? undefined) : null,
     needsReauth: reauth.needsReauth,
     reauthReason: reauth.reason,
   }

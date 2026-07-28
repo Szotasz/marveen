@@ -1,7 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT } from '../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
 import { resolveOwnerChatId } from '../owner-chat.js'
 import { logger } from '../logger.js'
 import { agentDir, readFileOr, findAvatarForAgent } from './agent-config.js'
@@ -9,7 +9,12 @@ import { TOOL_TIMEOUTS } from '../tool-timeouts.js'
 import { markIfTestRun } from '../test-run-marker.js'
 
 export function readAgentTelegramConfig(name: string): { hasTelegram: boolean; botUsername?: string } {
-  const envPath = join(agentDir(name), '.claude', 'channels', 'telegram', '.env')
+  // The main agent's channel state lives under ~/.claude/channels/telegram,
+  // not agents/<name>/... -- without this the detail modal showed the main
+  // agent as "Nincs bekötve" while this very bridge was delivering messages.
+  const envPath = name === MAIN_AGENT_ID
+    ? join(homedir(), '.claude', 'channels', 'telegram', '.env')
+    : join(agentDir(name), '.claude', 'channels', 'telegram', '.env')
   if (!existsSync(envPath)) return { hasTelegram: false }
   const content = readFileOr(envPath, '')
   const tokenMatch = content.match(/TELEGRAM_BOT_TOKEN=(.+)/)
