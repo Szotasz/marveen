@@ -1370,6 +1370,7 @@ function switchAgentTab(tab) {
   document.getElementById('tabChannel').hidden = tab !== 'channel'
   document.getElementById('tabSkills').hidden = tab !== 'skills'
   document.getElementById('tabTeam').hidden = tab !== 'team'
+  document.getElementById('tabMcpScope').hidden = tab !== 'mcp-scope'
   if (tab === 'channel') startChannelAutoPoll()
   else stopChannelAutoPoll()
 }
