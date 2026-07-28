@@ -11844,6 +11844,11 @@ function renderOnboarding(s) {
     el.classList.toggle('active', n === step)
     el.classList.toggle('done', n < step)
   })
+  // The steps build on each other and the system only comes alive at the end
+  // of step 4 -- say so, or a fresh installer reads step 2's "saved" as "done"
+  // and every later "bot token not found" as a failure (BK bootcamp, 07-28).
+  const flowNote = document.getElementById('onbFlowNote')
+  if (flowNote) flowNote.textContent = step === 4 ? t('onboarding.flow_note_last') : t('onboarding.flow_note')
   const body = document.getElementById('onboardingBody')
   if (step === 1) body.innerHTML = onbIdentityHtml(s)
   else if (step === 2) body.innerHTML = onbStep1Html(s)

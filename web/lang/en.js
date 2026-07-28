@@ -1510,6 +1510,8 @@ window._i18n.en = {
   'onboarding.step1.token_empty':'Paste the token.',
   'onboarding.step1.saved_verified':   'Token saved and verified.',
   'onboarding.step1.saved_unverified': 'Token saved (verification did not run, it may still be valid).',
+  'onboarding.flow_note': 'The four steps build on each other: the system starts and begins responding after step 4 (pairing). Until then, messages about missing steps are normal.',
+  'onboarding.flow_note_last': 'This is the last step: after pairing, the system goes live.',
   'onboarding.step1.saved_restarted': 'Token saved, the agent restarted with the new credentials.',
   'onboarding.step1.saved_restart_failed': 'Token saved, but restarting the agent failed. Restart it manually (Linux: systemctl --user restart marveen-channels), then come back here.',
   'onboarding.step1.launching':  'Launching...',

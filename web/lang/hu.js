@@ -1507,6 +1507,8 @@ window._i18n.hu = {
   'onboarding.step1.token_empty':'Illeszd be a tokent.',
   'onboarding.step1.saved_verified':   'Token elmentve és ellenőrizve.',
   'onboarding.step1.saved_unverified': 'Token elmentve (az ellenőrzés nem futott le, ettől még jó lehet).',
+  'onboarding.flow_note': 'A négy lépés egymásra épül: a rendszer a 4. lépés (párosítás) után indul el és kezd válaszolni. Addig a hiányzó lépésekre hivatkozó üzenetek normálisak.',
+  'onboarding.flow_note_last': 'Ez az utolsó lépés: a párosítás után a rendszer élesben elindul.',
   'onboarding.step1.saved_restarted': 'Token elmentve, az ügynök újraindult az új hitelesítéssel.',
   'onboarding.step1.saved_restart_failed': 'A token elmentve, de az ügynök újraindítása nem sikerült. Indítsd újra kézzel (Linux: systemctl --user restart marveen-channels), aztán térj vissza ide.',
   'onboarding.step1.launching':  'Indítás...',
