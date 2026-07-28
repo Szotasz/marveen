@@ -565,7 +565,7 @@ function applyMarveenReadonlyMode(readOnly) {
   // doesn't look like the row is missing -- the other save buttons (tied to
   // readonly textareas) are hidden because the textareas are also hidden by
   // the readonly note flow.
-  const hideButtonIds = ['saveClaudeMdBtn', 'saveSoulMdBtn', 'saveMcpJsonBtn', 'saveAuthModeBtn']
+  const hideButtonIds = ['saveClaudeMdBtn', 'saveSoulMdBtn', 'saveMcpJsonBtn', 'saveAuthModeBtn', 'saveMcpScopeBtn']
   const disableButtonIds = ['saveModelBtn']
   for (const id of textareaIds) {
     const el = document.getElementById(id)
@@ -955,6 +955,9 @@ async function openAgentDetail(agentName) {
 
   // Skills tab
   await _loadSkills?.(currentAgent.name)
+
+  // MCP scope tab
+  await loadMcpScope(currentAgent)
 
   // Process control
   updateProcessControl(currentAgent)
