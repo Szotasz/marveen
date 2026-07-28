@@ -3005,7 +3005,11 @@
         <h2 id="memModalTitle">Uj emlek</h2>
         <button class="modal-close" id="memModalClose">&times;</button>
       </div>
-      <div class="modal-body">
+      <div class="tab-nav" id="memModalTabNav">
+        <button class="tab-btn active" data-mem-tab="edit" data-i18n="memories.modal.tab_edit">Szerkesztés</button>
+        <button class="tab-btn" data-mem-tab="history" id="memHistoryTabBtn" hidden data-i18n="memories.modal.tab_history">Előzmények</button>
+      </div>
+      <div class="modal-body" id="memEditPanel">
         <div class="form-row">
           <div class="form-group form-half">
             <label for="memAgent" data-i18n="common.agent">Ügynök</label>
@@ -3031,6 +3035,9 @@
         </div>
         <input type="hidden" id="memEditId">
         <button class="btn-primary" id="saveMemBtn" data-i18n="common.btn.save">Mentés</button>
+      </div>
+      <div class="modal-body" id="memHistoryPanel" hidden>
+        <div id="memVersionList" class="mem-version-list"></div>
       </div>
     </div>
   </div>
