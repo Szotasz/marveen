@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT, MAIN_AGENT_ID, BOT_NAME } from '../../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, currentBotName } from '../../config.js'
 import { getDb, countTaskRunsBetween } from '../../db.js'
 import {
   agentDir, listAgentNames, readAgentDisplayName,
@@ -126,7 +126,7 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     ].some(existsSync)
     agentsForTeam.push({
       id: MAIN_AGENT_ID,
-      label: BOT_NAME,
+      label: currentBotName(),
       role: 'main',
       running: true,
       hasAvatar: mainHasAvatar,

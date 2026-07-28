@@ -152,6 +152,23 @@ export function resolveBrandName(brandEnv: string | undefined, botName: string):
   return b || botName
 }
 
+// Per-call reads of the two display names, so a wizard rename shows up on the
+// dashboard without a process restart. BOT_NAME/BRAND_NAME above are frozen at
+// module load; the identity/label routes read these instead. Display only --
+// MAIN_AGENT_ID / SERVICE_ID stay the boot-time constants (they key tmux
+// sessions, service units and DB rows, and are never rewritten at runtime).
+export function currentBotName(): string {
+  const b = (readEnvFile(['BOT_NAME'])['BOT_NAME'] ?? '').trim()
+  return b || BOT_NAME
+}
+export function currentBrandName(): string {
+  return resolveBrandName(readEnvFile(['BRAND_NAME'])['BRAND_NAME'], currentBotName())
+}
+export function currentOwnerName(): string {
+  const o = (readEnvFile(['OWNER_NAME'])['OWNER_NAME'] ?? '').trim()
+  return o || OWNER_NAME
+}
+
 // Pure derivation of the OS service id from a brand slug and the agent id:
 // the brand slug names the service units when it differs from the agent id,
 // otherwise the agent id is used. Mirrors the installer's SERVICE_ID choice so

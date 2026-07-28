@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import {
   listPendingTaskRetries, deletePendingTaskRetryById, listTaskRunHistory,
 } from '../../db.js'
-import { MAIN_AGENT_ID, BOT_NAME } from '../../config.js'
+import { MAIN_AGENT_ID, currentBotName } from '../../config.js'
 import { runAgent } from '../../agent.js'
 import { logger } from '../../logger.js'
 import { toPendingRetryView } from '../../pending-retries.js'
@@ -41,7 +41,7 @@ export async function tryHandleSchedules(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/schedules/agents' && method === 'GET') {
     const agentNames = listAgentNames()
     const agents = [
-      { name: MAIN_AGENT_ID, label: BOT_NAME, avatar: '/api/marveen/avatar' },
+      { name: MAIN_AGENT_ID, label: currentBotName(), avatar: '/api/marveen/avatar' },
       ...agentNames.map(n => ({ name: n, label: n, avatar: `/api/agents/${encodeURIComponent(n)}/avatar` }))
     ]
     json(res, agents)

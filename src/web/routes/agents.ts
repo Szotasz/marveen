@@ -3,7 +3,7 @@ import { join, extname, dirname } from 'node:path'
 import { homedir, platform, tmpdir } from 'node:os'
 import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
-import { MAIN_AGENT_ID, BOT_NAME, PROJECT_ROOT } from '../../config.js'
+import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
 import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed } from '../../db.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
@@ -1169,7 +1169,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }> = []
     nodes.push({
       id: MAIN_AGENT_ID,
-      label: BOT_NAME,
+      label: currentBotName(),
       role: 'main',
       reportsTo: null,
       delegatesTo: [],

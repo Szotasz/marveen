@@ -134,6 +134,17 @@ function identityConfirmed(): boolean {
   return readEnvValue('IDENTITY_CONFIRMED') === '1'
 }
 
+// Pure decision core of the identity save. BOT_NAME is always written (it is
+// display-only -- measured 2026-07-28, WIZNAME1: every tmux/unit/DB key
+// resolves from MAIN_AGENT_ID/SERVICE_ID, never from BOT_NAME). The channels
+// session is bounced only on a first-run save with the fleet already up (the
+// installer-started path, where the session is fresh setup state); a re-save
+// on a configured install never implicitly restarts a working fleet and
+// reports restartNeeded instead.
+export function identitySavePlan(servicesUp: boolean, firstRun: boolean): { restart: boolean; restartNeeded: boolean } {
+  return { restart: servicesUp && firstRun, restartNeeded: servicesUp && !firstRun }
+}
+
 export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -160,14 +171,19 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
 
   // Identity step: agent display name + owner name. SAFETY: MAIN_AGENT_ID and
   // SERVICE_ID are baked into the plumbing at install time (tmux session name,
-  // DB rows, OS service-unit names) -- rewriting them after the services exist
-  // orphans running units and can lock the owner out. The display name and the
-  // internal id may freely differ, so:
-  //   - services not yet launched: BOT_NAME + BRAND_NAME + OWNER_NAME may all
-  //     be set (launch picks them up from .env); the id plumbing stays as the
-  //     installer derived it.
-  //   - services already running: only BRAND_NAME + OWNER_NAME + the persona
-  //     files change. BOT_NAME is left alone with the rest of the plumbing.
+  // DB rows, OS service-unit names) -- rewriting THOSE after the services exist
+  // orphans running units and can lock the owner out, so this handler never
+  // touches them. BOT_NAME however is display-only (measured 2026-07-28,
+  // WIZNAME1: every session/unit/DB key resolves from MAIN_AGENT_ID/SERVICE_ID;
+  // BOT_NAME feeds labels, message prefixes and persona prose), so it is always
+  // written -- the old !servicesUp guard silently dropped the rename on every
+  // installer-started (VPS) setup, where the wizard runs with the fleet already
+  // up. Because a running process never re-reads .env, a first-run save with
+  // the fleet up also restarts the channels session (same rule as the
+  // claude-auth step: the session is freshly spawned setup state, bouncing it
+  // loses nothing). A re-save on an already-confirmed install keeps the
+  // no-implicit-restart-of-a-working-fleet behaviour and reports
+  // restartNeeded instead.
   if (path === '/api/onboarding/identity' && method === 'POST') {
     let body: { agentName?: string; ownerName?: string } = {}
     try { body = JSON.parse((await readBody(req)).toString()) as typeof body } catch { /* empty */ }
@@ -180,12 +196,13 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     }
 
     const servicesUp = agentsRunning()
+    const firstRun = !identityConfirmed()
     const prevAgentName = readEnvValue('BOT_NAME') || 'Marveen'
     const prevOwnerName = readEnvValue('OWNER_NAME') || ''
     try {
       setEnvKey('OWNER_NAME', ownerName)
       setEnvKey('BRAND_NAME', agentName)
-      if (!servicesUp) setEnvKey('BOT_NAME', agentName)
+      setEnvKey('BOT_NAME', agentName)
       setEnvKey('IDENTITY_CONFIRMED', '1')
     } catch (err) {
       logger.error({ err }, 'onboarding: failed to persist identity to .env')
@@ -204,8 +221,30 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       logger.warn({ err }, 'onboarding: persona rename failed (identity saved to .env regardless)')
     }
 
-    logger.info({ servicesUp, botNameUpdated: !servicesUp }, 'onboarding: identity configured')
-    json(res, { ok: true, botNameUpdated: !servicesUp })
+    // A running session never re-reads .env or its spawn-time persona, so a
+    // first-run save with the fleet already up (the installer-started VPS
+    // path) bounces the channels session to pick the name up -- setup state
+    // only, nothing to lose. Outside first-run we never implicitly restart a
+    // working fleet; the wizard copy surfaces restartNeeded instead.
+    let restarted = false
+    let restartError: string | null = null
+    const plan = identitySavePlan(servicesUp, firstRun)
+    const restartNeeded = plan.restartNeeded
+    if (plan.restart) {
+      const r = hardRestartMarveenChannels()
+      restarted = r.ok
+      if (!r.ok) restartError = r.error || 'restart failed'
+      if (r.ok) logger.info('onboarding: channels restarted so the new identity is picked up')
+      else logger.error({ error: restartError }, 'onboarding: channels restart after identity save FAILED')
+    }
+    logger.info({ servicesUp, firstRun, restarted, botNameUpdated: true }, 'onboarding: identity configured')
+    json(res, {
+      ok: true,
+      botNameUpdated: true,
+      restarted,
+      ...(restartError ? { restartError } : {}),
+      ...(restartNeeded ? { restartNeeded } : {}),
+    })
     return true
   }
 
