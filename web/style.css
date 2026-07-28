@@ -7093,7 +7093,12 @@ body {
 .updates-version-details .updates-commit-list { padding: 10px 0 2px; }
 /* First-run onboarding wizard */
 .onboarding-overlay { z-index: 10000; }
-.onboarding-modal { max-width: 540px; width: 92%; position: relative; }
+/* The base .modal ships zero padding (other modals pad via .modal-header /
+   .modal-body); the onboarding wizard renders its content directly, so it
+   needs its own inner padding -- without it the title and inputs sit flush
+   against the modal edge (first screen every fresh install sees). */
+.onboarding-modal { max-width: 540px; width: 92%; position: relative; padding: 24px 26px 22px; }
+@media (max-width: 600px) { .onboarding-modal { padding: 18px 16px 16px; } }
 .onboarding-modal .modal-close { position: absolute; top: 12px; right: 12px; }
 .onboarding-modal h2 { margin: 0 0 4px; }
 .onb-sub { color: var(--text-muted); font-size: 13px; margin: 0 0 16px; }

@@ -1510,6 +1510,8 @@ window._i18n.en = {
   'onboarding.step1.token_empty':'Paste the token.',
   'onboarding.step1.saved_verified':   'Token saved and verified.',
   'onboarding.step1.saved_unverified': 'Token saved (verification did not run, it may still be valid).',
+  'onboarding.step1.saved_restarted': 'Token saved, the agent restarted with the new credentials.',
+  'onboarding.step1.saved_restart_failed': 'Token saved, but restarting the agent failed. Restart it manually (Linux: systemctl --user restart marveen-channels), then come back here.',
   'onboarding.step1.launching':  'Launching...',
   'onboarding.step1.launched':   'Agents are starting...',
   'onboarding.step2.tab':        'Telegram bot',

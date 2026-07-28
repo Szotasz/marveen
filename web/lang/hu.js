@@ -1507,6 +1507,8 @@ window._i18n.hu = {
   'onboarding.step1.token_empty':'Illeszd be a tokent.',
   'onboarding.step1.saved_verified':   'Token elmentve és ellenőrizve.',
   'onboarding.step1.saved_unverified': 'Token elmentve (az ellenőrzés nem futott le, ettől még jó lehet).',
+  'onboarding.step1.saved_restarted': 'Token elmentve, az ügynök újraindult az új hitelesítéssel.',
+  'onboarding.step1.saved_restart_failed': 'A token elmentve, de az ügynök újraindítása nem sikerült. Indítsd újra kézzel (Linux: systemctl --user restart marveen-channels), aztán térj vissza ide.',
   'onboarding.step1.launching':  'Indítás...',
   'onboarding.step1.launched':   'Ügynökök indítása folyamatban...',
   'onboarding.step2.tab':        'Telegram bot',
