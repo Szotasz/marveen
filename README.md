@@ -15,7 +15,7 @@
 
 > **Fork.** Ez a repó a [Szotasz/marveen](https://github.com/Szotasz/marveen) önálló forkja, amely `fork-point` (2026-07-26, baseline: upstream `55ecbc6`) óta függetlenül fejlődik. Az upstream javításokat szelektíven vesszük át (`git fetch upstream` + cherry-pick). Hozzájárulásokat ehhez a forkhoz várunk PR-ként. Az AI által generált monolitikus kódot felhagyva, modularizált verzió alkotása a célom, amelyben nagyságrendekkel kisebb tokenhasználatot emészt fel magának a keretrendszernek a használata.
 
-## A cett hozzájárulásai az eredeti Marveen repóhoz
+## Jónás Gergő (cett) hozzájárulásai az eredeti Marveen repóhoz
 
 A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás Gergő (cett) 56 commitot küldött be. Az alábbiakban funkcionális csoportosításban:
 
@@ -31,11 +31,7 @@ A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás
 - **Ütemezés és megbízhatóság** -- scheduled-task fire-timeout (#665); heartbeat-precheck (#482); per-tool kimenő HTTP-határidő (#561); watchdog restart-flapping javítás (#483)
 - **Tool-call audit metadata** (#667); plugin-id centralizálás (#673); telepítő: Go + bumblebee auto-install (#432); frontend smoke-test + syntax-gate CI (#423)
 
-## Miben tér el ez a fork az eredeti Marveen aktuális állapotától
-
-*Állapot: upstream `b56c73d` vs fork `fcd6058`, 2026-07-27*
-
-## Változások, amelyek a forkban megvannak, az upstreamben nincsenek:
+## Változások/bővítések, amelyek a forkban megvannak, az upstreamben nincsenek:
 
 - **Device-key SSH revocation gap** -- `DELETE /api/auth/device-keys/:id` korábban csak az adatbázis-rekordot és a Bearer-credentialt törölte, az SSH `authorized_keys` bejegyzés érintetlen maradt (a Bridge `bridge-enroll.ts` törlésével eltűnt a `removeBridgeSshAccess` hívás). Javítás: `0003_device_key_install_id` migráció hozzáadja az `install_id` oszlopot a `device_keys` táblához; `remote-enroll-core.ts` megkapja a `removeAuthorizedKey` (pure) függvényt; `remote-enroll-fs.ts` megkapja a `removeEnrolledKey` (lockedread-modify-write) és `removeBridgeSshAccess` függvényeket; `auth-device-keys.ts` tárolja az `installId`-t mintegésnél és `getDeviceKey` hívással visszaadja revocationkor; az auth.ts DELETE handler mindkét oldalt egyszerre vonja vissza (SSH-oldal hiba esetén nem állítja vissza a már törölt DB-rekordot)
 - **Dashboard overview-redesign** -- 5-zónás layout, KPI-konsistencia-fix
