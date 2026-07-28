@@ -494,6 +494,15 @@ export function writeAgentVoiceConfig(name: string, patch: Partial<AgentVoiceCon
 // need a directory on disk. One fs stat per call -- the router calls this
 // twice per pending message on its 5s tick, roughly 10-20 stats per tick
 // in practice, no memoisation needed.
+// The dashboard's agent list carries the main agent under its DISPLAY name
+// ("Marveen"), while every config path uses MAIN_AGENT_ID ("marveen"). Routes
+// that receive a client-supplied agent name resolve the main agent
+// case-insensitively through this helper; sub-agent names stay exact (their
+// identity is the on-disk directory name).
+export function canonicalAgentName(raw: string): string {
+  return raw && raw.toLowerCase() === MAIN_AGENT_ID.toLowerCase() ? MAIN_AGENT_ID : raw
+}
+
 export function isKnownAgent(name: string): boolean {
   if (!name) return false
   if (name === MAIN_AGENT_ID) return true

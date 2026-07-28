@@ -41,6 +41,7 @@ import {
   readAgentVoiceConfig,
   writeAgentVoiceConfig,
   KNOWN_VOICE_MODELS,
+  canonicalAgentName,
   type AuthMode,
 } from '../agent-config.js'
 import { readClaudePlans, resolveAgentConfigDir } from '../claude-plans.js'
@@ -1798,14 +1799,17 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
   const agentMatch = path.match(/^\/api\/agents\/([^/]+)$/)
   if (agentMatch && method === 'GET') {
-    const name = decodeURIComponent(agentMatch[1])
+    // canonicalAgentName: the agent list shows the main agent's DISPLAY name
+    // ("Marveen"); an exact-match lookup 404'd here, which silently aborted the
+    // dashboard's agent editor for the main agent (card #95).
+    const name = canonicalAgentName(decodeURIComponent(agentMatch[1]))
     if (!isKnownAgent(name)) { json(res, { error: 'Agent not found' }, 404); return true }
     json(res, getAgentDetail(name))
     return true
   }
 
   if (agentMatch && method === 'PUT') {
-    const name = decodeURIComponent(agentMatch[1])
+    const name = canonicalAgentName(decodeURIComponent(agentMatch[1]))
     if (!isKnownAgent(name)) { json(res, { error: 'Agent not found' }, 404); return true }
     const body = await readBody(req)
     const configRoot = agentConfigRoot(name)
