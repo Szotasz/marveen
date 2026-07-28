@@ -40,14 +40,23 @@ import urllib.parse
 # which only 5.5s was CPU. That silently blew the dashboard's 60s STT timeout, so
 # /api/voice/directive returned transcript=null and voice messages reached the agent
 # untranscribed -- a failure with no error anywhere, just a missing transcript.
+# PREFER IPv4, do not EXCLUDE IPv6: an AF_INET-only override would turn a working
+# IPv6-only host into a dead one (ENETUNREACH -> transcript=null), which is the same
+# silent failure this patch exists to remove, just relocated. Ordering keeps the whole
+# measured benefit -- the stalling AAAA attempt no longer comes first -- while a host
+# with no IPv4 route still resolves and connects. The caller's own `family` argument is
+# passed through untouched, so an explicit AF_INET6 lookup still gets what it asked for.
 _orig_getaddrinfo = socket.getaddrinfo
 
 
-def _getaddrinfo_ipv4(host, port, family=0, *args, **kwargs):
-    return _orig_getaddrinfo(host, port, socket.AF_INET, *args, **kwargs)
+def _getaddrinfo_ipv4_first(host, port, family=0, *args, **kwargs):
+    results = _orig_getaddrinfo(host, port, family, *args, **kwargs)
+    # Stable sort: AF_INET entries move to the front, every other family keeps the
+    # relative order the resolver returned.
+    return sorted(results, key=lambda entry: 0 if entry[0] == socket.AF_INET else 1)
 
 
-socket.getaddrinfo = _getaddrinfo_ipv4
+socket.getaddrinfo = _getaddrinfo_ipv4_first
 # urlretrieve() takes no timeout kwarg -- bound it here so a stalled download can never
 # hang unbounded again.
 socket.setdefaulttimeout(60)
