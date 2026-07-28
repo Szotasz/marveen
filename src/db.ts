@@ -525,17 +525,33 @@ export function updateMemory(
   modifiedBy?: string,
 ): boolean {
   const now = Math.floor(Date.now() / 1000)
+
+  // Capture old state before the update so we can write a version record with
+  // the correct changed_by (modifiedBy or agentId) without touching agent_id.
+  const current = db.prepare(
+    'SELECT content, category, keywords, agent_id FROM memories WHERE id = ?'
+  ).get(id) as { content: string; category: string; keywords: string | null; agent_id: string } | undefined
+
+  if (current) {
+    const newCategory = category || current.category
+    const newKeywords = keywords !== undefined ? keywords : current.keywords
+    const contentChanged = content !== current.content
+    const categoryChanged = newCategory !== current.category
+    const keywordsChanged = newKeywords !== current.keywords
+    if (contentChanged || categoryChanged || keywordsChanged) {
+      const changeType = categoryChanged && !contentChanged ? 'category_change' : 'update'
+      const changedBy = modifiedBy || agentId || current.agent_id
+      db.prepare(
+        'INSERT INTO memory_versions(memory_id, content, category, keywords, changed_at, changed_by, change_type) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).run(id, current.content, current.category, current.keywords, now, changedBy, changeType)
+    }
+  }
+
   const sets: string[] = ['content = ?', 'accessed_at = ?', 'updated_at = ?']
   const params: unknown[] = [content, now, now]
   if (category) { sets.push('category = ?'); params.push(category) }
   if (agentId) { sets.push('agent_id = ?'); params.push(agentId) }
   if (keywords !== undefined) { sets.push('keywords = ?'); params.push(keywords) }
-  // modifiedBy is stored via the trigger's changed_by field; pass it through
-  // agent_id so the trigger can pick it up via NEW.agent_id fallback.
-  // When caller supplies a distinct modifiedBy, we temporarily surface it there.
-  if (modifiedBy && modifiedBy !== agentId) {
-    sets.push('agent_id = ?'); params.push(modifiedBy)
-  }
   params.push(id)
   const changed = db.prepare(`UPDATE memories SET ${sets.join(', ')} WHERE id = ?`).run(...params).changes > 0
   if (changed && agentId) memoryCacheInvalidate(agentId)

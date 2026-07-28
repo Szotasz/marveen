@@ -30,26 +30,8 @@ CREATE TABLE IF NOT EXISTS memory_versions (
 );
 CREATE INDEX IF NOT EXISTS idx_memory_versions_memory ON memory_versions(memory_id, changed_at DESC);
 
--- 4. Trigger: capture old content into memory_versions before an update
--- Fires when content, category, or keywords change -- not on accessed_at bumps.
-CREATE TRIGGER IF NOT EXISTS memories_version_before_update
-BEFORE UPDATE ON memories
-WHEN OLD.content   != NEW.content
-  OR OLD.category  != NEW.category
-  OR OLD.keywords  IS NOT NEW.keywords
-BEGIN
-  INSERT INTO memory_versions(memory_id, content, category, keywords, changed_at, changed_by, change_type)
-  VALUES (
-    OLD.id,
-    OLD.content,
-    OLD.category,
-    OLD.keywords,
-    unixepoch(),
-    COALESCE(NEW.agent_id, OLD.agent_id),
-    CASE
-      WHEN OLD.content != NEW.content AND OLD.category != NEW.category THEN 'update'
-      WHEN OLD.category != NEW.category                                THEN 'category_change'
-      ELSE 'update'
-    END
-  );
-END;
+-- 4. Version capture is handled explicitly in updateMemory() (db.ts) to avoid
+-- ownership corruption: a trigger using NEW.agent_id as changed_by would
+-- overwrite the memory owner when a different agent edits it. The explicit
+-- approach reads old state first, inserts into memory_versions with the
+-- correct changed_by, then performs the UPDATE without touching agent_id.
