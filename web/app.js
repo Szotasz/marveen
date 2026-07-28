@@ -69,6 +69,22 @@ function avatarBust() { return _avatarEpoch ? `?t=${_avatarEpoch}` : '' }
       .catch(() => {})
   })
 
+  // System-cron menu is Linux-only. The server reports {available:false} on
+  // macOS (where launchd, not crontab, is the scheduler), so hide the sidebar
+  // item there rather than show a misleading empty crontab. display:none (not
+  // [hidden]) because .sb-link is display:flex, which would override [hidden].
+  queueMicrotask(() => {
+    fetch('/api/system-cron')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data && data.available === false) {
+          const link = document.querySelector('.sb-link[data-page="systemCron"]')
+          if (link) link.style.display = 'none'
+        }
+      })
+      .catch(() => {})
+  })
+
   window.setLang = function setLang(lang) {
     if (!VALID.has(lang)) return
     window._lang = lang
@@ -379,6 +395,7 @@ function switchPage(pageId) {
   if (pageId === 'docs') loadDocs()
   if (pageId === 'research') loadResearch()
   if (pageId === 'status') loadStatus()
+  if (pageId === 'systemCron') loadSystemCron()
   if (pageId === 'recall') loadRecallPage()
   if (pageId === 'bgTasks') loadBgTasksPage()
   if (pageId === 'vault') loadVaultPage()
@@ -434,7 +451,7 @@ const SIDEBAR_GROUPS = [
   { key: 'team',        labelKey: 'nav.group.team',        pages: ['agents', 'activity', 'messages', 'tasks', 'bgTasks'] },
   { key: 'knowledge',   labelKey: 'nav.group.knowledge',   pages: ['memories', 'skills', 'research', 'ideas'] },
   { key: 'stats',       labelKey: 'nav.group.stats',       pages: ['costs', 'tokenUsage'] },
-  { key: 'system',      labelKey: 'nav.group.system',      pages: ['status', 'naplo', 'updates', 'settings', 'vault'] },
+  { key: 'system',      labelKey: 'nav.group.system',      pages: ['status', 'naplo', 'updates', 'settings', 'vault', 'systemCron'] },
   { key: 'connections', labelKey: 'nav.group.connections', pages: ['connectors', 'federation', 'migrate'] },
 ]
 const sidebarGroupEls = document.querySelectorAll('.sb-group[data-group]')
@@ -9616,6 +9633,74 @@ async function loadStatus() {
   } catch (err) {
     overallEl.className = 'status-overall unknown'
     overallEl.textContent = 'Nem sikerult betolteni a statuszt'
+  }
+}
+
+// === System Cron (read-only view of `crontab -l`) ===
+const refreshSystemCronBtn = document.getElementById('refreshSystemCronBtn')
+if (refreshSystemCronBtn) refreshSystemCronBtn.addEventListener('click', loadSystemCron)
+
+async function loadSystemCron() {
+  const wrap = document.getElementById('systemCronTableWrap')
+  const body = document.getElementById('systemCronTableBody')
+  const empty = document.getElementById('systemCronEmpty')
+  const errEl = document.getElementById('systemCronError')
+
+  body.innerHTML = ''
+  errEl.hidden = true
+  errEl.textContent = ''
+
+  try {
+    const res = await fetch('/api/system-cron')
+    const data = await res.json()
+
+    // Platform gate: on a platform with no provider (macOS today) the menu item
+    // is already hidden at boot, but guard a deep-link too.
+    if (data.available === false) {
+      wrap.hidden = true
+      empty.hidden = false
+      const p = empty.querySelector('p')
+      if (p) p.textContent = t('systemCron.unavailable')
+      return
+    }
+
+    if (data.error) {
+      errEl.textContent = t('systemCron.error') + ' ' + data.error
+      errEl.hidden = false
+    }
+
+    const entries = Array.isArray(data.entries) ? data.entries : []
+    if (entries.length === 0) {
+      wrap.hidden = true
+      empty.hidden = false
+      return
+    }
+
+    empty.hidden = true
+    wrap.hidden = false
+
+    for (const e of entries) {
+      const tr = document.createElement('tr')
+      const nextRun = e.nextRun
+        ? new Date(e.nextRun * 1000).toLocaleString('hu-HU', { timeZone: 'Europe/Budapest' })
+        : '—'
+      const cmd = e.command || e.raw || ''
+      const redirect = e.redirect
+        ? `<span class="syscron-redirect" title="${escapeHtml(e.redirect)}">${escapeHtml(e.redirect)}</span>`
+        : ''
+      tr.innerHTML = `
+        <td class="ssh-table-mono">${escapeHtml(e.schedule || '—')}</td>
+        <td>${escapeHtml(nextRun)}</td>
+        <td class="ssh-table-mono syscron-cmd">${escapeHtml(cmd)}${redirect}</td>
+        <td>${e.comment ? escapeHtml(e.comment) : '—'}</td>
+      `
+      body.appendChild(tr)
+    }
+  } catch (err) {
+    wrap.hidden = true
+    empty.hidden = true
+    errEl.textContent = t('systemCron.error')
+    errEl.hidden = false
   }
 }
 

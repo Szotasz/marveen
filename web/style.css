@@ -4502,6 +4502,27 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   .ssh-section-header { flex-direction: column; }
 }
 
+/* System cron (read-only) */
+.syscron-note {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  border-left: 3px solid var(--border);
+  background: var(--bg-card);
+  border-radius: var(--radius);
+}
+.syscron-error {
+  font-size: 13px;
+  color: var(--danger, #d9534f);
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--danger, #d9534f);
+  border-radius: var(--radius);
+}
+.syscron-cmd { word-break: break-all; }
+.syscron-redirect { margin-left: 6px; opacity: 0.6; font-size: 11px; }
+
 /* SSH keygen + info modal styles */
 .ssh-pubkey-label {
   display: flex;

@@ -86,6 +86,7 @@ window._i18n.hu = {
   'nav.approvals':    'Jóváhagyások',
   'nav.settings':     'Beállítások',
   'nav.vault':        'Vault',
+  'nav.systemCron':   'Cron',
   'nav.tokenUsage':   'Token Monitor',
   'nav.ideas':        'Ötletláda',
   'nav.group.team':        'Csapat',
@@ -873,6 +874,17 @@ window._i18n.hu = {
   'status.comp.partial_outage':  'részleges kimaradás',
   'status.comp.major_outage':    'kimaradás',
   'status.comp.maintenance':     'karbantartás',
+  // --- System cron (read-only) ---
+  'systemCron.page_title':       'Cron',
+  'systemCron.page_subtitle':    'Read-only nézet a rendszer crontab bejegyzéseiről (crontab -l)',
+  'systemCron.readonly_note':    'Csak olvasható. Ezek a rendszer crontab (crontab -l) bejegyzései, itt nem szerkeszthetők.',
+  'systemCron.col.schedule':     'Cron-kifejezés',
+  'systemCron.col.next':         'Következő futás',
+  'systemCron.col.command':      'Parancs',
+  'systemCron.col.comment':      'Megjegyzés',
+  'systemCron.empty':            'Nincs rendszer-cron bejegyzés',
+  'systemCron.error':            'Nem sikerült a rendszer-cron lekérése.',
+  'systemCron.unavailable':      'Ez a nézet csak Linuxon érhető el. macOS-en a launchd az ütemező (később kerül támogatásra).',
 
   // --- Costs (CostOps v0.1, PR #524) ---
   'costs.page_title':            'Költségek',

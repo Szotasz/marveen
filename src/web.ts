@@ -61,6 +61,7 @@ import { tryHandleOverview } from './web/routes/overview.js'
 import { tryHandleUpdates } from './web/routes/updates.js'
 import { tryHandleOnboarding } from './web/routes/onboarding.js'
 import { tryHandleStatus } from './web/routes/status.js'
+import { tryHandleSystemCron } from './web/routes/system-cron.js'
 import { tryHandleAutonomy } from './web/routes/autonomy.js'
 import { tryHandleApprovals, startApprovalTimeoutSweeper } from './web/routes/approvals.js'
 import { tryHandleTokenUsage } from './web/routes/token-usage.js'
@@ -197,6 +198,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleUpdates(routeCtx)) return
       if (await tryHandleOnboarding(routeCtx)) return
       if (await tryHandleStatus(routeCtx)) return
+      if (await tryHandleSystemCron(routeCtx)) return
       if (await tryHandleAutonomy(routeCtx)) return
       if (await tryHandleApprovals(routeCtx)) return
       if (await tryHandleTokenUsage(routeCtx)) return
