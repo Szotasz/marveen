@@ -36,6 +36,10 @@ vi.mock('../db.js', () => ({
   getMemoriesForChat: mockGetMemoriesForChat,
   getDb: mockGetDb,
   touchMemoriesAccessed: mockTouchMemoriesAccessed,
+  recordMemoryRead: vi.fn(),
+  recordMemoryReadBatch: vi.fn(),
+  getStaleMemories: vi.fn().mockReturnValue([]),
+  getMemoryVersions: vi.fn().mockReturnValue([]),
 }))
 
 vi.mock('../config.js', () => ({

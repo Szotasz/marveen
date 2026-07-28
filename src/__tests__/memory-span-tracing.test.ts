@@ -1,0 +1,152 @@
+import { describe, it, expect, beforeAll } from 'vitest'
+import {
+  initDatabase, saveAgentMemory, updateMemory,
+  recordMemoryRead, recordMemoryReadBatch,
+  getStaleMemories, getMemoryVersions, getDb,
+} from '../db.js'
+
+beforeAll(() => {
+  initDatabase(':memory:')
+})
+
+// Helper: insert a memory and return its id
+function insertMem(content: string, category: string, agentId: string): number {
+  saveAgentMemory(agentId, content, category, 'test keywords')
+  const row = getDb()
+    .prepare('SELECT id FROM memories WHERE agent_id = ? ORDER BY id DESC LIMIT 1')
+    .get(agentId) as { id: number }
+  return row.id
+}
+
+// ── recordMemoryRead ────────────────────────────────────────────────────────
+
+describe('recordMemoryRead', () => {
+  it('inserts a row into span_reads', () => {
+    const id = insertMem('read-test content', 'warm', 'agent-a')
+    recordMemoryRead('agent-a', id, 'direct')
+    const row = getDb()
+      .prepare('SELECT * FROM span_reads WHERE agent_id = ? AND memory_id = ?')
+      .get('agent-a', id) as { context: string; read_at: number } | undefined
+    expect(row).toBeDefined()
+    expect(row!.context).toBe('direct')
+    expect(row!.read_at).toBeGreaterThan(0)
+  })
+
+  it('inserts multiple rows for different contexts', () => {
+    const id = insertMem('multi-context content', 'warm', 'agent-a')
+    recordMemoryRead('agent-a', id, 'search')
+    recordMemoryRead('agent-a', id, 'heartbeat')
+    const rows = getDb()
+      .prepare('SELECT context FROM span_reads WHERE memory_id = ? ORDER BY id DESC LIMIT 2')
+      .all(id) as { context: string }[]
+    expect(rows.map(r => r.context)).toEqual(expect.arrayContaining(['search', 'heartbeat']))
+  })
+})
+
+// ── recordMemoryReadBatch ───────────────────────────────────────────────────
+
+describe('recordMemoryReadBatch', () => {
+  it('inserts rows for every id in the batch', () => {
+    const idA = insertMem('batch-a', 'warm', 'agent-b')
+    const idB = insertMem('batch-b', 'cold', 'agent-b')
+    recordMemoryReadBatch('agent-b', [idA, idB], 'search')
+    const rows = getDb()
+      .prepare('SELECT memory_id FROM span_reads WHERE agent_id = ? AND context = ?')
+      .all('agent-b', 'search') as { memory_id: number }[]
+    const ids = rows.map(r => r.memory_id)
+    expect(ids).toContain(idA)
+    expect(ids).toContain(idB)
+  })
+
+  it('is a no-op for an empty array', () => {
+    const before = (getDb().prepare('SELECT COUNT(*) as c FROM span_reads').get() as { c: number }).c
+    recordMemoryReadBatch('agent-b', [], 'search')
+    const after = (getDb().prepare('SELECT COUNT(*) as c FROM span_reads').get() as { c: number }).c
+    expect(after).toBe(before)
+  })
+})
+
+// ── getStaleMemories ────────────────────────────────────────────────────────
+
+describe('getStaleMemories', () => {
+  it('returns memory never read by the agent', () => {
+    const id = insertMem('never-read content', 'warm', 'agent-c')
+    // Ensure updated_at is set (migration backfill covers created rows)
+    getDb().prepare('UPDATE memories SET updated_at = unixepoch() + 1 WHERE id = ?').run(id)
+    const stale = getStaleMemories('agent-c')
+    expect(stale.some(m => m.id === id)).toBe(true)
+  })
+
+  it('does not return memory read after its last update', () => {
+    const id = insertMem('fresh-read content', 'warm', 'agent-d')
+    getDb().prepare('UPDATE memories SET updated_at = unixepoch() - 100 WHERE id = ?').run(id)
+    // Read it AFTER the update
+    recordMemoryRead('agent-d', id, 'direct')
+    const stale = getStaleMemories('agent-d')
+    expect(stale.some(m => m.id === id)).toBe(false)
+  })
+
+  it('returns memory updated after the agent last read it', () => {
+    const id = insertMem('stale-after-update', 'warm', 'agent-e')
+    // Record a read first, then update the memory
+    recordMemoryRead('agent-e', id, 'direct')
+    getDb().prepare('UPDATE memories SET updated_at = unixepoch() + 9999, content = ? WHERE id = ?')
+      .run('updated stale content', id)
+    const stale = getStaleMemories('agent-e')
+    expect(stale.some(m => m.id === id)).toBe(true)
+  })
+
+  it('includes shared memories for any agent', () => {
+    const id = insertMem('shared-memory', 'shared', 'agent-f')
+    getDb().prepare('UPDATE memories SET updated_at = unixepoch() + 1 WHERE id = ?').run(id)
+    const stale = getStaleMemories('agent-g') // different agent
+    expect(stale.some(m => m.id === id)).toBe(true)
+  })
+})
+
+// ── getMemoryVersions ───────────────────────────────────────────────────────
+
+describe('getMemoryVersions', () => {
+  it('returns empty array when memory has never been updated', () => {
+    const id = insertMem('virgin content', 'warm', 'agent-h')
+    const versions = getMemoryVersions(id)
+    expect(versions).toHaveLength(0)
+  })
+
+  it('captures a version when content changes via updateMemory', () => {
+    const id = insertMem('original content', 'warm', 'agent-h')
+    updateMemory(id, 'updated content', 'warm', 'agent-h', 'keywords')
+    const versions = getMemoryVersions(id)
+    expect(versions).toHaveLength(1)
+    expect(versions[0].content).toBe('original content')
+    expect(versions[0].change_type).toBe('update')
+    expect(versions[0].changed_by).toBe('agent-h')
+  })
+
+  it('captures a version when category changes via updateMemory', () => {
+    const id = insertMem('category-change content', 'warm', 'agent-h')
+    updateMemory(id, 'category-change content', 'cold', 'agent-h', undefined)
+    const versions = getMemoryVersions(id)
+    expect(versions).toHaveLength(1)
+    expect(versions[0].category).toBe('warm')
+    expect(versions[0].change_type).toBe('category_change')
+  })
+
+  it('accumulates multiple versions in reverse chronological order', () => {
+    const id = insertMem('v1', 'warm', 'agent-h')
+    updateMemory(id, 'v2', 'warm', 'agent-h', undefined)
+    updateMemory(id, 'v3', 'cold', 'agent-h', undefined)
+    const versions = getMemoryVersions(id)
+    expect(versions.length).toBeGreaterThanOrEqual(2)
+    // Most recent change first
+    expect(versions[0].content).toBe('v2')
+    expect(versions[1].content).toBe('v1')
+  })
+
+  it('does not create a version when only accessed_at changes', () => {
+    const id = insertMem('access-only', 'warm', 'agent-h')
+    getDb().prepare('UPDATE memories SET accessed_at = unixepoch() + 1 WHERE id = ?').run(id)
+    const versions = getMemoryVersions(id)
+    expect(versions).toHaveLength(0)
+  })
+})

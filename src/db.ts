@@ -591,7 +591,7 @@ export function getStaleMemories(agentId: string): Memory[] {
 
 export function getMemoryVersions(memoryId: number): MemoryVersion[] {
   return db.prepare(
-    'SELECT * FROM memory_versions WHERE memory_id = ? ORDER BY changed_at DESC'
+    'SELECT * FROM memory_versions WHERE memory_id = ? ORDER BY changed_at DESC, id DESC'
   ).all(memoryId) as MemoryVersion[]
 }
 
