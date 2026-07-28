@@ -111,6 +111,26 @@ describe('ensureIsolatedChannelConfigDir', () => {
     expect(inst.plugins[TG][0].projectPath).toBe(join(SANDBOX, 'agents', 'testagent'))
   })
 
+  it('a CHANNEL-LESS agent (null provider) disables EVERY channel plugin', () => {
+    // AUTHISO25: dani/geri-class agents have no bot token at all. Their
+    // isolated settings.json must not enable any channel plugin -- a loaded
+    // plugin without an own token only fights the fleet over poller slots.
+    const cfg = ensureIsolatedChannelConfigDir('testagent', null)!
+    expect(cfg).toBe(join(SANDBOX, 'agents', 'testagent', '.claude-config'))
+    const s = JSON.parse(readFileSync(join(cfg, 'settings.json'), 'utf-8'))
+    expect(s.enabledPlugins[TG]).toBe(false)
+    expect(s.enabledPlugins[SL]).toBe(false)
+    expect(s.enabledPlugins[DI]).toBe(false)
+    expect(s.hooks).toEqual({ Stop: [] }) // shared non-plugin settings preserved
+  })
+
+  it('channel-less provisioning still carries NO .credentials.json', () => {
+    const cfg = ensureIsolatedChannelConfigDir('testagent', null)!
+    expect(existsSync(join(cfg, '.credentials.json'))).toBe(false)
+    // and the auth-independent parts are intact
+    expect(lstatSync(join(cfg, 'projects')).isSymbolicLink()).toBe(true)
+  })
+
   it('is idempotent: a second call leaves a valid isolated dir', () => {
     const first = ensureIsolatedChannelConfigDir('testagent', 'telegram')
     const second = ensureIsolatedChannelConfigDir('testagent', 'telegram')
@@ -148,5 +168,21 @@ describe('isolated-config launcher wiring', () => {
     // The warning branch keeps the pre-isolation behaviour rather than launching
     // a logged-out sub-agent.
     expect(SRC).toMatch(/no fleet OAuth token/)
+  })
+
+  it('isolates channel-less Claude-OAuth agents too (AUTHISO25), not only channel ones', () => {
+    // The shared root's rotating credential (macOS Keychain /.credentials.json)
+    // wins over a valid CLAUDE_CODE_OAUTH_TOKEN env var, so a shared-root agent
+    // 401s whenever it rotates -- the gate must not be hasChannel-only.
+    expect(SRC).toMatch(/const needsFleetOauth = isClaude && authMode !== 'api'/)
+    expect(SRC).toMatch(/\(hasChannel \|\| needsFleetOauth\) && name !== MAIN_AGENT_ID/)
+  })
+
+  it('passes a null provider for channel-less agents so no plugin gets enabled', () => {
+    expect(SRC).toMatch(/ensureIsolatedChannelConfigDir\(name, hasChannel \? agentProvider : null\)/)
+  })
+
+  it('keeps the plugin-slot collision alert scoped to channel agents', () => {
+    expect(SRC).toMatch(/if \(hasChannel\) maybeAlertSharedConfigCollision\(name\)/)
   })
 })

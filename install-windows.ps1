@@ -165,7 +165,7 @@ INSTALL_DIR="$installPath"
 
 # Clone repo
 if [ ! -d "\$INSTALL_DIR" ]; then
-    git clone https://github.com/Szotasz/marveen.git "\$INSTALL_DIR"
+    git clone --branch main https://github.com/Szotasz/marveen.git "\$INSTALL_DIR"
     echo '  ✓ Repó klónozva'
 else
     echo '  ✓ Marveen mappa már létezik'

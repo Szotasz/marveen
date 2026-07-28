@@ -1,25 +1,51 @@
-import { describe, it, expect, beforeEach, afterAll } from 'vitest'
-import { existsSync, readFileSync, rmSync } from 'node:fs'
-import {
+import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest'
+import { existsSync, mkdirSync, readFileSync, rmSync, mkdtempSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+
+// ENFORCED sandbox, not an assumed one. The previous version of this file
+// imported the real settings-store (STORE_DIR = <repoRoot>/store) and relied
+// on a comment claiming the checkout lives under /tmp; run in a production
+// checkout it rmSync'd the LIVE store/config-overrides.json (2026-07-27
+// incident: the deletion dropped MAIN_AGENT_ISOLATED_CONFIG and 401'd the
+// main agent that evening). STORE_DIR is baked into OVERRIDES_PATH at import
+// time, so the sandbox must be mocked in before the module loads.
+const SANDBOX = mkdtempSync(join(tmpdir(), 'settings-store-'))
+const STORE = join(SANDBOX, 'store')
+
+vi.mock('../config.js', async (orig) => {
+  const actual = await orig<typeof import('../config.js')>()
+  return { ...actual, PROJECT_ROOT: SANDBOX, STORE_DIR: STORE }
+})
+// The .env resolution layer reads the REAL repo-root .env (env.ts carries its
+// own PROJECT_ROOT), which would leak host state into the "falls back to the
+// registry default" assertion -- blank it.
+vi.mock('../env.js', async (orig) => {
+  const actual = await orig<typeof import('../env.js')>()
+  return { ...actual, readEnvFile: () => ({}) }
+})
+
+const {
   OVERRIDES_PATH,
   getEffectiveSettingValue,
   setOverride,
   getOverrides,
   reloadOverridesForTest,
-} from '../settings-store.js'
+} = await import('../settings-store.js')
 
-// This worktree's PROJECT_ROOT resolves under /tmp/marveen-dashboard-settings
-// (see config.ts: PROJECT_ROOT = join(__dirname, '..')), so OVERRIDES_PATH
-// here is isolated from any real fleet install -- safe to write/delete.
 describe('settings-store', () => {
+  it('resolves OVERRIDES_PATH inside the sandbox (the guard this suite relies on)', () => {
+    expect(OVERRIDES_PATH).toBe(join(STORE, 'config-overrides.json'))
+  })
+
   beforeEach(() => {
+    mkdirSync(STORE, { recursive: true })
     if (existsSync(OVERRIDES_PATH)) rmSync(OVERRIDES_PATH)
     reloadOverridesForTest()
   })
 
   afterAll(() => {
-    if (existsSync(OVERRIDES_PATH)) rmSync(OVERRIDES_PATH)
-    reloadOverridesForTest()
+    rmSync(SANDBOX, { recursive: true, force: true })
   })
 
   it('falls back to the registry default when no override and no .env value exist', () => {

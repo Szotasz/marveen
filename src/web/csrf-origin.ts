@@ -1,9 +1,17 @@
 // CSRF origin gate for state-changing (non-safe) HTTP requests.
 //
-// The dashboard's primary auth is the bearer token (see dashboard-auth.ts); this
-// origin check is defence-in-depth against a malicious website the user happens
-// to be visiting trying to drive the dashboard via the browser. We block writes
-// whose Origin is foreign.
+// The dashboard's primary auth is the bearer token (see dashboard-auth.ts). The
+// optional browser login adds a second, AMBIENT credential: the mv_session
+// cookie, which the browser attaches automatically to same-origin requests.
+// That is precisely why this Origin gate is now load-bearing rather than pure
+// belt-and-braces -- a foreign page could otherwise ride the ambient cookie.
+// Two independent layers defend it: (1) the session cookie is SameSite=Strict,
+// so browsers never attach it to a cross-site request at all, and (2) this gate
+// blocks any non-safe request whose Origin is foreign (covering the bearer path
+// and pre-SameSite/quirky clients too). A synthetic CSRF token would only add
+// value for a browser that ignores SameSite yet still passes this Origin check
+// -- not a real population -- so none is used. We block writes whose Origin is
+// foreign.
 //
 // The static allowlist (localhost / 127.0.0.1 / WEB_HOST / DASHBOARD_PUBLIC_URL)
 // can't know every hostname the dashboard is reached by -- in particular a

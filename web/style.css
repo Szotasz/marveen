@@ -248,6 +248,46 @@ body {
 .sb-link.active { color: var(--text); background: var(--accent-soft); }
 .sb-link.active svg { color: var(--accent); }
 .sb-badge { margin-left: auto; }
+
+/* === Collapsible sidebar groups === */
+.sb-group { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
+.sb-group-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.sb-group-header:hover { color: var(--text); background: var(--accent-soft); }
+.sb-group-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.sb-group-chevron { flex-shrink: 0; transition: transform var(--transition); }
+.sb-group.open .sb-group-chevron { transform: rotate(90deg); }
+.sb-group-items { display: flex; flex-direction: column; gap: 2px; }
+.sb-group:not(.open) .sb-group-items { display: none; }
+/* Docs pinned to the sidebar bottom, just above the lang/theme row. Sits
+ * outside the scrolling .sidebar-nav (flex:1), so it stays visible however
+ * long the open group list gets. Separator reuses the .sidebar-footer
+ * border-top pattern. */
+.sidebar-docs {
+  padding-top: 12px;
+  padding-bottom: 12px;
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
 .sidebar-footer {
   padding-top: 12px;
   border-top: 1px solid var(--border);
@@ -408,6 +448,15 @@ nav { display: flex; gap: 4px; }
 .team-node:hover { border-color: var(--accent); transform: translateY(-1px); }
 .team-node.main { background: var(--accent-soft); border-color: var(--accent); }
 .team-node.leader { border-color: var(--accent); }
+/* Drag-and-drop reporting edit (Team page). */
+.team-node.team-draggable { cursor: grab; }
+.team-node.team-dragging { opacity: 0.45; cursor: grabbing; }
+.team-node.team-drop-target {
+  border-color: var(--accent);
+  border-style: dashed;
+  background: var(--accent-soft);
+  transform: translateY(-1px);
+}
 .team-node-avatar {
   width: 56px;
   height: 56px;
@@ -706,6 +755,48 @@ main {
 .kanban-col-body.drag-over {
   background: var(--accent-soft);
   border-radius: var(--radius-sm);
+}
+
+/* Touch drag drop bar. Raised only while a long-press drag is in progress:
+   on a phone the columns stack, so the next column is ~2000px below the fold
+   and there is nothing on screen to drop onto. Fixed to the bottom edge so
+   the drop target is always within thumb reach, whatever the scroll position. */
+.kanban-touch-dropbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 9998; /* under the dragged ghost (9999), over the board */
+  display: flex;
+  gap: 6px;
+  padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
+  background: var(--bg-card);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -6px 20px rgba(0, 0, 0, .25);
+}
+.kanban-drop-target {
+  flex: 1;
+  min-width: 0;
+  padding: 12px 4px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The column the card is already in -- a valid drop (it just reorders), but
+   dimmed so the eye goes to the other four. */
+.kanban-drop-target.is-current {
+  opacity: .5;
+}
+.kanban-drop-target.drag-over {
+  background: var(--accent-soft);
+  border-style: solid;
+  border-color: var(--accent);
+  color: var(--text);
 }
 
 /* === Kanban Card === */
@@ -1375,6 +1466,19 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  align-items: center;
+}
+
+/* Agents page: grid / org-chart view toggle */
+.view-toggle {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.view-toggle-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 /* === Agent Grid === */
@@ -1825,6 +1929,8 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   color: var(--text-secondary);
   line-height: 1.5;
 }
+/* The class display rule outranks the browser's [hidden] default. */
+.tg-notice[hidden] { display: none; }
 .tg-notice svg { flex-shrink: 0; margin-top: 1px; color: var(--accent); }
 .tg-notice code {
   background: var(--bg-code);
@@ -2359,6 +2465,8 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   margin-top: 0;
   white-space: nowrap;
 }
+/* Keep compact controls out of layout when JavaScript marks them hidden. */
+.btn-compact[hidden] { display: none; }
 
 .btn-secondary {
   padding: 10px 20px;
@@ -6403,6 +6511,16 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
 }
 .activity-tail-empty { margin: 0; font-size: 12px; color: var(--text-muted); font-style: italic; }
 
+/* Live "working" tint on an agent's Terminal button (Agents page). Mirrors the
+   Activity page's green working badge, including the breathe pulse. The SVG uses
+   currentColor, so the icon greens with the label. */
+.agent-terminal-btn.agent-terminal-btn--busy {
+  background: rgba(34,197,94,0.15);
+  color: #16a34a;
+  border-color: #22c55e;
+  animation: badge-breathe 2s ease-in-out infinite;
+}
+
 /* === Messages / Chat page === */
 .chat-layout {
   display: flex;
@@ -6660,6 +6778,15 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   color: var(--text-muted, #888);
   font-variant-numeric: tabular-nums;
 }
+.docs-list-group-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #888);
+  padding: 10px 12px 2px;
+}
+.docs-list-group-label:first-child { padding-top: 0; }
 .docs-list-item:hover { background: var(--surface-2, rgba(127,127,127,0.08)); }
 .docs-list-item.active {
   background: var(--surface-2, rgba(127,127,127,0.12));
@@ -7043,11 +7170,17 @@ body {
 .updates-version-details .updates-commit-list { padding: 10px 0 2px; }
 /* First-run onboarding wizard */
 .onboarding-overlay { z-index: 10000; }
-.onboarding-modal { max-width: 540px; width: 92%; position: relative; }
+/* The base .modal ships zero padding (other modals pad via .modal-header /
+   .modal-body); the onboarding wizard renders its content directly, so it
+   needs its own inner padding -- without it the title and inputs sit flush
+   against the modal edge (first screen every fresh install sees). */
+.onboarding-modal { max-width: 540px; width: 92%; position: relative; padding: 24px 26px 22px; }
+@media (max-width: 600px) { .onboarding-modal { padding: 18px 16px 16px; } }
 .onboarding-modal .modal-close { position: absolute; top: 12px; right: 12px; }
 .onboarding-modal h2 { margin: 0 0 4px; }
 .onb-sub { color: var(--text-muted); font-size: 13px; margin: 0 0 16px; }
-.onboarding-steps { display: flex; gap: 8px; margin-bottom: 18px; }
+.onboarding-steps { display: flex; gap: 8px; margin-bottom: 10px; }
+.onb-flow-note { font-size: 12px; color: var(--text-muted); background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 0 0 14px; }
 .onboarding-step { flex: 1; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); padding: 6px 8px; border-radius: 8px; background: var(--bg-input); border: 1px solid var(--border); }
 .onboarding-step.active { color: var(--text); border-color: var(--accent); }
 .onboarding-step.done { opacity: 0.55; }
@@ -7087,3 +7220,177 @@ body {
   margin-left: 6px;
   vertical-align: middle;
 }
+
+/* === Dashboard browser login (optional) === */
+.mv-auth-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  background: rgba(20, 20, 19, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.mv-auth-card {
+  background: var(--bg-card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  width: 100%;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+.mv-auth-card h2 {
+  margin: 0;
+  font-size: 18px;
+  text-align: center;
+}
+.mv-auth-desc {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: center;
+  line-height: 1.5;
+}
+.mv-auth-card input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+.mv-auth-card button {
+  padding: 11px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.mv-auth-card button:hover { background: var(--accent-hover); }
+.mv-auth-card button:disabled { opacity: 0.6; cursor: default; }
+.mv-auth-err {
+  color: var(--danger);
+  font-size: 13px;
+  min-height: 16px;
+  text-align: center;
+}
+
+/* Setup banner */
+.auth-setup-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 0 16px;
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  font-size: 13px;
+}
+/* The `display: flex` above is an author rule, so it outranks the UA's
+   [hidden] { display: none } -- without this override the banner stays on
+   screen even when initAuthBanner()/the dismiss button set el.hidden = true,
+   making the close button look dead. Same fix as .kanban-board[hidden] etc. */
+.auth-setup-banner[hidden] { display: none; }
+
+.auth-setup-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.auth-setup-banner-close {
+  background: none;
+  border: 0;
+  color: var(--text-muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+/* Branch-drift warning (top banner + Updates-page notice). The [hidden] rule
+   is explicit because the shared .auth-setup-banner display:flex would
+   otherwise override the UA's [hidden] { display: none }. */
+.branch-drift-banner { border-left-color: var(--warning, #d97706); }
+.branch-drift-banner[hidden] { display: none; }
+.branch-drift-banner code,
+.updates-branch-notice code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 6px;
+  font-size: 12px;
+  user-select: all;
+}
+.updates-branch-notice {
+  margin: 0 0 12px;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.updates-branch-notice.ok { color: var(--text-muted); }
+.updates-branch-notice.warn { border-left: 3px solid var(--warning, #d97706); }
+
+/* Settings login card */
+.auth-card h3 { margin: 0 0 12px; font-size: 15px; }
+.auth-muted { color: var(--text-muted); font-size: 13px; margin: 0 0 12px; }
+.auth-form { display: flex; flex-direction: column; gap: 8px; max-width: 360px; }
+.auth-form input {
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+.auth-form-msg { font-size: 13px; min-height: 16px; }
+.auth-form-msg.err { color: var(--danger); }
+.auth-form-msg.ok { color: var(--accent); }
+.auth-actions { display: flex; gap: 8px; margin-top: 12px; }
+.auth-sessions { margin-top: 14px; }
+.auth-sessions-title { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+.auth-session-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 4px 0;
+  border-top: 1px solid var(--border);
+}
+.auth-session-row code { color: var(--text); }
+.auth-session-ua { margin-left: auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.auth-device-keys { margin-top: 18px; }
+.auth-device-name { color: var(--text); font-weight: 600; }
+.auth-device-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.auth-device-row .auth-device-revoke { margin-left: auto; flex-shrink: 0; }
+.auth-device-mint { margin-top: 10px; }
+.auth-device-minted-row { flex-direction: row; max-width: none; }
+.auth-device-minted-row input { flex: 1; font-family: var(--mono, monospace); font-size: 12px; }
+.auth-device-warn { margin-bottom: 8px; }
+.auth-device-bridge-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  vertical-align: middle;
+}
+

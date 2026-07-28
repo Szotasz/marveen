@@ -33,6 +33,13 @@ const SEND_PATTERNS = [
   /\bswaks\b/i,
   /\bsmtplib\b|SMTP\s*\(/i,
   /\bmail\.send\b|\bsendEmail\b/i,
+  // graph-mail.ts (PR #668, M365/Exchange Online client-credentials mailbox):
+  // its CLI is `tsx scripts/graph-mail.ts send ...`, which none of the above
+  // patterns catch (no "sendmail"/"mail.send" substring). Also gate any direct
+  // call to the exported sendMail() (e.g. a one-off `node -e`/`tsx -e` that
+  // imports the module without going through the CLI).
+  /\bgraph-mail\b[^\n]*\bsend\b/i,
+  /\bsendMail\s*\(/i,
 ]
 
 // Pure decision: does this tool call send (or attempt to send) email?

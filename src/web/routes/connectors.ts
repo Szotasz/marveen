@@ -96,6 +96,36 @@ function upsertLocalCatalogEntry(entry: any): void {
   atomicWriteFileSync(localCatalogPath(), JSON.stringify(local, null, 2) + '\n')
 }
 
+// Move install-time env secrets out of plaintext: store each in the Vault and
+// bind it so the target config (~/.claude.json or .mcp.json) holds only a
+// `vault:` ref plus the resolver wrapper -- never the raw value. This is what
+// the install modal already promises ("titkosítva a Vault-ba kerülnek").
+//
+// Fail-closed: on any vault/bind/sync error we throw. The server was already
+// registered by `claude mcp add` WITHOUT the secret, so it stands non-functional
+// but leaks nothing; the caller surfaces the error and the user re-adds the
+// secret from the Vault page.
+export function vaultAndBindEnvSecrets(
+  serverName: string,
+  mcpFilePath: string,
+  envSecrets: Record<string, string>,
+): void {
+  for (const [key, value] of Object.entries(envSecrets)) {
+    if (!value) continue
+    const vaultId = `${slugifyMcp(serverName)}-${key.toLowerCase()}`
+    setSecret(vaultId, `${key} (${serverName})`, value)
+    addBinding({ vaultSecretId: vaultId, envVar: key, targets: [{ mcpFilePath, serverName }] })
+    const result = syncSecret(vaultId)
+    if (result.errors.length) {
+      throw new Error(
+        `A(z) "${key}" titkot nem sikerult a configba kotni: ${result.errors.join('; ')}. ` +
+        `A szerver telepitve van, de a kulcs NELKUL (nem mukodik, de nem is szivarog plaintextben). ` +
+        `Add meg ujra a kulcsot a Vault oldalon.`,
+      )
+    }
+  }
+}
+
 export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -400,14 +430,22 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         catalogEntry.url = data.url
         catalogEntry.transport = transport
       } else if (data.type === 'stdio' && data.command) {
-        const envFlags = data.env ? Object.entries(data.env).map(([k, v]) => `-e ${shellEscape(k)}=${shellEscape(v)}`).join(' ') : ''
+        // User-typed env values are secrets: register the server WITHOUT -e, then
+        // vault + bind below so the config holds only vault refs, never plaintext.
+        const userSecrets = Object.fromEntries(
+          Object.entries(data.env || {}).filter(([, v]) => v !== ''),
+        ) as Record<string, string>
         const argsStr = data.args ? data.args.split(/\s+/).filter(Boolean).map(a => shellEscape(a)).join(' ') : ''
-        execSync(`claude mcp add ${scopeFlag} ${shellEscape(sanitizedName)} ${envFlags} -- ${shellEscape(data.command)} ${argsStr} 2>&1`, { timeout: 15000, encoding: 'utf-8' })
+        execSync(`claude mcp add ${scopeFlag} ${shellEscape(sanitizedName)} -- ${shellEscape(data.command)} ${argsStr} 2>&1`, { timeout: 15000, encoding: 'utf-8' })
         catalogEntry.type = 'local'
         catalogEntry.command = data.command
         catalogEntry.args = data.args ? data.args.split(/\s+/).filter(Boolean) : []
         // Store only env var names with blank values -- never the secrets.
         catalogEntry.env = Object.fromEntries(Object.keys(data.env || {}).map(k => [k, '']))
+        if (Object.keys(userSecrets).length) {
+          const mcpFile = data.scope === 'project' ? join(PROJECT_ROOT, '.mcp.json') : join(homedir(), '.claude.json')
+          vaultAndBindEnvSecrets(sanitizedName, mcpFile, userSecrets)
+        }
       } else {
         json(res, { error: 'URL (http/sse) or command (stdio) required' }, 400)
         return true
@@ -612,19 +650,33 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       const cliName = item.id
 
       if (item.type === 'local') {
-        const allEnv = { ...item.env, ...envData }
-        const envFlags = Object.entries(allEnv)
-          .filter(([, v]) => v !== '')
+        // Values typed into the "API kulcsok megadása" modal are secrets: vault
+        // them so they never hit ~/.claude.json in plaintext (the modal already
+        // promises this). Non-empty catalog defaults are non-secret config and
+        // stay as -e flags.
+        const userSecrets = Object.fromEntries(
+          Object.entries(envData).filter(([, v]) => v !== ''),
+        ) as Record<string, string>
+        const defaultEnv = Object.fromEntries(
+          Object.entries(item.env || {}).filter(([k, v]) => v !== '' && !(k in userSecrets)),
+        ) as Record<string, string>
+        const envFlags = Object.entries(defaultEnv)
           .map(([k, v]) => `-e ${shellEscape(k)}=${shellEscape(v as string)}`)
           .join(' ')
 
         const argsStr = (item.args || []).map((a: string) => shellEscape(a)).join(' ')
         const cmd = `claude mcp add --scope user ${shellEscape(cliName)} ${envFlags} -- ${shellEscape(item.command)} ${argsStr} 2>&1`
         execSync(cmd, { timeout: 30000, encoding: 'utf-8' })
+        if (Object.keys(userSecrets).length) {
+          vaultAndBindEnvSecrets(cliName, join(homedir(), '.claude.json'), userSecrets)
+        }
       } else if (item.type === 'remote') {
         const url = item.url
         if (!url) { json(res, { error: 'Remote item has no URL' }, 400); return true }
-        execSync(`claude mcp add --transport sse --scope user ${shellEscape(cliName)} ${shellEscape(url)} 2>&1`, { timeout: 30000, encoding: 'utf-8' })
+        // Respect the catalog item's transport (http/sse) instead of forcing sse,
+        // so one-click remote installs can use streamable-http (e.g. n8n).
+        const transport = item.transport === 'http' ? 'http' : 'sse'
+        execSync(`claude mcp add --transport ${transport} --scope user ${shellEscape(cliName)} ${shellEscape(url)} 2>&1`, { timeout: 30000, encoding: 'utf-8' })
       }
 
       let message = 'Telepítve'
@@ -716,12 +768,19 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const data = JSON.parse(body.toString()) as {
       vaultSecretId: string
-      envVar: string
+      envVar?: string
       serverName?: string
       targets?: Array<{ mcpFilePath: string, serverName: string }>
+      // Remote-server header binding: the secret is injected into the request
+      // header (e.g. Authorization) via headersHelper instead of an env var.
+      headerName?: string
+      headerScheme?: string
     }
-    if (!data.vaultSecretId || !data.envVar) {
-      json(res, { error: 'vaultSecretId and envVar required' }, 400)
+    // A binding is either env-var based (local/stdio servers) or header based
+    // (remote http/sse servers). Header bindings key on the header name.
+    const bindingKey = data.headerName?.trim() || data.envVar?.trim()
+    if (!data.vaultSecretId || !bindingKey) {
+      json(res, { error: 'vaultSecretId and (envVar or headerName) required' }, 400)
       return true
     }
 
@@ -760,7 +819,12 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'No targets found for this server' }, 400)
       return true
     }
-    addBinding({ vaultSecretId: data.vaultSecretId, envVar: data.envVar, targets })
+    const binding: any = { vaultSecretId: data.vaultSecretId, envVar: bindingKey, targets }
+    if (data.headerName?.trim()) {
+      binding.headerName = data.headerName.trim()
+      binding.headerScheme = data.headerScheme?.trim() ?? 'Bearer'
+    }
+    addBinding(binding)
     const syncResult = syncSecret(data.vaultSecretId)
     json(res, { ok: true, synced: syncResult.updated, errors: syncResult.errors })
     return true

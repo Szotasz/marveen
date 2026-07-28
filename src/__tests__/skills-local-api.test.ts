@@ -2,13 +2,42 @@
 // a temporary filesystem fixture. Proves the endpoint actually returns skills
 // for the main agent (PROJECT_ROOT path) and for a sub-agent, not just that
 // the source text contains the right patterns.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { mkdirSync, rmSync, writeFileSync, readFileSync, mkdtempSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { tryHandleSkills } from '../web/routes/skills.js'
-import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
-import { agentDir } from '../web/agent-config.js'
+import { tmpdir } from 'node:os'
 import type { RouteContext } from '../web/routes/types.js'
+
+// ENFORCED sandbox: the earlier version wrote skills into the REAL
+// <repoRoot>/.claude/skills/ and the real agents/ tree (2026-07-27
+// test-suite-mutates-live-state incident class). PROJECT_ROOT and the whole
+// agent-dir resolution are redirected into an mkdtemp root; the handler under
+// test is imported AFTER the mocks so its module graph sees the sandbox.
+const tmpRoot = mkdtempSync(join(tmpdir(), 'skills-local-'))
+const AGENTS_TMP = join(tmpRoot, 'agents')
+
+vi.mock('../config.js', async (orig) => {
+  const actual = await orig<typeof import('../config.js')>()
+  return { ...actual, PROJECT_ROOT: tmpRoot }
+})
+vi.mock('../web/agent-config.js', async (orig) => {
+  const actual = await orig<typeof import('../web/agent-config.js')>()
+  const { MAIN_AGENT_ID } = await import('../config.js')
+  return {
+    ...actual,
+    AGENTS_BASE_DIR: AGENTS_TMP,
+    agentDir: (name: string) => join(AGENTS_TMP, name),
+    agentConfigRoot: (name: string) => (name === MAIN_AGENT_ID ? tmpRoot : join(AGENTS_TMP, name)),
+    listAgentNames: () =>
+      existsSync(AGENTS_TMP)
+        ? readdirSync(AGENTS_TMP).filter((f) => statSync(join(AGENTS_TMP, f)).isDirectory())
+        : [],
+  }
+})
+
+const { tryHandleSkills } = await import('../web/routes/skills.js')
+const { PROJECT_ROOT, MAIN_AGENT_ID } = await import('../config.js')
+const { agentDir } = await import('../web/agent-config.js')
 
 function fakeCtx(path: string, method = 'GET'): { ctx: RouteContext; out: { status: number; body: any } } {
   const out: { status: number; body: any } = { status: 0, body: null }

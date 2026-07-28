@@ -15,6 +15,13 @@ export interface RouteContext {
    *  "not a federation-token caller" (e.g. dashboard token) -- handlers must
    *  treat the two identically. */
   fedPeer?: string | null
+  /** Resolved auth principal for this request, set by the gate. Absent means
+   *  the request carried no valid credential (only possible on ungated public
+   *  paths, which are reached without a principal). `user` is set for the
+   *  'session' kind; `peer` mirrors fedPeer for the 'federation' kind;
+   *  `device` is the key name for the 'device' kind. Lets routes distinguish
+   *  a human session from a token/fleet caller or an enrolled device. */
+  auth?: { kind: 'token' | 'session' | 'federation' | 'device'; user?: string; peer?: string; device?: string }
 }
 
 export type RouteHandler = (ctx: RouteContext) => Promise<boolean>

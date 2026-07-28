@@ -48,6 +48,7 @@ import {
 } from '../config.js'
 import { resolveDashboardOrigin } from './agent-scaffold.js'
 import { logger } from '../logger.js'
+import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
 
 const HEARTBEAT_AGENT_NAME = 'heartbeat'
 const HEARTBEAT_AGENT_DIR = join(PROJECT_ROOT, 'agents', HEARTBEAT_AGENT_NAME)
@@ -59,11 +60,9 @@ const HEARTBEAT_AGENT_DIR = join(PROJECT_ROOT, 'agents', HEARTBEAT_AGENT_NAME)
 // open its own poller against the OPERATOR's bot token, and race the
 // main agent's poller for the same getUpdates slot -- see
 // agent-process.ts:137 for the same disable baked into startup).
-const CHANNEL_PLUGIN_DISABLES = {
-  'telegram@claude-plugins-official': false,
-  'slack-channel@marveen-marketplace': false,
-  'discord@claude-plugins-official': false,
-}
+const CHANNEL_PLUGIN_DISABLES = Object.fromEntries(
+  Object.values(CHANNEL_PLUGIN_IDS).map(id => [id, false as const])
+)
 
 // Haiku-class model: the heartbeat job is data-formatting (Calendar
 // events + kanban counts + memory + tasks list -> a short structured
@@ -172,7 +171,10 @@ When you receive the heartbeat prompt:
      \`sqlite3 ${id.storeDir}/claudeclaw.db "SELECT status, COUNT(*)
      FROM kanban_cards WHERE archived_at IS NULL GROUP BY status"\`
      for counts, and grab the titles of cards where
-     \`priority='urgent'\` or \`status='waiting'\`.
+     \`archived_at IS NULL AND priority='urgent' AND status != 'done'\`
+     (a card can be \`urgent\` priority but already \`done\` -- exclude
+     those, or you will report closed issues as active every hour)
+     or \`archived_at IS NULL AND status='waiting'\`.
    - **Scheduled tasks** -- count active rows in
      \`scheduled_tasks\` table; record \`next_run_at\` for the
      earliest upcoming one.

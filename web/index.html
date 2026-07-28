@@ -48,6 +48,7 @@
         <div class="onboarding-step" data-ostep="3"><span class="onb-num">3</span> <span data-i18n="onboarding.step2.tab">Telegram bot</span></div>
         <div class="onboarding-step" data-ostep="4"><span class="onb-num">4</span> <span data-i18n="onboarding.step3.tab">Párosítás</span></div>
       </div>
+      <p class="onb-flow-note" id="onbFlowNote"></p>
       <div id="onboardingBody" class="onboarding-body"></div>
     </div>
   </div>
@@ -76,100 +77,135 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="10" rx="1"/><rect x="17" y="4" width="4" height="13" rx="1"/></svg>
         <span class="sb-label">Kanban</span>
       </a>
-      <a href="#" class="sb-link" data-page="archived">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5" rx="1"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
-        <span class="sb-label">Archivált</span>
-      </a>
-      <a href="#" class="sb-link" data-page="agents">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-        <span class="sb-label">Ügynökök</span>
-      </a>
-      <a href="#" class="sb-link" data-page="activity">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>
-        <span class="sb-label">Aktivitás</span>
-      </a>
-      <a href="#" class="sb-link" data-page="team">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"/><path d="M12 8v4"/><circle cx="5" cy="18" r="3"/><circle cx="19" cy="18" r="3"/><path d="M12 12l-7 6M12 12l7 6"/></svg>
-        <span class="sb-label">Csapat</span>
-      </a>
-      <a href="#" class="sb-link" data-page="messages">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-        <span class="sb-label">Üzenetek</span>
-      </a>
-      <a href="#" class="sb-link" data-page="tasks">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
-        <span class="sb-label">Ütemezések</span>
-      </a>
-      <a href="#" class="sb-link" data-page="memories">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3C7.5 3 4 6.5 4 11v4l-2 3h4v2a3 3 0 0 0 3 3h1a3 3 0 0 0 3-3v0a3 3 0 0 0 3 3h1a3 3 0 0 0 3-3v-2h4l-2-3v-4c0-4.5-3.5-8-8-8z"/></svg>
-        <span class="sb-label">Memória</span>
-      </a>
-      <a href="#" class="sb-link" data-page="naplo">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-        <span class="sb-label">Napló</span>
-      </a>
-      <a href="#" class="sb-link" data-page="bgTasks">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-        <span class="sb-label">Háttér</span>
-      </a>
-      <a href="#" class="sb-link" data-page="skills">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15 8.5 22 9.3 17 14.2 18.2 21 12 17.8 5.8 21 7 14.2 2 9.3 9 8.5"/></svg>
-        <span class="sb-label">Skillek</span>
-      </a>
-      <a href="#" class="sb-link" data-page="connectors">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.5-1.5"/></svg>
-        <span class="sb-label">MCP</span>
-      </a>
-      <a href="#" class="sb-link" data-page="migrate">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/><polyline points="7 10 12 5 17 10"/><line x1="12" y1="5" x2="12" y2="17"/></svg>
-        <span class="sb-label">Költöztetés</span>
-      </a>
-      <a href="#" class="sb-link" data-page="docs">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-        <span class="sb-label">Dokumentáció</span>
-      </a>
-      <a href="#" class="sb-link" data-page="status">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-        <span class="sb-label">Státusz</span>
-      </a>
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-        <span class="sb-label">Autonómia</span>
-      </a>
       <a href="#" class="sb-link" data-page="approvals">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
         <span class="sb-label">Jóváhagyások</span>
         <span class="approvals-pending-badge sb-badge" id="approvalsPendingBadge" hidden></span>
       </a>
-      <a href="#" class="sb-link" data-page="settings">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        <span class="sb-label">Beállítások</span>
-      </a>
-      <a href="#" class="sb-link" data-page="vault">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1"/></svg>
-        <span class="sb-label">Vault</span>
-      </a>
-      <a href="#" class="sb-link" data-page="tokenUsage">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>
-        <span class="sb-label">Token Monitor</span>
-      </a>
-      <a href="#" class="sb-link" data-page="costs">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-        <span class="sb-label">Költségek</span>
-      </a>
-      <a href="#" class="sb-link" data-page="ideas">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
-        <span class="sb-label">Ötletláda</span>
-      </a>
-      <a href="#" class="sb-link" data-page="federation">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="12" r="3"/><circle cx="19" cy="12" r="3"/><path d="M8 12h8"/><path d="M12 9v-3"/><path d="M12 15v3"/></svg>
-        <span class="sb-label">Föderáció</span>
-      </a>
-      <a href="#" class="sb-link" data-page="updates">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-        <span class="sb-label">Frissítések</span>
-        <span class="updates-badge sb-badge" id="updatesBadge" hidden></span>
-      </a>
+      <div class="sb-group" data-group="team">
+        <button type="button" class="sb-group-header" aria-expanded="false" aria-controls="sbGroupTeam">
+          <span class="sb-group-label" data-i18n="nav.group.team">CSAPAT</span>
+          <svg class="sb-group-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+        <div class="sb-group-items" id="sbGroupTeam">
+          <a href="#" class="sb-link" data-page="agents">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            <span class="sb-label">Ügynökök</span>
+          </a>
+          <a href="#" class="sb-link" data-page="activity">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>
+            <span class="sb-label">Aktivitás</span>
+          </a>
+          <a href="#" class="sb-link" data-page="messages">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            <span class="sb-label">Üzenetek</span>
+          </a>
+          <a href="#" class="sb-link" data-page="tasks">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
+            <span class="sb-label">Ütemezések</span>
+          </a>
+          <a href="#" class="sb-link" data-page="bgTasks">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            <span class="sb-label">Háttér</span>
+          </a>
+        </div>
+      </div>
+      <div class="sb-group" data-group="knowledge">
+        <button type="button" class="sb-group-header" aria-expanded="false" aria-controls="sbGroupKnowledge">
+          <span class="sb-group-label" data-i18n="nav.group.knowledge">TUDÁS</span>
+          <svg class="sb-group-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+        <div class="sb-group-items" id="sbGroupKnowledge">
+          <a href="#" class="sb-link" data-page="memories">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3C7.5 3 4 6.5 4 11v4l-2 3h4v2a3 3 0 0 0 3 3h1a3 3 0 0 0 3-3v0a3 3 0 0 0 3 3h1a3 3 0 0 0 3-3v-2h4l-2-3v-4c0-4.5-3.5-8-8-8z"/></svg>
+            <span class="sb-label">Memória</span>
+          </a>
+          <a href="#" class="sb-link" data-page="naplo">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+            <span class="sb-label">Napló</span>
+          </a>
+          <a href="#" class="sb-link" data-page="skills">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15 8.5 22 9.3 17 14.2 18.2 21 12 17.8 5.8 21 7 14.2 2 9.3 9 8.5"/></svg>
+            <span class="sb-label">Skillek</span>
+          </a>
+          <a href="#" class="sb-link" data-page="research">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <span class="sb-label" data-i18n="nav.research">Kutatás</span>
+          </a>
+          <a href="#" class="sb-link" data-page="ideas">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+            <span class="sb-label">Ötletláda</span>
+          </a>
+        </div>
+      </div>
+      <div class="sb-group" data-group="stats">
+        <button type="button" class="sb-group-header" aria-expanded="false" aria-controls="sbGroupStats">
+          <span class="sb-group-label" data-i18n="nav.group.stats">STATISZTIKÁK</span>
+          <svg class="sb-group-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+        <div class="sb-group-items" id="sbGroupStats">
+          <a href="#" class="sb-link" data-page="costs">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+            <span class="sb-label">Költségek</span>
+          </a>
+          <a href="#" class="sb-link" data-page="tokenUsage">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>
+            <span class="sb-label">Token Monitor</span>
+          </a>
+        </div>
+      </div>
+      <div class="sb-group" data-group="system">
+        <button type="button" class="sb-group-header" aria-expanded="false" aria-controls="sbGroupSystem">
+          <span class="sb-group-label" data-i18n="nav.group.system">RENDSZER</span>
+          <svg class="sb-group-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+        <div class="sb-group-items" id="sbGroupSystem">
+          <a href="#" class="sb-link" data-page="status">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+            <span class="sb-label">Státusz</span>
+          </a>
+          <a href="#" class="sb-link" data-page="updates">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            <span class="sb-label">Frissítések</span>
+            <span class="updates-badge sb-badge" id="updatesBadge" hidden></span>
+          </a>
+          <a href="#" class="sb-link" data-page="settings">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            <span class="sb-label">Beállítások</span>
+          </a>
+          <a href="#" class="sb-link" data-page="vault">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1"/></svg>
+            <span class="sb-label">Vault</span>
+          </a>
+        </div>
+      </div>
+      <div class="sb-group" data-group="connections">
+        <button type="button" class="sb-group-header" aria-expanded="false" aria-controls="sbGroupConnections">
+          <span class="sb-group-label" data-i18n="nav.group.connections">KAPCSOLATOK</span>
+          <svg class="sb-group-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+        <div class="sb-group-items" id="sbGroupConnections">
+          <a href="#" class="sb-link" data-page="connectors">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.5-1.5"/></svg>
+            <span class="sb-label">MCP</span>
+          </a>
+          <a href="#" class="sb-link" data-page="federation">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="12" r="3"/><circle cx="19" cy="12" r="3"/><path d="M8 12h8"/><path d="M12 9v-3"/><path d="M12 15v3"/></svg>
+            <span class="sb-label">Föderáció</span>
+          </a>
+          <a href="#" class="sb-link" data-page="migrate">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/><polyline points="7 10 12 5 17 10"/><line x1="12" y1="5" x2="12" y2="17"/></svg>
+            <span class="sb-label">Költöztetés</span>
+          </a>
+        </div>
+      </div>
     </nav>
+    <div class="sidebar-docs">
+      <a href="#" class="sb-link" data-page="docs">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        <span class="sb-label">Dokumentáció</span>
+      </a>
+    </div>
     <div class="sidebar-footer">
       <button class="theme-toggle" id="langToggle" title="Language / Nyelv">HU</button>
       <button class="theme-toggle" id="mobileLoginBtn" title="Mobil belépés (QR)">
@@ -187,6 +223,30 @@
   </aside>
 
   <main>
+    <!-- Non-blocking, dismissible banner shown when the operator is authed via
+         the token but has not yet created a browser (username+password) login.
+         Motivated by the existing remote-access surfaces (Tailscale Serve,
+         DASHBOARD_PUBLIC_URL / LAN, mobile QR). Populated by initAuthBanner(). -->
+    <!-- Non-blocking, dismissible warning shown when the checkout follows a
+         branch other than main (the release/product branch): the install keeps
+         receiving unreleased code until switched back. Dev machines are on
+         develop on purpose, so the dismissal persists per browser+branch.
+         Populated by updateBranchDriftUI() from /api/updates. -->
+    <div id="branchDriftBanner" class="auth-setup-banner branch-drift-banner" hidden>
+      <span id="branchDriftBannerText"></span>
+      <span class="auth-setup-banner-actions">
+        <button class="auth-setup-banner-close" id="branchDriftDismiss" aria-label="Dismiss">&times;</button>
+      </span>
+    </div>
+
+    <div id="authSetupBanner" class="auth-setup-banner" hidden>
+      <span data-i18n="auth.banner.text">Add a username+password login for browser access.</span>
+      <span class="auth-setup-banner-actions">
+        <button class="btn-secondary btn-compact" id="authBannerGoBtn" data-i18n="auth.banner.action">Set up login</button>
+        <button class="auth-setup-banner-close" id="authBannerDismiss" aria-label="Dismiss">&times;</button>
+      </span>
+    </div>
+
     <!-- === Overview Page (default) === -->
     <div class="page" id="overviewPage">
       <div class="overview-stats">
@@ -234,6 +294,7 @@
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;">
         <button class="view-btn active" id="kanbanViewBoard" style="width:auto;padding:0 12px;" data-i18n="kanban.view.board">Tábla</button>
         <button class="view-btn" id="kanbanViewGantt" style="width:auto;padding:0 12px;" data-i18n="kanban.view.gantt">Idővonal</button>
+        <button class="view-btn" id="kanbanViewArchived" style="width:auto;padding:0 12px;margin-left:auto;" data-i18n="kanban.view.archived">Archiváltak</button>
       </div>
 
       <!-- Board-specific filter row (hidden when gantt active) -->
@@ -312,6 +373,10 @@
 
     <!-- === Archived Cards Page === -->
     <div class="page" id="archivedPage" hidden>
+      <!-- View switcher row (mirrors the kanban page's row that leads here) -->
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;">
+        <button class="view-btn" id="archivedBackToKanban" style="width:auto;padding:0 12px;" data-i18n="archived.backToKanban">Vissza a Kanbanra</button>
+      </div>
       <div class="page-header" style="margin-bottom:16px;">
         <h2 style="margin:0;font-size:18px;" data-i18n="archived.page_title">Archivált kártyák</h2>
       </div>
@@ -330,7 +395,7 @@
       <div id="archivedList"></div>
     </div>
 
-    <!-- === Agents Page === -->
+    <!-- === Agents Page (includes org-chart view, replaces separate Team page) === -->
     <div class="page" id="agentsPage" hidden>
       <div class="page-header">
         <div class="page-header-row">
@@ -339,6 +404,16 @@
             <p class="subtitle" data-i18n="agents.page_subtitle">AI csapattagok kezelése</p>
           </div>
           <div class="header-actions">
+            <div class="view-toggle" id="agentsViewToggle" role="group" aria-label="Nézet váltás">
+              <button class="btn-secondary btn-compact view-toggle-btn active" id="agentsViewGrid" data-view="grid" title="Kártyák">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+                Kártyák
+              </button>
+              <button class="btn-secondary btn-compact view-toggle-btn" id="agentsViewTree" data-view="tree" title="Org chart">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"/><path d="M12 8v4"/><circle cx="5" cy="18" r="3"/><circle cx="19" cy="18" r="3"/><path d="M12 12l-7 6M12 12l7 6"/></svg>
+                Org chart
+              </button>
+            </div>
             <button class="btn-secondary btn-compact" id="exportAllAgentsBtn">Összes exportálása</button>
             <button class="btn-secondary btn-compact" id="importAgentBtn">Ügynök importálása</button>
             <input type="file" id="importAgentFile" accept=".gz,.tgz,application/gzip" hidden>
@@ -347,15 +422,25 @@
         </div>
       </div>
       <div id="agentsModelAnalysis" style="display:none;margin:0 0 16px"></div>
-      <div class="agents-grid" id="agentsGrid">
-        <button class="agent-card add-card" id="addAgentBtn">
-          <div class="add-icon">
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-            </svg>
-          </div>
-          <span data-i18n="agents.page.new_btn">Új ügynök</span>
-        </button>
+      <!-- Grid view -->
+      <div id="agentsGridView">
+        <div class="agents-grid" id="agentsGrid">
+          <button class="agent-card add-card" id="addAgentBtn">
+            <div class="add-icon">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+            </div>
+            <span data-i18n="agents.page.new_btn">Új ügynök</span>
+          </button>
+        </div>
+      </div>
+      <!-- Tree / org-chart view (merged from separate Team page) -->
+      <div id="agentsTreeView" hidden>
+        <div id="teamGraph" class="team-graph"></div>
+        <p style="color:var(--text-muted);font-size:12px;margin-top:16px">
+          A szerep és a beosztott/vezető kapcsolatok az ügynök részletek &gt; Csapat fülén szerkeszthetők.
+        </p>
       </div>
     </div>
 
@@ -965,6 +1050,22 @@
       </div>
     </div>
 
+    <!-- === Research Page === -->
+    <div class="page" id="researchPage" hidden>
+      <div class="page-header">
+        <h1 data-i18n="research.page_title">Kutatás</h1>
+        <p class="subtitle" data-i18n="research.page_subtitle">Ágensek research/ mappái, olvasható formában</p>
+      </div>
+      <div class="docs-layout">
+        <aside class="docs-list" id="researchList">
+          <p class="muted" data-i18n="research.loading">Betöltés...</p>
+        </aside>
+        <article class="docs-content markdown-body" id="researchContent">
+          <p class="muted" data-i18n="research.select_hint">Válassz egy dokumentumot a bal oldali listából.</p>
+        </article>
+      </div>
+    </div>
+
     <!-- === Status Page === -->
     <div class="page" id="statusPage" hidden>
       <div class="page-header">
@@ -995,29 +1096,7 @@
       </div>
     </div>
 
-    <!-- === Team Page === -->
-    <div class="page" id="teamPage" hidden>
-      <div class="page-header">
-        <div class="page-header-row">
-          <div>
-            <h1>Csapat</h1>
-            <p class="subtitle" data-i18n="team.page_subtitle">Ki kinek jelent és ki kinek delegál</p>
-          </div>
-          <button class="btn-secondary btn-compact" id="refreshTeamBtn" data-i18n="common.btn.refresh">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-            </svg>
-            Frissítés
-          </button>
-        </div>
-      </div>
-
-      <div id="teamGraph" class="team-graph"></div>
-      <p style="color:var(--text-muted);font-size:12px;margin-top:16px">
-        A szerep és a beosztott/vezető kapcsolatok az ügynök részletek &gt; Csapat fülén szerkeszthetők.
-      </p>
-
-    </div>
+    <!-- Team page merged into Agents page (view toggle: grid / org-chart) -->
 
     <!-- === Messages Page === -->
     <div class="page" id="messagesPage" hidden>
@@ -1046,7 +1125,6 @@
       </div>
     </div>
 
-    <!-- === Autonomy Page === -->
 <!-- === Approvals Page === -->
     <div class="page" id="approvalsPage" hidden>
       <div class="page-header">
@@ -1114,6 +1192,16 @@
             Frissítés
           </button>
         </div>
+      </div>
+
+      <!-- Dashboard browser login (optional). Rendered by renderAuthCard():
+           create the first login when none exists, else change password + list
+           active sessions and log out. Starts hidden; loadSettings() moves it
+           into the Security tab panel and unhides it there (it stays here,
+           unhidden in place, only in the empty-registry fallback). -->
+      <div class="card auth-card" id="authCard" style="margin-bottom:16px" hidden>
+        <h3 data-i18n="auth.card.title">Dashboard login</h3>
+        <div id="authCardBody"></div>
       </div>
 
       <nav class="tab-nav" id="settingsTabNav" style="margin-bottom:0"></nav>
@@ -1781,6 +1869,8 @@
         </div>
       </div>
 
+      <div id="updatesBranchNotice" class="updates-branch-notice" hidden></div>
+
       <div id="updatesSummary" class="updates-summary"></div>
 
       <div id="updatesDiagnose" class="updates-diagnose" hidden></div>
@@ -2125,7 +2215,9 @@
               <option value="inherit" data-i18n="agents.model.inherit">Öröklött (alapértelmezett)</option>
               <optgroup label="☁️ Claude (felhő)">
                 <option value="claude-fable-5" data-i18n="agents.model.fable5">Fable 5 (legújabb)</option>
+                <option value="claude-opus-5" data-i18n="agents.model.opus5">Opus 5 (legújabb Opus)</option>
                 <option value="claude-opus-4-8[1m]" data-i18n="agents.model.opus48">Opus 4.8 (1M kontextus, alapértelmezett)</option>
+                <option value="claude-sonnet-5" data-i18n="agents.model.sonnet5">Sonnet 5 (legújabb Sonnet, Opus-közeli)</option>
                 <option value="claude-sonnet-4-6" data-i18n="agents.model.sonnet46">Sonnet 4.6 (gyors és okos)</option>
                 <option value="claude-haiku-4-5-20251001" data-i18n="agents.model.haiku45">Haiku 4.5 (leggyorsabb)</option>
               </optgroup>
@@ -2283,7 +2375,9 @@
             <select id="editAgentModel">
               <optgroup label="☁️ Claude (felhő)">
                 <option value="claude-fable-5" data-i18n="agents.model.fable5">Fable 5 (legújabb)</option>
+                <option value="claude-opus-5" data-i18n="agents.model.opus5">Opus 5 (legújabb Opus)</option>
                 <option value="claude-opus-4-8[1m]" data-i18n="agents.model.opus48">Opus 4.8 (1M kontextus, alapértelmezett)</option>
+                <option value="claude-sonnet-5" data-i18n="agents.model.sonnet5">Sonnet 5 (legújabb Sonnet, Opus-közeli)</option>
                 <option value="claude-sonnet-4-6" data-i18n="agents.model.sonnet46">Sonnet 4.6 (gyors és okos)</option>
                 <option value="claude-haiku-4-5-20251001" data-i18n="agents.model.haiku45">Haiku 4.5 (leggyorsabb)</option>
               </optgroup>

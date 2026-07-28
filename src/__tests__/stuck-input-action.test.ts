@@ -49,6 +49,7 @@ function facts(over: Partial<StuckInputActionFacts>): StuckInputActionFacts {
     truncatedPreamble: false,
     allowPlainReinject: false,
     hasPlainText: false,
+    scheduledTaskBlock: false,
     ...over,
   }
 }
@@ -98,6 +99,31 @@ describe('decideStuckInputAction (recovery-decision unit)', () => {
 
   it('single-row default (swallowed Enter) -> bare Enter', () => {
     expect(decideStuckInputAction(facts({ rowCount: 1, escalate: true }))).toBe('enter')
+  })
+
+  // 2026-07-25 hermes incident: a multi-row scheduled-task tick parked on the
+  // MAIN session (no plain re-inject) used to fall into the no-remedy 'hold'
+  // branch forever -> channel permanently mute. Clear-only is the safe move:
+  // the next schedule fire re-delivers, while re-injecting risks TUI mid-text
+  // truncation corrupting the instruction.
+  it('multi-row parked scheduled-task tick on main -> clear-scheduled, not hold', () => {
+    const a = decideStuckInputAction(facts({ rowCount: 6, scheduledTaskBlock: true }))
+    expect(a).toBe('clear-scheduled')
+  })
+
+  it('escalated single-row scheduled-task tick -> clear-scheduled', () => {
+    expect(decideStuckInputAction(facts({ rowCount: 1, scheduledTaskBlock: true, escalate: true }))).toBe('clear-scheduled')
+  })
+
+  it('single-row scheduled-task tick pre-escalation still tries the harmless Enter', () => {
+    expect(decideStuckInputAction(facts({ rowCount: 1, scheduledTaskBlock: true, escalate: false }))).toBe('enter')
+  })
+
+  it('sub-agent plain re-inject keeps precedence over clear-scheduled (existing path preserved)', () => {
+    const a = decideStuckInputAction(
+      facts({ rowCount: 3, scheduledTaskBlock: true, allowPlainReinject: true, hasPlainText: true }),
+    )
+    expect(a).toBe('reinject-plain')
   })
 })
 

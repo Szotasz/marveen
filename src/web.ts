@@ -4,7 +4,10 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execSync, execFileSync } from 'node:child_process'
 import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID } from './config.js'
-import { loadOrCreateDashboardToken, checkBearerToken } from './web/dashboard-auth.js'
+import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
+import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } from './web/auth-gate.js'
+import { sweepExpiredSessions } from './web/auth-sessions.js'
+import { sweepExpiredDeviceKeys } from './web/auth-device-keys.js'
 import { isBlockedCrossOriginWrite, originMatchesServedHost } from './web/csrf-origin.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
@@ -27,10 +30,11 @@ import { startModelFallbackRunner } from './web/model-fallback-runner.js'
 import { startContextGuardRunner } from './web/context-guard-runner.js'
 import { collectTokenUsage } from './web/token-usage.js'
 import { logger } from './logger.js'
+import { tryHandleAuth } from './web/routes/auth.js'
+import { tryHandleSecurity } from './web/routes/security.js'
 import { tryHandleProfiles } from './web/routes/profiles.js'
 import { tryHandleMessages } from './web/routes/messages.js'
 import { tryHandleFederation } from './web/routes/federation.js'
-import { identifyFederationCaller } from './web/federation/config.js'
 import { startFederationPoller } from './web/federation/poller.js'
 import { startCapabilitySummaryRunner } from './web/federation/capability-runner.js'
 import { ensureFederationClaudeMdSection } from './web/federation/onboarding.js'
@@ -45,6 +49,7 @@ import { tryHandleKanban } from './web/routes/kanban.js'
 import { tryHandleSchedules } from './web/routes/schedules.js'
 import { tryHandleConnectors } from './web/routes/connectors.js'
 import { tryHandleDocs } from './web/routes/docs.js'
+import { tryHandleResearch } from './web/routes/research.js'
 import { tryHandleConnectorsHu } from './web/routes/connectors-hu.js'
 import { tryHandleAgentsSkills } from './web/routes/agents-skills.js'
 import { tryHandleSkills } from './web/routes/skills.js'
@@ -62,6 +67,7 @@ import { tryHandleTokenUsage } from './web/routes/token-usage.js'
 import { tryHandleCosts, startCostsSyncTask } from './web/routes/costs.js'
 import { tryHandleIdeas } from './web/routes/ideas.js'
 import { tryHandleToolLog } from './web/routes/tool-log.js'
+import { tryHandleSpans } from './web/routes/spans.js'
 import { tryHandleSkillUsage } from './web/routes/skill-usage.js'
 import { tryHandleSettings } from './web/routes/settings.js'
 import { tryHandleAuditLog } from './web/routes/audit-log.js'
@@ -127,65 +133,30 @@ export function startWebServer(port = 3420): http.Server {
       return
     }
 
-    // Auth gate: every /api/* route requires a bearer token in the Authorization
-    // header. Exceptions: the auth-status probe (so the client can tell whether
-    // it needs to prompt the user), and GET requests for avatar images (loaded
-    // via <img src> which can't carry headers -- these are non-sensitive assets).
-    const isPublicApi =
-      (path === '/api/auth/status' && method === 'GET') ||
-      (method === 'GET' && (
-        path === '/api/marveen/avatar' ||
-        /^\/api\/agents\/[^/]+\/avatar$/.test(path)
-      ))
-    if (path === '/api/auth/status' && method === 'GET') {
-      const ok = checkBearerToken(req.headers.authorization, DASHBOARD_TOKEN)
-      return json(res, { authenticated: ok })
-    }
-    // The live pane SSE stream is consumed via EventSource, which cannot set an
-    // Authorization header -- accept the token via ?token= for this one GET
-    // path, validated with the same constant-time check. Everything else stays
-    // header-only.
-    const isSseStream = method === 'GET' && /^\/api\/agents\/[^/]+\/pane\/stream$/.test(path)
-    // /.well-known/fleetq exposes the agent roster; protect it with the same
-    // Bearer token as /api/* so LAN-exposed instances don't leak fleet topology.
-    const isFleetManifest = path === '/.well-known/fleetq' && method === 'GET'
-    let fedPeerForCtx: string | null = null
-    if ((path.startsWith('/api/') && !isPublicApi) || isFleetManifest) {
-      const headerOk = checkBearerToken(req.headers.authorization, DASHBOARD_TOKEN)
-      const queryOk = isSseStream && checkBearerToken(`Bearer ${url.searchParams.get('token') ?? ''}`, DASHBOARD_TOKEN)
-      // Scoped per-peer federation tokens (round 2): valid EXCLUSIVELY for
-      // the two federation wire endpoints (exact path+method), and only
-      // while federation is enabled. identifyFederationCaller tries each
-      // configured peer's inboundToken with the same timing-safe comparator
-      // (N is small single digits) and returns the matching peer id -- the
-      // caller IDENTITY, which the inbox uses to bind the claimed sender
-      // prefix. Everything is fail-closed: the helper never throws (this
-      // gate runs outside the dispatcher try{}), a disabled/invalid config
-      // identifies nobody, and short/empty stored tokens are skipped before
-      // comparison (an empty expected token would make checkBearerToken
-      // accept "Bearer " + whitespace). A disabled peer presents to its
-      // partner as a plain 401 -- deliberately indistinguishable from a
-      // token mismatch (revoked-token holders learn nothing). The peers
-      // config endpoints are NOT in this whitelist: dashboard-token-only.
-      const isFedPath =
-        (path === '/api/federation/manifest' && method === 'GET') ||
-        (path === '/api/federation/inbox' && method === 'POST')
-      let fedCaller: string | null = null
-      if (isFedPath && !headerOk && !queryOk) {
-        fedCaller = identifyFederationCaller(req.headers.authorization, checkBearerToken)
-        if (fedCaller === null) {
-          // 401s are otherwise silent; federation-endpoint auth failures are
-          // the brute-force surface, make them visible.
-          logger.warn({ path, method }, 'federation: rejected wire-endpoint auth')
-        }
+    // Auth gate: resolve the request's principal once via the extracted gate
+    // (bearer -> SSE ?token= -> endpoint-scoped federation token -> mv_session
+    // cookie). Bearer stays highest precedence and byte-identical, so every
+    // fleet curl call keeps working with users present or absent. requiresAuth()
+    // decides whether a missing principal is a 401 (gated /api/* + fleet
+    // manifest) or a public probe (auth status/login, avatars).
+    const auth: AuthResult = resolveAuth(req, url, path, method, DASHBOARD_TOKEN)
+    if (requiresAuth(path, method) && auth.kind === 'none') {
+      if (isFederationWireEndpoint(path, method)) {
+        // 401s are otherwise silent; federation-endpoint auth failures are the
+        // brute-force surface -- make them visible (round-2 scoped-token gate).
+        logger.warn({ path, method }, 'federation: rejected wire-endpoint auth')
       }
-      if (!headerOk && !queryOk && fedCaller === null) {
-        res.writeHead(401, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'Unauthorized' }))
-        return
-      }
-      if (fedCaller !== null) fedPeerForCtx = fedCaller
+      res.writeHead(401, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Unauthorized' }))
+      return
     }
+    const fedPeerForCtx: string | null = auth.kind === 'federation' ? auth.peer : null
+    const ctxAuth =
+      auth.kind === 'token' ? { kind: 'token' as const }
+      : auth.kind === 'device' ? { kind: 'device' as const, device: auth.device }
+      : auth.kind === 'session' ? { kind: 'session' as const, user: auth.user }
+      : auth.kind === 'federation' ? { kind: 'federation' as const, peer: auth.peer }
+      : undefined
 
     // The mobile-login QR needs a URL the phone can actually reach. When the
     // desktop opens the dashboard on localhost, window.location.origin is
@@ -197,8 +168,10 @@ export function startWebServer(port = 3420): http.Server {
     }
 
     try {
-      const routeCtx: RouteContext = { req, res, path, method, url, fedPeer: fedPeerForCtx }
+      const routeCtx: RouteContext = { req, res, path, method, url, fedPeer: fedPeerForCtx, auth: ctxAuth }
 
+      if (await tryHandleAuth(routeCtx)) return
+      if (await tryHandleSecurity(routeCtx)) return
       if (await tryHandleProfiles(routeCtx)) return
       if (await tryHandleMessages(routeCtx)) return
       if (await tryHandleFederation(routeCtx)) return
@@ -210,6 +183,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleConnectorsHu(routeCtx)) return
       if (await tryHandleConnectors(routeCtx)) return
       if (await tryHandleDocs(routeCtx)) return
+      if (await tryHandleResearch(routeCtx)) return
       if (await tryHandleAgentsSkills(routeCtx)) return
       if (await tryHandleSkills(routeCtx)) return
       if (await tryHandleAgentTerminal(routeCtx)) return
@@ -228,6 +202,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleTokenUsage(routeCtx)) return
       if (await tryHandleCosts(routeCtx)) return
       if (await tryHandleIdeas(routeCtx)) return
+      if (await tryHandleSpans(routeCtx)) return
       if (await tryHandleToolLog(routeCtx)) return
       if (await tryHandleSkillUsage(routeCtx)) return
       if (await tryHandleSettings(routeCtx)) return
@@ -425,6 +400,20 @@ export function startWebServer(port = 3420): http.Server {
   // Sweep timed-out pending approvals every minute
   const approvalTimeoutInterval = startApprovalTimeoutSweeper()
 
+  // Hourly sweep of expired browser-login sessions (7d idle / 30d absolute).
+  // Runs regardless of WEB_ONLY -- it is a cheap indexed delete on the shared DB
+  // and keeps auth_sessions from growing unboundedly on any instance.
+  const authSessionSweepInterval = setInterval(() => {
+    try {
+      const swept = sweepExpiredSessions()
+      if (swept > 0) logger.info({ swept }, 'Expired auth sessions swept')
+      const sweptKeys = sweepExpiredDeviceKeys()
+      if (sweptKeys > 0) logger.info({ swept: sweptKeys }, 'Expired device keys swept')
+    } catch (err) {
+      logger.warn({ err }, 'Auth session sweep failed')
+    }
+  }, 60 * 60 * 1000)
+
   const tokenCollectInterval = webOnly ? undefined : setInterval(() => {
     collectTokenUsage().catch(err => logger.warn({ err }, 'Periodic token usage collection failed'))
   }, 60 * 60 * 1000)
@@ -538,6 +527,7 @@ export function startWebServer(port = 3420): http.Server {
     clearInterval(modelFallbackInterval)
     clearInterval(contextGuardInterval)
     clearInterval(approvalTimeoutInterval)
+    clearInterval(authSessionSweepInterval)
     clearInterval(updateCheckerInterval)
     if (federationPollerInterval) clearInterval(federationPollerInterval)
     if (capabilityRunnerInterval) clearInterval(capabilityRunnerInterval)

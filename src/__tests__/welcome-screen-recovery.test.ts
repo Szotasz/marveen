@@ -58,6 +58,7 @@ describe('welcome-screen wedge: detection -> recovery decision (real fixture)', 
       truncatedPreamble: false,
       allowPlainReinject: true, // sub-agent box: no human draft
       hasPlainText: parkedInputText(QWEN_WELCOME_WEDGE) != null,
+      scheduledTaskBlock: false,
     })
     expect(action).toBe('reinject-plain')
   })

@@ -1,9 +1,9 @@
 import { logger } from '../../logger.js'
-import { json } from '../http-helpers.js'
+import { json, jsonMaybeGzip } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleStatus(ctx: RouteContext): Promise<boolean> {
-  const { res, path, method } = ctx
+  const { req, res, path, method } = ctx
 
   if (path === '/api/status' && method === 'GET') {
     try {
@@ -56,7 +56,7 @@ export async function tryHandleStatus(ctx: RouteContext): Promise<boolean> {
         logger.warn({ err }, 'Failed to fetch Claude status components')
       }
 
-      json(res, { overall, components, incidents: items.slice(0, 15), fetchedAt: Date.now() })
+      jsonMaybeGzip(req, res, { overall, components, incidents: items.slice(0, 15), fetchedAt: Date.now() })
     } catch (err) {
       logger.warn({ err }, 'Failed to fetch Claude status')
       json(res, { overall: 'unknown', components: [], incidents: [], fetchedAt: Date.now(), error: 'Failed to fetch status' })

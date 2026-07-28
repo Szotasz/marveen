@@ -25,6 +25,11 @@ if [ -f "$INSTALL_DIR/.env" ]; then
   MAIN_AGENT_ID="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
   CHANNEL_PROVIDER="$(grep -E '^CHANNEL_PROVIDER=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
   BOT_NAME="$(grep -E '^BOT_NAME=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
+  # Optional extra channel plugins to co-listen alongside the PRIMARY provider
+  # (space-separated plugin IDs, e.g. "discord@claude-plugins-official"). The
+  # primary provider still drives the orphan-reaper + liveness watchdog logic
+  # below unchanged; the extras are best-effort co-listeners on the same session.
+  CHANNEL_PLUGINS_EXTRA="$(grep -E '^CHANNEL_PLUGINS_EXTRA=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
   # Claude Code auth: pass API key or OAuth token so the tmux-spawned
   # claude process can authenticate. These are safe to export -- unlike
   # TELEGRAM_BOT_TOKEN they don't cause cross-session conflicts.
@@ -120,6 +125,19 @@ PYEOF
 }
 _ensure_plugin_enabled "$INSTALL_DIR/.claude/settings.json"
 unset -f _ensure_plugin_enabled
+
+# Build the extra --channels args from CHANNEL_PLUGINS_EXTRA (space-separated
+# plugin IDs). Each becomes an additional `plugin:<id>` token appended to the
+# --channels list. `claude --channels` accepts a space-separated plugin list,
+# so one session can co-listen on several providers (e.g. Telegram + Discord).
+# NOTE: co-listen also requires each extra plugin to be enabled in
+# .claude/settings.json enabledPlugins (true) -- CHANNEL_PLUGINS_EXTRA alone is
+# not enough; Claude Code only starts plugins marked true there.
+EXTRA_CHANNELS=""
+for _p in $CHANNEL_PLUGINS_EXTRA; do
+  [ -n "$_p" ] && EXTRA_CHANNELS="$EXTRA_CHANNELS plugin:$_p"
+done
+unset _p
 
 # ROOT-CAUSE NOTE (kali-linux WSL, claude-code 2.1.152, 2026-05-27):
 # Inbound MCP notifications from the `--channels` plugin go through a SECOND
@@ -222,15 +240,17 @@ MODEL_FLAG=""
 # tmux command-string round-trip without the inner shell glob-expanding `[1m]`.
 [ -n "$MAIN_MODEL" ] && MODEL_FLAG="--model '$MAIN_MODEL' "
 
-# macOS main-agent config isolation (OPT-IN, default OFF).
+# Main-agent config isolation (OPT-IN, default OFF).
 #
-# By default the main channels agent keeps the shared ~/.claude and, on macOS,
-# authenticates from the ROTATING Keychain OAuth session -- which periodically
-# expires and 401s the main bot ("Please run /login"), while the isolated
-# sub-agents (long-lived fleet setup-token) never do. The helper provisions an
-# isolated CLAUDE_CONFIG_DIR (same code path as the sub-agents, via
-# dist/web/agent-process.js) and authenticates the main agent from the fleet
-# setup-token instead.
+# By default the main channels agent keeps the shared ~/.claude and
+# authenticates from whatever on-process credential refreshes that shared root
+# -- the ROTATING macOS Keychain OAuth session, or (Linux) the shared
+# ~/.claude/.credentials.json -- both periodically expire and 401 the main bot
+# ("Please run /login"), while the isolated sub-agents (long-lived fleet
+# setup-token) never do (confirmed root cause of the 2026-07-23 marveen-channels
+# silent outage). The helper provisions an isolated CLAUDE_CONFIG_DIR (same code
+# path as the sub-agents, via dist/web/agent-process.js) and authenticates the
+# main agent from the fleet setup-token instead.
 #
 # The decision lives ENTIRELY in the helper, which prints "<mode>\t<path>" (or
 # nothing) and covers the two mutually exclusive ways the main agent can get its
@@ -241,10 +261,10 @@ MODEL_FLAG=""
 #     fleet's). That dir carries its own .credentials.json, so we must NOT inject
 #     the fleet token: doing so would authenticate the bot as the fleet. Works on
 #     every platform.
-#   isolated -- MAIN_AGENT_ISOLATED_CONFIG=1 on macOS with a fleet setup-token:
-#     the helper provisions a credential-less dir and we export the fleet token
-#     (same code path as the sub-agents), so the bot stops depending on the
-#     rotating Keychain OAuth session.
+#   isolated -- MAIN_AGENT_ISOLATED_CONFIG=1 (any platform) with a fleet
+#     setup-token: the helper provisions a credential-less dir and we export the
+#     fleet token (same code path as the sub-agents), so the bot stops depending
+#     on the rotating/shared on-disk credential.
 #
 # Both settings resolve through the settings-store (dashboard toggle in
 # store/config-overrides.json OR a hand-set .env key -- resolution override>.env>
@@ -269,6 +289,27 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
       CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$INSTALL_DIR/store/.claude-oauth-token')\" && "
     fi
     echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent $_cfg_mode CLAUDE_CONFIG_DIR=$_cfg_dir" >> "$INSTALL_DIR/store/channels-failures.log"
+  fi
+  # LOUD REGRESSION GUARD: an isolated main-agent config dir on disk (provisioned
+  # by an earlier isolated boot) combined with THIS boot resolving to the shared
+  # ~/.claude means the isolation setting was lost -- e.g. store/config-overrides.json
+  # deleted with no .env key backing it. The silent fallback rides the rotating
+  # shared credential session, which is exactly how the 2026-07-27 evening 401
+  # outage started and was only noticed hours later when the owner got no replies.
+  # Surface it at START time instead: a failures-log line plus a best-effort
+  # inter-agent message to the main agent. Installs that never ran isolated have
+  # no .channels-config dir and stay quiet, so default setups see no new noise.
+  if [ -z "$CFG_ENV" ] && [ -d "$INSTALL_DIR/.channels-config" ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN main-agent starting on SHARED ~/.claude although isolated dir $INSTALL_DIR/.channels-config exists -- MAIN_AGENT_ISOLATED_CONFIG resolution came back empty (overrides/.env key lost?). Auth rides the rotating shared session and can 401." >> "$INSTALL_DIR/store/channels-failures.log"
+    if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
+      _guard_port="$(grep -E '^WEB_PORT=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+      curl -s --max-time 5 -X POST "http://localhost:${_guard_port:-3420}/api/messages" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $(cat "$INSTALL_DIR/store/.dashboard-token")" \
+        -d "{\"from\":\"channels-sh-guard\",\"to\":\"${MAIN_AGENT_ID:-marveen}\",\"content\":\"[GUARD] A channels session most a KOZOS ~/.claude alol indult, pedig letezik izolalt config dir (.channels-config). A MAIN_AGENT_ISOLATED_CONFIG beallitas valoszinuleg elveszett (store/config-overrides.json torlodott es nincs .env kulcs). Az auth a rotalodo shared sessionbol megy, 401-veszely. Teendo: MAIN_AGENT_ISOLATED_CONFIG=1 visszaallitasa, majd channels session restart.\"}" \
+        >/dev/null 2>&1 || true
+      unset _guard_port
+    fi
   fi
   unset _cfg_line _cfg_mode _cfg_dir
 fi
@@ -359,9 +400,20 @@ fi
 # never reaches the channels claude -> "Not logged in" until the hourly restart.
 # Setting it -g makes the launch order irrelevant. Safe to share globally: every
 # agent uses the same Claude login (unlike the channel tokens scrubbed above,
-# which DO conflict and are -u'd). `|| true` tolerates "no server yet" -- in that
-# case new-session creates the server from this shell's exported env, which is
-# already correct.
+# which DO conflict and are -u'd).
+#
+# `start-server` first, because the "no server yet -> new-session inherits this
+# shell's env" assumption below is only safe when NOTHING ELSE creates the
+# server in between. At boot it does: systemd starts marveen-channels and
+# marveen-dashboard in the same second, and the dashboard's worker sessions win
+# the race about half the time. Then `set-environment -g` silently no-ops (no
+# server), the dashboard creates the server WITHOUT the token, and our
+# new-session inherits that empty global env instead of this shell's -- the
+# channels claude comes up "Not logged in - Please run /login" and the Telegram
+# plugin dies in a restart loop, on a headless box where /login is impossible.
+# Creating the server ourselves makes set-environment -g always land, which is
+# what the fix intended. start-server is idempotent and cheap.
+$TMUX start-server 2>/dev/null || true
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
   $TMUX set-environment -g CLAUDE_CODE_OAUTH_TOKEN "$CLAUDE_CODE_OAUTH_TOKEN" 2>/dev/null || true
 fi
@@ -392,7 +444,7 @@ $TMUX set-environment -g CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION false 2>/dev/null 
 # otherwise new-session below fails with "duplicate session".
 $TMUX kill-session -t "$SESSION" 2>/dev/null || true
 $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
-  "${MCP_BATCH_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}"
+  "${MCP_BATCH_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
 
 # Session startup guard: a Claude Code first-run dialogusait auto-accept-eljuk
 # kulonben a headless session orokre parkolna a prompton es a Telegram plugin
@@ -433,7 +485,7 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
         # entry); see the PR description / card 7EB18437.
         [ -e "$INSTALL_DIR/CLAUDE.md" ] && ln -sf "$INSTALL_DIR/CLAUDE.md" "$_CHANNELS_STARTDIR/CLAUDE.md" 2>/dev/null || true
         $TMUX new-session -d -s "$SESSION" -c "$_CHANNELS_STARTDIR" \
-          "${MCP_BATCH_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}"
+          "${MCP_BATCH_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
         unset _CHANNELS_STARTDIR
       fi
       continue

@@ -59,6 +59,18 @@ function keychainHasClaudeCredentials(): boolean {
   } catch { return false }
 }
 
+// The fleet setup-token leg (#654): the wizard's own auth step stores the
+// token into FLEET_TOKEN_FILE (see the /api/onboarding/claude-auth handler
+// below), so an install authenticated ONLY via the fleet token has no env
+// var, no ~/.claude/.credentials.json and no Keychain entry -- without this
+// check the wizard re-nagged on every reload right after completing itself.
+// Presence-only, non-empty, same spirit as the other legs.
+function fleetTokenPresent(): boolean {
+  try {
+    return readFileSync(FLEET_TOKEN_FILE, 'utf-8').trim().length > 0
+  } catch { return false }
+}
+
 function claudeAuthPresent(): boolean {
   if (readEnvValue('CLAUDE_CODE_OAUTH_TOKEN')) return true
   if (readEnvValue('ANTHROPIC_API_KEY')) return true
@@ -69,6 +81,7 @@ function claudeAuthPresent(): boolean {
     if (d?.claudeAiOauth?.accessToken) return true
     if (d?.apiKey) return true
   } catch { /* no / unreadable credentials.json */ }
+  if (fleetTokenPresent()) return true
   return keychainHasClaudeCredentials()
 }
 
@@ -207,6 +220,13 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     if (token && !/^sk-ant-oat/.test(token)) { json(res, { error: 'A setup-token formatuma nem stimmel (sk-ant-oat...).', reason: 'bad-token' }, 400); return true }
     if (apiKey && !/^sk-ant-/.test(apiKey)) { json(res, { error: 'Az API-kulcs formatuma nem stimmel (sk-ant-...).', reason: 'bad-key' }, 400); return true }
 
+    // Read BEFORE persisting: on a fresh install the channels session is
+    // booted by the installer/service unit with NO credentials, so if the
+    // install had no auth at this point, a running session is unauthenticated
+    // by construction. That is the one case where this endpoint must restart
+    // it after the save -- a running process never picks up new env.
+    const hadAuthBefore = claudeAuthPresent()
+
     // Verify BEFORE persisting, with a REAL probe. 2026-07-15 bootcamp bug 3:
     // the old persist-then-verify order stored a mistyped/revoked token into
     // .env + the fleet token file and still returned ok:true -- and since
@@ -242,8 +262,25 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'Nem sikerult elmenteni az .env-be.', reason: 'write-failed' }, 500)
       return true
     }
-    logger.info({ verified, mode: token ? 'oauth' : 'apikey' }, 'onboarding: Claude auth stored')
-    json(res, { ok: true, verified })
+    // BK bootcamp 2026-07-28: the wizard's /launch guards on agentsRunning()
+    // and short-circuits when the (unauthenticated) session already exists, so
+    // the token saved here never reached the running process and the install
+    // stayed logged-out. Restart here, in exactly the case where it is both
+    // needed and safe: the install had NO auth before this save, so the
+    // running session cannot be an authenticated live agent -- bouncing it
+    // loses nothing. Re-pasting a token on an already-authenticated install
+    // keeps today's behaviour (no implicit restart of a working fleet).
+    let restarted = false
+    let restartError: string | null = null
+    if (!hadAuthBefore && agentsRunning()) {
+      const r = hardRestartMarveenChannels()
+      restarted = r.ok
+      if (!r.ok) restartError = r.error || 'restart failed'
+      if (r.ok) logger.info('onboarding: channels restarted so the fresh auth is picked up')
+      else logger.error({ error: restartError }, 'onboarding: channels restart after first auth FAILED')
+    }
+    logger.info({ verified, restarted, mode: token ? 'oauth' : 'apikey' }, 'onboarding: Claude auth stored')
+    json(res, restartError ? { ok: true, verified, restarted, restartError } : { ok: true, verified, restarted })
     return true
   }
 

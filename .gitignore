@@ -79,6 +79,16 @@ REBUILD_PROMPT_V3.1.md
 # branded auto-reply here locally. Ignored so it never ships to other installs.
 scripts/support-mail/no-support-reply.html
 
+# M365 / Graph mail credentials (client secret, tenant/client IDs). Plaintext
+# secret -- never commit. Operator keeps this locally per install.
+marveen-mail-ugyfelkod
+*.secret
+.mail-credentials*
+
 # Python bytecode cache
 __pycache__/
 *.pyc
+
+# Claude Code Channels runtime config/session dir (sessions, history, tokens,
+# plugins, skills). Per-install runtime state -- never source, never commit.
+.channels-config/

@@ -20,12 +20,42 @@ BOT_PID_FILE="$HOME/.claude/channels/telegram/bot.pid"
 fail=0
 note() { echo "  $1"; }
 
-# Find the channels claude pid: a `claude ... --channels` process whose cwd is
-# the install dir. We match the session's claude by argv + the --channels flag.
-CLAUDE_PID="$(pgrep -af -- '--channels plugin:' | grep -F "$INSTALL_DIR" 2>/dev/null | awk '{print $1}' | head -1)"
-if [ -z "$CLAUDE_PID" ]; then
-  # Fallback: any claude with --channels (single main session on this box).
-  CLAUDE_PID="$(pgrep -af -- '--channels plugin:' | grep -vi 'agent-' | awk '{print $1}' | head -1)"
+# Find the channels claude pid, anchored on OUR tmux pane.
+#
+# The previous argv-grep discovery was wrong in both legs and silently verified
+# the WRONG process: the `grep -F "$INSTALL_DIR"` leg never matches a claude
+# (the install dir is the cwd, not part of argv -- it only matched the grep's
+# own shell wrapper), and the `grep -vi agent-` fallback took `head -1` of
+# every --channels claude on the box, which on a multi-agent host is a sibling
+# agent's session, whose argv may carry an entirely different provider set.
+# Verifying a sibling agent's process makes checks (c) and (d) meaningless.
+#
+# The pane of $SESSION is the only authoritative source. tmux runs the claude as
+# the pane process directly, but tolerate a wrapper shell by walking descendants.
+PANE_PID="$(tmux list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)"
+CLAUDE_PID=""
+if [ -n "$PANE_PID" ]; then
+  case "$(ps -p "$PANE_PID" -o args= 2>/dev/null)" in
+    *"--channels plugin:"*) CLAUDE_PID="$PANE_PID" ;;
+    *)
+      _parents="$PANE_PID"
+      for _depth in 1 2 3 4; do
+        _children=""
+        for _p in $_parents; do
+          _children="$_children $(pgrep -P "$_p" 2>/dev/null)" || true
+        done
+        [ -z "$(echo "$_children" | tr -d ' ')" ] && break
+        for _c in $_children; do
+          [ -z "$_c" ] && continue
+          case "$(ps -p "$_c" -o args= 2>/dev/null)" in
+            *"--channels plugin:"*) CLAUDE_PID="$_c"; break 2 ;;
+          esac
+        done
+        _parents="$_children"
+      done
+      unset _parents _children _p _c _depth
+      ;;
+  esac
 fi
 
 echo "verify-channels-health: session=$SESSION"
@@ -86,6 +116,38 @@ if [ -n "$CLAUDE_PID" ] && [ -r "/proc/$CLAUDE_PID/environ" ]; then
   fi
 else
   note "(c) SKIP: cannot read /proc/$CLAUDE_PID/environ"
+fi
+
+# (d) EVERY configured provider is on the live --channels argv (half-mute guard).
+# The three checks above all watch the PRIMARY provider, so a respawn that dropped
+# a secondary plugin passed them cleanly: outbound kept working (the plugin's MCP
+# reply tool is loaded) while inbound was dropped as "server not in --channels
+# list". Note it must read the ARGV, not the environment -- CHANNEL_PLUGINS_EXTRA
+# can be exported and correct while the argv omits the plugin -- that exact
+# combination is how a secondary inbound goes dead while everything else,
+# including the env the operator inspects first, looks correct.
+CHANNEL_PLUGINS_EXTRA="$(grep -E '^CHANNEL_PLUGINS_EXTRA=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+if [ -z "$CHANNEL_PLUGINS_EXTRA" ]; then
+  note "(d) SKIP: no CHANNEL_PLUGINS_EXTRA configured"
+elif [ -z "$CLAUDE_PID" ]; then
+  note "(d) SKIP: channels claude pid not found"
+else
+  CLAUDE_ARGV="$(ps -p "$CLAUDE_PID" -o args= 2>/dev/null)"
+  _missing=""
+  for _p in $CHANNEL_PLUGINS_EXTRA; do
+    [ -z "$_p" ] && continue
+    case "$CLAUDE_ARGV" in
+      *"plugin:$_p"*) ;;
+      *) _missing="$_missing $_p" ;;
+    esac
+  done
+  if [ -z "$_missing" ]; then
+    note "(d) OK: all extra channel plugins on argv"
+  else
+    note "(d) FAIL: HALF-MUTE -- inbound dropped for:$_missing (outbound still works, so this looks healthy elsewhere)"
+    fail=1
+  fi
+  unset _p _missing CLAUDE_ARGV
 fi
 
 if [ "$fail" -eq 0 ]; then

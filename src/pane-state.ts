@@ -404,6 +404,110 @@ export function detectsBlockingMenu(pane: string): boolean {
   return MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion)
 }
 
+// Claude Code FIRST-RUN gates: the interactive dialogs a brand-new install
+// parks on before the prompt ever renders -- the per-project "Do you trust the
+// files in this folder?" consent, the --dangerously-skip-permissions "Bypass
+// Permissions mode" acceptance, the "Select login method" picker, the theme
+// picker and the onboarding welcome screen. A sub-agent session stuck on one
+// of these is the fresh-install failure mode behind "scheduled tasks pile up
+// on the agents" (Oligo2000 VPS, 2026-07-22): the pane has no idle footer and
+// no busy signal, so detectPaneState reads 'unknown', isSessionReadyForPrompt
+// stays false forever, every scheduled task defers into pending_task_retries,
+// and a forceSend task types its prompt blindly into the dialog.
+//
+// These gates need their own detector (distinct from detectsBlockingMenu)
+// because the RECOVERY differs: a /mcp-style modal pops back to the prompt on
+// Escape, but on the trust/bypass dialogs Escape means "No, exit" -- it QUITS
+// the TUI and the session respawns straight back into the same dialog. The
+// monitor must answer them the way scripts/channels.sh's startup guard does
+// (trust -> "1" Enter, bypass -> "2" Enter) and must only ALERT on the login
+// picker (nobody can log in on the operator's behalf).
+//
+// Guards against a healthy session that merely quotes the dialog text follow
+// detectsBlockingMenu's discipline: a busy pane is never a gate, and a visible
+// idle footer means the real prompt is live (capture-pane -p sees only the
+// visible screen, so a quoted phrase always coexists with the live footer).
+export type FirstRunGateKind = 'trust' | 'bypass-permissions' | 'login' | 'theme' | 'welcome'
+
+// Ordered: the login picker and theme screen render UNDER the "Welcome to
+// Claude Code" banner, so the more specific matches must win before the
+// generic welcome fallback.
+const FIRST_RUN_GATES: Array<{ kind: FirstRunGateKind; rx: RegExp }> = [
+  { kind: 'trust', rx: /Do you trust the files in this folder\?/ },
+  { kind: 'bypass-permissions', rx: /Bypass Permissions mode/ },
+  { kind: 'login', rx: /Select login method/ },
+  { kind: 'theme', rx: /Choose the text style/ },
+  { kind: 'welcome', rx: /Welcome to Claude Code/ },
+]
+
+/**
+ * Classify the pane as a Claude Code first-run gate, or null when it is a
+ * normal (busy / idle / typing) surface. Pure + dependency-free.
+ */
+export function detectsFirstRunGate(pane: string): FirstRunGateKind | null {
+  if (!pane || !pane.trim()) return null
+  const lines = pane.split('\n')
+  const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(busyRegion)) return null
+  }
+  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return null
+  if (IDLE_FOOTER_RX.test(pane)) return null
+  for (const g of FIRST_RUN_GATES) {
+    if (!g.rx.test(pane)) continue
+    // The welcome banner also heads the NORMAL fresh-session layout (logo +
+    // model + cwd + empty input box, footer not yet rendered). A ❯ prompt
+    // glyph means an input box exists -- that pane is usable, not a gate.
+    // The trust/bypass/login dialogs use ❯ only as their option selector and
+    // are matched above, before this fallback.
+    if (g.kind === 'welcome' && pane.includes('❯')) continue
+    return g.kind
+  }
+  return null
+}
+
+// Claude Code model overage-consent dialog (first observed 2026-07-23; the
+// confirmed root cause of the "agent-config says claude-fable-5 but the
+// session runs Sonnet 5" activeModel drift). When a config root's
+// .claude.json lacks fableOverageConsentV2[<org>], the first Fable 5 turn
+// parks the TUI on:
+//   Fable 5 now uses usage credits
+//     1. Continue with Fable 5
+//   ❯ 2. Switch to Sonnet 5 and continue
+//   Enter to confirm · Esc to cancel
+// with the DEFAULT CURSOR ON THE SWITCH OPTION. Any blind Enter reaching the
+// pane (the post-spawn identity /name, sendPromptToSession's retry-Enter,
+// a human reflex) silently switches the session to Sonnet. The dialog is
+// detected here (pure, unit-testable) and answered in agent-process.ts by
+// actively selecting option 1 ("Continue with <model>") -- never the switch
+// default. Matchers are model-name-agnostic so a future "<other model> now
+// uses usage credits" variant is covered without a new detector.
+//
+// Guards follow detectsFirstRunGate's discipline: a busy pane is never the
+// dialog, and a visible idle footer means the real prompt is live -- so a
+// reply/inter-agent message that merely QUOTES the dialog text (which
+// happened the very day this shipped) can never trigger a keystroke. The
+// confirm hint must sit in the live footer region, not anywhere in the pane.
+const MODEL_CONSENT_TITLE_RX = /(?:now uses|runs on|requires) usage credits/
+const MODEL_CONSENT_CONTINUE_RX = /1\.\s*Continue with /
+const MODEL_CONSENT_CONFIRM_RX = /Enter to confirm/
+
+export function detectsModelConsentDialog(pane: string): boolean {
+  if (!pane || !pane.trim()) return false
+  const lines = pane.split('\n')
+  const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(busyRegion)) return false
+  }
+  const footerRegion = lines.slice(-LIVE_FOOTER_REGION_LINES).join('\n')
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
+  if (IDLE_FOOTER_RX.test(pane)) return false
+  return MODEL_CONSENT_TITLE_RX.test(pane)
+    && MODEL_CONSENT_CONTINUE_RX.test(pane)
+    && MODEL_CONSENT_CONFIRM_RX.test(footerRegion)
+}
+
 export interface DetectPaneStateOptions {
   /** If true, the 'typing' state (text parked in input box) is
    * merged into 'busy'. Default false -- callers that care about
@@ -1021,6 +1125,41 @@ export function parkedInputText(pane: string): string | null {
   return flat.length > 0 ? flat : null
 }
 
+// Machine-origin wrappers the delivery paths prepend to injected prompts.
+// A parked input STARTING with one of these cannot be a human's hand-typed
+// draft, so the recovery stack may act on it (clear a scheduled tick, or
+// hard-restart a wedged pane) without risking a human's work-in-progress.
+// Anchored to the box START on purpose: a human draft that merely QUOTES a
+// wrapper deeper in the text stays protected.
+const MACHINE_ORIGIN_PREFIXES = [
+  /^SCHEDULED TASK NOTICE/,
+  /^<scheduled-task[\s>]/,
+  /^TEAM MEMBER NOTICE/,
+  /^\[Uzenet @/,
+  /^<channel\s+source="plugin:/,
+] as const
+
+// True when the live input box holds parked ('typing') text that is
+// identifiably machine-injected (see MACHINE_ORIGIN_PREFIXES). Pure.
+export function parkedMachineOriginInput(pane: string): boolean {
+  const flat = parkedInputText(pane)
+  if (flat == null) return false
+  return MACHINE_ORIGIN_PREFIXES.some((rx) => rx.test(flat))
+}
+
+// True when the parked text is a scheduled-task injection (the scheduler's
+// wrapper or a bare <scheduled-task> block). Scheduled tasks are (near
+// always) RECURRING: dropping one parked tick is harmless -- the next
+// schedule fire re-delivers the same instruction -- while re-injecting is
+// NOT safe (the TUI truncates long box content mid-text, so the visible
+// capture may be missing lines even when the closing tag is visible).
+// The safe recovery for a parked tick is therefore clear-only.
+export function parkedScheduledTaskInput(pane: string): boolean {
+  const flat = parkedInputText(pane)
+  if (flat == null) return false
+  return /^SCHEDULED TASK NOTICE/.test(flat) || /^<scheduled-task[\s>]/.test(flat)
+}
+
 // How many VISUAL rows the live input box content occupies, ignoring the
 // bare prompt glyph and blank padding. The caller uses this to choose the
 // right submit keystroke: a MULTI-row parked input must NOT be submitted with
@@ -1180,6 +1319,7 @@ export type StuckInputAction =
   | 'reinject-block'   // clear + verbatim re-inject the COMPLETE <channel> block (chat_id-safe)
   | 'reinject-plain'   // clear + re-inject collapsed parked text (sub-agents only)
   | 'clear-preamble'   // clear a truncated/stale safety preamble, never re-inject
+  | 'clear-scheduled'  // clear a parked scheduled-task tick, never re-inject (next fire re-delivers)
   | 'enter'            // a single bare Enter -- ONLY safe at rowCount <= 1
   | 'hold'             // do nothing this tick (multi-row truncated / truncation-guard)
 
@@ -1199,6 +1339,9 @@ export interface StuckInputActionFacts {
   allowPlainReinject: boolean
   /** parkedInputText(pane) != null -- there is collapsed text to re-inject. */
   hasPlainText: boolean
+  /** parkedScheduledTaskInput(pane): a scheduled-task tick is parked. Clear-only
+   * is safe on ANY session (the next schedule fire re-delivers). */
+  scheduledTaskBlock: boolean
 }
 
 /**
@@ -1227,6 +1370,13 @@ export function decideStuckInputAction(f: StuckInputActionFacts): StuckInputActi
   if (f.allowPlainReinject && f.hasPlainText && !f.blockTruncated) {
     return f.escalate || multiRow ? 'reinject-plain' : 'enter'
   }
+  // Parked scheduled-task tick (main session reaches here: no plain re-inject).
+  // Clear-only -- re-injecting risks TUI mid-text truncation corrupting the
+  // instruction, while a dropped tick is re-delivered by the next schedule
+  // fire. Single-row still tries the harmless Enter first.
+  if (f.scheduledTaskBlock) {
+    return f.escalate || multiRow ? 'clear-scheduled' : 'enter'
+  }
   // Truncated safety preamble: clear only (never re-inject a stale preamble).
   if (f.truncatedPreamble && f.escalate) return 'clear-preamble'
   // Truncated <channel> block: hold a multi-row (Enter would corrupt; re-inject
@@ -1234,6 +1384,29 @@ export function decideStuckInputAction(f: StuckInputActionFacts): StuckInputActi
   if (f.blockTruncated) return multiRow ? 'hold' : 'enter'
   // Default swallowed-Enter remedy -- never on multi-row.
   return multiRow ? 'hold' : 'enter'
+}
+
+// Would the soft stuck-input recovery have ANY submitting/clearing move for
+// the MAIN session's parked input at full escalation, or is it wedged in the
+// no-remedy 'hold' branch? Used by the hard-restart busy-guard: a 'typing'
+// pane whose soft recovery still has a move keeps deferring the destructive
+// restart (soft path wins without context loss); a no-remedy hold must NOT
+// defer forever or the channel goes permanently mute (2026-07-25 hermes
+// incident: parked multi-row scheduled-task -> hold + 'typing' deferred both
+// the stuck-input hard restart AND the keepalive-staleness respawn).
+export function parkedMainInputHasRemedy(pane: string): boolean {
+  const block = parkedChannelInput(pane)
+  const facts: StuckInputActionFacts = {
+    escalate: true,
+    rowCount: parkedInputRowCount(pane),
+    blockComplete: block != null && block.complete && block.block != null,
+    blockTruncated: block != null && !block.complete,
+    truncatedPreamble: shouldClearTruncatedPreamble(pane),
+    allowPlainReinject: false,
+    hasPlainText: false,
+    scheduledTaskBlock: parkedScheduledTaskInput(pane),
+  }
+  return decideStuckInputAction(facts) !== 'hold'
 }
 
 // =============================================================================

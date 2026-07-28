@@ -12,6 +12,42 @@ WEB_PORT="${WEB_PORT:-3420}"
 
 timestamp() { date '+%Y-%m-%d %H:%M:%S'; }
 
+# Resolve which channel an agent must be respawned on, from its OWN
+# agent-config.json channelProvider -- the same field src/web/agent-process.ts
+# launches from. Sets AGENT_PROVIDER / TOKEN_VAR / STATE_ENV_VAR.
+#
+# Hardcoding telegram here had two failure modes for a non-telegram agent:
+# (a) no TELEGRAM_BOT_TOKEN in its .env, so the loop hit "no bot token,
+# skipping" and the watchdog NEVER restarted it -- precisely the agent the
+# watchdog exists for stayed dead, while the log line looked routine; or
+# (b) it came back on the wrong channel and was mute on its real one.
+#
+# Unknown / missing / malformed provider falls back to telegram, matching
+# the pre-existing default so single-channel telegram installs are unaffected.
+resolve_agent_provider() {
+  local agent_dir="$1"
+  AGENT_PROVIDER=$(python3 -c "import json; d=json.load(open('$agent_dir/agent-config.json')); print(d.get('channelProvider','telegram'))" 2>/dev/null || echo telegram)
+  [ -n "$AGENT_PROVIDER" ] || AGENT_PROVIDER=telegram
+  case "$AGENT_PROVIDER" in
+    slack)      TOKEN_VAR="SLACK_BOT_TOKEN";      STATE_ENV_VAR="SLACK_STATE_DIR" ;;
+    discord)    TOKEN_VAR="DISCORD_BOT_TOKEN";    STATE_ENV_VAR="DISCORD_STATE_DIR" ;;
+    teams)      TOKEN_VAR="TEAMS_BOT_TOKEN";      STATE_ENV_VAR="TEAMS_STATE_DIR" ;;
+    googlechat) TOKEN_VAR="GOOGLECHAT_BOT_TOKEN"; STATE_ENV_VAR="GOOGLECHAT_STATE_DIR" ;;
+    *)          AGENT_PROVIDER=telegram; TOKEN_VAR="TELEGRAM_BOT_TOKEN"; STATE_ENV_VAR="TELEGRAM_STATE_DIR" ;;
+  esac
+}
+
+# Self-test hook: print the resolution for one agent dir and exit, without
+# touching tmux, the dashboard API or the log. Lets the contract be tested
+# from fixtures (scripts/__tests__/watchdog-provider.test.sh) instead of
+# requiring a live agent with a real bot token.
+if [ "${1:-}" = "--resolve-provider" ]; then
+  [ -n "${2:-}" ] || { echo "usage: watchdog.sh --resolve-provider <agent-dir>" >&2; exit 2; }
+  resolve_agent_provider "$2"
+  echo "provider=$AGENT_PROVIDER token_var=$TOKEN_VAR state_env_var=$STATE_ENV_VAR"
+  exit 0
+fi
+
 
 export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
@@ -124,16 +160,18 @@ for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
 
   echo "$(timestamp) [watchdog] $AGENT_ID missing, restarting..." >> "$LOG"
 
-  CHAN_DIR="$AGENT_DIR/.claude/channels/telegram"
-  BOT_TOKEN=$(grep "TELEGRAM_BOT_TOKEN" "$CHAN_DIR/.env" 2>/dev/null | cut -d= -f2- | head -1)
+  resolve_agent_provider "$AGENT_DIR"
+
+  CHAN_DIR="$AGENT_DIR/.claude/channels/$AGENT_PROVIDER"
+  BOT_TOKEN=$(grep "$TOKEN_VAR" "$CHAN_DIR/.env" 2>/dev/null | cut -d= -f2- | head -1)
   MODEL=$(python3 -c "import json; d=json.load(open('$AGENT_DIR/agent-config.json')); print(d.get('model','claude-haiku-4-5-20251001'))" 2>/dev/null || echo "claude-haiku-4-5-20251001")
 
   if [ -z "$BOT_TOKEN" ]; then
-    echo "$(timestamp) [watchdog] $AGENT_ID: no bot token, skipping" >> "$LOG"
+    echo "$(timestamp) [watchdog] $AGENT_ID: no $AGENT_PROVIDER bot token, skipping" >> "$LOG"
     continue
   fi
 
-  CMD="export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export TELEGRAM_STATE_DIR=\"$CHAN_DIR\" && cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:telegram@claude-plugins-official"
+  CMD="export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official"
 
   tmux new-session -d -s "$SESSION_NAME" "$CMD" 2>/dev/null
   sleep 2

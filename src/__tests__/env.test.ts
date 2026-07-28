@@ -1,34 +1,31 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { writeFileSync, unlinkSync, existsSync } from 'node:fs'
-import { join, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { writeFileSync, unlinkSync, mkdtempSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
-const PROJECT_ROOT = join(__dirname, '..', '..')
-const testEnvPath = join(PROJECT_ROOT, '.env')
+// ENFORCED sandbox. The previous version of this file wrote fixtures into --
+// and unlink'd -- the LIVE repo-root .env (snapshot/restore around each test),
+// which in a production checkout recreated the real secrets file with default
+// 0644 permissions (2026-07-27 incident). env.ts resolves its own PROJECT_ROOT
+// (it cannot import config.js -- circular), so the redirect is the
+// CLAUDECLAW_ENV_DIR hook read at module import; set it BEFORE the dynamic
+// import below. vitest isolates module registries per test file, so the hook
+// cannot leak into other suites.
+const SANDBOX = mkdtempSync(join(tmpdir(), 'env-test-'))
+const testEnvPath = join(SANDBOX, '.env')
 
-let hadExistingEnv = false
-let existingContent = ''
-
-beforeEach(() => {
-  if (existsSync(testEnvPath)) {
-    hadExistingEnv = true
-    existingContent = require('fs').readFileSync(testEnvPath, 'utf-8')
-  }
+beforeAll(() => {
+  process.env.CLAUDECLAW_ENV_DIR = SANDBOX
 })
 
-afterEach(() => {
-  if (hadExistingEnv) {
-    writeFileSync(testEnvPath, existingContent)
-  } else {
-    try { unlinkSync(testEnvPath) } catch {}
-  }
+afterAll(() => {
+  delete process.env.CLAUDECLAW_ENV_DIR
+  rmSync(SANDBOX, { recursive: true, force: true })
 })
 
 describe('readEnvFile', () => {
   it('ures objektumot ad vissza ha nincs .env', async () => {
-    try { unlinkSync(testEnvPath) } catch {}
-    // Friss import
+    try { unlinkSync(testEnvPath) } catch { /* absent */ }
     const { readEnvFile } = await import('../env.js')
     const result = readEnvFile()
     expect(result).toEqual({})

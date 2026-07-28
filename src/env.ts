@@ -4,7 +4,11 @@ import { fileURLToPath } from 'node:url'
 import { atomicWriteFileSync } from './web/atomic-write.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const PROJECT_ROOT = join(__dirname, '..')
+// CLAUDECLAW_ENV_DIR: test-only escape hatch so the suite can point .env
+// reads/writes at a sandbox instead of the real repo root (env.test.ts used
+// to unlink+rewrite the LIVE .env -- 2026-07-27 incident). Read at import
+// time; production never sets it.
+const PROJECT_ROOT = process.env.CLAUDECLAW_ENV_DIR ?? join(__dirname, '..')
 
 export function readEnvFile(keys?: string[]): Record<string, string> {
   const envPath = join(PROJECT_ROOT, '.env')

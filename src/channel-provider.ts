@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { logger } from './logger.js'
 import { formatForTelegram, splitMessage } from './format.js'
+import { markIfTestRun } from './test-run-marker.js'
 
 export type ChannelProviderType = 'telegram' | 'slack' | 'discord' | 'googlechat' | 'teams'
 
@@ -481,8 +482,31 @@ const providers: Record<ChannelProviderType, ChannelProvider> = {
   teams: teamsProvider,
 }
 
+// Every provider send is routed through the test-run marker: getProvider has
+// many callers beyond notifyChannel (agent-process, channel-monitor, agent
+// routes), and any of them reached from a test run must label its outbound
+// message. markIfTestRun is a no-op in production and idempotent, so the
+// wrapper is safe to layer under callers that already mark.
+function withTestRunMarking(provider: ChannelProvider): ChannelProvider {
+  return {
+    ...provider,
+    sendMessage: (token, chatId, text, parseMode) =>
+      provider.sendMessage(token, chatId, markIfTestRun(text), parseMode),
+    sendPhoto: (token, chatId, photoPath, caption) =>
+      provider.sendPhoto(token, chatId, photoPath, markIfTestRun(caption)),
+  }
+}
+
+const markedProviders: Record<ChannelProviderType, ChannelProvider> = {
+  telegram: withTestRunMarking(telegramProvider),
+  slack: withTestRunMarking(slackProvider),
+  discord: withTestRunMarking(discordProvider),
+  googlechat: withTestRunMarking(googlechatProvider),
+  teams: withTestRunMarking(teamsProvider),
+}
+
 export function getProvider(type: ChannelProviderType): ChannelProvider {
-  return providers[type]
+  return markedProviders[type]
 }
 
 export function getProviderType(envValue: string | undefined): ChannelProviderType {

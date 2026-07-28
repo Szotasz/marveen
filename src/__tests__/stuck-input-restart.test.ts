@@ -85,4 +85,31 @@ describe('applyStuckRestartBusyGuard', () => {
     expect(applyStuckRestartBusyGuard('idle', 'skip')).toBe('skip')
     expect(applyStuckRestartBusyGuard('busy', 'skip')).toBe('skip')
   })
+
+  // Deadlock carve-out (2026-07-25 hermes incident): a parked machine-injected
+  // block with NO soft remedy must not defer forever -- the keepalive backstop
+  // defers on the same 'typing' signal, so the blanket defer muted the channel
+  // permanently. Restart is allowed ONLY for machine-origin + no-remedy.
+  describe('typing deadlock carve-out', () => {
+    it('restarts a machine-origin parked input that soft recovery cannot fix', () => {
+      expect(applyStuckRestartBusyGuard('typing', 'restart', { machineOrigin: true, softRemedy: false })).toBe('restart')
+      expect(applyStuckRestartBusyGuard('typing', 'alert', { machineOrigin: true, softRemedy: false })).toBe('alert')
+    })
+
+    it('keeps deferring while soft recovery still has a move (channel-block re-inject)', () => {
+      expect(applyStuckRestartBusyGuard('typing', 'restart', { machineOrigin: true, softRemedy: true })).toBe('skip')
+    })
+
+    it('keeps deferring for a possibly human draft (not machine-origin)', () => {
+      expect(applyStuckRestartBusyGuard('typing', 'restart', { machineOrigin: false, softRemedy: false })).toBe('skip')
+    })
+
+    it('a busy pane always defers, carve-out or not', () => {
+      expect(applyStuckRestartBusyGuard('busy', 'restart', { machineOrigin: true, softRemedy: false })).toBe('skip')
+    })
+
+    it('without carve-out facts the legacy blanket typing-defer applies', () => {
+      expect(applyStuckRestartBusyGuard('typing', 'restart')).toBe('skip')
+    })
+  })
 })

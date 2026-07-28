@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { execSync, execFileSync } from 'node:child_process'
@@ -15,6 +15,9 @@ import {
   stripGhostSuggestion,
   paneShowsContextSaturation,
   idleConsideringDimGhost,
+  detectsFirstRunGate,
+  detectsModelConsentDialog,
+  type FirstRunGateKind,
 } from '../pane-state.js'
 import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentMemoryIsolation } from './agent-config.js'
 import { resolveAgentConfigDir } from './claude-plans.js'
@@ -62,17 +65,8 @@ export function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
 }
 
-// The fleet's channel plugins keyed by provider. A sub-agent must enable ONLY
-// its own provider's plugin; the others are forced off so it cannot spawn a
-// competing poller against the main agent's bot token (the dup-poller / 409
-// Conflict class). Keep in sync with the user-scope enabledPlugins ids.
-export const CHANNEL_PLUGIN_IDS: Record<string, string> = {
-  telegram: 'telegram@claude-plugins-official',
-  slack: 'slack-channel@marveen-marketplace',
-  discord: 'discord@claude-plugins-official',
-  googlechat: 'googlechat@claude-channel-googlechat',
-  teams: 'teams@marveen-marketplace',
-}
+import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
+export { CHANNEL_PLUGIN_IDS }
 
 // Pure: compute the enabledPlugins map for a sub-agent so that exactly its own
 // channel plugin is enabled and every other channel plugin is disabled.
@@ -92,7 +86,7 @@ export function scopeChannelPlugins(
   existing?: Record<string, boolean>,
 ): Record<string, boolean> {
   const out: Record<string, boolean> = { ...(existing ?? {}) }
-  const ownPlugin = explicitProvider ? CHANNEL_PLUGIN_IDS[explicitProvider] : undefined
+  const ownPlugin = explicitProvider ? CHANNEL_PLUGIN_IDS[explicitProvider as keyof typeof CHANNEL_PLUGIN_IDS] : undefined
   for (const pid of Object.values(CHANNEL_PLUGIN_IDS)) {
     out[pid] = pid === ownPlugin
   }
@@ -292,31 +286,41 @@ const ISOLATED_CONFIG_SKIP = new Set(['settings.json', 'plugins', '.credentials.
 
 export function ensureIsolatedChannelConfigDir(
   name: string,
-  providerType: ChannelProviderType,
+  // null = channel-less agent: provision the isolated dir with EVERY channel
+  // plugin disabled (scopeChannelPlugins(null)) instead of enabling one.
+  providerType: ChannelProviderType | null,
 ): string | null {
   return provisionIsolatedConfigDir(join(agentDir(name), '.claude-config'), agentDir(name), providerType, name)
 }
 
 // The main channels agent (started by scripts/channels.sh, cwd = PROJECT_ROOT)
-// normally keeps the shared ~/.claude by design. On macOS that means it
-// authenticates from the ROTATING Keychain OAuth session, which periodically
-// expires and 401s the main bot (a manual /login is then needed) -- while the
-// isolated sub-agents, which authenticate from the long-lived fleet setup-token,
-// never do. This gives the main agent the SAME isolated CLAUDE_CONFIG_DIR as the
-// sub-agents so it too authenticates from CLAUDE_CODE_OAUTH_TOKEN and never
-// touches the rotating Keychain.
+// normally keeps the shared ~/.claude by design. That means it authenticates
+// from whatever on-process credential refreshes that shared root -- the
+// ROTATING macOS Keychain OAuth session, or (Linux) the shared
+// ~/.claude/.credentials.json, which self-refreshes on its own ~8h cycle --
+// either way, a periodic-401 risk: the refresh can hit a transient error and
+// never retry, and Claude Code prefers an on-disk .credentials.json over an
+// otherwise-valid CLAUDE_CODE_OAUTH_TOKEN env var (claude-credentials-guard.ts),
+// so a stale file wins even with a live token sitting right next to it
+// (confirmed root cause of the 2026-07-23 marveen-channels silent outage,
+// PLAN.md GAP 1). The isolated sub-agents, which authenticate from the
+// long-lived fleet setup-token via an isolated CLAUDE_CONFIG_DIR carrying no
+// .credentials.json at all, never hit this. This gives the main agent the SAME
+// isolated CLAUDE_CONFIG_DIR as the sub-agents so it too authenticates from
+// CLAUDE_CODE_OAUTH_TOKEN and never touches a rotating on-disk credential.
 //
 // Deliberately narrow and OPT-IN (default OFF), so nothing changes for existing
 // installs unless the operator turns it on:
-//   - macOS only -- on Linux the main agent's rotating credentials.json is
-//     handled by the separate credentials-guard; the Keychain-expiry motive is
-//     macOS-specific. This does NOT touch shouldAlertSharedConfigCollision's
-//     darwin early-return (a different failure mode: plugin-slot collision).
+//   - any platform -- the provisioning itself (provisionIsolatedConfigDir) is
+//     100% filesystem-based and already proven identical on every platform via
+//     the sub-agent path; there is no macOS-specific step here. This does NOT
+//     touch shouldAlertSharedConfigCollision's darwin early-return (a different,
+//     genuinely macOS-specific failure mode: plugin-slot collision).
 //   - gated on the MAIN_AGENT_ISOLATED_CONFIG setting via the settings-store, so
 //     BOTH the dashboard toggle (config-overrides.json) AND a hand-set .env key
 //     take effect (resolution: override > .env > default '0'). channels.sh no
-//     longer parses the flag itself -- it always calls the helper on macOS and
-//     this function is the single gate.
+//     longer parses the flag itself -- it always calls the helper and this
+//     function is the single gate.
 //   - gated on the fleet OAuth token (no token -> no isolation, since the
 //     isolated dir carries no .credentials.json -- identical gate to the
 //     sub-agent path in startAgentProcess);
@@ -325,7 +329,6 @@ export function ensureMainAgentIsolatedConfigDir(
   provider?: string,
   platform: NodeJS.Platform = process.platform,
 ): string | null {
-  if (platform !== 'darwin') return null
   let enabled = false
   try { enabled = String(getEffectiveSettingValue('MAIN_AGENT_ISOLATED_CONFIG')) === '1' } catch { enabled = false }
   if (!enabled) return null
@@ -372,7 +375,7 @@ export function resolveMainAgentConfigDir(): string | null {
 function provisionIsolatedConfigDir(
   cfg: string,
   cwd: string,
-  providerType: ChannelProviderType,
+  providerType: ChannelProviderType | null,
   name: string,
 ): string | null {
   try {
@@ -540,6 +543,110 @@ export function ensureSharedClaudeOnboarded(dotClaudePath: string = join(homedir
     return true
   } catch (err) {
     logger.warn({ err, dotClaudePath }, 'shared-config: could not guarantee hasCompletedOnboarding (unparseable or unwritable ~/.claude.json)')
+    return false
+  }
+}
+
+// Pre-accept the PER-PROJECT first-run consent for an agent's working dir in
+// the config root the session will boot from. Claude Code keys the "Do you
+// trust the files in this folder?" dialog on projects[<cwd>].hasTrustDialogAccepted
+// in <config root>/.claude.json -- a GLOBAL hasCompletedOnboarding does not
+// cover it. The main session gets this via the channels.sh startup guard and
+// the generation workers stamp it themselves (agent-worker.ts), but a normal
+// sub-agent launch never did: on the ORIGIN fleet every agents/<name> dir was
+// trusted interactively long ago, so the gap only bites on a FRESH install,
+// where every newly created agent parks on the trust dialog forever and its
+// scheduled tasks pile up as pending retries (Oligo2000 VPS, 2026-07-22).
+//
+// Stamps both the given dir and its realpath (macOS /var vs /private/var,
+// symlinked homes) since Claude Code keys trust by the resolved path. Write is
+// atomic and only performed on actual change, so a live Claude Code process
+// racing us never sees a torn file and an already-stamped launch is a no-op.
+export function stampProjectTrustForDir(dotClaudePath: string, projectDir: string): boolean {
+  try {
+    let data: Record<string, unknown> = {}
+    if (existsSync(dotClaudePath)) {
+      data = JSON.parse(readFileSync(dotClaudePath, 'utf-8')) as Record<string, unknown>
+    }
+    const dirs = new Set<string>([projectDir])
+    try { dirs.add(realpathSync(projectDir)) } catch { /* dir may not resolve yet */ }
+    const projects: Record<string, unknown> =
+      (data.projects && typeof data.projects === 'object' && !Array.isArray(data.projects))
+        ? data.projects as Record<string, unknown>
+        : {}
+    let changed = false
+    if (data.hasCompletedOnboarding !== true) {
+      data.hasCompletedOnboarding = true
+      changed = true
+    }
+    for (const dir of dirs) {
+      const base = (projects[dir] && typeof projects[dir] === 'object')
+        ? projects[dir] as Record<string, unknown>
+        : {}
+      if (base.hasTrustDialogAccepted === true && base.hasCompletedProjectOnboarding === true) continue
+      projects[dir] = {
+        ...base,
+        hasTrustDialogAccepted: true,
+        hasCompletedProjectOnboarding: true,
+        projectOnboardingSeenCount: Math.max(1, Number(base.projectOnboardingSeenCount) || 0),
+      }
+      changed = true
+    }
+    if (!changed) return false
+    data.projects = projects
+    atomicWriteFileSync(dotClaudePath, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
+    logger.info({ dotClaudePath, projectDir }, 'project-trust: stamped folder-trust consent for agent dir')
+    return true
+  } catch (err) {
+    // Unparseable/unwritable file: leave it to Claude Code (same policy as
+    // ensureSharedClaudeOnboarded). The scheduler's first-run gate + the
+    // channel-monitor's dialog answering remain the runtime backstop.
+    logger.warn({ err, dotClaudePath, projectDir }, 'project-trust: could not stamp trust flags (agent may park on the folder-trust dialog)')
+    return false
+  }
+}
+
+// Pre-stamp the Fable overage-consent acknowledgment in a config root's
+// .claude.json so the "Fable 5 now uses usage credits" dialog never renders.
+//
+// Root cause chain (2026-07-23, card b71fc541): a config root without
+// fableOverageConsentV2[<orgUuid>] parks the first Fable 5 turn on a TUI
+// dialog whose DEFAULT option is "Switch to Sonnet 5 and continue". The
+// fleet's own blind Enters (identity /name, sendPromptToSession retry-Enter)
+// accept that default, silently switching the session to Sonnet while
+// agent-config still says claude-fable-5 -- the long-unexplained
+// model/activeModel drift. Fleet policy (owner decision 2026-07-23): the
+// fleet stays on Fable 5, so the consent is pre-acknowledged the same way
+// onboarding/trust flags already are (see stampProjectTrustForDir above).
+//
+// Claude Code keys the consent on oauthAccount.organizationUuid (or
+// "acct:<accountUuid>" for org-less accounts) in the SAME .claude.json. A
+// file without an oauthAccount (brand-new config root that has never
+// authenticated) is left alone -- there is nothing to key the consent on;
+// the runtime dialog-answer backstop (dismissModelConsentDialogIfPresent)
+// covers that first session and this stamp catches up on the next launch.
+// Write is atomic and change-only, mirroring ensureSharedClaudeOnboarded.
+export function stampFableOverageConsent(dotClaudePath: string): boolean {
+  try {
+    if (!existsSync(dotClaudePath)) return false
+    const data = JSON.parse(readFileSync(dotClaudePath, 'utf-8')) as Record<string, unknown>
+    const oauth = (data.oauthAccount && typeof data.oauthAccount === 'object' && !Array.isArray(data.oauthAccount))
+      ? data.oauthAccount as Record<string, unknown>
+      : null
+    const orgUuid = typeof oauth?.organizationUuid === 'string' && oauth.organizationUuid ? oauth.organizationUuid : null
+    const acctUuid = typeof oauth?.accountUuid === 'string' && oauth.accountUuid ? oauth.accountUuid : null
+    const key = orgUuid ?? (acctUuid ? `acct:${acctUuid}` : null)
+    if (!key) return false
+    const consent = (data.fableOverageConsentV2 && typeof data.fableOverageConsentV2 === 'object' && !Array.isArray(data.fableOverageConsentV2))
+      ? data.fableOverageConsentV2 as Record<string, unknown>
+      : {}
+    if (consent[key] === true) return false
+    data.fableOverageConsentV2 = { ...consent, [key]: true }
+    atomicWriteFileSync(dotClaudePath, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
+    logger.info({ dotClaudePath }, 'fable-consent: pre-stamped fableOverageConsentV2 (prevents the usage-credit model-switch dialog)')
+    return true
+  } catch (err) {
+    logger.warn({ err, dotClaudePath }, 'fable-consent: could not stamp consent (runtime dialog-answer backstop remains)')
     return false
   }
 }
@@ -972,12 +1079,26 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     if (!claudeConfigDir && hasFleetOauthToken()) {
       oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
     }
-    if (!claudeConfigDir && hasChannel && name !== MAIN_AGENT_ID) {
+    // Isolation must also cover CHANNEL-LESS Claude-OAuth agents, not just
+    // channel ones. A shared-root agent authenticates from the ROTATING shared
+    // credential (macOS Keychain entry / .credentials.json), which Claude Code
+    // prefers over an otherwise-valid CLAUDE_CODE_OAUTH_TOKEN env var (see the
+    // ensureMainAgentIsolatedConfigDir header) -- so when that credential
+    // rotates or expires, the agent parks on a 401 even though the fleet token
+    // exported right next to it is fine (dani/geri recurring outage,
+    // 2026-07-25). Only agents that never touch Anthropic OAuth stay on the
+    // shared root: local/BYO-endpoint models (Ollama/DeepSeek/OpenRouter) and
+    // per-agent API-key (authMode 'api') agents.
+    const needsFleetOauth = isClaude && authMode !== 'api'
+    if (!claudeConfigDir && (hasChannel || needsFleetOauth) && name !== MAIN_AGENT_ID) {
       if (hasFleetOauthToken()) {
         // Token present -> isolation works; any earlier degradation is resolved,
         // so re-arm the one-shot alert for a future token loss.
         resetSharedConfigCollisionAlert()
-        const isolated = ensureIsolatedChannelConfigDir(name, agentProvider)
+        // A channel-less agent provisions with a null provider so its isolated
+        // settings.json disables EVERY channel plugin -- it has no bot token,
+        // so a loaded plugin could only fight the fleet over poller slots.
+        const isolated = ensureIsolatedChannelConfigDir(name, hasChannel ? agentProvider : null)
         if (isolated) {
           claudeConfigDir = isolated
           // Read the token at launch via $(cat) so the literal secret never
@@ -988,10 +1109,27 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
       } else {
         logger.warn({ name }, 'isolated-config: no fleet OAuth token (store/.claude-oauth-token); keeping shared ~/.claude. Run `claude setup-token` and store it to enable per-agent isolation.')
         // H1: the WARN above is silent. With >1 channel sub-agent sharing
-        // ~/.claude this is an active plugin-slot collision -> raise a loud alert.
-        maybeAlertSharedConfigCollision(name)
+        // ~/.claude this is an active plugin-slot collision -> raise a loud
+        // alert. Channel-less agents cannot contend for a plugin slot, so they
+        // only get the WARN.
+        if (hasChannel) maybeAlertSharedConfigCollision(name)
       }
     }
+    // Per-project trust pre-seed in the config root this session will ACTUALLY
+    // use (isolated CLAUDE_CONFIG_DIR when set, shared ~/.claude.json
+    // otherwise). Without it a fresh install's first launch of each agent
+    // parks on the "Do you trust the files in this folder?" dialog -- see
+    // stampProjectTrustForDir.
+    stampProjectTrustForDir(
+      claudeConfigDir ? join(claudeConfigDir, '.claude.json') : join(homedir(), '.claude.json'),
+      dir,
+    )
+    // Same target file: pre-acknowledge the Fable usage-credit consent so the
+    // model-switch dialog (default: Sonnet) never renders -- see
+    // stampFableOverageConsent for the drift root-cause chain.
+    stampFableOverageConsent(
+      claudeConfigDir ? join(claudeConfigDir, '.claude.json') : join(homedir(), '.claude.json'),
+    )
     const claudeConfigEnv = claudeConfigDir ? `export CLAUDE_CONFIG_DIR="${claudeConfigDir}" && ` : ''
     // `--continue` requires an existing session; on a brand-new agent the
     // Claude Code projects directory does not yet exist and `claude` exits
@@ -1198,6 +1336,85 @@ export async function dismissResumeSummaryModalIfPresent(session: string, host: 
   }
 }
 
+// Runtime backstop for the model overage-consent dialog ("Fable 5 now uses
+// usage credits" -- see detectsModelConsentDialog in pane-state.ts for the
+// full anatomy and the drift root cause). The stampFableOverageConsent
+// pre-seed normally prevents the dialog entirely; this handler covers the
+// windows the seed cannot reach (a config root that had no oauthAccount yet,
+// a future consent-key version bump). Unlike the generic dismissals above it
+// must NOT send a bare Enter: the dialog's default option SWITCHES the model
+// to Sonnet. It actively selects option 1 ("Continue with <configured
+// model>") -- number first, then confirm, mirroring answerFirstRunGates. The
+// keystrokes only ever fire when the specific dialog is visibly on screen
+// (pure detector, quoted-text-proof), so this adds no blind-injection surface.
+export async function dismissModelConsentDialogIfPresent(session: string, host: string | null = null): Promise<void> {
+  try {
+    const pane = captureTmux(host, ['capture-pane', '-t', session, '-p'])
+    if (!detectsModelConsentDialog(pane)) return
+    runTmux(host, ['send-keys', '-t', session, '1'], { timeout: 5000 })
+    await delay(150)
+    runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+    await delay(300)
+    logger.info({ session }, 'Answered model usage-credit consent dialog: kept the configured model (option 1, never the switch default)')
+  } catch (err) {
+    logger.warn({ err, session }, 'Failed to probe/answer model usage-credit consent dialog')
+  }
+}
+
+// Walk a session out of the Claude Code FIRST-RUN dialog chain (folder-trust,
+// bypass-permissions acceptance, theme picker, welcome screen), answering each
+// dialog exactly the way scripts/channels.sh's startup guard does for the main
+// session: trust -> "1" Enter (Yes, proceed), bypass -> "2" Enter (Yes, I
+// accept), theme/welcome -> Enter (accept default / continue). The login
+// picker is NEVER answered -- nobody can authenticate on the operator's
+// behalf -- so it is returned for the caller to alert on.
+//
+// Escape is deliberately NOT used anywhere here: on the trust/bypass dialogs
+// Escape selects "No, exit" and quits the TUI, which is exactly the
+// respawn-loop failure the channel-monitor's generic menu recovery would cause
+// on these panes (hence the detectsFirstRunGate carve-out at its call site).
+//
+// Bounded walk: the chain is at most a handful of dialogs; each answered
+// dialog gets a settle delay before the re-capture. Returns 'cleared' when at
+// least one dialog was answered and none remains, 'login' when the login
+// picker is (or becomes) the blocker, 'unchanged' when no gate was present.
+const FIRST_RUN_ANSWER_MAX_STEPS = 6
+const FIRST_RUN_ANSWER_SETTLE_MS = 1500
+
+export async function answerFirstRunGates(
+  session: string,
+  host: string | null = null,
+): Promise<'cleared' | 'login' | 'unchanged'> {
+  let acted = false
+  for (let i = 0; i < FIRST_RUN_ANSWER_MAX_STEPS; i++) {
+    const pane = capturePane(session, host)
+    const gate: FirstRunGateKind | null = pane != null ? detectsFirstRunGate(pane) : null
+    if (gate == null) return acted ? 'cleared' : 'unchanged'
+    if (gate === 'login') return 'login'
+    try {
+      if (gate === 'trust') {
+        runTmux(host, ['send-keys', '-t', session, '1'], { timeout: 5000 })
+        await delay(150)
+        runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+      } else if (gate === 'bypass-permissions') {
+        runTmux(host, ['send-keys', '-t', session, '2'], { timeout: 5000 })
+        await delay(150)
+        runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+      } else {
+        // theme / welcome: Enter accepts the highlighted default and moves on.
+        runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+      }
+    } catch (err) {
+      logger.warn({ err, session, gate }, 'first-run gate: answer keystroke failed')
+      return acted ? 'cleared' : 'unchanged'
+    }
+    acted = true
+    logger.info({ session, gate, step: i }, 'first-run gate: answered dialog')
+    await delay(FIRST_RUN_ANSWER_SETTLE_MS)
+  }
+  return acted ? 'cleared' : 'unchanged'
+}
+
 // Post-(re)start identity setup. Every freshly spawned Claude Code session is
 // given `/name` so it is identifiable. (`/remote-control` was dropped: the
 // operator no longer uses Remote Control, and the agent's inference-only OAuth
@@ -1225,6 +1442,7 @@ export async function scheduleIdentitySetup(session: string, displayName: string
       try {
         await dismissSurveyModalIfPresent(session, host)
         await dismissResumeSummaryModalIfPresent(session, host)
+        await dismissModelConsentDialogIfPresent(session, host)
       } catch (err) {
         logger.warn({ err, session }, 'Post-restart modal dismiss failed')
       }
@@ -1387,6 +1605,7 @@ export async function sendPromptToSession(
 ): Promise<'sent' | 'aborted-busy'> {
   await dismissSurveyModalIfPresent(session, host)
   await dismissResumeSummaryModalIfPresent(session, host)
+  await dismissModelConsentDialogIfPresent(session, host)
 
   // Pre-flight wait-until-idle (root-cause gate). Placed here -- inside
   // sendPromptToSession, AFTER the modal dismissals (a modal keeps the pane
@@ -1593,9 +1812,13 @@ export function captureParkedInputView(session: string, host: string | null = nu
 //
 // A saturated pane ("100% context used") is refused up front: it can present
 // as perfectly idle, so without this a new prompt would be dispatched into a
-// session that cannot act on it. We only log/audit the refusal here; how (or
-// whether) to recover the session is left to the caller / operator tooling, so
-// this predicate stays a pure, dependency-free readiness check.
+// session that cannot act on it. We only log/audit the refusal here; recovery
+// is the context-guard runner's saturation net (fresh restart -- see
+// src/web/context-guard-runner.ts), so this predicate stays a pure,
+// dependency-free readiness check. NOTE the refusal is part of a deadlock by
+// design: Claude Code's auto-compact only runs when a new turn starts, and
+// this refusal is exactly what prevents a new turn -- so a saturated session
+// never self-heals and MUST be restarted from outside.
 export async function isSessionReadyForPrompt(session: string, host: string | null = null): Promise<boolean> {
   // Dim-ghost tolerant idle read: CC >=2.1.202 paints a dim placeholder into
   // the empty input box, which a plain capture reads as parked text. Only when

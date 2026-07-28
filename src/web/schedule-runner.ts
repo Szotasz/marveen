@@ -10,6 +10,7 @@ import {
   MAIN_AGENT_ID,
   ALLOWED_CHAT_ID,
   BOT_NAME,
+  APP_TZ_INVALID,
 } from '../config.js'
 import {
   appendTaskRun,
@@ -19,19 +20,21 @@ import {
   insertPendingTaskRetryIfNew,
   markPendingTaskRetryAlert,
   clearPendingTaskRetryAlert,
+  markScheduledTaskKanbanWaiting,
 } from '../db.js'
 import { toPendingRetryView, classifyTelegramSendError, type PendingRetryView } from '../pending-retries.js'
 import {
   SCHEDULED_TASK_PREAMBLE,
   wrapScheduledTask,
 } from '../prompt-safety.js'
-import { cronDueBetween, resolveCronTz } from './cron.js'
+import { cronDueBetween, effectiveCronTz } from './cron.js'
 import {
   listScheduledTasks,
   SCHEDULED_TASKS_DIR,
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
-import { listAgentNames, readFileOr, readAgentRemoteHost } from './agent-config.js'
+import { listAgentNames, readFileOr, readAgentRemoteHost, agentDir } from './agent-config.js'
+import { channelStateDir } from '../channel-provider.js'
 import {
   agentSessionName,
   isAgentRunning,
@@ -46,11 +49,84 @@ import {
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { sendTelegramMessage } from './telegram.js'
 import { runCommandTask } from './command-task.js'
+import { paneShowsContextSaturation, detectsFirstRunGate, detectPaneState, type PaneState } from '../pane-state.js'
 
 // How many bare-Enter attempts the post-send resubmit tries before escalating
 // to a clear + re-inject, and the hard cap after which it gives up.
 const RESUBMIT_BARE_ENTER_ATTEMPTS = 2
 const RESUBMIT_MAX_ATTEMPTS = 6
+
+// --- Post-fire timeout watchdog ---
+// After a task/heartbeat injection, we track the target session to detect the
+// case where the agent got stuck processing the injected prompt. This closes
+// the gap in the pending_task_retries path: that path only fires when a NEW
+// task tries to inject into a busy session; if no new task arrives, a stuck
+// agent can sit undetected indefinitely.
+//
+// The design is a fire-and-monitor pattern rather than Promise.race: tmux
+// injection is fire-and-forget (no callback when the agent finishes), so we
+// poll the pane state on every scheduler tick instead.
+//
+// Grace period: the agent takes a few seconds to pick up the injected prompt.
+// We skip checking until TASK_FIRE_GRACE_MS have elapsed to avoid a false
+// clear before the agent even starts.
+//
+// Timeout: if the session is STILL busy TASK_FIRE_TIMEOUT_MS after injection,
+// we send a one-shot Telegram alert. 'busy' is the specific signal -- 'unknown'
+// and 'error' are handled by the context-guard / stuck-tool-call-watcher so we
+// leave them alone here.
+//
+// Idle clear: if the pane returns to idle at any point, the task completed (or
+// the session was restarted) and the entry is cleared.
+//
+// Maximum tracking age: entries that age past TASK_FIRE_MAX_TRACK_MS are
+// evicted regardless, so a permanently stuck agent does not accumulate entries.
+export const TASK_FIRE_GRACE_MS = 30_000
+export const TASK_FIRE_TIMEOUT_MS = 300_000
+const TASK_FIRE_MAX_TRACK_MS = 6 * 60 * 60_000
+
+export interface TaskInflightEntry {
+  taskName: string
+  agentName: string
+  session: string
+  host: string | null
+  injectedAt: number
+  alerted: boolean
+}
+
+// Active task/heartbeat injections keyed by `${taskName}@${agentName}`.
+const taskInflightMap = new Map<string, TaskInflightEntry>()
+
+export type TaskTimeoutDecision = 'clear' | 'alert' | 'hold'
+
+// Pure: decide what the watchdog should do for a single in-flight entry this
+// tick. Exported so it can be unit-tested without tmux I/O.
+//
+// clear -- remove the entry (session idle = task done, or entry too stale)
+// alert -- send a one-shot Telegram alert (session busy past timeout threshold)
+// hold  -- no action this tick
+//
+// Rationale for non-busy states returning 'hold' instead of 'clear':
+//   - null (capture failed): no signal, conservative.
+//   - 'unknown': session may be restarting -- other watchdogs handle it.
+//   - 'error': thinking-block API error, channel-monitor owns that alert path.
+//   - 'typing': post-send resubmit loop is already active.
+// Clearing on these states would drop the entry before the 300s timeout can
+// fire, producing false-negative coverage for genuinely stuck tasks.
+export function decideTaskTimeout(
+  entry: Pick<TaskInflightEntry, 'injectedAt' | 'alerted'>,
+  paneState: PaneState | null,
+  now: number,
+  opts: { graceMs: number; timeoutMs: number; maxTrackMs: number },
+): TaskTimeoutDecision {
+  const elapsed = now - entry.injectedAt
+  if (elapsed >= opts.maxTrackMs) return 'clear'
+  if (paneState === 'idle') return 'clear'
+  if (entry.alerted) return 'hold'
+  if (elapsed < opts.graceMs) return 'hold'
+  if (paneState === 'busy' && elapsed >= opts.timeoutMs) return 'alert'
+  return 'hold'
+}
 
 export type ResubmitAction = 'none' | 'enter' | 'reinject' | 'giveup'
 
@@ -128,6 +204,62 @@ function persistScheduleLastRun(): void {
 //   exit 0, stdout non-empty → run LLM with stdout as context prefix
 //   exit 0, stdout empty     → run LLM normally
 //   non-zero exit            → log warning, run LLM anyway (fail-open)
+// --- Bound-channel chat id resolution for scheduled-task prompts ---
+//
+// The prompt prefix used to carry a "chat_id: 0" sentinel meaning "the running
+// agent's own bound channel". The convention belonged to an earlier channel
+// implementation; the official Telegram plugin (0.0.6) knows nothing about it:
+// its reply tool calls assertAllowedChat(chat_id) first, "0" is never on the
+// allowlist, so every non-heartbeat scheduled task threw at delivery time
+// (Zara, 2026-07-27; all 32 task-configs affected -- none carries a chat_id).
+// The sentinel's INTENT stays correct (a sub-agent's result must go to its own
+// owner, never the boss's chat), so the fix resolves the concrete chat id at
+// prompt-build time from the same place the plugin enforces it: the agent's
+// own channel access.json allowlist.
+
+/** Pure core: first DM allowlist entry, else first allowed group, else null. */
+export function chatIdFromAccessConfig(raw: unknown): string | null {
+  if (!raw || typeof raw !== 'object') return null
+  const o = raw as Record<string, unknown>
+  if (Array.isArray(o.allowFrom) && o.allowFrom.length > 0) {
+    const first = o.allowFrom[0]
+    if (typeof first === 'string' && first.trim()) return first.trim()
+    if (typeof first === 'number') return String(first)
+  }
+  if (o.groups && typeof o.groups === 'object') {
+    const keys = Object.keys(o.groups as Record<string, unknown>)
+    if (keys.length > 0) return keys[0]
+  }
+  return null
+}
+
+/** The agent's own bound Telegram chat, or null when no binding exists.
+ *  Reads <agent channels dir>/telegram/access.json -- the exact file the
+ *  plugin's assertAllowedChat enforces, so a resolved id is deliverable by
+ *  construction. Deliberately NOT falling back to ALLOWED_CHAT_ID: that is
+ *  the boss's chat, and pointing a sub-agent's result there is the precise
+ *  bug the old sentinel existed to avoid. */
+export function resolveBoundChatId(agentName: string): string | null {
+  const dir = agentName === MAIN_AGENT_ID
+    ? channelStateDir('telegram')
+    : channelStateDir('telegram', agentDir(agentName))
+  try {
+    const raw = JSON.parse(readFileSync(join(dir, 'access.json'), 'utf-8')) as Record<string, unknown>
+    const chosen = chatIdFromAccessConfig(raw)
+    // "First allowlist entry" is a HEURISTIC, not a stated fact: access.json
+    // has no owner field, so with 2+ entries (zara/iris today) a reordering
+    // would silently redirect scheduled-task results to another person -- the
+    // exact failure class the old sentinel guarded against, now throw-free and
+    // thus invisible. The warn turns a silent misdirection into a searchable
+    // log line; behaviour is unchanged (Marveen, msg 7002).
+    const candidates = Array.isArray(raw?.allowFrom) ? raw.allowFrom.length : 0
+    if (chosen && candidates > 1) {
+      logger.warn({ agent: agentName, candidates, chosen }, 'bound-chat resolution is ambiguous: multiple DM allowlist entries, using the first')
+    }
+    return chosen
+  } catch { return null }
+}
+
 export function runPreCheck(task: ScheduledTask): { skip: boolean; prefix?: string } {
   if (!task.preCheck) return { skip: false }
   const scriptPath = isAbsolute(task.preCheck)
@@ -193,7 +325,7 @@ async function attemptFireTask(
   now: number,
   preCheckPrefix?: string,
   lateCatchUpMs?: number,
-): Promise<'fired' | 'busy' | 'missing' | 'starting' | 'error' | 'mcp-missing'> {
+): Promise<'fired' | 'busy' | 'missing' | 'starting' | 'error' | 'mcp-missing' | 'first-run'> {
   const isMainAgent = agentName === MAIN_AGENT_ID
   // Allow per-task session override via targetSession config field.
   // Falls back to the standard agent session name derivation.
@@ -234,18 +366,52 @@ async function attemptFireTask(
   // will process it at the next idle slot. This prevents the infinite
   // retry loop observed when the target session stays busy for hours
   // (275 retries overnight in production).
-  //
-  // KNOWN FOLLOW-UP: forceSend also bypasses the context-saturation refusal
-  // now folded into isSessionReadyForPrompt(). A forceSend task can therefore
-  // still land on a 100%-context session. Left open deliberately -- forceSend's
-  // contract is "always eventually land, never silently drop", and a saturated
-  // session needs a separate delivery policy, tracked as future work.
   if (!task.forceSend && !(await isSessionReadyForPrompt(session, host))) {
+    // Distinguish a first-run gate (fresh-install folder-trust / login picker
+    // parked forever) from an ordinary busy turn: the retry row's reason then
+    // drives a first-run-specific operator alert instead of a generic
+    // "varakozik" -- and 'first-run' is exempt from skipIfBusy in the caller,
+    // because a gated session never frees up on its own the way a busy one
+    // does (recovery is the channel-monitor's dialog answering).
+    const notReadyPane = capturePane(session, host)
+    const gate = notReadyPane != null ? detectsFirstRunGate(notReadyPane) : null
+    if (gate) {
+      logger.warn({ task: task.name, agent: agentName, session, gate }, 'Schedule target session parked on a Claude Code first-run dialog, deferring to retry queue')
+      return 'first-run'
+    }
     logger.warn({ task: task.name, agent: agentName, session }, 'Schedule target session busy or has pending input, will retry')
     return 'busy'
   }
 
   if (task.forceSend) {
+    // forceSend's contract is "always eventually land, never silently drop" --
+    // but injecting into a 100%-context session IS a silent drop with extra
+    // steps: the pane accepts the keystrokes and the wedged session never acts
+    // on them, and the context-guard's rescue restart then discards the queued
+    // input (2026-07-17: reggeli-napindito force-injected into a saturated
+    // marveen-channels and vanished without a trace). Closes the KNOWN
+    // FOLLOW-UP that previously lived here: saturation is the one busy-state
+    // forceSend must respect. Defer via the pending-retry queue (the caller
+    // maps 'busy' to a retry row, exempt from skipIfBusy for forceSend); the
+    // retry lands on the first tick after the session has been rescued. All
+    // other busy states keep the bypass.
+    const pane = capturePane(session, host)
+    if (pane != null && paneShowsContextSaturation(pane)) {
+      logger.warn({ task: task.name, agent: agentName, session }, 'forceSend target session is context-saturated (100%) -- deferring to retry queue instead of injecting into a wedged session')
+      return 'busy'
+    }
+    // Same non-negotiable for a first-run gate: a fresh install's agent parked
+    // on the folder-trust dialog / login picker has no input box at all, so a
+    // force-injected prompt is typed blindly into the DIALOG (digits select
+    // options, Enter confirms them) and the prompt is lost -- a silent drop
+    // with extra steps, plus keystroke roulette on a consent dialog. Defer to
+    // the retry queue; the channel-monitor answers the dialogs (or alerts on
+    // the login picker) and the retry lands on the first tick after.
+    const forceGate = pane != null ? detectsFirstRunGate(pane) : null
+    if (forceGate) {
+      logger.warn({ task: task.name, agent: agentName, session, gate: forceGate }, 'forceSend target session is parked on a Claude Code first-run dialog -- deferring to retry queue instead of typing into the dialog')
+      return 'first-run'
+    }
     logger.info({ task: task.name, agent: agentName, session }, 'forceSend=true, bypassing busy-state check')
   }
 
@@ -292,14 +458,24 @@ async function attemptFireTask(
       // heartbeat prompts.
       prefix = `[Heartbeat: ${task.name}] `
     } else {
-      // Target the RUNNING agent's own bound channel (chat_id: 0), NOT the
-      // global ALLOWED_CHAT_ID. The latter is the main/admin chat; injecting it
-      // here pointed every sub-agent's task result at the boss's chat instead of
-      // its own owner (e.g. attilamarveenja -> Papp Attila). chat_id: 0 is the
-      // established "bound channel" convention (template-identity-hygiene), so it
-      // resolves per-agent and stays correct for the main agent too. The
-      // system-level pending-retry alert below still uses ALLOWED_CHAT_ID.
-      prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el Telegramon (chat_id: 0, reply tool). `
+      // Target the RUNNING agent's own bound channel, NOT the global
+      // ALLOWED_CHAT_ID. The latter is the main/admin chat; injecting it here
+      // pointed every sub-agent's task result at the boss's chat instead of its
+      // own owner (e.g. attilamarveenja -> Papp Attila). The old "chat_id: 0"
+      // sentinel encoded the same intent, but the official Telegram plugin
+      // rejects it (assertAllowedChat: "0" is never allowlisted), so the
+      // binding is resolved to a CONCRETE id here at prompt-build time. No
+      // binding -> no Telegram instruction at all: better to skip delivery
+      // than to deliver to the wrong chat, and the warn below makes the
+      // config gap visible. The system-level pending-retry alert further
+      // down still uses ALLOWED_CHAT_ID by design.
+      const boundChatId = resolveBoundChatId(agentName)
+      if (boundChatId) {
+        prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el Telegramon (chat_id: ${boundChatId}, reply tool). `
+      } else {
+        logger.warn({ task: task.name, agent: agentName }, 'scheduled task: agent has no bound telegram chat (access.json missing/empty) -- prompt omits the Telegram delivery instruction')
+        prefix = `[Utemezett feladat: ${task.name}] `
+      }
     }
     // A scheduled task body is the agent's OWN task, authored by the operator
     // (SKILL.md on disk, or the bearer-gated /api/schedules editor -- both
@@ -344,6 +520,21 @@ async function attemptFireTask(
       appendTaskRun(task.name, agentName, 'fired')
     }
     logger.info({ task: task.name, agent: agentName, session }, 'Scheduled task fired')
+
+    // Register the injection in the post-fire timeout watchdog. The watchdog
+    // polls the target pane on each tick and alerts if the session stays busy
+    // past TASK_FIRE_TIMEOUT_MS. A new injection on the same key replaces the
+    // previous entry (task re-fired before the prior one completed -- e.g. a
+    // manual "run now" overlapping a cron tick; track the latest injection
+    // because the agent is processing that one).
+    taskInflightMap.set(`${task.name}@${agentName}`, {
+      taskName: task.name,
+      agentName,
+      session,
+      host,
+      injectedAt: now,
+      alerted: false,
+    })
 
     // Post-send verify: if the agent started a new turn during our chunk
     // stream, the Enter from sendPromptToSession might have landed while
@@ -396,6 +587,22 @@ async function attemptFireTask(
   }
 }
 
+// Injection priority within one tick: when several tasks are due in the same
+// scan window, the order of attemptFireTask calls decides who gets the target
+// session first -- and an injection takes seconds to a minute (readiness
+// double-sample, waitForIdle gate, chunked typing, post-send verify), so the
+// first task can push every later one well past its scheduled minute.
+// listScheduledTasks() returns directory (alphabetical) order, which let a
+// routine 30-min heartbeat outrank the operator-facing morning briefing every
+// day (2026-07-20: alkuszoktatas-feedback-figyelo injected first at 07:30 and
+// reggeli-napindito starved behind it). Rank: forceSend tasks (operator-marked
+// must-deliver) first, plain tasks next, heartbeats (short-cadence, typically
+// skipIfBusy) last. The sort is stable, so name order is kept within a rank.
+export function taskInjectionRank(t: Pick<ScheduledTask, 'forceSend' | 'type'>): number {
+  if (t.forceSend) return 0
+  return t.type === 'heartbeat' ? 2 : 1
+}
+
 // Manual "Run now": fire a scheduled task immediately, bypassing the cron
 // match + lastRun catch-up + skipIfBusy guards (the operator explicitly asked
 // for it). Reuses attemptFireTask, so a stopped agent is auto-started and the
@@ -424,7 +631,7 @@ export async function runScheduledTaskNow(
     // busy session both get a queued retry that lands once the session is
     // ready. We deliberately do NOT consult skipIfBusy here -- that flag trims
     // redundant cron ticks, but an explicit run-now must not be dropped.
-    if (result === 'starting' || result === 'busy' || result === 'mcp-missing') {
+    if (result === 'starting' || result === 'busy' || result === 'mcp-missing' || result === 'first-run') {
       const reason = result === 'mcp-missing' ? mcpMissingReason(task.name, agentName) : result
       insertPendingTaskRetryIfNew(task.name, agentName, now, reason)
     }
@@ -484,11 +691,22 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
   const mcpMissing = view.lastReason?.startsWith('mcp-missing')
     ? view.lastReason.slice('mcp-missing:'.length) || 'ismeretlen'
     : null
+  // A first-run-gated session (fresh install: mappa-trust dialog / belépés-
+  // választó) needs the operator to know the ACTUAL blocker: the fix is a
+  // one-time login/consent on the agent session, not waiting for a busy
+  // session to free up.
+  const firstRunStuck = view.lastReason === 'first-run'
   const text = (mcpMissing
     ? [
         `[${BOT_NAME} scheduler] A(z) "${view.taskName}" (${view.agentName}) feladat NEM tud lefutni: a szükséges MCP szerver(ek) nem futnak a cél-sessionben: ${mcpMissing}.`,
         `Első próbálkozás: ${firstAttempt} (${ageMinutes} perce).`,
         'Amint az MCP szerver újra elérhető, a feladat magától lefut; a dashboard /Ütemezések oldalán visszavonható.',
+      ]
+    : firstRunStuck
+    ? [
+        `[${BOT_NAME} scheduler] A(z) "${view.taskName}" (${view.agentName}) feladat NEM tud lefutni: az agent session a Claude Code első-indítási képernyőjén áll (mappa-jóváhagyás vagy belépés szükséges).`,
+        `Első próbálkozás: ${firstAttempt} (${ageMinutes} perce).`,
+        `A rendszer a jóváhagyás-dialogokat magától továbblépteti; ha belépés kell: tmux attach -t agent-${view.agentName}, majd válaszd ki a belépési módot. Utána a feladat magától lefut.`,
       ]
     : [
         `[${BOT_NAME} scheduler] A(z) "${view.taskName}" (${view.agentName}) ütemezett feladat ${ageMinutes} perce várakozik.`,
@@ -516,6 +734,50 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
   })()
 }
 
+// One-shot Telegram alert when a fired task/heartbeat has been continuously
+// busy past TASK_FIRE_TIMEOUT_MS. Follows the same token-resolution and
+// ALLOWED_CHAT_ID path as sendPendingRetryAlert: this is a system-level
+// scheduler alert, not a per-agent channel notification.
+function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void {
+  const ageMinutes = Math.floor(elapsedMs / 60000)
+  const envPath = join(PROJECT_ROOT, '.env')
+  const envContent = readFileOr(envPath, '')
+  const tokenMatch = envContent.match(/TELEGRAM_BOT_TOKEN=(.+)/)
+  let token = tokenMatch?.[1]?.trim()
+  if (!token) {
+    const channelEnv = readFileOr(join(homedir(), '.claude', 'channels', 'telegram', '.env'), '')
+    token = channelEnv.match(/TELEGRAM_BOT_TOKEN=(.+)/)?.[1]?.trim()
+  }
+  if (!token) {
+    logger.warn({ task: entry.taskName, agent: entry.agentName }, 'task-timeout alert suppressed: no TELEGRAM_BOT_TOKEN (config error)')
+    return
+  }
+  if (!ALLOWED_CHAT_ID.trim()) {
+    logger.warn({ task: entry.taskName, agent: entry.agentName }, 'task-timeout alert suppressed: empty ALLOWED_CHAT_ID (config error)')
+    return
+  }
+  // If there is an active kanban card whose title matches the task name, move it
+  // to 'waiting' so the board reflects the stuck state. No-op when no matching
+  // card exists (the task was never on the board, or has already been archived).
+  const movedCardId = markScheduledTaskKanbanWaiting(entry.taskName)
+  if (movedCardId) {
+    logger.info({ task: entry.taskName, agent: entry.agentName, cardId: movedCardId }, 'task-timeout: matching kanban card moved to waiting')
+  }
+
+  const text = [
+    `[${BOT_NAME} scheduler] A(z) "${entry.taskName}" (${entry.agentName}) ütemezett feladat ${ageMinutes} perce fut -- lehetséges beakadás.`,
+    'Az ágensben megtekintheted; a dashboard /Ütemezések oldalán visszavonható ha kell.',
+  ].join('\n')
+  ;(async () => {
+    try {
+      await sendTelegramMessage(token, ALLOWED_CHAT_ID, text)
+      logger.info({ task: entry.taskName, agent: entry.agentName, ageMinutes }, 'task-timeout Telegram alert sent')
+    } catch (err) {
+      logger.warn({ err, task: entry.taskName, agent: entry.agentName }, 'task-timeout alert delivery failed')
+    }
+  })()
+}
+
 // Tick interval for the schedule runner. 15 s gives 4x faster inter-agent
 // message delivery and scheduled-task triggering; each tick is a cheap
 // SQLite SELECT so the load is negligible.
@@ -532,7 +794,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
   // outage that is otherwise invisible until someone notices the missing
   // briefing (2026-07-13..15). Logging the source turns it into a grep-able
   // signal; the warn fires only on the actively-dangerous UTC-by-default case.
-  const { tz: cronTz, source: cronTzSource } = resolveCronTz()
+  const { tz: cronTz, source: cronTzSource } = effectiveCronTz()
   logger.info({ cronTz, cronTzSource }, 'schedule-runner: cron timezone in effect')
   if (cronTzSource === 'system-default' && cronTz === 'UTC') {
     logger.warn(
@@ -540,6 +802,19 @@ export function startScheduleRunner(): NodeJS.Timeout {
       'schedule-runner: cron timezone fell back to UTC (no SCHEDULER_TZ/TZ set) -- ' +
         'fixed-time crons like "30 7 * * *" match at UTC wall-clock, not the operator zone, ' +
         'so daily tasks may silently never fire while interval tasks still do. Set SCHEDULER_TZ or TZ.',
+    )
+  }
+  // A configured-but-unparseable zone is the failure mode BELOW the one above:
+  // cron-parser throws on every expression, the throw is caught as "not due",
+  // and the outage is total and silent rather than partial. config.ts already
+  // dropped back to the process zone so the scheduler keeps running -- say so
+  // loudly, with the rejected value, because nothing else in the system will.
+  if (APP_TZ_INVALID) {
+    logger.warn(
+      { rejectedTz: APP_TZ_INVALID, cronTz },
+      `schedule-runner: SCHEDULER_TZ="${APP_TZ_INVALID}" is not a usable timezone -- ` +
+        `ignored, scheduling on "${cronTz}" instead. Fix the value (e.g. "Europe/Budapest") ` +
+        'and restart, or every fixed-time cron runs on the wrong wall clock.',
     )
   }
 
@@ -569,6 +844,26 @@ export function startScheduleRunner(): NodeJS.Timeout {
     // first tick), not a fixed 60s window -- a late/dropped tick must not let a
     // sparse daily cron's single occurrence slip through a gap unscanned (#621).
     const fromMs = lastCheckMs
+
+    // Post-fire timeout watchdog sweep: check every tracked in-flight injection
+    // to see if the target session is still busy. If so past TASK_FIRE_TIMEOUT_MS,
+    // send a one-shot alert. Clear entries when the session goes idle (task done)
+    // or the maximum tracking age is reached.
+    for (const [key, entry] of taskInflightMap) {
+      const pane = capturePane(entry.session, entry.host)
+      const state = pane != null ? detectPaneState(pane) : null
+      const decision = decideTaskTimeout(entry, state, now, {
+        graceMs: TASK_FIRE_GRACE_MS,
+        timeoutMs: TASK_FIRE_TIMEOUT_MS,
+        maxTrackMs: TASK_FIRE_MAX_TRACK_MS,
+      })
+      if (decision === 'clear') {
+        taskInflightMap.delete(key)
+      } else if (decision === 'alert') {
+        sendTaskTimeoutAlert(entry, now - entry.injectedAt)
+        entry.alerted = true
+      }
+    }
 
     // Retry tasks that were busy-skipped on earlier ticks (persisted in
     // pending_task_retries so they survive dashboard restart). Each occurrence
@@ -624,6 +919,12 @@ export function startScheduleRunner(): NodeJS.Timeout {
       if (stillPresent && view.alertDue) sendPendingRetryAlert(view, now)
     }
 
+    // Fire in injection-priority order, not directory order: with several
+    // tasks due in one window, each injection delays the next by seconds to a
+    // minute, so forceSend/task entries must reach the session before the
+    // routine heartbeats (see taskInjectionRank). listScheduledTasks() builds
+    // a fresh array every tick, so the in-place sort leaks nowhere.
+    tasks.sort((a, b) => taskInjectionRank(a) - taskInjectionRank(b))
     for (const task of tasks) {
       if (!task.enabled) continue
       if (!cronDueBetween(task.schedule, fromMs, now)) continue
@@ -689,7 +990,12 @@ export function startScheduleRunner(): NodeJS.Timeout {
           // pending-retry loop then sends as soon as Claude has booted.
           insertPendingTaskRetryIfNew(task.name, agentName, now, 'starting')
         } else if (result === 'busy') {
-          if (task.skipIfBusy) {
+          // A forceSend task only ever reports 'busy' from the context-
+          // saturation deferral inside attemptFireTask -- every other busy
+          // state is bypassed. Dropping that on skipIfBusy would turn the
+          // deferral into a silent loss, so forceSend is exempt from the
+          // skip and always queues the retry.
+          if (task.skipIfBusy && !task.forceSend) {
             // Opt-in skip for short-cadence tasks (e.g. 30-min heartbeats):
             // a single missed tick is harmless because the next one is
             // already on the way, and queueing them produces spurious
@@ -711,6 +1017,13 @@ export function startScheduleRunner(): NodeJS.Timeout {
           // pre-check exists to eliminate. The retry row keeps the task alive
           // until the server returns, and the alert names the dead server.
           insertPendingTaskRetryIfNew(task.name, agentName, now, mcpMissingReason(task.name, agentName))
+        } else if (result === 'first-run') {
+          // Also exempt from skipIfBusy: a session parked on a first-run
+          // dialog (fresh install) never frees up between ticks the way a
+          // busy one does, so dropping ticks would starve the task with no
+          // trace. The retry row keeps it alive and the aged alert names the
+          // actual blocker instead of a generic "busy".
+          insertPendingTaskRetryIfNew(task.name, agentName, now, 'first-run')
         }
       }
     }

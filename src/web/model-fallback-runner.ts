@@ -1,8 +1,8 @@
-import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID, SERVICE_ID, PROJECT_ROOT } from '../config.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
+import { hardRestartMarveenChannels } from './channel-monitor.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import {
   listAgentNames,
@@ -75,12 +75,17 @@ function sessionFor(name: string): string {
 
 function restartFor(name: string): void {
   if (name === MAIN_AGENT_ID) {
-    // The main channels session is launchd-managed; a kickstart re-reads
-    // .claude/settings.json (and thus the new model) on relaunch. KeepAlive
-    // brings it straight back. channels.sh always starts fresh for main, so a
-    // conversation is not preserved here -- the model swap is what matters.
-    const uid = typeof process.getuid === 'function' ? process.getuid() : ''
-    execFileSync('/bin/launchctl', ['kickstart', '-k', `gui/${uid}/com.${SERVICE_ID}.channels`], { timeout: 10_000 })
+    // A fresh main relaunch re-reads .claude/settings.json (and thus the new
+    // model). channels.sh always starts fresh for main, so a conversation is
+    // not preserved here -- the model swap is what matters.
+    //
+    // Was a hardcoded `/bin/launchctl kickstart` (macOS-only), so on Linux the
+    // usage-limit fallback could never actually swap main's model: it threw
+    // ENOENT into the caller's catch. hardRestartMarveenChannels() keeps the
+    // launchd path for macOS installs and its Linux respawn-pane path re-reads
+    // settings.json the same way.
+    const res = hardRestartMarveenChannels()
+    if (!res.ok) throw new Error(res.error ?? 'main channels hard restart failed')
   } else {
     // 'continue' (fresh: false) re-spawns with --continue so the conversation
     // survives the model swap.

@@ -3,13 +3,14 @@ import {
   getAgentConversation, getAgentConversationThreads,
   getKanbanSeqByIdPrefix,
   markMessageDone, markMessageFailed, getAgentMessage,
+  closeOtelSpan,
   type AgentMessage,
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID } from '../../channel-coordinator/ingest.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
-import { readBody, json } from '../http-helpers.js'
+import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
@@ -152,7 +153,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       messages = listAgentMessages(limit)
     }
 
-    json(res, messages)
+    jsonMaybeGzip(req, res, messages)
     return true
   }
 
@@ -167,12 +168,16 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     else if (newStatus === 'failed') ok = markMessageFailed(id, result)
 
     if (ok) {
+      const done = getAgentMessage(id)
+      // Close the OTel span now that the message has a terminal status.
+      if (done?.trace_id && done?.span_id) {
+        closeOtelSpan(done.trace_id, done.span_id, Date.now(), newStatus === 'done' ? 'ok' : 'error')
+      }
       // Notify the delegator: create a reverse message from executor → delegator so
       // they learn the result without polling. Use a sentinel prefix to break
       // ping-pong chains (the delegator might write back, which would trigger
       // markMessageDone on this notification; we skip creating ANOTHER notification
       // when the original content is already a completion report).
-      const done = getAgentMessage(id)
       if (done && done.from_agent !== done.to_agent && !done.content.startsWith('[Eredmény]')) {
         const summary = result ? result.slice(0, 500) : '(nincs eredmény)'
         createAgentMessage(

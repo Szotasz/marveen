@@ -6,10 +6,12 @@ import { atomicWriteFileSync } from './atomic-write.js'
 import { readFileOr, AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
 import { getSecret, listSecrets } from './vault.js'
 import { getExternalProjectPaths } from './dashboard-settings.js'
+import { shellEscape } from './sanitize.js'
 import { logger } from '../logger.js'
 
 const BINDINGS_PATH = join(PROJECT_ROOT, 'store', 'vault-bindings.json')
 const VAULT_WRAPPER_PATH = join(PROJECT_ROOT, 'scripts', 'vault-env-wrapper.sh')
+const VAULT_HEADERS_HELPER_PATH = join(PROJECT_ROOT, 'scripts', 'vault-headers-helper.sh')
 
 export interface VaultBindingTarget {
   mcpFilePath: string
@@ -20,6 +22,13 @@ export interface VaultBinding {
   vaultSecretId: string
   envVar: string
   targets: VaultBindingTarget[]
+  // When set, this is a REMOTE-server header binding rather than an env binding.
+  // The secret is injected into request headers at connection time via the
+  // headersHelper script -- the plaintext token never lands in .mcp.json.
+  headerName?: string
+  // Auth scheme prefix for the header value, e.g. "Bearer" -> "Bearer <secret>".
+  // Empty/undefined means the raw secret is used as the header value.
+  headerScheme?: string
 }
 
 interface BindingsStore {
@@ -95,19 +104,30 @@ export function removeBinding(vaultSecretId: string, envVar: string): boolean {
 export function removeBindingsForSecret(vaultSecretId: string): void {
   const store = readBindings()
   const toRemove = store.bindings.filter(b => b.vaultSecretId === vaultSecretId)
+  const remaining = store.bindings.filter(b => b.vaultSecretId !== vaultSecretId)
   for (const binding of toRemove) {
     for (const target of binding.targets) {
       try {
         const content = JSON.parse(readFileOr(target.mcpFilePath, '{}'))
         const serverCfg = content.mcpServers?.[target.serverName]
-        if (!serverCfg?.env) continue
-        delete serverCfg.env[binding.envVar]
-        if (!serverHasVaultRefs(serverCfg.env)) unwrapCommand(serverCfg)
+        if (!serverCfg) continue
+        if (binding.headerName) {
+          // Rebuild the server's headersHelper from the header bindings that
+          // survive this secret's removal.
+          applyHeadersHelper(
+            serverCfg,
+            headerBindingsForServer(target.mcpFilePath, target.serverName, remaining),
+          )
+        } else {
+          if (!serverCfg.env) continue
+          delete serverCfg.env[binding.envVar]
+          if (!serverHasVaultRefs(serverCfg.env)) unwrapCommand(serverCfg)
+        }
         atomicWriteFileSync(target.mcpFilePath, JSON.stringify(content, null, 2))
       } catch { /* skip */ }
     }
   }
-  store.bindings = store.bindings.filter(b => b.vaultSecretId !== vaultSecretId)
+  store.bindings = remaining
   writeBindings(store)
 }
 
@@ -217,6 +237,37 @@ function serverHasVaultRefs(env: Record<string, string> | undefined): boolean {
   return Object.values(env).some(v => typeof v === 'string' && v.startsWith('vault:'))
 }
 
+// All header bindings (across every secret) that target one server in one file.
+// The headersHelper for a server must carry EVERY header the vault manages for
+// it, so syncing one secret must not drop another secret's header.
+function headerBindingsForServer(
+  mcpFilePath: string,
+  serverName: string,
+  all: VaultBinding[] = getBindings(),
+): VaultBinding[] {
+  return all.filter(
+    b => b.headerName && b.targets.some(t => t.mcpFilePath === mcpFilePath && t.serverName === serverName),
+  )
+}
+
+// Rebuild (or clear) a remote server's headersHelper from the given header
+// bindings, and strip any managed plaintext headers so the token only ever
+// exists as a vault id on disk. Claude Code runs the helper per connection.
+function applyHeadersHelper(serverCfg: any, headerBindings: VaultBinding[]): void {
+  for (const b of headerBindings) {
+    if (serverCfg.headers && b.headerName) delete serverCfg.headers[b.headerName]
+  }
+  if (headerBindings.length === 0) {
+    delete serverCfg.headersHelper
+  } else {
+    const args = headerBindings.map(
+      b => `${b.headerName}=${b.headerScheme ?? 'Bearer'}:::${b.vaultSecretId}`,
+    )
+    serverCfg.headersHelper = [VAULT_HEADERS_HELPER_PATH, ...args].map(shellEscape).join(' ')
+  }
+  if (serverCfg.headers && Object.keys(serverCfg.headers).length === 0) delete serverCfg.headers
+}
+
 export function syncSecret(vaultSecretId: string): SyncResult {
   const bindings = getBindings().filter(b => b.vaultSecretId === vaultSecretId)
   if (bindings.length === 0) return { updated: 0, errors: [] }
@@ -236,9 +287,18 @@ export function syncSecret(vaultSecretId: string): SyncResult {
           errors.push(`Server "${target.serverName}" not found in ${target.mcpFilePath}`)
           continue
         }
-        if (!serverCfg.env) serverCfg.env = {}
-        serverCfg.env[binding.envVar] = `vault:${vaultSecretId}`
-        if (serverCfg.command && !serverCfg.url) wrapCommand(serverCfg)
+        if (binding.headerName) {
+          // Remote header binding: wire the headersHelper (rebuilt from ALL
+          // header bindings for this server) and strip any plaintext header.
+          applyHeadersHelper(
+            serverCfg,
+            headerBindingsForServer(target.mcpFilePath, target.serverName),
+          )
+        } else {
+          if (!serverCfg.env) serverCfg.env = {}
+          serverCfg.env[binding.envVar] = `vault:${vaultSecretId}`
+          if (serverCfg.command && !serverCfg.url) wrapCommand(serverCfg)
+        }
         atomicWriteFileSync(target.mcpFilePath, JSON.stringify(content, null, 2))
         updated++
       } catch (err: any) {
@@ -252,17 +312,31 @@ export function syncSecret(vaultSecretId: string): SyncResult {
 }
 
 export function unsyncBinding(vaultSecretId: string, envVar: string): void {
-  const bindings = getBindings().filter(
+  const all = getBindings()
+  const bindings = all.filter(
     b => b.vaultSecretId === vaultSecretId && b.envVar === envVar,
+  )
+  // Header bindings are rebuilt from the set that survives this removal (the
+  // binding is still in the store here; removeBinding runs afterwards).
+  const remaining = all.filter(
+    b => !(b.vaultSecretId === vaultSecretId && b.envVar === envVar),
   )
   for (const binding of bindings) {
     for (const target of binding.targets) {
       try {
         const content = JSON.parse(readFileOr(target.mcpFilePath, '{}'))
         const serverCfg = content.mcpServers?.[target.serverName]
-        if (!serverCfg?.env) continue
-        delete serverCfg.env[envVar]
-        if (!serverHasVaultRefs(serverCfg.env)) unwrapCommand(serverCfg)
+        if (!serverCfg) continue
+        if (binding.headerName) {
+          applyHeadersHelper(
+            serverCfg,
+            headerBindingsForServer(target.mcpFilePath, target.serverName, remaining),
+          )
+        } else {
+          if (!serverCfg.env) continue
+          delete serverCfg.env[envVar]
+          if (!serverHasVaultRefs(serverCfg.env)) unwrapCommand(serverCfg)
+        }
         atomicWriteFileSync(target.mcpFilePath, JSON.stringify(content, null, 2))
       } catch { /* skip */ }
     }

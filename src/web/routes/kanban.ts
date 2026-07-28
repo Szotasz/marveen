@@ -19,7 +19,7 @@ import { isAgentRunning } from '../agent-process.js'
 import { resolveKanbanDispatchTarget } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
-import { readBody, json } from '../http-helpers.js'
+import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import type { RouteContext } from './types.js'
 
@@ -111,7 +111,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // everything it needs in a single round trip.
     const labelsByCard = getLabelsForAllCards()
     const cards = listKanbanCards().map((card) => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))
-    json(res, cards)
+    jsonMaybeGzip(req, res, cards)
     return true
   }
 

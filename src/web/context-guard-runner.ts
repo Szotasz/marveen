@@ -1,8 +1,9 @@
-import { execFileSync } from 'node:child_process'
-import { statSync } from 'node:fs'
+import { statSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID, SERVICE_ID, PROJECT_ROOT } from '../config.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
+import { hardRestartMarveenChannels, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS } from './channel-monitor.js'
+import { shouldDeferForRecentRespawn } from './stuck-tool-call-watcher.js'
 import { listAgentNames, agentDir, readAgentModel, readAgentClaudeConfigDir, readAgentRemoteHost } from './agent-config.js'
 import {
   agentRunState,
@@ -13,9 +14,10 @@ import {
   isSessionReadyForPrompt,
 } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
-import { paneLooksIdle } from '../pane-state.js'
+import { detectPaneState, paneShowsContextSaturation } from '../pane-state.js'
 import { readContextTokensFromProjectDir, readActiveModelFromProjectDir } from './active-model.js'
 import { readContextGuardConfig } from './context-guard-store.js'
+import { createAgentMessage } from '../db.js'
 import {
   decideGuard,
   contextLimitForModel,
@@ -28,8 +30,11 @@ import {
 // Fleet context guard (kanban #81): acts BEFORE a session drowns in its own
 // context. Sweep every agent (main included) every five minutes; at actPct ask the
 // agent to write HANDOFF.md, then fresh-restart it and inject a resume prompt
-// pointing at the handoff. See src/context-guard.ts for the why and the pure
-// state machine; this module is only the I/O, mirroring auto-restart-runner.
+// pointing at the handoff. The always-on saturation net additionally rescues a
+// pane already showing "100% context used" -- unreachable by prompt dispatch,
+// so nothing else can recover it (samu stall, 2026-07-18). See
+// src/context-guard.ts for the why and the pure state machine; this module is
+// only the I/O, mirroring auto-restart-runner.
 //
 // Remote-host agents are skipped: their transcripts live on the remote machine,
 // so the context size cannot be measured here (v1 limitation, logged once).
@@ -42,6 +47,40 @@ const INTERVAL_MS = 300_000
 // request, and cooldown prevents restart loops within a run.
 const guardStates = new Map<string, GuardState>()
 const remoteSkipLogged = new Set<string>()
+
+// Per-agent observed-context high-water mark, persisted across dashboard
+// restarts. calibrateLimit alone is memoryless: the moment the guard
+// restarts an agent, the fresh session's observation shrinks back below the
+// tier step-up point, the denominator falls back to the base guess, and a
+// miscalibrated agent gets restarted at the same false "over-full" reading
+// every cycle -- the evidence that would have corrected the limit is
+// destroyed by the very restart it triggered. Persisting the per-(agent,
+// model) maximum breaks that loop: once a session has proven the window is
+// bigger, the proof survives restarts. Keyed by model so a real model
+// downgrade (e.g. fable-5 -> haiku) does not inherit a 1M denominator.
+const HIGHWATER_PATH = join(PROJECT_ROOT, 'store', 'context-guard-highwater.json')
+type HighwaterMap = Record<string, { model: string; tokens: number }>
+
+function readHighwater(): HighwaterMap {
+  try {
+    const parsed = JSON.parse(readFileSync(HIGHWATER_PATH, 'utf-8'))
+    return (parsed && typeof parsed === 'object') ? parsed as HighwaterMap : {}
+  } catch { return {} }
+}
+
+let highwater: HighwaterMap | null = null
+
+function observedHighwater(name: string, model: string, observedNow: number): number {
+  if (highwater === null) highwater = readHighwater()
+  const entry = highwater[name]
+  const prior = entry && entry.model === model ? entry.tokens : 0
+  if (observedNow > prior) {
+    highwater[name] = { model, tokens: observedNow }
+    try { writeFileSync(HIGHWATER_PATH, JSON.stringify(highwater, null, 2)) }
+    catch (err) { logger.warn({ err }, 'context-guard: highwater persist failed') }
+  }
+  return Math.max(observedNow, prior)
+}
 
 function sessionFor(name: string): string {
   return name === MAIN_AGENT_ID ? MAIN_CHANNELS_SESSION : agentSessionName(name)
@@ -92,19 +131,35 @@ function measurePct(name: string, cfgLimit: number | null): number | null {
   if (cfgLimit) {
     limit = cfgLimit
   } else {
-    const model = name === MAIN_AGENT_ID
+    const model = (name === MAIN_AGENT_ID
       ? readActiveModelFromProjectDir(PROJECT_ROOT)
-      : readAgentModel(name)
-    limit = calibrateLimit(tokens, contextLimitForModel(model))
+      : readAgentModel(name)) ?? ''
+    // Calibrate against the persisted per-(agent, model) maximum, not just
+    // the live reading: a fresh post-restart session must not un-learn a
+    // window the previous session already proved (see HighwaterMap above).
+    limit = calibrateLimit(observedHighwater(name, model, tokens), contextLimitForModel(model))
   }
   return tokens / limit
 }
 
 function performRestart(name: string): void {
   if (name === MAIN_AGENT_ID) {
-    // launchd-managed; channels.sh always starts fresh, KeepAlive respawns it.
-    const uid = typeof process.getuid === 'function' ? process.getuid() : ''
-    execFileSync('/bin/launchctl', ['kickstart', '-k', `gui/${uid}/com.${SERVICE_ID}.channels`], { timeout: 10_000 })
+    // Platform-correct main-session restart. This was a hardcoded
+    // `/bin/launchctl kickstart`, which exists only on macOS: on Linux every
+    // rescue died instantly with `spawnSync /bin/launchctl ENOENT`, caught by
+    // checkAgent's catch and buried in a single WARN. Measured on 2026-07-26:
+    // the main agent sat at 100% context from 09:47, the saturation net -- the
+    // only mechanism that can rescue a pane prompt dispatch refuses -- fired
+    // four times and failed every time, and main was unreachable for ~2h until
+    // a hand restart.
+    //
+    // hardRestartMarveenChannels() is the existing helper the channel-monitor
+    // down-cascade already uses: it keeps the launchd path for macOS installs
+    // (and warns + falls back to a pane respawn if the plist is absent), uses
+    // respawn-pane-FRESH on Linux -- fresh is exactly what the guard wants --
+    // and writes the shared respawn stamp so the other respawners defer to us.
+    const res = hardRestartMarveenChannels()
+    if (!res.ok) throw new Error(res.error ?? 'main channels hard restart failed')
   } else {
     restartAgentProcess(name, { fresh: true })
   }
@@ -114,7 +169,10 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   const cfg = readContextGuardConfig(name)
   const state = guardStates.get(name) ?? INITIAL_GUARD_STATE
 
-  if (!cfg.enabled) {
+  // Fully disarmed only when BOTH the proactive tiers and the always-on
+  // saturation net are off; the net alone keeps the sweep alive so a
+  // 100%-context pane (which dispatch refuses to prompt) still gets rescued.
+  if (!cfg.enabled && !cfg.saturationRestart) {
     guardStates.delete(name)
     return
   }
@@ -139,16 +197,60 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   const sessionReady = running && state.phase === 'await-ready'
     ? await isSessionReadyForPrompt(session)
     : false
+  // One classification, two distinct signals: 'idle' (safe to restart) and
+  // 'busy' (positively mid-turn -- restarts defer). A pane that is neither
+  // (error banner, modal, unknown surface) is treated as NOT busy, so a
+  // wedged pane still gets the restart that is its only way out.
+  const paneState = pane !== null ? detectPaneState(pane) : 'unknown'
   const inputs: GuardInputs = {
     nowMs,
     running,
-    pct: running && needPct ? measurePct(name, cfg.limitTokens) : null,
-    paneIdle: pane !== null ? paneLooksIdle(pane) : false,
+    // The saturation net decides from the pane alone; only the proactive
+    // tiers need the (transcript-reading) pct probe.
+    pct: running && needPct && cfg.enabled ? measurePct(name, cfg.limitTokens) : null,
+    paneIdle: paneState === 'idle',
+    paneBusy: paneState === 'busy',
     sessionReady,
     handoffMtime: needPct ? handoffMtime(name) : null,
+    paneSaturated: pane !== null ? paneShowsContextSaturation(pane) : false,
   }
 
   const decision = decideGuard(state, inputs, cfg)
+
+  // Post-respawn grace for the main session. Making the Linux restart path work
+  // (above) also makes it repeatable: measured on 2026-07-26, the saturation net
+  // fresh-restarted main five times in one morning, so the agent lost its
+  // conversation roughly every half hour. Two causes of a redundant restart,
+  // both covered by the same stamp: a session that is still BOOTING can read as
+  // saturated/idle again on the next sweep, and ANOTHER respawner (the
+  // channel-monitor down-cascade, the auto-restart runner, channel-watchdog.sh)
+  // may have just restarted main for its own reasons.
+  //
+  // Same mechanism every other respawner already shares -- lastMainRespawnAt()
+  // plus MARVEEN_POST_RESPAWN_GRACE_MS -- so there is no new tunable and no new
+  // number; see the identical gate in stuck-tool-call-watcher.ts. Main only: the
+  // stamp describes the main channels session, and a sub-agent restart is
+  // cheap and independently coordinated.
+  //
+  // The state must NOT advance here. decideGuard() has already produced
+  // nextState = await-ready; committing that while skipping the restart would
+  // leave the machine believing main was restarted, and the next sweep would
+  // inject a "continue from your handoff" resume prompt into the SAME saturated
+  // pane -- the guard would consume its own recovery and never retry. Keeping
+  // the previous state means the next sweep re-decides, and the restart happens
+  // once the grace has elapsed.
+  if (decision.action === 'restart' && name === MAIN_AGENT_ID) {
+    const lastRespawn = lastMainRespawnAt()
+    if (shouldDeferForRecentRespawn(lastRespawn, nowMs)) {
+      logger.info(
+        { name, sinceRespawnMs: lastRespawn ? nowMs - lastRespawn : null, graceMs: MARVEEN_POST_RESPAWN_GRACE_MS },
+        'context-guard: recent main respawn within grace, deferring restart (avoid restart loop / boot churn)',
+      )
+      guardStates.set(name, state)
+      return
+    }
+  }
+
   guardStates.set(name, decision.nextState)
   if (decision.action === 'none') return
 
@@ -160,9 +262,39 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
       case 'request-handoff':
         await sendPromptToSession(session, handoffPrompt(pctRound ?? 0, handoffPathFor(name)))
         break
-      case 'restart':
+      case 'restart': {
+        // A forced restart must never be silent: the supervisor has to know
+        // that prompts delivered to the OLD session (queued steering input,
+        // parked text, the handoff request itself) may have died with it
+        // (2026-07-27: two dispatched instructions lost this way). Snapshot
+        // the pane first for post-mortem, then restart, then report on the
+        // inter-agent queue -- the channel supervisors actually read.
+        let snapshotPath: string | null = null
+        try {
+          const finalPane = pane ?? capturePane(session)
+          if (finalPane) {
+            snapshotPath = join(PROJECT_ROOT, 'store', `context-guard-last-pane-${name}.txt`)
+            writeFileSync(snapshotPath, finalPane)
+          }
+        } catch (err) {
+          logger.warn({ err, name }, 'context-guard: pre-restart pane snapshot failed')
+        }
         performRestart(name)
+        try {
+          createAgentMessage(
+            name,
+            MAIN_AGENT_ID,
+            `[CONTEXT-GUARD] Ujrainditottam a(z) "${name}" agentet -- ok: ${decision.reason}` +
+            (pctRound !== null ? ` (kontextus ~${pctRound}%)` : '') +
+            `. A regi sessionbe az utolso percekben kuldott uzenetek/utasitasok ELVESZHETTEK -- ellenorizd es kuldd ujra oket.` +
+            (snapshotPath ? ` Pane-snapshot a restart elotti allapotrol: ${snapshotPath}` : ''),
+            'context-guard restart notice',
+          )
+        } catch (err) {
+          logger.warn({ err, name }, 'context-guard: restart notice message failed')
+        }
         break
+      }
       case 'inject-resume': {
         const hadHandoff = inputs.handoffMtime !== null || handoffMtime(name) !== null
         await sendPromptToSession(session, resumePrompt(name, handoffPathFor(name), hadHandoff))
@@ -180,6 +312,7 @@ export function getContextGuardStatus(): Array<{
   phase: string
   pct: number | null
   enabled: boolean
+  saturationRestart: boolean
 }> {
   const names = [MAIN_AGENT_ID, ...listAgentNames()]
   return names.map((name) => {
@@ -190,6 +323,7 @@ export function getContextGuardStatus(): Array<{
       phase: guardStates.get(name)?.phase ?? 'idle',
       pct: cfg.enabled && !remote ? measurePct(name, cfg.limitTokens) : null,
       enabled: cfg.enabled,
+      saturationRestart: cfg.saturationRestart,
     }
   })
 }
