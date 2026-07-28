@@ -78,7 +78,11 @@
     "env": {"BRAVE_API_KEY": ""},
     "authType": "apikey",
     "authNote": "API kulcs: https://brave.com/search/api/",
-    "infoUrl": "https://github.com/modelcontextprotocol/servers/tree/main/src/brave-search"
+    "infoUrl": "https://github.com/modelcontextprotocol/servers/tree/main/src/brave-search",
+    "tools": [
+      {"id": "brave_web_search",   "label": "Webes keresés",   "dangerous": false},
+      {"id": "brave_local_search", "label": "Helyi keresés",   "dangerous": false}
+    ]
   },
   {
     "id": "filesystem",
@@ -91,7 +95,19 @@
     "args": ["-y", "@modelcontextprotocol/server-filesystem", "/"],
     "env": {},
     "authType": "none",
-    "infoUrl": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem"
+    "infoUrl": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
+    "tools": [
+      {"id": "read_file",           "label": "Fájl olvasás",          "dangerous": false},
+      {"id": "read_multiple_files", "label": "Több fájl olvasás",     "dangerous": false},
+      {"id": "list_directory",      "label": "Könyvtár lista",         "dangerous": false},
+      {"id": "directory_tree",      "label": "Könyvtárfa",             "dangerous": false},
+      {"id": "search_files",        "label": "Fájl keresés",           "dangerous": false},
+      {"id": "get_file_info",       "label": "Fájl infó",              "dangerous": false},
+      {"id": "write_file",          "label": "Fájl írás",              "dangerous": true},
+      {"id": "edit_file",           "label": "Fájl szerkesztés",       "dangerous": true},
+      {"id": "create_directory",    "label": "Könyvtár létrehozás",    "dangerous": true},
+      {"id": "move_file",           "label": "Fájl áthelyezés",        "dangerous": true}
+    ]
   },
   {
     "id": "github",
@@ -105,7 +121,39 @@
     "env": {"GITHUB_TOKEN": ""},
     "authType": "apikey",
     "authNote": "Personal Access Token: GitHub Settings -> Developer Settings -> Personal Access Tokens",
-    "infoUrl": "https://github.com/modelcontextprotocol/servers/tree/main/src/github"
+    "infoUrl": "https://github.com/modelcontextprotocol/servers/tree/main/src/github",
+    "tools": [
+      {"id": "list_issues",               "label": "Issue lista",              "dangerous": false},
+      {"id": "get_issue",                  "label": "Issue lekérés",            "dangerous": false},
+      {"id": "search_issues",              "label": "Issue keresés",            "dangerous": false},
+      {"id": "create_issue",               "label": "Issue létrehozás",         "dangerous": false},
+      {"id": "update_issue",               "label": "Issue szerkesztés",        "dangerous": false},
+      {"id": "add_issue_comment",          "label": "Issue komment",            "dangerous": false},
+      {"id": "list_pull_requests",         "label": "PR lista",                 "dangerous": false},
+      {"id": "get_pull_request",           "label": "PR lekérés",              "dangerous": false},
+      {"id": "get_pull_request_files",     "label": "PR fájlok",               "dangerous": false},
+      {"id": "get_pull_request_status",    "label": "PR státusz",              "dangerous": false},
+      {"id": "get_pull_request_reviews",   "label": "PR review-k",             "dangerous": false},
+      {"id": "get_pull_request_comments",  "label": "PR kommentek",            "dangerous": false},
+      {"id": "list_commits",               "label": "Commit lista",             "dangerous": false},
+      {"id": "get_commit",                 "label": "Commit lekérés",           "dangerous": false},
+      {"id": "list_branches",              "label": "Branch lista",             "dangerous": false},
+      {"id": "get_branch",                 "label": "Branch lekérés",           "dangerous": false},
+      {"id": "get_file_contents",          "label": "Fájl olvasás",             "dangerous": false},
+      {"id": "search_repositories",        "label": "Repo keresés",             "dangerous": false},
+      {"id": "search_code",                "label": "Kód keresés",              "dangerous": false},
+      {"id": "search_users",               "label": "Felhasználó keresés",      "dangerous": false},
+      {"id": "get_user",                   "label": "Felhasználó lekérés",      "dangerous": false},
+      {"id": "create_pull_request",        "label": "PR létrehozás",            "dangerous": true},
+      {"id": "create_pull_request_review", "label": "PR review küldés",        "dangerous": true},
+      {"id": "merge_pull_request",         "label": "PR merge",                 "dangerous": true},
+      {"id": "update_pull_request_branch", "label": "PR branch frissítés",     "dangerous": true},
+      {"id": "create_branch",              "label": "Branch létrehozás",        "dangerous": true},
+      {"id": "create_or_update_file",      "label": "Fájl írás/frissítés",     "dangerous": true},
+      {"id": "push_files",                 "label": "Fájlok pusholása",         "dangerous": true},
+      {"id": "create_repository",          "label": "Repo létrehozás",          "dangerous": true},
+      {"id": "fork_repository",            "label": "Repo fork",                "dangerous": true}
+    ]
   },
   {
     "id": "fal-ai",

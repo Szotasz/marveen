@@ -28,9 +28,11 @@ import {
   readAgentRemoteHost,
   readAgentVoiceConfig,
   writeAgentVoiceConfig,
+  writeAgentMcpScope,
   KNOWN_VOICE_MODELS,
   type AuthMode,
 } from '../agent-config.js'
+import { parseMcpScope, type McpScope } from '../mcp-tool-registry.js'
 import { readClaudePlans } from '../claude-plans.js'
 import {
   readAgentTeam,
@@ -631,6 +633,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     const data = await readJsonBody<{
       claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string
       authMode?: AuthMode; apiKey?: string; claudePlan?: string; memoryIsolation?: boolean
+      mcpScope?: McpScope
     }>(req)
     if (data.memoryIsolation !== undefined) {
       // The main agent's cwd IS the install repo root, which is already a git
@@ -653,6 +656,10 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)
     if (data.mcpJson !== undefined) atomicWriteFileSync(join(agentDir(name), '.mcp.json'), data.mcpJson)
     if (data.model !== undefined) writeAgentModel(name, data.model)
+    if (data.mcpScope !== undefined) {
+      const parsed = parseMcpScope(data.mcpScope)
+      if (parsed !== null) writeAgentMcpScope(name, parsed)
+    }
     if (data.authMode !== undefined) {
       writeAgentAuthMode(name, data.authMode)
       if (data.authMode === 'api' && typeof data.apiKey === 'string' && data.apiKey.trim()) {

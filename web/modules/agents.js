@@ -37,11 +37,12 @@ let _openTerminalModal = null
 let _openConversationModal = null
 let _setChatSelectedAgent = null
 let _showSudoModal = null
+let _renderTeamEditor = null
 
 export function initAgents({
   openModal, closeModal, loadSkills,
   openTerminalModal, openConversationModal, setChatSelectedAgent,
-  showSudoModal,
+  showSudoModal, renderTeamEditor,
 } = {}) {
   _openModal = openModal
   _closeModal = closeModal
@@ -50,6 +51,7 @@ export function initAgents({
   _openConversationModal = openConversationModal
   _setChatSelectedAgent = setChatSelectedAgent
   _showSudoModal = showSudoModal
+  _renderTeamEditor = renderTeamEditor
 }
 
 // ─── Federated peer status ────────────────────────────────────────────────────
@@ -565,7 +567,7 @@ function applyMarveenReadonlyMode(readOnly) {
   // doesn't look like the row is missing -- the other save buttons (tied to
   // readonly textareas) are hidden because the textareas are also hidden by
   // the readonly note flow.
-  const hideButtonIds = ['saveClaudeMdBtn', 'saveSoulMdBtn', 'saveMcpJsonBtn', 'saveAuthModeBtn']
+  const hideButtonIds = ['saveClaudeMdBtn', 'saveSoulMdBtn', 'saveMcpJsonBtn', 'saveAuthModeBtn', 'saveMcpScopeBtn']
   const disableButtonIds = ['saveModelBtn']
   for (const id of textareaIds) {
     const el = document.getElementById(id)
@@ -938,7 +940,7 @@ async function openAgentDetail(agentName) {
     document.getElementById('editAgentPlanDesc'),
     currentAgent.claudePlan || '',
   )
-  renderTeamEditor(currentAgent, agents)
+  _renderTeamEditor?.(currentAgent, agents)
   updateAuthModeUI(currentAgent.authMode || 'shared', currentAgent.hasApiKey || false)
   const memIsoToggle = document.getElementById('memoryIsolationToggle')
   if (memIsoToggle) memIsoToggle.checked = currentAgent.memoryIsolation === true
@@ -955,6 +957,13 @@ async function openAgentDetail(agentName) {
 
   // Skills tab
   await _loadSkills?.(currentAgent.name)
+
+  // MCP scope tab -- wrapped so a render failure never blocks the modal
+  try {
+    await loadMcpScope(currentAgent)
+  } catch (err) {
+    console.error('MCP scope tab load failed:', err)
+  }
 
   // Process control
   updateProcessControl(currentAgent)
@@ -1370,6 +1379,7 @@ function switchAgentTab(tab) {
   document.getElementById('tabChannel').hidden = tab !== 'channel'
   document.getElementById('tabSkills').hidden = tab !== 'skills'
   document.getElementById('tabTeam').hidden = tab !== 'team'
+  document.getElementById('tabMcpScope').hidden = tab !== 'mcp-scope'
   if (tab === 'channel') startChannelAutoPoll()
   else stopChannelAutoPoll()
 }
@@ -2241,6 +2251,272 @@ document.getElementById('saveMcpJsonBtn').addEventListener('click', async () => 
     if (!res.ok) throw new Error()
     showToast('.mcp.json mentve')
   } catch { showToast(t('common.error_save')) }
+})
+
+// === MCP scope tab ===
+
+// Read-only tool id prefixes -- used to auto-populate the "readonly" preset.
+const MCP_READONLY_PREFIXES = ['list_', 'get_', 'search_', 'check_', 'find_', 'fetch_', 'read_', 'directory_tree']
+
+function isMcpToolReadonly(toolId) {
+  return MCP_READONLY_PREFIXES.some((p) => toolId.startsWith(p))
+}
+
+// Build the mcpScope object from the current UI state.
+// Returns null when mode is "full" (unmanaged, no mcpScope field).
+function buildMcpScopeValue() {
+  const mode = document.querySelector('input[name="mcpScopeMode"]:checked')?.value || 'full'
+  if (mode === 'full') return null
+
+  const scope = {}
+  const serverSections = document.querySelectorAll('#mcpScopeServerList .mcp-server-section')
+  for (const section of serverSections) {
+    const serverKey = section.dataset.server
+    if (!serverKey) continue
+    const allToggle = section.querySelector('.mcp-server-all-toggle')
+    if (allToggle?.checked) {
+      scope[serverKey] = '*'
+      continue
+    }
+    const checked = [...section.querySelectorAll('.mcp-tool-cb:checked')].map((cb) => cb.value)
+    // Custom tools entered via free-text input
+    const customItems = [...section.querySelectorAll('.mcp-custom-tool-tag')].map((el) => el.dataset.tool)
+    const allTools = [...new Set([...checked, ...customItems])].filter(Boolean)
+    // null means server is explicitly blocked (empty whitelist under managed mode)
+    scope[serverKey] = allTools.length > 0 ? allTools : null
+  }
+  return scope
+}
+
+// Render a single server section (accordion-style) inside #mcpScopeServerList.
+function renderMcpServerSection(serverKey, catalogEntry, currentServerScope) {
+  const tools = catalogEntry?.tools || []
+  const isAllStar = currentServerScope === '*'
+  const allowedSet = Array.isArray(currentServerScope) ? new Set(currentServerScope) : new Set()
+  const isBlocked = !isAllStar && currentServerScope !== undefined && allowedSet.size === 0
+
+  const section = document.createElement('div')
+  section.className = 'mcp-server-section'
+  section.dataset.server = serverKey
+
+  const serverLabel = catalogEntry?.name || serverKey
+  const icon = catalogEntry?.icon || ''
+
+  section.innerHTML = `
+    <div class="mcp-server-header">
+      <span class="mcp-server-icon">${icon}</span>
+      <strong class="mcp-server-name">${escapeHtml(serverLabel)}</strong>
+      <label class="mcp-server-all-label">
+        <input type="checkbox" class="mcp-server-all-toggle" ${isAllStar ? 'checked' : ''}>
+        <span data-i18n="agents.mcp_scope.server_all_toggle">${t('agents.mcp_scope.server_all_toggle')}</span>
+      </label>
+      ${isBlocked ? `<span class="mcp-scope-blocked-badge">${t('agents.mcp_scope.server_blocked')}</span>` : ''}
+    </div>
+    <div class="mcp-tool-list" ${isAllStar ? 'style="display:none"' : ''}>
+      ${tools.length === 0 ? renderCustomToolSection(serverKey, allowedSet) : ''}
+    </div>
+  `
+
+  if (tools.length > 0) {
+    const toolList = section.querySelector('.mcp-tool-list')
+    for (const tool of tools) {
+      const isChecked = isAllStar || allowedSet.has(tool.id)
+      const row = document.createElement('label')
+      row.className = 'mcp-tool-row'
+      row.innerHTML = `
+        <input type="checkbox" class="mcp-tool-cb" value="${escapeHtml(tool.id)}" ${isChecked ? 'checked' : ''}>
+        <span class="mcp-tool-label">${escapeHtml(tool.label)}</span>
+        <code class="mcp-tool-id">${escapeHtml(tool.id)}</code>
+        ${tool.dangerous ? `<span class="mcp-tool-danger-badge">${t('agents.mcp_scope.dangerous_badge')}</span>` : ''}
+      `
+      toolList.appendChild(row)
+    }
+    // Custom tool input for tools not in catalog
+    const customSection = document.createElement('div')
+    customSection.innerHTML = renderCustomToolSection(serverKey, allowedSet, tools.map((t) => t.id))
+    toolList.appendChild(customSection)
+  }
+
+  // "All tools" toggle hides/shows the checkbox list
+  const allToggle = section.querySelector('.mcp-server-all-toggle')
+  const toolListEl = section.querySelector('.mcp-tool-list')
+  allToggle.addEventListener('change', () => {
+    toolListEl.style.display = allToggle.checked ? 'none' : ''
+    if (!allToggle.checked) {
+      section.querySelector('.mcp-scope-blocked-badge')?.remove()
+    }
+  })
+
+  return section
+}
+
+// Render the free-text custom tool input row for servers without a tool catalog.
+function renderCustomToolSection(serverKey, existingCustomSet, catalogToolIds = []) {
+  const customTools = [...existingCustomSet].filter((id) => !catalogToolIds.includes(id))
+  const tags = customTools.map((id) =>
+    `<span class="mcp-custom-tool-tag" data-tool="${escapeHtml(id)}">${escapeHtml(id)}<button class="mcp-custom-tool-remove" data-tool="${escapeHtml(id)}">&times;</button></span>`
+  ).join('')
+  return `
+    <div class="mcp-custom-tool-row">
+      <div class="mcp-custom-tool-tags" id="customTags_${escapeHtml(serverKey)}">${tags}</div>
+      <div class="mcp-custom-tool-input-row">
+        <input type="text" class="mcp-custom-tool-input" placeholder="${t('agents.mcp_scope.unknown_server_hint')}">
+        <button type="button" class="btn-compact btn-secondary mcp-custom-tool-add">${t('agents.mcp_scope.add_custom_tool')}</button>
+      </div>
+    </div>
+  `
+}
+
+function wireCustomToolInputs(container) {
+  container.querySelectorAll('.mcp-custom-tool-add').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const row = btn.closest('.mcp-custom-tool-row')
+      const input = row.querySelector('.mcp-custom-tool-input')
+      const toolId = input.value.trim()
+      if (!toolId) return
+      const serverKey = btn.closest('.mcp-server-section')?.dataset.server || ''
+      const tagsEl = row.querySelector('.mcp-custom-tool-tags') || document.getElementById(`customTags_${serverKey}`)
+      if (!tagsEl) return
+      const tag = document.createElement('span')
+      tag.className = 'mcp-custom-tool-tag'
+      tag.dataset.tool = toolId
+      tag.innerHTML = `${escapeHtml(toolId)}<button class="mcp-custom-tool-remove" data-tool="${escapeHtml(toolId)}">&times;</button>`
+      tag.querySelector('.mcp-custom-tool-remove').addEventListener('click', () => tag.remove())
+      tagsEl.appendChild(tag)
+      input.value = ''
+    })
+  })
+  container.querySelectorAll('.mcp-custom-tool-remove').forEach((btn) => {
+    btn.addEventListener('click', () => btn.closest('.mcp-custom-tool-tag')?.remove())
+  })
+}
+
+let _mcpCatalogCache = null
+async function fetchMcpCatalog() {
+  if (_mcpCatalogCache) return _mcpCatalogCache
+  try {
+    const res = await fetch('/api/mcp-catalog')
+    if (res.ok) _mcpCatalogCache = await res.json()
+  } catch { /* offline -- proceed without catalog */ }
+  return _mcpCatalogCache || []
+}
+
+async function loadMcpScope(agent) {
+  const serverListEl = document.getElementById('mcpScopeServerList')
+  const noServersEl = document.getElementById('mcpScopeNoServers')
+  const unmanagedHint = document.getElementById('mcpScopeUnmanagedHint')
+  if (!serverListEl) return
+
+  serverListEl.innerHTML = ''
+
+  // Parse .mcp.json to get configured server keys
+  let mcpJson = {}
+  try { mcpJson = JSON.parse(agent.mcpJson || '{}') } catch { /* ignore */ }
+  const serverKeys = Object.keys(mcpJson.mcpServers || {})
+
+  if (serverKeys.length === 0) {
+    if (noServersEl) noServersEl.style.display = ''
+    serverListEl.style.display = 'none'
+    return
+  }
+  if (noServersEl) noServersEl.style.display = 'none'
+
+  // Current mcpScope from agent config
+  const currentScope = agent.mcpScope || null
+
+  // Preset mode
+  let mode = 'full'
+  if (currentScope !== null && currentScope !== undefined) {
+    // Check if all servers are set to readonly-only tools
+    const allReadonly = serverKeys.every((key) => {
+      const s = currentScope[key]
+      return Array.isArray(s) && s.every(isMcpToolReadonly)
+    })
+    mode = allReadonly ? 'readonly' : 'custom'
+  }
+  const modeInput = document.querySelector(`input[name="mcpScopeMode"][value="${mode}"]`)
+  if (modeInput) modeInput.checked = true
+  if (unmanagedHint) unmanagedHint.style.display = mode === 'full' ? '' : 'none'
+  serverListEl.style.display = mode === 'custom' ? '' : 'none'
+
+  // Wire preset radio buttons
+  document.querySelectorAll('input[name="mcpScopeMode"]').forEach((radio) => {
+    radio.addEventListener('change', () => {
+      const m = document.querySelector('input[name="mcpScopeMode"]:checked')?.value
+      serverListEl.style.display = m === 'custom' ? '' : 'none'
+      if (unmanagedHint) unmanagedHint.style.display = m === 'full' ? '' : 'none'
+    })
+  })
+
+  const catalog = await fetchMcpCatalog()
+  const catalogMap = {}
+  for (const entry of catalog) catalogMap[entry.id] = entry
+
+  for (const serverKey of serverKeys) {
+    // Match server key to catalog: try exact id match or prefix match
+    try {
+      const catalogEntry = catalogMap[serverKey] ||
+        Object.values(catalogMap).find((e) => serverKey.startsWith(e.id))
+      const serverScope = currentScope ? currentScope[serverKey] : undefined
+      const section = renderMcpServerSection(serverKey, catalogEntry, serverScope)
+      serverListEl.appendChild(section)
+    } catch (err) {
+      console.error(`MCP scope: failed to render server "${serverKey}":`, err)
+    }
+  }
+
+  try {
+    wireCustomToolInputs(serverListEl)
+  } catch (err) {
+    console.error('MCP scope: wireCustomToolInputs failed:', err)
+  }
+}
+
+document.getElementById('saveMcpScopeBtn').addEventListener('click', async () => {
+  if (!currentAgent) return
+  const mode = document.querySelector('input[name="mcpScopeMode"]:checked')?.value || 'full'
+
+  let scopeValue = null
+  if (mode === 'readonly') {
+    // Auto-build readonly scope: only list/get/search tools from catalog per server
+    let mcpJson = {}
+    try { mcpJson = JSON.parse(currentAgent.mcpJson || '{}') } catch { /* ignore */ }
+    const serverKeys = Object.keys(mcpJson.mcpServers || {})
+    const catalog = await fetchMcpCatalog()
+    const catalogMap = {}
+    for (const entry of catalog) catalogMap[entry.id] = entry
+    scopeValue = {}
+    for (const serverKey of serverKeys) {
+      const catalogEntry = catalogMap[serverKey] ||
+        Object.values(catalogMap).find((e) => serverKey.startsWith(e.id))
+      if (catalogEntry?.tools) {
+        const readonlyTools = catalogEntry.tools.filter((t) => isMcpToolReadonly(t.id)).map((t) => t.id)
+        scopeValue[serverKey] = readonlyTools.length > 0 ? readonlyTools : null
+      } else {
+        // Unknown server: no tools to whitelist -> block
+        scopeValue[serverKey] = null
+      }
+    }
+  } else if (mode === 'custom') {
+    scopeValue = buildMcpScopeValue()
+    // Warn if any dangerous tools are newly included
+    const hasDangerous = Object.values(scopeValue || {}).some((v) =>
+      Array.isArray(v) && v.some((id) => !isMcpToolReadonly(id))
+    )
+    if (hasDangerous && !confirm(t('agents.mcp_scope.confirm_dangerous'))) return
+  }
+  // mode === 'full' -> scopeValue stays null (removes mcpScope field)
+
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mcpScope: scopeValue }),
+    })
+    if (!res.ok) throw new Error()
+    currentAgent.mcpScope = scopeValue
+    showToast(t('agents.mcp_scope.save_ok'))
+  } catch { showToast(t('agents.mcp_scope.save_error')) }
 })
 
 // === Channel tab ===

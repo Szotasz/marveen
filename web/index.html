@@ -2317,6 +2317,7 @@
           <button class="tab-btn" data-tab="channel" data-i18n="agents.tab.channel">Csatorna</button>
           <button class="tab-btn" data-tab="skills" data-i18n="agents.tab.skills">Skillek</button>
           <button class="tab-btn" data-tab="team" data-i18n="agents.tab.team">Csapat</button>
+          <button class="tab-btn" data-tab="mcp-scope" data-i18n="agents.tab.mcp_scope">MCP hatáskör</button>
         </div>
 
         <!-- Tab: Overview -->
@@ -2796,6 +2797,35 @@
             <small style="display:block;margin-top:6px;color:var(--text-muted);font-size:12px" data-i18n="agents.team.trusted_hint">A router alapból a jelent-kapcsolat és a delegálási lista alapján dönti el, hogy egy üzenet megbízható csapattárstól jön-e. Itt további ügynököket jelölhetsz kézzel &mdash; pl. egy cross-team együttműködő partner, akivel nincs hierarchikus kapcsolat, de a levelezése mégis csapattársi.</small>
           </div>
           <button class="btn-secondary btn-compact agent-save-section" id="saveTeamBtn" data-i18n="common.btn.save">Mentés</button>
+        </div>
+
+        <!-- Tab: MCP Scope -->
+        <div class="tab-panel" id="tabMcpScope" hidden>
+          <!-- Mode selector -->
+          <div class="form-group mcp-scope-mode-group">
+            <label class="form-label-sm" data-i18n="agents.tab.mcp_scope">MCP hatáskör</label>
+            <div class="mcp-scope-presets">
+              <label class="mcp-preset-option">
+                <input type="radio" name="mcpScopeMode" value="full" checked>
+                <span data-i18n="agents.mcp_scope.mode_full">Teljes hozzáférés (profil alapján)</span>
+              </label>
+              <label class="mcp-preset-option">
+                <input type="radio" name="mcpScopeMode" value="readonly">
+                <span data-i18n="agents.mcp_scope.mode_readonly">Csak olvasás</span>
+              </label>
+              <label class="mcp-preset-option">
+                <input type="radio" name="mcpScopeMode" value="custom">
+                <span data-i18n="agents.mcp_scope.mode_custom">Egyéni</span>
+              </label>
+            </div>
+            <small class="mcp-scope-unmanaged-hint" id="mcpScopeUnmanagedHint" style="display:none;color:var(--text-muted);font-size:12px;margin-top:6px" data-i18n="agents.mcp_scope.unmanaged_hint"></small>
+          </div>
+          <!-- Custom scope server list (visible only in "custom" mode) -->
+          <div id="mcpScopeServerList" style="display:none;margin-top:12px"></div>
+          <!-- No servers notice -->
+          <p id="mcpScopeNoServers" style="display:none;color:var(--text-muted);font-size:13px" data-i18n="agents.mcp_scope.no_servers"></p>
+          <!-- Save button -->
+          <button class="btn-secondary btn-compact agent-save-section" id="saveMcpScopeBtn" style="margin-top:16px" data-i18n="agents.mcp_scope.save">Hatáskör mentése</button>
         </div>
 
         <!-- Bottom actions -->

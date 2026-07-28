@@ -551,3 +551,25 @@ export function writeAgentCapabilities(name: string, capabilities: string[]): vo
   config.capabilities = capabilities
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
+
+// Read the raw mcpScope field from agent-config.json. Returns the raw value
+// (object, "*", or undefined) for parseMcpScope() to validate. Kept separate
+// so the scaffold can distinguish "absent" (undefined -> unmanaged) from
+// "present but empty" ({} -> scoped, deny everything).
+export function readAgentMcpScopeRaw(name: string): unknown {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}'))
+    return config.mcpScope
+  } catch {
+    return undefined
+  }
+}
+
+export function writeAgentMcpScope(name: string, mcpScope: Record<string, string[] | '*'>): void {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  let config: Record<string, unknown> = {}
+  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  config.mcpScope = mcpScope
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}

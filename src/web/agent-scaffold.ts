@@ -5,8 +5,9 @@ import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WE
 import { channelStateDir } from '../channel-provider.js'
 import { runAgent } from '../agent.js'
 import { atomicWriteFileSync } from './atomic-write.js'
-import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities } from './agent-config.js'
+import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities, readAgentMcpScopeRaw } from './agent-config.js'
 import { resolveProfilePlaceholders, type ProfileTemplate } from './profiles.js'
+import { MCP_TOOL_REGISTRY, parseMcpScope, buildMcpDenyList } from './mcp-tool-registry.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
 
 // Resolve the base URL agents should use to reach the dashboard API.
@@ -292,6 +293,12 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // allow), so this is a fail-closed layer; the self-pace-gate hook below covers
   // the Bash escape routes a name-deny cannot reach. (2026-06-26 autonom-kor fix.)
   if (agentGetsGovernanceGates(name)) denyList.push(...SELF_PACE_TOOL_DENY)
+  // Per-agent MCP capability scope: when mcpScope is defined in agent-config.json,
+  // deny every MCP tool in the registry that is NOT in the scope. When mcpScope is
+  // absent, no MCP denies are added (unmanaged = backward-compat). Deny is enforced
+  // even under --dangerously-skip-permissions (same guarantee as SELF_PACE_TOOL_DENY).
+  const mcpScope = parseMcpScope(readAgentMcpScopeRaw(name))
+  denyList.push(...buildMcpDenyList(mcpScope, MCP_TOOL_REGISTRY))
   existing.permissions = {
     allow: profile.filesystem.allow.map(p => resolveProfilePlaceholders(p, ctx)),
     deny: denyList,
