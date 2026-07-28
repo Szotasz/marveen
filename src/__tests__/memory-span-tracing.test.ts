@@ -149,4 +149,21 @@ describe('getMemoryVersions', () => {
     const versions = getMemoryVersions(id)
     expect(versions).toHaveLength(0)
   })
+
+  it('modifiedBy sets changed_by but does NOT overwrite memory agent_id (ownership safety)', () => {
+    // Shared memory owned by agent-x; agent-y edits it with modifiedBy
+    const id = insertMem('shared content', 'shared', 'agent-x')
+    updateMemory(id, 'updated by agent-y', 'shared', undefined, undefined, 'agent-y')
+
+    // Ownership must remain agent-x
+    const row = getDb()
+      .prepare('SELECT agent_id FROM memories WHERE id = ?')
+      .get(id) as { agent_id: string }
+    expect(row.agent_id).toBe('agent-x')
+
+    // Version record must attribute the change to agent-y
+    const versions = getMemoryVersions(id)
+    expect(versions).toHaveLength(1)
+    expect(versions[0].changed_by).toBe('agent-y')
+  })
 })
