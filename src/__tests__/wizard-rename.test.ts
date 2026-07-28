@@ -61,23 +61,37 @@ describe('currentBotName / currentBrandName (fresh per-call reads)', () => {
 })
 
 describe('identitySavePlan (identity-save decision core)', () => {
-  it('first-run save with the fleet up restarts the channels session (the VPS wizard path)', async () => {
+  it('mid-setup rename with the fleet up restarts the channels session (the VPS wizard path)', async () => {
     const { identitySavePlan } = await import('../web/routes/onboarding.js')
-    expect(identitySavePlan(true, true)).toEqual({ restart: true, restartNeeded: false })
+    expect(identitySavePlan(true, true, true)).toEqual({ restart: true, restartNeeded: false })
   })
 
-  it('first-run save with no fleet does not restart anything (pre-install flow: launch picks the name up)', async () => {
+  it('mid-setup rename with no fleet does not restart anything (pre-install flow: launch picks the name up)', async () => {
     const { identitySavePlan } = await import('../web/routes/onboarding.js')
-    expect(identitySavePlan(false, true)).toEqual({ restart: false, restartNeeded: false })
+    expect(identitySavePlan(false, true, true)).toEqual({ restart: false, restartNeeded: false })
   })
 
-  it('re-save on a configured running install never implicitly bounces a working fleet', async () => {
+  // The #758 review case: a pre-wizard-era install has no IDENTITY_CONFIRMED
+  // flag, yet its running session is a long-lived working agent, not setup
+  // state. freshSetup comes from the auth/channel/pairing probes (all true on
+  // such an install => freshSetup=false), so a rename must NOT bounce it --
+  // it reports restartNeeded and the wizard copy says so.
+  it('rename on a configured (incl. pre-wizard legacy) running install never implicitly bounces a working fleet', async () => {
     const { identitySavePlan } = await import('../web/routes/onboarding.js')
-    expect(identitySavePlan(true, false)).toEqual({ restart: false, restartNeeded: true })
+    expect(identitySavePlan(true, false, true)).toEqual({ restart: false, restartNeeded: true })
   })
 
-  it('re-save on a configured stopped install needs no restart flag either', async () => {
+  it('rename on a configured stopped install needs no restart flag either', async () => {
     const { identitySavePlan } = await import('../web/routes/onboarding.js')
-    expect(identitySavePlan(false, false)).toEqual({ restart: false, restartNeeded: false })
+    expect(identitySavePlan(false, false, true)).toEqual({ restart: false, restartNeeded: false })
+  })
+
+  it('a no-op save (name unchanged) never restarts and never demands one, in any state', async () => {
+    const { identitySavePlan } = await import('../web/routes/onboarding.js')
+    for (const servicesUp of [true, false]) {
+      for (const freshSetup of [true, false]) {
+        expect(identitySavePlan(servicesUp, freshSetup, false)).toEqual({ restart: false, restartNeeded: false })
+      }
+    }
   })
 })

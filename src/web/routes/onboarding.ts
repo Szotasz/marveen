@@ -137,12 +137,24 @@ function identityConfirmed(): boolean {
 // Pure decision core of the identity save. BOT_NAME is always written (it is
 // display-only -- measured 2026-07-28, WIZNAME1: every tmux/unit/DB key
 // resolves from MAIN_AGENT_ID/SERVICE_ID, never from BOT_NAME). The channels
-// session is bounced only on a first-run save with the fleet already up (the
-// installer-started path, where the session is fresh setup state); a re-save
-// on a configured install never implicitly restarts a working fleet and
-// reports restartNeeded instead.
-export function identitySavePlan(servicesUp: boolean, firstRun: boolean): { restart: boolean; restartNeeded: boolean } {
-  return { restart: servicesUp && firstRun, restartNeeded: servicesUp && !firstRun }
+// session is bounced only when ALL THREE hold: the fleet is up, the install is
+// genuinely mid-first-run-setup (freshSetup: auth/channel/pairing not yet all
+// in place -- the same probes the wizard itself gates on), and the display
+// name actually changed. freshSetup deliberately does NOT mean "the
+// IDENTITY_CONFIRMED flag is absent": a pre-wizard-era install lacks the flag
+// too, and its running session is a long-lived working agent, not setup state
+// -- bouncing it would cost real context (#758 review). Such installs, and any
+// configured install, get restartNeeded instead; a no-op save (name unchanged)
+// never triggers either.
+export function identitySavePlan(
+  servicesUp: boolean,
+  freshSetup: boolean,
+  nameChanged: boolean,
+): { restart: boolean; restartNeeded: boolean } {
+  return {
+    restart: servicesUp && freshSetup && nameChanged,
+    restartNeeded: servicesUp && !freshSetup && nameChanged,
+  }
 }
 
 export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
@@ -196,9 +208,13 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     }
 
     const servicesUp = agentsRunning()
-    const firstRun = !identityConfirmed()
+    // Genuine first-run-setup signal: the same probes the wizard gates on.
+    // NOT the IDENTITY_CONFIRMED flag -- a pre-wizard-era install lacks that
+    // flag while its running session is a live working agent (#758 review).
+    const freshSetup = !claudeAuthPresent() || !channelConfigured() || !paired()
     const prevAgentName = readEnvValue('BOT_NAME') || 'Marveen'
     const prevOwnerName = readEnvValue('OWNER_NAME') || ''
+    const nameChanged = agentName !== prevAgentName
     try {
       setEnvKey('OWNER_NAME', ownerName)
       setEnvKey('BRAND_NAME', agentName)
@@ -222,13 +238,14 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     }
 
     // A running session never re-reads .env or its spawn-time persona, so a
-    // first-run save with the fleet already up (the installer-started VPS
+    // mid-setup save with the fleet already up (the installer-started VPS
     // path) bounces the channels session to pick the name up -- setup state
-    // only, nothing to lose. Outside first-run we never implicitly restart a
-    // working fleet; the wizard copy surfaces restartNeeded instead.
+    // only, nothing to lose. On a configured (or pre-wizard legacy) install we
+    // never implicitly restart a working fleet; the wizard copy surfaces
+    // restartNeeded instead, and a no-op save restarts nothing.
     let restarted = false
     let restartError: string | null = null
-    const plan = identitySavePlan(servicesUp, firstRun)
+    const plan = identitySavePlan(servicesUp, freshSetup, nameChanged)
     const restartNeeded = plan.restartNeeded
     if (plan.restart) {
       const r = hardRestartMarveenChannels()
@@ -237,7 +254,7 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       if (r.ok) logger.info('onboarding: channels restarted so the new identity is picked up')
       else logger.error({ error: restartError }, 'onboarding: channels restart after identity save FAILED')
     }
-    logger.info({ servicesUp, firstRun, restarted, botNameUpdated: true }, 'onboarding: identity configured')
+    logger.info({ servicesUp, freshSetup, nameChanged, restarted, botNameUpdated: true }, 'onboarding: identity configured')
     json(res, {
       ok: true,
       botNameUpdated: true,
