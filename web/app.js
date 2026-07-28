@@ -110,6 +110,38 @@ function mainAgentId() {
     try { sessionToken = localStorage.getItem(TOKEN_KEY) || '' } catch { /* storage blocked */ }
   }
 
+  // Card #95: visible API/page diagnostics. Empty sections used to be the ONLY
+  // symptom of a failing request (hidden voice controls, blank profile select),
+  // which made client-side failures undebuggable from screenshots. Every failed
+  // same-origin API response, thrown fetch, and uncaught page error now lands
+  // in a fixed banner the user can read and screenshot.
+  const mvProblems = []
+  function mvReportProblem(detail) {
+    if (mvProblems.includes(detail)) return
+    mvProblems.push(detail)
+    let bar = document.getElementById('mv-diag-banner')
+    if (!bar) {
+      bar = document.createElement('div')
+      bar.id = 'mv-diag-banner'
+      bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#7a1f1f;color:#fff;' +
+        'font:13px/1.5 monospace;padding:8px 12px;max-height:40vh;overflow:auto;white-space:pre-wrap'
+      const attach = () => document.body ? document.body.appendChild(bar) : setTimeout(attach, 50)
+      attach()
+    }
+    let tokenState = 'nincs'
+    try { if (localStorage.getItem(TOKEN_KEY)) tokenState = 'localStorage' } catch { tokenState = 'storage blokkolva' }
+    if (sessionToken) tokenState = tokenState === 'nincs' ? 'memoria' : tokenState + '+memoria'
+    bar.textContent = 'MARVEEN DIAGNOSZTIKA (kuldd el kepernyokepen)\n' +
+      'token: ' + tokenState + '\n' + mvProblems.map(p => '- ' + p).join('\n')
+  }
+  window.addEventListener('error', (e) => {
+    mvReportProblem('PAGE ERROR: ' + (e.message || 'ismeretlen') + ' @ ' + (e.filename || '?') + ':' + (e.lineno || '?'))
+  })
+  window.addEventListener('unhandledrejection', (e) => {
+    const r = e.reason
+    mvReportProblem('UNHANDLED PROMISE: ' + (r && r.message ? r.message : String(r)))
+  })
+
   const originalFetch = window.fetch.bind(window)
   window.fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input))
@@ -128,7 +160,16 @@ function mainAgentId() {
         init.headers = headers
       }
     }
-    const res = await originalFetch(input, init)
+    let res
+    try {
+      res = await originalFetch(input, init)
+    } catch (err) {
+      if (isSameOriginApi) mvReportProblem('FETCH FAILED: ' + url + ' -- ' + (err && err.message ? err.message : String(err)))
+      throw err
+    }
+    if (isSameOriginApi && !res.ok && res.status !== 304) {
+      mvReportProblem('HTTP ' + res.status + ': ' + url)
+    }
     if (res.status === 401 && isSameOriginApi) {
       // Token missing, wrong, or revoked. Wipe and prompt once per page load.
       // Keep a URL-provided session token so a transient 401 does not lock out
