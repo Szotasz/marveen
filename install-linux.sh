@@ -402,16 +402,24 @@ ok "unzip" $(unzip -v | awk 'NR==1 {print $2}')
 if [ ! -f "$INSTALL_DIR/package.json" ]; then
   warn "A telepito a repon kivulrol fut (nincs package.json itt: $INSTALL_DIR)."
   TARGET_DIR="$HOME/marveen"
+  # A repo default branch-e a develop, de a publikus telepito main-rol fut
+  # (a Windows/WSL wrapper is main-rol fetcheli a scriptet) -> a default main.
+  # A GUI-telepito (provision) MARVEEN_INSTALL_REF-fel adja meg, hogy a
+  # self-reclone UGYANARROL a ref-rol tortenjen, amirol a bootstrap-script jott
+  # -- kulonben egy nem-main ref-rol curl-olt script itt main-t klonozna es a
+  # sajat modjai (pl. headless mode) elveszne az exec-nel.
+  CLONE_REF="${MARVEEN_INSTALL_REF:-main}"
   if [ -f "$TARGET_DIR/package.json" ]; then
     ok "Meglevo checkout: $TARGET_DIR -- frissites..."
-    git -C "$TARGET_DIR" pull --ff-only 2>/dev/null || warn "git pull kihagyva (helyi valtozasok lehetnek)."
+    git -C "$TARGET_DIR" fetch --depth 1 origin "$CLONE_REF" 2>/dev/null \
+      && git -C "$TARGET_DIR" checkout -q FETCH_HEAD 2>/dev/null \
+      || git -C "$TARGET_DIR" pull --ff-only 2>/dev/null \
+      || warn "git frissites kihagyva (helyi valtozasok lehetnek)."
   else
-    echo -e "  Repo klonozasa -> ${TARGET_DIR} ..."
-    # A repo default branch-e a develop, de a publikus telepito main-rol fut
-    # (a Windows/WSL wrapper is main-rol fetcheli a scriptet) -> pineljuk a main-t.
-    git clone --depth 1 --branch main https://github.com/Szotasz/marveen.git "$TARGET_DIR" \
-      || fail "git clone sikertelen: https://github.com/Szotasz/marveen.git (main branch)"
-    ok "Repo klonozva: $TARGET_DIR"
+    echo -e "  Repo klonozasa (${CLONE_REF}) -> ${TARGET_DIR} ..."
+    git clone --depth 1 --branch "$CLONE_REF" https://github.com/Szotasz/marveen.git "$TARGET_DIR" \
+      || fail "git clone sikertelen: https://github.com/Szotasz/marveen.git ($CLONE_REF)"
+    ok "Repo klonozva: $TARGET_DIR ($CLONE_REF)"
   fi
   echo -e "  Telepito ujrainditasa a checkoutbol..."
   exec bash "$TARGET_DIR/install-linux.sh"
