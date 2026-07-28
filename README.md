@@ -35,7 +35,7 @@ A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás
 
 *Állapot: upstream `b56c73d` vs fork `fcd6058`, 2026-07-27*
 
-#Változások, amelyek a forkban megvannak, az upstreamben nincsenek:
+## Változások, amelyek a forkban megvannak, az upstreamben nincsenek:
 
 - **Device-key SSH revocation gap** -- `DELETE /api/auth/device-keys/:id` korábban csak az adatbázis-rekordot és a Bearer-credentialt törölte, az SSH `authorized_keys` bejegyzés érintetlen maradt (a Bridge `bridge-enroll.ts` törlésével eltűnt a `removeBridgeSshAccess` hívás). Javítás: `0003_device_key_install_id` migráció hozzáadja az `install_id` oszlopot a `device_keys` táblához; `remote-enroll-core.ts` megkapja a `removeAuthorizedKey` (pure) függvényt; `remote-enroll-fs.ts` megkapja a `removeEnrolledKey` (lockedread-modify-write) és `removeBridgeSshAccess` függvényeket; `auth-device-keys.ts` tárolja az `installId`-t mintegésnél és `getDeviceKey` hívással visszaadja revocationkor; az auth.ts DELETE handler mindkét oldalt egyszerre vonja vissza (SSH-oldal hiba esetén nem állítja vissza a már törölt DB-rekordot)
 - **Dashboard overview-redesign** -- 5-zónás layout, KPI-konsistencia-fix
@@ -61,4 +61,4 @@ A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás
        git log upstream/develop..origin/develop --oneline   # fork többlet
      Az "Állapot:" sorban frissítsd az SHA-kat és a dátumot. -->
 
-#Minden másban - telepítés, használat - a fork megegyezik az eredetivel.
+## Minden másban - telepítés, használat - a fork megegyezik az eredetivel.
