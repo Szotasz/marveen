@@ -14,7 +14,7 @@ import { initSchedules, loadSchedules, loadScheduleAgents, openEditSchedule, get
 import { initMemories, loadMemAgents, loadMemStats, loadMemories } from './modules/memories.js'
 import { initConnectors, loadConnectors, loadVaultPage } from './modules/connectors.js'
 import { initSkills, loadSkills, loadGlobalSkills, clearSkillModalScope } from './modules/skills.js'
-import { loadMessagesPage, getChatSelectedAgent, setChatSelectedAgent } from './modules/messages.js'
+import { loadMessagesPage, getChatSelectedAgent, setChatSelectedAgent, renderTeamEditor } from './modules/messages.js'
 import { initSettings, loadSettings, isSettingsDirty } from './modules/settings.js'
 import { initTokenUsage, loadTokenUsage } from './modules/token-usage.js'
 import { startActivityPoll, stopActivityPoll, loadActivity, loadOverview, initActivity } from './modules/overview.js'
@@ -391,7 +391,7 @@ initKanban({ openModal, closeModal, wireColumn: wireKanbanColumnDnD, wireCardTou
 initAgents({
   openModal, closeModal, loadSkills,
   openTerminalModal, openConversationModal,
-  setChatSelectedAgent, showSudoModal,
+  setChatSelectedAgent, showSudoModal, renderTeamEditor,
 })
 
 // Wire modal helpers into the schedules module.

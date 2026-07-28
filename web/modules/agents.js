@@ -37,11 +37,12 @@ let _openTerminalModal = null
 let _openConversationModal = null
 let _setChatSelectedAgent = null
 let _showSudoModal = null
+let _renderTeamEditor = null
 
 export function initAgents({
   openModal, closeModal, loadSkills,
   openTerminalModal, openConversationModal, setChatSelectedAgent,
-  showSudoModal,
+  showSudoModal, renderTeamEditor,
 } = {}) {
   _openModal = openModal
   _closeModal = closeModal
@@ -50,6 +51,7 @@ export function initAgents({
   _openConversationModal = openConversationModal
   _setChatSelectedAgent = setChatSelectedAgent
   _showSudoModal = showSudoModal
+  _renderTeamEditor = renderTeamEditor
 }
 
 // ─── Federated peer status ────────────────────────────────────────────────────
@@ -938,7 +940,7 @@ async function openAgentDetail(agentName) {
     document.getElementById('editAgentPlanDesc'),
     currentAgent.claudePlan || '',
   )
-  renderTeamEditor(currentAgent, agents)
+  _renderTeamEditor?.(currentAgent, agents)
   updateAuthModeUI(currentAgent.authMode || 'shared', currentAgent.hasApiKey || false)
   const memIsoToggle = document.getElementById('memoryIsolationToggle')
   if (memIsoToggle) memIsoToggle.checked = currentAgent.memoryIsolation === true
