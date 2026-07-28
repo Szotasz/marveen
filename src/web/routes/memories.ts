@@ -102,12 +102,17 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     // e.g. the dashboard browsing all memories) is NOT a recall and must not
     // refresh accessed_at -- otherwise every poll would keep everything "fresh"
     // and defeat staleness detection.
-    if (q && results.length) {
-      const ids = results.map(m => m.id)
-      touchMemoriesAccessed(ids)
-      // Record span reads for search recall so stale-read detection works.
-      if (agentId) recordMemoryReadBatch(agentId, ids, 'search')
-    }
+    // A search query (q) is a genuine recall: stamp the surfaced memories as
+    // just-accessed so accessed_at reflects real usage. Plain listing (no q,
+    // e.g. the dashboard browsing all memories) is NOT a recall and must not
+    // refresh accessed_at -- otherwise every poll would keep everything "fresh"
+    // and defeat staleness detection.
+    //
+    // Span reads are NOT auto-recorded here: fuzzy search results are noisy
+    // (many matches, not all actually consumed). Callers that genuinely process
+    // a memory -- heartbeats, direct fetches -- call POST /api/memories/read-event
+    // explicitly with the ids they actually used.
+    if (q && results.length) touchMemoriesAccessed(results.map(m => m.id))
 
     const formatted = results.map(m => ({
       ...m,
@@ -237,16 +242,37 @@ Respond ONLY with JSON, nothing else:
   }
 
   // POST /api/memories/read-event -- explicit read-trace (heartbeat / direct)
+  // Accepts single: {agent_id, memory_id, context}
+  // Or batch:       {reads: [{agent_id, memory_id, context}]}
   if (path === '/api/memories/read-event' && method === 'POST') {
     const body = await readBody(req)
-    const { agent_id, memory_id, context } = JSON.parse(body.toString()) as {
-      agent_id: string; memory_id: number; context?: string
+    const parsed = JSON.parse(body.toString()) as {
+      agent_id?: string; memory_id?: number; context?: string
+      reads?: { agent_id: string; memory_id: number; context?: string }[]
     }
+    const toCtx = (c?: string): 'heartbeat' | 'search' | 'direct' =>
+      (['heartbeat', 'search', 'direct'].includes(c ?? '')) ? c as 'heartbeat' | 'search' | 'direct' : 'direct'
+
+    if (parsed.reads) {
+      // Batch mode
+      const batchByAgent = new Map<string, { ids: number[]; ctx: 'heartbeat' | 'search' | 'direct' }>()
+      for (const r of parsed.reads) {
+        if (!r.agent_id || !r.memory_id) continue
+        const key = `${r.agent_id}::${toCtx(r.context)}`
+        if (!batchByAgent.has(key)) batchByAgent.set(key, { ids: [], ctx: toCtx(r.context) })
+        batchByAgent.get(key)!.ids.push(r.memory_id)
+      }
+      for (const [key, { ids, ctx }] of batchByAgent) {
+        const agentId = key.split('::')[0]
+        recordMemoryReadBatch(agentId, ids, ctx)
+      }
+      json(res, { ok: true, recorded: parsed.reads.length })
+      return true
+    }
+
+    const { agent_id, memory_id, context } = parsed
     if (!agent_id || !memory_id) { json(res, { error: 'agent_id and memory_id required' }, 400); return true }
-    const ctx = (['heartbeat', 'search', 'direct'].includes(context ?? ''))
-      ? context as 'heartbeat' | 'search' | 'direct'
-      : 'direct'
-    recordMemoryRead(agent_id, memory_id, ctx)
+    recordMemoryRead(agent_id, memory_id, toCtx(context))
     json(res, { ok: true })
     return true
   }

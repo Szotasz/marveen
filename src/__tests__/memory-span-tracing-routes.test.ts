@@ -64,7 +64,7 @@ beforeEach(() => { vi.clearAllMocks() })
 // ── POST /api/memories/read-event ──────────────────────────────────────────
 
 describe('POST /api/memories/read-event', () => {
-  it('records a read event and returns ok', async () => {
+  it('records a single read event and returns ok', async () => {
     const { ctx, out } = makeCtx('POST', '/api/memories/read-event', {
       agent_id: 'agent-a', memory_id: 7, context: 'heartbeat',
     })
@@ -84,18 +84,34 @@ describe('POST /api/memories/read-event', () => {
     expect(mocks.recordMemoryRead).toHaveBeenCalledWith('agent-a', 8, 'direct')
   })
 
-  it('returns 400 when agent_id missing', async () => {
+  it('returns 400 when agent_id missing (single mode)', async () => {
     const { ctx, out } = makeCtx('POST', '/api/memories/read-event', { memory_id: 9 })
     const handled = await tryHandleMemories(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(400)
   })
 
-  it('returns 400 when memory_id missing', async () => {
+  it('returns 400 when memory_id missing (single mode)', async () => {
     const { ctx, out } = makeCtx('POST', '/api/memories/read-event', { agent_id: 'agent-a' })
     const handled = await tryHandleMemories(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(400)
+  })
+
+  it('batch mode: records multiple reads and returns count', async () => {
+    const { ctx, out } = makeCtx('POST', '/api/memories/read-event', {
+      reads: [
+        { agent_id: 'agent-a', memory_id: 1, context: 'heartbeat' },
+        { agent_id: 'agent-a', memory_id: 2, context: 'heartbeat' },
+        { agent_id: 'agent-b', memory_id: 3, context: 'direct' },
+      ],
+    })
+    const handled = await tryHandleMemories(ctx)
+    expect(handled).toBe(true)
+    expect(out.status).toBe(200)
+    expect((out.body as any).ok).toBe(true)
+    expect((out.body as any).recorded).toBe(3)
+    expect(mocks.recordMemoryReadBatch).toHaveBeenCalled()
   })
 })
 
