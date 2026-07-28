@@ -9683,16 +9683,16 @@ async function loadSystemCron() {
       const tr = document.createElement('tr')
       const nextRun = e.nextRun
         ? new Date(e.nextRun * 1000).toLocaleString('hu-HU', { timeZone: 'Europe/Budapest' })
-        : '—'
+        : '-'
       const cmd = e.command || e.raw || ''
       const redirect = e.redirect
         ? `<span class="syscron-redirect" title="${escapeHtml(e.redirect)}">${escapeHtml(e.redirect)}</span>`
         : ''
       tr.innerHTML = `
-        <td class="ssh-table-mono">${escapeHtml(e.schedule || '—')}</td>
+        <td class="ssh-table-mono">${escapeHtml(e.schedule || '-')}</td>
         <td>${escapeHtml(nextRun)}</td>
         <td class="ssh-table-mono syscron-cmd">${escapeHtml(cmd)}${redirect}</td>
-        <td>${e.comment ? escapeHtml(e.comment) : '—'}</td>
+        <td>${e.comment ? escapeHtml(e.comment) : '-'}</td>
       `
       body.appendChild(tr)
     }
