@@ -2682,6 +2682,20 @@ async function openMarveenDetail() {
   // Populate the model dropdown groups (auto/manual) AND surface the OpenRouter
   // curation button -- this is the main agent, the only place curation lives.
   loadAvailableModels()
+  // Card #95 root cause: this dedicated opener (Csapat card path) never
+  // populated the shared settings-tab fields, so the main agent's modal showed
+  // an empty security profile, empty plan select and no voice radios -- while
+  // openAgentDetail (agents-grid path) filled them. Populate the same fields
+  // here; the plan group is hidden for the main agent (its Claude login is
+  // managed via channels.sh, same rule as openAgentDetail's role==='main').
+  populateProfileSelect(
+    document.getElementById('editAgentProfile'),
+    document.getElementById('editAgentProfileDesc'),
+    m.securityProfile || 'default',
+  )
+  const marveenPlanGroup = document.getElementById('claudePlanGroup')
+  if (marveenPlanGroup) marveenPlanGroup.hidden = true
+  loadVoiceConfig(mainAgentId())
   // Surface the "channels restart" button -- destructive, but mobile-safe
   // when the Telegram plugin wedges and you're away from a terminal.
   document.getElementById('marveenRestartBtn').hidden = false
