@@ -15,9 +15,11 @@ import {
   readAgentClaudePlan,
   readAgentMemoryIsolation,
   readAgentRemoteConfig,
+  readAgentMcpScopeRaw,
   listAgentNames,
   type AuthMode,
 } from '../agent-config.js'
+import { parseMcpScope, type McpScope } from '../mcp-tool-registry.js'
 import { resolveAgentConfigDir } from '../claude-plans.js'
 import { readAgentTeam, type TeamConfig } from '../agent-team.js'
 import {
@@ -180,6 +182,7 @@ export interface AgentDetail extends AgentSummary {
   claudeMd: string
   soulMd: string
   mcpJson: string
+  mcpScope: McpScope
   skills: { name: string; hasSkillMd: boolean }[]
   hasAvatar: boolean
   hasApiKey: boolean
@@ -268,6 +271,7 @@ export function getAgentDetail(name: string): AgentDetail {
     claudeMd,
     soulMd,
     mcpJson,
+    mcpScope: parseMcpScope(readAgentMcpScopeRaw(name)),
     skills,
     hasAvatar: findAvatarForAgent(name) !== null,
     hasApiKey: getSecret(`agent-${name}-api-key`) !== null,
