@@ -81,7 +81,7 @@ interface ParsedCall {
   cacheCreationTokens: number
   /** Tokens in thinking content blocks (estimated from char length / 4). */
   thinkingTokens: number
-  /** Model identifier from the API response, e.g. "claude-sonnet-4-6". */
+  /** Model identifier from the API response, e.g. "claude-sonnet-5". */
   model: string | null
   contentPreview: string
   toolName: string | null

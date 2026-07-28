@@ -13594,6 +13594,7 @@ let tuChartState = null
 // Model pricing in USD per million tokens (input / output / cache-write / cache-read).
 // Fallback row is used when model is unknown or not yet captured.
 const TU_MODEL_PRICING = {
+  'claude-sonnet-4-6':   { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
   'claude-sonnet-4-5':   { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
   'claude-sonnet-5':     { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
   'claude-opus-4':       { in: 15.0,  out: 75.0,  cw: 18.75, cr: 1.50 },

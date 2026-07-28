@@ -68,6 +68,7 @@ const MODEL_COST_PER_M: Record<string, number> = {
   'claude-opus-5': 15,
   'claude-fable-5': 15,
   'claude-sonnet-5': 3,
+  'claude-sonnet-4-6': 3,
   'claude-haiku-4-5': 0.80,
 }
 
