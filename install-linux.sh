@@ -131,6 +131,13 @@ on_exit_emit_result() {
   local __code=$?
   if [ "$__code" -ne 0 ]; then
     emit_result false "installer exited with code ${__code} at step ${INSTALL_STEP}"
+  else
+    # Code 0 but no result yet = an early exit that never reached the normal
+    # completion (e.g. --help, or an aborted MCP prompt that exits 0). The
+    # normal success path emits `true` before returning, so the once-only guard
+    # makes this a no-op there; here it guarantees the machine consumer still
+    # gets exactly one closing MARVEEN_RESULT on every exit path.
+    emit_result false "installer exited early without completing (step ${INSTALL_STEP})"
   fi
 }
 trap on_exit_emit_result EXIT
@@ -422,7 +429,11 @@ if [ ! -f "$INSTALL_DIR/package.json" ]; then
     ok "Repo klonozva: $TARGET_DIR ($CLONE_REF)"
   fi
   echo -e "  Telepito ujrainditasa a checkoutbol..."
-  exec bash "$TARGET_DIR/install-linux.sh"
+  # Forward argv so a direct CLI run keeps its flags across the reclone. The
+  # headless/provision path passes WEB_PORT (and the other knobs) as ENV, which
+  # survives exec regardless -- this is belt-and-suspenders for interactive
+  # `--port` callers.
+  exec bash "$TARGET_DIR/install-linux.sh" "$@"
 fi
 
 set_step "claude-bun-install"
@@ -1758,8 +1769,13 @@ if [ -n "${MARVEEN_ENROLL_PUBKEY:-}" ]; then
     emit_progress "enroll" fail "remote-enroll produced no bundle"
     # The install itself completed, but the caller asked for an enroll bundle
     # and did not get one -- report failure so the Bridge can offer a retry
-    # instead of silently proceeding without a way to connect.
+    # instead of silently proceeding without a way to connect. EXIT here so the
+    # run does not fall through to the success banner and a trailing
+    # `emit_progress "$INSTALL_STEP" ok` that would repaint the failed enroll
+    # step green (the MARVEEN_RESULT is already false and the once-only guard
+    # keeps it authoritative).
     emit_result false "remote-enroll failed: MARVEEN_ENROLL_PUBKEY was set but no connection bundle was produced (see store/enroll.stderr.log on the host)"
+    exit 1
   fi
 fi
 

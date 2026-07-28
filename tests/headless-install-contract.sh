@@ -142,6 +142,32 @@ check "set_step transition protocol (init not closed)" "$expected" "$out"
 stray="$(grep -nE '^\s*read -r?p ' "$INSTALLER" | grep -cv '"\$__prompt"')"
 check "no bare read prompts outside prompt_or_preset" "0" "$stray"
 
+# 16) The EXIT trap closes the protocol on a code-0 early exit (e.g. --help or
+#     an aborted MCP prompt) so the machine consumer always gets exactly one
+#     MARVEEN_RESULT -- not zero.
+out="$(run_case MARVEEN_JSON_PROGRESS=1 -- '
+  trap on_exit_emit_result EXIT
+  INSTALL_STEP="init"
+  exit 0
+')"
+n="$(printf '%s\n' "$out" | grep -c "^MARVEEN_RESULT ")"
+check "exit-0 early path emits exactly one RESULT" "1" "$n"
+case "$out" in *'"ok":false'*) ok=yes;; *) ok=no;; esac
+check "exit-0 early path reports ok:false (did not complete)" "yes" "$ok"
+
+# 17) The EXIT trap is a no-op once a result was already emitted (the normal
+#     success path emits true before returning) -- exactly one RESULT, ok:true.
+out="$(run_case MARVEEN_JSON_PROGRESS=1 -- '
+  trap on_exit_emit_result EXIT
+  INSTALL_STEP="start"
+  emit_result true
+  exit 0
+')"
+n="$(printf '%s\n' "$out" | grep -c "^MARVEEN_RESULT ")"
+check "trap no-op after a prior result (single RESULT)" "1" "$n"
+case "$out" in *'"ok":true'*) ok=yes;; *) ok=no;; esac
+check "prior result wins (ok:true preserved)" "yes" "$ok"
+
 echo ""
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ]
