@@ -982,6 +982,7 @@ window._i18n.hu = {
   'approvals.status.approved':   'Jóváhagyott',
   'approvals.status.rejected':   'Elutasított',
   'approvals.status.timeout':    'Lejárt',
+  'approvals.status.decided':    'Eldöntve',
   'approvals.empty':             'Nincs találat.',
   'approvals.loading':           'Betöltés...',
   'approvals.error':             'Nem sikerült betölteni a jóváhagyásokat.',
