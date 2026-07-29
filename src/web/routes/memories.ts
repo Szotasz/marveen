@@ -3,6 +3,7 @@ import {
   hybridSearch, backfillEmbeddings, clearMemoryCache,
   searchMemories, getMemoriesForChat, getDb, touchMemoriesAccessed,
   recordMemoryRead, recordMemoryReadBatch, getStaleMemories, getMemoryVersions,
+  autoResortTiers, pruneMemoryVersions,
   type Memory,
 } from '../../db.js'
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from '../../config.js'
@@ -102,11 +103,6 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     // e.g. the dashboard browsing all memories) is NOT a recall and must not
     // refresh accessed_at -- otherwise every poll would keep everything "fresh"
     // and defeat staleness detection.
-    // A search query (q) is a genuine recall: stamp the surfaced memories as
-    // just-accessed so accessed_at reflects real usage. Plain listing (no q,
-    // e.g. the dashboard browsing all memories) is NOT a recall and must not
-    // refresh accessed_at -- otherwise every poll would keep everything "fresh"
-    // and defeat staleness detection.
     //
     // Span reads are NOT auto-recorded here: fuzzy search results are noisy
     // (many matches, not all actually consumed). Callers that genuinely process
@@ -114,9 +110,31 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     // explicitly with the ids they actually used.
     if (q && results.length) touchMemoriesAccessed(results.map(m => m.id))
 
+    // Smart context injection (F2): when searching with a known agent, annotate
+    // results with is_stale and surface updated-but-unread memories first.
+    let staleIdSet = new Set<number>()
+    if (q && agentId && results.length) {
+      const ids = results.map(m => m.id)
+      const db2 = getDb()
+      const staleRows = db2.prepare(`
+        SELECT m.id FROM memories m
+        LEFT JOIN (
+          SELECT memory_id, MAX(read_at) AS last_read
+          FROM span_reads WHERE agent_id = ?
+          GROUP BY memory_id
+        ) sr ON sr.memory_id = m.id
+        WHERE m.id IN (${ids.map(() => '?').join(',')})
+          AND m.updated_at > COALESCE(sr.last_read, 0)
+      `).all(agentId, ...ids) as { id: number }[]
+      staleIdSet = new Set(staleRows.map(r => r.id))
+      // Stale memories float to the top of context -- the agent needs fresh info first.
+      results.sort((a, b) => (staleIdSet.has(b.id) ? 1 : 0) - (staleIdSet.has(a.id) ? 1 : 0))
+    }
+
     const formatted = results.map(m => ({
       ...m,
       embedding: undefined,
+      is_stale: staleIdSet.has(m.id),
       created_label: new Date(m.created_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
       accessed_label: new Date(m.accessed_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
     }))
@@ -238,6 +256,28 @@ Respond ONLY with JSON, nothing else:
 
   if (path === '/api/memories/stats' && method === 'GET') {
     json(res, getMemoryStats())
+    return true
+  }
+
+  // POST /api/memories/resort -- auto tier-resorting job + version prune
+  // Called by the scheduled maintenance job (F2). Idempotent.
+  // Body (all optional): { warm_to_cold_days, multi_agent_days, min_agents }
+  if (path === '/api/memories/resort' && method === 'POST') {
+    try {
+      const body = await readBody(req)
+      const opts = body.length ? JSON.parse(body.toString()) : {}
+      const resort = autoResortTiers({
+        warmToColdDays: opts.warm_to_cold_days,
+        multiAgentDays: opts.multi_agent_days,
+        minAgents: opts.min_agents,
+      })
+      const pruned = pruneMemoryVersions(opts.version_ttl_days)
+      logger.info({ ...resort, prunedVersions: pruned }, 'Memory resort + prune complete')
+      json(res, { ok: true, ...resort, prunedVersions: pruned })
+    } catch (err) {
+      logger.error({ err }, 'Memory resort failed')
+      json(res, { error: 'Resort failed' }, 500)
+    }
     return true
   }
 

@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   getStaleMemories: vi.fn().mockReturnValue([]),
   getMemoryVersions: vi.fn().mockReturnValue([]),
   updateMemory: vi.fn().mockReturnValue(true),
+  autoResortTiers: vi.fn().mockReturnValue({ warmToCold: 2, coldToWarm: 1 }),
+  pruneMemoryVersions: vi.fn().mockReturnValue(5),
   getDb: vi.fn(),
 }))
 
@@ -27,6 +29,8 @@ vi.mock('../db.js', () => ({
   recordMemoryReadBatch: mocks.recordMemoryReadBatch,
   getStaleMemories: mocks.getStaleMemories,
   getMemoryVersions: mocks.getMemoryVersions,
+  autoResortTiers: mocks.autoResortTiers,
+  pruneMemoryVersions: mocks.pruneMemoryVersions,
   getDb: mocks.getDb,
 }))
 
@@ -226,5 +230,45 @@ describe('GET /api/memories/:id', () => {
     expect(out.status).toBe(200)
     expect((out.body as any).versions).toHaveLength(1)
     expect(mocks.recordMemoryRead).toHaveBeenCalledWith('agent-a', 10, 'direct')
+  })
+})
+
+// ── POST /api/memories/resort ─────────────────────────────────────────────
+
+describe('POST /api/memories/resort', () => {
+  it('calls autoResortTiers and pruneMemoryVersions and returns stats', async () => {
+    const { ctx, out } = makeCtx('POST', '/api/memories/resort', {})
+    const handled = await tryHandleMemories(ctx)
+    expect(handled).toBe(true)
+    expect(out.status).toBe(200)
+    expect((out.body as any).ok).toBe(true)
+    expect((out.body as any).warmToCold).toBe(2)
+    expect((out.body as any).coldToWarm).toBe(1)
+    expect((out.body as any).prunedVersions).toBe(5)
+    expect(mocks.autoResortTiers).toHaveBeenCalled()
+    expect(mocks.pruneMemoryVersions).toHaveBeenCalled()
+  })
+
+  it('passes custom thresholds to autoResortTiers', async () => {
+    const { ctx, out } = makeCtx('POST', '/api/memories/resort', {
+      warm_to_cold_days: 14,
+      multi_agent_days: 7,
+      min_agents: 3,
+      version_ttl_days: 90,
+    })
+    await tryHandleMemories(ctx)
+    expect(mocks.autoResortTiers).toHaveBeenCalledWith({
+      warmToColdDays: 14,
+      multiAgentDays: 7,
+      minAgents: 3,
+    })
+    expect(mocks.pruneMemoryVersions).toHaveBeenCalledWith(90)
+  })
+
+  it('accepts empty body (uses defaults)', async () => {
+    const { ctx, out } = makeCtx('POST', '/api/memories/resort')
+    const handled = await tryHandleMemories(ctx)
+    expect(handled).toBe(true)
+    expect(out.status).toBe(200)
   })
 })

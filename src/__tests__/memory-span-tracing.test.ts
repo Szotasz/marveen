@@ -3,6 +3,7 @@ import {
   initDatabase, saveAgentMemory, updateMemory,
   recordMemoryRead, recordMemoryReadBatch,
   getStaleMemories, getMemoryVersions, getDb,
+  autoResortTiers, pruneMemoryVersions,
 } from '../db.js'
 
 beforeAll(() => {
@@ -165,5 +166,69 @@ describe('getMemoryVersions', () => {
     const versions = getMemoryVersions(id)
     expect(versions).toHaveLength(1)
     expect(versions[0].changed_by).toBe('agent-y')
+  })
+})
+
+// ── autoResortTiers ─────────────────────────────────────────────────────────
+
+describe('autoResortTiers', () => {
+  it('moves warm memory to cold when unread for 30+ days', () => {
+    const id = insertMem('idle warm content', 'warm', 'agent-i')
+    // Simulate: no span_reads at all -> memory should be moved to cold
+    const result = autoResortTiers({ warmToColdDays: 30 })
+    expect(result.warmToCold).toBeGreaterThanOrEqual(1)
+    const row = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }
+    expect(row.category).toBe('cold')
+  })
+
+  it('does NOT move warm memory to cold when recently read', () => {
+    const id = insertMem('active warm content', 'warm', 'agent-j')
+    // Record a fresh read
+    recordMemoryRead('agent-j', id, 'direct')
+    const before = (getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }).category
+    autoResortTiers({ warmToColdDays: 30 })
+    const after = (getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }).category
+    expect(before).toBe('warm')
+    expect(after).toBe('warm')
+  })
+
+  it('promotes cold memory to warm when read by 2+ distinct agents', () => {
+    const id = insertMem('resurface cold content', 'cold', 'agent-k')
+    recordMemoryRead('agent-k', id, 'direct')
+    recordMemoryRead('agent-l', id, 'search')
+    const result = autoResortTiers({ multiAgentDays: 30, minAgents: 2 })
+    expect(result.coldToWarm).toBeGreaterThanOrEqual(1)
+    const row = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }
+    expect(row.category).toBe('warm')
+  })
+
+  it('does NOT promote cold memory with only 1 reader', () => {
+    const id = insertMem('single-reader cold', 'cold', 'agent-m')
+    recordMemoryRead('agent-m', id, 'direct')
+    autoResortTiers({ multiAgentDays: 30, minAgents: 2 })
+    const row = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }
+    expect(row.category).toBe('cold')
+  })
+})
+
+// ── pruneMemoryVersions ──────────────────────────────────────────────────────
+
+describe('pruneMemoryVersions', () => {
+  it('deletes versions older than the TTL', () => {
+    const id = insertMem('versioned content', 'warm', 'agent-n')
+    updateMemory(id, 'updated', 'warm', 'agent-n', undefined)
+    // Backdate the version to simulate age
+    getDb().prepare('UPDATE memory_versions SET changed_at = 0 WHERE memory_id = ?').run(id)
+    const pruned = pruneMemoryVersions(180)
+    expect(pruned).toBeGreaterThanOrEqual(1)
+    expect(getMemoryVersions(id)).toHaveLength(0)
+  })
+
+  it('keeps versions within the TTL', () => {
+    const id = insertMem('fresh versioned', 'warm', 'agent-o')
+    updateMemory(id, 'fresh update', 'warm', 'agent-o', undefined)
+    const pruned = pruneMemoryVersions(180)
+    expect(pruned).toBe(0)
+    expect(getMemoryVersions(id)).toHaveLength(1)
   })
 })

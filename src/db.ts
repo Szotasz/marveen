@@ -611,6 +611,54 @@ export function getMemoryVersions(memoryId: number): MemoryVersion[] {
   ).all(memoryId) as MemoryVersion[]
 }
 
+// Auto tier-resorting based on span_reads activity.
+// warm -> cold: no reads by any agent for warmToColdDays (default 30)
+// cold -> warm: read by minAgents+ distinct agents within multiAgentDays (default 30)
+// Returns counts of affected memories per direction.
+export function autoResortTiers(opts: {
+  warmToColdDays?: number
+  multiAgentDays?: number
+  minAgents?: number
+} = {}): { warmToCold: number; coldToWarm: number } {
+  const warmToColdSecs = (opts.warmToColdDays ?? 30) * 86400
+  const multiAgentSecs = (opts.multiAgentDays ?? 30) * 86400
+  const minAgents = opts.minAgents ?? 2
+  const now = Math.floor(Date.now() / 1000)
+
+  const warmToCold = db.prepare(`
+    UPDATE memories
+    SET category = 'cold', updated_at = ?
+    WHERE category = 'warm'
+      AND NOT EXISTS (
+        SELECT 1 FROM span_reads
+        WHERE span_reads.memory_id = memories.id
+          AND span_reads.read_at > ? - ?
+      )
+  `).run(now, now, warmToColdSecs).changes
+
+  const coldToWarm = db.prepare(`
+    UPDATE memories
+    SET category = 'warm', updated_at = ?
+    WHERE category = 'cold'
+      AND (
+        SELECT COUNT(DISTINCT agent_id) FROM span_reads
+        WHERE span_reads.memory_id = memories.id
+          AND span_reads.read_at > ? - ?
+      ) >= ?
+  `).run(now, now, multiAgentSecs, minAgents).changes
+
+  return { warmToCold, coldToWarm }
+}
+
+// Delete memory_versions entries older than ttlDays (default 180).
+// This is the scheduled prune mandated by the retention policy.
+export function pruneMemoryVersions(ttlDays = 180): number {
+  const cutoff = Math.floor(Date.now() / 1000) - ttlDays * 86400
+  return db.prepare(
+    'DELETE FROM memory_versions WHERE changed_at < ?'
+  ).run(cutoff).changes
+}
+
 // --- Daily logs ---
 
 export function appendDailyLog(agentId: string, content: string): void {

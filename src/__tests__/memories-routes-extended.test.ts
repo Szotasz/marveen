@@ -40,6 +40,8 @@ vi.mock('../db.js', () => ({
   recordMemoryReadBatch: vi.fn(),
   getStaleMemories: vi.fn().mockReturnValue([]),
   getMemoryVersions: vi.fn().mockReturnValue([]),
+  autoResortTiers: vi.fn().mockReturnValue({ warmToCold: 0, coldToWarm: 0 }),
+  pruneMemoryVersions: vi.fn().mockReturnValue(0),
 }))
 
 vi.mock('../config.js', () => ({
