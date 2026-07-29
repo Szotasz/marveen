@@ -93,10 +93,15 @@ def main():
         sys.exit(0)
     chat_id = m.group(1)
 
-    # Extract attachment_file_id if present (only set for voice attachments).
-    # Passed to the endpoint so STT runs server-side when a voice file is attached.
+    # Extract attachment_file_id AND attachment_kind. The kind matters: the
+    # Telegram plugin sets attachment_file_id for every attachment type, so the
+    # id alone does not mean "voice message". Without the kind the endpoint
+    # cannot tell a PDF from a voice note, and an agent in `auto` mode answered
+    # a document with a synthesized voice message (2026-07-29).
     m_file = re.search(r'\battachment_file_id="([^"]+)"', prompt)
     file_id = m_file.group(1) if m_file else None
+    m_kind = re.search(r'\battachment_kind="([a-z_]+)"', prompt)
+    kind = m_kind.group(1) if m_kind else None
 
     agent_id = _agent_id(payload.get("cwd"))
     if not agent_id:
@@ -110,6 +115,8 @@ def main():
     url = "http://localhost:%s/api/voice/directive?agent=%s&chat=%s" % (port, agent_id, chat_id)
     if file_id:
         url += "&file=" + urllib.parse.quote(file_id, safe="")
+        if kind:
+            url += "&kind=" + urllib.parse.quote(kind, safe="")
 
     try:
         req = urllib.request.Request(url)
