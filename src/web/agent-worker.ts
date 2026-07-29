@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync, readdirSync
 import { join } from 'node:path'
 import { homedir, userInfo } from 'node:os'
 import { createHash } from 'node:crypto'
-import { resolveFromPath } from '../platform.js'
+import { resolveFromPath, tryResolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT, DEFAULT_AGENT_MODEL } from '../config.js'
 import {
@@ -471,11 +471,20 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
   // Fleet setup-token (when present) via $(cat) at launch so the secret never
   // lands in argv/`ps` -- same pattern as startAgentProcess. Keeps the worker
   // on the stable token instead of the shared rotating credentials file.
+  // Launch claude by RESOLVED absolute path, not by bare name: `bash -lc` gets
+  // the login-shell PATH, which on stock Debian/Ubuntu roots does NOT include
+  // ~/.local/bin (the native installer's default target). The channels session
+  // launcher already compensates; the bare `claude` here made the worker die
+  // within seconds of every boot on such Linux installs (command not found,
+  // measured on vps47 during the WORKERHOME1 cold-start probe: session created,
+  // gone before the first 5s poll). tryResolveFromPath probes the known install
+  // dirs; fall back to the bare name so an exotic layout keeps the old behavior.
+  const claudeLaunchBin = tryResolveFromPath('claude') ?? 'claude'
   const launch =
     (hasFleetOauthToken() ? `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shArg(FLEET_OAUTH_TOKEN_PATH)})"; ` : '') +
     `export CLAUDE_CONFIG_DIR=${shArg(ctx.configDir)}; ` +
     `cd ${shArg(ctx.home)} && ` +
-    `claude --dangerously-skip-permissions --model ${shArg(WORKER_MODEL)}`
+    `${shArg(claudeLaunchBin)} --dangerously-skip-permissions --model ${shArg(WORKER_MODEL)}`
   execFileSync(TMUX, ['new-session', '-d', '-s', ctx.session, '-c', ctx.home, 'bash', '-lc', launch], { timeout: 8000 })
   logger.info({ session: ctx.session, cwd: ctx.home }, 'agent-worker: launched interactive worker session')
   logWorkerClaudeVersion(ctx)

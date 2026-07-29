@@ -131,4 +131,15 @@ describe('workerStartAllowed (WORKERHOME1: WEB_ONLY must suppress every worker s
     expect(gated('ensureWorkerReady')).toBe(true)
     expect(gated('restartWorkerSession')).toBe(true)
   })
+
+  // The worker launch line must invoke claude by RESOLVED path, never by bare
+  // name: `bash -lc` login shells on stock Debian/Ubuntu roots lack
+  // ~/.local/bin (the native installer target), which killed the worker within
+  // seconds of every boot on such installs (vps47 cold-start probe, WORKERHOME1).
+  it('the tmux launch line resolves the claude binary instead of relying on login-shell PATH', () => {
+    const __dirname = dirname(fileURLToPath(import.meta.url))
+    const src = readFileSync(join(__dirname, '../web/agent-worker.ts'), 'utf-8')
+    expect(src).toContain("tryResolveFromPath('claude')")
+    expect(src).not.toMatch(/`claude --dangerously-skip-permissions/)
+  })
 })
