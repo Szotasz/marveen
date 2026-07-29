@@ -416,6 +416,8 @@ window._i18n.en = {
   'memories.log_empty':          'No log entries on this day',
   'memories.modal.title_new':    'New memory',
   'memories.modal.title_edit':   'Edit memory',
+  'memories.modal.tab_edit':     'Edit',
+  'memories.modal.tab_history':  'History',
   'memories.modal.content_label': 'Content *',
   'memories.modal.category_label': 'Category',
   'memories.modal.keywords_label': 'Keywords',
