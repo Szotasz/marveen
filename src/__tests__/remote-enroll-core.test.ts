@@ -9,6 +9,7 @@ import {
   decodeBundle,
   RemoteEnrollError,
   RESTRICT_OPTIONS,
+  restrictOptions,
   parseKeyscanEd25519,
   resolveHostKey,
   HOST_KEY_PUB_CANDIDATES,
@@ -125,6 +126,29 @@ describe('buildRestrictedLine', () => {
     // Sanity: options segment is exactly as specified.
     expect(line.startsWith(RESTRICT_OPTIONS + ' ')).toBe(true)
   })
+
+  // INSTUX1: the permitopen MUST follow the actual dashboard port. Verifying on
+  // the default (3420) proves nothing -- that case worked before the bug too.
+  it('threads a NON-DEFAULT dashboard port into the permitopen, keeping it narrow', () => {
+    const parsed = validatePublicKeyLine(VALID_LINE)
+    const line = buildRestrictedLine(parsed, 3421)
+    expect(line).toBe(
+      `restrict,port-forwarding,permitopen="127.0.0.1:3421",command="/bin/false" ssh-ed25519 ${B64} marveen-remote:${UUID}`,
+    )
+    // Security narrowing preserved: exactly one loopback port, no wildcard/range,
+    // restrict + forced command intact.
+    expect(line).toContain('restrict,')
+    expect(line).toContain('command="/bin/false"')
+    expect(line).not.toContain('permitopen="127.0.0.1:*"')
+    expect((line.match(/permitopen=/g) ?? []).length).toBe(1)
+  })
+
+  it('restrictOptions defaults to REMOTE_PORT and narrows to the given port', () => {
+    expect(restrictOptions()).toBe(RESTRICT_OPTIONS)
+    expect(restrictOptions(3421)).toBe(
+      'restrict,port-forwarding,permitopen="127.0.0.1:3421",command="/bin/false"',
+    )
+  })
 })
 
 describe('mergeAuthorizedKeys', () => {
@@ -229,6 +253,32 @@ describe('bundle', () => {
     const json = Buffer.from(encoded, 'base64').toString('utf8')
     expect(json).not.toContain('hostKey')
     expect(decoded.remotePort).toBe(3420)
+  })
+
+  it('encodes a NON-DEFAULT webPort as the bundle remotePort (tunnel target)', () => {
+    const bundle = buildBundle({
+      displayName: 'my-host',
+      host: '203.0.113.5',
+      sshPort: 22,
+      sshUser: 'operator',
+      hostKey: 'HOSTKEYB64',
+      installId: base.installId,
+      webPort: 3421,
+    })
+    expect(bundle.remotePort).toBe(3421)
+    expect(decodeBundle(encodeBundle(bundle)).remotePort).toBe(3421)
+  })
+
+  it('falls back to REMOTE_PORT when no webPort is given', () => {
+    const bundle = buildBundle({
+      displayName: 'my-host',
+      host: '203.0.113.5',
+      sshPort: 22,
+      sshUser: 'operator',
+      hostKey: 'HOSTKEYB64',
+      installId: base.installId,
+    })
+    expect(bundle.remotePort).toBe(3420)
   })
 
   it('carries dashboardToken as the last field when provided', () => {
