@@ -172,31 +172,56 @@ describe('getMemoryVersions', () => {
 // ── runMemoryMaintenance ─────────────────────────────────────────────────────
 
 describe('runMemoryMaintenance', () => {
-  it('moves warm memory to cold when unread for 30+ days', () => {
-    const id = insertMem('idle warm content', 'warm', 'agent-i')
-    // No span_reads -> qualifies for cold
+  it('does NOT move a fresh warm memory to cold even with no reads (brand-new)', () => {
+    // created_at = now by default; threshold is 30 days -> must stay warm
+    const id = insertMem('brand-new warm content', 'warm', 'agent-i')
+    runMemoryMaintenance({ warmToColdDays: 30 })
+    const row = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }
+    expect(row.category).toBe('warm')
+  })
+
+  it('moves an old unread warm memory to cold (30+ days, no reads)', () => {
+    const id = insertMem('old unread warm', 'warm', 'agent-i')
+    // Backdate creation to 40 days ago so the age guard passes
+    getDb().prepare('UPDATE memories SET created_at = ? WHERE id = ?')
+      .run(Math.floor(Date.now() / 1000) - 40 * 86400, id)
     const result = runMemoryMaintenance({ warmToColdDays: 30 })
     expect(result.warmToCold).toBeGreaterThanOrEqual(1)
     const row = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }
     expect(row.category).toBe('cold')
   })
 
+  it('does NOT move an old warm memory to cold when recently read (within window)', () => {
+    const id = insertMem('old but active warm', 'warm', 'agent-i')
+    getDb().prepare('UPDATE memories SET created_at = ? WHERE id = ?')
+      .run(Math.floor(Date.now() / 1000) - 40 * 86400, id)
+    // Read 5 days ago -- within 30-day window
+    const recentRead = Math.floor(Date.now() / 1000) - 5 * 86400
+    getDb().prepare('INSERT INTO span_reads (agent_id, memory_id, read_at, context) VALUES (?, ?, ?, ?)')
+      .run('agent-i', id, recentRead, 'direct')
+    runMemoryMaintenance({ warmToColdDays: 30 })
+    const row = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }
+    expect(row.category).toBe('warm')
+  })
+
   it('does NOT move hot memory to cold (hot is manually managed)', () => {
     const id = insertMem('idle hot content', 'hot', 'agent-i2')
-    // No span_reads -> would qualify for auto-cold IF hot were in scope, but it isn't.
-    runMemoryMaintenance({ warmToColdDays: 0 }) // 0-day threshold archives everything in scope
+    // Even with 0-day threshold and old creation date, hot is never in scope
+    getDb().prepare('UPDATE memories SET created_at = 0 WHERE id = ?').run(id)
+    runMemoryMaintenance({ warmToColdDays: 0 })
     const row = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }
     expect(row.category).toBe('hot')
   })
 
   it('does NOT move shared memory to cold even if unread', () => {
     const id = insertMem('shared unread', 'shared', 'agent-i3')
-    runMemoryMaintenance({ warmToColdDays: 30 })
+    getDb().prepare('UPDATE memories SET created_at = 0 WHERE id = ?').run(id)
+    runMemoryMaintenance({ warmToColdDays: 0 })
     const row = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }
     expect(row.category).toBe('shared')
   })
 
-  it('does NOT move warm memory to cold when recently read', () => {
+  it('does NOT move warm memory to cold when recently read (fresh memory)', () => {
     const id = insertMem('active warm content', 'warm', 'agent-j')
     recordMemoryRead('agent-j', id, 'direct')
     runMemoryMaintenance({ warmToColdDays: 30 })

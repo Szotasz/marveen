@@ -614,9 +614,12 @@ export function getMemoryVersions(memoryId: number): MemoryVersion[] {
 // Auto tier-resorting based on span_reads activity. All three steps run in
 // a single transaction so a crash leaves the DB in a consistent state.
 //
-// warm -> cold: no reads by any agent for 30 days (hot is manually managed,
-//   shared is never auto-archived -- both implicitly excluded by category='warm').
-// cold -> warm: read by 2+ distinct agents within the last 30 days.
+// warm -> cold: memory is at least warmToColdDays old AND has not been read
+//   in the last warmToColdDays (hot is manually managed; shared is never
+//   auto-archived -- both implicitly excluded by category='warm').
+//   The created_at guard prevents freshly saved memories from being archived
+//   immediately on their first maintenance run just because they have no reads yet.
+// cold -> warm: read by 2+ distinct agents within the last coldToWarmDays.
 // version prune: delete memory_versions older than 180 days.
 //
 // Returns affected row counts for observability.
@@ -634,15 +637,19 @@ export function runMemoryMaintenance(opts: {
 
   return db.transaction(() => {
     // Only warm -> cold: hot is manually managed; shared belongs to all agents.
+    // created_at check: memory must be at least warmToColdSecs old before it
+    // can be auto-archived (a brand-new unread memory is not the same as a stale one).
     const warmToCold = db.prepare(`
       UPDATE memories
       SET category = 'cold', updated_at = ?
       WHERE category = 'warm'
-        AND id NOT IN (
-          SELECT DISTINCT memory_id FROM span_reads
-          WHERE read_at > ? - ?
+        AND created_at < ? - ?
+        AND NOT EXISTS (
+          SELECT 1 FROM span_reads
+          WHERE span_reads.memory_id = memories.id
+            AND span_reads.read_at > ? - ?
         )
-    `).run(now, now, warmToColdSecs).changes
+    `).run(now, now, warmToColdSecs, now, warmToColdSecs).changes
 
     const coldToWarm = db.prepare(`
       UPDATE memories
