@@ -10002,7 +10002,7 @@ memImportSaveBtn.addEventListener('click', async () => {
       const s = data.stats || {}
       memImportResult.hidden = false
       memImportResult.innerHTML = `
-        <div style="color:var(--text-primary);font-weight:600;margin-bottom:8px">${t('memories.import.done_title')}</div>
+        <div style="color:var(--text);font-weight:600;margin-bottom:8px">${t('memories.import.done_title')}</div>
         <div style="font-size:13px;color:var(--text-secondary)">
           ${t('memories.import.done_sub', { n: `<strong>${data.imported}</strong>` })}<br>
           Hot: ${s.hot || 0} | Warm: ${s.warm || 0} | Cold: ${s.cold || 0} | Shared: ${s.shared || 0}
@@ -12602,7 +12602,7 @@ async function loadBgTasks() {
             ${t.status === 'running' ? `<button class="btn btn-sm" onclick="viewBgTask('${esc(t.id)}')" style="font-size:11px;padding:2px 8px;">${t('bgTasks.output_btn')}</button><button class="btn btn-sm" onclick="cancelBgTask('${esc(t.id)}')" style="font-size:11px;padding:2px 8px;color:var(--danger)">${t('bgTasks.stop_btn')}</button>` : ''}
           </div>
         </div>
-        <div style="font-size:13px;color:var(--text-primary);margin-bottom:4px;">${esc(t.prompt)}</div>
+        <div style="font-size:13px;color:var(--text);margin-bottom:4px;">${esc(t.prompt)}</div>
         ${t.finished_label ? `<div style="font-size:12px;color:var(--text-muted);">${t('bgTasks.finished_label')} ${esc(t.finished_label)}</div>` : ''}
         ${output}
       </div>`
@@ -14056,7 +14056,7 @@ function renderTuTimeline(data, filterAgent) {
   ctx.clearRect(0, 0, cssW, cssH)
 
   const textSecondary = getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim() || '#64748b'
-  const textPrimary = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1e293b'
+  const textPrimary = getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#1e293b'
   const borderColor = getComputedStyle(document.documentElement).getPropertyValue('--border').trim() || '#e2e8f0'
 
   if (!data.length) {
@@ -14288,7 +14288,7 @@ function renderTuTimeline(data, filterAgent) {
   if (!tooltip) {
     tooltip = document.createElement('div')
     tooltip.id = 'tuTooltip'
-    tooltip.style.cssText = 'position:absolute;background:var(--bg-elevated,#1e293b);color:var(--text-primary,#f8fafc);padding:8px 12px;border-radius:6px;font-size:12px;pointer-events:none;z-index:100;display:none;box-shadow:0 4px 12px rgba(0,0,0,0.3);max-width:240px;line-height:1.5'
+    tooltip.style.cssText = 'position:absolute;background:var(--bg-card,#1e293b);color:var(--text,#f8fafc);padding:8px 12px;border-radius:6px;font-size:12px;pointer-events:none;z-index:100;display:none;box-shadow:0 4px 12px rgba(0,0,0,0.3);max-width:240px;line-height:1.5'
     canvas.parentElement.appendChild(tooltip)
   }
 
@@ -14447,7 +14447,7 @@ function renderTuDetails(data) {
     const thStyleR = thStyle + ';text-align:right'
     el.innerHTML = `<div style="margin-bottom:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
       <input id="tuSearchInput" type="text" placeholder="${t('tokenUsage.search_placeholder')}"
-        style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);width:260px;font-size:13px">
+        style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text);width:260px;font-size:13px">
       <span id="tuDetailsCount" style="color:var(--text-secondary);font-size:12px"></span>
     </div>
     <div style="overflow-x:auto"><table class="mem-table" style="width:100%;min-width:600px">
@@ -14578,7 +14578,8 @@ function renderTuModelDist(data) {
     ctx.fillStyle = tuGetModelColor(i)
     ctx.fill()
     // Thin separator
-    ctx.strokeStyle = 'var(--bg-primary, #0f172a)'
+    // Canvas cannot resolve CSS var() strings -- read the computed theme color.
+    ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#0f172a'
     ctx.lineWidth = 1.5
     ctx.stroke()
     startAngle = endAngle
@@ -14587,7 +14588,7 @@ function renderTuModelDist(data) {
   // Center hole (donut effect)
   ctx.beginPath()
   ctx.arc(cx, cy, r * 0.5, 0, Math.PI * 2)
-  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--bg-elevated') || '#1e293b'
+  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--bg-card') || '#1e293b'
   ctx.fill()
 
   // Legend + table
