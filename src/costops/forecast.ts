@@ -6,8 +6,8 @@
 // source, and forecast-vs-actual / forecast-error scoring once a month closes.
 // NO db.ts/web.ts edits: `initForecastSchema` is a schema DEFINER only, not
 // mounted anywhere yet -- the seam-refactor's `initCostOpsSchema(db)`
-// aggregator (Mason, accounting-core seam) calls it, per
-// docs/fork-upstream-policy.md §2a's thin-seam rule.
+// aggregator (Mason, accounting-core seam) calls it, keeping this feature's
+// whole schema behind one mount point in db.ts.
 
 import type Database from 'better-sqlite3'
 import type { MonthWindow } from './ledger.js'
@@ -293,9 +293,9 @@ export function forecastSnapshotDedupKey(sourceId: string | null, month: string,
 // ---- schema (DEFINER ONLY -- not mounted; see file header) ---------------------
 
 /**
- * Schema DEFINER only. NOT called from db.ts -- per fork-upstream-policy.md
- * §2a, the ONE seam mount (`initCostOpsSchema(db)` in db.ts calling this
- * among the module's other schema definers) is the seam-refactor's job, done
+ * Schema DEFINER only. NOT called from db.ts: the ONE seam mount
+ * (`initCostOpsSchema(db)` in db.ts calling this among the module's other
+ * schema definers) is the seam-refactor's job, done
  * once alongside the rest of the accounting-core schema so db.ts gains a
  * single line, not another scattered inline CREATE TABLE. Safe to call more
  * than once (`IF NOT EXISTS`).

@@ -743,9 +743,9 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec(`ALTER TABLE store_file_audit ADD COLUMN agent TEXT`) } catch { /* column already exists */ }
 
   // LOCAL-FORK: costops seam (keep on rebase). All CostOps tables/columns/
-  // indexes live in src/costops/schema.ts's initCostOpsSchema(), not here --
-  // see docs/fork-upstream-policy.md §2a. This one call is the entire
-  // upstream-file footprint of the CostOps schema.
+  // indexes live in src/costops/schema.ts's initCostOpsSchema(), not here, so
+  // this file gains one line instead of a table per CostOps release. This one
+  // call is the entire footprint of the CostOps schema in db.ts.
   initCostOpsSchema(db)
 
   // --- Vault SSH Keys (shared pool) ---

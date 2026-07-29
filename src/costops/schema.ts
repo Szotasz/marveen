@@ -1,7 +1,7 @@
 // CostOps schema -- ALL CostOps CREATE TABLE / ALTER TABLE / CREATE INDEX
-// statements live here, not in src/db.ts. This is the "schema" seam
-// (docs/fork-upstream-policy.md §2a): db.ts owns exactly one call,
-// `initCostOpsSchema(db)`, marked `// LOCAL-FORK: costops seam`. Every table
+// statements live here, not in src/db.ts. This is the "schema" seam: db.ts
+// owns exactly one call, `initCostOpsSchema(db)`, marked
+// `// LOCAL-FORK: costops seam`. Every table
 // this feature has ever added (v0.1 through PR-B) is consolidated here,
 // verbatim, so the upstream-owned db.ts stops growing a table per CostOps
 // release. Idempotent by construction (CREATE TABLE IF NOT EXISTS, ALTER
