@@ -129,3 +129,8 @@ transcripts/
 # el). A .example vaz viszont kimegy: abbol kap a vevo sajat kontextus-sablont.
 .agents/*
 !.agents/product-marketing.md.example
+
+# Upload staging area written into the install directory: per-install state,
+# not source. (The UI language marker .lang this commit also added has since
+# landed on develop; kept there, not duplicated here.)
+.uploads/
