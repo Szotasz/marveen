@@ -24,7 +24,7 @@ def main():
     body = a.body if a.body is not None else sys.stdin.read()
 
     msg = EmailMessage()
-    msg["From"] = f"{lib.FROM_NAME} <{lib.EMAIL}>"
+    msg["From"] = f"{lib.FROM_NAME} <{lib.FROM_ADDRESS}>"
     msg["To"] = a.to
     if a.cc:
         msg["Cc"] = a.cc
@@ -45,7 +45,7 @@ def main():
                           context=ssl.create_default_context(), timeout=45) as s:
         s.login(lib.EMAIL, lib.password())
         s.send_message(msg, to_addrs=rcpts)
-    print(f"SENT from {lib.EMAIL} to {a.to}" + (f" cc {a.cc}" if a.cc else ""))
+    print(f"SENT from {lib.FROM_ADDRESS} to {a.to}" + (f" cc {a.cc}" if a.cc else ""))
 
 
 if __name__ == "__main__":
