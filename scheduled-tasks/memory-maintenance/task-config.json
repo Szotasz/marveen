@@ -1,8 +1,0 @@
-{
-  "schedule": "0 3 * * *",
-  "agent": "jarvis",
-  "enabled": false,
-  "type": "task",
-  "skipIfBusy": true,
-  "description": "Napi memória-karbantartás: tier-átsorolás (hot/warm->cold 30 nap, cold->warm 2+ ágens 24h), memory_versions prune (180 nap TTL)"
-}

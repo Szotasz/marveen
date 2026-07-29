@@ -153,14 +153,9 @@ POST /api/memories/resort
 
 ### Ütemezett karbantartó job
 
-A `scheduled-tasks/memory-maintenance/` sablon **alapból kikapcsolt** (`enabled: false`). Ez szándékos opt-in döntés: a tier-átsorolás visszafordítható ugyan, de éles rendszeren csak akkor szabad automatizálni, ha az operátor meggyőződött róla, hogy a threshold-ok (30 nap, 2 ágens) illeszkednek az adott flotta munkastílusához.
+A `memory-maintenance` karbantartó job **alapból kikapcsolt** (`enabled: false`). Ez szándékos opt-in döntés: a tier-átsorolás visszafordítható ugyan, de éles rendszeren csak akkor szabad automatizálni, ha az operátor meggyőződött róla, hogy a threshold-ok (30 nap, 2 ágens) illeszkednek az adott flotta munkastílusához.
 
-Bekapcsolás:
-
-```bash
-cp -r scheduled-tasks/memory-maintenance ~/.claude/scheduled-tasks/
-# Majd a dashboardon vagy API-n: enabled = true
-```
+Bekapcsolás: a job megjelenik a dashboard **Ütemezések** listájában `memory-maintenance` néven, alapból kikapcsolva. Ott kapcsold be a sorához tartozó kapcsolóval — nem kell fájlt másolni vagy configot szerkeszteni.
 
 Alapértelmezetten naponta 03:00-kor fut (`0 3 * * *`), csak akkor jelent Telegramon, ha valamelyik szám > 0.
 

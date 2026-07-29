@@ -1,0 +1,9 @@
+{
+  "schedule": "0 3 * * *",
+  "agent": "{{MAIN_AGENT_ID}}",
+  "enabled": false,
+  "type": "task",
+  "skipIfBusy": true,
+  "createdAt": 0,
+  "description": "Napi memória-karbantartás: tier-átsorolás (warm->cold 30 nap olvasatlan, cold->warm 2+ ágens), memory_versions prune (180 nap TTL)"
+}
