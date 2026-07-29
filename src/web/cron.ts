@@ -105,6 +105,15 @@ export function isValidCronShape(cron: unknown): cron is string {
 // most recent occurrence, so a long outage yields at most one catch-up fire,
 // never a burst.
 export function cronDueBetween(cron: string, fromMs: number, toMs: number, tz: string = CRON_TZ): boolean {
+  return cronPrevOccurrence(cron, fromMs, toMs, tz) != null
+}
+
+// The occurrence time itself, or null when none falls in (fromMs, toMs]. The
+// boolean form above answers "is it due"; the catch-up path additionally needs
+// "HOW LATE is it" -- an occurrence missed 4 minutes ago (a dropped tick) and
+// one missed 9 hours ago (the host was powered off) are the same `true` but
+// call for opposite decisions, see decideCatchUp in schedule-runner.
+export function cronPrevOccurrence(cron: string, fromMs: number, toMs: number, tz: string = CRON_TZ): number | null {
   try {
     // `toMs + 1`: cron-parser's prev() returns the last occurrence STRICTLY
     // before currentDate, so an occurrence landing exactly on the tick boundary
@@ -113,9 +122,10 @@ export function cronDueBetween(cron: string, fromMs: number, toMs: number, tz: s
     // currentDate one ms past toMs makes the window a true half-open (fromMs,
     // toMs], so a boundary occurrence fires exactly once, never twice.
     const expr = CronExpressionParser.parse(cron, { tz, currentDate: new Date(toMs + 1) })
-    return expr.prev().getTime() > fromMs
+    const prev = expr.prev().getTime()
+    return prev > fromMs ? prev : null
   } catch {
-    return false
+    return null
   }
 }
 
