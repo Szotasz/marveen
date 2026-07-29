@@ -227,21 +227,25 @@ def _norm(t):
 
 
 def new_thoughts(agent, st):
-    """Assistant text blocks written since the last poll.
+    """Assistant text blocks written since the last poll, plus whether a real
+    reply went out in that span.
 
     Anything the agent also sent as a real Telegram reply is dropped: the owner
     would otherwise receive the same paragraph twice, once as "thinking" and
-    once as the answer.
+    once as the answer. The reply flag is what lets the caller know the
+    indicator (if still alive) is now stranded above a message that already
+    left, and should be moved to the bottom.
     """
     path = transcript_path(agent)
     if not path:
-        return []
+        return [], False
     key = f"{agent}:offset"
     prev_file = st.get(f"{agent}:file")
     offset = st.get(key, 0) if prev_file == path else 0
     st[f"{agent}:file"] = path
     out = []
     sent = []
+    replied = False
     try:
         size = os.path.getsize(path)
         if size < offset:          # file rotated
@@ -261,6 +265,8 @@ def new_thoughts(agent, st):
                 for c in content:
                     if c.get("type") == "tool_use" and "telegram" in str(c.get("name", "")):
                         sent.append(_norm((c.get("input") or {}).get("text")))
+                        if str(c.get("name", "")).endswith("__reply"):
+                            replied = True
                     elif c.get("type") == "text" and c.get("text"):
                         t = c["text"].strip()
                         if t:
@@ -270,7 +276,7 @@ def new_thoughts(agent, st):
             s_ and (_norm(t) == s_ or _norm(t).startswith(s_[:120])) for s_ in sent)]
     except Exception as e:
         log(f"transcript read failed: {e}")
-    return out
+    return out, replied
 
 
 # --- main loop --------------------------------------------------------------
@@ -320,7 +326,8 @@ def main():
                     st[f"{agent}:gone"] = 0
                     text = f"✻ {line}"
                     if not mid:
-                        r = api(tok, "sendMessage", {"chat_id": cid, "text": text})
+                        r = api(tok, "sendMessage",
+                                {"chat_id": cid, "text": text, "disable_notification": True})
                         if r.get("ok"):
                             st[f"{agent}:mid"] = r["result"]["message_id"]
                             st[f"{agent}:text"] = text
@@ -359,15 +366,27 @@ def main():
                         st[f"{agent}:gone"] = 0
 
                 # --- persistent verbose log ---
+                thoughts, replied = new_thoughts(agent, st)
+                posted = replied
                 if mode == "verbose":
-                    for t in new_thoughts(agent, st):
+                    for t in thoughts:
                         body = t if len(t) <= 600 else t[:600] + "…"
                         api(tok, "sendMessage",
-                            {"chat_id": cid, "text": f"▸ {body}"})
-                else:
-                    # Keep the offset current so switching to verbose later does
-                    # not dump the whole backlog into the chat.
-                    new_thoughts(agent, st)
+                            {"chat_id": cid, "text": f"▸ {body}",
+                             "disable_notification": True})
+                        posted = True
+
+                # A real reply or a verbose thought just landed below the
+                # indicator: delete it here so the next poll recreates it
+                # fresh at the bottom, instead of leaving it stranded above
+                # the message that just went out.
+                if posted:
+                    stale_mid = st.get(f"{agent}:mid")
+                    if stale_mid:
+                        api(tok, "deleteMessage", {"chat_id": cid, "message_id": stale_mid})
+                        st.pop(f"{agent}:mid", None)
+                        st.pop(f"{agent}:text", None)
+                        st[f"{agent}:gone"] = 0
 
             write_json(STATE_PATH, st)
         except Exception as e:
