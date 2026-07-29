@@ -641,6 +641,22 @@ window._i18n.en = {
   'costs.token_usage_note':      'Token usage volume (not priced)',
   'costs.calls':                 'calls',
 
+  // --- Costs: provider sync spine (v0.5) ---
+  'costs.sync_btn':              'Sync providers',
+  'costs.sync_running':          'Sync running...',
+  'costs.sync_ok':               'Sync finished ({count} units).',
+  'costs.sync_failed':           'Sync failed: {error}',
+  'costs.sync_network_error':    'network error',
+  'costs.sync_section_title':    'Provider sync',
+  'costs.sync_section_note':     'Read-only on the provider side; re-importing the same period is idempotent, so nothing is double counted.',
+  'costs.sync_col_status':       'Status',
+  'costs.sync_col_imported':     'Imported items',
+  'costs.sync_col_last_success': 'Last success',
+  'costs.sync_col_last_failure': 'Last failure',
+  'costs.sync_status_ok':        'ok',
+  'costs.sync_status_stale':     'stale',
+  'costs.sync_status_failed':    'failed',
+
   'tokenUsage.col.time':         'Time',
   'tokenUsage.col.agent':        'Agent',
   'tokenUsage.col.content':      'Content',

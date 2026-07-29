@@ -1889,12 +1889,18 @@
             <h1 data-i18n="costs.page_title">Költségek</h1>
             <p class="subtitle" data-i18n="costs.page_subtitle">Havi költség-összefoglaló a helyi konfigurációból</p>
           </div>
-          <button class="btn-secondary btn-compact" id="refreshCostsBtn" data-i18n="common.btn.refresh">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-            </svg>
-            Frissítés
-          </button>
+          <div class="header-actions">
+            <span id="costsSyncStatus" class="subtitle"></span>
+            <button class="btn-secondary btn-compact" id="costsSyncBtn" data-i18n="costs.sync_btn">
+              Provider szinkron
+            </button>
+            <button class="btn-secondary btn-compact" id="refreshCostsBtn" data-i18n="common.btn.refresh">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+              </svg>
+              Frissítés
+            </button>
+          </div>
         </div>
       </div>
 
