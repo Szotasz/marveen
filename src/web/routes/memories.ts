@@ -3,7 +3,7 @@ import {
   hybridSearch, backfillEmbeddings, clearMemoryCache,
   searchMemories, getMemoriesForChat, getDb, touchMemoriesAccessed,
   recordMemoryRead, recordMemoryReadBatch, getStaleMemories, getMemoryVersions,
-  autoResortTiers, pruneMemoryVersions,
+  runMemoryMaintenance,
   type Memory,
 } from '../../db.js'
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from '../../config.js'
@@ -131,10 +131,13 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       results.sort((a, b) => (staleIdSet.has(b.id) ? 1 : 0) - (staleIdSet.has(a.id) ? 1 : 0))
     }
 
+    // is_stale is only included when an agent filter is active (backward-compat:
+    // callers without agent context should not see a misleading false value).
+    const includeStale = staleIdSet.size > 0 || (q !== '' && agentId !== '')
     const formatted = results.map(m => ({
       ...m,
       embedding: undefined,
-      is_stale: staleIdSet.has(m.id),
+      ...(includeStale ? { is_stale: staleIdSet.has(m.id) } : {}),
       created_label: new Date(m.created_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
       accessed_label: new Date(m.accessed_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
     }))
@@ -259,21 +262,21 @@ Respond ONLY with JSON, nothing else:
     return true
   }
 
-  // POST /api/memories/resort -- auto tier-resorting job + version prune
-  // Called by the scheduled maintenance job (F2). Idempotent.
-  // Body (all optional): { warm_to_cold_days, multi_agent_days, min_agents }
+  // POST /api/memories/resort -- scheduled maintenance: tier-resort + version prune.
+  // Called daily by the maintenance scheduled task. Idempotent.
+  // Body (all optional): { warm_to_cold_days, cold_to_warm_hours, min_agents, version_ttl_days }
   if (path === '/api/memories/resort' && method === 'POST') {
     try {
       const body = await readBody(req)
       const opts = body.length ? JSON.parse(body.toString()) : {}
-      const resort = autoResortTiers({
+      const result = runMemoryMaintenance({
         warmToColdDays: opts.warm_to_cold_days,
-        multiAgentDays: opts.multi_agent_days,
+        coldToWarmHours: opts.cold_to_warm_hours,
         minAgents: opts.min_agents,
+        versionTtlDays: opts.version_ttl_days,
       })
-      const pruned = pruneMemoryVersions(opts.version_ttl_days)
-      logger.info({ ...resort, prunedVersions: pruned }, 'Memory resort + prune complete')
-      json(res, { ok: true, ...resort, prunedVersions: pruned })
+      logger.info(result, 'Memory resort + prune complete')
+      json(res, { ok: true, ...result })
     } catch (err) {
       logger.error({ err }, 'Memory resort failed')
       json(res, { error: 'Resort failed' }, 500)

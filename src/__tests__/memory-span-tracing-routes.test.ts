@@ -8,8 +8,7 @@ const mocks = vi.hoisted(() => ({
   getStaleMemories: vi.fn().mockReturnValue([]),
   getMemoryVersions: vi.fn().mockReturnValue([]),
   updateMemory: vi.fn().mockReturnValue(true),
-  autoResortTiers: vi.fn().mockReturnValue({ warmToCold: 2, coldToWarm: 1 }),
-  pruneMemoryVersions: vi.fn().mockReturnValue(5),
+  runMemoryMaintenance: vi.fn().mockReturnValue({ warmToCold: 2, coldToWarm: 1, prunedVersions: 5 }),
   getDb: vi.fn(),
 }))
 
@@ -29,8 +28,7 @@ vi.mock('../db.js', () => ({
   recordMemoryReadBatch: mocks.recordMemoryReadBatch,
   getStaleMemories: mocks.getStaleMemories,
   getMemoryVersions: mocks.getMemoryVersions,
-  autoResortTiers: mocks.autoResortTiers,
-  pruneMemoryVersions: mocks.pruneMemoryVersions,
+  runMemoryMaintenance: mocks.runMemoryMaintenance,
   getDb: mocks.getDb,
 }))
 
@@ -236,7 +234,7 @@ describe('GET /api/memories/:id', () => {
 // ── POST /api/memories/resort ─────────────────────────────────────────────
 
 describe('POST /api/memories/resort', () => {
-  it('calls autoResortTiers and pruneMemoryVersions and returns stats', async () => {
+  it('calls runMemoryMaintenance and returns stats', async () => {
     const { ctx, out } = makeCtx('POST', '/api/memories/resort', {})
     const handled = await tryHandleMemories(ctx)
     expect(handled).toBe(true)
@@ -245,24 +243,23 @@ describe('POST /api/memories/resort', () => {
     expect((out.body as any).warmToCold).toBe(2)
     expect((out.body as any).coldToWarm).toBe(1)
     expect((out.body as any).prunedVersions).toBe(5)
-    expect(mocks.autoResortTiers).toHaveBeenCalled()
-    expect(mocks.pruneMemoryVersions).toHaveBeenCalled()
+    expect(mocks.runMemoryMaintenance).toHaveBeenCalled()
   })
 
-  it('passes custom thresholds to autoResortTiers', async () => {
+  it('passes custom thresholds to runMemoryMaintenance', async () => {
     const { ctx, out } = makeCtx('POST', '/api/memories/resort', {
       warm_to_cold_days: 14,
-      multi_agent_days: 7,
+      cold_to_warm_hours: 48,
       min_agents: 3,
       version_ttl_days: 90,
     })
     await tryHandleMemories(ctx)
-    expect(mocks.autoResortTiers).toHaveBeenCalledWith({
+    expect(mocks.runMemoryMaintenance).toHaveBeenCalledWith({
       warmToColdDays: 14,
-      multiAgentDays: 7,
+      coldToWarmHours: 48,
       minAgents: 3,
+      versionTtlDays: 90,
     })
-    expect(mocks.pruneMemoryVersions).toHaveBeenCalledWith(90)
   })
 
   it('accepts empty body (uses defaults)', async () => {

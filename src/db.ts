@@ -611,47 +611,76 @@ export function getMemoryVersions(memoryId: number): MemoryVersion[] {
   ).all(memoryId) as MemoryVersion[]
 }
 
-// Auto tier-resorting based on span_reads activity.
-// warm -> cold: no reads by any agent for warmToColdDays (default 30)
-// cold -> warm: read by minAgents+ distinct agents within multiAgentDays (default 30)
-// Returns counts of affected memories per direction.
+// Auto tier-resorting based on span_reads activity. All three steps run in
+// a single transaction so a crash leaves the DB in a consistent state.
+//
+// hot/warm -> cold: no reads by any agent for 30 days; shared memories are
+//   intentionally excluded (they belong to all agents, never auto-archived).
+// cold -> warm: read by 2+ distinct agents within the last 24 hours.
+// version prune: delete memory_versions older than 180 days.
+//
+// Returns affected row counts for observability.
+export function runMemoryMaintenance(opts: {
+  warmToColdDays?: number
+  coldToWarmHours?: number
+  minAgents?: number
+  versionTtlDays?: number
+} = {}): { warmToCold: number; coldToWarm: number; prunedVersions: number } {
+  const warmToColdSecs = (opts.warmToColdDays ?? 30) * 86400
+  const coldToWarmSecs = (opts.coldToWarmHours ?? 24) * 3600
+  const minAgents = opts.minAgents ?? 2
+  const versionCutoff = Math.floor(Date.now() / 1000) - (opts.versionTtlDays ?? 180) * 86400
+  const now = Math.floor(Date.now() / 1000)
+
+  return db.transaction(() => {
+    const warmToCold = db.prepare(`
+      UPDATE memories
+      SET category = 'cold', updated_at = ?
+      WHERE category IN ('hot', 'warm')
+        AND category != 'shared'
+        AND id NOT IN (
+          SELECT DISTINCT memory_id FROM span_reads
+          WHERE read_at > ? - ?
+        )
+    `).run(now, now, warmToColdSecs).changes
+
+    const coldToWarm = db.prepare(`
+      UPDATE memories
+      SET category = 'warm', updated_at = ?
+      WHERE category = 'cold'
+        AND id IN (
+          SELECT memory_id FROM span_reads
+          WHERE read_at > ? - ?
+          GROUP BY memory_id
+          HAVING COUNT(DISTINCT agent_id) >= ?
+        )
+    `).run(now, now, coldToWarmSecs, minAgents).changes
+
+    const prunedVersions = db.prepare(
+      'DELETE FROM memory_versions WHERE changed_at < ?'
+    ).run(versionCutoff).changes
+
+    return { warmToCold, coldToWarm, prunedVersions }
+  })()
+}
+
+// Kept for backward-compat with existing tests and the resort route.
+// New callers should prefer runMemoryMaintenance().
 export function autoResortTiers(opts: {
   warmToColdDays?: number
   multiAgentDays?: number
   minAgents?: number
 } = {}): { warmToCold: number; coldToWarm: number } {
-  const warmToColdSecs = (opts.warmToColdDays ?? 30) * 86400
-  const multiAgentSecs = (opts.multiAgentDays ?? 30) * 86400
-  const minAgents = opts.minAgents ?? 2
-  const now = Math.floor(Date.now() / 1000)
-
-  const warmToCold = db.prepare(`
-    UPDATE memories
-    SET category = 'cold', updated_at = ?
-    WHERE category = 'warm'
-      AND NOT EXISTS (
-        SELECT 1 FROM span_reads
-        WHERE span_reads.memory_id = memories.id
-          AND span_reads.read_at > ? - ?
-      )
-  `).run(now, now, warmToColdSecs).changes
-
-  const coldToWarm = db.prepare(`
-    UPDATE memories
-    SET category = 'warm', updated_at = ?
-    WHERE category = 'cold'
-      AND (
-        SELECT COUNT(DISTINCT agent_id) FROM span_reads
-        WHERE span_reads.memory_id = memories.id
-          AND span_reads.read_at > ? - ?
-      ) >= ?
-  `).run(now, now, multiAgentSecs, minAgents).changes
-
-  return { warmToCold, coldToWarm }
+  const r = runMemoryMaintenance({
+    warmToColdDays: opts.warmToColdDays,
+    coldToWarmHours: (opts.multiAgentDays ?? 1) * 24,
+    minAgents: opts.minAgents,
+    versionTtlDays: 99999, // prune handled separately when called via autoResortTiers
+  })
+  return { warmToCold: r.warmToCold, coldToWarm: r.coldToWarm }
 }
 
 // Delete memory_versions entries older than ttlDays (default 180).
-// This is the scheduled prune mandated by the retention policy.
 export function pruneMemoryVersions(ttlDays = 180): number {
   const cutoff = Math.floor(Date.now() / 1000) - ttlDays * 86400
   return db.prepare(
