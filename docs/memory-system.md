@@ -79,7 +79,7 @@ Zero-config: az SQLite automatikusan létrejön, az embedding mentéskor generá
 
 ---
 
-## 📡 Olvasás-tracing és stale-read detekció (#37)
+## 📡 Olvasás-tracing és stale-read detekció
 
 ### Span reads
 
@@ -114,7 +114,7 @@ A dashboardon a memória-kártyákon narancssárga **Stale** badge jelzi az éri
 
 ---
 
-## 🕓 Verzió-előzmények (#37)
+## 🕓 Verzió-előzmények
 
 Minden `updateMemory()` hívásnál, ha a tartalom, kategória vagy kulcsszavak változnak, a rendszer snapshot-ot ment a `memory_versions` táblába. A trigger helyett explicit `SELECT → INSERT → UPDATE` szekvencia fut, hogy a tulajdonos (`agent_id`) ne íródjon felül, ha egy másik ágens szerkeszt.
 
@@ -129,7 +129,7 @@ A dashboardon a szerkesztő-modálban **Előzmények** tab mutatja a változáso
 
 ---
 
-## 🔄 Auto tier-átsorolás (#37)
+## 🔄 Auto tier-átsorolás
 
 A `runMemoryMaintenance()` egy tranzakcióban végzi el a három karbantartási lépést:
 
@@ -166,7 +166,7 @@ Alapértelmezetten naponta 03:00-kor fut (`0 3 * * *`), csak akkor jelent Telegr
 
 ---
 
-## 🗄 Migráció: meglévő emlékek (#37)
+## 🗄 Migráció: meglévő emlékek
 
 A `0004_memory_span_tracing.sql` migration két dolgot tesz a meglévő adatokkal:
 
