@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { buildWorkerPrompt, decidePoll, configDirKeychainService } from '../web/agent-worker.js'
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { buildWorkerPrompt, decidePoll, configDirKeychainService, workerHomeFor, workerStartAllowed } from '../web/agent-worker.js'
 
 // Pure-logic tests for the interactive-tmux worker that backs runAgent on the
 // subscription (jun.15 migration). The live-session orchestration is exercised
@@ -72,5 +75,60 @@ describe('configDirKeychainService', () => {
     const b = configDirKeychainService('/tmp/some-other-config')
     expect(a).not.toBe(b)
     expect(b.startsWith('Claude Code-credentials-')).toBe(true)
+  })
+})
+
+describe('workerHomeFor (WORKERHOME1: worker home derives from MAIN_AGENT_ID)', () => {
+  it('default install keeps the historical paths -- zero migration, unchanged Keychain hash', () => {
+    expect(workerHomeFor('marveen', 'slow').endsWith('/.marveen-worker')).toBe(true)
+    expect(workerHomeFor('marveen', 'fast').endsWith('/.marveen-worker-fast')).toBe(true)
+  })
+
+  it('a non-default id derives its own isolated dirs (sandbox/renamed install)', () => {
+    expect(workerHomeFor('jarvis', 'slow').endsWith('/.jarvis-worker')).toBe(true)
+    expect(workerHomeFor('jarvis', 'fast').endsWith('/.jarvis-worker-fast')).toBe(true)
+  })
+
+  it('never collides with the default install dir for a different id', () => {
+    expect(workerHomeFor('jarvis', 'slow')).not.toBe(workerHomeFor('marveen', 'slow'))
+    expect(workerHomeFor('jarvis', 'fast')).not.toBe(workerHomeFor('marveen', 'fast'))
+  })
+
+  it('slow and fast variants of the same id never share a home', () => {
+    expect(workerHomeFor('marveen', 'slow')).not.toBe(workerHomeFor('marveen', 'fast'))
+  })
+})
+
+describe('workerStartAllowed (WORKERHOME1: WEB_ONLY must suppress every worker start)', () => {
+  it('blocks in WEB_ONLY staging', () => {
+    expect(workerStartAllowed({ WEB_ONLY: 'true' })).toBe(false)
+  })
+
+  it('allows on a normal install (unset or explicit false)', () => {
+    expect(workerStartAllowed({})).toBe(true)
+    expect(workerStartAllowed({ WEB_ONLY: 'false' })).toBe(true)
+    expect(workerStartAllowed({ WEB_ONLY: '' })).toBe(true)
+  })
+
+  // String-contract wiring guard (house idiom: the pure predicate alone cannot
+  // prove the choke points consult it). Every function that creates, kills or
+  // configures a live worker session must check the gate: the lazy-start path
+  // (startWorkerSessionFor covers ensureWorkerCwd + tmux new-session), the
+  // readiness poll (ensureWorkerReady would otherwise spin 90s then page the
+  // LIVE channel via alertWorkerStuck from a staging instance) and the restart
+  // path (kill-session against a live worker). This is exactly how the
+  // 2026-07-28 sandbox boot wrote into the live worker config dir.
+  it('the three session-lifecycle choke points are wired to the gate', () => {
+    const __dirname = dirname(fileURLToPath(import.meta.url))
+    const src = readFileSync(join(__dirname, '../web/agent-worker.ts'), 'utf-8')
+    const gated = (fnName: string) => {
+      const start = src.indexOf(`function ${fnName}(`)
+      expect(start, `${fnName} not found`).toBeGreaterThan(-1)
+      const body = src.slice(start, start + 700)
+      return body.includes('workerStartAllowed()')
+    }
+    expect(gated('startWorkerSessionFor')).toBe(true)
+    expect(gated('ensureWorkerReady')).toBe(true)
+    expect(gated('restartWorkerSession')).toBe(true)
   })
 })
