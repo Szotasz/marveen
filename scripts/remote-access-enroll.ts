@@ -40,6 +40,7 @@ import {
   type ConnectionBundleInput,
 } from '../src/remote-enroll-core.js'
 import { enrollAuthorizedKey } from '../src/remote-enroll-fs.js'
+import { WEB_PORT as ENV_WEB_PORT } from '../src/config.js'
 
 interface Args {
   keyLine?: string
@@ -49,11 +50,13 @@ interface Args {
   includeDashboardToken: boolean
 }
 
-/** Dashboard port default: WEB_PORT from the environment (the install writes it
- * into .env, which the service loads), falling back to REMOTE_PORT. */
+/** Dashboard port default: the install's actual WEB_PORT, read from the same
+ * .env the service loads (config resolves config-overrides.json > .env), so a
+ * manual `remote-enroll` with no --web-port still targets the real port instead
+ * of the 3420 default. Explicit --web-port overrides. Falls back to REMOTE_PORT
+ * only when .env carries no WEB_PORT (config already applies that default). */
 function defaultWebPort(): number {
-  const raw = process.env['WEB_PORT']
-  const n = raw !== undefined ? Number(raw) : NaN
+  const n = ENV_WEB_PORT
   return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : REMOTE_PORT
 }
 
