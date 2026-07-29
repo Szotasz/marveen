@@ -12887,6 +12887,7 @@ function renderBridgeEnrollSection(body) {
     `<div class="auth-form">` +
       `<input id="authBridgeKeyLine" type="text" autocapitalize="off" spellcheck="false" placeholder="${t('auth.bridge.key_placeholder')}">` +
       `<input id="authBridgeName" type="text" autocapitalize="off" spellcheck="false" maxlength="64" placeholder="${t('auth.bridge.name_placeholder')}">` +
+      `<input id="authBridgeHost" type="text" autocapitalize="off" spellcheck="false" maxlength="253" placeholder="${t('auth.bridge.host_placeholder')}">` +
       `<button class="btn-secondary" id="authBridgeEnrollBtn">${t('auth.bridge.enroll')}</button>` +
       `<div class="auth-form-msg" id="authBridgeMsg"></div>` +
       `<div id="authBridgeBundle" hidden></div>` +
@@ -12900,6 +12901,7 @@ async function bridgeEnrollFromUi() {
   const out = document.getElementById('authBridgeBundle')
   const keyLine = (document.getElementById('authBridgeKeyLine').value || '').trim()
   const name = (document.getElementById('authBridgeName').value || '').trim()
+  const hostOverride = (document.getElementById('authBridgeHost').value || '').trim()
   msg.className = 'auth-form-msg'
   msg.textContent = ''
   out.hidden = true
@@ -12910,7 +12912,7 @@ async function bridgeEnrollFromUi() {
   try {
     const r = await fetch('/api/security/bridge-enroll', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key_line: keyLine, name }),
+      body: JSON.stringify(hostOverride ? { key_line: keyLine, name, host: hostOverride } : { key_line: keyLine, name }),
     })
     const data = await r.json().catch(() => ({}))
     if (!r.ok) { msg.classList.add('err'); msg.textContent = data.error || t('auth.card.err_generic'); return }
@@ -12919,6 +12921,7 @@ async function bridgeEnrollFromUi() {
       (data.warnings && data.warnings.length ? ` (${data.warnings.join('; ')})` : '')
     document.getElementById('authBridgeKeyLine').value = ''
     document.getElementById('authBridgeName').value = ''
+    document.getElementById('authBridgeHost').value = ''
     out.hidden = false
     out.innerHTML =
       `<p class="auth-muted">${t('auth.bridge.bundle_hint', { host: escapeHtml(data.host || '') })}</p>` +

@@ -1737,6 +1737,7 @@ window._i18n.hu = {
   'auth.bridge.desc':              'Illeszd be a Bridge alkalmazásban megjelenő kulcs-sort (ssh-ed25519 ... marveen-remote:...), adj nevet az eszköznek, és a kapott csomagot másold vissza a Bridge-be. Az eszköz saját, külön visszavonható kulcsot kap.',
   'auth.bridge.key_placeholder':   'ssh-ed25519 ... marveen-remote:...',
   'auth.bridge.name_placeholder':  'Eszköz neve (pl. Szabi laptopja)',
+  'auth.bridge.host_placeholder':  'Cél-cím (opcionális -- alapértelmezés: Tailscale-cím ha van, különben LAN)',
   'auth.bridge.enroll':            'Párosítás',
   'auth.bridge.confirm':           'Párosítod "{name}" eszközt? SSH-alagút + saját eszközkulcs hozzáférést kap a dashboardhoz.',
   'auth.bridge.working':           'Párosítás folyamatban...',

@@ -115,18 +115,49 @@ export function defaultBridgeEnrollDeps(): BridgeEnrollDeps {
   }
 }
 
-/** Best-effort primary non-loopback IPv4 address of this machine. */
-function primaryIPv4(): string | null {
-  const ifaces = networkInterfaces()
+/** True for the CGNAT range 100.64.0.0/10, which Tailscale uses for tailnet
+ * addresses. Second octet 64..127; 100.63.x and 100.128.x are OUTSIDE. */
+export function isTailnetIPv4(addr: string): boolean {
+  const m = /^100\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(addr)
+  if (!m) return false
+  const second = Number(m[1])
+  return second >= 64 && second <= 127
+}
+
+/** Pick the default enroll host from an interface map. The Bridge exists for
+ * REMOTE access, so a LAN address is a structurally wrong default: the first
+ * non-loopback IPv4 in interface order used to win (BRIDGEHOST1: en0's
+ * 192.168.x beat utun4's tailnet address, and the bundle died the moment the
+ * laptop left the home network). Prefer the first tailnet (CGNAT) address
+ * when one exists; otherwise keep the pre-existing first-IPv4 behavior so
+ * hosts without Tailscale see no change. Pure over the interface map so the
+ * order-sensitive cases are unit-testable. */
+export interface EnrollIfaceInfo {
+  address: string
+  family: string | number
+  internal: boolean
+}
+
+export function selectEnrollHost(
+  ifaces: Record<string, EnrollIfaceInfo[] | undefined>,
+): string | null {
+  let first: string | null = null
   for (const name of Object.keys(ifaces)) {
     for (const info of ifaces[name] ?? []) {
       const family = info.family as string | number
       if ((family === 'IPv4' || family === 4) && !info.internal) {
-        return info.address
+        if (isTailnetIPv4(info.address)) return info.address
+        if (first === null) first = info.address
       }
     }
   }
-  return null
+  return first
+}
+
+/** Best-effort default host of this machine: tailnet-preferred, else the
+ * first non-loopback IPv4. */
+function primaryIPv4(): string | null {
+  return selectEnrollHost(networkInterfaces())
 }
 
 export async function bridgeEnroll(
