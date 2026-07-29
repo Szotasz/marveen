@@ -8,7 +8,8 @@
 // rewrite of the original conversion). NO db.ts/web.ts/schema.ts edits:
 // `initFxSchema` is a schema DEFINER only, not mounted anywhere -- the
 // seam-refactor's `initCostOpsSchema(db)` aggregator (Mason, accounting-core
-// seam, src/costops/schema.ts) calls it, per docs/fork-upstream-policy.md §2a.
+// seam, src/costops/schema.ts) calls it, keeping every CostOps table behind
+// that single mount point.
 
 import type Database from 'better-sqlite3'
 
@@ -208,10 +209,10 @@ export function fxRateDedupKey(currency: string, source: FxSource, effectiveDate
 // ---- schema (DEFINER ONLY -- not mounted; see file header) -----------------------------
 
 /**
- * Schema DEFINER only. NOT called from db.ts or src/costops/schema.ts -- per
- * fork-upstream-policy.md §2a, the ONE seam mount (`initCostOpsSchema(db)` in
- * schema.ts calling this among the module's other schema definers) is the
- * seam-refactor's job. Safe to call more than once (`IF NOT EXISTS` /
+ * Schema DEFINER only. NOT called from db.ts or src/costops/schema.ts: the ONE
+ * seam mount (`initCostOpsSchema(db)` in schema.ts calling this among the
+ * module's other schema definers) is the seam-refactor's job. Safe to call more
+ * than once (`IF NOT EXISTS` /
  * `ADD COLUMN` wrapped in try/catch, matching schema.ts's own convention).
  *
  * Adds two things:
