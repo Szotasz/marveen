@@ -291,7 +291,7 @@ interface SystemInfo {
 interface HeartbeatData {
   timestamp: Date
   calendar: CalendarEvent[]
-  kanban: { urgent: number; in_progress: number; waiting: number; urgentTitles: string[]; waitingTitles: string[] }
+  kanban: { urgent: number; in_progress: number; waiting: number; urgentLabels: string[]; waitingLabels: string[] }
   system: SystemInfo
   tasks: { count: number; nextRun: number | null }
 }
@@ -309,6 +309,18 @@ async function collectCalendar(): Promise<CalendarEvent[]> {
   }
 }
 
+/** Label a card for the heartbeat prompt: `[ID] title`, title truncated.
+ * HBNAME1: the prompt used to carry bare titles, and because our titles
+ * routinely REFERENCE other cards by name, the summarizing model picked an
+ * id-looking token out of the wrong title ("urgent: 2 (INSTWIZ1, ...)" while
+ * the actual urgent card was 8290FF71). The bracketed id is the one
+ * authoritative handle; the truncation keeps cross-references out of view. */
+export function formatHeartbeatCardLabel(card: { id: string; title: string }): string {
+  const max = 80
+  const title = card.title.length > max ? card.title.slice(0, max) + '...' : card.title
+  return `[${card.id}] ${title}`
+}
+
 function collectKanban(): HeartbeatData['kanban'] {
   try {
     const summary = getHeartbeatKanbanSummary()
@@ -316,12 +328,12 @@ function collectKanban(): HeartbeatData['kanban'] {
       urgent: summary.urgent.length,
       in_progress: summary.in_progress.length,
       waiting: summary.waiting.length,
-      urgentTitles: summary.urgent.map((c) => c.title),
-      waitingTitles: summary.waiting.map((c) => c.title),
+      urgentLabels: summary.urgent.map(formatHeartbeatCardLabel),
+      waitingLabels: summary.waiting.map(formatHeartbeatCardLabel),
     }
   } catch (err) {
     logger.error({ err }, 'Heartbeat: kanban fetch failed')
-    return { urgent: 0, in_progress: 0, waiting: 0, urgentTitles: [], waitingTitles: [] }
+    return { urgent: 0, in_progress: 0, waiting: 0, urgentLabels: [], waitingLabels: [] }
   }
 }
 
@@ -408,15 +420,16 @@ function buildAgentPrompt(data: HeartbeatData): string {
   // Kanban -- card titles are operator-authored today, but a future Kanban-sync
   // integration could bring them from third parties. Wrap defensively.
   prompt += `## Kanban\n`
+  prompt += `A kanban-sor KESZ TENYLISTA: kartyat KIZAROLAG a szogletes zarojeles ID-javal nevezz meg (a cimben mas kartyak nevei is szerepelhetnek, azok NEM azonositok). CSAK jelentsd a listat -- valtozast ne magyarazz, eltunt tetelre okot ne kovetkeztess: amit az adat nem mond ki, azt nem tudhatod.\n`
   prompt += `- In Progress: ${data.kanban.in_progress}\n`
   prompt += `- Urgent: ${data.kanban.urgent}`
-  if (data.kanban.urgentTitles.length > 0) {
-    prompt += ` ${wrapUntrusted('kanban-urgent-titles', data.kanban.urgentTitles.join(', '))}`
+  if (data.kanban.urgentLabels.length > 0) {
+    prompt += ` ${wrapUntrusted('kanban-urgent-titles', data.kanban.urgentLabels.join(', '))}`
   }
   prompt += '\n'
   prompt += `- Waiting: ${data.kanban.waiting}`
-  if (data.kanban.waitingTitles.length > 0) {
-    prompt += ` ${wrapUntrusted('kanban-waiting-titles', data.kanban.waitingTitles.join(', '))}`
+  if (data.kanban.waitingLabels.length > 0) {
+    prompt += ` ${wrapUntrusted('kanban-waiting-titles', data.kanban.waitingLabels.join(', '))}`
   }
   prompt += '\n\n'
 
