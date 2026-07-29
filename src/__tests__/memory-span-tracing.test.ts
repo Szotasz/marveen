@@ -254,6 +254,30 @@ describe('runMemoryMaintenance', () => {
     const result = runMemoryMaintenance({ versionTtlDays: 180 })
     expect(result.prunedVersions).toBeGreaterThanOrEqual(1)
   })
+
+  it('migration seed prevents mass cold-demotion on first maintenance run', () => {
+    // Simulate pre-existing memories (created 40 days ago, no real reads)
+    // and a migration seed (NULL-context span_read inserted at migration time).
+    const now = Math.floor(Date.now() / 1000)
+    const id1 = insertMem('seeded warm pre-existing', 'warm', 'agent-seed')
+    const id2 = insertMem('seeded hot pre-existing', 'hot', 'agent-seed')
+    // Backdate creation to simulate memories that existed before span tracing
+    getDb().prepare('UPDATE memories SET created_at = ? WHERE id IN (?, ?)')
+      .run(now - 40 * 86400, id1, id2)
+    // Seed: migration-time span_read with NULL context (matches migration SQL)
+    getDb().prepare(
+      'INSERT INTO span_reads (agent_id, memory_id, read_at, context) VALUES (?, ?, ?, NULL)'
+    ).run('agent-seed', id1, now)
+    getDb().prepare(
+      'INSERT INTO span_reads (agent_id, memory_id, read_at, context) VALUES (?, ?, ?, NULL)'
+    ).run('agent-seed', id2, now)
+    // First maintenance run: seed read_at is within 30-day window -> must not demote
+    runMemoryMaintenance({ warmToColdDays: 30 })
+    const r1 = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id1) as { category: string }
+    const r2 = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id2) as { category: string }
+    expect(r1.category).toBe('warm')
+    expect(r2.category).toBe('hot')
+  })
 })
 
 // ── pruneMemoryVersions ──────────────────────────────────────────────────────

@@ -38,9 +38,10 @@ CREATE INDEX IF NOT EXISTS idx_memory_versions_memory ON memory_versions(memory_
 
 -- 5. Seed existing memories with a migration-time span_read so the first
 -- maintenance run does not mass-demote them to cold. Before span tracing
--- existed these memories were actively used; context='migration' marks that
--- this is not a real agent read. The read_at timestamp gives each memory a
--- 30-day grace period from the migration date before demotion eligibility.
+-- existed these memories were actively used. context=NULL signals a system
+-- read (not subject to the heartbeat/search/direct CHECK constraint) and
+-- distinguishes seed rows from real agent reads.
+-- The read_at timestamp gives each memory a 30-day grace period.
 INSERT INTO span_reads (agent_id, memory_id, read_at, context)
-SELECT agent_id, id, unixepoch(), 'migration'
+SELECT agent_id, id, unixepoch(), NULL
 FROM memories;
