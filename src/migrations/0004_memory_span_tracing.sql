@@ -1,4 +1,4 @@
--- Migration 0004: Memory span tracing (issue #37)
+-- Migration 0004: Memory span tracing
 -- Adds read-tracing (span_reads) and version history (memory_versions) to the
 -- memories system. updated_at column added to memories for stale-read detection.
 

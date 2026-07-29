@@ -34,7 +34,7 @@ A heartbeat skillek a stale memóriákat az alábbi módon kérhetik le:
 ```bash
 TOKEN=$(cat {{INSTALL_DIR}}/store/.dashboard-token)
 curl -s -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:3420/api/memories/stale?agent_id=jarvis"
+  "http://localhost:3420/api/memories/stale?agent_id=agent-a"
 ```
 
 Shared memóriáknál (`category = 'shared'`) érdemes figyelni: ha a válasz nem üres,

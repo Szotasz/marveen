@@ -88,13 +88,13 @@ Minden ágenshez nyomon követjük, mikor és milyen kontextusban olvasta az egy
 ```bash
 # Egyszeri olvasás rögzítése
 POST /api/memories/read-event
-{ "agent_id": "jarvis", "memory_id": 42, "context": "heartbeat" }
+{ "agent_id": "agent-a", "memory_id": 42, "context": "heartbeat" }
 
 # Batch rögzítés (heartbeat)
 POST /api/memories/read-event
 { "reads": [
-    { "agent_id": "jarvis", "memory_id": 42, "context": "heartbeat" },
-    { "agent_id": "jarvis", "memory_id": 17, "context": "search" }
+    { "agent_id": "agent-a", "memory_id": 42, "context": "heartbeat" },
+    { "agent_id": "agent-a", "memory_id": 17, "context": "search" }
   ]
 }
 ```
@@ -107,7 +107,7 @@ Egy emlék **stale** (elavult), ha `updated_at > az ágens utolsó olvasásának
 
 ```bash
 # Az ágens számára stale emlékek listája
-GET /api/memories/stale?agent_id=jarvis
+GET /api/memories/stale?agent_id=agent-a
 ```
 
 A dashboardon a memória-kártyákon narancssárga **Stale** badge jelzi az érintett emlékeket. Keresési eredményekben az `is_stale` mező is megjelenik, ha `q` és `agent` paraméter egyszerre van megadva — és a stale találatok kerülnek az eredménylista elejére.
