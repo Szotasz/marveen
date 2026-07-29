@@ -367,7 +367,7 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       if (created === 'script-missing' || created === 'spawn-failed') {
         logger.error({ created }, 'onboarding: channels session absent and channels.sh could not be launched')
         json(res, {
-          error: 'Az ugynokok inditasa nem sikerult: a channels.sh nem futtathato. A telepites serult lehet -- futtasd ujra a telepitot, vagy nezd meg a store/channels-failures.log-ot.',
+          error: 'Az ügynökök indítása nem sikerült: a channels.sh nem futtatható. A telepítés sérült lehet -- futtasd újra a telepítőt, vagy nézd meg a store/channels-failures.log-ot.',
           reason: created === 'script-missing' ? 'channels-script-missing' : 'channels-spawn-failed',
         }, 500)
         return true
