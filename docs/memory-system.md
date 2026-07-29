@@ -76,3 +76,101 @@ POST /api/memories/backfill               # embedding backfill
 ```
 
 Zero-config: az SQLite automatikusan létrejön, az embedding mentéskor generálódik.
+
+---
+
+## 📡 Olvasás-tracing és stale-read detekció (#37)
+
+### Span reads
+
+Minden ágenshez nyomon követjük, mikor és milyen kontextusban olvasta az egyes emlékeket. Ez az alap a "stale" detektáláshoz és az auto tier-átsoroláshoz.
+
+```bash
+# Egyszeri olvasás rögzítése
+POST /api/memories/read-event
+{ "agent_id": "jarvis", "memory_id": 42, "context": "heartbeat" }
+
+# Batch rögzítés (heartbeat)
+POST /api/memories/read-event
+{ "reads": [
+    { "agent_id": "jarvis", "memory_id": 42, "context": "heartbeat" },
+    { "agent_id": "jarvis", "memory_id": 17, "context": "search" }
+  ]
+}
+```
+
+Érvényes `context` értékek: `heartbeat`, `search`, `direct`.
+
+### Stale-read
+
+Egy emlék **stale** (elavult), ha `updated_at > az ágens utolsó olvasásának időpontja`. Nincs fix időküszöb: kizárólag az ágenshez kötött span_read timestamp számít.
+
+```bash
+# Az ágens számára stale emlékek listája
+GET /api/memories/stale?agent_id=jarvis
+```
+
+A dashboardon a memória-kártyákon narancssárga **Stale** badge jelzi az érintett emlékeket. Keresési eredményekben az `is_stale` mező is megjelenik, ha `q` és `agent` paraméter egyszerre van megadva — és a stale találatok kerülnek az eredménylista elejére.
+
+---
+
+## 🕓 Verzió-előzmények (#37)
+
+Minden `updateMemory()` hívásnál, ha a tartalom, kategória vagy kulcsszavak változnak, a rendszer snapshot-ot ment a `memory_versions` táblába. A trigger helyett explicit `SELECT → INSERT → UPDATE` szekvencia fut, hogy a tulajdonos (`agent_id`) ne íródjon felül, ha egy másik ágens szerkeszt.
+
+```bash
+# Emlék verziótörténete
+GET /api/memories/:id/versions
+```
+
+A dashboardon a szerkesztő-modálban **Előzmények** tab mutatja a változásokat időrendben (tartalom, kategória, változtató ágens, időbélyeg).
+
+**Prune:** a `memory_versions` táblából 180 napnál régebbi sorok automatikusan törlődnek a karbantartó job futásakor.
+
+---
+
+## 🔄 Auto tier-átsorolás (#37)
+
+A `runMemoryMaintenance()` egy tranzakcióban végzi el a három karbantartási lépést:
+
+| Lépés | Feltétel | Eredmény |
+|-------|----------|----------|
+| warm → cold | legalább 30 napos ÉS az utolsó 30 napban egyetlen ágenstől sem olvasódott | cold-ba kerül |
+| cold → warm | az utolsó 30 napban 2+ különböző ágens olvasta | warm-ba kerül |
+| verzió prune | `changed_at < most - 180 nap` | törlés |
+
+Fontos korlátok:
+- **hot** soha nem kerül automatikusan cold-ba — hot-ot csak manuálisan mozgat a dream-engine.
+- **shared** szintén kizárt az auto-cold-ból — minden ágenshez tartozik.
+- Az **életkor-guard** (`created_at < most - 30 nap`) védi a frissen mentett emlékeket: egy ma létrehozott, még nem olvasott warm emlék nem kerül az első karbantartáson azonnal cold-ba.
+
+```bash
+POST /api/memories/resort
+# Opcionális body (mind default-olt):
+{ "warm_to_cold_days": 30, "cold_to_warm_days": 30, "min_agents": 2, "version_ttl_days": 180 }
+# Válasz: { "ok": true, "warmToCold": N, "coldToWarm": N, "prunedVersions": N }
+```
+
+### Ütemezett karbantartó job
+
+A `scheduled-tasks/memory-maintenance/` sablon **alapból kikapcsolt** (`enabled: false`). Ez szándékos opt-in döntés: a tier-átsorolás visszafordítható ugyan, de éles rendszeren csak akkor szabad automatizálni, ha az operátor meggyőződött róla, hogy a threshold-ok (30 nap, 2 ágens) illeszkednek az adott flotta munkastílusához.
+
+Bekapcsolás:
+
+```bash
+cp -r scheduled-tasks/memory-maintenance ~/.claude/scheduled-tasks/
+# Majd a dashboardon vagy API-n: enabled = true
+```
+
+Alapértelmezetten naponta 03:00-kor fut (`0 3 * * *`), csak akkor jelent Telegramon, ha valamelyik szám > 0.
+
+---
+
+## 🗄 Migráció: meglévő emlékek (#37)
+
+A `0004_memory_span_tracing.sql` migration két dolgot tesz a meglévő adatokkal:
+
+1. **`updated_at` backfill**: minden régi emlék kap `updated_at = created_at` értéket.
+2. **Seed span_read**: minden meglévő emlékhez bekerül egy `context = NULL` span_read a migráció pillanatával mint `read_at`. Ez 30 napos kegyelmi időt ad — az első karbantartó futáson egyetlen aktívan használt emlék sem esik cold-ba pusztán azért, mert a span_reads tábla előtte nem létezett.
+
+A `context = NULL` szándékos: az `IN ('heartbeat', 'search', 'direct')` CHECK constraint nem sérül, és a seed sorok megkülönböztethetők a valódi olvasásoktól.
