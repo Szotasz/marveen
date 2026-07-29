@@ -1,0 +1,18 @@
+[Unit]
+Description=Marveen Memory Pressure Monitor
+Documentation=https://github.com/istvan/marveen
+After=network.target
+
+[Service]
+Type=oneshot
+# ExecStart points at the IMMUTABLE RELEASE, not the shared developer checkout.
+# A branch switch or source edit CANNOT break the running monitor because its
+# code lives in releases/monitor-current/, installed atomically by
+# scripts/install-monitor.sh (tracked, reproducible).
+ExecStart=/home/iszzu/.bun/bin/bun run /home/iszzu/marveen/releases/monitor-current/memory-pressure-monitor.js
+Environment=MARVEEN_HOME=/home/iszzu/marveen
+# Must survive dashboard death — no PartOf/Requires on dashboard.
+# No memory limit on the monitor itself (it's tiny).
+StandardOutput=journal
+StandardError=journal
+# Oneshot services exit after ExecStart; the timer triggers the next run.
