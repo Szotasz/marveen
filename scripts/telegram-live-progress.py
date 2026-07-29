@@ -50,6 +50,25 @@ MAIN_AGENT = os.environ.get("MAIN_AGENT_ID", "turing")
 SPINNER = "✻✽✢✳✶✴✵✷⏺●○◐◓◑◒*"
 STATUS_RE = re.compile(rf"^[{SPINNER}]\s+(.+)$")
 
+# Idle footer that still carries background work. Claude Code puts the counters
+# of running background shells / a monitor / sub-agent tasks into the
+# bypass-permissions footer when no turn is in flight:
+#   "⏵⏵ bypass permissions on · 2 shells · ctrl+t to hide tasks · ↓ to manage"
+#   "⏵⏵ bypass permissions on (shift+tab to cycle) · 1 monitor · ↓ to manage"
+# The prefix ALONE is not enough of an anchor: scrollback can quote
+# "bypass permissions on · 1 shell" verbatim (an echoed log line, a pasted
+# message), and reading that as running work parks a message in the chat that
+# never disappears. Two acceptable anchors, either one is enough:
+#   - the line STARTS with the mode glyphs, which only the real footer does
+#     (and unlike a tail marker this survives a capture truncated on the right,
+#     which is how a narrow pane renders); or
+#   - one of Claude Code's real tail actions follows, same test as
+#     IDLE_FOOTER_RX in src/pane-state.ts.
+BG_FOOTER_RE = re.compile(
+    r"^\s*⏵⏵ bypass permissions on|bypass permissions on[^\n]*?(?:ctrl\+t|↓ to manage)")
+# Read the counters out of the matched footer only, never the whole pane.
+BG_COUNTER_RE = re.compile(r"\d+ (?:shells?|tasks?|monitors?)")
+
 
 def log(msg):
     try:
@@ -176,8 +195,51 @@ def tmux_session(agent):
     return f"{MAIN_AGENT}-channels" if agent == MAIN_AGENT else f"agent-{agent}"
 
 
+def classify_pane(out):
+    """(kind, text) for a pane that is doing something, or None when idle.
+
+    kind is "live" for a turn in flight -- the fast-changing spinner -- and
+    "background" for work that keeps running with NO turn in flight. The two
+    are different states, not two renderings of one: the first is a thought
+    the owner is waiting on, the second is a process he only needs to know
+    exists, so the caller gives them different glyphs and the background one
+    is not expected to change between polls.
+
+    Pure function of the captured pane text: the tmux call lives in the
+    caller, so every branch below is reachable from a test.
+    """
+    if not out:
+        return None
+    # The bottom bar carries "esc to interrupt" for the whole duration of a
+    # turn, so it is the reliable "is working" gate. The spinner line above it
+    # (with the verb and the token counter) is only redrawn periodically -- use
+    # it when present, but never let a missed frame look like an idle agent.
+    if "esc to interrupt" in out:
+        for line in reversed(out.splitlines()):
+            m = STATUS_RE.match(line.strip())
+            if not m:
+                continue
+            text = m.group(1).strip()
+            if re.search(r"\(\d|for \d+s|still running", text):
+                return ("live", text)
+        # Working, but the detail line was not on screen this frame.
+        busy = re.search(r"(\d+ shells?|\d+ tasks?|monitor)", out)
+        return ("live", f"dolgozom… ({busy.group(1)})" if busy else "dolgozom…")
+    # No turn in flight. A background bash shell, the monitor or a sub-agent
+    # can still be running, and before this the owner saw nothing at all in
+    # that case: the indicator had already been deleted at the end of the
+    # turn that STARTED the background work, so a build running for ten
+    # minutes was indistinguishable from an idle machine.
+    for line in reversed(out.splitlines()):
+        if not BG_FOOTER_RE.search(line):
+            continue
+        counters = BG_COUNTER_RE.findall(line)
+        return ("background", f"háttérfolyamat fut ({', '.join(counters)})") if counters else None
+    return None
+
+
 def status_line(agent):
-    """The live 'thinking' line from the agent's terminal, or None when idle."""
+    """classify_pane() over the agent's terminal, or None when idle."""
     session = tmux_session(agent)
     try:
         out = subprocess.run(
@@ -185,23 +247,7 @@ def status_line(agent):
             capture_output=True, text=True, timeout=5).stdout
     except Exception:
         return None
-    # The bottom bar carries "esc to interrupt" for the whole duration of a
-    # turn, so it is the reliable "is working" gate. The spinner line above it
-    # (with the verb and the token counter) is only redrawn periodically -- use
-    # it when present, but never let a missed frame look like an idle agent.
-    working = "esc to interrupt" in out
-    if not working:
-        return None
-    for line in reversed(out.splitlines()):
-        m = STATUS_RE.match(line.strip())
-        if not m:
-            continue
-        text = m.group(1).strip()
-        if re.search(r"\(\d|for \d+s|still running", text):
-            return text
-    # Working, but the detail line was not on screen this frame.
-    busy = re.search(r"(\d+ shells?|\d+ tasks?|monitor)", out)
-    return f"dolgozom… ({busy.group(1)})" if busy else "dolgozom…"
+    return classify_pane(out)
 
 
 # --- verbose log ------------------------------------------------------------
@@ -323,8 +369,13 @@ def main():
                 gone = st.get(f"{agent}:gone", 0)
 
                 if line:
+                    kind, body = line
                     st[f"{agent}:gone"] = 0
-                    text = f"✻ {line}"
+                    # Different glyph for the two states: the spinner means a
+                    # turn is running and an answer is coming, the hourglass
+                    # means only a background process is alive and nothing is
+                    # owed to the owner right now.
+                    text = f"✻ {body}" if kind == "live" else f"⏳ {body}"
                     if not mid:
                         r = api(tok, "sendMessage",
                                 {"chat_id": cid, "text": text, "disable_notification": True})

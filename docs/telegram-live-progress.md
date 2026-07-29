@@ -32,6 +32,22 @@ scripts/progress-mode.sh indicator liebig   # egy adott ügynökre
 
 A váltás a következő ciklusban (~2 mp) érvényes, újraindítás nem kell.
 
+## Háttérfolyamat-jelzés
+
+A jelzőnek két állapota van, más glyph-fel, mert két különböző dolgot jelentenek:
+
+- `✻ Incubating… (55s · ↓ 2.6k tokens)` -- kör van folyamatban, válasz jön
+- `⏳ háttérfolyamat fut (2 shells)` -- NINCS kör folyamatban, de valami még megy
+
+A második azért kell, mert korábban a kör végén a jelző eltűnt, és onnantól egy
+tíz percig futó build semmiben nem különbözött egy tétlen géptől. Claude Code
+ilyenkor a háttérfolyamatok számlálóit teszi bele az alsó sávba
+(`bypass permissions on · 2 shells · ctrl+t to hide tasks · ↓ to manage`,
+`· 1 monitor · ← for agents · ↓ to manage`), a daemon ezt olvassa.
+
+A háttérállapot lassan változik, tehát nem pörög és nem szerkesztődik
+körönként. Eltűnik, amint a háttérfolyamat véget ér.
+
 ## Elakadás-jelzés
 
 Ha az ügynök munkamenete **meghal a kör közepén** (összeomlás, újraindítás,
@@ -67,6 +83,11 @@ tail -f store/progress-live.log
   eszközhívások között pillanatokra eltűnik.
 - **`silent`-re váltás közben** a már kint lévő jelzőt törölni kell, különben egy
   befagyott "gondolkodom" üzenet marad a chatben.
+- **A háttér-sáv felismeréséhez kevés a `bypass permissions on` előtag.** A
+  scrollbackben ott lehet ugyanez egy visszhangzott naplósorban, és akkor egy
+  soha el nem tűnő "háttérfolyamat fut" ül a chatben. Ugyanaz a horgony kell,
+  mint a `src/pane-state.ts` `IDLE_FOOTER_RX`-ében: az előtag UTÁN következnie
+  kell egy valódi akciónak (`ctrl+t`, `↓ to manage`).
 - **A bővebb napló duplázhat**: amit az ügynök gondolatként leír, azt sokszor
   válaszként is elküldi. Ezért a napló kiszűri azokat a szövegeket, amiket a
   reply eszköz is elküldött ugyanabban a körben.
