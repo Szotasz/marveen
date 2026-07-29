@@ -605,6 +605,8 @@ window._i18n.hu = {
   'memories.log_empty':          'Nincs naplóbejegyzés ezen a napon',
   'memories.modal.title_new':    'Új emlék',
   'memories.modal.title_edit':   'Emlék szerkesztése',
+  'memories.modal.tab_edit':     'Szerkesztés',
+  'memories.modal.tab_history':  'Előzmények',
   'memories.modal.content_label': 'Tartalom *',
   'memories.modal.category_label': 'Kategória',
   'memories.modal.keywords_label': 'Kulcsszavak',

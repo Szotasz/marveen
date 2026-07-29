@@ -228,11 +228,31 @@ export interface Memory {
   salience: number
   created_at: number
   accessed_at: number
+  updated_at: number | null
   agent_id: string
   category: string  // 'hot' | 'warm' | 'cold' | 'shared'
   auto_generated: number
   keywords: string | null
   embedding: string | null
+}
+
+export interface SpanRead {
+  id: number
+  agent_id: string
+  memory_id: number
+  read_at: number
+  context: 'heartbeat' | 'search' | 'direct' | null
+}
+
+export interface MemoryVersion {
+  id: number
+  memory_id: number
+  content: string
+  category: string
+  keywords: string | null
+  changed_at: number
+  changed_by: string
+  change_type: 'create' | 'update' | 'category_change'
 }
 
 export function saveMemory(
@@ -496,10 +516,39 @@ export function getMemoryStats(): { total: number; byAgent: Record<string, numbe
   return { total, byAgent, byTier, withEmbedding }
 }
 
-export function updateMemory(id: number, content: string, category?: string, agentId?: string, keywords?: string): boolean {
+export function updateMemory(
+  id: number,
+  content: string,
+  category?: string,
+  agentId?: string,
+  keywords?: string,
+  modifiedBy?: string,
+): boolean {
   const now = Math.floor(Date.now() / 1000)
-  const sets: string[] = ['content = ?', 'accessed_at = ?']
-  const params: unknown[] = [content, now]
+
+  // Capture old state before the update so we can write a version record with
+  // the correct changed_by (modifiedBy or agentId) without touching agent_id.
+  const current = db.prepare(
+    'SELECT content, category, keywords, agent_id FROM memories WHERE id = ?'
+  ).get(id) as { content: string; category: string; keywords: string | null; agent_id: string } | undefined
+
+  if (current) {
+    const newCategory = category || current.category
+    const newKeywords = keywords !== undefined ? keywords : current.keywords
+    const contentChanged = content !== current.content
+    const categoryChanged = newCategory !== current.category
+    const keywordsChanged = newKeywords !== current.keywords
+    if (contentChanged || categoryChanged || keywordsChanged) {
+      const changeType = categoryChanged && !contentChanged ? 'category_change' : 'update'
+      const changedBy = modifiedBy || agentId || current.agent_id
+      db.prepare(
+        'INSERT INTO memory_versions(memory_id, content, category, keywords, changed_at, changed_by, change_type) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).run(id, current.content, current.category, current.keywords, now, changedBy, changeType)
+    }
+  }
+
+  const sets: string[] = ['content = ?', 'accessed_at = ?', 'updated_at = ?']
+  const params: unknown[] = [content, now, now]
   if (category) { sets.push('category = ?'); params.push(category) }
   if (agentId) { sets.push('agent_id = ?'); params.push(agentId) }
   if (keywords !== undefined) { sets.push('keywords = ?'); params.push(keywords) }
@@ -507,6 +556,127 @@ export function updateMemory(id: number, content: string, category?: string, age
   const changed = db.prepare(`UPDATE memories SET ${sets.join(', ')} WHERE id = ?`).run(...params).changes > 0
   if (changed && agentId) memoryCacheInvalidate(agentId)
   return changed
+}
+
+// --- Span tracing ---
+
+export function recordMemoryRead(
+  agentId: string,
+  memoryId: number,
+  context: 'heartbeat' | 'search' | 'direct',
+): void {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(
+    'INSERT INTO span_reads (agent_id, memory_id, read_at, context) VALUES (?, ?, ?, ?)'
+  ).run(agentId, memoryId, now, context)
+}
+
+// Record reads for a batch of memory ids in a single transaction.
+export function recordMemoryReadBatch(
+  agentId: string,
+  memoryIds: number[],
+  context: 'heartbeat' | 'search' | 'direct',
+): void {
+  if (memoryIds.length === 0) return
+  const now = Math.floor(Date.now() / 1000)
+  const stmt = db.prepare(
+    'INSERT INTO span_reads (agent_id, memory_id, read_at, context) VALUES (?, ?, ?, ?)'
+  )
+  const tx = db.transaction(() => {
+    for (const id of memoryIds) stmt.run(agentId, id, now, context)
+  })
+  tx()
+}
+
+// Returns memories that are stale for the given agent:
+// updated_at > agent's last span_read.read_at (or never read at all).
+export function getStaleMemories(agentId: string): Memory[] {
+  return db.prepare(`
+    SELECT m.* FROM memories m
+    LEFT JOIN (
+      SELECT memory_id, MAX(read_at) AS last_read
+      FROM span_reads
+      WHERE agent_id = ?
+      GROUP BY memory_id
+    ) sr ON sr.memory_id = m.id
+    WHERE (m.agent_id = ? OR m.category = 'shared')
+      AND m.updated_at > COALESCE(sr.last_read, 0)
+    ORDER BY m.updated_at DESC
+  `).all(agentId, agentId) as Memory[]
+}
+
+export function getMemoryVersions(memoryId: number): MemoryVersion[] {
+  return db.prepare(
+    'SELECT * FROM memory_versions WHERE memory_id = ? ORDER BY changed_at DESC, id DESC'
+  ).all(memoryId) as MemoryVersion[]
+}
+
+// Auto tier-resorting based on span_reads activity. All three steps run in
+// a single transaction so a crash leaves the DB in a consistent state.
+//
+// warm -> cold: memory is at least warmToColdDays old AND has not been read
+//   in the last warmToColdDays (hot is manually managed; shared is never
+//   auto-archived -- both implicitly excluded by category='warm').
+//   The created_at guard prevents freshly saved memories from being archived
+//   immediately on their first maintenance run just because they have no reads yet.
+// cold -> warm: read by 2+ distinct agents within the last coldToWarmDays.
+// version prune: delete memory_versions older than 180 days.
+//
+// Returns affected row counts for observability.
+export function runMemoryMaintenance(opts: {
+  warmToColdDays?: number
+  coldToWarmDays?: number
+  minAgents?: number
+  versionTtlDays?: number
+} = {}): { warmToCold: number; coldToWarm: number; prunedVersions: number } {
+  const warmToColdSecs = (opts.warmToColdDays ?? 30) * 86400
+  const coldToWarmSecs = (opts.coldToWarmDays ?? 30) * 86400
+  const minAgents = opts.minAgents ?? 2
+  const versionCutoff = Math.floor(Date.now() / 1000) - (opts.versionTtlDays ?? 180) * 86400
+  const now = Math.floor(Date.now() / 1000)
+
+  return db.transaction(() => {
+    // Only warm -> cold: hot is manually managed; shared belongs to all agents.
+    // created_at check: memory must be at least warmToColdSecs old before it
+    // can be auto-archived (a brand-new unread memory is not the same as a stale one).
+    const warmToCold = db.prepare(`
+      UPDATE memories
+      SET category = 'cold', updated_at = ?
+      WHERE category = 'warm'
+        AND created_at < ? - ?
+        AND NOT EXISTS (
+          SELECT 1 FROM span_reads
+          WHERE span_reads.memory_id = memories.id
+            AND span_reads.read_at > ? - ?
+        )
+    `).run(now, now, warmToColdSecs, now, warmToColdSecs).changes
+
+    const coldToWarm = db.prepare(`
+      UPDATE memories
+      SET category = 'warm', updated_at = ?
+      WHERE category = 'cold'
+        AND id IN (
+          SELECT memory_id FROM span_reads
+          WHERE read_at > ? - ?
+          GROUP BY memory_id
+          HAVING COUNT(DISTINCT agent_id) >= ?
+        )
+    `).run(now, now, coldToWarmSecs, minAgents).changes
+
+    const prunedVersions = db.prepare(
+      'DELETE FROM memory_versions WHERE changed_at < ?'
+    ).run(versionCutoff).changes
+
+    return { warmToCold, coldToWarm, prunedVersions }
+  })()
+}
+
+// Delete memory_versions entries older than ttlDays (default 180).
+export function pruneMemoryVersions(ttlDays = 180): number {
+  const cutoff = Math.floor(Date.now() / 1000) - ttlDays * 86400
+  return db.prepare(
+    'DELETE FROM memory_versions WHERE changed_at < ?'
+  ).run(cutoff).changes
 }
 
 // --- Daily logs ---

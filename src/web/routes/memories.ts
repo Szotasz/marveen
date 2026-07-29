@@ -2,6 +2,8 @@ import {
   saveAgentMemory, getAgentMemories, searchAgentMemories, getMemoryStats, updateMemory,
   hybridSearch, backfillEmbeddings, clearMemoryCache,
   searchMemories, getMemoriesForChat, getDb, touchMemoriesAccessed,
+  recordMemoryRead, recordMemoryReadBatch, getStaleMemories, getMemoryVersions,
+  runMemoryMaintenance,
   type Memory,
 } from '../../db.js'
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from '../../config.js'
@@ -101,11 +103,41 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     // e.g. the dashboard browsing all memories) is NOT a recall and must not
     // refresh accessed_at -- otherwise every poll would keep everything "fresh"
     // and defeat staleness detection.
+    //
+    // Span reads are NOT auto-recorded here: fuzzy search results are noisy
+    // (many matches, not all actually consumed). Callers that genuinely process
+    // a memory -- heartbeats, direct fetches -- call POST /api/memories/read-event
+    // explicitly with the ids they actually used.
     if (q && results.length) touchMemoriesAccessed(results.map(m => m.id))
 
+    // Smart context injection (F2): when searching with a known agent, annotate
+    // results with is_stale and surface updated-but-unread memories first.
+    let staleIdSet = new Set<number>()
+    if (q && agentId && results.length) {
+      const ids = results.map(m => m.id)
+      const db2 = getDb()
+      const staleRows = db2.prepare(`
+        SELECT m.id FROM memories m
+        LEFT JOIN (
+          SELECT memory_id, MAX(read_at) AS last_read
+          FROM span_reads WHERE agent_id = ?
+          GROUP BY memory_id
+        ) sr ON sr.memory_id = m.id
+        WHERE m.id IN (${ids.map(() => '?').join(',')})
+          AND m.updated_at > COALESCE(sr.last_read, 0)
+      `).all(agentId, ...ids) as { id: number }[]
+      staleIdSet = new Set(staleRows.map(r => r.id))
+      // Stale memories float to the top of context -- the agent needs fresh info first.
+      results.sort((a, b) => (staleIdSet.has(b.id) ? 1 : 0) - (staleIdSet.has(a.id) ? 1 : 0))
+    }
+
+    // is_stale is only included when an agent filter is active (backward-compat:
+    // callers without agent context should not see a misleading false value).
+    const includeStale = staleIdSet.size > 0 || (q !== '' && agentId !== '')
     const formatted = results.map(m => ({
       ...m,
       embedding: undefined,
+      ...(includeStale ? { is_stale: staleIdSet.has(m.id) } : {}),
       created_label: new Date(m.created_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
       accessed_label: new Date(m.accessed_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
     }))
@@ -230,9 +262,99 @@ Respond ONLY with JSON, nothing else:
     return true
   }
 
-  const memUpdateMatch = path.match(/^\/api\/memories\/(\d+)$/)
-  if (memUpdateMatch && method === 'PUT') {
-    const id = parseInt(memUpdateMatch[1], 10)
+  // POST /api/memories/resort -- scheduled maintenance: tier-resort + version prune.
+  // Called daily by the maintenance scheduled task. Idempotent.
+  // Body (all optional): { warm_to_cold_days, cold_to_warm_days, min_agents, version_ttl_days }
+  if (path === '/api/memories/resort' && method === 'POST') {
+    try {
+      const body = await readBody(req)
+      const opts = body.length ? JSON.parse(body.toString()) : {}
+      const result = runMemoryMaintenance({
+        warmToColdDays: opts.warm_to_cold_days,
+        coldToWarmDays: opts.cold_to_warm_days,
+        minAgents: opts.min_agents,
+        versionTtlDays: opts.version_ttl_days,
+      })
+      logger.info(result, 'Memory resort + prune complete')
+      json(res, { ok: true, ...result })
+    } catch (err) {
+      logger.error({ err }, 'Memory resort failed')
+      json(res, { error: 'Resort failed' }, 500)
+    }
+    return true
+  }
+
+  // POST /api/memories/read-event -- explicit read-trace (heartbeat / direct)
+  // Accepts single: {agent_id, memory_id, context}
+  // Or batch:       {reads: [{agent_id, memory_id, context}]}
+  if (path === '/api/memories/read-event' && method === 'POST') {
+    const body = await readBody(req)
+    const parsed = JSON.parse(body.toString()) as {
+      agent_id?: string; memory_id?: number; context?: string
+      reads?: { agent_id: string; memory_id: number; context?: string }[]
+    }
+    const toCtx = (c?: string): 'heartbeat' | 'search' | 'direct' =>
+      (['heartbeat', 'search', 'direct'].includes(c ?? '')) ? c as 'heartbeat' | 'search' | 'direct' : 'direct'
+
+    if (parsed.reads) {
+      // Batch mode
+      const batchByAgent = new Map<string, { ids: number[]; ctx: 'heartbeat' | 'search' | 'direct' }>()
+      for (const r of parsed.reads) {
+        if (!r.agent_id || !r.memory_id) continue
+        const key = `${r.agent_id}::${toCtx(r.context)}`
+        if (!batchByAgent.has(key)) batchByAgent.set(key, { ids: [], ctx: toCtx(r.context) })
+        batchByAgent.get(key)!.ids.push(r.memory_id)
+      }
+      for (const [key, { ids, ctx }] of batchByAgent) {
+        const agentId = key.split('::')[0]
+        recordMemoryReadBatch(agentId, ids, ctx)
+      }
+      json(res, { ok: true, recorded: parsed.reads.length })
+      return true
+    }
+
+    const { agent_id, memory_id, context } = parsed
+    if (!agent_id || !memory_id) { json(res, { error: 'agent_id and memory_id required' }, 400); return true }
+    recordMemoryRead(agent_id, memory_id, toCtx(context))
+    json(res, { ok: true })
+    return true
+  }
+
+  // GET /api/memories/stale?agent_id=X -- memories updated after agent's last read
+  if (path === '/api/memories/stale' && method === 'GET') {
+    const agentId = url.searchParams.get('agent_id') || url.searchParams.get('agent') || ''
+    if (!agentId) { json(res, { error: 'agent_id required' }, 400); return true }
+    const stale = getStaleMemories(agentId)
+    json(res, stale.map(m => ({ ...m, embedding: undefined })))
+    return true
+  }
+
+  // GET /api/memories/:id/versions -- version history for a single memory
+  const memVersionsMatch = path.match(/^\/api\/memories\/(\d+)\/versions$/)
+  if (memVersionsMatch && method === 'GET') {
+    const id = parseInt(memVersionsMatch[1], 10)
+    json(res, getMemoryVersions(id))
+    return true
+  }
+
+  const memIdMatch = path.match(/^\/api\/memories\/(\d+)$/)
+  if (memIdMatch && method === 'GET') {
+    const id = parseInt(memIdMatch[1], 10)
+    const includeVersions = url.searchParams.get('include') === 'versions'
+    const db2 = getDb()
+    const mem = db2.prepare('SELECT * FROM memories WHERE id = ?').get(id) as Memory | undefined
+    if (!mem) { json(res, { error: 'Memory not found' }, 404); return true }
+    const { embedding: _emb, ...rest } = mem
+    const agentId = url.searchParams.get('agent_id') || url.searchParams.get('agent') || ''
+    if (agentId) recordMemoryRead(agentId, id, 'direct')
+    const payload: Record<string, unknown> = { ...rest }
+    if (includeVersions) payload.versions = getMemoryVersions(id)
+    json(res, payload)
+    return true
+  }
+
+  if (memIdMatch && method === 'PUT') {
+    const id = parseInt(memIdMatch[1], 10)
     const body = await readBody(req)
     const { content, category, tier, agent_id, keywords } = JSON.parse(body.toString()) as { content: string; category?: string; tier?: string; agent_id?: string; keywords?: string }
     if (updateMemory(id, content, tier || category, agent_id, keywords)) { json(res, { ok: true }); return true }
@@ -240,8 +362,8 @@ Respond ONLY with JSON, nothing else:
     return true
   }
 
-  if (memUpdateMatch && method === 'DELETE') {
-    const id = parseInt(memUpdateMatch[1], 10)
+  if (memIdMatch && method === 'DELETE') {
+    const id = parseInt(memIdMatch[1], 10)
     const db2 = getDb()
     const changes = db2.prepare('DELETE FROM memories WHERE id = ?').run(id).changes
     // Invalidate the in-process TTL cache so a deleted memory does not

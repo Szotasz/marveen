@@ -98,6 +98,9 @@ document.getElementById('memAddBtn').addEventListener('click', () => {
   document.getElementById('memTier').value = (currentMemTier === 'log' || currentMemTier === 'graph') ? 'warm' : currentMemTier
   document.getElementById('memKeywords').value = ''
   document.getElementById('memEditId').value = ''
+  // New memory: hide Előzmények tab, reset to edit
+  document.getElementById('memHistoryTabBtn').hidden = true
+  switchMemModalTab('edit')
   _openModal?.(memModalOverlay)
   setTimeout(() => document.getElementById('memContent').focus(), 200)
 })
@@ -184,15 +187,21 @@ export async function loadMemories() {
   params.set('limit', '50')
 
   try {
-    const res = await fetch(`/api/memories?${params}`)
-    const memories = await res.json()
-    renderMemories(memories)
+    const [memoriesRes, staleRes] = await Promise.all([
+      fetch(`/api/memories?${params}`),
+      agent ? fetch(`/api/memories/stale?agent_id=${encodeURIComponent(agent)}`) : Promise.resolve(null),
+    ])
+    const memories = await memoriesRes.json()
+    const staleIds = staleRes
+      ? new Set((await staleRes.json()).map(m => m.id))
+      : new Set()
+    renderMemories(memories, staleIds)
   } catch (err) {
     console.error('Memória betöltés hiba:', err)
   }
 }
 
-function renderMemories(memories) {
+function renderMemories(memories, staleIds = new Set()) {
   memList.innerHTML = ''
   memEmpty.hidden = memories.length > 0
 
@@ -205,6 +214,7 @@ function renderMemories(memories) {
     const badgeClass = 'badge-' + tier
     const shortContent = mem.content.length > 120 ? mem.content.slice(0, 120) + '...' : mem.content
     const agentLabel = mem.agent_id || mainAgentId()
+    const isStale = staleIds.has(mem.id)
 
     // Build keywords HTML
     let keywordsHtml = ''
@@ -220,6 +230,7 @@ function renderMemories(memories) {
         <span class="badge ${badgeClass}">${tierBadge}</span>
         <span class="mem-agent-badge">${escapeHtml(agentLabel)}</span>
         <span class="mem-date">${escapeHtml(mem.created_label || '')}</span>
+        ${isStale ? '<span class="mem-stale-badge" title="Frissult mióta az ágens utoljára olvasta">elavult</span>' : ''}
         ${typeof mem.salience === 'number' ? `<span class="mem-salience" title="Relevancia ertek">S: ${mem.salience.toFixed(2)}</span>` : ''}
       </div>
       <div class="mem-content-short">${escapeHtml(shortContent)}</div>
@@ -241,13 +252,7 @@ function renderMemories(memories) {
     const editBtn = item.querySelector('[data-edit-memid]')
     editBtn.addEventListener('click', (e) => {
       e.stopPropagation()
-      document.getElementById('memModalTitle').textContent = t('memories.modal.title_edit')
-      document.getElementById('memContent').value = mem.content
-      document.getElementById('memTier').value = tier
-      document.getElementById('memKeywords').value = mem.keywords || ''
-      document.getElementById('memEditId').value = mem.id
-      if (mem.agent_id) document.getElementById('memAgent').value = mem.agent_id
-      _openModal?.(memModalOverlay)
+      openMemEditModal(mem, tier)
     })
 
     // Delete
@@ -266,6 +271,71 @@ function renderMemories(memories) {
     })
 
     memList.appendChild(item)
+  }
+}
+
+// === Memory modal tab management ===
+
+function switchMemModalTab(tabName) {
+  document.querySelectorAll('#memModalTabNav .tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.memTab === tabName)
+  })
+  document.getElementById('memEditPanel').hidden = tabName !== 'edit'
+  document.getElementById('memHistoryPanel').hidden = tabName !== 'history'
+}
+
+document.getElementById('memModalTabNav').addEventListener('click', (e) => {
+  const btn = e.target.closest('.tab-btn[data-mem-tab]')
+  if (!btn) return
+  const tab = btn.dataset.memTab
+  switchMemModalTab(tab)
+  if (tab === 'history') {
+    const editId = document.getElementById('memEditId').value
+    if (editId) loadMemVersions(parseInt(editId, 10))
+  }
+})
+
+function openMemEditModal(mem, tier) {
+  document.getElementById('memModalTitle').textContent = t('memories.modal.title_edit')
+  document.getElementById('memContent').value = mem.content
+  document.getElementById('memTier').value = tier
+  document.getElementById('memKeywords').value = mem.keywords || ''
+  document.getElementById('memEditId').value = mem.id
+  if (mem.agent_id) document.getElementById('memAgent').value = mem.agent_id
+  // Show Előzmények tab for existing memories
+  document.getElementById('memHistoryTabBtn').hidden = false
+  switchMemModalTab('edit')
+  _openModal?.(memModalOverlay)
+}
+
+async function loadMemVersions(memId) {
+  const list = document.getElementById('memVersionList')
+  list.innerHTML = '<p style="color:var(--text-muted);font-size:13px">Betöltés...</p>'
+  try {
+    const res = await fetch(`/api/memories/${memId}/versions`)
+    const versions = await res.json()
+    if (!versions.length) {
+      list.innerHTML = '<p class="mem-version-empty">Nincs korábbi verzió.</p>'
+      return
+    }
+    list.innerHTML = versions.map((v, i) => {
+      const date = new Date(v.changed_at * 1000).toLocaleString('hu-HU', { timeZone: 'Europe/Budapest' })
+      const changeLabel = { update: 'tartalom', category_change: 'kategória', create: 'létrehozás' }[v.change_type] || v.change_type
+      return `
+        <div class="mem-version-item">
+          <div class="mem-version-meta">
+            <span class="mem-version-num">#${versions.length - i}</span>
+            <span class="mem-version-date">${escapeHtml(date)}</span>
+            <span class="mem-version-by">${escapeHtml(v.changed_by || '')}</span>
+            <span class="mem-version-type">${escapeHtml(changeLabel)}</span>
+          </div>
+          <div class="mem-version-content">${escapeHtml(v.content)}</div>
+          ${v.category ? `<div class="mem-version-cat"><span class="badge badge-${v.category}">${escapeHtml(v.category)}</span></div>` : ''}
+        </div>
+      `
+    }).join('')
+  } catch {
+    list.innerHTML = '<p class="mem-version-empty">Nem sikerült betölteni az előzményeket.</p>'
   }
 }
 
@@ -826,13 +896,8 @@ function hideGraphPanel() {
 }
 
 export function openEditMemory(mem) {
-  document.getElementById('memModalTitle').textContent = t('memories.modal.title_edit')
-  document.getElementById('memAgent').value = mem.agent_id || mainAgentId()
-  document.getElementById('memTier').value = mem.tier || mem.category || 'warm'
-  document.getElementById('memContent').value = mem.content || ''
-  document.getElementById('memKeywords').value = mem.keywords || ''
-  document.getElementById('memEditId').value = mem.id
-  _openModal?.(memModalOverlay)
+  const tier = mem.tier || mem.category || 'warm'
+  openMemEditModal({ ...mem, agent_id: mem.agent_id || mainAgentId() }, tier)
 }
 
 // === Graph search integration ===

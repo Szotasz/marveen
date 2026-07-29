@@ -3142,6 +3142,90 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   color: var(--text-muted);
 }
 
+/* Stale badge: appears on memory cards updated since the agent last read them */
+.mem-stale-badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 20px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+}
+
+/* === Memory version history (Előzmények tab) === */
+.mem-version-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.mem-version-item {
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+}
+
+.mem-version-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.mem-version-num {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  min-width: 24px;
+}
+
+.mem-version-date {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.mem-version-by {
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.mem-version-type {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+.mem-version-content {
+  font-size: 13px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
+.mem-version-cat {
+  margin-top: 6px;
+}
+
+.mem-version-empty {
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 24px 0;
+}
+
 /* === Daily Log === */
 .log-date-nav {
   display: flex;
