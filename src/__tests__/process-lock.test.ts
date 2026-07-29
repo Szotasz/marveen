@@ -15,16 +15,26 @@ import {
 // table directly so we can simulate PIDs dying at specific points, foreign
 // UIDs, non-node commands, etc. without ever touching real processes.
 
-interface MockProc { pid: number; uid: number; cmd: string; args?: string; alive: boolean }
+interface MockProc { pid: number; uid: number; cmd: string; args?: string; alive: boolean; cwd?: string | null }
 
 interface MockOptions {
   currentPid?: number
   uid?: number | null
+  /** Defaults to SELF_ROOT so existing tests (which don't care about
+   * cwd-scoping) keep matching by default; override to test cross-root
+   * scoping specifically. */
+  selfProjectRoot?: string | null
   procs?: MockProc[]
   portHolders?: Record<number, number[]>
   /** signal-probe override so tests can simulate EPERM etc. */
   signalOverride?: ProcessLockContext['signal']
 }
+
+// Default project root shared by currentPid and any MockProc that doesn't
+// specify its own `cwd` -- keeps every pre-existing test (written before
+// cwd-scoping existed) passing unchanged, since they're not testing that
+// dimension.
+const SELF_ROOT = '/self/root'
 
 function makeCtx(options: MockOptions): {
   ctx: ProcessLockContext
@@ -50,9 +60,16 @@ function makeCtx(options: MockOptions): {
     p.alive = false
     return 'sent'
   }
+  const selfProjectRoot = options.selfProjectRoot === undefined ? SELF_ROOT : options.selfProjectRoot
   const ctx: ProcessLockContext = {
     currentPid,
     uid,
+    selfProjectRoot,
+    getProcessCwd: (pid: number) => {
+      const p = table.get(pid)
+      if (!p) return null
+      return p.cwd === undefined ? SELF_ROOT : p.cwd
+    },
     listPortHolders: (port: number) => options.portHolders?.[port] ?? [],
     listOwnProcessesMatching: (pattern: RegExp) => {
       const out: number[] = []
@@ -174,6 +191,68 @@ describe('findOwnBinaryMatches', () => {
     ]
     const { ctx } = makeCtx({ uid: 501, procs })
     expect(findOwnBinaryMatches(/dist\/index\.js/, ctx)).toEqual([])
+  })
+
+  // Regression for the 2026-07-15 incident: a git worktree of this repo
+  // booting dist/index.js matched -- and killed -- the live production
+  // dashboard running from a completely different checkout, because the
+  // pattern only checks the trailing path segment. Fixed by scoping matches
+  // to the candidate process's actual cwd (via /proc/<pid>/cwd in the real
+  // ctx, `MockProc.cwd` here).
+  describe('cross-worktree scoping (2026-07-15 fix)', () => {
+    it('excludes a same-argv-pattern process running from a DIFFERENT project root', () => {
+      const procs: MockProc[] = [
+        { pid: 200, uid: 501, cmd: 'node', args: 'node dist/index.js', alive: true, cwd: '/home/user/marveen-worktrees/other-branch' },
+      ]
+      const { ctx, logs } = makeCtx({ selfProjectRoot: '/home/user/marveen', procs })
+      expect(findOwnBinaryMatches(/dist\/index\.js/, ctx)).toEqual([])
+      expect(logs.some(l => l.level === 'warn' && /different project root/.test(l.msg))).toBe(true)
+    })
+
+    it('includes a same-argv-pattern process running from the SAME project root', () => {
+      const procs: MockProc[] = [
+        { pid: 200, uid: 501, cmd: 'node', args: 'node dist/index.js', alive: true, cwd: '/home/user/marveen' },
+      ]
+      const { ctx } = makeCtx({ selfProjectRoot: '/home/user/marveen', procs })
+      expect(findOwnBinaryMatches(/dist\/index\.js/, ctx)).toEqual([200])
+    })
+
+    it('excludes a candidate whose cwd cannot be resolved (unverifiable is not "ours")', () => {
+      const procs: MockProc[] = [
+        { pid: 200, uid: 501, cmd: 'node', args: 'node dist/index.js', alive: true, cwd: null },
+      ]
+      const { ctx } = makeCtx({ selfProjectRoot: '/home/user/marveen', procs })
+      expect(findOwnBinaryMatches(/dist\/index\.js/, ctx)).toEqual([])
+    })
+
+    it('falls back to unscoped (old) behavior when selfProjectRoot itself is unresolvable', () => {
+      const procs: MockProc[] = [
+        { pid: 200, uid: 501, cmd: 'node', args: 'node dist/index.js', alive: true, cwd: '/home/user/marveen-worktrees/other-branch' },
+      ]
+      const { ctx } = makeCtx({ selfProjectRoot: null, procs })
+      expect(findOwnBinaryMatches(/dist\/index\.js/, ctx)).toEqual([200])
+    })
+
+    it('does NOT scope findOwnNodeHolders (byPort) by project root -- a real port conflict is still reclaimed', () => {
+      // byPort matching is intentionally left unscoped: it means "something
+      // is literally sitting on the exact port I need to bind", which is a
+      // genuine conflict regardless of which checkout it came from.
+      const procs: MockProc[] = [
+        { pid: 200, uid: 501, cmd: 'node', alive: true, cwd: '/some/other/checkout' },
+      ]
+      const { ctx } = makeCtx({ selfProjectRoot: '/home/user/marveen', procs, portHolders: { 3420: [200] } })
+      expect(findOwnNodeHolders(3420, ctx)).toEqual([200])
+    })
+
+    it('multiple worktrees: only the same-root instance is matched, siblings are left alone', () => {
+      const procs: MockProc[] = [
+        { pid: 200, uid: 501, cmd: 'node', args: 'node dist/index.js', alive: true, cwd: '/home/user/marveen' },
+        { pid: 300, uid: 501, cmd: 'node', args: 'node dist/index.js', alive: true, cwd: '/home/user/marveen-worktrees/branch-a' },
+        { pid: 400, uid: 501, cmd: 'node', args: 'node dist/index-scratch.js', alive: true, cwd: '/home/user/marveen-worktrees/branch-b' },
+      ]
+      const { ctx } = makeCtx({ selfProjectRoot: '/home/user/marveen-worktrees/branch-a', procs })
+      expect(findOwnBinaryMatches(/dist\/index\.js/, ctx)).toEqual([300])
+    })
   })
 })
 

@@ -27,6 +27,14 @@ export interface ProcessLockContext {
   currentPid: number
   /** Effective UID of the current process, or null on platforms without getuid. */
   uid: number | null
+  /**
+   * This process's own resolved project-root directory (e.g. `/home/user/
+   * marveen`, NOT `/home/user/marveen-worktrees/some-branch`), used to scope
+   * `findOwnBinaryMatches` to genuine predecessors of THIS checkout. Null on
+   * platforms/setups where it cannot be resolved -- binary-pattern matching
+   * then falls back to the old unscoped behavior (see `getProcessCwd`).
+   */
+  selfProjectRoot: string | null
   /** List PIDs currently bound to the given TCP port (typically via `lsof -ti`). */
   listPortHolders(port: number): number[]
   /** List own-UID PIDs whose argv matches `pattern` (typically via `ps -A -o pid,uid,args`).
@@ -37,6 +45,14 @@ export interface ProcessLockContext {
   getProcessCommand(pid: number): string | null
   /** Return the owning UID of the PID, or null if the process is gone. */
   getProcessUid(pid: number): number | null
+  /**
+   * Return the PID's current working directory (e.g. via `/proc/<pid>/cwd`
+   * on Linux), or null if unavailable/gone. Used to scope binary-pattern
+   * matches to the same checkout/worktree as this process -- a different
+   * worktree's `dist/index.js` matches the same argv pattern but runs from a
+   * different directory, and must never be treated as "our own predecessor".
+   */
+  getProcessCwd(pid: number): string | null
   /**
    * Send a signal. Signal 0 is the liveness probe. Returns:
    *  - 'sent' if the signal was delivered (process alive for sig 0)
@@ -76,7 +92,7 @@ const DEFAULT_POST_KILL_POLL_MS = 100
  */
 export function findOwnNodeHolders(port: number, ctx: ProcessLockContext): number[] {
   const raw = ctx.listPortHolders(port)
-  return filterOwnNodeCandidates(raw, ctx)
+  return filterOwnNodeCandidates(raw, ctx, { scopeToProjectRoot: false })
 }
 
 /**
@@ -84,13 +100,28 @@ export function findOwnNodeHolders(port: number, ctx: ProcessLockContext): numbe
  * excluding the current PID. Complements `findOwnNodeHolders` for the
  * case where a previous dashboard is still running but already lost its
  * listening socket.
+ *
+ * Scoped to `ctx.selfProjectRoot`: the pattern alone only checks the
+ * trailing path segment (`dist/index.js`), which matches identically
+ * regardless of which checkout/worktree a process runs from. Without this
+ * scoping, booting this app from ANY git worktree of this repo would match
+ * -- and SIGTERM -- every OTHER worktree's (including the live production
+ * instance's) same-named process, since a worktree checkout deliberately
+ * shares the exact same file layout. Confirmed live 2026-07-15: a merge
+ * worktree's test boot killed the live `marveen-dashboard` systemd service
+ * this way, on a completely different port. See
+ * cross-worktree-dashboard-binary-pattern-kill-bug memory for the incident.
  */
 export function findOwnBinaryMatches(pattern: RegExp, ctx: ProcessLockContext): number[] {
   const raw = ctx.listOwnProcessesMatching(pattern)
-  return filterOwnNodeCandidates(raw, ctx)
+  return filterOwnNodeCandidates(raw, ctx, { scopeToProjectRoot: true })
 }
 
-function filterOwnNodeCandidates(pids: number[], ctx: ProcessLockContext): number[] {
+function filterOwnNodeCandidates(
+  pids: number[],
+  ctx: ProcessLockContext,
+  opts: { scopeToProjectRoot: boolean },
+): number[] {
   const seen = new Set<number>()
   const holders: number[] = []
   for (const pid of pids) {
@@ -111,6 +142,21 @@ function filterOwnNodeCandidates(pids: number[], ctx: ProcessLockContext): numbe
     if (!/node|tsx/i.test(cmd)) {
       ctx.log.warn({ pid, cmd }, 'Port/binary holder is not a node/tsx process, leaving alone')
       continue
+    }
+    // Binary-pattern matches are cross-worktree-ambiguous (see doc comment
+    // above): only treat a match as "ours" if it runs from the exact same
+    // project-root directory we do. Unresolvable cwd (null on either side)
+    // is treated as "not provably ours" -- silence here favours leaving an
+    // unrelated process alone over killing something we can't verify.
+    if (opts.scopeToProjectRoot && ctx.selfProjectRoot != null) {
+      const candidateCwd = ctx.getProcessCwd(pid)
+      if (candidateCwd == null || candidateCwd !== ctx.selfProjectRoot) {
+        ctx.log.warn(
+          { pid, candidateCwd, selfProjectRoot: ctx.selfProjectRoot },
+          'Binary-pattern match runs from a different project root, leaving alone',
+        )
+        continue
+      }
     }
     holders.push(pid)
   }

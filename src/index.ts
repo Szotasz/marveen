@@ -1,6 +1,7 @@
 import {
   readFileSync,
   readlinkSync,
+  realpathSync,
   unlinkSync,
   mkdirSync,
   openSync,
@@ -96,9 +97,30 @@ function argvBelongsToThisInstall(argv: string, pid: number): boolean {
 // or node:fs directly.
 function buildProcessLockContext(): ProcessLockContext {
   const uid = typeof process.getuid === 'function' ? process.getuid() : null
+  // realpath so this compares equal against /proc/<pid>/cwd, which the
+  // kernel always reports fully symlink-resolved -- an un-resolved
+  // PROJECT_ROOT (e.g. reached via a symlinked path) would otherwise never
+  // match even for our own genuine predecessor.
+  let selfProjectRoot: string | null
+  try {
+    selfProjectRoot = realpathSync(PROJECT_ROOT)
+  } catch {
+    selfProjectRoot = null
+  }
   return {
     currentPid: process.pid,
     uid,
+    selfProjectRoot,
+    getProcessCwd(pid: number): string | null {
+      // Linux-only (/proc), consistent with the rest of this file's tooling
+      // (ps, lsof). Resolves symlinks so two different-looking paths to the
+      // same directory (e.g. via a bind mount) still compare equal.
+      try {
+        return readlinkSync(`/proc/${pid}/cwd`)
+      } catch {
+        return null
+      }
+    },
     listPortHolders(port: number): number[] {
       try {
         const raw = execSync(`lsof -ti :${port} 2>/dev/null || true`, { timeout: 3000, encoding: 'utf-8' }).trim()
