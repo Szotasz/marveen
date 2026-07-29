@@ -88,8 +88,8 @@ function captureNowSafely(): void {
 }
 
 /**
- * Boot-time seam entry point (docs/fork-upstream-policy.md §2a): the ONE
- * call web.ts makes for every CostOps background task, present and future
+ * Boot-time seam entry point: the ONE call web.ts makes for every CostOps
+ * background task, present and future
  * (currently: reliability-observation snapshots + Phase 1 forecast
  * snapshots). Captures immediately, then every 24h. Returns the interval
  * handle so the caller can clearInterval it on shutdown, matching every

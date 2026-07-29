@@ -49,7 +49,7 @@ describe('reliability observation window (CostOps Phase 0, P0.4/P0.5)', () => {
   })
 })
 
-describe('startCostOpsBackgroundTasks (boot seam, docs/fork-upstream-policy.md §2a)', () => {
+describe('startCostOpsBackgroundTasks (the single boot seam web.ts calls)', () => {
   beforeEach(() => { initDatabase(':memory:'); vi.useFakeTimers() })
   afterEach(() => { vi.useRealTimers() })
 

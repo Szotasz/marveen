@@ -16,7 +16,8 @@
 // NO db.ts/web.ts/schema.ts edits: `initAlertsSchema` is a schema DEFINER
 // only, not mounted anywhere -- the seam-refactor's `initCostOpsSchema(db)`
 // aggregator (Mason, accounting-core seam, src/costops/schema.ts) calls it,
-// per docs/fork-upstream-policy.md §2a. Same pattern as forecast.ts/fx.ts.
+// keeping every CostOps table behind that single mount point. Same pattern as
+// forecast.ts/fx.ts.
 //
 // GAP-12 acceptance reminder baked into every detector below: "stale adat
 // onmagaban nem okoz erős vagy hibás üzleti allitast" -- a stale/failed sync
@@ -348,10 +349,10 @@ export function deserializeEvidence(json: string): Record<string, unknown> {
 // ---- schema (DEFINER ONLY -- not mounted; see file header) --------------------------
 
 /**
- * Schema DEFINER only. NOT called from db.ts or src/costops/schema.ts -- per
- * fork-upstream-policy.md §2a, the ONE seam mount (`initCostOpsSchema(db)` in
- * schema.ts calling this among the module's other schema definers) is the
- * seam-refactor's job. Safe to call more than once (`IF NOT EXISTS`).
+ * Schema DEFINER only. NOT called from db.ts or src/costops/schema.ts: the ONE
+ * seam mount (`initCostOpsSchema(db)` in schema.ts calling this among the
+ * module's other schema definers) is the seam-refactor's job. Safe to call
+ * more than once (`IF NOT EXISTS`).
  * `evidence_json` stores the `AlertCandidate.evidence` object via
  * `serializeEvidence`; the aggregator round-trips it with
  * `deserializeEvidence`. Named `costops_alerts` (not the generic `alerts`)

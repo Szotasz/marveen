@@ -17,8 +17,8 @@
 //
 // NO db.ts/web.ts/schema.ts edits: `initOptimizationSchema` is a schema
 // DEFINER only, not mounted anywhere -- the seam-refactor's
-// `initCostOpsSchema(db)` aggregator calls it, per
-// docs/fork-upstream-policy.md §2a.
+// `initCostOpsSchema(db)` aggregator calls it, keeping every CostOps table
+// behind that single mount point.
 //
 // AGGREGATE COST SCOPE ONLY (GAP-17's explicit "Tilos" list): every
 // recommendation here is subscription/provider/hosting/SaaS/domain-level.
@@ -464,10 +464,10 @@ export { serializeEvidence, deserializeEvidence }
 // ---- schema (DEFINER ONLY -- not mounted; see file header) ------------------------------------
 
 /**
- * Schema DEFINER only. NOT called from db.ts or src/costops/schema.ts -- per
- * fork-upstream-policy.md §2a, the seam mount (`initCostOpsSchema(db)`
- * calling this among the module's other schema definers) is the
- * seam-refactor's job. Safe to call more than once (`IF NOT EXISTS`).
+ * Schema DEFINER only. NOT called from db.ts or src/costops/schema.ts: the
+ * seam mount (`initCostOpsSchema(db)` calling this among the module's other
+ * schema definers) is the seam-refactor's job. Safe to call more than once
+ * (`IF NOT EXISTS`).
  */
 export function initOptimizationSchema(db: Database.Database): void {
   db.exec(`
