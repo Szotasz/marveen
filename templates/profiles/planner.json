@@ -1,8 +1,8 @@
 {
   "id": "planner",
   "label": "Tervező (olvas, nem ír)",
-  "description": "Terv- és architektúra-készítéshez: OLVASHATJA a projekt repókat és a webet, de a repóba nem írhat. A researcher profil erre nem jó, mert az csak a saját agent-mappáját engedi olvasni, és a blanket curl-tiltása még az inter-agent jelentést is blokkolja. Következmény a workflow-ra: a tervező a terv-dokumentumot NEM tudja a repóba írni -- ${AGENT_DIR} vagy /tmp alá ír, és az orchestrator másolja be és commitolja.",
-  "permissionMode": "strict",
+  "description": "Terv- és architektúra-készítéshez: OLVASHATJA a projekt repókat és a webet, de a repóba nem írhat. A researcher profil erre nem jó, mert az csak a saját agent-mappáját engedi olvasni, és a blanket curl-tiltása még az inter-agent jelentést is blokkolja. Következmény a workflow-ra: a tervező a terv-dokumentumot NEM tudja a repóba írni -- ${AGENT_DIR} vagy /tmp alá ír, és az orchestrator másolja be és commitolja. A permissionMode PERMISSIVE, mert strict modban a cd-guard promptja megallitana a felugyelet nelkuli workert; az irast a readonly-repo-gate PreToolUse hook tiltja, ami a permission-modtol fuggetlenul fut.",
+  "permissionMode": "permissive",
   "filesystem": {
     "allow": [
       "Read(${AGENT_DIR}/**)",

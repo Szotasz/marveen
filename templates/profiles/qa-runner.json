@@ -1,8 +1,8 @@
 {
   "id": "qa-runner",
   "label": "QA / tesztfuttató (futtat, forrást nem szerkeszt)",
-  "description": "Teszt, lint, typecheck, build és loggyűjtés a projekt repókban. Olvashat és futtathat, de a forrásfájlokat nem szerkesztheti -- a hibát jelenti, nem javítja.",
-  "permissionMode": "strict",
+  "description": "Teszt, lint, typecheck, build és loggyűjtés a projekt repókban. Olvashat és futtathat, de a forrásfájlokat nem szerkesztheti -- a hibát jelenti, nem javítja. A permissionMode PERMISSIVE, mert strict modban a cd-guard promptja megallitana a felugyelet nelkuli workert; az irast a readonly-repo-gate PreToolUse hook tiltja, ami a permission-modtol fuggetlenul fut.",
+  "permissionMode": "permissive",
   "filesystem": {
     "allow": [
       "Read(${AGENT_DIR}/**)",
