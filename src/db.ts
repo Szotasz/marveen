@@ -614,30 +614,30 @@ export function getMemoryVersions(memoryId: number): MemoryVersion[] {
 // Auto tier-resorting based on span_reads activity. All three steps run in
 // a single transaction so a crash leaves the DB in a consistent state.
 //
-// hot/warm -> cold: no reads by any agent for 30 days; shared memories are
-//   intentionally excluded (they belong to all agents, never auto-archived).
-// cold -> warm: read by 2+ distinct agents within the last 24 hours.
+// warm -> cold: no reads by any agent for 30 days (hot is manually managed,
+//   shared is never auto-archived -- both implicitly excluded by category='warm').
+// cold -> warm: read by 2+ distinct agents within the last 30 days.
 // version prune: delete memory_versions older than 180 days.
 //
 // Returns affected row counts for observability.
 export function runMemoryMaintenance(opts: {
   warmToColdDays?: number
-  coldToWarmHours?: number
+  coldToWarmDays?: number
   minAgents?: number
   versionTtlDays?: number
 } = {}): { warmToCold: number; coldToWarm: number; prunedVersions: number } {
   const warmToColdSecs = (opts.warmToColdDays ?? 30) * 86400
-  const coldToWarmSecs = (opts.coldToWarmHours ?? 24) * 3600
+  const coldToWarmSecs = (opts.coldToWarmDays ?? 30) * 86400
   const minAgents = opts.minAgents ?? 2
   const versionCutoff = Math.floor(Date.now() / 1000) - (opts.versionTtlDays ?? 180) * 86400
   const now = Math.floor(Date.now() / 1000)
 
   return db.transaction(() => {
+    // Only warm -> cold: hot is manually managed; shared belongs to all agents.
     const warmToCold = db.prepare(`
       UPDATE memories
       SET category = 'cold', updated_at = ?
-      WHERE category IN ('hot', 'warm')
-        AND category != 'shared'
+      WHERE category = 'warm'
         AND id NOT IN (
           SELECT DISTINCT memory_id FROM span_reads
           WHERE read_at > ? - ?
@@ -662,22 +662,6 @@ export function runMemoryMaintenance(opts: {
 
     return { warmToCold, coldToWarm, prunedVersions }
   })()
-}
-
-// Kept for backward-compat with existing tests and the resort route.
-// New callers should prefer runMemoryMaintenance().
-export function autoResortTiers(opts: {
-  warmToColdDays?: number
-  multiAgentDays?: number
-  minAgents?: number
-} = {}): { warmToCold: number; coldToWarm: number } {
-  const r = runMemoryMaintenance({
-    warmToColdDays: opts.warmToColdDays,
-    coldToWarmHours: (opts.multiAgentDays ?? 1) * 24,
-    minAgents: opts.minAgents,
-    versionTtlDays: 99999, // prune handled separately when called via autoResortTiers
-  })
-  return { warmToCold: r.warmToCold, coldToWarm: r.coldToWarm }
 }
 
 // Delete memory_versions entries older than ttlDays (default 180).

@@ -8,8 +8,8 @@ description: Daily memory tier-resorting and version history pruning via POST /a
 ## Mikor használd
 
 Naponta egyszer (default: 03:00) automatikusan fut. Elvégzi:
-1. hot/warm -> cold átsorolás: ha 30 napja egyetlen ágenstől sem olvasódott (shared kategória kizárva)
-2. cold -> warm emelés: ha az utolsó 24 órában 2+ különböző ágens olvasta
+1. warm -> cold átsorolás: ha 30 napja egyetlen ágenstől sem olvasódott (hot és shared kizárva -- hot manuálisan kezelt)
+2. cold -> warm emelés: ha az utolsó 30 napban 2+ különböző ágens olvasta
 3. memory_versions prune: 180 napnál régebbi verziók törlése
 
 ## Eljárás
@@ -47,7 +47,7 @@ TOKEN=$(cat {{INSTALL_DIR}}/store/.dashboard-token)
 curl -s -X POST http://localhost:3420/api/memories/resort \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
-  -d '{"warm_to_cold_days":14,"cold_to_warm_hours":48,"min_agents":3,"version_ttl_days":90}'
+  -d '{"warm_to_cold_days":14,"cold_to_warm_days":7,"min_agents":3,"version_ttl_days":90}'
 ```
 
 ## Telepítés

@@ -181,12 +181,12 @@ describe('runMemoryMaintenance', () => {
     expect(row.category).toBe('cold')
   })
 
-  it('moves hot memory to cold when unread for 30+ days', () => {
+  it('does NOT move hot memory to cold (hot is manually managed)', () => {
     const id = insertMem('idle hot content', 'hot', 'agent-i2')
-    const result = runMemoryMaintenance({ warmToColdDays: 30 })
-    expect(result.warmToCold).toBeGreaterThanOrEqual(1)
+    // No span_reads -> would qualify for auto-cold IF hot were in scope, but it isn't.
+    runMemoryMaintenance({ warmToColdDays: 0 }) // 0-day threshold archives everything in scope
     const row = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }
-    expect(row.category).toBe('cold')
+    expect(row.category).toBe('hot')
   })
 
   it('does NOT move shared memory to cold even if unread', () => {
@@ -204,11 +204,11 @@ describe('runMemoryMaintenance', () => {
     expect(row.category).toBe('warm')
   })
 
-  it('promotes cold memory to warm when read by 2+ distinct agents within 24h', () => {
+  it('promotes cold memory to warm when read by 2+ distinct agents recently', () => {
     const id = insertMem('resurface cold content', 'cold', 'agent-k')
     recordMemoryRead('agent-k', id, 'direct')
     recordMemoryRead('agent-l', id, 'search')
-    const result = runMemoryMaintenance({ coldToWarmHours: 24, minAgents: 2 })
+    const result = runMemoryMaintenance({ coldToWarmDays: 30, minAgents: 2 })
     expect(result.coldToWarm).toBeGreaterThanOrEqual(1)
     const row = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }
     expect(row.category).toBe('warm')
@@ -217,7 +217,7 @@ describe('runMemoryMaintenance', () => {
   it('does NOT promote cold memory with only 1 reader', () => {
     const id = insertMem('single-reader cold', 'cold', 'agent-m')
     recordMemoryRead('agent-m', id, 'direct')
-    runMemoryMaintenance({ coldToWarmHours: 24, minAgents: 2 })
+    runMemoryMaintenance({ coldToWarmDays: 30, minAgents: 2 })
     const row = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }
     expect(row.category).toBe('cold')
   })

@@ -264,14 +264,14 @@ Respond ONLY with JSON, nothing else:
 
   // POST /api/memories/resort -- scheduled maintenance: tier-resort + version prune.
   // Called daily by the maintenance scheduled task. Idempotent.
-  // Body (all optional): { warm_to_cold_days, cold_to_warm_hours, min_agents, version_ttl_days }
+  // Body (all optional): { warm_to_cold_days, cold_to_warm_days, min_agents, version_ttl_days }
   if (path === '/api/memories/resort' && method === 'POST') {
     try {
       const body = await readBody(req)
       const opts = body.length ? JSON.parse(body.toString()) : {}
       const result = runMemoryMaintenance({
         warmToColdDays: opts.warm_to_cold_days,
-        coldToWarmHours: opts.cold_to_warm_hours,
+        coldToWarmDays: opts.cold_to_warm_days,
         minAgents: opts.min_agents,
         versionTtlDays: opts.version_ttl_days,
       })

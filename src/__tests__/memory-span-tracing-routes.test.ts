@@ -249,14 +249,14 @@ describe('POST /api/memories/resort', () => {
   it('passes custom thresholds to runMemoryMaintenance', async () => {
     const { ctx, out } = makeCtx('POST', '/api/memories/resort', {
       warm_to_cold_days: 14,
-      cold_to_warm_hours: 48,
+      cold_to_warm_days: 7,
       min_agents: 3,
       version_ttl_days: 90,
     })
     await tryHandleMemories(ctx)
     expect(mocks.runMemoryMaintenance).toHaveBeenCalledWith({
       warmToColdDays: 14,
-      coldToWarmHours: 48,
+      coldToWarmDays: 7,
       minAgents: 3,
       versionTtlDays: 90,
     })
