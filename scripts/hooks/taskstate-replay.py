@@ -51,15 +51,41 @@ def _token():
         return ""
 
 
+def _main_agent_id():
+    """MAIN_AGENT_ID from env, else .env, else the upstream default."""
+    v = os.environ.get("MAIN_AGENT_ID")
+    if v and v.strip():
+        return v.strip()
+    try:
+        with open(os.path.join(_project_root(), ".env")) as f:
+            for line in f:
+                if line.startswith("MAIN_AGENT_ID="):
+                    return line.split("=", 1)[1].strip().strip('"')
+    except Exception:
+        pass
+    return "marveen"
+
+
 def _agent_id_from_cwd(cwd):
-    # agents/<name>/... -> <name>; the main agent runs from the project root.
+    # agents/<name>/... -> <name>; the project root -> the MAIN agent.
+    #
+    # The main agent used to return None here, i.e. it silently never got its
+    # task-state back (2026-07-27). That was never a deliberate exclusion: the
+    # record is written per agent_id and the main agent writes one exactly like
+    # a sub-agent does, so there was nothing to protect against -- only a
+    # missing branch. It matters most for the main agent, which is the one
+    # holding the owner-facing threads when a respawn hits.
     if not cwd:
         return None
-    parts = os.path.normpath(cwd).split(os.sep)
+    root = os.path.normpath(_project_root())
+    norm = os.path.normpath(cwd)
+    parts = norm.split(os.sep)
     if "agents" in parts:
         i = parts.index("agents")
         if i + 1 < len(parts):
             return parts[i + 1]
+    if norm == root:
+        return _main_agent_id()
     return None
 
 
