@@ -27,7 +27,7 @@ interface LineRow {
   data_freshness: number
 }
 
-function readMonth(db: Database.Database, win: MonthWindow, providerBySource: Map<string, string>): MonthlyPeriod {
+function readMonth(db: Database.Database, win: MonthWindow, providerBySource: Map<string, string>, now: number): MonthlyPeriod {
   const rows = db.prepare(`
     SELECT source_id, billed_cost, charge_category, confidence, data_freshness
     FROM cost_line_items
@@ -43,6 +43,7 @@ function readMonth(db: Database.Database, win: MonthWindow, providerBySource: Ma
       billed_cost: l.billed_cost, charge_category: l.charge_category, confidence: l.confidence, data_freshness: l.data_freshness,
     })),
     win,
+    now,
   )
   return {
     month: win.key,
@@ -81,9 +82,9 @@ export function getPeriodTrend(
   }
   windows.reverse() // oldest first
 
-  const months = windows.map(w => readMonth(db, w, providerBySource))
+  const months = windows.map(w => readMonth(db, w, providerBySource, now))
   const current = months[months.length - 1]
-  const previous = months.length >= 2 ? months[months.length - 2] : readMonth(db, monthWindow(anchor.start - 86400), providerBySource)
+  const previous = months.length >= 2 ? months[months.length - 2] : readMonth(db, monthWindow(anchor.start - 86400), providerBySource, now)
   const month_over_month_delta = (!current.no_data && !previous.no_data)
     ? Math.round((current.operational_spend - previous.operational_spend) * 100) / 100
     : null

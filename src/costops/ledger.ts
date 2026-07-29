@@ -139,8 +139,13 @@ export interface OperationalResult {
  * Per source -> best line by OPERATIONAL_TIER. Per provider -> if it has any
  * provider-derived source, its manual/estimate sources are excluded from operational
  * (fallback only). No double counting. `win` is used for the forecast run-rate.
+ *
+ * `now` (epoch sec) is the reference instant for the future-stamp guard below.
+ * It is a parameter and not a `Date.now()` read so that this function is a pure
+ * function of its inputs: every caller in the codebase already has the request's
+ * `now` in scope, and a wall-clock read made the result depend on WHEN it ran.
  */
-export function resolveOperational(lines: OpLine[], win: MonthWindow): OperationalResult {
+export function resolveOperational(lines: OpLine[], win: MonthWindow, now: number = Math.floor(Date.now() / 1000)): OperationalResult {
   const bySource = new Map<string, OpLine[]>()
   for (const l of lines) { const a = bySource.get(l.source_id); if (a) a.push(l); else bySource.set(l.source_id, [l]) }
   const sourceBest = new Map<string, OpLine>()
@@ -168,7 +173,7 @@ export function resolveOperational(lines: OpLine[], win: MonthWindow): Operation
       // Same kind of line -> fall back to freshness, but a stamp in the FUTURE
       // cannot mean "fresher". A period-END date reaching data_freshness is a
       // known data defect (card 320c477a) and must not decide anything.
-      const now = Date.now() / 1000
+      // "Future" is measured against the caller's `now`, not the wall clock.
       const fa = a.data_freshness > now ? -Infinity : a.data_freshness
       const fb = b.data_freshness > now ? -Infinity : b.data_freshness
       return fb > fa ? b : a
@@ -566,7 +571,7 @@ export function getCostSummary(
     billed_cost: l.billed_cost, charge_category: l.charge_category, confidence: l.confidence, data_freshness: l.data_freshness,
     source_type: sourceTypeBySource.get(l.source_id),
   }))
-  const op = resolveOperational(opLines, win)
+  const op = resolveOperational(opLines, win, now)
 
   // previous month: aggregate from cost_line_items; NEVER fabricated. null if no data.
   const prevWin = monthWindow(win.start - 86400)
@@ -580,7 +585,7 @@ export function getCostSummary(
       source_id: l.source_id, provider: providerBySource.get(l.source_id) || 'other',
       billed_cost: l.billed_cost, charge_category: l.charge_category, confidence: l.confidence, data_freshness: l.data_freshness,
       source_type: sourceTypeBySource.get(l.source_id),
-    })), prevWin)
+    })), prevWin, now)
     previous_month = { month: prevWin.key, operational_spend: prevOp.operational_spend, by_provider: prevOp.provider_breakdown }
   }
   const month_over_month_delta = previous_month ? round2(op.operational_spend - previous_month.operational_spend) : null

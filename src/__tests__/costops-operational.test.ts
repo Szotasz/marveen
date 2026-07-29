@@ -180,12 +180,28 @@ describe('getCostSummary v0.4 operational fields', () => {
   })
 
   // Card 320c477a: a period-END date reaching data_freshness must not win.
+  // NOW is passed explicitly: "future" has to be measured against the scenario's
+  // clock, not the wall clock. Without it this assertion silently became
+  // vacuous 12 days after NOW and then flipped to a real failure -- the stamp
+  // it calls "future" was no longer in the future when the suite actually ran.
   it('a FUTURE freshness stamp cannot beat a real one', () => {
     const win = monthWindow(NOW)
     const r = resolveOperational([
       { source_id: 'z-api', provider: 'z', billed_cost: 100, charge_category: 'usage', confidence: 'provider_api', data_freshness: NOW },
       { source_id: 'z-api', provider: 'z', billed_cost: 7, charge_category: 'usage', confidence: 'provider_api', data_freshness: NOW + 12 * 86400 },
-    ], win)
+    ], win, NOW)
     expect(r.operational_spend).toBe(100)
+  })
+
+  // The guard has to be able to go the other way too, otherwise "cannot beat"
+  // above would also pass on an implementation that just always kept the first
+  // row. Same shape, both stamps in the PAST -> the genuinely fresher row wins.
+  it('with both stamps in the past, the fresher row still wins', () => {
+    const win = monthWindow(NOW)
+    const r = resolveOperational([
+      { source_id: 'z-api', provider: 'z', billed_cost: 100, charge_category: 'usage', confidence: 'provider_api', data_freshness: NOW - 12 * 86400 },
+      { source_id: 'z-api', provider: 'z', billed_cost: 7, charge_category: 'usage', confidence: 'provider_api', data_freshness: NOW },
+    ], win, NOW)
+    expect(r.operational_spend).toBe(7)
   })
 })
