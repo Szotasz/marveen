@@ -35,3 +35,12 @@ CREATE INDEX IF NOT EXISTS idx_memory_versions_memory ON memory_versions(memory_
 -- overwrite the memory owner when a different agent edits it. The explicit
 -- approach reads old state first, inserts into memory_versions with the
 -- correct changed_by, then performs the UPDATE without touching agent_id.
+
+-- 5. Seed existing memories with a migration-time span_read so the first
+-- maintenance run does not mass-demote them to cold. Before span tracing
+-- existed these memories were actively used; context='migration' marks that
+-- this is not a real agent read. The read_at timestamp gives each memory a
+-- 30-day grace period from the migration date before demotion eligibility.
+INSERT INTO span_reads (agent_id, memory_id, read_at, context)
+SELECT agent_id, id, unixepoch(), 'migration'
+FROM memories;
