@@ -690,6 +690,7 @@ window._i18n.en = {
   'approvals.status.approved':   'Approved',
   'approvals.status.rejected':   'Rejected',
   'approvals.status.timeout':    'Timed out',
+  'approvals.status.decided':    'Decided',
   'approvals.empty':             'No results.',
   'approvals.loading':           'Loading...',
   'approvals.error':             'Failed to load approvals.',
