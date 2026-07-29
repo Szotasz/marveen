@@ -4,6 +4,13 @@ import { homedir } from 'node:os'
 import { PROJECT_ROOT, MAIN_AGENT_ID, DEFAULT_AGENT_MODEL } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { safeJoin } from './sanitize.js'
+import {
+  resolveAgentModelFromConfig,
+  validateModelProfileMap,
+  type AgentModelConfig,
+  type ModelProfileMapState,
+  type ModelResolution,
+} from '../model-profiles.js'
 
 export const AGENTS_BASE_DIR = join(PROJECT_ROOT, 'agents')
 
@@ -61,14 +68,68 @@ export function resolveModelId(raw: string): string {
   return MODEL_ALIASES[raw] || raw
 }
 
-export function readAgentModel(name: string): string {
-  const configPath = join(agentDir(name), 'agent-config.json')
+// ---- model-profile map (deployment-local, card c755f4b2 Block B) -------------
+//
+// store/ is gitignored, so the concrete profile -> model mapping never leaves
+// the machine. config-examples/model-profile-map.example.json documents the
+// shape. A missing map is FINE: every agent that names a concrete `model`
+// keeps working untouched, which is every agent today.
+const MODEL_PROFILE_MAP_PATH = join(PROJECT_ROOT, 'store', 'model-profile-map.json')
+
+let cachedProfileMap: { state: ModelProfileMapState; mtimeMs: number } | null = null
+
+export function readModelProfileMap(): ModelProfileMapState | null {
   try {
-    const config = JSON.parse(readFileOr(configPath, '{}'))
-    return resolveModelId(config.model || DEFAULT_MODEL)
+    if (!existsSync(MODEL_PROFILE_MAP_PATH)) return null
+    const mtimeMs = statSync(MODEL_PROFILE_MAP_PATH).mtimeMs
+    if (cachedProfileMap && cachedProfileMap.mtimeMs === mtimeMs) return cachedProfileMap.state
+    let state: ModelProfileMapState
+    try {
+      state = validateModelProfileMap(JSON.parse(readFileSync(MODEL_PROFILE_MAP_PATH, 'utf-8')))
+    } catch {
+      state = { ok: false, error: 'profile_map_unparseable' }
+    }
+    cachedProfileMap = { state, mtimeMs }
+    return state
   } catch {
-    return DEFAULT_MODEL
+    return { ok: false, error: 'profile_map_read_error' }
   }
+}
+
+export function invalidateModelProfileMapCache(): void {
+  cachedProfileMap = null
+}
+
+// Full resolution result, for callers that need to show or log WHY an agent is
+// on a given model (the /api/agents payload, the profile canary).
+export function resolveAgentModelDetailed(name: string): ModelResolution {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  let config: AgentModelConfig
+  try {
+    config = JSON.parse(readFileOr(configPath, '{}')) as AgentModelConfig
+  } catch {
+    return { model: DEFAULT_MODEL, source: 'default' }
+  }
+  return resolveAgentModelFromConfig(config, readModelProfileMap(), DEFAULT_MODEL, resolveModelId)
+}
+
+// Unchanged contract: the concrete model id this agent runs on. For every
+// config that names a `model` -- which is all of them today -- this returns
+// byte-identically what it returned before Block B existed.
+export function readAgentModel(name: string): string {
+  return resolveAgentModelDetailed(name).model
+}
+
+// Card c755f4b2 Block B. Passing null REMOVES the key rather than writing a
+// null: an absent field and an explicit null must not become two ways of
+// saying the same thing in a config a human also edits by hand.
+export function writeAgentModelProfile(name: string, profile: string | null): void {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  let config: Record<string, unknown> = {}
+  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch { /* start fresh */ }
+  if (profile === null) delete config.modelProfile
+  else config.modelProfile = profile
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
 export function writeAgentModel(name: string, model: string): void {

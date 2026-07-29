@@ -3,6 +3,7 @@ import { join, extname, dirname } from 'node:path'
 import { homedir, platform, tmpdir } from 'node:os'
 import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
+import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
 import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed } from '../../db.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
@@ -20,6 +21,9 @@ import {
   findAvatarForAgent,
   resolveModelId,
   readAgentModel,
+  resolveAgentModelDetailed,
+  readModelProfileMap,
+  writeAgentModelProfile,
   writeAgentModel,
   readAgentDisplayName,
   writeAgentDisplayName,
@@ -314,7 +318,14 @@ interface AgentSummary {
   name: string
   displayName: string
   description: string
+  /** The concrete model id this agent resolves to. Unchanged meaning: for a
+   *  config that names a `model`, this is exactly what it always was. */
   model: string
+  /** Card c755f4b2 Block B: how `model` was arrived at. Metadata only -- it
+   *  reports the existing resolution, it does not change it. */
+  modelProfile: string | null
+  modelSource: 'explicit_model' | 'model_profile' | 'default'
+  modelProfileError: string | null
   activeModel: string | null
   runningSince: number | null
   authMode: AuthMode
@@ -368,6 +379,11 @@ function getAgentSummary(name: string): AgentSummary {
   const tc = readAgentTeamsConfig(name)
   const hasClaudeMd = claudeMd.trim().length > 0
   const hasSoulMd = soulMd.trim().length > 0
+  // Card c755f4b2 Block B: resolve once and report both the answer and how it
+  // was reached, so "configured" and "resolved" are never conflated in the API.
+  let agentModelConfig: { model?: unknown; modelProfile?: unknown } = {}
+  try { agentModelConfig = JSON.parse(readFileOr(join(dir, 'agent-config.json'), '{}')) } catch { /* defaults */ }
+  const modelResolution = resolveAgentModelDetailed(name)
 
   // Resolve run state through the cache (remote agents) so listing the fleet
   // never blocks on a sleeping laptop's ssh timeout. `running` is derived from
@@ -387,7 +403,10 @@ function getAgentSummary(name: string): AgentSummary {
     name,
     displayName: readAgentDisplayName(name),
     description: extractDescriptionFromClaudeMd(claudeMd),
-    model: readAgentModel(name),
+    model: modelResolution.model,
+    modelProfile: typeof agentModelConfig.modelProfile === 'string' ? agentModelConfig.modelProfile : null,
+    modelSource: modelResolution.source,
+    modelProfileError: modelResolution.error ?? null,
     activeModel: running ? readActiveModelFromProjectDir(dir, runningSince ?? undefined, resolveAgentConfigDir(name).configDir ?? undefined) : null,
     runningSince,
     authMode: readAgentAuthMode(name),
@@ -1840,6 +1859,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const data = JSON.parse(body.toString()) as {
       claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string
       authMode?: AuthMode; apiKey?: string; claudePlan?: string; memoryIsolation?: boolean
+      modelProfile?: string | null
     }
     if (data.memoryIsolation !== undefined) {
       // The main agent's cwd IS the install repo root, which is already a git
@@ -1862,6 +1882,29 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)
     if (data.mcpJson !== undefined) atomicWriteFileSync(join(agentDir(name), '.mcp.json'), data.mcpJson)
     if (data.model !== undefined) writeAgentModel(name, data.model)
+    // Card c755f4b2 Block B: optional generic capability tier. An unknown id
+    // is a 400, never a persisted value -- storing one would leave the UI
+    // showing a profile while resolution silently fell back to the install
+    // default, i.e. a model change nobody asked for. Empty string clears it.
+    if (data.modelProfile !== undefined) {
+      if (data.modelProfile === '' || data.modelProfile === null) {
+        writeAgentModelProfile(name, null)
+      } else if (isModelProfileId(data.modelProfile)) {
+        const mapState = readModelProfileMap()
+        if (!mapState) {
+          json(res, { error: 'No model-profile map is provisioned on this deployment; a modelProfile cannot be honoured yet.' }, 400)
+          return true
+        }
+        if (!mapState.ok) {
+          json(res, { error: `Model-profile map is unusable: ${mapState.error}` }, 400)
+          return true
+        }
+        writeAgentModelProfile(name, data.modelProfile)
+      } else {
+        json(res, { error: `modelProfile must be one of ${MODEL_PROFILE_IDS.join('|')}` }, 400)
+        return true
+      }
+    }
     if (data.authMode !== undefined) {
       writeAgentAuthMode(name, data.authMode)
       if (data.authMode === 'api' && typeof data.apiKey === 'string' && data.apiKey.trim()) {
