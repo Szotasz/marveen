@@ -188,7 +188,11 @@ function wireOnboarding(step) {
           if (st && st.agentsRunning) { up = true; break }
         }
         if (up) { await refreshOnboarding() }
-        else { launchBtn.disabled = false; onbMsg(t('onboarding.step1.launched')) }
+        // Timeout is NOT success: on a slow machine the cold start can outlast
+        // the 2-min bound while still being healthy, so the message must say
+        // "still starting, check back / refresh" -- repeating the launched
+        // message here would also mask a genuinely dead start (PR #779 review).
+        else { launchBtn.disabled = false; onbMsg(t('onboarding.step1.launch_slow'), true) }
       } catch (e) { launchBtn.disabled = false; onbMsg((e && e.message) || t('onboarding.error'), true) }
     })
   } else if (step === 3) {

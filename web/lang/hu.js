@@ -1547,6 +1547,7 @@ window._i18n.hu = {
   'onboarding.step3.svc_starting': 'A bot-szolgáltatás még indul -- ha a párosító kód nem érkezik meg azonnal, várj pár másodpercet és frissíts.',
   'onboarding.step1.launching':  'Indítás...',
   'onboarding.step1.launched':   'Ügynökök indítása folyamatban...',
+  'onboarding.step1.launch_slow':'Az ügynökök még nem álltak fel a várt időn belül. Lassabb gépen a hidegindítás pár percig is eltarthat: várj egy kicsit, majd frissítsd az oldalt. Ha 10 perc után sincs változás, nézd meg a store/channels-failures.log fájlt.',
   'onboarding.step2.tab':        'Telegram bot',
   'onboarding.step2.desc':       'Add meg a Telegram bot tokenjét (a BotFather-től).',
   'onboarding.step2.token_label':'Telegram bot token',

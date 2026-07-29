@@ -870,14 +870,21 @@ export function mainChannelsSessionExists(): boolean {
   }
 }
 
-export function createMainChannelsSession(): boolean {
+// Discriminated result instead of a boolean: 'grace' (already kicked, session
+// is booting -- benign) and 'script-missing'/'spawn-failed' (the install is
+// broken) must NOT look alike to callers. The onboarding launch endpoint
+// reports the former as "starting" and the latter as a hard error; a boolean
+// collapsed both into a silent false success (PR #779 review).
+export type MainSessionCreateResult = 'started' | 'grace' | 'script-missing' | 'spawn-failed'
+
+export function createMainChannelsSession(): MainSessionCreateResult {
   const now = Date.now()
   if (marveenLastSessionCreate && now - marveenLastSessionCreate < MAIN_SESSION_CREATE_GRACE_MS) {
-    return false
+    return 'grace'
   }
   if (!existsSync(CHANNELS_SCRIPT)) {
     logger.error({ script: CHANNELS_SCRIPT }, 'Cannot recreate main channels session: channels.sh missing')
-    return false
+    return 'script-missing'
   }
   try {
     // Detached + unref'd: channels.sh is a long-lived supervisor (it tails the
@@ -896,10 +903,10 @@ export function createMainChannelsSession(): boolean {
     writeRespawnStamp()
     logger.warn({ session: MAIN_CHANNELS_SESSION }, 'Main channels session absent -- recreating via channels.sh')
     sendAlert(`♻️ A ${MAIN_CHANNELS_SESSION} session eltunt -- ujrainditom (channels.sh). Enelkul minden utemezett feladat csendben kimaradna.`)
-    return true
+    return 'started'
   } catch (err) {
     logger.error({ err }, 'Failed to recreate main channels session via channels.sh')
-    return false
+    return 'spawn-failed'
   }
 }
 
@@ -1561,7 +1568,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // with no supervising service, and every scheduled main-agent task
           // silently skips (scheduler !sessionExists branch).
           if (!mainChannelsSessionExists()) {
-            if (shouldEscalateMarveenDown() && createMainChannelsSession()) {
+            if (shouldEscalateMarveenDown() && createMainChannelsSession() === 'started') {
               marveenDownState = null
               marveenSuspectFirstSeen = null
             }

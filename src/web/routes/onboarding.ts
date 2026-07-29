@@ -358,11 +358,20 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     // session that EXISTS but is wedged should be respawn-paned.
     if (!mainChannelsSessionExists()) {
       // createMainChannelsSession kicks channels.sh detached (a ~minutes cold
-      // start). It returns false when already kicked within its grace window
-      // (session is booting) as well as when channels.sh is missing; either way
-      // the session is not up yet, so report "starting" and let the status poll
-      // flip to running rather than surfacing a hard error.
+      // start). 'started' and 'grace' (already kicked, still booting) are both
+      // healthy "starting" states for the wizard's status poll. A missing or
+      // unlaunchable channels.sh is a BROKEN INSTALL: reporting it as
+      // "starting" would show the customer a success message over a fleet that
+      // can never come up, so it must be a hard error the UI can name.
       const created = createMainChannelsSession()
+      if (created === 'script-missing' || created === 'spawn-failed') {
+        logger.error({ created }, 'onboarding: channels session absent and channels.sh could not be launched')
+        json(res, {
+          error: 'Az ugynokok inditasa nem sikerult: a channels.sh nem futtathato. A telepites serult lehet -- futtasd ujra a telepitot, vagy nezd meg a store/channels-failures.log-ot.',
+          reason: created === 'script-missing' ? 'channels-script-missing' : 'channels-spawn-failed',
+        }, 500)
+        return true
+      }
       logger.info({ created }, 'onboarding: channels session absent -- creating via channels.sh')
       json(res, { ok: true, starting: true })
       return true
