@@ -764,6 +764,7 @@ window._i18n.en = {
   'settings.desc.KANBAN_SWIMLANE_SEPARATOR_COLOR': 'Background color of the swimlane separator header.',
   'settings.desc.DASHBOARD_PUBLIC_URL':        'Publicly accessible URL of the dashboard (e.g. https://{agentId}.example.com). Empty = no additional CORS whitelist.',
   'settings.desc.OLLAMA_URL':                  'Base URL for the Ollama API. Used for memory embedding and model suggestions.',
+  'settings.desc.MEMORY_RERANK_ENABLED':       'Enable the cross-encoder reranker for vector memory search (Xenova/ms-marco-MiniLM-L-6-v2, ~23 MB, ONNX q8). When off, results use recency-weighted cosine/ANN order. When on, every recall is ~100-300 ms slower and the model downloads on first request.',
   'settings.desc.DASHBOARD_LANG':              'Default display language of the dashboard (hu = Hungarian, en = English). Browser-saved preference (localStorage) overrides this.',
   'settings.desc.HEARTBEAT_START_HOUR':        'Start of the heartbeat active time window (local time, 0-22). No notifications sent before this hour.',
   'settings.desc.HEARTBEAT_END_HOUR':          'End of the heartbeat active time window (local time, 1-24). No notifications sent from this hour onward.',

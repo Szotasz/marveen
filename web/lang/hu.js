@@ -1076,6 +1076,7 @@ window._i18n.hu = {
   'settings.desc.KANBAN_SWIMLANE_SEPARATOR_COLOR': 'Az swimlane-elválasztó fejléc háttérszíne.',
   'settings.desc.DASHBOARD_PUBLIC_URL':        'A dashboard nyilvánosan elérhető URL-je (pl. https://{agentId}.example.com). Üres = nincs CORS whitelist bővítés.',
   'settings.desc.OLLAMA_URL':                  'Az Ollama API alap-URL-je. Memória-embedding és modell-javaslat ezt használja.',
+  'settings.desc.MEMORY_RERANK_ENABLED':       'Cross-encoder reranker engedélyezése a vektoros memória-keresésnél (Xenova/ms-marco-MiniLM-L-6-v2, ~23 MB, ONNX q8). Kikapcsolva recency-súlyozott cosine/ANN sorrend. Bekapcsolva minden recall +100-300 ms-mal lassul és az első kérésnél letöltődik a modell.',
   'settings.desc.DASHBOARD_LANG':              'A dashboard alapértelmezett megjelenítési nyelve (hu = magyar, en = angol). A böngészőben mentett preferencia (localStorage) felülírja.',
   'settings.desc.HEARTBEAT_START_HOUR':        'A heartbeat aktív időablakának kezdete (helyi idő, 0-22). Előtte nem küld értesítést.',
   'settings.desc.HEARTBEAT_END_HOUR':          'A heartbeat aktív időablakának vége (helyi idő, 1-24). Ettől nem küld értesítést.',
