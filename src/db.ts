@@ -536,7 +536,11 @@ export function searchAgentMemories(agentId: string, query: string, limit: numbe
 
 export function getMemoryStats(): { total: number; byAgent: Record<string, number>; byTier: Record<string, number>; withEmbedding: number } {
   const total = (db.prepare('SELECT COUNT(*) as c FROM memories').get() as {c:number}).c
-  const withEmbedding = (db.prepare('SELECT COUNT(*) as c FROM memories WHERE embedding IS NOT NULL').get() as {c:number}).c
+  // Count both the compact binary embedding_blob (the primary store since the
+  // 0005 migration) and the legacy JSON `embedding` column. Counting only the
+  // legacy column reported 0 vectors after the blob migration emptied it, even
+  // though every memory has a blob embedding.
+  const withEmbedding = (db.prepare('SELECT COUNT(*) as c FROM memories WHERE embedding_blob IS NOT NULL OR embedding IS NOT NULL').get() as {c:number}).c
   const agentRows = db.prepare('SELECT agent_id, COUNT(*) as c FROM memories GROUP BY agent_id').all() as {agent_id:string, c:number}[]
   const tierRows = db.prepare('SELECT category, COUNT(*) as c FROM memories GROUP BY category').all() as {category:string, c:number}[]
   const byAgent: Record<string, number> = {}

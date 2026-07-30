@@ -144,6 +144,19 @@ describe('memory functions', () => {
     expect(stats.total).toBeGreaterThan(0)
   })
 
+  it('getMemoryStats.withEmbedding counts embedding_blob, not just the legacy JSON column', () => {
+    const db = getDb()
+    // Simulate the post-0005-migration state: a memory whose vector lives in the
+    // binary embedding_blob column, with the legacy `embedding` JSON column NULL.
+    const before = getMemoryStats().withEmbedding
+    // 768-dim to satisfy the vec_memories(embedding FLOAT[768]) insert trigger.
+    const buf = Buffer.from(new Float32Array(768).fill(0.1).buffer)
+    db.prepare(
+      "INSERT INTO memories (chat_id, content, sector, salience, created_at, accessed_at, agent_id, category, embedding, embedding_blob) VALUES ('c', 'blob-only vector', 'semantic', 1.0, unixepoch(), unixepoch(), 'stat-blob-test', 'warm', NULL, ?)"
+    ).run(buf)
+    expect(getMemoryStats().withEmbedding).toBe(before + 1)
+  })
+
   it('updateMemory updates content and returns true', () => {
     const all = getDb().prepare("SELECT id FROM memories WHERE agent_id = 'db2-test-memo' LIMIT 1").all() as { id: number }[]
     if (all.length > 0) {
