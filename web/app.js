@@ -12046,7 +12046,26 @@ function wireOnboarding(step) {
     const refreshBtn = document.getElementById('onbRefreshBtn')
     const loadPending = async () => {
       try {
-        const p = await (await fetch(`/api/agents/${encodeURIComponent(mainAgentId())}/channels/telegram/pending`)).json()
+        // Same boot race the Messages page already guards against (see
+        // ensureMarveenLoaded): until /api/marveen resolves window._marveen,
+        // mainAgentId() returns the literal 'marveen' fallback. On a renamed
+        // install that is not the main agent, so the backend takes the
+        // sub-agent branch, finds no such agent dir and answers 404 -- and the
+        // wizard rendered that as "no pending pairing" while the Channel view,
+        // which uses the selected agent, listed the very same request.
+        await ensureMarveenLoaded()
+        const res = await fetch(`/api/agents/${encodeURIComponent(mainAgentId())}/channels/telegram/pending`)
+        // Surface the failure instead of rendering it as an empty list. This is
+        // a separate defect from the id race: without it ANY error (404, auth,
+        // network) reads as "nobody is waiting for approval", which is the one
+        // answer the user cannot act on.
+        if (!res.ok) {
+          const box = document.getElementById('onbPending')
+          const d = await res.json().catch(() => ({}))
+          if (box) box.innerHTML = `<span class="onb-hint">${escapeHtml(d.error || t('onboarding.error'))}</span>`
+          return
+        }
+        const p = await res.json()
         // Backend contract: [{code, senderId, chatId, createdAt, expiresAt}].
         // `code` is the approve key (the same code the bot sent the user) --
         // POSTing anything else gets a 400 and the pairing never completes.
