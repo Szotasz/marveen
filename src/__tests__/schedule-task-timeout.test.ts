@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { decideTaskTimeout, TASK_FIRE_GRACE_MS, TASK_FIRE_TIMEOUT_MS } from '../web/schedule-runner.js'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { decideTaskTimeout, resolveStuckTimeoutMs, TASK_FIRE_GRACE_MS, TASK_FIRE_TIMEOUT_MS } from '../web/schedule-runner.js'
 import type { TaskInflightEntry } from '../web/schedule-runner.js'
 
 // Tests for the post-fire timeout watchdog.
@@ -156,5 +158,57 @@ describe('fix-revert guard: alert case is load-bearing', () => {
     // this assertion would fail: that is the correct behaviour.
     expect(result).toBe('alert')
     expect(result).not.toBe('hold')
+  })
+})
+
+// --- Per-task stuck threshold ---
+//
+// TASK_FIRE_TIMEOUT_MS is one global number. It is the right default for the
+// common case (a short-cadence heartbeat still busy after 5 minutes IS a real
+// signal) and wrong for a task whose whole job is to think for a while: a
+// nightly analysis run was declared a "possible hang" five minutes in, on
+// 2026-07-30 at 02:12, and finished normally at 02:18. The operator got a
+// false alarm about a task doing exactly what it was written to do.
+describe('resolveStuckTimeoutMs: the threshold is per task', () => {
+  const MIN = 60_000
+
+  it('falls back to the global default when unset', () => {
+    expect(resolveStuckTimeoutMs({})).toBe(TASK_FIRE_TIMEOUT_MS)
+  })
+
+  it('honours an explicit longer budget (the nightly analysis case)', () => {
+    expect(resolveStuckTimeoutMs({ stuckAfterMinutes: 20 })).toBe(20 * MIN)
+  })
+
+  it('a malformed or non-positive value falls back to the default, never to NaN', () => {
+    expect(resolveStuckTimeoutMs({ stuckAfterMinutes: NaN })).toBe(TASK_FIRE_TIMEOUT_MS)
+    expect(resolveStuckTimeoutMs({ stuckAfterMinutes: 0 })).toBe(TASK_FIRE_TIMEOUT_MS)
+    expect(resolveStuckTimeoutMs({ stuckAfterMinutes: -5 })).toBe(TASK_FIRE_TIMEOUT_MS)
+    expect(resolveStuckTimeoutMs({ stuckAfterMinutes: 'twenty' as unknown as number })).toBe(TASK_FIRE_TIMEOUT_MS)
+  })
+
+  it('clamps below one minute so the alert cannot fire inside startup noise', () => {
+    expect(resolveStuckTimeoutMs({ stuckAfterMinutes: 0.1 })).toBe(MIN)
+  })
+
+  it('clamps to the tracking window, so a huge value cannot silently disable the alert', () => {
+    // Entries are evicted at maxTrackMs regardless, so anything above it would
+    // mean "never alert" while still looking like a threshold.
+    expect(resolveStuckTimeoutMs({ stuckAfterMinutes: 60 * 24 })).toBe(MAX_TRACK)
+  })
+
+  it('the resolved budget actually drives the decision', () => {
+    const at6min = 6 * MIN
+    const opts = { graceMs: GRACE, maxTrackMs: MAX_TRACK }
+    // Default budget: 6 minutes of continuous busy is a hang.
+    expect(decideTaskTimeout(makeEntry(), 'busy', at6min, { ...opts, timeoutMs: resolveStuckTimeoutMs({}) })).toBe('alert')
+    // 20-minute budget: the same 6 minutes is just work in progress.
+    expect(decideTaskTimeout(makeEntry(), 'busy', at6min, { ...opts, timeoutMs: resolveStuckTimeoutMs({ stuckAfterMinutes: 20 }) })).toBe('hold')
+  })
+
+  it('the sweep uses the entry budget, not the global constant (fix-revert guard)', () => {
+    const src = readFileSync(join(__dirname, '../web/schedule-runner.ts'), 'utf-8')
+    expect(src).toMatch(/timeoutMs: entry\.timeoutMs,/)
+    expect(src).toMatch(/timeoutMs: resolveStuckTimeoutMs\(task\),/)
   })
 })
