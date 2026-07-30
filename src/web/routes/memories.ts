@@ -137,6 +137,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     const formatted = results.map(m => ({
       ...m,
       embedding: undefined,
+      embedding_blob: undefined,
       ...(includeStale ? { is_stale: staleIdSet.has(m.id) } : {}),
       created_label: new Date(m.created_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
       accessed_label: new Date(m.accessed_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
@@ -325,7 +326,7 @@ Respond ONLY with JSON, nothing else:
     const agentId = url.searchParams.get('agent_id') || url.searchParams.get('agent') || ''
     if (!agentId) { json(res, { error: 'agent_id required' }, 400); return true }
     const stale = getStaleMemories(agentId)
-    json(res, stale.map(m => ({ ...m, embedding: undefined })))
+    json(res, stale.map(m => ({ ...m, embedding: undefined, embedding_blob: undefined })))
     return true
   }
 
@@ -344,7 +345,7 @@ Respond ONLY with JSON, nothing else:
     const db2 = getDb()
     const mem = db2.prepare('SELECT * FROM memories WHERE id = ?').get(id) as Memory | undefined
     if (!mem) { json(res, { error: 'Memory not found' }, 404); return true }
-    const { embedding: _emb, ...rest } = mem
+    const { embedding: _emb, embedding_blob: _blob, ...rest } = mem
     const agentId = url.searchParams.get('agent_id') || url.searchParams.get('agent') || ''
     if (agentId) recordMemoryRead(agentId, id, 'direct')
     const payload: Record<string, unknown> = { ...rest }
