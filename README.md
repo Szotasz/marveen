@@ -15,7 +15,7 @@
 
 > **Fork.** Ez a repó a [Szotasz/marveen](https://github.com/Szotasz/marveen) önálló forkja, amely `fork-point` (2026-07-26, baseline: upstream `55ecbc6`) óta függetlenül fejlődik. Az upstream javításokat szelektíven vesszük át (`git fetch upstream` + cherry-pick). Hozzájárulásokat ehhez a forkhoz várunk PR-ként. Az AI által generált monolitikus kódot felhagyva, modularizált verzió alkotása a célom, amelyben nagyságrendekkel kisebb tokenhasználatot emészt fel magának a keretrendszernek a használata és robosztusabb kialakítása révén hosszútávon stabilabb működést biztosít.
 >
-> Állapot: upstream `4043865` vs fork `0eaa672`, 2026-07-30
+> Állapot: upstream `328557e` vs fork `47cbaf4`, 2026-07-30
 
 ## Jónás Gergő (cett) hozzájárulásai az eredeti Marveen repóhoz
 
@@ -58,7 +58,9 @@ A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás
 
 - **Upstream bug fix portok (batch, 2026-07-30)** -- 16 upstream PR szelektíven átvéve egy commit-sorozatban: aktív bug fixek (#763 worker-home edge, #757 scheduled chat_id sentinel, #720 kanban urgency sort, #751 shutdown deadlock), plugin néma-elnémítás javítás (#727 glyph-agnosztikus MCP pane classifier), fő-model konfig (#768 MAIN_AGENT_MODEL .env-ből), wizard névcsere (#758 BOT_NAME minden felületen, per-call fresh olvasók, identitySavePlan), onboarding flow (#752 claude auth restart, #753 bot-token svc-állapot), bridge host (#769 Tailscale CGNAT preferencia UI-val), heartbeat kártya-azonosítás (#771 formatHeartbeatCardLabel bracketed id), agent-worker edge (#765 contract tesztek), installer argv-forward (#760 self-reclone exec), progress placeholder fix (#772)
 
-Állapot: upstream 4043865 vs fork 0eaa672, 2026-07-30
+- **Szemantikus memória-recall + link-grafikon (F0-F5)** -- a memória-rendszer teljes szemantikus rétege: (F0) `hybridSearch()` (FTS + vektor RRF-fúzió) bekötve a `buildMemoryContext()`-ba és a dashboard alapértelmezett keresési módjába; (F1) `memory_links` tábla migrációja (irányított súlyozott élgráf, link_type: semantic/explicit/entity/cooccurrence); (F2) automatikus szomszéd-linkelés a `saveAgentMemory()` embedding-pipeline-ban; (F3) 1-hop gráf-kiterjesztés a `hybridSearch()`-ben (a top találatok szomszédai LINK_TRAVERSAL_DECAY-vel kerülnek be az eredménybe); (F4) karbantartó heartbeat ütemezett feladat (`POST /api/memories/links/maintain`: re-embedding, szomszéd-frissítés, elavult élek pruningja, árva-detekció); (F5) dashboard gráf vizualizáció: valódi `memory_links` élek mint vastag, tier-szines ívek; szaggatott gyűrű az árva csomópontokhoz, tömör gyűrű a hub-okhoz (5+ él).
+
+Állapot: upstream 328557e vs fork 47cbaf4, 2026-07-30
 
 <!-- ONGOING: Minden jövőbeli fork-PR leadásakor (Zack -> Jarvis) frissítsd ezt a szakaszt
      a friss git log alapján:
