@@ -15,7 +15,7 @@
 
 > **Fork.** Ez a repó a [Szotasz/marveen](https://github.com/Szotasz/marveen) önálló forkja, amely `fork-point` (2026-07-26, baseline: upstream `55ecbc6`) óta függetlenül fejlődik. Az upstream javításokat szelektíven vesszük át (`git fetch upstream` + cherry-pick). Hozzájárulásokat ehhez a forkhoz várunk PR-ként. Az AI által generált monolitikus kódot felhagyva, modularizált verzió alkotása a célom, amelyben nagyságrendekkel kisebb tokenhasználatot emészt fel magának a keretrendszernek a használata és robosztusabb kialakítása révén hosszútávon stabilabb működést biztosít.
 >
-> Állapot: upstream `4043865` vs fork `99bed8e`, 2026-07-30
+> Állapot: upstream `4043865` vs fork `0eaa672`, 2026-07-30
 
 ## Jónás Gergő (cett) hozzájárulásai az eredeti Marveen repóhoz
 
@@ -56,7 +56,9 @@ A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás
 - **Kompakt vektorembedding tárolás + ANN szemantikus keresés** -- a szemantikus kereséshez használt embeddingek tárolása JSON-szöveg helyett bináris Float32 formátumban történik, ami egységnyi emlékenként ~80%-kal kisebb helyet foglal. A startup-migráció automatikusan és adatvesztés nélkül konvertálja a meglévő bejegyzéseket; a vektoros keresés visszafelé kompatibilis marad. Ezentúl a `sqlite-vec` npm csomag HNSW közelítő szomszéd-keresőt (ANN) biztosít: ha az extension betölthető, a `vectorSearch()` a `vec_memories` virtuális táblán fut (közel-lineáris skálázás helyett O(log n)); DB-triggerek tartják szinkronban a `memories.embedding_blob` változásaival; ha az extension nem töltődik be (pl. sandboxolt környezet), automatikusan az eredeti teljes-vizsgálatos BLOB-koszinusz fallback lép életbe.
 - **Token-használat hosszú távú riportálás és biztonságos adatcsökkentés** -- a nyers token-naplók 30 napra csökkentett ablakkal pruningolódnak (a 90 napos korábbi ablak helyett), de a számlázási és teljesítmény-audit adatok teljes biztonsággal megmaradnak: két új összesítő tábla (napi részletesség 1 évre, havi részletesség 3 évre) garantálja, hogy az adattörlés előtt minden agent- és modell-szintű tokenszám rögzítve van. Az összesítés idempotens, az eredeti törlési logikát teljesen felváltja -- nem áll fenn adatvesztés-kockázat ismételt futásoknál sem. Két új konfigurációs kulcs (TOKEN_USAGE_DAILY_RETENTION_DAYS, TOKEN_USAGE_MONTHLY_RETENTION_DAYS) a Beállítások dashboardon állítható; az aggregálási ablak a napi karbantartási söprésbe integrálva fut, külön ütemező nélkül.
 
-Állapot: upstream 4043865 vs fork 275b09b, 2026-07-30
+- **Upstream bug fix portok (batch, 2026-07-30)** -- 16 upstream PR szelektíven átvéve egy commit-sorozatban: aktív bug fixek (#763 worker-home edge, #757 scheduled chat_id sentinel, #720 kanban urgency sort, #751 shutdown deadlock), plugin néma-elnémítás javítás (#727 glyph-agnosztikus MCP pane classifier), fő-model konfig (#768 MAIN_AGENT_MODEL .env-ből), wizard névcsere (#758 BOT_NAME minden felületen, per-call fresh olvasók, identitySavePlan), onboarding flow (#752 claude auth restart, #753 bot-token svc-állapot), bridge host (#769 Tailscale CGNAT preferencia UI-val), heartbeat kártya-azonosítás (#771 formatHeartbeatCardLabel bracketed id), agent-worker edge (#765 contract tesztek), installer argv-forward (#760 self-reclone exec), progress placeholder fix (#772)
+
+Állapot: upstream 4043865 vs fork 0eaa672, 2026-07-30
 
 <!-- ONGOING: Minden jövőbeli fork-PR leadásakor (Zack -> Jarvis) frissítsd ezt a szakaszt
      a friss git log alapján:
