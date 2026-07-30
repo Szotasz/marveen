@@ -14,6 +14,8 @@
 > AI csapatod, ami fut amíg te alszol.
 
 > **Fork.** Ez a repó a [Szotasz/marveen](https://github.com/Szotasz/marveen) önálló forkja, amely `fork-point` (2026-07-26, baseline: upstream `55ecbc6`) óta függetlenül fejlődik. Az upstream javításokat szelektíven vesszük át (`git fetch upstream` + cherry-pick). Hozzájárulásokat ehhez a forkhoz várunk PR-ként. Az AI által generált monolitikus kódot felhagyva, modularizált verzió alkotása a célom, amelyben nagyságrendekkel kisebb tokenhasználatot emészt fel magának a keretrendszernek a használata.
+>
+> Állapot: upstream `4043865` vs fork `99bed8e`, 2026-07-30
 
 ## Jónás Gergő (cett) hozzájárulásai az eredeti Marveen repóhoz
 
@@ -51,6 +53,7 @@ A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás
 - **Coverage-emelés 65%-ra** -- ~695 új teszt a business-logikára; a coverage-gate küszöb az elért szintre ratchet-elve: statements 48→65%, branches 48→63%, functions 53→66%, lines 49→66%. A lefedetlen ~35% szándékosan process-lifecycle/infrastruktúra kód (marveen.ts, telegram.ts, tmux/process-mgmt, keychain, külső API), ami értelmesen csak integration-suite-tal fedhető.
 - **Per-agent MCP capability scope (#35)** -- ágensenként szabályozható, melyik MCP-toolt hívhatja (a veszélyeseket — push/merge/delete — külön). Opt-in, agent-agnosztikus, fail-closed enforcement a settings.json deny-listáján: új "MCP hatáskör" tab az ágens-detail modalban, 3-állású preset (Teljes/Csak-olvasás/Egyéni), szerverenkénti tool-checkboxok veszélyes-jelöléssel (🔴), "Mind" szerver-toggle, fallback szabad szöveges input ismeretlen szervereknek
 - **Memory span tracing** -- memória-olvasási nyomkövetés és verzióhistória a fleet ágensek számára. `span_reads` tábla (ki, mikor, milyen kontextusban olvasott egy emléket), `memory_versions` tábla (tartalom-snapshot változáskor, explicit INSERT előtt a `updateMemory()`-ban -- ownership-safe: `changed_by` != `agent_id`), stale-read detekció (`GET /api/memories/stale`), verziólista (`GET /api/memories/:id/versions`), batch olvasás-rögzítés (`POST /api/memories/read-event`), elavult badge a dashboard memória-listán, Előzmények tab a memória-modalban. Auto tier-átsorolás (`autoResortTiers()`: warm->cold 30 nap olvasatlan, cold->warm 2+ ágens olvasta), verzió-prune (180 napos TTL, `pruneMemoryVersions()`), ütemezett `POST /api/memories/resort` endpoint, smart context injection (keresési találatoknál `is_stale` mező + elavult emlékek előre rendezve). Ownership-safety regression teszt: shared memória szerkesztésekor `agent_id` változatlan marad, csak `memory_versions.changed_by` rögzíti a szerkesztőt.
+- **Kompakt vektorembedding tárolás** -- a szemantikus kereséshez használt embeddingek tárolása JSON-szöveg helyett bináris Float32 formátumban történik, ami egységnyi emlékenként ~80%-kal kisebb helyet foglal. Az adatbázis teljes embedding-tárhelye az eddigi ~7 MB töredékére csökken. A startup-migráció automatikusan és adatvesztés nélkül konvertálja a meglévő bejegyzéseket; a vektoros keresés visszafelé kompatibilis marad (hibás vagy hiányos bejegyzések a következő Ollama-futásnál pótlódnak). A `migrateExistingEmbeddingsToBLOB()` és `backfillEmbeddings()` függvények a jövőbeli sqlite-vec ANN-index alapjaként is szolgálnak.
 
 <!-- ONGOING: Minden jövőbeli fork-PR leadásakor (Zack -> Jarvis) frissítsd ezt a szakaszt
      a friss git log alapján:

@@ -235,6 +235,7 @@ function formatRecallResult(result: { logs: any[]; memories: any[]; dateRange: {
     memories: result.memories.map(m => ({
       ...m,
       embedding: undefined,
+      embedding_blob: undefined,
       created_label: new Date(m.created_at * 1000).toLocaleString('hu-HU', { timeZone: TZ }),
     })),
     summary: {

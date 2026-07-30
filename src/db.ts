@@ -106,6 +106,11 @@ export function initDatabase(dbPathOverride?: string): void {
   // race). Import rows if they exist, then rename the file so we don't keep
   // re-importing. Wrapped in a transaction so a crash mid-import is safe.
   migrateTaskRunsFromJson()
+
+  // Convert any remaining JSON-text embeddings to compact Float32 BLOB and null
+  // out the TEXT column. Idempotent: rows already having embedding_blob are
+  // skipped; on fresh installs or after a full backfill this is a no-op.
+  migrateExistingEmbeddingsToBLOB()
 }
 
 function migrateTaskRunsFromJson(): void {
@@ -234,6 +239,7 @@ export interface Memory {
   auto_generated: number
   keywords: string | null
   embedding: string | null
+  embedding_blob: Buffer | null
 }
 
 export interface SpanRead {
@@ -465,10 +471,11 @@ export function saveAgentMemory(
 
   memoryCacheInvalidate(agentId)
 
-  // Fire-and-forget: generate embedding asynchronously
+  // Fire-and-forget: generate embedding asynchronously and store as Float32 BLOB.
+  // The legacy TEXT column (embedding) is intentionally left NULL for new rows.
   generateEmbedding(content + (keywords ? ' ' + keywords : '')).then(emb => {
     if (emb) {
-      db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), id)
+      db.prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(floatsToBlob(emb), id)
     }
   }).catch(() => {})
 
@@ -1853,6 +1860,21 @@ export function markPendingTaskRetryAlert(taskName: string, agentName: string, t
 
 const EMBED_MODEL = 'nomic-embed-text'
 
+// Encode a float32 array as a little-endian binary buffer (4 bytes per value).
+function floatsToBlob(floats: number[]): Buffer {
+  const buf = Buffer.allocUnsafe(floats.length * 4)
+  for (let i = 0; i < floats.length; i++) buf.writeFloatLE(floats[i], i * 4)
+  return buf
+}
+
+// Decode a Float32 BLOB back to a number array.
+function blobToFloats(blob: Buffer): number[] {
+  const count = blob.byteLength >>> 2
+  const out = new Array<number>(count)
+  for (let i = 0; i < count; i++) out[i] = blob.readFloatLE(i * 4)
+  return out
+}
+
 export async function generateEmbedding(text: string): Promise<number[] | null> {
   try {
     const resp = await fetch(`${OLLAMA_URL}/api/embeddings`, {
@@ -1884,12 +1906,15 @@ function cosineSimilarity(a: number[], b: number[]): number {
 
 function vectorSearch(agentId: string, queryEmbedding: number[], limit: number = 10): Memory[] {
   const rows = db.prepare(
-    "SELECT * FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared')"
+    "SELECT * FROM memories WHERE (embedding_blob IS NOT NULL OR embedding IS NOT NULL) AND (agent_id = ? OR category = 'shared')"
   ).all(agentId) as Memory[]
 
   const scored = rows.map(m => {
     try {
-      const emb = JSON.parse(m.embedding!) as number[]
+      // Prefer the compact BLOB; fall back to legacy JSON text if blob absent.
+      const emb: number[] = m.embedding_blob
+        ? blobToFloats(m.embedding_blob as Buffer)
+        : JSON.parse(m.embedding!) as number[]
       return { memory: m, score: cosineSimilarity(queryEmbedding, emb) }
     } catch {
       return { memory: m, score: 0 }
@@ -1929,18 +1954,50 @@ export async function hybridSearch(agentId: string, query: string, limit: number
 }
 
 export async function backfillEmbeddings(): Promise<number> {
-  const rows = db.prepare('SELECT id, content, keywords FROM memories WHERE embedding IS NULL').all() as { id: number; content: string; keywords: string | null }[]
+  const rows = db.prepare('SELECT id, content, keywords FROM memories WHERE embedding_blob IS NULL').all() as { id: number; content: string; keywords: string | null }[]
   let count = 0
   for (const row of rows) {
     const text = row.content + (row.keywords ? ' ' + row.keywords : '')
     const emb = await generateEmbedding(text)
     if (emb) {
-      db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), row.id)
+      db.prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(floatsToBlob(emb), row.id)
       count++
     }
     // Small delay to not overwhelm Ollama
     await new Promise(r => setTimeout(r, 100))
   }
+  return count
+}
+
+/**
+ * One-time migration: convert any existing JSON-text embeddings to Float32 BLOB
+ * and immediately null out the TEXT column to reclaim space. Runs synchronously
+ * inside a single transaction so it is safe to call at startup after migrations.
+ */
+export function migrateExistingEmbeddingsToBLOB(): number {
+  const rows = db.prepare(
+    'SELECT id, embedding FROM memories WHERE embedding IS NOT NULL AND embedding_blob IS NULL'
+  ).all() as { id: number; embedding: string }[]
+
+  if (rows.length === 0) return 0
+
+  const update = db.prepare('UPDATE memories SET embedding_blob = ?, embedding = NULL WHERE id = ?')
+  const tx = db.transaction((items: { id: number; embedding: string }[]) => {
+    let converted = 0
+    for (const row of items) {
+      try {
+        const floats = JSON.parse(row.embedding) as number[]
+        update.run(floatsToBlob(floats), row.id)
+        converted++
+      } catch {
+        // Malformed JSON: leave the row untouched; it will be regenerated by backfillEmbeddings.
+      }
+    }
+    return converted
+  })
+
+  const count = tx(rows) as number
+  logger.info({ converted: count }, 'Migrated JSON embeddings to Float32 BLOB')
   return count
 }
 
