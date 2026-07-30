@@ -155,8 +155,8 @@ export async function saveConversationTurn(
 export function runDecaySweep(): void {
   dbDecay()
   pruneAuditLogs()
-  const tokenRowsPruned = pruneTokenUsage()
-  logger.info({ tokenRowsPruned }, 'Memoria leepulesi sopres vegrehajtva')
+  const tokenPruneResult = pruneTokenUsage()
+  logger.info(tokenPruneResult, 'Memoria leepulesi sopres vegrehajtva')
 }
 
 // --- Daily digest ---

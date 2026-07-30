@@ -106,25 +106,28 @@ afterAll(() => {
 describe('pruneTokenUsage', () => {
   const NOW = Math.floor(Date.now() / 1000)
   const DAY = 86400
-  function insertRow(sessionId: string, ageDays: number) {
+  function insertRow(sessionId: string, ageDays: number, inputTokens = 1, outputTokens = 1) {
     getDb().prepare(
       `INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
-       VALUES ('test-prune', ?, ?, 1, 1, 0, 0)`,
-    ).run(sessionId, NOW - ageDays * DAY)
+       VALUES ('test-prune', ?, ?, ?, ?, 0, 0)`,
+    ).run(sessionId, NOW - ageDays * DAY, inputTokens, outputTokens)
   }
 
   beforeEach(() => {
-    getDb().exec("DELETE FROM token_usage WHERE agent = 'test-prune'")
+    const db = getDb()
+    db.exec("DELETE FROM token_usage WHERE agent = 'test-prune'")
+    db.exec("DELETE FROM token_usage_daily WHERE agent = 'test-prune'")
+    db.exec("DELETE FROM token_usage_monthly WHERE agent = 'test-prune'")
   })
 
-  it('deletes rows older than the retention window (default 90 days), keeps recent ones', () => {
-    insertRow('sess-old-1', 200)   // well past 90d
-    insertRow('sess-old-2', 91)    // just past 90d
-    insertRow('sess-recent-1', 89) // just inside 90d
+  it('deletes rows older than the retention window (default 30 days), keeps recent ones', () => {
+    insertRow('sess-old-1', 200)   // well past 30d
+    insertRow('sess-old-2', 31)    // just past 30d
+    insertRow('sess-recent-1', 29) // just inside 30d
     insertRow('sess-recent-2', 1)  // recent
 
-    const removed = pruneTokenUsage()
-    expect(removed).toBe(2)
+    const result = pruneTokenUsage()
+    expect(result.rawDeleted).toBe(2)
 
     const remaining = getDb()
       .prepare("SELECT session_id FROM token_usage WHERE agent = 'test-prune' ORDER BY session_id")
@@ -134,9 +137,97 @@ describe('pruneTokenUsage', () => {
 
   it('is a no-op when nothing is older than the window', () => {
     insertRow('sess-fresh', 5)
-    expect(pruneTokenUsage()).toBe(0)
+    const result = pruneTokenUsage()
+    expect(result.rawDeleted).toBe(0)
     const cnt = getDb().prepare("SELECT COUNT(*) c FROM token_usage WHERE agent = 'test-prune'").get() as { c: number }
     expect(cnt.c).toBe(1)
+  })
+
+  it('aggregates old rows into token_usage_daily before deleting them', () => {
+    // Insert two old rows on the same day with known token counts
+    const oldTs = NOW - 60 * DAY  // 60 days ago, well past the 30d window
+    getDb().prepare(
+      `INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
+       VALUES ('test-prune', 'sess-agg-1', ?, 100, 50, 0, 0)`,
+    ).run(oldTs)
+    getDb().prepare(
+      `INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
+       VALUES ('test-prune', 'sess-agg-2', ?, 200, 75, 0, 0)`,
+    ).run(oldTs + 3600) // same day, 1h later
+
+    const result = pruneTokenUsage()
+    expect(result.rawDeleted).toBe(2)
+    expect(result.dailyUpserted).toBeGreaterThanOrEqual(1)
+
+    // The daily rollup must capture the token sums
+    const daily = getDb()
+      .prepare("SELECT input_tokens, output_tokens, row_count FROM token_usage_daily WHERE agent = 'test-prune'")
+      .all() as Array<{ input_tokens: number; output_tokens: number; row_count: number }>
+    expect(daily).toHaveLength(1)
+    expect(daily[0].input_tokens).toBe(300)
+    expect(daily[0].output_tokens).toBe(125)
+    expect(daily[0].row_count).toBe(2)
+  })
+
+  it('aggregates old rows into token_usage_monthly before deleting them', () => {
+    const oldTs = NOW - 60 * DAY
+    getDb().prepare(
+      `INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
+       VALUES ('test-prune', 'sess-month-1', ?, 500, 100, 0, 0)`,
+    ).run(oldTs)
+
+    const result = pruneTokenUsage()
+    expect(result.rawDeleted).toBe(1)
+    expect(result.monthlyUpserted).toBeGreaterThanOrEqual(1)
+
+    const monthly = getDb()
+      .prepare("SELECT input_tokens, session_count, row_count FROM token_usage_monthly WHERE agent = 'test-prune'")
+      .all() as Array<{ input_tokens: number; session_count: number; row_count: number }>
+    expect(monthly).toHaveLength(1)
+    expect(monthly[0].input_tokens).toBe(500)
+    expect(monthly[0].session_count).toBe(1)
+    expect(monthly[0].row_count).toBe(1)
+  })
+
+  it('is idempotent: running pruneTokenUsage twice does not duplicate aggregated rows', () => {
+    const oldTs = NOW - 60 * DAY
+    getDb().prepare(
+      `INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
+       VALUES ('test-prune', 'sess-idem-1', ?, 100, 50, 0, 0)`,
+    ).run(oldTs)
+
+    pruneTokenUsage()  // first run: aggregates + deletes
+    pruneTokenUsage()  // second run: nothing to delete, no phantom duplicates
+
+    const dailyCount = getDb()
+      .prepare("SELECT COUNT(*) c FROM token_usage_daily WHERE agent = 'test-prune'")
+      .get() as { c: number }
+    const monthlyCount = getDb()
+      .prepare("SELECT COUNT(*) c FROM token_usage_monthly WHERE agent = 'test-prune'")
+      .get() as { c: number }
+
+    // Exactly one daily row and one monthly row per (day/month, agent, model) group
+    expect(dailyCount.c).toBe(1)
+    expect(monthlyCount.c).toBe(1)
+  })
+
+  it('preserves aggregated totals across repeated prune runs', () => {
+    const oldTs = NOW - 60 * DAY
+    getDb().prepare(
+      `INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
+       VALUES ('test-prune', 'sess-persist-1', ?, 400, 200, 0, 0)`,
+    ).run(oldTs)
+
+    pruneTokenUsage()  // aggregates and deletes the row
+    pruneTokenUsage()  // second run: raw table empty for this agent; upsert re-applies same zero
+
+    const daily = getDb()
+      .prepare("SELECT input_tokens, output_tokens FROM token_usage_daily WHERE agent = 'test-prune'")
+      .get() as { input_tokens: number; output_tokens: number } | undefined
+
+    // The aggregated values must not change between runs
+    expect(daily?.input_tokens).toBe(400)
+    expect(daily?.output_tokens).toBe(200)
   })
 })
 
