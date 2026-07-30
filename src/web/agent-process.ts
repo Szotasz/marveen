@@ -32,7 +32,8 @@ import {
 } from '../pane-state.js'
 import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
 import { beginRestart, endRestart } from './restart-lock.js'
-import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentWorksourceChannel } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentWorksourceChannel, readAgentCustomProvider } from './agent-config.js'
+import { loadCustomProvider, type CustomProviderDef } from './custom-providers.js'
 import { worksourceRootFor } from './worksource-queue.js'
 import { resolveAgentConfigDir, readClaudePlans, getClaudePlan } from './claude-plans.js'
 import { readClaudePlansState } from './claude-plans-state.js'
@@ -1259,13 +1260,43 @@ export function shSingleQuote(value: string): string {
  * amit a hivo a `launchSecretRef`-fel allit elo. Egy jovobeli ag, ami megint az erteket akarna
  * beirni, eloszor a PARAMETER TIPUSAT kellene visszaallitsa -- az pedig latszik a review-ban.
  */
-export type ProviderKind = 'claude' | 'deepseek' | 'minimax' | 'openrouter' | 'ollama'
+export type ProviderKind = 'claude' | 'deepseek' | 'minimax' | 'openrouter' | 'ollama' | 'custom'
 
 export function resolveProviderEnv(
   model: string,
   /** A titok SHELL-HIVATKOZASA (pl. `"$(cat '/ut')"`), NEM az erteke. Lasd `launchSecretRef`. */
   secretShellRef: (id: string) => string | null,
+  customProviderDef?: CustomProviderDef | null,
 ): { provider: ProviderKind; exportsStr: string } {
+  // Generic custom-provider env: built from the provider definition stored in
+  // store/custom-providers.json. Only Anthropic-Messages-compatible endpoints
+  // are supported (/v1/messages); pure OpenAI endpoints require a proxy. Early
+  // return, ahead of every string-pattern discriminator below, so a custom
+  // provider's model id (which can look like anything) never accidentally
+  // matches the claude-/deepseek-/ollama branches.
+  if (customProviderDef) {
+    let headerExport: string
+    if (customProviderDef.authHeader === 'none') {
+      headerExport = `export ANTHROPIC_AUTH_TOKEN=ollama && `
+    } else {
+      // A BAZIS ALATTUNK MEGVALTOZOTT (LATENSKULCSARGV920, #1478): ez a parameter mar nem a kulcs
+      // ERTEKET adja vissza, hanem egy shell-HIVATKOZAST ra (`"$(cat '/ut')"`), amit a hivo a
+      // `launchSecretRef`-fel allit elo. A szerzo szandeka valtozatlan -- hianyzo vault-kulcsnal az
+      // inditas MEGALL, nem esik vissza csendben a rossz backendre --, csak a titok mar nem a
+      // launch-parancsban utazik. A `null` itt pontosan azt jelenti, amit nala az ures ertek.
+      const keyRef = secretShellRef(customProviderDef.vaultKey ?? '')
+      if (!keyRef) {
+        throw new Error(`Custom provider vault key "${customProviderDef.vaultKey}" not found. Add it in the Vault tab.`)
+      }
+      headerExport = customProviderDef.authHeader === 'x-api-key'
+        ? `export ANTHROPIC_API_KEY=${keyRef} && `
+        : `export ANTHROPIC_AUTH_TOKEN=${keyRef} && `
+    }
+    return {
+      provider: 'custom',
+      exportsStr: `export ANTHROPIC_BASE_URL="${customProviderDef.baseUrl}" && ${headerExport}export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+    }
+  }
   const isClaude = model.startsWith('claude-')
   const isDeepseek = model.startsWith('deepseek-')
   const isMinimax = model.startsWith('minimax-')
@@ -1685,11 +1716,35 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
       logger.warn({ err, name }, 'pre-launch detached-claude reap failed (continuing)')
     }
 
+    // Custom provider check runs FIRST and BEFORE resolveOpenRouterModel, so
+    // an explicit customProvider field in agent-config.json takes priority over
+    // all string-pattern discriminators. This prevents model ids like `mistral:7b`
+    // from accidentally matching the Ollama branch when the operator intends a
+    // custom Anthropic-compatible endpoint.
+    const rawModel = readAgentModel(name)
+    const customProviderId = readAgentCustomProvider(name)
+    // isCustom is true whenever an id is set -- even if the definition is missing.
+    // The guard below catches the missing-definition case and aborts before any
+    // string-pattern discriminator runs, so a deleted provider never silently
+    // falls through to the Ollama branch.
+    const isCustom = customProviderId !== null
+    const customProviderDef = customProviderId ? loadCustomProvider(customProviderId) : null
+
+    if (isCustom && !customProviderDef) {
+      // Provider id is set in agent-config but not found in custom-providers.json
+      // (deleted via DELETE /api/custom-providers/:id or corrupt store).
+      // Abort launch with a clear error rather than silently falling through to Ollama.
+      logger.error({ name, customProviderId }, 'Custom provider not found in store -- agent launch aborted. Add it in Settings > Providers.')
+      throw new Error(`Custom provider "${customProviderId}" not found. Add it in Settings > Providers.`)
+    }
+
     // `openrouter-auto:<tier>` resolves to the tier's current recommended model
     // (weekly-refreshed); a concrete OpenRouter id (contains '/') passes through.
-    const model = resolveOpenRouterModel(readAgentModel(name))
+    // Skip this resolution entirely for custom providers -- their model ids go
+    // verbatim to the custom endpoint and have no openrouter-auto semantics.
+    const model = isCustom ? rawModel : resolveOpenRouterModel(rawModel)
     const authMode = readAgentAuthMode(name)
-    const isClaude = model.startsWith('claude-')
+    const isClaude = !isCustom && model.startsWith('claude-')
     // ANTHROPIC_MODEL is REQUIRED for non-Claude models: the interactive TUI
     // validates the `--model` flag against known Anthropic models and silently
     // falls back to the built-in default (claude-opus-...) for an unrecognized
@@ -1700,10 +1755,21 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // Provider discriminator + env-export chain live in resolveProviderEnv (pure,
     // unit-tested in agent-provider-env.test.ts) so a new provider is one branch there.
     // A titok FAJLBA megy, es a launch-parancsba csak a HIVATKOZAS kerul (LATENSKULCSARGV920).
-    const { exportsStr: providerEnv } = resolveProviderEnv(model, (id) => {
-      const ertek = (getSecret(id) ?? '').trim()
-      return ertek ? launchSecretRef(`${name}.${id}`, ertek) : null
-    })
+    // A hiba-ag a SZERZOE (a hianyzo vault-kulcs megallitja az inditast, nem esik vissza csendben
+    // a rossz backendre); a titok-atadas alakja a MIENK. A ketto nem zarja ki egymast.
+    let providerEnv: string
+    try {
+      providerEnv = resolveProviderEnv(model, (id) => {
+        const ertek = (getSecret(id) ?? '').trim()
+        return ertek ? launchSecretRef(`${name}.${id}`, ertek) : null
+      }, customProviderDef).exportsStr
+    } catch (err) {
+      // Custom-provider vault key missing (deleted from the vault after the
+      // provider was configured). Abort launch with a clear error rather than
+      // silently falling through to the wrong backend.
+      logger.error({ name, customProviderId, err }, 'Custom provider vault key missing -- agent launch aborted. Add it in the Vault tab.')
+      throw err
+    }
     // When authMode is 'api', the agent uses its own ANTHROPIC_API_KEY from
     // the vault instead of the host's OAuth. The vault entry ID follows the
     // convention `agent-{name}-api-key`. We inject it as an env var so Claude
