@@ -882,7 +882,27 @@ echo -e "${BOLD}$(_t section_7)${NC}"
 PLIST_DIR="$HOME/Library/LaunchAgents"
 mkdir -p "$PLIST_DIR"
 
-NODE_PATH="$(which node)"
+# Pin launchd services to a stable Node 22 (brew node@22). Homebrew's generic
+# `node` symlink auto-upgrades to new majors (e.g. 26) whose ABI breaks the
+# prebuilt better-sqlite3 binary, preventing the dashboard from starting and the
+# dashboard token from ever being created. node@22 is keg-only, so a generic
+# `node` of any major can coexist -- we ensure node@22 is present and pin the
+# services directly to its keg path.
+NODE22_PREFIX="$(brew --prefix node@22 2>/dev/null || true)"
+if { [ -z "$NODE22_PREFIX" ] || [ ! -x "$NODE22_PREFIX/bin/node" ]; } && command -v brew &>/dev/null; then
+  echo -e "  ${ORANGE}node@22 telepitese a launchd szolgaltatasokhoz (ABI-stabil better-sqlite3)...${NC}"
+  brew install node@22 || true
+  NODE22_PREFIX="$(brew --prefix node@22 2>/dev/null || true)"
+fi
+if [ -n "$NODE22_PREFIX" ] && [ -x "$NODE22_PREFIX/bin/node" ]; then
+  NODE_PATH="$NODE22_PREFIX/bin/node"
+else
+  # Last-resort fallback: node@22 could not be installed (e.g. no brew). The
+  # services may still break on an ABI-incompatible node -- warn loudly.
+  NODE_PATH="$(which node)"
+  echo -e "  ${RED}Figyelem:${NC} node@22 nem elerheto, a szolgaltatasok ${NODE_PATH}-ra allnak. ABI-hiba eseten telepitsd: brew install node@22"
+fi
+NODE_BIN_DIR="$(dirname "$NODE_PATH")"
 # Launchd labels key off SERVICE_ID. SERVICE_ID == MAIN_AGENT_ID for a
 # brand-unaware (default) install, so these labels are unchanged unless the
 # operator picked a distinct brand above.
@@ -915,7 +935,7 @@ cat > "$PLIST_DIR/${DASHBOARD_PLIST}.plist" << PLISTEOF
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>${HOME}/.local/bin:/opt/homebrew/bin:${HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <string>${NODE_BIN_DIR}:${HOME}/.local/bin:/opt/homebrew/bin:${HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>HOME</key>
     <string>${HOME}</string>
   </dict>
@@ -960,7 +980,7 @@ cat > "$PLIST_DIR/${CHANNELS_PLIST}.plist" << PLISTEOF
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>${HOME}/.local/bin:/opt/homebrew/bin:${HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <string>${NODE_BIN_DIR}:${HOME}/.local/bin:/opt/homebrew/bin:${HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>HOME</key>
     <string>${HOME}</string>
     <key>USER</key>
