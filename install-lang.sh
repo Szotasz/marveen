@@ -257,10 +257,10 @@ _t() {
     hu:linux.apt_lock_unknown) echo "Nem tudom megnézni, ki fogja a csomagkezelő zárolást (nincs fuser) -- ha foglalt, az apt maga vár rá legfeljebb 3 percig." ;;
     en:linux.apt_lock_timeout_head) echo "The package-manager lock is STILL held after 5 minutes by:" ;;
     hu:linux.apt_lock_timeout_head) echo "A csomagkezelő zárolást 5 perc után is fogja:" ;;
-    en:linux.apt_lock_timeout_body1) echo "This is no longer the usual transient auto-update. Check what it is: sudo lsof /var/lib/dpkg/lock-frontend" ;;
-    hu:linux.apt_lock_timeout_body1) echo "Ez már nem a szokásos átmeneti auto-frissítés. Nézd meg, mi az: sudo lsof /var/lib/dpkg/lock-frontend" ;;
-    en:linux.apt_lock_timeout_body2) echo "If it is unattended-upgrades, let it finish (sudo systemctl status unattended-upgrades), then re-run this installer. Do NOT kill a running dpkg." ;;
-    hu:linux.apt_lock_timeout_body2) echo "Ha az unattended-upgrades az, várd meg amíg végez (sudo systemctl status unattended-upgrades), majd indítsd újra ezt a telepítőt. Futó dpkg-t NE lőj ki." ;;
+    en:linux.apt_lock_timeout_body1) printf '%s\n    sudo lsof /var/lib/dpkg/lock-frontend' "This is no longer the usual transient auto-update. Check what holds it (copy the line below):" ;;
+    hu:linux.apt_lock_timeout_body1) printf '%s\n    sudo lsof /var/lib/dpkg/lock-frontend' "Ez már nem a szokásos átmeneti auto-frissítés. Nézd meg, mi fogja (másold az alábbi sort):" ;;
+    en:linux.apt_lock_timeout_body2) printf '%s\n    sudo systemctl status unattended-upgrades\n%s' "If it is unattended-upgrades, let it finish -- status (copy the line below):" "  then re-run this installer. Do NOT kill a running dpkg." ;;
+    hu:linux.apt_lock_timeout_body2) printf '%s\n    sudo systemctl status unattended-upgrades\n%s' "Ha az unattended-upgrades az, várd meg amíg végez -- állapot (másold az alábbi sort):" "  majd indítsd újra ezt a telepítőt. Futó dpkg-t NE lőj ki." ;;
     en:linux.apt_lock_timeout_fail) echo "Package manager is locked by another process -- re-run the installer once it finished." ;;
     hu:linux.apt_lock_timeout_fail) echo "A csomagkezelőt egy másik folyamat zárolja -- ha végzett, indítsd újra a telepítőt." ;;
     en:linux.tg_channel_configured) echo "Telegram channel configured" ;;
