@@ -13,6 +13,8 @@ import {
   captureParkedInputView,
   clearInputBuffer,
   dismissResumeSummaryModalIfPresent,
+  dismissModelConsentDialogIfPresent,
+  stampFableOverageConsentSharedRoots,
   isAgentRunning,
   sendPromptToSession,
   startAgentProcess,
@@ -28,7 +30,7 @@ import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence }
 import { probeTelegramConflict } from './channel-conflict-probe.js'
 import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPluginAbsent } from './channel-plugin-unlock.js'
 import {
-  detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, detectsFirstRunGate, type PaneErrorAlertState, type PaneState,
+  detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, detectsFirstRunGate, detectsModelConsentDialog, type PaneErrorAlertState, type PaneState,
   stuckInputSignature, decideStuckInputRecovery, parkedChannelInput,
   parkedInputText, shouldClearTruncatedPreamble,
   parkedInputRowCount, submitLanded, decideStuckInputAction,
@@ -359,6 +361,11 @@ async function performStuckInputAction(
           await clearInputBuffer(session)
           await sendPromptToSession(session, text)
         } else {
+          // FABLEFALL1: a bare Enter on the model consent dialog confirms its
+          // DEFAULT option, which switches the model. Answer the dialog safely
+          // first (no-op when absent); an Enter on the then-idle prompt is
+          // harmless.
+          await dismissModelConsentDialogIfPresent(session)
           execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
         }
         submitted = true
@@ -373,6 +380,10 @@ async function performStuckInputAction(
         await clearInputBuffer(session)
         break
       case 'enter':
+        // FABLEFALL1: same guard as the reinject-plain fallback above -- a bare
+        // Enter must never reach the model consent dialog (its default SWITCHES
+        // the model). No-op when the dialog is absent.
+        await dismissModelConsentDialogIfPresent(session)
         execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
         submitted = true
         break
@@ -979,6 +990,11 @@ function schedulePostResumePluginGuard(provider: ChannelProviderType): void {
 }
 
 export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
+  // FABLEFALL1: the restarted session boots from the main/worker shared config
+  // roots, which the per-agent spawn-time stamp never covers -- stamp them now
+  // so the model consent dialog cannot render on the fresh boot (change-only,
+  // no-op when already stamped).
+  try { stampFableOverageConsentSharedRoots() } catch { /* backstop handlers remain */ }
   // macOS: bounce the launchd job when the plist exists. If the channels session
   // is NOT managed by launchd on this install (plist absent -- only
   // com.jarvis.dashboard exists), fall through to the respawn-pane path below.
@@ -1369,6 +1385,10 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
     logger.info({ host: hostname() }, 'Channel plugin monitor disabled (respawn is production-only)')
     return null
   }
+  // FABLEFALL1 boot pass: stamp the main/worker shared config roots that the
+  // per-agent spawn path never reaches, so an already-running unstamped install
+  // heals on the next dashboard boot instead of never.
+  try { stampFableOverageConsentSharedRoots() } catch { /* backstop handlers remain */ }
 
   const mainProvider = getMainAgentProvider()
 
@@ -1474,13 +1494,28 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
             sendAlert(`🧭 A(z) ${label} session a Claude Code első-indítási képernyőjén parkolt (${firstRunGate}); automatikusan továbbléptettem. A várakozó ütemezett feladatok a következő körben kézbesítődnek.`)
           }
         } else {
-          logger.warn({ session: t.session, agent: label }, 'Session parked in a blocking interactive menu -- sending Escape to recover')
-          try {
-            execFileSync(TMUX, ['send-keys', '-t', t.session, 'Escape'], { timeout: 5000 })
-          } catch (err) {
-            logger.warn({ err, session: t.session }, 'Menu-recovery Escape failed')
+          // FABLEFALL1: the model usage-credit consent dialog is indistinguishable
+          // from a stuck menu out here -- its footer says "Esc to cancel", so
+          // detectsBlockingMenu matches it. But Escape on that dialog is recorded
+          // as choice:"cancelled" and the CLI still continues on the FALLBACK
+          // model (measured: 59 ms Escape->fallback-record at a customer; 5 events
+          // and 514 silent Sonnet turns on this install). Probe for the dialog
+          // first and answer it safely (option 1, keep the configured model);
+          // only a genuine menu gets the blind Escape.
+          const paneNow = capturePane(t.session)
+          if (paneNow != null && detectsModelConsentDialog(paneNow)) {
+            logger.warn({ session: t.session, agent: label }, 'Blocking "menu" is the model usage-credit consent dialog -- answering it safely instead of Escape')
+            await dismissModelConsentDialogIfPresent(t.session)
+            sendAlert(`🎛️ A(z) ${label} session a modell-hozzájárulás dialóguson parkolt; az 1-es opcióval (a beállított modell megtartása) továbbléptettem. Modellváltás NEM történt.`)
+          } else {
+            logger.warn({ session: t.session, agent: label }, 'Session parked in a blocking interactive menu -- sending Escape to recover')
+            try {
+              execFileSync(TMUX, ['send-keys', '-t', t.session, 'Escape'], { timeout: 5000 })
+            } catch (err) {
+              logger.warn({ err, session: t.session }, 'Menu-recovery Escape failed')
+            }
+            sendAlert(`⌨️ A(z) ${label} session beragadt egy interaktiv menube (pl. /mcp) es nem dolgozott fel uzeneteket. Kikuldtem egy Escape-et, visszateritettem a prompthoz. Ha ismetlodik: tmux attach -t ${t.session}`)
           }
-          sendAlert(`⌨️ A(z) ${label} session beragadt egy interaktiv menube (pl. /mcp) es nem dolgozott fel uzeneteket. Kikuldtem egy Escape-et, visszateritettem a prompthoz. Ha ismetlodik: tmux attach -t ${t.session}`)
         }
       }
     }

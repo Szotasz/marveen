@@ -651,6 +651,28 @@ export function stampFableOverageConsent(dotClaudePath: string): boolean {
   }
 }
 
+// FABLEFALL1: the per-agent stamp above only runs on the startAgentProcess
+// spawn path. The MAIN channels session (spawned by channels.sh / launchd)
+// and the interactive workers' shared roots never pass through it, so those
+// roots never self-heal -- and the main session is exactly the long-running
+// process the menu-recovery keystrokes hit (silent Fable->Sonnet drift,
+// measured on 2026-07-28: 5 events, 514 post-fallback Sonnet turns here, 12
+// events at a customer). Called at dashboard boot and before every hard
+// restart of the channels session. Worker dir resolution mirrors
+// agent-worker.ts (env override + fixed default); change-only writes.
+export function stampFableOverageConsentSharedRoots(): void {
+  const mainDir = ensureMainAgentIsolatedConfigDir()
+  const candidates = [
+    mainDir ? join(mainDir, '.claude.json') : null,
+    join(homedir(), '.claude.json'),
+    join(process.env.MARVEEN_WORKER_DIR || join(homedir(), '.marveen-worker'), '.claude-config', '.claude.json'),
+    join(process.env.MARVEEN_WORKER_DIR_FAST || join(homedir(), '.marveen-worker-fast'), '.claude-config', '.claude.json'),
+  ]
+  for (const p of candidates) {
+    if (p && existsSync(p)) stampFableOverageConsent(p)
+  }
+}
+
 function resolveAgentProvider(name: string): ChannelProviderType {
   const perAgent = readAgentChannelProvider(name)
   if (perAgent === 'slack' || perAgent === 'telegram' || perAgent === 'discord' || perAgent === 'googlechat' || perAgent === 'teams') return perAgent

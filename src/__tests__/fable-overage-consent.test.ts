@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { stampFableOverageConsent } from '../web/agent-process.js'
-import { detectsModelConsentDialog } from '../pane-state.js'
+import { detectsBlockingMenu, detectsModelConsentDialog } from '../pane-state.js'
 
 const ORG = '238d7fa8-0000-4000-8000-000000000000'
 const ACCT = '4039fb28-0000-4000-8000-000000000000'
@@ -137,5 +137,19 @@ describe('detectsModelConsentDialog', () => {
 
   it('returns false on empty input', () => {
     expect(detectsModelConsentDialog('')).toBe(false)
+  })
+
+  // FABLEFALL1 regression anchor: the consent dialog ALSO satisfies the generic
+  // stuck-menu detector (its footer says "Esc to cancel"), so any recovery
+  // branch keyed on detectsBlockingMenu alone WILL reach it with a blind
+  // keystroke. This test pins the shadowing itself: if it ever fails because
+  // detectsBlockingMenu stops matching, the ordering guards in
+  // channel-monitor can be simplified -- until then, every blind-keystroke
+  // branch must probe detectsModelConsentDialog FIRST (measured field impact:
+  // 12 customer events + 5 local events, choice:"cancelled", session continued
+  // on the fallback model).
+  it('is shadowed by detectsBlockingMenu -- guards must check consent first', () => {
+    expect(detectsBlockingMenu(CONSENT_DIALOG_PANE)).toBe(true)
+    expect(detectsModelConsentDialog(CONSENT_DIALOG_PANE)).toBe(true)
   })
 })
