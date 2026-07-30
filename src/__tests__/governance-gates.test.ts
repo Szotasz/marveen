@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision as selfPaceDecision, stripDataPayloads, stripGitCommitMessages } from '../../scripts/self-pace-gate.mjs'
+import { gateDecision as selfPaceDecision, stripDataPayloads, stripGitCommitMessages, stripHeredocBodies } from '../../scripts/self-pace-gate.mjs'
 import {
   agentGetsGovernanceGates,
   injectSelfPaceGate,
@@ -128,6 +128,51 @@ describe('self-pace-gate gateDecision', () => {
 // a shell invocation, so a trigger token INSIDE the payload must not false-deny a
 // legit dispatch. Only provably-literal payloads are blanked; a payload that can
 // command-substitute ($(...)/backtick) is kept so a real substitution still trips. ---
+describe('self-pace-gate stripHeredocBodies (quoted vs unquoted marker)', () => {
+  // A heredoc body is data -- unless the shell will expand it. A quoted marker
+  // is literal, an unquoted one is not, and blanking an unquoted body would
+  // hide a live command substitution from the scheduler patterns. Reported on
+  // PR #770; the gate-level assertion for the same hole lives above.
+  const PROSE = 'at the same time we fixed the parser'
+
+  it('blanks a QUOTED heredoc body (the false positive this strip exists for)', () => {
+    const cmd = `git commit -F - <<'EOF'\n${PROSE}\nEOF`
+    expect(stripHeredocBodies(cmd)).not.toContain(PROSE)
+  })
+
+  it('blanks a double-quoted marker too', () => {
+    const cmd = `git commit -F - <<"EOF"\n${PROSE}\nEOF`
+    expect(stripHeredocBodies(cmd)).not.toContain(PROSE)
+  })
+
+  it('blanks an UNQUOTED body that has nothing to expand', () => {
+    const cmd = `git commit -F - <<EOF\n${PROSE}\nEOF`
+    expect(stripHeredocBodies(cmd)).not.toContain(PROSE)
+  })
+
+  it('KEEPS an unquoted body containing $( ) -- the shell would run it', () => {
+    const cmd = 'git commit -m "$(cat <<EOF\nfix\n$(at now)\nEOF\n)"'
+    expect(stripHeredocBodies(cmd)).toContain('$(at now)')
+  })
+
+  it('KEEPS an unquoted body containing a backtick', () => {
+    const cmd = 'git commit -F - <<EOF\nfix `at now`\nEOF'
+    expect(stripHeredocBodies(cmd)).toContain('`at now`')
+  })
+
+  it('still blanks a QUOTED body that merely mentions $( ) as text', () => {
+    // Quoted marker: the shell does not expand, so the text is data even when
+    // it looks like a substitution.
+    const cmd = "git commit -F - <<'EOF'\nwe replaced $(at now) with cron\nEOF"
+    expect(stripHeredocBodies(cmd)).not.toContain('$(at now)')
+  })
+
+  it('the <<- variant follows the same rule', () => {
+    expect(stripHeredocBodies(`git commit -F - <<-'EOF'\n\t${PROSE}\n\tEOF`)).not.toContain(PROSE)
+    expect(stripHeredocBodies('git commit -F - <<-EOF\n\t$(at now)\n\tEOF')).toContain('$(at now)')
+  })
+})
+
 describe('self-pace-gate stripDataPayloads (data-payload false-positive guard)', () => {
   it('blanks a single-quoted -d payload but keeps the flag', () => {
     expect(stripDataPayloads(`curl -d '{"x":"/api/schedules"}' u`)).toBe(`curl -d '' u`)
