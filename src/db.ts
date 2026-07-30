@@ -2029,8 +2029,11 @@ async function vectorSearch(
   }
 
   // Pipeline step 3: cross-encoder reranker picks the best N from the
-  // recency-reordered candidate pool.
+  // recency-reordered candidate pool -- only when enabled via the flag
+  // (default OFF: avoids ~100-300ms latency and the 23MB model download on
+  // every recall when the user has not opted in).
   if (!query || candidates.length === 0) return candidates.slice(0, limit)
+  if (getEffectiveSettingValue('MEMORY_RERANK_ENABLED') !== '1') return candidates.slice(0, limit)
   try {
     return await rerank(query, candidates, { topK: limit })
   } catch (err) {

@@ -506,6 +506,16 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
       'claude-haiku-4-5-20251001',
     ],
   },
+  // --- Memory module ---
+  {
+    key: 'MEMORY_RERANK_ENABLED',
+    type: 'boolean',
+    default: '0',
+    description: 'Cross-encoder reranker engedélyezése a vektoros memória-keresésnél (Xenova/ms-marco-MiniLM-L-6-v2, ~23 MB, ONNX q8). Kikapcsolt állapotban a keresés recency-súlyozott cosine/ANN sorrendet ad vissza. Bekapcsolva minden recall +100-300 ms-mal lassul és az első kérésnél a modell letöltődik.',
+    module: 'memory',
+    secret: false,
+    requiresRestart: false,
+  },
 ]
 
 export function getSettingDefinition(key: string): SettingDefinition | undefined {
