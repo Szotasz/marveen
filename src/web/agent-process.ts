@@ -23,7 +23,8 @@ import {
   detectsModelConsentDialog,
   type FirstRunGateKind,
 } from '../pane-state.js'
-import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentMemoryIsolation } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentMemoryIsolation, readAgentCustomProvider } from './agent-config.js'
+import { loadCustomProvider } from './custom-providers.js'
 import { resolveAgentConfigDir } from './claude-plans.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
@@ -1076,16 +1077,65 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
       logger.warn({ err, name }, 'pre-launch detached-claude reap failed (continuing)')
     }
 
+    // Custom provider check runs FIRST and BEFORE resolveOpenRouterModel, so
+    // an explicit customProvider field in agent-config.json takes priority over
+    // all string-pattern discriminators. This prevents model ids like `mistral:7b`
+    // from accidentally matching the Ollama branch when the operator intends a
+    // custom Anthropic-compatible endpoint.
+    const rawModel = readAgentModel(name)
+    const customProviderId = readAgentCustomProvider(name)
+    // isCustom is true whenever an id is set -- even if the definition is missing.
+    // The guard below catches the missing-definition case and aborts before any
+    // string-pattern discriminator runs, so a deleted provider never silently
+    // falls through to the Ollama branch.
+    const isCustom = customProviderId !== null
+    const customProviderDef = customProviderId ? loadCustomProvider(customProviderId) : null
+
+    if (isCustom && !customProviderDef) {
+      // Provider id is set in agent-config but not found in custom-providers.json
+      // (deleted via DELETE /api/custom-providers/:id or corrupt store).
+      // Abort launch with a clear error rather than silently falling through to Ollama.
+      logger.error({ name, customProviderId }, 'Custom provider not found in store -- agent launch aborted. Add it in Settings > Providers.')
+      throw new Error(`Custom provider "${customProviderId}" not found. Add it in Settings > Providers.`)
+    }
+
     // `openrouter-auto:<tier>` resolves to the tier's current recommended model
     // (weekly-refreshed); a concrete OpenRouter id (contains '/') passes through.
-    const model = resolveOpenRouterModel(readAgentModel(name))
+    // Skip this resolution entirely for custom providers -- their model ids go
+    // verbatim to the custom endpoint and have no openrouter-auto semantics.
+    const model = isCustom ? rawModel : resolveOpenRouterModel(rawModel)
     const authMode = readAgentAuthMode(name)
-    const isClaude = model.startsWith('claude-')
-    const isDeepseek = model.startsWith('deepseek-')
+
+    const isClaude = !isCustom && model.startsWith('claude-')
+    const isDeepseek = !isCustom && model.startsWith('deepseek-')
     // OpenRouter model ids are `provider/model` (contain '/'); Ollama tags use
     // ':' and no '/'. This discriminator keeps OpenRouter ids off the Ollama path.
-    const isOpenRouter = !isClaude && !isDeepseek && model.includes('/')
-    const isOllama = !isClaude && !isDeepseek && !isOpenRouter
+    const isOpenRouter = !isCustom && !isClaude && !isDeepseek && model.includes('/')
+    const isOllama = !isCustom && !isClaude && !isDeepseek && !isOpenRouter
+
+    // Generic custom-provider env: build from the provider definition stored in
+    // store/custom-providers.json. Only Anthropic-Messages-compatible endpoints
+    // are supported (/v1/messages); pure OpenAI endpoints require a proxy.
+    let customEnv = ''
+    if (isCustom && customProviderDef) {
+      let headerExport: string
+      if (customProviderDef.authHeader === 'none') {
+        headerExport = `export ANTHROPIC_AUTH_TOKEN=ollama && `
+      } else {
+        const key = getSecret(customProviderDef.vaultKey ?? '') ?? ''
+        if (!key) {
+          logger.error({ name, vaultKey: customProviderDef.vaultKey }, `Custom provider vault key missing -- agent launch aborted. Add "${customProviderDef.vaultKey}" in the Vault tab.`)
+          throw new Error(`Custom provider vault key "${customProviderDef.vaultKey}" not found. Add it in the Vault tab.`)
+        }
+        if (customProviderDef.authHeader === 'x-api-key') {
+          headerExport = `export ANTHROPIC_API_KEY="${key}" && `
+        } else {
+          headerExport = `export ANTHROPIC_AUTH_TOKEN="${key}" && `
+        }
+      }
+      customEnv = `export ANTHROPIC_BASE_URL="${customProviderDef.baseUrl}" && ${headerExport}export ANTHROPIC_MODEL='${model}' && `
+    }
+
     // ANTHROPIC_MODEL is REQUIRED for non-Claude models: the interactive TUI
     // validates the `--model` flag against known Anthropic models and silently
     // falls back to the built-in default (claude-opus-...) for an unrecognized
@@ -1375,7 +1425,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // values like `claude-opus-4-8[1m]` (1M-context suffix) from being glob-expanded AND makes a `'`
     // in the value inert rather than a quote-break -> command injection. Same escape at the three
     // ANTHROPIC_MODEL env sites above.
-    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${ollamaEnv}${deepseekEnv}${openrouterEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
+    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${customEnv}${ollamaEnv}${deepseekEnv}${openrouterEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
     runTmux(null, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir }, 'Agent tmux session started')

@@ -3474,25 +3474,42 @@ async function openAgentDetail(agentName) {
   const chConnected = agentIsConnected(currentAgent)
   document.getElementById('agentDetailChStatus').innerHTML = `<span class="tg-status"><span class="tg-dot ${chConnected ? 'connected' : 'disconnected'}"></span>${chConnected ? t('agents.channel.connected') : t('agents.channel.disconnected')}</span>`
 
-  // Settings tab - load Ollama + DeepSeek models then set value
+  // Settings tab - load Ollama + DeepSeek + custom-provider models then set value
   loadAvailableModels()
   loadOllamaModels().then(() => {
     const sel = document.getElementById('editAgentModel')
     const mv = currentAgent.activeModel || currentAgent.model || 'claude-opus-4-8[1m]'
+    const customProviderId = currentAgent.customProvider || null
     // The model <select> is one shared element reused per agent. A manual
-    // OpenRouter id (or openrouter-auto:tier) may not be among the static/auto
-    // options, so setting .value would silently show nothing. Inject THIS
-    // agent's model as a selectable option (cleaning any stale injected ones
-    // first) so every agent always displays its own model, per-agent.
+    // OpenRouter id (or openrouter-auto:tier, or custom model) may not be
+    // among the static/auto options, so setting .value would silently show
+    // nothing. Inject THIS agent's model as a selectable option (cleaning any
+    // stale injected ones first) so every agent always displays its own model.
     Array.from(sel.querySelectorAll('option.dynamic-model-opt')).forEach(o => o.remove())
-    if (!Array.from(sel.options).some(o => o.value === mv)) {
-      const opt = document.createElement('option')
-      opt.value = mv
-      opt.className = 'dynamic-model-opt'
-      opt.textContent = mv.startsWith('openrouter-auto:') ? `🔀 ${mv}` : `🔀 ${mv}`
-      sel.appendChild(opt)
+    if (customProviderId) {
+      // Custom provider: select value is "custom:<providerId>"; model-id in the text input.
+      const cpVal = `custom:${customProviderId}`
+      if (!Array.from(sel.options).some(o => o.value === cpVal)) {
+        const opt = document.createElement('option')
+        opt.value = cpVal
+        opt.className = 'dynamic-model-opt'
+        opt.textContent = `🔧 ${customProviderId}`
+        sel.appendChild(opt)
+      }
+      sel.value = cpVal
+      const modelInput = document.getElementById('editAgentModelCustomModelId')
+      if (modelInput) modelInput.value = mv
+    } else {
+      if (!Array.from(sel.options).some(o => o.value === mv)) {
+        const opt = document.createElement('option')
+        opt.value = mv
+        opt.className = 'dynamic-model-opt'
+        opt.textContent = mv.startsWith('openrouter-auto:') ? `🔀 ${mv}` : `🔀 ${mv}`
+        sel.appendChild(opt)
+      }
+      sel.value = mv
     }
-    sel.value = mv
+    updateCustomModelIdRow(sel)
   })
   populateProfileSelect(
     document.getElementById('editAgentProfile'),
@@ -4056,7 +4073,35 @@ async function loadAvailableModels() {
     )
     const orBtn = document.getElementById('openrouterBrowseBtn')
     if (orBtn) orBtn.style.display = (data.openrouterConfigured && isMainAgent) ? '' : 'none'
+
+    // Custom providers: one <option value="custom:<id>"> per defined provider.
+    const customProviders = Array.isArray(data.customProviders) ? data.customProviders : []
+    const cpGroupIds = ['editAgentModelCustomProviderGroup', 'agentModelCustomProviderGroup']
+    for (const gid of cpGroupIds) {
+      const g = document.getElementById(gid)
+      if (!g) continue
+      g.innerHTML = ''
+      if (customProviders.length === 0) { g.style.display = 'none'; continue }
+      g.style.display = ''
+      for (const p of customProviders) {
+        const opt = document.createElement('option')
+        opt.value = `custom:${p.id}`
+        opt.textContent = `🔧 ${p.label}`
+        g.appendChild(opt)
+      }
+    }
+    updateCustomModelIdRow(document.getElementById('editAgentModel'))
+    updateCustomModelIdRow(document.getElementById('agentModel'))
   } catch { /* dashboard not available */ }
+}
+
+function updateCustomModelIdRow(selectEl) {
+  if (!selectEl) return
+  const isEdit = selectEl.id === 'editAgentModel'
+  const rowId = isEdit ? 'editAgentModelCustomModelRow' : 'agentModelCustomModelRow'
+  const row = document.getElementById(rowId)
+  if (!row) return
+  row.style.display = (selectEl.value || '').startsWith('custom:') ? '' : 'none'
 }
 
 // --- OpenRouter manual-list curation (tick models into the shared dropdown) ---
@@ -4249,15 +4294,24 @@ function startModelRestartPolling(name, expectedModel, triggeredAt) {
   }, 2000)
 }
 
+document.getElementById('editAgentModel').addEventListener('change', () => {
+  updateCustomModelIdRow(document.getElementById('editAgentModel'))
+})
+
 document.getElementById('saveModelBtn').addEventListener('click', async () => {
   if (!currentAgent || currentAgent.role === 'main') return
-  const newModel = document.getElementById('editAgentModel').value
+  const selectVal = document.getElementById('editAgentModel').value
+  const isCustom = selectVal.startsWith('custom:')
+  const customProviderId = isCustom ? selectVal.slice('custom:'.length) : null
+  const newModel = isCustom
+    ? (document.getElementById('editAgentModelCustomModelId').value.trim() || selectVal)
+    : selectVal
   const name = currentAgent.name
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(name)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: newModel }),
+      body: JSON.stringify({ model: newModel, customProvider: customProviderId }),
     })
     if (!res.ok) throw new Error()
     currentAgent.model = newModel
@@ -13697,6 +13751,32 @@ async function loadSettings() {
         renderAutonomyContent(grid, footer)
       }
     }
+
+    // Providers tab (synthetic, owner-only feature for custom Anthropic-compatible endpoints)
+    {
+      const mod = 'providers'
+      const btn = document.createElement('button')
+      btn.className = 'tab-btn' + (mod === activeTab ? ' active' : '')
+      btn.dataset.tab = mod
+      btn.textContent = 'Provider-ok'
+      btn.addEventListener('click', () => activateSettingsTab(mod))
+      tabNav.appendChild(btn)
+
+      const panel = document.createElement('div')
+      panel.className = 'tab-panel'
+      panel.id = `settings-panel-${mod}`
+      panel.hidden = mod !== activeTab
+
+      const container = document.createElement('div')
+      container.id = 'settingsProvidersContainer'
+      panel.appendChild(container)
+
+      tabPanels.appendChild(panel)
+
+      if (mod === activeTab) {
+        renderProvidersContent(container)
+      }
+    }
   } catch (err) {
     tabPanels.innerHTML = `<p style="padding:24px;color:var(--danger)">${t('settings.error')}</p>`
   }
@@ -13716,6 +13796,179 @@ function activateSettingsTab(mod) {
     const footer = document.getElementById('settingsAutonomyUpdatedAt')
     if (grid && !grid.innerHTML.trim()) renderAutonomyContent(grid, footer)
   }
+  if (mod === 'providers') {
+    const container = document.getElementById('settingsProvidersContainer')
+    if (container && !container.innerHTML.trim()) renderProvidersContent(container)
+  }
+}
+
+async function renderProvidersContent(container) {
+  container.innerHTML = '<p style="padding:16px;color:var(--text-muted);font-size:13px">Betöltés...</p>'
+  try {
+    const res = await fetch('/api/custom-providers')
+    if (!res.ok) throw new Error('fetch failed')
+    const { providers } = await res.json()
+    buildProvidersUI(container, providers)
+  } catch {
+    container.innerHTML = '<p style="padding:16px;color:var(--danger);font-size:13px">Hiba a provider lista betöltésekor.</p>'
+  }
+}
+
+function buildProvidersUI(container, providers) {
+  container.innerHTML = ''
+
+  const notice = document.createElement('p')
+  notice.style.cssText = 'font-size:12.5px;color:var(--text-muted);padding:12px 0 8px;line-height:1.5'
+  notice.textContent = 'Egyéni Anthropic Messages API (/v1/messages) kompatibilis végpontok. Tiszta OpenAI végponthoz proxy szükséges.'
+  container.appendChild(notice)
+
+  if (providers.length > 0) {
+    const table = document.createElement('table')
+    table.style.cssText = 'width:100%;border-collapse:collapse;font-size:13px;margin-bottom:16px'
+    table.innerHTML = `<thead><tr style="border-bottom:1px solid var(--border)">
+      <th style="text-align:left;padding:6px 8px">Név</th>
+      <th style="text-align:left;padding:6px 8px">Base URL</th>
+      <th style="text-align:left;padding:6px 8px">Auth</th>
+      <th style="text-align:left;padding:6px 8px">Vault kulcs</th>
+      <th style="padding:6px 8px"></th>
+    </tr></thead><tbody id="customProvidersTableBody"></tbody>`
+    container.appendChild(table)
+    const tbody = table.querySelector('#customProvidersTableBody')
+    for (const p of providers) {
+      const tr = document.createElement('tr')
+      tr.style.borderBottom = '1px solid var(--border)'
+      tr.innerHTML = `
+        <td style="padding:6px 8px;font-weight:500">${escapeHtml(p.label)}</td>
+        <td style="padding:6px 8px;font-family:monospace;font-size:12px;word-break:break-all">${escapeHtml(p.baseUrl)}</td>
+        <td style="padding:6px 8px">${escapeHtml(p.authHeader)}</td>
+        <td style="padding:6px 8px;font-family:monospace;font-size:12px">${p.vaultKey ? escapeHtml(p.vaultKey) : '<em style="color:var(--text-muted)">nincs</em>'}</td>
+        <td style="padding:6px 8px;text-align:right;white-space:nowrap">
+          <button class="btn-secondary btn-compact" data-provider-edit="${escapeHtml(p.id)}" style="margin-right:4px">Szerkesztés</button>
+          <button class="btn-secondary btn-compact" style="color:var(--danger)" data-provider-delete="${escapeHtml(p.id)}">Törlés</button>
+        </td>`
+      tbody.appendChild(tr)
+    }
+    tbody.querySelectorAll('[data-provider-edit]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.providerEdit
+        const p = providers.find(x => x.id === id)
+        if (p) openAddProviderModal(container, p)
+      })
+    })
+    tbody.querySelectorAll('[data-provider-delete]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.providerDelete
+        if (!confirm(`Biztosan törlöd a(z) "${id}" providert?`)) return
+        try {
+          const r = await fetch(`/api/custom-providers/${encodeURIComponent(id)}`, { method: 'DELETE' })
+          if (!r.ok) throw new Error()
+          renderProvidersContent(container)
+          loadAvailableModels()
+        } catch { alert('Hiba a törléskor.') }
+      })
+    })
+  } else {
+    const empty = document.createElement('p')
+    empty.style.cssText = 'color:var(--text-muted);font-size:13px;padding:8px 0 16px'
+    empty.textContent = 'Nincs egyéni provider konfigurálva.'
+    container.appendChild(empty)
+  }
+
+  const addBtn = document.createElement('button')
+  addBtn.className = 'btn-primary btn-compact'
+  addBtn.textContent = '+ Új provider'
+  addBtn.addEventListener('click', () => openAddProviderModal(container))
+  container.appendChild(addBtn)
+}
+
+function openAddProviderModal(container, editProvider = null) {
+  const existing = document.getElementById('addProviderModal')
+  if (existing) existing.remove()
+
+  const isEdit = editProvider !== null
+  const v = (field) => isEdit ? escapeHtml(editProvider[field] || '') : ''
+
+  const overlay = document.createElement('div')
+  overlay.id = 'addProviderModal'
+  overlay.className = 'modal-overlay active'
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:480px">
+      <div class="modal-header">
+        <h2>${isEdit ? 'Provider szerkesztése' : 'Új egyéni provider'}</h2>
+        <button class="modal-close" id="addProviderModalClose">&times;</button>
+      </div>
+      <div class="modal-body" style="display:flex;flex-direction:column;gap:12px">
+        <div class="form-group">
+          <label class="form-label">Megjelenő név *</label>
+          <input type="text" id="cpLabel" class="input" placeholder="pl. DeepSeek (saját kulcs)" value="${v('label')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">ID * <small style="color:var(--text-muted)">(egyedi, csak a-z 0-9 _ -)</small></label>
+          <input type="text" id="cpId" class="input" placeholder="pl. my-deepseek" value="${v('id')}"${isEdit ? ' readonly style="opacity:0.6;cursor:not-allowed"' : ''}>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Base URL * <small style="color:var(--text-muted)">(https:// vagy http://localhost)</small></label>
+          <input type="text" id="cpBaseUrl" class="input" placeholder="https://api.deepseek.com/anthropic" value="${v('baseUrl')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Auth header *</label>
+          <select id="cpAuthHeader" class="input">
+            <option value="x-api-key"${isEdit && editProvider.authHeader === 'x-api-key' ? ' selected' : ''}>x-api-key (ANTHROPIC_API_KEY)</option>
+            <option value="Bearer"${isEdit && editProvider.authHeader === 'Bearer' ? ' selected' : ''}>Bearer (ANTHROPIC_AUTH_TOKEN)</option>
+            <option value="none"${isEdit && editProvider.authHeader === 'none' ? ' selected' : ''}>none (Ollama-szerű, token nélkül)</option>
+          </select>
+        </div>
+        <div class="form-group" id="cpVaultKeyGroup"${isEdit && editProvider.authHeader === 'none' ? ' style="display:none"' : ''}>
+          <label class="form-label">Vault kulcs neve *</label>
+          <input type="text" id="cpVaultKey" class="input" placeholder="pl. my-deepseek-api-key" value="${v('vaultKey')}">
+          <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">A kulcs értékét a Vault tabon veheted fel.</small>
+        </div>
+        <p style="font-size:12px;color:var(--text-muted);background:var(--surface-hover);padding:10px;border-radius:6px;line-height:1.5">
+          Csak Anthropic Messages API (/v1/messages) kompatibilis végpont működik. Tiszta OpenAI végponthoz (pl. /v1/chat/completions) fordítóproxy szükséges, az most nem támogatott.
+        </p>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn-secondary" id="addProviderCancelBtn">Mégsem</button>
+          <button class="btn-primary" id="addProviderSaveBtn">Mentés</button>
+        </div>
+      </div>
+    </div>`
+  document.body.appendChild(overlay)
+
+  const closeModal = () => overlay.remove()
+  overlay.querySelector('#addProviderModalClose').addEventListener('click', closeModal)
+  overlay.querySelector('#addProviderCancelBtn').addEventListener('click', closeModal)
+
+  overlay.querySelector('#cpAuthHeader').addEventListener('change', (e) => {
+    const vkGroup = overlay.querySelector('#cpVaultKeyGroup')
+    vkGroup.style.display = e.target.value === 'none' ? 'none' : ''
+  })
+
+  overlay.querySelector('#addProviderSaveBtn').addEventListener('click', async () => {
+    const id = overlay.querySelector('#cpId').value.trim()
+    const label = overlay.querySelector('#cpLabel').value.trim()
+    const baseUrl = overlay.querySelector('#cpBaseUrl').value.trim()
+    const authHeader = overlay.querySelector('#cpAuthHeader').value
+    const vaultKey = authHeader !== 'none' ? overlay.querySelector('#cpVaultKey').value.trim() : null
+    if (!id || !label || !baseUrl || (authHeader !== 'none' && !vaultKey)) {
+      alert('Töltsd ki az összes kötelező mezőt.')
+      return
+    }
+    try {
+      const r = await fetch('/api/custom-providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, label, baseUrl, authHeader, vaultKey }),
+      })
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}))
+        alert(err.error || 'Hiba a mentéskor.')
+        return
+      }
+      overlay.remove()
+      renderProvidersContent(container)
+      loadAvailableModels()
+    } catch { alert('Hiba a mentéskor.') }
+  })
 }
 
 function buildSettingRow(def) {

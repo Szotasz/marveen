@@ -633,3 +633,24 @@ export function writeAgentCapabilities(name: string, capabilities: string[]): vo
   config.capabilities = capabilities
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
+
+// ---- per-agent custom provider ---------------------------------------------
+
+export function readAgentCustomProvider(name: string): string | null {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}'))
+    const value = config.customProvider
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  } catch { /* fall through */ }
+  return null
+}
+
+export function writeAgentCustomProvider(name: string, id: string | null): void {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  let config: Record<string, unknown> = {}
+  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  if (id && id.trim()) config.customProvider = id.trim()
+  else delete config.customProvider
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
