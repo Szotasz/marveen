@@ -50,8 +50,15 @@ const SELF_PACE_BASH_PATTERNS = [
   /\btmux\b[\s\S]*\b(send-keys|paste-buffer|run-shell|set-buffer)\b/i,
   // self-backgrounding that relaunches claude (nohup/setsid/disown + claude)
   /\b(nohup|setsid|disown)\b[\s\S]*\bclaude\b/i,
-  // the loop slash-skill driven from a shell
-  /\bclaude\b[\s\S]*\/loop\b/i,
+  // the loop slash-skill driven from a shell. `/loop` must be in SLASH-COMMAND
+  // position -- a standalone token (segment-start / whitespace / quote before it,
+  // whitespace / quote / end after it) -- never a PATH segment. The old
+  // `\/loop\b` fired on any `loop`-prefixed path component whenever `.claude` was
+  // in the same command (\bclaude\b matches the `.claude` in every memory/skill
+  // path), so reading `.../memory/loop-stop-...md` or `~/.claude/skills/loop/...`
+  // was denied. Every real form stays denied: `claude /loop 5m`, `claude -p "/loop x"`,
+  // `claude '/loop'`, bare `claude /loop`.
+  /\bclaude\b[\s\S]*(?:^|[\s'"])\/loop(?=[\s'"]|$)/i,
 ]
 
 // OS-level schedulers + delayed exec (cron / launchd / systemd / at / batch): the
@@ -68,7 +75,22 @@ const SCHED_PREFIX = String.raw`(?:(?:[A-Za-z_]\w*=\S*|sudo|env|command|exec|nic
 // (`X=`crontab -r``) is caught too -- both run the enclosed command in a shell
 // context, so a scheduler binary immediately inside either is a real self-pace.
 const SCHED_BOUNDARY = '[;&|(`]'
-const SCHEDULER_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(crontab|launchctl|systemd-run|batch|at)\b(?!-)(?!\s*=)`, 'i')
+// `at` and `batch` are ordinary English words; splitSegments splits on NEWLINES
+// so a prose line ("at least 80%", "batch size 50") at a segment start looked
+// like the at(1)/batch(1) binaries. For these two ONLY, also require something
+// that looks like an actual invocation: end of segment, a flag, a redirect, or
+// an at(1) TIMESPEC. crontab/systemd-run keep the plain match (not English words).
+const AT_INVOCATION = String.raw`(?=\s*$|\s+-|\s*<|\s+(?:now|noon|midnight|teatime|today|tomorrow|next\b|\+\s*\d|\d{1,2}:\d{2}|\d{3,4}\b|\d{1,2}\s*(?:am|pm)\b|\d{1,2}[./]\d{1,2}|(?:mon|tue|wed|thu|fri|sat|sun)|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)))`
+// launchctl needs similar narrowing: fleet heartbeats include launchctl job labels
+// (e.g. `launchctl com.marveen.channels PID 555`) at segment-starts in status prose.
+// Require a subcommand-shaped next token (bare lowercase word, no dot/slash).
+// Every real self-pace vector (load/bootstrap/submit/kickstart/start/enable/...)
+// takes a subcommand word. A job label and a path both fail and pass as prose.
+const LAUNCHCTL_SUBCOMMAND = String.raw`(?=\s*$|\s+-|\s+[a-z][a-z-]*(?:\s|$))`
+const SCHEDULER_RX = new RegExp(
+  String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(?:(?:crontab|systemd-run)\b(?!-)(?!\s*=)|launchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|(?:batch|at)\b(?!-)(?!\s*=)${AT_INVOCATION})`,
+  'i',
+)
 // ...but allow a pure READ-listing of one's own schedule (parity with the store /
 // schedule-API read exemptions): crontab -l, launchctl list/print, atq.
 const SCHEDULER_READ_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(crontab\s+-l\b|launchctl\s+(?:list|print|dumpstate|blame|examine)\b|atq\b)`, 'i')
@@ -165,6 +187,27 @@ export function stripGitCommitMessages(command) {
   )
 }
 
+// Normalise two shell-level obfuscations that bash resolves at EXEC time, so an
+// invocation whose SHAPE is a real self-pace cannot dodge the slash-command match
+// with quoting the shell undoes anyway. Measured end-to-end through the gate hook
+// (upstream review, 2026-07-27): `claude \/loop` and `claude$IFS/loop` BOTH run
+// `claude /loop` in bash but slipped the `(?:^|[\s'"])\/loop` match -- the char
+// before `/loop` was `\` and `S` (end of `$IFS`), neither in the [\s'"] class.
+// The fix is NOT to widen that class (that would let more prose through); it is to
+// resolve what the shell resolves before matching: `$IFS`/`${IFS}` word-splits to
+// a space, and a backslash escape `\X` collapses to `X`. Side effect: also closes
+// `claude /lo\op`. Applied ONLY to the self-pace bash patterns below; the
+// scheduler/store/API checks keep the raw segment (upstream measured them clean,
+// and this PR is scoped to these two loop regressions). This cannot introduce a
+// false positive: collapsing escapes / dropping `$IFS` never synthesises the
+// literal `tmux`+send-keys, `nohup`+claude, or `claude`+`/loop` tokens out of
+// prose -- it only removes an evasion.
+export function normalizeShellEvasion(seg) {
+  return String(seg ?? '')
+    .replace(/\$\{IFS\}|\$IFS\b/g, ' ') // $IFS / ${IFS} -> the space it expands to
+    .replace(/\\(.)/g, '$1') // \X -> X (bash unescape of a backslash-escaped char)
+}
+
 // Pure decision: does this tool call set up self-pace / self-injection?
 export function gateDecision(toolName, toolInput) {
   const name = String(toolName ?? '')
@@ -186,7 +229,10 @@ export function gateDecision(toolName, toolInput) {
     // Per-segment so an unrelated token elsewhere in a compound command cannot
     // turn a legit read (store inspection, schedule-API GET) into a false deny.
     for (const seg of splitSegments(safeCommand)) {
-      if (SELF_PACE_BASH_PATTERNS.some((re) => re.test(seg))) return { deny: true }
+      // Match the self-pace bash patterns against the shell-normalised segment so a
+      // `\/loop` / `$IFS/loop` evasion (which bash resolves to `/loop` at exec) is
+      // still caught; the scheduler/store/API checks below use the RAW seg (scoped).
+      if (SELF_PACE_BASH_PATTERNS.some((re) => re.test(normalizeShellEvasion(seg)))) return { deny: true }
       // scheduler binaries: deny the exec/submit forms, allow pure read-listing
       if (SCHEDULER_RX.test(seg) && !SCHEDULER_READ_RX.test(seg)) return { deny: true }
       // self-schedule store: block WRITE only (a read/grep is legit diagnostics)

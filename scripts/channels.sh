@@ -46,18 +46,99 @@ if [ -f "$INSTALL_DIR/.env" ]; then
   fi
   [ -n "$_oauth" ] && export CLAUDE_CODE_OAUTH_TOKEN="$_oauth"
   unset _api_key _oauth
+  # Optional per-install model override for the MAIN agent. Lives here rather
+  # than in .claude/settings.json because that file is TRACKED: an install that
+  # writes its model choice there carries a permanent local diff, which blocks
+  # the update preflight's clean-tree check and silently reverts to the
+  # repository's value on the next update. .env is per-install and gitignored.
+  MAIN_AGENT_MODEL="$(grep -E '^MAIN_AGENT_MODEL=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
 fi
 CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"
 SESSION="${MAIN_AGENT_ID:-marveen}-channels"
 
-# Resolve plugin ID from provider
-case "$CHANNEL_PROVIDER" in
-  slack)    PLUGIN_ID="slack-channel@marveen-marketplace" ;;
-  whatsapp) PLUGIN_ID="whatsapp@marveen-marketplace" ;;
-  teams)    PLUGIN_ID="teams@marveen-marketplace" ;;
-  discord)  PLUGIN_ID="discord@claude-plugins-official" ;;
-  *)        PLUGIN_ID="telegram@claude-plugins-official" ;;
-esac
+# Resolve plugin ID from provider.
+#
+# PLUGIN_ID is the marketplace-qualified id the `--channels` flag takes.
+# PLUGIN_PANE_ID is the *MCP server* id the /mcp TUI renders, which is a
+# DIFFERENT string (`plugin:<plugin>:<mcp-server>`). Keep this map in sync with
+# `pluginPaneId` in src/channel-provider.ts -- the post-init unlock below greps
+# the /mcp pane for it.
+resolve_plugin_ids() {
+  case "$1" in
+    slack)    PLUGIN_ID="slack-channel@marveen-marketplace"; PLUGIN_PANE_ID="plugin:slack-channel:marveen-marketplace" ;;
+    whatsapp) PLUGIN_ID="whatsapp@marveen-marketplace";      PLUGIN_PANE_ID="plugin:whatsapp:marveen-marketplace" ;;
+    teams)    PLUGIN_ID="teams@marveen-marketplace";         PLUGIN_PANE_ID="plugin:teams:marveen-marketplace" ;;
+    discord)  PLUGIN_ID="discord@claude-plugins-official";   PLUGIN_PANE_ID="plugin:discord:discord" ;;
+    *)        PLUGIN_ID="telegram@claude-plugins-official";  PLUGIN_PANE_ID="plugin:telegram:telegram" ;;
+  esac
+}
+resolve_plugin_ids "$CHANNEL_PROVIDER"
+
+# --- pure classifier for the /mcp pane ----------------------------------------
+# Takes a captured pane as $1 and sets MCP_PLUGIN_STATE (failed|ok) plus the row
+# it judged in MCP_PLUGIN_ROW for logging. Assigns rather than prints so the
+# caller keeps the row without a subshell. Extracted so it is testable without a
+# live tmux session (see scripts/__tests__/channels-mcp-unlock.test.sh) -- the
+# previous inline matcher went stale against a Claude Code TUI change and no
+# test could have caught it.
+#
+# Only the plugin's OWN row is considered, and only the status word decides:
+#   - The row label is the MCP server id, not the marketplace id. Claude Code
+#     2.1.159 rendered `plugin:telegram@claude-plugins-official`, 2.1.220
+#     renders `plugin:telegram:telegram`. Both are accepted.
+#   - The failure marker moved from `✗ Failed` (U+2717, capitalised) to
+#     `✘ failed` (U+2718, lowercase), so the glyph is not matched at all. The
+#     status vocabulary mirrors PLUGIN_FAILED_RX in
+#     src/web/channel-health-monitor.ts.
+# The status-marker pre-filter keeps a scrollback mention of the plugin id (the
+# "Listening for channel messages from:" banner) from being read as the /mcp
+# row; `tail -1` prefers the menu, which renders at the bottom of the pane.
+MCP_PLUGIN_ROW=""
+MCP_PLUGIN_STATE="ok"
+classify_mcp_plugin_row() {
+  MCP_PLUGIN_ROW="$(printf '%s\n' "$1" \
+    | grep -F -e "$PLUGIN_PANE_ID" -e "plugin:$PLUGIN_ID" \
+    | grep -iE 'failed|error|disconnected|connected|disabled' \
+    | tail -1)"
+  case "$(printf '%s' "$MCP_PLUGIN_ROW" | tr '[:upper:]' '[:lower:]')" in
+    *failed*|*error*|*disconnected*) MCP_PLUGIN_STATE="failed" ;;
+    *)                               MCP_PLUGIN_STATE="ok" ;;
+  esac
+}
+
+# Test hook: classify a pane from stdin and exit before anything touches tmux,
+# the store or a live session.
+if [ "${1:-}" = "--classify-mcp-pane" ]; then
+  resolve_plugin_ids "${2:-$CHANNEL_PROVIDER}"
+  classify_mcp_plugin_row "$(cat)"
+  echo "$MCP_PLUGIN_STATE"
+  exit 0
+fi
+
+# Resolve the main agent's model. Precedence: MAIN_AGENT_MODEL from .env
+# (per-install, gitignored) over .claude/settings.json (tracked, shipped with
+# the repo). Without the .env route an install that wants a different model has
+# to edit a tracked file, which then blocks the update preflight's clean-tree
+# check and gets reverted by the next update.
+#
+# Kept as a function so `--resolve-main-model` can exercise exactly the code
+# the launch path uses, with no tmux, store or network involved.
+resolve_main_model() {
+  if [ -n "${MAIN_AGENT_MODEL:-}" ]; then
+    printf '%s' "$MAIN_AGENT_MODEL"
+    return 0
+  fi
+  if [ -f "$INSTALL_DIR/.claude/settings.json" ] && command -v jq >/dev/null 2>&1; then
+    jq -r '.model // empty' "$INSTALL_DIR/.claude/settings.json" 2>/dev/null
+  fi
+}
+
+# Test seam: print the resolved model and exit before any side effect.
+if [ "${1:-}" = "--resolve-main-model" ]; then
+  resolve_main_model
+  echo
+  exit 0
+fi
 
 # Self-healing guard: ensure PLUGIN_ID is enabled in the PROJECT settings.json
 # before launch. A PR review-reset or branch-switch that reverts
@@ -227,14 +308,16 @@ TMUX="$(command -v tmux)"
 # too closes the gap end-to-end). Parity with the sub-agent launch.
 MCP_BATCH_ENV="export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000 && "
 
-# Read the main agent's default model from .claude/settings.json so we can
-# pass --model explicitly. Without --model claude-code falls back to its
-# built-in default, which can drift across versions. Passing the flag makes
-# the choice deterministic and visible in `ps`.
-MAIN_MODEL=""
-if [ -f "$INSTALL_DIR/.claude/settings.json" ] && command -v jq >/dev/null 2>&1; then
-  MAIN_MODEL="$(jq -r '.model // empty' "$INSTALL_DIR/.claude/settings.json" 2>/dev/null)"
-fi
+# Resolve the main agent's model so we can pass --model explicitly. Without
+# --model claude-code falls back to its built-in default, which can drift
+# across versions. Passing the flag makes the choice deterministic and visible
+# in `ps`.
+#
+# Precedence: MAIN_AGENT_MODEL from .env (per-install, gitignored) wins over
+# .claude/settings.json (tracked, shipped with the repo). Without the .env
+# route an install that wants a different model has to edit a tracked file,
+# which then blocks the update preflight and gets reverted by the next update.
+MAIN_MODEL="$(resolve_main_model)"
 MODEL_FLAG=""
 # Single-quote the model id so values like `claude-opus-4-8[1m]` survive the
 # tmux command-string round-trip without the inner shell glob-expanding `[1m]`.
@@ -532,7 +615,7 @@ date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
 #      poller" even when one is running. A direct child-of-claude pgrep is the
 #      authoritative signal.
 #
-#   2. capture-pane after `/mcp` shows the plugin row marked with "✗ Failed".
+#   2. capture-pane after `/mcp` shows the plugin's own row in a failed state.
 #      Connected/Enabled rows must NOT trigger the keystroke sequence, because
 #      then `Up`+`Enter`+`Enter` would land on "Disable" in the submenu and
 #      disable the plugin instead of reconnecting it (Szabi msg 427).
@@ -554,19 +637,21 @@ date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
     exit 0
   fi
 
-  # Check 2: TUI confirmation that the plugin shows ✗ Failed. The /mcp view
-  # also shows "(disabled)" markers; we only fire on Failed, never on disabled
-  # (Enable-only submenu has no Reconnect, the Up+Enter+Enter sequence would
-  # land somewhere unsafe).
+  # Check 2: TUI confirmation that the plugin's row is in a failed state. The
+  # /mcp view also shows "(disabled)" markers; we only fire on failed, never on
+  # disabled (Enable-only submenu has no Reconnect, the Up+Enter+Enter sequence
+  # would land somewhere unsafe). See classify_mcp_plugin_row above for why the
+  # matching is row-scoped and glyph-agnostic.
   $TMUX send-keys -t "$SESSION" Escape
   sleep 1
   $TMUX send-keys -t "$SESSION" "/mcp" Enter
   sleep 3
   PANE="$($TMUX capture-pane -t "$SESSION" -p 2>/dev/null || true)"
 
-  case "$PANE" in
-    *"plugin:telegram@"*"✗ Failed"*|*"plugin:telegram@"*"✗ failed"*)
-      echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh post-init: telegram plugin in ✗ Failed state, firing /mcp Up+Enter+Enter unlock" >> "$INSTALL_DIR/store/channels-failures.log"
+  classify_mcp_plugin_row "$PANE"
+  case "$MCP_PLUGIN_STATE" in
+    failed)
+      echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh post-init: $CHANNEL_PROVIDER plugin row failed, firing /mcp Up+Enter+Enter unlock -- row: $MCP_PLUGIN_ROW" >> "$INSTALL_DIR/store/channels-failures.log"
       $TMUX send-keys -t "$SESSION" Up
       sleep 1
       $TMUX send-keys -t "$SESSION" Enter
@@ -580,7 +665,8 @@ date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
       # out safely. If the plugin row literally doesn't appear in the /mcp
       # listing (truly unreachable), the dashboard's channel-monitor will
       # detect down and run its own recovery ladder; we don't second-guess.
-      echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh post-init: no Failed plugin row in /mcp pane, skipping unlock (bun child absent but plugin not failed - check manually)" >> "$INSTALL_DIR/store/channels-failures.log"
+      # Log the row we DID see -- a stale matcher is invisible without it.
+      echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh post-init: no failed plugin row in /mcp pane, skipping unlock (bun child absent but plugin not failed - check manually) -- looked for '$PLUGIN_PANE_ID', row: ${MCP_PLUGIN_ROW:-<none>}" >> "$INSTALL_DIR/store/channels-failures.log"
       $TMUX send-keys -t "$SESSION" Escape
       ;;
   esac

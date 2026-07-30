@@ -6,8 +6,16 @@ import { atomicWriteFileSync } from './web/atomic-write.js'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = join(__dirname, '..')
 
+// CLAUDECLAW_ENV_DIR: test-only escape hatch so the suite can point .env
+// reads/writes at a sandbox instead of the real repo root. Read at call
+// time so beforeAll() wiring works even when env.ts is already in the
+// module cache (production never sets it).
+function resolveEnvRoot(): string {
+  return process.env.CLAUDECLAW_ENV_DIR ?? PROJECT_ROOT
+}
+
 export function readEnvFile(keys?: string[]): Record<string, string> {
-  const envPath = join(PROJECT_ROOT, '.env')
+  const envPath = join(resolveEnvRoot(), '.env')
   let content: string
   try {
     content = readFileSync(envPath, 'utf-8')
@@ -48,7 +56,7 @@ export function readEnvFile(keys?: string[]): Record<string, string> {
 // no quote-stripping, so a quoted value would leak the quotes. Only non-empty
 // string values are written; empty updates are a no-op (no file touch).
 export function updateEnvFile(updates: Record<string, string>): void {
-  const envPath = join(PROJECT_ROOT, '.env')
+  const envPath = join(resolveEnvRoot(), '.env')
   const entries = Object.entries(updates).filter(
     ([, v]) => typeof v === 'string' && v.length > 0,
   )

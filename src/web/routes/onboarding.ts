@@ -134,6 +134,29 @@ function identityConfirmed(): boolean {
   return readEnvValue('IDENTITY_CONFIRMED') === '1'
 }
 
+// Pure decision core of the identity save. BOT_NAME is always written (it is
+// display-only -- measured 2026-07-28, WIZNAME1: every tmux/unit/DB key
+// resolves from MAIN_AGENT_ID/SERVICE_ID, never from BOT_NAME). The channels
+// session is bounced only when ALL THREE hold: the fleet is up, the install is
+// genuinely mid-first-run-setup (freshSetup: auth/channel/pairing not yet all
+// in place -- the same probes the wizard itself gates on), and the display
+// name actually changed. freshSetup deliberately does NOT mean "the
+// IDENTITY_CONFIRMED flag is absent": a pre-wizard-era install lacks the flag
+// too, and its running session is a long-lived working agent, not setup state
+// -- bouncing it would cost real context (#758 review). Such installs, and any
+// configured install, get restartNeeded instead; a no-op save (name unchanged)
+// never triggers either.
+export function identitySavePlan(
+  servicesUp: boolean,
+  freshSetup: boolean,
+  nameChanged: boolean,
+): { restart: boolean; restartNeeded: boolean } {
+  return {
+    restart: servicesUp && freshSetup && nameChanged,
+    restartNeeded: servicesUp && !freshSetup && nameChanged,
+  }
+}
+
 export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -160,14 +183,19 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
 
   // Identity step: agent display name + owner name. SAFETY: MAIN_AGENT_ID and
   // SERVICE_ID are baked into the plumbing at install time (tmux session name,
-  // DB rows, OS service-unit names) -- rewriting them after the services exist
-  // orphans running units and can lock the owner out. The display name and the
-  // internal id may freely differ, so:
-  //   - services not yet launched: BOT_NAME + BRAND_NAME + OWNER_NAME may all
-  //     be set (launch picks them up from .env); the id plumbing stays as the
-  //     installer derived it.
-  //   - services already running: only BRAND_NAME + OWNER_NAME + the persona
-  //     files change. BOT_NAME is left alone with the rest of the plumbing.
+  // DB rows, OS service-unit names) -- rewriting THOSE after the services exist
+  // orphans running units and can lock the owner out, so this handler never
+  // touches them. BOT_NAME however is display-only (measured 2026-07-28,
+  // WIZNAME1: every session/unit/DB key resolves from MAIN_AGENT_ID/SERVICE_ID;
+  // BOT_NAME feeds labels, message prefixes and persona prose), so it is always
+  // written -- the old !servicesUp guard silently dropped the rename on every
+  // installer-started (VPS) setup, where the wizard runs with the fleet already
+  // up. Because a running process never re-reads .env, a first-run save with
+  // the fleet up also restarts the channels session (same rule as the
+  // claude-auth step: the session is freshly spawned setup state, bouncing it
+  // loses nothing). A re-save on an already-confirmed install keeps the
+  // no-implicit-restart-of-a-working-fleet behaviour and reports
+  // restartNeeded instead.
   if (path === '/api/onboarding/identity' && method === 'POST') {
     let body: { agentName?: string; ownerName?: string } = {}
     try { body = JSON.parse((await readBody(req)).toString()) as typeof body } catch { /* empty */ }
@@ -185,7 +213,7 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     try {
       setEnvKey('OWNER_NAME', ownerName)
       setEnvKey('BRAND_NAME', agentName)
-      if (!servicesUp) setEnvKey('BOT_NAME', agentName)
+      setEnvKey('BOT_NAME', agentName)
       setEnvKey('IDENTITY_CONFIRMED', '1')
     } catch (err) {
       logger.error({ err }, 'onboarding: failed to persist identity to .env')
@@ -204,8 +232,36 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       logger.warn({ err }, 'onboarding: persona rename failed (identity saved to .env regardless)')
     }
 
-    logger.info({ servicesUp, botNameUpdated: !servicesUp }, 'onboarding: identity configured')
-    json(res, { ok: true, botNameUpdated: !servicesUp })
+    // A running session never re-reads .env or its spawn-time persona, so a
+    // mid-setup save with the fleet already up (the installer-started VPS
+    // path) bounces the channels session to pick the name up -- setup state
+    // only, nothing to lose. On a configured (or pre-wizard legacy) install we
+    // never implicitly restart a working fleet; the wizard copy surfaces
+    // restartNeeded instead, and a no-op save restarts nothing.
+    let restarted = false
+    let restartError: string | null = null
+    // Genuine first-run-setup signal: the same probes the wizard gates on.
+    // NOT the IDENTITY_CONFIRMED flag -- a pre-wizard-era install lacks that
+    // flag while its running session is a live working agent (#758 review).
+    const freshSetup = !claudeAuthPresent() || !channelConfigured() || !paired()
+    const nameChanged = agentName !== prevAgentName
+    const plan = identitySavePlan(servicesUp, freshSetup, nameChanged)
+    const restartNeeded = plan.restartNeeded
+    if (plan.restart) {
+      const r = hardRestartMarveenChannels()
+      restarted = r.ok
+      if (!r.ok) restartError = r.error || 'restart failed'
+      if (r.ok) logger.info('onboarding: channels restarted so the new identity is picked up')
+      else logger.error({ error: restartError }, 'onboarding: channels restart after identity save FAILED')
+    }
+    logger.info({ servicesUp, freshSetup, nameChanged, restarted, botNameUpdated: true }, 'onboarding: identity configured')
+    json(res, {
+      ok: true,
+      botNameUpdated: true,
+      restarted,
+      ...(restartError ? { restartError } : {}),
+      ...(restartNeeded ? { restartNeeded } : {}),
+    })
     return true
   }
 
@@ -240,6 +296,13 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     }
     const verified = probe === 'ok'
 
+    // Read BEFORE persisting: on a fresh install the channels session is
+    // booted by the installer/service unit with NO credentials, so if the
+    // install had no auth at this point, a running session is unauthenticated
+    // by construction. That is the one case where this endpoint must restart
+    // it after the save -- a running process never picks up new env.
+    const hadAuthBefore = claudeAuthPresent()
+
     try {
       if (token) {
         setEnvKey('CLAUDE_CODE_OAUTH_TOKEN', token)
@@ -255,8 +318,26 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'Nem sikerult elmenteni az .env-be.', reason: 'write-failed' }, 500)
       return true
     }
-    logger.info({ verified, mode: token ? 'oauth' : 'apikey' }, 'onboarding: Claude auth stored')
-    json(res, { ok: true, verified })
+
+    // BK bootcamp 2026-07-28: the wizard's /launch guards on agentsRunning()
+    // and short-circuits when the (unauthenticated) session already exists, so
+    // the token saved here never reached the running process and the install
+    // stayed logged-out. Restart here, in exactly the case where it is both
+    // needed and safe: the install had NO auth before this save, so the
+    // running session cannot be an authenticated live agent -- bouncing it
+    // loses nothing. Re-pasting a token on an already-authenticated install
+    // keeps today's behaviour (no implicit restart of a working fleet).
+    let restarted = false
+    let restartError: string | null = null
+    if (!hadAuthBefore && agentsRunning()) {
+      const r = hardRestartMarveenChannels()
+      restarted = r.ok
+      if (!r.ok) restartError = r.error || 'restart failed'
+      if (r.ok) logger.info('onboarding: channels restarted so the fresh auth is picked up')
+      else logger.error({ error: restartError }, 'onboarding: channels restart after first auth FAILED')
+    }
+    logger.info({ verified, restarted, mode: token ? 'oauth' : 'apikey' }, 'onboarding: Claude auth stored')
+    json(res, restartError ? { ok: true, verified, restarted, restartError } : { ok: true, verified, restarted })
     return true
   }
 

@@ -13,6 +13,9 @@ vi.mock('../config.js', async (importOriginal) => {
     OWNER_NAME: 'Test User',
     CHANNEL_PROVIDER: 'telegram',
     KANBAN_LABEL_COLORS: {},
+    currentBotName: () => 'TestBot',
+    currentBrandName: () => 'Marveen',
+    currentOwnerName: () => 'Test User',
   }
 })
 vi.mock('../settings-store.js', () => ({
@@ -73,7 +76,7 @@ describe('tryHandleMarveen', () => {
     const { ctx, out } = makeCtx('GET', '/api/marveen')
     expect(await tryHandleMarveen(ctx, '/tmp/webdir')).toBe(true)
     expect(out.status).toBe(200)
-    expect(out.body.name).toBe('Jarvis')
+    expect(out.body.name).toBe('TestBot')
     expect(out.body.agentId).toBe('marveen')
     expect(out.body.role).toBe('main')
     expect(typeof out.body.hasTelegram).toBe('boolean')

@@ -19,7 +19,7 @@
 // trivially-testable property of this module.
 export const DEFAULT_MODEL_CHAIN: readonly string[] = [
   'claude-opus-4-8[1m]',
-  'claude-sonnet-4-6',
+  'claude-sonnet-5',
   'claude-haiku-4-5-20251001',
 ]
 

@@ -1,7 +1,8 @@
 import { existsSync, unlinkSync, copyFileSync, writeFileSync } from 'node:fs'
 import { join, extname } from 'node:path'
 import {
-  PROJECT_ROOT, OWNER_NAME, BOT_NAME, BRAND_NAME, MAIN_AGENT_ID, CHANNEL_PROVIDER,
+  PROJECT_ROOT, MAIN_AGENT_ID, CHANNEL_PROVIDER,
+  currentBotName, currentBrandName, currentOwnerName,
   KANBAN_LABEL_COLORS,
 } from '../../config.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
@@ -56,7 +57,7 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
       || ''
     const firstLine = claudeMd.match(/^Te .+$/m)?.[0]?.trim() || ''
     const descFromPersonality = soulSection.split('\n').filter(l => l.trim()).slice(0, 2).join(' ').slice(0, 200)
-    const description = firstLine || descFromPersonality || `${OWNER_NAME} AI asszisztense`
+    const description = firstLine || descFromPersonality || `${currentOwnerName()} AI asszisztense`
     const tg = readMarveenTelegramConfig()
     const dc = readMarveenDiscordConfig()
     const sl = readMarveenSlackConfig()
@@ -67,13 +68,13 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
     // the client falls back to its own HTML default "Marveen" if absent on a
     // legacy backend), `agentId` = canonical MAIN_AGENT_ID so the dashboard can
     // hit /api/agents/<id>/skills for the main agent.
-    const idCore = buildMarveenIdentityCore(BOT_NAME, BRAND_NAME, MAIN_AGENT_ID)
+    const idCore = buildMarveenIdentityCore(currentBotName(), currentBrandName(), MAIN_AGENT_ID)
     json(res, {
       ...idCore,
       // Configured owner display name (OWNER_NAME). The dashboard chat view uses
       // this to pin/label the owner's own message thread instead of a hardcoded
       // literal, so a renamed install recognizes its real owner.
-      ownerName: OWNER_NAME,
+      ownerName: currentOwnerName(),
       description,
       model: getActiveMarveenModel(),
       tmuxSession: MAIN_CHANNELS_SESSION,

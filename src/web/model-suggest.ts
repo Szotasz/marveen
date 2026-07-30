@@ -3,7 +3,6 @@
 
 export type ModelId =
   | 'claude-haiku-4-5-20251001'
-  | 'claude-sonnet-4-6'
   | 'claude-sonnet-5'
   | 'claude-opus-4-8[1m]'
   | 'claude-opus-5'
@@ -266,8 +265,8 @@ export function classifyPersona(
 
   // Default: Sonnet is the balanced general-purpose choice
   return {
-    suggestedModel: 'claude-sonnet-4-6',
-    reason: 'Általános célú ágens -- Sonnet 4.6 ajánlott (egyensúly minőség és sebesség között).',
+    suggestedModel: 'claude-sonnet-5',
+    reason: 'Általános célú ágens -- Sonnet 5 ajánlott (egyensúly minőség és sebesség között).',
     changeAdvised: true, // caller compares to currentModel to decide final changeAdvised
   }
 }
@@ -318,7 +317,7 @@ export function suggestForAgent(
   let suggestedModel: ModelId
   if (totalOpus >= 2) suggestedModel = 'claude-opus-4-8[1m]'
   else if (totalHaiku >= 2 && totalOpus === 0) suggestedModel = 'claude-haiku-4-5-20251001'
-  else suggestedModel = 'claude-sonnet-4-6'
+  else suggestedModel = 'claude-sonnet-5'
 
   const changeAdvised = normalize(suggestedModel) !== normalize(currentModel)
 

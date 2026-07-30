@@ -23,7 +23,7 @@ describe('classifyPersona', () => {
   it('suggests Sonnet as default for a general backend dev', () => {
     const text = 'Senior backend fejlesztő vagy. REST API, adatbázis, integrációk, tesztelés.'
     const result = classifyPersona(text)
-    expect(result.suggestedModel).toBe('claude-sonnet-4-6')
+    expect(result.suggestedModel).toBe('claude-sonnet-5')
   })
 
   it('overrides to Opus when contextTokens > 150k regardless of persona', () => {
@@ -37,21 +37,21 @@ describe('classifyPersona', () => {
     const text = 'Általános asszisztens. Edzés az egyik feladat.'
     const result = classifyPersona(text)
     // Only 1 haiku keyword hit -- should fall back to Sonnet
-    expect(result.suggestedModel).toBe('claude-sonnet-4-6')
+    expect(result.suggestedModel).toBe('claude-sonnet-5')
   })
 })
 
 describe('suggestForAgent -- base (no signals)', () => {
   it('sets changeAdvised=false when current model matches suggestion', () => {
     const text = 'Senior backend fejlesztő, REST API, adatbázis.'
-    const result = suggestForAgent('zack', 'claude-sonnet-4-6', text)
+    const result = suggestForAgent('zack', 'claude-sonnet-5', text)
     expect(result.changeAdvised).toBe(false)
     expect(result.agent).toBe('zack')
   })
 
   it('sets changeAdvised=true when models differ', () => {
     const text = 'IT architekt. Komplex elosztott rendszerterv, mikroszolgáltatás, stratégiai döntések.'
-    const result = suggestForAgent('rick', 'claude-sonnet-4-6', text)
+    const result = suggestForAgent('rick', 'claude-sonnet-5', text)
     expect(result.changeAdvised).toBe(true)
     expect(result.suggestedModel).toBe('claude-opus-4-8[1m]')
   })
@@ -68,14 +68,14 @@ describe('suggestForAgent -- AgentSignals thresholds', () => {
 
   it('tokenAvgInputPerCall > 10K alone adds 1 opus signal point (below threshold without persona hits)', () => {
     // 1 signal hit alone is not enough to push to Opus (need >=2 total)
-    const result = suggestForAgent('x', 'claude-sonnet-4-6', neutralPersona, 0, {
+    const result = suggestForAgent('x', 'claude-sonnet-5', neutralPersona, 0, {
       tokenAvgInputPerCall: 15_000,
     })
-    expect(result.suggestedModel).toBe('claude-sonnet-4-6')
+    expect(result.suggestedModel).toBe('claude-sonnet-5')
   })
 
   it('tokenAvgInputPerCall > 10K + mcpServerCount >= 4 pushes to Opus (2 signal hits)', () => {
-    const result = suggestForAgent('x', 'claude-sonnet-4-6', neutralPersona, 0, {
+    const result = suggestForAgent('x', 'claude-sonnet-5', neutralPersona, 0, {
       tokenAvgInputPerCall: 15_000,
       mcpServerCount: 5,
     })
@@ -84,7 +84,7 @@ describe('suggestForAgent -- AgentSignals thresholds', () => {
   })
 
   it('mcpServerCount >= 4 + kanbanUrgentCount >= 2 pushes to Opus (2 signal hits)', () => {
-    const result = suggestForAgent('x', 'claude-sonnet-4-6', neutralPersona, 0, {
+    const result = suggestForAgent('x', 'claude-sonnet-5', neutralPersona, 0, {
       mcpServerCount: 4,
       kanbanUrgentCount: 3,
     })
@@ -92,15 +92,15 @@ describe('suggestForAgent -- AgentSignals thresholds', () => {
   })
 
   it('scheduledFreqPerDay >= 10 alone adds 1 haiku signal point (not enough without persona)', () => {
-    const result = suggestForAgent('x', 'claude-sonnet-4-6', neutralPersona, 0, {
+    const result = suggestForAgent('x', 'claude-sonnet-5', neutralPersona, 0, {
       scheduledFreqPerDay: 96,
     })
-    expect(result.suggestedModel).toBe('claude-sonnet-4-6')
+    expect(result.suggestedModel).toBe('claude-sonnet-5')
   })
 
   it('scheduledFreqPerDay >= 10 + haiku persona keywords pushes to Haiku', () => {
     const haikuPersona = 'Sport, edzés, futás, kerékpár, tréner.'
-    const result = suggestForAgent('peter', 'claude-sonnet-4-6', haikuPersona, 0, {
+    const result = suggestForAgent('peter', 'claude-sonnet-5', haikuPersona, 0, {
       scheduledFreqPerDay: 48,
     })
     expect(result.suggestedModel).toBe('claude-haiku-4-5-20251001')
@@ -109,7 +109,7 @@ describe('suggestForAgent -- AgentSignals thresholds', () => {
   it('opus signal hits block Haiku even with >= 2 haiku keyword hits', () => {
     // haiku persona + 1 haiku signal + 2 opus signals -> Opus wins
     const haikuPersona = 'Sport, edzés, fitness, edző -- rövid feladatok.'
-    const result = suggestForAgent('x', 'claude-sonnet-4-6', haikuPersona, 0, {
+    const result = suggestForAgent('x', 'claude-sonnet-5', haikuPersona, 0, {
       scheduledFreqPerDay: 48,   // +1 haiku signal
       mcpServerCount: 5,          // +1 opus signal
       kanbanUrgentCount: 2,       // +1 opus signal
@@ -128,31 +128,31 @@ describe('suggestForAgent -- AgentSignals thresholds', () => {
   })
 
   it('mcpServerCount below threshold (3) does not add opus signal point', () => {
-    const result = suggestForAgent('x', 'claude-sonnet-4-6', neutralPersona, 0, {
+    const result = suggestForAgent('x', 'claude-sonnet-5', neutralPersona, 0, {
       mcpServerCount: 3,
     })
-    expect(result.suggestedModel).toBe('claude-sonnet-4-6')
+    expect(result.suggestedModel).toBe('claude-sonnet-5')
   })
 
   it('kanbanUrgentCount below threshold (1) does not add opus signal point', () => {
-    const result = suggestForAgent('x', 'claude-sonnet-4-6', neutralPersona, 0, {
+    const result = suggestForAgent('x', 'claude-sonnet-5', neutralPersona, 0, {
       kanbanUrgentCount: 1,
     })
-    expect(result.suggestedModel).toBe('claude-sonnet-4-6')
+    expect(result.suggestedModel).toBe('claude-sonnet-5')
   })
 
   it('tokenAvgInputPerCall at threshold boundary (exactly 10K) does not trigger', () => {
-    const result = suggestForAgent('x', 'claude-sonnet-4-6', neutralPersona, 0, {
+    const result = suggestForAgent('x', 'claude-sonnet-5', neutralPersona, 0, {
       tokenAvgInputPerCall: 10_000,
     })
-    expect(result.suggestedModel).toBe('claude-sonnet-4-6')
+    expect(result.suggestedModel).toBe('claude-sonnet-5')
   })
 })
 
 describe('suggestForAgent -- reason structure (6 sections)', () => {
   it('reason contains all 6 sections when signals provided', () => {
     const text = 'IT architekt. Komplex elosztott rendszerterv, mikroszolgáltatás, stratégiai döntések.'
-    const result = suggestForAgent('rick', 'claude-sonnet-4-6', text, 0, {
+    const result = suggestForAgent('rick', 'claude-sonnet-5', text, 0, {
       tokenAvgInputPerCall: 12_000,
       kanbanOpenCount: 3,
       kanbanUrgentCount: 2,
@@ -168,7 +168,7 @@ describe('suggestForAgent -- reason structure (6 sections)', () => {
   })
 
   it('reason section 6 lists missing signals as uncertainty', () => {
-    const result = suggestForAgent('x', 'claude-sonnet-4-6', 'Általános.', 0, {})
+    const result = suggestForAgent('x', 'claude-sonnet-5', 'Általános.', 0, {})
     expect(result.reason).toMatch(/token-adat hiányzik/)
     expect(result.reason).toMatch(/kanban-adat hiányzik/)
     expect(result.reason).toMatch(/ütemezési adat hiányzik/)
@@ -176,7 +176,7 @@ describe('suggestForAgent -- reason structure (6 sections)', () => {
   })
 
   it('reason section 6 confirms full coverage when all signals present', () => {
-    const result = suggestForAgent('x', 'claude-sonnet-4-6', 'Általános.', 0, {
+    const result = suggestForAgent('x', 'claude-sonnet-5', 'Általános.', 0, {
       tokenAvgInputPerCall: 5_000,
       kanbanOpenCount: 1,
       kanbanUrgentCount: 0,

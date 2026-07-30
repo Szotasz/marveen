@@ -297,7 +297,9 @@ if [ ! -f "$INSTALL_DIR/package.json" ]; then
     ok "Repo klonozva: $TARGET_DIR"
   fi
   echo -e "  Telepito ujrainditasa a checkoutbol..."
-  exec bash "$TARGET_DIR/install-linux.sh"
+  # Forward argv so a run from outside the repo (curl bootstrap, or an explicit
+  # `install-linux.sh --port N`) keeps its flags across the self-reclone exec.
+  exec bash "$TARGET_DIR/install-linux.sh" "$@"
 fi
 
 INSTALL_STEP="claude-bun-install"
