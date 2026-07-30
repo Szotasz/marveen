@@ -177,7 +177,9 @@ const AGENT_BUSY_DEFER_MAX_MS = 30 * 60 * 1000 // 30m
 // fresh (re-stamped by each post-respawn probe, cleared on recovery).
 const PLUGIN_ABSENT_MAX_RESTART_ATTEMPTS = 1
 const PLUGIN_ABSENT_TTL_MS = 15 * 60 * 1000
-const PLUGIN_ALERT_DEDUP_MS = 30 * 60 * 1000
+// Re-alert cadence while the main plugin is STILL down. The first alert is the
+// informative one; keep repeats to a few hours (owner request 2026-07-30).
+const PLUGIN_ALERT_DEDUP_MS = 3 * 60 * 60 * 1000
 
 // Stuck channel-input recovery (MAIN session only). A channel notification
 // delivered while Boss is busy can be parked as plain text at the ❯ prompt
@@ -441,7 +443,7 @@ const paneErrorState: Map<string, PaneErrorAlertState> = new Map()
 // spell alive across brief non-error blips (null capture, mid-flight
 // busy) so a flapping but genuinely wedged session still alerts.
 const PANE_ERROR_CONFIRM_MS = 120_000
-const PANE_ERROR_DEDUP_MS = 30 * 60 * 1000
+const PANE_ERROR_DEDUP_MS = 3 * 60 * 60 * 1000
 const PANE_ERROR_CLEAR_MS = 5 * 60 * 1000
 
 // Per-session tracking for a session parked in a blocking interactive menu
