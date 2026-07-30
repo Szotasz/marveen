@@ -244,6 +244,44 @@ _t() {
     # ── Linux-specific ───────────────────────────────────────────────
     en:linux.low_ram_prefix) echo "Low RAM:" ;;
     hu:linux.low_ram_prefix) echo "Kevés memória:" ;;
+    # APTLOCK1: dpkg/apt lock waiting (fresh Ubuntu/WSL: apt-daily holds it briefly)
+    en:linux.apt_lock_waiting_prefix) echo "The package manager is busy (another process holds the dpkg lock):" ;;
+    hu:linux.apt_lock_waiting_prefix) echo "A csomagkezelő foglalt (egy másik folyamat fogja a dpkg zárolást):" ;;
+    en:linux.apt_lock_transient_hint) echo "On a fresh system this is usually the automatic update (apt-daily/unattended-upgrades) and clears on its own -- waiting up to 5 minutes..." ;;
+    hu:linux.apt_lock_transient_hint) echo "Friss rendszeren ez általában az automatikus frissítés (apt-daily/unattended-upgrades), magától elenged -- várakozás legfeljebb 5 percig..." ;;
+    en:linux.apt_lock_still_prefix) echo "still held by:" ;;
+    hu:linux.apt_lock_still_prefix) echo "még mindig fogja:" ;;
+    en:linux.apt_lock_freed_prefix) echo "Package manager lock released after" ;;
+    hu:linux.apt_lock_freed_prefix) echo "A csomagkezelő zárolás felszabadult" ;;
+    en:linux.apt_lock_unknown) echo "Cannot check who holds the package-manager lock (fuser not installed) -- if it is busy, apt itself will wait up to 3 minutes." ;;
+    hu:linux.apt_lock_unknown) echo "Nem tudom megnézni, ki fogja a csomagkezelő zárolást (nincs fuser) -- ha foglalt, az apt maga vár rá legfeljebb 3 percig." ;;
+    en:linux.apt_lock_timeout_head) echo "The package-manager lock is STILL held after 5 minutes by:" ;;
+    hu:linux.apt_lock_timeout_head) echo "A csomagkezelő zárolást 5 perc után is fogja:" ;;
+    en:linux.apt_lock_timeout_body1) echo "This is no longer the usual transient auto-update. Check what it is: sudo lsof /var/lib/dpkg/lock-frontend" ;;
+    hu:linux.apt_lock_timeout_body1) echo "Ez már nem a szokásos átmeneti auto-frissítés. Nézd meg, mi az: sudo lsof /var/lib/dpkg/lock-frontend" ;;
+    en:linux.apt_lock_timeout_body2) echo "If it is unattended-upgrades, let it finish (sudo systemctl status unattended-upgrades), then re-run this installer. Do NOT kill a running dpkg." ;;
+    hu:linux.apt_lock_timeout_body2) echo "Ha az unattended-upgrades az, várd meg amíg végez (sudo systemctl status unattended-upgrades), majd indítsd újra ezt a telepítőt. Futó dpkg-t NE lőj ki." ;;
+    en:linux.apt_lock_timeout_fail) echo "Package manager is locked by another process -- re-run the installer once it finished." ;;
+    hu:linux.apt_lock_timeout_fail) echo "A csomagkezelőt egy másik folyamat zárolja -- ha végzett, indítsd újra a telepítőt." ;;
+    # MACOSOLD1: macOS version pre-flight before relying on Homebrew
+    en:macos.ver_unknown) echo "Could not determine the macOS version (sw_vers failed) -- continuing, but if Homebrew fails, that may be why." ;;
+    hu:macos.ver_unknown) echo "Nem sikerült megállapítani a macOS verziót (sw_vers hiba) -- folytatom, de ha a Homebrew elhasal, ez lehet az oka." ;;
+    en:macos.ver_too_old_head) echo "This Mac runs macOS" ;;
+    hu:macos.ver_too_old_head) echo "Ezen a gépen macOS" ;;
+    en:macos.ver_too_old_body1) echo "Homebrew (which installs the dependencies) does not run on macOS older than 10.15, so installation cannot continue on this machine." ;;
+    hu:macos.ver_too_old_body1) echo "fut, a Homebrew (ami a függőségeket telepítené) viszont 10.15-nél régebbi macOS-en nem indul el -- ezen a gépen a telepítés nem tud továbbmenni." ;;
+    en:macos.ver_too_old_body2) echo "Two ways out: (1) update macOS on this machine, or (2) use the REMOTE install (a VPS) -- this Mac is perfectly enough to log in from." ;;
+    hu:macos.ver_too_old_body2) echo "Két kiút: (1) frissítsd ezen a gépen a macOS-t, vagy (2) válaszd a TÁVOLI telepítést (VPS) -- ehhez ez a gép is bőven elég, csak bejelentkezni kell róla." ;;
+    en:macos.ver_too_old_fail) echo "macOS below Homebrew's minimum (10.15) -- update macOS or use the remote install." ;;
+    hu:macos.ver_too_old_fail) echo "A macOS a Homebrew minimuma (10.15) alatt van -- frissíts macOS-t, vagy használd a távoli telepítést." ;;
+    en:macos.ver_unsupported_head) echo "Homebrew no longer supports this macOS version:" ;;
+    hu:macos.ver_unsupported_head) echo "Ezt a macOS verziót a Homebrew már nem támogatja:" ;;
+    en:macos.ver_unsupported_body) echo "It usually still works, but dependency installs may break (best-effort support below macOS 14). If it fails, the remote install (VPS) works from this machine too." ;;
+    hu:macos.ver_unsupported_body) echo "Általában még működik, de a függőség-telepítés eltörhet (macOS 14 alatt best-effort a támogatás). Ha elhasal, a távoli telepítés (VPS) erről a gépről is megy." ;;
+    en:macos.ver_unsupported_prompt) echo "Continue anyway? (y = yes / n = stop) [y]: " ;;
+    hu:macos.ver_unsupported_prompt) echo "Folytassam így? (i = igen / n = megállok) [i]: " ;;
+    en:macos.ver_unsupported_abort) echo "Stopped at your request -- consider the remote install, or update macOS and re-run." ;;
+    hu:macos.ver_unsupported_abort) echo "Kérésedre megálltam -- érdemes a távoli telepítést választani, vagy macOS-frissítés után újrafuttatni." ;;
     en:linux.tg_channel_configured) echo "Telegram channel configured" ;;
     hu:linux.tg_channel_configured) echo "Telegram csatorna konfigurálva" ;;
     en:linux.slack_channel_configured) echo "Slack channel configured" ;;
