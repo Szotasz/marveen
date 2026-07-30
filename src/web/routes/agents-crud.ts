@@ -2,6 +2,7 @@ import { existsSync, readFileSync, mkdtempSync, rmSync, unlinkSync, writeFileSyn
 import { join, extname } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { logger } from '../../logger.js'
+import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
 import { createAgentMessage, getDb } from '../../db.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
@@ -15,6 +16,8 @@ import {
   findAvatarForAgent,
   resolveModelId,
   readAgentModel,
+  readModelProfileMap,
+  writeAgentModelProfile,
   writeAgentModel,
   readAgentDisplayName,
   writeAgentDisplayName,
@@ -656,6 +659,30 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)
     if (data.mcpJson !== undefined) atomicWriteFileSync(join(agentDir(name), '.mcp.json'), data.mcpJson)
     if (data.model !== undefined) writeAgentModel(name, data.model)
+    // Card c755f4b2 Block B: optional generic capability tier. An unknown id
+    // is a 400, never a persisted value -- storing one would leave the UI
+    // showing a profile while resolution silently fell back to the install
+    // default, i.e. a model change nobody asked for. Empty string clears it.
+    if ((data as { modelProfile?: string | null }).modelProfile !== undefined) {
+      const mp = (data as { modelProfile?: string | null }).modelProfile
+      if (mp === '' || mp === null) {
+        writeAgentModelProfile(name, null)
+      } else if (typeof mp === 'string' && isModelProfileId(mp)) {
+        const mapState = readModelProfileMap()
+        if (!mapState) {
+          json(res, { error: 'No model-profile map is provisioned on this deployment; a modelProfile cannot be honoured yet.' }, 400)
+          return true
+        }
+        if (!mapState.ok) {
+          json(res, { error: `Model-profile map is unusable: ${mapState.error}` }, 400)
+          return true
+        }
+        writeAgentModelProfile(name, mp)
+      } else {
+        json(res, { error: `modelProfile must be one of ${MODEL_PROFILE_IDS.join('|')}` }, 400)
+        return true
+      }
+    }
     if (data.mcpScope !== undefined) {
       const parsed = parseMcpScope(data.mcpScope)
       if (parsed !== null) writeAgentMcpScope(name, parsed)

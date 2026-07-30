@@ -1,0 +1,19 @@
+{
+  "_comment": [
+    "EXAMPLE ONLY. Copy to store/model-profile-map.json and edit for THIS deployment.",
+    "store/ is gitignored, so the concrete model and account mapping never leaves the machine.",
+    "The four profile ids are fixed and ALL FOUR must be present - a partial map is rejected,",
+    "because a missing entry would silently resolve an agent to the install default model.",
+    "Phase 1 intent is ABSTRACTION, not re-tiering: build the first map from the models the",
+    "fleet ALREADY runs, so switching an agent to a profile changes nothing observable.",
+    "Two profiles MAY point at the same concrete model - that is expected in a first map.",
+    "Precedence: an agent's explicit `model` always wins over its `modelProfile`."
+  ],
+  "version": "example-1",
+  "profiles": {
+    "premium_reasoning": "claude-opus-5",
+    "build_strong": "claude-sonnet-5",
+    "analysis_efficient": "deepseek-v4-pro",
+    "routine_lowcost": "deepseek-v4-pro"
+  }
+}
