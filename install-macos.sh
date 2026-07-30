@@ -44,6 +44,18 @@ INSTALL_ERRLOG=$(mktemp "${TMPDIR:-/tmp}/marveen-install-stderr.XXXXXX")
 exec 2> >(tee -a "$INSTALL_ERRLOG" >&2)
 
 ok() { echo -e "  ${GREEN}✓${NC} $*"; }
+
+# Does the INSTALL carry an auth credential the SERVICES can read?
+# NOT the same question as `claude auth status` / a Keychain login: the launchd
+# units read ONLY <install>/.env and <install>/store/.claude-oauth-token. On
+# macOS `claude auth login` fills the KEYCHAIN and nothing else, so before this
+# change the services were never given a credential at all -- the operator's
+# terminal worked and the agents sat at "Not logged in".
+service_auth_present() {
+  grep -qE '^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.+' "$INSTALL_DIR/.env" 2>/dev/null && return 0
+  [ -s "$INSTALL_DIR/store/.claude-oauth-token" ] && return 0
+  return 1
+}
 warn() { echo -e "  ${ORANGE}!${NC} $*"; }
 
 offer_claude_fallback() {
@@ -312,6 +324,32 @@ if [[ "$DO_AUTH" == "i" || "$DO_AUTH" == "y" ]]; then
 fi
 echo -e "  ${GREEN}✓${NC} $(_t macos.firstrun_done)"
 
+# Service-side credential. `claude auth login` above authenticates the OPERATOR
+# (Keychain); the launchd units cannot use that. They read .env and
+# store/.claude-oauth-token, so ask for a setup-token unless this install
+# already carries one (re-run, or the dashboard wizard got there first).
+MACOS_OAUTH_TOKEN_INPUT=""
+if service_auth_present; then
+  ok "A telepites mar hordoz auth kulcsot (.env / store/.claude-oauth-token)"
+else
+  echo ""
+  echo -e "  ${BOLD}Az ugynokok kulon hitelesitot igenyelnek.${NC}"
+  echo -e "  ${DIM}A fenti bejelentkezes a Te termnaljadnak szol (Keychain);${NC}"
+  echo -e "  ${DIM}a hatterszolgaltatasok ahhoz nem ferenek hozza.${NC}"
+  echo -e "  ${BOLD}1.${NC} Futtasd egy terminalban: ${BLUE}claude setup-token${NC}"
+  echo -e "  ${BOLD}2.${NC} Masold ide a kiirt tokent (Enter = kihagyas):"
+  read -rp "  OAuth token: " MACOS_OAUTH_TOKEN_INPUT
+  if [ -n "$MACOS_OAUTH_TOKEN_INPUT" ]; then
+    if printf '%s' "$MACOS_OAUTH_TOKEN_INPUT" | grep -Eq '^sk-ant-oat01-[A-Za-z0-9_-]{40,}$'; then
+      ok "Token formailag rendben, elmentjuk a szolgaltatasoknak"
+    else
+      warn "A beirt ertek nem setup-token alaku (sk-ant-oat01-...). Elmentjuk, de ellenorizd."
+    fi
+  else
+    warn "Token nem lett megadva -- az ugynokok igy nem fognak elindulni."
+  fi
+fi
+
 # Pre-flight headless probe — Issue #179.
 # `claude auth login` may exit 0 even when the resulting token is unusable for
 # headless queries (browser flow interrupted, stale cached state, etc.). The
@@ -320,8 +358,14 @@ echo -e "  ${GREEN}✓${NC} $(_t macos.firstrun_done)"
 echo ""
 echo -e "  ${DIM}$(_t macos.headless_test)${NC}"
 set +e
-CLAUDE_PROBE_OUT=$(claude --print "ping" 2>&1 | head -c 200)
+# The exit status here used to be `head`'s, not claude's: `VAR=$(cmd | head)`
+# reports the LAST pipeline element, so a failing claude looked like success.
+# PIPESTATUS does NOT help either -- after an assignment it describes the
+# assignment, not the pipeline inside the substitution (measured). Dropping the
+# pipe entirely is the only form that reports claude's own status.
+CLAUDE_PROBE_OUT=$(claude --print "ping" 2>&1)
 CLAUDE_PROBE_EXIT=$?
+CLAUDE_PROBE_OUT=${CLAUDE_PROBE_OUT:0:200}
 set -e
 if [ "$CLAUDE_PROBE_EXIT" -eq 0 ] && [ -n "$CLAUDE_PROBE_OUT" ]; then
   echo -e "  ${GREEN}✓${NC} $(_t macos.headless_ok)"
@@ -562,6 +606,75 @@ echo -e "  ${GREEN}✓${NC} $(_t macos.env_created)"
 # Create store directory
 mkdir -p "$INSTALL_DIR/store"
 mkdir -p "$INSTALL_DIR/agents"
+
+# Persist the service-side credential captured in the auth step. Both sinks are
+# needed: .env is what channels.sh exports for the MAIN agent, and the fleet
+# token file is what per-agent config-dir isolation reads for SUB-agents.
+if [ -n "${MACOS_OAUTH_TOKEN_INPUT:-}" ]; then
+  env_merge_key CLAUDE_CODE_OAUTH_TOKEN "$MACOS_OAUTH_TOKEN_INPUT"
+  chmod 600 "$INSTALL_DIR/.env"
+  if printf '%s' "$MACOS_OAUTH_TOKEN_INPUT" | grep -Eq '^sk-ant-oat01-[A-Za-z0-9_-]{40,}$'; then
+    (umask 077 && printf '%s' "$MACOS_OAUTH_TOKEN_INPUT" > "$INSTALL_DIR/store/.claude-oauth-token")
+    ok "Fleet setup-token eltarolva (store/.claude-oauth-token) -- per-agent izolacio aktiv"
+  fi
+fi
+
+# ── Fail-closed auth gate ────────────────────────────────────────────────────
+# Three states; the failure branches must never print the success text.
+INSTALL_AUTH_STATE="BROKEN"
+_svc_token=""
+if [ -s "$INSTALL_DIR/store/.claude-oauth-token" ]; then
+  _svc_token="$(cat "$INSTALL_DIR/store/.claude-oauth-token" 2>/dev/null || true)"
+fi
+if [ -z "$_svc_token" ]; then
+  _svc_token="$(grep -E '^CLAUDE_CODE_OAUTH_TOKEN=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+fi
+_svc_apikey="$(grep -E '^ANTHROPIC_API_KEY=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+
+if ! service_auth_present; then
+  INSTALL_AUTH_STATE="BROKEN"
+elif ! command -v claude >/dev/null 2>&1; then
+  INSTALL_AUTH_STATE="UNKNOWN"
+else
+  # Probe the way a SERVICE runs: isolated config dir (so the Keychain and the
+  # operator's shell cannot make a broken install look healthy) carrying ONLY
+  # the credential the launchd units will get.
+  _probe_cfg="$(mktemp -d 2>/dev/null || echo /tmp/marveen-authprobe.$$)"
+  if [ -n "$_svc_token" ]; then
+    _probe_out="$(env -i PATH="$PATH" HOME="$HOME" CLAUDE_CONFIG_DIR="$_probe_cfg" \
+      CLAUDE_CODE_OAUTH_TOKEN="$_svc_token" claude --print "ping" 2>&1)"
+  else
+    _probe_out="$(env -i PATH="$PATH" HOME="$HOME" CLAUDE_CONFIG_DIR="$_probe_cfg" \
+      ANTHROPIC_API_KEY="$_svc_apikey" claude --print "ping" 2>&1)"
+  fi
+  _probe_rc=$?
+  _probe_out=${_probe_out:0:200}
+  if [ "$_probe_rc" -eq 0 ] && [ -n "$_probe_out" ]; then
+    INSTALL_AUTH_STATE="OK"
+  else
+    INSTALL_AUTH_STATE="BROKEN"
+  fi
+  rm -rf "$_probe_cfg" 2>/dev/null || true
+fi
+unset _svc_token _svc_apikey
+
+case "$INSTALL_AUTH_STATE" in
+  OK)
+    ok "Auth ellenorizve a SZOLGALTATASOK utjan (izolalt konfig + a unitok hitelesitoje)"
+    ;;
+  UNKNOWN)
+    warn "Az auth-ot NEM tudtam ellenorizni (nincs futtathato claude vagy nincs halozat)."
+    echo -e "    ${DIM}A telepites folytatodik, de az ugynokok indulasa nincs igazolva.${NC}"
+    ;;
+  *)
+    warn "AZ UGYNOKOK IGY NEM FOGNAK ELINDULNI: a telepites nem hordoz mukodo auth kulcsot."
+    echo -e "    ${DIM}A szolgaltatasok CSAK ezt a ket helyet olvassak:${NC}"
+    echo -e "    ${DIM}  - $INSTALL_DIR/.env  (CLAUDE_CODE_OAUTH_TOKEN vagy ANTHROPIC_API_KEY)${NC}"
+    echo -e "    ${DIM}  - $INSTALL_DIR/store/.claude-oauth-token${NC}"
+    echo -e "    ${DIM}A Keychain-bejelentkezes (claude auth login) ehhez NEM eleg.${NC}"
+    echo -e "    ${BOLD}Javitas most: ${BLUE}bash \"$INSTALL_DIR/scripts/auth.sh\"${NC}"
+    ;;
+esac
 echo -e "  ${GREEN}✓${NC} $(_t macos.dirs_created)"
 
 # Generate CLAUDE.md from template
@@ -1160,3 +1273,16 @@ echo -e "  ${DIM}Frissites: ./update.sh${NC}"
 echo -e "  ${DIM}Leallitas: ./scripts/stop.sh${NC}"
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+# The auth verdict is repeated LAST: the closing "next steps" tell the user the
+# bot will answer, which is false when the services have no working credential.
+if [ "${INSTALL_AUTH_STATE:-UNKNOWN}" != "OK" ]; then
+  echo ""
+  if [ "${INSTALL_AUTH_STATE:-}" = "UNKNOWN" ]; then
+    echo -e "  ${ORANGE}! FIGYELEM: az auth-ot nem sikerult ellenoriznunk.${NC}"
+  else
+    echo -e "  ${RED}✗ AZ UGYNOKOK MEG NEM FOGNAK VALASZOLNI: hianyzik a mukodo auth kulcs.${NC}"
+  fi
+  echo -e "  ${BOLD}  Javitas: ${BLUE}bash \"$INSTALL_DIR/scripts/auth.sh\"${NC}${BOLD} majd ${BLUE}bash \"$INSTALL_DIR/scripts/channels.sh\" restart${NC}"
+  echo ""
+fi

@@ -64,6 +64,27 @@ on_error() {
 }
 trap 'on_error $LINENO' ERR
 
+# Does the INSTALL carry an auth credential the SERVICES can read?
+#
+# This is deliberately NOT `claude auth status`. That command answers a
+# different question -- "can the operator's current shell talk to Claude?" --
+# and the two answers diverge in the exact case that broke every affected
+# install: the services (systemd units) read ONLY <install>/.env and
+# <install>/store/.claude-oauth-token. They never see ~/.claude/.credentials.json,
+# the macOS Keychain, or a CLAUDE_CODE_OAUTH_TOKEN exported from ~/.bashrc.
+#
+# Measured on a live host 2026-07-30, same host, same command:
+#   non-interactive shell (how systemd starts a unit):  claude auth status -> FAILS
+#   interactive shell     (how this installer runs):    claude auth status -> SUCCEEDS
+# because a previous install had written `export CLAUDE_CODE_OAUTH_TOKEN=...`
+# into ~/.bashrc. The installer therefore believed auth was done, skipped the
+# token capture, and left the services with nothing.
+service_auth_present() {
+  grep -qE '^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.+' "$INSTALL_DIR/.env" 2>/dev/null && return 0
+  [ -s "$INSTALL_DIR/store/.claude-oauth-token" ] && return 0
+  return 1
+}
+
 # Ha a <marker> szoveg nem talalhato az rc fajlban, hozzaadja a <sort>.
 # Mindket fajlt kezeli (.bashrc, .zshrc) ha leteznek.
 # Hasznalat: ensure_in_rc "keres_minta" "hozzaadando sor"
@@ -525,10 +546,20 @@ if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
   IS_HEADLESS=true
 fi
 
-if claude auth status &>/dev/null; then
-  ok "Claude mar be van jelentkezve"
+# Skip the prompt only when THIS INSTALL already carries a credential the
+# services can read (a re-run, or the dashboard wizard got there first).
+# Gating on `claude auth status` here is what silently skipped token capture
+# for operators who had followed step 2 below and run `claude setup-token`
+# first -- the correct user behaviour triggered the bug.
+if service_auth_present; then
+  ok "A telepites mar hordoz auth kulcsot (.env / store/.claude-oauth-token)"
 else
-  echo -e "  ${ORANGE}Nincs aktiv Claude bejelentkezes.${NC}"
+  if claude auth status &>/dev/null; then
+    echo -e "  ${ORANGE}A terminalod be van jelentkezve, de a SZOLGALTATASOK ehhez nem ferenek hozza.${NC}"
+    echo -e "  ${DIM}A systemd unitok csak a .env-et es a store/.claude-oauth-token-t olvassak.${NC}"
+  else
+    echo -e "  ${ORANGE}Nincs aktiv Claude bejelentkezes.${NC}"
+  fi
   if [ "$IS_HEADLESS" = "true" ]; then
     echo ""
     echo -e "  ${BLUE}Headless szerver detektalva (nincs DISPLAY).${NC}"
@@ -601,10 +632,17 @@ fi
 # front of the install script.
 echo ""
 echo -e "  ${DIM}Headless Claude Code teszt...${NC}"
-CLAUDE_PROBE_OUT=$(claude --print "ping" 2>&1 | head -c 200)
+# The exit status here used to be `head`'s, not claude's: `VAR=$(cmd | head)`
+# reports the LAST pipeline element, so a failing claude looked like success.
+# PIPESTATUS does NOT help either -- after an assignment it describes the
+# assignment, not the pipeline inside the substitution (measured). Dropping the
+# pipe entirely is the only form that reports claude's own status; the output is
+# truncated afterwards in the shell.
+CLAUDE_PROBE_OUT=$(claude --print "ping" 2>&1)
 CLAUDE_PROBE_EXIT=$?
+CLAUDE_PROBE_OUT=${CLAUDE_PROBE_OUT:0:200}
 if [ "$CLAUDE_PROBE_EXIT" -eq 0 ] && [ -n "$CLAUDE_PROBE_OUT" ]; then
-  ok "Headless Claude Code futtathato (\`claude --print\` valaszolt)"
+  ok "Az OPERATOR shelljebol futtathato a Claude Code (\`claude --print\` valaszolt)"
 else
   warn "Headless Claude Code probe SIKERTELEN. Az agent-letrehozas KESOBB EL fog hasalni."
   echo -e "    ${DIM}Kimenet: ${CLAUDE_PROBE_OUT:-<ures>}${NC}"
@@ -921,6 +959,81 @@ if [ -n "${OAUTH_TOKEN_INPUT:-}" ] && printf '%s' "$OAUTH_TOKEN_INPUT" | grep -E
   ok "Fleet setup-token eltarolva (store/.claude-oauth-token) -- per-agent izolacio aktiv"
 fi
 ok ".env letrehozva (chmod 600)"
+
+# ── Fail-closed auth gate ────────────────────────────────────────────────────
+# Until now nothing verified that the AGENTS will actually be able to log in.
+# A skipped/empty token prompt produced a fully "successful" install whose main
+# agent then sat at "Not logged in" and re-tried forever (2026-07-30: 26 healer
+# escalations and 12 pointless restarts over six hours on one host).
+#
+# Three states, and the failure branches must never print the success text:
+#   OK       -- the services carry a credential AND it answers a live query
+#   BROKEN   -- no credential, or a credential that does not work
+#   UNKNOWN  -- the probe could not run (no claude binary, no network)
+INSTALL_AUTH_STATE="BROKEN"
+_svc_token=""
+if [ -s "$INSTALL_DIR/store/.claude-oauth-token" ]; then
+  _svc_token="$(cat "$INSTALL_DIR/store/.claude-oauth-token" 2>/dev/null || true)"
+fi
+if [ -z "$_svc_token" ]; then
+  _svc_token="$(grep -E '^CLAUDE_CODE_OAUTH_TOKEN=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+fi
+_svc_apikey="$(grep -E '^ANTHROPIC_API_KEY=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+
+if ! service_auth_present; then
+  INSTALL_AUTH_STATE="BROKEN"
+else
+  # Probe the way a SERVICE will run: an isolated config dir (so ~/.claude and
+  # the operator's shell exports cannot make a broken install look healthy)
+  # carrying ONLY the credential the units will actually get.
+  _probe_cfg="$(mktemp -d 2>/dev/null || echo /tmp/marveen-authprobe.$$)"
+  _probe_out=""
+  _probe_rc=1
+  if command -v claude >/dev/null 2>&1; then
+    if [ -n "$_svc_token" ]; then
+      _probe_out="$(env -i PATH="$PATH" HOME="$HOME" CLAUDE_CONFIG_DIR="$_probe_cfg" \
+        CLAUDE_CODE_OAUTH_TOKEN="$_svc_token" \
+        claude --print "ping" 2>&1)"
+      _probe_rc=$?
+    else
+      _probe_out="$(env -i PATH="$PATH" HOME="$HOME" CLAUDE_CONFIG_DIR="$_probe_cfg" \
+        ANTHROPIC_API_KEY="$_svc_apikey" \
+        claude --print "ping" 2>&1)"
+      _probe_rc=$?
+    fi
+    _probe_out=${_probe_out:0:200}
+    _probe_out=${_probe_out:0:200}
+  if [ "$_probe_rc" -eq 0 ] && [ -n "$_probe_out" ]; then
+      INSTALL_AUTH_STATE="OK"
+    else
+      INSTALL_AUTH_STATE="BROKEN"
+    fi
+  else
+    INSTALL_AUTH_STATE="UNKNOWN"
+  fi
+  rm -rf "$_probe_cfg" 2>/dev/null || true
+fi
+unset _svc_token _svc_apikey
+
+case "$INSTALL_AUTH_STATE" in
+  OK)
+    ok "Auth ellenorizve a SZOLGALTATASOK utjan (izolalt konfig + a unitok hitelesitoje)"
+    ;;
+  UNKNOWN)
+    warn "Az auth-ot NEM tudtam ellenorizni (nincs futtathato claude vagy nincs halozat)."
+    echo -e "    ${DIM}A telepites folytatodik, de az ugynokok indulasa nincs igazolva.${NC}"
+    echo -e "    ${DIM}Ellenorzes kesobb: ${BLUE}bash \"$INSTALL_DIR/scripts/doctor.sh\"${NC}"
+    ;;
+  *)
+    warn "AZ UGYNOKOK IGY NEM FOGNAK ELINDULNI: a telepites nem hordoz mukodo auth kulcsot."
+    echo -e "    ${DIM}A szolgaltatasok CSAK ezt a ket helyet olvassak:${NC}"
+    echo -e "    ${DIM}  - $INSTALL_DIR/.env  (CLAUDE_CODE_OAUTH_TOKEN vagy ANTHROPIC_API_KEY)${NC}"
+    echo -e "    ${DIM}  - $INSTALL_DIR/store/.claude-oauth-token${NC}"
+    echo -e "    ${DIM}Ha a terminalodban mukodik a claude, az NEM eleg: a systemd unit${NC}"
+    echo -e "    ${DIM}nem olvassa a ~/.bashrc-t es a ~/.claude credentialt.${NC}"
+    echo -e "    ${BOLD}Javitas most: ${BLUE}bash \"$INSTALL_DIR/scripts/auth.sh\"${NC}"
+    ;;
+esac
 
 # CLAUDE.md generalasa template-bol
 if [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
@@ -1784,3 +1897,19 @@ echo -e "  ${DIM}  ./scripts/start.sh${NC}                           $(_t linux.
 echo -e "  ${DIM}  ./scripts/stop.sh${NC}                            -- leallitas"
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+# The auth verdict is repeated LAST, because the "next steps" above tell the
+# user the bot will answer -- which is false when the services have no working
+# credential. A green frame must not be the final thing a broken install says.
+if [ "${INSTALL_AUTH_STATE:-UNKNOWN}" != "OK" ]; then
+  echo ""
+  if [ "${INSTALL_AUTH_STATE:-}" = "UNKNOWN" ]; then
+    echo -e "  ${ORANGE}! FIGYELEM: az auth-ot nem sikerult ellenoriznunk.${NC}"
+    echo -e "  ${DIM}  Lehet hogy mukodik, de nem igazoltuk. Ha a bot nem valaszol:${NC}"
+  else
+    echo -e "  ${RED}✗ AZ UGYNOKOK MEG NEM FOGNAK VALASZOLNI: hianyzik a mukodo auth kulcs.${NC}"
+    echo -e "  ${DIM}  A fenti 2. lepes (\"irj a botodnak\") addig NEM fog mukodni.${NC}"
+  fi
+  echo -e "  ${BOLD}  Javitas: ${BLUE}bash \"$INSTALL_DIR/scripts/auth.sh\"${NC}${BOLD} majd ${BLUE}bash \"$INSTALL_DIR/scripts/channels.sh\" restart${NC}"
+  echo ""
+fi
