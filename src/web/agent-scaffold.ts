@@ -443,12 +443,43 @@ export function ensureEgressGate(name: string): boolean {
 // on 2026-07-29 an install had claude.com on the egress gate but not in the
 // reader, so every fetch to it failed with "domain not on allowlist" while the
 // operator was looking at an allowlist that said otherwise.
+// A hostname the reader may be pointed at. The egress allowlist and the reader
+// are edited with different threat models in mind: the egress gate answers "may
+// the main agent call this host", where an owner adding their own dashboard or a
+// LAN box is ordinary. The reader's list answers "may a fetch target be steered
+// here", and that one is the backstop against a fetch being aimed inward -- the
+// caller is the main agent, and the main agent is exactly what earlier fetched
+// content can influence. So an entry that is fine on the gate is not
+// automatically fine here, and the ones that are not are dropped rather than
+// inherited silently.
+//
+// Rejected: IP literals of any kind (a fetch target is a name, and an address
+// bypasses the name check entirely), single-label names, and the internal
+// suffixes. That covers loopback, RFC1918, link-local (169.254.169.254 is the
+// cloud metadata endpoint), `localhost`, `*` and anything with a scheme, port,
+// path or space in it.
+export function isPublicFetchHost(value: string): boolean {
+  const host = value.trim().toLowerCase()
+  if (!host || host.length > 253) return false
+  if (/[^a-z0-9.-]/.test(host)) return false          // scheme, port, path, wildcard, space
+  if (host.startsWith('.') || host.endsWith('.')) return false
+  if (host.startsWith('-') || host.endsWith('-')) return false
+  if (/^\d+(\.\d+)*$/.test(host)) return false        // IPv4 literal or a bare number
+  const labels = host.split('.')
+  if (labels.length < 2) return false                 // single label: localhost and friends
+  if (labels.some((l) => !l || l.length > 63 || l.startsWith('-') || l.endsWith('-'))) return false
+  const INTERNAL_SUFFIX = ['local', 'internal', 'localdomain', 'lan', 'intranet', 'home', 'arpa', 'test', 'invalid', 'localhost']
+  if (INTERNAL_SUFFIX.includes(labels[labels.length - 1])) return false
+  return true
+}
+
 export function ownerAllowedDomains(storeDir = STORE_DIR): string[] {
   try {
     const raw = JSON.parse(readFileSync(join(storeDir, 'egress-allowlist.json'), 'utf-8'))
     const list = Array.isArray(raw?.domains) ? raw.domains : []
-    return list.filter((d: unknown): d is string => typeof d === 'string' && !!d.trim())
+    return list.filter((d: unknown): d is string => typeof d === 'string')
       .map((d: string) => d.trim())
+      .filter((d: string) => isPublicFetchHost(d))
   } catch {
     return []   // no file, unreadable, or malformed: ship the template as-is
   }
@@ -482,12 +513,20 @@ export function renderQuarantineReader(template: string, domains: string[]): str
   const extra = domains.filter((d) => !already.has(d.toLowerCase()))
   if (!extra.length) return stripped
   const block = [BEGIN, ...extra.map((d) => `- \`${d}\``), END].join('\n')
-  // Anchor on the last bullet of the shipped list so the block lands inside the
-  // Domain restriction section, not at the end of the file.
-  const bullets = [...stripped.matchAll(/^- `[^`]+`.*$/gm)]
+  // Anchor on the LAST bullet inside the Domain restriction section, not on the
+  // last bullet in the file: the moment a backtick-bullet appears in any later
+  // section, a file-wide anchor would silently relocate the per-install block
+  // there. Raised in review on #797.
+  const headingRx = /^##\s+Domain restriction\s*$/m
+  const heading = headingRx.exec(stripped)
+  const sectionStart = heading ? (heading.index ?? 0) + heading[0].length : 0
+  const nextHeading = /^##\s+/m.exec(stripped.slice(sectionStart))
+  const sectionEnd = nextHeading ? sectionStart + (nextHeading.index ?? 0) : stripped.length
+  const section = stripped.slice(sectionStart, sectionEnd)
+  const bullets = [...section.matchAll(/^- `[^`]+`.*$/gm)]
   if (!bullets.length) return stripped
   const last = bullets[bullets.length - 1]
-  const at = (last.index ?? 0) + last[0].length
+  const at = sectionStart + (last.index ?? 0) + last[0].length
   return `${stripped.slice(0, at)}\n${block}${stripped.slice(at)}`
 }
 
