@@ -2114,6 +2114,20 @@ export function getMemoryNeighbors(srcId: number, limit = 10): { memory: Memory;
  * Delete links whose weight has decayed below threshold or whose endpoints
  * no longer exist. Returns the count of removed links.
  */
+/**
+ * Return all memory_links where either endpoint is in the given id set.
+ * Used by the dashboard graph to fetch edges for a loaded set of memories.
+ */
+export function getLinksForMemories(ids: number[]): MemoryLink[] {
+  if (ids.length === 0) return []
+  const placeholders = ids.map(() => '?').join(',')
+  return db.prepare(
+    `SELECT * FROM memory_links
+     WHERE src_id IN (${placeholders}) OR dst_id IN (${placeholders})
+     ORDER BY weight DESC`
+  ).all(...ids, ...ids) as MemoryLink[]
+}
+
 export function pruneMemoryLinks(weightThreshold = 0.1): number {
   const result = db.prepare(
     `DELETE FROM memory_links WHERE weight < ?`

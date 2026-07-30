@@ -392,8 +392,14 @@ async function loadMemoryGraph() {
   params.set('limit', '200')
 
   try {
-    const res = await fetch(`/api/memories?${params}`)
+    const linkParams = new URLSearchParams()
+    if (agent) linkParams.set('agent', agent)
+    const [res, linkRes] = await Promise.all([
+      fetch(`/api/memories?${params}`),
+      fetch(`/api/memories/links?${linkParams}`),
+    ])
     const memories = await res.json()
+    const semanticLinks = linkRes.ok ? await linkRes.json() : []
 
     const emptyEl = document.getElementById('graphEmpty')
     if (!memories || memories.length === 0) {
@@ -411,14 +417,14 @@ async function loadMemoryGraph() {
     graphSelectedNode = null
     hideGraphPanel()
 
-    buildGraph(memories)
+    buildGraph(memories, semanticLinks)
     startGraphSimulation()
   } catch (err) {
     console.error('Gráf betöltés hiba:', err)
   }
 }
 
-function buildGraph(memories) {
+function buildGraph(memories, semanticLinks) {
   graphNodes = []
   graphEdges = []
 
@@ -457,29 +463,53 @@ function buildGraph(memories) {
     })
   }
 
-  // Create edges based on shared keywords
+  // Build id -> node index map for fast lookup
+  const idToIdx = new Map()
+  graphNodes.forEach((node, idx) => idToIdx.set(node.id, idx))
+
+  // Prefer real semantic links from memory_links table if available,
+  // fall back to keyword-based edges for nodes with no semantic links.
+  const semanticEdgeIds = new Set()  // "srcIdx-dstIdx" pairs covered by real links
+
+  if (semanticLinks && semanticLinks.length > 0) {
+    for (const link of semanticLinks) {
+      const si = idToIdx.get(link.src_id)
+      const di = idToIdx.get(link.dst_id)
+      if (si === undefined || di === undefined) continue
+      const a = graphNodes[si]
+      const b = graphNodes[di]
+      const strength = link.weight || 0.5
+      graphEdges.push({ source: si, target: di, strength, semantic: true, linkType: link.link_type })
+      a.connectionCount += strength
+      b.connectionCount += strength
+      semanticEdgeIds.add(`${Math.min(si, di)}-${Math.max(si, di)}`)
+    }
+  }
+
+  // Keyword-based fallback for nodes that have no semantic links yet
   for (let i = 0; i < graphNodes.length; i++) {
     for (let j = i + 1; j < graphNodes.length; j++) {
+      if (semanticEdgeIds.has(`${i}-${j}`)) continue  // already covered
       const a = graphNodes[i]
       const b = graphNodes[j]
       const shared = a.keywords.filter(k => b.keywords.includes(k))
       if (shared.length > 0) {
-        graphEdges.push({ source: i, target: j, strength: shared.length })
-        a.connectionCount += shared.length
-        b.connectionCount += shared.length
-      }
-      // Also connect same-agent same-tier with low probability
-      if (a.agent === b.agent && a.tier === b.tier && Math.random() < 0.3) {
-        graphEdges.push({ source: i, target: j, strength: 0.5 })
-        a.connectionCount += 0.5
-        b.connectionCount += 0.5
+        graphEdges.push({ source: i, target: j, strength: shared.length * 0.3, semantic: false })
+        a.connectionCount += shared.length * 0.3
+        b.connectionCount += shared.length * 0.3
       }
     }
   }
 
-  // Set node radius based on connection count
+  // Set node radius + orphan/hub badges based on connection count
+  const HUB_THRESHOLD = 5  // semantic edges to qualify as a hub
   for (const node of graphNodes) {
     node.radius = 5 + Math.min(Math.sqrt(node.connectionCount) * 2.5, 14)
+    const semanticEdgeCount = graphEdges.filter(
+      e => e.semantic && (graphNodes[e.source].id === node.id || graphNodes[e.target].id === node.id)
+    ).length
+    node.isOrphan = semanticEdgeCount === 0
+    node.isHub = semanticEdgeCount >= HUB_THRESHOLD
   }
 
   // Ensure controls hint and zoom indicator exist
@@ -695,14 +725,22 @@ function renderGraph() {
     const searchFaded = hasSearch && (!a.searchMatch || !b.searchMatch)
 
     // Edge thickness based on connection strength
-    const baseWidth = 0.5 + Math.min(edge.strength * 0.6, 2.5)
+    const baseWidth = edge.semantic
+      ? 1.0 + Math.min(edge.strength * 1.2, 3)  // semantic links: thicker
+      : 0.5 + Math.min(edge.strength * 0.3, 1.2)  // keyword fallback: thinner
 
-    // Subtle pulse/breathe animation
-    const pulse = 0.85 + 0.15 * Math.sin(time * 1.5 + edge.source * 0.3 + edge.target * 0.7)
+    // Subtle pulse/breathe animation (semantic edges pulse faster)
+    const pulse = 0.85 + 0.15 * Math.sin(time * (edge.semantic ? 2 : 1.5) + edge.source * 0.3 + edge.target * 0.7)
 
     ctx.lineWidth = isActiveEdge ? baseWidth * 1.8 : baseWidth * pulse
-    ctx.strokeStyle = isActiveEdge ? GRAPH_TIER_COLORS[a === activeNode ? a.tier : b.tier] || borderColor : borderColor
-    ctx.globalAlpha = searchFaded ? 0.05 : (isActiveEdge ? 0.7 : (0.15 + Math.min(edge.strength * 0.1, 0.3)) * pulse)
+    const edgeColor = edge.semantic
+      ? (GRAPH_TIER_COLORS[a.tier] || borderColor)  // semantic: tier color
+      : borderColor                                   // keyword: neutral
+    ctx.strokeStyle = isActiveEdge ? GRAPH_TIER_COLORS[a === activeNode ? a.tier : b.tier] || borderColor : edgeColor
+    const baseAlpha = edge.semantic
+      ? (0.25 + Math.min(edge.strength * 0.3, 0.55))  // semantic: more visible
+      : (0.08 + Math.min(edge.strength * 0.05, 0.12))  // keyword: subtle
+    ctx.globalAlpha = searchFaded ? 0.04 : (isActiveEdge ? 0.7 : baseAlpha * pulse)
 
     // Bezier curve: midpoint offset perpendicular to the line
     const mx = (a.x + b.x) / 2
@@ -774,6 +812,28 @@ function renderGraph() {
 
     ctx.shadowBlur = 0
     ctx.shadowColor = 'transparent'
+
+    // === Orphan/hub badges (semantic link status) ===
+    if (node.isOrphan && !searchFaded) {
+      // Dashed outer ring: memory has no semantic links yet
+      ctx.globalAlpha = nodeAlpha * 0.6
+      ctx.strokeStyle = isDark ? '#888' : '#aaa'
+      ctx.lineWidth = 1
+      ctx.setLineDash([2, 2])
+      ctx.beginPath()
+      ctx.arc(node.x, node.y, r + 5, 0, Math.PI * 2)
+      ctx.stroke()
+      ctx.setLineDash([])
+    } else if (node.isHub && !searchFaded) {
+      // Solid outer ring: high-connectivity hub node
+      ctx.globalAlpha = nodeAlpha * 0.8
+      ctx.strokeStyle = color
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.arc(node.x, node.y, r + 5, 0, Math.PI * 2)
+      ctx.stroke()
+    }
+    ctx.globalAlpha = nodeAlpha
 
     // === Always show label (pill/badge style) ===
     if (!searchFaded || (searchFaded && nodeAlpha > 0.15)) {

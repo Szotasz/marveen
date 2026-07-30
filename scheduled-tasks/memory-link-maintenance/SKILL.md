@@ -16,7 +16,7 @@ Ejjelente egyszer (default: 04:00) automatikusan fut. Elvegzi:
 ## Eljaras
 
 ```bash
-TOKEN=$(cat /Users/jonasgergo/marveen/store/.dashboard-token)
+TOKEN=$(cat {{INSTALL_DIR}}/store/.dashboard-token)
 RESULT=$(curl -s -X POST http://localhost:3420/api/memories/links/maintain \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
@@ -34,7 +34,7 @@ Egyebkent csendes heartbeat (type: heartbeat).
 ## Threshold override
 
 ```bash
-TOKEN=$(cat /Users/jonasgergo/marveen/store/.dashboard-token)
+TOKEN=$(cat {{INSTALL_DIR}}/store/.dashboard-token)
 curl -s -X POST http://localhost:3420/api/memories/links/maintain \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \

@@ -3,7 +3,7 @@ import {
   hybridSearch, backfillEmbeddings, clearMemoryCache,
   searchMemories, getMemoriesForChat, getDb, touchMemoriesAccessed,
   recordMemoryRead, recordMemoryReadBatch, getStaleMemories, getMemoryVersions,
-  runMemoryMaintenance, runLinkMaintenance,
+  runMemoryMaintenance, runLinkMaintenance, getLinksForMemories,
   type Memory,
 } from '../../db.js'
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from '../../config.js'
@@ -286,6 +286,25 @@ Respond ONLY with JSON, nothing else:
       logger.error({ err }, 'Memory resort failed')
       json(res, { error: 'Resort failed' }, 500)
     }
+    return true
+  }
+
+  // GET /api/memories/links -- fetch memory_links edges for a set of memory ids.
+  // Query params: ids (comma-separated) OR agent (fetch all links for agent's memories).
+  // Returns [{src_id, dst_id, link_type, weight}] -- used by the dashboard graph.
+  if (path === '/api/memories/links' && method === 'GET') {
+    const idsParam = url.searchParams.get('ids')
+    const agentParam = url.searchParams.get('agent')
+    let memoryIds: number[] = []
+    if (idsParam) {
+      memoryIds = idsParam.split(',').map(s => parseInt(s, 10)).filter(n => !isNaN(n))
+    } else if (agentParam) {
+      const rows = getDb().prepare(
+        `SELECT id FROM memories WHERE agent_id = ? ORDER BY accessed_at DESC LIMIT 500`
+      ).all(agentParam) as { id: number }[]
+      memoryIds = rows.map(r => r.id)
+    }
+    json(res, getLinksForMemories(memoryIds))
     return true
   }
 
