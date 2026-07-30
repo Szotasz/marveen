@@ -142,6 +142,26 @@ export type ResubmitAction = 'none' | 'enter' | 'reinject' | 'giveup'
 // covered the spinner/busy path, not this typing/parked-input path). Bare
 // Enter alone loses to a persistently swallowed Enter, so after
 // RESUBMIT_BARE_ENTER_ATTEMPTS Enters we escalate to a real clear + re-inject
+// SCHEDDUP1: is OUR scheduled prompt actually parked in the input box? The
+// previous inline check (`/❯\s+\S/.test(pane) && pane.includes(marker)`) was
+// busy-blind and matched the marker ANYWHERE in the pane -- so a session that
+// had already submitted the prompt and was ACTIVELY WORKING on it (marker
+// visible in the transcript echo, anything on the input line) was judged
+// stuck, and the recovery ladder pressed keystrokes into a working session.
+// Two narrowings:
+//   1. BUSY EXCLUSION: a busy pane is never stuck -- the prompt is running.
+//   2. MARKER IN THE INPUT REGION ONLY: the marker must sit at/after the LAST
+//      prompt box (❯), i.e. be the parked text itself -- a marker in the
+//      scrollback above is the running/finished case.
+export function isScheduledPromptStuck(pane: string | null, marker: string): boolean {
+  if (!pane || !pane.trim()) return false
+  if (detectPaneState(pane) === 'busy') return false
+  const idx = pane.lastIndexOf('❯')
+  if (idx < 0) return false
+  const inputRegion = pane.slice(idx)
+  return /❯\s+\S/.test(inputRegion) && inputRegion.includes(marker)
+}
+
 // of the prompt. Re-injecting is safe here: the scheduled prompt is locally
 // authored (SKILL.md / bearer-gated editor), not the ghost-suggestion text
 // that gates the MAIN plain-text re-inject path in stuck-input-watcher.
@@ -550,7 +570,7 @@ async function attemptFireTask(
         // Host-aware so a remote agent's post-send stuck-check + recovery Enter
         // hit the laptop session, not a (nonexistent) local one.
         const pane = capturePane(session, host)
-        const stuck = pane != null && /❯\s+\S/.test(pane) && pane.includes(marker)
+        const stuck = isScheduledPromptStuck(pane, marker)
         const action = decideScheduledResubmitAction(attempt, stuck)
         if (action === 'none') return
         if (action === 'giveup') {
