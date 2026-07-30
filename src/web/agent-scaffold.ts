@@ -28,6 +28,14 @@ const dashboardOrigin = resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT)
 // 200; this had been silently killing sub-agent memory saves and searches.
 const tokenPath = join(PROJECT_ROOT, 'store', '.dashboard-token')
 
+// Hook commands run under `/bin/sh -c` with a NON-interactive PATH. On nvm
+// installs a bare `node` is not on that PATH, so the hook exits 127 -- which
+// Claude Code treats as a NON-blocking error and lets the tool call through:
+// the gate silently never enforces (atlas incident, 2026-07-30). process.execPath
+// is the absolute binary of the node running this server, which by definition
+// exists on the host that spawns the agents. Exported for unit tests.
+export const HOOK_NODE_BIN = process.execPath
+
 // Identity values the template substitution injects. Pulled out so the
 // substitution is a pure, parameterizable function (the runtime binds these to
 // config; tests can prove a non-default identity substitutes with no literal
@@ -345,7 +353,7 @@ export function injectEmailSendGate(existing: Record<string, unknown>): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const command = `node ${join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs')}`
+  const command = `${HOOK_NODE_BIN} ${join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs')}`
   // Registration guard: a /tmp or missing path must never enter shared settings.
   if (isUnsafeHookCommand(command)) return
   const entry = {
@@ -380,7 +388,7 @@ export function injectSelfPaceGate(existing: Record<string, unknown>): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const command = `node ${join(PROJECT_ROOT, 'scripts', 'self-pace-gate.mjs')}`
+  const command = `${HOOK_NODE_BIN} ${join(PROJECT_ROOT, 'scripts', 'self-pace-gate.mjs')}`
   // Registration guard: a /tmp or missing path must never enter shared settings.
   if (isUnsafeHookCommand(command)) return
   const entry = {
@@ -406,7 +414,7 @@ export function injectEgressGate(existing: Record<string, unknown>): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const command = `node ${join(PROJECT_ROOT, 'scripts', 'hooks', 'egress-gate.mjs')}`
+  const command = `${HOOK_NODE_BIN} ${join(PROJECT_ROOT, 'scripts', 'hooks', 'egress-gate.mjs')}`
   // Registration guard: a /tmp or missing path must never enter shared settings.
   if (isUnsafeHookCommand(command)) return
   const entry = {
@@ -430,13 +438,17 @@ export function ensureEgressGate(name: string): boolean {
   if (existsSync(settingsPath)) {
     try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
   }
-  const command = `node ${join(PROJECT_ROOT, 'scripts', 'hooks', 'egress-gate.mjs')}`
+  const command = `${HOOK_NODE_BIN} ${join(PROJECT_ROOT, 'scripts', 'hooks', 'egress-gate.mjs')}`
   const hooks = (settings.hooks && typeof settings.hooks === 'object')
     ? settings.hooks as Record<string, unknown>
     : {}
   const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
-  // Idempotency: already wired if any entry references the egress-gate script.
-  if (JSON.stringify(ptu).includes('egress-gate.mjs')) return false
+  // Idempotency: already wired only if an entry references the egress-gate
+  // script AND already uses the absolute node binary. A legacy bare-`node`
+  // entry (dead on nvm PATHs, exit 127 = silently non-enforcing) must NOT
+  // count as wired -- fall through so injectEgressGate replaces it in place.
+  const ptuJson = JSON.stringify(ptu)
+  if (ptuJson.includes('egress-gate.mjs') && ptuJson.includes(command)) return false
   if (isUnsafeHookCommand(command)) return false
   injectEgressGate(settings)
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
@@ -535,6 +547,36 @@ export function renderQuarantineReader(template: string, domains: string[]): str
   const last = bullets[bullets.length - 1]
   const at = sectionStart + (last.index ?? 0) + last[0].length
   return `${stripped.slice(0, at)}\n${block}${stripped.slice(at)}`
+}
+
+// Idempotent migration: ensure a sub-agent's email-send + self-pace gate hook
+// commands use the absolute node binary (HOOK_NODE_BIN). Legacy entries wrote a
+// bare `node`, which is missing from the non-interactive hook PATH on nvm
+// installs -- exit 127 counts as a non-blocking hook error, so those gates were
+// silently non-enforcing. Called at server startup (alongside ensureEgressGate)
+// so running agents are upgraded without waiting for their next respawn.
+// Returns true if the file was updated, false if already correct.
+export function ensureGovernanceGateCommands(name: string): boolean {
+  if (name === MAIN_AGENT_ID) return false
+  const settingsPath = agentSettingsPath(name)
+  if (!existsSync(settingsPath)) return false
+  let settings: Record<string, unknown> = {}
+  try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  const emailCmd = `${HOOK_NODE_BIN} ${join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs')}`
+  const paceCmd = `${HOOK_NODE_BIN} ${join(PROJECT_ROOT, 'scripts', 'self-pace-gate.mjs')}`
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptuJson = JSON.stringify(Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : [])
+  const needEmail = agentGetsEmailGate(name) && !ptuJson.includes(JSON.stringify(emailCmd).slice(1, -1))
+  const needPace = agentGetsGovernanceGates(name) && !ptuJson.includes(JSON.stringify(paceCmd).slice(1, -1))
+  if (!needEmail && !needPace) return false
+  // The injectors dedupe by script basename, so a stale bare-`node` entry is
+  // replaced in place rather than accumulated.
+  if (needEmail) injectEmailSendGate(settings)
+  if (needPace) injectSelfPaceGate(settings)
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
 }
 
 // Deploy the quarantine-reader sub-agent definition to an agent's
