@@ -263,6 +263,25 @@ _t() {
     hu:linux.apt_lock_timeout_body2) echo "Ha az unattended-upgrades az, várd meg amíg végez (sudo systemctl status unattended-upgrades), majd indítsd újra ezt a telepítőt. Futó dpkg-t NE lőj ki." ;;
     en:linux.apt_lock_timeout_fail) echo "Package manager is locked by another process -- re-run the installer once it finished." ;;
     hu:linux.apt_lock_timeout_fail) echo "A csomagkezelőt egy másik folyamat zárolja -- ha végzett, indítsd újra a telepítőt." ;;
+    # MACOSOLD1: macOS version pre-flight before relying on Homebrew
+    en:macos.ver_unknown) echo "Could not determine the macOS version (sw_vers failed) -- continuing, but if Homebrew fails, that may be why." ;;
+    hu:macos.ver_unknown) echo "Nem sikerült megállapítani a macOS verziót (sw_vers hiba) -- folytatom, de ha a Homebrew elhasal, ez lehet az oka." ;;
+    en:macos.ver_too_old_head) echo "This Mac runs macOS" ;;
+    hu:macos.ver_too_old_head) echo "Ezen a gépen macOS" ;;
+    en:macos.ver_too_old_body1) echo "Homebrew (which installs the dependencies) does not run on macOS older than 10.15, so installation cannot continue on this machine." ;;
+    hu:macos.ver_too_old_body1) echo "fut, a Homebrew (ami a függőségeket telepítené) viszont 10.15-nél régebbi macOS-en nem indul el -- ezen a gépen a telepítés nem tud továbbmenni." ;;
+    en:macos.ver_too_old_body2) echo "Two ways out: (1) update macOS on this machine, or (2) use the REMOTE install (a VPS) -- this Mac is perfectly enough to log in from." ;;
+    hu:macos.ver_too_old_body2) echo "Két kiút: (1) frissítsd ezen a gépen a macOS-t, vagy (2) válaszd a TÁVOLI telepítést (VPS) -- ehhez ez a gép is bőven elég, csak bejelentkezni kell róla." ;;
+    en:macos.ver_too_old_fail) echo "macOS below Homebrew's minimum (10.15) -- update macOS or use the remote install." ;;
+    hu:macos.ver_too_old_fail) echo "A macOS a Homebrew minimuma (10.15) alatt van -- frissíts macOS-t, vagy használd a távoli telepítést." ;;
+    en:macos.ver_unsupported_head) echo "Homebrew no longer supports this macOS version:" ;;
+    hu:macos.ver_unsupported_head) echo "Ezt a macOS verziót a Homebrew már nem támogatja:" ;;
+    en:macos.ver_unsupported_body) echo "It usually still works, but dependency installs may break (best-effort support below macOS 14). If it fails, the remote install (VPS) works from this machine too." ;;
+    hu:macos.ver_unsupported_body) echo "Általában még működik, de a függőség-telepítés eltörhet (macOS 14 alatt best-effort a támogatás). Ha elhasal, a távoli telepítés (VPS) erről a gépről is megy." ;;
+    en:macos.ver_unsupported_prompt) echo "Continue anyway? (y = yes / n = stop) [y]: " ;;
+    hu:macos.ver_unsupported_prompt) echo "Folytassam így? (i = igen / n = megállok) [i]: " ;;
+    en:macos.ver_unsupported_abort) echo "Stopped at your request -- consider the remote install, or update macOS and re-run." ;;
+    hu:macos.ver_unsupported_abort) echo "Kérésedre megálltam -- érdemes a távoli telepítést választani, vagy macOS-frissítés után újrafuttatni." ;;
     en:linux.tg_channel_configured) echo "Telegram channel configured" ;;
     hu:linux.tg_channel_configured) echo "Telegram csatorna konfigurálva" ;;
     en:linux.slack_channel_configured) echo "Slack channel configured" ;;

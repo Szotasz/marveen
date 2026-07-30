@@ -103,6 +103,58 @@ echo ""
 INSTALL_STEP="prerequisites"
 echo -e "${BOLD}$(_t section_1)${NC}"
 
+# ── macOS verzio pre-flight (MACOSOLD1) ──────────────────────────────
+# A fuggosegeket a Homebrew-ra bizzuk, a brew-nak viszont sajat macOS-
+# minimumai vannak. Regi gepen a brew portable-ruby-ja dyld-hibaval hal
+# (____chkstk_darwin, "your system version is too old"), es a felhasznalo
+# egy Ruby-linker hibat lat egy sorszammal (2026-07-30, eles workshop).
+# Itt, a legelso lepesben derul ki, ERTHETO mondattal es KIUTTAL.
+#
+# A kuszobok a Homebrew SAJAT deklaralt minimumai (brew.sh, Homebrew
+# 6.0.13, kiolvasva 2026-07-30):
+#   HOMEBREW_MACOS_OLDEST_ALLOWED="10.15"  -- ez alatt a brew el sem indul
+#   HOMEBREW_MACOS_OLDEST_SUPPORTED="14"   -- ez alatt "unsupported/best effort"
+# Uj brew-kiadasnal ezek valtozhatnak; a forras a brew repo brew.sh fajlja.
+BREW_OLDEST_ALLOWED="10.15"
+BREW_OLDEST_SUPPORTED="14"
+
+# major[.minor] numerikus osszehasonlitas: 0 ha $1 < $2 (sort -V nelkul,
+# a BSD sort -V viselkedesere nem epitunk).
+macos_version_lt() {
+  local a1 b1 a2 b2
+  a1=${1%%.*}; b1=${2%%.*}
+  a2=${1#*.}; [ "$a2" = "$1" ] && a2=0; a2=${a2%%.*}
+  b2=${2#*.}; [ "$b2" = "$2" ] && b2=0; b2=${b2%%.*}
+  [ "$a1" -lt "$b1" ] || { [ "$a1" -eq "$b1" ] && [ "$a2" -lt "$b2" ]; }
+}
+
+MACOS_VER=$(sw_vers -productVersion 2>/dev/null || echo "")
+if [ -z "$MACOS_VER" ]; then
+  # Ismeretlen allapot: kimondjuk, nem talalgatunk -- a telepites megy
+  # tovabb, es ha a brew bukik, a hibauzenete legalabb valodi lesz.
+  echo -e "  ${DIM}$(_t macos.ver_unknown)${NC}"
+elif macos_version_lt "$MACOS_VER" "$BREW_OLDEST_ALLOWED"; then
+  # VEGLEGES akadaly ezen a gepen: a Homebrew el sem indul ilyen regi
+  # macOS-en -- azonnal, ertheto mondattal allunk meg, kiuttal.
+  echo -e "${RED}$(_t macos.ver_too_old_head) ${MACOS_VER}${NC}"
+  echo -e "  $(_t macos.ver_too_old_body1)"
+  echo -e "  $(_t macos.ver_too_old_body2)"
+  fail "$(_t macos.ver_too_old_fail)"
+elif macos_version_lt "$MACOS_VER" "$BREW_OLDEST_SUPPORTED"; then
+  # Szurke sav: a brew "unsupported / best effort" -- tipikusan mukodik,
+  # de torhet. Nem hazudunk sem sikert, sem bukast: figyelmeztetunk, es a
+  # felhasznalo dont.
+  warn "$(_t macos.ver_unsupported_head) ${MACOS_VER}"
+  echo -e "  $(_t macos.ver_unsupported_body)"
+  read -rp "$(_t macos.ver_unsupported_prompt)" CONT_OLD_MACOS
+  CONT_OLD_MACOS=${CONT_OLD_MACOS:-i}
+  # hu prompt: i/n, en prompt: y/n -- mindket igen-alak elfogadva.
+  case "$CONT_OLD_MACOS" in
+    i|I|y|Y) : ;;
+    *) fail "$(_t macos.ver_unsupported_abort)" ;;
+  esac
+fi
+
 check_cmd() {
   if command -v "$1" &>/dev/null; then
     echo -e "  ${GREEN}✓${NC} $2"
