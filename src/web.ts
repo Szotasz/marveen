@@ -346,6 +346,27 @@ export function startWebServer(port = 3420): http.Server {
       .catch(err => logger.warn({ err }, 'Failed to pre-start agent worker (will lazy-start on first use)'))
   }
 
+  // WORKERBOOT1: nothing watched the worker sessions, so a death left no trace
+  // and the cause stayed unknowable. This only notices and logs -- it does not
+  // restart (the next request already re-creates the session) and does not try
+  // to explain the death; that is what the log is for.
+  let workerLivenessInterval: NodeJS.Timeout | undefined
+  // The handle is assigned inside an async .then(), so a shutdown that runs
+  // BEFORE the dynamic import resolves would clear an undefined and then the
+  // import would start an interval nobody owns. A live setInterval keeps the
+  // event loop alive, so that is not just a leak: the process would never exit.
+  // The other monitors are synchronous calls and cannot hit this.
+  let workerLivenessCancelled = false
+  if (!webOnly && (process.env.MARVEEN_AGENT_BACKEND || 'worker').toLowerCase() !== 'sdk') {
+    import('./web/worker-liveness.js')
+      .then(m => {
+        if (workerLivenessCancelled) return
+        workerLivenessInterval = m.startWorkerLivenessMonitor()
+        logger.info('Worker liveness monitor started (60s poll)')
+      })
+      .catch(err => logger.warn({ err }, 'Failed to start the worker liveness monitor'))
+  }
+
   const pluginMonitorInterval = webOnly ? undefined : startChannelPluginMonitor()
   if (!webOnly) logger.info('Channel plugin health monitor started (60s poll)')
 
@@ -521,6 +542,8 @@ export function startWebServer(port = 3420): http.Server {
     clearInterval(routerInterval)
     clearInterval(scheduleInterval)
     if (pluginMonitorInterval) clearInterval(pluginMonitorInterval)
+    workerLivenessCancelled = true
+    if (workerLivenessInterval) clearInterval(workerLivenessInterval)
     clearInterval(channelHealthInterval)
     if (costsSyncInterval) clearInterval(costsSyncInterval)
     clearInterval(stuckInputInterval)
