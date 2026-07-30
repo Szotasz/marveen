@@ -118,7 +118,7 @@ def main():
         # placeholder already signals receipt, so a reaction would be redundant
         # (per user preference 2026-06-07).
         try:
-            resp = api(tok, "sendMessage", {"chat_id": chat_id, "text": PLACEHOLDER})
+            resp = api(tok, "sendMessage", {"chat_id": chat_id, "text": PLACEHOLDER, "disable_notification": True})
             pmid = resp.get("result", {}).get("message_id")
             if pmid:
                 entry = {"chat_id": chat_id, "message_id": pmid}
