@@ -13,6 +13,9 @@ vi.mock('../config.js', async (importOriginal) => {
     OWNER_NAME: 'Test User',
     CHANNEL_PROVIDER: 'telegram',
     KANBAN_LABEL_COLORS: {},
+    currentBotName: () => 'Jarvis',
+    currentBrandName: () => 'Marveen',
+    currentOwnerName: () => 'Test User',
   }
 })
 vi.mock('../settings-store.js', () => ({

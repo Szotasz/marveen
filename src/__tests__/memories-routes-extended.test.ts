@@ -154,7 +154,7 @@ describe('tryHandleMemories - extended paths', () => {
       const { ctx, out } = makeCtx('GET', '/api/memories', undefined, { agent: 'agent-a' })
       const handled = await tryHandleMemories(ctx)
       expect(handled).toBe(true)
-      expect(mockGetAgentMemories).toHaveBeenCalledWith('agent-a', 50)
+      expect(mockGetAgentMemories).toHaveBeenCalledWith('agent-a', 50, undefined)
     })
 
     it('GET with no params returns chat memories', async () => {
