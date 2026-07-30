@@ -483,11 +483,13 @@ export function saveAgentMemory(
   if (category === 'shared') clearMemoryCache()
   else memoryCacheInvalidate(agentId)
 
-  // Fire-and-forget: generate embedding asynchronously and store as Float32 BLOB.
-  // The legacy TEXT column (embedding) is intentionally left NULL for new rows.
-  generateEmbedding(content + (keywords ? ' ' + keywords : '')).then(emb => {
+  // Fire-and-forget: generate embedding, store as Float32 BLOB, then link to
+  // semantically similar neighbors. All three steps are best-effort -- Ollama
+  // unavailability silently skips them without affecting the saved memory.
+  generateEmbedding(content + (keywords ? ' ' + keywords : '')).then(async emb => {
     if (emb) {
       db.prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(floatsToBlob(emb), id)
+      await linkToNeighbors(id)
     }
   }).catch(() => {})
 
