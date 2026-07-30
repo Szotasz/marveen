@@ -335,15 +335,36 @@ export function stripDataPayloads(seg) {
 // Heredoc bodies are DATA, not commands. A worker writing a real commit message
 // through `git commit -F - <<EOF … EOF` had the turn denied because one prose
 // line happened to start with "at " -- which SCHEDULER_RX reads as the `at`
-// scheduler at a segment start. The body never reaches a shell as commands, so
-// blank it before any pattern runs. Quoted (<<'EOF') and unquoted markers both,
-// and <<- for tab-indented bodies.
+// scheduler at a segment start. A heredoc body is data, so blank it before any
+// pattern runs. Handles <<- for tab-indented bodies.
+//
+// EXCEPT when the body can still run something. A QUOTED marker (<<'EOF' or
+// <<"EOF") is literal: the shell performs no expansion inside it, so blanking is
+// safe. An UNQUOTED marker (<<EOF) is not -- the shell expands $(...) and
+// backticks in that body at exec time, so blanking one would hide a live
+// command substitution from SCHEDULER_RX and the gate would stop seeing
+// something that really runs:
+//
+//     git commit -m "$(cat <<EOF
+//     fix
+//     $(at now)
+//     EOF
+//     )"
+//
+// This is the same rule the other strippers already apply: stripDataPayloads,
+// stripGitCommitMessages and stripProseArguments all leave a double-quoted
+// value alone when it contains `$(` or a backtick. An unquoted heredoc is the
+// same category; it was simply missing the guard. Reported on PR #770.
 export function stripHeredocBodies(command) {
   const cmd = String(command ?? '')
   if (!/<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*/.test(cmd)) return cmd
   return cmd.replace(
     /(<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2)([\s\S]*?)(^\s*\3\s*$)/gm,
-    (_full, open, _q, _marker, _body, close) => `${open}\n${close}`,
+    (full, open, quote, _marker, body, close) => {
+      const literal = quote === "'" || quote === '"'
+      if (!literal && (body.includes('$(') || body.includes('`'))) return full
+      return `${open}\n${close}`
+    },
   )
 }
 
