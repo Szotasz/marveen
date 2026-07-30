@@ -1771,7 +1771,7 @@ document.getElementById('analyzeAllModelsBtn').addEventListener('click', async (
               body: JSON.stringify({
                 title: t('agents.model.card_title', { agent: r.agent }),
                 description: t('agents.model.card_desc', { current: r.currentModel, suggested: r.suggestedModel, reason: r.reason }),
-                assignee: 'marveen',
+                assignee: mainAgentId(),
                 priority: 'normal',
                 status: 'planned',
               }),
