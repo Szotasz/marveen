@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision as selfPaceDecision, stripDataPayloads, stripGitCommitMessages } from '../../scripts/self-pace-gate.mjs'
+import { gateDecision as selfPaceDecision, stripDataPayloads, stripGitCommitMessages, normalizeShellEvasion } from '../../scripts/self-pace-gate.mjs'
 import {
   agentGetsGovernanceGates,
   injectSelfPaceGate,
@@ -36,6 +36,43 @@ describe('self-pace-gate gateDecision', () => {
   it('does NOT misfire "at" on a substring (netstat / cat)', () => {
     expect(selfPaceDecision('Bash', { command: 'cat file.txt && netstat -an' }).deny).toBe(false)
   })
+  // Regression (2026-07-25, found by JogAsz): splitSegments splits on NEWLINES, so
+  // every prose line of a multi-line commit body became its own "segment". A line
+  // starting with the English words "at" / "batch" then looked like the at(1) /
+  // batch(1) binaries and false-denied a plain `git commit`. The `-m "$(...)"` form
+  // is deliberately NOT blanked by stripGitCommitMessages (a real command substitution
+  // could hide there), so the body does reach the splitter.
+  it('does NOT misfire on PROSE starting with "at"/"batch" in a heredoc commit body', () => {
+    const body = (line: string) => `git commit -m "$(cat <<'EOF'\nfix(lib): parser tweak\n\n${line}\nEOF\n)"`
+    for (const line of [
+      'at least 80% of parsed entries must carry a date',
+      'at most 3 retries before giving up',
+      'at runtime the parser reads the header',
+      'at the same time we clear the cache',
+      'batch size is 50 by default',
+    ]) {
+      expect(selfPaceDecision('Bash', { command: body(line) }).deny).toBe(false)
+    }
+  })
+  it('STILL denies a real at/batch submit (timespec, flag, redirect, bare batch)', () => {
+    for (const cmd of [
+      'at now + 1 minute',
+      'at 14:00',
+      'at tomorrow',
+      'at -f /tmp/x.sh now',
+      'batch',
+      'batch < /tmp/x.sh',
+      'echo hi ; at now + 5 min',
+      '/usr/bin/at now',
+    ]) {
+      expect(selfPaceDecision('Bash', { command: cmd }).deny).toBe(true)
+    }
+  })
+  it('STILL denies a real command substitution hidden in a commit message', () => {
+    expect(selfPaceDecision('Bash', { command: 'git commit -m "$(crontab -r)"' }).deny).toBe(true)
+    // unquoted heredoc delimiter DOES expand -> must stay caught
+    expect(selfPaceDecision('Bash', { command: 'git commit -m "$(cat <<EOF\nfix\n$(at now)\nEOF\n)"' }).deny).toBe(true)
+  })
   it('denies a WRITE to the self-schedule store (redirect)', () => {
     expect(selfPaceDecision('Bash', { command: 'echo "{}" > ~/.claude/scheduled_tasks.json' }).deny).toBe(true)
   })
@@ -56,6 +93,24 @@ describe('self-pace-gate gateDecision', () => {
   })
   it('denies a shell-driven /loop', () => {
     expect(selfPaceDecision('Bash', { command: 'claude /loop "keep polling"' }).deny).toBe(true)
+  })
+  // Two forms the slash-command-position match regressed on (upstream review,
+  // 2026-07-27): both EXECUTE `claude /loop` in bash but the char before `/loop`
+  // was `\` / end-of-`$IFS`, not in the [\s'"] class. Fixed by normalising the
+  // segment (resolve `\X`->`X`, `$IFS`->space) before the pattern runs.
+  it('denies a /loop hidden by a backslash-escaped slash (claude \\/loop)', () => {
+    expect(selfPaceDecision('Bash', { command: 'claude \\/loop "keep polling"' }).deny).toBe(true)
+  })
+  it('denies a /loop hidden by $IFS word-splitting (claude$IFS/loop)', () => {
+    expect(selfPaceDecision('Bash', { command: 'claude$IFS/loop 5m' }).deny).toBe(true)
+  })
+  it('denies the /lo\\op mid-token backslash form (side effect of the same fix)', () => {
+    expect(selfPaceDecision('Bash', { command: 'claude /lo\\op' }).deny).toBe(true)
+  })
+  it('ALLOWS reading a memory path with a loop- prefix (normalisation keeps prose through)', () => {
+    // `.claude` matches \bclaude\b and the name starts `loop-`, but `/loop` is not
+    // in slash-command position (a `-` follows), so it must still pass.
+    expect(selfPaceDecision('Bash', { command: 'cat ~/.claude/memory/loop-stop-vs-truncation.md' }).deny).toBe(false)
   })
   it('ALLOWS a normal Bash command', () => {
     expect(selfPaceDecision('Bash', { command: 'git status && ls -la' }).deny).toBe(false)
@@ -179,6 +234,22 @@ describe('self-pace-gate compound-command false-positives', () => {
     expect(selfPaceDecision('Bash', { command: 'crontab -r' }).deny).toBe(true)
     expect(selfPaceDecision('Bash', { command: 'launchctl submit -l self -- node x.mjs' }).deny).toBe(true)
   })
+  // Measured false positive, 2026-07-26 (found by Hacker): the fleet heartbeats include
+  // launchctl job LABELS in status prose; splitSegments on `;` put `launchctl <label>`
+  // at a segment start and it read as a real invocation. Status reports were denied.
+  it('does NOT deny a launchd job LABEL appearing in prose (no subcommand follows)', () => {
+    expect(selfPaceDecision('Bash', { command: 'echo hello; launchctl com.jarvis.channels PID 555' }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: 'launchctl com.marveen.dashboard is up' }).deny).toBe(false)
+  })
+  it('STILL denies every real launchctl form after that narrowing', () => {
+    // a subcommand word follows -> real invocation
+    expect(selfPaceDecision('Bash', { command: 'launchctl load ~/Library/LaunchAgents/x.plist' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: 'launchctl kickstart -k gui/501/com.jarvis.channels' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: 'launchctl bootout gui/501' }).deny).toBe(true)
+    // a bare `launchctl` is interactive, and a flag form is an invocation: both stay denied
+    expect(selfPaceDecision('Bash', { command: 'launchctl' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: 'launchctl -h' }).deny).toBe(true)
+  })
   it('denies scheduler WRITE behind a sudo/env/PATH/absolute-path wrapper', () => {
     expect(selfPaceDecision('Bash', { command: 'sudo crontab -r' }).deny).toBe(true)
     expect(selfPaceDecision('Bash', { command: '/usr/bin/at now + 1 minute' }).deny).toBe(true)
@@ -291,5 +362,25 @@ describe('self-pace-gate backtick command-substitution boundary', () => {
   })
   it('still allows a legit read-listing inside a substitution (crontab -l)', () => {
     expect(selfPaceDecision('Bash', { command: 'echo `crontab -l`' }).deny).toBe(false)
+  })
+})
+
+// --- normalizeShellEvasion: collapses backslash escapes and $IFS so the
+// slash-command-position match cannot be bypassed with shell quoting tricks ---
+describe('normalizeShellEvasion', () => {
+  it('resolves $IFS to a space', () => {
+    expect(normalizeShellEvasion('claude$IFS/loop')).toBe('claude /loop')
+    expect(normalizeShellEvasion('claude${IFS}/loop')).toBe('claude /loop')
+  })
+  it('resolves backslash escapes to their literal character', () => {
+    expect(normalizeShellEvasion('claude\\/loop')).toBe('claude/loop')
+    expect(normalizeShellEvasion('claude /lo\\op')).toBe('claude /loop')
+  })
+  it('handles null/undefined safely', () => {
+    expect(normalizeShellEvasion(null)).toBe('')
+    expect(normalizeShellEvasion(undefined)).toBe('')
+  })
+  it('leaves normal prose unchanged', () => {
+    expect(normalizeShellEvasion('git status && ls -la')).toBe('git status && ls -la')
   })
 })
