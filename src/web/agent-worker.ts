@@ -491,10 +491,6 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
 }
 
 /**
- * Pre-start both worker sessions. Called at server startup to amortise boot
- * latency across first requests. Idempotent -- a running session is a no-op.
- */
-/**
  * The worker sessions the boot pre-start creates, and a liveness probe for
  * them. Exported for the liveness monitor (WORKERBOOT1): nothing watched these
  * sessions, so a death went unrecorded and the cause stayed unknowable.
@@ -507,6 +503,10 @@ export function isWorkerSessionAlive(session: string): boolean {
   return sessionExistsOnHost(null, session)
 }
 
+/**
+ * Pre-start both worker sessions. Called at server startup to amortise boot
+ * latency across first requests. Idempotent -- a running session is a no-op.
+ */
 export function startWorkerSession(): void {
   startWorkerSessionFor(ctxSlow)
   startWorkerSessionFor(ctxFast)

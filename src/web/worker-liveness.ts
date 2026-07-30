@@ -33,6 +33,12 @@ export interface WorkerLivenessState {
   lastSeenAliveAtMs: number | null
   /** Last pane captured while alive -- the only post-mortem evidence available. */
   lastPane: string | null
+  /**
+   * True when the FIRST sighting happened on the monitor's first sweep, i.e.
+   * the session already existed before this process did. Its real age is then
+   * unknown and any lifetime we report is a LOWER BOUND.
+   */
+  firstSeenOnFirstSweep: boolean
 }
 
 export interface WorkerLivenessObservation {
@@ -40,6 +46,16 @@ export interface WorkerLivenessObservation {
   /** Pane content when alive; null when the capture failed or the session is gone. */
   pane: string | null
   nowMs: number
+  /**
+   * Whether this is the monitor's first sweep. A dashboard restart (deploy,
+   * promote, watchdog) empties the state while the tmux session survives --
+   * startWorkerSession() is idempotent -- so without this the first sweep would
+   * record "first seen now" for a session that may already be hours old, and a
+   * later death would report a truncated lifetime. That points the reader at
+   * the launch line when the cause is elsewhere, which is the exact mistake
+   * this instrument exists to prevent.
+   */
+  isFirstSweep: boolean
 }
 
 export interface WorkerLivenessDecision {
@@ -49,6 +65,12 @@ export interface WorkerLivenessDecision {
   lifetimeMs: number | null
   /** The pane as last observed while alive. */
   lastPane: string | null
+  /**
+   * True when lifetimeMs is a LOWER BOUND, not the real age: the session
+   * predates this monitor process. Reported rather than guessed -- the missing
+   * knowledge is flagged, not hidden.
+   */
+  lifetimeTruncated: boolean
   next: WorkerLivenessState
 }
 
@@ -56,6 +78,7 @@ export const NO_WORKER_LIVENESS_STATE: WorkerLivenessState = {
   firstSeenAtMs: null,
   lastSeenAliveAtMs: null,
   lastPane: null,
+  firstSeenOnFirstSweep: false,
 }
 
 /** Keep the death log bounded: the tail is where a crash message would be. */
@@ -82,13 +105,16 @@ export function decideWorkerLiveness(
   prev: WorkerLivenessState,
 ): WorkerLivenessDecision {
   if (obs.alive) {
+    const isNewSighting = prev.firstSeenAtMs == null
     return {
       logDeath: false,
       lifetimeMs: null,
       lastPane: null,
+      lifetimeTruncated: false,
       next: {
         firstSeenAtMs: prev.firstSeenAtMs ?? obs.nowMs,
         lastSeenAliveAtMs: obs.nowMs,
+        firstSeenOnFirstSweep: isNewSighting ? obs.isFirstSweep : prev.firstSeenOnFirstSweep,
         // Keep the previous snapshot when this capture failed, so a transient
         // capture error does not blank the only evidence we will have.
         lastPane: obs.pane ?? prev.lastPane,
@@ -98,7 +124,7 @@ export function decideWorkerLiveness(
 
   // Absent, and we never saw it alive: nothing happened worth reporting.
   if (prev.lastSeenAliveAtMs == null) {
-    return { logDeath: false, lifetimeMs: null, lastPane: null, next: NO_WORKER_LIVENESS_STATE }
+    return { logDeath: false, lifetimeMs: null, lastPane: null, lifetimeTruncated: false, next: NO_WORKER_LIVENESS_STATE }
   }
 
   // Absent after having been alive: the one transition worth a log line.
@@ -108,6 +134,7 @@ export function decideWorkerLiveness(
     logDeath: true,
     lifetimeMs,
     lastPane: tailLines(prev.lastPane),
+    lifetimeTruncated: prev.firstSeenOnFirstSweep,
     next: NO_WORKER_LIVENESS_STATE,
   }
 }
@@ -121,23 +148,29 @@ export interface WorkerLivenessDeps {
   sessions: () => Array<{ session: string }>
   isAlive: (session: string) => boolean
   capture: (session: string) => string | null
-  onDeath: (info: { session: string; lifetimeMs: number | null; lastPane: string | null }) => void
+  onDeath: (info: { session: string; lifetimeMs: number | null; lastPane: string | null; lifetimeTruncated: boolean }) => void
   now: () => number
 }
 
 export function sweepWorkerLiveness(
   deps: WorkerLivenessDeps,
   states: Map<string, WorkerLivenessState>,
+  isFirstSweep = false,
 ): void {
   for (const { session } of deps.sessions()) {
     const alive = deps.isAlive(session)
     const decision = decideWorkerLiveness(
-      { alive, pane: alive ? deps.capture(session) : null, nowMs: deps.now() },
+      { alive, pane: alive ? deps.capture(session) : null, nowMs: deps.now(), isFirstSweep },
       states.get(session) ?? NO_WORKER_LIVENESS_STATE,
     )
     states.set(session, decision.next)
     if (decision.logDeath) {
-      deps.onDeath({ session, lifetimeMs: decision.lifetimeMs, lastPane: decision.lastPane })
+      deps.onDeath({
+        session,
+        lifetimeMs: decision.lifetimeMs,
+        lastPane: decision.lastPane,
+        lifetimeTruncated: decision.lifetimeTruncated,
+      })
     }
   }
 }
@@ -156,16 +189,32 @@ export function startWorkerLivenessMonitor(): NodeJS.Timeout {
     isAlive: (session) => isWorkerSessionAlive(session),
     capture: (session) => capturePane(session),
     now: () => Date.now(),
-    onDeath: ({ session, lifetimeMs, lastPane }) => {
+    onDeath: ({ session, lifetimeMs, lastPane, lifetimeTruncated }) => {
       logger.warn(
-        { session, lifetimeMs, lifetimeMin: lifetimeMs == null ? null : Math.round(lifetimeMs / 60_000), lastPane },
-        'worker-liveness: worker session disappeared (it was started, then died -- nothing restarts it until the next request)',
+        {
+          session,
+          lifetimeMs,
+          lifetimeMin: lifetimeMs == null ? null : Math.round(lifetimeMs / 60_000),
+          // The session predated this monitor process, so the figure above is a
+          // LOWER BOUND. Said out loud rather than estimated: a truncated
+          // lifetime reads like a fast death and would point at the launch line.
+          lifetimeTruncated,
+          lastPane,
+        },
+        lifetimeTruncated
+          ? 'worker-liveness: worker session disappeared (lifetime is a LOWER BOUND: the session predated this monitor, e.g. a dashboard restart)'
+          : 'worker-liveness: worker session disappeared (it was started, then died -- nothing restarts it until the next request)',
       )
     },
   }
+  let first = true
   const tick = (): void => {
-    try { sweepWorkerLiveness(deps, states) } catch (err) {
+    try {
+      sweepWorkerLiveness(deps, states, first)
+    } catch (err) {
       logger.warn({ err }, 'worker-liveness: sweep failed (continuing)')
+    } finally {
+      first = false
     }
   }
   return setInterval(tick, LIVENESS_POLL_MS)

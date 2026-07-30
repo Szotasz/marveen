@@ -17,67 +17,72 @@ import {
 
 const t0 = 1_700_000_000_000
 
+/** Observation helper: isFirstSweep defaults to false (the steady state). */
+function obs(alive: boolean, pane: string | null, nowMs: number, isFirstSweep = false) {
+  return { alive, pane, nowMs, isFirstSweep }
+}
+
 describe('decideWorkerLiveness', () => {
   it('says nothing while the worker is alive, and starts the lifetime clock', () => {
-    const d = decideWorkerLiveness({ alive: true, pane: 'x', nowMs: t0 }, NO_WORKER_LIVENESS_STATE)
+    const d = decideWorkerLiveness(obs(true, 'x', t0), NO_WORKER_LIVENESS_STATE)
     expect(d.logDeath).toBe(false)
     expect(d.next.firstSeenAtMs).toBe(t0)
     expect(d.next.lastSeenAliveAtMs).toBe(t0)
   })
 
   it('keeps the ORIGINAL first sighting across later polls (lifetime, not age-since-last-poll)', () => {
-    let st: WorkerLivenessState = decideWorkerLiveness({ alive: true, pane: 'a', nowMs: t0 }, NO_WORKER_LIVENESS_STATE).next
-    st = decideWorkerLiveness({ alive: true, pane: 'b', nowMs: t0 + 60_000 }, st).next
-    st = decideWorkerLiveness({ alive: true, pane: 'c', nowMs: t0 + 120_000 }, st).next
+    let st: WorkerLivenessState = decideWorkerLiveness(obs(true, 'a', t0), NO_WORKER_LIVENESS_STATE).next
+    st = decideWorkerLiveness(obs(true, 'b', t0 + 60_000), st).next
+    st = decideWorkerLiveness(obs(true, 'c', t0 + 120_000), st).next
     expect(st.firstSeenAtMs).toBe(t0)
     expect(st.lastSeenAliveAtMs).toBe(t0 + 120_000)
   })
 
   it('logs the death exactly ONCE on the alive -> absent transition', () => {
-    const alive = decideWorkerLiveness({ alive: true, pane: 'p', nowMs: t0 }, NO_WORKER_LIVENESS_STATE)
-    const died = decideWorkerLiveness({ alive: false, pane: null, nowMs: t0 + 60_000 }, alive.next)
+    const alive = decideWorkerLiveness(obs(true, 'p', t0), NO_WORKER_LIVENESS_STATE)
+    const died = decideWorkerLiveness(obs(false, null, t0 + 60_000), alive.next)
     expect(died.logDeath).toBe(true)
 
     // still gone on the next poll -- must NOT re-log, or a permanently dead
     // worker would fill the log with one line per minute
-    const again = decideWorkerLiveness({ alive: false, pane: null, nowMs: t0 + 120_000 }, died.next)
+    const again = decideWorkerLiveness(obs(false, null, t0 + 120_000), died.next)
     expect(again.logDeath).toBe(false)
   })
 
   it('reports the lifetime from first sighting to last sighting', () => {
-    let st = decideWorkerLiveness({ alive: true, pane: 'p', nowMs: t0 }, NO_WORKER_LIVENESS_STATE).next
-    st = decideWorkerLiveness({ alive: true, pane: 'p', nowMs: t0 + 3 * 3600_000 }, st).next
-    const died = decideWorkerLiveness({ alive: false, pane: null, nowMs: t0 + 3 * 3600_000 + 60_000 }, st)
+    let st = decideWorkerLiveness(obs(true, 'p', t0), NO_WORKER_LIVENESS_STATE).next
+    st = decideWorkerLiveness(obs(true, 'p', t0 + 3 * 3600_000), st).next
+    const died = decideWorkerLiveness(obs(false, null, t0 + 3 * 3600_000 + 60_000), st)
     expect(died.lifetimeMs).toBe(3 * 3600_000)
   })
 
   it('carries the LAST pane seen while alive into the death record', () => {
-    let st = decideWorkerLiveness({ alive: true, pane: 'first', nowMs: t0 }, NO_WORKER_LIVENESS_STATE).next
-    st = decideWorkerLiveness({ alive: true, pane: 'last words', nowMs: t0 + 60_000 }, st).next
-    const died = decideWorkerLiveness({ alive: false, pane: null, nowMs: t0 + 120_000 }, st)
+    let st = decideWorkerLiveness(obs(true, 'first', t0), NO_WORKER_LIVENESS_STATE).next
+    st = decideWorkerLiveness(obs(true, 'last words', t0 + 60_000), st).next
+    const died = decideWorkerLiveness(obs(false, null, t0 + 120_000), st)
     expect(died.lastPane).toBe('last words')
   })
 
   it('a failed capture does not blank the only evidence we will have', () => {
-    let st = decideWorkerLiveness({ alive: true, pane: 'good output', nowMs: t0 }, NO_WORKER_LIVENESS_STATE).next
-    st = decideWorkerLiveness({ alive: true, pane: null, nowMs: t0 + 60_000 }, st).next // capture failed
-    const died = decideWorkerLiveness({ alive: false, pane: null, nowMs: t0 + 120_000 }, st)
+    let st = decideWorkerLiveness(obs(true, 'good output', t0), NO_WORKER_LIVENESS_STATE).next
+    st = decideWorkerLiveness(obs(true, null, t0 + 60_000), st).next // capture failed
+    const died = decideWorkerLiveness(obs(false, null, t0 + 120_000), st)
     expect(died.lastPane).toBe('good output')
   })
 
   // The signal is only useful if it stays quiet about non-events.
   it('a session NEVER seen alive is not a death (WEB_ONLY / boot race / never started)', () => {
-    const d = decideWorkerLiveness({ alive: false, pane: null, nowMs: t0 }, NO_WORKER_LIVENESS_STATE)
+    const d = decideWorkerLiveness(obs(false, null, t0), NO_WORKER_LIVENESS_STATE)
     expect(d.logDeath).toBe(false)
     expect(d.next).toEqual(NO_WORKER_LIVENESS_STATE)
   })
 
   it('a restart after a death starts a FRESH lifetime, and can die again', () => {
-    let st = decideWorkerLiveness({ alive: true, pane: 'p', nowMs: t0 }, NO_WORKER_LIVENESS_STATE).next
-    st = decideWorkerLiveness({ alive: false, pane: null, nowMs: t0 + 60_000 }, st).next
-    st = decideWorkerLiveness({ alive: true, pane: 'p2', nowMs: t0 + 120_000 }, st).next
+    let st = decideWorkerLiveness(obs(true, 'p', t0), NO_WORKER_LIVENESS_STATE).next
+    st = decideWorkerLiveness(obs(false, null, t0 + 60_000), st).next
+    st = decideWorkerLiveness(obs(true, 'p2', t0 + 120_000), st).next
     expect(st.firstSeenAtMs).toBe(t0 + 120_000)
-    const second = decideWorkerLiveness({ alive: false, pane: null, nowMs: t0 + 180_000 }, st)
+    const second = decideWorkerLiveness(obs(false, null, t0 + 180_000), st)
     expect(second.logDeath).toBe(true)
     expect(second.lifetimeMs).toBe(0)
   })
@@ -143,5 +148,59 @@ describe('sweepWorkerLiveness', () => {
     const call = onDeath.mock.calls[0]![0]
     expect(call.lifetimeMs).toBe(600_000)
     expect(call.lastPane).toBe('dying words')
+  })
+})
+
+// A dashboard restart (deploy, promote, watchdog) empties the state while the
+// tmux session survives, because startWorkerSession() is idempotent. Without a
+// marker the first sweep would record "first seen now" for a session that may
+// already be hours old, and a later death would report a truncated lifetime --
+// which reads as a fast death and points at the launch line. The instrument
+// would then mislead exactly the investigation it exists to serve.
+describe('lifetime after a monitor restart is reported as a LOWER BOUND', () => {
+  it('flags a session that was already alive on the first sweep', () => {
+    const seen = decideWorkerLiveness(obs(true, 'p', t0, true), NO_WORKER_LIVENESS_STATE)
+    expect(seen.next.firstSeenOnFirstSweep).toBe(true)
+    const died = decideWorkerLiveness(obs(false, null, t0 + 600_000), seen.next)
+    expect(died.logDeath).toBe(true)
+    expect(died.lifetimeTruncated).toBe(true)
+  })
+
+  it('does NOT flag a session that appeared after the monitor was already running', () => {
+    // first sweep: nothing there yet
+    const empty = decideWorkerLiveness(obs(false, null, t0, true), NO_WORKER_LIVENESS_STATE)
+    // later sweep: the session shows up -- its whole life is observed
+    const seen = decideWorkerLiveness(obs(true, 'p', t0 + 60_000), empty.next)
+    expect(seen.next.firstSeenOnFirstSweep).toBe(false)
+    const died = decideWorkerLiveness(obs(false, null, t0 + 120_000), seen.next)
+    expect(died.lifetimeTruncated).toBe(false)
+    expect(died.lifetimeMs).toBe(0)
+  })
+
+  it('a restart AFTER a first-sweep death starts a clean, untruncated lifetime', () => {
+    let st = decideWorkerLiveness(obs(true, 'p', t0, true), NO_WORKER_LIVENESS_STATE).next
+    st = decideWorkerLiveness(obs(false, null, t0 + 60_000), st).next   // truncated death
+    st = decideWorkerLiveness(obs(true, 'p2', t0 + 120_000), st).next   // fresh session, observed from birth
+    expect(st.firstSeenOnFirstSweep).toBe(false)
+    const second = decideWorkerLiveness(obs(false, null, t0 + 180_000), st)
+    expect(second.lifetimeTruncated).toBe(false)
+  })
+
+  it('the sweep marks only its FIRST pass, not every pass', () => {
+    const states = new Map()
+    const onDeath = vi.fn()
+    let alive = true
+    const d: WorkerLivenessDeps = {
+      sessions: () => [{ session: 'w' }],
+      isAlive: () => alive,
+      capture: () => 'pane',
+      onDeath,
+      now: () => t0,
+    }
+    sweepWorkerLiveness(d, states, true)    // first sweep: session already there
+    sweepWorkerLiveness(d, states, false)
+    alive = false
+    sweepWorkerLiveness(d, states, false)
+    expect(onDeath.mock.calls[0]![0].lifetimeTruncated).toBe(true)
   })
 })
