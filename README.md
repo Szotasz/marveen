@@ -71,6 +71,7 @@ Minden ágens saját, réteges memóriával rendelkezik (hot / warm / cold / sha
 ### macOS / Linux
 
 ```bash
+cd ~
 git clone --branch main https://github.com/Szotasz/marveen.git
 cd marveen
 ./install.sh
@@ -99,7 +100,7 @@ A Windows telepítő automatikusan beállítja a WSL-t (Windows Subsystem for Li
 
 > **Ha a PowerShell ablak bezárul / a telepítő nem jut túl a WSL+Ubuntu lépésen:** nyisd meg az Ubuntu-t (Start menü → Ubuntu), majd a WSL Ubuntu shellben futtasd közvetlenül a Linux-telepítőt (a PowerShell wrapper megkerülése):
 > ```bash
-> curl -fsSL https://raw.githubusercontent.com/Szotasz/marveen/main/install-linux.sh -o install.sh && bash install.sh
+> cd ~ && curl -fsSL https://raw.githubusercontent.com/Szotasz/marveen/main/install-linux.sh -o install.sh && bash install.sh
 > ```
 > Ez a megbízható út, ha a `wsl.exe`/Windows-claude környezet összeakad.
 
@@ -272,6 +273,7 @@ claude setup-token
 
 # 2. A VPS-en:
 export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+cd ~
 git clone --branch main https://github.com/Szotasz/marveen.git
 cd marveen
 ./install.sh    # automatikusan install-linux.sh-t futtat
