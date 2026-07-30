@@ -238,13 +238,13 @@ describe('self-pace-gate compound-command false-positives', () => {
   // launchctl job LABELS in status prose; splitSegments on `;` put `launchctl <label>`
   // at a segment start and it read as a real invocation. Status reports were denied.
   it('does NOT deny a launchd job LABEL appearing in prose (no subcommand follows)', () => {
-    expect(selfPaceDecision('Bash', { command: 'echo hello; launchctl com.jarvis.channels PID 555' }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: 'echo hello; launchctl com.example.channels PID 555' }).deny).toBe(false)
     expect(selfPaceDecision('Bash', { command: 'launchctl com.marveen.dashboard is up' }).deny).toBe(false)
   })
   it('STILL denies every real launchctl form after that narrowing', () => {
     // a subcommand word follows -> real invocation
     expect(selfPaceDecision('Bash', { command: 'launchctl load ~/Library/LaunchAgents/x.plist' }).deny).toBe(true)
-    expect(selfPaceDecision('Bash', { command: 'launchctl kickstart -k gui/501/com.jarvis.channels' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: 'launchctl kickstart -k gui/501/com.example.channels' }).deny).toBe(true)
     expect(selfPaceDecision('Bash', { command: 'launchctl bootout gui/501' }).deny).toBe(true)
     // a bare `launchctl` is interactive, and a flag form is an invocation: both stay denied
     expect(selfPaceDecision('Bash', { command: 'launchctl' }).deny).toBe(true)
