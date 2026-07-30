@@ -3,7 +3,7 @@ import {
   hybridSearch, backfillEmbeddings, clearMemoryCache,
   searchMemories, getMemoriesForChat, getDb, touchMemoriesAccessed,
   recordMemoryRead, recordMemoryReadBatch, getStaleMemories, getMemoryVersions,
-  runMemoryMaintenance,
+  runMemoryMaintenance, runLinkMaintenance,
   type Memory,
 } from '../../db.js'
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from '../../config.js'
@@ -285,6 +285,26 @@ Respond ONLY with JSON, nothing else:
     } catch (err) {
       logger.error({ err }, 'Memory resort failed')
       json(res, { error: 'Resort failed' }, 500)
+    }
+    return true
+  }
+
+  // POST /api/memories/links/maintain -- link-graph maintenance heartbeat.
+  // Re-embeds stale memories, refreshes neighbor links, prunes decayed edges,
+  // and counts orphan memories. Called by the memory-maintenance scheduled task.
+  // Body (all optional): { weight_threshold, max_age_seconds }
+  if (path === '/api/memories/links/maintain' && method === 'POST') {
+    try {
+      const body = await readBody(req)
+      const opts = body.length ? JSON.parse(body.toString()) : {}
+      const result = await runLinkMaintenance({
+        weightThreshold: opts.weight_threshold,
+        maxAge: opts.max_age_seconds,
+      })
+      json(res, { ok: true, ...result })
+    } catch (err) {
+      logger.error({ err }, 'Link maintenance failed')
+      json(res, { error: 'Link maintenance failed' }, 500)
     }
     return true
   }

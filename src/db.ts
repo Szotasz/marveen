@@ -2149,6 +2149,71 @@ export async function linkToNeighbors(memoryId: number, maxNeighbors = 5, simila
   return linked
 }
 
+export interface LinkMaintenanceResult {
+  reembedded: number
+  linksCreated: number
+  linksPruned: number
+  orphans: number
+}
+
+/**
+ * Periodic maintenance for the memory link graph:
+ * 1. Re-embed memories whose updated_at > last link created_at (stale embeddings).
+ * 2. Create/refresh neighbor links for recently updated memories.
+ * 3. Prune links below weightThreshold.
+ * 4. Count orphan memories: have embedding but 0 outgoing links.
+ *
+ * Designed to run as a heartbeat scheduled task (e.g. nightly). All steps
+ * are best-effort -- Ollama unavailability yields reembedded=0.
+ */
+export async function runLinkMaintenance(opts: {
+  weightThreshold?: number
+  maxAge?: number   // seconds: only re-link memories updated within this window
+} = {}): Promise<LinkMaintenanceResult> {
+  const { weightThreshold = 0.1, maxAge = 7 * 86400 } = opts
+  const cutoff = Math.floor(Date.now() / 1000) - maxAge
+
+  // Step 1: backfill embeddings for memories updated recently that lack one
+  const needsEmbed = db.prepare(
+    `SELECT id, content, keywords FROM memories
+     WHERE embedding_blob IS NULL AND updated_at >= ?`
+  ).all(cutoff) as { id: number; content: string; keywords: string | null }[]
+
+  let reembedded = 0
+  for (const row of needsEmbed) {
+    const text = row.content + (row.keywords ? ' ' + row.keywords : '')
+    const emb = await generateEmbedding(text)
+    if (emb) {
+      db.prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(floatsToBlob(emb), row.id)
+      reembedded++
+    }
+  }
+
+  // Step 2: re-link memories with embedding updated recently
+  const toLink = db.prepare(
+    `SELECT id FROM memories WHERE embedding_blob IS NOT NULL AND updated_at >= ?`
+  ).all(cutoff) as { id: number }[]
+
+  let linksCreated = 0
+  for (const { id } of toLink) {
+    linksCreated += await linkToNeighbors(id)
+  }
+
+  // Step 3: prune decayed links
+  const linksPruned = pruneMemoryLinks(weightThreshold)
+
+  // Step 4: count orphans (have embedding, 0 outgoing semantic links)
+  const orphanRow = db.prepare(
+    `SELECT COUNT(*) AS c FROM memories
+     WHERE embedding_blob IS NOT NULL
+       AND id NOT IN (SELECT DISTINCT src_id FROM memory_links WHERE link_type = 'semantic')`
+  ).get() as { c: number }
+  const orphans = orphanRow.c
+
+  logger.info({ reembedded, linksCreated, linksPruned, orphans }, 'Link maintenance complete')
+  return { reembedded, linksCreated, linksPruned, orphans }
+}
+
 /**
  * One-time migration: convert any existing JSON-text embeddings to Float32 BLOB
  * and immediately null out the TEXT column to reclaim space. Runs synchronously
