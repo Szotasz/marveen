@@ -46,6 +46,12 @@ if [ -f "$INSTALL_DIR/.env" ]; then
   fi
   [ -n "$_oauth" ] && export CLAUDE_CODE_OAUTH_TOKEN="$_oauth"
   unset _api_key _oauth
+  # Optional per-install model override for the MAIN agent. Lives here rather
+  # than in .claude/settings.json because that file is TRACKED: an install that
+  # writes its model choice there carries a permanent local diff, which blocks
+  # the update preflight's clean-tree check and silently reverts to the
+  # repository's value on the next update. .env is per-install and gitignored.
+  MAIN_AGENT_MODEL="$(grep -E '^MAIN_AGENT_MODEL=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2-)"
 fi
 CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"
 SESSION="${MAIN_AGENT_ID:-marveen}-channels"
@@ -106,6 +112,31 @@ if [ "${1:-}" = "--classify-mcp-pane" ]; then
   resolve_plugin_ids "${2:-$CHANNEL_PROVIDER}"
   classify_mcp_plugin_row "$(cat)"
   echo "$MCP_PLUGIN_STATE"
+  exit 0
+fi
+
+# Resolve the main agent's model. Precedence: MAIN_AGENT_MODEL from .env
+# (per-install, gitignored) over .claude/settings.json (tracked, shipped with
+# the repo). Without the .env route an install that wants a different model has
+# to edit a tracked file, which then blocks the update preflight's clean-tree
+# check and gets reverted by the next update.
+#
+# Kept as a function so `--resolve-main-model` can exercise exactly the code
+# the launch path uses, with no tmux, store or network involved.
+resolve_main_model() {
+  if [ -n "${MAIN_AGENT_MODEL:-}" ]; then
+    printf '%s' "$MAIN_AGENT_MODEL"
+    return 0
+  fi
+  if [ -f "$INSTALL_DIR/.claude/settings.json" ] && command -v jq >/dev/null 2>&1; then
+    jq -r '.model // empty' "$INSTALL_DIR/.claude/settings.json" 2>/dev/null
+  fi
+}
+
+# Test seam: print the resolved model and exit before any side effect.
+if [ "${1:-}" = "--resolve-main-model" ]; then
+  resolve_main_model
+  echo
   exit 0
 fi
 
@@ -277,14 +308,16 @@ TMUX="$(command -v tmux)"
 # too closes the gap end-to-end). Parity with the sub-agent launch.
 MCP_BATCH_ENV="export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000 && "
 
-# Read the main agent's default model from .claude/settings.json so we can
-# pass --model explicitly. Without --model claude-code falls back to its
-# built-in default, which can drift across versions. Passing the flag makes
-# the choice deterministic and visible in `ps`.
-MAIN_MODEL=""
-if [ -f "$INSTALL_DIR/.claude/settings.json" ] && command -v jq >/dev/null 2>&1; then
-  MAIN_MODEL="$(jq -r '.model // empty' "$INSTALL_DIR/.claude/settings.json" 2>/dev/null)"
-fi
+# Resolve the main agent's model so we can pass --model explicitly. Without
+# --model claude-code falls back to its built-in default, which can drift
+# across versions. Passing the flag makes the choice deterministic and visible
+# in `ps`.
+#
+# Precedence: MAIN_AGENT_MODEL from .env (per-install, gitignored) wins over
+# .claude/settings.json (tracked, shipped with the repo). Without the .env
+# route an install that wants a different model has to edit a tracked file,
+# which then blocks the update preflight and gets reverted by the next update.
+MAIN_MODEL="$(resolve_main_model)"
 MODEL_FLAG=""
 # Single-quote the model id so values like `claude-opus-4-8[1m]` survive the
 # tmux command-string round-trip without the inner shell glob-expanding `[1m]`.
