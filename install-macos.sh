@@ -236,7 +236,11 @@ if ! command -v claude &>/dev/null; then
       npm install -g @anthropic-ai/claude-code
     fi
   else
-    fail "Claude Code CLI szukseges a futtatashoz. Telepitsd: npm install -g @anthropic-ai/claude-code"
+    # A javasolt parancs KULON, masolhato sorban -- egy workshop-resztvevo
+    # kezzel gepelte at es egyetlen karakteren (@ = AltGr) elbukott.
+    echo -e "  ${DIM}Telepitsd (masold ki az alabbi sort):${NC}"
+    echo "    npm install -g @anthropic-ai/claude-code"
+    fail "Claude Code CLI szukseges a futtatashoz."
   fi
 fi
 echo -e "  ${GREEN}✓${NC} Claude Code CLI"

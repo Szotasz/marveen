@@ -367,9 +367,11 @@ else
   else
     echo -e "  ${RED}HIBA:${NC} claude telepitve, de nem indul (valoszinuleg AVX-hianyos CPU + Bun-binary)."
     if command -v npm >/dev/null 2>&1; then
-      echo -e "  ${DIM}Probald manualisan: npm install -g @anthropic-ai/claude-code@${CLAUDE_PIN}${NC}"
+      echo -e "  ${DIM}Probald manualisan (masold ki az alabbi sort):${NC}"
+      echo "    npm install -g @anthropic-ai/claude-code@${CLAUDE_PIN}"
     else
-      echo -e "  ${DIM}Telepits nvm+node-ot, majd: npm install -g @anthropic-ai/claude-code@${CLAUDE_PIN}${NC}"
+      echo -e "  ${DIM}Telepits nvm+node-ot, majd (masold ki az alabbi sort):${NC}"
+      echo "    npm install -g @anthropic-ai/claude-code@${CLAUDE_PIN}"
     fi
   fi
 fi
