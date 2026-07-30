@@ -37,6 +37,12 @@ INSTALL_STEP="init"
 # shellcheck source=install-lang.sh
 source "$(dirname "$0")/install-lang.sh"
 
+# Error-translation layer (NPMPERM1 kor): minden stderr egy log-fajlba is
+# megy, hogy hibanal a trap ne csak sorszamot mondjon, hanem le tudja
+# forditani az upstream hibat (explain_install_error, install-lang.sh).
+INSTALL_ERRLOG=$(mktemp "${TMPDIR:-/tmp}/marveen-install-stderr.XXXXXX")
+exec 2> >(tee -a "$INSTALL_ERRLOG" >&2)
+
 ok() { echo -e "  ${GREEN}✓${NC} $*"; }
 warn() { echo -e "  ${ORANGE}!${NC} $*"; }
 
@@ -62,6 +68,7 @@ offer_claude_fallback() {
 
 fail() {
   echo -e "  ${RED}✗${NC} $*"
+  explain_install_error "${INSTALL_ERRLOG:-}"
   offer_claude_fallback "$INSTALL_STEP" "$*" "${BASH_LINENO[0]}"
   exit 1
 }
@@ -69,6 +76,7 @@ fail() {
 on_error() {
   echo ""
   echo -e "${RED}Varatlan hiba a(z) '${INSTALL_STEP}' lepesben (sor: $1).${NC}"
+  explain_install_error "${INSTALL_ERRLOG:-}"
   offer_claude_fallback "$INSTALL_STEP" "Unexpected error at line $1" "$1"
   exit 1
 }
@@ -165,7 +173,16 @@ if ! command -v claude &>/dev/null; then
   echo -e "${ORANGE}$(_t macos.install_claude_hint)${NC}"
   read -rp "$(_t prompt_install_claude)" INSTALL_CLAUDE
   if [[ "$INSTALL_CLAUDE" == "i" || "$INSTALL_CLAUDE" == "y" ]]; then
-    npm install -g @anthropic-ai/claude-code
+    # NPMPERM1: hivatalos nodejs.org .pkg-s (vagy Intel) gepen a globalis
+    # node_modules root-tulajdonu -- EACCES-szel halna. Pre-flight + kiut.
+    if ! ensure_global_npm_writable; then
+      fail "$(_t npm.aborted)"
+    fi
+    if [ "${NPM_NEEDS_SUDO:-}" = "1" ]; then
+      sudo npm install -g @anthropic-ai/claude-code
+    else
+      npm install -g @anthropic-ai/claude-code
+    fi
   else
     fail "Claude Code CLI szukseges a futtatashoz. Telepitsd: npm install -g @anthropic-ai/claude-code"
   fi

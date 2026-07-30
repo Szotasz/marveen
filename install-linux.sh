@@ -50,6 +50,7 @@ offer_claude_fallback() {
 
 fail() {
   echo -e "  ${RED}✗${NC} $*"
+  explain_install_error "${INSTALL_ERRLOG:-}"
   offer_claude_fallback "$INSTALL_STEP" "$*" "${BASH_LINENO[0]}"
   exit 1
 }
@@ -57,6 +58,7 @@ fail() {
 on_error() {
   echo ""
   echo -e "${RED}Varatlan hiba a(z) '${INSTALL_STEP}' lepesben (sor: $1).${NC}"
+  explain_install_error "${INSTALL_ERRLOG:-}"
   offer_claude_fallback "$INSTALL_STEP" "Unexpected error at line $1" "$1"
   exit 1
 }
@@ -341,7 +343,14 @@ else
     ensure_in_rc 'DISABLE_AUTOUPDATER' 'export DISABLE_AUTOUPDATER=1'
     export DISABLE_AUTOUPDATER=1
     if command -v npm >/dev/null 2>&1; then
-      npm install -g "@anthropic-ai/claude-code@${CLAUDE_PIN}" || warn "npm install sikertelen (@${CLAUDE_PIN})."
+      # NPMPERM1: nodesource-os gepen a globalis node_modules root-tulajdonu
+      # lehet. Auto-mod: nem kerdez, sudo-ra valt lathato megjegyzessel.
+      ensure_global_npm_writable auto || true
+      if [ "${NPM_NEEDS_SUDO:-}" = "1" ]; then
+        sudo npm install -g "@anthropic-ai/claude-code@${CLAUDE_PIN}" || warn "npm install sikertelen (@${CLAUDE_PIN})."
+      else
+        npm install -g "@anthropic-ai/claude-code@${CLAUDE_PIN}" || warn "npm install sikertelen (@${CLAUDE_PIN})."
+      fi
     else
       warn "npm nem elerheto; a pinnelt hivatalos installert probalom (@${CLAUDE_PIN})."
       curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_PIN}" || warn "pinnelt install.sh sikertelen."

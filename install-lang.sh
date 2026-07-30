@@ -324,7 +324,128 @@ _t() {
     hu:migrate.done) echo "  ✓ Költöztetés kész!" ;;
     en:migrate.view_memories) echo "  Imported memories can be viewed on the dashboard:" ;;
     hu:migrate.view_memories) echo "  Az importált memóriák a dashboardon tekinthetők meg:" ;;
+    # NPMPERM1: global npm prefix writability pre-flight
+    en:npm.global_not_writable_head) echo "The global npm directory is not writable by your user:" ;;
+    hu:npm.global_not_writable_head) echo "A globális npm könyvtár nem írható a felhasználóddal:" ;;
+    en:npm.global_not_writable_why) echo "This is the default on Macs where Node came from the official nodejs.org installer (root-owned /usr/local). Two ways out:" ;;
+    hu:npm.global_not_writable_why) echo "Ez az alapállapot olyan gépen, ahol a Node a hivatalos nodejs.org telepítőből jött (root-tulajdonú /usr/local). Két kiút:" ;;
+    en:npm.remedy_1) echo "[1] LASTING (recommended): switch npm to your own prefix (~/.npm-global) -- no root-owned files, survives updates." ;;
+    hu:npm.remedy_1) echo "[1] TARTÓS (ajánlott): az npm átállítása saját prefixre (~/.npm-global) -- nincs root-tulajdonú fájl, frissítéskor is megmarad." ;;
+    en:npm.remedy_2) echo "[2] QUICK: install with sudo -- works now, but leaves root-owned files in the global node_modules." ;;
+    hu:npm.remedy_2) echo "[2] GYORS: telepítés sudo-val -- most működik, de root-tulajdonú fájlokat hagy a globális node_modules-ban." ;;
+    en:npm.remedy_prompt) echo "Which one? (1 = own prefix / 2 = sudo / n = stop) [1]: " ;;
+    hu:npm.remedy_prompt) echo "Melyiket válasszam? (1 = saját prefix / 2 = sudo / n = megállok) [1]: " ;;
+    en:npm.prefix_set) echo "npm prefix set to ~/.npm-global (PATH updated in your shell rc too)" ;;
+    hu:npm.prefix_set) echo "npm prefix átállítva ~/.npm-global-ra (a PATH a shell rc-be is bekerült)" ;;
+    en:npm.sudo_note) echo "Installing with sudo (root password may be asked)..." ;;
+    hu:npm.sudo_note) echo "Telepítés sudo-val (a rendszergazdai jelszót kérheti)..." ;;
+    en:npm.aborted) echo "Stopped: the global npm directory is not writable and no remedy was chosen." ;;
+    hu:npm.aborted) echo "Megálltam: a globális npm könyvtár nem írható, és nem választottál megoldást." ;;
+    # Error-translation layer (NPMPERM1/APTLOCK1/MACOSOLD1 -- the first three patterns)
+    en:errxl.dpkg_lock) echo "TRANSLATED: the package manager (apt/dpkg) is locked by another process -- on a fresh system this is the automatic update. Wait a few minutes and re-run the installer." ;;
+    hu:errxl.dpkg_lock) echo "FORDÍTÁS: a csomagkezelőt (apt/dpkg) egy másik folyamat zárolja -- friss rendszeren ez az automatikus frissítés. Várj pár percet, és indítsd újra a telepítőt." ;;
+    en:errxl.npm_eacces) echo "TRANSLATED: npm has no write access to the global directory. Re-run the installer -- it now offers a fix (own prefix, or sudo)." ;;
+    hu:errxl.npm_eacces) echo "FORDÍTÁS: az npm-nek nincs írásjoga a globális könyvtárra. Indítsd újra a telepítőt -- fel fogja ajánlani a megoldást (saját prefix, vagy sudo)." ;;
+    en:errxl.macos_old) echo "TRANSLATED: this macOS is older than what Homebrew supports. Way out: update macOS, or use the remote install (this machine is enough to log in from)." ;;
+    hu:errxl.macos_old) echo "FORDÍTÁS: ez a macOS régebbi, mint amit a Homebrew támogat. Kiút: macOS-frissítés, vagy a távoli telepítés (ehhez ez a gép is elég, csak bejelentkezni kell róla)." ;;
+    en:errxl.network) echo "TRANSLATED: a network error (download failed / DNS / timeout). Check the connection and any proxy/VPN, then re-run the installer." ;;
+    hu:errxl.network) echo "FORDÍTÁS: hálózati hiba (letöltés nem ment / DNS / timeout). Ellenőrizd a kapcsolatot és az esetleges proxy/VPN-t, majd indítsd újra a telepítőt." ;;
+    en:errxl.unknown_head) echo "The failing tool appears to be:" ;;
+    hu:errxl.unknown_head) echo "A hibázó eszköz a jelek szerint:" ;;
+    en:errxl.unknown_next) echo "Copy the lines above when asking for help; re-running the installer is safe (finished steps are skipped)." ;;
+    hu:errxl.unknown_next) echo "Segítségkéréshez a fenti sorokat másold ki; a telepítő újrafuttatása biztonságos (a kész lépéseket átugorja)." ;;
     # ── Fallback: return the key itself ──────────────────────────────
     *) echo "$key" ;;
   esac
+}
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Shared install helpers (sourced by install-macos.sh AND install-linux.sh).
+# Living here because this is the one file both installers already source --
+# duplicating them per-script is how the mirror-drift class starts.
+# ═══════════════════════════════════════════════════════════════════════
+
+# NPMPERM1: is the global npm prefix writable? If not, offer the two remedies
+# (kept strictly apart: [1] own prefix = lasting, no root-owned files;
+# [2] sudo = quick but leaves root-owned files). Mode "auto" (arg 1) never
+# prompts: it picks sudo with a visible note (for non-interactive fallback
+# lanes). Sets NPM_NEEDS_SUDO=1 when the sudo route was chosen.
+# Returns 1 only when the user explicitly stopped.
+ensure_global_npm_writable() {
+  local mode="${1:-interactive}" prefix nm probe
+  NPM_NEEDS_SUDO=""
+  command -v npm >/dev/null 2>&1 || return 0
+  prefix=$(npm config get prefix 2>/dev/null || true)
+  [ -n "$prefix" ] || return 0
+  nm="$prefix/lib/node_modules"
+  probe="$nm"
+  while [ ! -e "$probe" ] && [ "$probe" != "/" ]; do probe=$(dirname "$probe"); done
+  [ -w "$probe" ] && return 0
+  warn "$(_t npm.global_not_writable_head) ${nm}"
+  echo -e "  $(_t npm.global_not_writable_why)"
+  echo -e "  $(_t npm.remedy_1)"
+  echo -e "  $(_t npm.remedy_2)"
+  # Csak az explicit auto-mod valt kerdezes nelkul sudo-ra. Tty-t NEM
+  # ellenorzunk: curl|bash futtatasnal a stdin nem tty, megis a felhasznalo
+  # ul a gep elott -- es zart stdin-nel a read ures valaszt ad, ami az [1]
+  # (tartos, root-mentes) defaultra esik, az a biztonsagos irany.
+  if [ "$mode" = "auto" ]; then
+    echo -e "  $(_t npm.sudo_note)"
+    NPM_NEEDS_SUDO=1
+    return 0
+  fi
+  local NPM_REMEDY=""
+  read -rp "$(_t npm.remedy_prompt)" NPM_REMEDY || true
+  NPM_REMEDY=${NPM_REMEDY:-1}
+  case "$NPM_REMEDY" in
+    1)
+      mkdir -p "$HOME/.npm-global"
+      npm config set prefix "$HOME/.npm-global"
+      export PATH="$HOME/.npm-global/bin:$PATH"
+      local rc
+      for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
+        grep -qs '\.npm-global/bin' "$rc" 2>/dev/null || echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> "$rc"
+      done
+      ok "$(_t npm.prefix_set)"
+      ;;
+    2)
+      echo -e "  $(_t npm.sudo_note)"
+      NPM_NEEDS_SUDO=1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+# Error-translation layer: known upstream failure patterns -> one clear
+# sentence + a concrete next step; unknown -> at least WHICH tool broke and
+# the last stderr lines. $1 = the stderr capture file. Never fails.
+explain_install_error() {
+  local log="$1" tail_txt tool
+  [ -n "$log" ] && [ -s "$log" ] || return 0
+  tail_txt=$(tail -c 4000 "$log" 2>/dev/null || true)
+  [ -n "$tail_txt" ] || return 0
+  echo ""
+  if echo "$tail_txt" | grep -qiE 'could not get lock|lock-frontend|dpkg.+lock'; then
+    echo -e "${ORANGE}$(_t errxl.dpkg_lock)${NC}"
+  elif echo "$tail_txt" | grep -q 'EACCES' && echo "$tail_txt" | grep -q 'node_modules'; then
+    echo -e "${ORANGE}$(_t errxl.npm_eacces)${NC}"
+  elif echo "$tail_txt" | grep -qiE 'chkstk_darwin|system version is too old|your system is too old'; then
+    echo -e "${ORANGE}$(_t errxl.macos_old)${NC}"
+  elif echo "$tail_txt" | grep -qiE 'ENOTFOUND|Could not resolve|Connection refused|Connection timed out|Network is unreachable|curl: \(6\)|curl: \(7\)|curl: \(28\)'; then
+    echo -e "${ORANGE}$(_t errxl.network)${NC}"
+  else
+    tool="?"
+    echo "$tail_txt" | grep -q 'npm ERR' && tool="npm"
+    echo "$tail_txt" | grep -qE '(^|\n)E: ' && tool="apt"
+    echo "$tail_txt" | grep -qi 'dyld' && tool="dyld (Homebrew ruby)"
+    echo "$tail_txt" | grep -qiE '(^|\n)(brew|Homebrew)' && tool="Homebrew"
+    echo "$tail_txt" | grep -q 'curl:' && tool="curl"
+    echo -e "${ORANGE}$(_t errxl.unknown_head) ${tool}${NC}"
+    tail -n 5 "$log" 2>/dev/null | sed 's/^/    /'
+    echo -e "  $(_t errxl.unknown_next)"
+  fi
 }
