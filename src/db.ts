@@ -2037,6 +2037,97 @@ export async function backfillEmbeddings(): Promise<number> {
   return count
 }
 
+// ── Memory links (F1/F2/F3 semantic graph) ───────────────────────────────────
+
+export interface MemoryLink {
+  id: number
+  src_id: number
+  dst_id: number
+  link_type: 'semantic' | 'explicit' | 'entity' | 'cooccurrence'
+  weight: number
+  created_at: number
+  last_traversed_at: number | null
+}
+
+/**
+ * Upsert a directed link between two memories. If (src, dst, type) already
+ * exists the weight is replaced with the new value (INSERT OR REPLACE).
+ * Returns the row id of the upserted link.
+ */
+export function upsertMemoryLink(
+  srcId: number,
+  dstId: number,
+  linkType: MemoryLink['link_type'],
+  weight: number,
+): number {
+  const stmt = db.prepare(
+    `INSERT INTO memory_links (src_id, dst_id, link_type, weight)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(src_id, dst_id, link_type) DO UPDATE SET weight = excluded.weight, last_traversed_at = unixepoch()`
+  )
+  const result = stmt.run(srcId, dstId, linkType, weight) as { lastInsertRowid: number | bigint }
+  return Number(result.lastInsertRowid)
+}
+
+/**
+ * Return the 1-hop neighbors reachable from srcId, ordered by weight desc.
+ * Updates last_traversed_at on the traversed edges.
+ */
+export function getMemoryNeighbors(srcId: number, limit = 10): { memory: Memory; weight: number }[] {
+  // Touch traversal timestamp
+  db.prepare('UPDATE memory_links SET last_traversed_at = unixepoch() WHERE src_id = ?').run(srcId)
+
+  const rows = db.prepare(
+    `SELECT m.*, ml.weight
+     FROM memory_links ml
+     JOIN memories m ON m.id = ml.dst_id
+     WHERE ml.src_id = ?
+     ORDER BY ml.weight DESC
+     LIMIT ?`
+  ).all(srcId, limit) as (Memory & { weight: number })[]
+
+  return rows.map(r => ({ memory: r, weight: r.weight }))
+}
+
+/**
+ * Delete links whose weight has decayed below threshold or whose endpoints
+ * no longer exist. Returns the count of removed links.
+ */
+export function pruneMemoryLinks(weightThreshold = 0.1): number {
+  const result = db.prepare(
+    `DELETE FROM memory_links WHERE weight < ?`
+  ).run(weightThreshold) as { changes: number }
+  return result.changes
+}
+
+/**
+ * Create semantic links from a newly saved memory to its top-N cosine
+ * neighbors. Skips if no embedding available. Returns link count created.
+ */
+export async function linkToNeighbors(memoryId: number, maxNeighbors = 5, similarityThreshold = 0.75): Promise<number> {
+  const row = db.prepare('SELECT embedding_blob FROM memories WHERE id = ?').get(memoryId) as { embedding_blob: Buffer | null } | undefined
+  if (!row?.embedding_blob) return 0
+
+  const agentRow = db.prepare('SELECT agent_id FROM memories WHERE id = ?').get(memoryId) as { agent_id: string | null } | undefined
+  if (!agentRow?.agent_id) return 0
+
+  const queryVec = blobToFloats(row.embedding_blob)
+  const candidates = vectorSearch(agentRow.agent_id, queryVec, maxNeighbors + 1)
+
+  let linked = 0
+  for (const candidate of candidates) {
+    if (candidate.id === memoryId) continue
+    const candBlob = db.prepare('SELECT embedding_blob FROM memories WHERE id = ?').get(candidate.id) as { embedding_blob: Buffer | null } | undefined
+    if (!candBlob?.embedding_blob) continue
+    const sim = cosineSimilarity(queryVec, blobToFloats(candBlob.embedding_blob))
+    if (sim < similarityThreshold) continue
+    upsertMemoryLink(memoryId, candidate.id, 'semantic', sim)
+    linked++
+    if (linked >= maxNeighbors) break
+  }
+  return linked
+}
+
 /**
  * One-time migration: convert any existing JSON-text embeddings to Float32 BLOB
  * and immediately null out the TEXT column to reclaim space. Runs synchronously

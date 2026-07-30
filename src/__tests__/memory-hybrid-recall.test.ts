@@ -36,8 +36,24 @@ const mockHybridSearch = vi.mocked(db.hybridSearch)
 const mockRecentMemories = vi.mocked(db.recentMemories)
 const mockTouchMemory = vi.mocked(db.touchMemory)
 
-function makeMemory(id: number, content: string, sector = 'semantic') {
-  return { id, content, sector, category: 'warm', agent_id: 'agent-a', salience: 1, created_at: 0, updated_at: 0, accessed_at: 0, topic_key: null, keywords: null }
+function makeMemory(id: number, content: string, sector: 'semantic' | 'episodic' = 'semantic') {
+  return {
+    id,
+    content,
+    sector,
+    category: 'warm',
+    agent_id: 'agent-a',
+    chat_id: 'chat-1',
+    salience: 1,
+    created_at: 0,
+    updated_at: null,
+    accessed_at: 0,
+    topic_key: null,
+    keywords: null,
+    auto_generated: 0,
+    embedding: null,
+    embedding_blob: null,
+  }
 }
 
 beforeEach(() => {
