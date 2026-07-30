@@ -16,7 +16,7 @@ describe('writeAgentRemoteConfig (PUT /remote backing logic)', () => {
     // Seed an existing config to prove the remote write MERGES, not clobbers.
     writeFileSync(
       join(agentDir(TEST_AGENT), 'agent-config.json'),
-      JSON.stringify({ model: 'claude-sonnet-4-6', displayName: 'Tmp' }, null, 2),
+      JSON.stringify({ model: 'claude-sonnet-5', displayName: 'Tmp' }, null, 2),
     )
   })
   afterEach(() => {
@@ -28,7 +28,7 @@ describe('writeAgentRemoteConfig (PUT /remote backing logic)', () => {
     expect(res.ok).toBe(true)
     expect(readAgentRemoteConfig(TEST_AGENT)).toEqual({ host: 'devbox', workdir: '/home/user/proj' })
     const cfg = JSON.parse(readFileSync(join(agentDir(TEST_AGENT), 'agent-config.json'), 'utf-8'))
-    expect(cfg.model).toBe('claude-sonnet-4-6')
+    expect(cfg.model).toBe('claude-sonnet-5')
     expect(cfg.displayName).toBe('Tmp')
   })
 
@@ -56,7 +56,7 @@ describe('writeAgentRemoteConfig (PUT /remote backing logic)', () => {
     expect(readAgentRemoteConfig(TEST_AGENT)).toEqual({ host: null, workdir: null })
     // Other keys survive the clear.
     const cfg = JSON.parse(readFileSync(join(agentDir(TEST_AGENT), 'agent-config.json'), 'utf-8'))
-    expect(cfg.model).toBe('claude-sonnet-4-6')
+    expect(cfg.model).toBe('claude-sonnet-5')
     expect('remoteHost' in cfg).toBe(false)
   })
 

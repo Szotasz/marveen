@@ -52,7 +52,7 @@ describe('agent bundle export/import', () => {
   it('stages the portable subset and excludes channel secrets by default', () => {
     const src = join(tmp, 'src')
     makeAgent(src, {
-      'agent-config.json': '{"model":"claude-sonnet-4-6"}',
+      'agent-config.json': '{"model":"claude-sonnet-5"}',
       'CLAUDE.md': '# Agent',
       'SOUL.md': 'soul',
       '.mcp.json': '{"mcpServers":{}}',
@@ -149,7 +149,7 @@ describe('agent bundle export/import', () => {
     const stagedAgent = join(tmp, 'agent')
     mkdirSync(stagedAgent, { recursive: true })
     writeFileSync(join(stagedAgent, 'agent-config.json'), JSON.stringify({
-      model: 'claude-sonnet-4-6',
+      model: 'claude-sonnet-5',
       remoteHost: 'devbox',
       remoteWorkdir: '/home/user/proj',
       claudeConfigDir: '/home/user/.claude-alt',
@@ -160,7 +160,7 @@ describe('agent bundle export/import', () => {
     expect(cfg.remoteHost).toBeUndefined()
     expect(cfg.remoteWorkdir).toBeUndefined()
     expect(cfg.claudeConfigDir).toBeUndefined()
-    expect(cfg.model).toBe('claude-sonnet-4-6')
+    expect(cfg.model).toBe('claude-sonnet-5')
     expect(cfg.displayName).toBe('Keep me')
   })
 
@@ -244,7 +244,7 @@ describe('fleet bundle export/import', () => {
   it('imports every agent from a fleet bundle', () => {
     const bundle = packFleetBundle(join(tmp, 'f'), {
       alpha: { 'CLAUDE.md': '# Alpha', 'memory/MEMORY.md': 'mem-a' },
-      beta: { 'CLAUDE.md': '# Beta', 'agent-config.json': '{"model":"claude-sonnet-4-6"}' },
+      beta: { 'CLAUDE.md': '# Beta', 'agent-config.json': '{"model":"claude-sonnet-5"}' },
     })
     const destBase = join(tmp, 'agents')
     const result = importAllAgentsBundle(bundle, { resolveDest: (n) => join(destBase, n) })
