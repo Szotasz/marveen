@@ -92,6 +92,38 @@ export interface TaskInflightEntry {
   host: string | null
   injectedAt: number
   alerted: boolean
+  // Per-task stuck threshold, resolved at injection time from the task config
+  // (see resolveStuckTimeoutMs). Captured on the entry rather than looked up
+  // during the sweep so an edit to the schedule mid-run cannot move the
+  // goalposts under an already-running injection.
+  timeoutMs: number
+}
+
+// How long a fired task may stay busy before the watchdog calls it stuck.
+// TASK_FIRE_TIMEOUT_MS is the right default for the common case -- a
+// short-cadence heartbeat still running after 5 minutes is a real signal --
+// but it is wrong for a task whose whole job is to think for a while. The
+// nightly analysis run tripped it at 02:12 on 2026-07-30 while working
+// normally and finished fine six minutes later: a false "possible hang" alert
+// on a task doing exactly what it was written to do. Per-task override:
+//
+//   stuckAfterMinutes unset / malformed -> TASK_FIRE_TIMEOUT_MS
+//   positive                            -> that many minutes
+//
+// Clamped at both ends. Below one minute the alert would fire inside the
+// normal startup noise; above TASK_FIRE_MAX_TRACK_MS the entry is evicted
+// before the threshold could ever be reached, so a larger value would silently
+// mean "never alert" -- exactly the kind of quiet disable this codebase keeps
+// getting bitten by. An operator who truly wants no alert should say so in a
+// way that is visible, not by writing a big number.
+export function resolveStuckTimeoutMs(
+  task: Pick<ScheduledTask, 'stuckAfterMinutes'>,
+  defaultMs: number = TASK_FIRE_TIMEOUT_MS,
+  maxMs: number = TASK_FIRE_MAX_TRACK_MS,
+): number {
+  const configured = task.stuckAfterMinutes
+  if (typeof configured !== 'number' || !Number.isFinite(configured) || configured <= 0) return defaultMs
+  return Math.min(Math.max(configured * 60_000, 60_000), maxMs)
 }
 
 // Active task/heartbeat injections keyed by `${taskName}@${agentName}`.
@@ -667,6 +699,7 @@ async function attemptFireTask(
       host,
       injectedAt: now,
       alerted: false,
+      timeoutMs: resolveStuckTimeoutMs(task),
     })
 
     // Post-send verify: if the agent started a new turn during our chunk
@@ -935,8 +968,13 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
     logger.info({ task: entry.taskName, agent: entry.agentName, cardId: movedCardId }, 'task-timeout: matching kanban card moved to waiting')
   }
 
+  // Naming the threshold turns "possible hang" into something the operator can
+  // judge: a long-running analysis task that legitimately needs more time is
+  // then one config line away, instead of a recurring 3am mystery.
+  const thresholdMinutes = Math.round(entry.timeoutMs / 60000)
   const text = [
     `[${BOT_NAME} scheduler] A(z) "${entry.taskName}" (${entry.agentName}) ütemezett feladat ${ageMinutes} perce fut -- lehetséges beakadás.`,
+    `A riasztási küszöb ennél a feladatnál ${thresholdMinutes} perc; ha ez a feladat jogosan fut ennél tovább, allitsd a task-config.json "stuckAfterMinutes" mezojet.`,
     'Az ágensben megtekintheted; a dashboard /Ütemezések oldalán visszavonható ha kell.',
   ].join('\n')
   ;(async () => {
@@ -1043,7 +1081,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
       const state = pane != null ? detectPaneState(pane) : null
       const decision = decideTaskTimeout(entry, state, now, {
         graceMs: TASK_FIRE_GRACE_MS,
-        timeoutMs: TASK_FIRE_TIMEOUT_MS,
+        timeoutMs: entry.timeoutMs,
         maxTrackMs: TASK_FIRE_MAX_TRACK_MS,
       })
       if (decision === 'clear') {
