@@ -42,7 +42,18 @@ A keresés két párhuzamos csatornán fut, majd fúzionál:
 - **Vektor** — minden emlék mentéskor kap egy 768-dim embedding-et (Ollama `nomic-embed-text`); cosine similarity rangsorol, a jelentést érti, nem csak a szavakat.
 - **RRF (Reciprocal Rank Fusion, k=60)** — a két lista összefésülése: `score(d) = Σ 1/(k + rank)`. Előnye: nem kell a pontszámokat normalizálni, csak a rangsor számít.
 
-Az Ollama opcionális — nélküle is megy, csak FTS5-tel.
+A hibrid keresés (`hybridSearch()`) a **valós előhívási utak alapértelmezett módja**: az ügynök beszélgetés-kontextusa (`buildMemoryContext()`) és a dashboard memória-keresésének alap módja (`mode=hybrid`) egyaránt ezen fut. Ha az sqlite-vec extension betölthető, a vektor-ág az ANN-indexen (`vec_memories`) fut; különben teljes-vizsgálatos BLOB-koszinusz fallback.
+
+Az Ollama opcionális — nélküle is megy, csak FTS5-tel (a vektor-ág csendben kimarad, 0 embedding, debug log).
+
+### Szemantikus link-gráf
+
+A kulcsszó- és vektor-keresés mellett az emlékek **irányított, súlyozott kapcsolati gráfot** is alkotnak (`memory_links` tábla). Ez teszi lehetővé a többugrásos, asszociatív előhívást: nem csak a lekérdezésre illeszkedő emléket találja meg, hanem a hozzá kapcsolódókat is.
+
+- **Él-típusok** (`link_type`): `semantic` (embedding-közelség alapján automatikus), `explicit` (kézi `[[link]]`), `entity` (közös entitás), `cooccurrence` (együtt-előfordulás). A `weight` 0 és 1 közötti (koszinusz-hasonlóság), `UNIQUE(src, dst, link_type)`, és `ON DELETE CASCADE` (törölt emlék élei automatikusan eltűnnek).
+- **Automatikus linkelés mentéskor**: minden új emlék embeddingje után (`saveAgentMemory` fire-and-forget pipeline) a `linkToNeighbors()` a legközelebbi szomszédokat köti be. **Robbanás-védelem:** emlékenként **max 5 él** (`maxNeighbors`), és csak **0.75 koszinusz-küszöb** felett.
+- **1-ugrásos gráf-kiterjesztés a keresésben**: a `hybridSearch()` a top-3 találat szomszédait is behúzza az eredménybe, `LINK_TRAVERSAL_DECAY = 0.5 * él-súly` csillapítással. A szomszédok kontextusként megjelennek, de a közvetlen találatokat gyakorlatilag nem előzik meg (a csillapított pontszám a forrás felénél kisebb).
+- **Karbantartás** (lásd lentebb az ütemezett job): elavult emlékek újra-embeddingje, szomszéd-linkek frissítése, a `0.1` súly alatti (elhalt) élek nyesése, árva-emlékek (van embedding, de 0 kimenő szemantikus él) számlálása.
 
 ### Salience decay
 
@@ -63,14 +74,16 @@ Mielőtt a Claude Code kontextusablaka tömörítődik, a `PreCompact` hook átn
 
 ### Gráf nézet + embedding backfill
 
-A dashboard memória-oldalán force-directed (HTML5 Canvas) gráf: zoom/pan, keresés-highlight, kattintásra kibontható panel, a kulcsszó-kapcsolatokat mutatja ágensek közt. A régi, embedding nélküli emlékek automatikusan (és `POST /api/memories/backfill`-lel manuálisan) kapnak vektort.
+A dashboard memória-oldalán force-directed (HTML5 Canvas) gráf: zoom/pan, keresés-highlight, kattintásra kibontható panel. A valódi `memory_links` szemantikus élek **vastag, tier-színes ívként** jelennek meg (a halványabb kulcsszó-kapcsolatok mellett). A csomópontokon **állapot-gyűrű**: **szaggatott** az árva emlékeknél (0 szemantikus él), **tömör** a hub-oknál (5+ él). Az élek a `GET /api/memories/links` végpontról jönnek. A régi, embedding nélküli emlékek automatikusan (és `POST /api/memories/backfill`-lel manuálisan) kapnak vektort.
 
 ### API
 
 ```bash
 POST /api/memories                       # mentés (agent_id, content, tier, keywords)
-GET  /api/memories?agent=&q=&tier=        # keresés (kulcsszó)
+GET  /api/memories?agent=&q=&tier=&mode=hybrid   # keresés (mode=hybrid az alapértelmezett: FTS5 + vektor + gráf)
 GET  /api/memories/search?agent=&q=&hybrid=true   # hibrid (FTS5 + vektor)
+GET  /api/memories/links?ids=1,2,3        # a megadott emlékek közti memory_links élek
+POST /api/memories/links/maintain         # link-gráf karbantartás (re-embed, link-frissítés, él-nyesés, árva-számlálás)
 POST /api/daily-log                       # napi napló (append-only)
 POST /api/memories/backfill               # embedding backfill
 ```
@@ -158,6 +171,12 @@ A `memory-maintenance` karbantartó job **alapból kikapcsolt** (`enabled: false
 Bekapcsolás: a job megjelenik a dashboard **Ütemezések** listájában `memory-maintenance` néven, alapból kikapcsolva. Ott kapcsold be a sorához tartozó kapcsolóval — nem kell fájlt másolni vagy configot szerkeszteni.
 
 Alapértelmezetten naponta 03:00-kor fut (`0 3 * * *`), csak akkor jelent Telegramon, ha valamelyik szám > 0.
+
+### Link-gráf karbantartó job
+
+A szemantikus link-gráfnak külön karbantartó jobja van: **`memory-link-maintenance`**. A `memory-maintenance`-szel ellentétben ez **alapból BE van kapcsolva** (`enabled: true`), mert kizárólag additív, visszafordítható műveleteket végez a gráfon (nem sorol át tiereket): elavult emlékek újra-embeddingje, szomszéd-linkek frissítése, a `0.1` súly alatti élek nyesése, árva-emlékek számlálása. Megjelenik a dashboard **Ütemezések** listájában, ahol ki-be kapcsolható.
+
+Naponta 04:00-kor fut (`0 4 * * *`), `heartbeat` típus (`skipIfBusy: true`), a `POST /api/memories/links/maintain` végpontot hívja. Ez az a job, ami a **meglévő** emlékekre visszamenőleg is felépíti a linkeket (az automatikus linkelés csak új mentéseknél fut).
 
 ---
 

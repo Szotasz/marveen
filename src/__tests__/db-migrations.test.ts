@@ -242,7 +242,82 @@ describe('bad migration SQL', () => {
   })
 })
 
-// ── 6. Checksum mismatch: WARNING log, migration continues ───────────────────
+// ── 6. memory_links table: migration 0008 creates expected schema ─────────────
+
+describe('memory_links migration', () => {
+  it('creates memory_links table with required columns and constraints', () => {
+    const { dir, cleanup } = tempMigrationsDir()
+    try {
+      // Baseline must exist first (schema_version + memories table for FK)
+      writeMigration(
+        dir,
+        '0001_baseline.sql',
+        `CREATE TABLE memories (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          chat_id TEXT, topic_key TEXT, content TEXT NOT NULL,
+          sector TEXT, salience REAL, category TEXT, agent_id TEXT,
+          keywords TEXT, embedding TEXT, embedding_blob BLOB,
+          created_at INTEGER DEFAULT (unixepoch()),
+          accessed_at INTEGER DEFAULT (unixepoch()),
+          updated_at INTEGER
+        );`,
+      )
+      // 0008 migration SQL (verbatim copy of what we ship)
+      const sql0008 = `CREATE TABLE IF NOT EXISTS memory_links (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  src_id           INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+  dst_id           INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+  link_type        TEXT    NOT NULL CHECK(link_type IN ('semantic', 'explicit', 'entity', 'cooccurrence')),
+  weight           REAL    NOT NULL DEFAULT 1.0 CHECK(weight > 0 AND weight <= 1),
+  created_at       INTEGER NOT NULL DEFAULT (unixepoch()),
+  last_traversed_at INTEGER,
+  UNIQUE(src_id, dst_id, link_type)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_links_src  ON memory_links(src_id, weight DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_links_dst  ON memory_links(dst_id, weight DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_links_traversed ON memory_links(last_traversed_at);`
+      writeMigration(dir, '0008_memory_links.sql', sql0008)
+
+      const db = freshDb()
+      applyMigrations(db, dir)
+      expect(maxVersion(db)).toBe(8)
+
+      // Table exists
+      const tableRow = db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_links'")
+        .get()
+      expect(tableRow).toBeTruthy()
+
+      // Indexes exist
+      const indexes = (
+        db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='memory_links'").all() as { name: string }[]
+      ).map(r => r.name)
+      expect(indexes).toContain('idx_memory_links_src')
+      expect(indexes).toContain('idx_memory_links_dst')
+
+      // UNIQUE constraint: duplicate (src, dst, type) must fail
+      db.exec("INSERT INTO memories (id, content) VALUES (1, 'a'), (2, 'b')")
+      db.exec("INSERT INTO memory_links (src_id, dst_id, link_type, weight) VALUES (1, 2, 'semantic', 0.9)")
+      expect(() =>
+        db.exec("INSERT INTO memory_links (src_id, dst_id, link_type, weight) VALUES (1, 2, 'semantic', 0.8)")
+      ).toThrow()
+
+      // CHECK constraint: invalid link_type must fail
+      expect(() =>
+        db.exec("INSERT INTO memory_links (src_id, dst_id, link_type, weight) VALUES (1, 2, 'invalid', 0.5)")
+      ).toThrow()
+
+      // CHECK constraint: weight out of range must fail
+      expect(() =>
+        db.exec("INSERT INTO memory_links (src_id, dst_id, link_type, weight) VALUES (1, 2, 'explicit', 1.5)")
+      ).toThrow()
+    } finally {
+      cleanup()
+    }
+  })
+})
+
+// ── 7. Checksum mismatch: WARNING log, migration continues ───────────────────
 
 describe('checksum mismatch', () => {
   it('emits a warning but does not abort when an applied migration file changed', () => {
