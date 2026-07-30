@@ -72,7 +72,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     const agentId = url.searchParams.get('agent') || agentIdAlias || ''
     const tier = url.searchParams.get('tier') || url.searchParams.get('category') || ''
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
-    const mode = url.searchParams.get('mode') || 'fts'
+    const mode = url.searchParams.get('mode') || 'hybrid'
 
     let results: Memory[]
     if (q && mode === 'hybrid') {

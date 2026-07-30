@@ -11,8 +11,10 @@ import {
   pruneTokenUsage,
   getMemoriesForChat,
   listKanbanCardsSummary,
+  hybridSearch,
   type Memory,
 } from './db.js'
+import { MAIN_AGENT_ID } from './config.js'
 import { runAgent } from './agent.js'
 import { logger } from './logger.js'
 import { wrapUntrusted, UNTRUSTED_PREAMBLE } from './prompt-safety.js'
@@ -80,13 +82,17 @@ export async function buildMemoryContext(
   chatId: string,
   userMessage: string
 ): Promise<string> {
-  const ftsResults = searchMemories(userMessage, chatId, 3)
-  const recent = recentMemories(chatId, 5)
+  // Hybrid (FTS + vector RRF) search scoped to the main agent; falls back to
+  // FTS-only when Ollama is not running. Keep recentMemories for recency signal.
+  const [hybridResults, recent] = await Promise.all([
+    hybridSearch(MAIN_AGENT_ID, userMessage, 5),
+    Promise.resolve(recentMemories(chatId, 5)),
+  ])
 
   const seen = new Set<number>()
   const combined: Memory[] = []
 
-  for (const m of [...ftsResults, ...recent]) {
+  for (const m of [...hybridResults, ...recent]) {
     if (!seen.has(m.id)) {
       seen.add(m.id)
       combined.push(m)

@@ -133,6 +133,17 @@ describe('tryHandleMemories', () => {
     expect(out.status).toBe(200)
   })
 
+  it('GET /api/memories with q and no mode param defaults to hybrid search', async () => {
+    const db = await import('../db.js')
+    vi.mocked(db.hybridSearch).mockResolvedValueOnce([])
+    const { ctx, out } = makeCtx('GET', '/api/memories?q=default-mode-test&agent=agent-a')
+    const handled = await tryHandleMemories(ctx)
+    expect(handled).toBe(true)
+    expect(out.status).toBe(200)
+    expect(vi.mocked(db.hybridSearch)).toHaveBeenCalledWith('agent-a', 'default-mode-test', expect.any(Number))
+    expect(vi.mocked(db.searchAgentMemories)).not.toHaveBeenCalled()
+  })
+
   it('GET /api/memories/stats returns stats', async () => {
     const { ctx, out } = makeCtx('GET', '/api/memories/stats')
     const handled = await tryHandleMemories(ctx)
