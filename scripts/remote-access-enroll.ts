@@ -7,7 +7,15 @@
 // Usage:
 //   npm run remote-enroll -- "ssh-ed25519 <base64 key> marveen-remote:<uuid>"
 //   npm run remote-enroll -- --host 203.0.113.10 --port 2222 "<public key line>"
+//   npm run remote-enroll -- --web-port 3421 "<public key line>"
 //   npm run remote-enroll -- --no-dashboard-token "<public key line>"
+//
+// --port is the SSH port; --web-port is the dashboard port the enrolled key may
+// tunnel to (permitopen) AND the port encoded in the bundle. It defaults to the
+// WEB_PORT env / .env value, falling back to REMOTE_PORT. A mismatch between the
+// permitopen and the actual dashboard port silently locks the device out
+// (INSTUX1): the tunnel opens a dead port and the app reports "dashboard not
+// running" forever.
 //
 // The bundle includes the dashboard bearer token (store/.dashboard-token) by
 // default so the connecting app can authenticate against the dashboard. Such a
@@ -28,19 +36,32 @@ import {
   resolveHostKey,
   HOST_KEY_PUB_CANDIDATES,
   RemoteEnrollError,
+  REMOTE_PORT,
   type ConnectionBundleInput,
 } from '../src/remote-enroll-core.js'
 import { enrollAuthorizedKey } from '../src/remote-enroll-fs.js'
+import { WEB_PORT as ENV_WEB_PORT } from '../src/config.js'
 
 interface Args {
   keyLine?: string
   host?: string
   port: number
+  webPort: number
   includeDashboardToken: boolean
 }
 
+/** Dashboard port default: the install's actual WEB_PORT, read from the same
+ * .env the service loads (config resolves config-overrides.json > .env), so a
+ * manual `remote-enroll` with no --web-port still targets the real port instead
+ * of the 3420 default. Explicit --web-port overrides. Falls back to REMOTE_PORT
+ * only when .env carries no WEB_PORT (config already applies that default). */
+function defaultWebPort(): number {
+  const n = ENV_WEB_PORT
+  return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : REMOTE_PORT
+}
+
 function parseArgs(argv: string[]): Args {
-  const out: Args = { port: 22, includeDashboardToken: true }
+  const out: Args = { port: 22, webPort: defaultWebPort(), includeDashboardToken: true }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--host') {
@@ -55,6 +76,12 @@ function parseArgs(argv: string[]): Args {
       const n = Number(v)
       if (!Number.isInteger(n) || n < 1 || n > 65535) fail('--port must be 1..65535')
       out.port = n
+    } else if (a === '--web-port') {
+      const v = argv[++i]
+      if (!v) fail('--web-port requires a value')
+      const n = Number(v)
+      if (!Number.isInteger(n) || n < 1 || n > 65535) fail('--web-port must be 1..65535')
+      out.webPort = n
     } else if (a.startsWith('--')) {
       fail(`unknown flag: ${a}`)
     } else if (out.keyLine === undefined) {
@@ -146,7 +173,7 @@ async function main(): Promise<void> {
     throw err
   }
 
-  const restrictedLine = buildRestrictedLine(parsed)
+  const restrictedLine = buildRestrictedLine(parsed, args.webPort)
   const sshDir = join(homedir(), '.ssh')
 
   const result = await enrollAuthorizedKey({
@@ -190,6 +217,7 @@ async function main(): Promise<void> {
     sshUser: userInfo().username,
     installId: parsed.installId,
     hostKey: resolved.body,
+    webPort: args.webPort,
   }
 
   if (args.includeDashboardToken) {

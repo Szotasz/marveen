@@ -6,7 +6,12 @@
 // construction, replace-by-id merging, host-key parsing, and connection
 // bundle building. All filesystem work lives in remote-enroll-fs.ts.
 
-/** Fixed loopback endpoint the enrolled key is permitted to open. */
+/** Default loopback dashboard port. The enrolled key's permitopen and the
+ * connection bundle both target the ACTUAL dashboard port (WEB_PORT); this is
+ * only the fallback when a caller does not supply one. A hardcoded value here
+ * silently broke any install whose dashboard ran on a non-default port
+ * (INSTUX1): the permitopen stayed 3420 while the dashboard moved, so the
+ * tunnel hit a dead port. The port is now threaded through from the caller. */
 export const REMOTE_PORT = 3420
 
 /** The only key type accepted for enrollment. */
@@ -131,15 +136,26 @@ export function validatePublicKeyLine(rawLine: string): ParsedKey {
 /** Options string prepended to the enrolled key in authorized_keys. This is
  * the tight restriction set: no shell (command forced to /bin/false), no
  * agent/x11/pty, forwarding limited to a single loopback endpoint. */
-export const RESTRICT_OPTIONS =
-  `restrict,port-forwarding,permitopen="127.0.0.1:${REMOTE_PORT}",command="/bin/false"`
+/** The tight restriction set for a given dashboard port. The permitopen stays
+ * a SINGLE loopback endpoint (never a wildcard or a range), and the forced
+ * `command="/bin/false"` plus `restrict` are unchanged -- widening any of these
+ * would turn the enrolled key into a general port-forward grant on the server.
+ * Only the port follows the caller's WEB_PORT. */
+export function restrictOptions(webPort: number = REMOTE_PORT): string {
+  return `restrict,port-forwarding,permitopen="127.0.0.1:${webPort}",command="/bin/false"`
+}
+
+/** The default-port restriction string. Retained for callers/tests that assert
+ * the default shape; port-aware callers use restrictOptions(webPort). */
+export const RESTRICT_OPTIONS = restrictOptions(REMOTE_PORT)
 
 /**
  * Build the exact restricted authorized_keys line for a validated key.
- * The key material and comment are reproduced verbatim.
+ * The key material and comment are reproduced verbatim. `webPort` is the actual
+ * dashboard port the key may tunnel to (defaults to REMOTE_PORT).
  */
-export function buildRestrictedLine(parsed: ParsedKey): string {
-  return `${RESTRICT_OPTIONS} ${parsed.keyType} ${parsed.base64} ${parsed.comment}`
+export function buildRestrictedLine(parsed: ParsedKey, webPort: number = REMOTE_PORT): string {
+  return `${restrictOptions(webPort)} ${parsed.keyType} ${parsed.base64} ${parsed.comment}`
 }
 
 /** Extract the trailing comment field of an authorized_keys line, or null if
@@ -313,6 +329,10 @@ export interface ConnectionBundleInput {
    * field is a SECRET: it grants dashboard access to anyone holding it, so it
    * must be transported over a private channel, never email or chat logs. */
   dashboardToken?: string
+  /** Actual dashboard port the tunnel targets. Defaults to REMOTE_PORT. Must
+   * match the permitopen written by buildRestrictedLine, or the tunnel opens a
+   * dead port (INSTUX1). */
+  webPort?: number
 }
 
 export interface ConnectionBundle {
@@ -342,7 +362,7 @@ export function buildBundle(input: ConnectionBundleInput): ConnectionBundle {
     host: input.host,
     sshPort: input.sshPort,
     sshUser: input.sshUser,
-    remotePort: REMOTE_PORT,
+    remotePort: input.webPort ?? REMOTE_PORT,
     ...(input.hostKey !== undefined ? { hostKey: input.hostKey } : {}),
     installId: input.installId,
     ...(input.dashboardToken !== undefined ? { dashboardToken: input.dashboardToken } : {}),

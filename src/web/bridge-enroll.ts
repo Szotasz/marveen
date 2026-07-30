@@ -26,6 +26,7 @@ import { execFile } from 'node:child_process'
 import { homedir, hostname, userInfo, networkInterfaces } from 'node:os'
 import { join } from 'node:path'
 import { logger } from '../logger.js'
+import { WEB_PORT } from '../config.js'
 import {
   validatePublicKeyLine,
   buildRestrictedLine,
@@ -182,7 +183,9 @@ export async function bridgeEnroll(
 
   const enrollResult = await enrollAuthorizedKey({
     sshDir: deps.sshDir,
-    restrictedLine: buildRestrictedLine(parsed),
+    // permitopen must target the actual dashboard port, not a hardcoded 3420
+    // (INSTUX1) -- the tunnel opens exactly this endpoint.
+    restrictedLine: buildRestrictedLine(parsed, WEB_PORT),
     installId: parsed.installId,
   })
 
@@ -202,6 +205,7 @@ export async function bridgeEnroll(
       installId: parsed.installId,
       hostKey: resolved.body,
       dashboardToken: minted.key,
+      webPort: WEB_PORT,
     }),
   )
 
