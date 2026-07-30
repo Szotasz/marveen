@@ -25,11 +25,25 @@ import { join } from 'node:path'
 
 const APP = readFileSync(join(__dirname, '..', '..', 'web', 'app.js'), 'utf-8')
 
-/** The wizard's step-4 pending loader. */
+/**
+ * The wizard's step-4 pending loader, sliced to its ACTUAL end.
+ *
+ * A fixed-width window was the first version, and it was 116 characters from
+ * overflowing: two of the assertions below are NEGATIVE (`not.toMatch`), and a
+ * negative assertion over a truncated haystack passes silently when the pattern
+ * it is meant to exclude simply falls outside the window. That is the same
+ * failure as the over-narrow `[^)]*` in this file, one level up: the instrument
+ * stops measuring what you think it measures. Anchor on the closing catch
+ * instead, and fail loudly if the anchor is missing.
+ */
+const BLOCK_END_ANCHOR = 'showPendingError((e && e.message)'
+
 function loadPendingBlock(): string {
   const start = APP.indexOf('const loadPending = async () => {')
   expect(start, 'loadPending not found').toBeGreaterThan(0)
-  return APP.slice(start, start + 2000)
+  const end = APP.indexOf(BLOCK_END_ANCHOR, start)
+  expect(end, 'loadPending end anchor not found -- the slice would be truncated and the negative assertions meaningless').toBeGreaterThan(start)
+  return APP.slice(start, end + BLOCK_END_ANCHOR.length)
 }
 
 describe('PAIRAPPROVE1: the wizard resolves the real agent id before asking', () => {
@@ -79,5 +93,29 @@ describe('PAIRAPPROVE1: the wizard resolves the real agent id before asking', ()
     // measured in the telegram plugin source: expiresAt = now + 60*60*1000
     const blk = loadPendingBlock()
     expect(blk).toMatch(/x\.expiresAt > now/)
+  })
+})
+
+// The two failure paths must BOTH reach the user. res.ok covers a 404 or an
+// auth error; a network failure rejects the fetch and only the outer catch sees
+// it. Covering one and not the other would leave the comment claiming more than
+// the code does.
+describe('both failure paths surface, and they look different from "no pending"', () => {
+  it('routes the !res.ok branch through the shared error sink', () => {
+    expect(loadPendingBlock()).toMatch(/if \(!res\.ok\)[\s\S]*?showPendingError\(/)
+  })
+
+  it('the outer catch is no longer silent', () => {
+    const blk = loadPendingBlock()
+    expect(blk).not.toMatch(/catch \{ \/\* ignore \*\/ \}/)
+    expect(blk).toMatch(/catch \(e\)[\s\S]*?showPendingError\(/)
+  })
+
+  it('the error sink also uses onbMsg, not just the muted hint slot', () => {
+    // the box alone renders in the same onb-hint style as "no pending", so the
+    // distinction this fix is about would stay invisible
+    const sink = APP.slice(APP.indexOf('const showPendingError ='), APP.indexOf('const loadPending ='))
+    expect(sink).toMatch(/onbPending/)
+    expect(sink).toMatch(/onbMsg\(msg, true\)/)
   })
 })
