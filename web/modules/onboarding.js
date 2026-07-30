@@ -215,8 +215,41 @@ function wireOnboarding(step) {
   } else if (step === 4) {
     const refreshBtn = document.getElementById('onbRefreshBtn')
     const loadPending = async () => {
+      // One sink for both failure paths. The box alone was not enough: it renders
+      // in the same muted onb-hint slot as "no pending", so the very distinction
+      // this fix is about -- "nobody is waiting" vs "I could not ask" -- stayed
+      // invisible. onbMsg is the error channel this function already uses for the
+      // approve step a few lines below.
+      const showPendingError = (msg) => {
+        const box = document.getElementById('onbPending')
+        if (box) box.innerHTML = `<span class="onb-hint">${escapeHtml(msg)}</span>`
+        onbMsg(msg, true)
+      }
       try {
-        const p = await (await fetch(`/api/agents/${encodeURIComponent(mainAgentId())}/channels/telegram/pending`)).json()
+        // Same boot race the Messages page already guards against: until
+        // /api/marveen resolves window._marveen, mainAgentId() returns the
+        // literal 'marveen' fallback. On a renamed install that is not the
+        // main agent, so the backend takes the sub-agent branch, finds no such
+        // agent dir and answers 404 -- and the wizard rendered that as "no
+        // pending pairing" while the Channel view, which uses the selected
+        // agent, listed the very same request.
+        if (!window._marveen?.agentId) {
+          try {
+            const r = await fetch('/api/marveen')
+            if (r.ok) window._marveen = { ...(window._marveen || {}), ...(await r.json()) }
+          } catch { /* sidebar falls back to the literal id -- best effort */ }
+        }
+        const res = await fetch(`/api/agents/${encodeURIComponent(mainAgentId())}/channels/telegram/pending`)
+        // Surface the failure instead of rendering it as an empty list. This is
+        // a separate defect from the id race: without it a 404 or an auth error
+        // reads as "nobody is waiting for approval", which is the one answer the
+        // user cannot act on.
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}))
+          showPendingError(d.error || t('onboarding.error'))
+          return
+        }
+        const p = await res.json()
         const now = Date.now()
         const list = (Array.isArray(p) ? p : (p.pending || [])).filter((x) => x && x.code && (!x.expiresAt || x.expiresAt > now))
         const box = document.getElementById('onbPending')
@@ -237,7 +270,12 @@ function wireOnboarding(step) {
             setTimeout(refreshOnboarding, 1500)
           } catch (e) { b.disabled = false; onbMsg((e && e.message) || t('onboarding.error'), true) }
         }))
-      } catch { /* ignore */ }
+      } catch (e) {
+        // Network-level failure: the fetch rejected, so the !res.ok branch never
+        // ran. Without this the box stays empty and the user reads it as "nobody
+        // is waiting" -- the exact defect this change is about.
+        showPendingError((e && e.message) || t('onboarding.error'))
+      }
     }
     if (refreshBtn) refreshBtn.addEventListener('click', () => { refreshOnboarding() })
     loadPending()
