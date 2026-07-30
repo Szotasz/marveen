@@ -83,6 +83,36 @@ export function initDatabase(dbPathOverride?: string): void {
 
   applyMigrations(db)
 
+  // INVARIANT: a row that says 'delivered' must carry a delivered_at.
+  //
+  // On 2026-07-27 an operator bulk-closed a 28-row backlog with raw SQL that
+  // set status without a timestamp. Nothing broke loudly -- but the queue,
+  // which is the only signal we have for "what actually went out", started
+  // claiming that messages had been delivered when they never left. It took an
+  // hour of log archaeology to work out which of them the recipients had
+  // genuinely received and which they had only read out of band, and the answer
+  // was recoverable that day purely by luck.
+  //
+  // Enforced with a trigger rather than a CHECK constraint because SQLite
+  // cannot add a CHECK to an existing table without rebuilding it, and this is
+  // not worth a rebuild of the message log. Self-healing rather than ABORT:
+  // aborting would turn a bookkeeping slip into a failed operation for the
+  // caller, and the point is to keep the RECORD honest, not to police writers.
+  // The row gets a timestamp AND -- if nothing else explains it -- a marker
+  // saying it was closed without ever being delivered, so the distinction
+  // survives in the data instead of in someone's memory.
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS agent_messages_delivered_needs_ts
+    AFTER UPDATE OF status ON agent_messages
+    FOR EACH ROW WHEN NEW.status = 'delivered' AND NEW.delivered_at IS NULL
+    BEGIN
+      UPDATE agent_messages
+         SET delivered_at = CAST(strftime('%s','now') AS INTEGER),
+             result = COALESCE(result, 'closed-without-delivery')
+       WHERE id = NEW.id;
+    END
+  `)
+
   // One-time L1 backfill: federation system ids are now stored lowercase, but
   // rows written by a pre-L1 build (an install that federated with a
   // display-cased id like "Teodor/agent") keep their old case. Left alone,
@@ -1582,6 +1612,52 @@ export function getPendingMessages(toAgent?: string): AgentMessage[] {
 export function markMessageDelivered(id: number): boolean {
   const now = Math.floor(Date.now() / 1000)
   return db.prepare("UPDATE agent_messages SET status = 'delivered', delivered_at = ? WHERE id = ? AND status = 'pending'").run(now, id).changes > 0
+}
+
+// Per-agent backlog: how many messages are waiting, and how old the oldest one
+// is. The queue only surfaces when somebody opens a pane and notices, which is
+// how an 18-row backlog went unseen on 2026-07-27 and got mistaken for data
+// loss. Age matters more than count: three messages from a minute ago is a busy
+// agent working normally, one message from two hours ago is an agent that is
+// never going to pick it up.
+export type AgentBacklog = { agent: string; pending: number; oldestAgeSeconds: number }
+
+export function getPendingBacklogByAgent(): AgentBacklog[] {
+  const now = Math.floor(Date.now() / 1000)
+  const rows = db.prepare(
+    `SELECT to_agent AS agent, COUNT(*) AS pending, MIN(created_at) AS oldest
+       FROM agent_messages
+      WHERE status = 'pending'
+      GROUP BY to_agent`,
+  ).all() as { agent: string; pending: number; oldest: number }[]
+  return rows
+    .map(r => ({ agent: r.agent, pending: r.pending, oldestAgeSeconds: Math.max(0, now - r.oldest) }))
+    // oldest-first: whoever has been waiting longest is the one worth looking at
+    .sort((a, b) => b.oldestAgeSeconds - a.oldestAgeSeconds)
+}
+
+// Close a pending backlog that is NOT going to be delivered -- stale rows an
+// operator does not want the router to replay (an old thank-you note, a legal
+// warning whose content has since changed). Separate from markMessageDelivered
+// because the two mean opposite things: one records that a message went out,
+// this one records that it never will. Both leave a timestamp, and this one
+// leaves a reason, so the log can still answer "was this actually delivered?"
+// afterwards. Without it the only way to clear a backlog is raw SQL, which is
+// how the queue got 24 rows claiming delivery they never had.
+export function closeMessagesWithoutDelivery(ids: number[], reason: string): number {
+  if (!ids.length) return 0
+  const now = Math.floor(Date.now() / 1000)
+  const note = `closed-without-delivery: ${reason}`
+  const stmt = db.prepare(
+    `UPDATE agent_messages SET status = 'delivered', delivered_at = ?, result = ?
+      WHERE id = ? AND status = 'pending'`,
+  )
+  const run = db.transaction((rows: number[]) => {
+    let n = 0
+    for (const id of rows) n += stmt.run(now, note, id).changes
+    return n
+  })
+  return run(ids)
 }
 
 // Supplementary result text WITHOUT a status change. The federation bridge

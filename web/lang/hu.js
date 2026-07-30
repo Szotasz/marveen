@@ -472,6 +472,7 @@ window._i18n.hu = {
   'activity.error_load':         'Nem sikerült lekérni az aktivitást',
   'activity.empty':              'Nincs ügynök.',
   'activity.badge.main':         'fő',
+  'activity.tooltip.mode':       'Jogosultsági mód: {mode}. Ebben a módban az ágens megáll és jóváhagyásra vár, mielőtt eszközt hívna -- ha senki nem figyeli, órákig állhat úgy, hogy közben tétlennek látszik.',
   'activity.loading':            'Betöltés…',
   'activity.state.working':      'dolgozik',
   'activity.state.idle':         'várakozik',

@@ -924,6 +924,7 @@ window._i18n.en = {
 
   // --- Additional parity keys ---
   'activity.badge.main':			'main',
+  'activity.tooltip.mode':		'Permission mode: {mode}. In this mode the agent stops and waits for approval before calling a tool -- with nobody watching it can sit there for hours while still looking idle.',
   'activity.empty':			'No agents.',
   'activity.error_load':			'Failed to load activity',
   'activity.updated':			'Updated: {time}',

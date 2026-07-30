@@ -57,7 +57,25 @@ export type PaneState = 'idle' | 'busy' | 'typing' | 'unknown' | 'error'
 // shift+tab hint OR any `·`-separated tail ending in a known idle action (ctrl+t
 // / ↓ to manage). Busy states are filtered above (esc to interrupt / busy
 // indicators / paste placeholder), so this stays idle-specific.
-const IDLE_FOOTER_RX = /bypass permissions on(?: \(shift\+tab to cycle\)| · [^\n]*?(?:ctrl\+t|↓ to manage))|\? for shortcuts/
+//
+// THE MODE PREFIX IS NOT ALWAYS `bypass permissions`. That was the whole bug:
+// the footer names whichever permission mode the session is in --
+// `bypass permissions on`, `accept edits on`, `plan mode on`, `auto mode on`,
+// `manual mode on` -- and only the first was accepted. Every agent NOT in
+// bypass mode read as 'unknown', so the router refused to deliver to it. On
+// 2026-07-27 that silently swallowed four messages to an agent sitting in
+// `accept edits on`, while bypass-mode agents received everything.
+//
+// Deliberately NOT an enumeration of the five known modes. An earlier attempt
+// at this fix listed `auto mode on` and `manual mode on` and still missed
+// `accept edits on` -- the mode that was actually losing messages. Whatever
+// list we write today, Claude Code adds a mode tomorrow and the hole reopens.
+// So: one to three words followed by `on`, and the anti-false-positive work is
+// left where it already was -- in the REQUIRED TAIL. A bare `... on` in
+// scrollback still will not match; it needs the shift+tab hint or a `·`
+// separated idle action, which is UI chrome that prose does not carry.
+// `← for agents` is the FleetView tail on current builds; older tails kept.
+const IDLE_FOOTER_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\)| · [^\n]*?(?:ctrl\+t|↓ to manage|← for agents))|\? for shortcuts/
 
 // Positive busy signals. ANY match anywhere in the pane means the turn
 // is mid-flight, even if the footer looks idle for a frame.
@@ -532,6 +550,28 @@ export interface DetectPaneStateOptions {
  *   6. Text parked inside the bottom input box -> 'typing'.
  *   7. Otherwise -> 'idle'.
  */
+// Which permission mode the footer is advertising, e.g. 'bypass permissions',
+// 'accept edits', 'plan mode'. Purely additive: the router still treats every
+// mode as idle, because for DELIVERY purposes they are all idle -- the message
+// can arrive. What differs is what happens next: an agent in an ask-first mode
+// receives the message and then stops at its first tool call, waiting for an
+// approval nobody is watching for. That is how an agent sat unusable for hours
+// on 2026-07-27 while looking perfectly healthy on the dashboard.
+//
+// Returns the phrase VERBATIM rather than mapping to an enum, for the same
+// reason IDLE_FOOTER_RX does not enumerate modes: a new Claude Code mode should
+// show up on the dashboard on its own, not wait for someone to extend a union.
+// 'default' is the no-banner footer ('? for shortcuts'), which is what Claude
+// Code renders when no mode is switched on -- i.e. it asks about everything.
+export function detectPermissionMode(pane: string): string | null {
+  if (!pane || !pane.trim()) return null
+  const m = pane.match(
+    /((?:[A-Za-z][\w-]* ){1,3})on(?: \(shift\+tab to cycle\)| · [^\n]*?(?:ctrl\+t|↓ to manage|← for agents))/,
+  )
+  if (m) return m[1].trim()
+  return /\? for shortcuts/.test(pane) ? 'default' : null
+}
+
 export function detectPaneState(
   pane: string,
   opts: DetectPaneStateOptions = {},

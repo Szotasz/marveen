@@ -55,7 +55,8 @@ import {
 } from '../agent-scaffold.js'
 import { isAgentRunning, agentSessionName, capturePane } from '../agent-process.js'
 import { readContextTokensFromProjectDir } from '../active-model.js'
-import { detectPaneState } from '../../pane-state.js'
+import { detectPaneState, detectPermissionMode } from '../../pane-state.js'
+import { checkAgentPutFields, AGENT_PUT_WRITABLE_FIELDS } from '../agent-put-fields.js'
 import { loadProfileTemplate, resolveProfilePlaceholders } from '../profiles.js'
 import { sanitizeAgentName } from '../sanitize.js'
 import { parseMultipart } from '../multipart.js'
@@ -107,7 +108,15 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
             .filter(l => l.trim().length > 0)
             .slice(-8)
 
-    const entries: Array<{ name: string; isMain: boolean; running: boolean; state: string; tail: string[] }> = []
+    // The permission mode the agent is sitting in. Every mode counts as idle
+    // for delivery, so `state` alone cannot distinguish "working normally" from
+    // "will stop at its first tool call waiting for an approval nobody is
+    // watching for" -- an agent spent hours in the second case on 2026-07-27
+    // while the dashboard showed it as perfectly idle.
+    const modeOf = (running: boolean, pane: string | null): string | null =>
+      running && pane !== null ? detectPermissionMode(pane) : null
+
+    const entries: Array<{ name: string; isMain: boolean; running: boolean; state: string; mode: string | null; tail: string[] }> = []
 
     // Main agent runs in the --channels session, not agent-<name>.
     {
@@ -118,6 +127,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
         isMain: true,
         running,
         state: label(running, mainPane),
+        mode: modeOf(running, mainPane),
         tail: tailOf(mainPane),
       })
     }
@@ -135,7 +145,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
           : capturePane(agentSessionName(name))
       }
       const state = runState === 'unreachable' ? 'unreachable' : label(running, pane)
-      entries.push({ name, isMain: false, running, state, tail: tailOf(pane) })
+      entries.push({ name, isMain: false, running, state, mode: modeOf(running, pane), tail: tailOf(pane) })
     }
 
     jsonMaybeGzip(req, res, entries)
@@ -634,10 +644,17 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     }
     const configRoot = agentConfigRoot(name)
     const data = await readJsonBody<{
-      claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string
+      claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string; modelProfile?: string | null
       authMode?: AuthMode; apiKey?: string; claudePlan?: string; memoryIsolation?: boolean
       mcpScope?: McpScope
     }>(req)
+    // Unknown fields are rejected rather than silently dropped -- see
+    // agent-put-fields.ts for why, and for the securityProfile redirect.
+    const fieldCheck = checkAgentPutFields(name, data)
+    if (!fieldCheck.ok) {
+      json(res, { error: fieldCheck.message, rejected: fieldCheck.rejected, writable: AGENT_PUT_WRITABLE_FIELDS }, 400)
+      return true
+    }
     if (data.memoryIsolation !== undefined) {
       // The main agent's cwd IS the install repo root, which is already a git
       // root: a memory boundary there is meaningless, and exposing the knob
