@@ -2,7 +2,7 @@ import { existsSync, readFileSync, mkdtempSync, rmSync, unlinkSync, writeFileSyn
 import { join, extname } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { logger } from '../../logger.js'
-import { MAIN_AGENT_ID, BOT_NAME, PROJECT_ROOT } from '../../config.js'
+import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
 import { createAgentMessage, getDb } from '../../db.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
@@ -369,7 +369,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     }> = []
     nodes.push({
       id: MAIN_AGENT_ID,
-      label: BOT_NAME,
+      label: currentBotName(),
       role: 'main',
       reportsTo: null,
       delegatesTo: [],
