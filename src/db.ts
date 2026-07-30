@@ -1995,6 +1995,10 @@ function vectorSearch(agentId: string, queryEmbedding: number[], limit: number =
   return scored.slice(0, limit).map(s => s.memory)
 }
 
+// Decay applied to 1-hop neighbor scores added during graph traversal.
+// Keeps linked memories visible without letting them outrank direct hits.
+const LINK_TRAVERSAL_DECAY = 0.5
+
 export async function hybridSearch(agentId: string, query: string, limit: number = 10): Promise<Memory[]> {
   const k = 60 // RRF constant
 
@@ -2018,6 +2022,21 @@ export async function hybridSearch(agentId: string, query: string, limit: number
     scores.set(m.id, (scores.get(m.id) || 0) + 1 / (k + rank + 1))
     byId.set(m.id, m)
   })
+
+  // 1-hop graph traversal: expand the top-ranked hits by their linked neighbors.
+  // Neighbors receive a decayed fraction of the source memory's RRF score so
+  // they surface as contextual context without displacing direct hits.
+  const topIds = [...scores.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([id]) => id)
+  for (const srcId of topIds) {
+    const srcScore = scores.get(srcId) ?? 0
+    const neighbors = getMemoryNeighbors(srcId, 5)
+    for (const { memory, weight } of neighbors) {
+      if (byId.has(memory.id)) continue  // already in result set, don't double-add
+      const neighborScore = srcScore * weight * LINK_TRAVERSAL_DECAY
+      scores.set(memory.id, (scores.get(memory.id) || 0) + neighborScore)
+      byId.set(memory.id, memory)
+    }
+  }
 
   const ranked = [...scores.entries()].sort((a, b) => b[1] - a[1])
   return ranked.slice(0, limit).map(([id]) => byId.get(id)!)
