@@ -2528,15 +2528,103 @@ export function pruneAuditLogs(): void {
   db.prepare('DELETE FROM store_file_audit WHERE created_at < ?').run(cutoff)
 }
 
+export interface TokenUsagePruneResult {
+  rawDeleted: number
+  dailyUpserted: number
+  monthlyUpserted: number
+}
+
 // Prune token_usage rows older than TOKEN_USAGE_RETENTION_DAYS. The table is the
-// main DB-growth driver (one row per inbound token-log event); without this it
-// grows unbounded. Called from the daily decay sweep. `timestamp` is unix
-// SECONDS. Returns the number of rows removed (for logging).
-export function pruneTokenUsage(): number {
-  const retentionDays = Number(getEffectiveSettingValue('TOKEN_USAGE_RETENTION_DAYS'))
-  const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400
-  const info = db.prepare('DELETE FROM token_usage WHERE timestamp < ?').run(cutoff)
-  return info.changes
+// main DB-growth driver (one row per inbound token-log event); without aggregation
+// it grows unbounded. Called from the daily decay sweep.
+//
+// Strategy: aggregate rows older than the raw window into token_usage_daily and
+// token_usage_monthly (idempotent upserts) BEFORE deleting the raw rows, so
+// billing/cost-audit history is never lost. The aggregator tables are then pruned
+// to their own retention windows (daily: 1 year, monthly: 3 years).
+//
+// `timestamp` is unix SECONDS.
+export function pruneTokenUsage(): TokenUsagePruneResult {
+  const rawRetentionDays    = Number(getEffectiveSettingValue('TOKEN_USAGE_RETENTION_DAYS'))
+  const dailyRetentionDays  = Number(getEffectiveSettingValue('TOKEN_USAGE_DAILY_RETENTION_DAYS'))
+  const monthlyRetentionDays = Number(getEffectiveSettingValue('TOKEN_USAGE_MONTHLY_RETENTION_DAYS'))
+
+  const rawCutoff = Math.floor(Date.now() / 1000) - rawRetentionDays * 86400
+
+  // 1. Daily rollup upsert (idempotent: ON CONFLICT overwrites with fresh aggregate).
+  //    Runs only over rows that fall outside the raw retention window.
+  const dailyResult = db.prepare(`
+    INSERT INTO token_usage_daily
+      (day, agent, model, input_tokens, output_tokens, cache_read_tokens,
+       cache_creation_tokens, thinking_tokens, row_count)
+    SELECT
+      date(timestamp, 'unixepoch', 'localtime') AS day,
+      agent,
+      COALESCE(model, '') AS model,
+      SUM(input_tokens),
+      SUM(output_tokens),
+      SUM(cache_read_tokens),
+      SUM(cache_creation_tokens),
+      SUM(thinking_tokens),
+      COUNT(*)
+    FROM token_usage
+    WHERE timestamp < ?
+    GROUP BY date(timestamp, 'unixepoch', 'localtime'), agent, COALESCE(model, '')
+    ON CONFLICT(day, agent, model) DO UPDATE SET
+      input_tokens          = excluded.input_tokens,
+      output_tokens         = excluded.output_tokens,
+      cache_read_tokens     = excluded.cache_read_tokens,
+      cache_creation_tokens = excluded.cache_creation_tokens,
+      thinking_tokens       = excluded.thinking_tokens,
+      row_count             = excluded.row_count
+  `).run(rawCutoff)
+
+  // 2. Monthly rollup upsert (idempotent).
+  const monthlyResult = db.prepare(`
+    INSERT INTO token_usage_monthly
+      (month, agent, model, input_tokens, output_tokens, cache_read_tokens,
+       cache_creation_tokens, thinking_tokens, session_count, row_count)
+    SELECT
+      strftime('%Y-%m', timestamp, 'unixepoch', 'localtime') AS month,
+      agent,
+      COALESCE(model, '') AS model,
+      SUM(input_tokens),
+      SUM(output_tokens),
+      SUM(cache_read_tokens),
+      SUM(cache_creation_tokens),
+      SUM(thinking_tokens),
+      COUNT(DISTINCT session_id),
+      COUNT(*)
+    FROM token_usage
+    WHERE timestamp < ?
+    GROUP BY strftime('%Y-%m', timestamp, 'unixepoch', 'localtime'), agent, COALESCE(model, '')
+    ON CONFLICT(month, agent, model) DO UPDATE SET
+      input_tokens          = excluded.input_tokens,
+      output_tokens         = excluded.output_tokens,
+      cache_read_tokens     = excluded.cache_read_tokens,
+      cache_creation_tokens = excluded.cache_creation_tokens,
+      thinking_tokens       = excluded.thinking_tokens,
+      session_count         = excluded.session_count,
+      row_count             = excluded.row_count
+  `).run(rawCutoff)
+
+  // 3. Delete raw rows only after both rollups are committed.
+  const deleteResult = db.prepare('DELETE FROM token_usage WHERE timestamp < ?').run(rawCutoff)
+
+  // 4. Prune the aggregator tables to their own retention windows.
+  db.prepare(
+    "DELETE FROM token_usage_daily WHERE day < date(?, 'unixepoch', 'localtime')"
+  ).run(Math.floor(Date.now() / 1000) - dailyRetentionDays * 86400)
+
+  db.prepare(
+    "DELETE FROM token_usage_monthly WHERE month < strftime('%Y-%m', ?, 'unixepoch', 'localtime')"
+  ).run(Math.floor(Date.now() / 1000) - monthlyRetentionDays * 86400)
+
+  return {
+    rawDeleted:      deleteResult.changes,
+    dailyUpserted:   dailyResult.changes,
+    monthlyUpserted: monthlyResult.changes,
+  }
 }
 
 // --- Vault SSH Keys (shared key pool) ---
