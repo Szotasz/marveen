@@ -710,9 +710,22 @@ echo -e "${BOLD}$(_t section_5)${NC}"
 cd "$INSTALL_DIR"
 
 echo -e "  npm install..."
-if ! (npm ci --loglevel warn 2>/dev/null || npm install --loglevel warn); then
-  fail "npm install sikertelen. Ellenorizd a hibauzeneteket fentebb."
+# Fast path: npm ci. On a benign lockfile desync it fails harmlessly and we
+# fall back to npm install, so ci's stderr is captured (not shown) to avoid a
+# scary EUSAGE dump on the happy path. But if the fallback ALSO fails -- e.g.
+# node-gyp getting OOM-killed while compiling better-sqlite3 from source, which
+# has no prebuilt binary for newer Node ABIs -- we replay ci's captured stderr
+# so the real error is visible instead of an empty "check above".
+_NPM_CI_LOG=$(mktemp)
+if ! npm ci --loglevel warn 2>"$_NPM_CI_LOG"; then
+  if ! npm install --loglevel warn; then
+    echo -e "  ${DIM}--- npm ci kimenet ---${NC}"
+    cat "$_NPM_CI_LOG" >&2
+    rm -f "$_NPM_CI_LOG"
+    fail "npm install sikertelen. Ellenorizd a fenti hibauzeneteket (pl. node-gyp OOM a better-sqlite3 forditasakor)."
+  fi
 fi
+rm -f "$_NPM_CI_LOG"
 ok "npm csomagok telepitve"
 
 INSTALL_STEP="typescript-build"
