@@ -33,8 +33,20 @@ describe('shouldReplayTaskState', () => {
   it('replays on resume too', () => {
     expect(shouldReplayTaskState(rec(), 'resume', NOW + 1000)).toBe(true)
   })
-  it('does NOT replay on cold startup', () => {
-    expect(shouldReplayTaskState(rec(), 'startup', NOW + 1000)).toBe(false)
+  // A crash/watchdog respawn mid-task arrives as source=startup, so withholding
+  // the record there defeated the feature's whole purpose (2026-07-27).
+  it('replays on startup too (crash respawn mid-task)', () => {
+    expect(shouldReplayTaskState(rec(), 'startup', NOW + 1000)).toBe(true)
+  })
+  it('does NOT replay an unknown source', () => {
+    expect(shouldReplayTaskState(rec(), 'clear', NOW + 1000)).toBe(false)
+  })
+  it('does NOT replay an empty record on startup either', () => {
+    const empty = rec({ doneSteps: [], alreadyDelegated: [], nextAction: '', pendingDecision: '', summary: 'idle' })
+    expect(shouldReplayTaskState(empty, 'startup', NOW + 1000)).toBe(false)
+  })
+  it('does NOT replay a consumed record on startup either', () => {
+    expect(shouldReplayTaskState(rec({ consumed: true }), 'startup', NOW + 1000)).toBe(false)
   })
   it('does NOT replay a consumed record', () => {
     expect(shouldReplayTaskState(rec({ consumed: true }), 'compact', NOW + 1000)).toBe(false)
