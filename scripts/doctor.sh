@@ -13,6 +13,11 @@ fail() { echo -e "  ${RED}✗${RESET} $1"; FAIL=1; }
 
 FAIL=0
 MAIN_AGENT_ID="$(grep -E '^MAIN_AGENT_ID=' .env 2>/dev/null | head -1 | cut -d= -f2-)"
+# Dashboard port: env WEB_PORT, else .env, else the 3420 default. A fixed 3420
+# made this diagnostic report a RUNNING dashboard as dead on any other port --
+# and it is run precisely when something is already wrong.
+WEB_PORT="${WEB_PORT:-$(grep -E '^WEB_PORT=' "$(dirname "$0")/../.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "')}"
+WEB_PORT="${WEB_PORT:-3420}"
 MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
 
 echo -e "\n${BOLD}Marveen Doctor${RESET}: $(date '+%Y-%m-%d %H:%M:%S')\n"
@@ -190,7 +195,7 @@ done
 # --- Dashboard API ---
 echo -e "\n${BOLD}Dashboard${RESET}"
 if [ -f "store/.dashboard-token" ]; then
-  HTTP=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $(cat store/.dashboard-token)" http://localhost:3420/api/agents 2>/dev/null)
+  HTTP=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $(cat store/.dashboard-token)" "http://localhost:${WEB_PORT}/api/agents" 2>/dev/null)
   if [ "$HTTP" = "200" ]; then
     ok "Dashboard API: responding (HTTP 200)"
   else

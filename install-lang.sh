@@ -215,8 +215,8 @@ _t() {
     hu:macos.migration_title) echo "Korábbi rendszer költöztetése" ;;
     en:macos.migration_hint) echo "  If you had a previous AI assistant (OpenClaw, custom bot), you can migrate its memory." ;;
     hu:macos.migration_hint) echo "  Ha volt korábbi AI asszisztensed (OpenClaw, egyéni bot), átmigrálhatod a memóriáját." ;;
-    en:macos.migrate_missing) echo "  migrate.sh not found. Use the dashboard: http://localhost:3420 -> Migration" ;;
-    hu:macos.migrate_missing) echo "  A migrate.sh nem található. Használd a dashboardot: http://localhost:3420 -> Költöztetés" ;;
+    en:macos.migrate_missing) echo "  migrate.sh not found. Use the dashboard: http://localhost:${WEB_PORT:-3420} -> Migration" ;;
+    hu:macos.migrate_missing) echo "  A migrate.sh nem található. Használd a dashboardot: http://localhost:${WEB_PORT:-3420} -> Költöztetés" ;;
     # ── Done section ──────────────────────────────────────────────────
     en:dash.token_hint) echo "  (Open once; the browser will remember the token)" ;;
     hu:dash.token_hint) echo "  (Nyisd meg egyszer, utana a bongeszo megjegyzi a tokent)" ;;

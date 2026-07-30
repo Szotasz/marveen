@@ -18,7 +18,10 @@ if [ ! -f "$TOKEN_FILE" ]; then
 fi
 
 DASHBOARD_TOKEN="$(cat "$TOKEN_FILE")"
-API="http://localhost:3420/api/vault"
+# Dashboard port: env WEB_PORT, else the install .env, else 3420.
+WEB_PORT="${WEB_PORT:-$(grep -E '^WEB_PORT=' "$(dirname "$0")/../.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "')}"
+WEB_PORT="${WEB_PORT:-3420}"
+API="http://localhost:${WEB_PORT}/api/vault"
 
 get_secret() {
   local id="$1"
