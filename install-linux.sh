@@ -1002,8 +1002,7 @@ else
       _probe_rc=$?
     fi
     _probe_out=${_probe_out:0:200}
-    _probe_out=${_probe_out:0:200}
-  if [ "$_probe_rc" -eq 0 ] && [ -n "$_probe_out" ]; then
+    if [ "$_probe_rc" -eq 0 ] && [ -n "$_probe_out" ]; then
       INSTALL_AUTH_STATE="OK"
     else
       INSTALL_AUTH_STATE="BROKEN"
