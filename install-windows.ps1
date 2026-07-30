@@ -301,6 +301,14 @@ console.log("  ✓ Claude Code first-run flags");
 '
 "@
 
+# Dashboard port: read back from the .env we just wrote (WSL side), so the URL
+# printed here follows a non-default WEB_PORT. Guarded: any failure keeps 3420.
+$WebPort = 3420
+try {
+  $envPort = (wsl bash -c "grep -E '^WEB_PORT=' '$installPath/.env' 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' \"'").Trim()
+  if ($envPort) { $WebPort = $envPort }
+} catch { }
+
 # Done!
 Write-Host ""
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Green
@@ -311,7 +319,7 @@ Write-Host "  Indítás:" -ForegroundColor White
 Write-Host "    wsl bash -c 'cd $installPath && node dist/index.js &'" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Dashboard:" -ForegroundColor White
-Write-Host "    http://localhost:3420" -ForegroundColor Cyan
+Write-Host "    http://localhost:$WebPort" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Channel bridge indítása:" -ForegroundColor White
 Write-Host "    wsl bash -c 'cd $installPath && bash scripts/channels.sh &'" -ForegroundColor Cyan
