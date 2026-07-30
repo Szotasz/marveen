@@ -33,6 +33,9 @@ vi.mock('../web/federation/address.js', () => ({
 vi.mock('../web/federation/config.js', () => ({
   getFederationConfig: vi.fn().mockReturnValue({ peers: [] }),
 }))
+vi.mock('../config.js', () => ({
+  OWNER_NAME: 'test-owner',
+}))
 
 import { tryHandleMessages } from '../web/routes/messages.js'
 
@@ -115,6 +118,35 @@ describe('tryHandleMessages', () => {
     const handled = await tryHandleMessages(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(200)
+  })
+
+  it('POST /api/messages allows owner as sender even though isKnownAgent returns false', async () => {
+    // The human operator (OWNER_NAME) is not a fleet agent (no agents/<id>/ dir)
+    // but must be allowed to send from the dashboard Messages page.
+    const { isKnownAgent } = await import('../web/agent-config.js')
+    vi.mocked(isKnownAgent).mockReturnValueOnce(false)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'test-owner',
+      to: 'agent-a',
+      content: 'Hello from dashboard',
+    })
+    const handled = await tryHandleMessages(ctx)
+    expect(handled).toBe(true)
+    expect(out.status).toBe(200)
+  })
+
+  it('POST /api/messages returns 403 for unknown non-owner sender', async () => {
+    const { isKnownAgent } = await import('../web/agent-config.js')
+    vi.mocked(isKnownAgent).mockReturnValueOnce(false)
+    const { ctx, out } = makeCtx('POST', '/api/messages', {
+      from: 'unknown-entity',
+      to: 'agent-a',
+      content: 'inject',
+    })
+    const handled = await tryHandleMessages(ctx)
+    expect(handled).toBe(true)
+    expect(out.status).toBe(403)
+    expect(out.body.error).toMatch(/unknown agent/i)
   })
 
   it('returns false for unmatched route', async () => {
