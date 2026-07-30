@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync } from 'node:fs'
+import { load as loadSqliteVec } from 'sqlite-vec'
 import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from './config.js'
 import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
@@ -1917,13 +1918,14 @@ function vectorSearch(agentId: string, queryEmbedding: number[], limit: number =
       // ANN path: sqlite-vec HNSW index. Over-fetch by 5x to allow post-filter
       // by agent_id/shared without losing too many candidates.
       const queryBlob = floatsToBlob(queryEmbedding)
+      // k must be SQLITE_INTEGER; JS numbers bind as SQLITE_FLOAT in better-sqlite3.
       const annRows = db.prepare(`
         SELECT memory_id, distance
         FROM vec_memories
         WHERE embedding MATCH ?
           AND k = ?
         ORDER BY distance
-      `).all(queryBlob, limit * 5) as { memory_id: number; distance: number }[]
+      `).all(queryBlob, BigInt(limit * 5)) as { memory_id: number; distance: number }[]
 
       if (annRows.length > 0) {
         const ids = annRows.map(r => r.memory_id)
@@ -2040,9 +2042,7 @@ export function migrateExistingEmbeddingsToBLOB(): number {
 
 function tryLoadVecExtension(): void {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const sqliteVec = require('sqlite-vec') as { getLoadablePath(): string }
-    db.loadExtension(sqliteVec.getLoadablePath())
+    loadSqliteVec(db)
     vecExtensionLoaded = true
   } catch {
     logger.debug('sqlite-vec extension unavailable, using BLOB cosine similarity fallback')
@@ -2103,7 +2103,9 @@ function initVecSupport(): void {
   if (pending.length > 0) {
     const insert = db.prepare('INSERT OR IGNORE INTO vec_memories(memory_id, embedding) VALUES(?, ?)')
     const tx = db.transaction(() => {
-      for (const row of pending) insert.run(row.id, row.embedding_blob)
+      // better-sqlite3 binds JS numbers as SQLITE_FLOAT; vec0 INTEGER PRIMARY KEY
+      // requires SQLITE_INTEGER. BigInt forces the correct SQLite type.
+      for (const row of pending) insert.run(BigInt(row.id), row.embedding_blob)
     })
     tx()
     logger.info({ count: pending.length }, 'Backfilled existing embeddings into vec_memories ANN index')
