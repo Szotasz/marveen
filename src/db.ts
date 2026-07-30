@@ -7,6 +7,7 @@ import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { applyMigrations } from './db-migrations.js'
+import { rerank } from './reranker.js'
 
 let db: Database.Database
 let vecExtensionLoaded = false
@@ -1947,11 +1948,32 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB))
 }
 
-function vectorSearch(agentId: string, queryEmbedding: number[], limit: number = 10): Memory[] {
+// Over-fetch factor for cross-encoder reranking: retrieve N*RERANK_FACTOR
+// candidates from ANN/cosine, then let the reranker pick the best N.
+const RERANK_FACTOR = 5
+
+// Recency decay for vector search: score = base * exp(-lambda * age_days).
+// Half-life = ln(2)/0.02 ≈ 35 days. Distinct from the FTS reRankByRecency
+// blend (which operates on BM25 rank, not cosine/ANN scores) -- no overlap.
+const VECTOR_RECENCY_LAMBDA = 0.02
+
+function vectorRecencyDecay(createdAt: number, nowSec: number): number {
+  const ageDays = (nowSec - createdAt) / 86400
+  return Math.exp(-VECTOR_RECENCY_LAMBDA * ageDays)
+}
+
+async function vectorSearch(
+  agentId: string,
+  queryEmbedding: number[],
+  limit: number = 10,
+  query?: string
+): Promise<Memory[]> {
+  let candidates: Memory[] = []
+  const nowSec = Math.floor(Date.now() / 1000)
+
   if (vecExtensionLoaded) {
     try {
-      // ANN path: sqlite-vec HNSW index. Over-fetch by 5x to allow post-filter
-      // by agent_id/shared without losing too many candidates.
+      // ANN path: over-fetch by RERANK_FACTOR to give the reranker headroom.
       const queryBlob = floatsToBlob(queryEmbedding)
       // k must be SQLITE_INTEGER; JS numbers bind as SQLITE_FLOAT in better-sqlite3.
       const annRows = db.prepare(`
@@ -1960,7 +1982,7 @@ function vectorSearch(agentId: string, queryEmbedding: number[], limit: number =
         WHERE embedding MATCH ?
           AND k = ?
         ORDER BY distance
-      `).all(queryBlob, BigInt(limit * 5)) as { memory_id: number; distance: number }[]
+      `).all(queryBlob, BigInt(limit * RERANK_FACTOR)) as { memory_id: number; distance: number }[]
 
       if (annRows.length > 0) {
         const ids = annRows.map(r => r.memory_id)
@@ -1970,33 +1992,54 @@ function vectorSearch(agentId: string, queryEmbedding: number[], limit: number =
         ).all([...ids, agentId]) as Memory[]
 
         const distMap = new Map(annRows.map(r => [r.memory_id, r.distance]))
-        memories.sort((a, b) => (distMap.get(a.id) ?? Infinity) - (distMap.get(b.id) ?? Infinity))
-        return memories.slice(0, limit)
+        // Pipeline step 2: recency boost -- reorder by (proximity * decay) so
+        // the cross-encoder sees fresher candidates first within the same
+        // similarity tier. Uses 1/(1+distance) as an ANN proximity proxy.
+        memories.sort((a, b) => {
+          const sA = (1 / (1 + (distMap.get(a.id) ?? Infinity))) * vectorRecencyDecay(a.created_at, nowSec)
+          const sB = (1 / (1 + (distMap.get(b.id) ?? Infinity))) * vectorRecencyDecay(b.created_at, nowSec)
+          return sB - sA
+        })
+        candidates = memories
       }
     } catch (err) {
       logger.debug({ err }, 'ANN search failed, falling back to BLOB cosine similarity')
     }
   }
 
-  // BLOB cosine fallback: full-scan with manual scoring.
-  const rows = db.prepare(
-    "SELECT * FROM memories WHERE (embedding_blob IS NOT NULL OR embedding IS NOT NULL) AND (agent_id = ? OR category = 'shared')"
-  ).all(agentId) as Memory[]
+  if (candidates.length === 0) {
+    // BLOB cosine fallback: full-scan, score = cosine * recency decay.
+    const rows = db.prepare(
+      "SELECT * FROM memories WHERE (embedding_blob IS NOT NULL OR embedding IS NOT NULL) AND (agent_id = ? OR category = 'shared')"
+    ).all(agentId) as Memory[]
 
-  const scored = rows.map(m => {
-    try {
-      // Prefer the compact BLOB; fall back to legacy JSON text if blob absent.
-      const emb: number[] = m.embedding_blob
-        ? blobToFloats(m.embedding_blob as Buffer)
-        : JSON.parse(m.embedding!) as number[]
-      return { memory: m, score: cosineSimilarity(queryEmbedding, emb) }
-    } catch {
-      return { memory: m, score: 0 }
-    }
-  })
+    const scored = rows.map(m => {
+      try {
+        const emb: number[] = m.embedding_blob
+          ? blobToFloats(m.embedding_blob as Buffer)
+          : JSON.parse(m.embedding!) as number[]
+        return { memory: m, score: cosineSimilarity(queryEmbedding, emb) * vectorRecencyDecay(m.created_at, nowSec) }
+      } catch {
+        return { memory: m, score: 0 }
+      }
+    })
 
-  scored.sort((a, b) => b.score - a.score)
-  return scored.slice(0, limit).map(s => s.memory)
+    scored.sort((a, b) => b.score - a.score)
+    candidates = scored.slice(0, limit * RERANK_FACTOR).map(s => s.memory)
+  }
+
+  // Pipeline step 3: cross-encoder reranker picks the best N from the
+  // recency-reordered candidate pool -- only when enabled via the flag
+  // (default OFF: avoids ~100-300ms latency and the 23MB model download on
+  // every recall when the user has not opted in).
+  if (!query || candidates.length === 0) return candidates.slice(0, limit)
+  if (getEffectiveSettingValue('MEMORY_RERANK_ENABLED') !== '1') return candidates.slice(0, limit)
+  try {
+    return await rerank(query, candidates, { topK: limit })
+  } catch (err) {
+    logger.debug({ err }, 'vectorSearch: reranker threw unexpectedly, returning recency-boosted order')
+    return candidates.slice(0, limit)
+  }
 }
 
 // Decay applied to 1-hop neighbor scores added during graph traversal.
@@ -2011,7 +2054,7 @@ export async function hybridSearch(agentId: string, query: string, limit: number
 
   // Vector results
   const queryEmbedding = await generateEmbedding(query)
-  const vecResults = queryEmbedding ? vectorSearch(agentId, queryEmbedding, limit * 2) : []
+  const vecResults = queryEmbedding ? await vectorSearch(agentId, queryEmbedding, limit * 2, query) : []
 
   // Reciprocal Rank Fusion
   const scores: Map<number, number> = new Map()
@@ -2151,7 +2194,7 @@ export async function linkToNeighbors(memoryId: number, maxNeighbors = 5, simila
   if (!agentRow?.agent_id) return 0
 
   const queryVec = blobToFloats(row.embedding_blob)
-  const candidates = vectorSearch(agentRow.agent_id, queryVec, maxNeighbors + 1)
+  const candidates = await vectorSearch(agentRow.agent_id, queryVec, maxNeighbors + 1)
 
   let linked = 0
   for (const candidate of candidates) {
