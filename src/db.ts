@@ -8,6 +8,7 @@ import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { applyMigrations } from './db-migrations.js'
 
 let db: Database.Database
+let vecExtensionLoaded = false
 
 // Lock the DB file and its sidecars (WAL, SHM, rollback journal) down to
 // owner-only. better-sqlite3 opens the main file with the process umask
@@ -49,6 +50,7 @@ export function initDatabase(dbPathOverride?: string): void {
   if (db) {
     try { db.close() } catch { /* already closed */ }
   }
+  vecExtensionLoaded = false
   const dbPath = useOverride ? dbPathOverride! : join(STORE_DIR, DB_FILENAME)
   // Step 1: close the TOCTOU window on fresh installs. openSync with 'wx'
   // + 0o600 creates the file ONLY if it doesn't exist and sets the strict
@@ -111,6 +113,11 @@ export function initDatabase(dbPathOverride?: string): void {
   // out the TEXT column. Idempotent: rows already having embedding_blob are
   // skipped; on fresh installs or after a full backfill this is a no-op.
   migrateExistingEmbeddingsToBLOB()
+
+  // Load sqlite-vec extension and set up the ANN virtual table + sync triggers.
+  // Safe no-op if the extension binary is unavailable; vectorSearch falls back
+  // to full-scan BLOB cosine similarity in that case.
+  initVecSupport()
 }
 
 function migrateTaskRunsFromJson(): void {
@@ -1905,6 +1912,36 @@ function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 function vectorSearch(agentId: string, queryEmbedding: number[], limit: number = 10): Memory[] {
+  if (vecExtensionLoaded) {
+    try {
+      // ANN path: sqlite-vec HNSW index. Over-fetch by 5x to allow post-filter
+      // by agent_id/shared without losing too many candidates.
+      const queryBlob = floatsToBlob(queryEmbedding)
+      const annRows = db.prepare(`
+        SELECT memory_id, distance
+        FROM vec_memories
+        WHERE embedding MATCH ?
+          AND k = ?
+        ORDER BY distance
+      `).all(queryBlob, limit * 5) as { memory_id: number; distance: number }[]
+
+      if (annRows.length > 0) {
+        const ids = annRows.map(r => r.memory_id)
+        const placeholders = ids.map(() => '?').join(',')
+        const memories = db.prepare(
+          `SELECT * FROM memories WHERE id IN (${placeholders}) AND (agent_id = ? OR category = 'shared')`
+        ).all([...ids, agentId]) as Memory[]
+
+        const distMap = new Map(annRows.map(r => [r.memory_id, r.distance]))
+        memories.sort((a, b) => (distMap.get(a.id) ?? Infinity) - (distMap.get(b.id) ?? Infinity))
+        return memories.slice(0, limit)
+      }
+    } catch (err) {
+      logger.debug({ err }, 'ANN search failed, falling back to BLOB cosine similarity')
+    }
+  }
+
+  // BLOB cosine fallback: full-scan with manual scoring.
   const rows = db.prepare(
     "SELECT * FROM memories WHERE (embedding_blob IS NOT NULL OR embedding IS NOT NULL) AND (agent_id = ? OR category = 'shared')"
   ).all(agentId) as Memory[]
@@ -1999,6 +2036,78 @@ export function migrateExistingEmbeddingsToBLOB(): number {
   const count = tx(rows) as number
   logger.info({ converted: count }, 'Migrated JSON embeddings to Float32 BLOB')
   return count
+}
+
+function tryLoadVecExtension(): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const sqliteVec = require('sqlite-vec') as { getLoadablePath(): string }
+    db.loadExtension(sqliteVec.getLoadablePath())
+    vecExtensionLoaded = true
+  } catch {
+    logger.debug('sqlite-vec extension unavailable, using BLOB cosine similarity fallback')
+  }
+}
+
+function initVecSupport(): void {
+  // Drop any leftover sync triggers first so stale triggers never fire against
+  // a missing virtual table (e.g. when the extension failed to load this run).
+  db.exec(`
+    DROP TRIGGER IF EXISTS vec_memories_ai;
+    DROP TRIGGER IF EXISTS vec_memories_au;
+    DROP TRIGGER IF EXISTS vec_memories_ad;
+  `)
+
+  tryLoadVecExtension()
+  if (!vecExtensionLoaded) return
+
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS vec_memories USING vec0(
+      memory_id INTEGER PRIMARY KEY,
+      embedding FLOAT[768]
+    )
+  `)
+
+  db.exec(`
+    CREATE TRIGGER vec_memories_ai
+    AFTER INSERT ON memories
+    WHEN NEW.embedding_blob IS NOT NULL
+    BEGIN
+      INSERT INTO vec_memories(memory_id, embedding) VALUES(NEW.id, NEW.embedding_blob);
+    END
+  `)
+
+  db.exec(`
+    CREATE TRIGGER vec_memories_au
+    AFTER UPDATE OF embedding_blob ON memories
+    BEGIN
+      DELETE FROM vec_memories WHERE memory_id = OLD.id;
+      INSERT INTO vec_memories(memory_id, embedding)
+        SELECT NEW.id, NEW.embedding_blob WHERE NEW.embedding_blob IS NOT NULL;
+    END
+  `)
+
+  db.exec(`
+    CREATE TRIGGER vec_memories_ad
+    AFTER DELETE ON memories
+    BEGIN
+      DELETE FROM vec_memories WHERE memory_id = OLD.id;
+    END
+  `)
+
+  // Backfill: push any existing BLOB embeddings not yet in the ANN index.
+  const pending = db.prepare(
+    'SELECT id, embedding_blob FROM memories WHERE embedding_blob IS NOT NULL AND id NOT IN (SELECT memory_id FROM vec_memories)'
+  ).all() as { id: number; embedding_blob: Buffer }[]
+
+  if (pending.length > 0) {
+    const insert = db.prepare('INSERT OR IGNORE INTO vec_memories(memory_id, embedding) VALUES(?, ?)')
+    const tx = db.transaction(() => {
+      for (const row of pending) insert.run(row.id, row.embedding_blob)
+    })
+    tx()
+    logger.info({ count: pending.length }, 'Backfilled existing embeddings into vec_memories ANN index')
+  }
 }
 
 // --- Pending Channel Requests ---

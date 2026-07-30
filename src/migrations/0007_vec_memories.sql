@@ -1,0 +1,3 @@
+-- vec_memories virtual table and sync triggers are created at runtime in
+-- initDatabase() once the sqlite-vec extension is successfully loaded.
+-- This file reserves the migration slot so the sequence stays contiguous.
