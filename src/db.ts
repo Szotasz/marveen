@@ -1952,6 +1952,16 @@ function cosineSimilarity(a: number[], b: number[]): number {
 // candidates from ANN/cosine, then let the reranker pick the best N.
 const RERANK_FACTOR = 5
 
+// Recency decay for vector search: score = base * exp(-lambda * age_days).
+// Half-life = ln(2)/0.02 ≈ 35 days. Distinct from the FTS reRankByRecency
+// blend (which operates on BM25 rank, not cosine/ANN scores) -- no overlap.
+const VECTOR_RECENCY_LAMBDA = 0.02
+
+function vectorRecencyDecay(createdAt: number, nowSec: number): number {
+  const ageDays = (nowSec - createdAt) / 86400
+  return Math.exp(-VECTOR_RECENCY_LAMBDA * ageDays)
+}
+
 async function vectorSearch(
   agentId: string,
   queryEmbedding: number[],
@@ -1959,6 +1969,7 @@ async function vectorSearch(
   query?: string
 ): Promise<Memory[]> {
   let candidates: Memory[] = []
+  const nowSec = Math.floor(Date.now() / 1000)
 
   if (vecExtensionLoaded) {
     try {
@@ -1981,7 +1992,14 @@ async function vectorSearch(
         ).all([...ids, agentId]) as Memory[]
 
         const distMap = new Map(annRows.map(r => [r.memory_id, r.distance]))
-        memories.sort((a, b) => (distMap.get(a.id) ?? Infinity) - (distMap.get(b.id) ?? Infinity))
+        // Pipeline step 2: recency boost -- reorder by (proximity * decay) so
+        // the cross-encoder sees fresher candidates first within the same
+        // similarity tier. Uses 1/(1+distance) as an ANN proximity proxy.
+        memories.sort((a, b) => {
+          const sA = (1 / (1 + (distMap.get(a.id) ?? Infinity))) * vectorRecencyDecay(a.created_at, nowSec)
+          const sB = (1 / (1 + (distMap.get(b.id) ?? Infinity))) * vectorRecencyDecay(b.created_at, nowSec)
+          return sB - sA
+        })
         candidates = memories
       }
     } catch (err) {
@@ -1990,7 +2008,7 @@ async function vectorSearch(
   }
 
   if (candidates.length === 0) {
-    // BLOB cosine fallback: full-scan with manual scoring, over-fetch for reranker.
+    // BLOB cosine fallback: full-scan, score = cosine * recency decay.
     const rows = db.prepare(
       "SELECT * FROM memories WHERE (embedding_blob IS NOT NULL OR embedding IS NOT NULL) AND (agent_id = ? OR category = 'shared')"
     ).all(agentId) as Memory[]
@@ -2000,7 +2018,7 @@ async function vectorSearch(
         const emb: number[] = m.embedding_blob
           ? blobToFloats(m.embedding_blob as Buffer)
           : JSON.parse(m.embedding!) as number[]
-        return { memory: m, score: cosineSimilarity(queryEmbedding, emb) }
+        return { memory: m, score: cosineSimilarity(queryEmbedding, emb) * vectorRecencyDecay(m.created_at, nowSec) }
       } catch {
         return { memory: m, score: 0 }
       }
@@ -2010,11 +2028,13 @@ async function vectorSearch(
     candidates = scored.slice(0, limit * RERANK_FACTOR).map(s => s.memory)
   }
 
+  // Pipeline step 3: cross-encoder reranker picks the best N from the
+  // recency-reordered candidate pool.
   if (!query || candidates.length === 0) return candidates.slice(0, limit)
   try {
     return await rerank(query, candidates, { topK: limit })
   } catch (err) {
-    logger.debug({ err }, 'vectorSearch: reranker threw unexpectedly, returning cosine order')
+    logger.debug({ err }, 'vectorSearch: reranker threw unexpectedly, returning recency-boosted order')
     return candidates.slice(0, limit)
   }
 }
