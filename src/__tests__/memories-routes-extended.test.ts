@@ -3,7 +3,8 @@ import { EventEmitter } from 'node:events'
 import type { RouteContext } from '../web/routes/types.js'
 
 const { mockSaveAgentMemory, mockSearchAgentMemories, mockGetAgentMemories,
-  mockSearchMemories, mockGetMemoriesForChat, mockGetDb, mockTouchMemoriesAccessed } = vi.hoisted(() => {
+  mockSearchMemories, mockGetMemoriesForChat, mockGetDb, mockTouchMemoriesAccessed,
+  mockHybridSearch } = vi.hoisted(() => {
   const fakeMemory = (id: number) => ({
     id, agent_id: 'agent-a', content: 'test content', keywords: 'test',
     category: 'warm', created_at: 1750000000, accessed_at: 1750000001,
@@ -20,6 +21,7 @@ const { mockSaveAgentMemory, mockSearchAgentMemories, mockGetAgentMemories,
       prepare: vi.fn().mockReturnValue({ all: vi.fn().mockReturnValue([]), run: vi.fn() }),
     }),
     mockTouchMemoriesAccessed: vi.fn(),
+    mockHybridSearch: vi.fn().mockResolvedValue([]),
   }
 })
 
@@ -29,7 +31,7 @@ vi.mock('../db.js', () => ({
   searchAgentMemories: mockSearchAgentMemories,
   getMemoryStats: vi.fn().mockReturnValue({ total: 0 }),
   updateMemory: vi.fn().mockReturnValue(true),
-  hybridSearch: vi.fn().mockResolvedValue([]),
+  hybridSearch: mockHybridSearch,
   backfillEmbeddings: vi.fn().mockResolvedValue(5),
   clearMemoryCache: vi.fn(),
   searchMemories: mockSearchMemories,
@@ -41,6 +43,8 @@ vi.mock('../db.js', () => ({
   getStaleMemories: vi.fn().mockReturnValue([]),
   getMemoryVersions: vi.fn().mockReturnValue([]),
   runMemoryMaintenance: vi.fn().mockReturnValue({ warmToCold: 0, coldToWarm: 0, prunedVersions: 0 }),
+  runLinkMaintenance: vi.fn().mockResolvedValue({ reembedded: 0, linksCreated: 0, linksPruned: 0, orphans: 0 }),
+  getLinksForMemories: vi.fn().mockReturnValue([]),
 }))
 
 vi.mock('../config.js', () => ({
@@ -115,35 +119,53 @@ describe('tryHandleMemories - extended paths', () => {
   })
 
   describe('GET /api/memories - branches', () => {
-    it('GET with q + agentId calls searchAgentMemories', async () => {
-      mockSearchAgentMemories.mockClear()
+    it('GET with q + agentId defaults to hybrid search (F0)', async () => {
+      // Default mode is now "hybrid" -- hybridSearch is called, not searchAgentMemories directly.
       const { ctx, out } = makeCtx('GET', '/api/memories', undefined, { q: 'test', agent: 'agent-a' })
+      const handled = await tryHandleMemories(ctx)
+      expect(handled).toBe(true)
+      expect(out.status).toBe(200)
+      expect(mockHybridSearch).toHaveBeenCalledWith('agent-a', 'test', 50)
+    })
+
+    it('GET with q + agentId + mode=fts calls searchAgentMemories (explicit FTS override)', async () => {
+      mockSearchAgentMemories.mockClear()
+      const { ctx, out } = makeCtx('GET', '/api/memories', undefined, { q: 'test', agent: 'agent-a', mode: 'fts' })
       const handled = await tryHandleMemories(ctx)
       expect(handled).toBe(true)
       expect(out.status).toBe(200)
       expect(mockSearchAgentMemories).toHaveBeenCalledWith('agent-a', 'test', 50)
     })
 
-    it('GET with q + agentId falls back to LIKE search when FTS returns empty', async () => {
+    it('GET with q + agentId + mode=fts falls back to LIKE search when FTS returns empty', async () => {
       mockSearchAgentMemories.mockReturnValueOnce([])
-      const { ctx, out } = makeCtx('GET', '/api/memories', undefined, { q: 'fallback', agent: 'agent-a' })
+      const { ctx, out } = makeCtx('GET', '/api/memories', undefined, { q: 'fallback', agent: 'agent-a', mode: 'fts' })
       const handled = await tryHandleMemories(ctx)
       expect(handled).toBe(true)
       expect(out.status).toBe(200)
       expect(mockGetDb).toHaveBeenCalled()
     })
 
-    it('GET with q only (no agent) calls searchMemories', async () => {
-      mockSearchMemories.mockClear()
+    it('GET with q only (no agent) defaults to hybrid search (F0)', async () => {
+      // Default mode is now "hybrid" -- hybridSearch is used (falls through to FTS if no embedding).
       const { ctx, out } = makeCtx('GET', '/api/memories', undefined, { q: 'global search' })
+      const handled = await tryHandleMemories(ctx)
+      expect(handled).toBe(true)
+      expect(out.status).toBe(200)
+      expect(mockHybridSearch).toHaveBeenCalled()
+    })
+
+    it('GET with q only + mode=fts calls searchMemories', async () => {
+      mockSearchMemories.mockClear()
+      const { ctx, out } = makeCtx('GET', '/api/memories', undefined, { q: 'global search', mode: 'fts' })
       const handled = await tryHandleMemories(ctx)
       expect(handled).toBe(true)
       expect(mockSearchMemories).toHaveBeenCalled()
     })
 
-    it('GET with q only falls back to LIKE when searchMemories returns empty', async () => {
+    it('GET with q only + mode=fts falls back to LIKE when searchMemories returns empty', async () => {
       mockSearchMemories.mockReturnValueOnce([])
-      const { ctx, out } = makeCtx('GET', '/api/memories', undefined, { q: 'fallback global' })
+      const { ctx, out } = makeCtx('GET', '/api/memories', undefined, { q: 'fallback global', mode: 'fts' })
       const handled = await tryHandleMemories(ctx)
       expect(handled).toBe(true)
       expect(mockGetDb).toHaveBeenCalled()
@@ -178,9 +200,11 @@ describe('tryHandleMemories - extended paths', () => {
       expect(body.every((m: any) => m.category === 'hot')).toBe(true)
     })
 
-    it('GET with q stamps accessed memories via touchMemoriesAccessed', async () => {
+    it('GET with q stamps accessed memories via touchMemoriesAccessed (hybrid mode)', async () => {
       mockTouchMemoriesAccessed.mockClear()
-      const { ctx, out } = makeCtx('GET', '/api/memories', undefined, { q: 'stamp test', agent: 'agent-a' })
+      // hybridSearch must return at least one result for the stamp to trigger
+      mockHybridSearch.mockResolvedValueOnce([{ id: 7, content: 'x', category: 'warm', agent_id: 'agent-a' }])
+      const { ctx } = makeCtx('GET', '/api/memories', undefined, { q: 'stamp test', agent: 'agent-a' })
       await tryHandleMemories(ctx)
       expect(mockTouchMemoriesAccessed).toHaveBeenCalled()
     })

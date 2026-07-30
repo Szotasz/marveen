@@ -3,7 +3,7 @@ import {
   hybridSearch, backfillEmbeddings, clearMemoryCache,
   searchMemories, getMemoriesForChat, getDb, touchMemoriesAccessed,
   recordMemoryRead, recordMemoryReadBatch, getStaleMemories, getMemoryVersions,
-  runMemoryMaintenance,
+  runMemoryMaintenance, runLinkMaintenance, getLinksForMemories,
   type Memory,
 } from '../../db.js'
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from '../../config.js'
@@ -72,7 +72,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     const agentId = url.searchParams.get('agent') || agentIdAlias || ''
     const tier = url.searchParams.get('tier') || url.searchParams.get('category') || ''
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
-    const mode = url.searchParams.get('mode') || 'fts'
+    const mode = url.searchParams.get('mode') || 'hybrid'
 
     let results: Memory[]
     if (q && mode === 'hybrid') {
@@ -285,6 +285,45 @@ Respond ONLY with JSON, nothing else:
     } catch (err) {
       logger.error({ err }, 'Memory resort failed')
       json(res, { error: 'Resort failed' }, 500)
+    }
+    return true
+  }
+
+  // GET /api/memories/links -- fetch memory_links edges for a set of memory ids.
+  // Query params: ids (comma-separated) OR agent (fetch all links for agent's memories).
+  // Returns [{src_id, dst_id, link_type, weight}] -- used by the dashboard graph.
+  if (path === '/api/memories/links' && method === 'GET') {
+    const idsParam = url.searchParams.get('ids')
+    const agentParam = url.searchParams.get('agent')
+    let memoryIds: number[] = []
+    if (idsParam) {
+      memoryIds = idsParam.split(',').map(s => parseInt(s, 10)).filter(n => !isNaN(n))
+    } else if (agentParam) {
+      const rows = getDb().prepare(
+        `SELECT id FROM memories WHERE agent_id = ? ORDER BY accessed_at DESC LIMIT 500`
+      ).all(agentParam) as { id: number }[]
+      memoryIds = rows.map(r => r.id)
+    }
+    json(res, getLinksForMemories(memoryIds))
+    return true
+  }
+
+  // POST /api/memories/links/maintain -- link-graph maintenance heartbeat.
+  // Re-embeds stale memories, refreshes neighbor links, prunes decayed edges,
+  // and counts orphan memories. Called by the memory-maintenance scheduled task.
+  // Body (all optional): { weight_threshold, max_age_seconds }
+  if (path === '/api/memories/links/maintain' && method === 'POST') {
+    try {
+      const body = await readBody(req)
+      const opts = body.length ? JSON.parse(body.toString()) : {}
+      const result = await runLinkMaintenance({
+        weightThreshold: opts.weight_threshold,
+        maxAge: opts.max_age_seconds,
+      })
+      json(res, { ok: true, ...result })
+    } catch (err) {
+      logger.error({ err }, 'Link maintenance failed')
+      json(res, { error: 'Link maintenance failed' }, 500)
     }
     return true
   }

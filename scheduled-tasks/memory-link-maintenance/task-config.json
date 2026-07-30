@@ -1,0 +1,8 @@
+{
+  "schedule": "0 4 * * *",
+  "agent": "jarvis",
+  "enabled": true,
+  "type": "heartbeat",
+  "skipIfBusy": true,
+  "description": "Nightly memory link-graph maintenance: re-embed stale memories, refresh neighbor links, prune decayed edges, detect orphans"
+}

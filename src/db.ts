@@ -483,11 +483,13 @@ export function saveAgentMemory(
   if (category === 'shared') clearMemoryCache()
   else memoryCacheInvalidate(agentId)
 
-  // Fire-and-forget: generate embedding asynchronously and store as Float32 BLOB.
-  // The legacy TEXT column (embedding) is intentionally left NULL for new rows.
-  generateEmbedding(content + (keywords ? ' ' + keywords : '')).then(emb => {
+  // Fire-and-forget: generate embedding, store as Float32 BLOB, then link to
+  // semantically similar neighbors. All three steps are best-effort -- Ollama
+  // unavailability silently skips them without affecting the saved memory.
+  generateEmbedding(content + (keywords ? ' ' + keywords : '')).then(async emb => {
     if (emb) {
       db.prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(floatsToBlob(emb), id)
+      await linkToNeighbors(id)
     }
   }).catch(() => {})
 
@@ -1993,6 +1995,10 @@ function vectorSearch(agentId: string, queryEmbedding: number[], limit: number =
   return scored.slice(0, limit).map(s => s.memory)
 }
 
+// Decay applied to 1-hop neighbor scores added during graph traversal.
+// Keeps linked memories visible without letting them outrank direct hits.
+const LINK_TRAVERSAL_DECAY = 0.5
+
 export async function hybridSearch(agentId: string, query: string, limit: number = 10): Promise<Memory[]> {
   const k = 60 // RRF constant
 
@@ -2017,6 +2023,21 @@ export async function hybridSearch(agentId: string, query: string, limit: number
     byId.set(m.id, m)
   })
 
+  // 1-hop graph traversal: expand the top-ranked hits by their linked neighbors.
+  // Neighbors receive a decayed fraction of the source memory's RRF score so
+  // they surface as contextual context without displacing direct hits.
+  const topIds = [...scores.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([id]) => id)
+  for (const srcId of topIds) {
+    const srcScore = scores.get(srcId) ?? 0
+    const neighbors = getMemoryNeighbors(srcId, 5)
+    for (const { memory, weight } of neighbors) {
+      if (byId.has(memory.id)) continue  // already in result set, don't double-add
+      const neighborScore = srcScore * weight * LINK_TRAVERSAL_DECAY
+      scores.set(memory.id, (scores.get(memory.id) || 0) + neighborScore)
+      byId.set(memory.id, memory)
+    }
+  }
+
   const ranked = [...scores.entries()].sort((a, b) => b[1] - a[1])
   return ranked.slice(0, limit).map(([id]) => byId.get(id)!)
 }
@@ -2035,6 +2056,176 @@ export async function backfillEmbeddings(): Promise<number> {
     await new Promise(r => setTimeout(r, 100))
   }
   return count
+}
+
+// ── Memory links (F1/F2/F3 semantic graph) ───────────────────────────────────
+
+export interface MemoryLink {
+  id: number
+  src_id: number
+  dst_id: number
+  link_type: 'semantic' | 'explicit' | 'entity' | 'cooccurrence'
+  weight: number
+  created_at: number
+  last_traversed_at: number | null
+}
+
+/**
+ * Upsert a directed link between two memories. If (src, dst, type) already
+ * exists the weight is replaced with the new value (INSERT OR REPLACE).
+ * Returns the row id of the upserted link.
+ */
+export function upsertMemoryLink(
+  srcId: number,
+  dstId: number,
+  linkType: MemoryLink['link_type'],
+  weight: number,
+): number {
+  const stmt = db.prepare(
+    `INSERT INTO memory_links (src_id, dst_id, link_type, weight)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(src_id, dst_id, link_type) DO UPDATE SET weight = excluded.weight, last_traversed_at = unixepoch()`
+  )
+  const result = stmt.run(srcId, dstId, linkType, weight) as { lastInsertRowid: number | bigint }
+  return Number(result.lastInsertRowid)
+}
+
+/**
+ * Return the 1-hop neighbors reachable from srcId, ordered by weight desc.
+ * Updates last_traversed_at on the traversed edges.
+ */
+export function getMemoryNeighbors(srcId: number, limit = 10): { memory: Memory; weight: number }[] {
+  // Touch traversal timestamp
+  db.prepare('UPDATE memory_links SET last_traversed_at = unixepoch() WHERE src_id = ?').run(srcId)
+
+  const rows = db.prepare(
+    `SELECT m.*, ml.weight
+     FROM memory_links ml
+     JOIN memories m ON m.id = ml.dst_id
+     WHERE ml.src_id = ?
+     ORDER BY ml.weight DESC
+     LIMIT ?`
+  ).all(srcId, limit) as (Memory & { weight: number })[]
+
+  return rows.map(r => ({ memory: r, weight: r.weight }))
+}
+
+/**
+ * Delete links whose weight has decayed below threshold or whose endpoints
+ * no longer exist. Returns the count of removed links.
+ */
+/**
+ * Return all memory_links where either endpoint is in the given id set.
+ * Used by the dashboard graph to fetch edges for a loaded set of memories.
+ */
+export function getLinksForMemories(ids: number[]): MemoryLink[] {
+  if (ids.length === 0) return []
+  const placeholders = ids.map(() => '?').join(',')
+  return db.prepare(
+    `SELECT * FROM memory_links
+     WHERE src_id IN (${placeholders}) OR dst_id IN (${placeholders})
+     ORDER BY weight DESC`
+  ).all(...ids, ...ids) as MemoryLink[]
+}
+
+export function pruneMemoryLinks(weightThreshold = 0.1): number {
+  const result = db.prepare(
+    `DELETE FROM memory_links WHERE weight < ?`
+  ).run(weightThreshold) as { changes: number }
+  return result.changes
+}
+
+/**
+ * Create semantic links from a newly saved memory to its top-N cosine
+ * neighbors. Skips if no embedding available. Returns link count created.
+ */
+export async function linkToNeighbors(memoryId: number, maxNeighbors = 5, similarityThreshold = 0.75): Promise<number> {
+  const row = db.prepare('SELECT embedding_blob FROM memories WHERE id = ?').get(memoryId) as { embedding_blob: Buffer | null } | undefined
+  if (!row?.embedding_blob) return 0
+
+  const agentRow = db.prepare('SELECT agent_id FROM memories WHERE id = ?').get(memoryId) as { agent_id: string | null } | undefined
+  if (!agentRow?.agent_id) return 0
+
+  const queryVec = blobToFloats(row.embedding_blob)
+  const candidates = vectorSearch(agentRow.agent_id, queryVec, maxNeighbors + 1)
+
+  let linked = 0
+  for (const candidate of candidates) {
+    if (candidate.id === memoryId) continue
+    const candBlob = db.prepare('SELECT embedding_blob FROM memories WHERE id = ?').get(candidate.id) as { embedding_blob: Buffer | null } | undefined
+    if (!candBlob?.embedding_blob) continue
+    const sim = cosineSimilarity(queryVec, blobToFloats(candBlob.embedding_blob))
+    if (sim < similarityThreshold) continue
+    upsertMemoryLink(memoryId, candidate.id, 'semantic', sim)
+    linked++
+    if (linked >= maxNeighbors) break
+  }
+  return linked
+}
+
+export interface LinkMaintenanceResult {
+  reembedded: number
+  linksCreated: number
+  linksPruned: number
+  orphans: number
+}
+
+/**
+ * Periodic maintenance for the memory link graph:
+ * 1. Re-embed memories whose updated_at > last link created_at (stale embeddings).
+ * 2. Create/refresh neighbor links for recently updated memories.
+ * 3. Prune links below weightThreshold.
+ * 4. Count orphan memories: have embedding but 0 outgoing links.
+ *
+ * Designed to run as a heartbeat scheduled task (e.g. nightly). All steps
+ * are best-effort -- Ollama unavailability yields reembedded=0.
+ */
+export async function runLinkMaintenance(opts: {
+  weightThreshold?: number
+  maxAge?: number   // seconds: only re-link memories updated within this window
+} = {}): Promise<LinkMaintenanceResult> {
+  const { weightThreshold = 0.1, maxAge = 7 * 86400 } = opts
+  const cutoff = Math.floor(Date.now() / 1000) - maxAge
+
+  // Step 1: backfill embeddings for memories updated recently that lack one
+  const needsEmbed = db.prepare(
+    `SELECT id, content, keywords FROM memories
+     WHERE embedding_blob IS NULL AND updated_at >= ?`
+  ).all(cutoff) as { id: number; content: string; keywords: string | null }[]
+
+  let reembedded = 0
+  for (const row of needsEmbed) {
+    const text = row.content + (row.keywords ? ' ' + row.keywords : '')
+    const emb = await generateEmbedding(text)
+    if (emb) {
+      db.prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(floatsToBlob(emb), row.id)
+      reembedded++
+    }
+  }
+
+  // Step 2: re-link memories with embedding updated recently
+  const toLink = db.prepare(
+    `SELECT id FROM memories WHERE embedding_blob IS NOT NULL AND updated_at >= ?`
+  ).all(cutoff) as { id: number }[]
+
+  let linksCreated = 0
+  for (const { id } of toLink) {
+    linksCreated += await linkToNeighbors(id)
+  }
+
+  // Step 3: prune decayed links
+  const linksPruned = pruneMemoryLinks(weightThreshold)
+
+  // Step 4: count orphans (have embedding, 0 outgoing semantic links)
+  const orphanRow = db.prepare(
+    `SELECT COUNT(*) AS c FROM memories
+     WHERE embedding_blob IS NOT NULL
+       AND id NOT IN (SELECT DISTINCT src_id FROM memory_links WHERE link_type = 'semantic')`
+  ).get() as { c: number }
+  const orphans = orphanRow.c
+
+  logger.info({ reembedded, linksCreated, linksPruned, orphans }, 'Link maintenance complete')
+  return { reembedded, linksCreated, linksPruned, orphans }
 }
 
 /**
