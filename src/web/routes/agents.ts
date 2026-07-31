@@ -141,7 +141,13 @@ const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'disc
 
 // Dropped into the agent dir when personality generation failed and the agent was
 // kept on a template instead of being deleted. Its presence means "this agent
-// works, but its CLAUDE.md/SOUL.md are placeholders awaiting regeneration".
+// works, but its CLAUDE.md/SOUL.md are placeholders".
+//
+// It does NOT mean the agent is waiting for anything. NOTHING reads this file:
+// there is no regeneration job, no queue, no retry. It is a marker for an
+// operator (and for whoever builds regeneration later), and the way out today is
+// editing, via PUT /api/agents/:name. Do not reword this into a promise -- three
+// separate copies of "awaiting regeneration" had to be removed once already.
 export const PERSONALITY_PENDING_SENTINEL = '.personality-pending'
 
 // Minimal placeholders used when generateClaudeMd/generateSoulMd fail. Hungarian
@@ -856,7 +862,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // loss.
       //
       // So fall back to a minimal template and keep the agent usable. The
-      // sentinel marks it for regeneration; the response says so explicitly.
+      // sentinel marks that the personality is a placeholder, and the response
+      // says so and points at editing -- not at a regeneration that does not
+      // exist.
       const detail = err instanceof Error ? err.message : 'Unknown error'
       logger.error({ err, name }, 'Agent personality generation failed -- falling back to template, agent kept')
       try {
