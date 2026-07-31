@@ -150,12 +150,20 @@ export const PERSONALITY_PENDING_SENTINEL = '.personality-pending'
 // "Write ALL Hungarian text with proper accents"). Deliberately NOT an imitation
 // of a generated personality -- the first line says it is a template, so a
 // stand-in never silently becomes the agent's identity.
+//
+// Two things this text must keep. It says "ugynok", not "agens": this lands in
+// the wizard's editor directly under the notice banner and under a modal titled
+// "Uj ugynok letrehozasa", and two words for one thing on one screen reads as
+// carelessness. And it does NOT promise regeneration -- an earlier wording said
+// "Ujrageneralasig ez marad ervenyben", but nothing reads
+// PERSONALITY_PENDING_SENTINEL, so there is no regeneration to wait for. It
+// points at editing, which is what actually exists.
 function fallbackClaudeMd(name: string, description: string, model: string): string {
   return `# ${name}
 
-> **FIGYELEM: ez egy SABLON.** Az ágens személyiségének generálása nem sikerült a
-> létrehozáskor, ezért ez a fájl helyőrző. Az ágens használható, de a saját
-> CLAUDE.md-je még nem készült el. Újragenerálásig ez marad érvényben.
+> **FIGYELEM: ez egy SABLON.** Az ügynök személyiségének generálása nem sikerült a
+> létrehozáskor, ezért ez a fájl helyőrző. Az ügynök használható, de a saját
+> CLAUDE.md-je még nem készült el. Írd át itt, vagy az ügynök beállításainál.
 
 ## Szerepkör
 
@@ -181,8 +189,8 @@ function fallbackSoulMd(name: string, description: string): string {
 
 ${description}
 
-Alapértelmezett hangnem: tömör, pontos, túlzás nélkül. A részletes személyiség az
-újrageneráláskor kerül ide.
+Alapértelmezett hangnem: tömör, pontos, túlzás nélkül. A részletes személyiséget
+itt írhatod meg.
 `
 }
 
