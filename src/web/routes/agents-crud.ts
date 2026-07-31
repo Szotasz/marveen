@@ -64,7 +64,21 @@ import { readBody, readJsonBody, json, jsonMaybeGzip, serveFile } from '../http-
 
 // Dropped into the agent dir when personality generation failed and the agent was
 // kept on a template instead of being deleted. Its presence means "this agent
-// works, but its CLAUDE.md/SOUL.md are placeholders awaiting regeneration".
+// works, but its CLAUDE.md/SOUL.md are placeholders".
+//
+// It does NOT mean the agent is waiting for anything. NOTHING reads this file:
+// there is no regeneration job, no queue, no retry. It is a marker for an
+// operator (and for whoever builds regeneration later), and the way out today is
+// editing, via PUT /api/agents/:name. Do not reword this into a promise -- three
+// separate copies of "awaiting regeneration" had to be removed once already.
+//
+// Two things this text must keep. It says "ugynok", not "agens": this lands in
+// the wizard's editor directly under the notice banner and under a modal titled
+// "Uj ugynok letrehozasa", and two words for one thing on one screen reads as
+// carelessness. And it does NOT promise regeneration -- an earlier wording said
+// "Ujrageneralasig ez marad ervenyben", but nothing reads
+// PERSONALITY_PENDING_SENTINEL, so there is no regeneration to wait for. It
+// points at editing, which is what actually exists.
 export const PERSONALITY_PENDING_SENTINEL = '.personality-pending'
 
 // Minimal placeholders used when generateClaudeMd/generateSoulMd fail. Hungarian
@@ -76,9 +90,9 @@ export const PERSONALITY_PENDING_SENTINEL = '.personality-pending'
 function fallbackClaudeMd(name: string, description: string, model: string): string {
   return `# ${name}
 
-> **FIGYELEM: ez egy SABLON.** Az ágens személyiségének generálása nem sikerült a
-> létrehozáskor, ezért ez a fájl helyőrző. Az ágens használható, de a saját
-> CLAUDE.md-je még nem készült el. Újragenerálásig ez marad érvényben.
+> **FIGYELEM: ez egy SABLON.** Az ügynök személyiségének generálása nem sikerült a
+> létrehozáskor, ezért ez a fájl helyőrző. Az ügynök használható, de a saját
+> CLAUDE.md-je még nem készült el. Írd át itt, vagy az ügynök beállításainál.
 
 ## Szerepkör
 
@@ -104,8 +118,8 @@ function fallbackSoulMd(name: string, description: string): string {
 
 ${description}
 
-Alapértelmezett hangnem: tömör, pontos, túlzás nélkül. A részletes személyiség az
-újrageneráláskor kerül ide.
+Alapértelmezett hangnem: tömör, pontos, túlzás nélkül. A részletes személyiséget
+itt írhatod meg.
 `
 }
 import {
@@ -341,7 +355,9 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
       // loss.
       //
       // So fall back to a minimal template and keep the agent usable. The
-      // sentinel marks it for regeneration; the response says so explicitly.
+      // sentinel marks that the personality is a placeholder, and the response
+      // says so and points at editing -- not at a regeneration that does not
+      // exist.
       const detail = err instanceof Error ? err.message : 'Unknown error'
       logger.error({ err, name }, 'Agent personality generation failed -- falling back to template, agent kept')
       try {
@@ -381,7 +397,13 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     }
 
     if (personalityPendingDetail !== null) {
-      json(res, { ok: true, name, personalityPending: true, warning: 'Agent created, but its personality came from a template because generation failed. It is queued for regeneration.', detail: personalityPendingDetail }, 200)
+      // The warning says what actually happens next. An earlier wording promised
+      // "It is queued for regeneration", and there is no queue: the sentinel is
+      // written by this handler and read by nothing (grep PERSONALITY_PENDING_SENTINEL).
+      // What DOES exist is PUT /api/agents/:name with claudeMd/soulMd, so that is
+      // what the message points at. The sentinel stays as a marker for whenever a
+      // regeneration path gets built; it just must not be described as one today.
+      json(res, { ok: true, name, personalityPending: true, warning: 'Agent created with a template personality because generation failed. Edit CLAUDE.md and SOUL.md to replace it.', detail: personalityPendingDetail }, 200)
       return true
     }
 

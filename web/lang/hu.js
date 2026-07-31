@@ -392,6 +392,15 @@ window._i18n.hu = {
   'agents.wizard.desc_label':    'Írd le szabadon, mit szeretnél hogy csináljon ez az ügynök',
   'agents.wizard.profile_label': 'Biztonsági profil',
   'agents.wizard.gen_hint':      'Ez néhány másodpercig tarthat',
+  // Shown on step 3 when the backend answered personalityPending:true. State, not
+  // error: the agent exists and works, only its personality text is a placeholder.
+  // "ügynök", not "ágens": the wizard modal above this banner is titled
+  // "Új ügynök létrehozása", and two words for the same thing on one screen reads
+  // as carelessness. The product-wide split (hu.js: 66 x ügynök, 31 x ágens) is a
+  // separate decision, tracked on its own card.
+  'agents.wizard.pending_title': 'Az ügynök elkészült, a személyisége viszont sablonból jött',
+  'agents.wizard.pending_body':  'Az ügynök létrejött és működik, nem veszett el semmi. A személyiségét nem sikerült legenerálni, ezért amit alább látsz, az egy sablon. Átírhatod most itt, vagy később bármikor az ügynök beállításainál.',
+  'agents.wizard.pending_detail': 'Ami nem sikerült: {detail}',
   'agents.model.inherit':        'Öröklött (alapértelmezett)',
   'agents.model.fable5':         'Fable 5 (legújabb)',
   'agents.model.opus5':          'Opus 5 (legújabb Opus)',
