@@ -2,9 +2,10 @@ import { AutoTokenizer, AutoModelForSequenceClassification } from '@huggingface/
 import { logger } from './logger.js'
 import type { Memory } from './db.js'
 
-// ms-marco-MiniLM-L-6-v2: 23 MB q8 ONNX cross-encoder. Scores (query, passage)
-// pairs for relevance. ~100-300 ms CPU latency per batch. Lazy singleton.
-const RERANKER_MODEL = 'Xenova/ms-marco-MiniLM-L-6-v2'
+// bge-reranker-base (Xenova ONNX): ~180 MB q8, mBERT base (104 languages incl. hu).
+// Scores (query, passage) pairs for relevance. ~150-400 ms CPU latency per batch.
+// Lazy singleton. Xenova conversion provides the onnx/ folder needed by transformers.js.
+const RERANKER_MODEL = 'Xenova/bge-reranker-base'
 
 type Tokenizer = Awaited<ReturnType<typeof AutoTokenizer.from_pretrained>>
 type Model = Awaited<ReturnType<typeof AutoModelForSequenceClassification.from_pretrained>>
