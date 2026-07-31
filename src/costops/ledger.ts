@@ -9,6 +9,13 @@
 import type Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
 import type { CostOpsConfig, CostConfidence } from './config.js'
+import {
+  PRICE_MAP_VERSION,
+  ZERO_COMPONENTS,
+  priceTokens,
+  dayKey,
+  type TokenCostComponents,
+} from './pricing.js'
 
 // ---- month math (UTC, deterministic given `now`) ---------------------------
 
@@ -152,6 +159,20 @@ export interface CostSummary {
     output_tokens: number
     cache_read_tokens: number
     cache_creation_tokens: number
+    /**
+     * What this token volume would cost at published API rates. Reported
+     * alongside the money ledger, never summed into it: the operator is on a
+     * subscription that already appears in current_spend as a fixed cost, so
+     * adding this on top would double-count.
+     */
+    list_price_equivalent: {
+      basis: 'list_price_equivalent'
+      currency: 'USD'
+      total: number
+      components: TokenCostComponents
+      price_map_version: string
+      unpriced_calls: number
+    }
   }
   data_freshness: number | null
   config_present: boolean
@@ -239,7 +260,9 @@ export function getCostSummary(
     }
   }
 
-  // token_usage: VOLUME/ACTIVITY only -- NOT priced in v0.1 (no model column).
+  // token_usage volume, plus (v0.2) its list-price equivalent. The two are
+  // reported side by side but kept out of current_spend on purpose -- see the
+  // field doc on CostSummary.token_usage.
   const tu = db.prepare(`
     SELECT COUNT(*) as calls, COUNT(DISTINCT agent) as agents,
       COALESCE(SUM(input_tokens),0) as input_tokens,
@@ -252,6 +275,8 @@ export function getCostSummary(
     cache_read_tokens: number; cache_creation_tokens: number
   }
 
+  const tokenCost = getTokenCostReport(db, { start: win.start, end: win.end })
+
   return {
     month: win.key,
     currency: config.currency,
@@ -263,15 +288,132 @@ export function getCostSummary(
     breakdown: { fixed_manual: round2(breakdown.fixed_manual), provider: round2(breakdown.provider), estimate: round2(breakdown.estimate) },
     budget,
     token_usage: {
-      note: 'volume/activity only -- not priced in v0.1 (token_usage has no model column; token->cost mapping lands in v0.2 after model/session enrichment)',
+      note: 'volume plus a LIST-PRICE EQUIVALENT (v0.2): what this token volume would cost at published API rates. Not money owed and never added to current_spend -- the subscription is already counted there as a fixed cost.',
       calls: tu.calls, agents: tu.agents,
       input_tokens: tu.input_tokens, output_tokens: tu.output_tokens,
       cache_read_tokens: tu.cache_read_tokens, cache_creation_tokens: tu.cache_creation_tokens,
+      list_price_equivalent: {
+        basis: 'list_price_equivalent',
+        currency: 'USD',
+        total: tokenCost.total,
+        components: tokenCost.components,
+        price_map_version: tokenCost.price_map_version,
+        unpriced_calls: tokenCost.unpriced.calls,
+      },
     },
     data_freshness: latestFreshness,
     config_present: opts.configExists ?? true,
     config_errors: opts.configErrors ?? [],
     generated_at: now,
+  }
+}
+
+// ---- read path: token list-price equivalent (CostOps v0.2) -----------------
+
+export interface TokenCostReport {
+  /** Always this literal. Not money owed -- see pricing.ts for why. */
+  basis: 'list_price_equivalent'
+  currency: 'USD'
+  price_map_version: string
+  window: { start: number; end: number; timezone: string }
+  total: number
+  components: TokenCostComponents
+  by_model: Array<{ model: string; calls: number; cost: number }>
+  by_agent: Array<{ agent: string; calls: number; cost: number }>
+  by_day: Array<{ day: string; cost: number }>
+  /**
+   * Rows we hold no published rate for. Surfaced rather than folded into the
+   * total as zero, so an unrecognised model shows up as a gap instead of
+   * quietly shrinking the figure.
+   */
+  unpriced: { calls: number; models: string[] }
+}
+
+interface UsageRow {
+  model: string | null
+  agent: string
+  timestamp: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_creation_tokens: number
+}
+
+/**
+ * List-price-equivalent token cost over an epoch-second window, [start, end).
+ *
+ * Rows are aggregated in JS rather than SQL because the day bucketing needs a
+ * named timezone that SQLite cannot apply deterministically under test. The
+ * window is indexed (idx_token_usage_ts) and a month of fleet traffic is a few
+ * thousand rows, so the read stays cheap; revisit if the retention window grows
+ * by orders of magnitude.
+ */
+export function getTokenCostReport(
+  db: Database.Database,
+  opts: { start: number; end: number; timeZone?: string },
+): TokenCostReport {
+  const timeZone = opts.timeZone ?? 'Europe/Budapest'
+  const rows = db.prepare(`
+    SELECT model, agent, timestamp, input_tokens, output_tokens,
+           cache_read_tokens, cache_creation_tokens
+    FROM token_usage
+    WHERE timestamp >= @start AND timestamp < @end
+  `).all({ start: opts.start, end: opts.end }) as UsageRow[]
+
+  const components: TokenCostComponents = { ...ZERO_COMPONENTS }
+  const perModel = new Map<string, { calls: number; cost: number }>()
+  const perAgent = new Map<string, { calls: number; cost: number }>()
+  const perDay = new Map<string, number>()
+  const unpricedModels = new Set<string>()
+  let unpricedCalls = 0
+
+  for (const r of rows) {
+    const priced = priceTokens(r.model, r)
+    if (!priced) {
+      unpricedCalls++
+      unpricedModels.add(r.model ?? '(null)')
+      continue
+    }
+    components.input += priced.input
+    components.output += priced.output
+    components.cache_read += priced.cache_read
+    components.cache_write += priced.cache_write
+    components.total += priced.total
+
+    const model = r.model as string
+    const m = perModel.get(model) ?? { calls: 0, cost: 0 }
+    m.calls++; m.cost += priced.total; perModel.set(model, m)
+
+    const a = perAgent.get(r.agent) ?? { calls: 0, cost: 0 }
+    a.calls++; a.cost += priced.total; perAgent.set(r.agent, a)
+
+    const d = dayKey(r.timestamp, timeZone)
+    perDay.set(d, (perDay.get(d) ?? 0) + priced.total)
+  }
+
+  return {
+    basis: 'list_price_equivalent',
+    currency: 'USD',
+    price_map_version: PRICE_MAP_VERSION,
+    window: { start: opts.start, end: opts.end, timezone: timeZone },
+    total: round4(components.total),
+    components: {
+      input: round4(components.input),
+      output: round4(components.output),
+      cache_read: round4(components.cache_read),
+      cache_write: round4(components.cache_write),
+      total: round4(components.total),
+    },
+    by_model: [...perModel.entries()]
+      .map(([model, v]) => ({ model, calls: v.calls, cost: round4(v.cost) }))
+      .sort((a, b) => b.cost - a.cost),
+    by_agent: [...perAgent.entries()]
+      .map(([agent, v]) => ({ agent, calls: v.calls, cost: round4(v.cost) }))
+      .sort((a, b) => b.cost - a.cost),
+    by_day: [...perDay.entries()]
+      .map(([day, cost]) => ({ day, cost: round4(cost) }))
+      .sort((a, b) => a.day.localeCompare(b.day)),
+    unpriced: { calls: unpricedCalls, models: [...unpricedModels].sort() },
   }
 }
 
