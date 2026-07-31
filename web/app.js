@@ -10950,11 +10950,11 @@ function chatAvatarHtml(agentName, size = 32) {
 
 // Guard against the boot race: the Messages page can be opened before the
 // initial /api/marveen fetch resolves window._marveen. Until it does,
-// mainAgentId() returns the literal 'marveen' FALLBACK, which is a real agent
-// id on no install here -- composing to it creates a phantom "marveen" thread
-// that sits pending forever and shows up as a duplicate of the true main agent
-// (whatever id this install actually uses). Resolve _marveen before rendering
-// any chat target.
+// mainAgentId() returns the literal 'marveen' FALLBACK, which IS a real agent
+// id on a default install but is NOT one wherever the main agent was renamed
+// -- composing to it creates a phantom "marveen" thread that sits pending
+// forever and shows up as a duplicate of the true main agent (whatever id this
+// install actually uses). Resolve _marveen before rendering any chat target.
 async function ensureMarveenLoaded() {
   if (window._marveen?.agentId) return
   try {
