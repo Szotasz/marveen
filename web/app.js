@@ -10953,7 +10953,8 @@ function chatAvatarHtml(agentName, size = 32) {
 // mainAgentId() returns the literal 'marveen' FALLBACK, which is a real agent
 // id on no install here -- composing to it creates a phantom "marveen" thread
 // that sits pending forever and shows up as a duplicate of the true main agent
-// (torpapa). Resolve _marveen before rendering any chat target.
+// (whatever id this install actually uses). Resolve _marveen before rendering
+// any chat target.
 async function ensureMarveenLoaded() {
   if (window._marveen?.agentId) return
   try {
