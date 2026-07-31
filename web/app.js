@@ -13823,8 +13823,10 @@ function buildProvidersUI(container, providers) {
   container.appendChild(notice)
 
   if (providers.length > 0) {
+    const tableWrap = document.createElement('div')
+    tableWrap.style.cssText = 'overflow-x:auto;margin-bottom:16px'
     const table = document.createElement('table')
-    table.style.cssText = 'width:100%;border-collapse:collapse;font-size:13px;margin-bottom:16px'
+    table.style.cssText = 'width:100%;min-width:520px;border-collapse:collapse;font-size:13px'
     table.innerHTML = `<thead><tr style="border-bottom:1px solid var(--border)">
       <th style="text-align:left;padding:6px 8px">Név</th>
       <th style="text-align:left;padding:6px 8px">Base URL</th>
@@ -13832,7 +13834,8 @@ function buildProvidersUI(container, providers) {
       <th style="text-align:left;padding:6px 8px">Vault kulcs</th>
       <th style="padding:6px 8px"></th>
     </tr></thead><tbody id="customProvidersTableBody"></tbody>`
-    container.appendChild(table)
+    tableWrap.appendChild(table)
+    container.appendChild(tableWrap)
     const tbody = table.querySelector('#customProvidersTableBody')
     for (const p of providers) {
       const tr = document.createElement('tr')
@@ -13903,8 +13906,9 @@ function openAddProviderModal(container, editProvider = null) {
           <input type="text" id="cpLabel" class="input" placeholder="pl. DeepSeek (saját kulcs)" value="${v('label')}">
         </div>
         <div class="form-group">
-          <label class="form-label">ID * <small style="color:var(--text-muted)">(egyedi, csak a-z 0-9 _ -)</small></label>
+          <label class="form-label">Provider azonosító (belső név) * <small style="color:var(--text-muted)">(csak a-z 0-9 _ -)</small></label>
           <input type="text" id="cpId" class="input" placeholder="pl. my-deepseek" value="${v('id')}"${isEdit ? ' readonly style="opacity:0.6;cursor:not-allowed"' : ''}>
+          <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">Ez a provider belső neve, nem a modellazonosító. A modellt az ágens szerkesztőjében adod meg.</small>
         </div>
         <div class="form-group">
           <label class="form-label">Base URL * <small style="color:var(--text-muted)">(https:// vagy http://localhost)</small></label>
