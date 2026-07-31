@@ -301,7 +301,14 @@ export function maskInertLiterals(command) {
 const PROSE_FLAGS = String.raw`--body|--message|--notes|--title|--subject|-b|-m|-t`
 
 export function stripProseArguments(seg) {
-  return String(seg ?? '').replace(
+  const s = String(seg ?? '')
+  // Scoped to the tools these prose flags were written for: gh, git, glab (a PR
+  // body, a PR comment, a release note). A short flag means different things to
+  // different binaries (`tar -t`, `cut -b`, `sort -t`), so blanking it on an
+  // unrelated tool would hide real data from the gate (PR #770 review, Szotasz).
+  // Same coarse command-word guard as stripGitCommitMessages just below.
+  if (!/\b(?:gh|git|glab)\b/i.test(s)) return s
+  return s.replace(
     new RegExp(String.raw`((?:^|\s)(?:${PROSE_FLAGS})(?:\s+|=))('[^']*'|\$'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")`, 'gi'),
     (full, flag, arg) => {
       const dq = arg.startsWith('"')
@@ -355,14 +362,45 @@ export function stripDataPayloads(seg) {
 // stripGitCommitMessages and stripProseArguments all leave a double-quoted
 // value alone when it contains `$(` or a backtick. An unquoted heredoc is the
 // same category; it was simply missing the guard. Reported on PR #770.
+// Whether the command word owning a heredoc redirect EXECUTES the body. The
+// shell-literal guard above is not enough: a quoted marker (<<'EOF') is literal
+// to the SHELL, so blanking looks safe, but `bash <<'EOF'`, `sh`, `ssh box`,
+// `python - <<'EOF'` feed the body to an interpreter that runs it -- blanking
+// would hide a live scheduler command from the gate (PR #770 review, Szotasz).
+// `git commit -F - <<'EOF'` feeds the body to git as DATA, so that stays safe to
+// blank. So: keep the body visible when its redirect owner is an interpreter or
+// remote/container executor.
+const HEREDOC_INTERPRETER_RX = /^(?:bash|sh|zsh|dash|ksh|ash|python[0-9.]*|node|nodejs|ruby|perl|php|ssh)$/
+
+function heredocOwnerRunsBody(before) {
+  // `before` is the command text up to the << redirect; the owner is the first
+  // word of the last command segment.
+  const seg = before.split(/\n|;|\|\|?|&&?|\(|\{/).pop() ?? ''
+  const tokens = seg.trim().split(/\s+/).filter(Boolean)
+  // Pass-through prefixes that do not change what runs the body.
+  while (tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0]) ||
+    ['sudo', 'env', 'nice', 'time', 'exec', 'command', 'nohup', 'stdbuf'].includes(tokens[0]))) {
+    tokens.shift()
+  }
+  if (!tokens.length) return false
+  const word = tokens[0].split('/').pop()
+  if (HEREDOC_INTERPRETER_RX.test(word)) return true
+  // docker/podman/kubectl exec run the body through a shell in the target.
+  if (['docker', 'podman', 'kubectl'].includes(word) && tokens.slice(1).includes('exec')) return true
+  return false
+}
+
 export function stripHeredocBodies(command) {
   const cmd = String(command ?? '')
   if (!/<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*/.test(cmd)) return cmd
   return cmd.replace(
     /(<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2)([\s\S]*?)(^\s*\3\s*$)/gm,
-    (full, open, quote, _marker, body, close) => {
+    (full, open, quote, _marker, body, close, offset, string) => {
       const literal = quote === "'" || quote === '"'
       if (!literal && (body.includes('$(') || body.includes('`'))) return full
+      // A quoted body the shell will not expand is still executed when an
+      // interpreter/remote-executor owns the redirect -- keep it visible then.
+      if (heredocOwnerRunsBody(string.slice(0, offset))) return full
       return `${open}\n${close}`
     },
   )
