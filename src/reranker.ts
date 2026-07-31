@@ -1,4 +1,4 @@
-import { pipeline, type TextClassificationPipeline } from '@huggingface/transformers'
+import { AutoTokenizer, AutoModelForSequenceClassification } from '@huggingface/transformers'
 import { logger } from './logger.js'
 import type { Memory } from './db.js'
 
@@ -6,21 +6,29 @@ import type { Memory } from './db.js'
 // pairs for relevance. ~100-300 ms CPU latency per batch. Lazy singleton.
 const RERANKER_MODEL = 'Xenova/ms-marco-MiniLM-L-6-v2'
 
-let rankerInstance: TextClassificationPipeline | null = null
-let loadPromise: Promise<TextClassificationPipeline> | null = null
+type Tokenizer = Awaited<ReturnType<typeof AutoTokenizer.from_pretrained>>
+type Model = Awaited<ReturnType<typeof AutoModelForSequenceClassification.from_pretrained>>
 
-async function getRanker(): Promise<TextClassificationPipeline> {
-  if (rankerInstance) return rankerInstance
+let tokenizerInstance: Tokenizer | null = null
+let modelInstance: Model | null = null
+let loadPromise: Promise<void> | null = null
+
+async function getRanker(): Promise<{ tokenizer: Tokenizer; model: Model }> {
+  if (tokenizerInstance && modelInstance) return { tokenizer: tokenizerInstance, model: modelInstance }
   if (!loadPromise) {
-    loadPromise = (pipeline('text-classification', RERANKER_MODEL, { dtype: 'q8' }) as Promise<TextClassificationPipeline>).then(p => {
-      rankerInstance = p
-      return p
+    loadPromise = Promise.all([
+      AutoTokenizer.from_pretrained(RERANKER_MODEL),
+      AutoModelForSequenceClassification.from_pretrained(RERANKER_MODEL, { dtype: 'q8' }),
+    ]).then(([tok, mod]) => {
+      tokenizerInstance = tok as Tokenizer
+      modelInstance = mod as Model
     }).catch(err => {
       loadPromise = null
       throw err
     })
   }
-  return loadPromise
+  await loadPromise
+  return { tokenizer: tokenizerInstance!, model: modelInstance! }
 }
 
 export interface RerankOptions {
@@ -31,8 +39,10 @@ export interface RerankOptions {
 /**
  * Re-ranks candidate memories by relevance to query using a cross-encoder.
  *
- * Passes (query, passage) pairs through the model and sorts by score descending.
- * Falls back to original order if model is unavailable or inference fails.
+ * Uses AutoTokenizer + AutoModelForSequenceClassification directly so that
+ * (query, passage) pairs are tokenized as [CLS] query [SEP] passage [SEP]
+ * sequences. The single output logit per pair is passed through sigmoid to
+ * produce a 0..1 relevance score, then candidates are sorted descending.
  */
 export async function rerank(
   query: string,
@@ -44,13 +54,23 @@ export async function rerank(
   if (pool.length === 0) return []
 
   try {
-    const ranker = await getRanker()
-    // Cross-encoder expects {text: query, text_pair: passage} inputs.
-    const inputs = pool.map(m => ({ text: query, text_pair: m.content }))
-    const raw = await ranker(inputs as unknown as Parameters<typeof ranker>[0]) as { score: number; label: string }[]
+    const { tokenizer, model } = await getRanker()
+
+    // Encode each (query, passage) pair: [CLS] query [SEP] passage [SEP]
+    // The text_pair array route is the only correct way to get sentence-pair
+    // tokenization from transformers.js -- passing {text, text_pair} objects
+    // to a pipeline._call() does NOT work (it expects flat strings).
+    const queries = pool.map(() => query)
+    const passages = pool.map(m => m.content)
+    const inputs = tokenizer(queries, { text_pair: passages, padding: true, truncation: true })
+
+    const outputs = await (model as (inputs: unknown) => Promise<{ logits: { tolist(): number[][] } }>)(inputs)
+    // logits shape: [batch_size, 1] -- one relevance logit per (query, passage) pair
+    const logitRows = outputs.logits.tolist()
+    const scores = logitRows.map(row => 1 / (1 + Math.exp(-(row[0] ?? 0))))
 
     return pool
-      .map((m, i) => ({ memory: m, score: raw[i]?.score ?? 0 }))
+      .map((m, i) => ({ memory: m, score: scores[i] ?? 0 }))
       .sort((a, b) => b.score - a.score)
       .slice(0, topK)
       .map(r => r.memory)
@@ -62,6 +82,7 @@ export async function rerank(
 
 // Exposed for testing only -- allows resetting the singleton between tests.
 export function _resetRankerForTests(): void {
-  rankerInstance = null
+  tokenizerInstance = null
+  modelInstance = null
   loadPromise = null
 }
