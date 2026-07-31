@@ -605,6 +605,15 @@ export function initDatabase(dbPathOverride?: string): void {
   // Migrations for columns added after initial release
   try { db.exec('ALTER TABLE token_usage ADD COLUMN thinking_tokens INTEGER NOT NULL DEFAULT 0') } catch { /* already exists */ }
   try { db.exec('ALTER TABLE token_usage ADD COLUMN model TEXT') } catch { /* already exists */ }
+  // How task_title got its value. Two writers fill that one column with very
+  // different reliability: the transcript parser reads a marker the runner puts
+  // in the prompt (exact -- the prompt names the task), while
+  // correlateWithKanban() attributes by time window (a guess: every row in a
+  // span gets whatever card moved then). Indistinguishable in one column, they
+  // let a heuristic attribution be read as an exact one.
+  // NULL means the provenance predates this column, not that it is unknown
+  // forever: a rescan stamps the marker rows via the upsert below.
+  try { db.exec('ALTER TABLE token_usage ADD COLUMN task_source TEXT') } catch { /* already exists */ }
 
   // Deduplicate existing rows before creating unique index
   try {
