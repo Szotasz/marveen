@@ -953,41 +953,59 @@ export function initDatabase(dbPathOverride?: string): void {
   try {
     const apSchema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='approvals'").get() as { sql: string } | undefined
     if (apSchema?.sql && !apSchema.sql.includes("'decided'")) {
-      db.exec(`
-        CREATE TABLE approvals_new (
-          id TEXT PRIMARY KEY,
-          agent_id TEXT NOT NULL,
-          category TEXT NOT NULL,
-          action_description TEXT NOT NULL,
-          action_payload TEXT,
-          status TEXT NOT NULL DEFAULT 'pending'
-            CHECK(status IN ('pending','approved','rejected','timeout','decided')),
-          timeout_at INTEGER,
-          telegram_message_id INTEGER,
-          requested_at INTEGER NOT NULL DEFAULT (unixepoch()),
-          resolved_at INTEGER,
-          resolved_by TEXT,
-          card_id TEXT,
-          options TEXT,
-          chosen_key TEXT,
-          chosen_note TEXT
-        );
-        INSERT INTO approvals_new
-          (id, agent_id, category, action_description, action_payload, status,
-           timeout_at, telegram_message_id, requested_at, resolved_at, resolved_by)
-          SELECT id, agent_id, category, action_description, action_payload, status,
-                 timeout_at, telegram_message_id, requested_at, resolved_at, resolved_by
-          FROM approvals;
-        DROP TABLE approvals;
-        ALTER TABLE approvals_new RENAME TO approvals;
-      `)
-      db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, requested_at)`)
-      db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_agent ON approvals(agent_id, requested_at)`)
+      // The whole rebuild is one transaction: `db.exec` alone is NOT atomic
+      // across statements, and an interruption at a seam (SQLITE_BUSY from a
+      // parallel sqlite3 call, a kill, a full disk) used to leave the table
+      // half-rebuilt -- worst case rows stranded in approvals_new with an
+      // empty approvals. Inside a transaction those seams cannot be observed.
+      // The leading DROP self-heals a run interrupted before this fix: with
+      // the transaction, approvals_new leftovers can only coexist with an
+      // intact approvals table, so dropping them is always safe.
+      const rebuildApprovals = db.transaction(() => {
+        db.exec(`
+          DROP TABLE IF EXISTS approvals_new;
+          CREATE TABLE approvals_new (
+            id TEXT PRIMARY KEY,
+            agent_id TEXT NOT NULL,
+            category TEXT NOT NULL,
+            action_description TEXT NOT NULL,
+            action_payload TEXT,
+            status TEXT NOT NULL DEFAULT 'pending'
+              CHECK(status IN ('pending','approved','rejected','timeout','decided')),
+            timeout_at INTEGER,
+            telegram_message_id INTEGER,
+            requested_at INTEGER NOT NULL DEFAULT (unixepoch()),
+            resolved_at INTEGER,
+            resolved_by TEXT,
+            card_id TEXT,
+            options TEXT,
+            chosen_key TEXT,
+            chosen_note TEXT
+          );
+          INSERT INTO approvals_new
+            (id, agent_id, category, action_description, action_payload, status,
+             timeout_at, telegram_message_id, requested_at, resolved_at, resolved_by)
+            SELECT id, agent_id, category, action_description, action_payload, status,
+                   timeout_at, telegram_message_id, requested_at, resolved_at, resolved_by
+            FROM approvals;
+          DROP TABLE approvals;
+          ALTER TABLE approvals_new RENAME TO approvals;
+          CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, requested_at);
+          CREATE INDEX IF NOT EXISTS idx_approvals_agent ON approvals(agent_id, requested_at);
+          CREATE INDEX IF NOT EXISTS idx_approvals_card ON approvals(card_id, status);
+        `)
+      })
+      rebuildApprovals()
+    } else {
+      // Already on the new schema. The index stays inside this guard: on a
+      // database damaged by a pre-fix interrupted run, a missing card_id
+      // column must log a warning, not exit the process during initDatabase
+      // (under launchd KeepAlive that was a persistent crash loop).
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_card ON approvals(card_id, status)`)
     }
   } catch (err) {
     logger.warn({ err }, 'approvals decision-options migration failed -- continuing')
   }
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_card ON approvals(card_id, status)`)
 
   // One-shot migration from the old JSON file (which had a read-modify-write
   // race). Import rows if they exist, then rename the file so we don't keep
