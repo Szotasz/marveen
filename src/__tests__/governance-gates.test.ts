@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision as selfPaceDecision, stripDataPayloads, stripGitCommitMessages, stripHeredocBodies } from '../../scripts/self-pace-gate.mjs'
+import { gateDecision as selfPaceDecision, stripDataPayloads, stripGitCommitMessages, stripHeredocBodies, stripProseArguments } from '../../scripts/self-pace-gate.mjs'
 import {
   agentGetsGovernanceGates,
   injectSelfPaceGate,
@@ -170,6 +170,53 @@ describe('self-pace-gate stripHeredocBodies (quoted vs unquoted marker)', () => 
   it('the <<- variant follows the same rule', () => {
     expect(stripHeredocBodies(`git commit -F - <<-'EOF'\n\t${PROSE}\n\tEOF`)).not.toContain(PROSE)
     expect(stripHeredocBodies('git commit -F - <<-EOF\n\t$(at now)\n\tEOF')).toContain('$(at now)')
+  })
+
+  // PR #770 review (Szotasz): a QUOTED body is literal to the SHELL, but an
+  // interpreter/remote-executor that OWNS the redirect runs it -- blanking would
+  // hide a live scheduler command. Keep the body visible for those owners.
+  const RUNS = 'crontab -r; at now'
+
+  it('KEEPS a quoted heredoc body owned by bash (it executes the body)', () => {
+    expect(stripHeredocBodies(`bash <<'EOF'\n${RUNS}\nEOF`)).toContain(RUNS)
+  })
+
+  it('KEEPS a quoted heredoc body owned by sh / bash -s', () => {
+    expect(stripHeredocBodies(`sh <<"EOF"\n${RUNS}\nEOF`)).toContain(RUNS)
+    expect(stripHeredocBodies(`bash -s <<'EOF'\n${RUNS}\nEOF`)).toContain(RUNS)
+  })
+
+  it('KEEPS a quoted heredoc body owned by ssh / python / docker exec', () => {
+    expect(stripHeredocBodies(`ssh box <<'EOF'\n${RUNS}\nEOF`)).toContain(RUNS)
+    expect(stripHeredocBodies(`python3 - <<'EOF'\n${RUNS}\nEOF`)).toContain(RUNS)
+    expect(stripHeredocBodies(`docker exec c bash <<'EOF'\n${RUNS}\nEOF`)).toContain(RUNS)
+  })
+
+  it('sees through a sudo/env prefix to the interpreter owner', () => {
+    expect(stripHeredocBodies(`sudo bash <<'EOF'\n${RUNS}\nEOF`)).toContain(RUNS)
+  })
+
+  it('still blanks when a non-interpreter (git/tee) owns the redirect', () => {
+    expect(stripHeredocBodies(`git commit -F - <<'EOF'\n${RUNS}\nEOF`)).not.toContain(RUNS)
+    expect(stripHeredocBodies(`tee f <<'EOF'\n${RUNS}\nEOF`)).not.toContain(RUNS)
+  })
+})
+
+describe('self-pace-gate stripProseArguments (scoped to gh/git/glab)', () => {
+  // PR #770 review (Szotasz): the prose-flag blanking is for a PR/issue body or
+  // release note, so it must be scoped to gh/git/glab. A short flag means
+  // something else to other tools, and blanking it there hides real data.
+  it('blanks a prose flag on gh', () => {
+    expect(stripProseArguments("gh pr create --body 'runs at midnight, cron style'"))
+      .not.toContain('midnight')
+  })
+
+  it('leaves a same-named flag on an unrelated tool alone', () => {
+    // tar -t is "list", cut -b is "bytes" -- not prose, must not be blanked.
+    const tar = "tar -t 'archive at now.tar'"
+    expect(stripProseArguments(tar)).toBe(tar)
+    const cut = "cut -b '1-3 at now'"
+    expect(stripProseArguments(cut)).toBe(cut)
   })
 })
 
