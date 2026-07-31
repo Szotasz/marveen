@@ -11,6 +11,10 @@ import { loadCostopsConfig } from '../../costops/config.js'
 import { syncFixedCostsToLedger, getCostSummary, getCostSources, getTokenCostReport } from '../../costops/ledger.js'
 import { PRICE_MAP, isPriced } from '../../costops/pricing.js'
 import { applyEcoMode, readEcoState, baseModelId, DEFAULT_ECO_MODEL } from '../../costops/eco-mode.js'
+import { getContextAttribution } from '../../costops/context-attribution.js'
+import { readdirSync } from 'node:fs'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
 import type { RouteContext } from './types.js'
 
 // Runs the fixed-cost -> ledger reflection once immediately (so the summary is
@@ -111,6 +115,26 @@ export async function tryHandleCosts(ctx: RouteContext): Promise<boolean> {
     } catch (err) {
       logger.error({ err }, 'CostOps eco apply failed')
       json(res, { error: 'Eco apply failed' }, 500)
+    }
+    return true
+  }
+
+  // What a scheduled task pays for: context inherited from its host session
+  // versus its own work, plus the priced fresh-session alternative.
+  if (path === '/api/costs/context-attribution' && method === 'GET') {
+    try {
+      const raw = Number(url.searchParams.get('days') ?? '30')
+      const days = Number.isFinite(raw) ? Math.min(Math.max(Math.trunc(raw), 1), 400) : 30
+      // The schedule directory is the authoritative list of marker-labelled
+      // task names. Filtering by it keeps correlateWithKanban()'s time-window
+      // card titles -- a guess, not an attribution -- out of the cost figures.
+      let tasks: string[] = []
+      try { tasks = readdirSync(join(homedir(), '.claude', 'scheduled-tasks')) } catch { tasks = [] }
+      const now = Math.floor(Date.now() / 1000)
+      json(res, getContextAttribution(getDb(), { start: now - days * 86400, end: now, tasks }))
+    } catch (err) {
+      logger.error({ err }, 'CostOps context attribution failed')
+      json(res, { error: 'Context attribution failed' }, 500)
     }
     return true
   }
