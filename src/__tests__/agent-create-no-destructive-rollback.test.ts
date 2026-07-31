@@ -58,9 +58,11 @@ describe('agent creation never deletes the agent directory on failure', () => {
     expect(body).toMatch(/fallbackSoulMd\(/)
   })
 
-  it('the failure path marks the agent as awaiting regeneration', () => {
+  it('the failure path marks the personality as a placeholder', () => {
     // Without the sentinel a template silently becomes the agent's identity and
-    // nobody ever learns the personality was never generated.
+    // nobody ever learns the personality was never generated. The marker says the
+    // personality IS a placeholder -- not that anything is coming to replace it,
+    // because nothing reads this file.
     const body = createHandlerBody(stripComments(read()))
     expect(body).toMatch(/PERSONALITY_PENDING_SENTINEL/)
   })
