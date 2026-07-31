@@ -21,6 +21,8 @@ import {
   markPendingTaskRetryAlert,
   clearPendingTaskRetryAlert,
   markScheduledTaskKanbanWaiting,
+  createAgentMessage,
+  getDb,
 } from '../db.js'
 import { toPendingRetryView, classifyTelegramSendError, type PendingRetryView } from '../pending-retries.js'
 import {
@@ -716,6 +718,7 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
   ;(async () => {
     try {
       await sendTelegramMessage(token, ALLOWED_CHAT_ID, text)
+      recordSchedulerAlert(ALLOWED_CHAT_ID, text)
       logger.info({ task: view.taskName, agent: view.agentName, ageMinutes }, 'Pending-retry Telegram alert sent')
     } catch (err) {
       // Distinguish a transient failure (network blip, 429, 5xx) from a
@@ -771,11 +774,56 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
   ;(async () => {
     try {
       await sendTelegramMessage(token, ALLOWED_CHAT_ID, text)
+      recordSchedulerAlert(ALLOWED_CHAT_ID, text)
       logger.info({ task: entry.taskName, agent: entry.agentName, ageMinutes }, 'task-timeout Telegram alert sent')
     } catch (err) {
       logger.warn({ err, task: entry.taskName, agent: entry.agentName }, 'task-timeout alert delivery failed')
     }
   })()
+}
+
+/**
+ * Record a scheduler alert that has already gone out, so the main agent knows
+ * it exists.
+ *
+ * These alerts leave through the bot directly, bypassing the main agent's
+ * session. On 2026-07-29 that produced an exchange where the operator asked
+ * about an alert and the agent truthfully denied sending it -- it had no record
+ * that the message existed at all. Two traces fix that: a conversation_log row,
+ * so the alert appears in the agent's own history, and an inter-agent message,
+ * so the agent is actually told rather than left to notice.
+ *
+ * Called only AFTER a successful send. Recording an alert that failed to go out
+ * would put a false "out" row in the ledger -- the same kind of confident,
+ * wrong record this card exists to remove.
+ *
+ * Both traces are best-effort and separately isolated: alerting is the point,
+ * and neither trace failing may take the other down or surface to the caller.
+ */
+export function recordSchedulerAlert(chatId: string, text: string, now = Math.floor(Date.now() / 1000)): void {
+  try {
+    // `ts` is an ISO-8601 UTC string and `created_at` epoch seconds -- the
+    // shape ledger_lib.py writes for every other row. Putting the epoch in
+    // both would store "1785000000.0" under TEXT affinity and quietly break
+    // anything that parses ts as a date.
+    getDb().prepare(
+      `INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, ts, created_at)
+       VALUES (?, ?, 'out', NULL, ?, ?, ?)`,
+    ).run(MAIN_AGENT_ID, chatId, text, new Date(now * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z'), now)
+  } catch (err) {
+    logger.warn(
+      { context: { action: 'scheduler_alert_log_failed' }, err: err instanceof Error ? err.message : 'unknown' },
+      'Scheduler alert could not be written to the conversation log',
+    )
+  }
+  try {
+    createAgentMessage('scheduler', MAIN_AGENT_ID, `[scheduler-alert, mar kiment Telegramra]\n${text}`)
+  } catch (err) {
+    logger.warn(
+      { context: { action: 'scheduler_alert_copy_failed' }, err: err instanceof Error ? err.message : 'unknown' },
+      'Scheduler alert copy could not be queued for the main agent',
+    )
+  }
 }
 
 // Tick interval for the schedule runner. 15 s gives 4x faster inter-agent
