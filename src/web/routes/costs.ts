@@ -12,6 +12,7 @@ import { syncFixedCostsToLedger, getCostSummary, getCostSources, getTokenCostRep
 import { PRICE_MAP, isPriced } from '../../costops/pricing.js'
 import { applyEcoMode, readEcoState, baseModelId, DEFAULT_ECO_MODEL } from '../../costops/eco-mode.js'
 import { getContextAttribution } from '../../costops/context-attribution.js'
+import { runQuotaGuard, readQuotaState, WARN_THRESHOLD, CRITICAL_THRESHOLD } from '../../costops/quota-guard.js'
 import { readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
@@ -135,6 +136,24 @@ export async function tryHandleCosts(ctx: RouteContext): Promise<boolean> {
     } catch (err) {
       logger.error({ err }, 'CostOps context attribution failed')
       json(res, { error: 'Context attribution failed' }, 500)
+    }
+    return true
+  }
+
+  // Subscription quota. Report only: this GET classifies but never switches
+  // eco mode or sends an alert -- acting is the periodic guard's job, so a
+  // dashboard refresh cannot trip the fleet into eco mode.
+  if (path === '/api/costs/quota' && method === 'GET') {
+    try {
+      const result = await runQuotaGuard({ act: false, readState: () => readQuotaState() })
+      json(res, {
+        ...result,
+        thresholds: { warning: WARN_THRESHOLD, critical: CRITICAL_THRESHOLD },
+        state: readQuotaState(),
+      })
+    } catch (err) {
+      logger.error({ err }, 'CostOps quota read failed')
+      json(res, { error: 'Quota read failed' }, 500)
     }
     return true
   }
