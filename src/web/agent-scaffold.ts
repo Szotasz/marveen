@@ -36,6 +36,25 @@ const tokenPath = join(PROJECT_ROOT, 'store', '.dashboard-token')
 // exists on the host that spawns the agents. Exported for unit tests.
 export const HOOK_NODE_BIN = process.execPath
 
+// The ONE way a gate hook command is assembled. Both halves are quoted:
+// process.execPath with a space in it (native Windows `C:\Program Files`, a
+// home directory with a space) would otherwise be split by `sh -c` at the
+// space -- exit 127, silently non-enforcing, the exact failure this file
+// exists to close. A single builder also keeps the injectors and every
+// wired-already comparison byte-identical, so they cannot drift.
+export function hookCommand(scriptPath: string): string {
+  return `"${HOOK_NODE_BIN}" "${scriptPath}"`
+}
+
+// Wired-already predicate for the ensure* migrations: is `command` present in
+// the serialized PreToolUse array? The command must be JSON-escaped before the
+// includes() -- comparing the RAW string disagrees with the serialized form on
+// any backslash path (Windows), where the check then never settles and every
+// boot rewrites settings.json. Exported for unit tests.
+export function hookCommandWired(ptuJson: string, command: string): boolean {
+  return ptuJson.includes(JSON.stringify(command).slice(1, -1))
+}
+
 // Identity values the template substitution injects. Pulled out so the
 // substitution is a pure, parameterizable function (the runtime binds these to
 // config; tests can prove a non-default identity substitutes with no literal
@@ -353,7 +372,7 @@ export function injectEmailSendGate(existing: Record<string, unknown>): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const command = `${HOOK_NODE_BIN} ${join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs')}`
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'))
   // Registration guard: a /tmp or missing path must never enter shared settings.
   if (isUnsafeHookCommand(command)) return
   const entry = {
@@ -388,7 +407,7 @@ export function injectSelfPaceGate(existing: Record<string, unknown>): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const command = `${HOOK_NODE_BIN} ${join(PROJECT_ROOT, 'scripts', 'self-pace-gate.mjs')}`
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'self-pace-gate.mjs'))
   // Registration guard: a /tmp or missing path must never enter shared settings.
   if (isUnsafeHookCommand(command)) return
   const entry = {
@@ -414,7 +433,7 @@ export function injectEgressGate(existing: Record<string, unknown>): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const command = `${HOOK_NODE_BIN} ${join(PROJECT_ROOT, 'scripts', 'hooks', 'egress-gate.mjs')}`
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'egress-gate.mjs'))
   // Registration guard: a /tmp or missing path must never enter shared settings.
   if (isUnsafeHookCommand(command)) return
   const entry = {
@@ -438,7 +457,7 @@ export function ensureEgressGate(name: string): boolean {
   if (existsSync(settingsPath)) {
     try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
   }
-  const command = `${HOOK_NODE_BIN} ${join(PROJECT_ROOT, 'scripts', 'hooks', 'egress-gate.mjs')}`
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'egress-gate.mjs'))
   const hooks = (settings.hooks && typeof settings.hooks === 'object')
     ? settings.hooks as Record<string, unknown>
     : {}
@@ -448,7 +467,7 @@ export function ensureEgressGate(name: string): boolean {
   // entry (dead on nvm PATHs, exit 127 = silently non-enforcing) must NOT
   // count as wired -- fall through so injectEgressGate replaces it in place.
   const ptuJson = JSON.stringify(ptu)
-  if (ptuJson.includes('egress-gate.mjs') && ptuJson.includes(command)) return false
+  if (ptuJson.includes('egress-gate.mjs') && hookCommandWired(ptuJson, command)) return false
   if (isUnsafeHookCommand(command)) return false
   injectEgressGate(settings)
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
@@ -553,8 +572,10 @@ export function renderQuarantineReader(template: string, domains: string[]): str
 // commands use the absolute node binary (HOOK_NODE_BIN). Legacy entries wrote a
 // bare `node`, which is missing from the non-interactive hook PATH on nvm
 // installs -- exit 127 counts as a non-blocking hook error, so those gates were
-// silently non-enforcing. Called at server startup (alongside ensureEgressGate)
-// so running agents are upgraded without waiting for their next respawn.
+// silently non-enforcing. Called at server startup (alongside ensureEgressGate).
+// NOTE: a running session does NOT re-read settings.json -- the rewritten
+// command takes effect at that agent's next (re)spawn; this call only makes
+// the migration zero-touch, not instantaneous.
 // Returns true if the file was updated, false if already correct.
 export function ensureGovernanceGateCommands(name: string): boolean {
   if (name === MAIN_AGENT_ID) return false
@@ -562,14 +583,14 @@ export function ensureGovernanceGateCommands(name: string): boolean {
   if (!existsSync(settingsPath)) return false
   let settings: Record<string, unknown> = {}
   try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
-  const emailCmd = `${HOOK_NODE_BIN} ${join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs')}`
-  const paceCmd = `${HOOK_NODE_BIN} ${join(PROJECT_ROOT, 'scripts', 'self-pace-gate.mjs')}`
+  const emailCmd = hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'))
+  const paceCmd = hookCommand(join(PROJECT_ROOT, 'scripts', 'self-pace-gate.mjs'))
   const hooks = (settings.hooks && typeof settings.hooks === 'object')
     ? settings.hooks as Record<string, unknown>
     : {}
   const ptuJson = JSON.stringify(Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : [])
-  const needEmail = agentGetsEmailGate(name) && !ptuJson.includes(JSON.stringify(emailCmd).slice(1, -1))
-  const needPace = agentGetsGovernanceGates(name) && !ptuJson.includes(JSON.stringify(paceCmd).slice(1, -1))
+  const needEmail = agentGetsEmailGate(name) && !hookCommandWired(ptuJson, emailCmd)
+  const needPace = agentGetsGovernanceGates(name) && !hookCommandWired(ptuJson, paceCmd)
   if (!needEmail && !needPace) return false
   // The injectors dedupe by script basename, so a stale bare-`node` entry is
   // replaced in place rather than accumulated.
