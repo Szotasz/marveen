@@ -378,9 +378,9 @@ window._i18n.hu = {
   'agents.wizard.gen_hint':      'Ez néhány másodpercig tarthat',
   // Shown on step 3 when the backend answered personalityPending:true. State, not
   // error: the agent exists and works, only its personality text is a placeholder.
-  'agents.wizard.pending_title': 'Az ágens elkészült, a személyisége viszont még nem',
-  'agents.wizard.pending_body':  'A CLAUDE.md és a SOUL.md automatikus generálása nem sikerült, ezért amit alább látsz, az egy sablon. Az ágens maga létrejött és működik, nem veszett el semmi. Átírhatod most itt, vagy így hagyod és később újragenerálod.',
-  'agents.wizard.pending_detail': 'A hiba oka: {detail}',
+  'agents.wizard.pending_title': 'Az ágens elkészült, a személyisége viszont sablonból jött',
+  'agents.wizard.pending_body':  'Az ágens létrejött és működik, nem veszett el semmi. A személyiségét nem sikerült legenerálni, ezért amit alább látsz, az egy sablon. Átírhatod most itt, vagy később bármikor az ágens beállításainál.',
+  'agents.wizard.pending_detail': 'Ami nem sikerült: {detail}',
   'agents.model.inherit':        'Öröklött (alapértelmezett)',
   'agents.model.fable5':         'Fable 5 (legújabb)',
   'agents.model.opus5':          'Opus 5 (legújabb Opus)',

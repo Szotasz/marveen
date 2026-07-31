@@ -884,7 +884,13 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }
 
     if (personalityPendingDetail !== null) {
-      json(res, { ok: true, name, personalityPending: true, warning: 'Agent created, but its personality came from a template because generation failed. It is queued for regeneration.', detail: personalityPendingDetail }, 200)
+      // The warning says what actually happens next. An earlier wording promised
+      // "It is queued for regeneration", and there is no queue: the sentinel is
+      // written by this handler and read by nothing (grep PERSONALITY_PENDING_SENTINEL).
+      // What DOES exist is PUT /api/agents/:name with claudeMd/soulMd, so that is
+      // what the message points at. The sentinel stays as a marker for whenever a
+      // regeneration path gets built; it just must not be described as one today.
+      json(res, { ok: true, name, personalityPending: true, warning: 'Agent created with a template personality because generation failed. Edit CLAUDE.md and SOUL.md to replace it.', detail: personalityPendingDetail }, 200)
       return true
     }
 
