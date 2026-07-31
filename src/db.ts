@@ -1965,8 +1965,7 @@ function vectorRecencyDecay(createdAt: number, nowSec: number): number {
 async function vectorSearch(
   agentId: string,
   queryEmbedding: number[],
-  limit: number = 10,
-  query?: string
+  limit: number = 10
 ): Promise<Memory[]> {
   let candidates: Memory[] = []
   const nowSec = Math.floor(Date.now() / 1000)
@@ -2028,18 +2027,7 @@ async function vectorSearch(
     candidates = scored.slice(0, limit * RERANK_FACTOR).map(s => s.memory)
   }
 
-  // Pipeline step 3: cross-encoder reranker picks the best N from the
-  // recency-reordered candidate pool -- only when enabled via the flag
-  // (default OFF: avoids ~100-300ms latency and the 23MB model download on
-  // every recall when the user has not opted in).
-  if (!query || candidates.length === 0) return candidates.slice(0, limit)
-  if (getEffectiveSettingValue('MEMORY_RERANK_ENABLED') !== '1') return candidates.slice(0, limit)
-  try {
-    return await rerank(query, candidates, { topK: limit })
-  } catch (err) {
-    logger.debug({ err }, 'vectorSearch: reranker threw unexpectedly, returning recency-boosted order')
-    return candidates.slice(0, limit)
-  }
+  return candidates.slice(0, limit)
 }
 
 // Decay applied to 1-hop neighbor scores added during graph traversal.
@@ -2054,7 +2042,7 @@ export async function hybridSearch(agentId: string, query: string, limit: number
 
   // Vector results
   const queryEmbedding = await generateEmbedding(query)
-  const vecResults = queryEmbedding ? await vectorSearch(agentId, queryEmbedding, limit * 2, query) : []
+  const vecResults = queryEmbedding ? await vectorSearch(agentId, queryEmbedding, limit * 2) : []
 
   // Reciprocal Rank Fusion
   const scores: Map<number, number> = new Map()
@@ -2086,6 +2074,22 @@ export async function hybridSearch(agentId: string, query: string, limit: number
   }
 
   const ranked = [...scores.entries()].sort((a, b) => b[1] - a[1])
+
+  // Pipeline step 3: cross-encoder reranker applied to the fused RRF list so
+  // the final order seen by callers reflects semantic relevance, not just
+  // BM25+cosine rank fusion. Only when flag is ON (default OFF).
+  if (getEffectiveSettingValue('MEMORY_RERANK_ENABLED') === '1') {
+    const fusedList = ranked.slice(0, limit * RERANK_FACTOR).map(([id]) => byId.get(id)!)
+    if (fusedList.length > 0) {
+      try {
+        return await rerank(query, fusedList, { topK: limit })
+      } catch (err) {
+        logger.debug({ err }, 'hybridSearch: reranker threw unexpectedly, returning RRF order')
+        return fusedList.slice(0, limit)
+      }
+    }
+  }
+
   return ranked.slice(0, limit).map(([id]) => byId.get(id)!)
 }
 
