@@ -1,7 +1,7 @@
 import { escapeHtml, mainAgentId } from './util.js'
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
-import { avatarBust } from './agents.js'
+import { avatarBust, setFederatedPeerStatus, federatedAgentEntries } from './agents.js'
 
 
 // === Team: inter-agent message log + compose ===
