@@ -126,9 +126,22 @@ function mainAgentId() {
   // same-origin API response, thrown fetch, and uncaught page error now lands
   // in a fixed banner the user can read and screenshot.
   const mvProblems = []
+  // The banner is opt-in (review feedback on PR #762): on a customer install a
+  // transient non-ok response must not paint the whole page red. Enable with
+  // ?mvdiag=1 (persisted for the browser) or localStorage 'mv_diag' = '1';
+  // ?mvdiag=0 turns it back off. When off, problems still go to the console.
+  function mvDiagEnabled() {
+    try {
+      const q = new URLSearchParams(location.search).get('mvdiag')
+      if (q === '1') { try { localStorage.setItem('mv_diag', '1') } catch { /* storage blocked */ } return true }
+      if (q === '0') { try { localStorage.removeItem('mv_diag') } catch { /* storage blocked */ } return false }
+      return localStorage.getItem('mv_diag') === '1'
+    } catch { return false }
+  }
   function mvReportProblem(detail) {
     if (mvProblems.includes(detail)) return
     mvProblems.push(detail)
+    if (!mvDiagEnabled()) { console.warn('[mv-diag]', detail); return }
     let bar = document.getElementById('mv-diag-banner')
     if (!bar) {
       bar = document.createElement('div')
