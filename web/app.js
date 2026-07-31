@@ -1884,7 +1884,11 @@ document.getElementById('saveCardBtn').addEventListener('click', async () => {
       const res = await fetch(`/api/kanban/${encodeURIComponent(editId)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
+        // reassign: the assignee field in this dialog is filled by hand, so
+        // taking a card off the owner here is deliberate. Without the flag the
+        // server keeps the owner (it cannot tell a chosen assignee from one
+        // that rode along in a full-card body).
+        body: JSON.stringify({ ...data, reassign: true }),
       })
       if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || res.status) }
       showToast(t('kanban.toast.card_updated'))
@@ -2247,7 +2251,9 @@ async function showCardDetail(card) {
         const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...card, assignee: newVal }),
+          // reassign: this picker exists to change the assignee -- see the
+          // card dialog above for why the server needs to be told.
+          body: JSON.stringify({ ...card, assignee: newVal, reassign: true }),
         })
         if (!r.ok) throw new Error('PUT failed')
         card.assignee = newVal

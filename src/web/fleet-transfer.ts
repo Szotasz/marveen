@@ -1122,14 +1122,20 @@ export function importFleet(
         }
       }
 
-      // kanban card events -- idempotent on (card_id, created_at, to_status)
+      // kanban card events -- idempotent on (card_id, created_at, to_status, kind).
+      // `kind` is part of the key because a status move and an assignee change
+      // can land in the same second on the same card with the same to_status;
+      // without it the second one would look like a duplicate and be dropped.
+      // An export from an older install carries no kind -- those rows are
+      // status events, which is exactly what the schema default says.
       for (const ev of fleet.kanban?.cardEvents ?? []) {
         const e = ev as any
         if (!e.card_id || !e.to_status) continue
-        if (!db.prepare('SELECT 1 FROM kanban_card_events WHERE card_id = ? AND created_at = ? AND to_status = ?')
-          .get(e.card_id, e.created_at, e.to_status)) {
-          db.prepare('INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)')
-            .run(e.card_id, e.from_status ?? null, e.to_status, e.actor, e.created_at)
+        const kind = e.kind ?? 'status'
+        if (!db.prepare('SELECT 1 FROM kanban_card_events WHERE card_id = ? AND created_at = ? AND to_status = ? AND kind = ?')
+          .get(e.card_id, e.created_at, e.to_status, kind)) {
+          db.prepare('INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, kind, from_assignee, to_assignee) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+            .run(e.card_id, e.from_status ?? null, e.to_status, e.actor, e.created_at, kind, e.from_assignee ?? null, e.to_assignee ?? null)
         }
       }
 

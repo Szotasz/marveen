@@ -228,8 +228,13 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanCardMatch && method === 'PUT') {
     const id = decodeURIComponent(kanbanCardMatch[1])
     const body = await readBody(req)
-    const data = JSON.parse(body.toString())
-    if (updateKanbanCard(id, data)) { json(res, { ok: true }); return true }
+    // `actor` and `reassign` steer the update, they are not card columns:
+    // `reassign` is the caller stating that taking the card off the owner is
+    // the point of the call (see the owner guard in updateKanbanCard), and
+    // `actor` names who did it on the audit row. Same `actor` convention as
+    // the move endpoint below.
+    const { actor, reassign, ...data } = JSON.parse(body.toString())
+    if (updateKanbanCard(id, data, { actor, reassign: reassign === true })) { json(res, { ok: true }); return true }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
   }
@@ -417,13 +422,47 @@ export function notifyOwnerOfAgentComment(
     deliver = (text: string) => sendTelegramMessage(TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_ID, text)
   }
 
-  const excerpt = content.replace(/\s+/g, ' ').trim().slice(0, 180)
-  const text = `[kanban] ${author} kommentelt a kartyadon: "${card.title}"\n${excerpt}${content.length > 180 ? '...' : ''}`
-  void deliver(text).catch((err: unknown) => {
-    logger.warn(
-      { context: { action: 'owner_comment_nudge_failed', card: card.id }, err: err instanceof Error ? err.message : 'unknown' },
-      'Owner comment nudge could not be delivered',
-    )
-  })
+  // The ellipsis has to judge the text that was actually cut. Measuring the
+  // raw content instead put "..." on comments that fit whole -- a short
+  // comment padded with newlines is long raw and short flattened.
+  const flat = content.replace(/\s+/g, ' ').trim()
+  const excerpt = flat.slice(0, 180)
+  const text = `[kanban] ${author} kommentelt a kartyadon: "${card.title}"\n${excerpt}${flat.length > 180 ? '...' : ''}`
+  void deliver(text)
+    .then(() => recordOwnerNudge(text))
+    .catch((err: unknown) => {
+      logger.warn(
+        { context: { action: 'owner_comment_nudge_failed', card: card.id }, err: err instanceof Error ? err.message : 'unknown' },
+        'Owner comment nudge could not be delivered',
+      )
+    })
   return true
+}
+
+/**
+ * Put a delivered nudge into the main agent's conversation log.
+ *
+ * The nudge leaves through the bot directly, bypassing the agent's session --
+ * the same invisibility that made the scheduler deny sending an alert it had
+ * sent (see recordSchedulerAlert). Without this row the agent has no record
+ * that the owner was pinged at all.
+ *
+ * Called only after a successful send, and best-effort: a nudge that went out
+ * must not be undone by a ledger write, and the caller is an API request.
+ */
+function recordOwnerNudge(text: string, now = Math.floor(Date.now() / 1000)): void {
+  try {
+    // `ts` is an ISO-8601 UTC string and `created_at` epoch seconds -- the
+    // shape every other row in this table has. An epoch in both would store
+    // a number under TEXT affinity and break anything parsing ts as a date.
+    getDb().prepare(
+      `INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, ts, created_at)
+       VALUES (?, ?, 'out', NULL, ?, ?, ?)`,
+    ).run(MAIN_AGENT_ID, ALLOWED_CHAT_ID, text, new Date(now * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z'), now)
+  } catch (err) {
+    logger.warn(
+      { context: { action: 'owner_comment_nudge_log_failed' }, err: err instanceof Error ? err.message : 'unknown' },
+      'Owner comment nudge could not be written to the conversation log',
+    )
+  }
 }
