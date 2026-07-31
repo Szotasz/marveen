@@ -25,6 +25,8 @@ import { logger } from '../logger.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
 import { createAgentMessage } from '../db.js'
 import { applyEcoMode, readEcoState, DEFAULT_ECO_MODEL, type EcoApplyResult } from './eco-mode.js'
+import { checkContextCeilings, readCeilingState, writeCeilingState } from './context-ceiling.js'
+import { getDb } from '../db.js'
 
 export const CREDENTIALS_PATH = join(homedir(), '.claude', '.credentials.json')
 export const USAGE_ENDPOINT = 'https://api.anthropic.com/api/oauth/usage'
@@ -337,10 +339,44 @@ export function writeQuotaState(state: QuotaGuardState, path = QUOTA_STATE_PATH)
  * Periodic check. Runs once at boot and then on the interval; failures are
  * contained by runQuotaGuard, which never throws.
  */
-export function startQuotaGuardTask(intervalMs = CHECK_INTERVAL_MS): NodeJS.Timeout {
-  const tick = () => {
-    void runQuotaGuard({ readState: () => readQuotaState(), writeState: (s) => writeQuotaState(s) })
+/**
+ * One cycle of every periodic CostOps watch.
+ *
+ * Both watches ride this single timer rather than owning one each: they share a
+ * cadence and neither is urgent. More importantly, one place to look means a
+ * watch cannot end up written, tested and never called -- which is exactly what
+ * happened to the context ceiling on its first commit. A test asserts this
+ * function invokes both.
+ *
+ * Each watch is isolated: a failure in one must not stop the other from running,
+ * because a guard that takes its sibling down with it is worse than either alone.
+ */
+export async function guardTick(deps: {
+  quota?: () => Promise<unknown>
+  ceiling?: () => unknown
+} = {}): Promise<void> {
+  try {
+    await (deps.quota ?? (() =>
+      runQuotaGuard({ readState: () => readQuotaState(), writeState: (s) => writeQuotaState(s) })))()
+  } catch (err) {
+    logger.error(
+      { context: { action: 'quota_guard_tick_failed' }, err: err instanceof Error ? err.message : 'unknown' },
+      'Quota guard tick failed',
+    )
   }
+  try {
+    ;(deps.ceiling ?? (() =>
+      checkContextCeilings(getDb(), { readState: () => readCeilingState(), writeState: (s) => writeCeilingState(s) })))()
+  } catch (err) {
+    logger.error(
+      { context: { action: 'context_ceiling_tick_failed' }, err: err instanceof Error ? err.message : 'unknown' },
+      'Context ceiling tick failed',
+    )
+  }
+}
+
+export function startQuotaGuardTask(intervalMs = CHECK_INTERVAL_MS): NodeJS.Timeout {
+  const tick = () => { void guardTick() }
   tick()
   return setInterval(tick, intervalMs).unref()
 }

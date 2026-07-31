@@ -15,9 +15,13 @@
 // bloated session is an operator call.
 
 import type Database from 'better-sqlite3'
+import { readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID } from '../config.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { createAgentMessage } from '../db.js'
+
+export const CEILING_STATE_PATH = join(PROJECT_ROOT, 'store', 'context-ceiling.json')
 
 /**
  * Where the eco-worker's advantage disappears entirely, from the R1-A model:
@@ -153,6 +157,29 @@ function defaultNotify(text: string): void {
     logger.error(
       { context: { action: 'context_ceiling_undeliverable' }, err: err instanceof Error ? err.message : 'unknown' },
       'Context ceiling: alert could not be queued for the main agent',
+    )
+  }
+}
+
+export function readCeilingState(path = CEILING_STATE_PATH): CeilingState {
+  try {
+    if (!existsSync(path)) return { last_alert_at: {} }
+    const raw = JSON.parse(readFileSync(path, 'utf-8')) as Partial<CeilingState>
+    return { last_alert_at: (raw.last_alert_at && typeof raw.last_alert_at === 'object') ? raw.last_alert_at : {} }
+  } catch {
+    return { last_alert_at: {} }
+  }
+}
+
+export function writeCeilingState(state: CeilingState, path = CEILING_STATE_PATH): void {
+  try {
+    const tmp = `${path}.tmp`
+    writeFileSync(tmp, JSON.stringify(state, null, 2) + '\n', 'utf-8')
+    renameSync(tmp, path)
+  } catch (err) {
+    logger.warn(
+      { context: { action: 'ceiling_state_write_failed' }, err: err instanceof Error ? err.message : 'unknown' },
+      'Context ceiling: could not persist alert state (it will re-alert next cycle)',
     )
   }
 }
