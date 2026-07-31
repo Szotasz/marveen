@@ -2248,6 +2248,15 @@
 
         <!-- Step 3: Review -->
         <div class="wizard-panel" id="wizardStep3" hidden>
+          <!-- Shown only when the backend answered personalityPending:true, i.e. the
+               agent exists but its CLAUDE.md/SOUL.md are placeholders. Deliberately
+               placed ABOVE the two textareas: this is the first screen where the
+               operator SEES the text, and the same screen where they can rewrite it. -->
+          <div class="wizard-pending-banner" id="wizardPendingBanner" hidden>
+            <div class="wizard-pending-title" id="wizardPendingTitle"></div>
+            <div class="wizard-pending-body" id="wizardPendingBody"></div>
+            <div class="wizard-pending-detail" id="wizardPendingDetail" hidden></div>
+          </div>
           <div class="form-group">
             <label for="wizardClaudeMd">CLAUDE.md</label>
             <textarea id="wizardClaudeMd" class="code-textarea" rows="10"></textarea>

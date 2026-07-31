@@ -376,6 +376,11 @@ window._i18n.hu = {
   'agents.wizard.desc_label':    'Írd le szabadon, mit szeretnél hogy csináljon ez az ügynök',
   'agents.wizard.profile_label': 'Biztonsági profil',
   'agents.wizard.gen_hint':      'Ez néhány másodpercig tarthat',
+  // Shown on step 3 when the backend answered personalityPending:true. State, not
+  // error: the agent exists and works, only its personality text is a placeholder.
+  'agents.wizard.pending_title': 'Az ágens elkészült, a személyisége viszont még nem',
+  'agents.wizard.pending_body':  'A CLAUDE.md és a SOUL.md automatikus generálása nem sikerült, ezért amit alább látsz, az egy sablon. Az ágens maga létrejött és működik, nem veszett el semmi. Átírhatod most itt, vagy így hagyod és később újragenerálod.',
+  'agents.wizard.pending_detail': 'A hiba oka: {detail}',
   'agents.model.inherit':        'Öröklött (alapértelmezett)',
   'agents.model.fable5':         'Fable 5 (legújabb)',
   'agents.model.opus5':          'Opus 5 (legújabb Opus)',

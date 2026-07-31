@@ -2501,6 +2501,11 @@ let wizardStep = 1
 let generatedClaudeMd = ''
 let generatedSoulMd = ''
 let wizardCreatedName = ''
+// Set from the POST /api/agents response when the backend fell back to a template
+// because personality generation failed. It answers 200 in that case (the agent
+// EXISTS and works), so `res.ok` alone cannot tell the operator anything -- without
+// reading this field the wizard would look exactly like a full success.
+let wizardPersonalityPending = null
 
 // === Modal helpers ===
 function openModal(overlay) {
@@ -2638,6 +2643,32 @@ function populatePlanSelect(selectEl, descEl, selected) {
     })
 }
 
+// Paints (or clears) the step-3 notice from wizardPersonalityPending. Called from
+// resetWizard() too, so a later successful run can never inherit a stale banner.
+function renderWizardPendingBanner() {
+  const banner = document.getElementById('wizardPendingBanner')
+  if (!banner) return
+  if (!wizardPersonalityPending) {
+    banner.hidden = true
+    return
+  }
+  document.getElementById('wizardPendingTitle').textContent = t('agents.wizard.pending_title')
+  document.getElementById('wizardPendingBody').textContent = t('agents.wizard.pending_body')
+  const detailEl = document.getElementById('wizardPendingDetail')
+  const detail = wizardPersonalityPending.detail
+  // The cause is shown, but only when the server actually sent one: an empty
+  // string here would render "A hiba oka: " with nothing after it, which reads
+  // like the UI lost something.
+  if (detail) {
+    detailEl.textContent = t('agents.wizard.pending_detail', { detail })
+    detailEl.hidden = false
+  } else {
+    detailEl.textContent = ''
+    detailEl.hidden = true
+  }
+  banner.hidden = false
+}
+
 function resetWizard() {
   wizardStep = 1
   agentName.value = ''
@@ -2651,6 +2682,8 @@ function resetWizard() {
   generatedClaudeMd = ''
   generatedSoulMd = ''
   wizardCreatedName = ''
+  wizardPersonalityPending = null
+  renderWizardPendingBanner()
   document.getElementById('wizardClaudeMd').value = ''
   document.getElementById('wizardSoulMd').value = ''
   populateProfileSelect(
@@ -2711,6 +2744,12 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
     // like "étrendíró" still resolves to the real agent dir "etrendiro".
     const createdName = result.name || name
     wizardCreatedName = createdName
+    // 200 + personalityPending means the agent was created but its personality
+    // came from a template. Captured here and painted when step 3 opens, where
+    // the operator both sees the placeholder text and can rewrite it.
+    wizardPersonalityPending = result.personalityPending
+      ? { detail: result.detail || '', warning: result.warning || '' }
+      : null
     statusEl.textContent = t('agents.soul_md_generating')
 
     // Fetch full agent details to get generated content
@@ -2745,6 +2784,7 @@ document.getElementById('wizardNextBtn').addEventListener('click', async () => {
       wizardStep = 3
       document.getElementById('wizardClaudeMd').value = generatedClaudeMd
       document.getElementById('wizardSoulMd').value = generatedSoulMd
+      renderWizardPendingBanner()
       updateWizardUI()
     }, 600)
   } catch (err) {

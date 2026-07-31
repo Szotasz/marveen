@@ -2791,6 +2791,33 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
 }
 .approvals-pending-banner[hidden] { display: none; }
 
+/* Wizard step 3: the agent was created but its personality is a placeholder.
+   Warning tone, not danger: nothing failed for the operator to undo, the agent
+   works. Same token set as .approvals-pending-banner so the two read as one
+   family. */
+.wizard-pending-banner {
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--warning, #d4a52c) 12%, transparent);
+  border: 1px solid var(--warning, #d4a52c);
+  font-size: 13px;
+  color: var(--text);
+}
+.wizard-pending-banner[hidden] { display: none; }
+.wizard-pending-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.wizard-pending-body { line-height: 1.5; }
+.wizard-pending-detail {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+.wizard-pending-detail[hidden] { display: none; }
+
 .approvals-stats {
   display: flex;
   gap: 12px;
