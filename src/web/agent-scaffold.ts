@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL } from '../config.js'
+import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, STORE_DIR } from '../config.js'
 import { channelStateDir } from '../channel-provider.js'
 import { runAgent } from '../agent.js'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -444,10 +444,109 @@ export function ensureEgressGate(name: string): boolean {
   return true
 }
 
+// The domains the owner added for this install, from the egress allowlist.
+// That file is the owner's gate for outbound calls; the reader's own list used
+// to be a SECOND list of the same decision, kept by hand, and the two drifted:
+// on 2026-07-29 an install had claude.com on the egress gate but not in the
+// reader, so every fetch to it failed with "domain not on allowlist" while the
+// operator was looking at an allowlist that said otherwise.
+// A hostname the reader may be pointed at. The egress allowlist and the reader
+// are edited with different threat models in mind: the egress gate answers "may
+// the main agent call this host", where an owner adding their own dashboard or a
+// LAN box is ordinary. The reader's list answers "may a fetch target be steered
+// here", and that one is the backstop against a fetch being aimed inward -- the
+// caller is the main agent, and the main agent is exactly what earlier fetched
+// content can influence. So an entry that is fine on the gate is not
+// automatically fine here, and the ones that are not are dropped rather than
+// inherited silently.
+//
+// Rejected: IP literals of any kind (a fetch target is a name, and an address
+// bypasses the name check entirely), single-label names, and the internal
+// suffixes. That covers loopback, RFC1918, link-local (169.254.169.254 is the
+// cloud metadata endpoint), `localhost`, `*` and anything with a scheme, port,
+// path or space in it.
+export function isPublicFetchHost(value: string): boolean {
+  const host = value.trim().toLowerCase()
+  if (!host || host.length > 253) return false
+  if (/[^a-z0-9.-]/.test(host)) return false          // scheme, port, path, wildcard, space
+  if (host.startsWith('.') || host.endsWith('.')) return false
+  if (host.startsWith('-') || host.endsWith('-')) return false
+  if (/^\d+(\.\d+)*$/.test(host)) return false        // IPv4 literal or a bare number
+  const labels = host.split('.')
+  if (labels.length < 2) return false                 // single label: localhost and friends
+  if (labels.some((l) => !l || l.length > 63 || l.startsWith('-') || l.endsWith('-'))) return false
+  const INTERNAL_SUFFIX = ['local', 'internal', 'localdomain', 'lan', 'intranet', 'home', 'arpa', 'test', 'invalid', 'localhost']
+  if (INTERNAL_SUFFIX.includes(labels[labels.length - 1])) return false
+  return true
+}
+
+export function ownerAllowedDomains(storeDir = STORE_DIR): string[] {
+  try {
+    const raw = JSON.parse(readFileSync(join(storeDir, 'egress-allowlist.json'), 'utf-8'))
+    const list = Array.isArray(raw?.domains) ? raw.domains : []
+    return list.filter((d: unknown): d is string => typeof d === 'string')
+      .map((d: string) => d.trim())
+      .filter((d: string) => isPublicFetchHost(d))
+  } catch {
+    return []   // no file, unreadable, or malformed: ship the template as-is
+  }
+}
+
+// Render the reader definition: the template's shipped feeds, plus the domains
+// the owner allowed on this install. Pure, so the tests drive the same string
+// the deploy writes.
+//
+// Marker-delimited so a re-render replaces the previous block instead of
+// stacking copies, and so a reader can see which lines are per-install.
+export function renderQuarantineReader(template: string, domains: string[]): string {
+  const BEGIN = '<!-- BEGIN PER-INSTALL DOMAINS (from store/egress-allowlist.json) -->'
+  const END = '<!-- END PER-INSTALL DOMAINS -->'
+  // Strip a previous block by literal position, NOT with a regex: the markers
+  // contain parentheses, dots and a slash, and an unescaped RegExp turns
+  // "(from store/egress-allowlist.json)" into a capture group that never
+  // matches the literal text. First version of this shipped that bug and the
+  // revoke test caught it.
+  let stripped = template
+  const b = stripped.indexOf(BEGIN)
+  if (b >= 0) {
+    const e = stripped.indexOf(END, b)
+    if (e > b) {
+      const from = b > 0 && stripped[b - 1] === '\n' ? b - 1 : b
+      stripped = stripped.slice(0, from) + stripped.slice(e + END.length)
+    }
+  }
+  const already = new Set(
+    [...stripped.matchAll(/^- `([^`]+)`/gm)].map((m) => m[1].toLowerCase()))
+  const extra = domains.filter((d) => !already.has(d.toLowerCase()))
+  if (!extra.length) return stripped
+  const block = [BEGIN, ...extra.map((d) => `- \`${d}\``), END].join('\n')
+  // Anchor on the LAST bullet inside the Domain restriction section, not on the
+  // last bullet in the file: the moment a backtick-bullet appears in any later
+  // section, a file-wide anchor would silently relocate the per-install block
+  // there. Raised in review on #797.
+  const headingRx = /^##\s+Domain restriction\s*$/m
+  const heading = headingRx.exec(stripped)
+  const sectionStart = heading ? (heading.index ?? 0) + heading[0].length : 0
+  const nextHeading = /^##\s+/m.exec(stripped.slice(sectionStart))
+  const sectionEnd = nextHeading ? sectionStart + (nextHeading.index ?? 0) : stripped.length
+  const section = stripped.slice(sectionStart, sectionEnd)
+  const bullets = [...section.matchAll(/^- `[^`]+`.*$/gm)]
+  if (!bullets.length) return stripped
+  const last = bullets[bullets.length - 1]
+  const at = sectionStart + (last.index ?? 0) + last[0].length
+  return `${stripped.slice(0, at)}\n${block}${stripped.slice(at)}`
+}
+
 // Deploy the quarantine-reader sub-agent definition to an agent's
-// .claude/agents/ directory. The template lives in templates/agents/ (tracked
-// in git); sub-agent definitions under agents/ are gitignored at runtime.
-// Idempotent: only writes when the file is absent or the template is newer.
+// .claude/agents/ directory. The template lives in templates/sub-agents/
+// (tracked in git); the deployed copies are per-install runtime state.
+//
+// Writes when the rendered content differs from what is on disk, in EITHER
+// direction. The previous docstring claimed "only when the template is newer",
+// but the code compared contents, so a hand-edited deployed file was silently
+// reverted at the next boot -- which is how an owner-approved domain
+// disappeared on 2026-07-30. Now the owner's domains are an INPUT to the
+// render, so a re-render preserves the decision instead of erasing it.
 // Returns true if the file was written, false if already up-to-date.
 export function ensureQuarantineReader(name: string): boolean {
   const tplPath = join(PROJECT_ROOT, 'templates', 'sub-agents', 'quarantine-reader.md')
@@ -460,13 +559,18 @@ export function ensureQuarantineReader(name: string): boolean {
   }
   mkdirSync(destDir, { recursive: true })
   const destPath = join(destDir, 'quarantine-reader.md')
-  // Idempotency: already deployed when file exists and matches the template.
+  let rendered: string
+  try {
+    rendered = renderQuarantineReader(readFileSync(tplPath, 'utf-8'), ownerAllowedDomains())
+  } catch {
+    return false
+  }
   if (existsSync(destPath)) {
     try {
-      if (readFileSync(destPath, 'utf-8') === readFileSync(tplPath, 'utf-8')) return false
+      if (readFileSync(destPath, 'utf-8') === rendered) return false
     } catch { /* fall through to re-write */ }
   }
-  copyFileSync(tplPath, destPath)
+  writeFileSync(destPath, rendered)
   return true
 }
 
