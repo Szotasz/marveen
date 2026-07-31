@@ -282,13 +282,16 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
   const setCursor = db.prepare('INSERT OR REPLACE INTO token_usage_cursors (file_path, last_line, last_size, last_task_title) VALUES (?, ?, ?, ?)')
   const insertCall = db.prepare(`
     INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens,
-      cache_read_tokens, cache_creation_tokens, thinking_tokens, model, content_preview, tool_name, task_title)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      cache_read_tokens, cache_creation_tokens, thinking_tokens, model, content_preview, tool_name, task_title, task_source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(agent, session_id, timestamp, input_tokens, output_tokens) DO UPDATE SET
       model = CASE WHEN token_usage.model IS NULL AND excluded.model IS NOT NULL THEN excluded.model ELSE token_usage.model END,
       -- Fills in on a re-scan but never overwrites an existing label, so a
       -- deliberate backfill can label history without rewriting good rows.
       task_title = CASE WHEN token_usage.task_title IS NULL AND excluded.task_title IS NOT NULL THEN excluded.task_title ELSE token_usage.task_title END,
+      -- Fills provenance on a rescan for rows labelled before this column
+      -- existed, without ever relabelling a row that already has a source.
+      task_source = CASE WHEN token_usage.task_source IS NULL AND excluded.task_source IS NOT NULL THEN excluded.task_source ELSE token_usage.task_source END,
       thinking_tokens = CASE WHEN (token_usage.thinking_tokens IS NULL OR token_usage.thinking_tokens = 0) AND excluded.thinking_tokens > 0 THEN excluded.thinking_tokens ELSE token_usage.thinking_tokens END
   `)
 
@@ -320,6 +323,7 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
                 c.cacheReadTokens, c.cacheCreationTokens,
                 c.thinkingTokens, c.model,
                 c.contentPreview || null, c.toolName, c.taskTitle,
+                c.taskTitle ? 'schedule_marker' : null,
               )
             }
             setCursor.run(file, linesRead, fileSize, endTask)
@@ -582,7 +586,7 @@ export function correlateWithKanban(): void {
 
       db.prepare(`
         UPDATE token_usage
-        SET task_title = ?, project = ?
+        SET task_title = ?, project = ?, task_source = 'kanban_correlation'
         WHERE agent = ? AND timestamp BETWEEN ? AND ? AND task_title IS NULL
       `).run(card.title, card.project || null, row.agent, card.updated_at, endTs)
     }
