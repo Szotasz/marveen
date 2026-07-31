@@ -596,6 +596,12 @@ export function initDatabase(dbPathOverride?: string): void {
       last_size INTEGER NOT NULL DEFAULT 0
     )
   `)
+  // The scheduled task a transcript was last working on. Transcript parsing
+  // resumes mid-file from last_line, so the marker that names the task can sit
+  // in an already-consumed chunk; without carrying it across, every row after
+  // the first resume would lose its label and the attribution would be silently
+  // partial rather than obviously broken.
+  try { db.exec('ALTER TABLE token_usage_cursors ADD COLUMN last_task_title TEXT') } catch { /* already exists */ }
 
   // --- Idea Box ---
   db.exec(`
