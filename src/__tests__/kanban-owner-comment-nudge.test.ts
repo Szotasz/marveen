@@ -1,6 +1,22 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { notifyOwnerOfAgentComment } from '../web/routes/kanban.js'
 import { OWNER_NAME } from '../config.js'
+import { initDatabase, getDb } from '../db.js'
+
+// An empty bot token is what an install without Telegram looks like -- the
+// only way to exercise the channel guard, since the tests everywhere else
+// inject their own sender and never reach it. The chat id stays set so the
+// conversation-log row has something to assert on.
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
+  TELEGRAM_BOT_TOKEN: '',
+  ALLOWED_CHAT_ID: '4242',
+}))
+
+beforeEach(() => {
+  // The nudge writes itself to conversation_log; give it a real schema.
+  initDatabase(':memory:')
+})
 
 /**
  * A card assigned to the owner is one THEY are expected to act on. An agent
@@ -68,6 +84,44 @@ describe('what the nudge says', () => {
     notifyOwnerOfAgentComment(card(), 'prisma', 'elso\n\n  masodik', async (t) => { text = t })
     expect(text).toContain('elso masodik')
   })
+
+  it('does not claim truncation on a comment that fits once flattened', async () => {
+    // A short comment padded with blank lines is long raw and short flattened.
+    // Measuring the raw length put "..." on comments shown whole.
+    let text = ''
+    const padded = `roviden kesz.${'\n'.repeat(300)}`
+    notifyOwnerOfAgentComment(card(), 'prisma', padded, async (t) => { text = t })
+    expect(text).toContain('roviden kesz.')
+    expect(text).not.toContain('...')
+  })
+})
+
+describe('the agent knows the owner was pinged', () => {
+  it('logs a delivered nudge to the conversation log', async () => {
+    // The nudge leaves through the bot, outside the agent's session. Without
+    // this row the agent has no record that the owner was pinged at all.
+    notifyOwnerOfAgentComment(card(), 'prisma', 'Kesz, review-ra var.', async () => {})
+    await new Promise((r) => setTimeout(r, 0))
+
+    const row = getDb().prepare(
+      "SELECT chat_id, direction, text, ts FROM conversation_log WHERE direction = 'out'",
+    ).get() as { chat_id: string; direction: string; text: string; ts: string } | undefined
+    expect(row).toBeDefined()
+    expect(row!.chat_id).toBe('4242')
+    expect(row!.text).toContain('Kesz, review-ra var.')
+    // ISO-8601, not an epoch stringified into a TEXT column.
+    expect(row!.ts).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/)
+  })
+
+  it('logs nothing when delivery failed', async () => {
+    // A row for a message that never went out is the same confident-and-wrong
+    // record this trace exists to remove.
+    notifyOwnerOfAgentComment(card(), 'prisma', 'x', async () => { throw new Error('telegram down') })
+    await new Promise((r) => setTimeout(r, 0))
+
+    const count = getDb().prepare('SELECT count(*) AS n FROM conversation_log').get() as { n: number }
+    expect(count.n).toBe(0)
+  })
 })
 
 describe('it never breaks commenting', () => {
@@ -80,10 +134,10 @@ describe('it never breaks commenting', () => {
   })
 
   it('returns false rather than sending when the channel is unconfigured', () => {
-    // Covered by the token/chat guard: an install without Telegram configured
-    // must not throw on every comment.
-    const send = vi.fn(async () => {})
-    const result = notifyOwnerOfAgentComment(card({ assignee: 'nobody' }), 'prisma', 'x', send)
-    expect(result).toBe(false)
+    // No injected sender: this has to fall through to the default transport
+    // and stop at the token/chat guard. Passing a sender would skip the guard
+    // entirely, and an off-owner card would return false for the wrong reason
+    // -- the assertion would pass while testing nothing.
+    expect(notifyOwnerOfAgentComment(card(), 'prisma', 'x')).toBe(false)
   })
 })

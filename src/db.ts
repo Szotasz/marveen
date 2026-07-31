@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync } from 'node:fs'
-import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from './config.js'
+import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ, OWNER_NAME } from './config.js'
 import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
@@ -388,6 +388,21 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_events_card ON kanban_card_events(card_id, created_at)`)
+  // The same trail also carries assignee changes (kind='assignee') and refused
+  // owner take-overs (kind='assignee_blocked'), so "who took this card off the
+  // owner, when" is answerable from data instead of guesswork. Added as
+  // columns rather than a second table because the questions are asked
+  // together ("what happened to this card").
+  //
+  // Legacy rows have no `kind`; the DEFAULT backfills them as 'status', which
+  // is what they are. On an assignee row from/to_status carry the status at
+  // the time of the change -- equal when the update did not move the card, so
+  // a reader that only looks at the status pair sees no transition and cannot
+  // mistake it for one.
+  const cardEventCols = (db.prepare('PRAGMA table_info(kanban_card_events)').all() as { name: string }[]).map(r => r.name)
+  if (!cardEventCols.includes('kind'))          db.exec("ALTER TABLE kanban_card_events ADD COLUMN kind TEXT NOT NULL DEFAULT 'status'")
+  if (!cardEventCols.includes('from_assignee')) db.exec('ALTER TABLE kanban_card_events ADD COLUMN from_assignee TEXT')
+  if (!cardEventCols.includes('to_assignee'))   db.exec('ALTER TABLE kanban_card_events ADD COLUMN to_assignee TEXT')
 
   // --- Kanban labels (tags) -----------------------------------------------
   // Labels are a separate registry (not hardcoded per-card strings) so the
@@ -1704,15 +1719,88 @@ export function createKanbanCard(card: {
   )
 }
 
-export function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>): boolean {
+export interface UpdateKanbanCardOptions {
+  /** Who is making the change. Recorded on the assignee audit row. */
+  actor?: string
+  /**
+   * Explicit hand-off. Required to move a card OFF the owner -- see the
+   * owner guard in updateKanbanCard.
+   */
+  reassign?: boolean
+}
+
+/**
+ * Update a card's fields.
+ *
+ * Two behaviours beyond the plain UPDATE:
+ *
+ * 1. OWNER GUARD. A card the owner holds is one THEY are expected to act on;
+ *    losing it to an agent hides work the owner is waiting on. Most writers
+ *    here send the WHOLE card back (`{...card, parent_id}`), so an assignee
+ *    they never meant to touch rides along from whatever state they were
+ *    holding -- a stale copy silently reassigns the card. So an incoming
+ *    assignee that differs from the owner is dropped unless the caller says
+ *    `reassign`, which the deliberate paths (the card editor, the assignee
+ *    picker) do say. Everything else in the update still applies: refusing
+ *    the whole write would turn a stray field into a failed edit.
+ *
+ * 2. AUDIT. Every assignee change -- and every refusal -- is written to
+ *    kanban_card_events, so a card that changes hands names its actor
+ *    instead of leaving the board to be read backwards from comments.
+ */
+export function updateKanbanCard(
+  id: string,
+  fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>,
+  opts: UpdateKanbanCardOptions = {},
+): boolean {
   const card = getKanbanCard(id)
   if (!card) return false
   const now = Math.floor(Date.now() / 1000)
   const f = { ...card, ...fields, updated_at: now }
-  return db.prepare(
+
+  // Owner match is case-insensitive on both sides: the board holds both
+  // 'marveen' and 'Marveen', and a guard that misses on casing is no guard.
+  const owner = OWNER_NAME.trim().toLowerCase()
+  const held = (card.assignee ?? '').trim().toLowerCase()
+  const incoming = (f.assignee ?? '').trim().toLowerCase()
+  const blocked = Boolean(owner) && held === owner && incoming !== held && !opts.reassign
+  const attempted = f.assignee ?? null
+  if (blocked) f.assignee = card.assignee
+
+  const changed = db.prepare(
     `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
      WHERE id=?`
   ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+  if (!changed) return false
+
+  if (blocked) {
+    recordAssigneeEvent(id, 'assignee_blocked', card, f.status, attempted, opts.actor, now)
+    logger.warn(
+      { context: { action: 'kanban_owner_assignee_protected', card: id, held: card.assignee, attempted, actor: opts.actor ?? null } },
+      'Refused to take an owner-held card off the owner (no reassign flag)',
+    )
+  } else if ((card.assignee ?? null) !== (f.assignee ?? null)) {
+    recordAssigneeEvent(id, 'assignee', card, f.status, f.assignee ?? null, opts.actor, now)
+  }
+  return true
+}
+
+// Audit row for an assignee change (or a refused one). from/to_status carry
+// the card's status across the same update -- equal unless the caller also
+// moved it -- so the row stays honest about what the card was doing.
+function recordAssigneeEvent(
+  cardId: string,
+  kind: 'assignee' | 'assignee_blocked',
+  card: KanbanCard,
+  toStatus: string,
+  toAssignee: string | null,
+  actor: string | undefined,
+  now: number,
+): void {
+  db.prepare(
+    `INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, kind, from_assignee, to_assignee)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(cardId, card.status, toStatus, actor ?? null, now, kind, card.assignee ?? null, toAssignee)
 }
 
 export function getChildCards(parentId: string): KanbanCard[] {
@@ -1838,6 +1926,10 @@ export interface KanbanCardEvent {
   to_status: string
   actor: string | null
   created_at: number
+  /** 'status' = a real column move; the assignee kinds come from updateKanbanCard. */
+  kind: 'status' | 'assignee' | 'assignee_blocked'
+  from_assignee: string | null
+  to_assignee: string | null
 }
 
 export function getKanbanCardEvents(cardId: string): KanbanCardEvent[] {
