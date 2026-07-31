@@ -226,13 +226,14 @@ function wireOnboarding(step) {
         onbMsg(msg, true)
       }
       try {
-        // Same boot race the Messages page already guards against: until
-        // /api/marveen resolves window._marveen, mainAgentId() returns the
-        // literal 'marveen' fallback. On a renamed install that is not the
-        // main agent, so the backend takes the sub-agent branch, finds no such
-        // agent dir and answers 404 -- and the wizard rendered that as "no
-        // pending pairing" while the Channel view, which uses the selected
-        // agent, listed the very same request.
+        // Guard against the boot race: the wizard can reach this branch before
+        // /api/marveen resolves window._marveen. Until it does, mainAgentId()
+        // returns the literal 'marveen' FALLBACK, which IS a real agent id on
+        // a default install but is NOT one wherever the main agent was renamed
+        // -- composing to it creates a phantom "marveen" thread that answers
+        // 404 here (no such agent dir), which the wizard rendered as "no
+        // pending pairing" while the Channel view, which uses the real agent,
+        // listed the very same request.
         if (!window._marveen?.agentId) {
           try {
             const r = await fetch('/api/marveen')
