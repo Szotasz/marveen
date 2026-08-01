@@ -56,7 +56,9 @@ describe('what actually moved', () => {
     card('cccc3333', 'Quiet card with a fresh comment', T0 - 40 * 3600)
     comment(1, 'cccc3333', T0 - 1800)
     const moved = groundTruthCards(getDb(), WINDOW.start, WINDOW.end)
-    expect(moved).toEqual([{ id: 'cccc3333', title: 'Quiet card with a fresh comment', via: 'comment' }])
+    // seq is the card's rowid -- carried along so the matcher can credit the
+    // "#<seq>" form the fleet writes.
+    expect(moved).toEqual([{ id: 'cccc3333', seq: expect.any(Number), title: 'Quiet card with a fresh comment', via: 'comment' }])
   })
 
   it('does not count the same card twice', () => {
@@ -94,8 +96,8 @@ describe('what the worker actually sent', () => {
 
 describe('coverage', () => {
   const moved = [
-    { id: 'aaaa1111', title: 'Lightweight shipping calculator', via: 'card' as const },
-    { id: 'bbbb2222', title: 'GDPR data request review', via: 'card' as const },
+    { id: 'aaaa1111', seq: 41, title: 'Lightweight shipping calculator', via: 'card' as const },
+    { id: 'bbbb2222', seq: 42, title: 'GDPR data request review', via: 'card' as const },
   ]
 
   it('credits a card named by title', () => {
@@ -116,7 +118,7 @@ describe('coverage', () => {
   })
 
   it('does not credit a title too short to be evidence', () => {
-    const short = [{ id: 'x', title: 'fix', via: 'card' as const }]
+    const short = [{ id: 'x', seq: null, title: 'fix', via: 'card' as const }]
     expect(evaluateCoverage(['we fixed things'], short).missed).toHaveLength(1)
   })
 
@@ -126,7 +128,7 @@ describe('coverage', () => {
 })
 
 describe('the verdict', () => {
-  const moved = [{ id: 'aaaa1111', title: 'Lightweight shipping calculator', via: 'card' as const }]
+  const moved = [{ id: 'aaaa1111', seq: 41, title: 'Lightweight shipping calculator', via: 'card' as const }]
 
   it('passes when everything that moved was named', () => {
     const e = evaluateRun(['Lightweight shipping calculator mozdult'], moved, WINDOW)
@@ -160,5 +162,49 @@ describe('the verdict', () => {
     // Title substring matching over-credits. A high recall must not be read as
     // proof the worker did well; a low one is solid evidence it did not.
     expect(evaluateRun(['Lightweight shipping calculator'], moved, WINDOW).note).toContain('over-credit')
+  })
+})
+
+// Both of these come from the first real evaluation (2026-08-01, the vesta
+// eco-worker's first live run). Neither was a worker failure: both were the
+// evaluator measuring the wrong thing and being confident about it.
+describe('what the first real run taught the evaluator', () => {
+  const moved = [
+    { id: '7f99df1b', seq: 114, title: 'projekt koltsegek nyilvantartasa', via: 'comment' as const },
+    { id: '805c7b5b', seq: 134, title: 'Feladat-eloszuro / modell-router R&D', via: 'card' as const },
+  ]
+
+  it('credits the #<seq> reference the fleet actually writes', () => {
+    // The worker wrote "#114 projekt koltseg-nyilvantartas -> done". Under the
+    // id/title-only matcher that scored ZERO: the report never contains a hex
+    // id, because normalizeKanbanRefs rewrites hex refs into exactly this form.
+    // Measured on the real run: recall went 1/21 -> 15/21 once #<seq> counted.
+    const c = evaluateCoverage(['#114 projekt koltseg-nyilvantartas -> done', 'router: #134 halad'], moved)
+    expect(c.recall).toBe(1)
+    expect(c.missed).toEqual([])
+  })
+
+  it('does not let #11 be credited by a mention of #114', () => {
+    // Without the digit boundary every low-numbered card is permanently
+    // "covered" by any higher number sharing its prefix.
+    const eleven = [{ id: 'cccc3333', seq: 11, title: 'valami regi kartya', via: 'card' as const }]
+    expect(evaluateCoverage(['csak a #114 mozdult'], eleven).missed).toHaveLength(1)
+  })
+
+  it('refuses to judge a run that has not finished', () => {
+    // The review fired mid-run: the transcript held no notify calls YET, and
+    // the old code returned no_output, whose note says "treat as a failure".
+    // Reporting a running job as a silent one is the same error as calling a
+    // busy session stuck.
+    const e = evaluateRun([], moved, WINDOW, { runComplete: false })
+    expect(e.verdict).toBe('incomplete')
+    expect(e.note).toContain('Re-measure')
+  })
+
+  it('still calls a finished, silent run a failure', () => {
+    // The guard must not become an excuse: complete + nothing sent is exactly
+    // the failure the no_output verdict exists for.
+    expect(evaluateRun([], moved, WINDOW, { runComplete: true }).verdict).toBe('no_output')
+    expect(evaluateRun([], moved, WINDOW).verdict).toBe('no_output')
   })
 })
