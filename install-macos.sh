@@ -1135,7 +1135,17 @@ else
   # the very defect this block reports on.
   if [ -z "$DASHBOARD_PID" ]; then echo -e "    ${DIM}  - ${DASHBOARD_PLIST}: nem fut${NC}"; fi
   if [ -z "$CHANNELS_PID" ]; then echo -e "    ${DIM}  - ${CHANNELS_PLIST}: nem fut${NC}"; fi
-  echo -e "    ${DIM}A launchd betoltotte a unitokat, de nem inditotta el oket.${NC}"
+  # Reassurance BEFORE the detail. Whoever is installing for the first time needs
+  # three things from this screen, in this order: the install itself finished,
+  # nothing is lost, and there is something to do about it.
+  echo -e "    A telepites befejezodott. Ami nem indult el, azt fent latod, es a lentiekkel elindithatod."
+  # The detail line states only the two things this code actually knows: it wrote
+  # the plist files itself, and `launchctl print` reported no pid. It must NOT
+  # claim the units were loaded: in start_launchd_unit the whole
+  # bootstrap-or-load chain ends in `|| true`, and so does the kickstart, so no
+  # return value is ever inspected. "Loaded but not started" was a diagnosis
+  # nobody measured -- the same defect as the banner above it.
+  echo -e "    ${DIM}A unit-fajlok a helyukon vannak, de futo folyamatot nem talaltunk.${NC}"
   echo -e "    ${BOLD}Javitas most:${NC}"
   echo -e "    ${BLUE}launchctl kickstart -p gui/$(id -u)/${DASHBOARD_PLIST}${NC}"
   echo -e "    ${BLUE}launchctl kickstart -p gui/$(id -u)/${CHANNELS_PLIST}${NC}"
