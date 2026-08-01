@@ -1179,12 +1179,36 @@ const MACHINE_ORIGIN_PREFIXES = [
   /^<channel\s+source="plugin:/,
 ] as const
 
+// A long injection can lose its HEAD: the TUI drops the leading rows of an
+// overfull input box, so every anchored prefix above misses while unmistakable
+// wrapper text survives further in. Measured 2026-08-01 on a live MAIN pane
+// whose box began mid-sentence at "</scheduled-task> block is one of YOUR OWN
+// scheduled tasks." -- and the consequence was total: parkedScheduledTaskInput
+// read false so decideStuckInputAction fell through to 'hold' (no soft remedy),
+// AND parkedMachineOriginInput read false so the restart guard treated a
+// machine injection as "possibly a human draft" and deferred. Neither the clear
+// nor the restart could fire; the channel stayed mute until the box was cleared
+// by hand.
+//
+// These markers must stay BOILERPLATE a human does not reproduce verbatim --
+// wrapper syntax and the scheduler's own fixed sentences, never a topic phrase
+// like "SCHEDULED TASK NOTICE", which someone may legitimately type while
+// discussing the system. That distinction is why the list above is anchored and
+// this one is not; the human-draft fixtures in parked-machine-input.test.ts
+// guard it.
+const MACHINE_ORIGIN_TRUNCATED_MARKERS = [
+  /<\/scheduled-task>/,
+  /is one of YOUR OWN scheduled tasks/,
+  /fired by the local scheduler/,
+] as const
+
 // True when the live input box holds parked ('typing') text that is
 // identifiably machine-injected (see MACHINE_ORIGIN_PREFIXES). Pure.
 export function parkedMachineOriginInput(pane: string): boolean {
   const flat = parkedInputText(pane)
   if (flat == null) return false
   return MACHINE_ORIGIN_PREFIXES.some((rx) => rx.test(flat))
+    || MACHINE_ORIGIN_TRUNCATED_MARKERS.some((rx) => rx.test(flat))
 }
 
 // True when the parked text is a scheduled-task injection (the scheduler's
@@ -1197,7 +1221,11 @@ export function parkedMachineOriginInput(pane: string): boolean {
 export function parkedScheduledTaskInput(pane: string): boolean {
   const flat = parkedInputText(pane)
   if (flat == null) return false
-  return /^SCHEDULED TASK NOTICE/.test(flat) || /^<scheduled-task[\s>]/.test(flat)
+  if (/^SCHEDULED TASK NOTICE/.test(flat) || /^<scheduled-task[\s>]/.test(flat)) return true
+  // Head dropped by the TUI -- see MACHINE_ORIGIN_TRUNCATED_MARKERS. Clear-only
+  // is exactly as safe here as for an intact tick: the instruction is already
+  // corrupted by the truncation, and the next schedule fire re-delivers it.
+  return MACHINE_ORIGIN_TRUNCATED_MARKERS.some((rx) => rx.test(flat))
 }
 
 // How many VISUAL rows the live input box content occupies, ignoring the
