@@ -292,6 +292,71 @@ export function stripGhostSuggestion(coloredPane: string): string {
   return out
 }
 
+// Strip every ANSI escape sequence, leaving plain text. Unlike
+// stripGhostSuggestion this drops NO visible characters -- it only removes the
+// SGR/CSI codes -- so stripAllAnsi(`capture-pane -e -p`) equals `capture-pane -p`.
+export function stripAllAnsi(s: string): string {
+  let out = ''
+  let i = 0
+  const n = s.length
+  while (i < n) {
+    const ch = s[i]
+    if (ch === '\x1b') {
+      if (s[i + 1] !== '[') { i++; continue } // drop lone ESC / non-CSI
+      let j = i + 2
+      while (j < n && (s[j] < '@' || s[j] > '~')) j++
+      i = j < n ? j + 1 : n // skip the whole CSI sequence
+      continue
+    }
+    out += ch
+    i++
+  }
+  return out
+}
+
+// A pane line carries a background fill (highlight bar) when its SGR codes SET a
+// non-default background: 256/truecolor bg (48;5;.. / 48;2;..), the basic/bright
+// bg ranges (40-47 / 100-107), or reverse-video (7). The 38/48 colour specs are
+// skipped by mode so a *foreground* 256-colour index (e.g. 38;5;7) is never
+// misread as SGR 7. Foreground-only styling returns false.
+function lineHasBackgroundFill(line: string): boolean {
+  const seqs = line.match(/\x1b\[([0-9;]*)m/g)
+  if (!seqs) return false
+  for (const seq of seqs) {
+    const params = seq.slice(2, -1).split(';').map(x => (x === '' ? 0 : Number(x)))
+    let k = 0
+    while (k < params.length) {
+      const c = params[k]
+      if (c === 48) return true // any background colour set (256/truecolor)
+      if (c === 38) { const mode = params[k + 1]; k += mode === 5 ? 3 : mode === 2 ? 5 : 1; continue }
+      if (c === 7) return true // reverse video
+      if ((c >= 40 && c <= 47) || (c >= 100 && c <= 107)) return true // basic / bright bg
+      k++
+    }
+  }
+  return false
+}
+
+// Claude Code renders a custom session name (set via /rename) as a full-width
+// highlighted bar pinned to the BOTTOM of the pane, below the input box / idle
+// footer. A pathological name -- e.g. a whole <scheduled-task> block that a
+// /rename accidentally swallowed as its argument -- wraps to many lines and
+// pushes the live footer/spinner out of detectPaneState's bottom "live region",
+// so the pane classifies as 'unknown'. 'unknown' blocks BOTH the scheduler and
+// inter-agent delivery (2026-08-01: a rename-banner pinned the main agent
+// 'unknown' and stalled a queued inter-agent message). This strips that trailing
+// banner from a COLOURED capture so the real footer/spinner classifies normally.
+// The idle footer, input box and spinner never carry a background fill, and the
+// name bar is the bottom-most element, so trailing background-filled lines are
+// the banner; non-banner content is left untouched (no-op when absent).
+export function stripSessionTitleBanner(coloredPane: string): string {
+  const lines = coloredPane.split('\n')
+  let end = lines.length
+  while (end > 0 && lineHasBackgroundFill(lines[end - 1])) end--
+  if (end === lines.length) return coloredPane
+  return lines.slice(0, end).join('\n')
+}
+
 // Persistent Anthropic thinking-block API error. When an assistant turn
 // ends with a 400 about thinking/redacted_thinking blocks that "cannot
 // be modified", the session is wedged: every subsequent prompt re-sends
