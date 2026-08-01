@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { execSync, execFileSync } from 'node:child_process'
@@ -372,6 +372,67 @@ export function resolveMainAgentConfigDir(): string | null {
 // two can never diverge. `cfg` is the isolated CLAUDE_CONFIG_DIR to create; `cwd`
 // is the agent's project dir stamped into its own installed_plugins.json; `name`
 // is used for logs only.
+// Write JSON through a temp file + rename, so a Claude Code process reading
+// the file concurrently sees either the old content or the new one, never a
+// half-written one. The temp name carries the pid so two provisions racing on
+// the same dir cannot truncate each other's staging file.
+function writeJsonAtomic(path: string, value: unknown): void {
+  const tmp = `${path}.tmp-${process.pid}`
+  writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n')
+  renameSync(tmp, path)
+}
+
+// Fill mcpServers gaps in an ALREADY provisioned isolated .claude.json from the
+// shared ~/.claude.json.
+//
+// Why this exists (issue #834): the isolated .claude.json is seeded from a full
+// copy of the shared one ONLY on first provision. Every later spawn just makes
+// sure hasCompletedOnboarding stays set, so the server list is frozen at its
+// first-seed snapshot -- an MCP server added to ~/.claude.json afterwards
+// reaches brand-new agents but never an existing one, silently: the agent just
+// lacks the tool, with no error anywhere. Rolling one out to a running fleet
+// then needs a manual per-agent backfill, and that only fixes the current set.
+//
+// ADDITIVE ONLY, deliberately. This is a gap-fill, not a two-way sync:
+//   - a server missing from the isolated file is copied in,
+//   - an entry that already exists is NEVER overwritten -- Claude Code owns its
+//     evolved state, and a per-agent scoping decision must survive,
+//   - a server removed from the shared config is left in place,
+//   - a non-object mcpServers on either side means we do not touch it at all,
+//     because we cannot merge what we do not understand.
+// Returns true if the caller should persist `cur`.
+function reconcileMcpServers(
+  cur: Record<string, unknown>,
+  sharedDot: string,
+  name: string,
+): boolean {
+  if (!existsSync(sharedDot)) return false
+  let shared: Record<string, unknown>
+  try { shared = JSON.parse(readFileSync(sharedDot, 'utf-8')) as Record<string, unknown> }
+  catch { return false } // unparseable shared config -> leave the isolated one alone
+  if (!isPlainObject(shared.mcpServers)) return false
+  // An existing but non-object mcpServers is not ours to repair.
+  if ('mcpServers' in cur && !isPlainObject(cur.mcpServers)) {
+    logger.warn({ name }, 'isolated-config: mcpServers is not an object, skipping reconcile')
+    return false
+  }
+  const own = isPlainObject(cur.mcpServers) ? cur.mcpServers : {}
+  const added: string[] = []
+  for (const [key, def] of Object.entries(shared.mcpServers)) {
+    if (key in own) continue
+    own[key] = def
+    added.push(key)
+  }
+  if (added.length === 0) return false
+  cur.mcpServers = own
+  logger.info({ name, added }, 'isolated-config: added missing MCP servers from the shared config')
+  return true
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
 function provisionIsolatedConfigDir(
   cfg: string,
   cwd: string,
@@ -490,14 +551,17 @@ function provisionIsolatedConfigDir(
           try { seed = JSON.parse(readFileSync(sharedDot, 'utf-8')) as Record<string, unknown> } catch { /* keep minimal */ }
         }
         seed.hasCompletedOnboarding = true
-        writeFileSync(dotClaude, JSON.stringify(seed, null, 2) + '\n')
+        writeJsonAtomic(dotClaude, seed)
       } else {
         try {
           const cur = JSON.parse(readFileSync(dotClaude, 'utf-8')) as Record<string, unknown>
+          let dirty = false
           if (cur.hasCompletedOnboarding !== true) {
             cur.hasCompletedOnboarding = true
-            writeFileSync(dotClaude, JSON.stringify(cur, null, 2) + '\n')
+            dirty = true
           }
+          if (reconcileMcpServers(cur, sharedDot, name)) dirty = true
+          if (dirty) writeJsonAtomic(dotClaude, cur)
         } catch { /* unparseable -> leave for Claude Code to recreate */ }
       }
     } catch (err) {
