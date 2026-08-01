@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { execSync, execFileSync } from 'node:child_process'
@@ -376,9 +376,20 @@ export function resolveMainAgentConfigDir(): string | null {
 // the file concurrently sees either the old content or the new one, never a
 // half-written one. The temp name carries the pid so two provisions racing on
 // the same dir cannot truncate each other's staging file.
+//
+// The mode is carried over deliberately. A plain writeFileSync writes THROUGH
+// the existing inode and keeps its permissions; tmp + rename replaces the file
+// with a NEW inode, which would silently take the umask default and relax an
+// 0600 config to 0644. That matters here: some isolated .claude.json files are
+// 0600, and their mcpServers entries carry env blocks with credentials -- and
+// this reconcile is exactly the path that starts rewriting the file regularly.
+// Fall back to 0600 (not the umask) when the target does not exist yet, since
+// the content class is the same either way.
 function writeJsonAtomic(path: string, value: unknown): void {
+  let mode = 0o600
+  try { mode = statSync(path).mode & 0o777 } catch { /* new file -> owner-only */ }
   const tmp = `${path}.tmp-${process.pid}`
-  writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n')
+  writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', { mode })
   renameSync(tmp, path)
 }
 

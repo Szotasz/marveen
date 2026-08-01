@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync, chmodSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -116,6 +116,39 @@ describe('isolated config dir: mcpServers reconcile', () => {
     expect(after.projects).toEqual({ '/some/path': { hasTrustDialogAccepted: true } })
     expect(after.hasCompletedOnboarding).toBe(true)
     expect(Object.keys(after.mcpServers as object).sort()).toEqual(['extra', 'gmail'])
+  })
+
+  it('keeps an 0600 config at 0600 across a reconcile', () => {
+    // tmp + rename replaces the inode, so without an explicit mode the new file
+    // takes the umask default and a 0600 config silently relaxes to 0644. The
+    // mcpServers entries carry env blocks with credentials, and this reconcile
+    // is the path that rewrites the file regularly.
+    ensureIsolatedChannelConfigDir(AGENT, 'telegram')
+    chmodSync(isolatedDotClaude(), 0o600)
+    expect(statSync(isolatedDotClaude()).mode & 0o777).toBe(0o600)
+
+    writeShared({ gmail: { command: 'npx', args: ['gmail-mcp'] }, 'google-drive': { command: 'npx' } })
+    ensureIsolatedChannelConfigDir(AGENT, 'telegram')
+
+    // The reconcile really did run (otherwise the mode assertion proves nothing).
+    expect(Object.keys(servers()).sort()).toEqual(['gmail', 'google-drive'])
+    expect(statSync(isolatedDotClaude()).mode & 0o777).toBe(0o600)
+  })
+
+  it('preserves a deliberately wider mode too, rather than forcing 0600', () => {
+    ensureIsolatedChannelConfigDir(AGENT, 'telegram')
+    chmodSync(isolatedDotClaude(), 0o644)
+    writeShared({ gmail: { command: 'npx', args: ['gmail-mcp'] }, extra: { command: 'x' } })
+    ensureIsolatedChannelConfigDir(AGENT, 'telegram')
+    expect(Object.keys(servers()).sort()).toEqual(['extra', 'gmail'])
+    expect(statSync(isolatedDotClaude()).mode & 0o777).toBe(0o644)
+  })
+
+  it('creates a brand new isolated config owner-only, not at the umask default', () => {
+    // First provision: no target existed, so the fallback decides. It must be
+    // 0600 rather than whatever the umask happens to be on the host.
+    ensureIsolatedChannelConfigDir(AGENT, 'telegram')
+    expect(statSync(isolatedDotClaude()).mode & 0o777).toBe(0o600)
   })
 
   it('leaves no staging file behind (atomic write)', () => {
