@@ -649,7 +649,7 @@ window._i18n.en = {
   'costs.token_usage_note':      'Token usage volume (not priced)',
   'costs.calls':                 'calls',
   'costs.display_currency':      'Show amounts in:',
-  'costs.fx_converted_at':       'converted at the rates of',
+  'costs.fx_converted_at':       'converted at the exchange rates quoted on {date}',
   'costs.fx_no_asof':            'rate date unknown',
   'costs.by_project':            'By project',
   'costs.project':               'Project',
