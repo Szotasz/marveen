@@ -555,8 +555,10 @@ echo -e "  ${DIM}Headless Claude Code teszt...${NC}"
 # assignment, not the pipeline inside the substitution (measured). Dropping the
 # pipe entirely is the only form that reports claude's own status; the output is
 # truncated afterwards in the shell.
-CLAUDE_PROBE_OUT=$(claude --print "ping" 2>&1)
-CLAUDE_PROBE_EXIT=$?
+# The `&& ... || ...` guard is what keeps a failing probe out of the ERR trap:
+# the trap fires regardless of the errexit setting and on_error() exits 1, so an
+# unguarded capture aborted the installer instead of reaching the branch below.
+CLAUDE_PROBE_OUT=$(claude --print "ping" 2>&1) && CLAUDE_PROBE_EXIT=0 || CLAUDE_PROBE_EXIT=$?
 CLAUDE_PROBE_OUT=${CLAUDE_PROBE_OUT:0:200}
 if [ "$CLAUDE_PROBE_EXIT" -eq 0 ] && [ -n "$CLAUDE_PROBE_OUT" ]; then
   ok "Az OPERATOR shelljebol futtathato a Claude Code (\`claude --print\` valaszolt)"
@@ -866,16 +868,16 @@ else
   _probe_out=""
   _probe_rc=1
   if command -v claude >/dev/null 2>&1; then
+    # A 401 here is the VERDICT this gate exists to report, not an installer
+    # error -- see the guard rationale above the operator-shell probe.
     if [ -n "$_svc_token" ]; then
       _probe_out="$(env -i PATH="$PATH" HOME="$HOME" CLAUDE_CONFIG_DIR="$_probe_cfg" \
         CLAUDE_CODE_OAUTH_TOKEN="$_svc_token" \
-        claude --print "ping" 2>&1)"
-      _probe_rc=$?
+        claude --print "ping" 2>&1)" && _probe_rc=0 || _probe_rc=$?
     else
       _probe_out="$(env -i PATH="$PATH" HOME="$HOME" CLAUDE_CONFIG_DIR="$_probe_cfg" \
         ANTHROPIC_API_KEY="$_svc_apikey" \
-        claude --print "ping" 2>&1)"
-      _probe_rc=$?
+        claude --print "ping" 2>&1)" && _probe_rc=0 || _probe_rc=$?
     fi
     _probe_out=${_probe_out:0:200}
     if [ "$_probe_rc" -eq 0 ] && [ -n "$_probe_out" ]; then
