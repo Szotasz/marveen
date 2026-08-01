@@ -373,23 +373,22 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
     fi
     echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent $_cfg_mode CLAUDE_CONFIG_DIR=$_cfg_dir" >> "$INSTALL_DIR/store/channels-failures.log"
   fi
-  # LOUD REGRESSION GUARD: an isolated main-agent config dir on disk (provisioned
-  # by an earlier isolated boot) combined with THIS boot resolving to the shared
-  # ~/.claude means the isolation setting was lost -- e.g. store/config-overrides.json
-  # deleted with no .env key backing it. The silent fallback rides the rotating
-  # shared credential session, which is exactly how the 2026-07-27 evening 401
-  # outage started and was only noticed hours later when the owner got no replies.
-  # Surface it at START time instead: a failures-log line plus a best-effort
-  # inter-agent message to the main agent. Installs that never ran isolated have
-  # no .channels-config dir and stay quiet, so default setups see no new noise.
-  # Second trigger, and the one that covers a FRESH install. The condition above
-  # needs a .channels-config dir, which only exists once an isolated boot has
-  # already happened -- so on an install that NEVER ran isolated the guard was
-  # structurally silent, which is exactly the install shape issue #835 is about.
-  # A fleet setup-token with an empty resolution is suspicious on its own: the
-  # token is the thing isolation is gated on, so carrying one and still landing
-  # on the shared ~/.claude means the setting is missing, not that isolation was
-  # declined. Installs with no fleet token at all stay quiet, as before.
+  # LOUD REGRESSION GUARD, in two triggers. Both mean the same thing: this boot
+  # resolved to the shared ~/.claude, so the main agent rides the rotating
+  # shared credential session -- exactly how the 2026-07-27 evening 401 outage
+  # started, unnoticed for hours because the owner simply got no replies. Both
+  # surface it at START time: a failures-log line plus a best-effort inter-agent
+  # message. Measured, not assumed: the only combination silent on BOTH is an
+  # install that never ran isolated AND carries no fleet setup-token -- which is
+  # the plain default setup, so that one still sees no new noise. Note trigger 2
+  # does fire without a token when the .channels-config dir is there, which is
+  # correct: that dir means isolation once worked here.
+  #
+  # Trigger 1 (below): a FRESH install. A fleet setup-token exists while the
+  # resolution came back empty. The token is the thing isolation is gated on, so
+  # carrying one and still landing on the shared root means the setting is
+  # missing, not that isolation was declined. This is the shape issue #835 is
+  # about, and trigger 2 is structurally blind to it.
   if [ -z "$CFG_ENV" ] && [ ! -d "$INSTALL_DIR/.channels-config" ] && [ -s "$INSTALL_DIR/store/.claude-oauth-token" ]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN main-agent starting on SHARED ~/.claude although a fleet setup-token exists (store/.claude-oauth-token) -- MAIN_AGENT_ISOLATED_CONFIG is unset, so the main bot authenticates from the rotating shared credential and can 401 into a silent channel." >> "$INSTALL_DIR/store/channels-failures.log"
     if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
@@ -402,6 +401,11 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
       unset _guard_port
     fi
   fi
+  # Trigger 2 (below): an install that HAS run isolated before. Its
+  # .channels-config dir is still on disk, yet this boot resolved to the shared
+  # root -- so the isolation setting was LOST, e.g. store/config-overrides.json
+  # deleted with no .env key backing it. Needing that dir is what makes this
+  # trigger blind on a fresh install, hence trigger 1.
   if [ -z "$CFG_ENV" ] && [ -d "$INSTALL_DIR/.channels-config" ]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN main-agent starting on SHARED ~/.claude although isolated dir $INSTALL_DIR/.channels-config exists -- MAIN_AGENT_ISOLATED_CONFIG resolution came back empty (overrides/.env key lost?). Auth rides the rotating shared session and can 401." >> "$INSTALL_DIR/store/channels-failures.log"
     if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
