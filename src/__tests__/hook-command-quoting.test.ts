@@ -38,10 +38,29 @@ function ptuCommands(settings: Record<string, unknown>): string[] {
 describe('hookCommand builder', () => {
   it('quotes BOTH the interpreter and the script path', () => {
     const cmd = hookCommand('/some/dir/gate.mjs')
-    expect(cmd).toBe(`"${HOOK_NODE_BIN}" "/some/dir/gate.mjs"`)
+    expect(cmd).toContain(`"${HOOK_NODE_BIN}" "/some/dir/gate.mjs"`)
+  })
+
+  // A missing interpreter must BLOCK, not fall through with 127. process.execPath
+  // is a version-pinned path on brew, so a node upgrade can dangle it; without
+  // this guard the gate goes silent again on a different route.
+  it('blocks with a message when the interpreter is gone, instead of exiting 127', () => {
+    const cmd = hookCommand('/some/dir/gate.mjs')
+    expect(cmd).toMatch(/^test -x /)
+    expect(cmd).toContain('exit 2')
+    // the three things the operator needs: what is missing, that this blocks,
+    // and the way out
+    expect(cmd).toContain(HOOK_NODE_BIN)
+    expect(cmd).toContain('BLOKKOL')
+    expect(cmd).toContain('inditsd ujra a dashboardot')
   })
 })
 
+// A parancs nem a quoted interpreterrel KEZDODIK, hanem tartalmazza azt: elotte all
+// egy `test -x <BIN> || { echo ...; exit 2; }` or, hogy egy elmozdult interpreter
+// BLOKKOLJON, ne 127-tel csendben atengedjen. Az allitas ezert includes(), es a
+// vedett tulajdonsag valtozatlan: abszolut, idezojelezett interpreter, soha nem
+// csupasz `node`.
 describe('injectors write a quoted absolute interpreter, never a bare node', () => {
   for (const [label, inject] of [
     ['injectEmailSendGate', injectEmailSendGate],
@@ -54,7 +73,7 @@ describe('injectors write a quoted absolute interpreter, never a bare node', () 
       const commands = ptuCommands(s)
       expect(commands.length).toBeGreaterThan(0)
       for (const cmd of commands) {
-        expect(cmd.startsWith(`"${HOOK_NODE_BIN}" "`)).toBe(true)
+        expect(cmd.includes(`"${HOOK_NODE_BIN}" "`)).toBe(true)
         expect(cmd).not.toMatch(/^node /)
       }
     })
@@ -87,7 +106,7 @@ describe('ensure* migrations are idempotent (true, then false)', () => {
     expect(ensureEgressGate(TEST_AGENT)).toBe(false)
     const written = JSON.parse(readFileSync(join(testAgentDir, '.claude', 'settings.json'), 'utf-8'))
     for (const cmd of ptuCommands(written)) {
-      expect(cmd.startsWith(`"${HOOK_NODE_BIN}" "`)).toBe(true)
+      expect(cmd.includes(`"${HOOK_NODE_BIN}" "`)).toBe(true)
     }
   })
 
@@ -113,7 +132,7 @@ describe('ensure* migrations are idempotent (true, then false)', () => {
     expect(commands.some((c) => c.includes('email-send-gate.mjs'))).toBe(true)
     expect(commands.some((c) => c.includes('self-pace-gate.mjs'))).toBe(true)
     for (const cmd of commands) {
-      expect(cmd.startsWith(`"${HOOK_NODE_BIN}" "`)).toBe(true)
+      expect(cmd.includes(`"${HOOK_NODE_BIN}" "`)).toBe(true)
       expect(cmd).not.toMatch(/^node /)
     }
   })
