@@ -2077,6 +2077,13 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const name = decodeURIComponent(agentMatch[1])
     const dir = agentDir(name)
     if (!existsSync(dir)) { json(res, { error: 'Agent not found' }, 404); return true }
+    // Stop the running tmux session BEFORE removing the dir. Otherwise the
+    // orphaned session survives the delete, rewrites a minimal .claude-config
+    // under agents/<name>/, and the agent "returns" as an empty draft (persona
+    // gone) that still reports running=true, with the model reset to the default.
+    // stopAgentProcess() reads config from the dir (remote host, channel
+    // provider) for its orphan reap, so it must run while the dir still exists.
+    if (isAgentRunning(name)) stopAgentProcess(name)
     rmSync(dir, { recursive: true, force: true })
     cleanupTeamReferences(name)
     json(res, { ok: true })
