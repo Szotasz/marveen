@@ -180,8 +180,13 @@ describe('runtime-seeded placeholders are all substituted', () => {
   // every placeholder actually used under scheduled-tasks/ is in the known
   // set. (Empty set is fine -- nothing to leak.)
   it('every placeholder used under scheduled-tasks/ is in the known set', () => {
+    // *.agent.md files are meta-templates consumed by scaffoldAgentMemoriaHeartbeat
+    // (not by ensureDefaultScheduledTasks / resolveTemplatePlaceholders). They
+    // legitimately use {{AGENT_NAME}}, which is substituted at scaffold time rather
+    // than at install seed time, so they are excluded from this check.
     const used = new Set<string>()
     for (const file of walk(join(REPO_ROOT, 'scheduled-tasks'))) {
+      if (file.endsWith('.agent.md')) continue
       const text = readText(file)
       if (text === null) continue
       for (const m of text.matchAll(/\{\{([A-Z_]+)\}\}/g)) used.add(m[1])

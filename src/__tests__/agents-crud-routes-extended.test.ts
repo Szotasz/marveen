@@ -51,6 +51,7 @@ vi.mock('../web/telegram.js', () => ({
 }))
 vi.mock('../web/agent-scaffold.js', () => ({
   scaffoldAgentDir: vi.fn(),
+  scaffoldAgentMemoriaHeartbeat: vi.fn(),
   generateClaudeMd: vi.fn().mockResolvedValue('# Agent'),
   generateSoulMd: vi.fn().mockResolvedValue('# Soul'),
   writeAgentSettingsFromProfile: vi.fn(),
