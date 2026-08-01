@@ -1152,7 +1152,7 @@ window._i18n.en = {
   'settings.empty':			'No registered settings.',
   'settings.error':			'Failed to load settings.',
   'settings.loading':			'Loading...',
-  'settings.restart_badge':			'Restart required',
+  'settings.restart_badge':			'Takes effect after restart',
   'settings.save_btn.save':			'Save',
   'settings.save_btn.saving':			'Saving...',
   'tasks.agent_all':			'All agents',

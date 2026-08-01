@@ -1008,7 +1008,7 @@ window._i18n.hu = {
   'settings.loading':            'Betöltés...',
   'settings.empty':              'Nincs regisztrált beállítás.',
   'settings.error':              'Nem sikerült betölteni a beállításokat.',
-  'settings.restart_badge':      'Újraindítást igényel',
+  'settings.restart_badge':      'Újraindítás után lép életbe',
   'settings.save_btn.saving':    'Mentés...',
   'settings.save_btn.save':      'Mentés',
   'settings.btn.refresh':        'Frissítés',
