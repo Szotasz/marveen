@@ -64,7 +64,7 @@ import { tryHandleStatus } from './web/routes/status.js'
 import { tryHandleAutonomy } from './web/routes/autonomy.js'
 import { tryHandleApprovals, startApprovalTimeoutSweeper } from './web/routes/approvals.js'
 import { tryHandleTokenUsage } from './web/routes/token-usage.js'
-import { tryHandleCosts, startCostsSyncTask } from './web/routes/costs.js'
+import { tryHandleCosts, startCostsSyncTask, startFxRefreshTask } from './web/routes/costs.js'
 import { startQuotaGuardTask } from './costops/quota-guard.js'
 import { tryHandleIdeas } from './web/routes/ideas.js'
 import { tryHandleToolLog } from './web/routes/tool-log.js'
@@ -368,7 +368,12 @@ export function startWebServer(port = 3420): http.Server {
   // the fleet to eco mode at 85%. Writes config only -- scheduling the agent
   // restarts that make a model change effective stays an operator decision.
   const quotaGuardInterval = webOnly ? undefined : startQuotaGuardTask()
-  if (!webOnly) logger.info('CostOps fixed-cost sync started (10min poll + startup)')
+  // Daily FX rates for the cost config. Hourly poll; the refresh itself decides
+  // whether today's fetch is due, so a restart cannot skip a day and a weekend
+  // costs nothing. Writes only the fx_* keys, and only when the numbers pass a
+  // sanity check -- a bad rate is worse than a stale one.
+  const fxRefreshInterval = webOnly ? undefined : startFxRefreshTask()
+  if (!webOnly) logger.info('CostOps fixed-cost sync started (10min poll + startup); FX refresh started (1h poll)')
 
   const stuckInputInterval = webOnly ? undefined : startStuckInputWatcher()
   if (!webOnly) logger.info('Stuck-input watcher started (15s poll, 20s offset)')
@@ -527,6 +532,7 @@ export function startWebServer(port = 3420): http.Server {
     if (pluginMonitorInterval) clearInterval(pluginMonitorInterval)
     clearInterval(channelHealthInterval)
     if (costsSyncInterval) clearInterval(costsSyncInterval)
+    if (fxRefreshInterval) clearInterval(fxRefreshInterval)
     clearInterval(stuckInputInterval)
     clearInterval(stuckToolCallInterval)
     if (inboxNudgeInterval) clearInterval(inboxNudgeInterval)

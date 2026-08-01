@@ -8,6 +8,7 @@ import { json, readBody } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import { getDb } from '../../db.js'
 import { loadCostopsConfig } from '../../costops/config.js'
+import { refreshFxRates } from '../../costops/fx-rates.js'
 import { syncFixedCostsToLedger, getCostSummary, getCostSources, getTokenCostReport } from '../../costops/ledger.js'
 import { PRICE_MAP, isPriced } from '../../costops/pricing.js'
 import { applyEcoMode, readEcoState, baseModelId, DEFAULT_ECO_MODEL } from '../../costops/eco-mode.js'
@@ -37,6 +38,28 @@ export function startCostsSyncTask(intervalMs = SYNC_INTERVAL_MS): NodeJS.Timeou
   }
   sync()
   return setInterval(sync, intervalMs).unref()
+}
+
+// Daily FX refresh. Polls hourly and lets refreshFxRates() decide whether the
+// day's fetch is due -- rather than firing at a fixed hour, which a restart or
+// a machine asleep at that minute would simply skip. Weekends are skipped by
+// the same decision (the ECB does not publish), so this loop stays dumb.
+const FX_POLL_INTERVAL_MS = 60 * 60 * 1000
+
+export function startFxRefreshTask(intervalMs = FX_POLL_INTERVAL_MS): NodeJS.Timeout {
+  const tick = () => {
+    void refreshFxRates()
+      .then(outcome => {
+        // 'skipped' is the normal case on most ticks; logging it would bury the
+        // two outcomes that matter.
+        if (outcome.status === 'failed') {
+          logger.warn({ context: { action: 'fx_refresh_failed' }, error: outcome.error }, 'FX refresh failed; previous rates kept')
+        }
+      })
+      .catch(err => logger.warn({ err }, 'FX refresh threw unexpectedly'))
+  }
+  tick()
+  return setInterval(tick, intervalMs).unref()
 }
 
 export async function tryHandleCosts(ctx: RouteContext): Promise<boolean> {
