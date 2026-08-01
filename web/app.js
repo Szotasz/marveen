@@ -9876,7 +9876,7 @@ async function loadCosts() {
         <select id="costsCurrencySel" style="padding:4px 8px;border-radius:6px">
           ${available.map((c) => `<option value="${escapeHtml(c)}"${c === current ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('')}
         </select>
-        ${s.fx?.asof ? `<span style="${mutedStyle}">${t('costs.fx_converted_at')} ${escapeHtml(s.fx.asof)}</span>` : `<span style="${mutedStyle}">${t('costs.fx_no_asof')}</span>`}
+        ${s.fx?.asof ? `<span style="${mutedStyle}">${t('costs.fx_converted_at', { date: escapeHtml(s.fx.asof) })}</span>` : `<span style="${mutedStyle}">${t('costs.fx_no_asof')}</span>`}
       </div>`
     }
 
