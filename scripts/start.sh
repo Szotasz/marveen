@@ -32,9 +32,19 @@ INSTALL_DIR="$INSTALL_DIR" python3 "${INSTALL_DIR}/scripts/boot-hook-prune.py" 2
 
 echo "${BOT_NAME:-Marveen} $(_t start.starting)"
 OS="$(uname -s)"
+LAUNCHD_FAILED=""
 if [ "$OS" = "Darwin" ]; then
-  launchctl load "$HOME/Library/LaunchAgents/com.${SLUG}.dashboard.plist" 2>/dev/null || true
-  launchctl load "$HOME/Library/LaunchAgents/com.${SLUG}.channels.plist" 2>/dev/null || true
+  # `launchctl load` alone leaves a RunAtLoad job pended on modern macOS, so
+  # this script used to print the dashboard URL and "channel started" over two
+  # units that never ran. Same helper as install-macos.sh: load, kickstart,
+  # verify.
+  . "${INSTALL_DIR}/scripts/launchd-unit.sh"
+  for _svc in dashboard channels; do
+    if [ -z "$(start_launchd_unit "com.${SLUG}.${_svc}")" ]; then
+      LAUNCHD_FAILED="${LAUNCHD_FAILED}${_svc} "
+    fi
+  done
+  unset _svc
 elif [ "$OS" = "Linux" ]; then
   if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
     systemctl --user start "${SLUG}-dashboard" "${SLUG}-channels"
@@ -64,5 +74,16 @@ elif [ "$OS" = "Linux" ]; then
   fi
 fi
 
+if [ -n "$LAUNCHD_FAILED" ]; then
+  # "nem igazolt", not "nem indult el", and no claim about what that means for
+  # the bot: this reports what the verification established, nothing beyond it.
+  echo "✗ A szolgaltatas indulasa nem igazolt: ${LAUNCHD_FAILED}" >&2
+  for _svc in $LAUNCHD_FAILED; do
+    echo "  Ujraprobalas: launchctl kickstart -p gui/$(id -u)/com.${SLUG}.${_svc}" >&2
+    echo "  Ellenorzes:   launchctl print gui/$(id -u)/com.${SLUG}.${_svc} | grep -E 'state|pid'" >&2
+  done
+  unset _svc
+  exit 1
+fi
 echo "✓ Dashboard: http://localhost:${WEB_PORT:-3420}"
 echo "$(_t start.channel_started)"

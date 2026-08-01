@@ -1144,54 +1144,10 @@ PLISTEOF
 
 echo -e "  ${GREEN}✓${NC} $(_t macos.launchagents_created)"
 
-# Load AND START the LaunchAgents -- loading is not starting.
-#
-# `launchctl load` only PENDS a RunAtLoad spawn on modern macOS. Measured on
-# 26.5.1 with a throwaway agent carrying RunAtLoad=true + KeepAlive=true:
-#
-#   launchctl load <plist>              -> rc=0, runs = 0, never starts
-#   launchctl bootstrap gui/$UID <p>    -> rc=0, runs = 0, never starts
-#   launchctl print gui/$UID/<label>    -> "pended nondemand spawn = speculative"
-#                                          still `state = not running` after 30s
-#   launchctl kickstart gui/$UID/<label> -> starts immediately, runs = 1
-#
-# The old two lines swallowed every error (`2>/dev/null || true`) and then
-# printed "Szolgaltatasok elinditva" unconditionally, so a fresh install ended
-# with two units that had NEVER run while the operator was told they were up --
-# the bot answered nobody and there was no signal anywhere to explain it.
-start_launchd_unit() {
-  # start_launchd_unit LABEL -- bootstrap/load, kickstart, then VERIFY.
-  # Echoes the running pid, or nothing at all when the unit never came up.
-  _slu_label="$1"
-  _slu_domain="gui/$(id -u)"
-  launchctl bootstrap "$_slu_domain" "$PLIST_DIR/${_slu_label}.plist" 2>/dev/null \
-    || launchctl load "$PLIST_DIR/${_slu_label}.plist" 2>/dev/null \
-    || true
-  launchctl kickstart "$_slu_domain/${_slu_label}" >/dev/null 2>&1 || true
-  _slu_pid=""
-  _slu_try=0
-  while [ "$_slu_try" -lt "${LAUNCHD_START_TRIES:-10}" ]; do
-    _slu_pid="$(launchctl print "$_slu_domain/${_slu_label}" 2>/dev/null \
-      | awk '/^\tpid = /{print $3; exit}')"
-    # NOT `[ -n "$_slu_pid" ] && break`: as the last command of the loop body
-    # that list would return 1 on the final miss and abort the installer.
-    if [ -n "$_slu_pid" ]; then break; fi
-    _slu_try=$((_slu_try + 1))
-    sleep 1
-  done
-  # A first pid is not proof the unit STAYED up. Measured on 26.5.1 with a unit
-  # whose program does not exist: launchd reports a transient `state = xpcproxy`
-  # pid for about a second, and only two seconds on does it read
-  # `state = spawn scheduled`, no pid, `last exit code = 78: EX_CONFIG`. Confirm
-  # after a settle so a crash-looping unit is not counted as started.
-  if [ -n "$_slu_pid" ]; then
-    sleep 2
-    _slu_pid="$(launchctl print "$_slu_domain/${_slu_label}" 2>/dev/null \
-      | awk '/^\tpid = /{print $3; exit}')"
-  fi
-  printf '%s' "$_slu_pid"
-  unset _slu_label _slu_domain _slu_try
-}
+# Load AND START the LaunchAgents -- loading is not starting. The rationale and
+# the measurements live in the shared helper, which scripts/start.sh uses too so
+# both entry points behave identically.
+. "$INSTALL_DIR/scripts/launchd-unit.sh"
 
 DASHBOARD_PID="$(start_launchd_unit "$DASHBOARD_PLIST")"
 CHANNELS_PID="$(start_launchd_unit "$CHANNELS_PLIST")"

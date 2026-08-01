@@ -49,6 +49,8 @@ function runScriptFile(lines: string[]): { out: string; code: number } {
 const ROOT = join(__dirname, '..', '..')
 const LINUX = readFileSync(join(ROOT, 'install-linux.sh'), 'utf-8')
 const MACOS = readFileSync(join(ROOT, 'install-macos.sh'), 'utf-8')
+const HELPER = readFileSync(join(ROOT, 'scripts', 'launchd-unit.sh'), 'utf-8')
+const START = readFileSync(join(ROOT, 'scripts', 'start.sh'), 'utf-8')
 
 /** Pull one shell function out of a script so it can be executed for real. */
 function sliceShellFn(src: string, name: string): string {
@@ -222,7 +224,7 @@ describe('install-macos.sh -- launchd units must be verified, not assumed', () =
         `export PATH="${dir}:$PATH"`,
         'PLIST_DIR=/tmp',
         'LAUNCHD_START_TRIES=2',
-        sliceShellFn(MACOS, FN),
+        sliceShellFn(HELPER, FN),
         `printf 'PID=%s' "$(${FN} com.example.unit)"`,
       ].join('\n')
       const out = execFileSync('bash', ['-c', script], { encoding: 'utf-8' })
@@ -264,10 +266,10 @@ describe('install-macos.sh -- launchd units must be verified, not assumed', () =
     expect(() => runStart('pended')).not.toThrow()
   })
 
-  it('gates the success banner on the verified pids, not on the load call', () => {
-    const started = MACOS.indexOf(`${FN}() {`)
-    expect(started).toBeGreaterThan(0)
-    const tail = MACOS.slice(started)
+  it('install-macos.sh gates the success banner on the verified pids', () => {
+    const sourced = MACOS.indexOf('scripts/launchd-unit.sh')
+    expect(sourced).toBeGreaterThan(0)
+    const tail = MACOS.slice(sourced)
     // the old code printed this unconditionally, one line after `launchctl load`
     const banner = /Szolgaltatasok elinditva/.exec(tail)
     expect(banner).not.toBeNull()
@@ -277,10 +279,32 @@ describe('install-macos.sh -- launchd units must be verified, not assumed', () =
     // and there must be a loud else-branch for the failure the operator hit
     expect(tail.slice(banner!.index)).toMatch(/launchctl kickstart/)
   })
+
+  // scripts/start.sh carried the identical defect: measured live on 26.5.1 it
+  // printed "Dashboard: http://localhost:3420" and "Csatorna inditva" while
+  // `launchctl print` reported `state = not running` for BOTH units.
+  it('scripts/start.sh uses the same verified starter, not a bare load', () => {
+    expect(START).toContain('scripts/launchd-unit.sh')
+    expect(START).toMatch(new RegExp(`${FN}\\s`))
+    const bareLoad = START.split('\n').filter((l) => /^\s*launchctl load /.test(l))
+    expect(bareLoad).toEqual([])
+  })
+
+  it('scripts/start.sh refuses to report success when a unit did not come up', () => {
+    const banner = START.indexOf('✓ Dashboard: http://localhost')
+    expect(banner).toBeGreaterThan(0)
+    // the guard must come BEFORE the success line, and must not fall through
+    const before = START.slice(0, banner)
+    expect(before).toMatch(/if \[ -n "\$LAUNCHD_FAILED" \]/)
+    expect(before).toMatch(/exit 1/)
+  })
 })
 
-describe('both installers stay parseable', () => {
-  it.each(['install-linux.sh', 'install-macos.sh'])('bash -n %s', (f) => {
-    expect(() => execFileSync('bash', ['-n', join(ROOT, f)], { stdio: 'pipe' })).not.toThrow()
-  })
+describe('every touched shell entry point stays parseable', () => {
+  it.each(['install-linux.sh', 'install-macos.sh', 'scripts/start.sh', 'scripts/launchd-unit.sh'])(
+    'bash -n %s',
+    (f) => {
+      expect(() => execFileSync('bash', ['-n', join(ROOT, f)], { stdio: 'pipe' })).not.toThrow()
+    },
+  )
 })
