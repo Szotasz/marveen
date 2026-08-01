@@ -9827,12 +9827,18 @@ async function loadStatus() {
 
 document.getElementById('refreshCostsBtn').addEventListener('click', loadCosts)
 
+// The chosen display currency survives a reload: someone who reads these
+// figures in EUR reads them in EUR every morning, and re-picking it daily
+// would be the kind of small friction that stops people looking at all.
+const COSTS_CURRENCY_KEY = 'costsDisplayCurrency'
+
 async function loadCosts() {
   const el = document.getElementById('costsContent')
   const mutedStyle = 'color:var(--text-muted);font-size:13px'
   el.innerHTML = `<div style="${mutedStyle}">${t('costs.loading')}</div>`
   try {
-    const res = await fetch('/api/costs/summary')
+    const chosen = localStorage.getItem(COSTS_CURRENCY_KEY) || ''
+    const res = await fetch('/api/costs/summary' + (chosen ? `?display_currency=${encodeURIComponent(chosen)}` : ''))
     const s = await res.json()
     if (!res.ok) throw new Error(s?.error || 'request failed')
 
@@ -9856,6 +9862,21 @@ async function loadCosts() {
       html += `<div style="margin-top:16px;padding:12px 16px;border:1px solid var(--border,#333);border-radius:8px">
         <div style="font-weight:600;margin-bottom:6px">${t('costs.budget_title')}: ${escapeHtml(s.budget.id)} (${fmtMoney(s.budget.amount)})</div>
         <div style="${mutedStyle}">${t('costs.budget_used')}: <strong style="color:${color}">${pct}%</strong></div>
+      </div>`
+    }
+
+    // Currency picker + the date the rates come from. The two belong together:
+    // a converted figure without its as-of date invites reading a month-old
+    // rate as today's.
+    const available = Array.isArray(s.fx?.available_currencies) ? s.fx.available_currencies : []
+    if (available.length > 1) {
+      const current = s.fx?.display_currency || s.currency
+      html += `<div style="margin-top:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <label for="costsCurrencySel" style="${mutedStyle}">${t('costs.display_currency')}</label>
+        <select id="costsCurrencySel" style="padding:4px 8px;border-radius:6px">
+          ${available.map((c) => `<option value="${escapeHtml(c)}"${c === current ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('')}
+        </select>
+        ${s.fx?.asof ? `<span style="${mutedStyle}">${t('costs.fx_converted_at')} ${escapeHtml(s.fx.asof)}</span>` : `<span style="${mutedStyle}">${t('costs.fx_no_asof')}</span>`}
       </div>`
     }
 
@@ -9923,6 +9944,13 @@ async function loadCosts() {
     html += `<p style="${mutedStyle};margin-top:16px">${t('costs.token_usage_note')} (${(s.token_usage?.calls ?? 0)} ${t('costs.calls')}, ${(s.token_usage?.input_tokens ?? 0) + (s.token_usage?.output_tokens ?? 0)} tokens)</p>`
 
     el.innerHTML = html
+    const sel = document.getElementById('costsCurrencySel')
+    if (sel) {
+      sel.onchange = () => {
+        localStorage.setItem(COSTS_CURRENCY_KEY, sel.value)
+        loadCosts()
+      }
+    }
   } catch (err) {
     el.innerHTML = `<div style="${mutedStyle}">${t('costs.load_failed')}</div>`
   }

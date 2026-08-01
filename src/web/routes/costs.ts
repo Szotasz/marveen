@@ -7,7 +7,7 @@
 import { json, readBody } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import { getDb } from '../../db.js'
-import { loadCostopsConfig } from '../../costops/config.js'
+import { loadCostopsConfig, availableDisplayCurrencies } from '../../costops/config.js'
 import { refreshFxRates } from '../../costops/fx-rates.js'
 import { syncFixedCostsToLedger, getCostSummary, getCostSources, getTokenCostReport } from '../../costops/ledger.js'
 import { PRICE_MAP, isPriced } from '../../costops/pricing.js'
@@ -70,8 +70,18 @@ export async function tryHandleCosts(ctx: RouteContext): Promise<boolean> {
       const monthKey = url.searchParams.get('month') || undefined
       const now = Math.floor(Date.now() / 1000)
       const { config, exists, errors } = loadCostopsConfig()
+      // An unsupported display currency is refused rather than served as a
+      // page full of nulls: without a rate every figure would be "cannot say",
+      // which reads like missing data instead of a bad request.
+      const requested = (url.searchParams.get('display_currency') || '').trim().toUpperCase()
+      const available = availableDisplayCurrencies(config)
+      if (requested && !available.includes(requested)) {
+        json(res, { error: `No rate for ${requested}`, available }, 400)
+        return true
+      }
       const summary = getCostSummary(getDb(), config, now, {
         monthKey, configExists: exists, configErrors: errors,
+        displayCurrency: requested || undefined,
       })
       json(res, summary)
     } catch (err) {

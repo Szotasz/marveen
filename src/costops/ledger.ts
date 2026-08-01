@@ -9,6 +9,7 @@
 import type Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
 import {
+  availableDisplayCurrencies,
   normalizeProject,
   monthlyAmount,
   toDisplayCurrency,
@@ -175,6 +176,8 @@ export interface CostSummary {
     asof: string | null
     /** Currencies present in the ledger with no configured rate. */
     missing_rates: string[]
+    /** Currencies the summary can be rendered in -- what the UI may offer. */
+    available_currencies: string[]
   }
   /** Per-project money and (separately) per-project token list-price equivalent. */
   by_project: ProjectSpend[]
@@ -236,9 +239,12 @@ export function getCostSummary(
   db: Database.Database,
   config: CostOpsConfig,
   now: number,
-  opts: { monthKey?: string; configExists?: boolean; configErrors?: string[] } = {},
+  opts: { monthKey?: string; configExists?: boolean; configErrors?: string[]; displayCurrency?: string } = {},
 ): CostSummary {
   const win = monthWindow(now, opts.monthKey)
+  // What the caller wants to read the money in. Defaults to the currency the
+  // rate table is quoted in, which is what every earlier caller assumed.
+  const displayCurrency = (opts.displayCurrency || config.currency).toUpperCase()
 
   // The source join carries currency and project down to the line, so the
   // money can be grouped by both without a second pass over the ledger.
@@ -264,7 +270,7 @@ export function getCostSummary(
 
   for (const l of lines) {
     const currency = (l.currency || config.currency).toUpperCase()
-    const converted = toDisplayCurrency(l.billed_cost, currency, config)
+    const converted = toDisplayCurrency(l.billed_cost, currency, config, displayCurrency)
     // A line we cannot convert is NOT dropped from the per-currency view and
     // NOT counted at face value in the display total. Adding an unconverted
     // 20 USD to a HUF total is not a rounding error, it is a wrong number.
@@ -356,7 +362,7 @@ export function getCostSummary(
     const byCurrency = money?.byCurrency ?? {}
     let display: number | null = 0
     for (const [currency, amount] of Object.entries(byCurrency)) {
-      const converted = toDisplayCurrency(amount, currency, config)
+      const converted = toDisplayCurrency(amount, currency, config, displayCurrency)
       if (converted === null) { display = null; break }
       display += converted
     }
@@ -375,14 +381,15 @@ export function getCostSummary(
 
   return {
     month: win.key,
-    currency: config.currency,
+    currency: displayCurrency,
     current_spend,
     forecast_month_end,
     spend_by_currency,
     fx: {
-      display_currency: config.currency,
+      display_currency: displayCurrency,
       asof: config.fx_asof ?? null,
       missing_rates: [...missingRates].sort(),
+      available_currencies: availableDisplayCurrencies(config),
     },
     by_project,
     top_sources,

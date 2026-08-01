@@ -15,7 +15,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { initDatabase, getDb } from '../db.js'
 import { syncFixedCostsToLedger, getCostSummary, getTokenCostReport, UNTAGGED_PROJECT } from '../costops/ledger.js'
-import { normalizeProject, monthlyAmount, SHARED_PROJECT, validateConfig } from '../costops/config.js'
+import { normalizeProject, monthlyAmount, SHARED_PROJECT, validateConfig, availableDisplayCurrencies } from '../costops/config.js'
 import type { CostOpsConfig, FixedCostEntry } from '../costops/config.js'
 
 // 2026-07-15T12:00:00Z -- same deterministic "now" as the other costops tests.
@@ -218,5 +218,86 @@ describe('AI list-price equivalent stays its own column', () => {
     const p = getCostSummary(db, cfg(), NOW).by_project.find(x => x.project === 'idea-candidate')!
     expect(p.spend_display).toBe(0)
     expect(p.ai_list_price_usd).toBeCloseTo(5, 4)
+  })
+})
+
+// Viktor asked to read the same figures in USD or EUR, not only HUF (#187).
+// The rate table is quoted in one base currency, so every pair has to come out
+// of those same two numbers -- and the honesty rules must survive the change of
+// unit, since a wrong number is no better in dollars.
+describe('choosing the display currency', () => {
+  const mixed = {
+    fixed_costs: [
+      cost({ source_id: 'vercel', amount: 20, currency: 'USD', project: 'persistent-cart' }),
+      cost({ source_id: 'claude', amount: 100, currency: 'EUR', project: 'KOZOS' }),
+      cost({ source_id: 'partner', amount: 35000, currency: 'HUF', project: 'persistent-cart' }),
+    ],
+  }
+  // Roughly the real rates the updater fetched on 2026-08-01.
+  const rated = (over: Partial<CostOpsConfig> = {}) => cfg({ fx_rates: { USD: 350, EUR: 400 }, fx_asof: '2026-07-31', ...over })
+
+  it('defaults to the currency the rate table is quoted in', () => {
+    const db = getDb()
+    syncFixedCostsToLedger(db, cfg(mixed), NOW)
+    const s = getCostSummary(db, rated(), NOW)
+    expect(s.currency).toBe('HUF')
+    expect(s.current_spend).toBe(20 * 350 + 100 * 400 + 35000)
+  })
+
+  it('converts the whole summary into a requested currency', () => {
+    const db = getDb()
+    syncFixedCostsToLedger(db, cfg(mixed), NOW)
+    const s = getCostSummary(db, rated(), NOW, { displayCurrency: 'USD' })
+    expect(s.currency).toBe('USD')
+    // Everything through the base: (20*350 + 100*400 + 35000) HUF / 350.
+    expect(s.current_spend).toBeCloseTo((20 * 350 + 100 * 400 + 35000) / 350, 2)
+    expect(s.fx.display_currency).toBe('USD')
+  })
+
+  it('crosses two foreign currencies through the base, not a third rate', () => {
+    // EUR shown in USD: 100 EUR -> 40 000 HUF -> 114.29 USD.
+    const db = getDb()
+    syncFixedCostsToLedger(db, cfg({ fixed_costs: [cost({ source_id: 'claude', amount: 100, currency: 'EUR', project: 'KOZOS' })] }), NOW)
+    const s = getCostSummary(db, rated(), NOW, { displayCurrency: 'USD' })
+    expect(s.current_spend).toBeCloseTo(100 * 400 / 350, 2)
+  })
+
+  it('keeps spend_by_currency as the unconverted truth whatever the display', () => {
+    const db = getDb()
+    syncFixedCostsToLedger(db, cfg(mixed), NOW)
+    const s = getCostSummary(db, rated(), NOW, { displayCurrency: 'EUR' })
+    expect(s.spend_by_currency).toEqual({ USD: 20, EUR: 100, HUF: 35000 })
+  })
+
+  it('still refuses to guess when a source currency has no rate', () => {
+    // Changing the unit must not turn a "cannot say" into a number.
+    const db = getDb()
+    syncFixedCostsToLedger(db, cfg(mixed), NOW)
+    const s = getCostSummary(db, cfg({ fx_rates: { USD: 350 } }), NOW, { displayCurrency: 'USD' })
+    expect(s.fx.missing_rates).toEqual(['EUR'])
+    expect(s.by_project.find(p => p.project === SHARED_PROJECT)!.spend_display).toBeNull()
+  })
+
+  it('offers only currencies it can actually produce', () => {
+    const db = getDb()
+    syncFixedCostsToLedger(db, cfg(mixed), NOW)
+    // A selector must never list a currency that would yield nulls.
+    expect(getCostSummary(db, rated(), NOW).fx.available_currencies).toEqual(['EUR', 'HUF', 'USD'])
+    expect(getCostSummary(db, cfg(), NOW).fx.available_currencies).toEqual(['HUF'])
+  })
+
+  it('never offers a currency whose rate is unusable', () => {
+    // validateConfig drops non-positive rates, but this helper is also called
+    // with configs assembled in code -- and a 0 rate would divide the whole
+    // summary into Infinity rather than merely being wrong.
+    expect(availableDisplayCurrencies({ currency: 'HUF', fx_rates: { USD: 350, EUR: 0, GBP: -1 } })).toEqual(['HUF', 'USD'])
+  })
+
+  it('carries the as-of date into every display currency', () => {
+    // A converted figure without its date invites reading a month-old rate as
+    // today's -- and conversion is exactly when that matters.
+    const db = getDb()
+    syncFixedCostsToLedger(db, cfg(mixed), NOW)
+    expect(getCostSummary(db, rated(), NOW, { displayCurrency: 'USD' }).fx.asof).toBe('2026-07-31')
   })
 })

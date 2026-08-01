@@ -264,9 +264,39 @@ export function toDisplayCurrency(
   amount: number,
   from: string,
   config: Pick<CostOpsConfig, 'currency' | 'fx_rates'>,
+  displayCurrency?: string,
 ): number | null {
-  const src = (from || config.currency).toUpperCase()
-  if (src === config.currency.toUpperCase()) return amount
-  const rate = config.fx_rates[src]
-  return rate === undefined ? null : amount * rate
+  const base = config.currency.toUpperCase()
+  const src = (from || base).toUpperCase()
+  const target = (displayCurrency || base).toUpperCase()
+  if (src === target) return amount
+  // Everything goes through the base currency the rate table is quoted in, so
+  // any pair works from the same two numbers -- USD->EUR is USD->HUF->EUR, not
+  // a third rate we would have to fetch and keep in step with the other two.
+  const toBase = rateToBase(src, base, config.fx_rates)
+  const targetToBase = rateToBase(target, base, config.fx_rates)
+  if (toBase === null || targetToBase === null) return null
+  return (amount * toBase) / targetToBase
+}
+
+/** Units of the base currency per 1 unit of `code`, or null when unknown. */
+function rateToBase(code: string, base: string, rates: Record<string, number>): number | null {
+  if (code === base) return 1
+  const rate = rates[code]
+  return rate === undefined || rate <= 0 ? null : rate
+}
+
+/**
+ * Which currencies the summary can be displayed in right now.
+ *
+ * The base is always available (no conversion needed); every other currency
+ * needs a rate. Offering a currency the table cannot produce would put a
+ * selector on screen that silently yields nulls.
+ */
+export function availableDisplayCurrencies(config: Pick<CostOpsConfig, 'currency' | 'fx_rates'>): string[] {
+  const base = config.currency.toUpperCase()
+  const withRates = Object.entries(config.fx_rates)
+    .filter(([, rate]) => rate > 0)
+    .map(([code]) => code.toUpperCase())
+  return [base, ...withRates.filter(c => c !== base)].sort()
 }
