@@ -1691,7 +1691,13 @@ if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; the
     ok "systemd unitok generalva es engedelyezve"
   else
     warn "A unit-fajlok elkeszultek, de az engedelyezesuk nem sikerult -- ujrainditas utan a szolgaltatasok nem indulnak el maguktol."
-    echo -e "  ${DIM}Javitas most: systemctl --user enable ${DASH_UNIT} ${CHAN_UNIT}${NC}"
+    # ALL FOUR units the enable above covers, not just the two services. A
+    # command that silently drops the timer and the watchdog would leave them
+    # disabled while the operator sees no error and believes the fix worked --
+    # an incomplete instruction ends the same way as a false claim.
+    echo -e "  ${DIM}Javitas most: systemctl --user enable \\${NC}"
+    echo -e "  ${DIM}    ${DASH_UNIT} ${CHAN_UNIT} \\${NC}"
+    echo -e "  ${DIM}    ${MORN_UNIT}.timer ${SERVICE_ID}-host-watchdog.service${NC}"
   fi
   systemctl --user start "${DASH_UNIT}" "${CHAN_UNIT}" 2>/dev/null || true
   sleep 2
