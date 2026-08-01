@@ -380,8 +380,10 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   # shared credential session, which is exactly how the 2026-07-27 evening 401
   # outage started and was only noticed hours later when the owner got no replies.
   # Surface it at START time instead: a failures-log line plus a best-effort
-  # inter-agent message to the main agent. Installs that never ran isolated have
-  # no .channels-config dir and stay quiet, so default setups see no new noise.
+  # inter-agent message to the main agent. THIS trigger needs the dir, so it
+  # stays quiet on an install that never ran isolated -- which is why the second
+  # trigger below exists. What is quiet overall is an install carrying no fleet
+  # setup-token: neither trigger fires there.
   # Second trigger, and the one that covers a FRESH install. The condition above
   # needs a .channels-config dir, which only exists once an isolated boot has
   # already happened -- so on an install that NEVER ran isolated the guard was
