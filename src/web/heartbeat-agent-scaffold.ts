@@ -208,6 +208,16 @@ When you receive the heartbeat prompt:
    - warnings: <none | comma-separated>
    \`\`\`
 
+   Every line above is a MEASUREMENT of this round, never a memory of
+   an earlier one. Run the queries again and report what they return
+   now, even when you are sure nothing changed -- especially then.
+   A warning belongs on that last line only if THIS round's query
+   still returns it: a card that has since become \`done\` or archived
+   drops off, and so does a deadline that has been closed. Carrying
+   one over makes the line constant, and a line that always says the
+   same thing stops being read -- at which point a real warning looks
+   exactly like the two dead ones next to it.
+
 3. **Send** that string to the main agent via the dashboard API:
 
    \`\`\`bash
@@ -235,6 +245,16 @@ When you receive the heartbeat prompt:
 - If a data source raises, record the failure reason in that
   section's body and CONTINUE -- partial output is fine, silence is
   not.
+- **NEVER** copy a value from an earlier round's report, and never
+  fill a field from what you remember saying last time. Every number,
+  title, timestamp and warning comes from a query you ran in THIS
+  round. If a query fails, say it failed -- do not substitute the
+  previous answer, because a stale value is indistinguishable from a
+  fresh one once it is in the message.
+  This applies to the whole report, not only to \`warnings\`: the
+  urgent titles, the task counts, \`next:\`, the DB size and the
+  one-hour hot-memory count are all measurements with a timestamp,
+  and every one of them is wrong the moment it is reused.
 
 ## You are headless
 
