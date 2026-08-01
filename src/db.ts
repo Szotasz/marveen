@@ -789,6 +789,12 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_cost_line_items_period ON cost_line_items(charge_period_start, charge_period_end)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_cost_line_items_source ON cost_line_items(source_id)`)
+  // Which project a cost source serves. Idempotent add (PRAGMA-guarded) like
+  // the other in-place column additions. Rows written before this column
+  // existed read as NULL and are treated as shared, which is what an
+  // unlabelled cost is.
+  const costSourceCols = (db.prepare('PRAGMA table_info(cost_sources)').all() as { name: string }[]).map(r => r.name)
+  if (!costSourceCols.includes('project')) db.exec('ALTER TABLE cost_sources ADD COLUMN project TEXT')
 
   // --- Vault SSH Keys (shared pool) ---
   db.exec(`

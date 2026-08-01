@@ -18,7 +18,7 @@ const NOW = Math.floor(Date.UTC(2026, 6, 15, 12, 0, 0) / 1000)
 const OPUS = 'claude-opus-5' // $5 in / $25 out per 1M
 
 function cfg(over: Partial<CostOpsConfig> = {}): CostOpsConfig {
-  return { version: 1, currency: 'HUF', fixed_costs: [], budgets: [], ...over }
+  return { version: 1, currency: 'HUF', fx_rates: {}, fixed_costs: [], budgets: [], ...over }
 }
 
 function insertUsage(

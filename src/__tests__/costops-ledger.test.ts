@@ -17,6 +17,7 @@ function cfg(over: Partial<CostOpsConfig> = {}): CostOpsConfig {
   return {
     version: 1,
     currency: 'HUF',
+    fx_rates: {},
     fixed_costs: [
       { source_id: 'anthropic-max', name: 'Claude Max', provider: 'anthropic', source_type: 'subscription', amount: 22000, period: 'monthly', charge_category: 'subscription', confidence: 'manual', currency: 'HUF' },
       { source_id: 'openai', name: 'ChatGPT', provider: 'openai', source_type: 'subscription', amount: 8000, period: 'monthly', charge_category: 'subscription', confidence: 'manual', currency: 'HUF' },
@@ -77,8 +78,19 @@ describe('costops config validation', () => {
     expect(r.config.fixed_costs[0].source_id).toBe('ok')
     expect(r.errors.length).toBe(2)
   })
-  it('rejects non-monthly periods in v0.1', () => {
-    const r = validateConfig({ fixed_costs: [{ source_id: 'y', amount: 1, period: 'yearly' }], budgets: [] })
+  it('accepts a yearly period and keeps the amount as billed', () => {
+    // The owner's real list mixes monthly and yearly (a domain is billed once
+    // a year). Rejecting yearly forced a hand-divided figure into the config,
+    // which is the kind of number nobody can check later.
+    const r = validateConfig({ fixed_costs: [{ source_id: 'y', amount: 999, period: 'yearly' }], budgets: [] })
+    expect(r.config.fixed_costs).toHaveLength(1)
+    expect(r.config.fixed_costs[0].period).toBe('yearly')
+    expect(r.config.fixed_costs[0].amount).toBe(999)
+    expect(r.errors).toHaveLength(0)
+  })
+
+  it('rejects a period it does not understand', () => {
+    const r = validateConfig({ fixed_costs: [{ source_id: 'y', amount: 1, period: 'weekly' }], budgets: [] })
     expect(r.config.fixed_costs).toHaveLength(0)
     expect(r.errors[0]).toContain('monthly')
   })

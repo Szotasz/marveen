@@ -8,7 +8,14 @@
 
 import type Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
-import type { CostOpsConfig, CostConfidence } from './config.js'
+import {
+  normalizeProject,
+  monthlyAmount,
+  toDisplayCurrency,
+  SHARED_PROJECT,
+  type CostOpsConfig,
+  type CostConfidence,
+} from './config.js'
 import {
   PRICE_MAP_VERSION,
   ZERO_COMPONENTS,
@@ -88,11 +95,11 @@ export function syncFixedCostsToLedger(
 ): number {
   const win = monthWindow(now, monthKey)
   const upsertSource = db.prepare(`
-    INSERT INTO cost_sources (id, name, provider, source_type, currency, active, created_at, updated_at)
-    VALUES (@id, @name, @provider, @source_type, @currency, 1, @now, @now)
+    INSERT INTO cost_sources (id, name, provider, source_type, currency, project, active, created_at, updated_at)
+    VALUES (@id, @name, @provider, @source_type, @currency, @project, 1, @now, @now)
     ON CONFLICT(id) DO UPDATE SET
       name=excluded.name, provider=excluded.provider, source_type=excluded.source_type,
-      currency=excluded.currency, active=1, updated_at=excluded.updated_at
+      currency=excluded.currency, project=excluded.project, active=1, updated_at=excluded.updated_at
   `)
   const upsertLine = db.prepare(`
     INSERT INTO cost_line_items
@@ -101,11 +108,12 @@ export function syncFixedCostsToLedger(
        confidence, data_freshness, source_ref, dedup_key, created_at)
     VALUES
       (@source_id, @start, @end, @charge_category, @service_name,
-       NULL, 1, 'month', @billed_cost, NULL, @currency,
+       @usage_type, 1, 'month', @billed_cost, NULL, @currency,
        @confidence, @now, NULL, @dedup_key, @now)
     ON CONFLICT(dedup_key) DO UPDATE SET
       billed_cost=excluded.billed_cost, charge_category=excluded.charge_category,
       service_name=excluded.service_name, currency=excluded.currency,
+      usage_type=excluded.usage_type,
       confidence=excluded.confidence, data_freshness=excluded.data_freshness
   `)
   const tx = db.transaction((entries: CostOpsConfig['fixed_costs']) => {
@@ -113,12 +121,16 @@ export function syncFixedCostsToLedger(
     for (const e of entries) {
       upsertSource.run({
         id: e.source_id, name: e.name, provider: e.provider,
-        source_type: e.source_type, currency: e.currency ?? config.currency, now,
+        source_type: e.source_type, currency: e.currency ?? config.currency,
+        project: normalizeProject(e.project), now,
       })
       upsertLine.run({
         source_id: e.source_id, start: win.start, end: win.end,
         charge_category: e.charge_category ?? 'subscription', service_name: e.name,
-        billed_cost: e.amount, currency: e.currency ?? config.currency,
+        // A yearly cost lands as its monthly share (see monthlyAmount), tagged
+        // so a reader can tell an amortized twelfth from a real monthly bill.
+        billed_cost: monthlyAmount(e), usage_type: e.period === 'yearly' ? 'amortized_yearly' : null,
+        currency: e.currency ?? config.currency,
         confidence: e.confidence ?? 'manual', now,
         dedup_key: `fixed|${e.source_id}|${win.key}`,
       })
@@ -131,11 +143,41 @@ export function syncFixedCostsToLedger(
 
 // ---- read path: deterministic monthly summary ------------------------------
 
+export interface ProjectSpend {
+  project: string
+  /**
+   * Real money for this project in the display currency, or null when at least
+   * one of its currencies has no configured rate. Null means "cannot say", and
+   * the UI must show it as such -- a partial sum presented as a total is the
+   * kind of number people budget against.
+   */
+  spend_display: number | null
+  /** The same money, per currency it was actually billed in. Always complete. */
+  spend_by_currency: Record<string, number>
+  /**
+   * What this project's token volume would cost at published API rates. A
+   * SEPARATE column, never added to spend: the subscription that pays for those
+   * tokens is already in the money above, so summing the two double-counts.
+   */
+  ai_list_price_usd: number
+  sources: string[]
+}
+
 export interface CostSummary {
   month: string
   currency: string
   current_spend: number
   forecast_month_end: number
+  /** Money per currency as billed -- the unconverted truth behind current_spend. */
+  spend_by_currency: Record<string, number>
+  fx: {
+    display_currency: string
+    asof: string | null
+    /** Currencies present in the ledger with no configured rate. */
+    missing_rates: string[]
+  }
+  /** Per-project money and (separately) per-project token list-price equivalent. */
+  by_project: ProjectSpend[]
   top_sources: Array<{ source_id: string; name: string; spend: number }>
   // Full list of every configured/active source (not capped) -- top_sources is
   // the top-5 by spend; all_sources is the complete set for the dashboard table.
@@ -186,6 +228,8 @@ interface LineRow {
   charge_category: string
   confidence: CostConfidence
   data_freshness: number
+  currency: string
+  project: string | null
 }
 
 export function getCostSummary(
@@ -196,10 +240,14 @@ export function getCostSummary(
 ): CostSummary {
   const win = monthWindow(now, opts.monthKey)
 
+  // The source join carries currency and project down to the line, so the
+  // money can be grouped by both without a second pass over the ledger.
   const lines = db.prepare(`
-    SELECT source_id, billed_cost, charge_category, confidence, data_freshness
-    FROM cost_line_items
-    WHERE charge_period_start < @end AND charge_period_end > @start
+    SELECT li.source_id, li.billed_cost, li.charge_category, li.confidence, li.data_freshness,
+           li.currency, cs.project
+    FROM cost_line_items li
+    LEFT JOIN cost_sources cs ON cs.id = li.source_id
+    WHERE li.charge_period_start < @end AND li.charge_period_end > @start
   `).all({ start: win.start, end: win.end }) as LineRow[]
 
   let current_spend = 0
@@ -208,19 +256,39 @@ export function getCostSummary(
   const breakdown = { fixed_manual: 0, provider: 0, estimate: 0 }
   const perSource = new Map<string, number>()
   const perSourceConfidence = new Map<string, string>()
+  const spend_by_currency: Record<string, number> = {}
+  const missingRates = new Set<string>()
+  // project -> per-currency money, kept unconverted until the very end
+  const perProject = new Map<string, { byCurrency: Record<string, number>; sources: Set<string> }>()
   let latestFreshness: number | null = null
 
   for (const l of lines) {
-    current_spend += l.billed_cost
+    const currency = (l.currency || config.currency).toUpperCase()
+    const converted = toDisplayCurrency(l.billed_cost, currency, config)
+    // A line we cannot convert is NOT dropped from the per-currency view and
+    // NOT counted at face value in the display total. Adding an unconverted
+    // 20 USD to a HUF total is not a rounding error, it is a wrong number.
+    if (converted === null) missingRates.add(currency)
+    const display = converted ?? 0
+
+    current_spend += display
     // Usage-type lines are prorated to month-end; committed/fixed lines are
     // already whole-month (no proration).
     forecast_month_end += l.charge_category === 'usage'
-      ? l.billed_cost / win.fractionElapsed
-      : l.billed_cost
-    confidence_breakdown[l.confidence] = (confidence_breakdown[l.confidence] || 0) + l.billed_cost
-    breakdown[confidenceBucket(l.confidence)] += l.billed_cost
-    perSource.set(l.source_id, (perSource.get(l.source_id) || 0) + l.billed_cost)
+      ? display / win.fractionElapsed
+      : display
+    confidence_breakdown[l.confidence] = (confidence_breakdown[l.confidence] || 0) + display
+    breakdown[confidenceBucket(l.confidence)] += display
+    perSource.set(l.source_id, (perSource.get(l.source_id) || 0) + display)
     perSourceConfidence.set(l.source_id, l.confidence)
+    spend_by_currency[currency] = round2((spend_by_currency[currency] || 0) + l.billed_cost)
+
+    const project = normalizeProject(l.project)
+    const bucket = perProject.get(project) ?? { byCurrency: {}, sources: new Set<string>() }
+    bucket.byCurrency[currency] = round2((bucket.byCurrency[currency] || 0) + l.billed_cost)
+    bucket.sources.add(l.source_id)
+    perProject.set(project, bucket)
+
     if (latestFreshness === null || l.data_freshness > latestFreshness) latestFreshness = l.data_freshness
   }
   current_spend = round2(current_spend)
@@ -277,11 +345,46 @@ export function getCostSummary(
 
   const tokenCost = getTokenCostReport(db, { start: win.start, end: win.end })
 
+  // Per-project view: money (per currency, converted only where a rate exists)
+  // next to the token list-price equivalent, which stays its own column.
+  // A project can appear on either side alone -- a project with tokens but no
+  // subscription is real, and so is the reverse.
+  const tokenByProject = new Map(tokenCost.by_project.map(p => [p.project, p.cost]))
+  const projectNames = new Set<string>([...perProject.keys(), ...tokenByProject.keys()])
+  const by_project: ProjectSpend[] = [...projectNames].map(project => {
+    const money = perProject.get(project)
+    const byCurrency = money?.byCurrency ?? {}
+    let display: number | null = 0
+    for (const [currency, amount] of Object.entries(byCurrency)) {
+      const converted = toDisplayCurrency(amount, currency, config)
+      if (converted === null) { display = null; break }
+      display += converted
+    }
+    return {
+      project,
+      spend_display: display === null ? null : round2(display),
+      spend_by_currency: byCurrency,
+      ai_list_price_usd: round4(tokenByProject.get(project) ?? 0),
+      sources: [...(money?.sources ?? [])].sort(),
+    }
+  }).sort((a, b) =>
+    (b.spend_display ?? 0) - (a.spend_display ?? 0) ||
+    b.ai_list_price_usd - a.ai_list_price_usd ||
+    a.project.localeCompare(b.project),
+  )
+
   return {
     month: win.key,
     currency: config.currency,
     current_spend,
     forecast_month_end,
+    spend_by_currency,
+    fx: {
+      display_currency: config.currency,
+      asof: config.fx_asof ?? null,
+      missing_rates: [...missingRates].sort(),
+    },
+    by_project,
     top_sources,
     all_sources,
     confidence_breakdown: roundValues(confidence_breakdown),
@@ -320,6 +423,13 @@ export interface TokenCostReport {
   components: TokenCostComponents
   by_model: Array<{ model: string; calls: number; cost: number }>
   by_agent: Array<{ agent: string; calls: number; cost: number }>
+  /**
+   * Per project, from token_usage.project. Rows with no project land under
+   * UNTAGGED_PROJECT rather than being dropped or spread across the labelled
+   * ones -- as of 2026-07-31 that is 55% of the spend, and hiding it would
+   * make every per-project figure look more complete than it is.
+   */
+  by_project: Array<{ project: string; calls: number; cost: number }>
   by_day: Array<{ day: string; cost: number }>
   /**
    * Rows we hold no published rate for. Surfaced rather than folded into the
@@ -332,12 +442,16 @@ export interface TokenCostReport {
 interface UsageRow {
   model: string | null
   agent: string
+  project: string | null
   timestamp: number
   input_tokens: number
   output_tokens: number
   cache_read_tokens: number
   cache_creation_tokens: number
 }
+
+/** Where token usage with no project label is reported. Never hidden. */
+export const UNTAGGED_PROJECT = '(untagged)'
 
 /**
  * List-price-equivalent token cost over an epoch-second window, [start, end).
@@ -354,7 +468,7 @@ export function getTokenCostReport(
 ): TokenCostReport {
   const timeZone = opts.timeZone ?? 'Europe/Budapest'
   const rows = db.prepare(`
-    SELECT model, agent, timestamp, input_tokens, output_tokens,
+    SELECT model, agent, project, timestamp, input_tokens, output_tokens,
            cache_read_tokens, cache_creation_tokens
     FROM token_usage
     WHERE timestamp >= @start AND timestamp < @end
@@ -363,6 +477,7 @@ export function getTokenCostReport(
   const components: TokenCostComponents = { ...ZERO_COMPONENTS }
   const perModel = new Map<string, { calls: number; cost: number }>()
   const perAgent = new Map<string, { calls: number; cost: number }>()
+  const perProject = new Map<string, { calls: number; cost: number }>()
   const perDay = new Map<string, number>()
   const unpricedModels = new Set<string>()
   let unpricedCalls = 0
@@ -387,6 +502,10 @@ export function getTokenCostReport(
     const a = perAgent.get(r.agent) ?? { calls: 0, cost: 0 }
     a.calls++; a.cost += priced.total; perAgent.set(r.agent, a)
 
+    const projectKey = (r.project ?? '').trim() || UNTAGGED_PROJECT
+    const p = perProject.get(projectKey) ?? { calls: 0, cost: 0 }
+    p.calls++; p.cost += priced.total; perProject.set(projectKey, p)
+
     const d = dayKey(r.timestamp, timeZone)
     perDay.set(d, (perDay.get(d) ?? 0) + priced.total)
   }
@@ -409,6 +528,9 @@ export function getTokenCostReport(
       .sort((a, b) => b.cost - a.cost),
     by_agent: [...perAgent.entries()]
       .map(([agent, v]) => ({ agent, calls: v.calls, cost: round4(v.cost) }))
+      .sort((a, b) => b.cost - a.cost),
+    by_project: [...perProject.entries()]
+      .map(([project, v]) => ({ project, calls: v.calls, cost: round4(v.cost) }))
       .sort((a, b) => b.cost - a.cost),
     by_day: [...perDay.entries()]
       .map(([day, cost]) => ({ day, cost: round4(cost) }))

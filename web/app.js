@@ -9846,6 +9846,51 @@ async function loadCosts() {
       </div>`
     }
 
+    // A currency with no configured rate is left out of the totals above, so
+    // say so where the totals are. A quiet omission reads as "nothing there".
+    const missingRates = Array.isArray(s.fx?.missing_rates) ? s.fx.missing_rates : []
+    if (missingRates.length > 0) {
+      html += `<div style="margin-top:12px;padding:10px 14px;border:1px solid var(--warn,#e0a800);border-radius:8px;${mutedStyle}">
+        <strong>${t('costs.fx_missing')}</strong> ${missingRates.map(escapeHtml).join(', ')} &mdash; ${t('costs.fx_missing_note')}
+      </div>`
+    }
+
+    // Per-project: real money and the AI list-price equivalent side by side.
+    // Two columns on purpose -- adding them would double-count the
+    // subscription that already pays for the tokens.
+    const projects = Array.isArray(s.by_project) ? s.by_project : []
+    const projectLabel = (name) =>
+      name === 'shared' ? t('costs.project_shared')
+        : name === '(untagged)' ? t('costs.project_untagged')
+          : escapeHtml(name)
+    // An unconvertible project shows its own currencies rather than a total it
+    // cannot honestly produce.
+    const projectMoney = (p) => p.spend_display === null
+      ? Object.entries(p.spend_by_currency || {}).map(([c, v]) => `${v.toLocaleString('hu-HU')} ${escapeHtml(c)}`).join(' + ') || '—'
+      : fmtMoney(p.spend_display)
+
+    html += `<h3 style="margin-top:20px;margin-bottom:8px;font-size:15px">${t('costs.by_project')}</h3>`
+    if (projects.length === 0) {
+      html += `<div style="${mutedStyle}">${t('costs.no_projects')}</div>`
+    } else {
+      html += `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+        <thead><tr style="text-align:left;border-bottom:1px solid var(--border,#333)">
+          <th style="padding:6px 8px">${t('costs.project')}</th>
+          <th style="padding:6px 8px">${t('costs.project_money')}</th>
+          <th style="padding:6px 8px">${t('costs.project_ai')}</th>
+        </tr></thead>
+        <tbody>${projects.map((p) => `<tr style="border-bottom:1px solid var(--border,#222)">
+          <td style="padding:6px 8px">${projectLabel(p.project)}</td>
+          <td style="padding:6px 8px">${projectMoney(p)}</td>
+          <td style="padding:6px 8px;${mutedStyle}">$${(p.ai_list_price_usd ?? 0).toFixed(2)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+      <p style="${mutedStyle};margin-top:6px">${t('costs.project_ai_note')}</p>`
+    }
+    if (s.fx?.asof) {
+      html += `<p style="${mutedStyle};margin-top:4px">${t('costs.fx_asof')} ${escapeHtml(s.fx.asof)}</p>`
+    }
+
     const sources = Array.isArray(s.all_sources) ? s.all_sources : []
     if (sources.length === 0) {
       html += `<div style="${mutedStyle};margin-top:12px">${t('costs.no_sources')}</div>`
