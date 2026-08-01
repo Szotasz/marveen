@@ -382,6 +382,26 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   # Surface it at START time instead: a failures-log line plus a best-effort
   # inter-agent message to the main agent. Installs that never ran isolated have
   # no .channels-config dir and stay quiet, so default setups see no new noise.
+  # Second trigger, and the one that covers a FRESH install. The condition above
+  # needs a .channels-config dir, which only exists once an isolated boot has
+  # already happened -- so on an install that NEVER ran isolated the guard was
+  # structurally silent, which is exactly the install shape issue #835 is about.
+  # A fleet setup-token with an empty resolution is suspicious on its own: the
+  # token is the thing isolation is gated on, so carrying one and still landing
+  # on the shared ~/.claude means the setting is missing, not that isolation was
+  # declined. Installs with no fleet token at all stay quiet, as before.
+  if [ -z "$CFG_ENV" ] && [ ! -d "$INSTALL_DIR/.channels-config" ] && [ -s "$INSTALL_DIR/store/.claude-oauth-token" ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN main-agent starting on SHARED ~/.claude although a fleet setup-token exists (store/.claude-oauth-token) -- MAIN_AGENT_ISOLATED_CONFIG is unset, so the main bot authenticates from the rotating shared credential and can 401 into a silent channel." >> "$INSTALL_DIR/store/channels-failures.log"
+    if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
+      _guard_port="$(grep -E '^WEB_PORT=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+      curl -s --max-time 5 -X POST "http://localhost:${_guard_port:-3420}/api/messages" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $(cat "$INSTALL_DIR/store/.dashboard-token")" \
+        -d "{\"from\":\"channels-sh-guard\",\"to\":\"${MAIN_AGENT_ID:-marveen}\",\"content\":\"[GUARD] A fo agens a KOZOS ~/.claude alol indult, pedig van flotta setup-token (store/.claude-oauth-token). A MAIN_AGENT_ISOLATED_CONFIG nincs beallitva, ezert az auth a rotalodo megosztott credentialbol megy: ez lejarhat, 401-be all a TUI, es a csatorna NEMAN elerhetetlen lesz. Teendo: MAIN_AGENT_ISOLATED_CONFIG=1 beallitasa, majd channels session restart.\"}" \
+        >/dev/null 2>&1 || true
+      unset _guard_port
+    fi
+  fi
   if [ -z "$CFG_ENV" ] && [ -d "$INSTALL_DIR/.channels-config" ]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN main-agent starting on SHARED ~/.claude although isolated dir $INSTALL_DIR/.channels-config exists -- MAIN_AGENT_ISOLATED_CONFIG resolution came back empty (overrides/.env key lost?). Auth rides the rotating shared session and can 401." >> "$INSTALL_DIR/store/channels-failures.log"
     if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
