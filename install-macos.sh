@@ -70,12 +70,15 @@ offer_claude_fallback() {
     read -rp "$(_t prompt_open_claude)" OPEN_CLAUDE
     OPEN_CLAUDE=${OPEN_CLAUDE:-n}
     if [[ "$OPEN_CLAUDE" == "i" || "$OPEN_CLAUDE" == "y" ]]; then
-      claude --prompt "$prompt"
+      # `claude` takes the initial prompt as a POSITIONAL argument. The old
+      # `--prompt` flag no longer exists (unknown option '--prompt'), so the
+      # offer died at the exact moment the operator asked for help.
+      claude "$prompt"
       return
     fi
   fi
   echo -e "  ${DIM}$(_t macos.fallback_manual)${NC}"
-  echo -e "  ${DIM}claude --prompt \"$(echo "$prompt" | sed 's/"/\\"/g')\"${NC}"
+  echo -e "  ${DIM}claude \"$(echo "$prompt" | sed 's/"/\\"/g')\"${NC}"
 }
 
 fail() {
@@ -313,10 +316,12 @@ echo -e "${DIM}$(_t macos.auth_hint_2)${NC}"
 echo -e "${DIM}$(_t macos.auth_hint_3)${NC}"
 read -rp "$(_t prompt_login)" DO_AUTH
 if [[ "$DO_AUTH" == "i" || "$DO_AUTH" == "y" ]]; then
-  set +e
-  claude auth login
-  AUTH_RC=$?
-  set -e
+  # `&& ... || ...` rather than a `set +e` window: a `trap ... ERR` fires
+  # regardless of the errexit setting, and on_error() above EXITS, so a window
+  # never protected the branch below -- only keeping the command out of the
+  # trap's reach does. Only the FINAL command of an && / || list is subject to
+  # errexit and the ERR trap, so this captures the status instead of aborting.
+  claude auth login && AUTH_RC=0 || AUTH_RC=$?
   if [ "$AUTH_RC" -ne 0 ]; then
     echo -e "  ${ORANGE}⚠${NC} Auth login nem fejezodott be sikeresen (exit $AUTH_RC)."
     echo -e "  ${DIM}$(_t macos.auth_later)${NC}"
@@ -357,16 +362,16 @@ fi
 # here while the user is still at the install prompt.
 echo ""
 echo -e "  ${DIM}$(_t macos.headless_test)${NC}"
-set +e
 # The exit status here used to be `head`'s, not claude's: `VAR=$(cmd | head)`
 # reports the LAST pipeline element, so a failing claude looked like success.
 # PIPESTATUS does NOT help either -- after an assignment it describes the
 # assignment, not the pipeline inside the substitution (measured). Dropping the
 # pipe entirely is the only form that reports claude's own status.
-CLAUDE_PROBE_OUT=$(claude --print "ping" 2>&1)
-CLAUDE_PROBE_EXIT=$?
+# The `&& ... || ...` guard replaces the `set +e` window that used to wrap this:
+# the ERR trap fires regardless of errexit and on_error() exits, so the window
+# was decorative -- a failing probe still killed the installer here.
+CLAUDE_PROBE_OUT=$(claude --print "ping" 2>&1) && CLAUDE_PROBE_EXIT=0 || CLAUDE_PROBE_EXIT=$?
 CLAUDE_PROBE_OUT=${CLAUDE_PROBE_OUT:0:200}
-set -e
 if [ "$CLAUDE_PROBE_EXIT" -eq 0 ] && [ -n "$CLAUDE_PROBE_OUT" ]; then
   echo -e "  ${GREEN}✓${NC} $(_t macos.headless_ok)"
 else
@@ -640,14 +645,19 @@ else
   # operator's shell cannot make a broken install look healthy) carrying ONLY
   # the credential the launchd units will get.
   _probe_cfg="$(mktemp -d 2>/dev/null || echo /tmp/marveen-authprobe.$$)"
+  # A 401 here is the VERDICT this gate exists to report, not an installer
+  # error. Unguarded, the capture reached the ERR trap and on_error() exited 1 --
+  # blaming the enclosing `fi` -- so the BROKEN branch below (and its
+  # `scripts/auth.sh` hint) was unreachable in exactly the case it was written
+  # for. `&& ... || ...` keeps the failure out of the trap and preserves rc.
+  _probe_rc=0
   if [ -n "$_svc_token" ]; then
     _probe_out="$(env -i PATH="$PATH" HOME="$HOME" CLAUDE_CONFIG_DIR="$_probe_cfg" \
-      CLAUDE_CODE_OAUTH_TOKEN="$_svc_token" claude --print "ping" 2>&1)"
+      CLAUDE_CODE_OAUTH_TOKEN="$_svc_token" claude --print "ping" 2>&1)" && _probe_rc=0 || _probe_rc=$?
   else
     _probe_out="$(env -i PATH="$PATH" HOME="$HOME" CLAUDE_CONFIG_DIR="$_probe_cfg" \
-      ANTHROPIC_API_KEY="$_svc_apikey" claude --print "ping" 2>&1)"
+      ANTHROPIC_API_KEY="$_svc_apikey" claude --print "ping" 2>&1)" && _probe_rc=0 || _probe_rc=$?
   fi
-  _probe_rc=$?
   _probe_out=${_probe_out:0:200}
   if [ "$_probe_rc" -eq 0 ] && [ -n "$_probe_out" ]; then
     INSTALL_AUTH_STATE="OK"
@@ -1134,10 +1144,72 @@ PLISTEOF
 
 echo -e "  ${GREEN}✓${NC} $(_t macos.launchagents_created)"
 
-# Load LaunchAgents
-launchctl load "$PLIST_DIR/${DASHBOARD_PLIST}.plist" 2>/dev/null || true
-launchctl load "$PLIST_DIR/${CHANNELS_PLIST}.plist" 2>/dev/null || true
-echo -e "  ${GREEN}✓${NC} Szolgaltatasok elinditva"
+# Load AND START the LaunchAgents -- loading is not starting.
+#
+# `launchctl load` only PENDS a RunAtLoad spawn on modern macOS. Measured on
+# 26.5.1 with a throwaway agent carrying RunAtLoad=true + KeepAlive=true:
+#
+#   launchctl load <plist>              -> rc=0, runs = 0, never starts
+#   launchctl bootstrap gui/$UID <p>    -> rc=0, runs = 0, never starts
+#   launchctl print gui/$UID/<label>    -> "pended nondemand spawn = speculative"
+#                                          still `state = not running` after 30s
+#   launchctl kickstart gui/$UID/<label> -> starts immediately, runs = 1
+#
+# The old two lines swallowed every error (`2>/dev/null || true`) and then
+# printed "Szolgaltatasok elinditva" unconditionally, so a fresh install ended
+# with two units that had NEVER run while the operator was told they were up --
+# the bot answered nobody and there was no signal anywhere to explain it.
+start_launchd_unit() {
+  # start_launchd_unit LABEL -- bootstrap/load, kickstart, then VERIFY.
+  # Echoes the running pid, or nothing at all when the unit never came up.
+  _slu_label="$1"
+  _slu_domain="gui/$(id -u)"
+  launchctl bootstrap "$_slu_domain" "$PLIST_DIR/${_slu_label}.plist" 2>/dev/null \
+    || launchctl load "$PLIST_DIR/${_slu_label}.plist" 2>/dev/null \
+    || true
+  launchctl kickstart "$_slu_domain/${_slu_label}" >/dev/null 2>&1 || true
+  _slu_pid=""
+  _slu_try=0
+  while [ "$_slu_try" -lt "${LAUNCHD_START_TRIES:-10}" ]; do
+    _slu_pid="$(launchctl print "$_slu_domain/${_slu_label}" 2>/dev/null \
+      | awk '/^\tpid = /{print $3; exit}')"
+    # NOT `[ -n "$_slu_pid" ] && break`: as the last command of the loop body
+    # that list would return 1 on the final miss and abort the installer.
+    if [ -n "$_slu_pid" ]; then break; fi
+    _slu_try=$((_slu_try + 1))
+    sleep 1
+  done
+  # A first pid is not proof the unit STAYED up. Measured on 26.5.1 with a unit
+  # whose program does not exist: launchd reports a transient `state = xpcproxy`
+  # pid for about a second, and only two seconds on does it read
+  # `state = spawn scheduled`, no pid, `last exit code = 78: EX_CONFIG`. Confirm
+  # after a settle so a crash-looping unit is not counted as started.
+  if [ -n "$_slu_pid" ]; then
+    sleep 2
+    _slu_pid="$(launchctl print "$_slu_domain/${_slu_label}" 2>/dev/null \
+      | awk '/^\tpid = /{print $3; exit}')"
+  fi
+  printf '%s' "$_slu_pid"
+  unset _slu_label _slu_domain _slu_try
+}
+
+DASHBOARD_PID="$(start_launchd_unit "$DASHBOARD_PLIST")"
+CHANNELS_PID="$(start_launchd_unit "$CHANNELS_PLIST")"
+if [ -n "$DASHBOARD_PID" ] && [ -n "$CHANNELS_PID" ]; then
+  echo -e "  ${GREEN}✓${NC} Szolgaltatasok elinditva (dashboard pid $DASHBOARD_PID, channels pid $CHANNELS_PID)"
+else
+  warn "A SZOLGALTATASOK NEM INDULTAK EL -- a bot igy senkinek nem fog valaszolni."
+  # `if` rather than `[ ... ] && echo`: when the unit DID come up the test
+  # returns 1, the && list returns 1, and the ERR trap would abort right here --
+  # the very defect this block reports on.
+  if [ -z "$DASHBOARD_PID" ]; then echo -e "    ${DIM}  - ${DASHBOARD_PLIST}: nem fut${NC}"; fi
+  if [ -z "$CHANNELS_PID" ]; then echo -e "    ${DIM}  - ${CHANNELS_PLIST}: nem fut${NC}"; fi
+  echo -e "    ${DIM}A launchd betoltotte a unitokat, de nem inditotta el oket.${NC}"
+  echo -e "    ${BOLD}Javitas most:${NC}"
+  echo -e "    ${BLUE}launchctl kickstart -p gui/$(id -u)/${DASHBOARD_PLIST}${NC}"
+  echo -e "    ${BLUE}launchctl kickstart -p gui/$(id -u)/${CHANNELS_PLIST}${NC}"
+  echo -e "    ${DIM}Ellenorzes: launchctl print gui/$(id -u)/${CHANNELS_PLIST} | grep -E 'state|pid'${NC}"
+fi
 
 # Verify channel plugin is working
 sleep 3
