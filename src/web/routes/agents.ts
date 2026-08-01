@@ -5,7 +5,7 @@ import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
-import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed } from '../../db.js'
+import { createAgentMessage, deleteAgentMessages, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed } from '../../db.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
@@ -2079,6 +2079,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (!existsSync(dir)) { json(res, { error: 'Agent not found' }, 404); return true }
     rmSync(dir, { recursive: true, force: true })
     cleanupTeamReferences(name)
+    // Purge the agent's inter-agent messages too, otherwise the removed agent
+    // lingers in the dashboard Messages view as a phantom conversation partner
+    // (orphaned agent_messages rows survive the delete).
+    deleteAgentMessages(name)
     json(res, { ok: true })
     return true
   }

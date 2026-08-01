@@ -2049,6 +2049,15 @@ export function getPendingMessages(toAgent?: string): AgentMessage[] {
     .all() as AgentMessage[]
 }
 
+// Purge every inter-agent message a removed agent sent or received. The
+// DELETE /api/agents/:name handler calls this so a deleted agent leaves no
+// orphaned agent_messages rows -- otherwise it lingers in the dashboard
+// Messages view as a phantom conversation partner (reported 2026-08-01, the
+// ghost of a deleted "quantumae"). Returns the number of rows removed.
+export function deleteAgentMessages(name: string): number {
+  return db.prepare('DELETE FROM agent_messages WHERE from_agent = ? OR to_agent = ?').run(name, name).changes
+}
+
 // Status-guarded (pending only): the federation removal path bulk-fails
 // pending rows CONCURRENTLY with an in-flight bridge send -- an unguarded
 // UPDATE would flip such a row failed->delivered after the fact. If the row
