@@ -1204,6 +1204,11 @@ else
   # the very defect this block reports on.
   if [ -z "$DASHBOARD_PID" ]; then echo -e "    ${DIM}  - ${DASHBOARD_PLIST}: nem fut${NC}"; fi
   if [ -z "$CHANNELS_PID" ]; then echo -e "    ${DIM}  - ${CHANNELS_PLIST}: nem fut${NC}"; fi
+  # Reassurance BEFORE the technical cause. Whoever is installing for the first
+  # time needs three things from this screen, in this order: the install itself
+  # finished, nothing is lost, and there is something to do about it. The
+  # launchd sentence below is accurate but is an explanation, not an answer.
+  echo -e "    A telepites befejezodott, de a ket szolgaltatas nem indult el. Ez javithato, a lentiek bemasolasaval."
   echo -e "    ${DIM}A launchd betoltotte a unitokat, de nem inditotta el oket.${NC}"
   echo -e "    ${BOLD}Javitas most:${NC}"
   echo -e "    ${BLUE}launchctl kickstart -p gui/$(id -u)/${DASHBOARD_PLIST}${NC}"
