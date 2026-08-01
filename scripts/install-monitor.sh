@@ -57,6 +57,18 @@ if [ "${1:-}" = "--list" ]; then
 fi
 
 # ── --status ─────────────────────────────────────────────────────────────────
+#
+# Drift detection (PR #775 review comment 5b): the release directory is a
+# point-in-time snapshot, built and copied by the `install` step below. Once
+# installed, editing src/web/memory-pressure-*.ts changes NOTHING about the
+# running monitor — releases/monitor-current/ still serves the OLD compiled
+# code until someone re-runs `install-monitor.sh` (no `--status` flag) to
+# regenerate it. There was previously no signal for this drift at all; a
+# developer could edit the source, believe the fix was live, and be wrong.
+# `--status` now compares the installed release's recorded commit against
+# the checkout's current HEAD and fails LOUDLY (stderr banner + non-zero
+# exit) when they differ, so drift is a visible, checkable fact instead of
+# a silent trap.
 
 if [ "${1:-}" = "--status" ]; then
   current=$(current_target)
@@ -66,6 +78,7 @@ if [ "${1:-}" = "--status" ]; then
   else
     echo "previous: NONE"
   fi
+  drift=0
   if [ -n "$current" ] && [ -f "$CURRENT_LINK/$MANIFEST_FILE" ]; then
     python3 -c "
 import json
@@ -74,8 +87,21 @@ print(f\"  commit:     {d.get('commit','?')}\")
 print(f\"  installed:  {d.get('installedAt','?')}\")
 print(f\"  files:      {len(d.get('files',[]))} entries\")
 " 2>/dev/null || true
+
+    installed_commit=$(python3 -c "import json; print(json.load(open('$CURRENT_LINK/$MANIFEST_FILE')).get('commit',''))" 2>/dev/null || echo "")
+    checkout_head=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "")
+    if [ -n "$installed_commit" ] && [ -n "$checkout_head" ] && [ "$installed_commit" != "$checkout_head" ]; then
+      drift=1
+      echo "" >&2
+      echo "!!! RELEASE DRIFT: the installed release was built from a DIFFERENT commit" >&2
+      echo "!!! than what's currently checked out. Source edits since the release was" >&2
+      echo "!!! built are NOT live -- the running monitor is still serving the old code." >&2
+      echo "!!!   installed release commit: $installed_commit" >&2
+      echo "!!!   current checkout HEAD:    $checkout_head" >&2
+      echo "!!! Run 'scripts/install-monitor.sh' (no flag) to regenerate and reinstall." >&2
+    fi
   fi
-  exit 0
+  exit "$drift"
 fi
 
 # ── --rollback ───────────────────────────────────────────────────────────────
@@ -151,6 +177,28 @@ cat > "$RELEASE_DIR/$MANIFEST_FILE" << MANIFEST
   ]
 }
 MANIFEST
+
+# Verify the compiled release has NO references to the shared git checkout.
+# Every dependency must be bundled in the release or be a system tool. This
+# is a BUILD-TIME GATE (PR #775 review comment 6, ported from commit bd36767)
+# — it catches the exact defect class that caused card 5213e06c
+# (INSTALL_DIR/scripts reference surviving into the bundle).
+CLOSURE_CHECK="$REPO_ROOT/scripts/dependency-closure-check.sh"
+if [ -x "$CLOSURE_CHECK" ]; then
+  echo "=== Running dependency-closure check ==="
+  if bash "$CLOSURE_CHECK" "$RELEASE_DIR"; then
+    echo "  PASS: no shared-checkout references"
+  else
+    rc=$?
+    if [ "$rc" -eq 2 ]; then
+      echo "  WARNINGS (non-blocking) — see above"
+    else
+      die "Dependency-closure check FAILED (exit $rc). The compiled release references the shared checkout. Fix the source before deploying."
+    fi
+  fi
+else
+  echo "=== Skipping dependency-closure check (checker not found or not executable) ==="
+fi
 
 # Atomic symlink switch: save current as previous, install new as current
 current=$(current_target)

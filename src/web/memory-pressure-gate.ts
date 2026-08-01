@@ -15,6 +15,7 @@ import { execSync } from "node:child_process";
 import type { MemoryPressureState, MemoryPressureStateFile, MemoryPressureConfig, MemoryPressureReliefAction } from "./memory-pressure-types.js";
 import { DEFAULT_CONFIG, STATE_FILE, CONFIG_FILE } from "./memory-pressure-types.js";
 import { checkMonitorHealth } from "./memory-pressure-health.js";
+import { logger } from "../logger.js";
 
 const DASHBOARD_PORT = 3420;
 const DASHBOARD_TOKEN_PATH = "store/.dashboard-token";
@@ -23,6 +24,82 @@ const INSTALL_DIR = process.env.MARVEEN_HOME ?? process.cwd();
 
 function resolvePath(relative: string): string {
   return `${INSTALL_DIR}/${relative}`;
+}
+
+// ── Guard-absence detection (never-installed / unsupported platform) ───────
+//
+// A missing state file is ambiguous by itself: it means EITHER "this monitor
+// was never installed here" (nothing to gate on — should NOT block) OR
+// "the monitor was installed and is now broken" (the exact case the fail-closed
+// gate exists for — MUST keep blocking). Review #4 on PR #775: the gate as
+// written conflated these two into a single fail-closed branch, which blocks
+// the ENTIRE non-core fleet on any host that has never set the monitor up
+// (all non-Linux hosts, and any Linux host where install-monitor.sh ran but
+// the systemd timer was never enabled by hand).
+//
+// "Installed" evidence is the systemd TIMER unit file, NOT the releases/
+// symlink: install-monitor.sh manages the release directory but does not
+// install or enable the systemd unit (see scripts/install-monitor.sh) — a
+// release can exist on disk with the timer never turned on, and that must
+// still read as "guard never installed", not "guard broken".
+
+/** Platform check, test-injectable at call time (mirrors resolveStatePath's
+ *  override pattern) — avoids relying on monkey-patching process.platform,
+ *  which is fragile across test runners. */
+function currentPlatform(): string {
+  return process.env.MARVEEN_MEM_PRESSURE_TEST_PLATFORM ?? process.platform;
+}
+
+function isSupportedPlatform(): boolean {
+  // /proc/meminfo, /proc/pressure/memory and the systemd timer this gate
+  // depends on are Linux-only. On any other platform (e.g. macOS, where
+  // upstream reviewers run) the monitor structurally cannot ever write a
+  // state file — that is not a broken guard, it is an absent one.
+  return currentPlatform() === "linux";
+}
+
+/** Candidate systemd unit paths for the monitor's timer. Test-injectable:
+ *  when MARVEEN_MEM_PRESSURE_TEST_UNIT_PATH is set (even to an empty string),
+ *  it is used verbatim instead of the real host paths — empty string means
+ *  "simulate no unit anywhere", keeping hermetic tests independent of
+ *  whatever happens to be installed on the box the tests run on. */
+function guardUnitPaths(): string[] {
+  const override = process.env.MARVEEN_MEM_PRESSURE_TEST_UNIT_PATH;
+  if (override !== undefined) return override ? [override] : [];
+  const home = process.env.HOME ?? "";
+  return [
+    `${home}/.config/systemd/user/marveen-memory-monitor.timer`,
+    "/etc/systemd/system/marveen-memory-monitor.timer",
+  ];
+}
+
+function isGuardUnitPresent(): boolean {
+  return guardUnitPaths().some((p) => {
+    try { return existsSync(p); } catch { return false; }
+  });
+}
+
+export type GateAbsenceReason = "unsupported-platform" | "guard-not-installed";
+
+let hasLoggedGuardAbsence = false;
+
+/** Logs the guard-absent condition ONCE per process lifetime (review #4:
+ *  "log ONCE that the guard is absent" — not once per gated agent start,
+ *  which would spam the log on every restart of every non-core agent). */
+function logGuardAbsenceOnce(reason: GateAbsenceReason, detail: string): void {
+  if (hasLoggedGuardAbsence) return;
+  hasLoggedGuardAbsence = true;
+  logger.warn(
+    { reason, detail },
+    "Memory-pressure gate is absent on this host — non-core agent starts are NOT blocked by it. " +
+    "This is expected on a host that never installed the monitor; if it SHOULD be running here, install and enable it.",
+  );
+}
+
+/** Test-only: reset the once-per-process absence log so each test case can
+ *  assert independently whether IT triggered the log. */
+export function __resetGuardAbsenceLogForTest(): void {
+  hasLoggedGuardAbsence = false;
 }
 
 /** Resolve the state file path. When MARVEEN_MEM_PRESSURE_TEST_STATE is set,
@@ -104,10 +181,29 @@ export function memoryPressureGate(agentName: string): GateResult {
 
   const state = readState();
 
-  // FAIL-CLOSED: no state file → gate is active, block non-core.
-  // "a gate error or timeout must NOT fail-open"
   if (!state) {
-    return { allowed: false, reason: "gate-error: no state file (fail-closed)" };
+    // Three-state split (review #4): a missing state file alone does not
+    // tell us whether the guard was ever installed. Check for installation
+    // evidence before deciding.
+    //
+    //   1. Unsupported platform, or no systemd unit ever installed → UNKNOWN.
+    //      The guard is ABSENT, not broken. Do not block; log once.
+    //   2. Unit IS installed (or platform is Linux and would normally run
+    //      one) but there is still no state file → TERMINAL. The guard
+    //      exists and should be reporting but is not — this is exactly the
+    //      case fail-closed exists for. Keep blocking.
+    if (!isSupportedPlatform()) {
+      logGuardAbsenceOnce("unsupported-platform", `platform=${currentPlatform()}`);
+      return { allowed: true, reason: `gate-absent: unsupported platform (${currentPlatform()}), monitor cannot run here` };
+    }
+    if (!isGuardUnitPresent()) {
+      logGuardAbsenceOnce("guard-not-installed", "no systemd timer unit found on this host");
+      return { allowed: true, reason: "gate-absent: monitor never installed on this host (no systemd unit found)" };
+    }
+    // FAIL-CLOSED: unit is installed but the monitor has never written a
+    // state file (or it was deleted) — a real, installed guard that is not
+    // reporting. "a gate error or timeout must NOT fail-open".
+    return { allowed: false, reason: "gate-error: guard installed but no state file (fail-closed)" };
   }
 
   const s = state.state;

@@ -59,17 +59,54 @@ function writeMockPs(processes: Array<[number, number, number, string]>): void {
   chmodSync(`${mockDir}/ps`, 0o755);
 }
 
+// memory-pressure-release-regression.test.ts (S2) briefly overwrites this
+// SAME real checkout file (scripts/list-agent-rss.sh) with a decoy to prove
+// the release ignores it, then restores it. Under vitest's default
+// cross-file parallelism, that mutation window is otherwise visible here too
+// — confirmed empirically (this suite failed with DECOY-WRONG/999 and later
+// "Unexpected end of JSON input" when run alongside the regression suite).
+// Wait for that file's lock to clear before touching the real script; it is
+// held only for the duration of a single write+exec+restore, so this adds
+// negligible wall-clock time in the common case where nothing else is mutating it.
+const LIST_AGENT_RSS_LOCK_DIR = join(tmpdir(), "list-agent-rss-sh-mutation.lock");
+
+/** Acquire the SAME lock S2 in memory-pressure-release-regression.test.ts
+ *  holds while it mutates scripts/list-agent-rss.sh, run fn(), then release.
+ *  A wait-then-proceed check (rather than actually holding the lock) is a
+ *  check-then-act race — the other side can acquire between the check and
+ *  the exec. Both sides must hold the SAME mkdirSync-based lock for their
+ *  entire critical section for this to be actually mutually exclusive. */
+function withListAgentRssLock<T>(fn: () => T): T {
+  const deadline = Date.now() + 10000;
+  while (true) {
+    try {
+      mkdirSync(LIST_AGENT_RSS_LOCK_DIR);
+      break;
+    } catch {
+      if (Date.now() > deadline) throw new Error("timed out waiting for list-agent-rss.sh mutation lock");
+      execSync("sleep 0.05");
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    try { rmSync(LIST_AGENT_RSS_LOCK_DIR, { recursive: true, force: true }); } catch { /* ok */ }
+  }
+}
+
 /** Run list-agent-rss.sh --json with mock tmux/ps on PATH and return parsed JSON. */
 function runScript(): { status: string; measuredAgentCount: number; failedAgentCount: number; agents: Array<{ name: string; rssBytes: number }>; totalRssBytes: number | null } {
   // MARVEEN_HOME is the repo root; fallback: import.meta.url → src/web/ → up 2 levels
   const home = process.env.MARVEEN_HOME ?? join(dirname(fileURLToPath(import.meta.url)), "../..");
   const scriptPath = join(home, "scripts/list-agent-rss.sh");
-  const output = execSync(`bash "${scriptPath}" --json`, {
-    timeout: 5000,
-    encoding: "utf-8",
-    env: { ...process.env, PATH: `${mockDir}:${process.env.PATH}` },
+  return withListAgentRssLock(() => {
+    const output = execSync(`bash "${scriptPath}" --json`, {
+      timeout: 5000,
+      encoding: "utf-8",
+      env: { ...process.env, PATH: `${mockDir}:${process.env.PATH}` },
+    });
+    return JSON.parse(output.trim());
   });
-  return JSON.parse(output.trim());
 }
 
 // ── Test harness ─────────────────────────────────────────────────────────────
