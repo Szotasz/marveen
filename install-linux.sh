@@ -1695,7 +1695,15 @@ if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; the
     # command that silently drops the timer and the watchdog would leave them
     # disabled while the operator sees no error and believes the fix worked --
     # an incomplete instruction ends the same way as a false claim.
-    echo -e "  ${DIM}Javitas most: systemctl --user enable \\${NC}"
+    # The label gets its own line. With "Javitas most:" in front of the command,
+    # the backslashes join all three printed lines into ONE command whose first
+    # token is `Javitas`, so a pasted block fails with "Javitas: command not
+    # found" and enables nothing. Measured by rendering the block and running it.
+    # `bash -n` does NOT catch this: the pasted text is valid shell, just a
+    # different command than the one we meant to offer. Same shape as
+    # install-macos.sh, where the label is already on its own line.
+    echo -e "  ${DIM}Javitas most:${NC}"
+    echo -e "  ${DIM}systemctl --user enable \\${NC}"
     echo -e "  ${DIM}    ${DASH_UNIT} ${CHAN_UNIT} \\${NC}"
     echo -e "  ${DIM}    ${MORN_UNIT}.timer ${SERVICE_ID}-host-watchdog.service${NC}"
   fi
