@@ -12,6 +12,8 @@ import {
   detectsPastePlaceholder,
   detectPaneState,
   parkedInputText,
+  parkedInputRowCount,
+  parkedClearSequence,
   stripGhostSuggestion,
   paneShowsContextSaturation,
   idleConsideringDimGhost,
@@ -1623,14 +1625,22 @@ export async function waitForPaneIdle(
   }
 }
 
-// Buffer-clear (Ctrl-U) used pre-flight when shouldClearTruncatedPreamble
-// flags a stale preamble. Sent as a single key name (no `-l` literal
-// flag) so tmux interprets it as the control sequence.
+// Pre-flight buffer clear, used when shouldClearTruncatedPreamble flags a stale
+// preamble. This used to send a single Ctrl-U, which is a no-op whenever the
+// cursor sits at offset 0 of the buffer -- the normal state for text that
+// arrived via send-keys (see parkedClearSequence). A failed pre-flight clear is
+// worse than none: the prompt about to be typed is APPENDED to the stale text
+// instead of replacing it, which is how a box accumulates tick after tick until
+// nothing can be submitted at all. Keys are sent by name (no `-l` literal flag)
+// so tmux interprets them as control sequences.
 export async function clearInputBuffer(session: string, host: string | null = null): Promise<void> {
   try {
-    runTmux(host, ['send-keys', '-t', session, 'C-u'], { timeout: 5000 })
+    const pane = capturePane(session, host)
+    for (const key of parkedClearSequence(pane != null ? parkedInputRowCount(pane) : 0)) {
+      runTmux(host, ['send-keys', '-t', session, key], { timeout: 5000 })
+    }
     // Settle briefly so the next send-keys lands in the freshly cleared
-    // buffer rather than racing the Ctrl-U.
+    // buffer rather than racing the clear.
     await delay(100)
   } catch (err) {
     logger.warn({ err, session }, 'Failed to clear pane input buffer before send')
@@ -1947,10 +1957,13 @@ export async function isSessionReadyForPrompt(session: string, host: string | nu
 // the input box is STUCK (stale) vs being actively typed. Identical parked text
 // across this gap means nobody is typing -> it is a stranded artifact.
 const PARKED_STABLE_CONFIRM_MS = 2000
-// Settle after a Ctrl-U so the next capture reflects the cleared box.
+// Settle after a batch of clearing keystrokes so the next capture reflects the
+// emptied box.
 const PARKED_CLEAR_SETTLE_MS = 300
-// Bound the Ctrl-U presses for a (possibly multi-line) stale parked input.
-const PARKED_CLEAR_MAX = 3
+// How often to re-capture while working through parkedClearSequence(): often
+// enough that a box which empties early stops right away, rarely enough that the
+// settle delay is not paid per keystroke.
+const PARKED_CLEAR_RECHECK_EVERY = 8
 // A parked input that resists clearing must NOT be retried on every router tick:
 // each attempt awaits ~PARKED_STABLE_CONFIRM_MS on the settle
 // delay, so a permanently-stuck box would otherwise starve the loop, stall the HTTP server
@@ -2025,26 +2038,22 @@ export async function clearStaleParkedInput(session: string, host: string | null
     return false
   }
 
-  for (let i = 0; i < PARKED_CLEAR_MAX; i++) {
-    runTmux(host, ['send-keys', '-t', session, 'C-u'], { timeout: 5000 })
-    await delay(PARKED_CLEAR_SETTLE_MS)
-    const after = capturePane(session, host)
-    if (after == null || detectPaneState(after) !== 'typing') break
-  }
-
-  // Escalation: if Ctrl-U alone did not empty a multi-row box, send Home (C-a)
-  // then kill-to-end (C-k) and one more Ctrl-U round before giving up.
-  let post = capturePane(session, host)
-  if (post != null && detectPaneState(post) === 'typing' && parkedInputText(post) === parked) {
-    runTmux(host, ['send-keys', '-t', session, 'C-a'], { timeout: 5000 })
-    runTmux(host, ['send-keys', '-t', session, 'C-k'], { timeout: 5000 })
-    for (let i = 0; i < PARKED_CLEAR_MAX; i++) {
-      runTmux(host, ['send-keys', '-t', session, 'C-u'], { timeout: 5000 })
+  // Forward deletion, budgeted by the visible row count -- see the rationale and
+  // the 2026-08-01 measurement above parkedClearSequence(). The cursor sits at
+  // offset 0 of the buffer, so the previous Ctrl-U rounds were no-ops and the
+  // single C-a + C-k escalation could only ever strip ONE line off a multi-line
+  // box. Re-check every few keystrokes so a box that empties early stops
+  // immediately instead of spending the whole budget.
+  const sequence = parkedClearSequence(parkedInputRowCount(a))
+  for (let i = 0; i < sequence.length; i++) {
+    runTmux(host, ['send-keys', '-t', session, sequence[i]], { timeout: 5000 })
+    if (i % PARKED_CLEAR_RECHECK_EVERY === PARKED_CLEAR_RECHECK_EVERY - 1) {
       await delay(PARKED_CLEAR_SETTLE_MS)
-      post = capturePane(session, host)
-      if (post == null || detectPaneState(post) !== 'typing') break
+      const after = capturePane(session, host)
+      if (after == null || detectPaneState(after) !== 'typing') break
     }
   }
+  await delay(PARKED_CLEAR_SETTLE_MS)
 
   // Verify the box is ACTUALLY empty before claiming success: only then is the
   // pending message safe to deliver next tick. Otherwise record the failure so

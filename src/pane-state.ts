@@ -1228,6 +1228,46 @@ export function parkedScheduledTaskInput(pane: string): boolean {
   return MACHINE_ORIGIN_TRUNCATED_MARKERS.some((rx) => rx.test(flat))
 }
 
+// Keystrokes that actually EMPTY a parked input box.
+//
+// Measured 2026-08-01 on a wedged MAIN pane holding 489 characters over 7
+// visible rows. The previous cascade (`C-u` x3, then `C-a` + `C-k`, then `C-u`
+// x3) removed nothing at all across repeated runs, and the cursor position is
+// why: a literal string sent with tmux send-keys lands in FRONT of the parked
+// text, so the cursor sits at OFFSET 0.
+//
+//   before      len=489  "the user if it looks wrong. The wrapper marks prov"
+//   +MARKER123  len=498  "MARKER123the user if it looks wrong. The wrapper m"
+//   after C-u   len=489  "the user if it looks wrong. The wrapper marks prov"
+//
+// `C-u` kills BACKWARDS to the start of the line. With nothing before the
+// cursor it is a no-op every round -- it only ever removed a marker typed in
+// front of it. The lone `C-a` + `C-k` escalation clears exactly ONE line, so
+// with PARKED_CLEAR_MAX = 3 the whole cascade could strip at most one line off
+// a multi-line box and then failed its own emptiness check.
+//
+// Forward deletion is what drains it: `C-k` kills to end of line and `Delete`
+// eats the newline joining the next one. The live box needed 20 such rounds, so
+// the budget scales with the visible row count (the buffer is usually longer
+// than the box shows) and is clamped at both ends: a floor for a single-row box
+// whose buffer still wraps, and a ceiling so a bogus row count cannot turn into
+// an unbounded keystroke storm against a live session.
+const PARKED_CLEAR_ROUNDS_PER_ROW = 4
+const PARKED_CLEAR_ROUNDS_MIN = 12
+const PARKED_CLEAR_ROUNDS_MAX = 240
+
+export function parkedClearSequence(rowCount: number): string[] {
+  const rounds = Math.min(
+    PARKED_CLEAR_ROUNDS_MAX,
+    Math.max(PARKED_CLEAR_ROUNDS_MIN, Math.max(0, rowCount) * PARKED_CLEAR_ROUNDS_PER_ROW),
+  )
+  // Home first: the first kill must start at the beginning even when the cursor
+  // was left mid-buffer by an earlier attempt.
+  const keys = ['C-a']
+  for (let i = 0; i < rounds; i++) keys.push('C-k', 'Delete')
+  return keys
+}
+
 // How many VISUAL rows the live input box content occupies, ignoring the
 // bare prompt glyph and blank padding. The caller uses this to choose the
 // right submit keystroke: a MULTI-row parked input must NOT be submitted with
