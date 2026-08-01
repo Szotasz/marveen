@@ -42,7 +42,28 @@ export const HOOK_NODE_BIN = process.execPath
 // exists to close. A single builder also keeps the injectors and every
 // wired-already comparison byte-identical, so they cannot drift.
 export function hookCommand(scriptPath: string): string {
-  return `"${HOOK_NODE_BIN}" "${scriptPath}"`
+  // The interpreter is checked before it is used, and a missing one BLOCKS.
+  //
+  // HOOK_NODE_BIN is process.execPath, which on a brew install is the
+  // version-pinned real path (/opt/homebrew/Cellar/node@22/<version>/bin/node),
+  // not the stable /opt/homebrew/bin/node symlink the launchd plist starts.
+  // A `brew upgrade node@22` moves that directory, the burnt-in path goes
+  // dangling, the hook exits 127 -- and 127 is exactly the non-blocking status
+  // this whole file exists to stop, so the gate would go quiet again on a
+  // different route (measured: the pinned path fails with 127 after a version
+  // bump, the stable symlink survives).
+  //
+  // Burning the symlink instead is NOT the fix: nvm installs have no such
+  // stable path outside the launchd PATH, which is the original defect. Making
+  // the failure loud is install-manager agnostic and covers any future move.
+  //
+  // The message says the three things an operator needs: WHAT is missing, that
+  // this is why the call is blocked (so a wall of blocked tools is not read as
+  // some other breakage), and the way out -- restarting the dashboard reruns
+  // the ensure* migrations, which rewrite the path. A blocking gate with no
+  // stated way out is worse than a loud error.
+  const miss = `governance-kapu: a hook interpretere nem talalhato (${HOOK_NODE_BIN}). A kapu ezert BLOKKOL. Javitas: inditsd ujra a dashboardot, az ujrairja a hook-utakat.`
+  return `test -x "${HOOK_NODE_BIN}" || { echo "${miss}" >&2; exit 2; }; "${HOOK_NODE_BIN}" "${scriptPath}"`
 }
 
 // Wired-already predicate for the ensure* migrations: is `command` present in
