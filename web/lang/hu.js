@@ -900,7 +900,7 @@ window._i18n.hu = {
   'costs.token_usage_note':      'Token-felhasználás mennyisége (nincs árazva)',
   'costs.calls':                 'hívás',
   'costs.display_currency':      'Megjelenítés devizája:',
-  'costs.fx_converted_at':       'az átváltás a következő napi kurzuson:',
+  'costs.fx_converted_at':       'az átváltás kurzusának napja:',
   'costs.fx_no_asof':            'az árfolyam dátuma ismeretlen',
   'costs.by_project':            'Projektenként',
   'costs.project':               'Projekt',
