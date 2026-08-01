@@ -1198,7 +1198,11 @@ CHANNELS_PID="$(start_launchd_unit "$CHANNELS_PLIST")"
 if [ -n "$DASHBOARD_PID" ] && [ -n "$CHANNELS_PID" ]; then
   echo -e "  ${GREEN}✓${NC} Szolgaltatasok elinditva (dashboard pid $DASHBOARD_PID, channels pid $CHANNELS_PID)"
 else
-  warn "A SZOLGALTATASOK NEM INDULTAK EL -- a bot igy senkinek nem fog valaszolni."
+  # "nem igazolt", not "nem indultak el": this branch fires when EITHER pid is
+  # missing, so the plural claim was false whenever one unit came up. It also
+  # says only what was measured -- the verification did not succeed -- instead of
+  # asserting a consequence nobody checked.
+  warn "A SZOLGALTATASOK INDULASA NEM IGAZOLT"
   # `if` rather than `[ ... ] && echo`: when the unit DID come up the test
   # returns 1, the && list returns 1, and the ERR trap would abort right here --
   # the very defect this block reports on.
@@ -1208,7 +1212,7 @@ else
   # time needs three things from this screen, in this order: the install itself
   # finished, nothing is lost, and there is something to do about it. The
   # launchd sentence below is accurate but is an explanation, not an answer.
-  echo -e "    A telepites befejezodott, de a ket szolgaltatas nem indult el. Ez javithato, a lentiek bemasolasaval."
+  echo -e "    A telepites befejezodott. Ami nem indult el, azt fent latod, es a lentiekkel elindithatod."
   echo -e "    ${DIM}A launchd betoltotte a unitokat, de nem inditotta el oket.${NC}"
   echo -e "    ${BOLD}Javitas most:${NC}"
   echo -e "    ${BLUE}launchctl kickstart -p gui/$(id -u)/${DASHBOARD_PLIST}${NC}"
