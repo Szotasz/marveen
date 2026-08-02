@@ -102,6 +102,66 @@ function mainAgentId() {
   return window._marveen?.agentId || 'marveen'
 }
 
+// --- createDiagnostics start (extracted and executed by the unit test) ---
+// Card #95 / #140: the diagnostics banner, with its document and token reader
+// injected so the behaviour below is unit-testable without a browser.
+//
+// A problem carries the KEY of the thing that failed. A later success for the
+// same key drops it, and the banner disappears once nothing is left: a card
+// #140 fix, because the banner used to stick forever after a single failed
+// request. The concrete case (2026-07-31): an F3 deploy restarted the service
+// while the tab was open, one poll failed, and the red banner stayed up long
+// after the endpoint was answering 200 again -- a false alarm that reached the
+// owner as a screenshot.
+//
+// Page errors and unhandled rejections carry no key on purpose. Those are bugs,
+// not weather; nothing "succeeds" that would prove them gone.
+function createDiagnostics(env) {
+  const problems = []
+
+  function render() {
+    if (!env.isEnabled()) return
+    const doc = env.doc
+    let bar = doc.getElementById('mv-diag-banner')
+    if (problems.length === 0) {
+      if (bar && bar.parentNode) bar.parentNode.removeChild(bar)
+      return
+    }
+    if (!bar) {
+      bar = doc.createElement('div')
+      bar.id = 'mv-diag-banner'
+      bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#7a1f1f;color:#fff;' +
+        'font:13px/1.5 monospace;padding:8px 12px;max-height:40vh;overflow:auto;white-space:pre-wrap'
+      const attach = () => doc.body ? doc.body.appendChild(bar) : setTimeout(attach, 50)
+      attach()
+    }
+    bar.textContent = 'MARVEEN DIAGNOSZTIKA (kuldd el kepernyokepen)\n' +
+      'token: ' + env.tokenState() + '\n' + problems.map(p => '- ' + p.detail).join('\n')
+  }
+
+  return {
+    // `key` identifies what failed (an API url); omit it for a problem no
+    // later success can clear.
+    report(detail, key) {
+      if (problems.some(p => p.detail === detail)) return
+      problems.push({ detail, key: key || null })
+      if (!env.isEnabled()) { console.warn('[mv-diag]', detail); return }
+      render()
+    },
+    // The thing behind `key` answered -- drop every problem blamed on it.
+    resolve(key) {
+      if (!key) return
+      const before = problems.length
+      for (let i = problems.length - 1; i >= 0; i--) {
+        if (problems[i].key === key) problems.splice(i, 1)
+      }
+      if (problems.length !== before) render()
+    },
+    list() { return problems.map(p => ({ detail: p.detail, key: p.key })) },
+  }
+}
+// --- createDiagnostics end ---
+
 (() => {
   const TOKEN_KEY = 'marveen-dashboard-token'
   const urlParams = new URLSearchParams(window.location.search)
@@ -125,7 +185,7 @@ function mainAgentId() {
   // which made client-side failures undebuggable from screenshots. Every failed
   // same-origin API response, thrown fetch, and uncaught page error now lands
   // in a fixed banner the user can read and screenshot.
-  const mvProblems = []
+  //
   // The banner is opt-in (review feedback on PR #762): on a customer install a
   // transient non-ok response must not paint the whole page red. Enable with
   // ?mvdiag=1 (persisted for the browser) or localStorage 'mv_diag' = '1';
@@ -138,25 +198,17 @@ function mainAgentId() {
       return localStorage.getItem('mv_diag') === '1'
     } catch { return false }
   }
-  function mvReportProblem(detail) {
-    if (mvProblems.includes(detail)) return
-    mvProblems.push(detail)
-    if (!mvDiagEnabled()) { console.warn('[mv-diag]', detail); return }
-    let bar = document.getElementById('mv-diag-banner')
-    if (!bar) {
-      bar = document.createElement('div')
-      bar.id = 'mv-diag-banner'
-      bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#7a1f1f;color:#fff;' +
-        'font:13px/1.5 monospace;padding:8px 12px;max-height:40vh;overflow:auto;white-space:pre-wrap'
-      const attach = () => document.body ? document.body.appendChild(bar) : setTimeout(attach, 50)
-      attach()
-    }
-    let tokenState = 'nincs'
-    try { if (localStorage.getItem(TOKEN_KEY)) tokenState = 'localStorage' } catch { tokenState = 'storage blokkolva' }
-    if (sessionToken) tokenState = tokenState === 'nincs' ? 'memoria' : tokenState + '+memoria'
-    bar.textContent = 'MARVEEN DIAGNOSZTIKA (kuldd el kepernyokepen)\n' +
-      'token: ' + tokenState + '\n' + mvProblems.map(p => '- ' + p).join('\n')
-  }
+  const mvDiag = createDiagnostics({
+    doc: document,
+    isEnabled: mvDiagEnabled,
+    tokenState: () => {
+      let state = 'nincs'
+      try { if (localStorage.getItem(TOKEN_KEY)) state = 'localStorage' } catch { state = 'storage blokkolva' }
+      if (sessionToken) state = state === 'nincs' ? 'memoria' : state + '+memoria'
+      return state
+    },
+  })
+  const mvReportProblem = (detail, key) => mvDiag.report(detail, key)
   window.addEventListener('error', (e) => {
     mvReportProblem('PAGE ERROR: ' + (e.message || 'ismeretlen') + ' @ ' + (e.filename || '?') + ':' + (e.lineno || '?'))
   })
@@ -187,12 +239,16 @@ function mainAgentId() {
     try {
       res = await originalFetch(input, init)
     } catch (err) {
-      if (isSameOriginApi) mvReportProblem('FETCH FAILED: ' + url + ' -- ' + (err && err.message ? err.message : String(err)))
+      if (isSameOriginApi) mvReportProblem('FETCH FAILED: ' + url + ' -- ' + (err && err.message ? err.message : String(err)), url)
       throw err
     }
     if (isSameOriginApi && !res.ok && res.status !== 304) {
-      mvReportProblem('HTTP ' + res.status + ': ' + url)
+      mvReportProblem('HTTP ' + res.status + ': ' + url, url)
     }
+    // The endpoint answered, so whatever we blamed on it is over: a poll that
+    // failed during a deploy restart clears itself on the next round instead
+    // of leaving a red banner behind (#140).
+    if (isSameOriginApi && (res.ok || res.status === 304)) mvDiag.resolve(url)
     if (res.status === 401 && isSameOriginApi) {
       // Token missing, wrong, or revoked. Wipe and prompt once per page load.
       // Keep a URL-provided session token so a transient 401 does not lock out
