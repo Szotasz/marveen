@@ -197,6 +197,51 @@ APT_LOCK_WAIT_CAP=300   # 5 perc -- az apt-daily ennyi alatt tipikusan vegez
 # az esetre, ha a pre-flight utan, de a parancs elott ugrik be egy uj holder.
 APT_OPTS="-o DPkg::Lock::Timeout=180"
 
+# ── interaktiv dialogusok kizarasa (APTPROMPT802) ────────────────────
+# 2026-08-02, eles gepen merve: az elso VALODI elso-telepitesnel a
+#   sudo apt-get install -y nodejs
+# elakadt egy whiptail ablakon ("Pending kernel upgrade"), amit a needrestart
+# apt-hookja nyitott (apt-pinvoke -m u). A telepito a Marveen appbol fut, ahol
+# nincs terminal es nincs stdin -- a dialogus tehat nem elnyomhato, a telepites
+# ott all, amig valaki kezzel ki nem lovi. A naplo elso jele: "dpkg-preconfigure:
+# unable to re-open stdin". Eddig azert nem jott elo, mert a teszt-gepeken a node
+# mar fent volt a korabbi korokbol, es ez a lepes kimaradt.
+#
+# HAROM retegben zarjuk ki, mert egy reteg sem eleg onmagaban:
+#   1. DEBIAN_FRONTEND=noninteractive -- a debconf keresek ellen.
+#   2. NEEDRESTART_MODE=a + NEEDRESTART_SUSPEND=1 -- a needrestart apt-hookja
+#      ellen; ez az, ami a konkret gepet megfogta, es amit a frontend NEM fed.
+#   3. </dev/null minden hivason -- ha egy hook megis kerdez, azonnal EOF-ot kap
+#      a helyett, hogy a telepito sajat stdinjere varna.
+#
+# MIERT INLINE ATADAS ES NEM CSAK export: a sudo alapertelmezesben env_reset-tel
+# fut, tehat az exportalt valtozo NEM jut at. Debian 13-on megmerve:
+#   export DEBIAN_FRONTEND=... ; sudo printenv DEBIAN_FRONTEND -> URES
+#   sudo DEBIAN_FRONTEND=... printenv DEBIAN_FRONTEND        -> noninteractive
+#   sudo -E printenv DEBIAN_FRONTEND                          -> noninteractive
+# Ezert a sudo-s hivasoknal a valtozok a parancs ele kerulnek, es az export CSAK
+# a `sudo -E`-vel indulo gyerekek (nodesource setup-script) miatt marad meg.
+NONINTERACTIVE_ENV="DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1"
+export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
+# A meglevo config-fajlokat megtartjuk, ujat nem kerdezunk: a "melyik verziot
+# tartsam meg?" dpkg-prompt ugyanugy megallitana a telepitest, mint a needrestart.
+DPKG_KEEP_CONF="-o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-confdef"
+
+# MINDEN apt-get hivas ezen a fuggvenyen megy at. Egy hely, ahol a fenti harom
+# reteg egyutt van -- egy uj hivas hozzaadasakor nem lehet elfelejteni az
+# egyiket, es a teszt ezt a fuggvenyt futtatja, nem a leirasat.
+apt_run() {
+  # shellcheck disable=SC2086
+  sudo $NONINTERACTIVE_ENV apt-get $APT_OPTS $DPKG_KEEP_CONF "$@" </dev/null
+}
+
+# dnf/yum: a -y a csomag- es GPG-kulcs-kerdeseket is elfogadja, needrestart ott
+# nincs; a stdin-lezaras viszont ugyanugy kell, es a valtozok atadasa artalmatlan.
+pkg_install_noninteractive() {
+  # shellcheck disable=SC2086
+  sudo $NONINTERACTIVE_ENV "$PKG_MANAGER" install -y "$@" </dev/null
+}
+
 # stdout: "<pid> <procnev>" ha valaki fogja barmelyik lockot; ures + exit 1 ha
 # szabad. fuser nelkul exit 2 = NEM TUDJUK megallapitani (ismeretlen allapot).
 apt_lock_holder() {
@@ -326,8 +371,8 @@ if [ -n "$MISSING_PKGS" ]; then
       # kulonben a repo-lepes neman kimarad, a disztro sajat (regebbi) nodejs-e
       # telepul, es Debianon az npm (kulon csomag) le se jon -> [1/7] fail.
       if ! command -v curl &>/dev/null; then
-        sudo apt-get $APT_OPTS update -qq || true
-        sudo apt-get $APT_OPTS install -y curl -qq || true
+        apt_run update -qq || true
+        apt_run install -y curl -qq || true
         hash -r
       fi
       echo -e "  Node.js v22 repo hozzaadasa (nodesource)..."
@@ -337,7 +382,7 @@ if [ -n "$MISSING_PKGS" ]; then
       NODESOURCE_OK=false
       if command -v curl &>/dev/null; then
         NODESOURCE_SETUP="$(curl -fsSL https://deb.nodesource.com/setup_22.x 2>/dev/null || true)"
-        if [ -n "$NODESOURCE_SETUP" ] && echo "$NODESOURCE_SETUP" | sudo -E bash - >/dev/null 2>&1; then
+        if [ -n "$NODESOURCE_SETUP" ] && echo "$NODESOURCE_SETUP" | sudo -E $NONINTERACTIVE_ENV bash - >/dev/null 2>&1; then
           NODESOURCE_OK=true # a nodesource nodejs csomag node+npm-et egyben hozza
         fi
       fi
@@ -345,14 +390,14 @@ if [ -n "$MISSING_PKGS" ]; then
         # Fallback: disztro sajat nodejs-e. Debianon az npm kulon csomag,
         # a nodesource-bundle-lel ellentetben nem jon a nodejs-sel magatol.
         warn "nodesource repo hozzaadasa sikertelen -- a disztro sajat nodejs + npm csomagjat telepitem."
-        sudo apt-get $APT_OPTS update -qq
+        apt_run update -qq
         MISSING_PKGS="$MISSING_PKGS npm"
       fi
     else
-      sudo apt-get $APT_OPTS update -qq
+      apt_run update -qq
     fi
     # shellcheck disable=SC2086
-    sudo apt-get $APT_OPTS install -y $MISSING_PKGS -qq
+    apt_run install -y $MISSING_PKGS -qq
   else
     # dnf/yum (Fedora/Nobara/RHEL). A disztro nodejs csomagja v20+ az aktualis
     # kiadasokon, es az npm-et is tartalmazza -- nincs szukseg kulso repora.
@@ -360,7 +405,7 @@ if [ -n "$MISSING_PKGS" ]; then
     # python3/pipx/unzip/nodejs). Az ffmpeg-hez Fedoran az RPM Fusion repo
     # kellhet; ha mar engedelyezve van, a csomag elerheto.
     # shellcheck disable=SC2086
-    sudo "$PKG_MANAGER" install -y $MISSING_PKGS
+    pkg_install_noninteractive $MISSING_PKGS
   fi
 fi
 
