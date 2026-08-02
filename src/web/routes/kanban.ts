@@ -427,7 +427,10 @@ export function notifyOwnerOfAgentComment(
   // comment padded with newlines is long raw and short flattened.
   const flat = content.replace(/\s+/g, ' ').trim()
   const excerpt = flat.slice(0, 180)
-  const text = `[kanban] ${author} kommentelt a kartyadon: "${card.title}"\n${excerpt}${flat.length > 180 ? '...' : ''}`
+  // The ℹ️ prefix is the owner's visual anchor: it separates board-generated
+  // notifications from the agent's own replies when scrolling the chat
+  // (Viktor's request, 2026-08-02, Telegram 1630).
+  const text = `ℹ️ [kanban] ${author} kommentelt a kartyadon: "${card.title}"\n${excerpt}${flat.length > 180 ? '...' : ''}`
   void deliver(text)
     .then(() => recordOwnerNudge(text))
     .catch((err: unknown) => {
