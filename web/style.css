@@ -976,6 +976,51 @@ main {
 }
 .kanban-card-due.overdue { color: var(--danger); font-weight: 600; }
 
+/* Blocked marker (#185): the card waits for another card that is still open.
+   `margin-left: auto` would fight the due-date chip for the same slot, so it
+   simply follows whatever is in the footer. */
+.kanban-card-blocked {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--danger);
+  white-space: nowrap;
+}
+.kanban-card[data-blocked="1"] .kanban-card-title { opacity: 0.75; }
+
+.blocker-list { display: flex; flex-direction: column; gap: 4px; }
+.blocker-group-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.blocker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+.blocker-row.blocker-open { border-left: 3px solid var(--danger); }
+.blocker-row.blocker-closed { border-left: 3px solid var(--success); opacity: 0.7; }
+.blocker-ref { font-family: monospace; color: var(--text-muted); cursor: pointer; }
+.blocker-title { flex: 1; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.blocker-status { font-size: 10px; color: var(--text-muted); }
+.blocker-remove {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.blocker-remove:hover { color: var(--danger); }
+.blocker-empty { font-size: 12px; color: var(--text-muted); }
+
 .kanban-card-labels {
   display: flex;
   flex-wrap: wrap;
