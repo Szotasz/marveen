@@ -306,6 +306,12 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     writeAgentSettingsFromProfile(name, loadProfileTemplate(profileId))
     if (rawName && rawName !== name) writeAgentDisplayName(name, rawName)
 
+    // Set when the personality fell back to a template. The response is deferred
+    // to after the notification block so that BOTH outcomes announce the agent:
+    // a template-personality agent exists and is usable, so the fleet has to hear
+    // about it for the same reason a fully generated one does.
+    let personalityPendingDetail: string | null = null
+
     logger.info({ name, description }, 'Generating agent CLAUDE.md and SOUL.md...')
     try {
       const [claudeMd, soulMd] = await Promise.all([
@@ -348,14 +354,23 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
         // one they cannot.
         logger.error({ err: fallbackErr, name }, 'Fallback template write failed; agent left in place for inspection')
       }
-      json(res, { ok: true, name, personalityPending: true, warning: 'Agent created, but its personality came from a template because generation failed. It is queued for regeneration.', detail }, 200)
-      return true
+      // Set when the personality fell back to a template. The response is deferred
+      // to after the notification block so that BOTH outcomes announce the agent:
+      // a template-personality agent exists and is usable, so the fleet has to hear
+      // about it for the same reason a fully generated one does.
+      personalityPendingDetail = detail
     }
 
     // Notifications are deliberately OUTSIDE the try above. They used to sit
     // inside it, after the "Agent created successfully" log, so a failure here
     // (DB busy, a dead target session) ran the catch and deleted a fully
     // created agent. A greeting that does not go out must never cost the agent.
+    //
+    // This also runs on the template-fallback path, deliberately, and with the
+    // SAME text. The agent exists and works either way, so a silent creation
+    // would be a second silent outcome in the same handler. That the personality
+    // is a placeholder is the response's job to say, not the greeting's: the
+    // other agents are being told who joined, not how well it went.
     try {
       const runningAgents = listAgentNames().filter(a => a !== name && isAgentRunning(a))
       for (const target of [MAIN_AGENT_ID, ...runningAgents]) {
@@ -363,6 +378,11 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
       }
     } catch (err) {
       logger.warn({ err, name }, 'Agent created, but the team notification failed')
+    }
+
+    if (personalityPendingDetail !== null) {
+      json(res, { ok: true, name, personalityPending: true, warning: 'Agent created, but its personality came from a template because generation failed. It is queued for regeneration.', detail: personalityPendingDetail }, 200)
+      return true
     }
 
     json(res, { ok: true, name })
