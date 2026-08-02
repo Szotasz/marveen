@@ -23,7 +23,12 @@ import { join } from 'node:path'
 // template invariants. What they lock is ORDER and PRESENCE, which is exactly
 // what a later refactor would silently drop.
 
-const APP = readFileSync(join(__dirname, '..', '..', 'web', 'app.js'), 'utf-8')
+// Fork adaptation: the wizard code lives in web/modules/onboarding.js, not
+// in the upstream's monolithic web/app.js. The mainAgentId() fallback is in
+// web/modules/util.js. The boot-race guard is inlined in loadPending rather
+// than extracted into a separate ensureMarveenLoaded() function.
+const APP = readFileSync(join(__dirname, '..', '..', 'web', 'modules', 'onboarding.js'), 'utf-8')
+const UTIL = readFileSync(join(__dirname, '..', '..', 'web', 'modules', 'util.js'), 'utf-8')
 
 /**
  * The wizard's step-4 pending loader, sliced to its ACTUAL end.
@@ -48,16 +53,19 @@ function loadPendingBlock(): string {
 
 describe('PAIRAPPROVE1: the wizard resolves the real agent id before asking', () => {
   it('the boot-race guard still exists and is what we reuse', () => {
-    expect(APP).toContain('async function ensureMarveenLoaded()')
+    // Fork: the guard is inlined in loadPending (no separate ensureMarveenLoaded),
+    // using the same window._marveen?.agentId check as the upstream guard.
+    expect(APP).toContain("if (!window._marveen?.agentId)")
     // it must remain a no-op once the id is known, or every poll refetches
-    expect(APP).toMatch(/async function ensureMarveenLoaded\(\)\s*\{\s*\n\s*if \(window\._marveen\?\.agentId\) return/)
+    expect(loadPendingBlock()).toMatch(/if \(!window\._marveen\?\.agentId\)/)
   })
 
   it('awaits the guard BEFORE fetching pending (order is the whole fix)', () => {
     const blk = loadPendingBlock()
-    const guard = blk.indexOf('await ensureMarveenLoaded()')
+    // Fork: guard is a synchronous if-block, not an await; check it precedes fetch
+    const guard = blk.indexOf("if (!window._marveen?.agentId)")
     const fetchAt = blk.indexOf('await fetch(')
-    expect(guard, 'guard not called in loadPending').toBeGreaterThan(-1)
+    expect(guard, 'guard not present in loadPending').toBeGreaterThan(-1)
     expect(fetchAt).toBeGreaterThan(-1)
     expect(guard).toBeLessThan(fetchAt)
   })
@@ -86,7 +94,8 @@ describe('PAIRAPPROVE1: the wizard resolves the real agent id before asking', ()
   })
 
   it('leaves the mainAgentId fallback alone (other call sites depend on it)', () => {
-    expect(APP).toMatch(/return window\._marveen\?\.agentId \|\| 'marveen'/)
+    // Fork: mainAgentId() is defined in web/modules/util.js
+    expect(UTIL).toMatch(/window\._marveen\?\.agentId \|\| 'marveen'/)
   })
 
   it('keeps the expiry filter, which is correct (the plugin writes ms)', () => {
@@ -113,8 +122,14 @@ describe('both failure paths surface, and they look different from "no pending"'
 
   it('the error sink also uses onbMsg, not just the muted hint slot', () => {
     // the box alone renders in the same onb-hint style as "no pending", so the
-    // distinction this fix is about would stay invisible
-    const sink = APP.slice(APP.indexOf('const showPendingError ='), APP.indexOf('const loadPending ='))
+    // distinction this fix is about would stay invisible.
+    // Fork: showPendingError is defined inline inside loadPending, not before it.
+    const blk = loadPendingBlock()
+    const sinkStart = blk.indexOf('const showPendingError =')
+    expect(sinkStart, 'showPendingError not found inside loadPending').toBeGreaterThan(-1)
+    // The function body ends before the try block that follows it
+    const sinkEnd = blk.indexOf('try {', sinkStart)
+    const sink = blk.slice(sinkStart, sinkEnd > sinkStart ? sinkEnd : undefined)
     expect(sink).toMatch(/onbPending/)
     expect(sink).toMatch(/onbMsg\(msg, true\)/)
   })

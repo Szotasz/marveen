@@ -25,7 +25,9 @@ import { join } from 'node:path'
 // is what is asserted.
 
 const SRC = join(import.meta.dirname, '..')
-const FILE = 'web/routes/agents.ts'
+// Fork adaptation: the create handler lives in agents-crud.ts (the fork's
+// modular backend), not in the upstream's monolithic agents.ts.
+const FILE = 'web/routes/agents-crud.ts'
 
 function read(): string {
   return readFileSync(join(SRC, FILE), 'utf8')

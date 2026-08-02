@@ -53,9 +53,10 @@ describe('checkAgentPutFields', () => {
   it('does not quietly gain a writable field', () => {
     // A field added to this list widens what the endpoint can change, so the
     // list is pinned: growing it should require editing this test too.
+    // Fork adds: modelProfile (Block B card c755f4b2) and mcpScope.
     expect([...AGENT_PUT_WRITABLE_FIELDS]).toEqual([
-      'claudeMd', 'soulMd', 'mcpJson', 'model',
-      'authMode', 'apiKey', 'claudePlan', 'memoryIsolation',
+      'claudeMd', 'soulMd', 'mcpJson', 'model', 'modelProfile',
+      'authMode', 'apiKey', 'claudePlan', 'memoryIsolation', 'mcpScope',
     ])
     expect(AGENT_PUT_WRITABLE_FIELDS).not.toContain('securityProfile')
   })

@@ -100,6 +100,7 @@ vi.mock('../web/active-model.js', () => ({
 }))
 vi.mock('../pane-state.js', () => ({
   detectPaneState: vi.fn().mockReturnValue('idle'),
+  detectPermissionMode: vi.fn().mockReturnValue(null),
 }))
 vi.mock('../web/profiles.js', () => ({
   loadProfileTemplate: vi.fn().mockReturnValue({ id: 'default', label: 'Default', description: '', permissionMode: 'default', filesystem: { allow: [], deny: [] } }),
