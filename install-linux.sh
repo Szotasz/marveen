@@ -209,8 +209,33 @@ APT_OPTS="-o DPkg::Lock::Timeout=180"
 #
 # HAROM retegben zarjuk ki, mert egy reteg sem eleg onmagaban:
 #   1. DEBIAN_FRONTEND=noninteractive -- a debconf keresek ellen.
-#   2. NEEDRESTART_MODE=a + NEEDRESTART_SUSPEND=1 -- a needrestart apt-hookja
-#      ellen; ez az, ami a konkret gepet megfogta, es amit a frontend NEM fed.
+#   2. NEEDRESTART_SUSPEND=1 (+ NEEDRESTART_MODE=l tartalek) -- a needrestart
+#      apt-hookja ellen; ez az, ami a konkret gepet megfogta, es amit a frontend
+#      NEM fed.
+#
+#      MIERT "l" ES NEM "a", holott az "a" is elnemitja a kerdest (merve az eles
+#      gepen, needrestart 3.11 / Ubuntu 26.04, 2026-08-02):
+#        - /usr/lib/needrestart/apt-pinvoke 43-46. sor: ha NEEDRESTART_SUSPEND
+#          nem ures, kiir egy sort es `exit 0` -- az `exec needrestart` CSAK
+#          ezutan, az 49. sorban jon. Tehat SUSPEND mellett a needrestart EL SEM
+#          INDUL: sem dialogus, sem ujrainditas. A MODE azon az uton sosem jut
+#          ervenyre.
+#        - A MODE tehat TARTALEK: azokra a (regebbi) verziokra, amelyek hookja
+#          esetleg nem nezi a SUSPEND-et. Es ha a tartalek lep ervenybe, akkor
+#          szamit, MELYIK erteket adtuk: a needrestart -r modjai l = list only,
+#          i = interactive, a = automatically restart.
+#        - Az "a" tehat ujrainditana a varakozo szolgaltatasokat A TELEPITES
+#          KOZBEN. A cel-gepen ez negy szolgaltatast jelentett (dbus,
+#          networkd-dispatcher, serial-getty@ttyS0, systemd-logind), es a
+#          telepito KESOBB epit a felhasznaloi session-buszra (XDG_RUNTIME_DIR /
+#          DBUS_SESSION_BUS_ADDRESS), majd meg kesobb user-unitokat allit be. Egy
+#          dbus/logind restart a csomag-lepesben tehat egy MASIK, kesobbi lepest
+#          buktathatna el -- olyan hibat, ami semmivel nem utal vissza az aptra.
+#        - Az "l" ugyanugy nem kerdez, de nem is indit ujra semmit: a fuggo
+#          szolgaltatasok a kovetkezo rebootig a regi konyvtarakkal futnak, ami
+#          egy friss telepitesnel rendben van.
+#      NE ALLITSD VISSZA "a"-ra azzal, hogy "az alaposabb" -- itt epp az a
+#      kockazat, hogy a tartalek TOBBET csinal, mint amit kertunk tole.
 #   3. </dev/null minden hivason -- ha egy hook megis kerdez, azonnal EOF-ot kap
 #      a helyett, hogy a telepito sajat stdinjere varna.
 #
@@ -221,8 +246,8 @@ APT_OPTS="-o DPkg::Lock::Timeout=180"
 #   sudo -E printenv DEBIAN_FRONTEND                          -> noninteractive
 # Ezert a sudo-s hivasoknal a valtozok a parancs ele kerulnek, es az export CSAK
 # a `sudo -E`-vel indulo gyerekek (nodesource setup-script) miatt marad meg.
-NONINTERACTIVE_ENV="DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1"
-export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
+NONINTERACTIVE_ENV="DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1"
+export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1
 # A meglevo config-fajlokat megtartjuk, ujat nem kerdezunk: a "melyik verziot
 # tartsam meg?" dpkg-prompt ugyanugy megallitana a telepitest, mint a needrestart.
 DPKG_KEEP_CONF="-o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-confdef"
