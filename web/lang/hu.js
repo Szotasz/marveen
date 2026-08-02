@@ -596,6 +596,7 @@ window._i18n.hu = {
   'memories.page_subtitle':      'AI csapat tudásbázisa',
   'memories.agent_all':          'Minden ügynök',
   'memories.stat.total':         'Osszes',
+  'memories.stat.artifacts':     'Artifactok',
   'memories.stat.vectors_btn':   'Vektorok generalasa',
   'memories.stat.vectors_gen':   'Generálás...',
   'memories.toast.vector_count': '{count} emlekhez vektor generalva',
