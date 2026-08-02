@@ -1,4 +1,5 @@
-import { escapeHtml } from './util.js'
+import { escapeHtml, highlightJson } from './util.js'
+import { renderMarkdown } from './docs-research.js'
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
 
@@ -126,15 +127,14 @@ function renderPreview(container, artifact) {
   }
 
   if (kind === 'markdown') {
-    // Render markdown as <pre> with basic escaping (no external dependency)
-    container.innerHTML = `<pre style="white-space:pre-wrap;font-size:12px;background:var(--surface-2);padding:12px;border-radius:4px;overflow-x:auto;max-height:400px;overflow-y:auto">${escapeHtml(content)}</pre>`
+    // renderMarkdown escapes all user content via escapeHtml/mdInline -- safe for innerHTML
+    container.innerHTML = `<div class="markdown-body md-rendered" style="padding:12px;overflow-y:auto;max-height:400px;font-size:13px">${renderMarkdown(content)}</div>`
     return
   }
 
   if (kind === 'json') {
-    let pretty = content
-    try { pretty = JSON.stringify(JSON.parse(content), null, 2) } catch {}
-    container.innerHTML = `<pre style="white-space:pre-wrap;font-size:12px;background:var(--surface-2);padding:12px;border-radius:4px;overflow-x:auto;max-height:400px;overflow-y:auto">${escapeHtml(pretty)}</pre>`
+    // highlightJson HTML-escapes all string values via escapeHtml -- safe for innerHTML
+    container.innerHTML = `<pre style="white-space:pre-wrap;font-size:12px;background:var(--bg-code,var(--bg-input));padding:12px;border-radius:4px;overflow-x:auto;max-height:400px;overflow-y:auto;line-height:1.5">${highlightJson(content)}</pre>`
     return
   }
 

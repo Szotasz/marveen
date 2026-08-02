@@ -1,4 +1,5 @@
-import { escapeHtml, mainAgentId } from './util.js'
+import { escapeHtml, highlightJson, mainAgentId } from './util.js'
+import { renderMarkdown } from './docs-research.js'
 import { showToast } from './toast.js'
 import { t } from './i18n.js'
 
@@ -1497,6 +1498,12 @@ document.getElementById('memArtifactsList').addEventListener('click', async (e) 
         // sandbox=allow-scripts, NO allow-same-origin -- script runs in a null origin
         previewEl.innerHTML = `<iframe class="art-preview-frame" sandbox="allow-scripts"
           srcdoc="${escapeHtml(art.content)}"></iframe>`
+      } else if (art.kind === 'markdown') {
+        // renderMarkdown escapes all user content via escapeHtml/mdInline -- safe for innerHTML
+        previewEl.innerHTML = `<div class="markdown-body md-rendered" style="padding:12px;overflow-y:auto">${renderMarkdown(art.content)}</div>`
+      } else if (art.kind === 'json') {
+        // highlightJson HTML-escapes all string values via escapeHtml -- safe for innerHTML
+        previewEl.innerHTML = `<pre class="art-preview-pre">${highlightJson(art.content)}</pre>`
       } else if (isText) {
         previewEl.innerHTML = `<pre class="art-preview-pre">${escapeHtml(art.content)}</pre>`
       } else {
