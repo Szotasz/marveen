@@ -144,8 +144,13 @@ describe('pruneTokenUsage', () => {
   })
 
   it('aggregates old rows into token_usage_daily before deleting them', () => {
-    // Insert two old rows on the same day with known token counts
-    const oldTs = NOW - 60 * DAY  // 60 days ago, well past the 30d window
+    // Snap to today's UTC noon, then subtract 60 days.
+    // This makes the timestamp always land at 12:00 UTC, avoiding midnight boundary
+    // issues when CI runs at 22-24 UTC (= 00-02 Budapest next day). 60 days keeps
+    // the row outside the raw 30d window yet inside the daily 365d retention window
+    // so the daily rollup row is not immediately pruned away by step 4.
+    const todayNoonUTC = Math.floor(Date.now() / 86400000) * 86400 + 43200
+    const oldTs = todayNoonUTC - 60 * DAY
     getDb().prepare(
       `INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
        VALUES ('test-prune', 'sess-agg-1', ?, 100, 50, 0, 0)`,
@@ -170,7 +175,8 @@ describe('pruneTokenUsage', () => {
   })
 
   it('aggregates old rows into token_usage_monthly before deleting them', () => {
-    const oldTs = NOW - 60 * DAY
+    const todayNoonUTC = Math.floor(Date.now() / 86400000) * 86400 + 43200
+    const oldTs = todayNoonUTC - 60 * DAY
     getDb().prepare(
       `INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
        VALUES ('test-prune', 'sess-month-1', ?, 500, 100, 0, 0)`,
@@ -190,7 +196,8 @@ describe('pruneTokenUsage', () => {
   })
 
   it('is idempotent: running pruneTokenUsage twice does not duplicate aggregated rows', () => {
-    const oldTs = NOW - 60 * DAY
+    const todayNoonUTC = Math.floor(Date.now() / 86400000) * 86400 + 43200
+    const oldTs = todayNoonUTC - 60 * DAY
     getDb().prepare(
       `INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
        VALUES ('test-prune', 'sess-idem-1', ?, 100, 50, 0, 0)`,
@@ -212,7 +219,8 @@ describe('pruneTokenUsage', () => {
   })
 
   it('preserves aggregated totals across repeated prune runs', () => {
-    const oldTs = NOW - 60 * DAY
+    const todayNoonUTC = Math.floor(Date.now() / 86400000) * 86400 + 43200
+    const oldTs = todayNoonUTC - 60 * DAY
     getDb().prepare(
       `INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
        VALUES ('test-prune', 'sess-persist-1', ?, 400, 200, 0, 0)`,
