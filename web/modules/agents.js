@@ -562,6 +562,23 @@ export async function openMarveenDetail() {
 }
 
 function applyMarveenReadonlyMode(readOnly) {
+  // `readOnly` is really "this modal is showing the MAIN agent" -- it is called
+  // with true from openMarveenDetail and false from openAgentDetail, which makes
+  // it the one hook both open-paths share. Anything that must differ for the main
+  // agent belongs here; putting it in openAgentDetail alone silently no-ops for
+  // the main agent, whose panel never runs that function.
+  // The Team tab describes a SUB-agent's place in the hierarchy: role
+  // (leader | member), who it reports to, who it delegates to. None of it
+  // applies to the main agent, which has no team record and cannot have one.
+  // Its role is 'main', a tier ABOVE leader, and it is an implicit trusted peer
+  // of every agent (see isTrustedPeer), so there is nothing to configure. Shown
+  // anyway, the tab printed the literal fallback "member" and invited the
+  // operator to promote the main agent to 'leader' -- a demotion, and one that
+  // cannot be saved either way: the PUT targets /api/agents/<main>/team, which
+  // 404s because no agents/<main>/ directory exists. Hide the whole tab, same
+  // reasoning as claudePlanGroup.
+  const teamTabBtn = document.querySelector('#agentTabNav .tab-btn[data-tab="team"]')
+  if (teamTabBtn) teamTabBtn.hidden = readOnly
   const textareaIds = ['editClaudeMd', 'editSoulMd', 'editMcpJson']
   // saveModelBtn stays VISIBLE but disabled for Marveen, so the settings tab
   // doesn't look like the row is missing -- the other save buttons (tied to
