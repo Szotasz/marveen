@@ -28,6 +28,7 @@ import { loadApprovalsPage, initApprovals } from './modules/approvals.js'
 import { loadMigrateAgents, initMigrate } from './modules/migrate.js'
 import { loadUpdates, wireBranchDriftBanner, initUpdates } from './modules/updates.js'
 import { initOnboarding, dismissOnboarding, showSudoModal, initChannelSetup } from './modules/onboarding.js'
+import { initArtifacts, loadArtifacts } from './modules/artifacts.js'
 
 // avatarBust() is imported from ./modules/agents.js (avatar epoch owned there).
 
@@ -315,7 +316,7 @@ const SIDEBAR_GROUPS_LS_KEY = 'marveen.sidebarGroups'
 // naplo under system) or relabeling a group is a one-line change right here.
 const SIDEBAR_GROUPS = [
   { key: 'team',        labelKey: 'nav.group.team',        pages: ['agents', 'activity', 'messages', 'tasks', 'bgTasks'] },
-  { key: 'knowledge',   labelKey: 'nav.group.knowledge',   pages: ['memories', 'skills', 'research', 'ideas'] },
+  { key: 'knowledge',   labelKey: 'nav.group.knowledge',   pages: ['memories', 'skills', 'research', 'ideas', 'artifacts'] },
   { key: 'stats',       labelKey: 'nav.group.stats',       pages: ['costs', 'tokenUsage'] },
   { key: 'system',      labelKey: 'nav.group.system',      pages: ['status', 'naplo', 'updates', 'settings', 'vault'] },
   { key: 'connections', labelKey: 'nav.group.connections', pages: ['connectors', 'federation', 'migrate'] },
@@ -643,6 +644,7 @@ registerPage('ideas',     { enter: loadIdeasPage })
 registerPage('archived',  { enter: () => loadArchivedPage() })
 registerPage('naplo',     { enter: () => loadNaplo() })
 registerPage('federation',{ enter: loadFederationPage })
+registerPage('artifacts', { enter: () => { initArtifacts(); loadArtifacts() } })
 
 // Boot: wires up DOM (nav clicks, sidebar, hashchange listener), translates nav/static
 // elements, and performs the initial URL-hash route. Must run after DOM is ready.

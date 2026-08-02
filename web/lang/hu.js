@@ -88,6 +88,7 @@ window._i18n.hu = {
   'nav.vault':        'Vault',
   'nav.tokenUsage':   'Token Monitor',
   'nav.ideas':        'Ötletláda',
+  'nav.artifacts':    'Artifaktek',
   'nav.group.team':        'Csapat',
   'nav.group.knowledge':   'Tudás',
   'nav.group.stats':       'Statisztikák',

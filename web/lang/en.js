@@ -88,6 +88,7 @@ window._i18n.en = {
   'nav.vault':        'Vault',
   'nav.tokenUsage':   'Token Monitor',
   'nav.ideas':        'Ideas',
+  'nav.artifacts':    'Artifacts',
   'nav.group.team':        'Team',
   'nav.group.knowledge':   'Knowledge',
   'nav.group.stats':       'Statistics',

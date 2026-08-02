@@ -66,6 +66,18 @@ test.describe('Dashboard smoke', () => {
     expect(errors).toHaveLength(0)
   })
 
+  test('artifacts nav link is present and page loads without errors', async ({ page }) => {
+    const errors: string[] = []
+    page.on('pageerror', (err) => errors.push(err.message))
+    await page.goto(`/?token=${TOKEN}`)
+    const navLink = page.locator('.sb-link[data-page="artifacts"]')
+    await expect(navLink).toBeAttached()
+    await navLink.click()
+    await page.waitForTimeout(500)
+    await expect(page.locator('#artifactsPage')).toBeVisible()
+    expect(errors).toHaveLength(0)
+  })
+
   // Card 2ed90db1 / PR #524 review blocker: "no UI is wired, /api/costs isn't
   // reachable from the dashboard" -- this proves the Costs nav link is real, the
   // page actually renders live data from /api/costs/summary (not dead scaffolding),
