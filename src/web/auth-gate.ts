@@ -69,6 +69,9 @@ export function requiresAuth(path: string, method: string): boolean {
   if (path === '/api/auth/status' && method === 'GET') return false
   if (path === '/api/auth/login' && method === 'POST') return false
   if (method === 'GET' && (path === '/api/marveen/avatar' || /^\/api\/agents\/[^/]+\/avatar$/.test(path))) return false
+  // Artifact view endpoint is HMAC-token gated, not Bearer; exclude from the
+  // standard auth gate so the browser can open it without an Authorization header.
+  if (method === 'GET' && /^\/api\/artifacts\/[^/]+\/view$/.test(path)) return false
   if (path === '/.well-known/fleetq' && method === 'GET') return true
   return path.startsWith('/api/')
 }

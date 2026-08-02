@@ -3,6 +3,7 @@ import {
   createArtifact, listArtifacts, getArtifact, deleteArtifact,
   ARTIFACT_KINDS, type ArtifactKind,
 } from '../../artifacts-db.js'
+import { signViewToken, verifyViewToken } from '../view-token.js'
 import { logger } from '../../logger.js'
 import type { RouteContext } from './types.js'
 
@@ -100,6 +101,60 @@ function handleGet(ctx: RouteContext, id: string): boolean {
   return true
 }
 
+// POST /api/artifacts/:id/view-token  (Bearer required)
+// Returns a short-lived HMAC token that lets a browser open the artifact
+// content via GET /api/artifacts/:id/view without a Bearer header.
+function handleViewToken(ctx: RouteContext, id: string): boolean {
+  const { res } = ctx
+  const row = getArtifact(id)
+  if (!row) { json(res, { error: 'Not found' }, 404); return true }
+
+  const nowSec = Math.floor(Date.now() / 1000)
+  const { token, exp } = signViewToken(id, nowSec)
+  const viewPath = `/api/artifacts/${encodeURIComponent(id)}/view?token=${token}&exp=${exp}`
+  json(res, { token, exp, url: viewPath })
+  return true
+}
+
+// GET /api/artifacts/:id/view?token=&exp=  (HMAC token, no Bearer)
+// Serves the raw artifact content directly -- suitable for window.open().
+// Strict CSP prevents any cross-context reads; nosniff closes MIME confusion.
+function handleView(ctx: RouteContext, id: string): boolean {
+  const { res, url } = ctx
+  const token = url.searchParams.get('token') ?? ''
+  const expStr = url.searchParams.get('exp') ?? ''
+  const exp = parseInt(expStr, 10)
+
+  if (!token || isNaN(exp)) {
+    res.writeHead(400, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'Missing token or exp' }))
+    return true
+  }
+
+  const nowSec = Math.floor(Date.now() / 1000)
+  if (!verifyViewToken(id, token, exp, nowSec)) {
+    res.writeHead(401, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'Invalid or expired token' }))
+    return true
+  }
+
+  const row = getArtifact(id)
+  if (!row) {
+    res.writeHead(404, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'Not found' }))
+    return true
+  }
+
+  res.writeHead(200, {
+    'Content-Type': row.mime,
+    'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:;",
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': 'no-store',
+  })
+  res.end(row.content)
+  return true
+}
+
 // DELETE /api/artifacts/:id
 function handleDelete(ctx: RouteContext, id: string): boolean {
   const { res } = ctx
@@ -124,6 +179,12 @@ export async function tryHandleArtifacts(ctx: RouteContext): Promise<boolean> {
     if (method === 'GET')    return handleGet(ctx, id)
     if (method === 'DELETE') return handleDelete(ctx, id)
   }
+
+  const viewTokenMatch = /^\/api\/artifacts\/([^/]+)\/view-token$/.exec(path)
+  if (viewTokenMatch && method === 'POST') return handleViewToken(ctx, viewTokenMatch[1])
+
+  const viewMatch = /^\/api\/artifacts\/([^/]+)\/view$/.exec(path)
+  if (viewMatch && method === 'GET') return handleView(ctx, viewMatch[1])
 
   return false
 }
