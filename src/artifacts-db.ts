@@ -69,35 +69,44 @@ export interface ListArtifactsOptions {
 
 export function listArtifacts(opts: ListArtifactsOptions = {}): ArtifactSummary[] {
   const db = getDb()
-  const conditions: string[] = []
-  const bindings: unknown[] = []
-
-  if (opts.agent) {
-    conditions.push('agent_id = ?')
-    bindings.push(opts.agent)
-  }
-  if (opts.kind && ARTIFACT_KINDS.has(opts.kind as ArtifactKind)) {
-    conditions.push('kind = ?')
-    bindings.push(opts.kind)
-  }
-  if (opts.q?.trim()) {
-    conditions.push("(title LIKE ? OR source LIKE ? OR meta LIKE ?)")
-    const term = `%${opts.q.trim()}%`
-    bindings.push(term, term, term)
-  }
-
-  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
   const limit = Math.min(opts.limit ?? 50, 200)
   const offset = opts.offset ?? 0
-  bindings.push(limit, offset)
 
+  const agentBind = opts.agent ? [opts.agent] : []
+  const kindBind  = opts.kind && ARTIFACT_KINDS.has(opts.kind as ArtifactKind) ? [opts.kind] : []
+  const q = opts.q?.trim()
+
+  if (q) {
+    // FTS5 MATCH: searches title, meta JSON, and textual body of non-binary artifacts
+    const agentCond  = agentBind.length ? 'AND a.agent_id = ?' : ''
+    const kindCond   = kindBind.length  ? 'AND a.kind = ?'     : ''
+    return db.prepare(`
+      SELECT a.id, a.agent_id, a.title, a.kind, a.mime, a.meta, a.source, a.created_at, a.updated_at
+      FROM artifacts a
+      WHERE a.rowid IN (SELECT rowid FROM artifacts_fts WHERE artifacts_fts MATCH ?)
+      ${agentCond} ${kindCond}
+      ORDER BY a.created_at DESC
+      LIMIT ? OFFSET ?
+    `).all(ftsEscape(q), ...agentBind, ...kindBind, limit, offset) as ArtifactSummary[]
+  }
+
+  const conditions: string[] = []
+  if (agentBind.length) conditions.push('agent_id = ?')
+  if (kindBind.length)  conditions.push('kind = ?')
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
   return db.prepare(`
     SELECT id, agent_id, title, kind, mime, meta, source, created_at, updated_at
     FROM artifacts
     ${where}
     ORDER BY created_at DESC
     LIMIT ? OFFSET ?
-  `).all(...bindings) as ArtifactSummary[]
+  `).all(...agentBind, ...kindBind, limit, offset) as ArtifactSummary[]
+}
+
+// Escape FTS5 special characters to prevent query-syntax errors on user input.
+// Wraps the term in double quotes so it is treated as a phrase, not as FTS5 operators.
+function ftsEscape(term: string): string {
+  return `"${term.replace(/"/g, '""')}"`
 }
 
 export function getArtifact(id: string): ArtifactRow | undefined {

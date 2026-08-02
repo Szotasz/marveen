@@ -141,3 +141,65 @@ describe('deleteArtifact', () => {
     expect(deleteArtifact('ghost-id')).toBe(false)
   })
 })
+
+describe('listArtifacts FTS search (q param)', () => {
+  it('finds artifact by title match', () => {
+    createArtifact({ agent_id: 'fts-agent', title: 'Quarterly-Xyzzy-Report', kind: 'text', content: Buffer.from('data') })
+    const rows = listArtifacts({ q: 'Quarterly-Xyzzy-Report' })
+    expect(rows.some(r => r.title === 'Quarterly-Xyzzy-Report')).toBe(true)
+  })
+
+  it('finds artifact by body content (text kind)', () => {
+    createArtifact({ agent_id: 'fts-agent', title: 'Body-Search-Test', kind: 'text', content: Buffer.from('unique-fts-body-token-7q3r') })
+    const rows = listArtifacts({ q: 'unique-fts-body-token-7q3r' })
+    expect(rows.some(r => r.title === 'Body-Search-Test')).toBe(true)
+  })
+
+  it('finds artifact by meta content', () => {
+    createArtifact({
+      agent_id: 'fts-agent', title: 'Meta-FTS-Test', kind: 'json',
+      content: Buffer.from('{}'),
+      meta: { tags: ['zx9-unique-meta-token'] },
+    })
+    const rows = listArtifacts({ q: 'zx9-unique-meta-token' })
+    expect(rows.some(r => r.title === 'Meta-FTS-Test')).toBe(true)
+  })
+
+  it('does not return artifacts that do not match', () => {
+    createArtifact({ agent_id: 'fts-agent', title: 'Unrelated Artifact wq8p', kind: 'text', content: Buffer.from('nothing') })
+    const rows = listArtifacts({ q: 'nonexistent-xk7z-term' })
+    expect(rows.every(r => r.title !== 'Unrelated Artifact wq8p')).toBe(true)
+  })
+
+  it('does not find binary content in FTS', () => {
+    createArtifact({
+      agent_id: 'fts-agent', title: 'Binary-FTS-Test',
+      kind: 'binary', content: Buffer.from([0x00, 0xff, 0xab]),
+    })
+    // binary body must NOT be indexed; searching the raw bytes would be nonsensical
+    const rows = listArtifacts({ q: 'Binary-FTS-Test' })
+    // title IS indexed, so the title match must work
+    expect(rows.some(r => r.title === 'Binary-FTS-Test')).toBe(true)
+  })
+
+  it('FTS search respects additional agent filter', () => {
+    createArtifact({ agent_id: 'fts-match-agent', title: 'Filtered-FTS-Result', kind: 'text', content: Buffer.from('fts-filter-content') })
+    createArtifact({ agent_id: 'fts-other-agent', title: 'Filtered-FTS-Result', kind: 'text', content: Buffer.from('fts-filter-content') })
+    const rows = listArtifacts({ q: 'Filtered-FTS-Result', agent: 'fts-match-agent' })
+    expect(rows.every(r => r.agent_id === 'fts-match-agent')).toBe(true)
+  })
+
+  it('handles FTS special characters gracefully', () => {
+    // Double-quotes in the search term must not cause a syntax error
+    expect(() => listArtifacts({ q: 'test "quoted" term' })).not.toThrow()
+    expect(() => listArtifacts({ q: 'a OR b' })).not.toThrow()
+    expect(() => listArtifacts({ q: 'a*' })).not.toThrow()
+  })
+
+  it('removed artifact no longer appears in FTS results', () => {
+    const { id } = createArtifact({ agent_id: 'fts-agent', title: 'Deleted-FTS-Artifact', kind: 'text', content: Buffer.from('delete-me') })
+    expect(listArtifacts({ q: 'Deleted-FTS-Artifact' }).some(r => r.id === id)).toBe(true)
+    deleteArtifact(id)
+    expect(listArtifacts({ q: 'Deleted-FTS-Artifact' }).some(r => r.id === id)).toBe(false)
+  })
+})
