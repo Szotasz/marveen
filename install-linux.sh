@@ -214,9 +214,18 @@ apt_lock_holder() {
   return 1
 }
 
+# A ket ertekadas alatt SZANDEKOSAN `&& rc=0 || rc=$?` all, nem `; rc=$?`.
+# A szkript `set -e` alatt fut (5. sor), es egy ertekadas kilepesi kodja a
+# parancs-behelyettesitese -- tehat `holder=$(apt_lock_holder); rc=$?` eseten a
+# shell MAR AZON A SORON kilep, ha a fuggveny nem nullat ad. Az pedig pontosan
+# akkor ad nem nullat, amikor NINCS zar (return 1) vagy nincs fuser (return 2),
+# vagyis a haromallapotu logika alatta SOSEM futott le: az egyetlen tulelo ag az
+# volt, amikor tenyleg fogta valaki a lockot. A zar-figyelo igy a NYUGODT gepen
+# olte meg a telepitest, es a lock-versenyes gepen engedte at -- ezert ment at a
+# 07-30-i workshopon es bukott egy friss VPS-en 08-02-an.
 wait_for_apt_lock() {
   local holder rc waited=0 interval=5
-  holder=$(apt_lock_holder); rc=$?
+  holder=$(apt_lock_holder) && rc=0 || rc=$?
   if [ "$rc" -eq 2 ]; then
     # fuser nincs (minimal image) -- nem tudjuk MEGNEZNI, ki fogja a lockot.
     # Ezt kimondjuk, es az APT_OPTS timeout-ja kezeli, ha tenyleg fogott.
@@ -228,7 +237,7 @@ wait_for_apt_lock() {
   echo -e "  ${DIM}$(_t linux.apt_lock_transient_hint)${NC}"
   while [ "$waited" -lt "$APT_LOCK_WAIT_CAP" ]; do
     sleep "$interval"; waited=$((waited + interval))
-    holder=$(apt_lock_holder); rc=$?
+    holder=$(apt_lock_holder) && rc=0 || rc=$?
     if [ "$rc" -ne 0 ]; then
       ok "$(_t linux.apt_lock_freed_prefix) ${waited}s"
       return 0
