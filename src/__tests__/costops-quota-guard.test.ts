@@ -16,6 +16,9 @@ import {
   CRITICAL_THRESHOLD,
   ALERT_COOLDOWN_SECONDS,
   EMPTY_QUOTA_STATE,
+  FAILURE_ALERT_THRESHOLD,
+  isMeasurementStale,
+  CHECK_INTERVAL_MS,
   type QuotaGuardState,
   type QuotaUsage,
 } from '../costops/quota-guard.js'
@@ -184,7 +187,7 @@ describe('not shouting every cycle', () => {
     // At a 15-minute cadence a steady 72% would otherwise alert 96 times a day,
     // and noise is how a real alert gets ignored.
     const notify = vi.fn()
-    const state: QuotaGuardState = { last_alert_level: 'warning', last_alert_at: NOW - 60 }
+    const state: QuotaGuardState = { ...EMPTY_QUOTA_STATE, last_alert_level: 'warning', last_alert_at: NOW - 60 }
     const r = await runQuotaGuard(deps({ fetch: async () => usage(0.72), notify, readState: () => state }))
     expect(notify).not.toHaveBeenCalled()
     expect(r.alerted).toBe(false)
@@ -192,23 +195,31 @@ describe('not shouting every cycle', () => {
 
   it('speaks again once the cooldown has passed', async () => {
     const notify = vi.fn()
-    const state: QuotaGuardState = { last_alert_level: 'warning', last_alert_at: NOW - ALERT_COOLDOWN_SECONDS - 1 }
+    const state: QuotaGuardState = { ...EMPTY_QUOTA_STATE, last_alert_level: 'warning', last_alert_at: NOW - ALERT_COOLDOWN_SECONDS - 1 }
     await runQuotaGuard(deps({ fetch: async () => usage(0.72), notify, readState: () => state }))
     expect(notify).toHaveBeenCalledTimes(1)
   })
 
   it('speaks immediately when the level gets worse, cooldown or not', async () => {
     const notify = vi.fn()
-    const state: QuotaGuardState = { last_alert_level: 'warning', last_alert_at: NOW - 60 }
+    const state: QuotaGuardState = { ...EMPTY_QUOTA_STATE, last_alert_level: 'warning', last_alert_at: NOW - 60 }
     await runQuotaGuard(deps({ fetch: async () => usage(0.9), notify, readState: () => state }))
     expect(notify).toHaveBeenCalledTimes(1)
   })
 
   it('clears the latch after recovery so the next crossing alerts', async () => {
+    // The assertion used to be `toHaveBeenCalledWith(EMPTY_QUOTA_STATE)` --
+    // the whole state blanked. That is no longer right, and the change is the
+    // point of #225: the ALERT latch is about alerting, the success trace is
+    // about liveness, and clearing one must not erase the other. Blanking both
+    // would make the guard look dead on the cycle right after it recovered.
     const writeState = vi.fn()
-    const state: QuotaGuardState = { last_alert_level: 'critical', last_alert_at: NOW - 60 }
+    const state: QuotaGuardState = { ...EMPTY_QUOTA_STATE, last_alert_level: 'critical', last_alert_at: NOW - 60 }
     await runQuotaGuard(deps({ fetch: async () => usage(0.2), writeState, readState: () => state }))
-    expect(writeState).toHaveBeenCalledWith(EMPTY_QUOTA_STATE)
+    const written = writeState.mock.calls.at(-1)?.[0] as QuotaGuardState
+    expect(written.last_alert_level).toBeNull()
+    expect(written.last_alert_at).toBeNull()
+    expect(written.last_success_at).toBe(NOW)
   })
 })
 
@@ -292,5 +303,152 @@ describe('failing safe', () => {
     expect(sent).not.toContain(TOKEN)
     expect(sent).toContain('90%')
     expect(sent).toContain('does not perform')
+  })
+})
+
+// The guard used to log only failures. That made "running and fine"
+// indistinguishable from "not running at all" -- both were silence, and only
+// one of them was good news. Three failed reads at 03:09/03:29/03:49 on
+// 2026-08-02 woke nobody, which is what this section exists to prevent.
+/** A guard run that reads successfully at the given utilization. */
+function okDeps(utilization: number) {
+  return deps({ fetch: async () => usage(utilization), act: true })
+}
+
+describe('a successful check leaves a trace', () => {
+  it('records the time and the reading on every success, not just on alerts', () => {
+    // A quiet 36% is exactly the case that used to write nothing at all.
+    const writes: QuotaGuardState[] = []
+    return runQuotaGuard({
+      ...okDeps(0.36),
+      readState: () => ({ ...EMPTY_QUOTA_STATE }),
+      writeState: (s) => writes.push(s),
+      now: NOW,
+    }).then((result) => {
+      expect(result.ok).toBe(true)
+      expect(writes.length).toBeGreaterThan(0)
+      expect(writes[0].last_success_at).toBe(NOW)
+      expect(writes[0].last_utilization).toBeCloseTo(0.36, 4)
+      expect(writes[0].consecutive_failures).toBe(0)
+    })
+  })
+
+  it('does not blank the success trace when it also alerts', async () => {
+    // The alert write used to replace the whole object. Spreading matters:
+    // losing last_success_at here would make the very next cycle report the
+    // guard as dead, on a cycle that demonstrably ran.
+    const writes: QuotaGuardState[] = []
+    await runQuotaGuard({
+      ...okDeps(0.9),
+      readState: () => ({ ...EMPTY_QUOTA_STATE }),
+      writeState: (s) => writes.push(s),
+      now: NOW,
+    })
+    const last = writes[writes.length - 1]
+    expect(last.last_alert_level).toBe('critical')
+    expect(last.last_success_at).toBe(NOW)
+    expect(last.last_utilization).toBeCloseTo(0.9, 4)
+  })
+
+  it('keeps the success trace when the alert latch is cleared on recovery', async () => {
+    const writes: QuotaGuardState[] = []
+    await runQuotaGuard({
+      ...okDeps(0.2),
+      readState: () => ({ ...EMPTY_QUOTA_STATE, last_alert_level: 'warning', last_alert_at: NOW - 100 }),
+      writeState: (s) => writes.push(s),
+      now: NOW,
+    })
+    const last = writes[writes.length - 1]
+    expect(last.last_alert_level).toBeNull()
+    expect(last.last_success_at).toBe(NOW)
+  })
+})
+
+describe('repeated failures become their own alert', () => {
+  const failingDeps = () => ({
+    readToken: () => 'token',
+    fetch: async () => null,
+    notify: () => {},
+    act: true,
+  })
+
+  it('counts consecutive failures instead of only logging them', async () => {
+    const writes: QuotaGuardState[] = []
+    await runQuotaGuard({
+      ...failingDeps(),
+      readState: () => ({ ...EMPTY_QUOTA_STATE, consecutive_failures: 1 }),
+      writeState: (s) => writes.push(s),
+      now: NOW,
+    })
+    expect(writes[0].consecutive_failures).toBe(2)
+  })
+
+  it('stays quiet for a single blip', async () => {
+    // One miss is ordinary: a token refresh, a moment of endpoint trouble.
+    const notified: string[] = []
+    const result = await runQuotaGuard({
+      ...failingDeps(),
+      notify: (t) => notified.push(t),
+      readState: () => ({ ...EMPTY_QUOTA_STATE }),
+      writeState: () => {},
+      now: NOW,
+    })
+    expect(notified).toHaveLength(0)
+    expect(result.alerted).toBe(false)
+  })
+
+  it('alerts once the silence is long enough, and says the quota is unwatched', async () => {
+    const notified: string[] = []
+    const result = await runQuotaGuard({
+      ...failingDeps(),
+      notify: (t) => notified.push(t),
+      readState: () => ({ ...EMPTY_QUOTA_STATE, consecutive_failures: FAILURE_ALERT_THRESHOLD - 1, last_success_at: NOW - 3600 }),
+      writeState: () => {},
+      now: NOW,
+    })
+    expect(result.alerted).toBe(true)
+    expect(notified[0]).toMatch(/NOT being watched/)
+    // The message has to carry HOW LONG we have been blind, otherwise the
+    // reader cannot tell a blip from an outage.
+    expect(notified[0]).toMatch(/60 minutes ago/)
+  })
+
+  it('alerts once, not every cycle, while the endpoint stays down', async () => {
+    const notified: string[] = []
+    await runQuotaGuard({
+      ...failingDeps(),
+      notify: (t) => notified.push(t),
+      readState: () => ({ ...EMPTY_QUOTA_STATE, consecutive_failures: 9, last_failure_alert_at: NOW - 600 }),
+      writeState: () => {},
+      now: NOW,
+    })
+    expect(notified).toHaveLength(0)
+  })
+
+  it('resets the failure counter after a success', async () => {
+    const writes: QuotaGuardState[] = []
+    await runQuotaGuard({
+      ...okDeps(0.3),
+      readState: () => ({ ...EMPTY_QUOTA_STATE, consecutive_failures: 5 }),
+      writeState: (s) => writes.push(s),
+      now: NOW,
+    })
+    expect(writes[0].consecutive_failures).toBe(0)
+  })
+})
+
+describe('staleness is answerable without re-deriving it', () => {
+  it('calls a guard with no successful reading stale', () => {
+    expect(isMeasurementStale({ ...EMPTY_QUOTA_STATE }, NOW)).toBe(true)
+  })
+
+  it('accepts a reading from within two intervals', () => {
+    const recent = { ...EMPTY_QUOTA_STATE, last_success_at: NOW - 60 }
+    expect(isMeasurementStale(recent, NOW)).toBe(false)
+  })
+
+  it('flags a reading older than two intervals -- the guard is presumed dead', () => {
+    const old = { ...EMPTY_QUOTA_STATE, last_success_at: NOW - 3 * (CHECK_INTERVAL_MS / 1000) }
+    expect(isMeasurementStale(old, NOW)).toBe(true)
   })
 })
