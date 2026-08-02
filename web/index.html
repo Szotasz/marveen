@@ -136,6 +136,10 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
             <span class="sb-label">Ötletláda</span>
           </a>
+          <a href="#" class="sb-link" data-page="artifacts">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+            <span class="sb-label" data-i18n="nav.artifacts">Artifaktek</span>
+          </a>
         </div>
       </div>
       <div class="sb-group" data-group="stats">
@@ -274,6 +278,10 @@
         <a class="kpi-item" href="#memories">
           <span class="kpi-value" id="kpiMemories">—</span>
           <span class="kpi-label">Memóriák</span>
+        </a>
+        <a class="kpi-item" href="#memories">
+          <span class="kpi-value" id="kpiArtifacts">—</span>
+          <span class="kpi-label">Artifactok</span>
         </a>
         <a class="kpi-item" href="#skills">
           <span class="kpi-value" id="kpiSkills">—</span>
@@ -663,6 +671,14 @@
         <select class="mem-agent-filter" id="memAgentFilter">
           <option value="" data-i18n="memories.filter.all_agents">Minden ügynök</option>
         </select>
+        <select id="memArtKindFilter" style="display:none">
+          <option value="" data-i18n="memories.artifacts.kind_all">Minden típus</option>
+          <option value="html">HTML</option>
+          <option value="markdown">Markdown</option>
+          <option value="json">JSON</option>
+          <option value="text">Text</option>
+          <option value="binary">Binary</option>
+        </select>
       </div>
 
       <div class="mem-tabs" id="memTabs">
@@ -672,6 +688,7 @@
         <button class="mem-tab" data-tier="shared">&#128279; Shared</button>
         <button class="mem-tab" data-tier="graph">&#128376;&#65039; Graf</button>
         <button class="mem-tab" data-tier="log">&#128203; Naplo</button>
+        <button class="mem-tab" data-tier="artifacts" data-i18n="memories.tab.artifacts">Artifactok</button>
       </div>
 
       <!-- Memory list (for hot/warm/cold/shared) -->
@@ -701,6 +718,15 @@
         <div class="log-empty" id="logEmpty" hidden>
           <p data-i18n="memories.log_empty">Nincs naplobejegyzes ezen a napon</p>
         </div>
+      </div>
+
+      <!-- Artifacts tab view (on Memories screen) -->
+      <div id="memArtifactsView" hidden>
+        <div id="memArtifactsList"></div>
+        <div id="memArtifactsEmpty" hidden>
+          <p data-i18n="memories.artifacts.empty">Nincs artifact.</p>
+        </div>
+        <div id="memArtifactsPreview" hidden style="margin-top:12px;border:1px solid var(--border);border-radius:8px;overflow:hidden;max-height:520px;"></div>
       </div>
     </div>
 
@@ -2031,6 +2057,37 @@
             <button class="btn-primary btn-compact" id="fedPeerModalSave" data-i18n="common.btn.save">Mentés</button>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- === Artifacts Page === -->
+    <div class="page" id="artifactsPage" hidden>
+      <div class="page-header">
+        <h1 data-i18n="nav.artifacts">Artifaktek</h1>
+      </div>
+      <div class="filters-row" id="artifactsFilters" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+        <input type="text" id="artifactsAgentFilter" placeholder="Agent ID" style="width:140px">
+        <select id="artifactsKindFilter">
+          <option value="">Mind</option>
+          <option value="html">HTML</option>
+          <option value="markdown">Markdown</option>
+          <option value="json">JSON</option>
+          <option value="text">Text</option>
+          <option value="binary">Binary</option>
+        </select>
+        <input type="date" id="artifactsDateFilter">
+        <button class="btn-secondary btn-compact" id="artifactsSearchBtn" data-i18n="common.btn.search">Keresés</button>
+      </div>
+      <div id="artifactsList" style="margin-bottom:16px"></div>
+      <div id="artifactsEmpty" hidden style="color:var(--text-muted);padding:24px 0">Nincs találat.</div>
+
+      <!-- Preview panel -->
+      <div id="artifactsPreview" hidden style="border:1px solid var(--border);border-radius:6px;padding:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <strong id="artifactsPreviewTitle"></strong>
+          <button class="btn-secondary btn-compact" id="artifactsPreviewClose">&times;</button>
+        </div>
+        <div id="artifactsPreviewBody"></div>
       </div>
     </div>
 

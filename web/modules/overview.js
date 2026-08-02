@@ -279,6 +279,7 @@ export async function loadOverview() {
     }
     document.getElementById('kpiCost').textContent = d.costTodayUsd > 0 ? '$' + d.costTodayUsd.toFixed(2) : '—'
     document.getElementById('kpiMemories').textContent = d.memories.count.toLocaleString('hu-HU').replace(/,/g, ' ')
+    document.getElementById('kpiArtifacts').textContent = (d.artifacts?.count ?? 0).toLocaleString('hu-HU').replace(/,/g, ' ')
     document.getElementById('kpiSkills').textContent = d.skills.count
     document.getElementById('kpiTokens').textContent = fmtTokensShort(d.tokensToday)
 

@@ -69,4 +69,42 @@ describe('sqlite-vec extension', () => {
       )`)
     }).not.toThrow()
   })
+
+  it('vec_artifacts schema matches production (768-dim FLOAT, INTEGER PK)', () => {
+    db = new Database(':memory:')
+    loadSqliteVec(db)
+    expect(() => {
+      db.exec(`CREATE VIRTUAL TABLE vec_artifacts USING vec0(
+        artifact_rowid INTEGER PRIMARY KEY,
+        embedding FLOAT[768]
+      )`)
+    }).not.toThrow()
+  })
+
+  it('vec_artifacts KNN query returns correct artifact_rowid', () => {
+    db = new Database(':memory:')
+    loadSqliteVec(db)
+    db.exec(`CREATE VIRTUAL TABLE vec_artifacts USING vec0(
+      artifact_rowid INTEGER PRIMARY KEY,
+      embedding FLOAT[768]
+    )`)
+
+    const emb1 = Buffer.allocUnsafe(768 * 4)
+    const emb2 = Buffer.allocUnsafe(768 * 4)
+    for (let i = 0; i < 768; i++) {
+      emb1.writeFloatLE(i === 0 ? 1.0 : 0.0, i * 4)
+      emb2.writeFloatLE(i === 1 ? 1.0 : 0.0, i * 4)
+    }
+
+    db.prepare('INSERT INTO vec_artifacts(artifact_rowid, embedding) VALUES(?, ?)').run(BigInt(10), emb1)
+    db.prepare('INSERT INTO vec_artifacts(artifact_rowid, embedding) VALUES(?, ?)').run(BigInt(20), emb2)
+
+    const rows = db.prepare(
+      'SELECT artifact_rowid, distance FROM vec_artifacts WHERE embedding MATCH ? AND k = ? ORDER BY distance'
+    ).all(emb1, BigInt(1)) as { artifact_rowid: number; distance: number }[]
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0].artifact_rowid).toBe(10)
+    expect(rows[0].distance).toBeCloseTo(0, 5)
+  })
 })

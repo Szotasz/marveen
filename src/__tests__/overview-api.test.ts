@@ -59,6 +59,7 @@ describe('GET /api/overview — response shape', () => {
     expect(out.body).toHaveProperty('tasksToday')
     expect(out.body).toHaveProperty('tasksYesterday')
     expect(out.body).toHaveProperty('memories')
+    expect(out.body).toHaveProperty('artifacts')
     expect(out.body).toHaveProperty('skills')
     expect(out.body).toHaveProperty('tokensToday')
     expect(out.body).toHaveProperty('costTodayUsd')
@@ -67,6 +68,28 @@ describe('GET /api/overview — response shape', () => {
     expect(out.body).toHaveProperty('unreadMessages')
     expect(out.body).toHaveProperty('stuckTasks')
     expect(out.body).toHaveProperty('activity')
+  })
+
+  it('artifacts.count is 0 when no artifacts exist', async () => {
+    const { ctx, out } = fakeCtx('/api/overview')
+    await tryHandleOverview(ctx)
+    // Fix-revert proof: removing the artifacts COUNT query returns undefined here.
+    expect(out.body.artifacts).toEqual({ count: 0 })
+  })
+
+  it('artifacts.count reflects the number of rows in the artifacts table', async () => {
+    const db = getDb()
+    db.prepare(
+      "INSERT INTO artifacts (agent_id, title, kind, mime, content, meta) VALUES ('agent-a','Test A','text','text/plain',X'68656C6C6F','{}')"
+    ).run()
+    db.prepare(
+      "INSERT INTO artifacts (agent_id, title, kind, mime, content, meta) VALUES ('agent-b','Test B','html','text/html',X'3C68313E','{}')"
+    ).run()
+
+    const { ctx, out } = fakeCtx('/api/overview')
+    await tryHandleOverview(ctx)
+    // Fix-revert proof: without the COUNT query this would still be 0.
+    expect(out.body.artifacts.count).toBe(2)
   })
 
   it('agents object contains total, running and list', async () => {

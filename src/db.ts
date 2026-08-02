@@ -781,10 +781,19 @@ export function getDailyLogDates(agentId: string, limit: number = 14): string[] 
 
 // --- Session Recall ---
 
+export interface ArtifactPointer {
+  id: string
+  title: string
+  kind: string
+  created_at: number
+  score: number
+}
+
 export interface RecallResult {
   logs: { id: number; agent_id: string; date: string; content: string; created_at: number }[]
   memories: Memory[]
   dateRange: { from: string; to: string }
+  related_artifacts?: ArtifactPointer[]
 }
 
 function toBudapestTs(dateStr: string, endOfDay: boolean): number {
@@ -2456,6 +2465,71 @@ function initVecSupport(): void {
     })
     tx()
     logger.info({ count: pending.length }, 'Backfilled existing embeddings into vec_memories ANN index')
+  }
+
+  // vec_artifacts: ANN index for artifact title+meta embeddings (pointer-only recall).
+  // INSERT/UPDATE are handled async in artifacts-db.ts (fire-and-forget).
+  // DELETE trigger keeps the index clean when an artifact is removed.
+  db.exec(`
+    DROP TRIGGER IF EXISTS vec_artifacts_ad;
+  `)
+
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS vec_artifacts USING vec0(
+      artifact_rowid INTEGER PRIMARY KEY,
+      embedding FLOAT[768]
+    )
+  `)
+
+  db.exec(`
+    CREATE TRIGGER vec_artifacts_ad
+    AFTER DELETE ON artifacts
+    BEGIN
+      DELETE FROM vec_artifacts WHERE artifact_rowid = OLD.rowid;
+    END
+  `)
+}
+
+// --- Artifact Vector Search ---
+
+/**
+ * Search artifacts by semantic similarity against their title+meta embeddings.
+ * Returns ArtifactPointer list (no content) sorted by similarity score.
+ * Returns empty array when sqlite-vec is unavailable or Ollama is unreachable.
+ */
+export async function searchArtifactsByVector(
+  query: string,
+  limit = 10
+): Promise<ArtifactPointer[]> {
+  if (!vecExtensionLoaded) return []
+  const queryEmbedding = await generateEmbedding(query)
+  if (!queryEmbedding) return []
+
+  try {
+    const queryBlob = floatsToBlob(queryEmbedding)
+    const annRows = db.prepare(`
+      SELECT artifact_rowid, distance
+      FROM vec_artifacts
+      WHERE embedding MATCH ?
+        AND k = ?
+      ORDER BY distance
+    `).all(queryBlob, BigInt(limit)) as { artifact_rowid: number; distance: number }[]
+
+    if (annRows.length === 0) return []
+
+    const rowids = annRows.map(r => r.artifact_rowid)
+    const placeholders = rowids.map(() => '?').join(',')
+    const rows = db.prepare(
+      `SELECT rowid, id, title, kind, created_at FROM artifacts WHERE rowid IN (${placeholders})`
+    ).all(...rowids) as { rowid: number; id: string; title: string; kind: string; created_at: number }[]
+
+    const distMap = new Map(annRows.map(r => [r.artifact_rowid, r.distance]))
+    return rows
+      .map(a => ({ id: a.id, title: a.title, kind: a.kind, created_at: a.created_at, score: 1 / (1 + (distMap.get(a.rowid) ?? Infinity)) }))
+      .sort((x, y) => y.score - x.score)
+  } catch (err) {
+    logger.debug({ err }, 'searchArtifactsByVector: ANN query failed')
+    return []
   }
 }
 

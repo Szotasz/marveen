@@ -85,6 +85,11 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     const db0 = getDb()
     const memStats = db0.prepare("SELECT COUNT(*) as c FROM memories").get() as { c: number }
     const memCats = db0.prepare("SELECT COUNT(DISTINCT category) as c FROM memories").get() as { c: number }
+    let artifactCount = 0
+    try {
+      const aRow = db0.prepare("SELECT COUNT(*) as c FROM artifacts").get() as { c: number }
+      artifactCount = aRow.c
+    } catch { /* artifacts table absent on fresh installs before migration */ }
 
     const nowMs = Date.now()
     const startOfDay = new Date()
@@ -255,6 +260,7 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
       tasksToday,
       tasksYesterday,
       memories: { count: memStats.c, categories: memCats.c },
+      artifacts: { count: artifactCount },
       skills: { count: skillCount, today: skillsToday },
       tokensToday,
       costTodayUsd: Math.round(costTodayUsd * 10000) / 10000,
