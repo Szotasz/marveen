@@ -1492,6 +1492,17 @@ function createCardEl(card, embeddedChildren = []) {
     ? `<span class="kanban-card-seq" style="font-family:monospace;font-size:11px;color:var(--muted);margin-right:5px">#${card.seq}</span>`
     : ''
 
+  // Blocked marker: the card is waiting on at least one card that is neither
+  // done nor archived. Shown in the footer next to the assignee so the gate is
+  // readable from the board itself, not only from the card detail.
+  const openBlockers = Array.isArray(card.blockers) ? card.blockers.filter(b => b.open) : []
+  let blockedHtml = ''
+  if (openBlockers.length > 0) {
+    const list = openBlockers.map(b => `#${b.seq}`).join(', ')
+    blockedHtml = `<span class="kanban-card-blocked" title="${escapeHtml(t('kanban.blocker.card_tooltip', { list }))}">⛔ ${escapeHtml(list)}</span>`
+    el.dataset.blocked = '1'
+  }
+
   // Card aging: left stripe + top-right badge based on hours since last update.
   // Skipped for done cards. Config thresholds and colours come from window._marveen.kanbanAging.
   let agingBadgeHtml = ''
@@ -1535,7 +1546,7 @@ function createCardEl(card, embeddedChildren = []) {
   el.innerHTML = `
     ${projectHtml}
     <div class="kanban-card-title">${seqHtml}${escapeHtml(card.title)}</div>
-    <div class="kanban-card-footer">${assigneeHtml}${dueHtml}</div>
+    <div class="kanban-card-footer">${assigneeHtml}${dueHtml}${blockedHtml}</div>
     ${labelsHtml}
     <div class="kanban-card-actions">
       <button class="card-breakdown-btn" title="${t('kanban.btn.breakdown')}" aria-label="${t('kanban.btn.breakdown')}">⚡</button>
@@ -2142,6 +2153,88 @@ async function renderCardDecisions(cardId) {
   })
 }
 
+// === Card dependencies (blocked_by, #185) ===
+// Both directions in one panel: what the card waits for (removable, with an
+// add box), and -- read-only -- what waits for the card. The second list is
+// what makes the chain visible: closing this card is what releases them.
+async function renderCardBlockers(card) {
+  const list = document.getElementById('cardBlockerList')
+  const reverse = document.getElementById('cardBlockingList')
+  const input = document.getElementById('cardBlockerAdd')
+  const addBtn = document.getElementById('cardBlockerAddBtn')
+  if (!list) return
+
+  const statusLabel = (s) => t(`kanban.status.${s}`)
+  const rowHtml = (b, removable) => `
+    <div class="blocker-row ${b.open === false || b.status === 'done' ? 'blocker-closed' : 'blocker-open'}">
+      <span class="blocker-ref" data-goto="${escapeHtml(b.id)}">#${b.seq}</span>
+      <span class="blocker-title" data-goto="${escapeHtml(b.id)}">${escapeHtml(b.title)}</span>
+      <span class="blocker-status">${escapeHtml(statusLabel(b.status))}</span>
+      ${removable ? `<button class="blocker-remove" data-blocker="${escapeHtml(b.id)}" title="${escapeHtml(t('kanban.blocker.remove'))}" aria-label="${escapeHtml(t('kanban.blocker.remove'))}">&times;</button>` : ''}
+    </div>`
+
+  const render = (data) => {
+    const blockers = data.blockers || []
+    const blocking = data.blocking || []
+    list.innerHTML = blockers.length === 0
+      ? `<div class="blocker-empty">${escapeHtml(t('kanban.blocker.none'))}</div>`
+      : `<div class="blocker-group-label">${escapeHtml(t('kanban.blocker.waiting_for'))}</div>${blockers.map(b => rowHtml(b, true)).join('')}`
+    reverse.innerHTML = blocking.length === 0
+      ? ''
+      : `<div class="blocker-group-label">${escapeHtml(t('kanban.blocker.blocking'))}</div>${blocking.map(b => rowHtml(b, false)).join('')}`
+
+    for (const el of [list, reverse]) {
+      el.querySelectorAll('[data-goto]').forEach((refEl) => {
+        refEl.onclick = () => {
+          const target = kanbanCards.find(c => c.id === refEl.dataset.goto)
+          if (target) showCardDetail(target)
+        }
+      })
+    }
+    list.querySelectorAll('.blocker-remove').forEach((btn) => {
+      btn.onclick = async () => {
+        btn.disabled = true
+        try {
+          const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/blockers/${encodeURIComponent(btn.dataset.blocker)}`, { method: 'DELETE' })
+          if (!r.ok) { showToast((await r.json()).error || t('common.error_delete')); btn.disabled = false; return }
+          showToast(t('kanban.blocker.removed'))
+          await renderCardBlockers(card)
+          loadKanban()
+        } catch { showToast(t('common.error_delete')); btn.disabled = false }
+      }
+    })
+  }
+
+  addBtn.onclick = async () => {
+    const ref = input.value.trim()
+    if (!ref) { input.focus(); return }
+    addBtn.disabled = true
+    try {
+      const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/blockers`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ blocker: ref }),
+      })
+      const data = await r.json()
+      // The server names the reason (unknown card, self-reference, cycle) --
+      // showing its message beats a generic failure the user cannot act on.
+      if (!r.ok) { showToast(data.error || t('common.error_save')); return }
+      input.value = ''
+      showToast(t('kanban.blocker.added'))
+      await renderCardBlockers(card)
+      loadKanban()
+    } catch { showToast(t('common.error_save')) } finally { addBtn.disabled = false }
+  }
+  input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); addBtn.click() } }
+
+  try {
+    const res = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/blockers`)
+    render(await res.json())
+  } catch {
+    list.innerHTML = ''
+    reverse.innerHTML = ''
+  }
+}
+
 // === Card detail ===
 async function showCardDetail(card) {
   // Running number (#N) in the title bar, plus the stable hex id in the meta.
@@ -2425,6 +2518,9 @@ async function showCardDetail(card) {
       showToast(t('common.error_delete'))
     }
   }
+
+  // Dependencies (#185) -- both directions, wired for add/remove.
+  await renderCardBlockers(card)
 
   // Load children (subtasks) — only top-level tasks have children (no subtask of subtask)
   try {

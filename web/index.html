@@ -2085,6 +2085,18 @@
             <button class="btn-primary btn-compact" id="cardLabelNewSaveBtn" data-i18n="common.btn.save">Mentés</button>
           </div>
         </div>
+        <!-- Dependencies: what this card waits for, and what waits for it.
+             A gate written only in prose wakes nobody when the blocker closes,
+             so it lives here as data (#185). -->
+        <div class="card-detail-blockers">
+          <h4 data-i18n="kanban.modal.blockers_title">Függőségek</h4>
+          <div class="blocker-list" id="cardBlockerList"></div>
+          <div class="form-row" style="gap:8px; align-items:center; margin-top:6px">
+            <input type="text" id="cardBlockerAdd" placeholder="#12 vagy kártya-id" data-i18n-placeholder="kanban.blocker.add_ph" style="flex:1; padding:5px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px">
+            <button class="btn-secondary btn-compact" id="cardBlockerAddBtn" data-i18n="kanban.blocker.add_btn">+ Blokkoló</button>
+          </div>
+          <div class="blocker-list blocker-list-reverse" id="cardBlockingList" style="margin-top:8px"></div>
+        </div>
         <div class="card-detail-comments">
           <h4 data-i18n="kanban.modal.comments_title">Megjegyzések</h4>
           <div class="comments-list" id="commentsList"></div>
