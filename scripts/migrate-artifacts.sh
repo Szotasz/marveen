@@ -61,7 +61,9 @@ json_escape() {
 detect_kind() {
   local file="$1"
   local ext="${file##*.}"
-  case "${ext,,}" in
+  # bash 3.2 (macOS /bin/bash) lacks ${var,,} lowercase expansion -- use tr instead
+  ext="$(printf '%s' "$ext" | tr '[:upper:]' '[:lower:]')"
+  case "$ext" in
     html|htm) echo "html" ;;
     md|markdown) echo "markdown" ;;
     json) echo "json" ;;
@@ -204,7 +206,8 @@ print(json.dumps({'agent_id': sys.argv[1], 'title': sys.argv[2], 'kind': sys.arg
       -H "Content-Type: application/json" \
       -d "$PAYLOAD" 2>/dev/null)"
     IMPORT_STATUS="$(printf '%s' "$IMPORT_RESP" | tail -1)"
-    IMPORT_BODY="$(printf '%s' "$IMPORT_RESP" | head -n -1)"
+    # head -n -1 (all-but-last) is GNU-only; sed '$d' is POSIX and works on macOS
+    IMPORT_BODY="$(printf '%s' "$IMPORT_RESP" | sed '$d')"
 
     if [ "$IMPORT_STATUS" != "201" ]; then
       printf 'FAILED (HTTP %s)\n' "$IMPORT_STATUS"
@@ -228,7 +231,8 @@ print(json.dumps({'agent_id': sys.argv[1], 'title': sys.argv[2], 'kind': sys.arg
     GET_RESP="$(curl -s -w '\n%{http_code}' "$BASE_URL/api/artifacts/$ARTIFACT_ID" \
       -H "Authorization: Bearer $TOKEN" 2>/dev/null)"
     GET_STATUS="$(printf '%s' "$GET_RESP" | tail -1)"
-    GET_BODY="$(printf '%s' "$GET_RESP" | head -n -1)"
+    # head -n -1 (all-but-last) is GNU-only; sed '$d' is POSIX and works on macOS
+    GET_BODY="$(printf '%s' "$GET_RESP" | sed '$d')"
 
     if [ "$GET_STATUS" != "200" ]; then
       printf 'VERIFY-FAIL (HTTP %s)\n' "$GET_STATUS"

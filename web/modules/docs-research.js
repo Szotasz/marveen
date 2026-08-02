@@ -14,8 +14,12 @@ function mdInline(text) {
   s = s.replace(/`([^`]+)`/g, (m, c) => '<code>' + c + '</code>')
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
   s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>')
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, txt, url) =>
-    '<a href="' + escapeAttr(url) + '" target="_blank" rel="noopener noreferrer">' + txt + '</a>')
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, txt, url) => {
+    // Reject javascript:/data:/vbscript: schemes -- artifacts may come from untrusted sources
+    // and renderMarkdown output is set via innerHTML (not sandboxed). Case-insensitive, trim first.
+    const safeUrl = /^(?:javascript|data|vbscript):/i.test(url.trim()) ? '#' : url
+    return '<a href="' + escapeAttr(safeUrl) + '" target="_blank" rel="noopener noreferrer">' + txt + '</a>'
+  })
   return s
 }
 
