@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { APP_TZ } from '../config.js'
 import {
   initDatabase, getDb,
   // Session
@@ -177,7 +178,7 @@ describe('daily log functions', () => {
   it('appendDailyLog + getDailyLog roundtrip', () => {
     appendDailyLog('db2-test-logs', 'First log entry')
     appendDailyLog('db2-test-logs', 'Second log entry')
-    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Budapest' })
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: APP_TZ })
     const logs = getDailyLog('db2-test-logs', today)
     expect(logs.length).toBeGreaterThanOrEqual(2)
     expect(logs[0].content).toBe('First log entry')
