@@ -104,12 +104,21 @@ const SAME_LINE = /^\s*(?:local\s+)?\w+=\$\(.+\)\s*;\s*\w+=\$\?/
 const BARE_ASSIGN = /^\s*(?:local\s+)?\w+=\$\(.+\)\s*$/
 const RC_CAPTURE = /^\s*(?:local\s+)?\w+=\$\?/
 
+/** Next line that carries code: blanks and comments do not break the pair. */
+function nextCodeLine(lines: string[], from: number): string {
+  for (let i = from; i < lines.length; i++) {
+    const t = (lines[i] ?? '').trim()
+    if (t !== '' && !t.startsWith('#')) return lines[i] as string
+  }
+  return ''
+}
+
 function findUnguardedCaptures(src: string): string[] {
   const lines = src.split('\n')
   const hits: string[] = []
   lines.forEach((line, i) => {
     if (SAME_LINE.test(line)) hits.push(`${i + 1}: ${line.trim()}`)
-    else if (BARE_ASSIGN.test(line) && RC_CAPTURE.test(lines[i + 1] ?? '')) {
+    else if (BARE_ASSIGN.test(line) && RC_CAPTURE.test(nextCodeLine(lines, i + 1))) {
       hits.push(`${i + 1}: ${line.trim()}`)
     }
   })
@@ -136,6 +145,10 @@ describe('the assignment idiom that caused it', () => {
     // shapes are checked, because the next-line one is the easier to miss.
     expect(findUnguardedCaptures('  holder=$(apt_lock_holder); rc=$?')).toHaveLength(1)
     expect(findUnguardedCaptures('OUT=$(claude --print "ping" 2>&1)\nEXIT=$?')).toHaveLength(1)
+    // A comment or a blank line between the two must not hide the pair: that is
+    // how the shape would slip back in after someone documents it.
+    expect(findUnguardedCaptures('OUT=$(cmd)\n# why we capture it\nEXIT=$?')).toHaveLength(1)
+    expect(findUnguardedCaptures('OUT=$(cmd)\n\nEXIT=$?')).toHaveLength(1)
     // And it must NOT flag the guarded form we replaced them with.
     expect(findUnguardedCaptures('  holder=$(apt_lock_holder) && rc=0 || rc=$?')).toHaveLength(0)
     expect(findUnguardedCaptures('OUT=$(claude --print "ping" 2>&1) && E=0 || E=$?')).toHaveLength(0)
