@@ -63,9 +63,6 @@ A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás
 #720, #727, #729, #738, #739, #740, #741, #742, #743, #744, #746, #747, #749, #751, #752, #753, #756, #757, #758, #763, #760, #765, #768, #769, #771, #772,
 #776, #777, #778, #779, #780, #781, #782, #783, #784, #785, #786, #789, #790, #791, #793, #795, #797, #799, #800, #801, #802, #803, #805, #821, #822, #826, #828, #829, #832
 
-Az #776-#832 tartományból portolva: scheduler-catchup (#781, #785), worker-liveness (#801), onboarding/install-hardening (#778, #779, #789-#793, #799, #826, #828, #829), hook-security (#803), quarantine-reader egress-gate (#797), agent create rollback-safety (#821, #822), heartbeat (#832). Linux-only PR-ek (#788, #792, #794) kihagyva (systemd/WSL-specifikus).
-
-
 Állapot: upstream `504827f` vs fork `8ed4fd4`, 2026-08-02
 
 <!-- ONGOING: Minden jövőbeli fork-PR leadásakor (Zack -> Jarvis) frissítsd ezt a szakaszt
