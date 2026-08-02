@@ -77,6 +77,7 @@ import { tryHandleVaultSsh } from './web/routes/vault-ssh.js'
 import { tryHandleFleet } from './web/routes/fleet.js'
 import { tryHandleVaultSshKeys } from './web/routes/vault-ssh-keys.js'
 import { tryHandleSecurity } from './web/routes/security.js'
+import { tryHandleArtifacts } from './web/routes/artifacts.js'
 import type { RouteContext } from './web/routes/types.js'
 import { RouteDispatcher } from './web/routes/dispatcher.js'
 
@@ -90,6 +91,7 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleFederation)
   .add(tryHandleDailyLog)
   .add(tryHandleMemories)
+  .add(tryHandleArtifacts)
   .add(tryHandleMigrate)
   .add(tryHandleKanban)
   .add(tryHandleSchedules)
