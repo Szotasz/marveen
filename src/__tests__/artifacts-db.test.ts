@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest'
-import { initDatabase } from '../db.js'
+import { initDatabase, searchArtifactsByVector } from '../db.js'
 import {
-  createArtifact, listArtifacts, getArtifact, deleteArtifact,
+  createArtifact, listArtifacts, getArtifact, deleteArtifact, storeArtifactEmbedding,
 } from '../artifacts-db.js'
 
 beforeAll(() => { initDatabase(':memory:') })
@@ -201,5 +201,51 @@ describe('listArtifacts FTS search (q param)', () => {
     expect(listArtifacts({ q: 'Deleted-FTS-Artifact' }).some(r => r.id === id)).toBe(true)
     deleteArtifact(id)
     expect(listArtifacts({ q: 'Deleted-FTS-Artifact' }).some(r => r.id === id)).toBe(false)
+  })
+})
+
+describe('storeArtifactEmbedding (Ollama-free path)', () => {
+  it('does not throw when Ollama is unreachable (null embedding)', async () => {
+    const { id } = createArtifact({ agent_id: 'agent-a', title: 'Embed-test', kind: 'text', content: Buffer.from('content') })
+    await expect(storeArtifactEmbedding(id, 'Embed-test', '{}')).resolves.toBeUndefined()
+  })
+
+  it('does not throw for an unknown artifact id', async () => {
+    await expect(storeArtifactEmbedding('nonexistent-id', 'Title', '{}')).resolves.toBeUndefined()
+  })
+
+  it('does not throw when title and meta are empty strings', async () => {
+    await expect(storeArtifactEmbedding('any-id', '', '')).resolves.toBeUndefined()
+  })
+})
+
+describe('searchArtifactsByVector', () => {
+  it('always returns an array (with or without Ollama)', async () => {
+    const results = await searchArtifactsByVector('semantic query about reports')
+    expect(Array.isArray(results)).toBe(true)
+  })
+
+  it('result items have the ArtifactPointer shape (no content field)', async () => {
+    // Create an artifact so there is at least one candidate in the index
+    createArtifact({ agent_id: 'agent-a', title: 'Vector search target', kind: 'text', content: Buffer.from('vec') })
+    const results = await searchArtifactsByVector('vector search target')
+    for (const item of results) {
+      // Must have pointer fields
+      expect(typeof item.id).toBe('string')
+      expect(typeof item.title).toBe('string')
+      expect(typeof item.kind).toBe('string')
+      expect(typeof item.created_at).toBe('number')
+      expect(typeof item.score).toBe('number')
+      // Must NOT expose content -- pointer-only pattern
+      expect((item as unknown as Record<string, unknown>).content).toBeUndefined()
+    }
+  })
+
+  it('respects the limit parameter', async () => {
+    for (let i = 0; i < 5; i++) {
+      createArtifact({ agent_id: 'agent-a', title: `vec-limit-item-${i}`, kind: 'text', content: Buffer.from('x') })
+    }
+    const results = await searchArtifactsByVector('vec limit item', 3)
+    expect(results.length).toBeLessThanOrEqual(3)
   })
 })

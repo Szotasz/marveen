@@ -1,4 +1,4 @@
-import { getDb } from './db.js'
+import { getDb, generateEmbedding } from './db.js'
 
 export type ArtifactKind = 'html' | 'markdown' | 'json' | 'text' | 'binary'
 
@@ -56,7 +56,39 @@ export function createArtifact(params: CreateArtifactParams): { id: string } {
     VALUES (?, ?, ?, ?, ?, ?, ?)
     RETURNING id
   `).get(params.agent_id, params.title, params.kind, mime, params.content, meta, params.source ?? null) as { id: string }
+  // Fire-and-forget: index title+meta embedding for semantic search
+  storeArtifactEmbedding(row.id, params.title, meta).catch(() => { /* non-critical */ })
   return { id: row.id }
+}
+
+/**
+ * Generate and store a title+meta embedding for an artifact in vec_artifacts.
+ * No-op when Ollama is unavailable or sqlite-vec extension is not loaded.
+ */
+export async function storeArtifactEmbedding(
+  id: string,
+  title: string,
+  meta: string
+): Promise<void> {
+  const text = [title, meta].filter(s => s?.trim()).join(' ')
+  if (!text.trim()) return
+
+  const embedding = await generateEmbedding(text).catch(() => null)
+  if (!embedding) return
+
+  const db = getDb()
+  const rowRow = db.prepare('SELECT rowid FROM artifacts WHERE id = ?').get(id) as { rowid: number } | undefined
+  if (!rowRow) return
+
+  // Encode as little-endian Float32 buffer (same format as vec_memories)
+  const buf = Buffer.allocUnsafe(embedding.length * 4)
+  for (let i = 0; i < embedding.length; i++) buf.writeFloatLE(embedding[i], i * 4)
+
+  try {
+    db.prepare('INSERT OR REPLACE INTO vec_artifacts(artifact_rowid, embedding) VALUES(?, ?)').run(BigInt(rowRow.rowid), buf)
+  } catch {
+    // vec_artifacts is absent when sqlite-vec extension is unavailable -- graceful no-op
+  }
 }
 
 export interface ListArtifactsOptions {
