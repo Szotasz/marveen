@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 // The 2026-08-02 bug: a brand new VPS died at `set_step "prerequisites"` with
@@ -93,17 +93,51 @@ describe('wait_for_apt_lock under set -e', () => {
   })
 })
 
+// Whole-file scan for the idiom, in BOTH shapes it appears in:
+//   same line:  x=$(cmd); rc=$?
+//   next line:  x=$(cmd)
+//               rc=$?
+// The second shape is not hypothetical: the installer's claude probe used it,
+// and the released script had to be fixed there separately. A test that only
+// looked for the same-line form would have called that file clean.
+const SAME_LINE = /^\s*(?:local\s+)?\w+=\$\(.+\)\s*;\s*\w+=\$\?/
+const BARE_ASSIGN = /^\s*(?:local\s+)?\w+=\$\(.+\)\s*$/
+const RC_CAPTURE = /^\s*(?:local\s+)?\w+=\$\?/
+
+function findUnguardedCaptures(src: string): string[] {
+  const lines = src.split('\n')
+  const hits: string[] = []
+  lines.forEach((line, i) => {
+    if (SAME_LINE.test(line)) hits.push(`${i + 1}: ${line.trim()}`)
+    else if (BARE_ASSIGN.test(line) && RC_CAPTURE.test(lines[i + 1] ?? '')) {
+      hits.push(`${i + 1}: ${line.trim()}`)
+    }
+  })
+  return hits
+}
+
 describe('the assignment idiom that caused it', () => {
-  it('is gone from install-linux.sh', () => {
-    // `x=$(...)` followed by `rc=$?` on the same line: the author expected
-    // execution to continue, which under set -e it does not.
-    const hits = LINUX.split('\n').filter((l) => /^\s*(?:local\s+)?\w+=\$\(.+\)\s*;\s*\w+=\$\?/.test(l))
-    expect(hits, `still present: ${hits.join(' | ')}`).toHaveLength(0)
+  it('appears nowhere in install-linux.sh, in either shape', () => {
+    const hits = findUnguardedCaptures(LINUX)
+    expect(hits, `unguarded capture(s) under set -e:\n${hits.join('\n')}`).toHaveLength(0)
   })
 
-  it('the matcher really does find the broken form (instrument control)', () => {
-    // A zero above is only evidence if this pattern can detect a positive.
-    const broken = '  holder=$(apt_lock_holder); rc=$?'
-    expect(/^\s*(?:local\s+)?\w+=\$\(.+\)\s*;\s*\w+=\$\?/.test(broken)).toBe(true)
+  it('appears nowhere in the other install scripts either', () => {
+    for (const name of ['install-macos.sh', 'install-lang.sh', 'install.sh', 'update.sh']) {
+      const path = join(ROOT, name)
+      if (!existsSync(path)) continue
+      const hits = findUnguardedCaptures(readFileSync(path, 'utf-8'))
+      expect(hits, `${name}:\n${hits.join('\n')}`).toHaveLength(0)
+    }
+  })
+
+  it('the scanner really does detect BOTH broken shapes (instrument control)', () => {
+    // Zeros above are only evidence if the scanner can find a positive. Both
+    // shapes are checked, because the next-line one is the easier to miss.
+    expect(findUnguardedCaptures('  holder=$(apt_lock_holder); rc=$?')).toHaveLength(1)
+    expect(findUnguardedCaptures('OUT=$(claude --print "ping" 2>&1)\nEXIT=$?')).toHaveLength(1)
+    // And it must NOT flag the guarded form we replaced them with.
+    expect(findUnguardedCaptures('  holder=$(apt_lock_holder) && rc=0 || rc=$?')).toHaveLength(0)
+    expect(findUnguardedCaptures('OUT=$(claude --print "ping" 2>&1) && E=0 || E=$?')).toHaveLength(0)
   })
 })
