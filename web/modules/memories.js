@@ -49,6 +49,8 @@ document.getElementById('memAgentFilter').addEventListener('change', () => {
     loadMemoryGraph()
   } else if (currentMemTier === 'log') {
     loadDailyLog()
+  } else if (currentMemTier === 'artifacts') {
+    loadArtifactsTab()
   } else {
     loadMemories()
   }
@@ -57,14 +59,22 @@ document.getElementById('memAgentFilter').addEventListener('change', () => {
 // Search with debounce
 memSearchInput.addEventListener('input', () => {
   clearTimeout(memSearchTimer)
-  memSearchTimer = setTimeout(loadMemories, 300)
+  if (currentMemTier === 'artifacts') {
+    memSearchTimer = setTimeout(loadArtifactsTab, 300)
+  } else {
+    memSearchTimer = setTimeout(loadMemories, 300)
+  }
 })
 
 // Enter to search immediately
 memSearchInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     clearTimeout(memSearchTimer)
-    loadMemories()
+    if (currentMemTier === 'artifacts') {
+      loadArtifactsTab()
+    } else {
+      loadMemories()
+    }
   }
 })
 
@@ -76,16 +86,22 @@ document.getElementById('memTabs').addEventListener('click', (e) => {
   tab.classList.add('active')
   currentMemTier = tab.dataset.tier
 
-  const isLog = currentMemTier === 'log'
-  const isGraph = currentMemTier === 'graph'
-  document.getElementById('memTierView').hidden = isLog || isGraph
-  document.getElementById('memLogView').hidden = !isLog
-  document.getElementById('memGraphView').hidden = !isGraph
+  const isLog       = currentMemTier === 'log'
+  const isGraph     = currentMemTier === 'graph'
+  const isArtifacts = currentMemTier === 'artifacts'
+
+  document.getElementById('memTierView').hidden      = isLog || isGraph || isArtifacts
+  document.getElementById('memLogView').hidden       = !isLog
+  document.getElementById('memGraphView').hidden     = !isGraph
+  document.getElementById('memArtifactsView').hidden = !isArtifacts
+  document.getElementById('memArtKindFilter').style.display = isArtifacts ? '' : 'none'
 
   if (isGraph) {
     loadMemoryGraph()
   } else if (isLog) {
     loadDailyLog()
+  } else if (isArtifacts) {
+    loadArtifactsTab()
   } else {
     loadMemories()
   }
@@ -1376,4 +1392,146 @@ memImportSaveBtn.addEventListener('click', async () => {
   memImportSaveBtn.querySelector('.btn-text').hidden = false
   memImportSaveBtn.querySelector('.btn-loading').hidden = true
   memImportSaveBtn.disabled = false
+})
+
+// ============================================================
+// === Artifacts Tab (on Memories screen) ===
+// ============================================================
+
+let _artPreviewArtifactId = null
+
+export async function loadArtifactsTab() {
+  const listEl   = document.getElementById('memArtifactsList')
+  const emptyEl  = document.getElementById('memArtifactsEmpty')
+  const previewEl = document.getElementById('memArtifactsPreview')
+
+  if (!listEl) return
+  listEl.innerHTML = '<div style="padding:16px;color:var(--text-secondary)">' + t('memories.artifacts.loading') + '</div>'
+  if (emptyEl)  emptyEl.hidden = true
+  if (previewEl) previewEl.hidden = true
+
+  const agent = document.getElementById('memAgentFilter').value
+  const q     = document.getElementById('memSearchInput').value.trim()
+  const kind  = document.getElementById('memArtKindFilter').value
+
+  const params = new URLSearchParams()
+  if (agent) params.set('agent', agent)
+  if (q)     params.set('q', q)
+  if (kind)  params.set('kind', kind)
+  params.set('limit', '50')
+
+  try {
+    const res  = await fetch('/api/artifacts?' + params.toString())
+    const rows = await res.json()
+
+    if (!rows.length) {
+      listEl.innerHTML = ''
+      if (emptyEl) emptyEl.hidden = false
+      return
+    }
+
+    listEl.innerHTML = `
+      <table class="art-tab-table">
+        <thead>
+          <tr>
+            <th>${t('memories.artifacts.col.agent')}</th>
+            <th>${t('memories.artifacts.col.title')}</th>
+            <th>${t('memories.artifacts.col.kind')}</th>
+            <th>${t('memories.artifacts.col.date')}</th>
+            <th>${t('memories.artifacts.col.actions')}</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map(r => `
+            <tr>
+              <td>${escapeHtml(r.agent_id)}</td>
+              <td title="${escapeHtml(r.title)}">${escapeHtml(r.title.length > 48 ? r.title.slice(0, 48) + '…' : r.title)}</td>
+              <td><span class="badge">${escapeHtml(r.kind)}</span></td>
+              <td>${new Date(r.created_at * 1000).toLocaleDateString('hu-HU')}</td>
+              <td class="art-tab-actions">
+                <button class="btn-sm art-preview-btn" data-id="${escapeHtml(r.id)}">${t('memories.artifacts.btn.preview')}</button>
+                <button class="btn-sm art-open-btn" data-id="${escapeHtml(r.id)}">${t('memories.artifacts.btn.open')}</button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `
+  } catch {
+    listEl.innerHTML = '<div style="padding:16px;color:var(--danger)">' + t('memories.artifacts.load_error') + '</div>'
+  }
+}
+
+// Delegated click handler for the artifacts tab list
+document.getElementById('memArtifactsList').addEventListener('click', async (e) => {
+  const previewBtn = e.target.closest('.art-preview-btn')
+  const openBtn    = e.target.closest('.art-open-btn')
+  if (!previewBtn && !openBtn) return
+
+  const id = (previewBtn || openBtn).dataset.id
+  if (!id) return
+
+  if (previewBtn) {
+    const previewEl = document.getElementById('memArtifactsPreview')
+    if (_artPreviewArtifactId === id && !previewEl.hidden) {
+      previewEl.hidden = true
+      _artPreviewArtifactId = null
+      return
+    }
+    _artPreviewArtifactId = id
+    previewEl.hidden = false
+    previewEl.innerHTML = '<div style="padding:16px;color:var(--text-secondary)">' + t('memories.artifacts.loading') + '</div>'
+
+    try {
+      const res  = await fetch(`/api/artifacts/${id}`)
+      const art  = await res.json()
+      const isText = ['html', 'markdown', 'json', 'text'].includes(art.kind)
+
+      if (art.kind === 'html') {
+        // sandbox=allow-scripts, NO allow-same-origin -- script runs in a null origin
+        previewEl.innerHTML = `<iframe class="art-preview-frame" sandbox="allow-scripts"
+          srcdoc="${escapeHtml(art.content)}"></iframe>`
+      } else if (isText) {
+        previewEl.innerHTML = `<pre class="art-preview-pre">${escapeHtml(art.content)}</pre>`
+      } else {
+        const bytes   = atob(art.content)
+        const bArr    = new Uint8Array(bytes.length)
+        for (let i = 0; i < bytes.length; i++) bArr[i] = bytes.charCodeAt(i)
+        const blob    = new Blob([bArr], { type: art.mime })
+        const url     = URL.createObjectURL(blob)
+        previewEl.innerHTML = `<a class="btn" href="${url}" download="${escapeHtml(art.title)}">${t('memories.artifacts.btn.download')}</a>`
+      }
+    } catch {
+      previewEl.innerHTML = '<div style="padding:16px;color:var(--danger)">' + t('memories.artifacts.load_error') + '</div>'
+    }
+  }
+
+  if (openBtn) {
+    try {
+      const res  = await fetch(`/api/artifacts/${id}/view-token`, { method: 'POST' })
+      const data = await res.json()
+      // Guard: only open same-origin relative paths; never javascript: or data: URIs
+      if (data.url && data.url.startsWith('/')) window.open(data.url, '_blank', 'noopener,noreferrer')
+      else showToast(t('memories.artifacts.load_error'))
+    } catch {
+      showToast(t('memories.artifacts.load_error'))
+    }
+  }
+})
+
+// Close artifacts preview on click-outside or Escape
+document.getElementById('memArtifactsPreview')?.addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) {
+    e.currentTarget.hidden = true
+    _artPreviewArtifactId = null
+  }
+})
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    const previewEl = document.getElementById('memArtifactsPreview')
+    if (previewEl && !previewEl.hidden) {
+      previewEl.hidden = true
+      _artPreviewArtifactId = null
+    }
+  }
 })
