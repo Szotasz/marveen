@@ -122,6 +122,66 @@ describe('renderHeartbeatClaudeMd', () => {
     expect(b).toContain('/data/store/claudeclaw.db')
     expect(b).toContain('http://localhost:9000/api/messages')
   })
+
+  // 2026-08-02 (HBTZ802). The first report after a fresh restart carried
+  // "09:00 (Europe/Budapest)" at 11:06 local. The transcript shows the agent
+  // ran `date -u` and formatted with datetime.now(timezone.utc): the label was
+  // a template constant, the number was UTC. The environment was never at
+  // fault -- the spawn command is identical apart from `--continue`, no agent
+  // gets a TZ var either way, and a process spawned by the same tmux server
+  // prints correct local time. So the instructions must name the measurement.
+  it('tells the agent to measure local time in the configured zone', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    expect(out).toMatch(/TZ=\S+ date \+'%Y-%m-%d %H:%M'/)
+  })
+
+  it('forbids the UTC clocks that produced the mislabelled header', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    expect(out).toContain('date -u')
+    expect(out).toContain('datetime.now(timezone.utc)')
+    expect(out).toMatch(/Never `date -u`/)
+  })
+
+  it('does not leave a bare HH:MM placeholder in the header template', () => {
+    // A literal `HH:MM` next to a zone label is what let the agent fill the
+    // slot from whatever clock it happened to reach for.
+    const out = renderHeartbeatClaudeMd(ID)
+    expect(out).not.toContain('## Heartbeat YYYY-MM-DD HH:MM')
+  })
+
+  it('requires the calendar MCP to be called as a tool, never from a subprocess', () => {
+    // Same round: the agent tried to reach the MCP server from a python
+    // subprocess and reported "not accessible in subprocess context" while the
+    // server was a live child of its own session.
+    const out = renderHeartbeatClaudeMd(ID)
+    expect(out).toContain('Call it as a TOOL, directly.')
+    expect(out).toMatch(/Do not try to reach an MCP server\s+from Bash, python, curl or any other subprocess/)
+  })
+
+  it('separates "tool absent" from "call failed" so the two are not reported alike', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    expect(out).toContain('calendar tool not available in this session')
+    expect(out).toContain('calendar fetch failed: <reason>')
+  })
+
+  // Same investigation: the Tasks section read the `scheduled_tasks` table,
+  // which holds 0 rows on this deployment while /api/schedules lists 25
+  // enabled entries -- so every report said "active: 0, next: (none
+  // scheduled)". A line that is always the same stops being read, which is
+  // the failure this file already warns about elsewhere.
+  it('reads the schedule count from the live registry, not the empty table', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    expect(out).toContain('http://localhost:3420/api/schedules')
+    expect(out).not.toContain('count active rows in')
+    expect(out).not.toContain('next_run_at')
+  })
+
+  it('compares task_runs.ts in milliseconds', () => {
+    // ts is epoch MILLISECONDS; a seconds comparison matches every row and
+    // silently turns "last hour" into "since the beginning".
+    const out = renderHeartbeatClaudeMd(ID)
+    expect(out).toContain('(unixepoch()-3600)*1000')
+  })
 })
 
 describe('shouldBootHeartbeatAgent', () => {
