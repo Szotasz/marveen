@@ -51,6 +51,7 @@ vi.mock('../web/agent-config.js', async (importOriginal) => {
     agentConfigRoot: vi.fn().mockReturnValue('/tmp/fake-agent-config'),
     readFileOr: vi.fn().mockReturnValue(''),
     readAgentModel: vi.fn().mockReturnValue('claude-sonnet-4-6'),
+    resolveAgentModelDetailed: vi.fn().mockReturnValue({ model: 'claude-sonnet-4-6', source: 'explicit_model' }),
     readAgentDisplayName: vi.fn().mockReturnValue('Test Agent'),
     readAgentAuthMode: vi.fn().mockReturnValue('oauth'),
     readAgentSecurityProfile: vi.fn().mockReturnValue('default'),

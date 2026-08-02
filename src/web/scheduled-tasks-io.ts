@@ -53,6 +53,20 @@ export interface ScheduledTask {
   //   exit 0 + empty stdout  → run LLM normally
   //   non-zero exit          → log warning, run LLM anyway (fail-open)
   preCheck?: string
+  // How stale a MISSED occurrence may be and still be executed as a catch-up
+  // after the scheduler was down (host powered off, dashboard restart). Unset
+  // uses the per-type default in DEFAULT_CATCHUP_MAX_AGE_MIN; 0 disables
+  // catch-up for this task entirely (only on-time ticks run it); a negative
+  // value means "always catch up, however late". Occurrences older than the
+  // limit are recorded as a 'missed' run and reported, never silently dropped.
+  catchUpMaxAgeMinutes?: number
+  // How long this task may run before the post-fire watchdog calls it stuck and
+  // alerts the operator. Unset uses the global TASK_FIRE_TIMEOUT_MS (5 min),
+  // which is right for a short-cadence heartbeat and wrong for a task whose job
+  // is to think for a while. Clamped at both ends, see resolveStuckTimeoutMs.
+  // DISTINCT from catchUpMaxAgeMinutes: that one judges a MISSED occurrence's
+  // staleness before firing; this one judges a RUNNING injection's age.
+  stuckAfterMinutes?: number
   // Manifest-style requirements (Roitman 22.5). When mcp_servers is set, the
   // runner pre-checks each named MCP server has a live process under the
   // target session before injecting the prompt; a dead server defers the task
@@ -90,7 +104,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
   const skillContent = hasSkill ? readFileOr(skillPath, '') : ''
   const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; requires?: { mcp_servers?: unknown } } = {}
+  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown } } = {}
   try {
     config = JSON.parse(readFileOr(configPath, '{}'))
   } catch { /* use defaults */ }
@@ -111,8 +125,24 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     timeoutMs: config.timeoutMs,
     failThreshold: config.failThreshold,
     preCheck: config.preCheck,
+    catchUpMaxAgeMinutes: parseCatchUpMaxAge(config.catchUpMaxAgeMinutes),
+    stuckAfterMinutes: parseFiniteMinutes(config.stuckAfterMinutes),
     requires: parseRequires(config.requires),
   }
+}
+
+// Only a finite number is a policy; anything else (string, null, NaN) is
+// treated as absent so a malformed config falls back to the built-in default
+// instead of disabling a guard by accident.
+export function parseFiniteMinutes(raw: unknown): number | undefined {
+  return typeof raw === 'number' && Number.isFinite(raw) ? raw : undefined
+}
+
+// Same acceptance rule, kept as a named export because the catch-up call sites
+// and tests predate the generic helper (range semantics live downstream in
+// catchUpMaxAgeMs / resolveStuckTimeoutMs, not here).
+export function parseCatchUpMaxAge(raw: unknown): number | undefined {
+  return parseFiniteMinutes(raw)
 }
 
 // Accept only a string array for requires.mcp_servers; anything else is
@@ -138,7 +168,7 @@ export function listScheduledTasks(): ScheduledTask[] {
 
 export function writeScheduledTask(
   taskName: string,
-  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string },
+  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number },
 ): void {
   const dir = join(SCHEDULED_TASKS_DIR, taskName)
   mkdirSync(dir, { recursive: true })
@@ -169,6 +199,8 @@ export function writeScheduledTask(
   if (data.timeoutMs !== undefined) config.timeoutMs = data.timeoutMs
   if (data.failThreshold !== undefined) config.failThreshold = data.failThreshold
   if (data.preCheck !== undefined) config.preCheck = data.preCheck
+  if (data.catchUpMaxAgeMinutes !== undefined) config.catchUpMaxAgeMinutes = data.catchUpMaxAgeMinutes
+  if (data.stuckAfterMinutes !== undefined) config.stuckAfterMinutes = data.stuckAfterMinutes
   if (data.description !== undefined) config.description = data.description
   if (!config.createdAt) config.createdAt = Math.floor(Date.now() / 1000)
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))

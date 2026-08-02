@@ -23,9 +23,21 @@ const STORE_DIR = join(PROJECT_ROOT, 'store', 'agent-taskstate')
 // truly abandoned record without risking dropping a real long-running task.
 export const TASKSTATE_TTL_MS = 12 * 60 * 60 * 1000
 
-// SessionStart sources we replay on. NOT 'startup' (a cold start has no
-// in-flight task to resume) -- only an in-place compact or a resume/respawn.
-const REPLAY_SOURCES = new Set(['compact', 'resume'])
+// SessionStart sources we replay on. 'startup' IS included (2026-07-27): the
+// original exclusion assumed a cold start is always a PLANNED one with no
+// in-flight task. That holds for an operator restart, and is exactly wrong for
+// the case this feature exists for -- a crash/watchdog respawn mid-task, which
+// the harness also reports as source=startup. Observed: bigme hard-restarted at
+// 07:31 in the middle of an update+debug thread and came back with only the
+// channel-ledger replay (time-ordered chat turns), because the structured
+// task-state was withheld on exactly the start that needed it most.
+//
+// Nothing else loosens: an unconsumed, non-empty, within-TTL record is still
+// required, and the consumed flag still guarantees a single replay -- so a
+// planned restart right after finishing work replays nothing (the record was
+// either consumed or is empty), and at worst a stale-but-unconsumed record
+// costs one short injected block that the agent can discard.
+const REPLAY_SOURCES = new Set(['compact', 'resume', 'startup'])
 
 export interface AgentTaskState {
   agent: string
@@ -91,7 +103,10 @@ const SENTINEL = '=== TASK-FOLYTATAS (NEM uj feladat) ==='
 export function buildTaskStateInjection(r: AgentTaskState): string {
   const lines: string[] = [
     SENTINEL,
-    'A kontextusod tomoritodott egy FOLYAMATBAN LEVO feladat kozben. Ez NEM uj feladat -- FOLYTASD onnan ahol abbamaradt. NE INDITSD ujra a mar kesz lepeseket, es NE delegald ujra amit mar atadtal.',
+    // Source-neutral wording: the same record is replayed after a compact, a
+    // resume AND a crash respawn (source=startup, added 2026-07-27), so it must
+    // not claim a compact happened.
+    'A sessiond ujraindult egy FOLYAMATBAN LEVO feladat kozben (tomorites, resume vagy osszeomlas utani ujraindulas). Ez NEM uj feladat -- FOLYTASD onnan ahol abbamaradt. NE INDITSD ujra a mar kesz lepeseket, es NE delegald ujra amit mar atadtal.',
   ]
   if (r.summary.trim()) lines.push(`FELADAT: ${r.summary.trim()}`)
   if (r.doneSteps.length) lines.push('MAR KESZ (NE ismeteld meg):\n' + r.doneSteps.map((s) => `  - ${s}`).join('\n'))

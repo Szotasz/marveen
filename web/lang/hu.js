@@ -392,6 +392,15 @@ window._i18n.hu = {
   'agents.wizard.desc_label':    'Írd le szabadon, mit szeretnél hogy csináljon ez az ügynök',
   'agents.wizard.profile_label': 'Biztonsági profil',
   'agents.wizard.gen_hint':      'Ez néhány másodpercig tarthat',
+  // Shown on step 3 when the backend answered personalityPending:true. State, not
+  // error: the agent exists and works, only its personality text is a placeholder.
+  // "ügynök", not "ágens": the wizard modal above this banner is titled
+  // "Új ügynök létrehozása", and two words for the same thing on one screen reads
+  // as carelessness. The product-wide split (hu.js: 66 x ügynök, 31 x ágens) is a
+  // separate decision, tracked on its own card.
+  'agents.wizard.pending_title': 'Az ügynök elkészült, a személyisége viszont sablonból jött',
+  'agents.wizard.pending_body':  'Az ügynök létrejött és működik, nem veszett el semmi. A személyiségét nem sikerült legenerálni, ezért amit alább látsz, az egy sablon. Átírhatod most itt, vagy később bármikor az ügynök beállításainál.',
+  'agents.wizard.pending_detail': 'Ami nem sikerült: {detail}',
   'agents.model.inherit':        'Öröklött (alapértelmezett)',
   'agents.model.fable5':         'Fable 5 (legújabb)',
   'agents.model.opus5':          'Opus 5 (legújabb Opus)',
@@ -472,6 +481,7 @@ window._i18n.hu = {
   'activity.error_load':         'Nem sikerült lekérni az aktivitást',
   'activity.empty':              'Nincs ügynök.',
   'activity.badge.main':         'fő',
+  'activity.tooltip.mode':       'Jogosultsági mód: {mode}. Ebben a módban az ágens megáll és jóváhagyásra vár, mielőtt eszközt hívna -- ha senki nem figyeli, órákig állhat úgy, hogy közben tétlennek látszik.',
   'activity.loading':            'Betöltés…',
   'activity.state.working':      'dolgozik',
   'activity.state.idle':         'várakozik',
@@ -1546,6 +1556,7 @@ window._i18n.hu = {
   'onboarding.step3.svc_starting': 'A bot-szolgáltatás még indul -- ha a párosító kód nem érkezik meg azonnal, várj pár másodpercet és frissíts.',
   'onboarding.step1.launching':  'Indítás...',
   'onboarding.step1.launched':   'Ügynökök indítása folyamatban...',
+  'onboarding.step1.launch_slow':'Az ügynökök még nem álltak fel a várt időn belül. Lassabb gépen a hidegindítás pár percig is eltarthat: várj egy kicsit, majd frissítsd az oldalt. Ha 10 perc után sincs változás, nézd meg a store/channels-failures.log fájlt.',
   'onboarding.step2.tab':        'Telegram bot',
   'onboarding.step2.desc':       'Add meg a Telegram bot tokenjét (a BotFather-től).',
   'onboarding.step2.token_label':'Telegram bot token',

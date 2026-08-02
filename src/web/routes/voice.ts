@@ -22,7 +22,7 @@ import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { KNOWN_VOICE_MODELS, AGENTS_BASE_DIR, readAgentVoiceConfig } from '../agent-config.js'
 import { getLastInboundModality, setLastInboundModality } from '../voice-modality.js'
-import { buildTtsDirective, resolveAgentChannelStateDir } from '../voice-directive.js'
+import { buildTtsDirective, resolveAgentChannelStateDir, inboundIsAudio } from '../voice-directive.js'
 import { PROJECT_ROOT } from '../../config.js'
 import type { RouteContext } from './types.js'
 
@@ -116,9 +116,11 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
   // directive semantics by responseMode:
   //   text  -> null (never speaks)
   //   voice -> always buildTtsDirective (speaks even for plain-text input)
-  //   auto  -> buildTtsDirective only when a voice file_id is present (speaks only if user sent audio)
-  // transcript: STT result when `file` is provided and valid (mode-independent -- even text-mode
-  //   agents can benefit from knowing what a voice message said).
+  //   auto  -> buildTtsDirective only when the inbound attachment kind is audio
+  //            (voice/audio/video_note). A document or photo attachment does NOT speak.
+  // transcript: STT result when the attachment is audio and the id is valid (mode-independent --
+  //   even text-mode agents benefit from knowing what a voice message said). Non-audio
+  //   attachments are never pushed through speech-to-text.
   // fail-safe: STT errors set transcript=null; directive is always attempted independently.
   if (path === '/api/voice/directive' && method === 'GET') {
     const agentId = ctx.url.searchParams.get('agent') ?? ''
@@ -128,15 +130,19 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
     if (!chatId || !/^\d+$/.test(chatId)) { json(res, { error: 'Invalid chat_id' }, 400); return true }
     const voiceCfg = readAgentVoiceConfig(agentId)
     const stateDir = resolveAgentChannelStateDir(agentId, 'telegram')
-    const fileIsVoice = !!fileParam && SAFE_FILE_ID_RE.test(fileParam)
+    const kindParam = ctx.url.searchParams.get('kind') ?? ''
+    const fileIdOk = !!fileParam && SAFE_FILE_ID_RE.test(fileParam)
+    // Audio is decided by the declared attachment kind, never by the mere
+    // presence of a file id -- a document attachment is not a voice message.
+    const inboundWasAudio = fileIdOk && inboundIsAudio(kindParam, fileParam)
     const ttsParams = { chatId, stateDir, voiceModel: voiceCfg.voiceModel ?? 'hu_HU-imre-medium' }
     const directive = voiceCfg.responseMode === 'text' ? null
       : voiceCfg.responseMode === 'voice' ? buildTtsDirective(ttsParams)
-      : fileIsVoice ? buildTtsDirective(ttsParams)  // auto: only when inbound was audio
+      : inboundWasAudio ? buildTtsDirective(ttsParams)  // auto: only when inbound was audio
       : null
 
     let transcript: string | null = null
-    if (fileParam && SAFE_FILE_ID_RE.test(fileParam) && isVoiceInstalled()) {
+    if (inboundWasAudio && isVoiceInstalled()) {
       const sttResult = await runProc(VENV_PY, [VTOOLS_PY, 'transcribe', fileParam, stateDir], { timeoutMs: 60_000 })
       if (sttResult.code === 0) {
         transcript = sttResult.stdout.trim() || null

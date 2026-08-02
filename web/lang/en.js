@@ -924,6 +924,7 @@ window._i18n.en = {
 
   // --- Additional parity keys ---
   'activity.badge.main':			'main',
+  'activity.tooltip.mode':		'Permission mode: {mode}. In this mode the agent stops and waits for approval before calling a tool -- with nobody watching it can sit there for hours while still looking idle.',
   'activity.empty':			'No agents.',
   'activity.error_load':			'Failed to load activity',
   'activity.updated':			'Updated: {time}',
@@ -993,6 +994,9 @@ window._i18n.en = {
   'agents.wizard.desc_label':    'Describe freely what you want this agent to do',
   'agents.wizard.profile_label': 'Security profile',
   'agents.wizard.gen_hint':      'This may take a few seconds',
+  'agents.wizard.pending_title': 'Your agent is ready, but its personality came from a template',
+  'agents.wizard.pending_body':  'The agent was created and works, nothing was lost. Its personality could not be generated, so what you see below is a template. You can rewrite it here now, or later in the agent\'s settings.',
+  'agents.wizard.pending_detail': 'What failed: {detail}',
   'agents.model.inherit':        'Inherited (default)',
   'agents.model.fable5':         'Fable 5 (latest)',
   'agents.model.opus5':          'Opus 5 (newest Opus)',
@@ -1549,6 +1553,7 @@ window._i18n.en = {
   'onboarding.step3.svc_starting': 'The bot service is still starting -- if the pairing code does not arrive right away, wait a few seconds and refresh.',
   'onboarding.step1.launching':  'Launching...',
   'onboarding.step1.launched':   'Agents are starting...',
+  'onboarding.step1.launch_slow':'The agents have not come up within the expected window. On a slower machine the cold start can take a few minutes: wait a bit, then refresh this page. If nothing changes after 10 minutes, check the store/channels-failures.log file.',
   'onboarding.step2.tab':        'Telegram bot',
   'onboarding.step2.desc':       'Provide your Telegram bot token (from BotFather).',
   'onboarding.step2.token_label':'Telegram bot token',

@@ -11,6 +11,10 @@
 #     "marveen" to the new slug, renames the plist files + Label keys,
 #     writes MAIN_AGENT_ID into .env, and restarts.
 
+# Dashboard port: env WEB_PORT, else the install .env, else the 3420 default.
+WEB_PORT="${WEB_PORT:-$(grep -E '^WEB_PORT=' "$(dirname "$0")/../.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "')}"
+WEB_PORT="${WEB_PORT:-3420}"
+
 set -e
 
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -152,5 +156,5 @@ if [ "$OS" = "Darwin" ]; then
 fi
 
 echo ""
-echo "Done. Dashboard: http://localhost:3420"
+echo "Done. Dashboard: http://localhost:${WEB_PORT:-3420}"
 echo "tmux attach -t ${NEW_SLUG}-channels   (was marveen-channels)"

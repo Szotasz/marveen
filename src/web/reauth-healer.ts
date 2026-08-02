@@ -35,7 +35,11 @@ const NOTIFY_SCRIPT = join(PROJECT_ROOT, 'scripts', 'notify.sh')
 const PROBE_INTERVAL_MS = 3 * 60 * 1000 // 3 min
 const INITIAL_DELAY_MS = 90_000         // after boot-grace, offset from other watchers
 const DEAD_PROBE_THRESHOLD = 3          // ~9 min of consecutive dead-token probes before acting
-const ESCALATION_COOLDOWN_MS = 30 * 60 * 1000 // 1 alert / agent / 30 min (re-alerts if still dead)
+// Repeat-alert cadence for a still-dead token. The first escalation is what
+// matters; every re-alert after it carries no new information, so keep it rare
+// (owner request 2026-07-30: "elég pár óránként jelezni" -- a 30 min cadence
+// produced ~10 identical alerts in one morning).
+const ESCALATION_COOLDOWN_MS = 3 * 60 * 60 * 1000 // 1 alert / agent / 3h (re-alerts if still dead)
 
 export interface ReauthHealerState {
   consecutiveDead: number

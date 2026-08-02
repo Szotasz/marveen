@@ -9,7 +9,11 @@ import { atomicWriteFileSync } from '../atomic-write.js'
 import { channelStateDir, readChannelToken } from '../../channel-provider.js'
 import { sessionExistsOnHost } from '../agent-process.js'
 import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
-import { hardRestartMarveenChannels } from '../channel-monitor.js'
+import {
+  hardRestartMarveenChannels,
+  mainChannelsSessionExists,
+  createMainChannelsSession,
+} from '../channel-monitor.js'
 import { liveProbeAuth, stampTokenVerified } from '../claude-credentials-guard.js'
 import { json, readBody } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
@@ -345,6 +349,33 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/onboarding/launch' && method === 'POST') {
     if (agentsRunning()) { json(res, { ok: true, alreadyRunning: true }); return true }
     if (!claudeAuthPresent()) { json(res, { error: 'Eloszor allitsd be a Claude-autentikaciot.', reason: 'no-auth' }, 409); return true }
+    // ONBTMUX1: on a fresh install the channels session does NOT exist yet, and
+    // `tmux respawn-pane` (what hardRestartMarveenChannels does on Linux) cannot
+    // bring back a session that was never there -- it fails with "respawn-pane
+    // failed" and the wizard's step 2 dead-ends. When the session is ABSENT the
+    // correct action is to CREATE it via channels.sh (createMainChannelsSession),
+    // the same path the keep-alive monitor uses for a vanished session. Only a
+    // session that EXISTS but is wedged should be respawn-paned.
+    if (!mainChannelsSessionExists()) {
+      // createMainChannelsSession kicks channels.sh detached (a ~minutes cold
+      // start). 'started' and 'grace' (already kicked, still booting) are both
+      // healthy "starting" states for the wizard's status poll. A missing or
+      // unlaunchable channels.sh is a BROKEN INSTALL: reporting it as
+      // "starting" would show the customer a success message over a fleet that
+      // can never come up, so it must be a hard error the UI can name.
+      const created = createMainChannelsSession()
+      if (created === 'script-missing' || created === 'spawn-failed') {
+        logger.error({ created }, 'onboarding: channels session absent and channels.sh could not be launched')
+        json(res, {
+          error: 'Az ügynökök indítása nem sikerült: a channels.sh nem futtatható. A telepítés sérült lehet -- futtasd újra a telepítőt, vagy nézd meg a store/channels-failures.log-ot.',
+          reason: created === 'script-missing' ? 'channels-script-missing' : 'channels-spawn-failed',
+        }, 500)
+        return true
+      }
+      logger.info({ created }, 'onboarding: channels session absent -- creating via channels.sh')
+      json(res, { ok: true, starting: true })
+      return true
+    }
     const r = hardRestartMarveenChannels()
     if (!r.ok) { json(res, { error: r.error || 'Nem sikerult eletre kelteni az agenteket.', reason: 'launch-failed' }, 500); return true }
     logger.info('onboarding: fleet launched (channels session)')

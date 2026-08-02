@@ -215,8 +215,8 @@ _t() {
     hu:macos.migration_title) echo "Korábbi rendszer költöztetése" ;;
     en:macos.migration_hint) echo "  If you had a previous AI assistant (OpenClaw, custom bot), you can migrate its memory." ;;
     hu:macos.migration_hint) echo "  Ha volt korábbi AI asszisztensed (OpenClaw, egyéni bot), átmigrálhatod a memóriáját." ;;
-    en:macos.migrate_missing) echo "  migrate.sh not found. Use the dashboard: http://localhost:3420 -> Migration" ;;
-    hu:macos.migrate_missing) echo "  A migrate.sh nem található. Használd a dashboardot: http://localhost:3420 -> Költöztetés" ;;
+    en:macos.migrate_missing) echo "  migrate.sh not found. Use the dashboard: http://localhost:${WEB_PORT:-3420} -> Migration" ;;
+    hu:macos.migrate_missing) echo "  A migrate.sh nem található. Használd a dashboardot: http://localhost:${WEB_PORT:-3420} -> Költöztetés" ;;
     # ── Done section ──────────────────────────────────────────────────
     en:dash.token_hint) echo "  (Open once; the browser will remember the token)" ;;
     hu:dash.token_hint) echo "  (Nyisd meg egyszer, utana a bongeszo megjegyzi a tokent)" ;;
@@ -244,6 +244,44 @@ _t() {
     # ── Linux-specific ───────────────────────────────────────────────
     en:linux.low_ram_prefix) echo "Low RAM:" ;;
     hu:linux.low_ram_prefix) echo "Kevés memória:" ;;
+    # APTLOCK1: dpkg/apt lock waiting (fresh Ubuntu/WSL: apt-daily holds it briefly)
+    en:linux.apt_lock_waiting_prefix) echo "The package manager is busy (another process holds the dpkg lock):" ;;
+    hu:linux.apt_lock_waiting_prefix) echo "A csomagkezelő foglalt (egy másik folyamat fogja a dpkg zárolást):" ;;
+    en:linux.apt_lock_transient_hint) echo "On a fresh system this is usually the automatic update (apt-daily/unattended-upgrades) and clears on its own -- waiting up to 5 minutes..." ;;
+    hu:linux.apt_lock_transient_hint) echo "Friss rendszeren ez általában az automatikus frissítés (apt-daily/unattended-upgrades), magától elenged -- várakozás legfeljebb 5 percig..." ;;
+    en:linux.apt_lock_still_prefix) echo "still held by:" ;;
+    hu:linux.apt_lock_still_prefix) echo "még mindig fogja:" ;;
+    en:linux.apt_lock_freed_prefix) echo "Package manager lock released after" ;;
+    hu:linux.apt_lock_freed_prefix) echo "A csomagkezelő zárolás felszabadult" ;;
+    en:linux.apt_lock_unknown) echo "Cannot check who holds the package-manager lock (fuser not installed) -- if it is busy, apt itself will wait up to 3 minutes." ;;
+    hu:linux.apt_lock_unknown) echo "Nem tudom megnézni, ki fogja a csomagkezelő zárolást (nincs fuser) -- ha foglalt, az apt maga vár rá legfeljebb 3 percig." ;;
+    en:linux.apt_lock_timeout_head) echo "The package-manager lock is STILL held after 5 minutes by:" ;;
+    hu:linux.apt_lock_timeout_head) echo "A csomagkezelő zárolást 5 perc után is fogja:" ;;
+    en:linux.apt_lock_timeout_body1) printf '%s\n    sudo lsof /var/lib/dpkg/lock-frontend' "This is no longer the usual transient auto-update. Check what holds it (copy the line below):" ;;
+    hu:linux.apt_lock_timeout_body1) printf '%s\n    sudo lsof /var/lib/dpkg/lock-frontend' "Ez már nem a szokásos átmeneti auto-frissítés. Nézd meg, mi fogja (másold az alábbi sort):" ;;
+    en:linux.apt_lock_timeout_body2) printf '%s\n    sudo systemctl status unattended-upgrades\n%s' "If it is unattended-upgrades, let it finish -- status (copy the line below):" "  then re-run this installer. Do NOT kill a running dpkg." ;;
+    hu:linux.apt_lock_timeout_body2) printf '%s\n    sudo systemctl status unattended-upgrades\n%s' "Ha az unattended-upgrades az, várd meg amíg végez -- állapot (másold az alábbi sort):" "  majd indítsd újra ezt a telepítőt. Futó dpkg-t NE lőj ki." ;;
+    en:linux.apt_lock_timeout_fail) echo "Package manager is locked by another process -- re-run the installer once it finished." ;;
+    hu:linux.apt_lock_timeout_fail) echo "A csomagkezelőt egy másik folyamat zárolja -- ha végzett, indítsd újra a telepítőt." ;;
+    # MACOSOLD1: macOS version pre-flight before relying on Homebrew
+    en:macos.ver_unknown) echo "Could not determine the macOS version (sw_vers failed) -- continuing, but if Homebrew fails, that may be why." ;;
+    hu:macos.ver_unknown) echo "Nem sikerült megállapítani a macOS verziót (sw_vers hiba) -- folytatom, de ha a Homebrew elhasal, ez lehet az oka." ;;
+    en:macos.ver_too_old_head) echo "This Mac runs macOS" ;;
+    hu:macos.ver_too_old_head) echo "Ezen a gépen macOS" ;;
+    en:macos.ver_too_old_body1) echo "Homebrew (which installs the dependencies) does not run on macOS older than 10.15, so installation cannot continue on this machine." ;;
+    hu:macos.ver_too_old_body1) echo "fut, a Homebrew (ami a függőségeket telepítené) viszont 10.15-nél régebbi macOS-en nem indul el -- ezen a gépen a telepítés nem tud továbbmenni." ;;
+    en:macos.ver_too_old_body2) echo "Two ways out: (1) update macOS on this machine, or (2) use the REMOTE install (a VPS) -- this Mac is perfectly enough to log in from." ;;
+    hu:macos.ver_too_old_body2) echo "Két kiút: (1) frissítsd ezen a gépen a macOS-t, vagy (2) válaszd a TÁVOLI telepítést (VPS) -- ehhez ez a gép is bőven elég, csak bejelentkezni kell róla." ;;
+    en:macos.ver_too_old_fail) echo "macOS below Homebrew's minimum (10.15) -- update macOS or use the remote install." ;;
+    hu:macos.ver_too_old_fail) echo "A macOS a Homebrew minimuma (10.15) alatt van -- frissíts macOS-t, vagy használd a távoli telepítést." ;;
+    en:macos.ver_unsupported_head) echo "Homebrew no longer supports this macOS version:" ;;
+    hu:macos.ver_unsupported_head) echo "Ezt a macOS verziót a Homebrew már nem támogatja:" ;;
+    en:macos.ver_unsupported_body) echo "It usually still works, but dependency installs may break (best-effort support below macOS 14). If it fails, the remote install (VPS) works from this machine too." ;;
+    hu:macos.ver_unsupported_body) echo "Általában még működik, de a függőség-telepítés eltörhet (macOS 14 alatt best-effort a támogatás). Ha elhasal, a távoli telepítés (VPS) erről a gépről is megy." ;;
+    en:macos.ver_unsupported_prompt) echo "Continue anyway? (y = yes / n = stop) [y]: " ;;
+    hu:macos.ver_unsupported_prompt) echo "Folytassam így? (i = igen / n = megállok) [i]: " ;;
+    en:macos.ver_unsupported_abort) echo "Stopped at your request -- consider the remote install, or update macOS and re-run." ;;
+    hu:macos.ver_unsupported_abort) echo "Kérésedre megálltam -- érdemes a távoli telepítést választani, vagy macOS-frissítés után újrafuttatni." ;;
     en:linux.tg_channel_configured) echo "Telegram channel configured" ;;
     hu:linux.tg_channel_configured) echo "Telegram csatorna konfigurálva" ;;
     en:linux.slack_channel_configured) echo "Slack channel configured" ;;
@@ -324,7 +362,128 @@ _t() {
     hu:migrate.done) echo "  ✓ Költöztetés kész!" ;;
     en:migrate.view_memories) echo "  Imported memories can be viewed on the dashboard:" ;;
     hu:migrate.view_memories) echo "  Az importált memóriák a dashboardon tekinthetők meg:" ;;
+    # NPMPERM1: global npm prefix writability pre-flight
+    en:npm.global_not_writable_head) echo "The global npm directory is not writable by your user:" ;;
+    hu:npm.global_not_writable_head) echo "A globális npm könyvtár nem írható a felhasználóddal:" ;;
+    en:npm.global_not_writable_why) echo "This is the default on Macs where Node came from the official nodejs.org installer (root-owned /usr/local). Two ways out:" ;;
+    hu:npm.global_not_writable_why) echo "Ez az alapállapot olyan gépen, ahol a Node a hivatalos nodejs.org telepítőből jött (root-tulajdonú /usr/local). Két kiút:" ;;
+    en:npm.remedy_1) echo "[1] LASTING (recommended): switch npm to your own prefix (~/.npm-global) -- no root-owned files, survives updates." ;;
+    hu:npm.remedy_1) echo "[1] TARTÓS (ajánlott): az npm átállítása saját prefixre (~/.npm-global) -- nincs root-tulajdonú fájl, frissítéskor is megmarad." ;;
+    en:npm.remedy_2) echo "[2] QUICK: install with sudo -- works now, but leaves root-owned files in the global node_modules." ;;
+    hu:npm.remedy_2) echo "[2] GYORS: telepítés sudo-val -- most működik, de root-tulajdonú fájlokat hagy a globális node_modules-ban." ;;
+    en:npm.remedy_prompt) echo "Which one? (1 = own prefix / 2 = sudo / n = stop) [1]: " ;;
+    hu:npm.remedy_prompt) echo "Melyiket válasszam? (1 = saját prefix / 2 = sudo / n = megállok) [1]: " ;;
+    en:npm.prefix_set) echo "npm prefix set to ~/.npm-global (PATH updated in your shell rc too)" ;;
+    hu:npm.prefix_set) echo "npm prefix átállítva ~/.npm-global-ra (a PATH a shell rc-be is bekerült)" ;;
+    en:npm.sudo_note) echo "Installing with sudo (root password may be asked)..." ;;
+    hu:npm.sudo_note) echo "Telepítés sudo-val (a rendszergazdai jelszót kérheti)..." ;;
+    en:npm.aborted) echo "Stopped: the global npm directory is not writable and no remedy was chosen." ;;
+    hu:npm.aborted) echo "Megálltam: a globális npm könyvtár nem írható, és nem választottál megoldást." ;;
+    # Error-translation layer (NPMPERM1/APTLOCK1/MACOSOLD1 -- the first three patterns)
+    en:errxl.dpkg_lock) echo "TRANSLATED: the package manager (apt/dpkg) is locked by another process -- on a fresh system this is the automatic update. Wait a few minutes and re-run the installer." ;;
+    hu:errxl.dpkg_lock) echo "FORDÍTÁS: a csomagkezelőt (apt/dpkg) egy másik folyamat zárolja -- friss rendszeren ez az automatikus frissítés. Várj pár percet, és indítsd újra a telepítőt." ;;
+    en:errxl.npm_eacces) echo "TRANSLATED: npm has no write access to the global directory. Re-run the installer -- it now offers a fix (own prefix, or sudo)." ;;
+    hu:errxl.npm_eacces) echo "FORDÍTÁS: az npm-nek nincs írásjoga a globális könyvtárra. Indítsd újra a telepítőt -- fel fogja ajánlani a megoldást (saját prefix, vagy sudo)." ;;
+    en:errxl.macos_old) echo "TRANSLATED: this macOS is older than what Homebrew supports. Way out: update macOS, or use the remote install (this machine is enough to log in from)." ;;
+    hu:errxl.macos_old) echo "FORDÍTÁS: ez a macOS régebbi, mint amit a Homebrew támogat. Kiút: macOS-frissítés, vagy a távoli telepítés (ehhez ez a gép is elég, csak bejelentkezni kell róla)." ;;
+    en:errxl.network) echo "TRANSLATED: a network error (download failed / DNS / timeout). Check the connection and any proxy/VPN, then re-run the installer." ;;
+    hu:errxl.network) echo "FORDÍTÁS: hálózati hiba (letöltés nem ment / DNS / timeout). Ellenőrizd a kapcsolatot és az esetleges proxy/VPN-t, majd indítsd újra a telepítőt." ;;
+    en:errxl.unknown_head) echo "The failing tool appears to be:" ;;
+    hu:errxl.unknown_head) echo "A hibázó eszköz a jelek szerint:" ;;
+    en:errxl.unknown_next) echo "Copy the lines above when asking for help; re-running the installer is safe (finished steps are skipped)." ;;
+    hu:errxl.unknown_next) echo "Segítségkéréshez a fenti sorokat másold ki; a telepítő újrafuttatása biztonságos (a kész lépéseket átugorja)." ;;
     # ── Fallback: return the key itself ──────────────────────────────
     *) echo "$key" ;;
   esac
+}
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Shared install helpers (sourced by install-macos.sh AND install-linux.sh).
+# Living here because this is the one file both installers already source --
+# duplicating them per-script is how the mirror-drift class starts.
+# ═══════════════════════════════════════════════════════════════════════
+
+# NPMPERM1: is the global npm prefix writable? If not, offer the two remedies
+# (kept strictly apart: [1] own prefix = lasting, no root-owned files;
+# [2] sudo = quick but leaves root-owned files). Mode "auto" (arg 1) never
+# prompts: it picks sudo with a visible note (for non-interactive fallback
+# lanes). Sets NPM_NEEDS_SUDO=1 when the sudo route was chosen.
+# Returns 1 only when the user explicitly stopped.
+ensure_global_npm_writable() {
+  local mode="${1:-interactive}" prefix nm probe
+  NPM_NEEDS_SUDO=""
+  command -v npm >/dev/null 2>&1 || return 0
+  prefix=$(npm config get prefix 2>/dev/null || true)
+  [ -n "$prefix" ] || return 0
+  nm="$prefix/lib/node_modules"
+  probe="$nm"
+  while [ ! -e "$probe" ] && [ "$probe" != "/" ]; do probe=$(dirname "$probe"); done
+  [ -w "$probe" ] && return 0
+  warn "$(_t npm.global_not_writable_head) ${nm}"
+  echo -e "  $(_t npm.global_not_writable_why)"
+  echo -e "  $(_t npm.remedy_1)"
+  echo -e "  $(_t npm.remedy_2)"
+  # Csak az explicit auto-mod valt kerdezes nelkul sudo-ra. Tty-t NEM
+  # ellenorzunk: curl|bash futtatasnal a stdin nem tty, megis a felhasznalo
+  # ul a gep elott -- es zart stdin-nel a read ures valaszt ad, ami az [1]
+  # (tartos, root-mentes) defaultra esik, az a biztonsagos irany.
+  if [ "$mode" = "auto" ]; then
+    echo -e "  $(_t npm.sudo_note)"
+    NPM_NEEDS_SUDO=1
+    return 0
+  fi
+  local NPM_REMEDY=""
+  read -rp "$(_t npm.remedy_prompt)" NPM_REMEDY || true
+  NPM_REMEDY=${NPM_REMEDY:-1}
+  case "$NPM_REMEDY" in
+    1)
+      mkdir -p "$HOME/.npm-global"
+      npm config set prefix "$HOME/.npm-global"
+      export PATH="$HOME/.npm-global/bin:$PATH"
+      local rc
+      for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
+        grep -qs '\.npm-global/bin' "$rc" 2>/dev/null || echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> "$rc"
+      done
+      ok "$(_t npm.prefix_set)"
+      ;;
+    2)
+      echo -e "  $(_t npm.sudo_note)"
+      NPM_NEEDS_SUDO=1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+# Error-translation layer: known upstream failure patterns -> one clear
+# sentence + a concrete next step; unknown -> at least WHICH tool broke and
+# the last stderr lines. $1 = the stderr capture file. Never fails.
+explain_install_error() {
+  local log="$1" tail_txt tool
+  [ -n "$log" ] && [ -s "$log" ] || return 0
+  tail_txt=$(tail -c 4000 "$log" 2>/dev/null || true)
+  [ -n "$tail_txt" ] || return 0
+  echo ""
+  if echo "$tail_txt" | grep -qiE 'could not get lock|lock-frontend|dpkg.+lock'; then
+    echo -e "${ORANGE}$(_t errxl.dpkg_lock)${NC}"
+  elif echo "$tail_txt" | grep -q 'EACCES' && echo "$tail_txt" | grep -q 'node_modules'; then
+    echo -e "${ORANGE}$(_t errxl.npm_eacces)${NC}"
+  elif echo "$tail_txt" | grep -qiE 'chkstk_darwin|system version is too old|your system is too old'; then
+    echo -e "${ORANGE}$(_t errxl.macos_old)${NC}"
+  elif echo "$tail_txt" | grep -qiE 'ENOTFOUND|Could not resolve|Connection refused|Connection timed out|Network is unreachable|curl: \(6\)|curl: \(7\)|curl: \(28\)'; then
+    echo -e "${ORANGE}$(_t errxl.network)${NC}"
+  else
+    tool="?"
+    echo "$tail_txt" | grep -q 'npm ERR' && tool="npm"
+    echo "$tail_txt" | grep -qE '(^|\n)E: ' && tool="apt"
+    echo "$tail_txt" | grep -qi 'dyld' && tool="dyld (Homebrew ruby)"
+    echo "$tail_txt" | grep -qiE '(^|\n)(brew|Homebrew)' && tool="Homebrew"
+    echo "$tail_txt" | grep -q 'curl:' && tool="curl"
+    echo -e "${ORANGE}$(_t errxl.unknown_head) ${tool}${NC}"
+    tail -n 5 "$log" 2>/dev/null | sed 's/^/    /'
+    echo -e "  $(_t errxl.unknown_next)"
+  fi
 }

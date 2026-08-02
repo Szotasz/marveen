@@ -2791,6 +2791,33 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
 }
 .approvals-pending-banner[hidden] { display: none; }
 
+/* Wizard step 3: the agent was created but its personality is a placeholder.
+   Warning tone, not danger: nothing failed for the operator to undo, the agent
+   works. Same token set as .approvals-pending-banner so the two read as one
+   family. */
+.wizard-pending-banner {
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--warning, #d4a52c) 12%, transparent);
+  border: 1px solid var(--warning, #d4a52c);
+  font-size: 13px;
+  color: var(--text);
+}
+.wizard-pending-banner[hidden] { display: none; }
+.wizard-pending-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.wizard-pending-body { line-height: 1.5; }
+.wizard-pending-detail {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+.wizard-pending-detail[hidden] { display: none; }
+
 .approvals-stats {
   display: flex;
   gap: 12px;
@@ -6490,6 +6517,11 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
 .act-main-badge {
   font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
   background: var(--border); color: var(--text-muted); border-radius: 4px; padding: 1px 6px;
+}
+.act-mode-badge {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.02em;
+  background: rgba(234,179,8,0.16); color: #a16207;
+  border-radius: 4px; padding: 1px 6px; white-space: nowrap;
 }
 .activity-badge { font-size: 12px; font-weight: 600; border-radius: 999px; padding: 2px 10px; }
 .activity-badge.act-working {

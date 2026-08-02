@@ -18,6 +18,26 @@ export function resolveAgentChannelStateDir(agentId: string, provider: string): 
   return candidates.find((d) => existsSync(join(d, '.env'))) ?? candidates[candidates.length - 1]
 }
 
+// Which inbound attachment kinds are actually audio.
+//
+// The channel tag carries attachment_kind, and the Telegram plugin uses it for
+// EVERY attachment type -- "document", "photo" and so on, not just audio. The
+// directive endpoint used to decide "was this a voice message?" from the mere
+// PRESENCE of an attachment_file_id, so sending a PDF to an agent in `auto`
+// voice mode made it answer a document with a synthesized voice message (and
+// pushed the PDF through speech-to-text). Observed 2026-07-29 with an 826 kB
+// PDF attachment.
+const AUDIO_KINDS = new Set(['voice', 'audio', 'video_note'])
+
+// True only when the inbound attachment is known to be audio. An absent or
+// unrecognised kind counts as NOT audio: the conservative direction is to stay
+// in text, because a wrong "speak" is a wrong-format answer to the owner, while
+// a wrong "stay quiet" only loses the audio nicety.
+export function inboundIsAudio(kind: string | null | undefined, fileId: string | null | undefined): boolean {
+  if (!fileId) return false
+  return AUDIO_KINDS.has(String(kind ?? '').trim().toLowerCase())
+}
+
 // Build a ready-to-run TTS directive block injected after the STT transcript.
 // Returns null if the dashboard token cannot be read.
 export function buildTtsDirective(opts: {

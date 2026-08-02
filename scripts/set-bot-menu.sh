@@ -3,6 +3,10 @@
 # the App Manifest for slash commands.
 # Called by channels.sh after plugin startup (with 15s delay).
 
+# Dashboard port: env WEB_PORT, else the install .env, else the 3420 default.
+WEB_PORT="${WEB_PORT:-$(grep -E '^WEB_PORT=' "$(dirname "$0")/../.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "')}"
+WEB_PORT="${WEB_PORT:-3420}"
+
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Read provider from .env; skip if not telegram
@@ -40,7 +44,7 @@ curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setMyCommands" \
       {"command": "kanban", "description": "Kanban tábla összefoglaló"},
       {"command": "heartbeat", "description": "Heartbeat futtatás most"},
       {"command": "memoria", "description": "Memória keresés és összefoglaló"},
-      {"command": "dashboard", "description": "Dashboard link (localhost:3420)"},
+      {"command": "dashboard", "description": "Dashboard link (localhost:'"${WEB_PORT:-3420}"')"},
       {"command": "status", "description": "Futó feladatok állapota"},
       {"command": "cancel", "description": "Futó feladat megszakítása"}
     ]

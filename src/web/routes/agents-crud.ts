@@ -2,6 +2,7 @@ import { existsSync, readFileSync, mkdtempSync, rmSync, unlinkSync, writeFileSyn
 import { join, extname } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { logger } from '../../logger.js'
+import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
 import { createAgentMessage, getDb } from '../../db.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
@@ -15,6 +16,8 @@ import {
   findAvatarForAgent,
   resolveModelId,
   readAgentModel,
+  readModelProfileMap,
+  writeAgentModelProfile,
   writeAgentModel,
   readAgentDisplayName,
   writeAgentDisplayName,
@@ -53,11 +56,73 @@ import {
 } from '../agent-scaffold.js'
 import { isAgentRunning, agentSessionName, capturePane } from '../agent-process.js'
 import { readContextTokensFromProjectDir } from '../active-model.js'
-import { detectPaneState } from '../../pane-state.js'
+import { detectPaneState, detectPermissionMode } from '../../pane-state.js'
+import { checkAgentPutFields, AGENT_PUT_WRITABLE_FIELDS } from '../agent-put-fields.js'
 import { loadProfileTemplate, resolveProfilePlaceholders } from '../profiles.js'
 import { sanitizeAgentName } from '../sanitize.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, readJsonBody, json, jsonMaybeGzip, serveFile } from '../http-helpers.js'
+
+// Dropped into the agent dir when personality generation failed and the agent was
+// kept on a template instead of being deleted. Its presence means "this agent
+// works, but its CLAUDE.md/SOUL.md are placeholders".
+//
+// It does NOT mean the agent is waiting for anything. NOTHING reads this file:
+// there is no regeneration job, no queue, no retry. It is a marker for an
+// operator (and for whoever builds regeneration later), and the way out today is
+// editing, via PUT /api/agents/:name. Do not reword this into a promise -- three
+// separate copies of "awaiting regeneration" had to be removed once already.
+//
+// Two things this text must keep. It says "ugynok", not "agens": this lands in
+// the wizard's editor directly under the notice banner and under a modal titled
+// "Uj ugynok letrehozasa", and two words for one thing on one screen reads as
+// carelessness. And it does NOT promise regeneration -- an earlier wording said
+// "Ujrageneralasig ez marad ervenyben", but nothing reads
+// PERSONALITY_PENDING_SENTINEL, so there is no regeneration to wait for. It
+// points at editing, which is what actually exists.
+export const PERSONALITY_PENDING_SENTINEL = '.personality-pending'
+
+// Minimal placeholders used when generateClaudeMd/generateSoulMd fail. Hungarian
+// with accents, because that is what they stand in for: the generators produce
+// Hungarian agent personalities (see agent-scaffold.ts, whose SOUL prompt states
+// "Write ALL Hungarian text with proper accents"). Deliberately NOT an imitation
+// of a generated personality -- the first line says it is a template, so a
+// stand-in never silently becomes the agent's identity.
+function fallbackClaudeMd(name: string, description: string, model: string): string {
+  return `# ${name}
+
+> **FIGYELEM: ez egy SABLON.** Az ügynök személyiségének generálása nem sikerült a
+> létrehozáskor, ezért ez a fájl helyőrző. Az ügynök használható, de a saját
+> CLAUDE.md-je még nem készült el. Írd át itt, vagy az ügynök beállításainál.
+
+## Szerepkör
+
+${description}
+
+## Alapelvek
+
+- Végrehajtás. Ne magyarázd el, mit fogsz csinálni, csak csináld.
+- Tömör válaszok, lényegre törően.
+- Ha nem tudsz valamit, mondd meg egyszerűen.
+- Kód, kommentek, technikai dokumentáció angolul; a felhasználóval magyarul.
+
+## Modell
+
+${model}
+`
+}
+
+function fallbackSoulMd(name: string, description: string): string {
+  return `# ${name} - SOUL
+
+> **FIGYELEM: ez egy SABLON.** A generálás nem sikerült, ez helyőrző szöveg.
+
+${description}
+
+Alapértelmezett hangnem: tömör, pontos, túlzás nélkül. A részletes személyiséget
+itt írhatod meg.
+`
+}
 import {
   exportAgentBundle,
   importAgentBundle,
@@ -105,7 +170,15 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
             .filter(l => l.trim().length > 0)
             .slice(-8)
 
-    const entries: Array<{ name: string; isMain: boolean; running: boolean; state: string; tail: string[] }> = []
+    // The permission mode the agent is sitting in. Every mode counts as idle
+    // for delivery, so `state` alone cannot distinguish "working normally" from
+    // "will stop at its first tool call waiting for an approval nobody is
+    // watching for" -- an agent spent hours in the second case on 2026-07-27
+    // while the dashboard showed it as perfectly idle.
+    const modeOf = (running: boolean, pane: string | null): string | null =>
+      running && pane !== null ? detectPermissionMode(pane) : null
+
+    const entries: Array<{ name: string; isMain: boolean; running: boolean; state: string; mode: string | null; tail: string[] }> = []
 
     // Main agent runs in the --channels session, not agent-<name>.
     {
@@ -116,6 +189,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
         isMain: true,
         running,
         state: label(running, mainPane),
+        mode: modeOf(running, mainPane),
         tail: tailOf(mainPane),
       })
     }
@@ -133,7 +207,7 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
           : capturePane(agentSessionName(name))
       }
       const state = runState === 'unreachable' ? 'unreachable' : label(running, pane)
-      entries.push({ name, isMain: false, running, state, tail: tailOf(pane) })
+      entries.push({ name, isMain: false, running, state, mode: modeOf(running, pane), tail: tailOf(pane) })
     }
 
     jsonMaybeGzip(req, res, entries)
@@ -248,6 +322,12 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     writeAgentSettingsFromProfile(name, loadProfileTemplate(profileId))
     if (rawName && rawName !== name) writeAgentDisplayName(name, rawName)
 
+    // Set when the personality fell back to a template. The response is deferred
+    // to after the notification block so that BOTH outcomes announce the agent:
+    // a template-personality agent exists and is usable, so the fleet has to hear
+    // about it for the same reason a fully generated one does.
+    let personalityPendingDetail: string | null = null
+
     logger.info({ name, description }, 'Generating agent CLAUDE.md and SOUL.md...')
     try {
       const [claudeMd, soulMd] = await Promise.all([
@@ -257,21 +337,75 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
       atomicWriteFileSync(join(agentDir(name), 'CLAUDE.md'), claudeMd)
       atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), soulMd)
       logger.info({ name }, 'Agent created successfully')
+    } catch (err) {
+      // NO DESTRUCTIVE ROLLBACK. This used to be
+      //   rmSync(agentDir(name), { recursive: true, force: true })
+      // which deleted the WHOLE agent directory when personality generation
+      // failed. Reported by a user whose agent card showed on the dashboard
+      // while the terminal answered "Agent not found" and restarting could not
+      // help, because there was nothing left to start.
+      //
+      // Deleting was disproportionate. By this point scaffoldAgentDir() has
+      // already produced a COMPLETE, valid agent -- .claude/{skills,hooks,
+      // agents}, the channel state dir, memory/MEMORY.md, .mcp.json, the
+      // quarantine-reader sub-agent -- and the model, security profile,
+      // settings and display name are all written. The only thing missing is
+      // the two PERSONALITY files, produced by the single most failure-prone
+      // step: an LLM call that can time out, hit missing auth, a CLI error or a
+      // network fault. Throwing away everything that succeeded because the
+      // least essential part failed turns a slow generation into silent data
+      // loss.
+      //
+      // So fall back to a minimal template and keep the agent usable. The
+      // sentinel marks that the personality is a placeholder, and the response
+      // says so and points at editing -- not at a regeneration that does not
+      // exist.
+      const detail = err instanceof Error ? err.message : 'Unknown error'
+      logger.error({ err, name }, 'Agent personality generation failed -- falling back to template, agent kept')
+      try {
+        atomicWriteFileSync(join(agentDir(name), 'CLAUDE.md'), fallbackClaudeMd(name, description, model))
+        atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), fallbackSoulMd(name, description))
+        atomicWriteFileSync(join(agentDir(name), PERSONALITY_PENDING_SENTINEL), `${new Date().toISOString()}\n${detail}\n`)
+      } catch (fallbackErr) {
+        // Even the template write failed (disk full, permissions). Still do NOT
+        // delete: a half-built agent an operator can inspect beats a vanished
+        // one they cannot.
+        logger.error({ err: fallbackErr, name }, 'Fallback template write failed; agent left in place for inspection')
+      }
+      // Set when the personality fell back to a template. The response is deferred
+      // to after the notification block so that BOTH outcomes announce the agent:
+      // a template-personality agent exists and is usable, so the fleet has to hear
+      // about it for the same reason a fully generated one does.
+      personalityPendingDetail = detail
+    }
 
-      const allAgents = listAgentNames()
-      const runningAgents = allAgents.filter(a => a !== name && isAgentRunning(a))
-      const notifyTargets = [MAIN_AGENT_ID, ...runningAgents]
-      for (const target of notifyTargets) {
+    // Notifications are deliberately OUTSIDE the try above. They used to sit
+    // inside it, after the "Agent created successfully" log, so a failure here
+    // (DB busy, a dead target session) ran the catch and deleted a fully
+    // created agent. A greeting that does not go out must never cost the agent.
+    //
+    // This also runs on the template-fallback path, deliberately, and with the
+    // SAME text. The agent exists and works either way, so a silent creation
+    // would be a second silent outcome in the same handler. That the personality
+    // is a placeholder is the response's job to say, not the greeting's: the
+    // other agents are being told who joined, not how well it went.
+    try {
+      const runningAgents = listAgentNames().filter(a => a !== name && isAgentRunning(a))
+      for (const target of [MAIN_AGENT_ID, ...runningAgents]) {
         createAgentMessage('system', target, `Uj csapattag erkezett: ${name}. Leirasa: ${description}. Udv neki ha legkozelebb beszeltek!`)
       }
     } catch (err) {
-      rmSync(agentDir(name), { recursive: true, force: true })
-      logger.error({ err, name }, 'Failed to generate agent files')
-      // Propagate the underlying message so the dashboard surfaces the actual
-      // cause (auth not configured, Claude Code CLI missing, etc.) instead of
-      // the previous opaque "Failed to generate agent files" — Issue #179.
-      const detail = err instanceof Error ? err.message : 'Unknown error'
-      json(res, { error: 'Failed to generate agent files', detail }, 500)
+      logger.warn({ err, name }, 'Agent created, but the team notification failed')
+    }
+
+    if (personalityPendingDetail !== null) {
+      // The warning says what actually happens next. An earlier wording promised
+      // "It is queued for regeneration", and there is no queue: the sentinel is
+      // written by this handler and read by nothing (grep PERSONALITY_PENDING_SENTINEL).
+      // What DOES exist is PUT /api/agents/:name with claudeMd/soulMd, so that is
+      // what the message points at. The sentinel stays as a marker for whenever a
+      // regeneration path gets built; it just must not be described as one today.
+      json(res, { ok: true, name, personalityPending: true, warning: 'Agent created with a template personality because generation failed. Edit CLAUDE.md and SOUL.md to replace it.', detail: personalityPendingDetail }, 200)
       return true
     }
 
@@ -633,10 +767,17 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     }
     const configRoot = agentConfigRoot(name)
     const data = await readJsonBody<{
-      claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string
+      claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string; modelProfile?: string | null
       authMode?: AuthMode; apiKey?: string; claudePlan?: string; memoryIsolation?: boolean
       mcpScope?: McpScope
     }>(req)
+    // Unknown fields are rejected rather than silently dropped -- see
+    // agent-put-fields.ts for why, and for the securityProfile redirect.
+    const fieldCheck = checkAgentPutFields(name, data)
+    if (!fieldCheck.ok) {
+      json(res, { error: fieldCheck.message, rejected: fieldCheck.rejected, writable: AGENT_PUT_WRITABLE_FIELDS }, 400)
+      return true
+    }
     if (data.memoryIsolation !== undefined) {
       // The main agent's cwd IS the install repo root, which is already a git
       // root: a memory boundary there is meaningless, and exposing the knob
@@ -658,6 +799,30 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     if (data.soulMd !== undefined) atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), data.soulMd)
     if (data.mcpJson !== undefined) atomicWriteFileSync(join(agentDir(name), '.mcp.json'), data.mcpJson)
     if (data.model !== undefined) writeAgentModel(name, data.model)
+    // Card c755f4b2 Block B: optional generic capability tier. An unknown id
+    // is a 400, never a persisted value -- storing one would leave the UI
+    // showing a profile while resolution silently fell back to the install
+    // default, i.e. a model change nobody asked for. Empty string clears it.
+    if ((data as { modelProfile?: string | null }).modelProfile !== undefined) {
+      const mp = (data as { modelProfile?: string | null }).modelProfile
+      if (mp === '' || mp === null) {
+        writeAgentModelProfile(name, null)
+      } else if (typeof mp === 'string' && isModelProfileId(mp)) {
+        const mapState = readModelProfileMap()
+        if (!mapState) {
+          json(res, { error: 'No model-profile map is provisioned on this deployment; a modelProfile cannot be honoured yet.' }, 400)
+          return true
+        }
+        if (!mapState.ok) {
+          json(res, { error: `Model-profile map is unusable: ${mapState.error}` }, 400)
+          return true
+        }
+        writeAgentModelProfile(name, mp)
+      } else {
+        json(res, { error: `modelProfile must be one of ${MODEL_PROFILE_IDS.join('|')}` }, 400)
+        return true
+      }
+    }
     if (data.mcpScope !== undefined) {
       const parsed = parseMcpScope(data.mcpScope)
       if (parsed !== null) writeAgentMcpScope(name, parsed)

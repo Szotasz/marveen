@@ -9,6 +9,7 @@ import {
   extractDescriptionFromClaudeMd,
   findAvatarForAgent,
   readAgentModel,
+  resolveAgentModelDetailed,
   readAgentDisplayName,
   readAgentSecurityProfile,
   readAgentAuthMode,
@@ -144,7 +145,14 @@ export interface AgentSummary {
   name: string
   displayName: string
   description: string
+  /** The concrete model id this agent resolves to. Unchanged meaning: for a
+   *  config that names a `model`, this is exactly what it always was. */
   model: string
+  /** Card c755f4b2 Block B: how `model` was arrived at. Metadata only -- it
+   *  reports the existing resolution, it does not change it. */
+  modelProfile: string | null
+  modelSource: 'explicit_model' | 'model_profile' | 'default'
+  modelProfileError: string | null
   activeModel: string | null
   runningSince: number | null
   authMode: AuthMode
@@ -214,11 +222,20 @@ export function getAgentSummary(name: string): AgentSummary {
   // no pane to inspect). One capture-pane per running agent on the list poll.
   const reauth = running ? detectReauthNeeded(capturePane(agentSessionName(name))) : { needsReauth: false }
 
+  // Card c755f4b2 Block B: resolve once and report both the answer and how it
+  // was reached, so "configured" and "resolved" are never conflated in the API.
+  let agentModelConfig: { model?: unknown; modelProfile?: unknown } = {}
+  try { agentModelConfig = JSON.parse(readFileOr(join(dir, 'agent-config.json'), '{}')) } catch { /* defaults */ }
+  const modelResolution = resolveAgentModelDetailed(name)
+
   return {
     name,
     displayName: readAgentDisplayName(name),
     description: extractDescriptionFromClaudeMd(claudeMd),
-    model: readAgentModel(name),
+    model: modelResolution.model,
+    modelProfile: typeof agentModelConfig.modelProfile === 'string' ? agentModelConfig.modelProfile : null,
+    modelSource: modelResolution.source,
+    modelProfileError: modelResolution.error ?? null,
     activeModel: running ? readActiveModelFromProjectDir(dir, runningSince ?? undefined, resolveAgentConfigDir(name).configDir ?? undefined) : null,
     runningSince,
     authMode: readAgentAuthMode(name),

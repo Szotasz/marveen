@@ -176,7 +176,23 @@ function wireOnboarding(step) {
         const d = await res.json().catch(() => ({}))
         if (!res.ok) { launchBtn.disabled = false; onbMsg(d.error || t('onboarding.error'), true); return }
         onbMsg(t('onboarding.step1.launched'))
-        setTimeout(refreshOnboarding, 2500)
+        // On a fresh install the session is CREATED here (ONBTMUX1) and takes a
+        // ~minute cold start via channels.sh. Poll until it is up so the wizard
+        // advances on its own instead of stranding the user on step 2 after a
+        // single 2.5s re-check. Bounded so a genuinely failed start still hands
+        // control back rather than spinning forever.
+        let up = false
+        for (let i = 0; i < 40 && !up; i++) {  // ~40 x 3s = 2 min
+          await new Promise((r) => setTimeout(r, 3000))
+          const st = await fetchOnboardingStatus()
+          if (st && st.agentsRunning) { up = true; break }
+        }
+        if (up) { await refreshOnboarding() }
+        // Timeout is NOT success: on a slow machine the cold start can outlast
+        // the 2-min bound while still being healthy, so the message must say
+        // "still starting, check back / refresh" -- repeating the launched
+        // message here would also mask a genuinely dead start (PR #779 review).
+        else { launchBtn.disabled = false; onbMsg(t('onboarding.step1.launch_slow'), true) }
       } catch (e) { launchBtn.disabled = false; onbMsg((e && e.message) || t('onboarding.error'), true) }
     })
   } else if (step === 3) {
@@ -199,8 +215,42 @@ function wireOnboarding(step) {
   } else if (step === 4) {
     const refreshBtn = document.getElementById('onbRefreshBtn')
     const loadPending = async () => {
+      // One sink for both failure paths. The box alone was not enough: it renders
+      // in the same muted onb-hint slot as "no pending", so the very distinction
+      // this fix is about -- "nobody is waiting" vs "I could not ask" -- stayed
+      // invisible. onbMsg is the error channel this function already uses for the
+      // approve step a few lines below.
+      const showPendingError = (msg) => {
+        const box = document.getElementById('onbPending')
+        if (box) box.innerHTML = `<span class="onb-hint">${escapeHtml(msg)}</span>`
+        onbMsg(msg, true)
+      }
       try {
-        const p = await (await fetch(`/api/agents/${encodeURIComponent(mainAgentId())}/channels/telegram/pending`)).json()
+        // Guard against the boot race: the wizard can reach this branch before
+        // /api/marveen resolves window._marveen. Until it does, mainAgentId()
+        // returns the literal 'marveen' FALLBACK, which IS a real agent id on
+        // a default install but is NOT one wherever the main agent was renamed
+        // -- composing to it creates a phantom "marveen" thread that answers
+        // 404 here (no such agent dir), which the wizard rendered as "no
+        // pending pairing" while the Channel view, which uses the real agent,
+        // listed the very same request.
+        if (!window._marveen?.agentId) {
+          try {
+            const r = await fetch('/api/marveen')
+            if (r.ok) window._marveen = { ...(window._marveen || {}), ...(await r.json()) }
+          } catch { /* sidebar falls back to the literal id -- best effort */ }
+        }
+        const res = await fetch(`/api/agents/${encodeURIComponent(mainAgentId())}/channels/telegram/pending`)
+        // Surface the failure instead of rendering it as an empty list. This is
+        // a separate defect from the id race: without it a 404 or an auth error
+        // reads as "nobody is waiting for approval", which is the one answer the
+        // user cannot act on.
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}))
+          showPendingError(d.error || t('onboarding.error'))
+          return
+        }
+        const p = await res.json()
         const now = Date.now()
         const list = (Array.isArray(p) ? p : (p.pending || [])).filter((x) => x && x.code && (!x.expiresAt || x.expiresAt > now))
         const box = document.getElementById('onbPending')
@@ -221,7 +271,12 @@ function wireOnboarding(step) {
             setTimeout(refreshOnboarding, 1500)
           } catch (e) { b.disabled = false; onbMsg((e && e.message) || t('onboarding.error'), true) }
         }))
-      } catch { /* ignore */ }
+      } catch (e) {
+        // Network-level failure: the fetch rejected, so the !res.ok branch never
+        // ran. Without this the box stays empty and the user reads it as "nobody
+        // is waiting" -- the exact defect this change is about.
+        showPendingError((e && e.message) || t('onboarding.error'))
+      }
     }
     if (refreshBtn) refreshBtn.addEventListener('click', () => { refreshOnboarding() })
     loadPending()

@@ -37,7 +37,25 @@ INSTALL_STEP="init"
 # shellcheck source=install-lang.sh
 source "$(dirname "$0")/install-lang.sh"
 
+# Error-translation layer (NPMPERM1 kor): minden stderr egy log-fajlba is
+# megy, hogy hibanal a trap ne csak sorszamot mondjon, hanem le tudja
+# forditani az upstream hibat (explain_install_error, install-lang.sh).
+INSTALL_ERRLOG=$(mktemp "${TMPDIR:-/tmp}/marveen-install-stderr.XXXXXX")
+exec 2> >(tee -a "$INSTALL_ERRLOG" >&2)
+
 ok() { echo -e "  ${GREEN}✓${NC} $*"; }
+
+# Does the INSTALL carry an auth credential the SERVICES can read?
+# NOT the same question as `claude auth status` / a Keychain login: the launchd
+# units read ONLY <install>/.env and <install>/store/.claude-oauth-token. On
+# macOS `claude auth login` fills the KEYCHAIN and nothing else, so before this
+# change the services were never given a credential at all -- the operator's
+# terminal worked and the agents sat at "Not logged in".
+service_auth_present() {
+  grep -qE '^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.+' "$INSTALL_DIR/.env" 2>/dev/null && return 0
+  [ -s "$INSTALL_DIR/store/.claude-oauth-token" ] && return 0
+  return 1
+}
 warn() { echo -e "  ${ORANGE}!${NC} $*"; }
 
 offer_claude_fallback() {
@@ -52,16 +70,20 @@ offer_claude_fallback() {
     read -rp "$(_t prompt_open_claude)" OPEN_CLAUDE
     OPEN_CLAUDE=${OPEN_CLAUDE:-n}
     if [[ "$OPEN_CLAUDE" == "i" || "$OPEN_CLAUDE" == "y" ]]; then
-      claude --prompt "$prompt"
+      # `claude` takes the initial prompt as a POSITIONAL argument. The old
+      # `--prompt` flag no longer exists (unknown option '--prompt'), so the
+      # offer died at the exact moment the operator asked for help.
+      claude "$prompt"
       return
     fi
   fi
   echo -e "  ${DIM}$(_t macos.fallback_manual)${NC}"
-  echo -e "  ${DIM}claude --prompt \"$(echo "$prompt" | sed 's/"/\\"/g')\"${NC}"
+  echo -e "  ${DIM}claude \"$(echo "$prompt" | sed 's/"/\\"/g')\"${NC}"
 }
 
 fail() {
   echo -e "  ${RED}✗${NC} $*"
+  explain_install_error "${INSTALL_ERRLOG:-}"
   offer_claude_fallback "$INSTALL_STEP" "$*" "${BASH_LINENO[0]}"
   exit 1
 }
@@ -69,6 +91,7 @@ fail() {
 on_error() {
   echo ""
   echo -e "${RED}Varatlan hiba a(z) '${INSTALL_STEP}' lepesben (sor: $1).${NC}"
+  explain_install_error "${INSTALL_ERRLOG:-}"
   offer_claude_fallback "$INSTALL_STEP" "Unexpected error at line $1" "$1"
   exit 1
 }
@@ -94,6 +117,58 @@ echo ""
 # Step 1: Check prerequisites
 INSTALL_STEP="prerequisites"
 echo -e "${BOLD}$(_t section_1)${NC}"
+
+# ── macOS verzio pre-flight (MACOSOLD1) ──────────────────────────────
+# A fuggosegeket a Homebrew-ra bizzuk, a brew-nak viszont sajat macOS-
+# minimumai vannak. Regi gepen a brew portable-ruby-ja dyld-hibaval hal
+# (____chkstk_darwin, "your system version is too old"), es a felhasznalo
+# egy Ruby-linker hibat lat egy sorszammal (2026-07-30, eles workshop).
+# Itt, a legelso lepesben derul ki, ERTHETO mondattal es KIUTTAL.
+#
+# A kuszobok a Homebrew SAJAT deklaralt minimumai (brew.sh, Homebrew
+# 6.0.13, kiolvasva 2026-07-30):
+#   HOMEBREW_MACOS_OLDEST_ALLOWED="10.15"  -- ez alatt a brew el sem indul
+#   HOMEBREW_MACOS_OLDEST_SUPPORTED="14"   -- ez alatt "unsupported/best effort"
+# Uj brew-kiadasnal ezek valtozhatnak; a forras a brew repo brew.sh fajlja.
+BREW_OLDEST_ALLOWED="10.15"
+BREW_OLDEST_SUPPORTED="14"
+
+# major[.minor] numerikus osszehasonlitas: 0 ha $1 < $2 (sort -V nelkul,
+# a BSD sort -V viselkedesere nem epitunk).
+macos_version_lt() {
+  local a1 b1 a2 b2
+  a1=${1%%.*}; b1=${2%%.*}
+  a2=${1#*.}; [ "$a2" = "$1" ] && a2=0; a2=${a2%%.*}
+  b2=${2#*.}; [ "$b2" = "$2" ] && b2=0; b2=${b2%%.*}
+  [ "$a1" -lt "$b1" ] || { [ "$a1" -eq "$b1" ] && [ "$a2" -lt "$b2" ]; }
+}
+
+MACOS_VER=$(sw_vers -productVersion 2>/dev/null || echo "")
+if [ -z "$MACOS_VER" ]; then
+  # Ismeretlen allapot: kimondjuk, nem talalgatunk -- a telepites megy
+  # tovabb, es ha a brew bukik, a hibauzenete legalabb valodi lesz.
+  echo -e "  ${DIM}$(_t macos.ver_unknown)${NC}"
+elif macos_version_lt "$MACOS_VER" "$BREW_OLDEST_ALLOWED"; then
+  # VEGLEGES akadaly ezen a gepen: a Homebrew el sem indul ilyen regi
+  # macOS-en -- azonnal, ertheto mondattal allunk meg, kiuttal.
+  echo -e "${RED}$(_t macos.ver_too_old_head) ${MACOS_VER}${NC}"
+  echo -e "  $(_t macos.ver_too_old_body1)"
+  echo -e "  $(_t macos.ver_too_old_body2)"
+  fail "$(_t macos.ver_too_old_fail)"
+elif macos_version_lt "$MACOS_VER" "$BREW_OLDEST_SUPPORTED"; then
+  # Szurke sav: a brew "unsupported / best effort" -- tipikusan mukodik,
+  # de torhet. Nem hazudunk sem sikert, sem bukast: figyelmeztetunk, es a
+  # felhasznalo dont.
+  warn "$(_t macos.ver_unsupported_head) ${MACOS_VER}"
+  echo -e "  $(_t macos.ver_unsupported_body)"
+  read -rp "$(_t macos.ver_unsupported_prompt)" CONT_OLD_MACOS
+  CONT_OLD_MACOS=${CONT_OLD_MACOS:-i}
+  # hu prompt: i/n, en prompt: y/n -- mindket igen-alak elfogadva.
+  case "$CONT_OLD_MACOS" in
+    i|I|y|Y) : ;;
+    *) fail "$(_t macos.ver_unsupported_abort)" ;;
+  esac
+fi
 
 check_cmd() {
   if command -v "$1" &>/dev/null; then
@@ -165,9 +240,22 @@ if ! command -v claude &>/dev/null; then
   echo -e "${ORANGE}$(_t macos.install_claude_hint)${NC}"
   read -rp "$(_t prompt_install_claude)" INSTALL_CLAUDE
   if [[ "$INSTALL_CLAUDE" == "i" || "$INSTALL_CLAUDE" == "y" ]]; then
-    npm install -g @anthropic-ai/claude-code
+    # NPMPERM1: hivatalos nodejs.org .pkg-s (vagy Intel) gepen a globalis
+    # node_modules root-tulajdonu -- EACCES-szel halna. Pre-flight + kiut.
+    if ! ensure_global_npm_writable; then
+      fail "$(_t npm.aborted)"
+    fi
+    if [ "${NPM_NEEDS_SUDO:-}" = "1" ]; then
+      sudo npm install -g @anthropic-ai/claude-code
+    else
+      npm install -g @anthropic-ai/claude-code
+    fi
   else
-    fail "Claude Code CLI szukseges a futtatashoz. Telepitsd: npm install -g @anthropic-ai/claude-code"
+    # A javasolt parancs KULON, masolhato sorban -- egy workshop-resztvevo
+    # kezzel gepelte at es egyetlen karakteren (@ = AltGr) elbukott.
+    echo -e "  ${DIM}Telepitsd (masold ki az alabbi sort):${NC}"
+    echo "    npm install -g @anthropic-ai/claude-code"
+    fail "Claude Code CLI szukseges a futtatashoz."
   fi
 fi
 echo -e "  ${GREEN}✓${NC} Claude Code CLI"
@@ -228,16 +316,44 @@ echo -e "${DIM}$(_t macos.auth_hint_2)${NC}"
 echo -e "${DIM}$(_t macos.auth_hint_3)${NC}"
 read -rp "$(_t prompt_login)" DO_AUTH
 if [[ "$DO_AUTH" == "i" || "$DO_AUTH" == "y" ]]; then
-  set +e
-  claude auth login
-  AUTH_RC=$?
-  set -e
+  # `&& ... || ...` rather than a `set +e` window: a `trap ... ERR` fires
+  # regardless of the errexit setting, and on_error() above EXITS, so a window
+  # never protected the branch below -- only keeping the command out of the
+  # trap's reach does. Only the FINAL command of an && / || list is subject to
+  # errexit and the ERR trap, so this captures the status instead of aborting.
+  claude auth login && AUTH_RC=0 || AUTH_RC=$?
   if [ "$AUTH_RC" -ne 0 ]; then
     echo -e "  ${ORANGE}⚠${NC} Auth login nem fejezodott be sikeresen (exit $AUTH_RC)."
     echo -e "  ${DIM}$(_t macos.auth_later)${NC}"
   fi
 fi
 echo -e "  ${GREEN}✓${NC} $(_t macos.firstrun_done)"
+
+# Service-side credential. `claude auth login` above authenticates the OPERATOR
+# (Keychain); the launchd units cannot use that. They read .env and
+# store/.claude-oauth-token, so ask for a setup-token unless this install
+# already carries one (re-run, or the dashboard wizard got there first).
+MACOS_OAUTH_TOKEN_INPUT=""
+if service_auth_present; then
+  ok "A telepites mar hordoz auth kulcsot (.env / store/.claude-oauth-token)"
+else
+  echo ""
+  echo -e "  ${BOLD}Az ugynokok kulon hitelesitot igenyelnek.${NC}"
+  echo -e "  ${DIM}A fenti bejelentkezes a Te termnaljadnak szol (Keychain);${NC}"
+  echo -e "  ${DIM}a hatterszolgaltatasok ahhoz nem ferenek hozza.${NC}"
+  echo -e "  ${BOLD}1.${NC} Futtasd egy terminalban: ${BLUE}claude setup-token${NC}"
+  echo -e "  ${BOLD}2.${NC} Masold ide a kiirt tokent (Enter = kihagyas):"
+  read -rp "  OAuth token: " MACOS_OAUTH_TOKEN_INPUT
+  if [ -n "$MACOS_OAUTH_TOKEN_INPUT" ]; then
+    if printf '%s' "$MACOS_OAUTH_TOKEN_INPUT" | grep -Eq '^sk-ant-oat01-[A-Za-z0-9_-]{40,}$'; then
+      ok "Token formailag rendben, elmentjuk a szolgaltatasoknak"
+    else
+      warn "A beirt ertek nem setup-token alaku (sk-ant-oat01-...). Elmentjuk, de ellenorizd."
+    fi
+  else
+    warn "Token nem lett megadva -- az ugynokok igy nem fognak elindulni."
+  fi
+fi
 
 # Pre-flight headless probe — Issue #179.
 # `claude auth login` may exit 0 even when the resulting token is unusable for
@@ -246,10 +362,16 @@ echo -e "  ${GREEN}✓${NC} $(_t macos.firstrun_done)"
 # here while the user is still at the install prompt.
 echo ""
 echo -e "  ${DIM}$(_t macos.headless_test)${NC}"
-set +e
-CLAUDE_PROBE_OUT=$(claude --print "ping" 2>&1 | head -c 200)
-CLAUDE_PROBE_EXIT=$?
-set -e
+# The exit status here used to be `head`'s, not claude's: `VAR=$(cmd | head)`
+# reports the LAST pipeline element, so a failing claude looked like success.
+# PIPESTATUS does NOT help either -- after an assignment it describes the
+# assignment, not the pipeline inside the substitution (measured). Dropping the
+# pipe entirely is the only form that reports claude's own status.
+# The `&& ... || ...` guard replaces the `set +e` window that used to wrap this:
+# the ERR trap fires regardless of errexit and on_error() exits, so the window
+# was decorative -- a failing probe still killed the installer here.
+CLAUDE_PROBE_OUT=$(claude --print "ping" 2>&1) && CLAUDE_PROBE_EXIT=0 || CLAUDE_PROBE_EXIT=$?
+CLAUDE_PROBE_OUT=${CLAUDE_PROBE_OUT:0:200}
 if [ "$CLAUDE_PROBE_EXIT" -eq 0 ] && [ -n "$CLAUDE_PROBE_OUT" ]; then
   echo -e "  ${GREEN}✓${NC} $(_t macos.headless_ok)"
 else
@@ -464,6 +586,80 @@ echo -e "  ${GREEN}✓${NC} $(_t macos.env_created)"
 # Create store directory
 mkdir -p "$INSTALL_DIR/store"
 mkdir -p "$INSTALL_DIR/agents"
+
+# Persist the service-side credential captured in the auth step. Both sinks are
+# needed: .env is what channels.sh exports for the MAIN agent, and the fleet
+# token file is what per-agent config-dir isolation reads for SUB-agents.
+if [ -n "${MACOS_OAUTH_TOKEN_INPUT:-}" ]; then
+  env_merge_key CLAUDE_CODE_OAUTH_TOKEN "$MACOS_OAUTH_TOKEN_INPUT"
+  chmod 600 "$INSTALL_DIR/.env"
+  if printf '%s' "$MACOS_OAUTH_TOKEN_INPUT" | grep -Eq '^sk-ant-oat01-[A-Za-z0-9_-]{40,}$'; then
+    (umask 077 && printf '%s' "$MACOS_OAUTH_TOKEN_INPUT" > "$INSTALL_DIR/store/.claude-oauth-token")
+    ok "Fleet setup-token eltarolva (store/.claude-oauth-token) -- per-agent izolacio aktiv"
+  fi
+fi
+
+# ── Fail-closed auth gate ────────────────────────────────────────────────────
+# Three states; the failure branches must never print the success text.
+INSTALL_AUTH_STATE="BROKEN"
+_svc_token=""
+if [ -s "$INSTALL_DIR/store/.claude-oauth-token" ]; then
+  _svc_token="$(cat "$INSTALL_DIR/store/.claude-oauth-token" 2>/dev/null || true)"
+fi
+if [ -z "$_svc_token" ]; then
+  _svc_token="$(grep -E '^CLAUDE_CODE_OAUTH_TOKEN=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+fi
+_svc_apikey="$(grep -E '^ANTHROPIC_API_KEY=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+
+if ! service_auth_present; then
+  INSTALL_AUTH_STATE="BROKEN"
+elif ! command -v claude >/dev/null 2>&1; then
+  INSTALL_AUTH_STATE="UNKNOWN"
+else
+  # Probe the way a SERVICE runs: isolated config dir (so the Keychain and the
+  # operator's shell cannot make a broken install look healthy) carrying ONLY
+  # the credential the launchd units will get.
+  _probe_cfg="$(mktemp -d 2>/dev/null || echo /tmp/marveen-authprobe.$$)"
+  # A 401 here is the VERDICT this gate exists to report, not an installer
+  # error. Unguarded, the capture reached the ERR trap and on_error() exited 1 --
+  # blaming the enclosing `fi` -- so the BROKEN branch below (and its
+  # `scripts/auth.sh` hint) was unreachable in exactly the case it was written
+  # for. `&& ... || ...` keeps the failure out of the trap and preserves rc.
+  _probe_rc=0
+  if [ -n "$_svc_token" ]; then
+    _probe_out="$(env -i PATH="$PATH" HOME="$HOME" CLAUDE_CONFIG_DIR="$_probe_cfg" \
+      CLAUDE_CODE_OAUTH_TOKEN="$_svc_token" claude --print "ping" 2>&1)" && _probe_rc=0 || _probe_rc=$?
+  else
+    _probe_out="$(env -i PATH="$PATH" HOME="$HOME" CLAUDE_CONFIG_DIR="$_probe_cfg" \
+      ANTHROPIC_API_KEY="$_svc_apikey" claude --print "ping" 2>&1)" && _probe_rc=0 || _probe_rc=$?
+  fi
+  _probe_out=${_probe_out:0:200}
+  if [ "$_probe_rc" -eq 0 ] && [ -n "$_probe_out" ]; then
+    INSTALL_AUTH_STATE="OK"
+  else
+    INSTALL_AUTH_STATE="BROKEN"
+  fi
+  rm -rf "$_probe_cfg" 2>/dev/null || true
+fi
+unset _svc_token _svc_apikey
+
+case "$INSTALL_AUTH_STATE" in
+  OK)
+    ok "Auth ellenorizve a SZOLGALTATASOK utjan (izolalt konfig + a unitok hitelesitoje)"
+    ;;
+  UNKNOWN)
+    warn "Az auth-ot NEM tudtam ellenorizni (nincs futtathato claude vagy nincs halozat)."
+    echo -e "    ${DIM}A telepites folytatodik, de az ugynokok indulasa nincs igazolva.${NC}"
+    ;;
+  *)
+    warn "AZ UGYNOKOK IGY NEM FOGNAK ELINDULNI: a telepites nem hordoz mukodo auth kulcsot."
+    echo -e "    ${DIM}A szolgaltatasok CSAK ezt a ket helyet olvassak:${NC}"
+    echo -e "    ${DIM}  - $INSTALL_DIR/.env  (CLAUDE_CODE_OAUTH_TOKEN vagy ANTHROPIC_API_KEY)${NC}"
+    echo -e "    ${DIM}  - $INSTALL_DIR/store/.claude-oauth-token${NC}"
+    echo -e "    ${DIM}A Keychain-bejelentkezes (claude auth login) ehhez NEM eleg.${NC}"
+    echo -e "    ${BOLD}Javitas most: ${BLUE}bash \"$INSTALL_DIR/scripts/auth.sh\"${NC}"
+    ;;
+esac
 echo -e "  ${GREEN}✓${NC} $(_t macos.dirs_created)"
 
 # Generate CLAUDE.md from template
@@ -809,7 +1005,27 @@ echo -e "${BOLD}$(_t section_7)${NC}"
 PLIST_DIR="$HOME/Library/LaunchAgents"
 mkdir -p "$PLIST_DIR"
 
-NODE_PATH="$(which node)"
+# Pin launchd services to a stable Node 22 (brew node@22). Homebrew's generic
+# `node` symlink auto-upgrades to new majors (e.g. 26) whose ABI breaks the
+# prebuilt better-sqlite3 binary, preventing the dashboard from starting and the
+# dashboard token from ever being created. node@22 is keg-only, so a generic
+# `node` of any major can coexist -- we ensure node@22 is present and pin the
+# services directly to its keg path.
+NODE22_PREFIX="$(brew --prefix node@22 2>/dev/null || true)"
+if { [ -z "$NODE22_PREFIX" ] || [ ! -x "$NODE22_PREFIX/bin/node" ]; } && command -v brew &>/dev/null; then
+  echo -e "  ${ORANGE}node@22 telepitese a launchd szolgaltatasokhoz (ABI-stabil better-sqlite3)...${NC}"
+  brew install node@22 || true
+  NODE22_PREFIX="$(brew --prefix node@22 2>/dev/null || true)"
+fi
+if [ -n "$NODE22_PREFIX" ] && [ -x "$NODE22_PREFIX/bin/node" ]; then
+  NODE_PATH="$NODE22_PREFIX/bin/node"
+else
+  # Last-resort fallback: node@22 could not be installed (e.g. no brew). The
+  # services may still break on an ABI-incompatible node -- warn loudly.
+  NODE_PATH="$(which node)"
+  echo -e "  ${RED}Figyelem:${NC} node@22 nem elerheto, a szolgaltatasok ${NODE_PATH}-ra allnak. ABI-hiba eseten telepitsd: brew install node@22"
+fi
+NODE_BIN_DIR="$(dirname "$NODE_PATH")"
 # Launchd labels key off SERVICE_ID. SERVICE_ID == MAIN_AGENT_ID for a
 # brand-unaware (default) install, so these labels are unchanged unless the
 # operator picked a distinct brand above.
@@ -842,7 +1058,7 @@ cat > "$PLIST_DIR/${DASHBOARD_PLIST}.plist" << PLISTEOF
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>${HOME}/.local/bin:/opt/homebrew/bin:${HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <string>${NODE_BIN_DIR}:${HOME}/.local/bin:/opt/homebrew/bin:${HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>HOME</key>
     <string>${HOME}</string>
   </dict>
@@ -887,7 +1103,7 @@ cat > "$PLIST_DIR/${CHANNELS_PLIST}.plist" << PLISTEOF
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>${HOME}/.local/bin:/opt/homebrew/bin:${HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <string>${NODE_BIN_DIR}:${HOME}/.local/bin:/opt/homebrew/bin:${HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>HOME</key>
     <string>${HOME}</string>
     <key>USER</key>
@@ -903,10 +1119,38 @@ PLISTEOF
 
 echo -e "  ${GREEN}✓${NC} $(_t macos.launchagents_created)"
 
-# Load LaunchAgents
-launchctl load "$PLIST_DIR/${DASHBOARD_PLIST}.plist" 2>/dev/null || true
-launchctl load "$PLIST_DIR/${CHANNELS_PLIST}.plist" 2>/dev/null || true
-echo -e "  ${GREEN}✓${NC} Szolgaltatasok elinditva"
+# Load AND START the LaunchAgents -- loading is not starting. The rationale and
+# the measurements live in the shared helper, which scripts/start.sh uses too so
+# both entry points behave identically.
+. "$INSTALL_DIR/scripts/launchd-unit.sh"
+
+DASHBOARD_PID="$(start_launchd_unit "$DASHBOARD_PLIST")"
+CHANNELS_PID="$(start_launchd_unit "$CHANNELS_PLIST")"
+if [ -n "$DASHBOARD_PID" ] && [ -n "$CHANNELS_PID" ]; then
+  echo -e "  ${GREEN}✓${NC} Szolgaltatasok elinditva (dashboard pid $DASHBOARD_PID, channels pid $CHANNELS_PID)"
+else
+  warn "A SZOLGALTATASOK NEM INDULTAK EL -- a bot igy senkinek nem fog valaszolni."
+  # `if` rather than `[ ... ] && echo`: when the unit DID come up the test
+  # returns 1, the && list returns 1, and the ERR trap would abort right here --
+  # the very defect this block reports on.
+  if [ -z "$DASHBOARD_PID" ]; then echo -e "    ${DIM}  - ${DASHBOARD_PLIST}: nem fut${NC}"; fi
+  if [ -z "$CHANNELS_PID" ]; then echo -e "    ${DIM}  - ${CHANNELS_PLIST}: nem fut${NC}"; fi
+  # Reassurance BEFORE the detail. Whoever is installing for the first time needs
+  # three things from this screen, in this order: the install itself finished,
+  # nothing is lost, and there is something to do about it.
+  echo -e "    A telepites befejezodott. Ami nem indult el, azt fent latod, es a lentiekkel elindithatod."
+  # The detail line states only the two things this code actually knows: it wrote
+  # the plist files itself, and `launchctl print` reported no pid. It must NOT
+  # claim the units were loaded: in start_launchd_unit the whole
+  # bootstrap-or-load chain ends in `|| true`, and so does the kickstart, so no
+  # return value is ever inspected. "Loaded but not started" was a diagnosis
+  # nobody measured -- the same defect as the banner above it.
+  echo -e "    ${DIM}A unit-fajlok a helyukon vannak, de futo folyamatot nem talaltunk.${NC}"
+  echo -e "    ${BOLD}Javitas most:${NC}"
+  echo -e "    ${BLUE}launchctl kickstart -p gui/$(id -u)/${DASHBOARD_PLIST}${NC}"
+  echo -e "    ${BLUE}launchctl kickstart -p gui/$(id -u)/${CHANNELS_PLIST}${NC}"
+  echo -e "    ${DIM}Ellenorzes: launchctl print gui/$(id -u)/${CHANNELS_PLIST} | grep -E 'state|pid'${NC}"
+fi
 
 # Verify channel plugin is working
 sleep 3
@@ -1042,3 +1286,16 @@ echo -e "  ${DIM}Frissites: ./update.sh${NC}"
 echo -e "  ${DIM}Leallitas: ./scripts/stop.sh${NC}"
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+# The auth verdict is repeated LAST: the closing "next steps" tell the user the
+# bot will answer, which is false when the services have no working credential.
+if [ "${INSTALL_AUTH_STATE:-UNKNOWN}" != "OK" ]; then
+  echo ""
+  if [ "${INSTALL_AUTH_STATE:-}" = "UNKNOWN" ]; then
+    echo -e "  ${ORANGE}! FIGYELEM: az auth-ot nem sikerult ellenoriznunk.${NC}"
+  else
+    echo -e "  ${RED}✗ AZ UGYNOKOK MEG NEM FOGNAK VALASZOLNI: hianyzik a mukodo auth kulcs.${NC}"
+  fi
+  echo -e "  ${BOLD}  Javitas: ${BLUE}bash \"$INSTALL_DIR/scripts/auth.sh\"${NC}${BOLD} majd ${BLUE}bash \"$INSTALL_DIR/scripts/channels.sh\" restart${NC}"
+  echo ""
+fi
