@@ -66,9 +66,56 @@ export interface QuotaGuardState {
   /** Level of the last alert sent, so a steady 72% does not alert every cycle. */
   last_alert_level: QuotaLevel | null
   last_alert_at: number | null
+  /**
+   * When the guard last SUCCEEDED at reading usage, and what it read.
+   *
+   * Recorded on every successful cycle, not only on alerts. Without it the log
+   * cannot distinguish "running and fine" from "not running at all" -- both
+   * look like silence, and only one of them is good news. That is the same
+   * false-green shape we hunt elsewhere, in our own code.
+   */
+  last_success_at: number | null
+  last_utilization: number | null
+  /** Consecutive failed reads. Reset to 0 by any success. */
+  consecutive_failures: number
+  /** When we last alerted about failures, so a dead endpoint alerts once. */
+  last_failure_alert_at: number | null
 }
 
-export const EMPTY_QUOTA_STATE: QuotaGuardState = { last_alert_level: null, last_alert_at: null }
+export const EMPTY_QUOTA_STATE: QuotaGuardState = {
+  last_alert_level: null,
+  last_alert_at: null,
+  last_success_at: null,
+  last_utilization: null,
+  consecutive_failures: 0,
+  last_failure_alert_at: null,
+}
+
+/**
+ * Failed reads in a row before the silence itself becomes the alert.
+ *
+ * Three, because a single miss is ordinary (token refresh, a blip at the
+ * endpoint) and 2026-08-02 saw exactly three in a row at 03:09/03:29/03:49
+ * that woke nobody. At a 20-minute interval this fires about an hour into a
+ * real outage, which is soon enough for a guard whose whole job is to notice.
+ */
+export const FAILURE_ALERT_THRESHOLD = 3
+
+/**
+ * How stale a successful reading may be before the guard is presumed dead.
+ *
+ * Two intervals: one missed cycle is a blip, two means it has not completed a
+ * check in over 40 minutes. Exported so a health check can ask the question
+ * without re-deriving the arithmetic.
+ */
+export function isMeasurementStale(
+  state: QuotaGuardState,
+  now: number,
+  intervalMs = CHECK_INTERVAL_MS,
+): boolean {
+  if (state.last_success_at === null) return true
+  return now - state.last_success_at > (2 * intervalMs) / 1000
+}
 
 /**
  * OAuth access token for the usage endpoint.
@@ -235,15 +282,22 @@ export async function runQuotaGuard(deps: QuotaGuardDeps = {}): Promise<QuotaGua
     alerted: false, eco: null, reason: '', restart_required: true,
   }
   try {
+    const readState = deps.readState ?? (() => ({ ...EMPTY_QUOTA_STATE }))
+    const writeState = deps.writeState ?? (() => {})
+    const state = readState()
+
     const token = (deps.readToken ?? readAccessToken)()
-    if (!token) return { ...base, reason: 'no_credentials' }
+    if (!token) {
+      return { ...base, ...recordFailure(state, now, deps, 'no_credentials'), reason: 'no_credentials' }
+    }
 
     const usage = await (deps.fetch ?? ((t: string) => fetchUsage(t)))(token)
-    if (!usage?.seven_day) return { ...base, reason: 'usage_unavailable' }
+    if (!usage?.seven_day) {
+      return { ...base, ...recordFailure(state, now, deps, 'usage_unavailable'), reason: 'usage_unavailable' }
+    }
 
     const utilization = usage.seven_day.utilization
     const level = classify(utilization)
-    const state = (deps.readState ?? (() => ({ ...EMPTY_QUOTA_STATE })))()
 
     // Alert on a level change, or once the cooldown has passed at the same
     // level. A steady 72% must not produce a message every 15 minutes: noise is
@@ -264,6 +318,29 @@ export async function runQuotaGuard(deps: QuotaGuardDeps = {}): Promise<QuotaGua
       }
     }
 
+    // A successful reading is recorded whether or not it alerts. This is the
+    // point of the card: silence must mean "not running", never "running and
+    // fine". Written before the alert branch so a notify failure cannot lose
+    // the evidence that the check happened.
+    const successState: QuotaGuardState = {
+      ...state,
+      last_success_at: now,
+      last_utilization: utilization,
+      consecutive_failures: 0,
+    }
+    writeState(successState)
+    logger.info(
+      {
+        context: {
+          action: 'quota_check_ok',
+          utilization: Math.round(utilization * 1000) / 1000,
+          level,
+          resets_at: usage.seven_day.resets_at,
+        },
+      },
+      'Quota guard: usage read successfully',
+    )
+
     if (act && shouldAlert) {
       const pct = Math.round(utilization * 100)
       const forecast = forecastText(utilization, elapsedFraction(usage.seven_day.resets_at, now))
@@ -276,10 +353,14 @@ export async function runQuotaGuard(deps: QuotaGuardDeps = {}): Promise<QuotaGua
           : ' Eco mode was already on; nothing changed.'
         : ' No action taken.'
       ;(deps.notify ?? defaultNotify)(`${head}${action} ${forecast}`)
-      ;(deps.writeState ?? (() => {}))({ last_alert_level: level, last_alert_at: now })
+      // Spread over successState, never a fresh object: writing only the alert
+      // fields would blank the success trace we just recorded, and the next
+      // cycle would report the guard as stale.
+      writeState({ ...successState, last_alert_level: level, last_alert_at: now })
     } else if (act && level === 'ok' && state.last_alert_level !== null) {
-      // Recovered: clear the latch so the next crossing alerts again.
-      ;(deps.writeState ?? (() => {}))({ ...EMPTY_QUOTA_STATE })
+      // Recovered: clear the alert latch so the next crossing alerts again --
+      // but keep the success trace, which is about liveness, not alerting.
+      writeState({ ...successState, last_alert_level: null, last_alert_at: null })
     }
 
     return {
@@ -293,6 +374,53 @@ export async function runQuotaGuard(deps: QuotaGuardDeps = {}): Promise<QuotaGua
     )
     return { ...base, reason: 'error' }
   }
+}
+
+/**
+ * A failed read: count it, and once the count crosses the threshold, say so.
+ *
+ * The failure alert is latched on `last_failure_alert_at` so a dead endpoint
+ * produces ONE message rather than one every twenty minutes -- the same reason
+ * the utilization alert has a cooldown. Recovery clears the counter, and the
+ * next outage alerts again.
+ *
+ * Returns the partial result fields the caller merges in, so the failure path
+ * reports what it did rather than looking identical to a silent return.
+ */
+function recordFailure(
+  state: QuotaGuardState,
+  now: number,
+  deps: QuotaGuardDeps,
+  cause: string,
+): { alerted: boolean } {
+  const writeState = deps.writeState ?? (() => {})
+  const failures = (state.consecutive_failures ?? 0) + 1
+  const alreadyAlerted = state.last_failure_alert_at !== null
+  const shouldAlert = deps.act !== false && failures >= FAILURE_ALERT_THRESHOLD && !alreadyAlerted
+
+  writeState({
+    ...state,
+    consecutive_failures: failures,
+    last_failure_alert_at: shouldAlert ? now : state.last_failure_alert_at,
+  })
+
+  logger.warn(
+    { context: { action: 'quota_check_failed', cause, consecutive_failures: failures } },
+    'Quota guard: usage read failed',
+  )
+
+  if (shouldAlert) {
+    const lastSuccess = state.last_success_at
+    const since = lastSuccess === null
+      ? 'there has been no successful reading at all'
+      : `the last successful reading was ${Math.round((now - lastSuccess) / 60)} minutes ago`
+    ;(deps.notify ?? defaultNotify)(
+      `Subscription quota guard has failed ${failures} checks in a row (${cause}); ${since}. ` +
+      'The quota is NOT being watched until this clears -- the guard cannot tell you it is fine, only that it cannot look.',
+    )
+  }
+
+  return { alerted: shouldAlert }
 }
 
 function defaultNotify(text: string): void {
@@ -316,6 +444,10 @@ export function readQuotaState(path = QUOTA_STATE_PATH): QuotaGuardState {
     return {
       last_alert_level: raw.last_alert_level ?? null,
       last_alert_at: typeof raw.last_alert_at === 'number' ? raw.last_alert_at : null,
+      last_success_at: typeof raw.last_success_at === 'number' ? raw.last_success_at : null,
+      last_utilization: typeof raw.last_utilization === 'number' ? raw.last_utilization : null,
+      consecutive_failures: typeof raw.consecutive_failures === 'number' ? raw.consecutive_failures : 0,
+      last_failure_alert_at: typeof raw.last_failure_alert_at === 'number' ? raw.last_failure_alert_at : null,
     }
   } catch {
     return { ...EMPTY_QUOTA_STATE }
