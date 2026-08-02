@@ -72,6 +72,14 @@ describe('what the nudge says', () => {
     expect(text).toContain('Leadtam a szoveget.')
   })
 
+  it('starts with the info emoji, so board noise is scannable apart from real replies', async () => {
+    // The owner scrolls one mixed Telegram thread; the ℹ️ prefix is the only
+    // thing separating board-generated pings from the agent's own answers.
+    let text = ''
+    notifyOwnerOfAgentComment(card(), 'edina1', 'Leadtam a szoveget.', async (t) => { text = t })
+    expect(text.startsWith('ℹ️ [kanban]')).toBe(true)
+  })
+
   it('truncates a long comment instead of pasting an essay into Telegram', async () => {
     let text = ''
     notifyOwnerOfAgentComment(card(), 'prisma', 'x'.repeat(500), async (t) => { text = t })
