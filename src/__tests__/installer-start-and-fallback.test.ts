@@ -115,7 +115,10 @@ describe('the ERR-trap abort is real (guards the premise of the tests above)', (
   // that lives on line 644.
   it('an unguarded capture aborts, and bash blames the enclosing `fi`', () => {
     const r = runScriptFile([...TRAP, 'if [ -n "x" ]; then', '  out="$(false)"', 'fi', 'echo REACHED'])
-    expect(r.out).toBe('TRAP:6')
+    // bash 3.2 (macOS) blames the closing `fi` (line 6); bash 5.x (Linux CI)
+    // blames the actual failing command substitution (line 5). Both are correct
+    // ERR-trap behaviour -- only the line-blame differs across versions.
+    expect(r.out).toMatch(/^TRAP:[56]$/)
     expect(r.out).not.toContain('REACHED')
     expect(r.code).toBe(9)
   })
