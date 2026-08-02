@@ -271,6 +271,34 @@ Minden kontextus-tömörítés előtt (PreCompact hook) automatikusan vizsgáld 
 - Van-e a session-ben újrafelhasználható minta?
 - Van-e meglévő skill amit javítani kellene?
 
+## Artifact mentés
+
+Minden generált artifaktet (HTML, Markdown, JSON, szöveg, riport, diagram) **alapból a DB-backed artifact store-ba** ments -- NE laza fájlba vagy a felhő Artifact tool-ba.
+
+```bash
+TOKEN=$(cat {{INSTALL_DIR}}/store/.dashboard-token)
+curl -s -X POST http://127.0.0.1:3420/api/artifacts \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_id": "{{BOT_NAME}}",
+    "title":    "Riport 2026-08",
+    "kind":     "html",
+    "content":  "<h1>...</h1>",
+    "meta":     {"tags": ["riport"]}
+  }'
+# -> {"ok": true, "id": "..."}
+```
+
+**Kind-enum**: `html` / `markdown` / `json` / `text` / `binary` (binary esetén `content` = base64 string).
+
+Keresés: `GET /api/artifacts?q=kifejezés` (FTS5, title+meta+tartalom).
+
+Szabályok:
+- **Felhő Artifact tool** (claude.ai): CSAK explicit "publikálj" / "ossz meg" kérésre.
+- **Felhő-publish esetén**: ugyanabban a lépésben POST /api/artifacts-t is hívj, azonos tartalommal.
+- **Laza fájl**: csak ha a user kifejezetten fájlt kér a diszken.
+
 ## Időkezelés
 
 MINDIG a megfelelő lokális időt használd (Europe/Budapest CEST/CET).
