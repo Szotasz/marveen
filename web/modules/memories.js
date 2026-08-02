@@ -1510,8 +1510,20 @@ document.getElementById('memArtifactsList').addEventListener('click', async (e) 
     try {
       const res  = await fetch(`/api/artifacts/${id}/view-token`, { method: 'POST' })
       const data = await res.json()
-      // Guard: only open same-origin relative paths; never javascript: or data: URIs
-      if (data.url && data.url.startsWith('/')) window.open(data.url, '_blank', 'noopener,noreferrer')
+      // Guard: only open same-origin paths; reject protocol-relative (//evil.com)
+      // and any non-relative URL by parsing against the current origin.
+      if (data.url) {
+        try {
+          const parsed = new URL(data.url, window.location.origin)
+          if (parsed.origin === window.location.origin) {
+            window.open(parsed.pathname + parsed.search + parsed.hash, '_blank', 'noopener,noreferrer')
+          } else {
+            showToast(t('memories.artifacts.load_error'))
+          }
+        } catch {
+          showToast(t('memories.artifacts.load_error'))
+        }
+      }
       else showToast(t('memories.artifacts.load_error'))
     } catch {
       showToast(t('memories.artifacts.load_error'))
