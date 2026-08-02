@@ -61,6 +61,53 @@ import { loadProfileTemplate, resolveProfilePlaceholders } from '../profiles.js'
 import { sanitizeAgentName } from '../sanitize.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, readJsonBody, json, jsonMaybeGzip, serveFile } from '../http-helpers.js'
+
+// Dropped into the agent dir when personality generation failed and the agent was
+// kept on a template instead of being deleted. Its presence means "this agent
+// works, but its CLAUDE.md/SOUL.md are placeholders awaiting regeneration".
+export const PERSONALITY_PENDING_SENTINEL = '.personality-pending'
+
+// Minimal placeholders used when generateClaudeMd/generateSoulMd fail. Hungarian
+// with accents, because that is what they stand in for: the generators produce
+// Hungarian agent personalities (see agent-scaffold.ts, whose SOUL prompt states
+// "Write ALL Hungarian text with proper accents"). Deliberately NOT an imitation
+// of a generated personality -- the first line says it is a template, so a
+// stand-in never silently becomes the agent's identity.
+function fallbackClaudeMd(name: string, description: string, model: string): string {
+  return `# ${name}
+
+> **FIGYELEM: ez egy SABLON.** Az ágens személyiségének generálása nem sikerült a
+> létrehozáskor, ezért ez a fájl helyőrző. Az ágens használható, de a saját
+> CLAUDE.md-je még nem készült el. Újragenerálásig ez marad érvényben.
+
+## Szerepkör
+
+${description}
+
+## Alapelvek
+
+- Végrehajtás. Ne magyarázd el, mit fogsz csinálni, csak csináld.
+- Tömör válaszok, lényegre törően.
+- Ha nem tudsz valamit, mondd meg egyszerűen.
+- Kód, kommentek, technikai dokumentáció angolul; a felhasználóval magyarul.
+
+## Modell
+
+${model}
+`
+}
+
+function fallbackSoulMd(name: string, description: string): string {
+  return `# ${name} - SOUL
+
+> **FIGYELEM: ez egy SABLON.** A generálás nem sikerült, ez helyőrző szöveg.
+
+${description}
+
+Alapértelmezett hangnem: tömör, pontos, túlzás nélkül. A részletes személyiség az
+újrageneráláskor kerül ide.
+`
+}
 import {
   exportAgentBundle,
   importAgentBundle,
@@ -268,22 +315,54 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
       atomicWriteFileSync(join(agentDir(name), 'CLAUDE.md'), claudeMd)
       atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), soulMd)
       logger.info({ name }, 'Agent created successfully')
+    } catch (err) {
+      // NO DESTRUCTIVE ROLLBACK. This used to be
+      //   rmSync(agentDir(name), { recursive: true, force: true })
+      // which deleted the WHOLE agent directory when personality generation
+      // failed. Reported by a user whose agent card showed on the dashboard
+      // while the terminal answered "Agent not found" and restarting could not
+      // help, because there was nothing left to start.
+      //
+      // Deleting was disproportionate. By this point scaffoldAgentDir() has
+      // already produced a COMPLETE, valid agent -- .claude/{skills,hooks,
+      // agents}, the channel state dir, memory/MEMORY.md, .mcp.json, the
+      // quarantine-reader sub-agent -- and the model, security profile,
+      // settings and display name are all written. The only thing missing is
+      // the two PERSONALITY files, produced by the single most failure-prone
+      // step: an LLM call that can time out, hit missing auth, a CLI error or a
+      // network fault. Throwing away everything that succeeded because the
+      // least essential part failed turns a slow generation into silent data
+      // loss.
+      //
+      // So fall back to a minimal template and keep the agent usable. The
+      // sentinel marks it for regeneration; the response says so explicitly.
+      const detail = err instanceof Error ? err.message : 'Unknown error'
+      logger.error({ err, name }, 'Agent personality generation failed -- falling back to template, agent kept')
+      try {
+        atomicWriteFileSync(join(agentDir(name), 'CLAUDE.md'), fallbackClaudeMd(name, description, model))
+        atomicWriteFileSync(join(agentDir(name), 'SOUL.md'), fallbackSoulMd(name, description))
+        atomicWriteFileSync(join(agentDir(name), PERSONALITY_PENDING_SENTINEL), `${new Date().toISOString()}\n${detail}\n`)
+      } catch (fallbackErr) {
+        // Even the template write failed (disk full, permissions). Still do NOT
+        // delete: a half-built agent an operator can inspect beats a vanished
+        // one they cannot.
+        logger.error({ err: fallbackErr, name }, 'Fallback template write failed; agent left in place for inspection')
+      }
+      json(res, { ok: true, name, personalityPending: true, warning: 'Agent created, but its personality came from a template because generation failed. It is queued for regeneration.', detail }, 200)
+      return true
+    }
 
-      const allAgents = listAgentNames()
-      const runningAgents = allAgents.filter(a => a !== name && isAgentRunning(a))
-      const notifyTargets = [MAIN_AGENT_ID, ...runningAgents]
-      for (const target of notifyTargets) {
+    // Notifications are deliberately OUTSIDE the try above. They used to sit
+    // inside it, after the "Agent created successfully" log, so a failure here
+    // (DB busy, a dead target session) ran the catch and deleted a fully
+    // created agent. A greeting that does not go out must never cost the agent.
+    try {
+      const runningAgents = listAgentNames().filter(a => a !== name && isAgentRunning(a))
+      for (const target of [MAIN_AGENT_ID, ...runningAgents]) {
         createAgentMessage('system', target, `Uj csapattag erkezett: ${name}. Leirasa: ${description}. Udv neki ha legkozelebb beszeltek!`)
       }
     } catch (err) {
-      rmSync(agentDir(name), { recursive: true, force: true })
-      logger.error({ err, name }, 'Failed to generate agent files')
-      // Propagate the underlying message so the dashboard surfaces the actual
-      // cause (auth not configured, Claude Code CLI missing, etc.) instead of
-      // the previous opaque "Failed to generate agent files" — Issue #179.
-      const detail = err instanceof Error ? err.message : 'Unknown error'
-      json(res, { error: 'Failed to generate agent files', detail }, 500)
-      return true
+      logger.warn({ err, name }, 'Agent created, but the team notification failed')
     }
 
     json(res, { ok: true, name })
