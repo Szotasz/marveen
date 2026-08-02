@@ -6,6 +6,54 @@ import {
 
 beforeAll(() => { initDatabase(':memory:') })
 
+describe('createArtifact cloud_url UPSERT', () => {
+  const CLOUD_URL = 'https://cloud.example.test/artifacts/unique-abc'
+
+  it('first POST with cloud_url creates the artifact (updated=false)', () => {
+    const r = createArtifact({
+      agent_id: 'agent-a', title: 'Cloud artifact v1', kind: 'html',
+      content: Buffer.from('<h1>v1</h1>'), source: 'cloud:artifact', cloud_url: CLOUD_URL,
+    })
+    expect(r.id).toBeTruthy()
+    expect(r.updated).toBe(false)
+  })
+
+  it('second POST with same cloud_url updates in place (updated=true, single row)', () => {
+    const r2 = createArtifact({
+      agent_id: 'agent-a', title: 'Cloud artifact v2', kind: 'html',
+      content: Buffer.from('<h1>v2</h1>'), source: 'cloud:artifact', cloud_url: CLOUD_URL,
+    })
+    expect(r2.updated).toBe(true)
+
+    // Must still be exactly one row for this cloud_url
+    const rows = listArtifacts({ agent: 'agent-a' }).filter(r => r.cloud_url === CLOUD_URL)
+    expect(rows).toHaveLength(1)
+
+    // Content must reflect the latest version
+    const full = getArtifact(r2.id)
+    expect(full!.content.toString('utf-8')).toBe('<h1>v2</h1>')
+    expect(full!.title).toBe('Cloud artifact v2')
+  })
+
+  it('artifact without cloud_url inserts unconditionally (updated=false)', () => {
+    const r = createArtifact({
+      agent_id: 'agent-b', title: 'Local artifact', kind: 'text', content: Buffer.from('local'),
+    })
+    expect(r.updated).toBe(false)
+    expect(getArtifact(r.id)).toBeDefined()
+  })
+
+  it('cloud_url is stored and visible on the artifact row', () => {
+    const r = createArtifact({
+      agent_id: 'agent-a', title: 'URL check', kind: 'text',
+      content: Buffer.from('x'), source: 'cloud:artifact',
+      cloud_url: 'https://cloud.example.test/artifacts/url-check',
+    })
+    const full = getArtifact(r.id)
+    expect(full!.cloud_url).toBe('https://cloud.example.test/artifacts/url-check')
+  })
+})
+
 describe('createArtifact', () => {
   it('stores and retrieves a text artifact', () => {
     const { id } = createArtifact({

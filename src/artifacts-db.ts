@@ -11,6 +11,7 @@ export interface ArtifactRow {
   content: Buffer
   meta: string
   source: string | null
+  cloud_url: string | null
   created_at: number
   updated_at: number
 }
@@ -23,6 +24,7 @@ export interface ArtifactSummary {
   mime: string
   meta: string
   source: string | null
+  cloud_url: string | null
   created_at: number
   updated_at: number
 }
@@ -37,6 +39,7 @@ export interface CreateArtifactParams {
   content: Buffer
   meta?: Record<string, unknown>
   source?: string
+  cloud_url?: string
 }
 
 const DEFAULT_MIME: Record<ArtifactKind, string> = {
@@ -47,10 +50,35 @@ const DEFAULT_MIME: Record<ArtifactKind, string> = {
   binary:   'application/octet-stream',
 }
 
-export function createArtifact(params: CreateArtifactParams): { id: string } {
+export function createArtifact(params: CreateArtifactParams): { id: string; updated: boolean } {
   const db = getDb()
   const mime = params.mime ?? DEFAULT_MIME[params.kind]
   const meta = JSON.stringify(params.meta ?? {})
+
+  if (params.cloud_url) {
+    // UPSERT path: dedup on cloud_url; only updates rows that are already
+    // cloud-sourced (WHERE source = 'cloud:artifact') to prevent accidental
+    // overwrites of locally-created artifacts that happen to share a URL.
+    const existing = db.prepare('SELECT id FROM artifacts WHERE cloud_url = ?')
+      .get(params.cloud_url) as { id: string } | undefined
+    const source = params.source ?? 'cloud:artifact'
+    const row = db.prepare(`
+      INSERT INTO artifacts (agent_id, title, kind, mime, content, meta, source, cloud_url)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(cloud_url) DO UPDATE SET
+        content    = excluded.content,
+        title      = excluded.title,
+        updated_at = unixepoch()
+      WHERE source = 'cloud:artifact'
+      RETURNING id
+    `).get(
+      params.agent_id, params.title, params.kind, mime, params.content, meta, source, params.cloud_url,
+    ) as { id: string }
+    storeArtifactEmbedding(row.id, params.title, meta).catch(() => { /* non-critical */ })
+    return { id: row.id, updated: !!existing }
+  }
+
+  // Standard insert path (no cloud_url)
   const row = db.prepare(`
     INSERT INTO artifacts (agent_id, title, kind, mime, content, meta, source)
     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -58,7 +86,7 @@ export function createArtifact(params: CreateArtifactParams): { id: string } {
   `).get(params.agent_id, params.title, params.kind, mime, params.content, meta, params.source ?? null) as { id: string }
   // Fire-and-forget: index title+meta embedding for semantic search
   storeArtifactEmbedding(row.id, params.title, meta).catch(() => { /* non-critical */ })
-  return { id: row.id }
+  return { id: row.id, updated: false }
 }
 
 /**
@@ -113,7 +141,7 @@ export function listArtifacts(opts: ListArtifactsOptions = {}): ArtifactSummary[
     const agentCond  = agentBind.length ? 'AND a.agent_id = ?' : ''
     const kindCond   = kindBind.length  ? 'AND a.kind = ?'     : ''
     return db.prepare(`
-      SELECT a.id, a.agent_id, a.title, a.kind, a.mime, a.meta, a.source, a.created_at, a.updated_at
+      SELECT a.id, a.agent_id, a.title, a.kind, a.mime, a.meta, a.source, a.cloud_url, a.created_at, a.updated_at
       FROM artifacts a
       WHERE a.rowid IN (SELECT rowid FROM artifacts_fts WHERE artifacts_fts MATCH ?)
       ${agentCond} ${kindCond}
@@ -127,7 +155,7 @@ export function listArtifacts(opts: ListArtifactsOptions = {}): ArtifactSummary[
   if (kindBind.length)  conditions.push('kind = ?')
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
   return db.prepare(`
-    SELECT id, agent_id, title, kind, mime, meta, source, created_at, updated_at
+    SELECT id, agent_id, title, kind, mime, meta, source, cloud_url, created_at, updated_at
     FROM artifacts
     ${where}
     ORDER BY created_at DESC

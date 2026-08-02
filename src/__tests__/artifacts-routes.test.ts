@@ -76,8 +76,8 @@ describe('POST /api/artifacts', () => {
     expect((out.body as { error: string }).error).toMatch(/content/)
   })
 
-  it('calls createArtifact and returns 201 with id', async () => {
-    mockCreate.mockReturnValue({ id: 'abc-123' })
+  it('calls createArtifact and returns 201 with id (new insert)', async () => {
+    mockCreate.mockReturnValue({ id: 'abc-123', updated: false })
     const { ctx, out } = makeCtx('POST', '/api/artifacts', {
       agent_id: 'agent-a', title: 'My artifact', kind: 'html', content: '<h1>hi</h1>',
     })
@@ -93,8 +93,22 @@ describe('POST /api/artifacts', () => {
     expect(call.content.toString('utf-8')).toBe('<h1>hi</h1>')
   })
 
+  it('returns 200 when cloud_url UPSERT updates an existing artifact', async () => {
+    mockCreate.mockReturnValue({ id: 'existing-id', updated: true })
+    const { ctx, out } = makeCtx('POST', '/api/artifacts', {
+      agent_id: 'agent-a', title: 'Cloud v2', kind: 'html', content: '<h1>v2</h1>',
+      source: 'cloud:artifact', cloud_url: 'https://cloud.example.test/art/1',
+    })
+    await tryHandleArtifacts(ctx)
+    expect(out.status).toBe(200)
+    expect((out.body as { id: string }).id).toBe('existing-id')
+    const call = mockCreate.mock.calls[0][0] as { cloud_url: string; source: string }
+    expect(call.cloud_url).toBe('https://cloud.example.test/art/1')
+    expect(call.source).toBe('cloud:artifact')
+  })
+
   it('encodes binary content from base64', async () => {
-    mockCreate.mockReturnValue({ id: 'bin-1' })
+    mockCreate.mockReturnValue({ id: 'bin-1', updated: false })
     const raw = Buffer.from([0x00, 0xff])
     const { ctx, out } = makeCtx('POST', '/api/artifacts', {
       agent_id: 'agent-a', title: 'Bin', kind: 'binary', content: raw.toString('base64'),

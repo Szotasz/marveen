@@ -14,6 +14,9 @@ CREATE TABLE IF NOT EXISTS artifacts (
   content     BLOB    NOT NULL,
   meta        TEXT    NOT NULL DEFAULT '{}',
   source      TEXT,
+  -- Populated only for cloud-synced artifacts (source = 'cloud:artifact').
+  -- UNIQUE so POST /api/artifacts can UPSERT on cloud_url without duplicates.
+  cloud_url   TEXT    UNIQUE,
   created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
   updated_at  INTEGER NOT NULL DEFAULT (unixepoch())
 );
@@ -22,6 +25,8 @@ CREATE TABLE IF NOT EXISTS artifacts (
 CREATE INDEX IF NOT EXISTS idx_artifacts_agent_created ON artifacts(agent_id, created_at DESC);
 -- Filter by kind (e.g. list all HTML artifacts)
 CREATE INDEX IF NOT EXISTS idx_artifacts_kind ON artifacts(kind);
+-- Fast lookup by cloud URL for UPSERT deduplication
+CREATE INDEX IF NOT EXISTS idx_artifacts_cloud_url ON artifacts(cloud_url) WHERE cloud_url IS NOT NULL;
 
 -- Keep updated_at current on every UPDATE
 CREATE TRIGGER IF NOT EXISTS artifacts_updated_at

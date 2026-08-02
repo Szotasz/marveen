@@ -20,6 +20,7 @@ async function handleCreate(ctx: RouteContext): Promise<boolean> {
     content?: string
     meta?: Record<string, unknown>
     source?: string
+    cloud_url?: string
   }>(ctx.req)
 
   if (!body.agent_id?.trim())   { json(res, { error: 'agent_id is required' },  400); return true }
@@ -45,15 +46,17 @@ async function handleCreate(ctx: RouteContext): Promise<boolean> {
 
   try {
     const result = createArtifact({
-      agent_id: body.agent_id.trim(),
-      title:    body.title.trim(),
+      agent_id:  body.agent_id.trim(),
+      title:     body.title.trim(),
       kind,
-      mime:     body.mime,
-      content:  contentBuf,
-      meta:     body.meta,
-      source:   body.source,
+      mime:      body.mime,
+      content:   contentBuf,
+      meta:      body.meta,
+      source:    body.source,
+      cloud_url: body.cloud_url?.trim() || undefined,
     })
-    json(res, { ok: true, id: result.id }, 201)
+    // 200 when an existing cloud artifact was updated via UPSERT; 201 for new inserts.
+    json(res, { ok: true, id: result.id }, result.updated ? 200 : 201)
   } catch (err) {
     logger.error({ err }, 'artifact create failed')
     json(res, { error: 'Failed to save artifact' }, 500)
