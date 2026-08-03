@@ -1992,7 +1992,11 @@ export function deleteKanbanCard(id: string): boolean {
 }
 
 export function getKanbanComments(cardId: string): KanbanComment[] {
-  return db.prepare('SELECT * FROM kanban_comments WHERE card_id = ? ORDER BY created_at ASC').all(cardId) as KanbanComment[]
+  // Callers address cards as "#230", "230" or by hex id; comments are keyed by
+  // the hex id alone. Resolve first, or a seq-shaped ref reads an empty list
+  // that looks like a card with no history.
+  const resolved = resolveKanbanCardRef(cardId) ?? cardId
+  return db.prepare('SELECT * FROM kanban_comments WHERE card_id = ? ORDER BY created_at ASC').all(resolved) as KanbanComment[]
 }
 
 export interface KanbanCardEvent {
@@ -2051,12 +2055,18 @@ export function markScheduledTaskKanbanWaiting(taskName: string): string | null 
 }
 
 export function addKanbanComment(cardId: string, author: string, content: string): KanbanComment {
+  // A comment written under an unresolved ref is an orphan: it never shows on
+  // the card, the card's updated_at update below no-ops, and the caller sees
+  // success. Fifteen live comments went that way on 2026-08-03. Resolve or
+  // refuse -- loudly.
+  const resolved = resolveKanbanCardRef(cardId)
+  if (!resolved) throw new Error(`unknown kanban card: ${cardId}`)
   const now = Math.floor(Date.now() / 1000)
   const info = db.prepare(
     'INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES (?, ?, ?, ?)'
-  ).run(cardId, author, content, now)
-  db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?').run(now, cardId)
-  return { id: Number(info.lastInsertRowid), card_id: cardId, author, content, created_at: now }
+  ).run(resolved, author, content, now)
+  db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?').run(now, resolved)
+  return { id: Number(info.lastInsertRowid), card_id: resolved, author, content, created_at: now }
 }
 
 // --- Kanban labels (tags) ---
