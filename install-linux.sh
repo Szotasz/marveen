@@ -697,6 +697,14 @@ else
     fi
 
   else
+    # Record that skipping was a CHOICE, here, at the moment it is made
+    # (INSTDEAD803). Without this the only later evidence is the ABSENCE of
+    # credentials, and absence cannot tell "the operator decided to set this up
+    # later" apart from "the sign-in broke halfway" -- which is exactly the
+    # dead end a bootcamp host hit on 2026-08-03. The installer app reads this
+    # flag to decide whether an install is finished or unfinished. It is not a
+    # renunciation: completing the sign-in later stays available on request.
+    CLAUDE_AUTH_DEFERRED=1
     echo -e "  ${DIM}Kihagyva. Kesobb allitsd be:${NC}"
     echo -e "  ${DIM}  export ANTHROPIC_API_KEY=sk-ant-...${NC}"
     echo -e "  ${DIM}  vagy: claude setup-token (boengeszos gepen), majd export CLAUDE_CODE_OAUTH_TOKEN=...${NC}"
@@ -1027,6 +1035,16 @@ else
   env_keep_or_set SLACK_BOT_TOKEN "${SLACK_BOT_TOKEN}"
   env_keep_or_set SLACK_APP_TOKEN "${SLACK_APP_TOKEN}"
 fi
+# The operator's deliberate "set auth up later" choice, persisted next to the
+# rest of the configuration. Written only when the skip branch above set it, so
+# it is a record of a decision and never an inference from missing credentials.
+# If the run dies before this point the flag is simply absent, which reads as
+# "unfinished" -- the safe direction, since that offers help rather than
+# assuming the operator wanted no auth.
+if [ "${CLAUDE_AUTH_DEFERRED:-}" = "1" ]; then
+  env_merge_key CLAUDE_AUTH_DEFERRED 1
+fi
+
 # Claude auth credentials (API key or OAuth token) -- channels.sh reads
 # these selectively so the tmux-spawned claude process can authenticate.
 # Merged by key, so an auth line saved by a previous run (or the dashboard
