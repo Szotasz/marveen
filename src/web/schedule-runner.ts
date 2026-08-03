@@ -12,6 +12,7 @@ import {
   BOT_NAME,
   APP_TZ_INVALID,
   CHANNEL_PROVIDER,
+  TASK_STALL_TIMEOUT_MS,
 } from '../config.js'
 import { resolveOwnerChatId, configuredOwnerChatFor } from '../owner-chat.js'
 import {
@@ -116,7 +117,10 @@ export const TASK_FIRE_GRACE_MS = 30_000
 // and noise is what makes a real hang invisible. 45 minutes still catches a
 // genuinely wedged tool call well inside the 6-hour tracking window, and a
 // task that legitimately needs longer sets stuckAfterMinutes.
-export const TASK_FIRE_TIMEOUT_MS = 2_700_000
+// 2026-09-23: the 45 minutes above is now the DEFAULT rather than the only value --
+// TASK_STALL_TIMEOUT_MS lets an install say so in .env, which survives updates where a
+// patch to src/ does not. An install that sets nothing keeps behaving exactly as it did.
+export const TASK_FIRE_TIMEOUT_MS = TASK_STALL_TIMEOUT_MS
 const TASK_FIRE_MAX_TRACK_MS = 6 * 60 * 60_000
 
 export interface TaskInflightEntry {
