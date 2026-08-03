@@ -55,6 +55,7 @@ import {
   generateSoulMd,
 } from '../agent-scaffold.js'
 import { isAgentRunning, agentSessionName, capturePane, stopAgentProcess } from '../agent-process.js'
+import { removeDesiredAgent } from '../agent-desired-state.js'
 import { readContextTokensFromProjectDir } from '../active-model.js'
 import { detectPaneState, detectPermissionMode } from '../../pane-state.js'
 import { checkAgentPutFields, AGENT_PUT_WRITABLE_FIELDS } from '../agent-put-fields.js'
@@ -870,6 +871,10 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     // running=true. stopAgentProcess() reads config from the dir for its orphan
     // reap, so it must run while the dir still exists.
     if (isAgentRunning(name)) stopAgentProcess(name)
+    // Clear the desired run-state so the reconciler stops trying to start a
+    // non-existent agent (#857). A stale entry also starts a same-named new
+    // agent immediately on next create -- unasked.
+    removeDesiredAgent(name)
     rmSync(dir, { recursive: true, force: true })
     cleanupTeamReferences(name)
     json(res, { ok: true })
