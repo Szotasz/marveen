@@ -54,13 +54,22 @@ const FOREIGN_DEFAULT_OWNER_RX = /\bSzab(olcs|i)/i
 // or the {{CHAT_ID}} placeholder instead.
 const HARDCODED_CHAT_ID_RX = /chat_id["':\s]+-?\d{5,}/i
 
+// Build artifacts are not shipped files -- they are gitignored and exist only
+// on a machine that has run the scripts. A compiled .pyc embeds the build
+// machine's absolute path, so walking into __pycache__ made this suite fail on
+// any developer box that had executed scripts/support-mail, for a file that is
+// not in the repository at all. A permanently-red test teaches people to
+// ignore red tests, so the walk skips them.
+const SKIP_DIRS = new Set(['__pycache__', 'node_modules', '.git'])
+
 function walk(dir: string): string[] {
   if (!existsSync(dir)) return []
   const out: string[] = []
   for (const entry of readdirSync(dir)) {
+    if (SKIP_DIRS.has(entry)) continue
     const p = join(dir, entry)
     if (statSync(p).isDirectory()) out.push(...walk(p))
-    else out.push(p)
+    else if (!entry.endsWith('.pyc')) out.push(p)
   }
   return out
 }

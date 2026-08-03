@@ -120,6 +120,51 @@ function mainAgentId() {
     try { sessionToken = localStorage.getItem(TOKEN_KEY) || '' } catch { /* storage blocked */ }
   }
 
+  // Card #95: visible API/page diagnostics. Empty sections used to be the ONLY
+  // symptom of a failing request (hidden voice controls, blank profile select),
+  // which made client-side failures undebuggable from screenshots. Every failed
+  // same-origin API response, thrown fetch, and uncaught page error now lands
+  // in a fixed banner the user can read and screenshot.
+  const mvProblems = []
+  // The banner is opt-in (review feedback on PR #762): on a customer install a
+  // transient non-ok response must not paint the whole page red. Enable with
+  // ?mvdiag=1 (persisted for the browser) or localStorage 'mv_diag' = '1';
+  // ?mvdiag=0 turns it back off. When off, problems still go to the console.
+  function mvDiagEnabled() {
+    try {
+      const q = new URLSearchParams(location.search).get('mvdiag')
+      if (q === '1') { try { localStorage.setItem('mv_diag', '1') } catch { /* storage blocked */ } return true }
+      if (q === '0') { try { localStorage.removeItem('mv_diag') } catch { /* storage blocked */ } return false }
+      return localStorage.getItem('mv_diag') === '1'
+    } catch { return false }
+  }
+  function mvReportProblem(detail) {
+    if (mvProblems.includes(detail)) return
+    mvProblems.push(detail)
+    if (!mvDiagEnabled()) { console.warn('[mv-diag]', detail); return }
+    let bar = document.getElementById('mv-diag-banner')
+    if (!bar) {
+      bar = document.createElement('div')
+      bar.id = 'mv-diag-banner'
+      bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#7a1f1f;color:#fff;' +
+        'font:13px/1.5 monospace;padding:8px 12px;max-height:40vh;overflow:auto;white-space:pre-wrap'
+      const attach = () => document.body ? document.body.appendChild(bar) : setTimeout(attach, 50)
+      attach()
+    }
+    let tokenState = 'nincs'
+    try { if (localStorage.getItem(TOKEN_KEY)) tokenState = 'localStorage' } catch { tokenState = 'storage blokkolva' }
+    if (sessionToken) tokenState = tokenState === 'nincs' ? 'memoria' : tokenState + '+memoria'
+    bar.textContent = 'MARVEEN DIAGNOSZTIKA (kuldd el kepernyokepen)\n' +
+      'token: ' + tokenState + '\n' + mvProblems.map(p => '- ' + p).join('\n')
+  }
+  window.addEventListener('error', (e) => {
+    mvReportProblem('PAGE ERROR: ' + (e.message || 'ismeretlen') + ' @ ' + (e.filename || '?') + ':' + (e.lineno || '?'))
+  })
+  window.addEventListener('unhandledrejection', (e) => {
+    const r = e.reason
+    mvReportProblem('UNHANDLED PROMISE: ' + (r && r.message ? r.message : String(r)))
+  })
+
   const originalFetch = window.fetch.bind(window)
   window.fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input))
@@ -138,7 +183,16 @@ function mainAgentId() {
         init.headers = headers
       }
     }
-    const res = await originalFetch(input, init)
+    let res
+    try {
+      res = await originalFetch(input, init)
+    } catch (err) {
+      if (isSameOriginApi) mvReportProblem('FETCH FAILED: ' + url + ' -- ' + (err && err.message ? err.message : String(err)))
+      throw err
+    }
+    if (isSameOriginApi && !res.ok && res.status !== 304) {
+      mvReportProblem('HTTP ' + res.status + ': ' + url)
+    }
     if (res.status === 401 && isSameOriginApi) {
       // Token missing, wrong, or revoked. Wipe and prompt once per page load.
       // Keep a URL-provided session token so a transient 401 does not lock out
@@ -1975,6 +2029,126 @@ async function renderCardLabelsSection(card) {
   }
 }
 
+// === Card decisions ===
+// A question an agent put to the owner, answered by clicking one of the
+// offered options. It lives on the card (not in the chat thread) so "what was
+// decided, when, by whom, and why" stays retrievable next to the work itself.
+async function renderCardDecisions(cardId) {
+  const section = document.getElementById('cardDecisionsSection')
+  const list = document.getElementById('cardDecisionsList')
+  if (!section || !list) return
+  let decisions = []
+  try {
+    const res = await fetch(`/api/kanban/${encodeURIComponent(cardId)}/decisions`)
+    if (!res.ok) throw new Error('fetch failed')
+    decisions = await res.json()
+  } catch {
+    section.style.display = 'none'
+    return
+  }
+  if (!decisions.length) {
+    section.style.display = 'none'
+    return
+  }
+  section.style.display = ''
+  list.innerHTML = ''
+
+  for (const d of decisions) {
+    const item = document.createElement('div')
+    item.className = `decision-item decision-${d.status}`
+    const asked = new Date(d.requested_at * 1000).toLocaleString('hu-HU')
+
+    if (d.status === 'pending') {
+      const opts = (d.options || [])
+        .map(
+          (o) => `
+          <button class="btn-secondary decision-option" data-id="${escapeHtml(d.id)}" data-key="${escapeHtml(o.key)}">
+            <span class="decision-option-label">${escapeHtml(o.label)}</span>
+            ${o.detail ? `<span class="decision-option-detail">${escapeHtml(o.detail)}</span>` : ''}
+          </button>`,
+        )
+        .join('')
+      item.innerHTML = `
+        <div class="decision-head">
+          <span class="decision-badge decision-badge-open">${t('kanban.decision.pending')}</span>
+          <span class="decision-asker">${escapeHtml(d.agent_id)}</span>
+          <span class="decision-date">${asked}</span>
+        </div>
+        <div class="decision-question">${escapeHtml(d.action_description)}</div>
+        <div class="decision-options">${opts}</div>
+        <div class="decision-none-row">
+          <input type="text" class="decision-note" data-id="${escapeHtml(d.id)}"
+                 placeholder="${escapeHtml(t('kanban.decision.note_placeholder'))}">
+          <button class="btn-secondary decision-reject" data-id="${escapeHtml(d.id)}">${escapeHtml(t('kanban.decision.none'))}</button>
+        </div>
+      `
+    } else {
+      // Answered: show what was chosen and why, so the card reads as a log.
+      const chosen = (d.options || []).find((o) => o.key === d.chosen_key)
+      const answer =
+        d.status === 'rejected'
+          ? t('kanban.decision.answered_none')
+          : escapeHtml(chosen ? chosen.label : d.chosen_key || '?')
+      const decidedAt = d.resolved_at ? new Date(d.resolved_at * 1000).toLocaleString('hu-HU') : ''
+      item.innerHTML = `
+        <div class="decision-head">
+          <span class="decision-badge decision-badge-done">${t('kanban.decision.answered')}</span>
+          <span class="decision-asker">${escapeHtml(d.agent_id)}</span>
+          <span class="decision-date">${asked}</span>
+        </div>
+        <div class="decision-question">${escapeHtml(d.action_description)}</div>
+        <div class="decision-answer">
+          <strong>${answer}</strong>
+          <span class="decision-answer-meta">${escapeHtml(d.resolved_by || '')} &middot; ${decidedAt}</span>
+        </div>
+        ${d.chosen_note ? `<div class="decision-answer-note">${escapeHtml(d.chosen_note)}</div>` : ''}
+      `
+    }
+    list.appendChild(item)
+  }
+
+  // Sending the note along with the click is what keeps this a one-action
+  // answer: the owner never has to type unless they want to add a reason.
+  const noteFor = (id) => {
+    const el = list.querySelector(`.decision-note[data-id="${CSS.escape(id)}"]`)
+    return el && el.value.trim() ? el.value.trim() : null
+  }
+  const submit = async (id, payload, btn) => {
+    const buttons = list.querySelectorAll(`[data-id="${CSS.escape(id)}"]`)
+    buttons.forEach((b) => { if (b.tagName === 'BUTTON') b.disabled = true })
+    try {
+      const res = await fetch(`/api/approvals/${encodeURIComponent(id)}/decide`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // Who answered is part of the record, so it must be the real owner of
+        // THIS install (OWNER_NAME -> window._marveen.ownerName), never a
+        // baked-in name -- a renamed install would otherwise log the wrong
+        // person as having made the decision.
+        body: JSON.stringify({ decided_by: chatOwnerName() || 'owner', ...payload }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        showToast(err.error || t('kanban.decision.error'))
+        buttons.forEach((b) => { if (b.tagName === 'BUTTON') b.disabled = false })
+        return
+      }
+      showToast(t('kanban.decision.saved'))
+      renderCardDecisions(cardId)
+    } catch {
+      showToast(t('kanban.decision.error'))
+      buttons.forEach((b) => { if (b.tagName === 'BUTTON') b.disabled = false })
+    }
+    if (btn) { /* button is re-rendered below */ }
+  }
+
+  list.querySelectorAll('.decision-option').forEach((btn) => {
+    btn.onclick = () => submit(btn.dataset.id, { chosen_key: btn.dataset.key, note: noteFor(btn.dataset.id) }, btn)
+  })
+  list.querySelectorAll('.decision-reject').forEach((btn) => {
+    btn.onclick = () => submit(btn.dataset.id, { reject: true, note: noteFor(btn.dataset.id) }, btn)
+  })
+}
+
 // === Card detail ===
 async function showCardDetail(card) {
   // Running number (#N) in the title bar, plus the stable hex id in the meta.
@@ -2155,6 +2329,8 @@ async function showCardDetail(card) {
   } else {
     parentMetaItem.style.display = 'none'
   }
+
+  renderCardDecisions(card.id)
 
   // Load comments
   try {
@@ -2980,6 +3156,20 @@ async function openMarveenDetail() {
   // Populate the model dropdown groups (auto/manual) AND surface the OpenRouter
   // curation button -- this is the main agent, the only place curation lives.
   loadAvailableModels()
+  // Card #95 root cause: this dedicated opener (Csapat card path) never
+  // populated the shared settings-tab fields, so the main agent's modal showed
+  // an empty security profile, empty plan select and no voice radios -- while
+  // openAgentDetail (agents-grid path) filled them. Populate the same fields
+  // here; the plan group is hidden for the main agent (its Claude login is
+  // managed via channels.sh, same rule as openAgentDetail's role==='main').
+  populateProfileSelect(
+    document.getElementById('editAgentProfile'),
+    document.getElementById('editAgentProfileDesc'),
+    m.securityProfile || 'default',
+  )
+  const marveenPlanGroup = document.getElementById('claudePlanGroup')
+  if (marveenPlanGroup) marveenPlanGroup.hidden = true
+  loadVoiceConfig(mainAgentId())
   // Surface the "channels restart" button -- destructive, but mobile-safe
   // when the Telegram plugin wedges and you're away from a terminal.
   document.getElementById('marveenRestartBtn').hidden = false
@@ -4386,7 +4576,13 @@ async function loadVoiceConfig(agentName) {
     if (controls) controls.hidden = false
 
     const r = await fetch(`/api/agents/${encodeURIComponent(agentName)}/voice-config`)
-    if (!r.ok) return
+    if (!r.ok) {
+      // Never leave the PREVIOUS agent's values on screen: a failed load once
+      // showed edina1's voice settings inside Marveen's modal. Hide the
+      // controls instead of lying.
+      if (controls) controls.hidden = true
+      return
+    }
     const cfg = await r.json()
     voiceModelSel.innerHTML = (cfg.availableVoices || []).map(v =>
       `<option value="${v}"${v === cfg.voiceModel ? ' selected' : ''}>${v}</option>`
