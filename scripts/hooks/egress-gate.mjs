@@ -125,11 +125,31 @@ export function isEgressBlocked(toolName, toolInput, runtimeList = { domains: []
   return true
 }
 
-function logBlocked(url, reason) {
+// The payload's top-level FIELD NAMES, sorted -- never a value.
+//
+// This exists to answer one open question with data instead of a guess: does
+// the PreToolUse payload carry anything that identifies the CALLER? The gate
+// decides on the URL alone, so a main agent and a quarantine-reader sub-agent
+// are indistinguishable to it, and the sub-agent is the escape hatch the block
+// message itself prescribes -- which is why the RSS path is currently dead
+// (kanban #224). A caller-aware tier can only be built on a field that is
+// verified to exist; building it on an assumed one would produce a guard that
+// looks like it protects and does not.
+//
+// Keys only, by construction: a value could carry a url, a prompt, or a
+// secret, and this log is read casually. Nested objects contribute nothing but
+// their own key.
+export function payloadKeySignature(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return ''
+  return Object.keys(payload).sort().join(',')
+}
+
+function logBlocked(url, reason, keys = '') {
   try {
     mkdirSync(join(REPO_ROOT, 'store'), { recursive: true })
     const ts = new Date().toISOString()
-    appendFileSync(EGRESS_BLOCK_LOG, `${ts} BLOCKED url="${url}" reason="${reason}"\n`, 'utf-8')
+    const keyPart = keys ? ` payload_keys="${keys}"` : ''
+    appendFileSync(EGRESS_BLOCK_LOG, `${ts} BLOCKED url="${url}" reason="${reason}"${keyPart}\n`, 'utf-8')
   } catch {
     // Never let log failure cascade into blocking the agent process itself.
   }
@@ -178,7 +198,7 @@ if (isInvokedDirectly()) {
   const url = String(payload?.tool_input?.url ?? '')
   const runtimeList = loadRuntimeAllowlist()
   if (isEgressBlocked(payload?.tool_name, payload?.tool_input, runtimeList)) {
-    logBlocked(url, 'not on egress allowlist')
+    logBlocked(url, 'not on egress allowlist', payloadKeySignature(payload))
     deny(BLOCK_MESSAGE)
   }
   allow()
