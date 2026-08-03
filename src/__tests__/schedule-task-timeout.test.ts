@@ -200,8 +200,14 @@ describe('resolveStuckTimeoutMs: the threshold is per task', () => {
   it('the resolved budget actually drives the decision', () => {
     const at6min = 6 * MIN
     const opts = { graceMs: GRACE, maxTrackMs: MAX_TRACK }
-    // Default budget: 6 minutes of continuous busy is a hang.
-    expect(decideTaskTimeout(makeEntry(), 'busy', at6min, { ...opts, timeoutMs: resolveStuckTimeoutMs({}) })).toBe('alert')
+    // Both budgets are stated EXPLICITLY rather than leaning on the global
+    // default. The claim under test is "the resolved budget drives the
+    // decision", which says nothing about what the default happens to be --
+    // and the default is install-configurable (TASK_STALL_TIMEOUT_MS), so an
+    // install that raises it to 10 minutes would have failed this test on a
+    // point it never meant to assert.
+    // 5-minute budget: 6 minutes of continuous busy is a hang.
+    expect(decideTaskTimeout(makeEntry(), 'busy', at6min, { ...opts, timeoutMs: resolveStuckTimeoutMs({ stuckAfterMinutes: 5 }) })).toBe('alert')
     // 20-minute budget: the same 6 minutes is just work in progress.
     expect(decideTaskTimeout(makeEntry(), 'busy', at6min, { ...opts, timeoutMs: resolveStuckTimeoutMs({ stuckAfterMinutes: 20 }) })).toBe('hold')
   })
