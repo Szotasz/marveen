@@ -14,7 +14,10 @@
 // side effects.
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { isEgressBlocked, payloadKeySignature } from '../../scripts/hooks/egress-gate.mjs'
+import { isEgressBlocked, egressDecision, payloadKeySignature } from '../../scripts/hooks/egress-gate.mjs'
+
+const QUARANTINE = 'quarantine-reader'
+const EMPTY = { domains: [], prefixes: [], quarantineDomains: [] }
 
 describe('what the gate lets through', () => {
   it('passes a built-in allowed prefix', () => {
@@ -49,6 +52,65 @@ describe('what the gate lets through', () => {
 
   it('blocks an unparseable url instead of throwing', () => {
     expect(isEgressBlocked('WebFetch', { url: 'not a url' }, { domains: ['example.com'], prefixes: [] })).toBe(true)
+  })
+})
+
+// The tier that made the gate's own escape hatch usable. A sub-agent payload
+// carries `agent_type`, a main agent's does not (measured 2026-08-03) -- that
+// field, and nothing else, separates the two.
+describe('the quarantine tier', () => {
+  const feed = { url: 'https://techcrunch.com/feed/' }
+
+  it('lets the quarantine-reader fetch a feed on its list', () => {
+    expect(isEgressBlocked('WebFetch', feed, EMPTY, QUARANTINE)).toBe(false)
+    expect(egressDecision('WebFetch', feed, EMPTY, QUARANTINE).tier).toBe('quarantine')
+  })
+
+  it('STILL blocks the same url for a main agent', () => {
+    // The property the whole design rests on: opening the tier for the
+    // sub-agent must not open it for everyone. A main agent fetching a news
+    // feed puts unwrapped, untrusted text straight into its own context.
+    expect(isEgressBlocked('WebFetch', feed, EMPTY, '')).toBe(true)
+    expect(isEgressBlocked('WebFetch', feed, EMPTY, undefined)).toBe(true)
+  })
+
+  it('blocks a domain the quarantine-reader was never given', () => {
+    expect(isEgressBlocked('WebFetch', { url: 'https://evil.example/feed' }, EMPTY, QUARANTINE)).toBe(true)
+  })
+
+  it('fails closed on anything that is not an exact agent_type match', () => {
+    // A typo, a rename, a spoofed-looking value: all fall through to the
+    // block. A mistake here can only deny a fetch, never grant one.
+    for (const bad of ['quarantine_reader', 'Quarantine-Reader', 'quarantine-reader ', 'general-purpose', null, 42]) {
+      expect(isEgressBlocked('WebFetch', feed, EMPTY, bad as never)).toBe(true)
+    }
+  })
+
+  it('holds the reddit promise its definition makes: RSS only', () => {
+    // The sub-agent's definition allows reddit RSS feeds; hostname matching
+    // alone would hand over the whole site, including the json endpoints a
+    // main agent was blocked from earlier.
+    expect(isEgressBlocked('WebFetch', { url: 'https://www.reddit.com/r/devops/new.rss' }, EMPTY, QUARANTINE)).toBe(false)
+    expect(isEgressBlocked('WebFetch', { url: 'https://www.reddit.com/r/devops/about/rules.json' }, EMPTY, QUARANTINE)).toBe(true)
+  })
+
+  it('inherits the ordinary allowlist rather than replacing it', () => {
+    expect(isEgressBlocked('WebFetch', { url: 'https://api.github.com/x' }, EMPTY, QUARANTINE)).toBe(false)
+  })
+
+  it('takes operator additions from quarantine_domains -- for the sub-agent only', () => {
+    const list = { domains: [], prefixes: [], quarantineDomains: ['feeds.example.org'] }
+    expect(isEgressBlocked('WebFetch', { url: 'https://feeds.example.org/rss' }, list, QUARANTINE)).toBe(false)
+    // Putting a domain in the quarantine list must not open it to a main agent.
+    expect(isEgressBlocked('WebFetch', { url: 'https://feeds.example.org/rss' }, list, '')).toBe(true)
+  })
+
+  it('reports the tier so the grant can be audited', () => {
+    // A fetch nobody can see is a hole nobody can find: the entry point logs
+    // an ALLOWED_QUARANTINE line off this tier.
+    expect(egressDecision('WebFetch', { url: 'https://api.github.com/x' }, EMPTY, QUARANTINE).tier).toBe('builtin')
+    expect(egressDecision('WebFetch', feed, EMPTY, QUARANTINE).tier).toBe('quarantine')
+    expect(egressDecision('WebFetch', feed, EMPTY, '').tier).toBe('none')
   })
 })
 
