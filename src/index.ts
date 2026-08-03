@@ -10,7 +10,8 @@ import {
 import { join } from 'node:path'
 import { execFileSync, execSync } from 'node:child_process'
 import type { Server as HttpServer } from 'node:http'
-import { PROJECT_ROOT, STORE_DIR, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
+import { PROJECT_ROOT, STORE_DIR, PID_FILENAME, WEB_PORT, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
+import { resolveOwnerChatId } from './owner-chat.js'
 import { initDatabase, backfillEmbeddings } from './db.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
 import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
@@ -458,15 +459,20 @@ async function main(): Promise<void> {
     target.setHours(23, 0, 0, 0)
     if (target <= now) target.setDate(target.getDate() + 1)
     const msUntil = target.getTime() - now.getTime()
+    // Resolved per run, not captured once: a wizard install pairs AFTER boot,
+    // so a value read at startup would stay the placeholder for the life of
+    // the process and the first digest would go nowhere.
+    const runDigest = () => {
+      const chatId = resolveOwnerChatId()
+      if (!chatId) {
+        logger.warn('Napi naplo kihagyva: nincs gazda-chat (nincs ALLOWED_CHAT_ID es nincs parositott csatorna)')
+        return
+      }
+      runDailyDigest(chatId).catch((err) => logger.error({ err }, 'Napi naplo hiba'))
+    }
     digestTimer = setTimeout(() => {
-      runDailyDigest(ALLOWED_CHAT_ID).catch((err) =>
-        logger.error({ err }, 'Napi naplo hiba')
-      )
-      digestInterval = setInterval(() => {
-        runDailyDigest(ALLOWED_CHAT_ID).catch((err) =>
-          logger.error({ err }, 'Napi naplo hiba')
-        )
-      }, 24 * 60 * 60 * 1000)
+      runDigest()
+      digestInterval = setInterval(runDigest, 24 * 60 * 60 * 1000)
     }, msUntil)
     logger.info({ nextRun: target.toLocaleString('hu-HU') }, 'Napi naplo utemezve')
   }

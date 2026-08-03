@@ -8,10 +8,10 @@ import { logger } from '../logger.js'
 import {
   PROJECT_ROOT,
   MAIN_AGENT_ID,
-  ALLOWED_CHAT_ID,
   BOT_NAME,
   APP_TZ_INVALID,
 } from '../config.js'
+import { resolveOwnerChatId } from '../owner-chat.js'
 import {
   appendTaskRun,
   listPendingTaskRetries,
@@ -842,8 +842,9 @@ function sendCatchUpSummary(
     logger.warn('catch-up summary suppressed: no TELEGRAM_BOT_TOKEN (config error)')
     return
   }
-  if (!ALLOWED_CHAT_ID.trim()) {
-    logger.warn('catch-up summary suppressed: empty ALLOWED_CHAT_ID (config error)')
+  const ownerChat = resolveOwnerChatId()
+  if (!ownerChat) {
+    logger.warn('catch-up summary suppressed: no owner chat (ALLOWED_CHAT_ID unset/placeholder and no paired channel)')
     return
   }
   const mins = (ms: number) => `${Math.round(ms / 60000)} perc`
@@ -861,7 +862,7 @@ function sendCatchUpSummary(
   const text = lines.join('\n')
   ;(async () => {
     try {
-      await sendTelegramMessage(token, ALLOWED_CHAT_ID, text)
+      await sendTelegramMessage(token, ownerChat, text)
       logger.info({ caughtUp: caughtUp.length, stale: stale.length }, 'catch-up summary Telegram alert sent')
     } catch (err) {
       logger.warn({ err }, 'catch-up summary delivery failed')
@@ -890,8 +891,9 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
     logger.warn({ task: view.taskName, agent: view.agentName }, 'Pending-retry alert suppressed: no TELEGRAM_BOT_TOKEN (config error, stamp kept to avoid 60s spin)')
     return
   }
-  if (!ALLOWED_CHAT_ID.trim()) {
-    logger.warn({ task: view.taskName, agent: view.agentName }, 'Pending-retry alert suppressed: empty ALLOWED_CHAT_ID (config error, stamp kept to avoid 60s spin)')
+  const ownerChat = resolveOwnerChatId()
+  if (!ownerChat) {
+    logger.warn({ task: view.taskName, agent: view.agentName }, 'Pending-retry alert suppressed: no owner chat (ALLOWED_CHAT_ID unset/placeholder and no paired channel; stamp kept to avoid 60s spin)')
     return
   }
 
@@ -926,7 +928,7 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
       ]).join('\n')
   ;(async () => {
     try {
-      await sendTelegramMessage(token, ALLOWED_CHAT_ID, text)
+      await sendTelegramMessage(token, ownerChat, text)
       logger.info({ task: view.taskName, agent: view.agentName, ageMinutes }, 'Pending-retry Telegram alert sent')
     } catch (err) {
       // Distinguish a transient failure (network blip, 429, 5xx) from a
@@ -956,8 +958,9 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
     logger.warn({ task: entry.taskName, agent: entry.agentName }, 'task-timeout alert suppressed: no TELEGRAM_BOT_TOKEN (config error)')
     return
   }
-  if (!ALLOWED_CHAT_ID.trim()) {
-    logger.warn({ task: entry.taskName, agent: entry.agentName }, 'task-timeout alert suppressed: empty ALLOWED_CHAT_ID (config error)')
+  const ownerChat = resolveOwnerChatId()
+  if (!ownerChat) {
+    logger.warn({ task: entry.taskName, agent: entry.agentName }, 'task-timeout alert suppressed: no owner chat (ALLOWED_CHAT_ID unset/placeholder and no paired channel)')
     return
   }
   // If there is an active kanban card whose title matches the task name, move it
@@ -979,7 +982,7 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
   ].join('\n')
   ;(async () => {
     try {
-      await sendTelegramMessage(token, ALLOWED_CHAT_ID, text)
+      await sendTelegramMessage(token, ownerChat, text)
       logger.info({ task: entry.taskName, agent: entry.agentName, ageMinutes }, 'task-timeout Telegram alert sent')
     } catch (err) {
       logger.warn({ err, task: entry.taskName, agent: entry.agentName }, 'task-timeout alert delivery failed')

@@ -22,6 +22,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { logger } from '../logger.js'
 import { PROJECT_ROOT } from '../config.js'
 import { readEnvFile } from '../env.js'
+import { resolveOwnerChatId } from '../owner-chat.js'
 
 // Mirrors KEEPALIVE_RESPAWN_GRACE_MS from channel-monitor.ts (15 min).
 // Not imported directly to avoid a circular module dependency: channel-monitor.ts
@@ -210,9 +211,11 @@ function readProbeIntervalMs(): number {
 // W4: read once at startup; subsequent calls return the cached value.
 function readAllowedChatId(): string | null {
   if (_cachedAllowedChatId !== undefined) return _cachedAllowedChatId
+  // Goes through the shared resolver so the installer placeholder "0" counts
+  // as "not set" here too, and so a wizard install falls back to the paired
+  // channel instead of probing a chat that cannot exist.
   const env = readEnvFile(['ALLOWED_CHAT_ID'])
-  const v = env['ALLOWED_CHAT_ID']
-  _cachedAllowedChatId = v && v.trim() ? v.trim() : null
+  _cachedAllowedChatId = resolveOwnerChatId(undefined, env['ALLOWED_CHAT_ID'] ?? null)
   return _cachedAllowedChatId
 }
 
