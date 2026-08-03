@@ -11,6 +11,7 @@ import {
   ALLOWED_CHAT_ID,
   BOT_NAME,
   APP_TZ_INVALID,
+  TASK_STALL_TIMEOUT_MS,
 } from '../config.js'
 import {
   appendTaskRun,
@@ -82,7 +83,7 @@ const RESUBMIT_MAX_ATTEMPTS = 6
 // Maximum tracking age: entries that age past TASK_FIRE_MAX_TRACK_MS are
 // evicted regardless, so a permanently stuck agent does not accumulate entries.
 export const TASK_FIRE_GRACE_MS = 30_000
-export const TASK_FIRE_TIMEOUT_MS = 300_000
+export const TASK_FIRE_TIMEOUT_MS = TASK_STALL_TIMEOUT_MS
 const TASK_FIRE_MAX_TRACK_MS = 6 * 60 * 60_000
 
 export interface TaskInflightEntry {
