@@ -13008,6 +13008,10 @@ function renderBridgeEnrollSection(body) {
       `<input id="authBridgeKeyLine" type="text" autocapitalize="off" spellcheck="false" placeholder="${t('auth.bridge.key_placeholder')}">` +
       `<input id="authBridgeName" type="text" autocapitalize="off" spellcheck="false" maxlength="64" placeholder="${t('auth.bridge.name_placeholder')}">` +
       `<input id="authBridgeHost" type="text" autocapitalize="off" spellcheck="false" maxlength="253" placeholder="${t('auth.bridge.host_placeholder')}">` +
+      // The placeholder alone cannot carry this: it is clipped by the input's
+      // width, and it disappears the moment the user types. The Tailscale trap
+      // (account email vs 100.x address) has to stay readable while they type.
+      `<p class="auth-muted">${t('auth.bridge.host_hint')}</p>` +
       `<button class="btn-secondary" id="authBridgeEnrollBtn">${t('auth.bridge.enroll')}</button>` +
       `<div class="auth-form-msg" id="authBridgeMsg"></div>` +
       `<div id="authBridgeBundle" hidden></div>` +
