@@ -7,8 +7,8 @@
 import { describe, it, expect } from 'vitest'
 import { MODEL_ID_RE, isValidModelId, InvalidModelIdError } from '../model-id.js'
 // import { writeAgentModel } from '../web/agent-config.js'
-// import { shSingleQuote } from '../web/agent-process.js'
-// import { execFileSync } from 'node:child_process'
+import { shSingleQuote } from '../web/agent-process.js'
+import { execFileSync } from 'node:child_process'
 // import { readFileSync } from 'node:fs'
 // import { join, dirname } from 'node:path'
 // import { fileURLToPath } from 'node:url'
@@ -102,7 +102,6 @@ describe('the writer chokepoint refuses a bad id before touching disk', () => {
 })
 */
 
-/*
 describe('layer 2 -- shSingleQuote makes ANY value one inert shell word', () => {
   it('wraps a plain value in single quotes', () => {
     expect(shSingleQuote('claude-opus-5')).toBe("'claude-opus-5'")
@@ -136,9 +135,7 @@ describe('layer 2 -- shSingleQuote makes ANY value one inert shell word', () => 
     expect(out).toBe(payload) // returned verbatim -> neither $(...) nor `id` was evaluated
   })
 })
-*/
 
-/*
 describe('the launch string the fix produces is safe end-to-end', () => {
   // Mirror agent-process.ts's construction for the ollama branch with a hostile (pre-allowlist) model,
   // and prove that running it does NOT execute the payload -- the belt (allowlist) and braces (escape)
@@ -155,4 +152,3 @@ describe('the launch string the fix produces is safe end-to-end', () => {
     expect(out).toBe(hostile)
   })
 })
-*/
