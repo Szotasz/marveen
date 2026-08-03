@@ -6,7 +6,7 @@
 // suite pins BOTH, because either alone leaves the class open.
 import { describe, it, expect } from 'vitest'
 import { MODEL_ID_RE, isValidModelId, InvalidModelIdError } from '../model-id.js'
-// import { writeAgentModel } from '../web/agent-config.js'
+import { writeAgentModel } from '../web/agent-config.js'
 import { shSingleQuote } from '../web/agent-process.js'
 import { execFileSync } from 'node:child_process'
 // import { readFileSync } from 'node:fs'
@@ -65,7 +65,6 @@ describe('layer 1 -- the model-id allowlist', () => {
   })
 })
 
-/*
 describe('the writer chokepoint refuses a bad id before touching disk', () => {
   it('writeAgentModel THROWS InvalidModelIdError on an injection payload', () => {
     // The guard is the first statement, before any fs access, so no agent-config.json is written.
@@ -78,29 +77,29 @@ describe('the writer chokepoint refuses a bad id before touching disk', () => {
   // one persisted-model writer that used to skip the allowlist. It is a private, IO-side-effecting fn
   // in the heavy model-fallback-runner module (never imported by a test), so we pin the guard at the
   // source: it must call isValidModelId(model) and BEFORE it ever writes .claude/settings.json.
-  it('writeMainModel validates the id BEFORE the write chokepoint', () => {
-    const runnerSrc = readFileSync(
-      join(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'model-fallback-runner.ts'),
-      'utf8',
-    )
-    const m = /function writeMainModel\s*\([^)]*\)[^{]*\{/.exec(runnerSrc)
-    expect(m, 'writeMainModel not found').not.toBeNull()
-    // Brace-match the function body so the assertions cannot be satisfied by code elsewhere.
-    let depth = 0
-    let end = runnerSrc.length
-    for (let i = runnerSrc.indexOf('{', m!.index); i < runnerSrc.length; i++) {
-      if (runnerSrc[i] === '{') depth++
-      else if (runnerSrc[i] === '}' && --depth === 0) { end = i; break }
-    }
-    const body = runnerSrc.slice(m!.index, end + 1)
-    const guardAt = body.indexOf('if (!isValidModelId(model)) throw new InvalidModelIdError(model)')
-    const writeAt = body.indexOf('atomicWriteFileSync')
-    expect(guardAt, 'writeMainModel missing the isValidModelId guard').toBeGreaterThan(0)
-    expect(writeAt, 'writeMainModel no longer writes via atomicWriteFileSync').toBeGreaterThan(0)
-    expect(guardAt).toBeLessThan(writeAt) // validate before persisting
-  })
+  // P2: needs web/model-fallback-runner.ts
+  // it('writeMainModel validates the id BEFORE the write chokepoint', () => {
+  //   const runnerSrc = readFileSync(
+  //     join(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'model-fallback-runner.ts'),
+  //     'utf8',
+  //   )
+  //   const m = /function writeMainModel\s*\([^)]*\)[^{]*\{/.exec(runnerSrc)
+  //   expect(m, 'writeMainModel not found').not.toBeNull()
+  //   // Brace-match the function body so the assertions cannot be satisfied by code elsewhere.
+  //   let depth = 0
+  //   let end = runnerSrc.length
+  //   for (let i = runnerSrc.indexOf('{', m!.index); i < runnerSrc.length; i++) {
+  //     if (runnerSrc[i] === '{') depth++
+  //     else if (runnerSrc[i] === '}' && --depth === 0) { end = i; break }
+  //   }
+  //   const body = runnerSrc.slice(m!.index, end + 1)
+  //   const guardAt = body.indexOf('if (!isValidModelId(model)) throw new InvalidModelIdError(model)')
+  //   const writeAt = body.indexOf('atomicWriteFileSync')
+  //   expect(guardAt, 'writeMainModel missing the isValidModelId guard').toBeGreaterThan(0)
+  //   expect(writeAt, 'writeMainModel no longer writes via atomicWriteFileSync').toBeGreaterThan(0)
+  //   expect(guardAt).toBeLessThan(writeAt) // validate before persisting
+  // })
 })
-*/
 
 describe('layer 2 -- shSingleQuote makes ANY value one inert shell word', () => {
   it('wraps a plain value in single quotes', () => {
