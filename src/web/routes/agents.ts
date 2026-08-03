@@ -2079,6 +2079,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (!existsSync(dir)) { json(res, { error: 'Agent not found' }, 404); return true }
     rmSync(dir, { recursive: true, force: true })
     cleanupTeamReferences(name)
+    // Deleting an agent is at least as strong a statement of intent as stopping
+    // one, so it must clear the desired run-state the same way /stop does.
+    // Without this the name outlives its directory in agents-desired.json, and
+    // the reconciler keeps trying to start something that no longer exists --
+    // a permanent error-level log line for a machine that is behaving
+    // correctly. The sharper hazard is later: create an agent with the same
+    // name again and the stale entry starts it immediately, unasked.
+    removeDesiredAgent(name)
     json(res, { ok: true })
     return true
   }
