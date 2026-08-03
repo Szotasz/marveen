@@ -1,0 +1,59 @@
+name: marveen
+
+services:
+  marveen:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: marveen:local
+    container_name: marveen
+    restart: unless-stopped
+    # Docker-provided init as a second safety net alongside the image's tini.
+    init: true
+    env_file:
+      - .env.docker
+    environment:
+      WEB_PORT: ${WEB_PORT:-3420}
+      TZ: ${TZ:-Europe/Budapest}
+    ports:
+      - "${WEB_PORT:-3420}:${WEB_PORT:-3420}"
+    volumes:
+      # Persistent runtime state (all gitignored, never baked into the image).
+      # store/ contains the SQLite DB (store/claudeclaw.db), tokens and settings.
+      - marveen-store:/app/store
+      - marveen-agents:/app/agents
+      - marveen-workspace:/app/workspace
+      - marveen-reports:/app/reports
+      - marveen-channels:/app/.channels-config
+      - marveen-mcp:/app/mcp-servers
+      # Alternative to baking/env tokens: mount host Claude auth read-only.
+      # - ${HOME}/.claude:/home/node/.claude:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:${WEB_PORT:-3420}/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+
+  # Optional local-LLM offload target (mikrob's Ollama offload feature).
+  # Enable with:  docker compose --profile ollama up -d
+  # then set OLLAMA_URL=http://ollama:11434 in .env.docker.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: marveen-ollama
+    profiles: ["ollama"]
+    restart: unless-stopped
+    volumes:
+      - ollama-models:/root/.ollama
+    # Uncomment to expose the Ollama API on the host:
+    # ports:
+    #   - "11434:11434"
+
+volumes:
+  marveen-store:
+  marveen-agents:
+  marveen-workspace:
+  marveen-reports:
+  marveen-channels:
+  marveen-mcp:
+  ollama-models:

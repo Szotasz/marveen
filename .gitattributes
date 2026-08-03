@@ -6,3 +6,11 @@
 # Other shell scripts stay LF — they run on bash.
 *.sh   text eol=lf
 *.bash text eol=lf
+
+# Docker + container config run on Linux; keep LF so RUN steps and the shebang
+# lines in mounted scripts don't break on a Windows (autocrlf) checkout.
+Dockerfile          text eol=lf
+*.dockerfile        text eol=lf
+.dockerignore       text eol=lf
+docker-compose*.yml text eol=lf
+.env*               text eol=lf

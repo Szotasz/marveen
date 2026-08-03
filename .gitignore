@@ -8,6 +8,8 @@ __pycache__/
 
 # Secrets & personal data
 .env
+# Docker runtime env may hold tokens -- keep only the tracked .example.
+.env.docker
 store/
 workspace/
 agents/
