@@ -524,12 +524,61 @@ fi
 BRAND_NAME="$BOT_NAME"
 SERVICE_ID="$MAIN_AGENT_ID"
 
+# Resolve the Node the launchd SERVICES will run, and pin the whole install to
+# it. Idempotent: sets NODE_PATH / NODE_BIN_DIR once, both the npm step below and
+# the launchagent step later call it.
+#
+# This used to live only in the launchagent step, ~600 lines further down -- long
+# AFTER `npm rebuild better-sqlite3`. So the install compiled the native module
+# against whatever generic `node` was on the operator's PATH (v25/v26, ABI 141)
+# and THEN handed the services node@22 (ABI 127). The pin worked exactly as
+# designed and the module was still built for the wrong runtime:
+#
+#   better_sqlite3.node was compiled against NODE_MODULE_VERSION 141.
+#   This version of Node.js requires NODE_MODULE_VERSION 127.
+#
+# `channels` survived (it touches no DB); the dashboard died on its first
+# require, so store/.dashboard-token -- written on first successful boot -- was
+# never created, and the installer still printed "sikeresen telepitve".
+resolve_service_node() {
+  [ -n "${NODE_PATH:-}" ] && [ -x "${NODE_PATH:-}" ] && return 0
+
+  # Homebrew's generic `node` symlink auto-upgrades to new majors whose ABI
+  # breaks the prebuilt better-sqlite3. node@22 is keg-only, so a generic `node`
+  # of any major can coexist -- pin to its keg path.
+  local prefix
+  prefix="$(brew --prefix node@22 2>/dev/null || true)"
+
+  if { [ -z "$prefix" ] || [ ! -x "$prefix/bin/node" ]; } && command -v brew &>/dev/null; then
+    echo -e "  ${ORANGE}node@22 telepitese a launchd szolgaltatasokhoz (ABI-stabil better-sqlite3)...${NC}"
+    brew install node@22 || true
+    prefix="$(brew --prefix node@22 2>/dev/null || true)"
+  fi
+
+  if [ -n "$prefix" ] && [ -x "$prefix/bin/node" ]; then
+    NODE_PATH="$prefix/bin/node"
+  else
+    # Last-resort fallback: node@22 could not be installed (e.g. no brew). The
+    # services may still break on an ABI-incompatible node -- warn loudly.
+    NODE_PATH="$(which node)"
+    echo -e "  ${RED}Figyelem:${NC} node@22 nem elerheto, a szolgaltatasok ${NODE_PATH}-ra allnak. ABI-hiba eseten telepitsd: brew install node@22"
+  fi
+
+  NODE_BIN_DIR="$(dirname "$NODE_PATH")"
+}
+
 # Step 5: Install dependencies
 INSTALL_STEP="npm-install"
 echo ""
 echo -e "${BOLD}$(_t section_5)${NC}"
 cd "$INSTALL_DIR"
-if ! npm install --loglevel warn || ! npm rebuild better-sqlite3 --build-from-source; then
+resolve_service_node
+# Prepending NODE_BIN_DIR is what makes the rebuild target the SERVICE runtime:
+# npm resolves `node` through PATH, and node-gyp compiles against the node that
+# resolves. Same reason `npm install` runs here too -- it can fetch or build
+# native prebuilds of its own.
+if ! PATH="$NODE_BIN_DIR:$PATH" npm install --loglevel warn \
+  || ! PATH="$NODE_BIN_DIR:$PATH" npm rebuild better-sqlite3 --build-from-source; then
   fail "npm install sikertelen. Ellenorizd a hibauzeneteket fentebb."
 fi
 ok "$(_t macos.npm_done)"
@@ -1053,27 +1102,10 @@ echo -e "${BOLD}$(_t section_7)${NC}"
 PLIST_DIR="$HOME/Library/LaunchAgents"
 mkdir -p "$PLIST_DIR"
 
-# Pin launchd services to a stable Node 22 (brew node@22). Homebrew's generic
-# `node` symlink auto-upgrades to new majors (e.g. 26) whose ABI breaks the
-# prebuilt better-sqlite3 binary, preventing the dashboard from starting and the
-# dashboard token from ever being created. node@22 is keg-only, so a generic
-# `node` of any major can coexist -- we ensure node@22 is present and pin the
-# services directly to its keg path.
-NODE22_PREFIX="$(brew --prefix node@22 2>/dev/null || true)"
-if { [ -z "$NODE22_PREFIX" ] || [ ! -x "$NODE22_PREFIX/bin/node" ]; } && command -v brew &>/dev/null; then
-  echo -e "  ${ORANGE}node@22 telepitese a launchd szolgaltatasokhoz (ABI-stabil better-sqlite3)...${NC}"
-  brew install node@22 || true
-  NODE22_PREFIX="$(brew --prefix node@22 2>/dev/null || true)"
-fi
-if [ -n "$NODE22_PREFIX" ] && [ -x "$NODE22_PREFIX/bin/node" ]; then
-  NODE_PATH="$NODE22_PREFIX/bin/node"
-else
-  # Last-resort fallback: node@22 could not be installed (e.g. no brew). The
-  # services may still break on an ABI-incompatible node -- warn loudly.
-  NODE_PATH="$(which node)"
-  echo -e "  ${RED}Figyelem:${NC} node@22 nem elerheto, a szolgaltatasok ${NODE_PATH}-ra allnak. ABI-hiba eseten telepitsd: brew install node@22"
-fi
-NODE_BIN_DIR="$(dirname "$NODE_PATH")"
+# Pin launchd services to the SAME Node the native module was just compiled
+# against (see resolve_service_node above, called from the npm-install step).
+# The resolution used to live here, which is why the two disagreed.
+resolve_service_node
 # Launchd labels key off SERVICE_ID. SERVICE_ID == MAIN_AGENT_ID for a
 # brand-unaware (default) install, so these labels are unchanged unless the
 # operator picked a distinct brand above.
