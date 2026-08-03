@@ -28,10 +28,12 @@ import { execFileSync } from 'node:child_process'
 import { homedir, hostname, userInfo, networkInterfaces } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isIP } from 'node:net'
 import {
   validatePublicKeyLine,
   buildRestrictedLine,
   buildBundle,
+  checkEnrollHost,
   encodeBundle,
   resolveHostKey,
   HOST_KEY_PUB_CANDIDATES,
@@ -67,6 +69,11 @@ function parseArgs(argv: string[]): Args {
     if (a === '--host') {
       const v = argv[++i]
       if (!v) fail('--host requires a value')
+      // Same check as the dashboard route: this is the SECOND way a target
+      // address enters a bundle, and leaving it open would mean the next
+      // person has to find the same bug twice.
+      const checked = checkEnrollHost(v, isIP)
+      if (!checked.ok) fail(`--host: ${checked.reason}`)
       out.host = v
     } else if (a === '--no-dashboard-token') {
       out.includeDashboardToken = false

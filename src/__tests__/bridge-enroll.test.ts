@@ -222,6 +222,31 @@ describe('POST /api/security/bridge-enroll (HTTP)', () => {
     expect(listDeviceKeys()).toHaveLength(0)
   })
 
+  it('400s on a target address that cannot be a host, before any side effect (JANKBRIDGE803)', async () => {
+    // The reported case: the customer typed his Tailscale ACCOUNT email. It
+    // used to reach the bundle untouched and fail only at connect time with
+    // `getaddrinfo EAI_FAIL <email>`. The refusal must happen here, at the
+    // door, and it must leave nothing behind -- a half-enrolled device key
+    // would be worse than the original bug.
+    const { line } = makeKeyLine()
+    const r = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', {
+      auth: { kind: 'token' },
+      body: { key_line: line, name: 'Route Phone', host: 'jaequas2605@gmail.com' },
+    })
+    expect(r.statusCode).toBe(400)
+    expect(String(r.json().error)).toMatch(/email/i)
+    expect(listDeviceKeys()).toHaveLength(0)
+
+    // Positive control on the same route: a well-formed address must NOT be
+    // refused by this check. Without it a validator that rejects everything
+    // would pass the assertion above and quietly break every pairing.
+    const ok = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', {
+      auth: { kind: 'token' },
+      body: { key_line: line, name: 'Route Phone', host: '100.124.123.12' },
+    })
+    expect(String(ok.json().error ?? '')).not.toMatch(/Invalid host/)
+  })
+
   it('enrolls end-to-end over the route (MARVEEN_SSH_DIR seam) and audits', async () => {
     process.env.MARVEEN_SSH_DIR = sshDir
     // The route uses default deps; loopback keyscan may fail in CI, so give it

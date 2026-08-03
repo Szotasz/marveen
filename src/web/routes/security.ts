@@ -16,6 +16,8 @@ import { logger } from '../../logger.js'
 import { logConfigChange } from '../../db.js'
 import { notifySecurityEvent } from '../../notify.js'
 import { bridgeEnroll, sshDirOverride, RemoteEnrollError } from '../bridge-enroll.js'
+import { checkEnrollHost } from '../../remote-enroll-core.js'
+import { isIP } from 'node:net'
 import type { RouteContext } from './types.js'
 
 const BODY_MAX_BYTES = 8 * 1024
@@ -56,7 +58,17 @@ export async function tryHandleSecurity(ctx: RouteContext): Promise<boolean> {
     json(res, { error: 'Invalid device name (1-64 chars: letters, digits, space, . _ -)' }, 400)
     return true
   }
+  // Empty stays empty: the field is optional and bridgeEnroll then fills in the
+  // machine's own address. Note that this `|| undefined` is load-bearing --
+  // bridgeEnroll's fallback uses `??`, which does NOT catch an empty string.
   const host = str(body.host).trim() || undefined
+  if (host !== undefined) {
+    const checked = checkEnrollHost(host, isIP)
+    if (!checked.ok) {
+      json(res, { error: `Invalid host: ${checked.reason}` }, 400)
+      return true
+    }
+  }
   let sshPort: number | undefined
   if (body.ssh_port !== undefined && body.ssh_port !== null && body.ssh_port !== '') {
     const n = Number(body.ssh_port)
