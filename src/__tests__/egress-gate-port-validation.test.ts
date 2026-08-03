@@ -8,31 +8,37 @@
 // adds one line -- `if (fromEnv) return fromEnv` after the validated read -- restores the exploit in
 // full while all those assertions still pass. A source-grep measures the code's spelling: it goes
 // green on a vulnerable mutant and red on a harmless rename. So the load-bearing assertions below
-// call isEgressBlocked() and check the ALLOW/BLOCK decision instead.
+// exercise the ALLOW/BLOCK decision instead.
 //
-// DASHBOARD_PORT is resolved at MODULE LOAD, so each case sets the env first, then vi.resetModules()
-// + a dynamic import to get a freshly-resolved gate.
-import { describe, it, expect, vi, afterEach } from 'vitest'
+// SUBPROCESS, deliberately (not `await import('.../egress-gate.mjs')`). `egress-gate.mjs` carries a
+// `#!/usr/bin/env node` shebang because it also runs as a directly-invoked hook. On this toolchain
+// (vitest 2.1.9 / vite 5.4.21 / Node v25.2.1) vite-node's SSR transform only blanks a leading shebang
+// when the transformed output still starts with `#`; the isValidPort/DASHBOARD_PORT block changes
+// esbuild's transform shape enough that the shebang line no longer stays first, so vite-node's dynamic
+// `import()` throws `SyntaxError: Invalid or unexpected token` -- a vite-node collection artifact, not
+// a defect in the hook. Spawning the file as a real child process sidesteps vite-node's transform
+// entirely and exercises the exact code path production uses (JSON on stdin, WEB_PORT via env, an
+// ALLOW/DENY decision on exit).
+import { describe, it, expect } from 'vitest'
+import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 
-const NO_RUNTIME_LIST = { domains: [], prefixes: [] }
+const HOOK_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'hooks', 'egress-gate.mjs')
 
-/** Load the gate with WEB_PORT set to `port` (or unset), resolved fresh at import time. */
-async function gateWithPort(port: string | undefined) {
-  if (port === undefined) delete process.env['WEB_PORT']
-  else process.env['WEB_PORT'] = port
-  vi.resetModules()
-  // The hook is plain ESM JavaScript with no .d.ts, so TS cannot type the dynamic import; the shape
-  // we rely on is asserted immediately below.
-  // @ts-expect-error -- untyped .mjs hook, intentionally imported for a behavioural test
-  const mod = (await import('../../scripts/hooks/egress-gate.mjs')) as unknown
-  const gate = mod as { isEgressBlocked: (t: string, i: { url: string }, r?: unknown) => boolean }
-  expect(typeof gate.isEgressBlocked).toBe('function')
-  return gate
+/**
+ * Run the hook exactly as the PreToolUse harness does: `tool_name`/`tool_input` JSON on stdin,
+ * WEB_PORT via env. The hook always exits 0; it writes a deny payload to stdout only when blocking,
+ * and writes nothing when allowing (see `allow()`/`deny()` in egress-gate.mjs).
+ */
+function runGate(port: string | undefined, url: string): 'ALLOW' | 'DENY' {
+  const env: NodeJS.ProcessEnv = { ...process.env }
+  if (port === undefined) delete env['WEB_PORT']
+  else env['WEB_PORT'] = port
+  const input = JSON.stringify({ tool_name: 'WebFetch', tool_input: { url } })
+  const stdout = execFileSync(process.execPath, [HOOK_PATH], { env, input, encoding: 'utf8' })
+  return stdout.trim() === '' ? 'ALLOW' : 'DENY'
 }
-const blocked = async (port: string | undefined, url: string) =>
-  (await gateWithPort(port)).isEgressBlocked('WebFetch', { url }, NO_RUNTIME_LIST)
-
-afterEach(() => { delete process.env['WEB_PORT'] })
 
 describe('egress-gate dashboard-port validation (cards 266d8248, 417cf07a)', () => {
   it('documents WHY: an @ in the port makes the attacker host the real host', () => {
@@ -42,32 +48,32 @@ describe('egress-gate dashboard-port validation (cards 266d8248, 417cf07a)', () 
     expect(new URL('http://localhost:3420/').hostname).toBe('localhost')
   })
 
-  it('BLOCKS a port that smuggles a host onto the built-in allowlist (the exploit)', async () => {
-    expect(await blocked('3420@evil.com', 'http://localhost:3420@evil.com/steal')).toBe(true)
+  it('BLOCKS a port that smuggles a host onto the built-in allowlist (the exploit)', () => {
+    expect(runGate('3420@evil.com', 'http://localhost:3420@evil.com/steal')).toBe('DENY')
   })
 
-  it('a rejected port cannot put a foreign host on the allowlist, and falls back to the default', async () => {
+  it('a rejected port cannot put a foreign host on the allowlist, and falls back to the default', () => {
     // Probe the actual risk: whatever the bad value is, no NEW origin may become reachable, and the
     // default port must still work. (Probing `http://localhost:<bad>/...` would be wrong -- e.g.
     // '3420/../' falls back to 3420 and then legitimately IS the dashboard.)
     for (const bad of ['3420 ', '80#x', '3420/../', 'evil.com', '3420@evil.com']) {
-      expect(await blocked(bad, 'http://evil.com/steal')).toBe(true)
-      expect(await blocked(bad, 'http://localhost:3420@evil.com/steal')).toBe(true)
-      expect(await blocked(bad, 'http://localhost:3420/api/agents')).toBe(false)
+      expect(runGate(bad, 'http://evil.com/steal')).toBe('DENY')
+      expect(runGate(bad, 'http://localhost:3420@evil.com/steal')).toBe('DENY')
+      expect(runGate(bad, 'http://localhost:3420/api/agents')).toBe('ALLOW')
     }
   })
 
-  it('does NOT over-correct: a legitimate configured port still reaches the dashboard', async () => {
+  it('does NOT over-correct: a legitimate configured port still reaches the dashboard', () => {
     // A validation that also broke the dashboard would just trade one outage for another.
-    expect(await blocked('8080', 'http://localhost:8080/api/kanban')).toBe(false)
-    expect(await blocked('8080', 'http://127.0.0.1:8080/api/kanban')).toBe(false)
+    expect(runGate('8080', 'http://localhost:8080/api/kanban')).toBe('ALLOW')
+    expect(runGate('8080', 'http://127.0.0.1:8080/api/kanban')).toBe('ALLOW')
   })
 
-  it('a port that is NOT the configured one stays blocked', async () => {
-    expect(await blocked('8080', 'http://localhost:3420/api/kanban')).toBe(true)
+  it('a port that is NOT the configured one stays blocked', () => {
+    expect(runGate('8080', 'http://localhost:3420/api/kanban')).toBe('DENY')
   })
 
-  it('with WEB_PORT unset the default port is allowed', async () => {
-    expect(await blocked(undefined, 'http://localhost:3420/api/agents')).toBe(false)
+  it('with WEB_PORT unset the default port is allowed', () => {
+    expect(runGate(undefined, 'http://localhost:3420/api/agents')).toBe('ALLOW')
   })
 })
