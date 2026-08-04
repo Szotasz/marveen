@@ -16,6 +16,19 @@ import type { RouteContext } from './types.js'
 // and the holder would answer the wrong party.
 const LOCK_SENDER = 'desktop-lock'
 
+// MARKER SHAPE: every broadcast starts with the BARE marker -- `[DESKTOP-LOCK]` or
+// `[DESKTOP-FREE]` -- and any qualifier (extension, expiry) follows AFTER the closing
+// bracket. Readers scan for these markers with a start-anchored `content LIKE
+// '[DESKTOP-LOCK...'`, and a qualifier placed INSIDE the brackets silently defeats the
+// bracket-closing variant of that pattern.
+//
+// Measured on 2026-08-04: a lock announced as `[DESKTOP-LOCK -- on behalf of the owner]`
+// returned ZERO hits from a peer's `LIKE '[DESKTOP-LOCK]%'` check -- so the STRICTEST lock
+// of the day (taken because the human owner was working on the screen) was the one the
+// detector could not see, and the peer nearly started a browser round on top of it. The
+// pattern was fixed too, but a message shape that only works with the fixed pattern would
+// re-open the same hole for the next reader who writes the obvious one.
+
 /** Everyone who must keep their hands off, minus the holder. Derived from the
  *  agent registry, never a hand-written list -- a new agent joins the fleet
  *  and is covered without anyone remembering this file. */
@@ -93,7 +106,7 @@ export async function tryHandleDesktopLock(ctx: RouteContext): Promise<boolean> 
 
     const until = hu(lock.estimatedEndAt as number)
     const head = isExtension
-      ? `[DESKTOP-LOCK MEGHOSSZABBITVA] ${owner}: a kepernyo tovabbra is foglalt, uj becsult vege ${until}.`
+      ? `[DESKTOP-LOCK] MEGHOSSZABBITVA -- ${owner}: a kepernyo tovabbra is foglalt, uj becsult vege ${until}.`
       : `[DESKTOP-LOCK] ${owner}: a kepernyo foglalt, becsult vege ${until}.`
     const estimateNote = lock.estimateProvided
       ? ''
@@ -154,7 +167,7 @@ export function sweepExpiredDesktopLock(now: number = Date.now()): boolean {
 
   try {
     createAgentMessage(LOCK_SENDER, lock.owner,
-      `[DESKTOP-LOCK LEJART] A te lockod lejart (${heldMin} perc utan; ${detail}), a kapu KINYITOTT.`
+      `[DESKTOP-LOCK] LEJART -- a te lockod lejart (${heldMin} perc utan; ${detail}), a kapu KINYITOTT.`
       + ' Ha meg a kepernyon dolgozol, AZONNAL nyiss ujat (POST /api/desktop-lock), kulonben masik'
       + ' ugynok is hozzanyulhat. Ha vegeztel, ezt hagyd figyelmen kivul -- de akkor a FREE-t'
       + ' legkozelebb kuldd el, mert enelkul a kapu csak lejaratra nyilik.')
@@ -162,7 +175,7 @@ export function sweepExpiredDesktopLock(now: number = Date.now()): boolean {
     logger.warn({ err, owner: lock.owner }, 'desktop-lock: could not notify holder about expiry')
   }
   broadcast(LOCK_SENDER, broadcastTargets(lock.owner),
-    `[DESKTOP-FREE / LEJARAT] ${lock.owner} lockja LEJART (${heldMin} perc, ${detail}).`
+    `[DESKTOP-FREE] LEJARAT -- ${lock.owner} lockja lejart (${heldMin} perc, ${detail}).`
     + ' A kepernyo szabad, DE a tulaj nem zarta le rendesen -- lehet, hogy meg ott dolgozik.'
     + ' Mielott hozzanyulsz, gyozodj meg rola.')
   return true

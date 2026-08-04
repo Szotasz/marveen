@@ -17,6 +17,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { dirname } from 'node:path'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
 import {
   decideDesktopGate, lockExpiresAt, readDesktopLock, writeDesktopLock, clearDesktopLock,
   recordDesktopSkip, TTL_GRACE_MS, DEFAULT_ESTIMATE_MS, type DesktopLock, type DesktopSkipRecord,
@@ -151,5 +155,42 @@ describe('skip records', () => {
   it('never throws on an unwritable path -- losing the trail beats losing the run loop', () => {
     expect(() => recordDesktopSkip(rec(), join(dir, 'no', 'such', 'dir', 'x.json'))).not.toThrow()
     expect(existsSync(join(dir, 'no'))).toBe(false)
+  })
+})
+
+// The broadcast marker must stay BARE: `[DESKTOP-LOCK]` / `[DESKTOP-FREE]` with any
+// qualifier AFTER the closing bracket. Peers scan for these with a start-anchored
+// `content LIKE '[DESKTOP-LOCK...'`, and a qualifier moved INSIDE the brackets silently
+// defeats the bracket-closing variant of that pattern.
+//
+// Measured on 2026-08-04: a lock announced as `[DESKTOP-LOCK -- on behalf of the owner]`
+// returned ZERO hits from a peer's `LIKE '[DESKTOP-LOCK]%'` check. The strictest lock of
+// the day was the one the detector could not see, and the peer nearly started a browser
+// round on top of the human owner's live session.
+//
+// A static source assert, mirroring the other structural-invariant tests in this suite:
+// the shape has to hold for every message the route can emit, and enumerating them
+// through the HTTP handler would test less for more setup.
+describe('broadcast marker shape', () => {
+  const src = readFileSync(
+    join(__dirname, '..', 'web', 'routes', 'desktop-lock.ts'), 'utf-8',
+  )
+
+  it('never puts a qualifier inside the marker brackets', () => {
+    // Scan CODE only: the comment above the constant quotes the broken shape on
+    // purpose (that is what makes the comment useful), and a scan that cannot
+    // tell code from prose would either fail forever or force the explanation out.
+    const code = src
+      .split('\n')
+      .filter(l => !l.trimStart().startsWith('//') && !l.trimStart().startsWith('*'))
+      .join('\n')
+    const bad = [...code.matchAll(/\[DESKTOP-(LOCK|FREE)(?!\])/g)]
+      .map(m => code.slice(m.index, (m.index ?? 0) + 60))
+    expect(bad).toEqual([])
+  })
+
+  it('still emits both markers', () => {
+    expect(src).toContain('[DESKTOP-LOCK]')
+    expect(src).toContain('[DESKTOP-FREE]')
   })
 })
