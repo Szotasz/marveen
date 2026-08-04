@@ -1289,13 +1289,20 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     }
     let claudeConfigDir = planResolution.configDir
     let oauthTokenEnv = ''
+    // Only Claude-OAuth agents need the fleet token. BYO/custom-endpoint agents
+    // (Ollama, DeepSeek, OpenRouter, generic custom) authenticate via their own
+    // ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN. Exporting CLAUDE_CODE_OAUTH_TOKEN
+    // for those agents causes the Claude CLI to send it to the third-party
+    // endpoint instead of the provider credential -> 401 (channel-agent + custom
+    // provider bug, 2026-08-05).
+    const needsFleetOauth = isClaude && authMode !== 'api'
     // Shared-home agents (no isolated config dir) authenticate from the rotating
     // ~/.claude/.credentials.json by default. If the operator has a long-lived
     // fleet setup-token, export it so EVERY locally launched agent uses the
     // stable token instead -- this is what makes the Linux credentials-guard
     // rename safe (a shared sub-agent with no env token would otherwise be
     // locked out once credentials.json is moved aside). No-op without a token.
-    if (!claudeConfigDir && hasFleetOauthToken()) {
+    if (!claudeConfigDir && hasFleetOauthToken() && needsFleetOauth) {
       oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
     }
     // Isolation must also cover CHANNEL-LESS Claude-OAuth agents, not just
@@ -1308,7 +1315,10 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // 2026-07-25). Only agents that never touch Anthropic OAuth stay on the
     // shared root: local/BYO-endpoint models (Ollama/DeepSeek/OpenRouter) and
     // per-agent API-key (authMode 'api') agents.
-    const needsFleetOauth = isClaude && authMode !== 'api'
+    // The CLAUDE_CONFIG_DIR isolation (ensureIsolatedChannelConfigDir) still
+    // applies to BYO-endpoint channel agents -- it prevents plugin-slot
+    // collision regardless of provider type. Only the OAuth token export is
+    // gated on needsFleetOauth.
     if (!claudeConfigDir && (hasChannel || needsFleetOauth) && name !== MAIN_AGENT_ID) {
       if (hasFleetOauthToken()) {
         // Token present -> isolation works; any earlier degradation is resolved,
@@ -1323,7 +1333,10 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
           // Read the token at launch via $(cat) so the literal secret never
           // appears in the JS-built command string or in `ps`. The file is 0600
           // and the value lands only in this process's own environment.
-          oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
+          // BYO/custom-endpoint agents: no OAuth export, only config-dir isolation.
+          if (needsFleetOauth) {
+            oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
+          }
         }
       } else {
         logger.warn({ name }, 'isolated-config: no fleet OAuth token (store/.claude-oauth-token); keeping shared ~/.claude. Run `claude setup-token` and store it to enable per-agent isolation.')
