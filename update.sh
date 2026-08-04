@@ -412,6 +412,135 @@ run_unit_maintenance() {
 }
 run_unit_maintenance
 
+# ─────────────────────────────────────────────────────────────────────────────
+# SEED REFRESH -- update a shipped skill/task copy ONLY while it is provably
+# untouched, and sits here (above the up-to-date exit) for the same reason the
+# unit maintenance does.
+#
+# The problem it solves: seeding is skip-if-exists, so a fix to a file we ship
+# reaches new installs only. That is how a broken recipe survived on every
+# existing machine (the kanban-audit task called sqlite3/jq, absent on a stock
+# Linux box, so two of its steps died silently four times a day). --reseed-fleet
+# fixes it, but somebody has to run it.
+#
+# The safety rule, and the only reason this is allowed to write at all: a file is
+# refreshed ONLY if its current bytes match SOME version we ourselves shipped.
+# Then the operator demonstrably never edited it, and the worst case of a wrong
+# call is that a modified file stays old -- which --reseed-fleet still handles by
+# hand. An edited file is never overwritten behind the operator's back.
+#
+# "Some version we shipped" is the whole history of that path in this checkout,
+# not just the current one: a machine carrying an untouched copy from two
+# releases ago is just as entitled to the fix.
+#
+# Scheduled tasks are TEMPLATED at seed time, so a historical blob is compared
+# in RENDERED form, with this install's own values. If the operator renamed the
+# bot after seeding, nothing matches and we leave the file alone -- conservative
+# in the safe direction.
+#
+# NOT touched here: the operator's own skills/tasks (they have no seed source, so
+# the loop never visits them) and CLAUDE.md (its refresh stays behind the
+# explicit --regen-claudemd flag, because that file is the operator's text).
+SEED_REFRESH_UPDATED=0
+SEED_REFRESH_KEPT=0
+
+# Render a template stream the same way the seeder does. Keep in sync with the
+# sed blocks in the seeding loops below and in install-linux.sh.
+render_seed_template() {
+  sed -e "s/{{MAIN_AGENT_ID}}/${MAIN_AGENT_ID:-}/g" \
+      -e "s/{{BOT_NAME}}/${BOT_NAME:-}/g" \
+      -e "s/{{OWNER_NAME}}/${OWNER_NAME:-}/g" \
+      -e "s|{{INSTALL_DIR}}|${INSTALL_DIR}|g" \
+      -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g"
+}
+
+# True (0) iff $1 (an installed file) is byte-identical to ANY historical version
+# of $2 (a repo-relative path), rendered when $3 = "template".
+seed_copy_is_untouched() {
+  installed="$1"; rel="$2"; mode="${3:-verbatim}"
+  [ -f "$installed" ] || return 1
+  cur="$(shasum -a 256 <"$installed" 2>/dev/null | awk '{print $1}')"
+  [ -n "$cur" ] || return 1
+  # Newest first, capped: a file we shipped 25+ revisions ago and never fixed
+  # since is not worth the extra git calls.
+  for blob in $(git -C "$INSTALL_DIR" log --format=%H -n 25 -- "$rel" 2>/dev/null); do
+    if [ "$mode" = "template" ]; then
+      candidate="$(git -C "$INSTALL_DIR" show "$blob:$rel" 2>/dev/null | render_seed_template | shasum -a 256 | awk '{print $1}')"
+    else
+      candidate="$(git -C "$INSTALL_DIR" show "$blob:$rel" 2>/dev/null | shasum -a 256 | awk '{print $1}')"
+    fi
+    [ "$cur" = "$candidate" ] && return 0
+  done
+  return 1
+}
+
+# Refresh one seeded directory tree. $1 = repo source dir (relative), $2 = target
+# root, $3 = verbatim|template.
+refresh_untouched_seeds() {
+  src_rel="$1"; target_root="$2"; mode="${3:-verbatim}"
+  [ -d "$INSTALL_DIR/$src_rel" ] || return 0
+  [ -d "$target_root" ] || return 0
+  for d in "$INSTALL_DIR/$src_rel"/*/; do
+    [ -d "$d" ] || continue
+    name="$(basename "$d")"
+    [ -d "$target_root/$name" ] || continue     # not seeded here -> not ours to add
+    for f in "$d"*; do
+      [ -f "$f" ] || continue
+      base="$(basename "$f")"
+      installed="$target_root/$name/$base"
+      [ -f "$installed" ] || continue           # never add files to an existing dir
+      rel="$src_rel/$name/$base"
+      # Already identical to what we would write -> not an update. Without this
+      # the run is not idempotent: it would rewrite the same bytes and report a
+      # refresh on every single update, which is exactly the kind of constant
+      # signal that stops being read.
+      if [ "$mode" = "template" ]; then
+        want="$(render_seed_template <"$f" | shasum -a 256 | awk '{print $1}')"
+      else
+        want="$(shasum -a 256 <"$f" | awk '{print $1}')"
+      fi
+      have="$(shasum -a 256 <"$installed" 2>/dev/null | awk '{print $1}')"
+      [ "$want" = "$have" ] && continue
+      if seed_copy_is_untouched "$installed" "$rel" "$mode"; then
+        if [ "$mode" = "template" ]; then
+          render_seed_template <"$f" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
+        else
+          cp "$f" "$installed"
+        fi
+        SEED_REFRESH_UPDATED=$((SEED_REFRESH_UPDATED + 1))
+      else
+        SEED_REFRESH_KEPT=$((SEED_REFRESH_KEPT + 1))
+      fi
+    done
+  done
+  return 0
+}
+
+run_seed_refresh() {
+  # Self-initialising counters: the function must not depend on a caller having
+  # set them, or it dies under `set -u` the moment it is called from anywhere
+  # else (a test harness found exactly that).
+  SEED_REFRESH_UPDATED="${SEED_REFRESH_UPDATED:-0}"
+  SEED_REFRESH_KEPT="${SEED_REFRESH_KEPT:-0}"
+  # .env values feed the template rendering; without MAIN_AGENT_ID a rendered
+  # comparison would be meaningless, so templated tasks are skipped then.
+  if [ -f "$INSTALL_DIR/.env" ]; then
+    MAIN_AGENT_ID="${MAIN_AGENT_ID:-$(sed -n 's/^MAIN_AGENT_ID=//p' "$INSTALL_DIR/.env" | head -1 | tr -d '"')}"
+    BOT_NAME="${BOT_NAME:-$(sed -n 's/^BOT_NAME=//p' "$INSTALL_DIR/.env" | head -1 | tr -d '"')}"
+    OWNER_NAME="${OWNER_NAME:-$(sed -n 's/^OWNER_NAME=//p' "$INSTALL_DIR/.env" | head -1 | tr -d '"')}"
+    WEB_PORT="${WEB_PORT:-$(sed -n 's/^WEB_PORT=//p' "$INSTALL_DIR/.env" | head -1 | tr -d '"')}"
+  fi
+  refresh_untouched_seeds "seed-skills" "$HOME/.claude/skills" "verbatim"
+  if [ -n "${MAIN_AGENT_ID:-}" ]; then
+    refresh_untouched_seeds "seed-scheduled-tasks" "$HOME/.claude/scheduled-tasks" "template"
+  fi
+  if [ "$SEED_REFRESH_UPDATED" -gt 0 ]; then
+    echo -e "  ${GREEN}✓${NC} Szallitott skill/feladat frissitve: ${SEED_REFRESH_UPDATED} (erintetlen masolat); megtartva: ${SEED_REFRESH_KEPT} (helyben modositott)"
+  fi
+  return 0
+}
+run_seed_refresh
+
 if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
   # Already on the latest commit -- but "no new commits" does NOT guarantee the
   # compiled dist/ matches the source. A prior update can pull new source and
