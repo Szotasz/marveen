@@ -33,22 +33,36 @@ Examples:
 Collect data from these sources (skip any that return empty):
 
 ```bash
-# Active kanban cards (assigned to current agent or recently touched)
+# Active kanban cards (assigned to current agent or recently touched).
+# Via the dashboard API, NOT the sqlite3 CLI: sqlite3 (and jq) are absent on a
+# stock Linux install -- measured on two live hosts 2026-08-04, where the CLI
+# call died with exit 127 while python3 was present on both.
 AGENT_ID="$(echo $BOT_NAME | tr '[:upper:]' '[:lower:]')"
-sqlite3 store/claudeclaw.db "SELECT id, title, status, priority, assignee, description FROM kanban_cards WHERE archived_at IS NULL AND (assignee = '$AGENT_ID' OR status = 'in_progress') ORDER BY priority DESC, updated_at DESC LIMIT 10"
+PORT="$(sed -n 's/^WEB_PORT=//p' .env 2>/dev/null | head -1 | tr -d '"')"; PORT="${PORT:-3420}"
+curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
+  "http://localhost:$PORT/api/kanban" | AGENT_ID="$AGENT_ID" python3 -c "
+import json,os,sys
+me=os.environ.get('AGENT_ID','')
+rows=[c for c in json.load(sys.stdin)
+      if not c.get('archived_at') and ((c.get('assignee') or '').lower()==me or c.get('status')=='in_progress')]
+rank={'urgent':0,'high':1,'normal':2,'low':3}
+rows.sort(key=lambda c:(rank.get(c.get('priority'),9), -(c.get('updated_at') or 0)))
+for c in rows[:10]:
+    print(c['id'], '|', c.get('status'), '|', c.get('priority'), '|', (c.get('assignee') or '-'), '|', c.get('title'))
+"
 
 # Hot memories from last 24h
 curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  "http://localhost:3420/api/memories?agent=$AGENT_ID&category=hot&limit=10"
+  "http://localhost:$PORT/api/memories?agent=$AGENT_ID&category=hot&limit=10"
 
 # Recent warm memories (project context)
 curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  "http://localhost:3420/api/memories?agent=$AGENT_ID&category=warm&limit=5"
+  "http://localhost:$PORT/api/memories?agent=$AGENT_ID&category=warm&limit=5"
 
 # Today's daily log
 DATE=$(date +%Y-%m-%d)
 curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  "http://localhost:3420/api/daily-log?agent=$AGENT_ID&date=$DATE"
+  "http://localhost:$PORT/api/daily-log?agent=$AGENT_ID&date=$DATE"
 ```
 
 Also include from your current conversation context:
@@ -105,7 +119,7 @@ Keep each step concrete enough to execute without asking questions.}
 **Inter-agent mode** (`target=` specified): Send the full HANDOFF.md content as an inter-agent message:
 
 ```bash
-curl -s -X POST http://localhost:3420/api/messages \
+curl -s -X POST http://localhost:$PORT/api/messages \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $(cat store/.dashboard-token)" \
   -d "{\"from\":\"$AGENT_ID\",\"to\":\"TARGET\",\"content\":\"[HANDOFF] purpose: ... \n\n$(cat HANDOFF.md)\"}"

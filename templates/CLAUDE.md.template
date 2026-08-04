@@ -124,7 +124,43 @@ curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
 
 ## Kanban tábla
 
-A kanban tábla az SQLite adatbázisban van: `store/claudeclaw.db` -> `kanban_cards` és `kanban_comments` táblák.
+A kanban adatai a `store/claudeclaw.db` SQLite fájlban vannak, de **NE a `sqlite3`
+parancssori eszközzel nyúlj hozzá, és `jq`-t se feltételezz**: egyik sincs telepítve egy
+átlagos Linux gépen (a telepítő függőségei: ffmpeg, git, tmux, lsof, curl, python3, pipx,
+unzip), és ott a hívás `exit 127`-tel elhal. A tábla útja a dashboard API -- ugyanaz a
+Bearer token, mint a memóriánál. Szűréshez/számoláshoz `python3` van mindig kéznél.
+
+Kártyák listázása (JSON tömb: id, title, status, assignee, priority, updated_at, archived_at):
+```bash
+curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
+  http://localhost:{{WEB_PORT}}/api/kanban
+```
+
+Új kártya:
+```bash
+curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
+  -d '{"title":"CÍM","status":"planned","assignee":"{{MAIN_AGENT_ID}}","priority":"normal"}'
+```
+
+Kártya mozgatása:
+```bash
+curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/move \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
+  -d '{"status":"in_progress"}'
+```
+
+Komment a kártyára (az eredmény ide kerül, a dashboardon ez látszik):
+```bash
+curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/comments \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
+  -d '{"author":"{{MAIN_AGENT_ID}}","content":"AZ EREDMÉNY RÖVIDEN"}'
+```
+
+Archiválás: `POST /api/kanban/KARTYA_ID/archive`, üres törzzsel.
 
 Státuszok: planned, in_progress, waiting, done
 Prioritások: low, normal, high, urgent

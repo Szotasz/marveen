@@ -640,10 +640,16 @@ if [ -d "$SEED_SCHED_DIR" ]; then
       mkdir -p "$target"
       for f in "$tpl"*; do
         [ -f "$f" ] || continue
+        # {{WEB_PORT}} belongs here too: install-linux.sh substitutes it in both
+        # of its seeding loops, and a task seeded by THIS path used to keep the
+        # literal placeholder in its URLs. Same placeholder set on both paths,
+        # or a template silently means different things depending on which
+        # script created the copy.
         sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
             -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
             -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
             -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+            -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
             "$f" > "$target/$(basename "$f")"
       done
       if [ "$forced" = "1" ]; then SCHED_FORCED=$((SCHED_FORCED + 1)); else SCHED_NEW=$((SCHED_NEW + 1)); fi
