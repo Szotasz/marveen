@@ -289,6 +289,8 @@ window._i18n.en = {
 
   // --- Agents ---
   'agents.page_title':           'Team',
+  'agents.view.profile':         'Profile',
+  'agents.view.activity':        'Activity',
   'agents.page_subtitle':        'Manage AI team members',
   'agents.detail.select_avatar':   'Select new avatar',
   'agents.detail.modal_title':      'Agent Details',
@@ -326,9 +328,8 @@ window._i18n.en = {
   'agents.toast.avatar_error':   'Error saving avatar',
 
   // --- Activity ---
-  'activity.page_title':         'Activity',
-  'activity.page_subtitle':      'What each agent is doing: live view, updates every 3 sec',
-  'activity.loading':            'Loading…',
+  'activity.no_output':          'no recent output',
+  'activity.not_running':        'session not running',
   'activity.state.working':      'working',
   'activity.state.idle':         'idle',
   'activity.state.unknown':      'unknown',
@@ -655,7 +656,7 @@ window._i18n.en = {
   'team.page_title':             'Team',
   'team.page_subtitle':          'Who reports to whom and who delegates to whom',
   'team.btn.refresh':            'Refresh',
-  'team.hint':                   'Drag an agent onto another to make it a subordinate. Roles and finer settings live on the agent detail > Team tab.',
+  'team.hint':                   'Roles and the report/manager links are editable on the agent detail > Team tab. You can also rearrange with the mouse: grab an agent and drop it onto the one it should report to.',
   'team.drop.saved':             '{child} now reports to {parent}',
   'team.drop.cycle':             "Can't place a manager under its own subordinate.",
   'team.drop.error':             'Failed to save the reporting change.',
@@ -912,11 +913,7 @@ window._i18n.en = {
   'updates.toast.error':         'Error: {msg}',
 
   // --- Additional parity keys ---
-  'activity.badge.main':			'main',
   'activity.tooltip.mode':		'Permission mode: {mode}. In this mode the agent stops and waits for approval before calling a tool -- with nobody watching it can sit there for hours while still looking idle.',
-  'activity.empty':			'No agents.',
-  'activity.error_load':			'Failed to load activity',
-  'activity.updated':			'Updated: {time}',
   'agents.api_key.missing':			'No API key configured',
   'agents.api_key.ok':			'API key configured in vault',
   'agents.btn.conversation':			'Conversation',
@@ -1202,8 +1199,8 @@ window._i18n.en = {
   'team.role.leader':			'team leader',
   'team.role.main':			'main agent',
   'team.role.member':			'member',
-  'team.running':			'● Running',
-  'team.stopped':			'○ Stopped',
+  'team.running':			'Running',
+  'team.stopped':			'Stopped',
   'team.save_saving':            'Saving...',
   'team.save_done':              '✓ Saved',
   'team.save_ok':                'Team saved',
