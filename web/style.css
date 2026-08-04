@@ -670,9 +670,17 @@ main {
 .overview-activity-time { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
 /* === Kanban Board === */
+/* Five statuses, four fixed tracks: the board always wrapped "done" onto a
+ * second row of its own, at every window size. auto-fit fits as many columns
+ * as can hold KANBAN_COL_MIN and collapses the rest, so the count follows the
+ * window instead of a constant: all five side by side from ~1500px up, and on
+ * a narrow window fewer per row -- but never squeezed below a width where the
+ * card titles stop being readable. (min-width:0 on the column keeps a long
+ * unbroken title from inflating its track past that minimum.) */
 .kanban-board {
+  --kanban-col-min: 280px;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(var(--kanban-col-min), 1fr));
   gap: 12px;
   min-height: calc(100vh - 160px);
 }
@@ -690,6 +698,10 @@ main {
   display: flex;
   flex-direction: column;
   min-height: 200px;
+  /* A grid item's default minimum is its content's min-content width, so one
+   * long unbroken card title would push its track past the minmax() minimum
+   * and steal room from the other columns. */
+  min-width: 0;
 }
 
 .kanban-col-header {
@@ -1208,9 +1220,12 @@ main {
   transition: all var(--transition);
 }
 .kanban-swimlane-toggle:hover { background: var(--accent-soft); color: var(--accent); }
+/* The swimlane rows carry the same five status columns as the flat board, so
+ * they follow the same rule -- otherwise switching to swimlanes would silently
+ * put the column count back to four. */
 .kanban-swimlane-body {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(var(--kanban-col-min, 280px), 1fr));
   gap: 12px;
   margin-top: 4px;
 }

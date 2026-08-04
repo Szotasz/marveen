@@ -50,7 +50,12 @@ describe('full-width dashboard layout', () => {
 
   // The grids that must reflow rather than stretch. A fixed `repeat(<n>, 1fr)`
   // here would keep the old column count and just widen the cards.
-  const REFLOWING = ['agents-grid', 'skills-grid', 'status-service-grid', 'overview-stats', 'catalog-grid']
+  const REFLOWING = [
+    'agents-grid', 'skills-grid', 'status-service-grid', 'overview-stats', 'catalog-grid',
+    // The board and its swimlane rows carry five status columns in four fixed
+    // tracks, so "done" wrapped onto a row of its own at EVERY window size.
+    'kanban-board', 'kanban-swimlane-body',
+  ]
 
   it.each(REFLOWING)('.%s adds columns instead of stretching', (cls) => {
     const cols = /grid-template-columns\s*:\s*([^;]+)/.exec(ruleBody(`\\.${cls}`))
@@ -59,9 +64,11 @@ describe('full-width dashboard layout', () => {
     expect(cols![1]).toMatch(/repeat\(\s*auto-(fill|fit)\s*,/)
   })
 
-  // The board's four columns are the four statuses, not a responsive card list:
-  // it is the one grid that SHOULD keep a fixed count at any width.
-  it('the kanban board keeps its fixed status columns', () => {
-    expect(ruleBody('\\.kanban-board')).toMatch(/grid-template-columns\s*:\s*repeat\(4,/)
+  // The floor is the point of the board rule: without a minimum the five
+  // columns would keep fitting on one row by getting unreadably narrow.
+  it('the board columns have a readable minimum width', () => {
+    expect(ruleBody('\\.kanban-board')).toMatch(/--kanban-col-min:\s*(\d+)px/)
+    const min = Number(/--kanban-col-min:\s*(\d+)px/.exec(ruleBody('\\.kanban-board'))![1])
+    expect(min).toBeGreaterThanOrEqual(240)
   })
 })
