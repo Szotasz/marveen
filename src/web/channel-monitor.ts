@@ -502,13 +502,47 @@ async function triggerMarveenMemorySave(): Promise<void> {
   }
 }
 
-// Read the main agent's configured model from .claude/settings.json so a
-// soft resume passes --model explicitly, mirroring scripts/channels.sh. Without
-// it the respawned session falls back to claude-code's built-in default and
-// silently drifts off the model the user picked. Returns '' when unset.
-function readConfiguredMainModel(): string {
+// Single `KEY=value` lookup in the install's .env, used by the readers below.
+// Deliberately dumb (first matching line, trimmed): it mirrors the `grep -E
+// '^KEY=' | head -1 | cut -d= -f2-` that scripts/channels.sh already does, so
+// both sides read the same file the same way.
+function readEnvValue(projectRoot: string, key: string): string {
   try {
-    const settingsPath = join(PROJECT_ROOT, '.claude', 'settings.json')
+    const envPath = join(projectRoot, '.env')
+    if (!existsSync(envPath)) return ''
+    const line = readFileSync(envPath, 'utf-8')
+      .split('\n')
+      .find((l) => l.startsWith(`${key}=`))
+    return line ? line.slice(key.length + 1).trim() : ''
+  } catch {
+    return ''
+  }
+}
+
+// Read the main agent's configured model so a soft resume passes --model
+// explicitly, mirroring scripts/channels.sh. Without it the respawned session
+// falls back to claude-code's built-in default and silently drifts off the model
+// the user picked. Returns '' when unset.
+//
+// PRECEDENCE MUST MATCH channels.sh resolve_main_model(): .env MAIN_AGENT_MODEL
+// (per-install, gitignored) wins over .claude/settings.json (tracked, shipped
+// with the repo). Reading ONLY settings.json here was a silent split-brain: an
+// install that sets its model the documented way -- in .env, precisely so the
+// tracked file stays clean for the update preflight -- got that choice honoured
+// on the LAUNCH path and ignored on the RESPAWN path. The two only agreed while
+// someone kept both files in sync by hand, and nothing detected the drift.
+//
+// The failure is not hypothetical and not symmetric: the tracked settings.json
+// ships a model of its own, so a respawn after an update (which reverts local
+// edits to tracked files) can silently move the main agent to a DIFFERENT model
+// than the one it launched with -- below the operator's required floor, with no
+// dialog, no error and no log line. The launch path would keep saying the right
+// thing, which is exactly what makes it hard to see.
+export function readConfiguredMainModel(projectRoot: string = PROJECT_ROOT): string {
+  const fromEnv = readEnvValue(projectRoot, 'MAIN_AGENT_MODEL')
+  if (fromEnv) return fromEnv
+  try {
+    const settingsPath = join(projectRoot, '.claude', 'settings.json')
     if (!existsSync(settingsPath)) return ''
     const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'))
     const model = parsed?.model
@@ -530,17 +564,7 @@ function readConfiguredMainModel(): string {
 // Observed in practice: a context-saturation hard restart dropped the secondary
 // inbound for ~20 minutes while the primary channel kept working normally.
 export function readExtraChannelPluginIds(projectRoot: string = PROJECT_ROOT): string[] {
-  try {
-    const envPath = join(projectRoot, '.env')
-    if (!existsSync(envPath)) return []
-    const line = readFileSync(envPath, 'utf-8')
-      .split('\n')
-      .find((l) => l.startsWith('CHANNEL_PLUGINS_EXTRA='))
-    if (!line) return []
-    return line.slice('CHANNEL_PLUGINS_EXTRA='.length).trim().split(/\s+/).filter(Boolean)
-  } catch {
-    return []
-  }
+  return readEnvValue(projectRoot, 'CHANNEL_PLUGINS_EXTRA').split(/\s+/).filter(Boolean)
 }
 
 // Build the claude command used to (re)spawn the main channels session via
