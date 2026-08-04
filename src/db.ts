@@ -1989,29 +1989,31 @@ export interface HeartbeatKanbanSummary {
  * which gets it over /api/kanban/heartbeat-summary instead of composing its own
  * query. Two hand-written copies of the same filter is how they drift apart.
  *
- * `urgent` means urgent AND OPEN: priority='urgent' and the card is actually
- * being worked or blocked. `status != 'done'` was not enough -- it also let
- * through `planned` cards, and on 2026-08-04 the 09:00 report listed five items
- * of which three were already closed, so the most prominent line of an hourly
- * report was 92% noise and nobody read it any more.
+ * `urgent` means urgent and NOT FINISHED: priority='urgent', not archived, not
+ * `done`. `planned` stays IN on purpose -- "urgent and nobody has touched it" is
+ * one of the states most worth seeing, and a list that hides it would be quiet
+ * for the wrong reason. (A first draft of this change narrowed it to
+ * waiting/in_progress; that was withdrawn precisely because it would have hidden
+ * untouched urgent work.)
  *
- * Deliberate consequence, named so it is a decision and not an accident: an
- * urgent card sitting in `planned` is NOT listed. It is in the counts, but the
- * title list is for things in flight or blocked.
+ * What DID have to go is closed work: on 2026-08-04 the 09:00 report listed five
+ * items of which three were already `done`, and the 08-03 count was 22 done
+ * against 2 waiting -- the most prominent line of an hourly report was mostly
+ * finished cards, so it stopped being read. Those 22 were only reachable through
+ * a hand-written query; this statement never returned them, which is why the real
+ * fix is that the heartbeat agent no longer writes its own query.
  */
-export const HEARTBEAT_OPEN_STATUSES = ['waiting', 'in_progress'] as const
-
 /** Exported so a test can execute the SHIPPED statement against a fixture DB
  *  instead of re-typing an equivalent one and proving nothing. */
 export const HEARTBEAT_URGENT_SQL =
-  `SELECT * FROM kanban_cards WHERE archived_at IS NULL AND priority = 'urgent' AND status IN (${HEARTBEAT_OPEN_STATUSES.map(() => '?').join(',')})`
+  "SELECT * FROM kanban_cards WHERE archived_at IS NULL AND priority = 'urgent' AND status != 'done'"
 export const HEARTBEAT_IN_PROGRESS_SQL =
   "SELECT * FROM kanban_cards WHERE archived_at IS NULL AND status = 'in_progress'"
 export const HEARTBEAT_WAITING_SQL =
   "SELECT * FROM kanban_cards WHERE archived_at IS NULL AND status = 'waiting'"
 
 export function getHeartbeatKanbanSummary(): HeartbeatKanbanSummary {
-  const urgent = db.prepare(HEARTBEAT_URGENT_SQL).all(...HEARTBEAT_OPEN_STATUSES) as KanbanCard[]
+  const urgent = db.prepare(HEARTBEAT_URGENT_SQL).all() as KanbanCard[]
   const in_progress = db.prepare(HEARTBEAT_IN_PROGRESS_SQL).all() as KanbanCard[]
   const waiting = db.prepare(HEARTBEAT_WAITING_SQL).all() as KanbanCard[]
   return { urgent, in_progress, waiting }

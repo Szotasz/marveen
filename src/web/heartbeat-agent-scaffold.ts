@@ -197,9 +197,10 @@ When you receive the heartbeat prompt:
 
      It returns exactly what this section may report:
      \`{"urgent":[...], "waiting":[...], "counts":{...}}\`, where the
-     lists contain ONLY open cards (\`waiting\` / \`in_progress\`,
-     never archived, never \`done\`). Report the ids and titles it
-     gives you and nothing else.
+     lists contain only UNFINISHED cards -- never archived, never
+     \`done\`, but \`planned\` included, because "urgent and nobody
+     has touched it" is exactly what this line is for. Report the ids
+     and titles it gives you and nothing else.
 
      Two things this replaces, both measured: the old instruction told
      you to write the filter yourself, and on 2026-08-04 the 09:00

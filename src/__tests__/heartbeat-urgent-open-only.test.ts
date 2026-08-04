@@ -3,7 +3,7 @@ import Database from 'better-sqlite3'
 import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { HEARTBEAT_OPEN_STATUSES, HEARTBEAT_URGENT_SQL, HEARTBEAT_WAITING_SQL } from '../db.js'
+import { HEARTBEAT_URGENT_SQL, HEARTBEAT_WAITING_SQL } from '../db.js'
 
 // The most prominent line of an hourly report is the one nobody reads.
 //
@@ -13,9 +13,13 @@ import { HEARTBEAT_OPEN_STATUSES, HEARTBEAT_URGENT_SQL, HEARTBEAT_WAITING_SQL } 
 // same thing stops being a signal -- the same failure family as the silent
 // channel death we spent the day on, seen from the other side.
 //
-// Two things are pinned here, and the SECOND one matters more:
-//   1. a `done` card never reaches the list;
-//   2. an EMPTY list is allowed to stay empty. "Fill it with something so the
+// Three things are pinned here, and the LAST one matters most:
+//   1. a `done` (or archived) card never reaches the list;
+//   2. a `planned` urgent card DOES reach it -- "urgent and nobody has touched
+//      it" is one of the states most worth seeing. An earlier draft narrowed the
+//      list to waiting/in_progress and was withdrawn for exactly that reason, so
+//      the inclusion is asserted rather than assumed;
+//   3. an EMPTY list is allowed to stay empty. "Fill it with something so the
 //      section is not blank" is the natural wrong fix, and it is the one that
 //      would quietly bring the noise back.
 
@@ -34,8 +38,8 @@ function fixtureDb() {
   return { dir, db, ins }
 }
 
-describe('the heartbeat urgent list contains only urgent AND open cards', () => {
-  it('excludes done, excludes archived, keeps waiting and in_progress', () => {
+describe('the heartbeat urgent list contains urgent, unfinished cards', () => {
+  it('excludes done and archived, keeps waiting, in_progress AND planned', () => {
     const { dir, db, ins } = fixtureDb()
     try {
       ins.run('OPEN1', 'urgent + in_progress', 'in_progress', 'urgent', 'samu', null, 1, 1)
@@ -46,16 +50,16 @@ describe('the heartbeat urgent list contains only urgent AND open cards', () => 
       ins.run('PLAN1', 'urgent but not started', 'planned', 'urgent', 'samu', null, 1, 1)
       ins.run('NORM1', 'in_progress but not urgent', 'in_progress', 'normal', 'samu', null, 1, 1)
 
-      const rows = db.prepare(HEARTBEAT_URGENT_SQL).all(...HEARTBEAT_OPEN_STATUSES) as { id: string }[]
+      const rows = db.prepare(HEARTBEAT_URGENT_SQL).all() as { id: string }[]
       const ids = rows.map((r) => r.id).sort()
 
-      expect(ids).toEqual(['OPEN1', 'OPEN2'])
+      expect(ids).toEqual(['OPEN1', 'OPEN2', 'PLAN1'])
       expect(ids).not.toContain('DONE1')
       expect(ids).not.toContain('DONE2')
       expect(ids).not.toContain('ARCH1')
-      // deliberate scope decision, pinned so a later change is a decision too:
-      // an urgent card nobody has started is in the COUNTS, not in the list
-      expect(ids).not.toContain('PLAN1')
+      // pinned explicitly: an urgent card nobody has started must be VISIBLE.
+      // Hiding it would make the line quiet for the wrong reason.
+      expect(ids).toContain('PLAN1')
     } finally {
       db.close()
       rmSync(dir, { recursive: true, force: true })
@@ -69,7 +73,7 @@ describe('the heartbeat urgent list contains only urgent AND open cards', () => 
       ins.run('D2', 'done urgent', 'done', 'urgent', 'samu', null, 1, 1)
       ins.run('D3', 'done urgent', 'done', 'urgent', 'samu', null, 1, 1)
 
-      const rows = db.prepare(HEARTBEAT_URGENT_SQL).all(...HEARTBEAT_OPEN_STATUSES) as unknown[]
+      const rows = db.prepare(HEARTBEAT_URGENT_SQL).all() as unknown[]
       expect(rows).toEqual([])
       expect(rows.length).toBe(0)
     } finally {
@@ -81,7 +85,7 @@ describe('the heartbeat urgent list contains only urgent AND open cards', () => 
   it('an EMPTY board stays empty on both lists', () => {
     const { dir, db } = fixtureDb()
     try {
-      expect(db.prepare(HEARTBEAT_URGENT_SQL).all(...HEARTBEAT_OPEN_STATUSES)).toEqual([])
+      expect(db.prepare(HEARTBEAT_URGENT_SQL).all()).toEqual([])
       expect(db.prepare(HEARTBEAT_WAITING_SQL).all()).toEqual([])
     } finally {
       db.close()
@@ -121,12 +125,13 @@ describe('there is ONE definition, and both consumers read it', () => {
     expect(ROUTE_SRC).not.toMatch(/priority = 'urgent'/)
   })
 
-  it('the old too-wide filter is gone from the definition', () => {
-    // `status != 'done'` also let `planned` through; that is what put closed and
-    // not-started work on the same line.
+  it('the definition itself excludes finished and archived work, and nothing else', () => {
     const fn = DB_SRC.slice(DB_SRC.indexOf('HEARTBEAT_URGENT_SQL'), DB_SRC.indexOf('getHeartbeatKanbanSummary('))
-    expect(fn).not.toMatch(/status != 'done'/)
-    expect(fn).toMatch(/status IN \(/)
+    expect(fn).toMatch(/archived_at IS NULL/)
+    expect(fn).toMatch(/status != 'done'/)
+    // no status allowlist: narrowing to waiting/in_progress would hide an
+    // untouched urgent card, which is the state we most want to see
+    expect(fn).not.toMatch(/status IN \(/)
   })
 })
 
