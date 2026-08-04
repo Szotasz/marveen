@@ -26,6 +26,7 @@ import {
   hasFleetOauthToken,
   FLEET_OAUTH_TOKEN_PATH,
   answerFirstRunGates,
+  shSingleQuote,
 } from './agent-process.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence } from './channel-poller-reap.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
@@ -604,9 +605,13 @@ export function buildMainSessionRespawnCmd(opts: {
     '&&', opts.claudePath,
     ...(opts.continueSession ? ['--continue'] : []),
     '--dangerously-skip-permissions',
-    // Single-quote the model id so a value like `claude-opus-4-8[1m]` is not
-    // glob-expanded by the shell that tmux respawn-pane spawns the command in.
-    ...(opts.model ? ['--model', `'${opts.model}'`] : []),
+    // Escape the model id so a value like `claude-opus-4-8[1m]` is not
+    // glob-expanded -- and so a hostile value cannot break out of the quote and
+    // inject a command into the string the tmux respawn-pane shell runs. This is
+    // the 5th launch sink; it must use the same escaper as the other four (the
+    // allowlist is the belt, this is the braces). shSingleQuote makes the value
+    // one inert shell word. See model-id-injection.test.ts.
+    ...(opts.model ? ['--model', shSingleQuote(opts.model)] : []),
     [`--channels plugin:${opts.pluginId}`, ...(opts.extraPluginIds ?? []).map((p) => `plugin:${p}`)].join(' '),
   ].join(' ')
 }
