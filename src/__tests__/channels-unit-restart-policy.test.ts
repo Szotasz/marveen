@@ -227,7 +227,11 @@ describe('update.sh migration for already-installed machines', () => {
   })
 
   it('is actually called by update.sh, not merely defined', () => {
+    // The call moved into run_unit_maintenance() when the maintenance block was
+    // lifted above the up-to-date early exit, so assert the whole chain: the
+    // wrapper calls it, and the wrapper itself is invoked at top level.
     const afterDefinition = UPDATE.slice(UPDATE.indexOf('migrate_channels_restart() {') + 1)
-    expect(afterDefinition).toMatch(/^migrate_channels_restart$/m)
+    expect(afterDefinition).toMatch(/^\s+migrate_channels_restart "\$@"$/m)
+    expect(afterDefinition).toMatch(/^run_unit_maintenance$/m)
   })
 })

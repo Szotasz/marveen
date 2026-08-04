@@ -331,6 +331,87 @@ NEW_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 NEW_VERSION_FULL=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
 BUILT_COMMIT_FILE="$INSTALL_DIR/dist/.built-commit"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# UNIT MAINTENANCE -- and its position in this file is the fix, not a detail.
+#
+# These repairs used to live ~150 lines further down, BEHIND the "already on the
+# latest commit" `exit 0` below. That made them unreachable exactly when they
+# were needed: an update that has nothing to pull returns before them, and the
+# update that DOES pull them is still running the OLD copy of this script (bash
+# reads a script incrementally and there is no re-exec), so it runs the old code
+# that does not contain them either. Measured on a live host on 2026-08-04: a
+# machine went 1.28.2 -> 1.29.0 and its channels unit still carried the old
+# Restart=on-failure; re-running update.sh did not help, because the second run
+# exited at the up-to-date branch. The repair would first have run one whole
+# release later.
+#
+# THE BUG CLASS, so the next person does not re-create it: unit maintenance must
+# NOT be placed after the up-to-date early exit. Anything that repairs on-disk
+# state of an ALREADY INSTALLED machine belongs here, above that exit -- the
+# repairs are idempotent and cost a directory scan. The morning-timer repair had
+# the same defect for weeks before the channels migration joined it.
+#
+# What this placement does NOT solve: the run that pulls a NEW repair still
+# cannot execute it (no re-exec). It lands on the next update.sh run of any kind
+# -- including a "nothing to pull" one, which is the common case via the
+# dashboard button and the seeded auto-update task.
+
+# Morning-timer unit repair (Linux only). Earlier installers wrote
+# Requires=<unit>.service into the timer's [Unit] section, which makes every
+# activation of the timer unit (each systemd user-manager start, not just the
+# 07:27 elapse) start the briefing service immediately -- restart churn then
+# multiplies the morning briefing (customer report 2026-07-26: 5 deliveries in
+# one day). Idempotent: strips the line wherever it is still present.
+repair_morning_timer() {
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  [ -d "$units_dir" ] || return 0
+  for morn_timer in "$units_dir/"*-morning.timer; do
+    [ -f "$morn_timer" ] || continue
+    if grep -q '^Requires=.*-morning\.service' "$morn_timer"; then
+      sed -i.marveen-bak '/^Requires=.*-morning\.service/d' "$morn_timer" && rm -f "${morn_timer}.marveen-bak"
+      systemctl --user daemon-reload 2>/dev/null || true
+      echo -e "  Reggeli-napindito timer javitva (Requires= a [Unit]-bol eltavolitva): $(basename "$morn_timer")"
+    fi
+  done
+  return 0
+}
+
+# Channels-unit restart-policy migration (Linux only). The installer template is
+# the only place that writes the unit file, and update.sh does NOT re-run the
+# installer -- so a fix to the template reaches new installs only. Every machine
+# installed before that change keeps Restart=on-failure, under which channels.sh
+# exiting zero from its own watchdog leaves the unit inactive/dead forever (seen
+# live 2026-08-04). This migration is what actually lands the fix on those hosts.
+# Idempotent: it only touches units that still carry the old value.
+migrate_channels_restart() {
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  [ -d "$units_dir" ] || return 0
+  _patched=0
+  for chan_unit in "$units_dir/"*-channels.service; do
+    [ -f "$chan_unit" ] || continue
+    if grep -q '^Restart=on-failure[[:space:]]*$' "$chan_unit"; then
+      if sed -i.marveen-bak 's/^Restart=on-failure[[:space:]]*$/Restart=always/' "$chan_unit" 2>/dev/null; then
+        rm -f "${chan_unit}.marveen-bak"
+        _patched=1
+        echo -e "  Csatorna-unit javitva (Restart=on-failure -> always): $(basename "$chan_unit")"
+      else
+        echo -e "  FIGYELEM: a csatorna-unit nem volt irhato: $chan_unit"
+      fi
+    fi
+  done
+  if [ "$_patched" = "1" ]; then
+    systemctl --user daemon-reload 2>/dev/null || true
+  fi
+  return 0
+}
+
+run_unit_maintenance() {
+  repair_morning_timer "$@"
+  migrate_channels_restart "$@"
+  return 0
+}
+run_unit_maintenance
+
 if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
   # Already on the latest commit -- but "no new commits" does NOT guarantee the
   # compiled dist/ matches the source. A prior update can pull new source and
@@ -472,52 +553,11 @@ if [ -x "$INSTALL_DIR/scripts/sync-hooks.sh" ]; then
   bash "$INSTALL_DIR/scripts/sync-hooks.sh" || echo -e "  FIGYELEM: sync-hooks.sh nem-nulla exit; manualisan ellenorizd."
 fi
 
-# Morning-timer unit repair (Linux only). Earlier installers wrote
-# Requires=<unit>.service into the timer's [Unit] section, which makes every
-# activation of the timer unit (each systemd user-manager start, not just the
-# 07:27 elapse) start the briefing service immediately -- restart churn then
-# multiplies the morning briefing (customer report 2026-07-26: 5 deliveries in
-# one day). Idempotent: strips the line wherever it is still present.
-if [ -d "$HOME/.config/systemd/user" ]; then
-  for morn_timer in "$HOME/.config/systemd/user/"*-morning.timer; do
-    [ -f "$morn_timer" ] || continue
-    if grep -q '^Requires=.*-morning\.service' "$morn_timer"; then
-      sed -i.marveen-bak '/^Requires=.*-morning\.service/d' "$morn_timer" && rm -f "${morn_timer}.marveen-bak"
-      systemctl --user daemon-reload 2>/dev/null || true
-      echo -e "  Reggeli-napindito timer javitva (Requires= a [Unit]-bol eltavolitva): $(basename "$morn_timer")"
-    fi
-  done
-fi
-
-# Channels-unit restart-policy migration (Linux only). The installer template is
-# the only place that writes the unit file, and update.sh does NOT re-run the
-# installer -- so a fix to the template reaches new installs only. Every machine
-# installed before this change keeps Restart=on-failure, under which channels.sh
-# exiting zero from its own watchdog leaves the unit inactive/dead forever (seen
-# live 2026-08-04). This migration is what actually lands the fix on those hosts.
-# Idempotent: it only touches units that still carry the old value.
-migrate_channels_restart() {
-  units_dir="${1:-$HOME/.config/systemd/user}"
-  [ -d "$units_dir" ] || return 0
-  _patched=0
-  for chan_unit in "$units_dir/"*-channels.service; do
-    [ -f "$chan_unit" ] || continue
-    if grep -q '^Restart=on-failure[[:space:]]*$' "$chan_unit"; then
-      if sed -i.marveen-bak 's/^Restart=on-failure[[:space:]]*$/Restart=always/' "$chan_unit" 2>/dev/null; then
-        rm -f "${chan_unit}.marveen-bak"
-        _patched=1
-        echo -e "  Csatorna-unit javitva (Restart=on-failure -> always): $(basename "$chan_unit")"
-      else
-        echo -e "  FIGYELEM: a csatorna-unit nem volt irhato: $chan_unit"
-      fi
-    fi
-  done
-  if [ "$_patched" = "1" ]; then
-    systemctl --user daemon-reload 2>/dev/null || true
-  fi
-  return 0
-}
-migrate_channels_restart
+# Unit maintenance (morning-timer repair + channels restart-policy migration)
+# deliberately does NOT live here any more. It ran from this spot for weeks and
+# was unreachable on an already-current machine, because the up-to-date branch
+# exits ~150 lines above. It now runs before that exit -- see the block above
+# the OLD_VERSION check. Do not move repairs back down here.
 
 # Seed skills & scheduled tasks (idempotent: skip existing)
 # Source .env for template variables needed by seed-scheduled-tasks
