@@ -194,3 +194,46 @@ describe('broadcast marker shape', () => {
     expect(src).toContain('[DESKTOP-FREE]')
   })
 })
+
+// ORDERING INVARIANT: in every branch the STATE write happens before the broadcast,
+// and a failing broadcast never rolls the state back.
+//
+// This is a deliberate asymmetry, not an oversight: the gate reads the STATE, the
+// message is only how humans and agents hear about it. If a message-queue error
+// could undo the lock, then the ERROR would open the gate -- the worst direction.
+// The consequence worth knowing when reading a half-applied deploy: "state set,
+// nobody told" is possible (safe: the gate holds, quietly), while "told, no state"
+// is NOT reachable through this route at all.
+//
+// Locked by a test rather than by line numbers in a runbook: the numbers drift the
+// first time someone edits the file, and a drifted reference reads as fact.
+describe('state-before-broadcast ordering', () => {
+  const src = readFileSync(
+    join(__dirname, '..', 'web', 'routes', 'desktop-lock.ts'), 'utf-8',
+  )
+  const code = src
+    .split('\n')
+    .filter(l => !l.trimStart().startsWith('//') && !l.trimStart().startsWith('*'))
+    .join('\n')
+
+  // Each entry: the state call that must come first, then the notification after it.
+  const branches: Array<[string, RegExp]> = [
+    ['writeDesktopLock(lock)', /broadcast\(owner,/],
+    ['clearDesktopLock()', /broadcast\(lock\.owner,/],
+  ]
+
+  for (const [stateCall, notifyRx] of branches) {
+    it(`${stateCall} precedes its broadcast`, () => {
+      const stateIdx = code.indexOf(stateCall)
+      expect(stateIdx).toBeGreaterThan(-1)
+      const notifyIdx = code.slice(stateIdx).search(notifyRx)
+      expect(notifyIdx).toBeGreaterThan(-1)
+    })
+  }
+
+  it('never rolls the state back when a broadcast fails', () => {
+    // the per-target catch logs and continues; it must not call the state writers
+    const helper = code.slice(code.indexOf('function broadcast('), code.indexOf('function hu('))
+    expect(helper).not.toMatch(/clearDesktopLock|writeDesktopLock/)
+  })
+})
