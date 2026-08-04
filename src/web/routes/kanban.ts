@@ -60,7 +60,17 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     `  curl -s -X POST ${moveUrl} \\`,
     `    ${auth} \\`,
     `    -H 'Content-Type: application/json' \\`,
-    `    -d '{"status":"done"}'`,
+    `    -d '{"status":"done","actor":"${target}"}'`,
+    '',
+    // The "actor" field is not decoration: it is what tells the board WHO moved
+    // the card. Without it a self-pickup (agent -> in_progress on its own card)
+    // is indistinguishable from an assignment, and the dispatcher echoes the
+    // task back at the agent that just started it.
+    `Az "actor":"${target}" mezőt MINDEN mozgatásnál küldd el (ez mondja meg a táblának, hogy te mozgattad). Ha te magad veszed fel a kártyát in_progress-re, ott is:`,
+    `  curl -s -X POST ${moveUrl} \\`,
+    `    ${auth} \\`,
+    `    -H 'Content-Type: application/json' \\`,
+    `    -d '{"status":"in_progress","actor":"${target}"}'`,
     '',
     `Ha elakadtál / ${escalateTo} döntésére/lépésére vársz: NE csak status="waiting"-et állíts be. HÁROM lépés kell EGYÜTT:`,
     `  a) Írj egy kommentet ami KÖZVETLENÜL ${escalateTo}-hez szól, egyértelműen megfogalmazva mit kell eldöntenie/megtennie (NE a saját belső elemzésedet írd oda) -- ugyanaz a comments hívás mint fent, "content" mezőben.`,
@@ -81,7 +91,9 @@ export function kanbanMoveInstructions(id: string, target: string): string {
 // assigned agent once via the inter-agent message router (createAgentMessage),
 // which gives retry / dedup / trust-wrapping / busy-receiver handling for free.
 // dispatched_at is the once-only guard; errors never block the card move.
-function fireKanbanDispatch(id: string): void {
+// `actor` is the mover reported by the caller: an agent that moves its own card
+// to in_progress must not be woken with an assignment for work it just started.
+function fireKanbanDispatch(id: string, actor?: string | null): void {
   try {
     const card = getKanbanCard(id)
     if (!card || card.dispatched_at) return
@@ -91,6 +103,7 @@ function fireKanbanDispatch(id: string): void {
       mainAgentId: MAIN_AGENT_ID,
       agentNames: listAgentNames(),
       isRunning: isAgentRunning,
+      actor,
     })
     if (!target) return
     const desc = (card.description ?? '').trim()
@@ -272,8 +285,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { status, sort_order, actor } = JSON.parse(body.toString())
     if (moveKanbanCard(id, status, sort_order ?? 0, actor)) {
-      // Wake the assigned agent once when the card enters in_progress.
-      if (status === 'in_progress') fireKanbanDispatch(id)
+      // Wake the assigned agent once when the card enters in_progress -- unless
+      // that agent is the one who moved it (self-pickup needs no wake-up).
+      if (status === 'in_progress') fireKanbanDispatch(id, actor)
       json(res, { ok: true })
       return true
     }
