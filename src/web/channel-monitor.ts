@@ -502,13 +502,45 @@ async function triggerMarveenMemorySave(): Promise<void> {
   }
 }
 
-// Read the main agent's configured model from .claude/settings.json so a
-// soft resume passes --model explicitly, mirroring scripts/channels.sh. Without
-// it the respawned session falls back to claude-code's built-in default and
-// silently drifts off the model the user picked. Returns '' when unset.
-function readConfiguredMainModel(): string {
+// Read the main agent's configured model so a soft resume passes --model
+// explicitly. Without it the respawned session falls back to claude-code's
+// built-in default and silently drifts off the model the user picked.
+// Returns '' when unset, so the caller omits the flag.
+//
+// PRECEDENCE, mirroring scripts/channels.sh resolve_main_model() EXACTLY:
+// MAIN_AGENT_MODEL from .env (per-install, gitignored) wins over
+// .claude/settings.json (tracked, shipped with the repo). An EMPTY
+// MAIN_AGENT_MODEL does not shadow settings.json -- same as the `[ -n ... ]`
+// test in the shell.
+//
+// 2026-08-03: this function read ONLY settings.json while its comment already
+// claimed to mirror channels.sh -- it did not. The launch path honoured .env,
+// this respawn path did not, so an install whose model lives in .env came up
+// correct on boot and drifted to the REPOSITORY's model on every nightly
+// restart, recovery resume and hard respawn (the three call sites below).
+// Silent, because nothing fails: the agent just answers as another model.
+//
+// The .env route exists precisely because settings.json is TRACKED -- writing
+// a per-install choice there carries a permanent local diff, which blocks the
+// update preflight's clean-tree check and gets reverted by the next update
+// (see the header of scripts/__tests__/channels-main-model.test.sh).
+//
+// projectRoot is a test seam, matching readExtraChannelPluginIds() below.
+export function readConfiguredMainModel(projectRoot: string = PROJECT_ROOT): string {
   try {
-    const settingsPath = join(PROJECT_ROOT, '.claude', 'settings.json')
+    const envPath = join(projectRoot, '.env')
+    if (existsSync(envPath)) {
+      const line = readFileSync(envPath, 'utf-8')
+        .split('\n')
+        .find((l) => l.startsWith('MAIN_AGENT_MODEL='))
+      const fromEnv = line ? line.slice('MAIN_AGENT_MODEL='.length).trim() : ''
+      if (fromEnv) return fromEnv
+    }
+  } catch {
+    // Unreadable .env must not break the respawn -- fall through to settings.json.
+  }
+  try {
+    const settingsPath = join(projectRoot, '.claude', 'settings.json')
     if (!existsSync(settingsPath)) return ''
     const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'))
     const model = parsed?.model
