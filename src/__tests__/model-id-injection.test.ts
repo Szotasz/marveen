@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest'
 import { MODEL_ID_RE, isValidModelId, InvalidModelIdError } from '../model-id.js'
 import { writeAgentModel } from '../web/agent-config.js'
 import { shSingleQuote } from '../web/agent-process.js'
+import { buildMainSessionRespawnCmd } from '../web/channel-monitor.js'
 import { execFileSync } from 'node:child_process'
 // import { readFileSync } from 'node:fs'
 // import { join, dirname } from 'node:path'
@@ -149,5 +150,37 @@ describe('the launch string the fix produces is safe end-to-end', () => {
     // Exact match is the proof: if injection had occurred, `echo INJECTED` would have printed its own
     // line BEFORE printf and the assignment would have been split, so out would not equal the payload.
     expect(out).toBe(hostile)
+  })
+})
+
+// The block above reconstructs the launch string inline, so it stays green even if a REAL sink is
+// reverted to raw interpolation. This block calls the actual command-builder, so a regression AT the
+// sink (e.g. restoring `--model '${model}'`) turns it red. buildMainSessionRespawnCmd is the 5th launch
+// sink -- the tmux respawn-pane of the main channels session. Its model source is the main agent's
+// .claude/settings.json `model`, which writeAgentModel/isValidModelId do NOT cover, so the sink-side
+// escape is the only guard on this path. (The other four sinks live in agent-process/ssh-tmux/
+// agent-worker and use shSingleQuote/shQuote/shArg; this one was the last raw-quoted holdout.)
+describe('the real launch builder escapes the model AT the sink (not only at the validator)', () => {
+  const OPTS = { claudePath: 'claude', pluginId: 'telegram', continueSession: false }
+
+  it('buildMainSessionRespawnCmd single-quote-escapes a hostile model id at --model', () => {
+    const hostile = "x'; touch PWNED #"
+    const cmd = buildMainSessionRespawnCmd({ ...OPTS, model: hostile })
+    // The escaped token must be present; the raw close-quote breakout must NOT.
+    expect(cmd).toContain(`--model ${shSingleQuote(hostile)}`)
+    expect(cmd).not.toContain(`--model '${hostile}'`)
+  })
+
+  it('a POSIX shell treats the built --model token as one inert word, running nothing', () => {
+    // Sentinel kept OUT of the payload string so its (non-)existence is an independent signal
+    // rather than a substring of the value itself (the trap the block above documents at its sentinel).
+    const hostile = "y'; echo LEAKED_$(id -u); printf '"
+    const cmd = buildMainSessionRespawnCmd({ ...OPTS, model: hostile })
+    const token = shSingleQuote(hostile)
+    expect(cmd).toContain(`--model ${token}`)
+    // Run just the escaped --model token as the sole printf arg. If the escape leaked, the injected
+    // `echo`/`$(id -u)` would run: output would gain an extra line and no longer equal the literal value.
+    const out = execFileSync('/bin/sh', ['-c', `printf %s ${token}`], { encoding: 'utf8' })
+    expect(out).toBe(hostile) // verbatim -> neither the injected echo nor the $(id -u) substitution ran
   })
 })
