@@ -35,7 +35,7 @@ export function isValidModelId(model: unknown): model is string {
 export class InvalidModelIdError extends Error {
   constructor(model: unknown) {
     super(
-      `Érvénytelen modell-azonosító. Csak betű, szám és a . _ : / - karakterek engedélyezettek, ` +
+      `Érvénytelen modell-azonosító. Csak betű, szám és a . _ : / - [ ] karakterek engedélyezettek, ` +
         `1-128 hosszban (kapott: ${typeof model === 'string' ? JSON.stringify(model.slice(0, 60)) : typeof model}).`,
     )
     this.name = 'InvalidModelIdError'
