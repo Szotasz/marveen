@@ -751,7 +751,49 @@ MAIN_BOT_PID_FILE="$HOME/.claude/channels/$CHANNEL_PROVIDER/bot.pid"
 # Never-started budget: generous so a slow cold-start (WSL first-run, MCP
 # handshake + /mcp unlock retries) is never killed prematurely. The plugin
 # normally writes bot.pid within ~1-2 min; 10 min is a safe ceiling.
-PLUGIN_NEVER_STARTED_DEADLINE=$((START_TS + 600))
+#
+# The budget GROWS across consecutive restarts, and that is the point. On a host
+# where the plugin cannot start at all -- AVX-less box, broken plugin cache,
+# Claude auth deferred at install -- a fixed 10-minute budget becomes a
+# ten-minute restart cycle that never ends. Each restart kill-sessions and
+# recreates the agent's tmux session, so on a machine where Claude itself works
+# and only the plugin is dead, the main agent loses its context every ten
+# minutes. Measured on a live host on 2026-08-04: exit 1 at 08:23:52, systemd
+# restart at 08:24:03, fresh session at 08:24:04, and the same again one budget
+# later. Before the watchdog exited non-zero that host simply kept a working
+# agent with a dead channel -- so an unbounded cycle would be a regression for
+# that population, not an improvement.
+#
+# What is deliberately NOT damped: the signal. The warning still goes to the log
+# and the exit is still non-zero, so the service manager still restarts the unit
+# and OnFailure= still fires. We slow the churn down; we do not silence the
+# symptom. A host that recovers resets the streak, so a healthy machine keeps
+# the original fast watchdog.
+NEVER_STARTED_BASE=600
+NEVER_STARTED_CAP=2400
+NEVER_STARTED_STREAK_FILE="$INSTALL_DIR/store/.channel-neverstart-streak"
+
+# Budget for the Nth consecutive never-started exit: 600 -> 1200 -> 2400, capped.
+never_started_budget() {
+  _streak="${1:-0}"
+  case "$_streak" in ''|*[!0-9]*) _streak=0 ;; esac
+  _budget=$NEVER_STARTED_BASE
+  _i=0
+  while [ "$_i" -lt "$_streak" ]; do
+    _budget=$((_budget * 2))
+    if [ "$_budget" -ge "$NEVER_STARTED_CAP" ]; then
+      _budget=$NEVER_STARTED_CAP
+      break
+    fi
+    _i=$((_i + 1))
+  done
+  echo "$_budget"
+}
+
+NEVER_STARTED_STREAK="$(cat "$NEVER_STARTED_STREAK_FILE" 2>/dev/null | tr -d '[:space:]')"
+case "$NEVER_STARTED_STREAK" in ''|*[!0-9]*) NEVER_STARTED_STREAK=0 ;; esac
+PLUGIN_NEVER_STARTED_BUDGET="$(never_started_budget "$NEVER_STARTED_STREAK")"
+PLUGIN_NEVER_STARTED_DEADLINE=$((START_TS + PLUGIN_NEVER_STARTED_BUDGET))
 # Died-after-up budget: once we have seen the plugin alive, a continuous
 # disappearance this long means it crashed and is not self-recovering.
 PLUGIN_DEAD_GRACE=180
@@ -793,6 +835,13 @@ while $TMUX has-session -t "$SESSION" 2>/dev/null; do
   if [ "$_plugin_alive" = "true" ]; then
     PLUGIN_SEEN_ONCE=true
     PLUGIN_DEAD_SINCE=0
+    # The plugin came up, so this host is not in the never-starting state:
+    # drop the streak so the next cold start gets the fast 10-minute watchdog
+    # again instead of inheriting a 40-minute budget from an old outage.
+    if [ "$NEVER_STARTED_STREAK" != "0" ]; then
+      rm -f "$NEVER_STARTED_STREAK_FILE" 2>/dev/null || true
+      NEVER_STARTED_STREAK=0
+    fi
   elif [ "$PLUGIN_SEEN_ONCE" = "true" ]; then
     # Was up, now gone -- start/continue the dead-grace timer (a transient
     # gap that recovers resets it, so only a sustained death triggers exit).
@@ -808,7 +857,12 @@ while $TMUX has-session -t "$SESSION" 2>/dev/null; do
     # Never came up at all (e.g. a Claude Code build that silently disables
     # --channels). Give it the full cold-start budget, then restart.
     if [ "$NOW" -ge "$PLUGIN_NEVER_STARTED_DEADLINE" ]; then
-      echo "WARN: $CHANNEL_PROVIDER plugin never started within $((PLUGIN_NEVER_STARTED_DEADLINE - START_TS))s -- exiting for service-manager restart" >&2
+      # Persist the streak BEFORE exiting: the next process start reads it and
+      # waits longer. Written first so a kill between the write and the exit
+      # still leaves the counter advanced rather than stuck at the fast budget.
+      _next_streak=$((NEVER_STARTED_STREAK + 1))
+      echo "$_next_streak" > "$NEVER_STARTED_STREAK_FILE" 2>/dev/null || true
+      echo "WARN: $CHANNEL_PROVIDER plugin never started within ${PLUGIN_NEVER_STARTED_BUDGET}s -- exiting for service-manager restart (consecutive: $_next_streak, next budget: $(never_started_budget "$_next_streak")s)" >&2
       RESTART_REQUESTED=1
       break
     fi
