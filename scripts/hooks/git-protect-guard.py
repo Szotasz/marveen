@@ -77,7 +77,7 @@ LOCKFILES = ("pnpm-lock.yaml", "package-lock.json", "yarn.lock")
 _ENV_PREFIX = r"(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]*\s+)*"
 # Git GLOBAL options, which may sit BETWEEN `git` and the subcommand (Cybersec/QA NO-GO on c9e4b5d).
 # `git -C <path> reset --hard` is not an evasion -- it is the NORMAL way to operate on a repo you are
-# not cd'd into, i.e. exactly how an agent working from the shared repo root touches the shared CleanCore
+# not cd'd into, i.e. exactly how an agent working from the shared repo root touches the shared checkout
 # checkout. Missing it meant the guard missed its own primary scenario. Options that take a SEPARATE
 # argument (-C, -c) must consume that argument too, or the subcommand match lands on the wrong token.
 _GIT_GLOBAL = (
