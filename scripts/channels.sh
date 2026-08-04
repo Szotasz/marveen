@@ -5,11 +5,15 @@
 # from CHANNEL_PROVIDER in .env; when absent, defaults to "telegram" for
 # full backward compatibility.
 #
-# A LaunchAgent hívja. Működés:
+# A LaunchAgent (macOS) vagy a systemd user unit (Linux) hívja. Működés:
 # 1. Tmux session indul a claude processzel
 # 2. A script vár amíg a session él
 # 3. Ha a claude kilép, a tmux session záródik, a script is kilép
-# 4. A launchd KeepAlive újraindítja
+# 4. A launchd KeepAlive újraindítja -- kilépési kódtól függetlenül.
+#    A systemd oldalon ez NEM volt igaz: a unit Restart=always nélkül a nulla
+#    kilépési kódot "kész, nem kell újraindítani"-ként olvasta, így a csatorna
+#    némán, véglegesen leállt. Ezért ad a watchdog-ág mostantól nem-nulla kódot,
+#    és ezért Restart=always a unit -- a két platform szemantikája így egyezik.
 #
 # Kézzel rácsatlakozás: tmux attach -t <MAIN_AGENT_ID>-channels (pl. marveen-channels)
 
@@ -753,6 +757,13 @@ PLUGIN_NEVER_STARTED_DEADLINE=$((START_TS + 600))
 PLUGIN_DEAD_GRACE=180
 PLUGIN_SEEN_ONCE=false
 PLUGIN_DEAD_SINCE=0
+# Set to 1 when the watchdog below breaks out ON PURPOSE to be restarted. The
+# exit status has to carry that intent: a watchdog exit is not a normal one, and
+# a unit still carrying the old Restart=on-failure would read exit 0 as "this
+# service is done" and never bring the channel back. Measured on a live install
+# 2026-08-04: channels.sh logged "exiting for service-manager restart", exited 0,
+# and the unit stayed inactive/dead for the next ten minutes.
+RESTART_REQUESTED=0
 
 # Várakozás amíg a session él
 while $TMUX has-session -t "$SESSION" 2>/dev/null; do
@@ -790,6 +801,7 @@ while $TMUX has-session -t "$SESSION" 2>/dev/null; do
       echo "WARN: $CHANNEL_PROVIDER plugin (bot.pid) disappeared -- ${PLUGIN_DEAD_GRACE}s grace before restart" >&2
     elif [ "$((NOW - PLUGIN_DEAD_SINCE))" -ge "$PLUGIN_DEAD_GRACE" ]; then
       echo "WARN: $CHANNEL_PROVIDER plugin dead for $((NOW - PLUGIN_DEAD_SINCE))s -- exiting for service-manager restart" >&2
+      RESTART_REQUESTED=1
       break
     fi
   else
@@ -797,6 +809,7 @@ while $TMUX has-session -t "$SESSION" 2>/dev/null; do
     # --channels). Give it the full cold-start budget, then restart.
     if [ "$NOW" -ge "$PLUGIN_NEVER_STARTED_DEADLINE" ]; then
       echo "WARN: $CHANNEL_PROVIDER plugin never started within $((PLUGIN_NEVER_STARTED_DEADLINE - START_TS))s -- exiting for service-manager restart" >&2
+      RESTART_REQUESTED=1
       break
     fi
   fi
@@ -820,4 +833,11 @@ fi
 
 # Normal exit: clear failure log
 rm -f "$INSTALL_DIR/store/channels-failures.log"
+
+# A watchdog exit asked for a restart, so it must NOT look like a clean finish.
+# Written as an if (not `[ ] && exit 1`) so a future `set -e` cannot turn the
+# false branch into an accidental non-zero exit of the whole script.
+if [ "$RESTART_REQUESTED" = "1" ]; then
+  exit 1
+fi
 exit 0

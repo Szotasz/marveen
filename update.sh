@@ -489,6 +489,36 @@ if [ -d "$HOME/.config/systemd/user" ]; then
   done
 fi
 
+# Channels-unit restart-policy migration (Linux only). The installer template is
+# the only place that writes the unit file, and update.sh does NOT re-run the
+# installer -- so a fix to the template reaches new installs only. Every machine
+# installed before this change keeps Restart=on-failure, under which channels.sh
+# exiting zero from its own watchdog leaves the unit inactive/dead forever (seen
+# live 2026-08-04). This migration is what actually lands the fix on those hosts.
+# Idempotent: it only touches units that still carry the old value.
+migrate_channels_restart() {
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  [ -d "$units_dir" ] || return 0
+  _patched=0
+  for chan_unit in "$units_dir/"*-channels.service; do
+    [ -f "$chan_unit" ] || continue
+    if grep -q '^Restart=on-failure[[:space:]]*$' "$chan_unit"; then
+      if sed -i.marveen-bak 's/^Restart=on-failure[[:space:]]*$/Restart=always/' "$chan_unit" 2>/dev/null; then
+        rm -f "${chan_unit}.marveen-bak"
+        _patched=1
+        echo -e "  Csatorna-unit javitva (Restart=on-failure -> always): $(basename "$chan_unit")"
+      else
+        echo -e "  FIGYELEM: a csatorna-unit nem volt irhato: $chan_unit"
+      fi
+    fi
+  done
+  if [ "$_patched" = "1" ]; then
+    systemctl --user daemon-reload 2>/dev/null || true
+  fi
+  return 0
+}
+migrate_channels_restart
+
 # Seed skills & scheduled tasks (idempotent: skip existing)
 # Source .env for template variables needed by seed-scheduled-tasks
 MAIN_AGENT_ID=""

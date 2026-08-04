@@ -1674,7 +1674,17 @@ WorkingDirectory=$INSTALL_DIR
 # load for the current Node ABI before starting (2026-07-03 crash-loop fix).
 ExecStartPre=$INSTALL_DIR/scripts/ensure-native-modules.sh
 ExecStart=$INSTALL_DIR/scripts/channels.sh
-Restart=on-failure
+# Restart=always, NOT on-failure. channels.sh has watchdog branches that exit ON
+# PURPOSE to be restarted (sustained plugin death, plugin never started), and
+# under on-failure a zero exit read as "service finished" and the channel stayed
+# dead for good -- silently, with no failed unit to notice. macOS never showed
+# this because the launchd plist uses KeepAlive=true, which restarts regardless
+# of exit code; this line is what makes the Linux side symmetric with it.
+# Observed on a live v1.27.0 install 2026-08-04: unit inactive/dead after
+# ExecMainStatus=0, ten minutes before anyone looked.
+# Restart churn stays bounded by StartLimitIntervalSec/StartLimitBurst in
+# [Unit] above plus channels.sh's own rapid-failure backoff (sleep 60/300).
+Restart=always
 RestartSec=10
 StandardOutput=append:$INSTALL_DIR/store/channels.log
 StandardError=append:$INSTALL_DIR/store/channels.error.log
