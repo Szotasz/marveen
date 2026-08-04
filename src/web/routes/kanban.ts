@@ -11,6 +11,7 @@ import {
   addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
   listArchivedKanbanCards,
   revertIdeaFromKanban,
+  getHeartbeatKanbanSummary,
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
@@ -112,6 +113,30 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const labelsByCard = getLabelsForAllCards()
     const cards = listKanbanCards().map((card) => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))
     jsonMaybeGzip(req, res, cards)
+    return true
+  }
+
+  // The heartbeat agent's kanban source. It exists so the agent does not have to
+  // COMPOSE the filter every hour: on 2026-08-04 the 09:00 report listed five
+  // items of which three were already `done`, even though its instructions had
+  // said to exclude them since #680. A rule the model must re-apply each hour is
+  // not a mechanism; an endpoint that cannot return a closed card is. It also
+  // removes the sqlite3 CLI from that path, which does not exist on a stock
+  // Linux install (#870).
+  if (path === '/api/kanban/heartbeat-summary' && method === 'GET') {
+    const summary = getHeartbeatKanbanSummary()
+    const slim = (c: { id: string; title: string; status: string; priority: string; assignee?: string | null }) => ({
+      id: c.id, title: c.title, status: c.status, priority: c.priority, assignee: c.assignee ?? null,
+    })
+    json(res, {
+      urgent: summary.urgent.map(slim),
+      waiting: summary.waiting.map(slim),
+      counts: {
+        urgent: summary.urgent.length,
+        in_progress: summary.in_progress.length,
+        waiting: summary.waiting.length,
+      },
+    })
     return true
   }
 

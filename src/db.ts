@@ -1983,16 +1983,37 @@ export interface HeartbeatKanbanSummary {
   waiting: KanbanCard[]
 }
 
+/**
+ * The ONE definition of "what the heartbeat lists". Both consumers read it from
+ * here: the built-in heartbeat prompt (heartbeat.ts) and the heartbeat AGENT,
+ * which gets it over /api/kanban/heartbeat-summary instead of composing its own
+ * query. Two hand-written copies of the same filter is how they drift apart.
+ *
+ * `urgent` means urgent AND OPEN: priority='urgent' and the card is actually
+ * being worked or blocked. `status != 'done'` was not enough -- it also let
+ * through `planned` cards, and on 2026-08-04 the 09:00 report listed five items
+ * of which three were already closed, so the most prominent line of an hourly
+ * report was 92% noise and nobody read it any more.
+ *
+ * Deliberate consequence, named so it is a decision and not an accident: an
+ * urgent card sitting in `planned` is NOT listed. It is in the counts, but the
+ * title list is for things in flight or blocked.
+ */
+export const HEARTBEAT_OPEN_STATUSES = ['waiting', 'in_progress'] as const
+
+/** Exported so a test can execute the SHIPPED statement against a fixture DB
+ *  instead of re-typing an equivalent one and proving nothing. */
+export const HEARTBEAT_URGENT_SQL =
+  `SELECT * FROM kanban_cards WHERE archived_at IS NULL AND priority = 'urgent' AND status IN (${HEARTBEAT_OPEN_STATUSES.map(() => '?').join(',')})`
+export const HEARTBEAT_IN_PROGRESS_SQL =
+  "SELECT * FROM kanban_cards WHERE archived_at IS NULL AND status = 'in_progress'"
+export const HEARTBEAT_WAITING_SQL =
+  "SELECT * FROM kanban_cards WHERE archived_at IS NULL AND status = 'waiting'"
+
 export function getHeartbeatKanbanSummary(): HeartbeatKanbanSummary {
-  const urgent = db
-    .prepare("SELECT * FROM kanban_cards WHERE archived_at IS NULL AND priority = 'urgent' AND status != 'done'")
-    .all() as KanbanCard[]
-  const in_progress = db
-    .prepare("SELECT * FROM kanban_cards WHERE archived_at IS NULL AND status = 'in_progress'")
-    .all() as KanbanCard[]
-  const waiting = db
-    .prepare("SELECT * FROM kanban_cards WHERE archived_at IS NULL AND status = 'waiting'")
-    .all() as KanbanCard[]
+  const urgent = db.prepare(HEARTBEAT_URGENT_SQL).all(...HEARTBEAT_OPEN_STATUSES) as KanbanCard[]
+  const in_progress = db.prepare(HEARTBEAT_IN_PROGRESS_SQL).all() as KanbanCard[]
+  const waiting = db.prepare(HEARTBEAT_WAITING_SQL).all() as KanbanCard[]
   return { urgent, in_progress, waiting }
 }
 

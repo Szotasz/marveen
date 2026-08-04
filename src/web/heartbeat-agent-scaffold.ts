@@ -188,15 +188,31 @@ When you receive the heartbeat prompt:
      If the call fails (token revoked / 401), record the failure
      reason rather than the events; the main agent can act on the
      failure.
-   - **Kanban** -- read the SQLite DB at
-     \`${id.storeDir}/claudeclaw.db\`:
-     \`sqlite3 ${id.storeDir}/claudeclaw.db "SELECT status, COUNT(*)
-     FROM kanban_cards WHERE archived_at IS NULL GROUP BY status"\`
-     for counts, and grab the titles of cards where
-     \`archived_at IS NULL AND priority='urgent' AND status != 'done'\`
-     (a card can be \`urgent\` priority but already \`done\` -- exclude
-     those, or you will report closed issues as active every hour)
-     or \`archived_at IS NULL AND status='waiting'\`.
+   - **Kanban** -- ONE call, and do not compose a query of your own:
+
+     \`\`\`bash
+     curl -s -H "Authorization: Bearer $(cat ${id.storeDir}/.dashboard-token)" \\
+       ${id.dashboardOrigin}/api/kanban/heartbeat-summary
+     \`\`\`
+
+     It returns exactly what this section may report:
+     \`{"urgent":[...], "waiting":[...], "counts":{...}}\`, where the
+     lists contain ONLY open cards (\`waiting\` / \`in_progress\`,
+     never archived, never \`done\`). Report the ids and titles it
+     gives you and nothing else.
+
+     Two things this replaces, both measured: the old instruction told
+     you to write the filter yourself, and on 2026-08-04 the 09:00
+     report still listed five items of which THREE were \`done\` --
+     a rule you must re-apply every hour is not a mechanism. And the
+     old call used \`sqlite3\`, which does not exist on a stock Linux
+     install (exit 127), so on those hosts this step died silently.
+
+     If a list comes back EMPTY, write that it is empty. Do not widen
+     the query, do not fall back to another status, do not fill the
+     line with closed cards so that it has content: an empty urgent
+     list is the good news, and a report nobody can trust to be empty
+     is a report nobody reads.
    - **Scheduled tasks** -- the live registry is the dashboard API, NOT
      the \`scheduled_tasks\` table (that table is empty on this
      deployment, and a count taken from it reports 0 forever):

@@ -99,11 +99,17 @@ describe('renderHeartbeatClaudeMd', () => {
     expect(out).toContain('You are headless')
   })
 
-  it('excludes done cards from the urgent-title kanban query (card 776e800a)', () => {
+  it('does not ask the agent to filter done cards -- it cannot see them at all (was card 776e800a)', () => {
     const out = renderHeartbeatClaudeMd(ID)
-    // A done card can still carry priority='urgent' -- the title lookup
-    // must filter it out, or closed issues get reported as active forever.
-    expect(out).toContain("priority='urgent' AND status != 'done'")
+    // This assertion REPLACES the older one, which required the prose to carry
+    // `priority='urgent' AND status != 'done'`. That instruction was present and
+    // correct since #680, and the 09:00 report on 2026-08-04 still listed three
+    // `done` cards out of five: a filter the model must re-apply every hour is
+    // not a mechanism. The agent now calls an endpoint that can only return open
+    // cards, so the guarantee moved from "it was told to" to "it cannot".
+    expect(out).toContain('/api/kanban/heartbeat-summary')
+    expect(out).not.toContain("priority='urgent' AND status != 'done'")
+    expect(out).not.toMatch(/SELECT[^\n]*FROM kanban_cards/i)
   })
 
   it('is fully driven by the identity -- distinct configs render distinctly', () => {
