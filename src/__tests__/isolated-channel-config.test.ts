@@ -185,4 +185,25 @@ describe('isolated-config launcher wiring', () => {
   it('keeps the plugin-slot collision alert scoped to channel agents', () => {
     expect(SRC).toMatch(/if \(hasChannel\) maybeAlertSharedConfigCollision\(name\)/)
   })
+
+  // Regression guard for the BYO/custom-provider + channel-agent 401 bug (2026-08-05).
+  // A BYO-endpoint agent (Ollama, DeepSeek, OpenRouter, generic custom) must NEVER
+  // receive CLAUDE_CODE_OAUTH_TOKEN in its env -- the Claude CLI forwards it to the
+  // third-party endpoint instead of the ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN
+  // the provider expects, resulting in a 401.  The CLAUDE_CONFIG_DIR isolation for
+  // channel agents is unrelated and must be preserved regardless of provider type.
+
+  it('shared-home token export is gated on needsFleetOauth so BYO/custom agents are never given the OAuth token', () => {
+    // The shared-home fallback block must export CLAUDE_CODE_OAUTH_TOKEN only when
+    // needsFleetOauth is true (i.e. isClaude && authMode !== 'api').
+    expect(SRC).toMatch(/hasFleetOauthToken\(\) && needsFleetOauth/)
+  })
+
+  it('channel-isolation token export is wrapped in if(needsFleetOauth) — BYO channel agents keep CLAUDE_CONFIG_DIR but no OAuth token', () => {
+    // The oauthTokenEnv assignment inside the channel-isolation block must be
+    // wrapped in an if(needsFleetOauth) guard so BYO channel agents (hasChannel=true
+    // but isClaude=false) get the isolated CLAUDE_CONFIG_DIR for plugin-slot
+    // separation without the Claude OAuth token being forwarded to their provider.
+    expect(SRC).toMatch(/if \(needsFleetOauth\)\s*\{[^}]*CLAUDE_CODE_OAUTH_TOKEN/)
+  })
 })
