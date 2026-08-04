@@ -8,10 +8,13 @@ import { recoverStuckInputForSession, sendAlert } from './channel-monitor.js'
 import {
   stuckInputSignature,
   parkedPasteSignature,
+  parkedChannelInput,
+  parkedInputText,
   decideStuckInputRecovery,
   type StuckInputState,
   type StuckInputThresholds,
 } from '../pane-state.js'
+import { matchDelivery } from './delivery-intent.js'
 
 // Backstop recovery for a swallowed Enter on the channel-notification
 // path. Inbound Telegram/Slack messages are delivered into the session by
@@ -130,10 +133,20 @@ function recoverParkedPaste(
   return true
 }
 
-// Bare-Enter recovery (host-aware). Used for the MAIN session (host null) and
-// for REMOTE sub-agents, where the local-tmux clear+re-inject is not
-// available. channel-monitor owns the clear+re-inject escalation for these.
-function bareEnterRecovery(label: string, session: string, host: string | null): void {
+// Bare-Enter recovery (host-aware). Used for REMOTE sub-agents, where the
+// local-tmux clear+re-inject is not available. channel-monitor owns the
+// clear+re-inject escalation for these.
+//
+// Delivery-intent gate (sub-agent only): a bare Enter submits whatever is
+// in the box, so before sending one we verify the parked content was actually
+// delivered by the router. Unattributed plain text is held (not submitted)
+// and logged. Complete <channel> blocks are exempt -- their structural
+// chat_id verification applies. This mirrors the gate in decideStuckInputAction
+// for the local-session plain-text re-inject path (MAIN path excluded --
+// false-negative risk outweighs phantom-injection risk there).
+//
+// Exported as _bareEnterRecovery for unit testing only.
+export function _bareEnterRecovery(label: string, session: string, host: string | null): void {
   // Ghost-stripped capture: a bare recovery Enter submits whatever is parked,
   // so a dim autocomplete hint read as parked input would be Enter-submitted as
   // a forged message. captureParkedInputView removes the SGR-2 ghost first.
@@ -151,7 +164,22 @@ function bareEnterRecovery(label: string, session: string, host: string | null):
     watchState.set(session, next)
   }
 
-  if (recover) {
+  if (recover && pane != null) {
+    // Delivery-intent gate: only send the Enter if the parked content is either
+    // a complete <channel> block (exempt: structural chat_id verification) or
+    // matches a genuine delivery. Unattributed plain text is held.
+    const block = parkedChannelInput(pane)
+    const isBlockComplete = block != null && block.complete && block.block != null
+    if (!isBlockComplete) {
+      const plainText = parkedInputText(pane)
+      if (plainText != null && !matchDelivery(session, plainText)) {
+        logger.warn(
+          { label, session, attempt: next.attempts },
+          'stuck-input-watcher: bareEnterRecovery held -- plain text not attributed to a known delivery',
+        )
+        return
+      }
+    }
     logger.info(
       { label, session, attempt: next.attempts },
       'stuck-input-watcher: parked input persisted past confirm window, sending recovery Enter',
@@ -166,6 +194,9 @@ function bareEnterRecovery(label: string, session: string, host: string | null):
     }
   }
 }
+
+// Internal alias: the sweep uses the exported _bareEnterRecovery for remote agents.
+const bareEnterRecovery = _bareEnterRecovery
 
 // LOCAL session: full robust escalation (Enter -> clear + re-inject) on the
 // fast tick. Used for the MAIN channels session AND local sub-agents -- both
