@@ -4,7 +4,7 @@ import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { hardRestartMarveenChannels, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS } from './channel-monitor.js'
 import { shouldDeferForRecentRespawn } from './stuck-tool-call-watcher.js'
-import { listAgentNames, agentDir, readAgentModel, readAgentClaudeConfigDir, readAgentRemoteHost } from './agent-config.js'
+import { listAgentNames, listAllAgentNames, agentDir, readAgentModel, readAgentClaudeConfigDir, readAgentRemoteHost } from './agent-config.js'
 import {
   agentRunState,
   agentSessionName,
@@ -328,11 +328,30 @@ export function getContextGuardStatus(): Array<{
   })
 }
 
+/**
+ * Who the saturation net sweeps: the main agent plus EVERY agent directory,
+ * dashboard-hidden technical workers included.
+ *
+ * Deliberately listAllAgentNames(), not listAgentNames(). A hidden worker is
+ * hidden from the OPERATOR, not from the fleet's life support: it runs a real
+ * Claude session that can wedge at 100% context exactly like a visible agent,
+ * and when it does, this sweep is the only thing that can free it. The hourly
+ * heartbeat proved it on 2026-08-04 -- agents/heartbeat wedged, was invisible
+ * to this sweep, and the schedule runner's (correct) "defer instead of
+ * injecting into a wedged session" turned into an unbounded wait.
+ *
+ * Exported so the regression test can assert the SET rather than reach into a
+ * timer: narrowing this back to listAgentNames() must fail a test, not a
+ * production heartbeat.
+ */
+export function guardSweepAgentNames(): string[] {
+  return [MAIN_AGENT_ID, ...listAllAgentNames()]
+}
+
 export function startContextGuardRunner(): NodeJS.Timeout {
   async function sweep() {
     const now = Date.now()
-    try { await checkAgent(MAIN_AGENT_ID, now) } catch (err) { logger.debug({ err }, 'context-guard: main check error') }
-    for (const name of listAgentNames()) {
+    for (const name of guardSweepAgentNames()) {
       try { await checkAgent(name, now) } catch (err) { logger.debug({ err, agent: name }, 'context-guard: agent check error') }
     }
   }
