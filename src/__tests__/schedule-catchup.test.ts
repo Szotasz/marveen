@@ -9,6 +9,7 @@ import {
   catchUpMaxAgeMs,
   computeCatchUpStart,
   decideCatchUp,
+  shouldReportCatchUp,
 } from '../web/schedule-runner.js'
 import { cronDueBetween, cronPrevOccurrence } from '../web/cron.js'
 
@@ -119,6 +120,28 @@ describe('decideCatchUp: run it, or say it was missed -- never neither', () => {
   })
 })
 
+describe('shouldReportCatchUp: a successful catch-up is silent, only a missed run pings', () => {
+  // 2026-08-04 operator request (#2): the "[scheduler] Kimaradt ütemezés / Pótlás
+  // elindítva" line on every downtime was noise -- a successful catch-up needs no
+  // ping. Only a STALE occurrence (silently skipped, needs manual attention on the
+  // dashboard) is worth interrupting the operator for.
+  it('stays silent when the gap only caught tasks up', () => {
+    expect(shouldReportCatchUp(3, 0)).toBe(false)
+  })
+
+  it('pings when an occurrence was too stale to run (silently skipped)', () => {
+    expect(shouldReportCatchUp(0, 1)).toBe(true)
+  })
+
+  it('pings -- and the summary still names the caught-up half -- when both happened', () => {
+    expect(shouldReportCatchUp(2, 1)).toBe(true)
+  })
+
+  it('stays silent on an empty gap', () => {
+    expect(shouldReportCatchUp(0, 0)).toBe(false)
+  })
+})
+
 describe('cronPrevOccurrence: the age the decision is made on', () => {
   // 2026-07-29 08:40 local, a Wednesday -- one occurrence of "40 6 * * *" is in
   // the window (06:40 that morning), and it is 2h late.
@@ -175,7 +198,10 @@ describe('the runner wires the policy in', () => {
     expect(SRC).toMatch(/sendCatchUpSummary\(caughtUpThisTick, staleThisTick/)
   })
 
-  it('stays silent on a tick that caught nothing up', () => {
-    expect(SRC).toMatch(/if \(caughtUpThisTick\.length \|\| staleThisTick\.length\) \{/)
+  it('reports only when something was missed, via shouldReportCatchUp', () => {
+    // #2 policy: a successful-only catch-up is silent; the summary fires only when
+    // staleThisTick is non-empty. The guard delegates to the pure predicate.
+    expect(SRC).toMatch(/if \(shouldReportCatchUp\(caughtUpThisTick\.length, staleThisTick\.length\)\) \{/)
+    expect(SRC).not.toMatch(/if \(caughtUpThisTick\.length \|\| staleThisTick\.length\) \{/)
   })
 })

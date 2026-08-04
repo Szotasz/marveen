@@ -330,6 +330,18 @@ export function decideCatchUp(
   return ageMs <= catchUpMaxAgeMs(task) ? 'catch-up' : 'stale'
 }
 
+// Pure: whether a downtime gap is worth a Telegram ping. Policy (2026-08-04,
+// operator request): a successful catch-up runs silently -- the operator does
+// not need to know a scheduled task fired a few minutes late. Only a STALE
+// occurrence -- one too old to run, therefore silently skipped -- warrants the
+// alert, because it needs manual attention on the dashboard /Ütemezések page.
+// The caughtUp count is deliberately ignored: its presence never forces a ping,
+// but when a stale one does fire the summary still names both halves.
+export function shouldReportCatchUp(caughtUpCount: number, staleCount: number): boolean {
+  void caughtUpCount
+  return staleCount > 0
+}
+
 /** Pure: where the first post-start scan window begins. */
 export function computeCatchUpStart(
   persistedTickMs: number | null,
@@ -828,10 +840,11 @@ function resolveSchedulerAlertToken(): string | undefined {
 }
 
 // One line about what the scheduler missed while it was down: which tasks it
-// caught up, and which were too stale to be worth running. Sent once per tick
-// that produced any such entry -- in normal operation that is never, so the
-// channel stays quiet. This is the reporting half of the catch-up policy: a
-// missed occurrence either runs or gets named, never both and never neither.
+// caught up, and which were too stale to be worth running. Called only when a
+// stale (silently-skipped) occurrence exists -- see shouldReportCatchUp; a gap
+// that merely caught tasks up stays quiet (2026-08-04 policy). This is the
+// reporting half of the catch-up policy: a missed occurrence either runs or
+// gets named, never both and never neither.
 function sendCatchUpSummary(
   caughtUp: Array<{ task: string; ageMs: number }>,
   stale: Array<{ task: string; ageMs: number }>,
@@ -1272,10 +1285,10 @@ export function startScheduleRunner(): NodeJS.Timeout {
       }
     }
 
-    // Tell the operator, in one line, what the gap cost. Only fires when this
-    // tick actually caught something up or declared something too stale, which
-    // in steady state is never.
-    if (caughtUpThisTick.length || staleThisTick.length) {
+    // Tell the operator, in one line, what the gap cost -- but only when a missed
+    // occurrence was too stale to run (silently skipped, needs manual attention).
+    // A gap that merely caught tasks up stays quiet: see shouldReportCatchUp.
+    if (shouldReportCatchUp(caughtUpThisTick.length, staleThisTick.length)) {
       sendCatchUpSummary(caughtUpThisTick, staleThisTick, pendingStartupGapMs || (now - fromMs))
     }
     pendingStartupGapMs = 0
