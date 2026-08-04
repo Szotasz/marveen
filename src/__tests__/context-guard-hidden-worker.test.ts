@@ -68,6 +68,23 @@ describe('hidden technical workers and the saturation net', () => {
     expect(guardSweepAgentNames()[0]).toBe('marveen') // main stays first
   })
 
+  it('the sweep set is a SET -- the main agent is never swept twice', () => {
+    // On a real install agents/<MAIN_AGENT_ID> exists as a directory, so the
+    // main agent arrives from BOTH sources: the explicit head of the list and
+    // the directory listing. Without the sandbox dir below this test cannot see
+    // the duplicate at all, which is why it is created here explicitly.
+    agent('marveen')
+    agent('samu')
+    agent('heartbeat', true)
+
+    const swept = guardSweepAgentNames()
+    expect(swept[0]).toBe('marveen')
+    expect(swept).toEqual([...new Set(swept)])
+    expect(swept.filter((n) => n === 'marveen')).toHaveLength(1)
+    // and the widening still holds in the same breath
+    expect(swept).toContain('heartbeat')
+  })
+
   it('the dashboard listing still hides that same worker', () => {
     agent('samu')
     agent('heartbeat', true)

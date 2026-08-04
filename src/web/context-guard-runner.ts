@@ -343,9 +343,16 @@ export function getContextGuardStatus(): Array<{
  * Exported so the regression test can assert the SET rather than reach into a
  * timer: narrowing this back to listAgentNames() must fail a test, not a
  * production heartbeat.
+ *
+ * Deduplicated, main first. On an install where agents/<MAIN_AGENT_ID> exists
+ * as a real directory (ours does) the main agent appears twice -- once
+ * explicitly, once from the listing -- and checkAgent would run its whole
+ * decision on it twice per sweep. That is exactly the agent where a doubled
+ * decision is least welcome, so the canonical "who do we sweep" answer is a
+ * set, not a concatenation.
  */
 export function guardSweepAgentNames(): string[] {
-  return [MAIN_AGENT_ID, ...listAllAgentNames()]
+  return [...new Set([MAIN_AGENT_ID, ...listAllAgentNames()])]
 }
 
 export function startContextGuardRunner(): NodeJS.Timeout {
