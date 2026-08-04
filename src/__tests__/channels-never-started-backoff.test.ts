@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -157,5 +157,121 @@ describe('the signal is NOT damped -- only the churn is', () => {
     expect(CHANNELS).toMatch(/^PLUGIN_DEAD_GRACE=180$/m)
     const deadBranch = sliceBetween(CHANNELS, 'plugin dead for', 'break')
     expect(deadBranch).not.toMatch(/NEVER_STARTED/)
+  })
+})
+
+// ── The one assertion that must not be text-level ────────────────────────────
+// The streak WRITE is the silent-failure point of this whole change: if it
+// quietly fails (bad path, unwritable store/, a quoting slip), the streak never
+// grows, the budget stays at 600s, and the backoff does nothing while looking
+// exactly like it works. Every other claim here fails loudly; this one fails
+// mute. So it gets a real run: execute the shipped decision chain and READ THE
+// FILE BACK afterwards -- the temp dir is deliberately kept alive until the
+// assertions are done.
+//
+// The harness supplies only the environment (elapsed time, "is the plugin
+// alive"), never the answer: the branch logic, the arithmetic and the write are
+// all sliced out of scripts/channels.sh unmodified.
+function constantsBlock(): string {
+  return sliceBetween(CHANNELS, 'NEVER_STARTED_BASE=600', 'PLUGIN_NEVER_STARTED_DEADLINE=$((START_TS + PLUGIN_NEVER_STARTED_BUDGET))')
+}
+
+/** The plugin-alive / died-after-up / never-started decision chain, verbatim. */
+function decisionChain(): string {
+  const start = CHANNELS.indexOf('  if [ "$_plugin_alive" = "true" ]; then')
+  if (start < 0) throw new Error('decision chain not found')
+  const end = CHANNELS.indexOf('\ndone', start)
+  if (end < 0) throw new Error('unterminated decision chain')
+  return CHANNELS.slice(start, end)
+}
+
+function runChain(dir: string, opts: { ageSeconds: number; pluginAlive: boolean }): { out: string; code: number } {
+  const body = [
+    'set -u',
+    // the shipped warnings go to stderr; merge the streams so the assertions
+    // can see the real message instead of a re-typed copy of it
+    'exec 2>&1',
+    `INSTALL_DIR="${dir}"`,
+    'mkdir -p "$INSTALL_DIR/store"',
+    'CHANNEL_PROVIDER=telegram',
+    `START_TS=$(( $(date +%s) - ${opts.ageSeconds} ))`,
+    constantsBlock(),
+    'PLUGIN_SEEN_ONCE=false',
+    'PLUGIN_DEAD_SINCE=0',
+    'PLUGIN_DEAD_GRACE=180',
+    'RESTART_REQUESTED=0',
+    'NOW=$(date +%s)',
+    `_plugin_alive=${opts.pluginAlive ? 'true' : 'false'}`,
+    // `break` is meaningful only inside a loop; one iteration keeps the shipped
+    // control flow honest without re-typing it.
+    'for _once in 1; do',
+    decisionChain(),
+    'done',
+    'echo "RESULT restart_requested=$RESTART_REQUESTED budget=$PLUGIN_NEVER_STARTED_BUDGET"',
+  ].join('\n')
+  const p = join(dir, 'chain.sh')
+  writeFileSync(p, body + '\n')
+  try {
+    return { out: execFileSync('bash', [p], { encoding: 'utf-8' }).trim(), code: 0 }
+  } catch (e) {
+    const err = e as { stdout?: string; stderr?: string; status?: number }
+    return { out: `${String(err.stdout ?? '')}${String(err.stderr ?? '')}`.trim(), code: err.status ?? -1 }
+  }
+}
+
+describe('the streak file, executed for real and read back', () => {
+  it('counts up across consecutive never-started exits and clears on recovery', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'streak-'))
+    const streakFile = join(dir, 'store', '.channel-neverstart-streak')
+    try {
+      // 1st exit: no counter yet, budget 600, elapsed 700 -> deadline passed
+      const r1 = runChain(dir, { ageSeconds: 700, pluginAlive: false })
+      expect(r1.code).toBe(0)
+      expect(r1.out).toContain('budget=600')
+      expect(r1.out).toContain('restart_requested=1')
+      expect(r1.out).toMatch(/never started within 600s/)
+      expect(readFileSync(streakFile, 'utf-8').trim()).toBe('1')
+
+      // 2nd exit: counter 1 -> budget 1200, so 700s is NOT enough any more
+      const rShort = runChain(dir, { ageSeconds: 700, pluginAlive: false })
+      expect(rShort.out).toContain('budget=1200')
+      expect(rShort.out).toContain('restart_requested=0')
+      expect(readFileSync(streakFile, 'utf-8').trim()).toBe('1')
+
+      // ... and with 1300s elapsed it fires and the counter reaches 2
+      const r2 = runChain(dir, { ageSeconds: 1300, pluginAlive: false })
+      expect(r2.out).toContain('budget=1200')
+      expect(r2.out).toContain('restart_requested=1')
+      expect(readFileSync(streakFile, 'utf-8').trim()).toBe('2')
+
+      // recovery: the plugin comes up -> the file is gone
+      const r3 = runChain(dir, { ageSeconds: 10, pluginAlive: true })
+      expect(r3.code).toBe(0)
+      expect(existsSync(streakFile)).toBe(false)
+
+      // and after recovery the next cold start is back on the fast budget
+      const r4 = runChain(dir, { ageSeconds: 700, pluginAlive: false })
+      expect(r4.out).toContain('budget=600')
+      expect(readFileSync(streakFile, 'utf-8').trim()).toBe('1')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('an unwritable store/ does not fake success: the counter stays put and the exit still happens', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'streak-ro-'))
+    try {
+      const storeDir = join(dir, 'store')
+      execFileSync('mkdir', ['-p', storeDir])
+      execFileSync('chmod', ['500', storeDir])
+      const r = runChain(dir, { ageSeconds: 700, pluginAlive: false })
+      // the watchdog still asks for the restart -- the signal survives a
+      // failed write, which is the behaviour we want on a broken host
+      expect(r.out).toContain('restart_requested=1')
+      expect(existsSync(join(storeDir, '.channel-neverstart-streak'))).toBe(false)
+    } finally {
+      execFileSync('chmod', ['700', join(dir, 'store')])
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
