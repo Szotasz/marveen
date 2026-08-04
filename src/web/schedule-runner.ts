@@ -5,6 +5,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { logger } from '../logger.js'
+import { decideDesktopGate, readDesktopLock, recordDesktopSkip } from './desktop-lock.js'
 import {
   PROJECT_ROOT,
   MAIN_AGENT_ID,
@@ -1221,6 +1222,47 @@ export function startScheduleRunner(): NodeJS.Timeout {
           appendTaskRun(task.name, agentName, 'skipped')
         }
         continue
+      }
+
+      // DESKTOP GATE. Only rounds that drive the screen wait for the lock;
+      // everything else (email, kanban, memory, watchdogs) keeps running. A
+      // blanket suspension would produce blanket silence, and silence is what
+      // nobody questions.
+      //
+      // The skip is RECORDED, never silent: a dropped tick with no trace is
+      // indistinguishable from "there was nothing to do", which is exactly how
+      // a missed customer message disappears. Observed the day this was built:
+      // two consecutive WhatsApp rounds were lost behind two GUI rounds and
+      // only a human noticing the gap brought them back.
+      if (task.requiresDesktop) {
+        const gate = decideDesktopGate({
+          requiresDesktop: true,
+          lock: readDesktopLock(),
+          now,
+          agent: task.agent === 'all' ? null : (task.agent || MAIN_AGENT_ID),
+        })
+        if (gate.action === 'skip') {
+          logger.info({ task: task.name, reason: gate.reason }, 'Schedule skipped: desktop locked')
+          scheduleLastRun.set(task.name, now)
+          persistScheduleLastRun()
+          for (const agentName of targetAgents) {
+            appendTaskRun(task.name, agentName, 'skipped-desktop-lock')
+            recordDesktopSkip({
+              task: task.name,
+              agent: agentName,
+              at: now,
+              lockOwner: gate.lockOwner ?? null,
+              lockedUntil: gate.lockedUntil ?? null,
+              reason: gate.reason,
+            })
+          }
+          continue
+        }
+        if (gate.action === 'run-lock-expired') {
+          // Not a skip: we run. But an expired lock is a finding (bad estimate
+          // or a holder that died), so it is never passed over quietly.
+          logger.warn({ task: task.name, reason: gate.reason }, 'Schedule ran through an EXPIRED desktop lock')
+        }
       }
 
       for (const agentName of targetAgents) {
