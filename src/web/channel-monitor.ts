@@ -28,6 +28,7 @@ import {
   answerFirstRunGates,
 } from './agent-process.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence } from './channel-poller-reap.js'
+import { matchDelivery } from './delivery-intent.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
 import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPluginAbsent } from './channel-plugin-unlock.js'
 import {
@@ -318,6 +319,7 @@ export async function recoverStuckInputForSession(
     // and corrupts the message) and prefers a chat_id-safe re-inject; the
     // truncation-guard (no verbatim re-inject of an incomplete <channel> block)
     // is preserved via blockTruncated.
+    const plainText = parkedInputText(pane)
     const facts: StuckInputActionFacts = {
       escalate: attempt > MAIN_STUCK_ENTER_ATTEMPTS,
       rowCount: parkedInputRowCount(pane),
@@ -325,8 +327,14 @@ export async function recoverStuckInputForSession(
       blockTruncated: block != null && !block.complete,
       truncatedPreamble: shouldClearTruncatedPreamble(pane),
       allowPlainReinject,
-      hasPlainText: allowPlainReinject && parkedInputText(pane) != null,
+      hasPlainText: allowPlainReinject && plainText != null,
       scheduledTaskBlock: parkedScheduledTaskInput(pane),
+      // Delivery-intent gate: only re-inject plain text that the router/scheduler
+      // verifiably delivered. A false value holds the re-inject rather than
+      // risking phantom-injection of externally-injected content.
+      deliveryMatched: allowPlainReinject && plainText != null
+        ? matchDelivery(session, plainText)
+        : undefined,
     }
     const action = decideStuckInputAction(facts)
     await performStuckInputAction(session, action, pane, block, sig, attempt)

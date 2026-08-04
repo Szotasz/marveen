@@ -1382,6 +1382,13 @@ export interface StuckInputActionFacts {
   /** parkedScheduledTaskInput(pane): a scheduled-task tick is parked. Clear-only
    * is safe on ANY session (the next schedule fire re-delivers). */
   scheduledTaskBlock: boolean
+  /**
+   * The parked plain text was attributed to a genuine router/scheduler delivery
+   * (via the delivery-intent registry). When false the plain-text re-inject path
+   * must hold instead of re-submitting unattributed content. Omit (undefined) to
+   * leave the gate open (e.g. for sessions where delivery-intent is not tracked).
+   */
+  deliveryMatched?: boolean
 }
 
 /**
@@ -1406,8 +1413,11 @@ export function decideStuckInputAction(f: StuckInputActionFacts): StuckInputActi
   if (f.blockComplete) {
     return f.escalate || multiRow ? 'reinject-block' : 'enter'
   }
-  // Sub-agent non-channel parked text: clear + re-inject is safe (no human draft).
+  // Sub-agent non-channel parked text: clear + re-inject is safe (no human draft),
+  // but ONLY when the content is attributed to a genuine delivery. If deliveryMatched
+  // is explicitly false (registry present, no match), hold to prevent phantom-inject.
   if (f.allowPlainReinject && f.hasPlainText && !f.blockTruncated) {
+    if (f.deliveryMatched === false) return 'hold'
     return f.escalate || multiRow ? 'reinject-plain' : 'enter'
   }
   // Parked scheduled-task tick (main session reaches here: no plain re-inject).

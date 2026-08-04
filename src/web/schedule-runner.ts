@@ -50,6 +50,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { sendTelegramMessage } from './telegram.js'
 import { runCommandTask } from './command-task.js'
 import { paneShowsContextSaturation, detectsFirstRunGate, detectPaneState, type PaneState } from '../pane-state.js'
+import { recordDelivery } from './delivery-intent.js'
 
 // How many bare-Enter attempts the post-send resubmit tries before escalating
 // to a clear + re-inject, and the hard cap after which it gives up.
@@ -658,6 +659,7 @@ async function attemptFireTask(
     // tick -- defeating the very purpose of forceSend (inject regardless, let
     // Claude Code queue it). All non-forceSend tasks keep the gate ON.
     await sendPromptToSession(session, fullPrompt, host, { waitForIdle: !task.forceSend })
+    recordDelivery(session, fullPrompt)
     scheduleLastRun.set(task.name, now)
     persistScheduleLastRun()
     // A lateCatchUpMs value means this tick only matched because of the
@@ -726,6 +728,7 @@ async function attemptFireTask(
           // would otherwise burn its whole budget and time out every attempt.
           if (await clearStaleParkedInput(session, host)) {
             await sendPromptToSession(session, fullPrompt, host, { waitForIdle: false })
+            recordDelivery(session, fullPrompt)
             logger.info({ task: task.name, session, attempt }, 'Scheduled prompt re-injected after swallowed Enter')
           } else {
             sendEnterToSession(session, host)
