@@ -48,6 +48,7 @@ import {
 } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { sendTelegramMessage } from './telegram.js'
+import { getEffectiveSettingValue } from '../settings-store.js'
 import { runCommandTask } from './command-task.js'
 import { paneShowsContextSaturation, detectsFirstRunGate, detectPaneState, type PaneState } from '../pane-state.js'
 
@@ -328,6 +329,18 @@ export function decideCatchUp(
 ): CatchUpDecision {
   if (ageMs <= lateThresholdMs) return 'on-time'
   return ageMs <= catchUpMaxAgeMs(task) ? 'catch-up' : 'stale'
+}
+
+// Pure: whether a downtime catch-up gap warrants a Telegram ping, given the
+// operator's SCHEDULER_CATCHUP_ALERT level (2026-08-05, dashboard-configurable,
+// replacing the reverted hardcoded #872). 0 = never; 1 = only when a stale
+// (silently-skipped) occurrence exists; 2 = every non-empty gap (legacy
+// default). Out-of-range is clamped by the setting bounds, but the predicate is
+// defensive: any level >= 2 reads as the legacy default, < 0 as never.
+export function shouldReportCatchUp(caughtUpCount: number, staleCount: number, alertLevel: number): boolean {
+  if (alertLevel <= 0) return false
+  if (alertLevel === 1) return staleCount > 0
+  return caughtUpCount > 0 || staleCount > 0
 }
 
 /** Pure: where the first post-start scan window begins. */
@@ -1275,7 +1288,10 @@ export function startScheduleRunner(): NodeJS.Timeout {
     // Tell the operator, in one line, what the gap cost. Only fires when this
     // tick actually caught something up or declared something too stale, which
     // in steady state is never.
-    if (caughtUpThisTick.length || staleThisTick.length) {
+    // Downtime catch-up ping: gated by the SCHEDULER_CATCHUP_ALERT dashboard
+    // setting (0 never / 1 only-missed / 2 every gap; hot-reloaded per tick).
+    const catchUpAlertLevel = Number(getEffectiveSettingValue('SCHEDULER_CATCHUP_ALERT'))
+    if (shouldReportCatchUp(caughtUpThisTick.length, staleThisTick.length, catchUpAlertLevel)) {
       sendCatchUpSummary(caughtUpThisTick, staleThisTick, pendingStartupGapMs || (now - fromMs))
     }
     pendingStartupGapMs = 0

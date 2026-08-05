@@ -160,6 +160,18 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  // --- Scheduler ---
+  {
+    key: 'SCHEDULER_CATCHUP_ALERT',
+    type: 'int',
+    default: 2,
+    min: 0,
+    max: 2,
+    description: 'Downtime utáni catch-up értesítés a Telegramon ("Kimaradt ütemezés / Pótlás elindítva"): 0 = soha, 1 = csak ha volt némán kihagyott (stale) feladat, 2 = minden kiesésnél (alapértelmezett).',
+    module: 'scheduler',
+    secret: false,
+    requiresRestart: false,
+  },
   // --- Kanban aging thresholds and colours (hot-reload via settings-store) ---
   {
     key: 'KANBAN_AGING_WARN_H',

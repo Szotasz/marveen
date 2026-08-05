@@ -9,6 +9,7 @@ import {
   catchUpMaxAgeMs,
   computeCatchUpStart,
   decideCatchUp,
+  shouldReportCatchUp,
 } from '../web/schedule-runner.js'
 import { cronDueBetween, cronPrevOccurrence } from '../web/cron.js'
 
@@ -119,6 +120,45 @@ describe('decideCatchUp: run it, or say it was missed -- never neither', () => {
   })
 })
 
+describe('shouldReportCatchUp: the SCHEDULER_CATCHUP_ALERT level gates the downtime ping', () => {
+  // 2026-08-05 operator request: a configurable dashboard switch (int 0/1/2) for
+  // the "[scheduler] Kimaradt ütemezés / Pótlás elindítva" downtime line, replacing
+  // the reverted hardcoded #872. 0 = never, 1 = only when a stale (silently
+  // skipped) occurrence exists, 2 = every gap (the legacy default).
+  it('level 0 (never): stays silent even when something was missed', () => {
+    expect(shouldReportCatchUp(0, 5, 0)).toBe(false)
+    expect(shouldReportCatchUp(3, 0, 0)).toBe(false)
+    expect(shouldReportCatchUp(2, 1, 0)).toBe(false)
+  })
+
+  it('level 1 (only-missed): pings on a stale occurrence, silent on a pure catch-up', () => {
+    expect(shouldReportCatchUp(0, 1, 1)).toBe(true)
+    expect(shouldReportCatchUp(2, 1, 1)).toBe(true)
+    expect(shouldReportCatchUp(3, 0, 1)).toBe(false)
+    expect(shouldReportCatchUp(0, 0, 1)).toBe(false)
+  })
+
+  it('level 2 (every gap, legacy default): pings on any caught-up or missed occurrence', () => {
+    expect(shouldReportCatchUp(3, 0, 2)).toBe(true)
+    expect(shouldReportCatchUp(0, 1, 2)).toBe(true)
+    expect(shouldReportCatchUp(2, 1, 2)).toBe(true)
+    expect(shouldReportCatchUp(0, 0, 2)).toBe(false)
+  })
+
+  it('an out-of-range level >= 2 behaves as the legacy default; < 0 as never', () => {
+    expect(shouldReportCatchUp(3, 0, 99)).toBe(true)
+    expect(shouldReportCatchUp(3, 0, -1)).toBe(false)
+  })
+})
+
+describe('the runner reads the SCHEDULER_CATCHUP_ALERT setting and gates the summary', () => {
+  it('resolves the level from settings and delegates to shouldReportCatchUp', () => {
+    expect(SRC).toMatch(/getEffectiveSettingValue\('SCHEDULER_CATCHUP_ALERT'\)/)
+    expect(SRC).toMatch(/shouldReportCatchUp\(caughtUpThisTick\.length, staleThisTick\.length/)
+    expect(SRC).not.toMatch(/if \(caughtUpThisTick\.length \|\| staleThisTick\.length\) \{/)
+  })
+})
+
 describe('cronPrevOccurrence: the age the decision is made on', () => {
   // 2026-07-29 08:40 local, a Wednesday -- one occurrence of "40 6 * * *" is in
   // the window (06:40 that morning), and it is 2h late.
@@ -175,7 +215,11 @@ describe('the runner wires the policy in', () => {
     expect(SRC).toMatch(/sendCatchUpSummary\(caughtUpThisTick, staleThisTick/)
   })
 
-  it('stays silent on a tick that caught nothing up', () => {
-    expect(SRC).toMatch(/if \(caughtUpThisTick\.length \|\| staleThisTick\.length\) \{/)
+  it('gates the summary on config-driven shouldReportCatchUp, not the legacy unconditional guard', () => {
+    // 2026-08-05: the old `if (caughtUp || stale)` guard is replaced by the
+    // SCHEDULER_CATCHUP_ALERT-gated shouldReportCatchUp (see the dedicated
+    // describe above). An empty gap still stays silent (level 2: caughtUp||stale).
+    expect(SRC).toMatch(/shouldReportCatchUp\(caughtUpThisTick\.length, staleThisTick\.length, catchUpAlertLevel\)/)
+    expect(SRC).not.toMatch(/if \(caughtUpThisTick\.length \|\| staleThisTick\.length\) \{/)
   })
 })

@@ -16,6 +16,18 @@ describe('config-registry', () => {
     expect(getSettingDefinition('KANBAN_WIP_PLANNED')?.module).toBe('kanban')
   })
 
+  it('registers SCHEDULER_CATCHUP_ALERT as a 0..2 int, module=scheduler, hot-reloadable', () => {
+    const def = getSettingDefinition('SCHEDULER_CATCHUP_ALERT')
+    expect(def).toBeDefined()
+    expect(def!.type).toBe('int')
+    expect(def!.default).toBe(2)
+    expect(def!.min).toBe(0)
+    expect(def!.max).toBe(2)
+    expect(def!.module).toBe('scheduler')
+    expect(def!.secret).toBe(false)
+    expect(def!.requiresRestart).toBe(false)
+  })
+
   it('getSettingDefinition finds a known key and returns undefined for unknown', () => {
     expect(getSettingDefinition('KANBAN_WIP_PLANNED')?.type).toBe('int')
     expect(getSettingDefinition('NOT_A_REAL_KEY')).toBeUndefined()
