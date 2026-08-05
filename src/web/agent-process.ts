@@ -2156,6 +2156,15 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     const continueFlag = continueDecision.useContinue ? '--continue ' : ''
     const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : agentProvider === 'discord' ? 'DISCORD_STATE_DIR' : agentProvider === 'googlechat' ? 'GOOGLECHAT_STATE_DIR' : agentProvider === 'teams' ? 'TEAMS_STATE_DIR' : 'TELEGRAM_STATE_DIR'
     const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN'
+    // BYO/custom-endpoint agents must have CLAUDE_CODE_OAUTH_TOKEN removed from
+    // their environment, not just omitted from the launch export. The parent tmux
+    // server (atlas-channels) carries the fleet OAuth token in its own env, and
+    // every new pane inherits it. The Claude CLI prefers CLAUDE_CODE_OAUTH_TOKEN
+    // over ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN, so the inherited token would
+    // reach the custom endpoint -> 401, even after the explicit export was removed.
+    // An active `unset` at launch strips the inherited value before exec.
+    // Claude-OAuth agents (needsFleetOauth=true) must keep the token intact.
+    const byoUnsetEnv = !needsFleetOauth ? 'unset CLAUDE_CODE_OAUTH_TOKEN && ' : ''
     // Slack plugin is third-party; its "not on approved allowlist" check is
     // bypassed via `allowedChannelPlugins` in /Library/Application Support/ClaudeCode/managed-settings.json.
     const auditLogEnv = agentProvider === 'slack' ? ` && export SLACK_AUDIT_LOG="${agentChannelDir}/audit.jsonl"` : ''
@@ -2227,7 +2236,11 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // buildLaunchCmd(launchCwd): only the launch CWD varies between the normal start and the
     // EPERM /tmp fallback below; every env export is an absolute path and stays pointed at the
     // real agent dir.
-    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
+    //
+    // A `${byoUnsetEnv}` a SZERZO tagja (BYO/custom agensnel az orokolt OAuth-tokent le kell
+    // venni, kulonben a CLI azt preferalja a sajat kulcs helyett). A bazis azota fuggvennye tette
+    // ezt a sort az EPERM-fallback miatt; a tag ugyanabba a poziciba kerult vissza.
+    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
     // silently started it as the router's user -- measured 2026-08-19: the start
