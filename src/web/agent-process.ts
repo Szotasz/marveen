@@ -740,6 +740,46 @@ export function stampProjectTrustForDir(dotClaudePath: string, projectDir: strin
   }
 }
 
+// Pre-approve a custom ANTHROPIC_API_KEY in a config root's .claude.json so
+// Claude Code's "Detected a custom API key" TUI prompt never renders in
+// --channels (non-interactive) mode.
+//
+// Root cause: when a custom provider uses authHeader=x-api-key, agent-process
+// exports ANTHROPIC_API_KEY. The Claude Code TUI treats ANTHROPIC_API_KEY as
+// an approval-required key (it shows "Detected a custom API key in your
+// environment / Do you want to use this API key?"). In --channels mode this
+// dialog cannot be answered interactively, so the agent parks on "Not logged
+// in". The ANTHROPIC_AUTH_TOKEN (Bearer) path has no such gate.
+//
+// Fix: mirror the CLI's own approval storage. The CLI stores the key as
+//   customApiKeyResponses.approved: [key.trim().slice(-20)]
+// (empirically verified from the 2.1.222 binary: `function Jne(e){return
+//  e.trim().slice(-20)}`). Pre-seeding this entry before spawn makes the CLI
+// treat the key as already approved. Idempotent; atomic 0600 write.
+export function stampCustomApiKeyApproval(dotClaudePath: string, apiKey: string): boolean {
+  const suffix = apiKey.trim().slice(-20)
+  if (!suffix) return false
+  try {
+    let data: Record<string, unknown> = {}
+    if (existsSync(dotClaudePath)) {
+      try { data = JSON.parse(readFileSync(dotClaudePath, 'utf-8')) as Record<string, unknown> }
+      catch { /* unreadable / empty -- start fresh */ }
+    }
+    const existing = (data.customApiKeyResponses && typeof data.customApiKeyResponses === 'object' && !Array.isArray(data.customApiKeyResponses))
+      ? data.customApiKeyResponses as Record<string, unknown>
+      : {}
+    const approved = Array.isArray(existing.approved) ? existing.approved as string[] : []
+    if (approved.includes(suffix)) return false
+    data.customApiKeyResponses = { ...existing, approved: [...approved, suffix] }
+    atomicWriteFileSync(dotClaudePath, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
+    logger.info({ dotClaudePath }, 'custom-api-key: pre-stamped customApiKeyResponses.approved (prevents interactive approval prompt in --channels TUI)')
+    return true
+  } catch (err) {
+    logger.warn({ err, dotClaudePath }, 'custom-api-key: could not stamp approval (agent may park on API key prompt if running non-interactively)')
+    return false
+  }
+}
+
 // Pre-stamp the Fable overage-consent acknowledgment in a config root's
 // .claude.json so the "Fable 5 now uses usage credits" dialog never renders.
 //
@@ -1117,6 +1157,12 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // store/custom-providers.json. Only Anthropic-Messages-compatible endpoints
     // are supported (/v1/messages); pure OpenAI endpoints require a proxy.
     let customEnv = ''
+    // When authHeader=x-api-key, the key is exported as ANTHROPIC_API_KEY.
+    // The CLI shows an interactive approval prompt for that env var, which
+    // cannot be answered in --channels mode. We pre-seed the approval into
+    // .claude.json (see stampCustomApiKeyApproval) after claudeConfigDir is
+    // resolved below. Store the key here so the stamp call has it.
+    let customApiKeyForApproval: string | null = null
     if (isCustom && customProviderDef) {
       let headerExport: string
       if (customProviderDef.authHeader === 'none') {
@@ -1129,6 +1175,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
         }
         if (customProviderDef.authHeader === 'x-api-key') {
           headerExport = `export ANTHROPIC_API_KEY="${key}" && `
+          customApiKeyForApproval = key
         } else {
           headerExport = `export ANTHROPIC_AUTH_TOKEN="${key}" && `
         }
@@ -1362,6 +1409,14 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     stampFableOverageConsent(
       claudeConfigDir ? join(claudeConfigDir, '.claude.json') : join(homedir(), '.claude.json'),
     )
+    // Pre-approve ANTHROPIC_API_KEY for x-api-key custom providers so the
+    // "Detected a custom API key" TUI prompt never blocks a --channels agent.
+    if (customApiKeyForApproval) {
+      stampCustomApiKeyApproval(
+        claudeConfigDir ? join(claudeConfigDir, '.claude.json') : join(homedir(), '.claude.json'),
+        customApiKeyForApproval,
+      )
+    }
     const claudeConfigEnv = claudeConfigDir ? `export CLAUDE_CONFIG_DIR="${claudeConfigDir}" && ` : ''
     // `--continue` requires an existing session; on a brand-new agent the
     // Claude Code projects directory does not yet exist and `claude` exits
