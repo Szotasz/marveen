@@ -6,7 +6,7 @@
 
 ## Mit csinál ez a funkció?
 
-Alapból a Marveen ágensek az Anthropic Cloud API-n, OpenRouter-en vagy helyi Ollama végponton futnak. Az egyéni provider funkció lehetővé teszi, hogy tetszőleges, a `/v1/messages` Anthropic Messages API-t megvalósító végpontot regisztrálj, és ágensekhez rendelj. Így pl. OpenRouter ingyenes tier, DeepSeek saját kulccsal, vagy bármilyen Anthropic-kompatibilis proxy egyszerűen bekonfigurálható.
+Alapból az ágensek az Anthropic Cloud API-n, OpenRouter-en vagy helyi Ollama végponton futnak. Az egyéni provider funkció lehetővé teszi, hogy tetszőleges, a `/v1/messages` Anthropic Messages API-t megvalósító végpontot regisztrálj, és ágensekhez rendelj. Így pl. OpenRouter ingyenes tier, DeepSeek saját kulccsal, vagy bármilyen Anthropic-kompatibilis proxy egyszerűen bekonfigurálható.
 
 **Fontos korlát:** csak az Anthropic Messages API (`/v1/messages`) kompatibilis végpontok működnek. Tiszta OpenAI végpont (`/v1/chat/completions`) esetén fordítóproxyt kell közé tenni -- ez jelenleg nem támogatott.
 
