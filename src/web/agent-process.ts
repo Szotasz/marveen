@@ -1445,7 +1445,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN'
     // BYO/custom-endpoint agents must have CLAUDE_CODE_OAUTH_TOKEN removed from
     // their environment, not just omitted from the launch export. The parent tmux
-    // server (atlas-channels) carries the fleet OAuth token in its own env, and
+    // server carries the fleet OAuth token in its own env, and
     // every new pane inherits it. The Claude CLI prefers CLAUDE_CODE_OAUTH_TOKEN
     // over ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN, so the inherited token would
     // reach the custom endpoint -> 401, even after the explicit export was removed.
