@@ -337,6 +337,7 @@ export async function recoverStuckInputForSession(
       deliveryMatched: allowPlainReinject && plainText != null
         ? matchDelivery(session, plainText)
         : undefined,
+      machineOrigin: parkedMachineOriginInput(pane),
     }
     const action = decideStuckInputAction(facts)
     await performStuckInputAction(session, action, pane, block, sig, attempt)
