@@ -112,13 +112,20 @@ function buildProcessLockContext(): ProcessLockContext {
     uid,
     selfProjectRoot,
     getProcessCwd(pid: number): string | null {
-      // Linux-only (/proc), consistent with the rest of this file's tooling
-      // (ps, lsof). Resolves symlinks so two different-looking paths to the
-      // same directory (e.g. via a bind mount) still compare equal.
+      // Resolve the PID's cwd on BOTH platforms via the shared processCwd
+      // helper: /proc on Linux, `lsof -a -p <pid> -d cwd` on macOS. A previous
+      // version was /proc-only, which returned null for every pid on macOS (no
+      // /proc) and silently disabled the byBinary single-instance reclaim on
+      // the production platform. realpath the result so it compares equal to
+      // selfProjectRoot (also realpath'd) -- two different-looking paths to the
+      // same directory (symlink / bind mount) must still match. If the path is
+      // gone by the time we realpath, fall back to the raw value.
+      const cwd = processCwd(pid)
+      if (cwd == null) return null
       try {
-        return readlinkSync(`/proc/${pid}/cwd`)
+        return realpathSync(cwd)
       } catch {
-        return null
+        return cwd
       }
     },
     listPortHolders(port: number): number[] {

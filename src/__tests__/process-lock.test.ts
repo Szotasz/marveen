@@ -217,12 +217,46 @@ describe('findOwnBinaryMatches', () => {
       expect(findOwnBinaryMatches(/dist\/index\.js/, ctx)).toEqual([200])
     })
 
-    it('excludes a candidate whose cwd cannot be resolved (unverifiable is not "ours")', () => {
+    // CWD774FIX: a null cwd means "cannot resolve" (lsof denied, racing exit),
+    // NOT "not ours". The candidates reaching here already passed argv-
+    // attribution upstream (listOwnProcessesMatching -> argvBelongsToThisInstall),
+    // so an own process whose cwd is momentarily unreadable stays reclaimable.
+    // Reading null as "different" is what disabled reclaim entirely on macOS.
+    it('INCLUDES a candidate whose cwd cannot be resolved (null cwd is not "not ours")', () => {
       const procs: MockProc[] = [
         { pid: 200, uid: 501, cmd: 'node', args: 'node dist/index.js', alive: true, cwd: null },
       ]
       const { ctx } = makeCtx({ selfProjectRoot: '/home/user/marveen', procs })
-      expect(findOwnBinaryMatches(/dist\/index\.js/, ctx)).toEqual([])
+      // Pre-fix this returned [] (null -> exclude); the fix keeps it reclaimable.
+      expect(findOwnBinaryMatches(/dist\/index\.js/, ctx)).toEqual([200])
+    })
+
+    // The macOS production reality, directly: the earlier getProcessCwd was
+    // /proc-only, so on a box with no /proc EVERY probe returned null and the
+    // byBinary single-instance reclaim was a permanent no-op. Simulate that
+    // whole-platform condition (getProcessCwd -> null for all) and prove the
+    // reclaim STILL finds our own predecessor. Reverting to the null-excludes
+    // logic turns this red -- which is the point.
+    it('reclaims on a no-/proc platform where EVERY cwd probe returns null (macOS)', () => {
+      const procs: MockProc[] = [
+        { pid: 200, uid: 501, cmd: 'node', args: 'node dist/index.js', alive: true, cwd: null },
+        { pid: 300, uid: 501, cmd: 'node', args: 'node dist/index.js', alive: true, cwd: null },
+      ]
+      const { ctx } = makeCtx({ selfProjectRoot: '/Users/marvin/ClaudeClaw', procs })
+      expect(findOwnBinaryMatches(/dist\/index\.js/, ctx).sort()).toEqual([200, 300])
+    })
+
+    // Dani's second miss: a legit self-orphan launched with an ABSOLUTE argv
+    // under PROJECT_ROOT but running from a DIFFERENT cwd. It is still ours
+    // (the binary lives under our root), yet the resolvable-but-different cwd
+    // used to exclude it. Here the cwd is unresolvable, exercising the same
+    // "argv already vouched" path -- it must stay reclaimable.
+    it('keeps a legit self-orphan whose cwd differs from PROJECT_ROOT but argv is ours', () => {
+      const procs: MockProc[] = [
+        { pid: 200, uid: 501, cmd: 'node', args: 'node /home/user/marveen/dist/index.js', alive: true, cwd: null },
+      ]
+      const { ctx } = makeCtx({ selfProjectRoot: '/home/user/marveen', procs })
+      expect(findOwnBinaryMatches(/dist\/index\.js/, ctx)).toEqual([200])
     })
 
     it('falls back to unscoped (old) behavior when selfProjectRoot itself is unresolvable', () => {

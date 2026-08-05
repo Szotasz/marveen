@@ -150,7 +150,19 @@ function filterOwnNodeCandidates(
     // unrelated process alone over killing something we can't verify.
     if (opts.scopeToProjectRoot && ctx.selfProjectRoot != null) {
       const candidateCwd = ctx.getProcessCwd(pid)
-      if (candidateCwd == null || candidateCwd !== ctx.selfProjectRoot) {
+      // Exclude ONLY on a POSITIVELY different cwd. A null cwd means "cannot
+      // resolve" (lsof denied, process racing exit) -- it must NOT be read as
+      // "not ours". These candidates already passed argv-attribution upstream
+      // (listOwnProcessesMatching -> argvBelongsToThisInstall), so an own
+      // process whose cwd is momentarily unreadable -- or an own process
+      // launched with an ABSOLUTE argv under PROJECT_ROOT from some other cwd
+      // -- is still ours to reclaim. Reading null as "different" is what
+      // disabled the reclaim entirely on macOS (every lsof-less probe was null)
+      // and would also drop a legit absolute-argv self-orphan on Linux. A
+      // genuinely different worktree never reaches here: its argv does not
+      // contain PROJECT_ROOT and its (resolvable) cwd is not under it, so
+      // argvBelongsToThisInstall already excluded it.
+      if (candidateCwd != null && candidateCwd !== ctx.selfProjectRoot) {
         ctx.log.warn(
           { pid, candidateCwd, selfProjectRoot: ctx.selfProjectRoot },
           'Binary-pattern match runs from a different project root, leaving alone',
