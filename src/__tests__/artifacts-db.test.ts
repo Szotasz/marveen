@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import { initDatabase, searchArtifactsByVector } from '../db.js'
 import {
   createArtifact, listArtifacts, getArtifact, deleteArtifact, storeArtifactEmbedding,
+  getArtifactStats,
 } from '../artifacts-db.js'
 
 beforeAll(() => { initDatabase(':memory:') })
@@ -264,6 +265,36 @@ describe('storeArtifactEmbedding (Ollama-free path)', () => {
 
   it('does not throw when title and meta are empty strings', async () => {
     await expect(storeArtifactEmbedding('any-id', '', '')).resolves.toBeUndefined()
+  })
+})
+
+describe('getArtifactStats', () => {
+  it('returns artifact_count matching the number of created artifacts', () => {
+    const before = getArtifactStats().artifact_count
+    createArtifact({ agent_id: 'agent-a', title: 'Stats test 1', kind: 'text', content: Buffer.from('s1') })
+    createArtifact({ agent_id: 'agent-b', title: 'Stats test 2', kind: 'text', content: Buffer.from('s2') })
+    const after = getArtifactStats().artifact_count
+    expect(after).toBe(before + 2)
+  })
+
+  it('returns vec_count >= -1 (elérhető: >= 0; nem elérhető: -1)', () => {
+    const stats = getArtifactStats()
+    expect(stats.vec_count).toBeGreaterThanOrEqual(-1)
+  })
+
+  it('vec_rebuild_suggested is false when vec_count is below 10000', () => {
+    // In test environments the index has far fewer than 10 000 rows
+    const stats = getArtifactStats()
+    if (stats.vec_count < 10_000) {
+      expect(stats.vec_rebuild_suggested).toBe(false)
+    }
+  })
+
+  it('has the expected shape (artifact_count, vec_count, vec_rebuild_suggested)', () => {
+    const stats = getArtifactStats()
+    expect(typeof stats.artifact_count).toBe('number')
+    expect(typeof stats.vec_count).toBe('number')
+    expect(typeof stats.vec_rebuild_suggested).toBe('boolean')
   })
 })
 

@@ -150,9 +150,16 @@ def main() -> None:
     try:
         req = urllib.request.Request(url, data=body, headers=headers, method='POST')
         urllib.request.urlopen(req, timeout=5)
-    except Exception:
-        # Fail-soft: dashboard may not be running; never block the agent
-        pass
+    except Exception as exc:
+        # Fail-soft: dashboard may not be running; never block the agent.
+        # Log the failure so the heartbeat task can alert if errors accumulate.
+        log_path = os.path.join(_project_root(), 'store', 'artifact-sync-errors.log')
+        try:
+            import datetime
+            with open(log_path, 'a') as lf:
+                lf.write(f"{datetime.datetime.now().isoformat()} ERROR: {exc}\n")
+        except OSError:
+            pass  # log-write failure is truly unrecoverable; still must not block
 
     sys.exit(0)
 
