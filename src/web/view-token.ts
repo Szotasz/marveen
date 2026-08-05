@@ -6,8 +6,17 @@ import { loadOrCreateDashboardToken } from './dashboard-auth.js'
 // expiry so the HMAC simultaneously authenticates the ID and the TTL.
 const TOKEN_TTL_SEC = 5 * 60 // 5 minutes
 
+// Prefer a dedicated ARTIFACT_HMAC_SECRET so that rotating the dashboard Bearer
+// token does not invalidate outstanding view tokens (and vice-versa).
+// Rotation: set ARTIFACT_HMAC_SECRET to a new value (openssl rand -hex 32) and
+// restart the dashboard -- any in-flight 5-minute view tokens are invalidated,
+// which is acceptable given the short TTL.
+function getHmacSecret(): string {
+  return process.env['ARTIFACT_HMAC_SECRET'] ?? loadOrCreateDashboardToken()
+}
+
 function hmacForScope(scope: string): string {
-  return createHmac('sha256', loadOrCreateDashboardToken()).update(scope).digest('hex')
+  return createHmac('sha256', getHmacSecret()).update(scope).digest('hex')
 }
 
 export function signViewToken(artifactId: string, nowSec: number): { token: string; exp: number } {

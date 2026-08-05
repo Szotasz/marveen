@@ -1,11 +1,19 @@
 import { readJsonBody, json } from '../http-helpers.js'
 import {
-  createArtifact, listArtifacts, getArtifact, deleteArtifact,
+  createArtifact, listArtifacts, getArtifact, deleteArtifact, getArtifactStats,
   ARTIFACT_KINDS, type ArtifactKind,
 } from '../../artifacts-db.js'
 import { signViewToken, verifyViewToken } from '../view-token.js'
 import { logger } from '../../logger.js'
 import type { RouteContext } from './types.js'
+
+// GET /api/artifacts/stats  — aggregate counts for monitoring
+// Returns artifact_count, vec_count (ANN index rows, -1 if unavailable),
+// and vec_rebuild_suggested (true when vec_count >= 10 000).
+function handleStats(ctx: RouteContext): boolean {
+  json(ctx.res, getArtifactStats())
+  return true
+}
 
 // POST /api/artifacts
 // Body: { agent_id, title, kind, mime?, content, meta?, source? }
@@ -169,6 +177,11 @@ function handleDelete(ctx: RouteContext, id: string): boolean {
 
 export async function tryHandleArtifacts(ctx: RouteContext): Promise<boolean> {
   const { path, method } = ctx
+
+  if (path === '/api/artifacts/stats') {
+    if (method === 'GET') return handleStats(ctx)
+    return false
+  }
 
   if (path === '/api/artifacts') {
     if (method === 'POST') return handleCreate(ctx)

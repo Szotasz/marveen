@@ -6,6 +6,7 @@
 #
 #   repo/   -> extract under the project root (this repo)
 #     store/claudeclaw.db (+ -shm/-wal; WAL-checkpointed before copy)
+#       (memories, kanban, artifacts, artifacts_fts*, vec_artifacts* tables)
 #     store/.dashboard-token   (dashboard bearer)
 #     .env                     (project root secrets)
 #     scheduled-tasks.json     (legacy, if present)
@@ -43,6 +44,10 @@ cd "${REPO_ROOT}"
 # Tolerate a missing sqlite3 CLI -- just fall back to copying the files as-is.
 if [[ -f store/claudeclaw.db ]] && command -v sqlite3 >/dev/null 2>&1; then
   sqlite3 store/claudeclaw.db 'PRAGMA wal_checkpoint(TRUNCATE);' >/dev/null || true
+  # Verify the artifacts table survived the checkpoint (absent on fresh installs is OK).
+  if ! sqlite3 store/claudeclaw.db "SELECT 1 FROM sqlite_master WHERE name='artifacts'" 2>/dev/null | grep -q 1; then
+    echo "backup: WARNING -- artifacts table missing in DB (fresh install?)" >&2
+  fi
 fi
 
 # --- Build the two path lists (each relative to its own base). -------------

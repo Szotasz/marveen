@@ -1,4 +1,8 @@
 import { getDb, generateEmbedding } from './db.js'
+import { logger } from './logger.js'
+
+// At this row count the HNSW graph may benefit from a periodic re-index.
+const VEC_REBUILD_THRESHOLD = 10_000
 
 export type ArtifactKind = 'html' | 'markdown' | 'json' | 'text' | 'binary'
 
@@ -114,6 +118,10 @@ export async function storeArtifactEmbedding(
 
   try {
     db.prepare('INSERT OR REPLACE INTO vec_artifacts(artifact_rowid, embedding) VALUES(?, ?)').run(BigInt(rowRow.rowid), buf)
+    const { c } = db.prepare('SELECT COUNT(*) as c FROM vec_artifacts').get() as { c: number }
+    if (c >= VEC_REBUILD_THRESHOLD) {
+      logger.warn({ vec_count: c }, 'vec_artifacts index approaching rebuild threshold; consider running a periodic VACUUM or re-index')
+    }
   } catch {
     // vec_artifacts is absent when sqlite-vec extension is unavailable -- graceful no-op
   }
@@ -180,4 +188,29 @@ export function deleteArtifact(id: string): boolean {
     .prepare('DELETE FROM artifacts WHERE id = ?')
     .run(id)
   return result.changes > 0
+}
+
+export interface ArtifactStats {
+  artifact_count: number
+  /** Number of rows in vec_artifacts (ANN index). -1 when sqlite-vec is unavailable. */
+  vec_count: number
+  /** True when vec_count exceeds the rebuild-consideration threshold. */
+  vec_rebuild_suggested: boolean
+}
+
+export function getArtifactStats(): ArtifactStats {
+  const db = getDb()
+  const { c: artifact_count } = db.prepare('SELECT COUNT(*) as c FROM artifacts').get() as { c: number }
+  let vec_count = -1
+  try {
+    const row = db.prepare('SELECT COUNT(*) as c FROM vec_artifacts').get() as { c: number } | undefined
+    if (row) vec_count = row.c
+  } catch {
+    // sqlite-vec extension unavailable -- graceful no-op
+  }
+  return {
+    artifact_count,
+    vec_count,
+    vec_rebuild_suggested: vec_count >= VEC_REBUILD_THRESHOLD,
+  }
 }

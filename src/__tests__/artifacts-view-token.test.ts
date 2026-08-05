@@ -1,7 +1,11 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import { signViewToken, verifyViewToken } from '../web/view-token.js'
 
 const NOW = 1_700_000_000
+
+afterEach(() => {
+  delete process.env['ARTIFACT_HMAC_SECRET']
+})
 
 describe('signViewToken', () => {
   it('returns a 64-char hex token and an exp 5 minutes in the future', () => {
@@ -42,5 +46,28 @@ describe('verifyViewToken', () => {
   it('returns false for a token with wrong length', () => {
     const { exp } = signViewToken('artifact-id-1', NOW)
     expect(verifyViewToken('artifact-id-1', 'short', exp, NOW + 60)).toBe(false)
+  })
+})
+
+describe('ARTIFACT_HMAC_SECRET env var', () => {
+  it('tokens signed with a custom secret verify successfully with the same secret', () => {
+    process.env['ARTIFACT_HMAC_SECRET'] = 'test-secret-alpha'
+    const { token, exp } = signViewToken('artifact-id-1', NOW)
+    expect(verifyViewToken('artifact-id-1', token, exp, NOW + 60)).toBe(true)
+  })
+
+  it('tokens signed with secret-A fail verification after secret changes to secret-B', () => {
+    process.env['ARTIFACT_HMAC_SECRET'] = 'test-secret-alpha'
+    const { token, exp } = signViewToken('artifact-id-1', NOW)
+
+    process.env['ARTIFACT_HMAC_SECRET'] = 'test-secret-beta'
+    expect(verifyViewToken('artifact-id-1', token, exp, NOW + 60)).toBe(false)
+  })
+
+  it('tokens are consistent: same inputs + same secret produce the same token', () => {
+    process.env['ARTIFACT_HMAC_SECRET'] = 'test-secret-stable'
+    const { token: t1 } = signViewToken('artifact-id-1', NOW)
+    const { token: t2 } = signViewToken('artifact-id-1', NOW)
+    expect(t1).toBe(t2)
   })
 })
