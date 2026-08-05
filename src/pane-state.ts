@@ -237,6 +237,28 @@ const BOX_SEP_RX = /^─{10,}/
 // admitting the NBSP and any other horizontal Unicode space the TUI emits.
 const PARKED_INPUT_RX = /❯[^\S\r\n]+\S/
 
+// QUEUED MESSAGES: Claude Code holds prompts typed during a running turn in a
+// queue and renders them ABOVE the box, putting this hint INSIDE the (otherwise
+// empty) live input box. The hint is DIM, exactly like the autocomplete ghost,
+// so idleConsideringDimGhost strips it and the pane reads 'idle' -- while the
+// session in fact has unprocessed input waiting. Every writer (nudge watcher,
+// scheduler, router, keepalive) then believes the session is free and types
+// ANOTHER line, which just joins the queue.
+//
+// Observed 2026-08-04: the main agent ran one 32-minute turn; three inbox
+// nudges were "sent" into it 5 minutes apart, all three queued unprocessed,
+// and the watcher escalated to the owner claiming a broken drain hook -- while
+// nothing was broken and no message was lost. The second half of the misread
+// is that with the queued block rendered, the busy spinner is pushed to the
+// edge of (and sometimes past) the BUSY_LIVE_REGION_LINES window, so the
+// spinner check cannot be relied on to catch this state either.
+//
+// MUST stay scoped to the live input box, never whole-pane: an incident report
+// or a chat log quoting this very sentence would otherwise pin an idle session
+// busy forever (the same self-contamination that made the `esc to interrupt`
+// check region-scoped above).
+const QUEUED_MESSAGES_HINT_RX = /Press up to edit queued messages/
+
 // Strip Claude Code's DIM (SGR 2) "ghost suggestion" autocomplete from a
 // COLOURED pane capture (`tmux capture-pane -e -p`), then remove every
 // remaining ANSI escape, yielding plain text equivalent to `capture-pane -p`
@@ -639,6 +661,12 @@ export function detectPaneState(
     }
     if (topSep >= 0 && bottomSep > topSep) {
       const inputLines = lines.slice(topSep + 1, bottomSep)
+      // Queued messages first: the hint lives in the box and would otherwise
+      // read as parked text ('typing'), which idleConsideringDimGhost then
+      // rescues to 'idle' because the hint is dim -- the exact false-ready
+      // path this guards. 'busy' is the honest answer: input IS waiting, it
+      // just isn't ours to submit. See QUEUED_MESSAGES_HINT_RX.
+      if (inputLines.some(l => QUEUED_MESSAGES_HINT_RX.test(l))) return 'busy'
       if (inputLines.some(l => PARKED_INPUT_RX.test(l))) {
         return opts.mergeTypingAsBusy ? 'busy' : 'typing'
       }
