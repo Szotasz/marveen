@@ -138,7 +138,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-MARVEEN_DIR = Path("/Users/gruzmanarnold/marveen")
+MARVEEN_DIR = Path(__file__).resolve().parents[1]
 DB_PATH = MARVEEN_DIR / "store" / "claudeclaw.db"
 TOKEN_FILE = MARVEEN_DIR / "store" / ".dashboard-token"
 MARKER_FILE = MARVEEN_DIR / "store" / "memoria-heartbeat-gate-last.txt"
@@ -180,7 +180,7 @@ WAKE_MESSAGE = (
     "NE oraban merd az ablakot -- a jelolo szabja meg, nem az eltelt ido. Ha a "
     "legutobbi fordulo elszallt vagy kimaradt, ez az ablak tobb orat is atfoghat.\n\n"
     "AZ UTOLSO LEPESED, a fordulo vegen, KOTELEZOEN, PONTOSAN igy:\n"
-    "  python3 /Users/gruzmanarnold/marveen/scripts/memoria_heartbeat_gate.py "
+    f"  python3 {MARVEEN_DIR}/scripts/memoria_heartbeat_gate.py "
     "--mark-seen --conv-upto {conv_max}\n"
     "A {conv_max} a FENTI ablak vege, ne ird at a pillanatnyi max-ra. A ket jelolo "
     "szandekosan NEM egyformán lep: a tool_call_log a pillanatnyi max-ra megy (az a te "

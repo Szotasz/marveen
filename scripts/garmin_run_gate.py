@@ -41,18 +41,19 @@ finds the run again.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-GARMIN_DIR = Path("/Users/gruzmanarnold/garmin-data")
+GARMIN_DIR = Path(os.environ.get("GARMIN_DATA_DIR", str(Path.home() / "garmin-data")))
 ANALYSIS_SCRIPT = GARMIN_DIR / "running_analysis.py"
 STATE_FILE = GARMIN_DIR / "last_analyzed_run.json"
 PENDING_FILE = GARMIN_DIR / "pending_run_analysis.txt"
 
-MARVEEN_DIR = Path("/Users/gruzmanarnold/marveen")
+MARVEEN_DIR = Path(__file__).resolve().parents[1]
 TOKEN_FILE = MARVEEN_DIR / "store" / ".dashboard-token"
 MESSAGES_URL = "http://localhost:3420/api/messages"
 # Proof-of-life artefact: its mtime answers "did the silent path actually run

@@ -70,10 +70,11 @@ def add_tool(con, agent="picard", summary="ls") -> None:
     con.commit()
 
 
-# What the PostToolUse hook actually stores for the agent's own end-of-turn
-# bookkeeping call, verbatim from the live tool_call_log (row 4266).
+# Shape of what the PostToolUse hook actually stores for the agent's own
+# end-of-turn bookkeeping call (matches the live tool_call_log row 4266,
+# modulo the machine-specific install path).
 MARK_SEEN_SUMMARY = (
-    "python3 /Users/gruzmanarnold/marveen/scripts/memoria_heartbeat_gate.py "
+    f"python3 {gate.MARVEEN_DIR}/scripts/memoria_heartbeat_gate.py "
     "--mark-seen --conv-upto 1609"
 )
 
