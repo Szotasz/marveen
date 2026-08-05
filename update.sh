@@ -413,15 +413,50 @@ OLD_VERSION_FULL=$(git rev-parse HEAD 2>/dev/null || echo "")
 # checkout sat 53 commits ahead / 0 behind on 2026-08-30, having just merged
 # upstream, and the updater still would not run -- no build, no migration, no
 # restart, on a tree that was in fact current. Only ahead AND behind together
-# mean the histories have parted and a human has to reconcile them.
+# mean the histories have parted, and reconciling them is a human's call by
+# DEFAULT -- see the UPDATE_AUTO_REBASE block below, which is off unless the
+# operator of this install turns it on.
 RESULT_PHASE="pull"
 AHEAD=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
 BEHIND=$(git rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
 if [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
-  RESULT_MSG="A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van az upstreamhez kepest (szetvalt elozmeny); a fast-forward frissites nem lehetseges. Nezd meg: git log @{u}..HEAD"
-  echo -e "${RED}HIBA:${NC} a helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van (szetvalt elozmeny); fast-forward nem lehetseges. Nezd: git log @{u}..HEAD"
-  restore_stash_before_exit
-  exit 5
+  # Diverged history: ahead AND behind. #1112 made this refuse ON PURPOSE -- a
+  # human has to reconcile it -- and that stays the DEFAULT here. What this adds
+  # is an explicit opt-in for installs whose operator has already decided that
+  # replaying local commits is the right call for their box (fleet operators who
+  # commit fixes locally and rarely push hit this on every update; "the Update
+  # button does nothing" is the dominant report). Rewriting someone else's
+  # history without their say-so is not a default we are willing to ship, so the
+  # switch is off unless UPDATE_AUTO_REBASE=1 is set.
+  if [ "${UPDATE_AUTO_REBASE:-0}" = "1" ]; then
+    echo -e "  ${ORANGE}↻${NC} A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van; UPDATE_AUTO_REBASE=1, auto-rebase origin/${CURRENT_BRANCH}-re..."
+    # A FAILED fetch must NOT fall through to the rebase: rebasing onto a stale
+    # origin ref does not error, it just quietly does something other than what
+    # the operator asked for. Bail out to the same loud refusal as a conflict.
+    if ! git fetch origin "$CURRENT_BRANCH" --quiet 2>>"$INSTALL_DIR/store/update.log"; then
+      RESULT_MSG="Auto-rebase megszakitva: a 'git fetch origin ${CURRENT_BRANCH}' elbukott, igy csak egy ELAVULT origin-refre lehetne rebase-elni. Nezd: store/update.log"
+      echo -e "${RED}HIBA:${NC} a fetch elbukott, az auto-rebase kimarad (elavult origin-refre nem rebase-elunk)."
+      bash "$INSTALL_DIR/scripts/notify.sh" "🔴 Dashboard update: a fetch elbukott, az auto-rebase kimaradt. Reszletek: store/update.log" >/dev/null 2>&1 || true
+      restore_stash_before_exit
+      exit 5
+    fi
+    if git -c core.editor=true rebase "origin/${CURRENT_BRANCH}" >>"$INSTALL_DIR/store/update.log" 2>&1; then
+      echo -e "  ${GREEN}✓${NC} Auto-rebase sikeres (${AHEAD} helyi commit ujrajatszva a friss upstreamre)."
+      RESULT_MSG="Auto-rebase: ${AHEAD} helyi commit ujrajatszva origin/${CURRENT_BRANCH}-re."
+    else
+      git rebase --abort 2>/dev/null || true
+      RESULT_MSG="A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van, es az auto-rebase KONFLIKTUSBA utkozott -- kezi (szemantikus) rebase kell. Nezd: git log @{u}..HEAD"
+      echo -e "${RED}HIBA:${NC} auto-rebase konfliktus, kezi feloldas kell (git log @{u}..HEAD)."
+      bash "$INSTALL_DIR/scripts/notify.sh" "🔴 Dashboard update: ${AHEAD} helyi commit utkozik az upstreammel, az auto-rebase konfliktusba futott. Kezi szemantikus rebase kell. Reszletek: store/update.log" >/dev/null 2>&1 || true
+      restore_stash_before_exit
+      exit 5
+    fi
+  else
+    RESULT_MSG="A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van az upstreamhez kepest (szetvalt elozmeny); a fast-forward frissites nem lehetseges. Nezd meg: git log @{u}..HEAD (vagy UPDATE_AUTO_REBASE=1 az automatikus ujrajatszashoz)"
+    echo -e "${RED}HIBA:${NC} a helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van (szetvalt elozmeny); fast-forward nem lehetseges. Nezd: git log @{u}..HEAD"
+    restore_stash_before_exit
+    exit 5
+  fi
 fi
 if [ "${AHEAD:-0}" -gt 0 ]; then
   echo -e "  ${ORANGE}Megjegyzes:${NC} a helyi checkout ${AHEAD} committal elore van, lemaradas nincs -- a letoltes nem hoz ujat, a frissites folytatodik."
