@@ -171,7 +171,6 @@ export function tryAcquireSessionSendLane(session: string, host: string | null):
     handOff(lane)
   }
 }
-
 // Test-only: reset lane state between cases.
 export function __resetSessionSendLocks(): void {
   lanes.clear()
