@@ -329,6 +329,7 @@ export async function recoverStuckInputForSession(
       allowPlainReinject,
       hasPlainText: allowPlainReinject && parkedInputText(pane) != null,
       scheduledTaskBlock: parkedScheduledTaskInput(pane),
+      machineOrigin: parkedMachineOriginInput(pane),
     }
     const action = decideStuckInputAction(facts)
     await performStuckInputAction(session, action, pane, block, sig, attempt)

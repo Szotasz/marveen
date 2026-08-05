@@ -1540,6 +1540,12 @@ export interface StuckInputActionFacts {
   allowPlainReinject: boolean
   /** parkedInputText(pane) != null -- there is collapsed text to re-inject. */
   hasPlainText: boolean
+  /** parkedMachineOriginInput(pane): the park is POSITIVELY machine-injected.
+   * STUCKINPUT805: reinject-plain requires this. Without positive origin the
+   * park may be a human draft (agent-terminal reaches sub-agent panes too),
+   * and clearing or re-injecting a human's text destroys work nothing will
+   * re-deliver. Uncertain origin -> hands off. */
+  machineOrigin: boolean
   /** parkedScheduledTaskInput(pane): a scheduled-task tick is parked. Clear-only
    * is safe on ANY session (the next schedule fire re-delivers). */
   scheduledTaskBlock: boolean
@@ -1567,16 +1573,29 @@ export function decideStuckInputAction(f: StuckInputActionFacts): StuckInputActi
   if (f.blockComplete) {
     return f.escalate || multiRow ? 'reinject-block' : 'enter'
   }
-  // Sub-agent non-channel parked text: clear + re-inject is safe (no human draft).
-  if (f.allowPlainReinject && f.hasPlainText && !f.blockTruncated) {
-    return f.escalate || multiRow ? 'reinject-plain' : 'enter'
-  }
-  // Parked scheduled-task tick (main session reaches here: no plain re-inject).
-  // Clear-only -- re-injecting risks TUI mid-text truncation corrupting the
-  // instruction, while a dropped tick is re-delivered by the next schedule
-  // fire. Single-row still tries the harmless Enter first.
+  // Parked scheduled-task tick: clear-only on EVERY session, and this check
+  // must sit ABOVE the plain-reinject branch. STUCKINPUT805: on a sub-agent
+  // pane the old order routed a parked tick into reinject-plain, whose text is
+  // parkedInputText = a scrape of the VISIBLE box -- and the TUI drops the
+  // HEAD rows of an overfull box, so the scrape is a tail fragment. That
+  // produced the byte-identical head-lost/tail-doubled deliveries measured at
+  // 15:06 and 16:00 on 2026-08-05 (10,509-char prompt reduced to its last
+  // ~400 chars, twice). A dropped tick is re-delivered WHOLE by the next
+  // schedule fire; a re-injected fragment is corruption nothing repairs.
+  // Single-row still tries the harmless Enter first.
   if (f.scheduledTaskBlock) {
     return f.escalate || multiRow ? 'clear-scheduled' : 'enter'
+  }
+  // Sub-agent non-channel parked text: clear + re-inject, but ONLY with
+  // POSITIVE machine origin (prefix or unmistakable wrapper marker). The old
+  // "sub-agent means no human draft" assumption is false -- agent-terminal
+  // types into sub-agent panes too -- and an uncertain park must not be
+  // destroyed: a human's text has no re-delivery. Machine-but-unrecognized
+  // (e.g. a head-lost inter-agent frame with no surviving marker) lands in
+  // 'hold' below: it cannot be re-injected whole (the scrape is lossy) and
+  // must not be cleared (the queue will not re-send a delivered message).
+  if (f.allowPlainReinject && f.hasPlainText && !f.blockTruncated && f.machineOrigin) {
+    return f.escalate || multiRow ? 'reinject-plain' : 'enter'
   }
   // Truncated safety preamble: clear only (never re-inject a stale preamble).
   if (f.truncatedPreamble && f.escalate) return 'clear-preamble'
@@ -1606,6 +1625,7 @@ export function parkedMainInputHasRemedy(pane: string): boolean {
     allowPlainReinject: false,
     hasPlainText: false,
     scheduledTaskBlock: parkedScheduledTaskInput(pane),
+    machineOrigin: parkedMachineOriginInput(pane),
   }
   return decideStuckInputAction(facts) !== 'hold'
 }
