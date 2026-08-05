@@ -1,6 +1,7 @@
 import {
   readFileSync,
   readlinkSync,
+  realpathSync,
   unlinkSync,
   mkdirSync,
   openSync,
@@ -96,9 +97,37 @@ function argvBelongsToThisInstall(argv: string, pid: number): boolean {
 // or node:fs directly.
 function buildProcessLockContext(): ProcessLockContext {
   const uid = typeof process.getuid === 'function' ? process.getuid() : null
+  // realpath so this compares equal against /proc/<pid>/cwd, which the
+  // kernel always reports fully symlink-resolved -- an un-resolved
+  // PROJECT_ROOT (e.g. reached via a symlinked path) would otherwise never
+  // match even for our own genuine predecessor.
+  let selfProjectRoot: string | null
+  try {
+    selfProjectRoot = realpathSync(PROJECT_ROOT)
+  } catch {
+    selfProjectRoot = null
+  }
   return {
     currentPid: process.pid,
     uid,
+    selfProjectRoot,
+    getProcessCwd(pid: number): string | null {
+      // Resolve the PID's cwd on BOTH platforms via the shared processCwd
+      // helper: /proc on Linux, `lsof -a -p <pid> -d cwd` on macOS. A previous
+      // version was /proc-only, which returned null for every pid on macOS (no
+      // /proc) and silently disabled the byBinary single-instance reclaim on
+      // the production platform. realpath the result so it compares equal to
+      // selfProjectRoot (also realpath'd) -- two different-looking paths to the
+      // same directory (symlink / bind mount) must still match. If the path is
+      // gone by the time we realpath, fall back to the raw value.
+      const cwd = processCwd(pid)
+      if (cwd == null) return null
+      try {
+        return realpathSync(cwd)
+      } catch {
+        return cwd
+      }
+    },
     listPortHolders(port: number): number[] {
       try {
         const raw = execSync(`lsof -ti :${port} 2>/dev/null || true`, { timeout: 3000, encoding: 'utf-8' }).trim()
