@@ -7,16 +7,28 @@
 // frame is a prompt-injection surface, so the delivery path must be mutually
 // exclusive per pane.
 //
-// SCOPE (measured on our topology): the dashboard is a singleton process
-// (O_EXCL pidfile, index.ts) and every `send-keys` writer -- message-router,
-// schedule-runner, inbox-nudge-watcher, channel-monitor, context-guard-runner,
-// stuck-input-watcher, agent-worker dispatch, channel-mcp-reconnect,
-// reauth-healer, pane-state, ssh-tmux -- is a library module loaded into it.
-// So an IN-PROCESS promise-chain mutex per session serializes all of them; no
-// file lock is needed. It does NOT cover the channel plugin's own in-band
-// delivery: that runs in a separate bun poller process, injects channel text
-// through the plugin runtime, and never calls sendPromptToSession -- a
-// cross-process (file) lock would be a separate change and is out of scope.
+// SCOPE (measured, do not overstate): an in-process mutex serializes only the
+// writers that ACQUIRE it. Same-process is NOT the same as serialized. As of
+// this change EXACTLY TWO call sites take the lock (grep -rln withSessionSendLock
+// src -> agent-process.ts, channel-monitor.ts): sendPromptToSession's emit span
+// (so every caller that delivers through it -- message-router, schedule-runner,
+// inbox-nudge-watcher, channel-monitor delivery, context-guard-runner, the
+// stuck-input re-inject, agent-worker dispatch, routes/agents /login -- is
+// serialized against every other), and channel-monitor's recover-mode
+// clear+re-inject. The dashboard singleton (O_EXCL pidfile, index.ts) is what
+// makes an in-process mutex sufficient FOR THOSE; no file lock is needed there.
+//
+// STILL UNGUARDED (in-process writers that hit the pane with a direct tmux
+// send-keys and do NOT go through the lock -- tracked as PANEWRITERS805):
+// channel-mcp-reconnect.ts, channel-plugin-unlock.ts, reauth-healer.ts,
+// agent-worker.ts's /clear, routes/agent-terminal.ts, and sendPromptToSession's
+// OWN three modal dismissals (dismissSurveyModal / dismissResumeSummary /
+// dismissModelConsent), which run BEFORE the lock is taken. Also NOT covered:
+// the channel plugin's own in-band delivery -- a separate bun poller process
+// that injects channel text through the plugin runtime and never calls
+// sendPromptToSession, so no in-process lock can reach it (a cross-process file
+// lock would be a separate change). A reader must not assume the pane is fully
+// serialized: it is serialized for the two acquirers above, no more.
 
 const delay = (ms: number): Promise<void> => new Promise(res => setTimeout(res, ms))
 
