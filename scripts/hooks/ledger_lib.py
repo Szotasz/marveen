@@ -28,10 +28,20 @@ CREATE TABLE IF NOT EXISTS conversation_log (
   text TEXT,
   ts TEXT,
   created_at INTEGER NOT NULL,
+  attachment_kind TEXT,
+  attachment_file_id TEXT,
   UNIQUE(agent_id, chat_id, direction, message_id)
 )
 """
 INDEX = "CREATE INDEX IF NOT EXISTS idx_convlog_agent ON conversation_log(agent_id, created_at)"
+
+# Columns added after the initial schema shipped. connect() retrofits them onto
+# existing DBs with idempotent ALTERs (CREATE TABLE IF NOT EXISTS is a no-op on
+# an already-created table, so the SCHEMA text alone never upgrades old DBs).
+_MIGRATION_COLUMNS = (
+    ("attachment_kind", "TEXT"),
+    ("attachment_file_id", "TEXT"),
+)
 
 RECENT_LIMIT = 20
 
@@ -114,18 +124,29 @@ def connect():
     con.execute("PRAGMA busy_timeout=10000")
     con.execute(SCHEMA)
     con.execute(INDEX)
+    existing = {row[1] for row in con.execute("PRAGMA table_info(conversation_log)")}
+    for col, coltype in _MIGRATION_COLUMNS:
+        if col not in existing:
+            con.execute(f"ALTER TABLE conversation_log ADD COLUMN {col} {coltype}")
     return con
 
 
-def log_inbound(agent_id, chat_id, message_id, text, ts):
-    """Record an inbound user message. Idempotent on (agent_id, chat_id, in, message_id)."""
+def log_inbound(agent_id, chat_id, message_id, text, ts,
+                attachment_kind=None, attachment_file_id=None):
+    """Record an inbound user message. Idempotent on (agent_id, chat_id, in, message_id).
+
+    attachment_kind/file_id: set for voice / video_note messages that arrived
+    WITHOUT a transcript, so a respawned session can still download and
+    transcribe the audio instead of losing the message content forever."""
     con = connect()
     try:
         con.execute(
             "INSERT OR IGNORE INTO conversation_log"
-            " (agent_id, chat_id, direction, message_id, text, ts, created_at)"
-            " VALUES (?, ?, 'in', ?, ?, ?, ?)",
-            (str(agent_id), str(chat_id), str(message_id), text, ts, int(time.time())),
+            " (agent_id, chat_id, direction, message_id, text, ts, created_at,"
+            "  attachment_kind, attachment_file_id)"
+            " VALUES (?, ?, 'in', ?, ?, ?, ?, ?, ?)",
+            (str(agent_id), str(chat_id), str(message_id), text, ts, int(time.time()),
+             attachment_kind, attachment_file_id),
         )
         con.commit()
     finally:
@@ -149,11 +170,13 @@ def log_outbound(agent_id, chat_id, text):
 
 
 def recent(agent_id, limit=RECENT_LIMIT):
-    """The last `limit` turns for this agent, oldest-first. Rows: (direction, chat_id, text, ts)."""
+    """The last `limit` turns for this agent, oldest-first.
+    Rows: (direction, chat_id, text, ts, attachment_kind, attachment_file_id)."""
     con = connect()
     try:
         rows = con.execute(
-            "SELECT direction, chat_id, text, ts FROM conversation_log"
+            "SELECT direction, chat_id, text, ts, attachment_kind, attachment_file_id"
+            " FROM conversation_log"
             " WHERE agent_id=? ORDER BY created_at DESC, id DESC LIMIT ?",
             (str(agent_id), int(limit)),
         ).fetchall()
@@ -164,18 +187,21 @@ def recent(agent_id, limit=RECENT_LIMIT):
 
 def open_question_with_age(agent_id):
     """Like open_question() but also returns the open inbound's created_at (unix
-    epoch). Returns (chat_id, message_id, text, ts, created_at) or None. Used by
-    the live-drain hook, which needs the age for its grace window."""
+    epoch). Returns (chat_id, message_id, text, ts, created_at, attachment_kind,
+    attachment_file_id) or None. Used by the live-drain hook, which needs the
+    age for its grace window."""
     con = connect()
     try:
         row = con.execute(
-            "SELECT chat_id, message_id, text, ts, created_at, id FROM conversation_log"
+            "SELECT chat_id, message_id, text, ts, created_at, id,"
+            "       attachment_kind, attachment_file_id"
+            " FROM conversation_log"
             " WHERE agent_id=? AND direction='in' ORDER BY created_at DESC, id DESC LIMIT 1",
             (str(agent_id),),
         ).fetchone()
         if not row:
             return None
-        chat_id, message_id, text, ts, created_at, rid = row
+        chat_id, message_id, text, ts, created_at, rid, att_kind, att_file_id = row
         later_out = con.execute(
             "SELECT 1 FROM conversation_log"
             " WHERE agent_id=? AND direction='out'"
@@ -184,13 +210,17 @@ def open_question_with_age(agent_id):
         ).fetchone()
         if later_out:
             return None  # the last inbound has already been answered
-        return (chat_id, message_id, text, ts, created_at)
+        return (chat_id, message_id, text, ts, created_at, att_kind, att_file_id)
     finally:
         con.close()
 
 
 def open_question(agent_id):
     """The most recent inbound with NO later outbound (the unanswered question),
-    or None. Returns (chat_id, message_id, text, ts)."""
+    or None. Returns (chat_id, message_id, text, ts, attachment_kind,
+    attachment_file_id)."""
     oq = open_question_with_age(agent_id)
-    return oq[:4] if oq else None
+    if not oq:
+        return None
+    chat_id, message_id, text, ts, _created_at, att_kind, att_file_id = oq
+    return (chat_id, message_id, text, ts, att_kind, att_file_id)

@@ -262,10 +262,21 @@ export function initDatabase(dbPathOverride?: string): void {
       text TEXT,
       ts TEXT,
       created_at INTEGER NOT NULL,
+      attachment_kind TEXT,
+      attachment_file_id TEXT,
       UNIQUE(agent_id, chat_id, direction, message_id)
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_convlog_agent ON conversation_log(agent_id, created_at)`)
+  // Migration for pre-existing DBs: transcript-less voice/video_note inbounds
+  // keep their attachment identity so a respawned session can still download
+  // and transcribe them (mirrors _MIGRATION_COLUMNS in scripts/hooks/ledger_lib.py).
+  for (const col of ['attachment_kind', 'attachment_file_id']) {
+    const cols = db.prepare("PRAGMA table_info(conversation_log)").all() as { name: string }[]
+    if (!cols.some(c => c.name === col)) {
+      db.exec(`ALTER TABLE conversation_log ADD COLUMN ${col} TEXT`)
+    }
+  }
 
   // Migration: hot/warm/cold/shared tier system with an enforced CHECK.
   // Rebuilds the table whenever its current schema doesn't include the
