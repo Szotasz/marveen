@@ -21,14 +21,13 @@
 // alone would otherwise re-open exactly the same gap from the other direction.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { readConfiguredMainModel, readExtraChannelPluginIds } from '../web/channel-monitor.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const CHANNELS_SH = join(__dirname, '..', '..', 'scripts', 'channels.sh')
 
 let root: string
 
@@ -106,19 +105,7 @@ describe('readExtraChannelPluginIds (shares the same .env reader)', () => {
   })
 })
 
-describe('scripts/channels.sh resolve_main_model (the path this must mirror)', () => {
-  const sh = readFileSync(CHANNELS_SH, 'utf-8')
-  const fn = sh.slice(sh.indexOf('resolve_main_model() {'))
+// A shell<->TS runtime parity is covered by main-model-resolution-parity.test.ts
+// (executes channels.sh --resolve-main-model and asserts TS === shell). The
+// weaker structural source-inspection that used to live here was dropped.
 
-  it('checks MAIN_AGENT_MODEL before .claude/settings.json', () => {
-    const envIdx = fn.indexOf('MAIN_AGENT_MODEL')
-    const settingsIdx = fn.indexOf('.claude/settings.json')
-    expect(envIdx).toBeGreaterThan(-1)
-    expect(settingsIdx).toBeGreaterThan(-1)
-    expect(envIdx).toBeLessThan(settingsIdx)
-  })
-
-  it('still sources MAIN_AGENT_MODEL from .env', () => {
-    expect(sh).toMatch(/\^MAIN_AGENT_MODEL=.*\$INSTALL_DIR\/\.env/)
-  })
-})
