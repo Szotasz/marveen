@@ -36,6 +36,7 @@ import { execFileSync } from 'node:child_process'
 import { resolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
 import type { ChannelProviderType } from '../channel-provider.js'
+import { tryAcquireSessionSendLane } from './session-send-lock.js'
 
 const TMUX = resolveFromPath('tmux')
 
@@ -259,11 +260,33 @@ function runUnlockProbe(state: UnlockProbeState): void {
     return
   }
 
+  // PANEWRITERS805: the unlock sequence is direct keystrokes (/mcp, Up, Enter)
+  // into a pane that also receives locked deliveries. Fail-closed on a busy
+  // send lane, reusing the existing not-idle retry ladder: a delivery finishes
+  // within seconds, well inside the ladder's budget.
+  const releaseLane = tryAcquireSessionSendLane(state.session, null)
+  if (!releaseLane) {
+    if (state.retriesLeft > 0) {
+      logger.info(
+        { session: state.session, retriesLeft: state.retriesLeft },
+        'channel-plugin-unlock: pane send lane busy (delivery in flight), retrying',
+      )
+      setTimeout(() => runUnlockProbe({ ...state, retriesLeft: state.retriesLeft - 1 }), UNLOCK_PROBE_RETRY_DELAY_MS)
+      return
+    }
+    logger.warn({ session: state.session }, 'channel-plugin-unlock: pane send lane never freed up, abandoning')
+    return
+  }
+
   logger.warn(
     { session: state.session, claudePid, provider: state.provider },
     'channel-plugin-unlock: bun child absent after cold-start window, firing /mcp unlock sequence',
   )
-  sendUnlockKeystrokes(state.session, state.provider)
+  try {
+    sendUnlockKeystrokes(state.session, state.provider)
+  } finally {
+    releaseLane()
+  }
 }
 
 /**
