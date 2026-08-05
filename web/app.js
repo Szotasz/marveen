@@ -1217,6 +1217,21 @@ function renderKanbanQuickFilters() {
   }
 }
 
+// --- canEmbedSubtask start
+// Whether a subtask should be drawn inside its parent card instead of getting
+// a box of its own. Same column is not enough: the board groups into swimlanes
+// by assignee, so embedding a subtask owned by someone else moves it out of
+// its owner's lane and into the parent owner's. That is how card #257 left the
+// owner's lane on 2026-08-05 -- he dragged it to waiting, which happened to
+// match its parent's column, and a card assigned to him ended up inside an
+// agent's card. Same column AND same owner, or it keeps its own box.
+function canEmbedSubtask(parent, child) {
+  if (parent.status !== child.status) return false
+  const owner = (card) => String(card && card.assignee ? card.assignee : '').trim().toLowerCase()
+  return owner(parent) === owner(child)
+}
+// --- canEmbedSubtask end
+
 function renderKanban() {
   const cardById = new Map(kanbanCards.map(c => [c.id, c]))
 
@@ -1231,16 +1246,17 @@ function renderKanban() {
     visibleCardIds.add(card.id)
   }
 
-  // A subtask is "embedded" when its parent is visible AND both share the same
-  // column. Embedded subtasks are hidden as standalone cards and rendered
-  // inside the parent card instead. Filter state of the subtask itself is
-  // intentionally ignored so it always shows under its visible parent.
+  // A subtask is "embedded" when its parent is visible AND the two belong
+  // together on the board (see canEmbedSubtask). Embedded subtasks are hidden
+  // as standalone cards and rendered inside the parent card instead. Filter
+  // state of the subtask itself is intentionally ignored so it always shows
+  // under its visible parent.
   const embeddedSubtaskIds = new Set()
   for (const card of kanbanCards) {
     if (!card.parent_id) continue
     const parent = cardById.get(card.parent_id)
     if (!parent || !visibleCardIds.has(parent.id)) continue
-    if (parent.status === card.status) embeddedSubtaskIds.add(card.id)
+    if (canEmbedSubtask(parent, card)) embeddedSubtaskIds.add(card.id)
   }
 
   const grouped = { planned: [], in_progress: [], waiting: [], testing: [], done: [] }
