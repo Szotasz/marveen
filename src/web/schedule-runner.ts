@@ -94,6 +94,22 @@ export interface TaskInflightEntry {
   host: string | null
   injectedAt: number
   alerted: boolean
+  // Per-task override for the stall-alert fuse. A task that legitimately runs
+  // long (headless browser rounds, multi-page scrapes) would otherwise trip the
+  // 5-minute default every single run -- and a nightly false alarm trains the
+  // reader to ignore the real one (idea-scout, 2026-08-04 and 08-05).
+  stallAlertMs?: number
+}
+
+// How long this entry may stay busy before the watchdog alerts. Exported so the
+// resolution itself is testable: a test that re-implements the fallback would
+// pass without the production path ever honouring the override.
+export function resolveStallTimeoutMs(entry: TaskInflightEntry): number {
+  const wanted = entry.stallAlertMs
+  if (typeof wanted !== 'number' || !Number.isFinite(wanted) || wanted <= 0) return TASK_FIRE_TIMEOUT_MS
+  // Never shorter than the default grace: inside the grace window the pane is
+  // routinely still 'busy' from the previous turn.
+  return Math.max(wanted, TASK_FIRE_GRACE_MS)
 }
 
 // Active task/heartbeat injections keyed by `${taskName}@${agentName}`.
@@ -536,6 +552,7 @@ async function attemptFireTask(
       host,
       injectedAt: now,
       alerted: false,
+      stallAlertMs: task.stallAlertMs,
     })
 
     // Post-send verify: if the agent started a new turn during our chunk
@@ -902,7 +919,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
       const state = pane != null ? detectPaneState(pane) : null
       const decision = decideTaskTimeout(entry, state, now, {
         graceMs: TASK_FIRE_GRACE_MS,
-        timeoutMs: TASK_FIRE_TIMEOUT_MS,
+        timeoutMs: resolveStallTimeoutMs(entry),
         maxTrackMs: TASK_FIRE_MAX_TRACK_MS,
       })
       if (decision === 'clear') {

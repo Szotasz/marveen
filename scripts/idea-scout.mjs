@@ -42,11 +42,17 @@ async function main() {
     console.log((todayText || '').slice(0, 4000))
 
     await jitter()
-    await page.goto('https://www.ideabrowser.com/hub/ideas/browse?sort=most_popular', { waitUntil: 'domcontentloaded', timeout: 60000 })
+    // A "legnepszerubb UJ tetelek" URL-je MERVE (2026-08-05): a UI "New" fule
+    // NEM ujdonsagot jelent, hanem status=no_reaction-t (amire meg nem
+    // reagaltunk) -- ezert a sima most_popular minden ejjel ugyanazokat a
+    // 2025-os evergreen teteleket adta vissza. A tenyleges frissesseg a
+    // sort=newest. A ketto egyutt: amit meg nem lattunk, idorendben.
+    await page.goto('https://www.ideabrowser.com/hub/ideas/browse?sort=newest&status=no_reaction',
+      { waitUntil: 'domcontentloaded', timeout: 60000 })
     await page.waitForTimeout(3500)
     await page.mouse.wheel(0, 1200); await jitter()
+    console.log('===== BROWSE (newest, meg nem ertekelt) =====')
     const browseText = await page.locator('main').innerText().catch(async () => await page.locator('body').innerText())
-    console.log('===== BROWSE (most_popular, top) =====')
     console.log((browseText || '').slice(0, 5000))
   } finally {
     await browser.close()
