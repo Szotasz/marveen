@@ -5,6 +5,7 @@ import {
   markMessageDone, markMessageFailed, getAgentMessage,
   closeOtelSpan,
   getPendingBacklogByAgent,
+  SYSTEM_SENDER,
   type AgentMessage,
 } from '../../db.js'
 import { logger } from '../../logger.js'
@@ -196,7 +197,14 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       // ping-pong chains (the delegator might write back, which would trigger
       // markMessageDone on this notification; we skip creating ANOTHER notification
       // when the original content is already a completion report).
-      if (done && done.from_agent !== done.to_agent && !done.content.startsWith('[Eredmény]')) {
+      // ...and never ack a notice raised by SYSTEM_SENDER: it is not an agent,
+      // so the ack is undeliverable by construction, and the router then reports
+      // THAT as a handoff failure -- which the main agent marks done, which acks
+      // again. One hour per lap (the retry window), measured 2026-08-05.
+      // The '[Eredmény]' sentinel below does not cover it: a '[handoff-failure]'
+      // notice does not start with that prefix.
+      if (done && done.from_agent !== done.to_agent && done.from_agent !== SYSTEM_SENDER
+        && !done.content.startsWith('[Eredmény]')) {
         const summary = result ? result.slice(0, 500) : '(nincs eredmény)'
         createAgentMessage(
           done.to_agent,
