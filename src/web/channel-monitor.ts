@@ -28,6 +28,7 @@ import {
   answerFirstRunGates,
   shSingleQuote,
 } from './agent-process.js'
+import { withSessionSendLock } from './session-send-lock.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence } from './channel-poller-reap.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
 import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPluginAbsent } from './channel-plugin-unlock.js'
@@ -352,18 +353,36 @@ async function performStuckInputAction(
   let submitted = false
   try {
     switch (action) {
-      case 'reinject-block':
+      case 'reinject-block': {
         logger.warn({ session, chatId: block?.chatId, attempt }, 'Stuck channel input -- clear + verbatim re-inject')
-        await clearInputBuffer(session)
-        await sendPromptToSession(session, block!.block!)
+        // DELIVLOCK805: clear+re-inject MUTATES the input box, so it must not
+        // race a live delivery into this pane (it could clear a partial send or
+        // submit the wrong buffer). Run the clear+re-inject as ONE recover-mode
+        // critical section; if a delivery holds the lane, skip and log -- a
+        // stuck box recovers on the next tick once the delivery finishes.
+        const res = await withSessionSendLock(session, null, 'recover', async () => {
+          await clearInputBuffer(session)
+          await sendPromptToSession(session, block!.block!, null, { lockMode: 'held' })
+        })
+        if (!res.ran) {
+          logger.info({ session, attempt }, 'Stuck-input recovery (reinject-block) skipped: a delivery is in flight into this pane (fail-closed)')
+          break
+        }
         submitted = true
         break
+      }
       case 'reinject-plain': {
         const text = parkedInputText(paneBefore)
         if (text != null) {
           logger.warn({ session, attempt }, 'Stuck input (non-channel) -- clear + re-inject parked text')
-          await clearInputBuffer(session)
-          await sendPromptToSession(session, text)
+          const res = await withSessionSendLock(session, null, 'recover', async () => {
+            await clearInputBuffer(session)
+            await sendPromptToSession(session, text, null, { lockMode: 'held' })
+          })
+          if (!res.ran) {
+            logger.info({ session, attempt }, 'Stuck-input recovery (reinject-plain) skipped: a delivery is in flight into this pane (fail-closed)')
+            break
+          }
         } else {
           // FABLEFALL1: a bare Enter on the model consent dialog confirms its
           // DEFAULT option, which switches the model. Answer the dialog safely

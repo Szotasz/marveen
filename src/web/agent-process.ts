@@ -24,6 +24,7 @@ import { resolveAgentConfigDir } from './claude-plans.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { withSessionSendLock, type SendLockMode } from './session-send-lock.js'
 import {
   buildTmuxInvocation,
   buildSshExec,
@@ -1713,8 +1714,8 @@ export async function sendPromptToSession(
   session: string,
   text: string,
   host: string | null = null,
-  opts: { waitForIdle?: boolean; onBusyTimeout?: 'send' | 'abort'; idleTimeoutMs?: number } = {},
-): Promise<'sent' | 'aborted-busy'> {
+  opts: { waitForIdle?: boolean; onBusyTimeout?: 'send' | 'abort'; idleTimeoutMs?: number; lockMode?: SendLockMode } = {},
+): Promise<'sent' | 'aborted-busy' | 'skipped-locked'> {
   await dismissSurveyModalIfPresent(session, host)
   await dismissResumeSummaryModalIfPresent(session, host)
   await dismissModelConsentDialogIfPresent(session, host)
@@ -1753,6 +1754,14 @@ export async function sendPromptToSession(
     logger.warn({ session }, 'sendPromptToSession: pane still busy after wait-until-idle budget; sending best-effort')
   }
 
+  // DELIVLOCK805: everything from here to `return 'sent'` EMITS keystrokes into
+  // the pane (preamble-clear, chunk stream, submit-retry loop). Two writers
+  // interleaving this span splice foreign text into one framed message, so it
+  // is the per-session critical section. Held under a per-pane in-process mutex
+  // (session-send-lock): normal delivery is fail-open (a stuck holder must not
+  // silence the fleet); a `recover` caller skips instead of racing a live send.
+  const lockMode: SendLockMode = opts.lockMode ?? 'deliver'
+  const emitToPane = async (): Promise<'sent'> => {
   // Pre-flight buffer-clear when a stale preamble is detected. Reading
   // the pane is best-effort: a capture failure here means we cannot
   // prove the buffer is clean, but proceeding without the clear is no
@@ -1851,6 +1860,31 @@ export async function sendPromptToSession(
       logger.warn({ err, session, attempt }, 'Retry-Enter send failed')
       break
     }
+  }
+    return 'sent'
+  }
+
+  // 'held': the caller already owns this pane's lane (e.g. the stuck-input
+  // recovery clears + re-injects as ONE recover-mode critical section). Re-
+  // acquiring the same lane here would deadlock against ourselves, so emit
+  // directly.
+  if (lockMode === 'held') {
+    return emitToPane()
+  }
+
+  const lockResult = await withSessionSendLock(session, host, lockMode, emitToPane)
+  if (!lockResult.ran) {
+    // recover mode + lane busy: a delivery is mid-flight into this pane. Do NOT
+    // race it (we would clear or submit the wrong buffer). Skip this round and
+    // say so out loud -- a skip nobody logs is not a skip.
+    logger.info({ session }, 'sendPromptToSession: pane delivery in progress; recover-mode send skipped this round')
+    return 'skipped-locked'
+  }
+  if (lockResult.failedOpen) {
+    // Fail-open: the wait budget elapsed against a stuck holder and we wrote
+    // without the lock. Delivery still happened; log loudly so a wedged holder
+    // is visible rather than silently degrading into re-interleaving.
+    logger.warn({ session }, 'sendPromptToSession: delivery lock wait budget elapsed; sent WITHOUT the per-pane lock (fail-open) -- a holder may be wedged')
   }
   return 'sent'
 }

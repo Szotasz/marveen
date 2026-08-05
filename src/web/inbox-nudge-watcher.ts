@@ -242,7 +242,7 @@ async function tick(): Promise<void> {
 
     const prev = state
     state = recordNudge(state, now, oldest.id)
-    let result: 'sent' | 'aborted-busy'
+    let result: 'sent' | 'aborted-busy' | 'skipped-locked'
     try {
       result = await sendPromptToSession(MAIN_CHANNELS_SESSION, nudgeText(resolveLang()), null, {
         onBusyTimeout: 'abort',
@@ -257,11 +257,13 @@ async function tick(): Promise<void> {
       logger.warn({ err, pending: pending.length }, 'inbox nudge: send threw; nothing typed, state restored')
       return
     }
-    if (result === 'aborted-busy') {
-      // The pane turned busy in the check->send gap; nothing was typed. Undo
-      // the debounce so the normal cadence retries.
+    if (result === 'aborted-busy' || result === 'skipped-locked') {
+      // Nothing was typed: either the pane turned busy in the check->send gap
+      // (aborted-busy), or a delivery held the per-pane lock (skipped-locked --
+      // this is a deliver-mode call so it fails open rather than skipping, but
+      // handle it for completeness). Undo the debounce so the cadence retries.
       state = prev
-      logger.info({ inboxNudgeSkipped: 'busy', pending: pending.length }, 'inbox nudge: pane turned busy before send; skipped')
+      logger.info({ inboxNudgeSkipped: result, pending: pending.length }, 'inbox nudge: nothing typed before send; skipped')
       return
     }
     logger.info(
