@@ -14,6 +14,7 @@ import {
   hasFleetOauthToken,
   FLEET_OAUTH_TOKEN_PATH,
 } from './agent-process.js'
+import { withSessionSendLock } from './session-send-lock.js'
 import { readClaudeCodeOauthJson } from './claude-credentials.js'
 import { detectPaneState } from '../pane-state.js'
 import { notifyChannel } from '../notify.js'
@@ -662,8 +663,18 @@ async function runWorkerAttempt(ctx: WorkerCtx, message: string, timeoutMs: numb
   const donePath = join(ctx.scratchDir, `${reqId}.done`)
   for (const p of [outPath, donePath]) { try { rmSync(p, { force: true }) } catch { /* none */ } }
 
-  clearWorkerContext(ctx)
-  await sendPromptToSession(ctx.session, buildWorkerPrompt(message, outPath, donePath))
+  // PANEWRITERS805: /clear + prompt-send is ONE atomic delivery. Unlocked, the
+  // /clear could eat another writer's in-flight text, and a writer slipping in
+  // between the clear and our send would land its text into the freshly
+  // cleared context ahead of ours. Deliver mode (not recover): a dispatch must
+  // deliver; on a wedged holder we fail open past the budget, logged.
+  const sendRes = await withSessionSendLock(ctx.session, null, 'deliver', async () => {
+    clearWorkerContext(ctx)
+    await sendPromptToSession(ctx.session, buildWorkerPrompt(message, outPath, donePath), null, { lockMode: 'held' })
+  })
+  if (sendRes.failedOpen) {
+    logger.warn({ session: ctx.session, reqId }, 'agent-worker: dispatch ran without the send lane (fail-open past wait budget)')
+  }
 
   const start = Date.now()
   try {

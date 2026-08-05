@@ -154,6 +154,24 @@ export async function withSessionSendLock<T>(
   }
 }
 
+// PANEWRITERS805: synchronous recover-mode acquire for the LEGACY SYNC writers
+// (the /mcp reconnect + plugin-unlock healers and the worker /clear are
+// execFileSync keystroke sequences that cannot await). Same fail-closed
+// contract as mode 'recover': a busy lane returns null and the caller MUST
+// skip-and-log, never write anyway. On success the returned release fn frees
+// the lane; it is idempotent so a finally block cannot double-hand-off.
+export function tryAcquireSessionSendLane(session: string, host: string | null): (() => void) | null {
+  const lane = laneFor(keyFor(session, host))
+  if (lane.busy) return null
+  lane.busy = true
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    handOff(lane)
+  }
+}
+
 // Test-only: reset lane state between cases.
 export function __resetSessionSendLocks(): void {
   lanes.clear()

@@ -360,6 +360,12 @@ async function performStuckInputAction(
         // submit the wrong buffer). Run the clear+re-inject as ONE recover-mode
         // critical section; if a delivery holds the lane, skip and log -- a
         // stuck box recovers on the next tick once the delivery finishes.
+        // HOST-KEY CAVEAT (PANEWRITERS805): the lane key is host-scoped
+        // (`local::sess` here vs `vps1::sess` for a remote delivery). This
+        // recovery only ever targets LOCAL sessions today, so null is correct;
+        // if stuck-input recovery is ever extended to remote agents, the real
+        // host MUST be threaded here or the fail-closed guarantee silently
+        // evaporates (two different keys never contend).
         const res = await withSessionSendLock(session, null, 'recover', async () => {
           await clearInputBuffer(session)
           await sendPromptToSession(session, block!.block!, null, { lockMode: 'held' })

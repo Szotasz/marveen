@@ -28,7 +28,7 @@ import { resolveAgentConfigDir } from './claude-plans.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
 import { atomicWriteFileSync } from './atomic-write.js'
-import { withSessionSendLock, type SendLockMode } from './session-send-lock.js'
+import { withSessionSendLock, tryAcquireSessionSendLane, type SendLockMode } from './session-send-lock.js'
 import {
   buildTmuxInvocation,
   buildSshExec,
@@ -1728,9 +1728,34 @@ export async function sendPromptToSession(
   host: string | null = null,
   opts: { waitForIdle?: boolean; onBusyTimeout?: 'send' | 'abort'; idleTimeoutMs?: number; lockMode?: SendLockMode } = {},
 ): Promise<'sent' | 'aborted-busy' | 'skipped-locked'> {
-  await dismissSurveyModalIfPresent(session, host)
-  await dismissResumeSummaryModalIfPresent(session, host)
-  await dismissModelConsentDialogIfPresent(session, host)
+  const lockMode: SendLockMode = opts.lockMode ?? 'deliver'
+  // PANEWRITERS805: the three modal dismissals are probe+act keystroke writers
+  // that ran BEFORE the lane lock -- so they could press Escape/Enter into a
+  // pane mid-delivery (an Enter on the model-consent dialog confirms its
+  // DEFAULT, the FABLEFALL1 model switch). They must stay BEFORE the idle gate
+  // (a modal keeps the pane non-idle, so dismiss-after-wait would always time
+  // out), so they get their own fail-closed acquire instead of moving into the
+  // emit span. Skipping on a busy lane is safe: if a modal is really up, the
+  // idle gate below times out and the emit still queues behind the holder.
+  // 'held' callers already own the lane -- acquiring again would deadlock.
+  if (lockMode === 'held') {
+    await dismissSurveyModalIfPresent(session, host)
+    await dismissResumeSummaryModalIfPresent(session, host)
+    await dismissModelConsentDialogIfPresent(session, host)
+  } else {
+    const releaseDismissLane = tryAcquireSessionSendLane(session, host)
+    if (releaseDismissLane) {
+      try {
+        await dismissSurveyModalIfPresent(session, host)
+        await dismissResumeSummaryModalIfPresent(session, host)
+        await dismissModelConsentDialogIfPresent(session, host)
+      } finally {
+        releaseDismissLane()
+      }
+    } else {
+      logger.info({ session }, 'sendPromptToSession: modal dismissals skipped -- a delivery holds this pane send lane (fail-closed); emit will queue behind it')
+    }
+  }
 
   // Pre-flight wait-until-idle (root-cause gate). Placed here -- inside
   // sendPromptToSession, AFTER the modal dismissals (a modal keeps the pane
@@ -1772,7 +1797,6 @@ export async function sendPromptToSession(
   // is the per-session critical section. Held under a per-pane in-process mutex
   // (session-send-lock): normal delivery is fail-open (a stuck holder must not
   // silence the fleet); a `recover` caller skips instead of racing a live send.
-  const lockMode: SendLockMode = opts.lockMode ?? 'deliver'
   const emitToPane = async (): Promise<'sent'> => {
   // Pre-flight buffer-clear when a stale preamble is detected. Reading
   // the pane is best-effort: a capture failure here means we cannot
