@@ -153,6 +153,120 @@ export function splitSegments(command) {
     .map((s) => s.trim())
 }
 
+// Split like splitSegments, but ONLY on separators the shell would actually
+// treat as separators -- never on one that sits inside a quoted string or a
+// heredoc body. Returns null when the quoting cannot be resolved with
+// confidence, and every caller must then fall back to the naive splitter.
+//
+// WHY THIS EXISTS (measured 2026-08-05, five denials in one morning -- three
+// mine, two taric's): splitSegments is not quote-aware, so PROSE can manufacture
+// a command position that never existed. All five denials had the same cause: a
+// grep pattern quoted inside an inter-agent message,
+//   Minta: stop.sh <bar> launchctl <bar> com.janna.dashboard
+// The `<bar>` split it, the middle piece trimmed down to the bare word
+// `launchctl`, and SCHEDULER_RX's end-of-segment branch reads a bare `launchctl`
+// as a real (interactive) invocation -- correctly, for a real command line.
+// Nothing was scheduled; five messages simply never went out. From outside, a
+// hard-gate denial is indistinguishable from an agent that stayed silent.
+//
+// The route decided it: the SAME text passes as `curl -d '<json>'` (the payload
+// is blanked by stripDataPayloads) and is denied when sent from a python
+// heredoc, which has no -d argument to blank. Choosing how to send a message
+// had quietly become a security decision. stripDataPayloads' own comment names
+// this false-positive class as its target -- it is implemented for exactly one
+// route, so the gap is unfinished work, not an oversight.
+//
+// SCOPE, and this is the part that matters: the result feeds ONLY the anchored
+// scheduler check. The unanchored patterns (tmux+send-keys, nohup+claude,
+// claude+/loop) keep scanning naive segments, quoted regions included, because
+// they do NOT depend on a command position that prose can fake -- and because
+// measurement showed the naive scan is what catches a real
+// `subprocess.run(['tmux','send-keys',...])` hidden in a heredoc body. Handing
+// them quote-aware segments would have removed the detection of the very
+// incident vector this gate was built for, under the banner of a structural fix.
+//
+// FAIL-CLOSED in three places, because "could not parse" must mean "scan more",
+// never "scan less":
+//   - unterminated quote or heredoc -> null (caller uses the naive split)
+//   - a double-quoted region containing $(...) or a backtick -> null; the shell
+//     runs what is inside, so a `;` in there IS a real separator
+//   - a heredoc with an UNQUOTED tag whose body contains $(...) or a backtick
+//     -> null, same reason (an unquoted tag expands the body)
+// NOTE ON THE SHAPE OF THIS FIX. The first attempt made the SEGMENTER
+// quote-aware and left the regexes alone. It failed one corpus case:
+//   echo 'grep: foo <bar> crontab <bar> bar'
+// stayed denied, because SCHEDULER_RX carries its OWN boundary anchor
+// (SCHED_BOUNDARY includes the bar), so it re-finds a command position INSIDE a
+// segment. Keeping the quoted text in the segment at all was the mistake. The
+// `launchctl` cases passed only by luck -- LAUNCHCTL_SUBCOMMAND's lookahead
+// happened to reject the following bar. So the primitive is not "split more
+// carefully", it is "the inert text must not be there": mask it out, then let
+// the existing splitter and regexes run unchanged on what remains.
+export function maskInertLiterals(command) {
+  const src = String(command ?? '').replace(/\\\r?\n/g, ' ')
+  let cur = ''
+  let i = 0
+
+  // Inert regions collapse to spaces: the text is gone, and with it every
+  // separator inside it -- which is precisely what prose was faking.
+  const blank = (s) => ' '.repeat(s.length)
+
+  while (i < src.length) {
+    const c = src[i]
+
+    // backslash escape outside quotes: consumes the next character
+    if (c === '\\' && i + 1 < src.length) { cur += src.slice(i, i + 2); i += 2; continue }
+
+    // heredoc: <<TAG / <<-TAG / <<'TAG' / <<"TAG"
+    const here = /^<<-?\s*(?:'([^']*)'|"([^"]*)"|([A-Za-z_]\w*))/.exec(src.slice(i))
+    if (here) {
+      const tag = here[1] ?? here[2] ?? here[3]
+      const quotedTag = here[1] != null || here[2] != null
+      cur += here[0]
+      i += here[0].length
+      // the body starts after the rest of THIS line
+      const nl = src.indexOf('\n', i)
+      if (nl === -1) return null // heredoc announced but no body -> cannot resolve
+      cur += src.slice(i, nl + 1)
+      i = nl + 1
+      // find the terminator line (leading tabs allowed for <<-)
+      const endRx = new RegExp(`^[ \\t]*${tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]*$`, 'm')
+      const rel = endRx.exec(src.slice(i))
+      if (!rel) return null // unterminated heredoc
+      const body = src.slice(i, i + rel.index)
+      if (!quotedTag && /\$\(|`/.test(body)) return null // unquoted tag expands the body
+      cur += blank(body) + rel[0]
+      i += rel.index + rel[0].length
+      continue
+    }
+
+    if (c === "'") { // literal until the next ' -- a backslash is NOT special here
+      const end = src.indexOf("'", i + 1)
+      if (end === -1) return null
+      cur += blank(src.slice(i, end + 1)); i = end + 1; continue
+    }
+
+    if (c === '$' && src[i + 1] === "'") { // ANSI-C: \' does escape
+      let j = i + 2
+      while (j < src.length && src[j] !== "'") { j += src[j] === '\\' ? 2 : 1 }
+      if (j >= src.length) return null
+      cur += blank(src.slice(i, j + 1)); i = j + 1; continue
+    }
+
+    if (c === '"') {
+      let j = i + 1
+      while (j < src.length && src[j] !== '"') { j += src[j] === '\\' ? 2 : 1 }
+      if (j >= src.length) return null
+      const inner = src.slice(i + 1, j)
+      if (/\$\(|`/.test(inner)) return null // may run a command -> not inert
+      cur += blank(src.slice(i, j + 1)); i = j + 1; continue
+    }
+
+    cur += c; i++
+  }
+  return cur
+}
+
 // Blank out curl/HTTP DATA-PAYLOAD arguments before self-pace matching. A -d /
 // --data body is data sent over the wire, NEVER a shell invocation, so a trigger
 // token that only appears INSIDE the payload must not false-deny. The classic
@@ -252,17 +366,31 @@ export function gateDecision(toolName, toolInput) {
     const safeCommand = stripDataPayloads(stripGitCommitMessages(String(toolInput?.command ?? '')))
     // Per-segment so an unrelated token elsewhere in a compound command cannot
     // turn a legit read (store inspection, schedule-API GET) into a false deny.
-    for (const seg of splitSegments(safeCommand)) {
+    const naiveSegs = splitSegments(safeCommand)
+    for (const seg of naiveSegs) {
       // Match the self-pace bash patterns against the shell-normalised segment so a
       // `\/loop` / `$IFS/loop` evasion (which bash resolves to `/loop` at exec) is
       // still caught; the scheduler/store/API checks below use the RAW seg (scoped).
+      //
+      // These stay on the NAIVE segments ON PURPOSE. They are unanchored, so a
+      // quoted region is not a hiding place for them -- and the naive scan is
+      // what catches a real `subprocess.run(['tmux','send-keys',...])` inside a
+      // heredoc body (measured 2026-08-05). Quote-aware segments here would have
+      // dropped the detection of this gate's own founding incident vector.
       if (SELF_PACE_BASH_PATTERNS.some((re) => re.test(normalizeShellEvasion(seg)))) return { deny: true }
-      // scheduler binaries: deny the exec/submit forms, allow pure read-listing
-      if (SCHEDULER_RX.test(seg) && !SCHEDULER_READ_RX.test(seg)) return { deny: true }
       // self-schedule store: block WRITE only (a read/grep is legit diagnostics)
       if (SCHEDULE_STORE_RX.test(seg) && WRITE_INTENT_RX.test(seg)) return { deny: true }
       // dashboard schedule API: block WRITE methods only (GET list/pending is legit)
       if (SCHEDULE_API_RX.test(seg) && HTTP_WRITE_RX.test(seg)) return { deny: true }
+    }
+    // The scheduler check is the ANCHORED one -- it fires on what sits at a
+    // segment START -- so it is the one a fake segment boundary can mislead, and
+    // the only one that gets quote-aware segments. Null (unresolvable quoting)
+    // falls back to the naive split, i.e. to scanning strictly more.
+    const masked = maskInertLiterals(safeCommand)
+    for (const seg of (masked == null ? naiveSegs : splitSegments(masked))) {
+      // scheduler binaries: deny the exec/submit forms, allow pure read-listing
+      if (SCHEDULER_RX.test(seg) && !SCHEDULER_READ_RX.test(seg)) return { deny: true }
     }
   }
   return { deny: false }
