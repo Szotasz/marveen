@@ -208,7 +208,7 @@ describe('isolated-config launcher wiring', () => {
   })
 
   // Regression guard for the inherited-token layer of the BYO 401 bug (2026-08-05).
-  // The tmux server (atlas-channels) carries CLAUDE_CODE_OAUTH_TOKEN in its own env;
+  // The tmux server carries CLAUDE_CODE_OAUTH_TOKEN in its own env;
   // every new agent pane inherits it regardless of whether the launch command exports
   // it.  Not exporting is not enough — the token must be actively unset at launch for
   // BYO/custom-endpoint agents so the CLI forwards ANTHROPIC_API_KEY to the provider
