@@ -15,6 +15,7 @@ INSTALL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 PATCHER="$INSTALL_DIR/scripts/patch-telegram-reply-to.mjs"
 WATCHDOG="$INSTALL_DIR/scripts/channel-watchdog.sh"
 SERVICE="$INSTALL_DIR/scripts/systemd/marveen-channels.service"
+MACOS_INSTALL="$INSTALL_DIR/install-macos.sh"
 
 RUNNER="node"
 command -v node >/dev/null 2>&1 || RUNNER="bun"
@@ -106,6 +107,35 @@ if grep -q "patch-telegram-reply-to.mjs" "$SERVICE"; then
   pass "marveen-channels.service reapplies on start (ExecStartPre)"
 else
   fail "marveen-channels.service reapplies on start"
+fi
+# macOS has no ExecStartPre/systemd-timer, so the same two reapply paths live in
+# install-macos.sh's launchd plists: (a) the channels plist wraps channels.sh so
+# the patcher runs before the bridge starts, and (b) a periodic reply-to-patch
+# plist re-runs it on an interval. Both must invoke the patcher.
+if grep -qE 'patch-telegram-reply-to\.mjs.*exec.*channels\.sh' "$MACOS_INSTALL"; then
+  pass "install-macos.sh channels plist runs the patcher before channels.sh (start-time reapply)"
+else
+  fail "install-macos.sh channels plist runs the patcher before channels.sh"
+fi
+if grep -q 'com.${SERVICE_ID}.reply-to-patch' "$MACOS_INSTALL" && grep -q 'StartInterval' "$MACOS_INSTALL"; then
+  pass "install-macos.sh installs the periodic reply-to-patch launchd job (watchdog-cycle reapply)"
+else
+  fail "install-macos.sh installs the periodic reply-to-patch launchd job"
+fi
+if grep -q 'launchctl load "$PLIST_DIR/${REPLY_PATCH_PLIST}.plist"' "$MACOS_INSTALL"; then
+  pass "install-macos.sh loads the reply-to-patch launchd job"
+else
+  fail "install-macos.sh loads the reply-to-patch launchd job"
+fi
+
+# (4b) The watchdog reapply must be observable when it CANNOT run (no node/bun),
+#      not silent -- the nvm/minimal-PATH failure mode (review #3).
+echo ""
+echo "(4b) watchdog logs a skipped patcher"
+if grep -qE 'reply-to patch: SKIPPED' "$WATCHDOG"; then
+  pass "channel-watchdog.sh logs when no runner is found (patcher did not start)"
+else
+  fail "channel-watchdog.sh logs when no runner is found"
 fi
 
 # (5) Portability: no baked-in home path or hardcoded plugin version.

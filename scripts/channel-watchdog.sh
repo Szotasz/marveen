@@ -77,6 +77,13 @@ if [ -f "$REPLY_PATCH" ]; then
   if [ -n "$REPLY_RUNNER" ]; then
     REPLY_OUT="$("$REPLY_RUNNER" "$REPLY_PATCH" 2>&1)" || true
     [ -n "$REPLY_OUT" ] && log "reply-to patch: $REPLY_OUT"
+  else
+    # No node/bun on PATH -- the patcher could not even start. This is the exact
+    # silent-failure mode of an nvm-installed node under a minimal service PATH
+    # (systemd ExecStartPre's leading '-' or launchd's default PATH would swallow
+    # it): the patch just never runs and quote-replies keep getting dropped with
+    # no trace. Log it here so a reverted patch is visible instead of silent.
+    log "reply-to patch: SKIPPED -- no node/bun on PATH, patcher did not start ($REPLY_PATCH)"
   fi
 fi
 
