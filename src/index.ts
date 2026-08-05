@@ -9,7 +9,8 @@ import {
   writeSync,
 } from 'node:fs'
 import { join } from 'node:path'
-import { execFileSync, execSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
+import { runLsof } from './lsof.js'
 import type { Server as HttpServer } from 'node:http'
 import { PROJECT_ROOT, STORE_DIR, PID_FILENAME, WEB_PORT, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
 import { resolveOwnerChatId } from './owner-chat.js'
@@ -77,13 +78,12 @@ function processCwd(pid: number): string | null {
     // Linux: cheap and exact.
     return readlinkSync(`/proc/${pid}/cwd`)
   } catch { /* not Linux or no access; try lsof (macOS) */ }
-  try {
-    const raw = execSync(`lsof -a -p ${pid} -d cwd -Fn 2>/dev/null || true`, { timeout: 2000, encoding: 'utf-8' })
-    const line = raw.split('\n').find((l) => l.startsWith('n'))
-    return line ? line.slice(1) : null
-  } catch {
-    return null
-  }
+  // Resolved-path lsof (LSOFPATH805): a bare `lsof` was command-not-found under
+  // the launchd PATH and silently returned null on the live box.
+  const raw = runLsof(['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], 2000)
+  if (raw == null) return null
+  const line = raw.split('\n').find((l) => l.startsWith('n'))
+  return line ? line.slice(1) : null
 }
 
 function argvBelongsToThisInstall(argv: string, pid: number): boolean {
@@ -130,13 +130,14 @@ function buildProcessLockContext(): ProcessLockContext {
       }
     },
     listPortHolders(port: number): number[] {
-      try {
-        const raw = execSync(`lsof -ti :${port} 2>/dev/null || true`, { timeout: 3000, encoding: 'utf-8' }).trim()
-        if (!raw) return []
-        return raw.split('\n').map((s) => parseInt(s.trim(), 10)).filter((n) => Number.isFinite(n) && n > 0)
-      } catch {
-        return []
-      }
+      // Resolved-path lsof (LSOFPATH805): under the launchd PATH the old bare
+      // `lsof -ti` was command-not-found and silently returned [], so this
+      // port-holder probe -- which the single-instance reclaim depends on --
+      // found no one on the live box. runLsof resolves an absolute lsof and
+      // warns loudly if none exists rather than returning a silent empty.
+      const raw = (runLsof(['-ti', `:${port}`], 3000) ?? '').trim()
+      if (!raw) return []
+      return raw.split('\n').map((s) => parseInt(s.trim(), 10)).filter((n) => Number.isFinite(n) && n > 0)
     },
     listOwnProcessesMatching(pattern: RegExp): number[] {
       // `ps -A -o pid=,uid=,args=` emits `<pid> <uid> <full argv>` per row.
