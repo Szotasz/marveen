@@ -206,4 +206,18 @@ describe('isolated-config launcher wiring', () => {
     // separation without the Claude OAuth token being forwarded to their provider.
     expect(SRC).toMatch(/if \(needsFleetOauth\)\s*\{[^}]*CLAUDE_CODE_OAUTH_TOKEN/)
   })
+
+  // Regression guard for the inherited-token layer of the BYO 401 bug (2026-08-05).
+  // The tmux server (atlas-channels) carries CLAUDE_CODE_OAUTH_TOKEN in its own env;
+  // every new agent pane inherits it regardless of whether the launch command exports
+  // it.  Not exporting is not enough — the token must be actively unset at launch for
+  // BYO/custom-endpoint agents so the CLI forwards ANTHROPIC_API_KEY to the provider
+  // instead.
+
+  it('launch command actively unsets CLAUDE_CODE_OAUTH_TOKEN for BYO agents (inherited tmux-server env)', () => {
+    // byoUnsetEnv must be defined and wired into the cmd string so the inherited
+    // token is removed before exec for non-Claude-OAuth agents.
+    expect(SRC).toMatch(/const byoUnsetEnv = !needsFleetOauth \? 'unset CLAUDE_CODE_OAUTH_TOKEN && ' : ''/)
+    expect(SRC).toMatch(/\$\{byoUnsetEnv\}/)
+  })
 })
