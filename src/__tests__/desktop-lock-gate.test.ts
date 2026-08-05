@@ -25,6 +25,7 @@ import {
   decideDesktopGate, lockExpiresAt, readDesktopLock, writeDesktopLock, clearDesktopLock,
   recordDesktopSkip, TTL_GRACE_MS, DEFAULT_ESTIMATE_MS, type DesktopLock, type DesktopSkipRecord,
 } from '../web/desktop-lock.js'
+import { parseLockBody } from '../web/routes/desktop-lock.js'
 
 const NOW = 1_785_855_000_000
 
@@ -207,6 +208,51 @@ describe('broadcast marker shape', () => {
 //
 // Locked by a test rather than by line numbers in a runbook: the numbers drift the
 // first time someone edits the file, and a drifted reference reads as fact.
+describe('POST body keys: a misspelled key must not pass silently', () => {
+  // The real incident, 2026-08-05: `estimateMinutes` (no "d") was accepted, the
+  // key fell out of the typeof test, and the lock went out with the 30-minute
+  // DEFAULT for a round estimated at 2 minutes. The cost is skipped
+  // screen-requiring rounds, so this is the case the fix exists for.
+  it('flags the estimateMinutes -> estimatedMinutes slip as a typo', () => {
+    const r = parseLockBody({ owner: 'janna', estimateMinutes: 2 })
+    expect(r.typo).toEqual({ sent: 'estimateMinutes', meant: 'estimatedMinutes' })
+    expect(r.minutes).toBeNull() // still dropped -- which is exactly why we refuse
+  })
+
+  it('catches a case-only slip too', () => {
+    expect(parseLockBody({ owner: 'janna', estimatedminutes: 2 }).typo?.meant)
+      .toBe('estimatedMinutes')
+  })
+
+  // NEGATIVE CONTROL: without it, a rule that flags everything would pass the
+  // test above while making the endpoint unusable.
+  it('accepts the correctly spelled body with no typo and no unknown keys', () => {
+    const r = parseLockBody({ owner: 'janna', estimatedMinutes: 2, note: 'WAWI' })
+    expect(r.typo).toBeUndefined()
+    expect(r.unknownKeys).toEqual([])
+    expect(r.minutes).toBe(2)
+    expect(r.note).toBe('WAWI')
+  })
+
+  it('reports an unrelated extra key but does NOT call it a typo', () => {
+    // A caller sending a harmless extra field must not be locked out of the
+    // screen -- but the key must not be invisible either.
+    const r = parseLockBody({ owner: 'janna', estimatedMinutes: 5, requestId: 'abc' })
+    expect(r.typo).toBeUndefined()
+    expect(r.unknownKeys).toEqual(['requestId'])
+    expect(r.minutes).toBe(5)
+  })
+
+  it('every key the four lock skills send is a known key', () => {
+    // The docs were right and the caller was wrong (janna wrote the key from
+    // memory). This pins the docs' side so a later rename cannot drift.
+    for (const k of ['owner', 'note', 'estimatedMinutes']) {
+      expect(parseLockBody({ owner: 'x', [k]: k === 'estimatedMinutes' ? 1 : 'v' }).unknownKeys)
+        .toEqual([])
+    }
+  })
+})
+
 describe('state-before-broadcast ordering', () => {
   const src = readFileSync(
     join(__dirname, '..', 'web', 'routes', 'desktop-lock.ts'), 'utf-8',

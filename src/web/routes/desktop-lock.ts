@@ -55,6 +55,79 @@ function hu(dtMs: number): string {
   return new Date(dtMs).toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit' })
 }
 
+/** The keys a POST body may carry. Anything else is either a caller bug or a
+ *  field this endpoint does not know about -- and the two need DIFFERENT
+ *  answers, which is what parseLockBody below decides. */
+const KNOWN_LOCK_KEYS = ['owner', 'note', 'estimatedMinutes'] as const
+
+function editDistance(a: string, b: string): number {
+  // Levenshtein, iterative single-row. Only ever run on short JSON key names.
+  let prev = [...Array(b.length + 1).keys()]
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i]
+    for (let j = 1; j <= b.length; j++) {
+      row[j] = Math.min(
+        prev[j] + 1,
+        row[j - 1] + 1,
+        prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      )
+    }
+    prev = row
+  }
+  return prev[b.length]
+}
+
+export type LockBody = {
+  owner: string
+  note?: string
+  minutes: number | null
+  /** Keys we do not know. Reported back so the caller sees them immediately. */
+  unknownKeys: string[]
+  /** An unknown key that is one or two edits from a known one -- almost
+   *  certainly a typo, and the reason this function exists. */
+  typo?: { sent: string, meant: string }
+}
+
+/**
+ * Read the POST body, and REFUSE to silently ignore a misspelled key.
+ *
+ * Why this is not over-engineering (measured 2026-08-05, found by janna): a
+ * POST that said `estimateMinutes` instead of `estimatedMinutes` was accepted
+ * without a word. The unknown key fell out of the `typeof` test, `minutes`
+ * became null, and the lock was announced with the 30-minute DEFAULT -- for a
+ * round the holder had estimated at 2 minutes. Nothing in the response, the
+ * log, or the broadcast said a key had been dropped; the only symptom was an
+ * end time that looked plausible, just wrong. The cost is real work, not
+ * cosmetics: every screen-requiring round in that window is skipped, and the
+ * skip is correct behaviour for a lock the system believes lasts 30 minutes.
+ *
+ * A typo therefore gets a 400 naming the intended key -- a near-miss changes
+ * behaviour, so it must not pass. An unrelated extra key does NOT fail the
+ * request (a caller sending a harmless extra field should not be locked out of
+ * the screen), but it comes back in `unknownKeys` so it cannot stay invisible.
+ */
+export function parseLockBody(data: Record<string, unknown>): LockBody {
+  const owner = typeof data.owner === 'string' ? data.owner.trim() : ''
+  const note = typeof data.note === 'string' ? data.note.trim() : undefined
+  const minutes = typeof data.estimatedMinutes === 'number' && data.estimatedMinutes > 0
+    ? data.estimatedMinutes
+    : null
+
+  const unknownKeys = Object.keys(data).filter(
+    k => !(KNOWN_LOCK_KEYS as readonly string[]).includes(k),
+  )
+  let typo: LockBody['typo']
+  for (const sent of unknownKeys) {
+    // Case-insensitive: `estimatedminutes` is the same mistake as a one-letter
+    // slip, and both silently change the announced end time.
+    const meant = KNOWN_LOCK_KEYS.find(
+      known => editDistance(sent.toLowerCase(), known.toLowerCase()) <= 2,
+    )
+    if (meant) { typo = { sent, meant }; break }
+  }
+  return { owner, note, minutes, unknownKeys, typo }
+}
+
 export async function tryHandleDesktopLock(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
   if (path !== '/api/desktop-lock') return false
@@ -69,15 +142,25 @@ export async function tryHandleDesktopLock(ctx: RouteContext): Promise<boolean> 
     const body = await readBody(req)
     let data: Record<string, unknown> = {}
     try { data = JSON.parse(body.toString() || '{}') } catch { /* handled below */ }
-    const owner = typeof data.owner === 'string' ? data.owner.trim() : ''
+    const { owner, note, minutes, unknownKeys, typo } = parseLockBody(data)
     if (!owner) {
       json(res, { error: 'owner is required' }, 400)
       return true
     }
-    const note = typeof data.note === 'string' ? data.note.trim() : undefined
-    const minutes = typeof data.estimatedMinutes === 'number' && data.estimatedMinutes > 0
-      ? data.estimatedMinutes
-      : null
+    if (typo) {
+      // Refuse rather than lock with a silently defaulted estimate -- see
+      // parseLockBody. The caller gets the key it meant, so the retry is one edit.
+      logger.warn({ owner, sent: typo.sent, meant: typo.meant }, 'desktop-lock: misspelled body key')
+      json(res, {
+        error: `unknown key "${typo.sent}" -- did you mean "${typo.meant}"?`,
+        hint: 'a misspelled key would be ignored and the lock announced with the 30-minute default',
+        knownKeys: KNOWN_LOCK_KEYS,
+      }, 400)
+      return true
+    }
+    if (unknownKeys.length) {
+      logger.warn({ owner, unknownKeys }, 'desktop-lock: ignoring unknown body keys')
+    }
 
     const now = Date.now()
     const existing = readDesktopLock()
@@ -117,7 +200,10 @@ export async function tryHandleDesktopLock(ctx: RouteContext): Promise<boolean> 
       + ' [DESKTOP-FREE] megy, amint a tulaj felszabaditja.')
 
     logger.info({ owner, isExtension, estimateProvided: lock.estimateProvided }, 'desktop-lock: acquired')
-    json(res, { ok: true, lock, expiresAt: lockExpiresAt(lock) })
+    json(res, {
+      ok: true, lock, expiresAt: lockExpiresAt(lock),
+      ...(unknownKeys.length ? { unknownKeys } : {}),
+    })
     return true
   }
 
