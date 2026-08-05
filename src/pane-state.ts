@@ -1179,12 +1179,36 @@ const MACHINE_ORIGIN_PREFIXES = [
   /^<channel\s+source="plugin:/,
 ] as const
 
+// A long injection can lose its HEAD: the TUI drops the leading rows of an
+// overfull input box, so every anchored prefix above misses while unmistakable
+// wrapper text survives further in. Measured 2026-08-01 on a live MAIN pane
+// whose box began mid-sentence at "</scheduled-task> block is one of YOUR OWN
+// scheduled tasks." -- and the consequence was total: parkedScheduledTaskInput
+// read false so decideStuckInputAction fell through to 'hold' (no soft remedy),
+// AND parkedMachineOriginInput read false so the restart guard treated a
+// machine injection as "possibly a human draft" and deferred. Neither the clear
+// nor the restart could fire; the channel stayed mute until the box was cleared
+// by hand.
+//
+// These markers must stay BOILERPLATE a human does not reproduce verbatim --
+// wrapper syntax and the scheduler's own fixed sentences, never a topic phrase
+// like "SCHEDULED TASK NOTICE", which someone may legitimately type while
+// discussing the system. That distinction is why the list above is anchored and
+// this one is not; the human-draft fixtures in parked-machine-input.test.ts
+// guard it.
+const MACHINE_ORIGIN_TRUNCATED_MARKERS = [
+  /<\/scheduled-task>/,
+  /is one of YOUR OWN scheduled tasks/,
+  /fired by the local scheduler/,
+] as const
+
 // True when the live input box holds parked ('typing') text that is
 // identifiably machine-injected (see MACHINE_ORIGIN_PREFIXES). Pure.
 export function parkedMachineOriginInput(pane: string): boolean {
   const flat = parkedInputText(pane)
   if (flat == null) return false
   return MACHINE_ORIGIN_PREFIXES.some((rx) => rx.test(flat))
+    || MACHINE_ORIGIN_TRUNCATED_MARKERS.some((rx) => rx.test(flat))
 }
 
 // True when the parked text is a scheduled-task injection (the scheduler's
@@ -1197,7 +1221,51 @@ export function parkedMachineOriginInput(pane: string): boolean {
 export function parkedScheduledTaskInput(pane: string): boolean {
   const flat = parkedInputText(pane)
   if (flat == null) return false
-  return /^SCHEDULED TASK NOTICE/.test(flat) || /^<scheduled-task[\s>]/.test(flat)
+  if (/^SCHEDULED TASK NOTICE/.test(flat) || /^<scheduled-task[\s>]/.test(flat)) return true
+  // Head dropped by the TUI -- see MACHINE_ORIGIN_TRUNCATED_MARKERS. Clear-only
+  // is exactly as safe here as for an intact tick: the instruction is already
+  // corrupted by the truncation, and the next schedule fire re-delivers it.
+  return MACHINE_ORIGIN_TRUNCATED_MARKERS.some((rx) => rx.test(flat))
+}
+
+// Keystrokes that actually EMPTY a parked input box.
+//
+// Measured 2026-08-01 on a wedged MAIN pane holding 489 characters over 7
+// visible rows. The previous cascade (`C-u` x3, then `C-a` + `C-k`, then `C-u`
+// x3) removed nothing at all across repeated runs, and the cursor position is
+// why: a literal string sent with tmux send-keys lands in FRONT of the parked
+// text, so the cursor sits at OFFSET 0.
+//
+//   before      len=489  "the user if it looks wrong. The wrapper marks prov"
+//   +MARKER123  len=498  "MARKER123the user if it looks wrong. The wrapper m"
+//   after C-u   len=489  "the user if it looks wrong. The wrapper marks prov"
+//
+// `C-u` kills BACKWARDS to the start of the line. With nothing before the
+// cursor it is a no-op every round -- it only ever removed a marker typed in
+// front of it. The lone `C-a` + `C-k` escalation clears exactly ONE line, so
+// with PARKED_CLEAR_MAX = 3 the whole cascade could strip at most one line off
+// a multi-line box and then failed its own emptiness check.
+//
+// Forward deletion is what drains it: `C-k` kills to end of line and `Delete`
+// eats the newline joining the next one. The live box needed 20 such rounds, so
+// the budget scales with the visible row count (the buffer is usually longer
+// than the box shows) and is clamped at both ends: a floor for a single-row box
+// whose buffer still wraps, and a ceiling so a bogus row count cannot turn into
+// an unbounded keystroke storm against a live session.
+const PARKED_CLEAR_ROUNDS_PER_ROW = 4
+const PARKED_CLEAR_ROUNDS_MIN = 12
+const PARKED_CLEAR_ROUNDS_MAX = 240
+
+export function parkedClearSequence(rowCount: number): string[] {
+  const rounds = Math.min(
+    PARKED_CLEAR_ROUNDS_MAX,
+    Math.max(PARKED_CLEAR_ROUNDS_MIN, Math.max(0, rowCount) * PARKED_CLEAR_ROUNDS_PER_ROW),
+  )
+  // Home first: the first kill must start at the beginning even when the cursor
+  // was left mid-buffer by an earlier attempt.
+  const keys = ['C-a']
+  for (let i = 0; i < rounds; i++) keys.push('C-k', 'Delete')
+  return keys
 }
 
 // How many VISUAL rows the live input box content occupies, ignoring the
