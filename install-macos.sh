@@ -911,26 +911,76 @@ if ! ollama list 2>/dev/null | grep -q "nomic-embed-text"; then
 fi
 echo -e "$(_t macos.ollama_done)"
 
-# Whisper (speech-to-text for video transcription)
+# Whisper (speech-to-text for video transcription) -- OPTIONAL.
+#
+# This block used to end the install. On an Intel Mac the operator saw only
+# "Varatlan hiba a(z) 'configuration' lepesben (sor: 982)" -- 982 being the
+# CLOSING `fi`, where nothing runs. Three defects, all fixed here:
+#
+#  1. macOS ships bash 3.2, where a command that fails inside a `{ ... }` group
+#     on the RHS of `||` STILL reaches the ERR trap, and $LINENO blames the
+#     enclosing `fi`. Same trap-vs-`fi` class as the `claude --print` probe and
+#     the service-auth probe above; same cure: call the work through a function
+#     in an `&& rc=0 || rc=$?` list, which keeps the failure out of the trap and
+#     preserves the status. An OPTIONAL dependency must never abort the install.
+#  2. `2>/dev/null` on every installer hid the reason. The real message here was
+#     "pipx needs uv>=0.9.17, but ... reports 0.5.9" -- actionable, and never
+#     shown. Let stderr through; it is captured in $INSTALL_ERRLOG too.
+#  3. mlx-whisper is MLX-based, i.e. Apple Silicon ONLY. On Intel it can never
+#     install, so the first attempt was guaranteed to fail there. Gate it on the
+#     architecture and fall back to openai-whisper, which runs everywhere.
+#
+# The old fallback also printed "openai-whisper telepítve" unconditionally --
+# after a `brew install` whose status it had just discarded. Each success line
+# now follows the command that actually succeeded.
 echo ""
 echo -e "$(_t macos.whisper_installing)"
-if command -v mlx_whisper &>/dev/null || [ -f "$HOME/.local/bin/mlx_whisper" ]; then
-  echo -e "  ${GREEN}✓${NC} $(_t macos.mlx_whisper_installed)"
-elif command -v whisper &>/dev/null; then
-  echo -e "  ${GREEN}✓${NC} $(_t macos.whisper_installed)"
-  echo -e "  ${DIM}  Tipp: pipx install mlx-whisper gyorsabb Apple Silicon-on${NC}"
-else
-  if command -v pipx &>/dev/null; then
-    pipx install mlx-whisper 2>/dev/null && echo -e "  ${GREEN}✓${NC} mlx-whisper telepítve" || {
-      brew install openai-whisper 2>/dev/null
-      echo -e "  ${GREEN}✓${NC} openai-whisper telepítve"
-    }
-  else
-    brew install pipx 2>/dev/null && pipx install mlx-whisper 2>/dev/null && echo -e "  ${GREEN}✓${NC} mlx-whisper telepítve" || {
-      brew install openai-whisper 2>/dev/null
-      echo -e "  ${GREEN}✓${NC} openai-whisper telepítve"
-    }
+
+install_whisper() {
+  if command -v mlx_whisper &>/dev/null || [ -f "$HOME/.local/bin/mlx_whisper" ]; then
+    echo -e "  ${GREEN}✓${NC} $(_t macos.mlx_whisper_installed)"
+    return 0
   fi
+
+  if command -v whisper &>/dev/null; then
+    echo -e "  ${GREEN}✓${NC} $(_t macos.whisper_installed)"
+    return 0
+  fi
+
+  if ! command -v pipx &>/dev/null; then
+    command -v brew &>/dev/null && brew install pipx
+  fi
+
+  if [ "$(uname -m)" = "arm64" ] && command -v pipx &>/dev/null; then
+    if pipx install mlx-whisper; then
+      echo -e "  ${GREEN}✓${NC} mlx-whisper telepítve"
+      return 0
+    fi
+  fi
+
+  if command -v pipx &>/dev/null; then
+    if pipx install openai-whisper; then
+      echo -e "  ${GREEN}✓${NC} openai-whisper telepítve (pipx)"
+      return 0
+    fi
+  fi
+
+  if command -v brew &>/dev/null; then
+    if brew install openai-whisper; then
+      echo -e "  ${GREEN}✓${NC} openai-whisper telepítve (brew)"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+WHISPER_RC=0
+install_whisper || WHISPER_RC=$?
+
+if [ "$WHISPER_RC" -ne 0 ]; then
+  warn "$(_t macos.whisper_skipped)"
+  echo -e "    ${DIM}$(_t macos.whisper_skipped_hint)${NC}"
 fi
 
 # ffmpeg (audio/video processing)
