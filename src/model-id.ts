@@ -31,6 +31,28 @@ export function isValidModelId(model: unknown): model is string {
   return typeof model === 'string' && MODEL_ID_RE.test(model)
 }
 
+/**
+ * Every effort level the Claude Code CLI accepts, in ascending order (claude.exe 2.1.220, `vO`).
+ *
+ * NOT the same list settings.json accepts. The settings schema is NARROWER --
+ * `effortLevel: enum(["low","medium","high","xhigh"]).catch(void 0)` -- so `"max"` written into a
+ * settings file is dropped SILENTLY (no error, no log) and the default `"high"` takes over. Measured
+ * 2026-08-06 (card cb42ad6d): seven settings files said "max" while every agent actually ran at high.
+ * `"max"` only reaches the model through the `CLAUDE_CODE_EFFORT_LEVEL` env var or the `--effort`
+ * flag, which parse against THIS list and outrank settings.
+ */
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+
+export type EffortLevel = (typeof EFFORT_LEVELS)[number]
+
+/**
+ * The effort level every Claude agent in the fleet launches with (Balázs, 2026-08-06: "mindenkinél
+ * max"). Set as an env var at the launch sites, never in settings.json -- see {@link EFFORT_LEVELS}
+ * for why the file is the wrong lever. A model without the `max_effort` capability downgrades itself
+ * to high, so this is safe for every Claude model.
+ */
+export const FLEET_EFFORT_LEVEL: EffortLevel = 'max'
+
 /** Thrown when a caller tries to persist a malformed id. Routes map it to 400. */
 export class InvalidModelIdError extends Error {
   constructor(model: unknown) {

@@ -68,6 +68,7 @@ import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureAutonomy
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
+import { FLEET_EFFORT_LEVEL } from '../model-id.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
@@ -2103,6 +2104,24 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // through. Agents launch from a deliberately pinned install, so the updater
     // must never move it out from under a live process.
     const autoUpdaterEnv = 'export DISABLE_AUTOUPDATER=1 && '
+    // Effort level. Claude Code's settings.json schema validates `effortLevel`
+    // as enum(["low","medium","high","xhigh"]).catch(void 0) -- "max" is NOT in
+    // that list, and the .catch SILENTLY drops an unknown value (no error, no
+    // log), so the default "high" takes over. Measured 2026-08-06: every agent
+    // ran at high while seven settings files claimed "max" -- CLAUDE_EFFORT=high
+    // in each launched subprocess and effort:"high" on every transcript message
+    // since 07-28. Writing the file was never the switch. "max" IS a valid
+    // level, but only through the env var / --effort flag, which go through a
+    // wider parser (the CLI's own list includes "max") and outrank every other
+    // source. Claude models lacking the max_effort capability downgrade
+    // themselves to high, so this is safe to set unconditionally for Claude
+    // launches; non-Claude models (Ollama/DeepSeek/OpenRouter) never see it.
+    //
+    // Trade-off, deliberate: env pins the level for the whole session -- an
+    // in-session `/effort` then reports "Not applied: CLAUDE_CODE_EFFORT_LEVEL
+    // overrides effort this session". That is the intent (a fleet-wide floor set
+    // by the operator), not a side effect.
+    const effortEnv = isClaude ? `export CLAUDE_CODE_EFFORT_LEVEL=${shSingleQuote(FLEET_EFFORT_LEVEL)} && ` : ''
     // shSingleQuote(model) (card b7fa5281): the model is POSIX single-quote ESCAPED, which both keeps
     // values like `claude-opus-4-8[1m]` (1M-context suffix) from being glob-expanded AND makes a `'`
     // in the value inert rather than a quote-break -> command injection. Same escape at the three
@@ -2117,7 +2136,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // buildLaunchCmd(launchCwd): only the launch CWD varies between the normal start and the
     // EPERM /tmp fallback below; every env export is an absolute path and stays pointed at the
     // real agent dir.
-    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
+    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${effortEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
     // silently started it as the router's user -- measured 2026-08-19: the start
