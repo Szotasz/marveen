@@ -27,7 +27,7 @@ import {
   SCHEDULED_TASK_PREAMBLE,
   wrapScheduledTask,
 } from '../prompt-safety.js'
-import { cronPrevOccurrence, effectiveCronTz } from './cron.js'
+import { computeCatchUpWindow, cronPrevOccurrence, effectiveCronTz } from './cron.js'
 import {
   listScheduledTasks,
   SCHEDULED_TASKS_DIR,
@@ -1034,6 +1034,12 @@ export function startScheduleRunner(): NodeJS.Timeout {
   // Reload the persisted last-run times so a restart inside a task's catch-up
   // window does not re-fire an already-run task.
   loadScheduleLastRun()
+  // Wall-clock time of the previous tick, used to detect a host-suspend gap
+  // (see computeCatchUpWindow in cron.ts). In-memory ON PURPOSE: a process
+  // restart is covered by the persisted tick stamp below, and the case this
+  // exists for -- a suspended host -- keeps the process, and this variable,
+  // alive.
+  let lastTickAt: number | null = null
 
   // Surface the effective cron timezone at startup. A silent UTC fallback (no
   // SCHEDULER_TZ/TZ in the env) shifts every fixed-time cron off its intended
@@ -1101,10 +1107,33 @@ export function startScheduleRunner(): NodeJS.Timeout {
     try {
     const tasks = listScheduledTasks()
     const now = Date.now()
+    // Wall-clock distance from the previous tick, decided on the tick's START
+    // time and stamped immediately: the window then means "everything since we
+    // last looked", however long this tick itself takes.
+    const gap = computeCatchUpWindow(now, lastTickAt)
+    lastTickAt = now
+    const catchUp = gap.catchUpMs
     // Scan the real interval elapsed since the previous tick (30 min on the
     // first tick), not a fixed 60s window -- a late/dropped tick must not let a
     // sparse daily cron's single occurrence slip through a gap unscanned (#621).
-    const fromMs = lastCheckMs
+    //
+    // QUIET-BAND CLAMP: that contiguity is right for a dropped tick and wrong
+    // for a host that suspends overnight and wakes at 03:00 -- scanning back to
+    // the last tick would replay every evening occurrence still inside its
+    // staleness budget (24h for command-type, unbounded for a custom
+    // catchUpMaxAgeMinutes) into a sleeping operator's chat, and record/alert
+    // the rest as missed. computeCatchUpWindow returns a band-safe window (collapsed to
+    // the normal one when the resume itself lands in the band), so on a genuine
+    // in-process gap tick the scan starts no earlier than that boundary. The
+    // COLD-START tick is deliberately NOT clamped: real process downtime is
+    // owned by the persisted lastCheckMs (computeCatchUpStart), which is capped
+    // separately and is what the downtime report reads.
+    const fromMs = (gap.gapResume || gap.quietSkipped)
+      ? Math.max(lastCheckMs, now - catchUp)
+      : lastCheckMs
+    // Counted for the end-of-tick summary log, so a gap-resume is auditable:
+    // how long the host was away, and what the resume tick actually pulled in.
+    let catchUpFires = 0
     // Catch-up bookkeeping for this tick's one-line report (see below). Empty
     // on every normal tick, so the operator only ever hears about real gaps.
     const caughtUpThisTick: Array<{ task: string; ageMs: number }> = []
@@ -1195,11 +1224,14 @@ export function startScheduleRunner(): NodeJS.Timeout {
       const occurrenceMs = cronPrevOccurrence(task.schedule, fromMs, now)
       if (occurrenceMs == null) continue
 
-      // Prevent double-firing across a restart: skip if the task already ran at
-      // or after the start of this scan window (its occurrence is already
-      // recorded, so re-scanning the catch-up window must not fire it again).
+      // Prevent double-firing across a restart: skip only if the task already
+      // ran at or after THIS occurrence. Comparing against the window START
+      // (fromMs) instead drops a genuinely new occurrence on any long-gap tick:
+      // fromMs is the previous tick's timestamp, so a task that fired on that
+      // tick has lastRun === fromMs, and a slot that then came due while the
+      // host was suspended is skipped as if it had already run.
       const lastRun = scheduleLastRun.get(task.name) || 0
-      if (lastRun >= fromMs) continue
+      if (lastRun >= occurrenceMs) continue
 
       // How late is this occurrence, and is it still worth running? An
       // occurrence the owning tick never scanned (process down, dropped tick)
@@ -1233,6 +1265,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         runCommandTask(task, now)
         scheduleLastRun.set(task.name, now)
         persistScheduleLastRun()
+        if (lateCatchUpMs != null) catchUpFires++
         continue
       }
 
@@ -1264,6 +1297,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         // the retry handler -- don't re-queue or double-fire.
         if (pendingKeys.has(key)) continue
         const result = await attemptFireTask(task, agentName, now, cronPc.prefix, lateCatchUpMs)
+        if (lateCatchUpMs != null && result === 'fired') catchUpFires++
         if (result === 'starting') {
           // Agent was auto-started this tick. ALWAYS enqueue the retry that
           // delivers the prompt once the session is ready -- skipIfBusy must
@@ -1308,6 +1342,27 @@ export function startScheduleRunner(): NodeJS.Timeout {
           insertPendingTaskRetryIfNew(task.name, agentName, now, 'first-run')
         }
       }
+    }
+
+    // Gap-resume summary. Logged AFTER the loops so `catchUpFires` is real, and
+    // only on a tick that actually saw a gap -- an ordinary tick stays silent.
+    // Without these lines a host suspend leaves no trace at all in the log: the
+    // operator sees either a burst of late fires or a pointed absence of them,
+    // with nothing to explain which one was the deliberate outcome.
+    if (gap.gapResume) {
+      logger.info(
+        {
+          gapMinutes: Math.round(gap.gapMs / 60000),
+          catchUpMinutes: Math.round(catchUp / 60000),
+          catchUpFires,
+        },
+        'Schedule tick gap detected (host suspend?) -- catch-up window clamped to the quiet-band edge',
+      )
+    } else if (gap.quietSkipped) {
+      logger.info(
+        { gapMinutes: Math.round(gap.gapMs / 60000) },
+        'Schedule tick gap detected inside the quiet band -- no catch-up (night slots stay missed)',
+      )
     }
 
     // Tell the operator, in one line, what the gap cost. Only fires when this
