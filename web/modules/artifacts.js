@@ -140,10 +140,12 @@ function renderPreview(container, artifact) {
   const { kind, content, mime, title, id } = artifact
 
   if (kind === 'html') {
-    // Sandboxed iframe prevents script execution; srcdoc keeps content local
-    const csp = "default-src 'none'; style-src 'unsafe-inline'"
+    // allow-scripts: enables inline JS (e.g. tab switching, form logic).
+    // Omitting allow-same-origin keeps the iframe at null origin so scripts
+    // cannot reach parent cookies, localStorage, or the dashboard session.
+    const csp = "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
     const iframe = document.createElement('iframe')
-    iframe.setAttribute('sandbox', 'allow-same-origin')
+    iframe.setAttribute('sandbox', 'allow-scripts')
     iframe.setAttribute('csp', csp)
     iframe.style.cssText = 'width:100%;height:400px;border:1px solid var(--border);border-radius:4px'
     iframe.srcdoc = content
