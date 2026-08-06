@@ -100,6 +100,112 @@ expect_classify "telegram detector ignores a failed slack row" telegram ok \
 expect_classify "disconnected row fires unlock" telegram failed \
   '     plugin:telegram:telegram · ✘ disconnected'
 
+# ==============================================================================
+# MCPDUP806: the input-line probe bracketing the unlock round.
+#
+# Regression origin (2026-08-06, fresh 0.3.9 install): "/mcp" typed via
+# send-keys only opens the MCP manager from an EMPTY idle prompt. Two boots in
+# a row typed it into a non-idle pane; each round's text parked in the input
+# box, the second appended to the first ("/mcp/mcp"), the combined text was
+# submitted as a PROMPT -- and while parked, the router read the session as
+# busy and stopped delivering inter-agent messages to it.
+#
+# The probe delegates to the compiled dist/pane-state.js (the instruments the
+# dashboard recovery stack trusts). dist/ is a build product and absent from a
+# fresh clone, so the suite points CHANNELS_PANE_STATE_JS at a real build when
+# one exists; without one the probe paths are SKIPPED loudly (the unverifiable
+# path and the residue classifier below run regardless -- they are node-free).
+# ==============================================================================
+
+# $1 = label, $2 = expected first line, $3 = pane text (piped as stdin)
+expect_probe() {
+  local got
+  got="$(printf '%s' "$3" | bash "$CHANNELS" --probe-input-state 2>/dev/null)"
+  if [ "$got" = "$2" ]; then pass "$1"; else fail "$1" "$2" "$got"; fi
+}
+
+BOX_SEP='──────────────────────────────'
+PANE_STATE_JS="${CHANNELS_PANE_STATE_JS:-$INSTALL_DIR/dist/pane-state.js}"
+
+if command -v node >/dev/null 2>&1 && [ -f "$PANE_STATE_JS" ]; then
+  export CHANNELS_PANE_STATE_JS="$PANE_STATE_JS"
+
+  PROBE_IDLE="scrollback text
+$BOX_SEP
+ ❯
+$BOX_SEP
+  ? for shortcuts"
+  expect_probe "probe: empty idle prompt -> idle" idle "$PROBE_IDLE"
+
+  PROBE_PARKED="scrollback text
+$BOX_SEP
+ ❯ /mcp/mcp
+$BOX_SEP
+  ? for shortcuts"
+  expect_probe "probe: parked /mcp/mcp -> parked (the incident shape)" \
+    "parked:/mcp/mcp" "$PROBE_PARKED"
+
+  PROBE_PARKED_MSG="scrollback text
+$BOX_SEP
+ ❯ deploy the thing to production
+$BOX_SEP
+  ? for shortcuts"
+  expect_probe "probe: parked human/channel text -> parked" \
+    "parked:deploy the thing to production" "$PROBE_PARKED_MSG"
+
+  PROBE_BUSY="scrollback text
+✳ Deliberating… (12s · 4.2k tokens · esc to interrupt)
+$BOX_SEP
+ ❯
+$BOX_SEP
+  ? for shortcuts"
+  expect_probe "probe: busy turn -> busy (never type into it)" busy "$PROBE_BUSY"
+
+  # Claude Code >=2.1.202 renders autocomplete/placeholder hints DIM (SGR 2)
+  # inside an EMPTY box; a plain capture shows them as parked text. The probe
+  # reads the coloured capture so the ghost strips away and the box reads idle.
+  PROBE_GHOST="scrollback text
+$BOX_SEP
+ ❯ $(printf '\033[2m')Try \"refactor foo\"$(printf '\033[0m')
+$BOX_SEP
+  ? for shortcuts"
+  expect_probe "probe: dim ghost suggestion in empty box -> idle" idle "$PROBE_GHOST"
+
+  # Welcome screen without the idle footer: nothing confirms a live empty box,
+  # so the probe must refuse to certify it (unknown, not idle).
+  PROBE_WELCOME=" ▐▛███▜▌   Claude Code v2.1.x
+  Try \"help\" to get started"
+  expect_probe "probe: footer-less welcome screen -> not idle" unknown "$PROBE_WELCOME"
+else
+  echo "  SKIP: probe fixtures (node or a built pane-state.js not available;"
+  echo "        set CHANNELS_PANE_STATE_JS to a real build to run them)"
+fi
+
+# The fail-closed arm needs no build: without an instrument the probe must say
+# so, never certify emptiness it did not measure.
+_got="$(printf 'anything' | CHANNELS_PANE_STATE_JS=/nonexistent/pane-state.js bash "$CHANNELS" --probe-input-state 2>/dev/null)"
+if [ "$_got" = "unverifiable" ]; then
+  pass "probe: missing pane-state.js -> unverifiable (fail closed)"
+else
+  fail "probe: missing pane-state.js -> unverifiable (fail closed)" "unverifiable" "$_got"
+fi
+
+# --- residue classifier: cleanup may only ever clear OUR OWN probe text -------
+# $1 = label, $2 = expected (own|foreign), $3 = residue text
+expect_residue() {
+  local got
+  got="$(printf '%s' "$3" | bash "$CHANNELS" --classify-unlock-residue 2>/dev/null)"
+  if [ "$got" = "$2" ]; then pass "$1"; else fail "$1" "$2" "$got"; fi
+}
+
+expect_residue "residue: single /mcp is ours" own '/mcp'
+expect_residue "residue: /mcp/mcp (the incident shape) is ours" own '/mcp/mcp'
+expect_residue "residue: spaced /mcp repeats are ours" own '  /mcp /mcp  '
+expect_residue "residue: /mcp plus other text is NOT ours" foreign '/mcp deploy something'
+expect_residue "residue: a delivered channel block is NOT ours" foreign \
+  '<channel source="plugin:telegram" chat_id="123">hello</channel>'
+expect_residue "residue: empty string is NOT ours (nothing to clear)" foreign ''
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

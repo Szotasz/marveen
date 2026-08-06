@@ -173,6 +173,76 @@ if [ "${1:-}" = "--classify-mcp-pane" ]; then
   exit 0
 fi
 
+# --- input-line probe for the /mcp unlock (MCPDUP806) -------------------------
+# Classifies a COLOURED capture (`tmux capture-pane -e -p`) of the main session.
+# Typing "/mcp" only opens the MCP manager when the pane sits at an EMPTY idle
+# prompt; into any other state the literal text lands in the input box instead.
+# On a fresh 0.3.9 install two consecutive boots did exactly that: each left a
+# parked "/mcp", the second appended to the first ("/mcp/mcp"), the combined
+# text was submitted as a PROMPT, and while parked it also made the message
+# router read the session as busy -- muting inter-agent delivery.
+#
+# Delegates to the compiled pane-state.js instruments (stripGhostSuggestion /
+# idleConsideringDimGhost / detectPaneState / parkedInputText) -- the same code
+# the dashboard recovery stack trusts -- rather than re-deriving TUI parsing in
+# shell. The coloured capture matters: Claude Code renders ghost/placeholder
+# hints dim (SGR 2) inside an EMPTY box, and a plain capture cannot tell them
+# from genuinely parked text.
+#
+# stdout, exactly one line:
+#   idle           -- input box live and provably empty; safe to type
+#   parked:<text>  -- text parked in the box (collapsed, truncated for logs)
+#   busy|unknown|… -- detectPaneState verdict; not safe to type
+#   unverifiable   -- node or dist/pane-state.js unavailable; not safe to type
+probe_pane_input_state() {
+  local _node _pane_js
+  _node="$(command -v node || true)"
+  # Test seam: the suite points this at a real build outside the checkout
+  # (dist/ is a build product, absent from a fresh clone). Runtime installs
+  # always carry dist/ -- the dashboard itself runs from it.
+  _pane_js="${CHANNELS_PANE_STATE_JS:-$INSTALL_DIR/dist/pane-state.js}"
+  if [ -z "$_node" ] || [ ! -f "$_pane_js" ]; then
+    echo "unverifiable"
+    return 0
+  fi
+  "$_node" -e '
+    const ps = require(process.argv[1])
+    let raw = ""
+    process.stdin.on("data", (d) => { raw += d })
+    process.stdin.on("end", () => {
+      const plain = ps.stripAllAnsi(raw)
+      const view = ps.stripGhostSuggestion(raw)
+      if (ps.idleConsideringDimGhost(plain, view)) { console.log("idle"); return }
+      const state = ps.detectPaneState(plain)
+      if (state === "typing") {
+        const parked = ps.parkedInputText(view) || ps.parkedInputText(plain) || ""
+        console.log("parked:" + parked.replace(/\s+/g, " ").slice(0, 120))
+        return
+      }
+      console.log(state)
+    })
+  ' "$_pane_js" 2>/dev/null || echo "unverifiable"
+}
+
+# True (exit 0) when $1 is nothing but our own unlock-probe residue -- one or
+# more "/mcp" fragments and whitespace. The post-unlock cleanup may only ever
+# clear text WE parked; anything else (a human draft, a delivered channel
+# message) is left alone for the stuck-input recovery stack.
+is_own_probe_residue() {
+  printf '%s' "$1" | grep -Eq '^[[:space:]]*(/mcp[[:space:]]*)+$'
+}
+
+# Test seams: drive the two helpers from stdin with no tmux / store / session.
+if [ "${1:-}" = "--probe-input-state" ]; then
+  probe_pane_input_state
+  exit 0
+fi
+
+if [ "${1:-}" = "--classify-unlock-residue" ]; then
+  if is_own_probe_residue "$(cat)"; then echo "own"; else echo "foreign"; fi
+  exit 0
+fi
+
 # Self-healing guard: ensure PLUGIN_ID is enabled in the PROJECT settings.json
 # before launch. A PR review-reset or branch-switch that reverts
 # .claude/settings.json can silently drop the entry and disable the channel
@@ -698,8 +768,24 @@ date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
 #      then `Up`+`Enter`+`Enter` would land on "Disable" in the submenu and
 #      disable the plugin instead of reconnecting it (Szabi msg 427).
 #
-# We sequence both checks, log the decision, and fire only when both agree.
+# We sequence the checks, log the decision, and fire only when all agree.
 # The subshell is detached so the main script keeps moving to the wait-loop.
+#
+# MCPDUP806 hardening (2026-08-06, fresh-0.3.9 incident): the round is
+# bracketed by input-line proofs.
+#   - PRE-FLIGHT: "/mcp" is only typed into a PROVABLY empty idle prompt.
+#     Into any other pane state the literal text parks in the input box, the
+#     next boot's probe appends to it ("/mcp/mcp"), the combined text gets
+#     submitted as a prompt, and while parked it reads as busy to the message
+#     router -- muting inter-agent delivery to the main session.
+#   - END-OF-ROUND: Escape-until-idle (a single Escape from the per-plugin
+#     submenu only pops one level -- the list stays open), then, if our own
+#     "/mcp" residue is still parked, one Ctrl-C (the measured clear for a
+#     parked line; C-u and Escape verifiably do not empty it) and a final
+#     probe. The log records the PROVEN end state, never the intent.
+#   - EFFECT: after a fired unlock the bun-poller check re-runs and the log
+#     records whether the plugin actually came up -- a green "firing unlock"
+#     line alone said nothing about whether the fix landed.
 (
   sleep 15
   CLAUDE_PID="$($TMUX list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)"
@@ -715,7 +801,36 @@ date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
     exit 0
   fi
 
-  # Check 2: TUI confirmation that the plugin's row is in a failed state. The
+  # Check 2 (MCPDUP806 pre-flight): the input line must be PROVABLY empty
+  # before we type. Retried because a slow cold-start may not have rendered
+  # the idle footer yet at +15s; when the pane never confirms idle (busy turn,
+  # parked text, dialog, or no node/dist to measure with) we do NOT type --
+  # the dashboard channel-monitor's recovery ladder owns the pane from there.
+  PROBE_STATE="unverifiable"
+  for _try in 1 2 3; do
+    PROBE_STATE="$($TMUX capture-pane -t "$SESSION" -e -p 2>/dev/null | probe_pane_input_state)"
+    [ "$PROBE_STATE" = "idle" ] && break
+    case "$PROBE_STATE" in
+      parked:*)
+        # Residue of OUR OWN earlier probe (a previous boot's round left "/mcp"
+        # parked -- the incident state). It is ours, so clear it with the
+        # measured keystroke and let the retry re-prove emptiness. Any other
+        # parked text is never touched here; the stuck-input recovery stack
+        # owns it.
+        if is_own_probe_residue "${PROBE_STATE#parked:}"; then
+          $TMUX send-keys -t "$SESSION" C-c
+          sleep 1
+        fi
+        ;;
+    esac
+    sleep 10
+  done
+  if [ "$PROBE_STATE" != "idle" ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh post-init: unlock probe SKIPPED -- input line not confirmed empty (state: $PROBE_STATE); typing /mcp would park in the box (MCPDUP806), deferring to the dashboard channel-monitor" >> "$INSTALL_DIR/store/channels-failures.log"
+    exit 0
+  fi
+
+  # Check 3: TUI confirmation that the plugin's row is in a failed state. The
   # /mcp view also shows "(disabled)" markers; we only fire on failed, never on
   # disabled (Enable-only submenu has no Reconnect, the Up+Enter+Enter sequence
   # would land somewhere unsafe). See classify_mcp_plugin_row above for why the
@@ -727,6 +842,7 @@ date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
   PANE="$($TMUX capture-pane -t "$SESSION" -p 2>/dev/null || true)"
 
   classify_mcp_plugin_row "$PANE"
+  UNLOCK_FIRED=0
   case "$MCP_PLUGIN_STATE" in
     failed)
       echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh post-init: $CHANNEL_PROVIDER plugin row failed, firing /mcp Up+Enter+Enter unlock -- row: $MCP_PLUGIN_ROW" >> "$INSTALL_DIR/store/channels-failures.log"
@@ -736,7 +852,7 @@ date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
       sleep 2
       $TMUX send-keys -t "$SESSION" Enter
       sleep 4
-      $TMUX send-keys -t "$SESSION" Escape
+      UNLOCK_FIRED=1
       ;;
     *)
       # Plugin is connected/enabled/not-listed, or we couldn't capture. Bail
@@ -745,9 +861,57 @@ date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
       # detect down and run its own recovery ladder; we don't second-guess.
       # Log the row we DID see -- a stale matcher is invisible without it.
       echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh post-init: no failed plugin row in /mcp pane, skipping unlock (bun child absent but plugin not failed - check manually) -- looked for '$PLUGIN_PANE_ID', row: ${MCP_PLUGIN_ROW:-<none>}" >> "$INSTALL_DIR/store/channels-failures.log"
-      $TMUX send-keys -t "$SESSION" Escape
       ;;
   esac
+
+  # End-of-round (MCPDUP806): leave the input line PROVABLY empty. Escape
+  # dismisses the /mcp modal levels but never clears parked text, so after the
+  # bounded Escape loop any leftover of OUR OWN probe ("/mcp" fragments only --
+  # never anything else, a human draft or a delivered message belongs to the
+  # stuck-input recovery stack) is cleared with a single Ctrl-C and re-proven.
+  END_STATE="unknown"
+  for _i in 1 2 3 4 5; do
+    $TMUX send-keys -t "$SESSION" Escape
+    sleep 1
+    END_STATE="$($TMUX capture-pane -t "$SESSION" -e -p 2>/dev/null | probe_pane_input_state)"
+    [ "$END_STATE" = "idle" ] && break
+  done
+  case "$END_STATE" in
+    parked:*)
+      if is_own_probe_residue "${END_STATE#parked:}"; then
+        $TMUX send-keys -t "$SESSION" C-c
+        sleep 1
+        END_STATE="$($TMUX capture-pane -t "$SESSION" -e -p 2>/dev/null | probe_pane_input_state)"
+      fi
+      ;;
+  esac
+  if [ "$END_STATE" = "idle" ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh post-init: unlock round finished, input line verified empty" >> "$INSTALL_DIR/store/channels-failures.log"
+  else
+    echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh post-init: input line NOT verified empty after unlock round (state: $END_STATE) -- not retrying (MCPDUP806), check manually: tmux attach -t $SESSION" >> "$INSTALL_DIR/store/channels-failures.log"
+  fi
+
+  # Effect (MCPDUP806): a fired unlock is only a keystroke sequence; whether it
+  # WORKED shows up as the plugin's bun poller appearing under the claude
+  # process. Poll for up to ~60s (a reconnect can take tens of seconds to
+  # spawn the poller -- an instant read would log a false STILL ABSENT), then
+  # record the measured outcome so the failure log carries the effect, not
+  # just the attempt.
+  if [ "$UNLOCK_FIRED" = "1" ]; then
+    BUN_AFTER=""
+    for _w in 1 2 3 4 5 6 7 8 9 10 11 12; do
+      sleep 5
+      if [ -n "$CLAUDE_PID" ]; then
+        BUN_AFTER="$(/usr/bin/pgrep -P "$CLAUDE_PID" bun 2>/dev/null | head -1)"
+      fi
+      [ -n "$BUN_AFTER" ] && break
+    done
+    if [ -n "$BUN_AFTER" ]; then
+      echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh post-init: unlock effect: plugin bun poller RUNNING (pid $BUN_AFTER)" >> "$INSTALL_DIR/store/channels-failures.log"
+    else
+      echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh post-init: unlock effect: plugin bun poller STILL ABSENT 60s after the Up+Enter+Enter unlock -- the unlock did not take effect" >> "$INSTALL_DIR/store/channels-failures.log"
+    fi
+  fi
 ) &
 
 # Bot menu setup (Telegram only; Slack uses App Manifest)
