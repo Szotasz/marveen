@@ -13,6 +13,7 @@ import {
   parseKeyscanEd25519,
   resolveHostKey,
   HOST_KEY_PUB_CANDIDATES,
+  dashboardTokenDecision,
   type ParsedKey,
 } from '../remote-enroll-core.js'
 
@@ -401,5 +402,37 @@ describe('resolveHostKey', () => {
   it('ships macOS locations among the default candidates', () => {
     expect(HOST_KEY_PUB_CANDIDATES).toContain('/etc/ssh/ssh_host_ed25519_key.pub')
     expect(HOST_KEY_PUB_CANDIDATES).toContain('/private/etc/ssh/ssh_host_ed25519_key.pub')
+  })
+})
+
+describe('dashboardTokenDecision (INSTNODE806)', () => {
+  it('includes the token when requested and present', () => {
+    expect(dashboardTokenDecision(true, 'tok_abc')).toEqual({ include: true, token: 'tok_abc' })
+  })
+
+  it('deliberate token-free bundle: --no-dashboard-token skips the token, no failure', () => {
+    expect(dashboardTokenDecision(false, null)).toEqual({ include: false })
+    // Even if a token exists, opting out must NOT include it.
+    expect(dashboardTokenDecision(false, 'tok_abc')).toEqual({ include: false })
+  })
+
+  it('FAILS HARD when a token was requested but is missing -- no silent token-free bundle', () => {
+    const d = dashboardTokenDecision(true, null)
+    // It MUST be the failure shape -- not a degrade to include:false (a silent
+    // token-free bundle) and not an include:true with a null token. Asserting
+    // `'ok' in d` (not just a falsy d.ok) is what catches those regressions.
+    expect('ok' in d).toBe(true)
+    expect((d as { ok: boolean }).ok).toBe(false)
+    const reason = (d as { reason: string }).reason
+    // The message must name the real cause (dashboard not running / no token)
+    // and the deliberate escape hatch, not a generic error.
+    expect(reason).toMatch(/dashboard/i)
+    expect(reason).toMatch(/--no-dashboard-token/)
+  })
+
+  it('treats an empty-string token as missing (fails hard, never ships an empty token)', () => {
+    const d = dashboardTokenDecision(true, '')
+    expect('ok' in d).toBe(true)
+    expect((d as { ok: boolean }).ok).toBe(false)
   })
 })
