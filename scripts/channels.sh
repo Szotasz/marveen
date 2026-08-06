@@ -125,8 +125,19 @@ resolve_main_model() {
     printf '%s' "$MAIN_AGENT_MODEL"
     return 0
   fi
-  if [ -f "$INSTALL_DIR/.claude/settings.json" ] && command -v jq >/dev/null 2>&1; then
-    jq -r '.model // empty' "$INSTALL_DIR/.claude/settings.json" 2>/dev/null
+  if [ -f "$INSTALL_DIR/.claude/settings.json" ]; then
+    # python3 fallback: jq is not guaranteed on the host (stock WSL/minimal
+    # Debian images ship without it). Behind a `command -v jq` guard alone the
+    # settings.json read silently resolves EMPTY on such a host: MODEL_FLAG is
+    # omitted, the main agent launches on the CLI's built-in default, and every
+    # status surface keeps naming the configured model -- a silent model drift
+    # with no error anywhere. python3 is already a hard dependency of the hooks,
+    # so it is always available as the fallback reader.
+    if command -v jq >/dev/null 2>&1; then
+      jq -r '.model // empty' "$INSTALL_DIR/.claude/settings.json" 2>/dev/null
+    else
+      python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("model") or "")' "$INSTALL_DIR/.claude/settings.json" 2>/dev/null
+    fi
   fi
 }
 
