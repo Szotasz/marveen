@@ -492,9 +492,20 @@ fi
 # >= 2.1.205 silently drops channel-plugin INBOUND notifications on a team/
 # enterprise org unless managed-settings has channelsEnabled:true (harmless /
 # no-op on a personal org). Idempotent + preserves existing managed keys.
+CHANNELS_GATE_STATE="manual"
 if [ -f "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" ]; then
   echo -e "  Managed-settings channel-kapu ellenorzese..."
-  bash "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" || true
+  # ORGGATESILENT806: the gate script must never fail the install (exit 0 on
+  # every path -- a personal org is a legitimate no-op), but its OUTCOME must
+  # not vanish either: it prints a MARVEEN_CHANNELS_GATE=ok|manual verdict
+  # line, and the final summary below repeats it -- with the exact root
+  # command when manual. Silent skipping was the bug, not skipping.
+  CHANNELS_GATE_OUT="$(bash "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" 2>&1 || true)"
+  echo "$CHANNELS_GATE_OUT"
+  case "$CHANNELS_GATE_OUT" in
+    *MARVEEN_CHANNELS_GATE=ok*) CHANNELS_GATE_STATE="ok" ;;
+    *) CHANNELS_GATE_STATE="manual" ;;
+  esac
 fi
 
 read -rp "$(_t prompt_bot_name)" BOT_NAME
@@ -1411,6 +1422,12 @@ else
   echo -e "  ${DIM}$(_t dash.no_token_hint)${NC}"
 fi
 echo -e "  ${BOLD}Telegram:${NC} $(_t telegram.write_hint)"
+if [ "${CHANNELS_GATE_STATE:-manual}" = "ok" ]; then
+  echo -e "  ${GREEN}✓${NC} Org-szintu channel-kapu: channelsEnabled=true a managed-settings-ben"
+else
+  echo -e "  ${ORANGE}!${NC} Org-szintu channel-kapu NINCS beallitva (team/enterprise orgnal a bejovo uzenetek elakadnak)."
+  echo -e "    Kezi root-lepes: ${BOLD}sudo bash \"$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh\"${NC}"
+fi
 echo ""
 echo -e "  ${DIM}$(_t next_steps.title)${NC}"
 echo -e "  ${DIM}$(_t next_steps.1)${NC}"
