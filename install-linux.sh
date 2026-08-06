@@ -357,7 +357,7 @@ if command -v free &>/dev/null; then
 fi
 
 MISSING_PKGS=""
-for pkg in ffmpeg git tmux lsof curl python3 pipx unzip; do
+for pkg in ffmpeg git tmux lsof curl python3 pipx unzip zstd; do
   if ! command -v "$pkg" &>/dev/null; then
     MISSING_PKGS="$MISSING_PKGS $pkg"
   fi
@@ -427,7 +427,7 @@ if [ -n "$MISSING_PKGS" ]; then
     # dnf/yum (Fedora/Nobara/RHEL). A disztro nodejs csomagja v20+ az aktualis
     # kiadasokon, es az npm-et is tartalmazza -- nincs szukseg kulso repora.
     # Csomagnevek megegyeznek a Debian-belivel (ffmpeg/git/tmux/lsof/curl/
-    # python3/pipx/unzip/nodejs). Az ffmpeg-hez Fedoran az RPM Fusion repo
+    # python3/pipx/unzip/zstd/nodejs). Az ffmpeg-hez Fedoran az RPM Fusion repo
     # kellhet; ha mar engedelyezve van, a csomag elerheto.
     # shellcheck disable=SC2086
     pkg_install_noninteractive $MISSING_PKGS
@@ -457,6 +457,7 @@ ok "pipx" $(pipx --version)
 ok "python3 $(python3 --version | awk '{print $2}')"
 ok "tmux $(tmux -V | awk '{print $2}')"
 ok "unzip" $(unzip -v | awk 'NR==1 {print $2}')
+ok "zstd $(zstd --version | awk '{gsub(",","",$5); print $5}')"
 
 # ─────────────────────────────────────────────
 # Repo bootstrap
@@ -602,6 +603,11 @@ export PATH="$BUN_INSTALL/bin:$PATH"
 if command -v bun &>/dev/null; then
   ok "bun mar telepitve: $(bun --version)"
 else
+  # unzip -- a Bun hivatalos telepitoje ezzel csomagolja ki a binarist; nincs alapertelmezetten telepitve friss Ubuntu
+  # WSL kepen, nelkule "error: unzip is required to install bun"-nal elhasal.
+  if ! command -v unzip &>/dev/null; then
+    sudo apt-get install -y unzip 2>/dev/null || true
+  fi
   echo -e "  Bun telepitese (Telegram plugin fuggoseg)..."
   curl -fsSL https://bun.sh/install | bash 2>/dev/null
   if ! command -v bun &>/dev/null; then
@@ -1416,6 +1422,11 @@ else
   # Az ollama telepitoje sudo-val ir a /usr/local/bin-be es allit be systemd service-t.
   # Elore gyorsitotarazzuk a sudo hitelesitest, hogy a gyermek-script sudo prompt-ja ne bukjon el.
   sudo -v 2>/dev/null || true
+  # zstd -- az ollama telepitoje ezzel csomagolja ki a binarist; nincs alapertelmezetten telepitve friss Ubuntu
+  # WSL kepen, nelkule "ERROR: This version requires zstd for extraction" hibaval elhasal.
+  if ! command -v zstd &>/dev/null; then
+    sudo apt-get install -y zstd 2>/dev/null || true
+  fi
   # NEM fatalis: ha az ollama telepitoje hibara fut (pl. sudo, halozat, WSL),
   # csak figyelmeztetunk es kihagyjuk a szemantikus memoria lepest -- a telepito megy tovabb.
   if curl -fsSL https://ollama.com/install.sh | sh; then
