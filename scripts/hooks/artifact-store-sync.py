@@ -109,7 +109,13 @@ def main() -> None:
 
     cloud_url = _extract_cloud_url(tool_response)
     if not cloud_url:
-        # Artifact didn't publish a URL (unlikely but possible for previews/dry runs)
+        # When updating an existing artifact the response may omit the URL
+        # because the caller already provided it as tool_input.url.
+        candidate = (tool_input.get('url') or '').strip()
+        if candidate.startswith('https') and 'claude.ai' in candidate:
+            cloud_url = candidate
+    if not cloud_url:
+        # No URL found in response or input; nothing to sync.
         sys.exit(0)
 
     file_path = tool_input.get('file_path') or ''

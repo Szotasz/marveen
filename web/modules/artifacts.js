@@ -16,7 +16,8 @@ const emptyEl      = () => document.getElementById('artifactsEmpty')
 const previewPanel = () => document.getElementById('artifactsPreview')
 const previewTitle = () => document.getElementById('artifactsPreviewTitle')
 const previewBody  = () => document.getElementById('artifactsPreviewBody')
-const previewClose = () => document.getElementById('artifactsPreviewClose')
+const previewClose    = () => document.getElementById('artifactsPreviewClose')
+const previewDownload = () => document.getElementById('artifactsPreviewDownload')
 
 // ── Fetch & render list ───────────────────────────────────────────────────────
 
@@ -90,12 +91,16 @@ function fmtTime(unixSec) {
 
 // ── Preview ───────────────────────────────────────────────────────────────────
 
+// Last artifact fetched in the preview panel -- used by the download button.
+let _previewArtifact = null
+
 async function openPreview(id, kind, title) {
   const panel = previewPanel()
   const body  = previewBody()
   const ttl   = previewTitle()
   if (!panel || !body || !ttl) return
 
+  _previewArtifact = null
   ttl.textContent = title
   body.innerHTML = '<span style="color:var(--text-muted)">Betöltés...</span>'
   panel.hidden = false
@@ -104,10 +109,31 @@ async function openPreview(id, kind, title) {
     const res = await fetch(`/api/artifacts/${encodeURIComponent(id)}`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const artifact = await res.json()
+    _previewArtifact = artifact
     renderPreview(body, artifact)
   } catch (err) {
     body.innerHTML = `<span style="color:var(--danger)">Hiba: ${escapeHtml(err.message)}</span>`
   }
+}
+
+function downloadArtifact(artifact) {
+  if (!artifact) return
+  const { kind, content, mime, title, id } = artifact
+  const filename = title || `artifact-${id}`
+  let blob
+  if (kind === 'binary') {
+    blob = b64toBlob(content, mime || 'application/octet-stream')
+  } else {
+    blob = new Blob([content], { type: mime || 'text/plain' })
+  }
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
 }
 
 function renderPreview(container, artifact) {
@@ -205,5 +231,9 @@ export function initArtifacts() {
   previewClose()?.addEventListener('click', () => {
     const panel = previewPanel()
     if (panel) panel.hidden = true
+  })
+
+  previewDownload()?.addEventListener('click', () => {
+    downloadArtifact(_previewArtifact)
   })
 }

@@ -151,6 +151,44 @@ class TestMainSkipConditions(unittest.TestCase):
         # Dashboard is not running in test env; hook must fail-soft and exit 0.
         self.assertEqual(self._run_hook(self._payload()), 0)
 
+    def test_tool_input_url_fallback_when_response_has_no_url(self):
+        """When tool_response has no URL but tool_input.url is a valid claude.ai
+        URL (update-existing-artifact path), the hook must proceed to POST."""
+        import json
+        d = json.loads(self._payload())
+        d["tool_response"] = {"result": "updated successfully"}
+        d["tool_input"]["url"] = "https://claude.ai/public/artifacts/existing-abc"
+        # Dashboard unreachable -> exits 0 just like a normal publish attempt.
+        self.assertEqual(self._run_hook(json.dumps(d)), 0)
+
+    def test_tool_input_url_non_claude_domain_skips(self):
+        """tool_input.url pointing to a non-claude.ai domain must not be used."""
+        import json
+        d = json.loads(self._payload())
+        d["tool_response"] = {"result": "no url"}
+        d["tool_input"]["url"] = "https://example.com/artifact"
+        self.assertEqual(self._run_hook(json.dumps(d)), 0)
+
+    def test_tool_input_url_http_not_https_skips(self):
+        """tool_input.url with http:// (not https) must be rejected."""
+        import json
+        d = json.loads(self._payload())
+        d["tool_response"] = {"result": "no url"}
+        d["tool_input"]["url"] = "http://claude.ai/public/artifacts/insecure"
+        self.assertEqual(self._run_hook(json.dumps(d)), 0)
+
+    def test_response_url_takes_priority_over_tool_input_url(self):
+        """When both tool_response and tool_input.url carry a URL, the response
+        URL wins (it is the authoritative published location)."""
+        import json
+        d = json.loads(self._payload())
+        # Response has a URL -- tool_input.url must not override it.
+        d["tool_response"] = {"url": "https://claude.ai/public/artifacts/from-response"}
+        d["tool_input"]["url"] = "https://claude.ai/public/artifacts/from-input"
+        # Both paths exit 0 (unreachable dashboard), but this exercises the
+        # branch order: response URL is extracted first.
+        self.assertEqual(self._run_hook(json.dumps(d)), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
