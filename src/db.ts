@@ -2245,8 +2245,14 @@ export function resolveKanbanCardRef(ref: string): string | null {
   const raw = String(ref ?? '').trim().replace(/^#/, '')
   if (!raw) return null
   if (/^\d+$/.test(raw)) {
-    const row = db.prepare('SELECT id FROM kanban_cards WHERE rowid = ?').get(Number(raw)) as { id: string } | undefined
-    return row?.id ?? null
+    // Seq first: "#253" is how humans write a card reference, and that reading
+    // must win when both are possible. But a card id is 8 hex characters, so
+    // roughly one id in forty-three is all digits -- and for those the seq
+    // lookup finds nothing and used to return null, which made the card
+    // uncommentable ("Szerver hiba" on every attempt, card 03466831,
+    // 2026-08-06). Fall through to the id match instead of giving up.
+    const bySeq = db.prepare('SELECT id FROM kanban_cards WHERE rowid = ?').get(Number(raw)) as { id: string } | undefined
+    if (bySeq) return bySeq.id
   }
   const row = db.prepare('SELECT id FROM kanban_cards WHERE id = ? COLLATE NOCASE').get(raw) as { id: string } | undefined
   return row?.id ?? null
