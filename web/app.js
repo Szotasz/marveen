@@ -10899,34 +10899,23 @@ function renderTeamGraph(container, data, opts = {}) {
   }
 }
 
-// === Agents page: grid / org-chart view toggle ===
+// === Agents page: view toggle (cards / activity / org chart) ===
+// Three views, but only TWO layouts: 'grid' and 'activity' are the same card
+// grid with different card bodies ('grid' is the original card -- model badge,
+// run + channel status, actions; 'activity' replaces everything below the
+// avatar/name/description with the live pane status that used to be its own
+// Activity page), and 'tree' is the org chart. The card body follows from the
+// view, so the CSS keeps its data-card-mode hook without a second piece of
+// state to keep in sync.
 // Persists the chosen view for the session so navigating away and back keeps
 // the last selection. Defaults to 'grid'.
 let _agentsActiveView = 'grid'
 
-// === Agents page: card content mode (profile / activity) ===
-// 'profile' is the original card (model badge, run + channel status, actions).
-// 'activity' replaces everything below the avatar/name/description with the live
-// pane status that used to be its own Activity page. The header block stays in
-// both, so the card never stops telling you WHICH agent you are looking at.
-let _agentsCardMode = 'profile'
-
-function _setAgentsCardMode(mode) {
-  _agentsCardMode = mode === 'activity' ? 'activity' : 'profile'
-  if (agentsGrid) agentsGrid.dataset.cardMode = _agentsCardMode
-  const profileBtn = document.getElementById('agentsModeProfile')
-  const activityBtn = document.getElementById('agentsModeActivity')
-  if (profileBtn) profileBtn.classList.toggle('active', _agentsCardMode === 'profile')
-  if (activityBtn) activityBtn.classList.toggle('active', _agentsCardMode === 'activity')
-  // Repaint immediately rather than waiting up to 3s for the next tick.
-  if (agentsBusyTimer) refreshAgentTerminalBusy()
-}
-
-// A card click means "open this agent" in profile mode and "look at what it is
-// doing" in activity mode -- the same split the Activity page had, where only a
+// A card click means "open this agent" in card view and "look at what it is
+// doing" in activity view -- the same split the Activity page had, where only a
 // running agent's card was clickable.
 function onAgentCardClick(id, openDetail) {
-  if (_agentsCardMode === 'activity') {
+  if (_agentsActiveView === 'activity') {
     if (id && _liveAgentIds.has(id)) openTerminalModal(id)
     return
   }
@@ -10934,37 +10923,25 @@ function onAgentCardClick(id, openDetail) {
 }
 
 function _setAgentsView(view) {
-  _agentsActiveView = view
+  _agentsActiveView = view === 'activity' || view === 'tree' ? view : 'grid'
   const gridView = document.getElementById('agentsGridView')
   const treeView = document.getElementById('agentsTreeView')
-  const gridBtn  = document.getElementById('agentsViewGrid')
-  const treeBtn  = document.getElementById('agentsViewTree')
   if (!gridView || !treeView) return
-  const showGrid = view === 'grid'
-  gridView.hidden = !showGrid
-  treeView.hidden = showGrid
-  if (gridBtn) gridBtn.classList.toggle('active', showGrid)
-  if (treeBtn) treeBtn.classList.toggle('active', !showGrid)
-  // The card-content toggle only means anything while cards are showing. Its
-  // trailing divider goes with it, otherwise the org chart view shows two rules
-  // with nothing between them.
-  const modeToggle = document.getElementById('agentsCardModeToggle')
-  if (modeToggle) modeToggle.hidden = !showGrid
-  const modeDivider = document.getElementById('agentsCardModeDivider')
-  if (modeDivider) modeDivider.hidden = !showGrid
-  if (showGrid) _setAgentsCardMode(_agentsCardMode)
-  if (!showGrid) loadTeamGraph()
+  const showTree = _agentsActiveView === 'tree'
+  gridView.hidden = showTree
+  treeView.hidden = !showTree
+  if (agentsGrid) agentsGrid.dataset.cardMode = _agentsActiveView === 'activity' ? 'activity' : 'profile'
+  for (const btn of document.querySelectorAll('#agentsViewToggle [data-view]')) {
+    btn.classList.toggle('active', btn.dataset.view === _agentsActiveView)
+  }
+  // Repaint immediately rather than waiting up to 3s for the next tick.
+  if (!showTree && agentsBusyTimer) refreshAgentTerminalBusy()
+  if (showTree) loadTeamGraph()
 }
 
-const _agentsViewGridBtn = document.getElementById('agentsViewGrid')
-const _agentsViewTreeBtn = document.getElementById('agentsViewTree')
-if (_agentsViewGridBtn) _agentsViewGridBtn.addEventListener('click', () => _setAgentsView('grid'))
-if (_agentsViewTreeBtn) _agentsViewTreeBtn.addEventListener('click', () => _setAgentsView('tree'))
-
-const _agentsModeProfileBtn = document.getElementById('agentsModeProfile')
-const _agentsModeActivityBtn = document.getElementById('agentsModeActivity')
-if (_agentsModeProfileBtn) _agentsModeProfileBtn.addEventListener('click', () => _setAgentsCardMode('profile'))
-if (_agentsModeActivityBtn) _agentsModeActivityBtn.addEventListener('click', () => _setAgentsCardMode('activity'))
+for (const btn of document.querySelectorAll('#agentsViewToggle [data-view]')) {
+  btn.addEventListener('click', () => _setAgentsView(btn.dataset.view))
+}
 
 // === Team: inter-agent message log + compose ===
 // View the /api/messages queue and let the operator send a message to an agent

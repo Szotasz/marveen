@@ -403,32 +403,24 @@
             <p class="subtitle" data-i18n="agents.page_subtitle">AI csapattagok kezelése</p>
           </div>
           <div class="header-actions">
+            <!-- Three views, one row. "Kártyák" and "Aktivitás" are the SAME
+                 grid with different card bodies; only "Org chart" is a
+                 different layout. See _setAgentsView() in app.js. -->
             <div class="view-toggle" id="agentsViewToggle" role="group" aria-label="Nézet váltás">
-              <button class="btn-secondary btn-compact view-toggle-btn active" id="agentsViewGrid" data-view="grid" title="Kártyák">
+              <button class="btn-secondary btn-compact view-toggle-btn active" id="agentsViewGrid" data-view="grid" title="Kártyák" data-i18n="agents.view.cards" data-i18n-title="agents.view.cards">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
                 Kártyák
               </button>
-              <button class="btn-secondary btn-compact view-toggle-btn" id="agentsViewTree" data-view="tree" title="Org chart">
+              <button class="btn-secondary btn-compact view-toggle-btn" id="agentsViewActivity" data-view="activity" title="Aktivitás" data-i18n="agents.view.activity" data-i18n-title="agents.view.activity">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>
+                Aktivitás
+              </button>
+              <button class="btn-secondary btn-compact view-toggle-btn" id="agentsViewTree" data-view="tree" title="Org chart" data-i18n="agents.view.org_chart" data-i18n-title="agents.view.org_chart">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"/><path d="M12 8v4"/><circle cx="5" cy="18" r="3"/><circle cx="19" cy="18" r="3"/><path d="M12 12l-7 6M12 12l7 6"/></svg>
                 Org chart
               </button>
             </div>
             <span class="header-divider" aria-hidden="true"></span>
-            <!-- Card-content toggle. Only meaningful in card view, so it is
-                 hidden (with its trailing divider) while the org chart shows.
-                 Icon-only: the label stays for screen readers, the sighted user
-                 gets the native title tooltip. -->
-            <div class="view-toggle view-toggle-compact" id="agentsCardModeToggle" role="group" aria-label="Kártya tartalom">
-              <button class="btn-secondary btn-compact view-toggle-btn active" id="agentsModeProfile" data-mode="profile" title="Adatlap">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M14 9h4M14 13h4M6 16h12"/></svg>
-                <span class="view-toggle-label">Adatlap</span>
-              </button>
-              <button class="btn-secondary btn-compact view-toggle-btn" id="agentsModeActivity" data-mode="activity" title="Aktivitás">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>
-                <span class="view-toggle-label">Aktivitás</span>
-              </button>
-            </div>
-            <span class="header-divider" id="agentsCardModeDivider" aria-hidden="true"></span>
             <button class="btn-secondary btn-compact" id="exportAllAgentsBtn">Összes exportálása</button>
             <button class="btn-secondary btn-compact" id="importAgentBtn">Ügynök importálása</button>
             <input type="file" id="importAgentFile" accept=".gz,.tgz,application/gzip" hidden>

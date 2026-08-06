@@ -289,8 +289,9 @@ window._i18n.en = {
 
   // --- Agents ---
   'agents.page_title':           'Team',
-  'agents.view.profile':         'Profile',
+  'agents.view.cards':           'Cards',
   'agents.view.activity':        'Activity',
+  'agents.view.org_chart':       'Org chart',
   'agents.page_subtitle':        'Manage AI team members',
   'agents.detail.select_avatar':   'Select new avatar',
   'agents.detail.modal_title':      'Agent Details',

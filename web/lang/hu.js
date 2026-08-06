@@ -289,8 +289,9 @@ window._i18n.hu = {
 
   // --- Agents ---
   'agents.page_title':           'Csapat',
-  'agents.view.profile':         'Adatlap',
+  'agents.view.cards':           'Kártyák',
   'agents.view.activity':        'Aktivitás',
+  'agents.view.org_chart':       'Org chart',
   'agents.page_subtitle':        'AI csapattagok kezelése',
   'agents.detail.select_avatar':   'Válassz új avatart',
   'agents.detail.modal_title':      'Ügynök részletek',
