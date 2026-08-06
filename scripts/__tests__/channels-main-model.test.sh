@@ -69,6 +69,28 @@ expect_model "a similarly named key does not leak in" \
   'NOT_MAIN_AGENT_MODEL=wrong-model
 MAIN_AGENT_MODEL=claude-haiku-4-5' '' 'claude-haiku-4-5'
 
+# MODELMIGRATE806: with NO .env override and NO model in settings.json, the
+# resolver falls back to the SHIPPED DISTRIBUTION_DEFAULT_AGENT_MODEL, read from
+# dist/config-registry.js via node. This is what reaches existing model-less
+# installs on a plain code update -- no per-install .env write. Drive it through
+# the real resolver with a fixture dist that exports a known constant.
+migr_fallback() {
+  local want="$1" root
+  root="$(mktemp -d)"
+  mkdir -p "$root/scripts" "$root/dist"
+  cp "$SRC" "$root/scripts/channels.sh"
+  printf 'exports.DISTRIBUTION_DEFAULT_AGENT_MODEL = %s;\n' "\"$want\"" > "$root/dist/config-registry.js"
+  local got
+  got="$(bash "$root/scripts/channels.sh" --resolve-main-model 2>/dev/null | head -1)"
+  rm -rf "$root"
+  if [ "$got" = "$want" ]; then pass "no .env + no settings model -> shipped distribution default ($want)"; else fail "distribution-default fallback" "$want" "$got"; fi
+}
+migr_fallback "claude-opus-5[1m]"
+
+# The .env override still wins over the distribution-default fallback.
+expect_model ".env override beats the distribution-default fallback" \
+  'MAIN_AGENT_MODEL=claude-sonnet-5' '' 'claude-sonnet-5'
+
 # THE SHIPPED-DEFAULT CONTRACT (2026-08-06): a fresh install ships
 # templates/settings.json.template as .claude/settings.json and writes no
 # MAIN_AGENT_MODEL to .env, so resolve_main_model reads the template's model.

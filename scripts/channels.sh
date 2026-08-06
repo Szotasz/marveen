@@ -125,6 +125,7 @@ resolve_main_model() {
     printf '%s' "$MAIN_AGENT_MODEL"
     return 0
   fi
+  local _m=""
   if [ -f "$INSTALL_DIR/.claude/settings.json" ]; then
     # python3 fallback: jq is not guaranteed on the host (stock WSL/minimal
     # Debian images ship without it). Behind a `command -v jq` guard alone the
@@ -134,10 +135,27 @@ resolve_main_model() {
     # with no error anywhere. python3 is already a hard dependency of the hooks,
     # so it is always available as the fallback reader.
     if command -v jq >/dev/null 2>&1; then
-      jq -r '.model // empty' "$INSTALL_DIR/.claude/settings.json" 2>/dev/null
+      _m="$(jq -r '.model // empty' "$INSTALL_DIR/.claude/settings.json" 2>/dev/null)"
     else
-      python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("model") or "")' "$INSTALL_DIR/.claude/settings.json" 2>/dev/null
+      _m="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("model") or "")' "$INSTALL_DIR/.claude/settings.json" 2>/dev/null)"
     fi
+  fi
+  if [ -n "$_m" ]; then
+    printf '%s' "$_m"
+    return 0
+  fi
+  # MODELMIGRATE806: settings.json has no model -> fall back to the SHIPPED
+  # distribution default (DISTRIBUTION_DEFAULT_AGENT_MODEL). This is what lets a
+  # model bump reach EXISTING installs through a plain code update: their
+  # settings.json (shipped before the model field existed) stays model-less, and
+  # WITHOUT this fallback they would silently keep the CLI default forever. We do
+  # NOT write the value into a per-install file -- that would pin an inherited
+  # default and cut those machines off from the NEXT bump. The shipped TS
+  # constant stays the single source of truth; node reads it (node is already a
+  # hard dependency on this launch path, and the read is ~one-time per restart).
+  # The .env override above still wins, so a hand-set model is untouched.
+  if command -v node >/dev/null 2>&1 && [ -f "$INSTALL_DIR/dist/config-registry.js" ]; then
+    node -e 'try { process.stdout.write(String(require(process.argv[1]).DISTRIBUTION_DEFAULT_AGENT_MODEL || "")) } catch (e) {}' "$INSTALL_DIR/dist/config-registry.js" 2>/dev/null
   fi
 }
 

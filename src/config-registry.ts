@@ -14,14 +14,20 @@
 // config.ts cannot drift apart -- bumping the distribution default is a
 // one-line change in exactly one place.
 // MAINMODEL806 (Szabi: "everything on Opus 5"): the default for the OTHER
-// agents and the background-worker sessions. The [1m] suffix is DELIBERATE and
-// matches the main agent's template default (claude-opus-5[1m]): the prior
-// worker default was already [1m] (claude-opus-4-8[1m]), so this preserves the
-// 1M-context behaviour and only lifts the version -- it does NOT quietly diverge
-// from the main-agent value. resolveModelId passes the [1m] id through
-// unchanged (measured), exactly as the CLI already handles the 4.8[1m] default.
-// The valueSet below carries BOTH claude-opus-5 and claude-opus-5[1m] so an
-// operator can still pick the non-1M form.
+// agents and the background-worker sessions -- AND, via resolve_main_model's
+// fallback (channels.sh), the effective default for the MAIN agent on any
+// install whose settings.json has no model. So this value is INHERITED by NEW
+// agents and by existing model-less installs; it is not a mere worker knob.
+// The [1m] suffix is DELIBERATE, and the real reason is that inheritance, not
+// continuity: a new agent is as long-lived as the current fleet (all of whom
+// run explicit [1m]), and a narrower window would reproduce the context-guard
+// restarts we measured. (The prior worker default happening to be [1m] only
+// proves precedent, not need -- do not read it as "it was always this".) It
+// matches the main agent's template value, so the two do not quietly diverge.
+// resolveModelId passes the [1m] id through unchanged (measured), exactly as
+// the CLI already handles the 4.8[1m] default. The valueSet below carries BOTH
+// claude-opus-5 and claude-opus-5[1m] so an operator can still pick the
+// non-1M form.
 export const DISTRIBUTION_DEFAULT_AGENT_MODEL = 'claude-opus-5[1m]'
 
 export type SettingType = 'int' | 'string' | 'color' | 'boolean'
