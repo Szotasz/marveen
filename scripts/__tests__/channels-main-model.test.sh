@@ -69,6 +69,33 @@ expect_model "a similarly named key does not leak in" \
   'NOT_MAIN_AGENT_MODEL=wrong-model
 MAIN_AGENT_MODEL=claude-haiku-4-5' '' 'claude-haiku-4-5'
 
+# THE SHIPPED-DEFAULT CONTRACT (2026-08-06): a fresh install ships
+# templates/settings.json.template as .claude/settings.json and writes no
+# MAIN_AGENT_MODEL to .env, so resolve_main_model reads the template's model.
+# The 2026-08-06 bug was that the template had NO model field -> empty ->
+# the main agent came up on claude-code's built-in default (4.8), silently.
+# This locks the template to a non-empty model, driven through the REAL
+# resolver over the REAL shipped template.
+TEMPLATE="$INSTALL_DIR/templates/settings.json.template"
+template_model="$(bash -c '
+  root="$(mktemp -d)"; mkdir -p "$root/scripts" "$root/.claude"
+  cp "'"$SRC"'" "$root/scripts/channels.sh"
+  cp "'"$TEMPLATE"'" "$root/.claude/settings.json"
+  bash "$root/scripts/channels.sh" --resolve-main-model 2>/dev/null | head -1
+  rm -rf "$root"
+')"
+if [ -n "$template_model" ]; then
+  pass "shipped template resolves to a NON-EMPTY main model ($template_model)"
+else
+  fail "shipped template resolves to a non-empty main model" "non-empty" "(empty)"
+fi
+# And it is the intended Opus 5 (1M) default, matching the fleet host.
+if [ "$template_model" = "claude-opus-5[1m]" ]; then
+  pass "shipped template main model is claude-opus-5[1m]"
+else
+  fail "shipped template main model" "claude-opus-5[1m]" "$template_model"
+fi
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
