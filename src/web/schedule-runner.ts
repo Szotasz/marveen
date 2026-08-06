@@ -1,7 +1,7 @@
 import { join, isAbsolute } from 'node:path'
 import { homedir } from 'node:os'
 import { checkTaskMcpRequirements } from './schedule-mcp-precheck.js'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { logger } from '../logger.js'
@@ -99,6 +99,26 @@ export interface TaskInflightEntry {
   // 5-minute default every single run -- and a nightly false alarm trains the
   // reader to ignore the real one (idea-scout, 2026-08-04 and 08-05).
   stallAlertMs?: number
+  // Absolute path to the file this task rewrites when a run completes. See
+  // readTaskProgressAt / decideTaskTimeout: an mtime newer than injectedAt is
+  // the task's OWN proof of progress, which the shared pane cannot give.
+  progressFile?: string
+}
+
+// Read the task's own completion marker. Returns the mtime in ms, or null when
+// there is no marker configured, the file is missing, or it cannot be stat'ed.
+//
+// null is deliberately indistinguishable from "no marker": every caller treats
+// it as "no information" and falls back to the pane heuristic, so a deleted or
+// unreadable marker can never turn into a silent all-clear.
+export function readTaskProgressAt(path: string | undefined): number | null {
+  if (!path) return null
+  const resolved = isAbsolute(path) ? path : join(PROJECT_ROOT, path)
+  try {
+    return statSync(resolved).mtimeMs
+  } catch {
+    return null
+  }
 }
 
 // How long this entry may stay busy before the watchdog alerts. Exported so the
@@ -131,14 +151,26 @@ export type TaskTimeoutDecision = 'clear' | 'alert' | 'hold'
 //   - 'typing': post-send resubmit loop is already active.
 // Clearing on these states would drop the entry before the 300s timeout can
 // fire, producing false-negative coverage for genuinely stuck tasks.
+//
+// progressAt -- mtime of the task's own marker file, or null when it has none.
+// A marker written AFTER the injection is proof that this very run reached its
+// end, so the entry clears no matter what the pane shows. This is the whole
+// point of the marker: the pane is shared by the injected task and every manual
+// turn in the same tmux, so a long docker drill and a 12-second inbox check
+// look identical there (#264, measured 2026-08-06). The marker can only ever
+// CLEAR an entry, never raise an alert -- a task that has not written yet is
+// indistinguishable from one that is still working, and guessing there would
+// trade a false stall alarm for a false silence.
 export function decideTaskTimeout(
   entry: Pick<TaskInflightEntry, 'injectedAt' | 'alerted'>,
   paneState: PaneState | null,
   now: number,
-  opts: { graceMs: number; timeoutMs: number; maxTrackMs: number },
+  opts: { graceMs: number; timeoutMs: number; maxTrackMs: number; progressAt?: number | null },
 ): TaskTimeoutDecision {
   const elapsed = now - entry.injectedAt
   if (elapsed >= opts.maxTrackMs) return 'clear'
+  const progressAt = opts.progressAt
+  if (typeof progressAt === 'number' && progressAt > entry.injectedAt) return 'clear'
   if (paneState === 'idle') return 'clear'
   if (entry.alerted) return 'hold'
   if (elapsed < opts.graceMs) return 'hold'
@@ -553,6 +585,7 @@ async function attemptFireTask(
       injectedAt: now,
       alerted: false,
       stallAlertMs: task.stallAlertMs,
+      progressFile: task.progressFile,
     })
 
     // Post-send verify: if the agent started a new turn during our chunk
@@ -784,8 +817,16 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
     logger.info({ task: entry.taskName, agent: entry.agentName, cardId: movedCardId }, 'task-timeout: matching kanban card moved to waiting')
   }
 
+  // Say WHICH signal fired. Without a progress marker this alert is a pane
+  // reading, and the pane is shared with every manual turn in the same tmux --
+  // so the honest wording is "the session is busy", not "the task is stuck".
+  // An alert that overstates its evidence gets acted on as if it were measured.
+  const basis = entry.progressFile
+    ? 'A feladat saját állapotfájlja az indítás óta nem frissült, és a pane is foglalt.'
+    : 'Ez pane-alapú becslés: a feladatnak nincs saját állapotfájlja, tehát a kézi munka is így néz ki.'
   const text = [
     `[${BOT_NAME} scheduler] A(z) "${entry.taskName}" (${entry.agentName}) ütemezett feladat ${ageMinutes} perce fut -- lehetséges beakadás.`,
+    basis,
     'Az ágensben megtekintheted; a dashboard /Ütemezések oldalán visszavonható ha kell.',
   ].join('\n')
   ;(async () => {
@@ -917,11 +958,22 @@ export function startScheduleRunner(): NodeJS.Timeout {
     for (const [key, entry] of taskInflightMap) {
       const pane = capturePane(entry.session, entry.host)
       const state = pane != null ? detectPaneState(pane) : null
+      // Only local tasks can be measured by their marker: for a remote agent
+      // the file sits on that box, and a missing local path would read as "no
+      // progress" forever. Remote entries keep the pane-only behaviour.
+      const progressAt = entry.host == null ? readTaskProgressAt(entry.progressFile) : null
       const decision = decideTaskTimeout(entry, state, now, {
         graceMs: TASK_FIRE_GRACE_MS,
         timeoutMs: resolveStallTimeoutMs(entry),
         maxTrackMs: TASK_FIRE_MAX_TRACK_MS,
+        progressAt,
       })
+      if (decision === 'clear' && progressAt != null && progressAt > entry.injectedAt) {
+        logger.debug(
+          { task: entry.taskName, agent: entry.agentName, progressFile: entry.progressFile },
+          'task-timeout: cleared by the task own progress marker, pane not consulted',
+        )
+      }
       if (decision === 'clear') {
         taskInflightMap.delete(key)
       } else if (decision === 'alert') {

@@ -44,6 +44,15 @@ export interface ScheduledTask {
   // legitimately run long (headless browser rounds), so the watchdog stops
   // pushing a false "possible stall" on every run. Omitted -> 5 min default.
   stallAlertMs?: number
+  // Path to a file the task itself rewrites when a run COMPLETES (its own
+  // state/marker file, e.g. store/support-inbox-state.json). The post-fire
+  // watchdog treats an mtime newer than the injection as proof that this run
+  // finished, and clears the entry without looking at the pane. The pane is a
+  // SHARED signal -- any manual work in the same tmux reads as 'busy' -- so a
+  // task with a marker gets measured on its own progress instead of on whatever
+  // else the agent happens to be doing (#264). Relative paths resolve against
+  // the marveen project root. Omitted -> pane-only behaviour, unchanged.
+  progressFile?: string
   // type='command' only: raw shell command run via `bash -lc`, no LLM/tmux.
   command?: string
   // type='command' only: command timeout in ms (default 10000).
@@ -94,7 +103,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
   const skillContent = hasSkill ? readFileOr(skillPath, '') : ''
   const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; stallAlertMs?: number; failThreshold?: number; preCheck?: string; requires?: { mcp_servers?: unknown } } = {}
+  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; stallAlertMs?: number; progressFile?: string; failThreshold?: number; preCheck?: string; requires?: { mcp_servers?: unknown } } = {}
   try {
     config = JSON.parse(readFileOr(configPath, '{}'))
   } catch { /* use defaults */ }
@@ -114,6 +123,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     command: config.command,
     timeoutMs: config.timeoutMs,
     stallAlertMs: config.stallAlertMs,
+    progressFile: config.progressFile,
     failThreshold: config.failThreshold,
     preCheck: config.preCheck,
     requires: parseRequires(config.requires),
@@ -143,7 +153,7 @@ export function listScheduledTasks(): ScheduledTask[] {
 
 export function writeScheduledTask(
   taskName: string,
-  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; stallAlertMs?: number; failThreshold?: number; preCheck?: string },
+  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; stallAlertMs?: number; progressFile?: string; failThreshold?: number; preCheck?: string },
 ): void {
   const dir = join(SCHEDULED_TASKS_DIR, taskName)
   mkdirSync(dir, { recursive: true })
@@ -173,6 +183,7 @@ export function writeScheduledTask(
   if (data.command !== undefined) config.command = data.command
   if (data.timeoutMs !== undefined) config.timeoutMs = data.timeoutMs
   if (data.stallAlertMs !== undefined) config.stallAlertMs = data.stallAlertMs
+  if (data.progressFile !== undefined) config.progressFile = data.progressFile
   if (data.failThreshold !== undefined) config.failThreshold = data.failThreshold
   if (data.preCheck !== undefined) config.preCheck = data.preCheck
   if (data.description !== undefined) config.description = data.description
