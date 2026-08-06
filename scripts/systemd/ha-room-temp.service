@@ -1,0 +1,13 @@
+# NOTE: replace /path/to/marveen (install dir) and /home/USER (home) with your values.
+[Unit]
+Description=Push Home Assistant room temperatures to the start.otthon page on peci01
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/path/to/marveen/scripts/ha-room-temp-push.sh
+Environment=PATH=/home/USER/.local/bin:/home/USER/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/USER
+Environment=TZ=Europe/Budapest
+StandardOutput=journal
