@@ -49,7 +49,7 @@ interface CalendarListResponse {
 // process restart, because cachedTokens held the pre-re-auth (88-day-old,
 // already-revoked) refresh_token.
 let cachedTokens: { normal: TokenData; mtimeMs: number } | null = null
-let cachedClient: ClientCredentials | null = null
+let cachedClient: { value: ClientCredentials; mtimeMs: number } | null = null
 
 function loadTokens(): TokenData {
   let currentMtime = 0
@@ -72,10 +72,15 @@ function saveTokens(tokens: TokenData): void {
 }
 
 function loadClientCredentials(): ClientCredentials {
-  if (!cachedClient) {
-    cachedClient = JSON.parse(readFileSync(CLIENT_CREDS_PATH, 'utf-8'))
+  // mtime-invalidated like loadTokens above. Client credentials rotate rarely,
+  // but a bare `if (!cachedClient)` would hold a stale payload forever after an
+  // out-of-process credentials rewrite. Re-read whenever the file's mtime advances.
+  let currentMtime = 0
+  try { currentMtime = statSync(CLIENT_CREDS_PATH).mtimeMs } catch { /* missing -- fall through to readFileSync error */ }
+  if (!cachedClient || cachedClient.mtimeMs !== currentMtime) {
+    cachedClient = { value: JSON.parse(readFileSync(CLIENT_CREDS_PATH, 'utf-8')), mtimeMs: currentMtime }
   }
-  return cachedClient!
+  return cachedClient.value
 }
 
 function httpsRequest(

@@ -79,6 +79,15 @@ describe('P1#3 — .bun/bin PATH on every claude (re)spawn path', () => {
   })
 })
 
+describe('P1#4 — DISABLE_AUTOUPDATER=1 on the sub-agent spawn path', () => {
+  // A spawned agent whose Claude Code auto-updater fires does an in-place global
+  // reinstall into the shared package prefix and can corrupt the one install
+  // every agent resolves through. The launch command must disable it.
+  it('agent-process.ts sub-agent launch disables the auto-updater', () => {
+    expect(read('src/web/agent-process.ts')).toMatch(/DISABLE_AUTOUPDATER=1/)
+  })
+})
+
 describe('P2#4 — independent systemd-timer watchdog', () => {
   const sh = read('scripts/channel-watchdog.sh')
   const timer = read('scripts/systemd/channel-watchdog.timer')
