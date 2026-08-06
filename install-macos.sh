@@ -501,7 +501,8 @@ if [ -f "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" ]; then
   # line, and the final summary below repeats it -- with the exact root
   # command when manual. Silent skipping was the bug, not skipping.
   CHANNELS_GATE_OUT="$(bash "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" 2>&1 || true)"
-  echo "$CHANNELS_GATE_OUT"
+  # The verdict line is machine-facing; the customer sees only the human lines.
+  echo "$CHANNELS_GATE_OUT" | grep -v "MARVEEN_CHANNELS_GATE=" || true
   case "$CHANNELS_GATE_OUT" in
     *MARVEEN_CHANNELS_GATE=ok*) CHANNELS_GATE_STATE="ok" ;;
     *) CHANNELS_GATE_STATE="manual" ;;
