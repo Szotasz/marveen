@@ -3,7 +3,7 @@ import { join, extname, dirname } from 'node:path'
 import { homedir, platform, tmpdir } from 'node:os'
 import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
-import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
+import { isModelProfileId, MODEL_PROFILE_IDS, type ModelResolution } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
 import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed } from '../../db.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
@@ -74,7 +74,7 @@ import {
   revokeInvite,
   agentChannelDir,
 } from '../channel-invites.js'
-import { hardRestartMarveenChannels } from '../channel-monitor.js'
+import { hardRestartMarveenChannels, readConfiguredMainModel } from '../channel-monitor.js'
 import { isMainChannelsAgent, MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import {
   getProvider,
@@ -386,7 +386,7 @@ interface AgentSummary {
   /** Card c755f4b2 Block B: how `model` was arrived at. Metadata only -- it
    *  reports the existing resolution, it does not change it. */
   modelProfile: string | null
-  modelSource: 'explicit_model' | 'model_profile' | 'default'
+  modelSource: 'explicit_model' | 'model_profile' | 'default' | 'launch_config'
   modelProfileError: string | null
   activeModel: string | null
   runningSince: number | null
@@ -430,6 +430,20 @@ interface AgentDetail extends AgentSummary {
   hasApiKey: boolean
 }
 
+// The MAIN agent is not launched from agents/<name>/agent-config.json:
+// scripts/channels.sh resolves its --model from .env MAIN_AGENT_MODEL and then
+// the tracked .claude/settings.json (readConfiguredMainModel mirrors that
+// exact precedence, parity-tested against the shell). Reporting
+// agent-config.json for it can therefore show a model the main agent is not
+// running on -- a silent split-brain between the fleet list and the process.
+// Fall back to the ordinary resolution only when neither launch source names a
+// model (fresh install with no settings.json).
+export function mainAgentModelResolution(): ModelResolution {
+  const launch = readConfiguredMainModel()
+  if (launch) return { model: launch, source: 'launch_config' }
+  return resolveAgentModelDetailed(MAIN_AGENT_ID)
+}
+
 function getAgentSummary(name: string): AgentSummary {
   const dir = agentDir(name)
   const configRoot = agentConfigRoot(name)
@@ -445,7 +459,7 @@ function getAgentSummary(name: string): AgentSummary {
   // was reached, so "configured" and "resolved" are never conflated in the API.
   let agentModelConfig: { model?: unknown; modelProfile?: unknown } = {}
   try { agentModelConfig = JSON.parse(readFileOr(join(dir, 'agent-config.json'), '{}')) } catch { /* defaults */ }
-  const modelResolution = resolveAgentModelDetailed(name)
+  const modelResolution = name === MAIN_AGENT_ID ? mainAgentModelResolution() : resolveAgentModelDetailed(name)
 
   // Resolve run state through the cache (remote agents) so listing the fleet
   // never blocks on a sleeping laptop's ssh timeout. `running` is derived from
