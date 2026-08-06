@@ -18,6 +18,7 @@ import { withSessionSendLock } from './session-send-lock.js'
 import { readClaudeCodeOauthJson } from './claude-credentials.js'
 import { detectPaneState } from '../pane-state.js'
 import { notifyChannel } from '../notify.js'
+import { FLEET_EFFORT_LEVEL } from '../model-id.js'
 
 // =============================================================================
 // Interactive-tmux agent worker (jun.15 subscription migration).
@@ -484,6 +485,10 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
   const launch =
     (hasFleetOauthToken() ? `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shArg(FLEET_OAUTH_TOKEN_PATH)})"; ` : '') +
     `export CLAUDE_CONFIG_DIR=${shArg(ctx.configDir)}; ` +
+    // Effort as an ENV var, never settings.json: the CLI's settings schema
+    // accepts only low|medium|high|xhigh and silently drops anything else, so a
+    // file saying "max" runs at high (card cb42ad6d). See FLEET_EFFORT_LEVEL.
+    `export CLAUDE_CODE_EFFORT_LEVEL=${shArg(FLEET_EFFORT_LEVEL)}; ` +
     `cd ${shArg(ctx.home)} && ` +
     `${shArg(claudeLaunchBin)} --dangerously-skip-permissions --model ${shArg(WORKER_MODEL)}`
   execFileSync(TMUX, ['new-session', '-d', '-s', ctx.session, '-c', ctx.home, 'bash', '-lc', launch], { timeout: 8000 })

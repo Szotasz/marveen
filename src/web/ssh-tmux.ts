@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { userInfo } from 'node:os'
 import { execFileSync } from 'node:child_process'
+import { FLEET_EFFORT_LEVEL } from '../model-id.js'
 
 // SSH + tmux transport primitives.
 //
@@ -147,7 +148,11 @@ export function buildRemoteLaunchCommand(opts: {
 }): string {
   const path = 'export PATH="$HOME/.bun/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"'
   const cont = opts.continue ? '--continue ' : ''
-  return `${path} && cd ${shQuote(opts.workdir)} && claude ${cont}--dangerously-skip-permissions --model ${shQuote(opts.model)}`
+  // Effort comes from the env var, NOT settings.json: the CLI's settings schema
+  // accepts only low|medium|high|xhigh and silently drops anything else, so a
+  // file saying "max" runs at high (card cb42ad6d). See FLEET_EFFORT_LEVEL.
+  const effort = `export CLAUDE_CODE_EFFORT_LEVEL=${shQuote(FLEET_EFFORT_LEVEL)}`
+  return `${path} && ${effort} && cd ${shQuote(opts.workdir)} && claude ${cont}--dangerously-skip-permissions --model ${shQuote(opts.model)}`
 }
 
 /**

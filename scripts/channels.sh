@@ -281,6 +281,9 @@ fi
 # source removes the phantom entirely. Inherited by every sub-agent via the tmux
 # global env set below.
 export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false
+# Effort level for THIS shell (the main channels claude inherits it). See the
+# set-environment -g block below for why this is an env var and not settings.json.
+export CLAUDE_CODE_EFFORT_LEVEL=max
 
 CLAUDE="$(command -v claude)"
 TMUX="$(command -v tmux)"
@@ -533,6 +536,16 @@ if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
 fi
 # Propagate the prompt-suggestion disable to every sub-agent tmux session.
 $TMUX set-environment -g CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION false 2>/dev/null || true
+# Effort level for the whole fleet, propagated the same way. It MUST be an env
+# var: Claude Code's settings.json schema validates effortLevel as
+# enum(["low","medium","high","xhigh"]).catch(void 0), so "max" written into a
+# settings file is dropped SILENTLY and the default "high" wins -- measured
+# 2026-08-06, seven config files claimed max while every agent ran at high
+# (card cb42ad6d). The env var parses against the wider list (which includes
+# "max") and outranks every other source. Keep in sync with FLEET_EFFORT_LEVEL
+# in src/model-id.ts -- that constant governs the TS launch paths, this line the
+# tmux-inherited ones.
+$TMUX set-environment -g CLAUDE_CODE_EFFORT_LEVEL max 2>/dev/null || true
 
 # Hybrid channel-coordinator model: the native plugin stays the PRIMARY inbound
 # path (it always polls getUpdates here -- never outbound-only). The standalone

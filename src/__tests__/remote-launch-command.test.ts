@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { buildRemoteLaunchCommand, classifyRunState, classifyRunStateFromExit, buildContinueProbeCommand } from '../web/ssh-tmux.js'
+import { FLEET_EFFORT_LEVEL, EFFORT_LEVELS } from '../model-id.js'
 
 describe('classifyRunStateFromExit (failed list-sessions probe)', () => {
   it('remote ssh transport failure (exit 255) is unreachable', () => {
@@ -59,6 +60,25 @@ describe('buildRemoteLaunchCommand', () => {
   it('omits --continue when continue is false', () => {
     const cmd = buildRemoteLaunchCommand({ workdir: '/p', model: 'm', continue: false })
     expect(cmd).not.toContain('--continue')
+  })
+
+  // The effort level MUST ride the env var. Claude Code's settings.json schema
+  // accepts only low|medium|high|xhigh and silently drops anything else, so the
+  // fleet's "max" written into a settings file runs at high with no error and no
+  // log -- measured 2026-08-06, seven config files claimed max while every agent
+  // ran at high. If a future edit moves this back into settings.json or drops
+  // the export, the regression is invisible in behaviour; this test is the alarm.
+  it('exports the fleet effort level as an env var', () => {
+    const cmd = buildRemoteLaunchCommand({ workdir: '/p', model: 'm', continue: false })
+    expect(cmd).toContain(`export CLAUDE_CODE_EFFORT_LEVEL='${FLEET_EFFORT_LEVEL}'`)
+  })
+
+  // A typo here ('maximum', 'MAX', 'ultra') would NOT fail loudly: the CLI parses
+  // the env var against its own list and falls back to the default. Pin the value
+  // to the known-good set so the mistake is caught here instead of silently
+  // costing the whole fleet its effort level.
+  it('uses an effort level the CLI actually recognises', () => {
+    expect(EFFORT_LEVELS).toContain(FLEET_EFFORT_LEVEL)
   })
 
   it('never carries channel/token scaffolding (launch-only, channel-less)', () => {
