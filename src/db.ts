@@ -1762,6 +1762,26 @@ export function getKanbanCard(id: string): KanbanCard | undefined {
   return db.prepare('SELECT rowid AS seq, * FROM kanban_cards WHERE id = ?').get(id) as KanbanCard | undefined
 }
 
+/**
+ * Reuse the board's existing spelling of an assignee name. The board holds
+ * hand-typed names ('Viktor' 77 rows vs 'viktor' 2, 'marveen' 60 vs 'Marveen'
+ * 6 -- measured 2026-08-06) and SQLite compares case-sensitively, so every
+ * consumer keying on assignee equality either remembers COLLATE NOCASE or
+ * silently misses rows. Normalising at the write keeps new rows from widening
+ * the split; the majority spelling wins, so the board converges on what it
+ * already mostly says. A name the board has never seen is stored as typed.
+ */
+function canonicalAssignee(name: string | null | undefined): string | null {
+  const trimmed = (name ?? '').trim()
+  if (!trimmed) return null
+  const row = db.prepare(
+    `SELECT assignee, COUNT(*) AS n FROM kanban_cards
+     WHERE assignee = ? COLLATE NOCASE
+     GROUP BY assignee ORDER BY n DESC LIMIT 1`
+  ).get(trimmed) as { assignee: string } | undefined
+  return row?.assignee ?? trimmed
+}
+
 export function createKanbanCard(card: {
   id: string
   title: string
@@ -1785,7 +1805,7 @@ export function createKanbanCard(card: {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     card.id, card.title, card.description ?? null, status,
-    card.assignee ?? null, card.priority ?? 'normal',
+    canonicalAssignee(card.assignee), card.priority ?? 'normal',
     card.project ?? null, card.parent_id ?? null, card.due_date ?? null, sortOrder, now, now
   )
 }
@@ -1828,6 +1848,7 @@ export function updateKanbanCard(
   if (!card) return false
   const now = Math.floor(Date.now() / 1000)
   const f = { ...card, ...fields, updated_at: now }
+  if (fields.assignee !== undefined) f.assignee = canonicalAssignee(fields.assignee)
 
   // Owner match is case-insensitive on both sides: the board holds both
   // 'marveen' and 'Marveen', and a guard that misses on casing is no guard.
