@@ -6,6 +6,7 @@ import { readAgentChannelProvider } from './agent-config.js'
 import { agentSessionName, capturePane } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { getProvider, type ChannelProviderType } from '../channel-provider.js'
+import { tryAcquireSessionSendLane } from './session-send-lock.js'
 import { paneLooksIdle, detectPaneState } from '../pane-state.js'
 
 const TMUX = resolveFromPath('tmux')
@@ -176,6 +177,18 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
     return { ok: false, message: 'Pane busy -- reconnect deferred to avoid interrupting active work' }
   }
 
+  // PANEWRITERS805: the whole /mcp menu walk (Escape, /mcp, Up/Down/Enter) is
+  // direct keystrokes into a pane that also receives locked deliveries. Take
+  // the pane's send lane fail-closed for the entire sequence: a busy lane means
+  // a delivery is mid-chunk-stream, and our Escape/Enter would land inside its
+  // framed text. Skip and let the caller's tick retry -- same contract as the
+  // busy-pane defer above.
+  const releaseLane = tryAcquireSessionSendLane(session, null)
+  if (!releaseLane) {
+    logger.info({ agentName, session }, 'channel-mcp-reconnect: pane send lane busy (delivery in flight) -- deferring reconnect (fail-closed)')
+    return { ok: false, message: 'A delivery is in flight into this pane -- reconnect deferred' }
+  }
+
   try {
     execFileSync(TMUX, ['send-keys', '-t', session, 'Escape'], { timeout: 3000 })
     execFileSync('/bin/sleep', ['1'], { timeout: 2000 })
@@ -264,5 +277,7 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
     logger.warn({ err, agentName, session }, 'channel-mcp-reconnect failed')
     try { dismissMcpMenu(session) } catch { /* best effort */ }
     return { ok: false, message: err instanceof Error ? err.message : String(err) }
+  } finally {
+    releaseLane()
   }
 }

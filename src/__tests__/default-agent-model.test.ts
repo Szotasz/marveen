@@ -64,11 +64,15 @@ describe('agent-config default wiring', () => {
     expect(resolveModelId('inherit')).toBe(DEFAULT_AGENT_MODEL)
   })
 
-  it("leaves the bare 'opus' alias pinned to 4.8", () => {
-    // Deliberate upstream decision (v1.23.2): raising the install default must
-    // not silently reconfigure agents whose config says the generic 'opus'.
-    expect(MODEL_ALIASES['opus']).toBe('claude-opus-4-8[1m]')
-    expect(resolveModelId('opus')).toBe('claude-opus-4-8[1m]')
+  it("resolves the bare 'opus' alias to Opus 5 (MODELMIGRATE806)", () => {
+    // Szabi's "everything on Opus 5" applies here too. Measured before the
+    // change: ZERO live callers use the bare 'opus' alias -- all 10 fleet
+    // agent-configs carry a full model id, and the UI picks from the valueSet
+    // (full ids), never an alias. So the change is zero-risk, and a dead alias
+    // still pointing at the OLD model is exactly the silent trap we spent a day
+    // on: whoever writes 'opus' gets 4.8 with nothing warning them.
+    expect(MODEL_ALIASES['opus']).toBe('claude-opus-5[1m]')
+    expect(resolveModelId('opus')).toBe('claude-opus-5[1m]')
   })
 })
 

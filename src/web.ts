@@ -2,7 +2,8 @@ import http from 'node:http'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { execSync, execFileSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
+import { runLsof } from './lsof.js'
 import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID } from './config.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } from './web/auth-gate.js'
@@ -230,7 +231,7 @@ export function startWebServer(port = 3420): http.Server {
       // and under launchd it also race-kills the not-yet-dead predecessor.
       logger.warn({ port }, 'Web port foglalt, probalok felszabaditani...')
       try {
-        const pidsRaw = execSync(`lsof -ti :${port} 2>/dev/null || true`, { timeout: 3000, encoding: 'utf-8' }).trim()
+        const pidsRaw = (runLsof(['-ti', `:${port}`], 3000) ?? '').trim()
         const pids = pidsRaw.split('\n').map(s => s.trim()).filter(Boolean).map(Number).filter(n => Number.isFinite(n) && n > 0)
         const uid = typeof process.getuid === 'function' ? process.getuid() : null
         const victims: number[] = []

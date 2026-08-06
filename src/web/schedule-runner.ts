@@ -50,11 +50,17 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { sendTelegramMessage } from './telegram.js'
 import { runCommandTask } from './command-task.js'
 import { paneShowsContextSaturation, detectsFirstRunGate, detectPaneState, type PaneState } from '../pane-state.js'
+import { withSessionSendLock } from './session-send-lock.js'
 
 // How many bare-Enter attempts the post-send resubmit tries before escalating
 // to a clear + re-inject, and the hard cap after which it gives up.
 const RESUBMIT_BARE_ENTER_ATTEMPTS = 2
 const RESUBMIT_MAX_ATTEMPTS = 6
+// TASKTAIL805: how many consecutive lane-busy skips a resubmit attempt
+// tolerates before giving up. A skip means another delivery holds this pane's
+// send lane; each skip re-waits 3s, so the cap bounds the timer chain at
+// ~1 min of a persistently busy lane -- well past any real chunked delivery.
+const RESUBMIT_LANE_BUSY_MAX_SKIPS = 20
 
 // --- Post-fire timeout watchdog ---
 // After a task/heartbeat injection, we track the target session to detect the
@@ -711,35 +717,64 @@ async function attemptFireTask(
     const marker = task.type === 'heartbeat'
       ? `[Heartbeat: ${task.name}]`
       : `[Utemezett feladat: ${task.name}]`
-    const resubmit = async (attempt: number): Promise<void> => {
+    const resubmit = async (attempt: number, laneBusySkips = 0): Promise<void> => {
       try {
-        // Host-aware so a remote agent's post-send stuck-check + recovery Enter
-        // hit the laptop session, not a (nonexistent) local one.
-        const pane = capturePane(session, host)
-        const stuck = isScheduledPromptStuck(pane, marker)
-        const action = decideScheduledResubmitAction(attempt, stuck)
-        if (action === 'none') return
-        if (action === 'giveup') {
-          logger.warn({ task: task.name, session }, 'Scheduled prompt still stuck after Enter + re-inject retries -- giving up')
-          return
-        }
-        if (action === 'reinject') {
-          // The Enter is being swallowed persistently. Clear the parked prompt
-          // and re-type it. clearStaleParkedInput verifies the box is empty
-          // before returning true; if it can't clear (box changed under us, or
-          // its cooldown fired), fall back to one more bare Enter. waitForIdle
-          // is off because the box is 'typing', not idle -- the pre-flight gate
-          // would otherwise burn its whole budget and time out every attempt.
-          if (await clearStaleParkedInput(session, host)) {
-            await sendPromptToSession(session, fullPrompt, host, { waitForIdle: false })
-            logger.info({ task: task.name, session, attempt }, 'Scheduled prompt re-injected after swallowed Enter')
+        // TASKTAIL805: the whole probe+act step is one recover-mode critical
+        // section on the pane's send lane. The resubmit timer escapes the
+        // scheduler's own serialization (it is a detached setTimeout), so
+        // without the lock it raced any delivery typing into the same pane:
+        // its Enter could submit a half-typed foreign message, and its
+        // clear+re-type could cut the head off an in-flight chunk stream while
+        // the writer kept typing the tail (head lost, tail kept, re-type
+        // duplicating the span -- the truncation+duplication observed twice).
+        // The MEASUREMENT must be atomic with the action too: a pane sampled
+        // outside the lock can change before the keystroke lands.
+        const res = await withSessionSendLock(session, host, 'recover', async (): Promise<'done' | 'continue'> => {
+          // Host-aware so a remote agent's post-send stuck-check + recovery
+          // Enter hit the laptop session, not a (nonexistent) local one.
+          const pane = capturePane(session, host)
+          const stuck = isScheduledPromptStuck(pane, marker)
+          const action = decideScheduledResubmitAction(attempt, stuck)
+          if (action === 'none') return 'done'
+          if (action === 'giveup') {
+            logger.warn({ task: task.name, session }, 'Scheduled prompt still stuck after Enter + re-inject retries -- giving up')
+            return 'done'
+          }
+          if (action === 'reinject') {
+            // The Enter is being swallowed persistently. Clear the parked prompt
+            // and re-type it. clearStaleParkedInput verifies the box is empty
+            // before returning true; if it can't clear (box changed under us, or
+            // its cooldown fired), fall back to one more bare Enter. waitForIdle
+            // is off because the box is 'typing', not idle -- the pre-flight gate
+            // would otherwise burn its whole budget and time out every attempt.
+            // lockMode 'held': we are already inside this pane's lane; taking
+            // the lock again would deadlock the promise-chain mutex.
+            if (await clearStaleParkedInput(session, host)) {
+              await sendPromptToSession(session, fullPrompt, host, { waitForIdle: false, lockMode: 'held' })
+              logger.info({ task: task.name, session, attempt }, 'Scheduled prompt re-injected after swallowed Enter')
+            } else {
+              sendEnterToSession(session, host)
+            }
           } else {
             sendEnterToSession(session, host)
           }
-        } else {
-          sendEnterToSession(session, host)
+          return 'continue'
+        })
+        if (!res.ran) {
+          // Fail-closed skip: a delivery holds this pane's lane right now, so
+          // both the stuck-measurement and any keystroke would hit someone
+          // else's in-flight message. Re-try the SAME attempt once the lane
+          // frees up; bounded so a wedged holder cannot chain timers forever.
+          if (laneBusySkips >= RESUBMIT_LANE_BUSY_MAX_SKIPS) {
+            logger.warn({ task: task.name, session, attempt }, 'Post-send resubmit gave up: pane send lane stayed busy past the skip budget')
+            return
+          }
+          logger.info({ task: task.name, session, attempt, laneBusySkips }, 'Post-send resubmit skipped: a delivery is in flight into this pane (fail-closed)')
+          setTimeout(() => { void resubmit(attempt, laneBusySkips + 1) }, 3000)
+          return
         }
-        setTimeout(() => { void resubmit(attempt + 1) }, 3000)
+        if (res.value === 'done') return
+        setTimeout(() => { void resubmit(attempt + 1, 0) }, 3000)
       } catch (err) {
         logger.warn({ err, task: task.name }, 'Post-send resubmit failed')
       }

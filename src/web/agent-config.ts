@@ -22,7 +22,7 @@ export const DEFAULT_MODEL = DEFAULT_AGENT_MODEL
 
 // Map short model names to full Claude model IDs (backwards compat with old configs)
 export const MODEL_ALIASES: Record<string, string> = {
-  'opus': 'claude-opus-4-8[1m]',
+  'opus': 'claude-opus-5[1m]',
   'sonnet': 'claude-sonnet-5',
   'sonnet-5': 'claude-sonnet-5',
   'sonnet5': 'claude-sonnet-5',

@@ -75,7 +75,7 @@ import {
   agentChannelDir,
 } from '../channel-invites.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
-import { isMainChannelsAgent, MAIN_CHANNELS_SESSION } from '../main-agent.js'
+import { isMainChannelsAgent, MAIN_CHANNELS_SESSION, withoutMainAgent } from '../main-agent.js'
 import {
   getProvider,
   channelStateDir,
@@ -700,7 +700,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       })
     }
 
-    for (const name of listAgentNames()) {
+    for (const name of withoutMainAgent(listAgentNames())) {
       // Remote agents: resolve run state + pane through the short-TTL caches so
       // this 3s-polled endpoint never blocks the event loop on an ssh timeout.
       const host = readAgentRemoteHost(name)
@@ -784,7 +784,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       } catch { return 0 }
     }
 
-    const names = listAgentNames()
+    const names = withoutMainAgent(listAgentNames())
     const results = [MAIN_AGENT_ID, ...names].map(name => {
       const dir = agentDir(name)
       const claudeMd = readFileOr(join(dir, 'CLAUDE.md'), '')

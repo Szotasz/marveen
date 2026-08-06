@@ -23,8 +23,9 @@ describe('sendPromptToSession waitForIdle gate', () => {
     const sig = AGENT_PROCESS.slice(sigIdx, sigIdx + 300)
     // The opts bag grew onBusyTimeout/idleTimeoutMs for the inbox-nudge
     // watcher (an OPTIONAL prompt aborts instead of best-effort-typing into a
-    // busy pane); waitForIdle stays the first, default-ON member.
-    expect(sig).toMatch(/opts:\s*\{\s*waitForIdle\?:\s*boolean;\s*onBusyTimeout\?:\s*'send'\s*\|\s*'abort';\s*idleTimeoutMs\?:\s*number\s*\}/)
+    // busy pane); waitForIdle stays the first, default-ON member. DELIVLOCK805
+    // added lockMode (per-pane delivery mutex: deliver/recover/held).
+    expect(sig).toMatch(/opts:\s*\{\s*waitForIdle\?:\s*boolean;\s*onBusyTimeout\?:\s*'send'\s*\|\s*'abort';\s*idleTimeoutMs\?:\s*number;\s*lockMode\?:\s*SendLockMode\s*\}/)
   })
 
   it('the gate defaults ON (waitForIdle !== false) so all other callers keep it', () => {

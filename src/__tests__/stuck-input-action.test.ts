@@ -50,6 +50,7 @@ function facts(over: Partial<StuckInputActionFacts>): StuckInputActionFacts {
     allowPlainReinject: false,
     hasPlainText: false,
     scheduledTaskBlock: false,
+    machineOrigin: false,
     ...over,
   }
 }
@@ -69,11 +70,53 @@ describe('decideStuckInputAction (recovery-decision unit)', () => {
     expect(a).toBe('hold')
   })
 
-  it('multi-row sub-agent plain text -> re-inject plain, never enter', () => {
+  it('multi-row sub-agent MACHINE-marked plain text -> re-inject plain, never enter', () => {
     const a = decideStuckInputAction(
-      facts({ rowCount: 2, allowPlainReinject: true, hasPlainText: true }),
+      facts({ rowCount: 2, allowPlainReinject: true, hasPlainText: true, machineOrigin: true }),
     )
     expect(a).toBe('reinject-plain')
+  })
+
+  // -------------------------------------------------------------------------
+  // STUCKINPUT805: the lossy-rescue regression measured live on 2026-08-05.
+  // The visible-box scrape drops the HEAD rows of an overfull box, so a
+  // re-inject of it is deterministic corruption (10,509-char prompt delivered
+  // as its last ~400 chars, byte-identically at 15:06 and 16:00).
+  // -------------------------------------------------------------------------
+
+  it('STUCKINPUT805: a parked scheduled tick on a SUB-AGENT is clear-only, never reinject-plain', () => {
+    // The old branch order routed this into reinject-plain (the sub-agent
+    // check sat above the scheduled check) -- the exact bug. The scheduler
+    // re-fires the tick whole; the scrape never contains the whole prompt.
+    const a = decideStuckInputAction(facts({
+      rowCount: 5, allowPlainReinject: true, hasPlainText: true,
+      scheduledTaskBlock: true, machineOrigin: true, escalate: true,
+    }))
+    expect(a).toBe('clear-scheduled')
+  })
+
+  it('STUCKINPUT805: uncertain-origin park on a sub-agent -> hold, never clear or re-inject', () => {
+    // "Sub-agent means no human draft" is false: agent-terminal types into
+    // sub-agent panes too. A human's text has no re-delivery; destroying it is
+    // strictly worse than a wedged box. Simulates the human-typed overflow:
+    // long multi-row text, no machine marker anywhere.
+    const a = decideStuckInputAction(facts({
+      rowCount: 8, allowPlainReinject: true, hasPlainText: true,
+      machineOrigin: false, escalate: true,
+    }))
+    expect(a).toBe('hold')
+  })
+
+  it('STUCKINPUT805: box so short even the tail marker is cut -> no machine evidence -> default path', () => {
+    // scheduledTaskBlock and machineOrigin both read false when every marker
+    // is outside the visible box. Multi-row holds; single-row keeps the
+    // harmless legacy Enter. Neither destroys anything.
+    expect(decideStuckInputAction(facts({
+      rowCount: 3, allowPlainReinject: true, hasPlainText: true, escalate: true,
+    }))).toBe('hold')
+    expect(decideStuckInputAction(facts({
+      rowCount: 1, allowPlainReinject: true, hasPlainText: true, escalate: true,
+    }))).toBe('enter')
   })
 
   it('multi-row with nothing safely re-injectable -> hold (never corrupt via Enter)', () => {
@@ -119,11 +162,19 @@ describe('decideStuckInputAction (recovery-decision unit)', () => {
     expect(decideStuckInputAction(facts({ rowCount: 1, scheduledTaskBlock: true, escalate: false }))).toBe('enter')
   })
 
-  it('sub-agent plain re-inject keeps precedence over clear-scheduled (existing path preserved)', () => {
+  it('STUCKINPUT805 precedence FLIP: clear-scheduled beats plain re-inject on sub-agents too', () => {
+    // The previous version of this test pinned the OPPOSITE ("existing path
+    // preserved") -- and that precedence WAS the bug: on a sub-agent pane a
+    // parked scheduled tick took the reinject-plain branch, whose payload is a
+    // scrape of the VISIBLE box. The TUI drops the head rows of an overfull
+    // box, so the scrape was the tail fragment -- re-injected byte-identically
+    // at 15:06 and 16:00 on 2026-08-05 (10,509-char prompt as its last ~400
+    // chars). clear-scheduled is strictly better on every session: the next
+    // schedule fire re-delivers the WHOLE prompt.
     const a = decideStuckInputAction(
-      facts({ rowCount: 3, scheduledTaskBlock: true, allowPlainReinject: true, hasPlainText: true }),
+      facts({ rowCount: 3, scheduledTaskBlock: true, allowPlainReinject: true, hasPlainText: true, machineOrigin: true }),
     )
-    expect(a).toBe('reinject-plain')
+    expect(a).toBe('clear-scheduled')
   })
 })
 

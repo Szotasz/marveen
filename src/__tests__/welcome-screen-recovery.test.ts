@@ -49,17 +49,27 @@ describe('welcome-screen wedge: detection -> recovery decision (real fixture)', 
     expect(parkedInputRowCount(QWEN_WELCOME_WEDGE)).toBeGreaterThan(1)
   })
 
-  it('recovery decides reinject-plain for the multi-row sub-agent message (not hold/bare-Enter)', () => {
+  it('recovery HOLDS the wedge: the parked fragment has no surviving machine marker (STUCKINPUT805)', () => {
+    // POLICY CHANGE 2026-08-05: this fixture's parked text begins mid-sentence
+    // ("kepet: /Users/marvin/...") -- the head rows were already dropped by
+    // the TUI, and no machine marker survives in the visible box. The old
+    // decision re-injected it (reinject-plain), which is exactly the lossy
+    // rescue that delivered byte-identical truncated prompts at 15:06/16:00:
+    // the scrape IS a fragment, re-injecting it ships corruption. And origin
+    // is genuinely uncertain here (agent-terminal reaches sub-agent panes), so
+    // clearing could destroy a human's un-re-deliverable text. Hands off, log;
+    // the down-cascade's own agent recovery handles a persistently wedged pane.
     const action = decideStuckInputAction({
-      escalate: false,
+      escalate: true,
       rowCount: parkedInputRowCount(QWEN_WELCOME_WEDGE),
       blockComplete: false,
       blockTruncated: false,
       truncatedPreamble: false,
-      allowPlainReinject: true, // sub-agent box: no human draft
+      allowPlainReinject: true,
       hasPlainText: parkedInputText(QWEN_WELCOME_WEDGE) != null,
       scheduledTaskBlock: false,
+      machineOrigin: false, // computed: no prefix, no truncated marker survives
     })
-    expect(action).toBe('reinject-plain')
+    expect(action).toBe('hold')
   })
 })
