@@ -89,3 +89,26 @@ describe('schedule-runner: resubmit probe+act is a recover-mode critical section
     expect(captureIdx).toBeGreaterThan(lockIdx)
   })
 })
+
+describe('schedule-runner: resubmit dead ends are compensated, never silent', () => {
+  const SRC = readFileSync(join(__dirname, '../web/schedule-runner.ts'), 'utf-8')
+
+  it("the 'giveup' exit enqueues a pending retry (the run-log already says 'fired')", () => {
+    // attemptFireTask records 'fired' + stamps scheduleLastRun BEFORE the
+    // detached resubmit chain runs; a giveup without compensation is a run-log
+    // row that says 'fired' for a task that never ran.
+    const giveupIdx = SRC.indexOf('still stuck after Enter + re-inject retries -- giving up')
+    expect(giveupIdx).toBeGreaterThan(-1)
+    const after = SRC.slice(giveupIdx, giveupIdx + 1200)
+    expect(after).toMatch(/insertPendingTaskRetryIfNew\(task\.name, agentName, now, 'giveup'\)/)
+  })
+
+  it('the lane-busy-exhausted exit enqueues a pending retry too', () => {
+    // Exhausting the skip budget exits with NO measurement ever taken -- the
+    // prompt may be parked and nothing would ever look again.
+    const busyIdx = SRC.indexOf('lane stayed busy past the skip budget')
+    expect(busyIdx).toBeGreaterThan(-1)
+    const after = SRC.slice(busyIdx, busyIdx + 800)
+    expect(after).toMatch(/insertPendingTaskRetryIfNew\(task\.name, agentName, now, 'lane-busy'\)/)
+  })
+})
