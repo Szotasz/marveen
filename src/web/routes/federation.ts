@@ -21,6 +21,15 @@ import { createAgentMessage, failPendingFederatedMessages } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json, RequestBodyTooLargeError } from '../http-helpers.js'
 import { isKnownAgent, readAgentDisplayName, readAgentModel } from '../agent-config.js'
+import { readConfiguredMainModel } from '../channel-monitor.js'
+
+// The MAIN agent's model comes from its launch source (.env MAIN_AGENT_MODEL ->
+// tracked .claude/settings.json, the channels.sh precedence readConfiguredMainModel
+// mirrors), not from agents/<name>/agent-config.json -- the directory and peer
+// catalog otherwise advertise a model the main agent is not running on.
+function mainAgentModel(): string {
+  return readConfiguredMainModel() || readAgentModel(MAIN_AGENT_ID)
+}
 import { parseQualifiedId, isValidIdSegment, formatQualifiedId } from '../federation/address.js'
 import { catalogAgentNames, listAgentLocalSkills } from '../federation/local-catalog.js'
 import { containsPrivateData, getCapabilitySummary, mainAgentCapabilitySummary, purgeCapabilityCache } from '../federation/capabilities.js'
@@ -225,7 +234,7 @@ function buildManifest(cfg: FederationConfig, callerPeerId: string | null): unkn
     federationVersion: FEDERATION_VERSION,
     agents: [
       {
-        id: MAIN_AGENT_ID, displayName: BOT_NAME, model: readAgentModel(MAIN_AGENT_ID),
+        id: MAIN_AGENT_ID, displayName: BOT_NAME, model: mainAgentModel(),
         ...(share ? { capabilitySummary: mainAgentCapabilitySummary(resolveLang()) } : {}),
       },
       ...names.map((n) => ({ id: n, displayName: readAgentDisplayName(n), model: readAgentModel(n), ...summaryFor(n) })),
@@ -387,7 +396,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
       {
         id: MAIN_AGENT_ID,
         displayName: BOT_NAME,
-        model: readAgentModel(MAIN_AGENT_ID),
+        model: mainAgentModel(),
         capabilitySummary: mainAgentCapabilitySummary(lang),
         skills: [] as Array<{ name: string; description: string }>,
       },

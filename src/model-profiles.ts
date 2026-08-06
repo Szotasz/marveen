@@ -65,7 +65,11 @@ export function validateModelProfileMap(raw: unknown): ModelProfileMapState {
   };
 }
 
-export type ModelResolutionSource = 'explicit_model' | 'model_profile' | 'default';
+// 'launch_config': the model was read from the MAIN agent's actual launch
+// source (.env MAIN_AGENT_MODEL, then the tracked .claude/settings.json --
+// the same precedence scripts/channels.sh resolves --model from), not from
+// agents/<name>/agent-config.json.
+export type ModelResolutionSource = 'explicit_model' | 'model_profile' | 'default' | 'launch_config';
 
 export interface ModelResolution {
   model: string;
