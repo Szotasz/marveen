@@ -10,9 +10,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 HA_URL="${HA_URL:-http://192.168.1.124:8123}"
-# Both garage sensors; which garage peci01 actually sits in is Viktor's call,
-# until then both are shown.
-SENSORS="${SENSORS:-sensor.shellyht_34bc74_temperature sensor.garazs2_temperature}"
+# peci01 sits in garage 2 (Viktor, 2026-08-06), so only that sensor is shown;
+# garazs1 (sensor.shellyht_34bc74_temperature) was dropped on the same call.
+SENSORS="${SENSORS:-sensor.garazs2_temperature}"
 PECI="${PECI:-viktor@192.168.2.122}"
 KEY="${KEY:-$HOME/.ssh/atlas-crm-migration-ed25519}"
 DEST="${DEST:-/mnt/data/start-otthon/room-temp.json}"
