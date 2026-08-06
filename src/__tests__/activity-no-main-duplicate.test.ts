@@ -10,14 +10,14 @@ const agentsSource = readFileSync(join(__dirname, '..', 'web', 'routes', 'agents
 
 describe('withoutMainAgent', () => {
   it('removes the main agent id from a list that contains it', () => {
-    const result = withoutMainAgent([MAIN_AGENT_ID, 'hermes', 'prometheus'])
+    const result = withoutMainAgent([MAIN_AGENT_ID, 'agent-a', 'agent-b'])
     expect(result).not.toContain(MAIN_AGENT_ID)
-    expect(result).toEqual(['hermes', 'prometheus'])
+    expect(result).toEqual(['agent-a', 'agent-b'])
   })
 
   it('leaves a list that does not contain the main agent unchanged', () => {
-    const result = withoutMainAgent(['hermes', 'prometheus'])
-    expect(result).toEqual(['hermes', 'prometheus'])
+    const result = withoutMainAgent(['agent-a', 'agent-b'])
+    expect(result).toEqual(['agent-a', 'agent-b'])
   })
 
   it('returns an empty list when given only the main agent', () => {
@@ -25,7 +25,7 @@ describe('withoutMainAgent', () => {
   })
 
   it('is consistent with isMainChannelsAgent', () => {
-    const names = [MAIN_AGENT_ID, 'hermes']
+    const names = [MAIN_AGENT_ID, 'agent-a']
     const filtered = withoutMainAgent(names)
     for (const n of filtered) {
       expect(isMainChannelsAgent(n)).toBe(false)
