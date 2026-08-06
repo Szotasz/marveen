@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -53,6 +54,24 @@ def _dashboard_token() -> str:
         return ''
 
 
+def _is_valid_claude_url(url: str) -> bool:
+    """Return True iff url is a genuine https://claude.ai (or subdomain) URL.
+
+    Rejects substring-bypass attempts such as:
+      https://claude.ai.evil.com/...  (evil hostname contains claude.ai)
+      https://evil.com/claude.ai/...  (path contains claude.ai, not hostname)
+      httpsx://claude.ai/...          (scheme is not exactly 'https')
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        return False
+    host = (parsed.hostname or '').rstrip('.').lower()
+    return parsed.scheme == 'https' and (
+        host == 'claude.ai' or host.endswith('.claude.ai')
+    )
+
+
 def _kind_from_path(path: str) -> str:
     ext = os.path.splitext(path)[1].lower()
     return _EXT_KIND.get(ext, 'text')
@@ -64,7 +83,7 @@ def _extract_cloud_url(tool_response) -> str:
         # Direct field names the Artifact tool may use
         for key in ('url', 'cloud_url', 'artifact_url', 'published_url'):
             val = tool_response.get(key)
-            if val and isinstance(val, str) and 'claude.ai' in val and val.startswith('https'):
+            if val and isinstance(val, str) and _is_valid_claude_url(val):
                 return val
         # Recurse into nested dicts (e.g. {result: {url: ...}})
         for val in tool_response.values():
@@ -112,7 +131,7 @@ def main() -> None:
         # When updating an existing artifact the response may omit the URL
         # because the caller already provided it as tool_input.url.
         candidate = (tool_input.get('url') or '').strip()
-        if candidate.startswith('https') and 'claude.ai' in candidate:
+        if _is_valid_claude_url(candidate):
             cloud_url = candidate
     if not cloud_url:
         # No URL found in response or input; nothing to sync.
