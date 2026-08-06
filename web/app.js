@@ -3317,6 +3317,11 @@ function renderAgents() {
   }
 
   for (const agent of agents) {
+    // Skip the main agent — it is already rendered as the dedicated Marveen
+    // card above (window._marveen block). Without this guard a second card
+    // appears once the agents/atlas/ config directory is created.
+    if (agent.name === mainAgentId()) continue
+
     // agent.name is the sanitized id (API/filesystem); displayName keeps the
     // original accented/cased input the user typed.
     const label = agent.displayName || agent.name
