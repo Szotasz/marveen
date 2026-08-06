@@ -97,6 +97,18 @@ if [ "${1:-}" = "--check-scaffolded" ]; then
 fi
 
 
+# Overlap guard: a cycle's per-agent restart sleeps + message replay can exceed
+# the 5-min cron interval; without this a second watchdog would start mid-restart
+# and both could spawn the same session (restart-race, 2026-08-06). NON-BLOCKING:
+# if a cycle is still running, this tick skips. `exec 9>` must succeed BEFORE
+# flock -- otherwise `flock -n 9` acts on fd 0 (stdin) and SUCCEEDS, silently
+# bypassing the lock (trap documented in stuck-modal-guard.sh). Placed AFTER the
+# --resolve-provider fast path so the provider-contract tests never take the lock.
+exec 9>"$INSTALL_DIR/logs/.watchdog.lock" || { echo "$(timestamp) [watchdog] cannot open lock file, skipping" >> "$LOG"; exit 0; }
+if command -v flock >/dev/null 2>&1; then
+  flock -n 9 || { echo "$(timestamp) [watchdog] another watchdog run in progress, skipping" >> "$LOG"; exit 0; }
+fi
+
 export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
 TOKEN=""
