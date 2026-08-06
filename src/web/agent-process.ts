@@ -500,7 +500,43 @@ function provisionIsolatedConfigDir(
       settings.enabledPlugins as Record<string, boolean> | undefined,
     )
     settings.enabledPlugins = scopedPlugins
-    writeFileSync(join(cfg, 'settings.json'), JSON.stringify(settings, null, 2) + '\n')
+    // Keys the isolated file already carries that the shared file never
+    // mentions must SURVIVE this rewrite. The rewrite runs on every main-agent
+    // start, so a straight copy silently drops agent-only configuration. That
+    // is how `statusLine` went missing three times (2026-07-28, 07-30, 08-03):
+    // it is configured for the main agent alone, the shared file never names
+    // it, and the symptom is invisible -- the agent starts fine, it just stops
+    // reporting context usage, so nothing alerts.
+    //
+    // Shared wins on conflict: for every key the shared file DOES define it
+    // stays the source of truth (that is the point of the copy). Target-only
+    // keys are purely additive, so this cannot resurrect a key the shared file
+    // deliberately changed.
+    // The asymmetry is the tell: all four SUB-agents kept their statusLine
+    // through the same restarts, because their path
+    // (ensureIsolatedClaudeConfigDir in claude-config-isolate.ts) merges over
+    // its own previous file. Only this one was a pure copy.
+    //
+    // enabledPlugins is explicitly never inherited -- it is decided by the
+    // scope call above and must not survive from the dir's own older copy.
+    const ownSettingsPath = join(cfg, 'settings.json')
+    if (existsSync(ownSettingsPath)) {
+      try {
+        const own = JSON.parse(readFileSync(ownSettingsPath, 'utf-8')) as Record<string, unknown>
+        // A JSON array or `null` parses fine but is not a settings object;
+        // spreading one would invent numeric keys instead of failing.
+        if (own && typeof own === 'object' && !Array.isArray(own)) {
+          for (const [key, value] of Object.entries(own)) {
+            if (key !== 'enabledPlugins' && !(key in settings)) settings[key] = value
+          }
+        }
+      } catch (err) {
+        // Deliberately loud: rewriting an unparseable own-settings file from
+        // the shared one is exactly the silent-loss shape this block fixes.
+        logger.warn({ err, name, path: ownSettingsPath }, 'isolated-config: unparseable own settings.json, rewriting from shared')
+      }
+    }
+    writeFileSync(ownSettingsPath, JSON.stringify(settings, null, 2) + '\n')
 
     // 3. Own plugins/ dir: symlink the heavy shared parts, own the install state.
     const pluginsDir = join(cfg, 'plugins')
