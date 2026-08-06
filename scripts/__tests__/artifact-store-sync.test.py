@@ -66,6 +66,57 @@ class TestExtractCloudUrl(unittest.TestCase):
         self.assertEqual(hook._extract_cloud_url(resp), "https://claude.ai/public/artifacts/pub")
 
 
+class TestIsValidClaudeUrl(unittest.TestCase):
+    """_is_valid_claude_url must reject hostname-bypass attempts."""
+
+    def test_valid_claude_ai_url(self):
+        self.assertTrue(hook._is_valid_claude_url("https://claude.ai/public/artifacts/abc"))
+
+    def test_valid_subdomain_url(self):
+        self.assertTrue(hook._is_valid_claude_url("https://cdn.claude.ai/static/x.js"))
+
+    def test_bypass_hostname_contains_claude_ai_as_prefix(self):
+        # Substring match on 'claude.ai' would incorrectly accept this.
+        self.assertFalse(hook._is_valid_claude_url("https://claude.ai.evil.com/artifact"))
+
+    def test_bypass_path_contains_claude_ai(self):
+        # Substring match on 'claude.ai' would incorrectly accept this.
+        self.assertFalse(hook._is_valid_claude_url("https://evil.com/claude.ai/artifacts/x"))
+
+    def test_bypass_scheme_not_https(self):
+        # startswith('https') would accept 'httpsx://' -- scheme check must be exact.
+        self.assertFalse(hook._is_valid_claude_url("httpsx://claude.ai/public/artifacts/x"))
+
+    def test_http_not_https_rejected(self):
+        self.assertFalse(hook._is_valid_claude_url("http://claude.ai/public/artifacts/x"))
+
+    def test_non_claude_domain_rejected(self):
+        self.assertFalse(hook._is_valid_claude_url("https://example.com/artifact"))
+
+    def test_empty_string_rejected(self):
+        self.assertFalse(hook._is_valid_claude_url(""))
+
+    def test_trailing_dot_hostname_accepted(self):
+        # urlparse may return 'claude.ai.' with a trailing dot in some edge cases.
+        self.assertTrue(hook._is_valid_claude_url("https://claude.ai./public/artifacts/abc"))
+
+
+class TestExtractCloudUrlBypassRejection(unittest.TestCase):
+    """_extract_cloud_url must not return URLs that bypass the host allowlist."""
+
+    def test_dict_url_with_bypass_hostname_rejected(self):
+        resp = {"url": "https://claude.ai.evil.com/public/artifacts/bypass"}
+        self.assertEqual(hook._extract_cloud_url(resp), "")
+
+    def test_dict_url_with_path_only_claude_ai_rejected(self):
+        resp = {"url": "https://evil.com/claude.ai/public/artifacts/bypass"}
+        self.assertEqual(hook._extract_cloud_url(resp), "")
+
+    def test_dict_url_with_non_https_scheme_rejected(self):
+        resp = {"url": "httpsx://claude.ai/public/artifacts/bypass"}
+        self.assertEqual(hook._extract_cloud_url(resp), "")
+
+
 class TestKindFromPath(unittest.TestCase):
     """_kind_from_path maps file extension to artifact kind."""
 
