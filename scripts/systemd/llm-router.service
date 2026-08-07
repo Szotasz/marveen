@@ -1,0 +1,23 @@
+[Unit]
+# Eco-mode local LLM router (kanban #132, plan phase P1).
+# Sits in front of the two GPU hosts so agents, scheduled prompts and OpenWebUI
+# can reach the local models without knowing which machine is awake or which
+# flags a given model needs.
+Description=Eco-mode local LLM router
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# LAN-only by decision AND by constraint: ollama itself has no authentication,
+# so nothing here is published outward. Bind to a LAN address, never a public
+# one, and keep it behind the same remote_ip guard as the rest of .otthon.
+Environment=ROUTER_PORT=11500
+Environment=ROUTER_BIND=0.0.0.0
+Environment=TZ=Europe/Budapest
+ExecStart=/usr/bin/node /opt/llm-router/index.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
