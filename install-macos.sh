@@ -1293,8 +1293,15 @@ else
   # nobody measured -- the same defect as the banner above it.
   echo -e "    ${DIM}A unit-fajlok a helyukon vannak, de futo folyamatot nem talaltunk.${NC}"
   echo -e "    ${BOLD}Javitas most:${NC}"
-  echo -e "    ${BLUE}launchctl kickstart -p gui/$(id -u)/${DASHBOARD_PLIST}${NC}"
-  echo -e "    ${BLUE}launchctl kickstart -p gui/$(id -u)/${CHANNELS_PLIST}${NC}"
+  # REMEDYCMD807: kickstart alone cannot start a unit that was never REGISTERED
+  # in the gui domain -- and that is exactly the state this branch fires in most
+  # often (an SSH-driven install cannot bootstrap into gui/$UID; measured live,
+  # rc=5 EIO). The remedy the user runs from a GUI terminal must be
+  # state-agnostic: bootstrap first (registers + RunAtLoad-starts; errors
+  # harmlessly if already registered), then kickstart (covers the
+  # registered-but-dead state).
+  echo -e "    ${BLUE}launchctl bootstrap gui/$(id -u) \"\$HOME/Library/LaunchAgents/${DASHBOARD_PLIST}.plist\" 2>/dev/null; launchctl kickstart -p gui/$(id -u)/${DASHBOARD_PLIST}${NC}"
+  echo -e "    ${BLUE}launchctl bootstrap gui/$(id -u) \"\$HOME/Library/LaunchAgents/${CHANNELS_PLIST}.plist\" 2>/dev/null; launchctl kickstart -p gui/$(id -u)/${CHANNELS_PLIST}${NC}"
   echo -e "    ${DIM}Ellenorzes: launchctl print gui/$(id -u)/${CHANNELS_PLIST} | grep -E 'state|pid'${NC}"
 fi
 
