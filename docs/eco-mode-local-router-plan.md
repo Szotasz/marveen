@@ -69,10 +69,18 @@ eléri, már ott fut a start.otthon státusz-infra):
 ## 5. Eco-mode / hard-cap bekötés
 
 A meglévő F2-kapcsoló és a kvóta-őrség (quota-guard) mellé egy harmadik
-állapot: **local-first**. Cap-átlépéskor a jelenlegi viselkedés a
-felfüggesztés; ehelyett ami a fenti táblában helyi-képes osztály, az a
-routerre megy, és csak a maradék függ fel. A memoria-heartbeat kivétel
-marad (host-kontextus-függő, korábbi prisma-döntés).
+állapot: **local-first**. A memoria-heartbeat kivétel marad
+(host-kontextus-függő, korábbi prisma-döntés).
+
+**Premissza-korrekció (2026-08-07, prisma mérése a P2 első felében):** a terv
+eredetileg azt írta, cap-átlépéskor a jelenlegi viselkedés a felfüggesztés,
+és a local-first ezt váltja ki. Ez tévedés volt: ma SEMMI nem függeszt fel
+schedule-t cap-átlépéskor — a quota-guard modellt vált és riaszt. A
+local-first tehát nem kivált egy meglévő mechanizmust, hanem új képességet
+ad: cap-átlépéskor a helyi-képes osztályú, címkézett feladat a routerre
+mehet a felhő helyett. A kapcsolás végrehajtó-útja a P2 második felének
+kérdése, és előtte címke-audit dönti el, van-e ma egyáltalán ilyen feladat
+(lásd #132 kártya).
 
 ## 6. Folytonossági határok (a #132 (3) pontja, őszintén)
 
