@@ -53,6 +53,13 @@ export interface ScheduledTask {
   // else the agent happens to be doing (#264). Relative paths resolve against
   // the marveen project root. Omitted -> pane-only behaviour, unchanged.
   progressFile?: string
+  // Which local-model class this task's work belongs to, from the router's own
+  // list (structured, summary, hungarian, code, long-context, general). Used by
+  // eco mode's local-first state to decide what could run on the local router
+  // instead of the cloud. Absent means "not classified", and an unclassified
+  // task stays in the cloud -- guessing the class from the prompt text would
+  // put a cost decision on a heuristic nobody measured.
+  taskClass?: string
   // type='command' only: raw shell command run via `bash -lc`, no LLM/tmux.
   command?: string
   // type='command' only: command timeout in ms (default 10000).
