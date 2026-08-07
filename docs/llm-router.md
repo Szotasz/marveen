@@ -63,19 +63,34 @@ sudo systemctl daemon-reload && sudo systemctl enable --now llm-router
 curl -s http://localhost:11500/health
 ```
 
-## Verified on 2026-08-07, from the nucbox against the live machines
+## The acceptance test
 
-Each class driven through the router, with real answers coming back:
+`scripts/llm-router-battery.mjs` drives the six #133 benchmark tasks through
+the router, by class, and checks each one reaches the machine and model the
+table promises. It exits non-zero on a mismatch, so it can gate a deployment
+rather than be read by eye.
 
-| Class | Landed on | Model |
-|---|---|---|
-| structured | air903max | qwen3-coder:latest |
-| summary | air903max | qwen3-coder:latest |
-| hungarian | air903max | gemma4:31b-magyar |
-| code | air903max | laguna-xs.2:fixed |
-| general | air903max | qwen3-coder:latest |
+```bash
+node scripts/llm-router-battery.mjs --router http://<host>:11500
+```
 
-`agent-loop` answered `501` with the reason in words.
+Run on 2026-08-07 from the nucbox against the live machines: **7/7 routed as
+the table promises.**
+
+| Task | Class | Served by | ms |
+|---|---|---|---|
+| hu_summary | summary | air903max / qwen3-coder:latest | 1294 |
+| hu_qa | hungarian | air903max / gemma4:31b-magyar | 22102 |
+| en_draft | general | air903max / qwen3-coder:latest | 16498 |
+| json_tool | structured | air903max / qwen3-coder:latest (valid JSON) | 1063 |
+| code | code | air903max / laguna-xs.2:fixed | 21616 |
+| long_ctx | long-context | air903max / qwen3-coder:latest | 16236 |
+| agent_loop | agent-loop | refused, `cloud-only` | 10 |
+
+The latencies show the model thrash the plan warned about: a task that reuses
+the loaded model answers in about a second, a task that forces a swap costs
+16-22. That is the measurement behind leaving batching out of P1 rather than a
+reason to add it blindly -- what to batch is a P3 question, with numbers.
 
 The fallback and prompt-ceiling paths are covered by unit tests with a control
 run rather than live: proving them live would mean taking a machine down, and
