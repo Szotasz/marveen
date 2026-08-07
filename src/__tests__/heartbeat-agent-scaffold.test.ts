@@ -233,3 +233,41 @@ describe('hot-memory metric is a ready-made query (HBMEMBLIND807)', () => {
     expect(out).toContain('do not rewrite the query')
   })
 })
+
+// HBWARN807: the warnings metric was unfalsifiable -- it pointed at a source
+// that does not exist (no status column on memories, no such log table), so
+// it could only ever render 'none'. It was removed. This contract stops it
+// from creeping back WITHOUT a real, ready-made query behind it.
+describe('no unfalsifiable warnings metric (HBWARN807)', () => {
+  it('the report format has no bare "warnings:" output line', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    // The removed line was `- warnings: <none | comma-separated>`. Any warnings
+    // OUTPUT line must be backed by a query; a bare template line is the defect.
+    expect(out).not.toMatch(/^\s*-\s*warnings:/m)
+  })
+
+  it('mentions status=warning only inside the guard comment, never in a query block', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    // The string may appear once, in the HBWARN807 explanation naming the dead
+    // source. It must NOT appear inside a ```-fenced block (i.e. as a query the
+    // agent is told to run).
+    const fences = out.split('```')
+    for (let i = 1; i < fences.length; i += 2) {
+      expect(fences[i]).not.toContain("status='warning'")
+    }
+    // And it never appears as an actual sqlite invocation anywhere.
+    expect(out).not.toMatch(/sqlite3[^\n]*status='warning'/)
+  })
+
+  it('if warnings is mentioned at all, it is only the guard comment demanding a real query', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    // Every surviving "warning" mention must sit in the HBWARN807 explanation,
+    // never as a metric the agent is told to emit. Proxy: no "warning" line
+    // appears inside a ```-fenced report template block.
+    const fences = out.split('```')
+    // odd indices are inside fenced blocks
+    for (let i = 1; i < fences.length; i += 2) {
+      expect(fences[i].toLowerCase()).not.toContain('warning')
+    }
+  })
+})
