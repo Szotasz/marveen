@@ -103,6 +103,50 @@ const telegramProvider: ChannelProvider = {
   splitMessage: (text) => splitMessage(text),
 }
 
+// MCPTOKEN807: a syntactically valid token (getMe ok) can still be UNUSABLE by
+// our poller. Two live-measured cases (Szabolcs, 2026-08-07 fresh install with
+// a reused test-bot token): a webhook bound to the bot, or another running
+// install already long-polling getUpdates -- either way the plugin dies with an
+// opaque "-32000" at runtime. Probe BOTH at save time and answer in human
+// language with the remedy. The probe is advisory: if the probe request itself
+// fails (network hiccup -- getMe already proved connectivity moments ago), we
+// let the save through rather than block setup on a transient error.
+// NOT part of validateToken: the /test endpoint validates the agent's CURRENT
+// token, whose own running poller would 409 against this probe (false busy).
+// Call it only when saving a token that differs from the one already stored.
+export async function checkTelegramTokenBusy(
+  token: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ busy: boolean; reason?: 'webhook' | 'poller'; error?: string }> {
+  try {
+    const wh = await fetchImpl(`https://api.telegram.org/bot${token}/getWebhookInfo`)
+    const whData = await wh.json() as { ok: boolean; result?: { url?: string } }
+    if (whData.ok && whData.result?.url) {
+      return {
+        busy: true,
+        reason: 'webhook',
+        // The token itself must never appear in this user-facing message.
+        error: 'A bot token érvényes, de a bot jelenleg webhookra van kötve, így a Marveen nem tud rá csatlakozni. '
+          + `Teendő: szüntesd meg a webhookot (nyisd meg böngészőben: https://api.telegram.org/bot<A-TOKENED>/deleteWebhook), `
+          + 'vagy készíts új botot a @BotFather-nél, és annak a tokenjét add meg itt.',
+      }
+    }
+    const up = await fetchImpl(`https://api.telegram.org/bot${token}/getUpdates?timeout=0&limit=1`)
+    if (up.status === 409) {
+      return {
+        busy: true,
+        reason: 'poller',
+        error: 'A bot token érvényes, de egy másik futó rendszer már használja (a Telegram 409 Conflict választ adott). '
+          + 'Egy bot tokent egyszerre csak egy telepítés használhat. Teendő: állítsd le a korábbi telepítést, '
+          + 'amelyik még ezzel a tokennel fut, vagy készíts új botot a @BotFather-nél, és annak a tokenjét add meg itt.',
+      }
+    }
+    return { busy: false }
+  } catch {
+    return { busy: false }
+  }
+}
+
 // -- Slack implementation (stub) --
 // The actual Slack channel plugin (jeremylongshore/claude-code-slack-channel)
 // handles message delivery via its own MCP tools. This stub provides the
