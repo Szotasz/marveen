@@ -61,6 +61,7 @@ _FALLBACK_BY_REFUSAL = {
     "timeout": "cloud",
     # The request itself needs changing -- retrying it unchanged cannot help.
     "prompt-too-long-for-fallback": "fix-request",
+    "bad-request": "fix-request",
     # Local models are not meant for this kind of work at all.
     "cloud-only": "cloud",
     "upstream_error": "cloud",
@@ -93,7 +94,8 @@ def ask(messages, task_class=None, timeout=DEFAULT_TIMEOUT, url=None, options=No
     """
     Send one chat request to the local router.
 
-    messages    OpenAI-style [{"role": "...", "content": "..."}]
+    messages    OpenAI-style [{"role": "...", "content": "..."}], or a bare
+                string, which becomes a single user message.
     task_class  structured | summary | hungarian | code | long-context | general
                 (omit and the router uses its default). The router picks the
                 model; naming one here would be ignored on purpose.
@@ -103,6 +105,19 @@ def ask(messages, task_class=None, timeout=DEFAULT_TIMEOUT, url=None, options=No
     Always returns a dict; never raises for a refusal, a timeout or an
     unreachable router.
     """
+    # A bare string is the natural way to call this mid-task, so accept it.
+    # Anything else malformed is refused HERE as fix-request: sent onward it
+    # would come back as an upstream 400 with a "cloud" suggestion, and a
+    # caller typo must not turn into a recommendation to spend cloud money.
+    if isinstance(messages, str):
+        messages = [{"role": "user", "content": messages}]
+    if not isinstance(messages, list) or not all(
+        isinstance(m, dict) and isinstance(m.get("content"), str) for m in messages
+    ):
+        return _refused(
+            "bad-request",
+            'messages must be a string or a list of {"role", "content"} dicts',
+        )
     base = (url or router_url()).rstrip("/")
     payload = {"messages": messages}
     if options:

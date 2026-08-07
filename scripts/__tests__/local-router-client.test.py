@@ -173,6 +173,30 @@ class NoSilentCloudTest(unittest.TestCase):
         self.assertIn(r["fallback"], ("cloud", "retry", "fix-request"))
 
 
+class CallerMistakeTest(unittest.TestCase):
+    # Found in review: a bare-string call went to the router, came back as an
+    # upstream 400, and the client suggested "cloud" -- a typo priced as a
+    # cloud recommendation. The string form is now accepted, and malformed
+    # input is refused locally as fix-request before any network happens.
+    def test_a_bare_string_becomes_a_single_user_message(self):
+        body = _Response(json.dumps({
+            "model": "qwen3-coder:latest", "x_router_host": "air903max",
+            "choices": [{"message": {"content": "ok"}}], "usage": {},
+        }).encode())
+        with patch.object(lr.urllib.request, "urlopen", return_value=body) as mocked:
+            r = lr.ask("just a prompt", task_class="general")
+        self.assertTrue(r["ok"])
+        sent = json.loads(mocked.call_args[0][0].data.decode())
+        self.assertEqual(sent["messages"], [{"role": "user", "content": "just a prompt"}])
+
+    def test_malformed_messages_are_refused_before_the_network(self):
+        with patch.object(lr.urllib.request, "urlopen", side_effect=AssertionError("no network call allowed")):
+            r = lr.ask([{"role": "user"}])  # content missing
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["refusal"], "bad-request")
+        self.assertEqual(r["fallback"], "fix-request")
+
+
 class HealthTest(unittest.TestCase):
     def test_reports_what_the_router_sees(self):
         body = _Response(json.dumps({"up": {"air903max": True, "strikex": False}, "busy": []}).encode())
