@@ -26,6 +26,7 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { readConfiguredMainModel, readExtraChannelPluginIds } from '../web/channel-monitor.js'
+import { DISTRIBUTION_DEFAULT_AGENT_MODEL } from '../config-registry.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -76,10 +77,15 @@ describe('readConfiguredMainModel', () => {
     expect(readConfiguredMainModel(root)).toBe('claude-opus-5')
   })
 
-  it('returns empty string when neither source names a model', () => {
+  it('falls back to the shipped distribution default when neither source names a model (RESPAWNMODEL807)', () => {
+    // The old contract here was '' -- and '' meant every respawn call site
+    // silently dropped --model the day the shipped settings.json stopped
+    // pinning one (#924). Measured live on hermes: bare `claude`, actual
+    // model claude-sonnet-4-6. The resolver now lands on the same third
+    // layer as the launch path.
     writeEnv('MAIN_AGENT_MODEL_SOMETHINGELSE=x\n')
     writeSettings({ enabledPlugins: {} })
-    expect(readConfiguredMainModel(root)).toBe('')
+    expect(readConfiguredMainModel(root)).toBe(DISTRIBUTION_DEFAULT_AGENT_MODEL)
   })
 
   it('survives an unparseable settings.json', () => {

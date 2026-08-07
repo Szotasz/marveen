@@ -6,6 +6,7 @@ import { resolveFromPath } from '../platform.js'
 import { WEB_PORT } from '../config.js'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, SERVICE_ID, BOT_NAME, CHANNEL_PROVIDER, PROJECT_ROOT, RESPAWN_ENABLED } from '../config.js'
+import { DISTRIBUTION_DEFAULT_AGENT_MODEL } from '../config-registry.js'
 import { agentDir, listAgentNames, readAgentChannelProvider } from './agent-config.js'
 import {
   agentHasChannel,
@@ -565,18 +566,33 @@ function readEnvValue(projectRoot: string, key: string): string {
 // than the one it launched with -- below the operator's required floor, with no
 // dialog, no error and no log line. The launch path would keep saying the right
 // thing, which is exactly what makes it hard to see.
+//
+// RESPAWNMODEL807 (2026-08-07): the parity claim above went stale the day
+// MODELDRIFT807 removed the pinned model from the shipped settings.json. The
+// launch path had a THIRD layer (the shipped DISTRIBUTION_DEFAULT_AGENT_MODEL,
+// #918) -- this function did not, so on a clean install it started returning
+// '' and every respawn call site dropped the --model flag entirely. Measured
+// live on the hermes soak box: the respawned main session ran a bare `claude`
+// and the transcript showed claude-sonnet-4-6 -- neither the fleet default nor
+// any configured value, just the CLI's account-tier default. The fix mirrors
+// the launch path's final layer from the SAME single source (a TS import of
+// the constant the shell path reads out of dist/config-registry.js), so this
+// resolver can no longer return empty while a distribution default exists.
 export function readConfiguredMainModel(projectRoot: string = PROJECT_ROOT): string {
   const fromEnv = readEnvValue(projectRoot, 'MAIN_AGENT_MODEL')
   if (fromEnv) return fromEnv
   try {
     const settingsPath = join(projectRoot, '.claude', 'settings.json')
-    if (!existsSync(settingsPath)) return ''
-    const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'))
-    const model = parsed?.model
-    return typeof model === 'string' ? model.trim() : ''
+    if (existsSync(settingsPath)) {
+      const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+      const model = parsed?.model
+      if (typeof model === 'string' && model.trim()) return model.trim()
+    }
   } catch {
-    return ''
+    // fall through to the distribution default -- an unreadable settings file
+    // must degrade the same way as a model-less one, never to a flag-less spawn
   }
+  return DISTRIBUTION_DEFAULT_AGENT_MODEL
 }
 
 // Secondary channel plugins the main session co-listens on, read from .env
