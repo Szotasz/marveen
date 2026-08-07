@@ -613,6 +613,145 @@ export function detectsModelConsentDialog(pane: string): boolean {
     && MODEL_CONSENT_CONFIRM_RX.test(footerRegion)
 }
 
+// The WIDER credit-dialog surface, and why it needs a detector of its own.
+//
+// detectsModelConsentDialog above pins the one shape that has been captured in
+// the field: title + `1. Continue with <model>` + the confirm hint. Answering
+// it by pressing option 1 is safe precisely BECAUSE that shape's option 1 is
+// known to mean "stay on the configured model".
+//
+// Claude Code also renders credit-gated modals that wear the same footer but
+// NOT that layout -- e.g. a picker whose first row is "Buy usage credits", or
+// a dialog that only offers models this agent is not configured for (an agent
+// pinned to Haiku parked on a Fable/Sonnet dialog). There, a blind option 1
+// either spends money or moves the agent onto a model nobody chose. The modal
+// then disappears and the pane, the dashboard and agent-config.json all keep
+// naming the configured model, so the switch is invisible until someone reads
+// the session transcript. A consent dialog whose options do not include the
+// configured model must ESCALATE, not guess.
+//
+// Hence a deliberately LOOSER detector (any credit phrase + >= 2 numbered
+// rows) paired with an explicit option lookup, so a caller can act only when a
+// row unambiguously names the configured model and otherwise has a defined
+// "escalate" answer instead of a default keypress.
+const MODEL_CREDIT_PHRASE_RX = /\b(?:uses?|runs on|requires?) usage credits\b/i
+// A rendered select row: optional focus caret, the 1-based index, a dot, the
+// label.
+const MODEL_CREDIT_OPTION_RX = /^\s*❯?\s*(\d+)\.\s+(\S.*)$/
+// How many trailing lines the credit scan inspects. Counted against the widest
+// variant the bundle can render: border + title + gap + wrapped body + the
+// "you don't have usage credits yet" note + a wrapped Help-Center line + gap +
+// three options + footer + border ~= 18 lines. 24 keeps margin for narrower
+// panes (more wrapping) while staying far short of the transcript rendered
+// above the modal. Sizing this too small is the dangerous direction: the phrase
+// sits at the TOP of the modal, so an under-sized region silently drops the
+// pane back to the generic Escape recovery.
+const MODEL_CREDIT_REGION_LINES = 24
+
+// Model id -> the SHORT name the dialog prints. Source of truth: the Claude
+// entries of /api/models/available (src/web/routes/agents.ts), which is the set
+// an agent can actually be configured to. Ids outside it -- including every
+// non-Claude provider model -- resolve to null, and the caller escalates rather
+// than guessing a "closest" model.
+export const MODEL_CREDIT_DIALOG_LABELS: Record<string, string> = {
+  'claude-opus-5': 'Opus 5',
+  'claude-sonnet-5': 'Sonnet 5',
+  'claude-sonnet-4-6': 'Sonnet 4.6',
+  'claude-fable-5': 'Fable 5',
+  'claude-opus-4-8': 'Opus 4.8',
+  'claude-haiku-4-5': 'Haiku 4.5',
+}
+
+// Agent configs carry variant suffixes the labels do not: the 1M-context marker
+// (`claude-opus-4-8[1m]`) and the dated release pin
+// (`claude-haiku-4-5-20251001`). Both name the SAME model in the dialog, so
+// strip them before the lookup.
+function baseModelId(modelId: string): string {
+  return modelId.trim().replace(/\[1m\]$/i, '').replace(/-\d{8}$/, '')
+}
+
+function escapeForRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+interface ModelCreditOption {
+  num: number
+  text: string
+}
+
+function parseModelCreditOptions(lines: string[]): ModelCreditOption[] {
+  const out: ModelCreditOption[] = []
+  for (const line of lines) {
+    const m = line.match(MODEL_CREDIT_OPTION_RX)
+    if (!m) continue
+    const num = Number.parseInt(m[1], 10)
+    if (!Number.isFinite(num) || num < 1) continue
+    out.push({ num, text: m[2].trim() })
+  }
+  return out
+}
+
+/**
+ * True when the pane is parked in a Claude Code usage-credit consent modal --
+ * the navigable dialog shown when continuing draws paid usage credits. Pure +
+ * dependency-free.
+ *
+ * Callers must treat a match as "do NOT auto-Escape": Escape is answered as
+ * `cancelled`, which the CLI resolves by switching the session onto the
+ * fallback model and continuing -- a silent, invisible downgrade. Navigate
+ * explicitly (findModelCreditDialogOption) or escalate instead.
+ *
+ * Guards, in order:
+ *   (a) detectsBlockingMenu() must hold. Reusing it inherits the busy /
+ *       idle-footer / footer-region discipline instead of re-inlining it, AND
+ *       makes every match a strict SUBSET of the panes the generic Escape
+ *       recovery already handled -- so this can never fire somewhere the old
+ *       code did nothing.
+ *   (b) The credit phrase must appear in the live bottom region, matched on a
+ *       whitespace-FLATTENED join rather than per line: the TUI hard-wraps the
+ *       body ("Continuing on Fable 5\n  uses usage credits").
+ *   (c) At least two numbered option rows in the same region. This separates
+ *       the interactive modal from the non-interactive "... requires usage
+ *       credits" banners Claude Code also prints.
+ */
+export function detectsModelCreditDialog(pane: string): boolean {
+  if (!detectsBlockingMenu(pane)) return false
+  const region = pane.split('\n').slice(-MODEL_CREDIT_REGION_LINES)
+  // Flatten before matching: the body wraps mid-phrase at pane width.
+  if (!MODEL_CREDIT_PHRASE_RX.test(region.join(' ').replace(/\s+/g, ' '))) return false
+  return parseModelCreditOptions(region).length >= 2
+}
+
+/**
+ * The 1-based option number in a credit dialog that selects `modelId`, or null
+ * when there is no UNAMBIGUOUS match.
+ *
+ * Only the two row shapes that actually name a model count -- "Continue with
+ * <label>" (stay on the credit-gated model) and "Switch to <label> and
+ * continue" (move to the offered alternative). The other labels the dialog can
+ * render ("Buy usage credits", "Request usage credits from your admin", an
+ * upsell row) name no model and must never be selected by a watchdog.
+ *
+ * Returns null -- i.e. "escalate, do not act" -- when the id is not in
+ * MODEL_CREDIT_DIALOG_LABELS, when no row names it (e.g. the agent is
+ * configured for Haiku but the dialog only offers Fable/Sonnet), or when more
+ * than one row would match. Guessing a "closest" model is deliberately not
+ * attempted: picking the wrong row here spends money or downgrades the agent
+ * silently, which is the failure this pair exists to prevent.
+ *
+ * Wrapped option labels are NOT reassembled across lines. A wrap yields null,
+ * which routes to escalation -- the safe direction.
+ */
+export function findModelCreditDialogOption(pane: string, modelId: string): number | null {
+  if (!pane || !modelId) return null
+  const label = MODEL_CREDIT_DIALOG_LABELS[baseModelId(modelId)]
+  if (label == null) return null
+  const rx = new RegExp(`^(?:Continue with|Switch to)\\s+${escapeForRegExp(label)}\\b`, 'i')
+  const matches = parseModelCreditOptions(pane.split('\n').slice(-MODEL_CREDIT_REGION_LINES))
+    .filter((o) => rx.test(o.text))
+  return matches.length === 1 ? matches[0].num : null
+}
+
 export interface DetectPaneStateOptions {
   /** If true, the 'typing' state (text parked in input box) is
    * merged into 'busy'. Default false -- callers that care about

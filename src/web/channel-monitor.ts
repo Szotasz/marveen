@@ -6,7 +6,7 @@ import { resolveFromPath } from '../platform.js'
 import { WEB_PORT } from '../config.js'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, SERVICE_ID, BOT_NAME, CHANNEL_PROVIDER, PROJECT_ROOT, RESPAWN_ENABLED } from '../config.js'
-import { agentDir, listAgentNames, readAgentChannelProvider } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentChannelProvider, readAgentModel } from './agent-config.js'
 import {
   agentHasChannel,
   agentSessionName,
@@ -33,7 +33,8 @@ import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence }
 import { probeTelegramConflict } from './channel-conflict-probe.js'
 import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPluginAbsent } from './channel-plugin-unlock.js'
 import {
-  detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, detectsFirstRunGate, detectsModelConsentDialog, type PaneErrorAlertState, type PaneState,
+  detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, detectsFirstRunGate, detectsModelConsentDialog,
+  detectsModelCreditDialog, findModelCreditDialogOption, type PaneErrorAlertState, type PaneState,
   stuckInputSignature, decideStuckInputRecovery, parkedChannelInput,
   parkedInputText, shouldClearTruncatedPreamble,
   parkedInputRowCount, submitLanded, decideStuckInputAction,
@@ -1557,6 +1558,81 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
             sendAlert(`🔑 A(z) ${label} agent első-indítási dialogjait továbbléptettem, de Claude-belépés kell ("Select login method"). Lépj be: tmux attach -t ${t.session}. Utána minden várakozó feladat magától kézbesítődik.`)
           } else {
             sendAlert(`🧭 A(z) ${label} session a Claude Code első-indítási képernyőjén parkolt (${firstRunGate}); automatikusan továbbléptettem. A várakozó ütemezett feladatok a következő körben kézbesítődnek.`)
+          }
+        } else if (pane != null && detectsModelCreditDialog(pane)) {
+          // A credit dialog whose options do not include the configured model
+          // must ESCALATE, not guess.
+          //
+          // The FABLEFALL1 branch below answers the one measured dialog shape
+          // by pressing option 1, which is safe only because that shape's
+          // option 1 IS "Continue with <configured model>". On the other shapes
+          // Claude Code renders -- a first row reading "Buy usage credits", or
+          // a dialog offering only models this agent is not configured for -- a
+          // blind option 1 spends money or silently switches the fleet's model.
+          // The modal then vanishes and the pane, the dashboard and
+          // agent-config.json all keep naming the configured model, so nothing
+          // surfaces the change until someone reads the session transcript.
+          //
+          // Escape is not an out either: the CLI records it as `cancelled` and
+          // continues on the FALLBACK model (the measurement in FABLEFALL1
+          // below). So this branch either navigates to a row that unambiguously
+          // names the configured model, or it sends NO keystrokes at all and
+          // alerts. Both paths are throttled by the menu-recovery debounce that
+          // already gates this whole block.
+          const configuredModel = t.isMarveen
+            ? readConfiguredMainModel()
+            : (t.agentName ? readAgentModel(t.agentName) : '')
+          const optionNum = configuredModel ? findModelCreditDialogOption(pane, configuredModel) : null
+          if (optionNum == null) {
+            // No row unambiguously names the configured model (unknown or
+            // non-Claude model id, none offered, or two rows would match). Do
+            // NOT guess a "closest" model and do NOT fall through to the Escape
+            // below -- leave the dialog parked and let a human choose.
+            logger.warn({ session: t.session, agent: label, configuredModel },
+              'Model usage-credit dialog offers no unambiguous option for the configured model -- escalating, NO keystrokes sent')
+            sendAlert(`💳 A(z) ${label} session usage-credit dialóguson parkol, de nincs benne egyértelmű opció a beállított modellre (${configuredModel || 'ismeretlen'}). Nem tippelek: a dialógus nyitva maradt, a választás a tiéd. tmux attach -t ${t.session}`)
+          } else {
+            // PANEWRITERS805: a probe+act keystroke writer, so the re-probe and
+            // the digit+Enter it authorises run as ONE recover-mode critical
+            // section -- a delivery streaming into this pane must not get a
+            // digit spliced into it, and nothing may move the pane between the
+            // check and the press. Fail-closed: a busy lane sends nothing and
+            // the dialog is re-detected on a later sweep.
+            const nav = await withSessionSendLock(t.session, null, 'recover', async () => {
+              // Re-probe INSIDE the lane. `pane` was captured before the
+              // debounce decision, and a digit selects by POSITION -- acting on
+              // a stale capture could confirm a row that has since moved. Only
+              // an unchanged option number authorises the press.
+              const paneNow = capturePane(t.session)
+              if (paneNow == null || !detectsModelCreditDialog(paneNow)) return 'gone'
+              if (findModelCreditDialogOption(paneNow, configuredModel) !== optionNum) return 'moved'
+              try {
+                // Digit + settle + Enter, the same select-modal sequence
+                // dismissModelConsentDialogIfPresent uses. If the digit alone
+                // confirms, the trailing Enter lands on an empty prompt and is
+                // a no-op; if it only moves focus, the Enter confirms.
+                execFileSync(TMUX, ['send-keys', '-t', t.session, String(optionNum)], { timeout: 5000 })
+                await delay(150)
+                execFileSync(TMUX, ['send-keys', '-t', t.session, 'Enter'], { timeout: 5000 })
+                return 'navigated'
+              } catch (err) {
+                logger.warn({ err, session: t.session }, 'Model usage-credit dialog navigation keystrokes failed')
+                return 'failed'
+              }
+            })
+            if (!nav.ran) {
+              logger.info({ session: t.session, agent: label },
+                'Model usage-credit dialog navigation skipped: a delivery holds this pane send lane (fail-closed); re-detected on a later sweep')
+            } else if (nav.value === 'navigated') {
+              logger.warn({ session: t.session, agent: label, configuredModel, optionNum },
+                'Model usage-credit dialog answered on the option naming the configured model (never a blind option 1)')
+              sendAlert(`💳 A(z) ${label} session usage-credit dialóguson parkolt; a beállított modellt (${configuredModel}) néven nevező opciót (${optionNum}.) választottam -- a session a konfigurált modelljén fut tovább. Ha ez a credit-köteles modell, innentől usage-creditet fogyaszt.`)
+            } else if (nav.value === 'failed') {
+              sendAlert(`💳 A(z) ${label} session usage-credit dialógusán a beállított modell (${configuredModel}) opciójára navigálás HIBÁZOTT -- a dialógus valószínűleg nyitva maradt. Kézi feloldás kell: tmux attach -t ${t.session}`)
+            } else {
+              logger.info({ session: t.session, agent: label, outcome: nav.value },
+                'Model usage-credit dialog changed between detection and the send lane -- no keystrokes sent')
+            }
           }
         } else {
           // FABLEFALL1: the model usage-credit consent dialog is indistinguishable

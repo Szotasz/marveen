@@ -4,6 +4,10 @@ import {
   detectPermissionMode,
   detectsThinkingBlockError,
   detectsBlockingMenu,
+  detectsModelConsentDialog,
+  detectsModelCreditDialog,
+  findModelCreditDialogOption,
+  MODEL_CREDIT_DIALOG_LABELS,
   detectsPastePlaceholder,
   isReadyForPrompt,
   shouldRetrySubmit,
@@ -2166,5 +2170,179 @@ describe('parkedPasteSignature (stuck [Pasted text #N] recovery)', () => {
     ].join('\n')
     expect(stuckInputSignature(auraShape)).toBeNull()
     expect(parkedPasteSignature(auraShape)).not.toBeNull()
+  })
+})
+
+describe('detectsModelCreditDialog / findModelCreditDialogOption', () => {
+  // The shape detectsModelConsentDialog already covers: option 1 IS "Continue
+  // with <model>", so pressing 1 keeps the configured model. Note the hard wrap
+  // inside the body ("Continuing on Fable 5" / "uses usage credits, ...") --
+  // the phrase the detector keys on straddles the line break.
+  const CREDIT_DIALOG = [
+    '  ⎿  $ date && ls -la',
+    SEP,
+    "  You've reached your Fable 5 limit",
+    "  You've used your included Fable 5 usage for this week. Continuing on Fable 5",
+    '  uses usage credits, purchased separately from your plan.',
+    '  Learn more: https://support.claude.com/en/articles/12429409-extra-usage-for-',
+    '  paid-claude-plans',
+    '  ❯ 1. Continue with Fable 5',
+    '    2. Switch to Sonnet 5 and continue',
+    '  Enter to confirm · Esc to cancel',
+  ].join('\n')
+
+  // The variant that motivates this pair: option 1 names NO model at all, so a
+  // blind option-1 answer buys credits instead of choosing a model.
+  const CREDIT_DIALOG_ALT = [
+    '  Fable 5 now uses usage credits',
+    '  Fable 5 runs on usage credits, purchased separately from your plan.',
+    "  You don't have usage credits yet.",
+    '  ❯ 1. Buy usage credits',
+    '    2. Switch to Opus 5 and continue',
+    '  Enter to confirm · Esc to cancel',
+  ].join('\n')
+
+  it('detects the credit dialog even though the body phrase is line-wrapped', () => {
+    expect(detectsModelCreditDialog(CREDIT_DIALOG)).toBe(true)
+  })
+
+  it('detects the alternate ("runs on usage credits") wording', () => {
+    expect(detectsModelCreditDialog(CREDIT_DIALOG_ALT)).toBe(true)
+  })
+
+  it('catches the shape detectsModelConsentDialog misses -- the reason it exists', () => {
+    // The consent detector requires `1. Continue with `, so the "Buy usage
+    // credits" variant slips past it and would reach the generic Escape
+    // recovery, which the CLI answers as "continue on the fallback model".
+    expect(detectsModelConsentDialog(CREDIT_DIALOG_ALT)).toBe(false)
+    expect(detectsModelCreditDialog(CREDIT_DIALOG_ALT)).toBe(true)
+  })
+
+  it('is a strict SUBSET of detectsBlockingMenu (the branch it splits off from)', () => {
+    // The monitor only reaches the new branch inside the blocking-menu pass, so
+    // a credit dialog that is not a blocking menu would be unreachable.
+    expect(detectsBlockingMenu(CREDIT_DIALOG)).toBe(true)
+    expect(detectsBlockingMenu(CREDIT_DIALOG_ALT)).toBe(true)
+  })
+
+  it('is false for other blocking menus, idle, busy and empty panes', () => {
+    const MCP_MENU = [
+      '   Manage MCP servers',
+      '   ❯ claude.ai Canva · ✔ connected · 39 tools',
+      '   ↑/↓ to navigate · Enter to confirm · Esc to cancel',
+    ].join('\n')
+    expect(detectsModelCreditDialog(MCP_MENU)).toBe(false)
+    expect(detectsModelCreditDialog(IDLE_BYPASS)).toBe(false)
+    expect(detectsModelCreditDialog(IDLE_STRICT)).toBe(false)
+    expect(detectsModelCreditDialog(BUSY_FULL_FOOTER)).toBe(false)
+    expect(detectsModelCreditDialog(BUSY_TOKENS_ONLY)).toBe(false)
+    expect(detectsModelCreditDialog('')).toBe(false)
+    expect(detectsModelCreditDialog('   \n  ')).toBe(false)
+  })
+
+  it('is false for a non-interactive credit BANNER (no numbered options)', () => {
+    // Claude Code also prints credit prose without a select; only the modal
+    // with >= 2 numbered rows may be navigated.
+    const banner = [
+      '  Fast mode requires usage credits',
+      '  Press Esc to exit',
+    ].join('\n')
+    expect(detectsBlockingMenu(banner)).toBe(true)
+    expect(detectsModelCreditDialog(banner)).toBe(false)
+  })
+
+  it('does not trigger on a reply that merely quotes the dialog above a live prompt', () => {
+    // Region-scoping + the idle-footer guard: agents discuss this very dialog,
+    // so a quoted copy in the transcript must never be actioned.
+    const quoted = [
+      "  A watchdog reported: \"You've reached your Fable 5 limit\"; per the modal",
+      '  text, continuing would run on usage credits.',
+      '  1. Continue with Fable 5',
+      '  2. Switch to Sonnet 5 and continue',
+      '',
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(detectsModelCreditDialog(quoted)).toBe(false)
+  })
+
+  it('does not trigger under a live "esc to interrupt" footer (busy guard)', () => {
+    const busyQuote = [
+      '  Continuing on Fable 5 uses usage credits, purchased separately.',
+      '  1. Continue with Fable 5',
+      '  2. Switch to Sonnet 5 and continue',
+      '  Esc to cancel',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt',
+    ].join('\n')
+    expect(detectsModelCreditDialog(busyQuote)).toBe(false)
+  })
+
+  it('finds the "Continue with <model>" option for the configured model', () => {
+    expect(findModelCreditDialogOption(CREDIT_DIALOG, 'claude-fable-5')).toBe(1)
+  })
+
+  it('finds the "Switch to <model> and continue" option for the configured model', () => {
+    expect(findModelCreditDialogOption(CREDIT_DIALOG, 'claude-sonnet-5')).toBe(2)
+    expect(findModelCreditDialogOption(CREDIT_DIALOG_ALT, 'claude-opus-5')).toBe(2)
+  })
+
+  it('normalises the [1m] and dated-release suffixes agent configs carry', () => {
+    const pane = [
+      '  Fable 5 now uses usage credits',
+      '  ❯ 1. Continue with Fable 5',
+      '    2. Switch to Opus 4.8 and continue',
+      '  Enter to confirm · Esc to cancel',
+    ].join('\n')
+    expect(findModelCreditDialogOption(pane, 'claude-opus-4-8[1m]')).toBe(2)
+    const haiku = pane.replace('Opus 4.8', 'Haiku 4.5')
+    expect(findModelCreditDialogOption(haiku, 'claude-haiku-4-5-20251001')).toBe(2)
+  })
+
+  it('returns null for a model id that is not in the label map', () => {
+    // Non-Claude provider models can never be named by this dialog.
+    expect(findModelCreditDialogOption(CREDIT_DIALOG, 'deepseek-v4-pro')).toBeNull()
+    expect(findModelCreditDialogOption(CREDIT_DIALOG, '')).toBeNull()
+  })
+
+  it('returns null when no offered option names the configured model', () => {
+    // The escalate path: agent configured for Haiku, dialog offers Fable/Sonnet.
+    expect(findModelCreditDialogOption(CREDIT_DIALOG, 'claude-haiku-4-5-20251001')).toBeNull()
+    // ...and the credit-buying row names no model at all, so an agent on Fable
+    // parked on that variant must escalate rather than press 1.
+    expect(findModelCreditDialogOption(CREDIT_DIALOG_ALT, 'claude-fable-5')).toBeNull()
+  })
+
+  it('returns null when the label would only match mid-label, not as the option target', () => {
+    // "Sonnet 4.6" must not be satisfied by an option naming "Sonnet 4.65".
+    const pane = [
+      '  Fable 5 now uses usage credits',
+      '  ❯ 1. Continue with Fable 5',
+      '    2. Switch to Sonnet 4.65 and continue',
+      '  Enter to confirm · Esc to cancel',
+    ].join('\n')
+    expect(findModelCreditDialogOption(pane, 'claude-sonnet-4-6')).toBeNull()
+  })
+
+  it('returns null when more than one option matches (ambiguous, never guess)', () => {
+    const pane = [
+      '  Fable 5 now uses usage credits',
+      '  ❯ 1. Continue with Fable 5',
+      '    2. Switch to Fable 5 and continue',
+      '  Enter to confirm · Esc to cancel',
+    ].join('\n')
+    expect(findModelCreditDialogOption(pane, 'claude-fable-5')).toBeNull()
+  })
+
+  it('every label in the map is the display name the model picker offers', () => {
+    // Pins the source of truth: these strings are what the dialog prints, so a
+    // silent drift here would turn every navigation into an escalation.
+    expect(MODEL_CREDIT_DIALOG_LABELS['claude-fable-5']).toBe('Fable 5')
+    expect(MODEL_CREDIT_DIALOG_LABELS['claude-opus-5']).toBe('Opus 5')
+    expect(MODEL_CREDIT_DIALOG_LABELS['claude-sonnet-5']).toBe('Sonnet 5')
+    expect(MODEL_CREDIT_DIALOG_LABELS['claude-sonnet-4-6']).toBe('Sonnet 4.6')
+    expect(MODEL_CREDIT_DIALOG_LABELS['claude-opus-4-8']).toBe('Opus 4.8')
+    expect(MODEL_CREDIT_DIALOG_LABELS['claude-haiku-4-5']).toBe('Haiku 4.5')
   })
 })
