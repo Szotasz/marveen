@@ -28,6 +28,7 @@ import {
   readChannelToken,
   generateSlackAppManifest,
   getSlackAppSetupInstructions,
+  checkTelegramTokenBusy,
   type ChannelProviderType,
 } from '../../channel-provider.js'
 import {
@@ -306,6 +307,20 @@ export async function tryHandleAgentsChannels(ctx: RouteContext): Promise<boolea
     if (dupeOwner) {
       json(res, { error: `This bot token is already used by agent "${dupeOwner}". Each agent needs its own bot token to avoid getUpdates conflicts.` }, 409)
       return true
+    }
+
+    // MCPTOKEN807: a token reused from a PREVIOUS install (webhook bound, or a
+    // poller still running elsewhere) passes getMe and the local dupe check,
+    // then kills the plugin at runtime with an opaque -32000. Probe at save
+    // time and answer with the remedy. Skipped when re-saving the token this
+    // agent already runs with -- its OWN live poller would read as busy.
+    if (provider === 'telegram') {
+      const stateDir0 = isMain ? channelStateDir(provider) : channelStateDir(provider, agentDir(name))
+      const currentToken = readChannelToken(provider, join(stateDir0, '.env'))
+      if (botToken.trim() !== currentToken) {
+        const busyCheck = await checkTelegramTokenBusy(botToken.trim())
+        if (busyCheck.busy) { json(res, { error: busyCheck.error }, 409); return true }
+      }
     }
 
     if (provider === 'slack' && !isManagedSettingsReady()) {
