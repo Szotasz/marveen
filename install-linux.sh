@@ -846,6 +846,43 @@ else
 fi
 ok "Csatorna: $CHANNEL_PROVIDER"
 
+# INSTTOKEN807: probe the freshly entered bot token BEFORE anything is written.
+# Warn-only (advisory), for two hard reasons: a network hiccup must not block
+# the install, and the headless derive contract (Bridge payload) forbids new
+# interactive reads here -- so we say it loudly and let the install continue.
+# The dashboard save path hard-rejects the same states (#926); this is the
+# installer-side voice for the same three findings, each with its remedy.
+# set -e safe: every path ends in return 0; curl failures are guarded.
+# The token value itself is NEVER printed.
+probe_telegram_token() {
+  _ptt_t="$1"
+  [ -n "$_ptt_t" ] || return 0
+  _ptt_me="$(curl -s --max-time 8 "https://api.telegram.org/bot${_ptt_t}/getMe" 2>/dev/null)" || return 0
+  case "$_ptt_me" in
+    *'"ok":true'*) : ;;
+    *'"ok":false'*)
+      warn "A megadott bot token ERVENYTELEN (a Telegram getMe elutasitotta)."
+      echo -e "    ${DIM}Ellenorizd a @BotFather-tol kapott tokent. A telepites folytatodik, de a bot ezzel a tokennel nem fog valaszolni.${NC}"
+      return 0 ;;
+    *) return 0 ;;
+  esac
+  _ptt_wh="$(curl -s --max-time 8 "https://api.telegram.org/bot${_ptt_t}/getWebhookInfo" 2>/dev/null)" || return 0
+  case "$_ptt_wh" in
+    *'"url":"http'*)
+      warn "A bot token ervenyes, de a bot WEBHOOKRA van kotve -- a Marveen poller igy nem tud ra csatlakozni."
+      echo -e "    ${DIM}Teendo: nyisd meg bongeszoben: https://api.telegram.org/bot<A-TOKENED>/deleteWebhook${NC}"
+      echo -e "    ${DIM}vagy keszits uj botot a @BotFather-nel, es futtasd ujra a telepitot azzal.${NC}"
+      return 0 ;;
+  esac
+  _ptt_up="$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "https://api.telegram.org/bot${_ptt_t}/getUpdates?timeout=0&limit=1" 2>/dev/null)" || return 0
+  if [ "$_ptt_up" = "409" ]; then
+    warn "A bot token ervenyes, de egy MASIK futo rendszer mar hasznalja (Telegram 409 Conflict)."
+    echo -e "    ${DIM}Egy tokent egyszerre csak egy telepites hasznalhat. Teendo: allitsd le a korabbi telepitest,${NC}"
+    echo -e "    ${DIM}vagy keszits uj botot a @BotFather-nel, es futtasd ujra a telepitot az uj tokennel.${NC}"
+  fi
+  return 0
+}
+
 BOT_TOKEN=""
 SLACK_BOT_TOKEN=""
 SLACK_APP_TOKEN=""
@@ -862,6 +899,7 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   echo -e "${DIM}  4. Masold ide a kapott tokent:${NC}"
   echo ""
   read -rp "$(_t prompt_telegram_token)" BOT_TOKEN
+  probe_telegram_token "$BOT_TOKEN"
 elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   echo ""
   echo -e "${DIM}  Az AI asszisztensed Discordon kommunikal veled.${NC}"
