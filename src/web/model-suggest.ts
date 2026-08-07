@@ -14,6 +14,10 @@ import { DISTRIBUTION_DEFAULT_AGENT_MODEL } from '../config-registry.js'
 
 // Human label for the reason texts, derived from the constant so a future
 // model bump rewrites the prose too: 'claude-opus-5[1m]' -> 'Opus 5 (1M)'.
+// CAVEAT: only sane for family-major ids (opus/sonnet/fable tiers). A dated id
+// like 'claude-haiku-4-5-20251001' would yield a nonsense label -- today this
+// is only ever called with TOP_TIER_MODEL; extend the parser before any
+// general-purpose use.
 export function humanModelLabel(model: string): string {
   const oneM = /\[1m\]$/i.test(model)
   const base = model.replace(/\[.*\]$/, '').replace(/^claude-/, '')
