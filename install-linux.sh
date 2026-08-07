@@ -457,7 +457,7 @@ ok "pipx" $(pipx --version)
 ok "python3 $(python3 --version | awk '{print $2}')"
 ok "tmux $(tmux -V | awk '{print $2}')"
 ok "unzip" $(unzip -v | awk 'NR==1 {print $2}')
-ok "zstd $(zstd --version | awk '{gsub(",","",$5); print $5}')"
+ok "zstd $(zstd --version | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
 
 # ─────────────────────────────────────────────
 # Repo bootstrap
@@ -603,11 +603,9 @@ export PATH="$BUN_INSTALL/bin:$PATH"
 if command -v bun &>/dev/null; then
   ok "bun mar telepitve: $(bun --version)"
 else
-  # unzip -- a Bun hivatalos telepitoje ezzel csomagolja ki a binarist; nincs alapertelmezetten telepitve friss Ubuntu
-  # WSL kepen, nelkule "error: unzip is required to install bun"-nal elhasal.
-  if ! command -v unzip &>/dev/null; then
-    sudo apt-get install -y unzip 2>/dev/null || true
-  fi
+  # unzip -- a Bun hivatalos telepitoje ezzel csomagolja ki a binarist; nincs alapertelmezetten telepitve friss WSL distrokon,
+  # nelkule "error: unzip is required to install bun"-nal elhasal.
+  command -v unzip &>/dev/null || pkg_install_noninteractive unzip || true
   echo -e "  Bun telepitese (Telegram plugin fuggoseg)..."
   curl -fsSL https://bun.sh/install | bash 2>/dev/null
   if ! command -v bun &>/dev/null; then
@@ -1422,11 +1420,9 @@ else
   # Az ollama telepitoje sudo-val ir a /usr/local/bin-be es allit be systemd service-t.
   # Elore gyorsitotarazzuk a sudo hitelesitest, hogy a gyermek-script sudo prompt-ja ne bukjon el.
   sudo -v 2>/dev/null || true
-  # zstd -- az ollama telepitoje ezzel csomagolja ki a binarist; nincs alapertelmezetten telepitve friss Ubuntu
-  # WSL kepen, nelkule "ERROR: This version requires zstd for extraction" hibaval elhasal.
-  if ! command -v zstd &>/dev/null; then
-    sudo apt-get install -y zstd 2>/dev/null || true
-  fi
+  # zstd -- az ollama telepitoje ezzel csomagolja ki a binarist; nincs alapertelmezetten telepitve friss WSL distron,
+  # nelkule "ERROR: This version requires zstd for extraction" hibaval elhasal.
+  command -v zstd &>/dev/null || pkg_install_noninteractive zstd || true
   # NEM fatalis: ha az ollama telepitoje hibara fut (pl. sudo, halozat, WSL),
   # csak figyelmeztetunk es kihagyjuk a szemantikus memoria lepest -- a telepito megy tovabb.
   if curl -fsSL https://ollama.com/install.sh | sh; then
