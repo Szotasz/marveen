@@ -207,3 +207,29 @@ describe('shouldBootHeartbeatAgent', () => {
     expect(shouldBootHeartbeatAgent({ respawnEnabled: false, agentEnabled: false })).toBe(false)
   })
 })
+
+// HBMEMBLIND807: the hot-memory metric must ship as a READY-MADE query, the
+// way task_runs does -- a prose-only bullet let the heartbeat agent compose
+// its own SQL and report 0 with three hot memories in the window. Lock the
+// contract: the exact query, the SECONDS cutoff (no ms multiplier -- that is
+// the task_runs unit, not this one), and the do-not-rewrite instruction.
+describe('hot-memory metric is a ready-made query (HBMEMBLIND807)', () => {
+  it('ships the exact scoped count query', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    expect(out).toContain("SELECT COUNT(*) FROM memories")
+    expect(out).toContain(`agent_id='${ID.mainAgentId}'`)
+    expect(out).toContain("category='hot'")
+    expect(out).toContain('created_at > unixepoch()-3600')
+  })
+
+  it('the memory cutoff carries NO millisecond multiplier', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    const memBullet = out.slice(out.indexOf('Memory + system'))
+    expect(memBullet.slice(0, 1200)).not.toContain("(unixepoch()-3600)*1000")
+  })
+
+  it('tells the agent to report the number, not to rewrite the query', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    expect(out).toContain('do not rewrite the query')
+  })
+})

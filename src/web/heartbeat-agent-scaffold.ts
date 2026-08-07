@@ -230,9 +230,23 @@ When you receive the heartbeat prompt:
      the whole table:
      \`sqlite3 ${id.storeDir}/claudeclaw.db "SELECT status, COUNT(*) FROM
      task_runs WHERE ts > (unixepoch()-3600)*1000 GROUP BY status"\`.
-   - **Memory + system** -- DB file size, any \`category='hot'\`
-     memories newer than 1 hour, plus presence of any
-     \`status='warning'\` entries in the memory log.
+   - **Memory + system** -- DB file size, new hot memories, warning
+     entries. HBMEMBLIND807: the hot-memory count is a READY-MADE query,
+     exactly like task_runs above -- when this bullet was prose only, the
+     heartbeat agent composed its own SQL and reported 0 while three hot
+     memories sat in the window (measured 2026-08-07 09:00, ids
+     2442-2444). A metric line that can silently read 0 is worse than no
+     line: real change looks identical to silence. NOTE the unit
+     difference from task_runs: \`memories.created_at\` is SECONDS, so
+     the cutoff is \`unixepoch()-3600\` with NO millisecond multiplier:
+
+     \`\`\`bash
+     sqlite3 ${id.storeDir}/claudeclaw.db "SELECT COUNT(*) FROM memories \\
+       WHERE agent_id='${id.mainAgentId}' AND category='hot' \\
+       AND created_at > unixepoch()-3600"
+     \`\`\`
+
+     Report the number this query returns -- do not rewrite the query.
 
 2. **Format** the result as a single inter-agent message:
 
