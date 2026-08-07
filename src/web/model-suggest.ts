@@ -4,8 +4,9 @@
 // MODELSUGGEST807: the top-tier suggestion is the SHIPPED distribution default,
 // never a literal. This module used to hardcode claude-opus-4-8[1m] on every
 // opus branch, so after the Opus 5 migration the dashboard advised DOWNGRADING
-// Opus 5 agents to 4.8 (measured on the live endpoint: 6 of 10 agents, 5 of
-// them running Opus 5) -- a customer-facing surface the migration missed.
+// Opus 5 agents to 4.8 (measured on the live endpoint before the fix: 8 of 10
+// agents were suggested 4.8, 7 of them with changeAdvised, 5 of those running
+// Opus 5; after: 0 of 10) -- a customer-facing surface the migration missed.
 // [1m] everywhere, not a split: a second plain-opus literal would be the next
 // forgotten drift seed, a context-threshold split would make suggestions flap
 // around the boundary, and this module's own cost table prices the variants

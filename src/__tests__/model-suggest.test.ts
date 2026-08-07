@@ -212,7 +212,8 @@ describe('suggestForAgent -- reason structure (6 sections)', () => {
 
 // MODELSUGGEST807: the migration missed this customer-facing surface -- the
 // suggester kept recommending claude-opus-4-8[1m] (measured on the live
-// endpoint: 6 of 10 agents advised to DOWNGRADE, 5 of them on Opus 5).
+// endpoint before the fix: 8 of 10 agents were suggested 4.8, 7 of them with
+// changeAdvised, 5 of those running Opus 5; after: 0 of 10).
 describe('MODELSUGGEST807 -- top tier is the shipped distribution default', () => {
   it('the constant this suite locks to is Opus 5 (1M) today', () => {
     expect(DISTRIBUTION_DEFAULT_AGENT_MODEL).toBe('claude-opus-5[1m]')
