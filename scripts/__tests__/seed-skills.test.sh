@@ -132,10 +132,19 @@ else
   fail "MAIN_AGENT_ID NOT substituted in task-config.json"
 fi
 
-if grep -q '/opt/testbot/store/claudeclaw.db' "$SCHED_TARGET/kanban-audit/SKILL.md"; then
+# SHTEST807: this assert used to grep for '/opt/testbot/store/claudeclaw.db',
+# a recipe-content string that #870 rewrote away (sqlite3 paths -> HTTP API), so
+# it failed on every current tree. Assert the substitution MECHANISM, not the
+# recipe text, so the next recipe rewrite cannot break it again.
+if grep -q '/opt/testbot/' "$SCHED_TARGET/kanban-audit/SKILL.md"; then
   pass "INSTALL_DIR substituted in SKILL.md"
 else
   fail "INSTALL_DIR NOT substituted in SKILL.md"
+fi
+if ! grep -rq '{{' "$SCHED_TARGET"; then
+  pass "no unsubstituted {{placeholder}} left anywhere in seeded output"
+else
+  fail "unsubstituted {{placeholder}} left in seeded output: $(grep -rl '{{' "$SCHED_TARGET" | head -2 | tr '\n' ' ')"
 fi
 
 if grep -q "skip ha assignee='testbot'" "$SCHED_TARGET/kanban-audit/SKILL.md"; then
