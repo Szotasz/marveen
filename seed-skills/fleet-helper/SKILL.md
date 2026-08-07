@@ -53,6 +53,15 @@ only does the judgment + notification. Zero scheduler/runner changes. See
 `scripts/README.md` for the full rationale and two hard-won scheduling lessons
 (avoid cron collisions with other heartbeats; `skipIfBusy` trade-off).
 
+## One cheap model call (`local_router.py`)
+A single summary, classification or JSON extraction can go to the local LLM
+router instead of a cloud model: `ask(messages, task_class="summary")`. You name
+the kind of work, the router picks the machine and the model and applies the
+per-model rules the benchmarks measured. A refusal comes back as DATA
+(`refusal`, `detail`, and a suggested `fallback` of retry / cloud / fix-request)
+rather than as an exception, and the client never calls a cloud model itself --
+spending money stays the caller's decision. See `scripts/README.md`.
+
 ## Safety
 - Token is read from `store/.dashboard-token` at call time; never printed or committed.
 - Kanban helpers are READ-ONLY; mutations stay in your own audited flows.

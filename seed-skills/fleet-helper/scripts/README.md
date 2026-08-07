@@ -74,9 +74,52 @@ Scheduling caveats (learned the hard way in a live test):
 
 `gate_example.py` is a reference gate (mail + kanban + calendar) you can adapt.
 
+## `local_router.py` - one cheap model call
+
+For a single summary, classification or JSON extraction, ask the local LLM
+router instead of paying a cloud model. You name the KIND of work; the router
+picks the machine and the model, and enforces the per-model rules the
+benchmarks measured.
+
+```python
+from local_router import ask, is_ok
+
+r = ask([{"role": "user", "content": f"Summarise in three sentences:\n{text}"}],
+        task_class="summary")
+
+if is_ok(r):
+    summary = r["text"]          # r["host"], r["model"] say who answered
+elif r["fallback"] == "retry":   # every machine busy right now
+    ...
+elif r["fallback"] == "cloud":   # nothing local can do it - YOUR call whether it is worth the money
+    ...
+else:                            # "fix-request": prompt over the fallback machine's ceiling
+    ...
+```
+
+Classes: `structured`, `summary`, `hungarian`, `code`, `long-context`,
+`general`. (`agent-loop` exists only so the router can refuse it: tool use and
+multi-step work are not local jobs.)
+
+Two rules the client keeps, and both matter when it is called from inside a
+bigger job:
+
+- **A refusal is data, never an exception.** Busy machines, an unreachable
+  router, a timeout, a prompt over the ceiling - all come back as a dict with
+  `refusal`, `detail` and a suggested `fallback`. A helper called mid-task must
+  not be the thing that crashes it.
+- **It never calls a cloud model itself.** It returns advice; spending money is
+  the caller's decision, because only the caller knows whether the work is
+  worth it.
+
+`python3 local_router.py health` prints what the router sees;
+`python3 local_router.py summary "text..."` sends one call. Override the
+address with `ROUTER_URL`.
+
 ## Layout
 ```
 fleet.py                 # shared lib + CLI
+local_router.py          # local LLM router client (one cheap model call)
 mail_triage.py           # unread-mail filter
 gate_example.py          # reference heartbeat gate (keep-alive == the gate call)
 mail_rules.example.json  # copy to mail_rules.json (gitignored) with real values
