@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest'
 import {
   isInfrastructureChild,
   findClaudePidInTree,
+  extractMcpPackageNames,
+  isMcpProcess,
   TASKSTATE_FRESH_WINDOW_MS,
 } from '../web/context-restart-gate-runner.js'
 import {
@@ -370,6 +372,90 @@ describe('findClaudePidInTree -- locate claude in pane process tree', () => {
 
   it('fail-closed: pane is unknown process with no claude child', () => {
     expect(findClaudePidInTree(1000, 'sh', [])).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// extractMcpPackageNames + isMcpProcess -- reconnected MCP server detection
+// (review #938 round 3: channel-mcp-reconnect.ts restarts MCP plugin mid-session)
+//
+// A reconnected server has a fresh (young) age, so the age-based filter would
+// misclassify it as work. Pattern-based check catches it.
+//
+// Real examples on this host:
+//   .mcp.json: gmail -> "npx -y gmail-mcp-server@1.0.30"
+//     → process: "npm exec gmail-mcp-server@1.0.30" (args contain "gmail-mcp-server")
+//   channel plugin (telegram):
+//     → process: "bun run --cwd /home/janos/.claude/plugins/cache/... --shell=bun --silent start"
+//     → args contain "/plugins/cache/" (the global plugin cache path)
+// ---------------------------------------------------------------------------
+describe('extractMcpPackageNames -- extract package names from .mcp.json config', () => {
+  it('extracts package name from npx command', () => {
+    const names = extractMcpPackageNames({
+      gmail: { command: 'npx', args: ['-y', 'gmail-mcp-server@1.0.30'] },
+    })
+    expect(names).toContain('gmail-mcp-server')
+  })
+
+  it('strips version suffix from package name', () => {
+    const names = extractMcpPackageNames({
+      foo: { command: 'npx', args: ['-y', 'my-mcp-server@2.3.4'] },
+    })
+    expect(names).toContain('my-mcp-server')
+    expect(names).not.toContain('my-mcp-server@2.3.4')
+  })
+
+  it('skips launcher tokens (npx, npm, bun, node, -y, etc.)', () => {
+    const names = extractMcpPackageNames({
+      x: { command: 'npm', args: ['exec', 'some-mcp-tool@1.0'] },
+    })
+    expect(names).not.toContain('npm')
+    expect(names).not.toContain('exec')
+    expect(names).toContain('some-mcp-tool')
+  })
+
+  it('handles multiple servers', () => {
+    const names = extractMcpPackageNames({
+      a: { command: 'npx', args: ['-y', 'alpha-mcp@1.0'] },
+      b: { command: 'npx', args: ['-y', 'beta-mcp@2.0'] },
+    })
+    expect(names).toContain('alpha-mcp')
+    expect(names).toContain('beta-mcp')
+  })
+
+  it('returns empty array for empty config', () => {
+    expect(extractMcpPackageNames({})).toEqual([])
+  })
+})
+
+describe('isMcpProcess -- pattern-based MCP server identification', () => {
+  it('identifies telegram channel plugin by plugin cache path', () => {
+    // bigme-channels measured: bun run --cwd /home/janos/.claude/plugins/cache/... --shell=bun --silent start
+    const args = 'bun run --cwd /home/janos/.claude/plugins/cache/claude-plugins-official/telegram/0.0.6 --shell=bun --silent start'
+    expect(isMcpProcess(args, [])).toBe(true)
+  })
+
+  it('identifies gmail MCP server by package name', () => {
+    // bigme-channels measured: npm exec gmail-mcp-server@1.0.30
+    const args = 'npm exec gmail-mcp-server@1.0.30'
+    expect(isMcpProcess(args, ['gmail-mcp-server'])).toBe(true)
+  })
+
+  it('identifies reconnected (fresh-age) gmail MCP server', () => {
+    // After a /mcp reconnect, the gmail server is young but still identifiable
+    // by package name in args -- this is the B3 scenario.
+    const args = '/usr/bin/node /home/janos/.npm/_npx/.../gmail-mcp-server/dist/index.js --non-interactive'
+    expect(isMcpProcess(args, ['gmail-mcp-server'])).toBe(true)
+  })
+
+  it('does NOT classify a Task-tool subagent as MCP', () => {
+    const args = '/home/janos/.local/bin/claude --dangerously-skip-permissions --model claude-sonnet-5'
+    expect(isMcpProcess(args, ['gmail-mcp-server'])).toBe(false)
+  })
+
+  it('does NOT classify a bash process as MCP', () => {
+    expect(isMcpProcess('bash', [])).toBe(false)
+    expect(isMcpProcess('/bin/bash -c echo hello', ['gmail-mcp-server'])).toBe(false)
   })
 })
 

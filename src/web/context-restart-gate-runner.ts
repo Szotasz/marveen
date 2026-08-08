@@ -160,6 +160,14 @@ function getPidAgeSeconds(pid: number): number | null {
   } catch { return null }
 }
 
+function getChildArgsStr(pid: number): string | null {
+  try {
+    const out = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'args='],
+      { timeout: 2000, encoding: 'utf-8' })
+    return out.trim() || null
+  } catch { return null }
+}
+
 function getCommForPid(pid: number): string | null {
   try {
     const out = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'comm='],
@@ -191,13 +199,83 @@ export function findClaudePidInTree(
   return null
 }
 
+// ---- MCP process pattern helpers --------------------------------------------
+//
+// After a channel-mcp-reconnect.ts-triggered reconnect, the MCP server process
+// restarts with a fresh (young) age. The age-based infra filter would classify
+// it as possibly-work and block the gate for up to 2h. To avoid this, we also
+// check whether a child process's args identify it as an MCP server by:
+//
+//   1. Matching known plugin cache paths (/plugins/cache/) -- all Claude Code
+//      channel plugins run from the global plugin cache dir.
+//
+//   2. Matching package names extracted from the session's .mcp.json -- covers
+//      npm/npx-started MCP servers (e.g. gmail-mcp-server@1.0.30).
+//
+// A process matching either criterion is infra even if young.
+//
+// Tokens like 'npx', 'npm', 'exec', 'bun', 'node' are skipped; only the
+// package/script name that uniquely identifies the server is extracted.
+
+const MCP_SKIP_ARGS = new Set([
+  'npx', 'npm', 'exec', '-y', '--yes', 'bun', 'node', 'deno',
+  'python3', 'python', 'ruby', 'uvx', 'run', 'start',
+])
+
+/**
+ * Pure: extract identifying package names from an mcpServers config object.
+ * Strips runtime launchers (npx, npm, bun, node...) and version suffixes.
+ * Exported for tests.
+ */
+export function extractMcpPackageNames(mcpServers: Record<string, unknown>): string[] {
+  const names: string[] = []
+  for (const v of Object.values(mcpServers) as Record<string, unknown>[]) {
+    const allArgs = [
+      typeof v['command'] === 'string' ? v['command'] : '',
+      ...((Array.isArray(v['args']) ? v['args'] : []) as string[]),
+    ]
+    for (const raw of allArgs) {
+      if (!raw || typeof raw !== 'string') continue
+      if (raw.startsWith('-')) continue
+      // Take basename (strip absolute path prefix) then version suffix
+      const base = raw.split('/').at(-1)?.replace(/@.*$/, '') ?? ''
+      if (base.length < 5 || MCP_SKIP_ARGS.has(base.toLowerCase())) continue
+      names.push(base)
+    }
+  }
+  return names
+}
+
+function getMcpJsonPatterns(workingDir: string): string[] {
+  try {
+    const raw = JSON.parse(readFileSync(join(workingDir, '.mcp.json'), 'utf-8')) as Record<string, unknown>
+    const servers = (raw['mcpServers'] ?? {}) as Record<string, unknown>
+    return extractMcpPackageNames(servers)
+  } catch { return [] }
+}
+
+/**
+ * Pure: true if a child process (identified by its full args string) is an
+ * MCP server and should be treated as infrastructure regardless of age.
+ *
+ * Two criteria (either is sufficient):
+ *   - args contains '/plugins/cache/' → channel plugin (telegram, slack, etc.)
+ *   - args contains a package name from mcpPatterns → .mcp.json MCP server
+ *
+ * Exported for tests.
+ */
+export function isMcpProcess(childArgs: string, mcpPatterns: string[]): boolean {
+  if (childArgs.includes('/plugins/cache/')) return true
+  return mcpPatterns.some(p => childArgs.includes(p))
+}
+
 /**
  * Returns true if the session's claude process has live children that look
  * like in-flight work (Task-tool subagents, background Bash), false if only
  * infrastructure children are found, null if the check cannot be completed
  * (fail-closed → decideGate blocks).
  */
-function hasLiveChildProcesses(session: string): boolean | null {
+function hasLiveChildProcesses(session: string, mcpPatterns: string[]): boolean | null {
   const panePid = getPanePid(session)
   if (panePid === null) return null
 
@@ -222,7 +300,12 @@ function hasLiveChildProcesses(session: string): boolean | null {
   for (const pid of claudeChildren) {
     const age = getPidAgeSeconds(pid)
     if (age === null) return null   // fail-closed
-    if (!isInfrastructureChild(age, claudeAge)) return true
+    if (isInfrastructureChild(age, claudeAge)) continue   // age-based infra
+    // Age alone is not enough: a reconnected MCP server starts fresh (young).
+    // Check process args to identify MCP servers regardless of age.
+    const args = getChildArgsStr(pid) ?? ''
+    if (isMcpProcess(args, mcpPatterns)) continue   // pattern-based infra
+    return true   // live work child
   }
   return false
 }
@@ -249,6 +332,36 @@ function hasLiveTaskStateFile(name: string, nowMs: number): boolean {
     const ts = typeof raw.ts === 'number' ? raw.ts : 0
     return ts > 0 && nowMs - ts <= TASKSTATE_FRESH_WINDOW_MS
   } catch { return false }
+}
+
+/**
+ * Collect args strings of live work children for diagnostic logging.
+ * Called only on the alert path (infrequent) so the extra ps calls are fine.
+ */
+function getLiveWorkChildArgs(session: string, mcpPatterns: string[]): string[] {
+  try {
+    const panePid = getPanePid(session)
+    if (panePid === null) return []
+    const paneComm = getCommForPid(panePid)
+    const panePidChildren = getChildPids(panePid)
+    const claudePid = findClaudePidInTree(
+      panePid, paneComm,
+      panePidChildren.map(pid => ({ pid, comm: getCommForPid(pid) })),
+    )
+    if (claudePid === null) return []
+    const claudeAge = getPidAgeSeconds(claudePid)
+    if (claudeAge === null) return []
+    const children = claudePid === panePid ? panePidChildren : getChildPids(claudePid)
+    const result: string[] = []
+    for (const pid of children) {
+      const age = getPidAgeSeconds(pid)
+      if (age === null || isInfrastructureChild(age, claudeAge)) continue
+      const args = getChildArgsStr(pid) ?? ''
+      if (isMcpProcess(args, mcpPatterns)) continue
+      result.push(args || `PID ${pid}`)
+    }
+    return result
+  } catch { return [] }
 }
 
 // ---- Gate check for one agent -----------------------------------------------
@@ -281,8 +394,9 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
 
   const liveTaskState = hasLiveTaskStateFile(name, nowMs)
 
+  const mcpPatterns = getMcpJsonPatterns(workingDir)
   const childProcesses = (() => {
-    try { return hasLiveChildProcesses(session) }
+    try { return hasLiveChildProcesses(session, mcpPatterns) }
     catch { return null }
   })()
 
@@ -347,10 +461,19 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
           ? Math.round((nowMs - runState.firstBlockedAt) / 60_000)
           : '?'
         try {
+          // When the block reason is child processes, include their args so
+          // bigme can identify the culprit at a glance (no post-hoc investigation).
+          let childInfo = ''
+          if (decision.reason.startsWith('live-child-processes')) {
+            const workArgs = getLiveWorkChildArgs(session, mcpPatterns)
+            if (workArgs.length > 0) {
+              childInfo = ` Blokkolo gyerekfolyamatok: ${workArgs.slice(0, 5).join('; ')}`
+            }
+          }
           createAgentMessage(
             name,
             MAIN_AGENT_ID,
-            `[CONTEXT-RESTART-GATE] A(z) "${name}" agens kapuja ${blockedSinceMin} perce folyamatosan blokkolt. Ok: ${decision.reason}. A(z) ${Math.round(cfg.thresholdTokens / 1000)}k tokenes kuszob ele ert, de a kapu nem enged -- ellenorizd hogy nincs-e elakadt munka.`,
+            `[CONTEXT-RESTART-GATE] A(z) "${name}" agens kapuja ${blockedSinceMin} perce folyamatosan blokkolt. Ok: ${decision.reason}.${childInfo} A(z) ${Math.round(cfg.thresholdTokens / 1000)}k tokenes kuszob ele ert, de a kapu nem enged -- ellenorizd hogy nincs-e elakadt munka.`,
             'context-restart-gate persistent-block alert',
           )
           logger.warn({ agent: name, reason: decision.reason, blockedSinceMin },
