@@ -12,7 +12,10 @@ cd "$(dirname "$0")/.."
 HA_URL="${HA_URL:-http://192.168.1.124:8123}"
 # peci01 sits in garage 2 (Viktor, 2026-08-06), so only that sensor is shown;
 # garazs1 (sensor.shellyht_34bc74_temperature) was dropped on the same call.
-SENSORS="${SENSORS:-sensor.garazs2_temperature}"
+# garazs2: where peci01 sits until the machine-room move; mt15_kucko: the Tuya
+# 15-in-1 that will watch the machine room (#289). Both flow to the page; the
+# gree-thermostat on peci01 matches on the machine key, not the display name.
+SENSORS="${SENSORS:-sensor.garazs2_temperature sensor.mt15_kucko_temperature}"
 PECI="${PECI:-viktor@192.168.2.122}"
 KEY="${KEY:-$HOME/.ssh/atlas-crm-migration-ed25519}"
 DEST="${DEST:-/mnt/data/start-otthon/room-temp.json}"
@@ -45,7 +48,12 @@ for line in sys.stdin:
         continue
     name = s.get("attributes", {}).get("friendly_name") or s["entity_id"]
     name = name.replace(" Temperature", "").strip()
-    rooms.append({"name": name, "c": round(c, 1), "updated_unix": int(ts)})
+    # Stable machine key alongside the display name: consumers (the peci01
+    # gree-thermostat) must not have to match on accented, renamable labels.
+    key = s["entity_id"]
+    key = key[len("sensor."):] if key.startswith("sensor.") else key
+    key = key[:-len("_temperature")] if key.endswith("_temperature") else key
+    rooms.append({"key": key, "name": name, "c": round(c, 1), "updated_unix": int(ts)})
 print(json.dumps({"fetched_unix": int(now), "rooms": rooms}))
 ')
 
