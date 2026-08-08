@@ -132,16 +132,28 @@ def log_inbound(agent_id, chat_id, message_id, text, ts):
         con.close()
 
 
-def log_outbound(agent_id, chat_id, text):
-    """Record an outbound reply (message_id NULL -> never deduped)."""
+def log_outbound(agent_id, chat_id, text, message_id=None):
+    """Record an outbound reply.
+
+    message_id: the Telegram message_id returned by the reply tool, or None.
+    When provided, INSERT OR IGNORE deduplicates on the UNIQUE constraint so
+    a double-fire of the hook does not produce a duplicate row. When None the
+    constraint does not trigger (NULL != NULL in SQL), preserving the existing
+    behaviour for callers that do not supply a message_id.
+    Note: INSERT OR IGNORE silently swallows ALL constraint violations, not
+    only UNIQUE conflicts. This is intentional: a duplicate outbound row is
+    harmless, and we never want the ledger write to raise an exception.
+    """
     con = connect()
     try:
         now = int(time.time())
+        mid = str(message_id) if message_id is not None else None
         con.execute(
-            "INSERT INTO conversation_log"
+            "INSERT OR IGNORE INTO conversation_log"
             " (agent_id, chat_id, direction, message_id, text, ts, created_at)"
-            " VALUES (?, ?, 'out', NULL, ?, ?, ?)",
-            (str(agent_id), str(chat_id), text, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)), now),
+            " VALUES (?, ?, 'out', ?, ?, ?, ?)",
+            (str(agent_id), str(chat_id), mid, text,
+             time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)), now),
         )
         con.commit()
     finally:
