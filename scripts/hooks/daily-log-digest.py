@@ -116,22 +116,29 @@ def _fetch_pending_approvals(agent_id):
 
 
 def _fetch_task_failures(agent_id):
-    """Failed task_runs for this agent in the last 72h."""
-    cutoff = int(time.time()) - WINDOW_HOURS * 3600
+    """Missed/late task_runs for this agent in the last 72h.
+
+    task_runs.ts is in MILLISECONDS (src/db.ts:2295, Date.now()). The cutoff
+    is therefore in ms too. Conversion to epoch seconds uses ts/1000. The
+    status column never contains 'failed' in practice; the real failure signals
+    are 'missed' and 'fired_late' (src/db.ts appendTaskRun).
+    """
+    cutoff_ms = (int(time.time()) - WINDOW_HOURS * 3600) * 1000
     con = ledger_lib.connect()
     try:
         rows = con.execute(
             "SELECT name, ts FROM task_runs"
-            " WHERE agent=? AND status='failed' AND ts >= ?"
+            " WHERE agent=? AND status IN ('missed','fired_late') AND ts >= ?"
             " ORDER BY ts DESC LIMIT 5",
-            (str(agent_id), cutoff),
+            (str(agent_id), cutoff_ms),
         ).fetchall()
         result = []
-        for name, ts in rows:
-            dt = datetime.datetime.fromtimestamp(ts).strftime("%m-%d %H:%M")
+        for name, ts_ms in rows:
+            dt = datetime.datetime.fromtimestamp(ts_ms / 1000).strftime("%m-%d %H:%M")
             result.append(f"[TASK HIBA] {name} ({dt})")
         return result
-    except Exception:
+    except Exception as e:
+        _log_secondary_err(agent_id, f"task-failures: {type(e).__name__}")
         return []
     finally:
         con.close()
@@ -185,6 +192,27 @@ def _log_skip(agent_id, reason):
             "%Y-%m-%dT%H:%M:%S"
         )
         line = f"{ts}\t{agent_id}\tDIGEST_SKIP\t{reason}\n"
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass
+
+
+def _log_secondary_err(agent_id, reason):
+    """Append a DIGEST_SECONDARY_ERR line when a secondary fetch fails.
+
+    Distinguishes a secondary data error from a full skip: the primary digest
+    still injects, but the secondary source was silently dropped. Without this
+    the silent except in secondary fetchers hid the B1 bug completely.
+    Format: ISO-datetime<TAB>agent_id<TAB>DIGEST_SECONDARY_ERR<TAB>reason
+    """
+    try:
+        db = ledger_lib.db_path()
+        log_path = os.path.join(os.path.dirname(db), "digest-inject.log")
+        ts = datetime.datetime.fromtimestamp(int(time.time())).strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        )
+        line = f"{ts}\t{agent_id}\tDIGEST_SECONDARY_ERR\t{reason}\n"
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(line)
     except Exception:
@@ -249,7 +277,8 @@ def main():
         if created_at >= recent_cutoff:
             recent_pointers.append(f"{headline} [ts:{created_at}]")
         else:
-            older_headlines.append(headline)
+            date_prefix = datetime.datetime.fromtimestamp(created_at).strftime("%m-%d")
+            older_headlines.append(f"{date_prefix} {headline}")
 
     if not recent_pointers and not older_headlines:
         _log_skip(agent_id, "ures-szures-utan")
