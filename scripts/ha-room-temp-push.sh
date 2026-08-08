@@ -10,12 +10,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 HA_URL="${HA_URL:-http://192.168.1.124:8123}"
-# peci01 sits in garage 2 (Viktor, 2026-08-06), so only that sensor is shown;
-# garazs1 (sensor.shellyht_34bc74_temperature) was dropped on the same call.
-# garazs2: where peci01 sits until the machine-room move; mt15_kucko: the Tuya
-# 15-in-1 that will watch the machine room (#289). Both flow to the page; the
-# gree-thermostat on peci01 matches on the machine key, not the display name.
-SENSORS="${SENSORS:-sensor.garazs2_temperature sensor.mt15_kucko_temperature}"
+# mt15_kucko: the Tuya 15-in-1 watching the machine room, where all units now
+# live (#289). garazs2 was dropped 2026-08-08 once peci01 moved out of the
+# garage -- its reading is no longer "the room". (Viktor may move peci01 back to
+# garazs2 for winter ~mid-October: the machine warms that car-garage usefully in
+# cold months; if so, re-add sensor.garazs2_temperature here.)
+# The gree-thermostat on peci01 matches on the machine key, not the display name.
+SENSORS="${SENSORS:-sensor.mt15_kucko_temperature}"
 PECI="${PECI:-viktor@192.168.2.122}"
 KEY="${KEY:-$HOME/.ssh/atlas-crm-migration-ed25519}"
 DEST="${DEST:-/mnt/data/start-otthon/room-temp.json}"
