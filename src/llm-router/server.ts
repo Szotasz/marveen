@@ -16,9 +16,12 @@
 // outward. Binding is explicit for that reason.
 
 import http from 'node:http'
+import { appendFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { planRoute, estimatePromptTokens, TASK_CLASSES, type HostHealth, type HostName } from './routing.js'
 import { createHealthCache } from './health.js'
 import { toOllamaChat, toOpenAiResponse, refusalToHttp, taskClassOf, type OpenAiChatRequest } from './openai-bridge.js'
+import { servedMetric, refusedMetric, summarise, toJsonl, parseJsonl, type RouteMetric } from './metrics.js'
 
 const HOST_ADDRESSES: Record<HostName, string[]> = {
   air903max: ['http://192.168.2.189:11434', 'http://192.168.2.163:11434'],
@@ -28,6 +31,18 @@ const HOST_ADDRESSES: Record<HostName, string[]> = {
 export interface RouterDeps {
   fetchImpl?: typeof fetch
   now?: () => number
+  /**
+   * Where the per-request records go. One JSON object per line, appended.
+   *
+   * A record is written with a single appendFileSync call: on Linux an append
+   * of this size lands whole, so two requests finishing together interleave as
+   * complete lines rather than as halves of one. The reader skips a damaged
+   * final line anyway, so a crash mid-write costs the record being written and
+   * nothing above it.
+   */
+  metricsPath?: string
+  /** Recording failures must never fail a request; this exists so a test can see them. */
+  onMetricError?: (err: Error) => void
 }
 
 /**
@@ -43,6 +58,36 @@ export function createRouterHandler(deps: RouterDeps = {}) {
   // not actually have.
   const busyHosts = new Set<string>()
 
+  const metricsPath = deps.metricsPath ?? process.env.ROUTER_METRICS_PATH ?? null
+  const clock = deps.now ?? (() => Date.now())
+
+  /**
+   * Write one record.
+   *
+   * Swallows its own errors on purpose: a full disk or a bad path must cost the
+   * measurement, never the answer a caller is waiting for. The error goes to a
+   * hook so a test can prove it happened rather than trusting the silence.
+   */
+  const record = (metric: RouteMetric) => {
+    if (!metricsPath) return
+    try {
+      const dir = dirname(metricsPath)
+      if (dir && !existsSync(dir)) mkdirSync(dir, { recursive: true })
+      appendFileSync(metricsPath, toJsonl(metric))
+    } catch (err) {
+      deps.onMetricError?.(err as Error)
+    }
+  }
+
+  const readRecords = (): RouteMetric[] => {
+    if (!metricsPath || !existsSync(metricsPath)) return []
+    try {
+      return parseJsonl(readFileSync(metricsPath, 'utf8'))
+    } catch {
+      return []
+    }
+  }
+
   async function currentHealth(): Promise<HostHealth> {
     const [air, strike] = await Promise.all([
       health.get('air903max', HOST_ADDRESSES.air903max),
@@ -57,21 +102,45 @@ export function createRouterHandler(deps: RouterDeps = {}) {
   }
 
   async function handleChat(body: OpenAiChatRequest, headers: http.IncomingHttpHeaders) {
+    const startedAt = clock()
     const messages = Array.isArray(body?.messages) ? body.messages : []
+    const requestedClass = taskClassOf(headers as Record<string, string | string[] | undefined>, body)
+    // Recorded as ASKED FOR, so an unknown label appears in the numbers as
+    // itself instead of as the default it silently became.
+    const metricClass = requestedClass ?? '(default)'
     const plan = planRoute({
-      taskClass: taskClassOf(headers as Record<string, string | string[] | undefined>, body),
+      taskClass: requestedClass,
       promptTokens: estimatePromptTokens(messages),
       health: await currentHealth(),
       busyHosts,
     })
 
-    if (plan.refused) return refusalToHttp(plan.refused, plan.detail)
+    if (plan.refused) {
+      const answer = refusalToHttp(plan.refused, plan.detail)
+      record(refusedMetric({
+        at: startedAt,
+        taskClass: metricClass,
+        status: answer.status,
+        refusal: plan.refused,
+        totalMs: clock() - startedAt,
+      }))
+      return answer
+    }
 
     const address = await addressFor(plan.host)
     if (!address) {
       // The health cache said up and the address vanished between the two --
       // rare, and still not a reason to invent a target.
-      return refusalToHttp('no-healthy-host', `${plan.host} stopped answering between the health check and the call`)
+      const answer = refusalToHttp('no-healthy-host', `${plan.host} stopped answering between the health check and the call`)
+      record(refusedMetric({
+        at: startedAt,
+        taskClass: metricClass,
+        status: answer.status,
+        refusal: 'no-healthy-host',
+        totalMs: clock() - startedAt,
+        host: plan.host,
+      }))
+      return answer
     }
 
     busyHosts.add(plan.host)
@@ -82,6 +151,10 @@ export function createRouterHandler(deps: RouterDeps = {}) {
         body: JSON.stringify(toOllamaChat(body, plan)),
       })
       if (!res.ok) {
+        record(refusedMetric({
+          at: startedAt, taskClass: metricClass, status: 502,
+          refusal: 'upstream_error', totalMs: clock() - startedAt, host: plan.host,
+        }))
         return {
           status: 502,
           headers: {},
@@ -89,8 +162,16 @@ export function createRouterHandler(deps: RouterDeps = {}) {
         }
       }
       const json = (await res.json()) as any
+      record(servedMetric({
+        at: startedAt, taskClass: metricClass, host: plan.host, model: plan.model,
+        totalMs: clock() - startedAt, ollama: json,
+      }))
       return { status: 200, headers: {}, body: toOpenAiResponse(json, { model: plan.model, host: plan.host }) }
     } catch (err) {
+      record(refusedMetric({
+        at: startedAt, taskClass: metricClass, status: 502,
+        refusal: 'upstream_unreachable', totalMs: clock() - startedAt, host: plan.host,
+      }))
       return {
         status: 502,
         headers: {},
@@ -118,6 +199,14 @@ export function createRouterHandler(deps: RouterDeps = {}) {
         busy: [...busyHosts],
         classes: Object.keys(TASK_CLASSES),
       })
+    }
+
+    if (req.method === 'GET' && url.pathname === '/metrics') {
+      // Aggregated from the FILE rather than from a counter in memory: a
+      // restart must not quietly reset the numbers an acceptance check is
+      // comparing against.
+      const records = readRecords()
+      return send(200, { ...summarise(records), path: metricsPath, since: records[0]?.at ?? null })
     }
 
     // Both the OpenAI path and the native one land in the same place: the

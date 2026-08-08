@@ -1,4 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
+import { mkdtempSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { createRouterHandler } from '../llm-router/server.js'
 
 // The router as a caller meets it.
@@ -39,6 +42,15 @@ const call = async (handle: any, { path = '/v1/chat/completions', headers = {}, 
   }
   await handle(req, res)
   return { status, headers: responseHeaders, body: JSON.parse(chunks.join('')) }
+}
+
+const get = async (handle: any, path: string) => {
+  const chunks: string[] = []
+  let status = 0
+  const req: any = { method: 'GET', url: path, headers: {}, on() { return req } }
+  const res: any = { writeHead(s: number) { status = s }, end(p: string) { chunks.push(p) } }
+  await handle(req, res)
+  return { status, body: JSON.parse(chunks.join('')) }
 }
 
 describe('a normal call', () => {
@@ -179,5 +191,63 @@ describe('a request the router cannot parse', () => {
     const res: any = { writeHead(s: number) { status = s }, end(p: string) { chunks.push(p) } }
     await handle(req, res)
     expect(status).toBe(400)
+  })
+})
+
+// The measurement wiring, not the measurement itself.
+//
+// metrics.ts is tested next door; what can only be checked here is that the
+// server actually calls it -- the gap where a working recorder and a working
+// server sit side by side and nothing is ever written.
+describe('what the router records about itself', () => {
+  const tmpFile = () => join(mkdtempSync(join(tmpdir(), 'router-metrics-')), 'metrics.jsonl')
+
+  it('writes a record for a served request, and /metrics reports it', async () => {
+    const metricsPath = tmpFile()
+    const handle = createRouterHandler({ fetchImpl: fakeFleet(), metricsPath })
+
+    await call(handle, { headers: { 'x-task-class': 'summary' }, body: { messages: [] } })
+
+    const lines = readFileSync(metricsPath, 'utf8').trim().split('\n')
+    expect(lines).toHaveLength(1)
+    expect(JSON.parse(lines[0])).toMatchObject({ taskClass: 'summary', host: 'air903max', status: 200 })
+
+    const metrics = await get(handle, '/metrics')
+    expect(metrics.body).toMatchObject({ requests: 1, served: 1, refused: 0, byClass: { summary: 1 } })
+  })
+
+  it('records a refusal with its reason', async () => {
+    const metricsPath = tmpFile()
+    const handle = createRouterHandler({ fetchImpl: fakeFleet(), metricsPath })
+
+    await call(handle, { headers: { 'x-task-class': 'agent-loop' }, body: { messages: [] } })
+
+    const metrics = await get(handle, '/metrics')
+    expect(metrics.body).toMatchObject({ requests: 1, refused: 1, byRefusal: { 'cloud-only': 1 } })
+  })
+
+  it('does not fail the request when it cannot write the record', async () => {
+    // A full disk must cost the measurement, never the answer.
+    const errors: Error[] = []
+    const handle = createRouterHandler({
+      fetchImpl: fakeFleet(),
+      // /dev/null is not a directory: the mkdir fails immediately with
+      // ENOTDIR, which is the fast, deterministic version of a bad path.
+      metricsPath: '/dev/null/metrics.jsonl',
+      onMetricError: (e) => errors.push(e),
+    })
+
+    const out = await call(handle, { body: { messages: [] } })
+    expect(out.status).toBe(200)
+    expect(errors.length).toBe(1)
+  })
+
+  it('records nothing at all when no path is configured', async () => {
+    // The default must be silence, not a file appearing somewhere unexpected.
+    const handle = createRouterHandler({ fetchImpl: fakeFleet() })
+    const out = await call(handle, { body: { messages: [] } })
+    expect(out.status).toBe(200)
+    const metrics = await get(handle, '/metrics')
+    expect(metrics.body).toMatchObject({ requests: 0, path: null })
   })
 })
