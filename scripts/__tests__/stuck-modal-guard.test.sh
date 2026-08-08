@@ -132,6 +132,33 @@ assert_eq "limited: '5-hour limit reached' banner" "limited" "$(classify "$LIMIT
 assert_eq "decide: limited -> hold (no Escape, no respawn)" "hold" "$(decide limited 0 1000)"
 assert_eq "decide: limited -> hold even when firstseen is set" "hold" "$(decide limited 800 1000)"
 
+# B3 regression: limit text in scrollback but idle footer also present -> idle wins.
+# The guard must NEVER send Escape/respawn against a live session.
+LIMIT_WITH_IDLE='You hit your session limit · resets 5:50pm
+Some scrollback text here.
+                                                      ⏵⏵ bypass permissions on (shift+tab to cycle)'
+assert_eq "B3 regression: limit text + idle footer -> idle (not limited)" "idle" "$(classify "$LIMIT_WITH_IDLE")"
+
+# ---------------------------------------------------------------------------
+# (h) parse-reset-epoch: extracts reset time from pane text
+# ---------------------------------------------------------------------------
+echo ""
+echo "(h) parse-reset-epoch"
+
+# Parseable format ("resets 5:50pm") -> non-empty epoch
+PR_RESULT="$(bash "$GUARD" parse-reset-epoch "You hit your session limit · resets 5:50pm")"
+case "$PR_RESULT" in
+  ''|*[!0-9]*) fail "parse-reset-epoch: parseable input returned empty or non-numeric: '$PR_RESULT'" ;;
+  *) pass "parse-reset-epoch: parseable 'resets 5:50pm' -> epoch '$PR_RESULT'" ;;
+esac
+
+# Unparseable / no reset string -> empty
+PR_EMPTY="$(bash "$GUARD" parse-reset-epoch "You hit your session limit")"
+assert_eq "parse-reset-epoch: no reset time -> empty" "" "$PR_EMPTY"
+
+PR_JUNK="$(bash "$GUARD" parse-reset-epoch "junk pane with no time")"
+assert_eq "parse-reset-epoch: junk pane -> empty" "" "$PR_JUNK"
+
 # ---------------------------------------------------------------------------
 # (f) F1 — a missing state dir is created (no flock defer-forever, cold install)
 # ---------------------------------------------------------------------------

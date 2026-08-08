@@ -52,6 +52,9 @@ RESPAWN_STAMP="$STORE/.channel-last-respawn"           # SHARED with channel-wat
 RESPAWN_COUNT_FILE="$STORE/.stuck-modal-respawns"
 BACKOFF_STAMP="$STORE/.stuck-modal-backoff-alerted"
 LIMIT_ALERTED_STAMP="$STORE/.stuck-modal-limit-alerted"
+LIMIT_OVERDUE_STAMP="$STORE/.stuck-modal-limit-overdue-alerted"
+LIMIT_OVERDUE_GRACE=600          # seconds past reset time before escalating
+LIMIT_FALLBACK_SECONDS=21600     # 6 hours: cap when reset time is not parseable
 TG_ENV="$HOME/.claude/channels/telegram/.env"
 LOG_TAG="stuck-modal-guard"
 
@@ -88,20 +91,23 @@ classify_pane() {
   if printf '%s' "$pane" | grep -qE 'esc to interrupt|\([0-9]+s (·|\.)'; then
     echo busy; return
   fi
-  # 3. session/usage limit banner -> limited (quota exhausted, NOT a modal).
-  #    Observed text (bigme 2026-08-08): "You hit your session limit · resets 5:50pm".
-  #    Additional canonical variants from src/model-fallback.ts USAGE_LIMIT_RX.
-  #    Must be checked BEFORE the idle-footer test: the banner replaces the footer.
-  if printf '%s' "$pane" | grep -qiE \
-      'hit (your|the) (session|usage) limit|usage limit reached|[0-9]+-hour limit reached|limit will reset at|upgrade to increase your usage limit'; then
-    echo limited; return
-  fi
-  # 4. idle footer present -> idle (healthy prompt)
+  # 3. idle footer present -> idle (healthy prompt).
+  #    Checked BEFORE the limit banner: if somehow both are visible (e.g. the
+  #    limit text is in scrollback while the footer is live), the healthy state
+  #    wins and the guard never sends Escape/respawn against a live session.
   if printf '%s' "$pane" | grep -qaF 'bypass permissions on' \
      || printf '%s' "$pane" | grep -qaF '? for shortcuts'; then
     echo idle; return
   fi
-  # 4. neither -> the idle footer is hidden by a modal overlay and no live turn
+  # 4. session/usage limit banner -> limited (quota exhausted, NOT a modal).
+  #    Observed text (bigme 2026-08-08): "You hit your session limit · resets 5:50pm".
+  #    Additional canonical variants from src/model-fallback.ts USAGE_LIMIT_RX.
+  #    The banner replaces the idle footer, so reaching here means no footer.
+  if printf '%s' "$pane" | grep -qiE \
+      'hit (your|the) (session|usage) limit|usage limit reached|[0-9]+-hour limit reached|limit will reset at|upgrade to increase your usage limit'; then
+    echo limited; return
+  fi
+  # 5. neither -> the idle footer is hidden by a modal overlay and no live turn
   echo stuck
 }
 
@@ -135,6 +141,22 @@ sanitize_model() {
   printf '%s' "${1:-}" | tr -cd 'A-Za-z0-9._:[]-'
 }
 
+# --- parse reset epoch from pane text (pure, testable) -------------------------
+# Reads pane text on stdin. Outputs the Unix epoch of the reset time printed on
+# the pane (e.g. "resets 5:50pm" -> today's epoch at 17:50), or empty string if
+# the reset time is absent or unparseable. Used to detect when the quota has
+# already reset but the session is still showing the limit screen.
+parse_reset_epoch() {
+  local pane time_str ep
+  pane="$(cat)"
+  time_str="$(printf '%s' "$pane" \
+    | grep -oiE 'resets? +[0-9]+(:[0-9]+)? *(am|pm)' | head -1 \
+    | grep -oiE '[0-9]+(:[0-9]+)? *(am|pm)')"
+  [ -z "$time_str" ] && { echo ""; return; }
+  ep="$(date -d "$time_str" +%s 2>/dev/null)" || { echo ""; return; }
+  echo "$ep"
+}
+
 # --- session usage-limit notification (rate-limited to once/hour) --------------
 alert_limited() {
   local pane_text="$1" now="$2"
@@ -148,6 +170,24 @@ alert_limited() {
   log "session usage limit hit${reset_info} -- holding (no Escape/respawn)"
   alert_owner "⏳ The ${SESSION} session hit its usage limit${reset_info}. This is NOT a /mcp modal -- auto-respawn would not help. The session will resume automatically when the quota resets. Messages sent during this window may be queued."
   date +%s > "$LIMIT_ALERTED_STAMP" 2>/dev/null || true
+}
+
+# --- overdue-limit alert: reset passed but session still frozen ----------------
+# Rate-limited to once/hour. Called when parse_reset_epoch shows the reset time
+# has already passed (+ LIMIT_OVERDUE_GRACE), or when the fallback 6-hour cap
+# fires. After this, run_guard treats the state as 'stuck' so the normal
+# Escape -> respawn path can actually recover the session.
+alert_overdue_limit() {
+  local pane_text="$1" now="$2"
+  local bstamp=0
+  [ -f "$LIMIT_OVERDUE_STAMP" ] && bstamp="$(stat -c %Y "$LIMIT_OVERDUE_STAMP" 2>/dev/null || echo 0)"
+  [ $(( now - bstamp )) -lt 3600 ] && return 0
+  local reset_str reset_info=""
+  reset_str="$(printf '%s' "$pane_text" | grep -oiE 'resets? +[0-9]+(:[0-9]+)? *(am|pm)?' | head -1)"
+  [ -n "$reset_str" ] && reset_info=" ($reset_str)"
+  log "session limit reset time passed${reset_info} but banner still visible -- escalating to stuck path"
+  alert_owner "🔴 The ${SESSION} session's usage limit reset time has passed${reset_info} but the pane still shows the limit banner. The session did not auto-resume -- triggering recovery (Escape / respawn). If you messaged during the outage and got no reply, please resend."
+  date +%s > "$LIMIT_OVERDUE_STAMP" 2>/dev/null || true
 }
 
 # --- direct Bot API alert (mirrors channel-watchdog.sh alert_owner) -------------
@@ -205,16 +245,36 @@ run_guard() {
   firstseen=0; [ -f "$FIRSTSEEN_STAMP" ] && firstseen="$(cat "$FIRSTSEEN_STAMP" 2>/dev/null || echo 0)"
   case "$firstseen" in (''|*[!0-9]*) firstseen=0;; esac
 
-  # Session usage-limit: alert owner (rate-limited) before letting decide_action hold.
+  # Session usage-limit: check whether the reset time has already passed.
+  # If yes -> escalate (alert + fall through to the normal stuck path so
+  # the session is actually recovered via Escape / respawn). If no -> hold.
   if [ "$state" = "limited" ]; then
-    alert_limited "$pane" "$now"
+    local reset_ep overdue=0
+    reset_ep="$(printf '%s' "$pane" | parse_reset_epoch)"
+    if [ -n "$reset_ep" ]; then
+      [ $(( now - reset_ep )) -ge "$LIMIT_OVERDUE_GRACE" ] && overdue=1
+    else
+      # No parseable reset time: fall back to stamp-based 6-hour cap.
+      local first_alerted=0
+      [ -f "$LIMIT_ALERTED_STAMP" ] && first_alerted="$(stat -c %Y "$LIMIT_ALERTED_STAMP" 2>/dev/null || echo 0)"
+      [ "$first_alerted" -ne 0 ] \
+        && [ $(( now - first_alerted )) -ge "$LIMIT_FALLBACK_SECONDS" ] \
+        && overdue=1
+    fi
+    if [ "$overdue" = "1" ]; then
+      alert_overdue_limit "$pane" "$now"
+      state="stuck"   # engage Escape -> respawn recovery
+    else
+      alert_limited "$pane" "$now"
+    fi
   fi
 
   action="$(decide_action "$state" "$firstseen" "$now")"
   case "$action" in
     clear)
       if [ "$firstseen" != 0 ]; then log "session healthy ($state) -- clearing confirm window"; fi
-      rm -f "$FIRSTSEEN_STAMP" "$RESPAWN_COUNT_FILE" "$BACKOFF_STAMP" 2>/dev/null || true
+      rm -f "$FIRSTSEEN_STAMP" "$RESPAWN_COUNT_FILE" "$BACKOFF_STAMP" \
+            "$LIMIT_ALERTED_STAMP" "$LIMIT_OVERDUE_STAMP" 2>/dev/null || true
       return 0 ;;
     hold)
       return 0 ;;
@@ -309,9 +369,10 @@ run_guard() {
 }
 
 case "${1:-}" in
-  classify)       classify_pane ;;
-  decide)         decide_action "${2:-}" "${3:-0}" "${4:-0}" ;;
-  sanitize-model) sanitize_model "${2:-}" ;;
-  *)              run_guard ;;
+  classify)           classify_pane ;;
+  decide)             decide_action "${2:-}" "${3:-0}" "${4:-0}" ;;
+  sanitize-model)     sanitize_model "${2:-}" ;;
+  parse-reset-epoch)  printf '%s' "${2:-}" | parse_reset_epoch ;;
+  *)                  run_guard ;;
 esac
 exit 0
