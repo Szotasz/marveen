@@ -21,6 +21,54 @@ def _owner_chat():
     return v.strip() if v else ""
 
 
+def _extract_message_id(payload):
+    """Extract the Telegram message_id from the tool result, or return None.
+
+    The MCP plugin may return the result in several shapes:
+      - dict directly: {"message_id": 123, "ok": true}
+      - list of content blocks: [{"type": "text", "text": "{\"message_id\": 123}"}]
+      - JSON string encoding either of the above
+
+    We try the most common paths and fall back to None so a missing or
+    unexpected result format never prevents the outbound from being logged.
+    """
+    result = payload.get("tool_result")
+    if result is None:
+        return None
+
+    # Unwrap a JSON string at the top level.
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except Exception:
+            return None
+
+    # Direct dict: {"message_id": 123, ...}
+    if isinstance(result, dict):
+        mid = result.get("message_id")
+        if mid is not None:
+            return str(mid)
+
+    # MCP content-block list: [{"type": "text", "text": "<json>"}]
+    if isinstance(result, list):
+        for block in result:
+            if not isinstance(block, dict):
+                continue
+            text = block.get("text") or block.get("content") or ""
+            if not isinstance(text, str):
+                continue
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, dict):
+                    mid = parsed.get("message_id")
+                    if mid is not None:
+                        return str(mid)
+            except Exception:
+                continue
+
+    return None
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -37,9 +85,10 @@ def main():
     if chat_id in ("", "0"):
         chat_id = _owner_chat()
     text = tool_input.get("text")
+    message_id = _extract_message_id(payload)
     if chat_id and text is not None:
         try:
-            ledger_lib.log_outbound(agent_id, chat_id, str(text))
+            ledger_lib.log_outbound(agent_id, chat_id, str(text), message_id)
         except Exception:
             pass
     sys.exit(0)
