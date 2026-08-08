@@ -170,6 +170,27 @@ def _build_output(recent_pointers, older_headlines, secondary_lines):
     }
 
 
+def _log_skip(agent_id, reason):
+    """Append a DIGEST_SKIP line when the hook exits early without injecting.
+
+    Makes a persistently-silent digest visible: if a session keeps getting
+    DIGEST_SKIP rows but no DIGEST_INJECT rows, the digest is effectively dead.
+    Format: ISO-datetime<TAB>agent_id<TAB>DIGEST_SKIP<TAB>reason
+    Failure is silently ignored -- must never block startup.
+    """
+    try:
+        db = ledger_lib.db_path()
+        log_path = os.path.join(os.path.dirname(db), "digest-inject.log")
+        ts = datetime.datetime.fromtimestamp(int(time.time())).strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        )
+        line = f"{ts}\t{agent_id}\tDIGEST_SKIP\t{reason}\n"
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass
+
+
 def _log_inject_marker(agent_id, byte_size, item_count):
     """Append a DIGEST_INJECT measurement line to store/digest-inject.log.
 
@@ -200,6 +221,7 @@ def main():
         payload = json.load(sys.stdin)
         cwd = payload.get("cwd")
     except Exception:
+        _log_skip("unknown", "json-parse-hiba")
         sys.exit(0)
 
     agent_id = ledger_lib.agent_id_from_cwd(cwd)
@@ -207,9 +229,11 @@ def main():
     try:
         rows = _fetch_log_entries(agent_id)
     except Exception:
+        _log_skip(agent_id, "db-hiba")
         sys.exit(0)
 
     if not rows:
+        _log_skip(agent_id, "nincs-sor")
         sys.exit(0)
 
     now_ts = int(time.time())
@@ -228,6 +252,7 @@ def main():
             older_headlines.append(headline)
 
     if not recent_pointers and not older_headlines:
+        _log_skip(agent_id, "ures-szures-utan")
         sys.exit(0)
 
     secondary = _fetch_pending_approvals(agent_id) + _fetch_task_failures(agent_id)
