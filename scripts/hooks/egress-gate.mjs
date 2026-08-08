@@ -29,6 +29,7 @@
 // requests. Those channels are out of scope for this hook mechanism and require
 // separate controls if needed.
 
+import { spawn } from 'node:child_process'
 import { readFileSync, appendFileSync, mkdirSync } from 'node:fs'
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -256,6 +257,32 @@ const BLOCK_MESSAGE =
   'store/egress-allowlist.json fájlhoz ({ "domains": ["example.com"] } vagy ' +
   '{ "prefixes": ["https://example.com/api/"] }), majd futtassa újra a WebFetch hívást.'
 
+/**
+ * Leave a ledger row for a call we are about to stop.
+ *
+ * A PreToolUse denial never reaches PostToolUse, so the tool ledger simply had
+ * no row for it: for 48 hours it showed zero WebFetch calls while this gate's
+ * own log was full of denials (#232). Anyone reading the ledger would conclude
+ * the fleet never tries to read the web -- observability with one eye shut.
+ *
+ * The row is written by the SAME script that writes every other row, handed a
+ * `blocked_by` marker, so the shape cannot drift from the ordinary ones. It is
+ * fire-and-forget and fully detached: recording a block must never delay the
+ * block, and must never be able to fail it.
+ */
+function recordBlockInLedger(payload) {
+  try {
+    const script = join(dirname(fileURLToPath(import.meta.url)), 'tool-log-capture.py')
+    const child = spawn('python3', [script], { stdio: ['pipe', 'ignore', 'ignore'], detached: true })
+    child.on('error', () => {})
+    child.stdin.on('error', () => {})
+    child.stdin.end(JSON.stringify({ ...payload, blocked_by: 'egress-gate' }))
+    child.unref()
+  } catch {
+    /* the block is the point; the record is a bonus */
+  }
+}
+
 function allow() { process.exit(0) }
 
 function deny(reason) {
@@ -292,6 +319,7 @@ if (isInvokedDirectly()) {
   const decision = egressDecision(payload?.tool_name, payload?.tool_input, runtimeList, agentType)
   if (decision.blocked) {
     logLine('BLOCKED', url, 'reason="not on egress allowlist"', payloadKeySignature(payload), agentType)
+    recordBlockInLedger(payload)
     deny(BLOCK_MESSAGE)
   }
   // Audited, not silent: the quarantine tier is the one grant a main agent

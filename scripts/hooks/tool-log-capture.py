@@ -99,6 +99,16 @@ def main():
         duration_ms = None
     success = not bool(payload.get('tool_response', {}).get('is_error') if isinstance(payload.get('tool_response'), dict) else False)
 
+    # A call stopped by a PreToolUse gate never reaches PostToolUse, so it
+    # would leave NO row at all: for 48 hours the ledger showed zero WebFetch
+    # calls while the egress log was full of denials, and anyone reading the
+    # ledger would conclude the fleet never tries to read the web (#232). The
+    # gate therefore calls this script itself with `blocked_by` set, and the
+    # row it produces says so instead of looking like an ordinary failure.
+    blocked_by = payload.get('blocked_by')
+    if isinstance(blocked_by, str) and blocked_by:
+        success = False
+
     if not session_id or not tool_name:
         sys.exit(0)
 
@@ -112,7 +122,8 @@ def main():
     body = json.dumps({
         'session_id': session_id,
         'tool_name': tool_name,
-        'input_summary': _input_summary(tool_input, tool_name),
+        'input_summary': (f'[BLOCKED {blocked_by}] ' + _input_summary(tool_input, tool_name))[:200]
+        if isinstance(blocked_by, str) and blocked_by else _input_summary(tool_input, tool_name),
         'success': success,
         'agent_id': ledger_lib.agent_id_from_cwd(cwd),
         # trace_id holds the CC-native tool_use_id: stable, unique per call,
