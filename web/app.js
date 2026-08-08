@@ -4530,7 +4530,7 @@ document.getElementById('analyzeAllModelsBtn').addEventListener('click', async (
         let created = 0
         for (const r of changes) {
           try {
-            await fetch('/api/kanban', {
+            const res = await fetch('/api/kanban', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -4539,9 +4539,15 @@ document.getElementById('analyzeAllModelsBtn').addEventListener('click', async (
                 assignee: 'marveen',
                 priority: 'normal',
                 status: 'planned',
+                // Fleet housekeeping belongs to the marveen project. Required
+                // since cards must carry one; without it the endpoint refuses
+                // and this loop would report cards it never created.
+                project: 'marveen',
               }),
             })
-            created++
+            // fetch does not throw on a 4xx, so counting before checking would
+            // report "N cards created" after creating none.
+            if (res.ok) created++
           } catch { /* skip failed card */ }
         }
         showToast(t('agents.model.cards_created', { n: created }))

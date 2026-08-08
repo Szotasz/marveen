@@ -17,6 +17,7 @@ import {
 import { decideRelease, releaseMessage } from '../../kanban-release.js'
 import type { ReleasableCard, ClosedBlocker } from '../../kanban-release.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
+import { resolveCardProject } from '../kanban-project-guard.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS, TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_ID } from '../../config.js'
 import { sendTelegramMessage } from '../telegram.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
@@ -378,8 +379,20 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/kanban' && method === 'POST') {
     const body = await readBody(req)
     const data = JSON.parse(body.toString())
+
+    // Every card carries a project, or it is not created: the cost report
+    // attributes spend by project, so a card without one is work whose cost
+    // cannot be traced (Viktor's house rule, 2026-08-08). The rule used to
+    // live in a prompt, which binds only the sessions that read it.
+    const parentProject = data.parent_id ? getKanbanCard(String(data.parent_id))?.project ?? null : null
+    const resolved = resolveCardProject(data, { parentProject, knownProjects: listKanbanProjects() })
+    if (!resolved.ok) {
+      json(res, { error: resolved.error }, 400)
+      return true
+    }
+
     const id = randomUUID().slice(0, 8)
-    createKanbanCard({ id, ...data })
+    createKanbanCard({ id, ...data, project: resolved.project })
     json(res, { ok: true, id })
     return true
   }
