@@ -30,8 +30,16 @@
 #     watchdogs never double-respawn (no storm), plus its own consecutive cap.
 #   - Stamp writes are best-effort (disk-full tolerance).
 #
+# Detection (extended):
+#   - LIMITED: session usage-limit banner visible in the pane ("You hit your
+#              session limit · resets Npm"). No idle/busy markers but the cause
+#              is quota exhaustion, NOT a modal. Escape and respawn are useless;
+#              only the quota reset clears it. The guard holds and alerts the
+#              owner (rate-limited to once/hour) with the real reason + reset
+#              time extracted from the pane.
+#
 # Modes (for tests; mirror the pure functions in src/pane-state.ts):
-#   stuck-modal-guard.sh classify         < pane.txt   -> prints idle|busy|stuck|empty
+#   stuck-modal-guard.sh classify         < pane.txt   -> prints idle|busy|limited|stuck|empty
 #   stuck-modal-guard.sh decide STATE FIRSTSEEN NOW     -> prints the action
 #   stuck-modal-guard.sh                                -> run the guard live
 
@@ -43,6 +51,7 @@ FIRSTSEEN_STAMP="$STORE/.stuck-modal-firstseen"
 RESPAWN_STAMP="$STORE/.channel-last-respawn"           # SHARED with channel-watchdog.sh
 RESPAWN_COUNT_FILE="$STORE/.stuck-modal-respawns"
 BACKOFF_STAMP="$STORE/.stuck-modal-backoff-alerted"
+LIMIT_ALERTED_STAMP="$STORE/.stuck-modal-limit-alerted"
 TG_ENV="$HOME/.claude/channels/telegram/.env"
 LOG_TAG="stuck-modal-guard"
 
@@ -79,7 +88,15 @@ classify_pane() {
   if printf '%s' "$pane" | grep -qE 'esc to interrupt|\([0-9]+s (·|\.)'; then
     echo busy; return
   fi
-  # 3. idle footer present -> idle (healthy prompt)
+  # 3. session/usage limit banner -> limited (quota exhausted, NOT a modal).
+  #    Observed text (bigme 2026-08-08): "You hit your session limit · resets 5:50pm".
+  #    Additional canonical variants from src/model-fallback.ts USAGE_LIMIT_RX.
+  #    Must be checked BEFORE the idle-footer test: the banner replaces the footer.
+  if printf '%s' "$pane" | grep -qiE \
+      'hit (your|the) (session|usage) limit|usage limit reached|[0-9]+-hour limit reached|limit will reset at|upgrade to increase your usage limit'; then
+    echo limited; return
+  fi
+  # 4. idle footer present -> idle (healthy prompt)
   if printf '%s' "$pane" | grep -qaF 'bypass permissions on' \
      || printf '%s' "$pane" | grep -qaF '? for shortcuts'; then
     echo idle; return
@@ -91,7 +108,7 @@ classify_pane() {
 # --- pure decision (testable without tmux) -------------------------------------
 # Args: STATE FIRSTSEEN_EPOCH NOW_EPOCH. Prints one of:
 #   clear         -> pane healthy; drop any confirm window
-#   hold          -> inconclusive (empty capture); preserve the confirm window
+#   hold          -> inconclusive (empty capture OR usage-limit); preserve confirm window
 #   start-confirm -> first stuck observation; begin the confirm window
 #   wait-confirm  -> stuck but not yet persisted long enough
 #   act           -> stuck and persisted >= STUCK_SECONDS; recover now
@@ -100,6 +117,7 @@ decide_action() {
   case "$state" in
     idle|busy) echo clear; return ;;
     empty)     echo hold;  return ;;
+    limited)   echo hold;  return ;;   # quota exhaustion: Escape/respawn useless
     stuck)
       case "$firstseen" in (''|0|*[!0-9]*) echo start-confirm; return ;; esac
       if [ $(( now - firstseen )) -ge "$STUCK_SECONDS" ]; then echo act; else echo wait-confirm; fi
@@ -115,6 +133,21 @@ decide_action() {
 # shell-string, while a legit "claude-opus-4-8[1m]" survives intact.
 sanitize_model() {
   printf '%s' "${1:-}" | tr -cd 'A-Za-z0-9._:[]-'
+}
+
+# --- session usage-limit notification (rate-limited to once/hour) --------------
+alert_limited() {
+  local pane_text="$1" now="$2"
+  local bstamp=0
+  [ -f "$LIMIT_ALERTED_STAMP" ] && bstamp="$(stat -c %Y "$LIMIT_ALERTED_STAMP" 2>/dev/null || echo 0)"
+  [ $(( now - bstamp )) -lt 3600 ] && return 0   # already alerted within the hour
+  # Extract "resets Xpm" / "resets X:XXam" from the pane if present.
+  local reset_str reset_info=""
+  reset_str="$(printf '%s' "$pane_text" | grep -oiE 'resets? [0-9]+(:[0-9]+)?(am|pm)?' | head -1)"
+  [ -n "$reset_str" ] && reset_info=", $reset_str"
+  log "session usage limit hit${reset_info} -- holding (no Escape/respawn)"
+  alert_owner "⏳ The ${SESSION} session hit its usage limit${reset_info}. This is NOT a /mcp modal -- auto-respawn would not help. The session will resume automatically when the quota resets. Messages sent during this window may be queued."
+  date +%s > "$LIMIT_ALERTED_STAMP" 2>/dev/null || true
 }
 
 # --- direct Bot API alert (mirrors channel-watchdog.sh alert_owner) -------------
@@ -171,6 +204,11 @@ run_guard() {
   now="$(date +%s)"
   firstseen=0; [ -f "$FIRSTSEEN_STAMP" ] && firstseen="$(cat "$FIRSTSEEN_STAMP" 2>/dev/null || echo 0)"
   case "$firstseen" in (''|*[!0-9]*) firstseen=0;; esac
+
+  # Session usage-limit: alert owner (rate-limited) before letting decide_action hold.
+  if [ "$state" = "limited" ]; then
+    alert_limited "$pane" "$now"
+  fi
 
   action="$(decide_action "$state" "$firstseen" "$now")"
   case "$action" in

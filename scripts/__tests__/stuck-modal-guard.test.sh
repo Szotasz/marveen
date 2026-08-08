@@ -113,6 +113,26 @@ case "$SAN" in
 esac
 
 # ---------------------------------------------------------------------------
+# (g) Classifier: session usage-limit banner -> limited (NOT stuck/idle)
+# ---------------------------------------------------------------------------
+echo ""
+echo "(g) Session usage-limit pane is 'limited' (not stuck, never Escape/respawn)"
+
+# Exact text observed by bigme on 2026-08-08.
+LIMIT_OBSERVED='You hit your session limit · resets 5:50pm
+
+> Start new session'
+assert_eq "limited: observed 'hit your session limit' banner" "limited" "$(classify "$LIMIT_OBSERVED")"
+
+# Canonical 5-hour variant from src/model-fallback.ts USAGE_LIMIT_RX.
+LIMIT_5H='5-hour limit reached ∙ resets 3pm'
+assert_eq "limited: '5-hour limit reached' banner" "limited" "$(classify "$LIMIT_5H")"
+
+# decide: limited -> hold (NEVER start-confirm/act; Escape and respawn must not fire)
+assert_eq "decide: limited -> hold (no Escape, no respawn)" "hold" "$(decide limited 0 1000)"
+assert_eq "decide: limited -> hold even when firstseen is set" "hold" "$(decide limited 800 1000)"
+
+# ---------------------------------------------------------------------------
 # (f) F1 — a missing state dir is created (no flock defer-forever, cold install)
 # ---------------------------------------------------------------------------
 echo ""
