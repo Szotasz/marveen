@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
+  isInfrastructureChild,
+  TASKSTATE_FRESH_WINDOW_MS,
+} from '../web/context-restart-gate-runner.js'
+import {
   decideGate,
   DEFAULT_THRESHOLD_TOKENS,
   DEFAULT_STALE_CUTOFF_MS,
@@ -259,5 +263,81 @@ describe('decideGate -- full block scenario (dispatched background work, GATE BL
     const d = decideGate(inputs, ENABLED, null)
     expect(d.action).toBe('block')
     expect(d.reason).toMatch(/live-child-processes/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// isInfrastructureChild -- models the REAL process tree shape on this host
+// (measured in review #938 round 1 by bigme)
+//
+// bigme-channels: pane_pid=2612 (claude), children: npm exec gmail (6294s),
+//   bun telegram plugin (6294s). Both are as old as claude itself.
+// agent-slarti:   pane_pid=3448 (claude), children: npm exec gmail (6287s).
+//
+// All MCP servers start at session boot and have etimes ≈ claude's etimes.
+// Task-tool subagents are spawned during the session (much younger).
+// ---------------------------------------------------------------------------
+describe('isInfrastructureChild -- age-based infrastructure detection', () => {
+  const CLAUDE_AGE = 6294  // seconds (from bigme's live measurement)
+
+  it('treats transient exec (<3s) as infrastructure', () => {
+    expect(isInfrastructureChild(1, CLAUDE_AGE)).toBe(true)
+    expect(isInfrastructureChild(2, CLAUDE_AGE)).toBe(true)
+  })
+
+  it('treats MCP server as infrastructure (age ≈ claude age)', () => {
+    // npm exec gmail-... and bun plugin both at 6294s = same age as claude
+    expect(isInfrastructureChild(6294, CLAUDE_AGE)).toBe(true)
+    // Slightly younger MCP server (startup delay)
+    expect(isInfrastructureChild(6200, CLAUDE_AGE)).toBe(true)  // 6200 >= 6294*0.85=5350
+  })
+
+  it('treats recently-spawned child as possibly-work (Task-tool subagent)', () => {
+    // Task spawned 2 min ago in a 6294s-old session
+    expect(isInfrastructureChild(120, CLAUDE_AGE)).toBe(false)
+    // Task running for 10 min in the same session
+    expect(isInfrastructureChild(600, CLAUDE_AGE)).toBe(false)  // 600 < 6294*0.85=5350
+  })
+
+  it('transient exec (1-2s) is always infra regardless of claude age', () => {
+    expect(isInfrastructureChild(1, 10)).toBe(true)
+    expect(isInfrastructureChild(2, 30)).toBe(true)
+  })
+
+  it('(regression) MCP servers must NOT cause the gate to always block', () => {
+    // This was the B1 blocker from review #938 round 1:
+    // Before the fix, age >= CHILD_MIN_AGE_S(3) was the only filter.
+    // A MCP server at 6294s would have passed that filter and returned true.
+    // Now it is correctly classified as infrastructure → gate can open.
+    const mcpAge = 6294
+    expect(isInfrastructureChild(mcpAge, CLAUDE_AGE)).toBe(true)
+    // Verify: a session with ONLY MCP-age children (no work children) returns
+    // hasChildProcesses=false, which means the gate condition is NOT blocked.
+    // We verify this at the pure-logic level: hasChildProcesses=false → allow.
+    const d = decideGate(
+      { ...CLEAR_INPUTS, hasChildProcesses: false },
+      ENABLED,
+      null,
+    )
+    expect(d.action).toBe('allow')
+  })
+})
+
+describe('hasLiveTaskState freshness window', () => {
+  it('TASKSTATE_FRESH_WINDOW_MS is 10 minutes', () => {
+    expect(TASKSTATE_FRESH_WINDOW_MS).toBe(600_000)
+  })
+
+  it('(integration comment) stale taskstate must NOT block the gate', () => {
+    // A taskstate record written hours ago (consumed=false, nextAction set) was
+    // blocking the gate permanently in the B2 design error. The runner now only
+    // sets hasLiveTaskState=true when the record ts is within TASKSTATE_FRESH_WINDOW_MS.
+    // At the pure-logic level: hasLiveTaskState=false → the gate can open.
+    const d = decideGate(
+      { ...CLEAR_INPUTS, hasLiveTaskState: false },
+      ENABLED,
+      null,
+    )
+    expect(d.action).toBe('allow')
   })
 })

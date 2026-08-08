@@ -15,7 +15,6 @@ import { readGateConfig, readGateRunState, writeGateRunState } from './context-r
 import {
   getDispatchedPendingStats,
   hasOpenInboundQuestion,
-  getDb,
   createAgentMessage,
 } from '../db.js'
 import {
@@ -42,12 +41,45 @@ const INITIAL_DELAY_MS = 3 * 60_000   // 3 min
 // tmux path (matches other runners).
 const TMUX = process.env.TMUX_BIN ?? '/usr/bin/tmux'
 
-// Child-process measurement: how many seconds old must a child PID be before
-// we consider it "persistent" (not a just-spawned transient exec)? A Task-tool
-// subagent starts quickly and persists; a one-shot `exec` usually exits in <1s.
-// 3s is conservative: nearly all transient children exit in that window, while
-// a real subagent is always older.
-const CHILD_MIN_AGE_S = 3
+// Child-process measurement constants.
+//
+// Two-tier filter to separate "infrastructure" (MCP servers, telegram plugin,
+// gmail runner) from "work" (Task-tool subagents, background Bash):
+//
+//   CHILD_MIN_AGE_S     -- lower bound: skip children younger than this to
+//                          ignore transient exec() calls (<1s typical).
+//
+//   INFRA_AGE_RATIO     -- upper bound: if a child's age is >= this fraction
+//                          of the claude process's own age, it started near
+//                          session boot and is almost certainly infrastructure.
+//                          Measured on this host: claude and its MCP servers
+//                          (npm exec gmail-..., bun telegram plugin) all share
+//                          the same etimes (~6294s). Task-tool subagents are
+//                          always spawned during the session and thus much
+//                          younger (etimes/claude_etimes << 0.85).
+//
+// A child is treated as "possibly work" only when:
+//   age >= CHILD_MIN_AGE_S  AND  age < claude_age * INFRA_AGE_RATIO
+//
+// On ps failure (null age): fail-closed → treat as work.
+const CHILD_MIN_AGE_S    = 3
+const INFRA_AGE_RATIO    = 0.85
+
+/**
+ * Pure: true if a child process with the given age (seconds) should be treated
+ * as infrastructure (MCP server, plugin runner) rather than in-flight work.
+ * Exported for tests.
+ *
+ * Infrastructure is detected by age:
+ *   - age < CHILD_MIN_AGE_S                    → transient exec() → infra
+ *   - age >= claudeAgeS * INFRA_AGE_RATIO      → started near session boot → infra
+ *   - otherwise                                → spawned during session → possibly work
+ */
+export function isInfrastructureChild(childAgeS: number, claudeAgeS: number): boolean {
+  if (childAgeS < CHILD_MIN_AGE_S) return true
+  if (childAgeS >= claudeAgeS * INFRA_AGE_RATIO) return true
+  return false
+}
 
 function sessionFor(name: string): string {
   return name === MAIN_AGENT_ID ? MAIN_CHANNELS_SESSION : agentSessionName(name)
@@ -72,23 +104,20 @@ function capturePaneOrNull(session: string): string | null {
 
 // ---- Child-process detection ------------------------------------------------
 //
-// Limitations (documented, not papered over):
+// Measured on this host (see review #938 round 1):
+//   - Both main-agent and sub-agent sessions: pane_pid comm=claude (NOT a shell).
+//     The original isMainAgent distinction was wrong; panePid is the claude
+//     process directly in all cases.
+//   - Claude's MCP servers (npm exec gmail-..., bun telegram plugin) are direct
+//     children of claude and share ~the same etimes as claude itself. They run
+//     for the full session lifetime.
 //
-//   1. For the main channels session the pane PID IS the claude process PID
-//      (confirmed by stuck-tool-call-watcher.ts). For named sub-agent sessions
-//      the pane PID is the shell; the claude process is a child of it. We walk
-//      one level down for sub-agents. If the shell spawned something other than
-//      claude (e.g. a secondary shell) we may see its children too -- the
-//      fail-closed posture means we block rather than falsely allow.
+// Two-tier age filter separates infrastructure from work:
+//   - age < CHILD_MIN_AGE_S            → transient exec(), skip
+//   - age >= claude_age * INFRA_AGE_RATIO → started near session boot = infra, skip
+//   - otherwise                         → spawned during session = possibly work
 //
-//   2. We filter by child age to skip transient exec() calls that exit in <1s.
-//      A blocked Task-tool subagent or a long Bash command will always be older.
-//      This is a heuristic; a genuinely short background Bash (< CHILD_MIN_AGE_S)
-//      would be missed. Given the 5-min retry interval, it will be caught on
-//      the next sweep unless it finishes by then (in which case it was
-//      effectively done and blocking was unnecessary).
-//
-//   3. On `ps` failure of any kind: returns null → fail-closed in decideGate.
+// On ps failure for any PID: fail-closed (return null → decideGate blocks).
 
 function getPanePid(session: string): number | null {
   try {
@@ -118,50 +147,52 @@ function getPidAgeSeconds(pid: number): number | null {
   } catch { return null }
 }
 
-function hasLiveChildProcesses(session: string, isMainAgent: boolean): boolean | null {
-  const panePid = getPanePid(session)
-  if (panePid === null) return null  // fail-closed
+/**
+ * Returns true if the session's claude process has live children that look
+ * like in-flight work (Task-tool subagents, background Bash), false if only
+ * infrastructure children are found, null if the check cannot be completed
+ * (fail-closed → decideGate blocks).
+ */
+function hasLiveChildProcesses(session: string): boolean | null {
+  // pane_pid IS the claude process on all session types on this host.
+  const claudePid = getPanePid(session)
+  if (claudePid === null) return null
 
-  // For the main agent, panePid IS the claude process. For sub-agents, claude
-  // is a child of the shell at panePid.
-  let claudePid: number
-  if (isMainAgent) {
-    claudePid = panePid
-  } else {
-    const shellChildren = getChildPids(panePid)
-    if (shellChildren.length === 0) return false   // no children → no claude running → no subagents
-    // Find the oldest child as the most likely claude process.
-    let oldest = -1, oldestPid = shellChildren[0]
-    for (const pid of shellChildren) {
-      const age = getPidAgeSeconds(pid)
-      if (age !== null && age > oldest) { oldest = age; oldestPid = pid }
-    }
-    claudePid = oldestPid
-  }
+  const claudeAge = getPidAgeSeconds(claudePid)
+  if (claudeAge === null) return null   // can't measure parent → fail-closed
 
   const children = getChildPids(claudePid)
   if (children.length === 0) return false
 
-  // Filter to children that have been running for at least CHILD_MIN_AGE_S to
-  // exclude transient exec() calls.
   for (const pid of children) {
     const age = getPidAgeSeconds(pid)
-    if (age === null) return null   // can't measure age → fail-closed
-    if (age >= CHILD_MIN_AGE_S) return true
+    if (age === null) return null   // can't measure child age → fail-closed
+    if (!isInfrastructureChild(age, claudeAge)) return true
   }
   return false
 }
 
 // ---- Task-state helper ------------------------------------------------------
 
-function hasLiveTaskStateFile(name: string): boolean {
+// A taskstate record survives restarts by design (taskstate-replay re-injects
+// it). Its mere existence does not mean work is running NOW -- an open thread
+// can live for days. Only a RECENTLY-WRITTEN record (written during the current
+// work session, not hours/days ago by a prior one) is a reliable signal of
+// actively in-flight work. 10 minutes covers a PreCompact or a proactive write
+// at the start of a task; anything older than that is a stale thread.
+export const TASKSTATE_FRESH_WINDOW_MS = 10 * 60 * 1000  // 10 min
+
+function hasLiveTaskStateFile(name: string, nowMs: number): boolean {
   const path = join(PROJECT_ROOT, 'store', 'agent-taskstate', `${name}.json`)
   if (!existsSync(path)) return false
   try {
     const raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>
     if (raw.consumed === true) return false
     const nextAction = String(raw.nextAction ?? '').trim()
-    return nextAction.length > 0
+    if (!nextAction) return false
+    // Only block if the record was written recently (active work session).
+    const ts = typeof raw.ts === 'number' ? raw.ts : 0
+    return ts > 0 && nowMs - ts <= TASKSTATE_FRESH_WINDOW_MS
   } catch { return false }
 }
 
@@ -172,7 +203,6 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   if (!cfg.enabled) return   // fast-exit without touching state
 
   const session = sessionFor(name)
-  const isMain = name === MAIN_AGENT_ID
   const workingDir = workingDirFor(name)
 
   // Gather inputs (all deterministic, no AI inference).
@@ -194,10 +224,10 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     catch { return false }
   })()
 
-  const liveTaskState = hasLiveTaskStateFile(name)
+  const liveTaskState = hasLiveTaskStateFile(name, nowMs)
 
   const childProcesses = (() => {
-    try { return hasLiveChildProcesses(session, isMain) }
+    try { return hasLiveChildProcesses(session) }
     catch { return null }
   })()
 
