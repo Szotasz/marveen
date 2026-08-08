@@ -22,6 +22,25 @@ def _owner_chat():
     return v.strip() if v else ""
 
 
+def _id_from_text(text):
+    """Extract a numeric id from a plain-text string, or return None.
+
+    Two patterns in priority order:
+    1. Parenthesized exact form: "sent (id: 3461)" -> "3461"
+       Matches the current Telegram plugin response format.
+    2. Word-boundary fallback: matches "id: 42" or "id 42" but not
+       "invalid 42" (the word boundary \b prevents partial-word hits
+       that would produce false positives from error messages).
+    """
+    # Exact parenthesized form first.
+    m = re.search(r"\(id:\s*(\d+)\)", text, re.IGNORECASE)
+    if m:
+        return str(m.group(1))
+    # Word-boundary fallback for looser formats.
+    m = re.search(r"\bid[:\s]+(\d+)", text, re.IGNORECASE)
+    return str(m.group(1)) if m else None
+
+
 def _extract_message_id(payload):
     """Extract the Telegram message_id from the tool response, or return None.
 
@@ -42,8 +61,7 @@ def _extract_message_id(payload):
             result = json.loads(result)
         except Exception:
             # Plain string -- try regex directly.
-            m = re.search(r"id[:\s]+(\d+)", result, re.IGNORECASE)
-            return str(m.group(1)) if m else None
+            return _id_from_text(result)
 
     # Direct dict: {"message_id": 123, ...}
     if isinstance(result, dict):
@@ -68,9 +86,9 @@ def _extract_message_id(payload):
                         return str(mid)
             except Exception:
                 pass
-            m = re.search(r"id[:\s]+(\d+)", text, re.IGNORECASE)
-            if m:
-                return str(m.group(1))
+            mid = _id_from_text(text)
+            if mid is not None:
+                return mid
 
     return None
 
