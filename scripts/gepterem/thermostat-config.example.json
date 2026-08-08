@@ -1,0 +1,7 @@
+{
+  "active": "unattended",
+  "profiles": {
+    "unattended": { "on": 32, "off": 27, "label": "gepterem (gepek)" },
+    "occupied":   { "on": 26, "off": 22, "label": "bent vagyok" }
+  }
+}
