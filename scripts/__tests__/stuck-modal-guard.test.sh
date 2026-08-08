@@ -140,10 +140,10 @@ Some scrollback text here.
 assert_eq "B3 regression: limit text + idle footer -> idle (not limited)" "idle" "$(classify "$LIMIT_WITH_IDLE")"
 
 # ---------------------------------------------------------------------------
-# (h) parse-reset-epoch: extracts reset time from pane text
+# (h) parse-reset-epoch and is-overdue (B5: midnight-rollover guard)
 # ---------------------------------------------------------------------------
 echo ""
-echo "(h) parse-reset-epoch"
+echo "(h) parse-reset-epoch / is-overdue (midnight-rollover guard)"
 
 # Parseable format ("resets 5:50pm") -> non-empty epoch
 PR_RESULT="$(bash "$GUARD" parse-reset-epoch "You hit your session limit · resets 5:50pm")"
@@ -158,6 +158,29 @@ assert_eq "parse-reset-epoch: no reset time -> empty" "" "$PR_EMPTY"
 
 PR_JUNK="$(bash "$GUARD" parse-reset-epoch "junk pane with no time")"
 assert_eq "parse-reset-epoch: junk pane -> empty" "" "$PR_JUNK"
+
+# B5 regression: "resets 1am" observed at 19:00 must NOT be overdue.
+# date -d "1am" always returns today's 01:00, which is 18h in the past.
+# Without the rollover fix this would produce overdue=1 (false escalation).
+RESET_EP_1AM="$(bash "$GUARD" parse-reset-epoch "You hit your session limit · resets 1am")"
+ANCHOR_1900="$(date -d "19:00 today" +%s 2>/dev/null || date -d "today 19:00" +%s)"
+NOW_1929="$(date -d "19:29 today" +%s 2>/dev/null || date -d "today 19:29" +%s)"
+assert_eq "B5: 'resets 1am' at 19:29 with 19:00 anchor -> NOT overdue (rollover guard)" \
+  "0" "$(bash "$GUARD" is-overdue "$RESET_EP_1AM" "$ANCHOR_1900" "$NOW_1929")"
+
+# Normal overdue: "resets 5:50pm", first detection 16:00, now 19:00 -> overdue.
+RESET_EP_550="$(bash "$GUARD" parse-reset-epoch "You hit your session limit · resets 5:50pm")"
+ANCHOR_1600="$(date -d "16:00 today" +%s 2>/dev/null || date -d "today 16:00" +%s)"
+NOW_1900="$(date -d "19:00 today" +%s 2>/dev/null || date -d "today 19:00" +%s)"
+assert_eq "B5: 'resets 5:50pm' at 19:00 with 16:00 anchor -> overdue" \
+  "1" "$(bash "$GUARD" is-overdue "$RESET_EP_550" "$ANCHOR_1600" "$NOW_1900")"
+
+# Not yet overdue: reset is in the future.
+RESET_EP_550_FUTURE="$(bash "$GUARD" parse-reset-epoch "resets 5:50pm")"
+ANCHOR_1530="$(date -d "15:30 today" +%s 2>/dev/null || date -d "today 15:30" +%s)"
+NOW_1540="$(date -d "15:40 today" +%s 2>/dev/null || date -d "today 15:40" +%s)"
+assert_eq "B5: 'resets 5:50pm' at 15:40 -> not yet overdue" \
+  "0" "$(bash "$GUARD" is-overdue "$RESET_EP_550_FUTURE" "$ANCHOR_1530" "$NOW_1540")"
 
 # ---------------------------------------------------------------------------
 # (f) F1 — a missing state dir is created (no flock defer-forever, cold install)

@@ -157,6 +157,24 @@ parse_reset_epoch() {
   echo "$ep"
 }
 
+# --- overdue check (pure, testable) -------------------------------------------
+# Args: RESET_EPOCH ANCHOR_EPOCH NOW_EPOCH
+# ANCHOR_EPOCH is the time of first limit detection (LIMIT_ALERTED_STAMP mtime,
+# or 'now' on the very first tick before the stamp exists).
+# Midnight-rollover guard: if reset_ep < anchor the reset is actually tomorrow
+# (e.g. "resets 1am" parsed at 19:00 gives today 01:00 < 19:00 → +86400).
+# Prints 1 if the reset time has passed by >= LIMIT_OVERDUE_GRACE, else 0.
+is_limit_overdue() {
+  local reset_ep="$1" anchor="$2" now="$3"
+  [ -z "$reset_ep" ] && { echo 0; return; }
+  case "$reset_ep" in (''|*[!0-9]*) echo 0; return ;; esac
+  # Roll forward to next day if reset looks like it's in the past relative to
+  # when we first detected the limit (anchor). A fresh session limit always has
+  # reset_ep >= anchor; if it's earlier the date has rolled over.
+  [ "$reset_ep" -lt "$anchor" ] && reset_ep=$(( reset_ep + 86400 ))
+  if [ $(( now - reset_ep )) -ge "$LIMIT_OVERDUE_GRACE" ]; then echo 1; else echo 0; fi
+}
+
 # --- session usage-limit notification (rate-limited to once/hour) --------------
 alert_limited() {
   local pane_text="$1" now="$2"
@@ -249,16 +267,21 @@ run_guard() {
   # If yes -> escalate (alert + fall through to the normal stuck path so
   # the session is actually recovered via Escape / respawn). If no -> hold.
   if [ "$state" = "limited" ]; then
-    local reset_ep overdue=0
+    local reset_ep overdue anchor
     reset_ep="$(printf '%s' "$pane" | parse_reset_epoch)"
+    # Anchor: time of first limit detection (stamp mtime), or now on first tick.
+    anchor="$now"
+    [ -f "$LIMIT_ALERTED_STAMP" ] && {
+      local fs; fs="$(stat -c %Y "$LIMIT_ALERTED_STAMP" 2>/dev/null || echo 0)"
+      [ "$fs" -gt 0 ] && anchor="$fs"
+    }
     if [ -n "$reset_ep" ]; then
-      [ $(( now - reset_ep )) -ge "$LIMIT_OVERDUE_GRACE" ] && overdue=1
+      overdue="$(is_limit_overdue "$reset_ep" "$anchor" "$now")"
     else
-      # No parseable reset time: fall back to stamp-based 6-hour cap.
-      local first_alerted=0
-      [ -f "$LIMIT_ALERTED_STAMP" ] && first_alerted="$(stat -c %Y "$LIMIT_ALERTED_STAMP" 2>/dev/null || echo 0)"
-      [ "$first_alerted" -ne 0 ] \
-        && [ $(( now - first_alerted )) -ge "$LIMIT_FALLBACK_SECONDS" ] \
+      # No parseable reset time: stamp-based 6-hour cap.
+      overdue=0
+      [ "$anchor" -lt "$now" ] \
+        && [ $(( now - anchor )) -ge "$LIMIT_FALLBACK_SECONDS" ] \
         && overdue=1
     fi
     if [ "$overdue" = "1" ]; then
@@ -373,6 +396,7 @@ case "${1:-}" in
   decide)             decide_action "${2:-}" "${3:-0}" "${4:-0}" ;;
   sanitize-model)     sanitize_model "${2:-}" ;;
   parse-reset-epoch)  printf '%s' "${2:-}" | parse_reset_epoch ;;
+  is-overdue)         is_limit_overdue "${2:-}" "${3:-0}" "${4:-0}" ;;
   *)                  run_guard ;;
 esac
 exit 0
