@@ -11,6 +11,7 @@ reply tool sometimes uses chat_id=0/empty as a shorthand for the main chat
 import sys
 import os
 import json
+import re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
@@ -22,17 +23,16 @@ def _owner_chat():
 
 
 def _extract_message_id(payload):
-    """Extract the Telegram message_id from the tool result, or return None.
+    """Extract the Telegram message_id from the tool response, or return None.
 
-    The MCP plugin may return the result in several shapes:
-      - dict directly: {"message_id": 123, "ok": true}
-      - list of content blocks: [{"type": "text", "text": "{\"message_id\": 123}"}]
-      - JSON string encoding either of the above
-
-    We try the most common paths and fall back to None so a missing or
-    unexpected result format never prevents the outbound from being logged.
+    The hook payload key is `tool_response` (not `tool_result`).
+    The MCP plugin returns a content-block list:
+      [{"type": "text", "text": "sent (id: 3461)"}]
+    The text is NOT JSON -- it is a plain sentence. We first try json.loads
+    in case the format ever changes, then fall back to a regex.
+    Falls back to None on any parse error so the caller is never blocked.
     """
-    result = payload.get("tool_result")
+    result = payload.get("tool_response")
     if result is None:
         return None
 
@@ -41,7 +41,9 @@ def _extract_message_id(payload):
         try:
             result = json.loads(result)
         except Exception:
-            return None
+            # Plain string -- try regex directly.
+            m = re.search(r"id[:\s]+(\d+)", result, re.IGNORECASE)
+            return str(m.group(1)) if m else None
 
     # Direct dict: {"message_id": 123, ...}
     if isinstance(result, dict):
@@ -49,7 +51,7 @@ def _extract_message_id(payload):
         if mid is not None:
             return str(mid)
 
-    # MCP content-block list: [{"type": "text", "text": "<json>"}]
+    # Content-block list: [{"type": "text", "text": "sent (id: 3461)"}]
     if isinstance(result, list):
         for block in result:
             if not isinstance(block, dict):
@@ -57,6 +59,7 @@ def _extract_message_id(payload):
             text = block.get("text") or block.get("content") or ""
             if not isinstance(text, str):
                 continue
+            # Try JSON first (future-proof), then regex for the current format.
             try:
                 parsed = json.loads(text)
                 if isinstance(parsed, dict):
@@ -64,7 +67,10 @@ def _extract_message_id(payload):
                     if mid is not None:
                         return str(mid)
             except Exception:
-                continue
+                pass
+            m = re.search(r"id[:\s]+(\d+)", text, re.IGNORECASE)
+            if m:
+                return str(m.group(1))
 
     return None
 

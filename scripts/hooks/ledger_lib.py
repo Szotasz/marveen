@@ -140,6 +140,9 @@ def log_outbound(agent_id, chat_id, text, message_id=None):
     a double-fire of the hook does not produce a duplicate row. When None the
     constraint does not trigger (NULL != NULL in SQL), preserving the existing
     behaviour for callers that do not supply a message_id.
+    Note: INSERT OR IGNORE silently swallows ALL constraint violations, not
+    only UNIQUE conflicts. This is intentional: a duplicate outbound row is
+    harmless, and we never want the ledger write to raise an exception.
     """
     con = connect()
     try:
