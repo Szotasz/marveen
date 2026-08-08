@@ -19,11 +19,26 @@ no restart needed.
 
 Usage:
     telegram_fallback_send.py <chat_id> <text> [--sid SID] [--state-dir DIR]
+                              [--once-per-day LABEL] [--marker-dir DIR]
+
+`--once-per-day` is the code-level defence against a message going out twice.
+The morning briefing went out twice on three separate days (2026-08-02, 08-07,
+08-08) because two sessions ran the same scheduled task around a channels
+restart. The prompt-side guard (marker file + mkdir lock) cannot close that: it
+only protects sessions that actually run it, and the third incident was a stale
+session that sent without ever looking.
+
+So the claim moves into the sender: the marker is created with O_CREAT|O_EXCL
+BEFORE the API call, and the second caller loses the race and sends nothing.
+Fail-closed -- if the marker cannot be created for any reason other than "it
+already exists", the send is refused rather than risking a duplicate.
 
 Exit code:
     0  message delivered (placeholder cleared best-effort)
     2  delivery FAILED (Bot API not ok / unreachable) -> caller should escalate
        (per the skill: fall through to email). Nothing was cleared.
+    3  refused: today's message for this label has already been sent (or is
+       being sent right now by another process). Nothing was sent.
 
 Resolution mirrors the plugin/hooks: state dir from --state-dir else
 TELEGRAM_STATE_DIR else ~/.claude/channels/telegram; token from <state_dir>/.env
@@ -111,8 +126,64 @@ def clear_placeholder(sd, sid, chat_id, tok):
         log(sd, f"[fallback-send] pend trim failed: {e}")
 
 
+def marker_dir(cli_dir=None):
+    """Where the once-per-day markers live. Defaults to the project's store/."""
+    if cli_dir:
+        return cli_dir
+    env = os.environ.get("MORNING_MARKER_DIR")
+    if env:
+        return env
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))), "store")
+
+
+def marker_path(label, mdir, day=None):
+    day = day or __import__("datetime").date.today().isoformat()
+    return os.path.join(mdir, f"{label}-{day}")
+
+
+def claim_once_per_day(path):
+    """
+    Claim today's single send for this label.
+
+    Returns True exactly once per marker path, whatever else is happening: the
+    file is created with O_CREAT|O_EXCL, which is atomic even between two
+    processes that check at the same instant. That is the whole point -- the
+    check-then-send the prompt used to do was NOT atomic, and two sessions
+    walked through it forty seconds apart.
+
+    A failure that is not "already there" also returns False. Fail-closed: if
+    we cannot prove we are the only sender, we do not send. A duplicate message
+    is worse than a missing one here -- the user reads the same briefing twice
+    and cannot tell which is current.
+    """
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        return False
+    except OSError:
+        return False
+    with os.fdopen(fd, "w") as fh:
+        fh.write(f"claimed pid={os.getpid()} at={__import__('datetime').datetime.now().isoformat(timespec='seconds')}\n")
+    return True
+
+
+def release_claim(path):
+    """
+    Give the day's chance back after a FAILED send.
+
+    Only called when the API call did not deliver: a claim that outlives a
+    failure would silently cost the day's briefing, which is the opposite
+    failure from the one this guard exists to prevent.
+    """
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
 def parse_args(argv):
-    pos, sid, sdir = [], None, None
+    pos, sid, sdir, label, mdir = [], None, None, None, None
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -120,22 +191,40 @@ def parse_args(argv):
             sid = argv[i + 1]; i += 2; continue
         if a == "--state-dir" and i + 1 < len(argv):
             sdir = argv[i + 1]; i += 2; continue
+        if a == "--once-per-day" and i + 1 < len(argv):
+            label = argv[i + 1]; i += 2; continue
+        if a == "--marker-dir" and i + 1 < len(argv):
+            mdir = argv[i + 1]; i += 2; continue
         pos.append(a); i += 1
-    return pos, sid, sdir
+    return pos, sid, sdir, label, mdir
 
 
 def main():
-    pos, cli_sid, cli_dir = parse_args(sys.argv[1:])
+    pos, cli_sid, cli_dir, label, cli_mdir = parse_args(sys.argv[1:])
     if len(pos) < 2:
         sys.stderr.write("usage: telegram_fallback_send.py <chat_id> <text> "
-                         "[--sid SID] [--state-dir DIR]\n")
+                         "[--sid SID] [--state-dir DIR] [--once-per-day LABEL] "
+                         "[--marker-dir DIR]\n")
         sys.exit(2)
     chat_id, text = pos[0], pos[1]
     sd = state_dir(cli_dir)
     sid = session_id(cli_sid)
 
+    claimed = None
+    if label:
+        claimed = marker_path(label, marker_dir(cli_mdir))
+        if not claim_once_per_day(claimed):
+            # Not an error: another process holds today's send, or it already
+            # went out. Say so plainly -- a caller that sees only a non-zero
+            # exit tends to retry.
+            sys.stderr.write(f"telegram_fallback_send: refused, '{label}' already claimed for today "
+                             f"({claimed}) -- nothing sent\n")
+            sys.exit(3)
+
     tok = token(sd)
     if not tok:
+        if claimed:
+            release_claim(claimed)
         sys.stderr.write("telegram_fallback_send: no TELEGRAM_BOT_TOKEN in "
                          f"{os.path.join(sd, '.env')}\n")
         sys.exit(2)
@@ -143,10 +232,14 @@ def main():
     try:
         resp = api(tok, "sendMessage", {"chat_id": chat_id, "text": text[:MAX_LEN]})
     except Exception as e:
+        if claimed:
+            release_claim(claimed)
         sys.stderr.write(f"telegram_fallback_send: sendMessage failed: {e}\n")
         sys.exit(2)
 
     if not (isinstance(resp, dict) and resp.get("ok")):
+        if claimed:
+            release_claim(claimed)
         sys.stderr.write(f"telegram_fallback_send: Bot API not ok: {resp}\n")
         sys.exit(2)
 
@@ -154,6 +247,15 @@ def main():
     # does not re-deliver the same answer.
     clear_placeholder(sd, sid, chat_id, tok)
     mid = (resp.get("result") or {}).get("message_id")
+    if claimed:
+        # The marker now says what was sent and when. A caller that finds it
+        # tomorrow morning gets an answer, not just a lock file: the whole
+        # incident started with people unable to tell which message was current.
+        try:
+            with open(claimed, "a") as fh:
+                fh.write(f"sent chat={chat_id} message_id={mid} sid={sid}\n")
+        except OSError:
+            pass
     log(sd, f"[fallback-send] delivered chat={chat_id} message_id={mid} "
             f"(placeholder cleared) sid={sid}")
     # Echo the API result so the agent can record the message_id.
