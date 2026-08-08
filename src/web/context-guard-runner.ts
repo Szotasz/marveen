@@ -355,6 +355,16 @@ export function guardSweepAgentNames(): string[] {
   return [...new Set([MAIN_AGENT_ID, ...listAllAgentNames()])]
 }
 
+/**
+ * Current phase of the hard context-guard for this agent. Returns 'idle' when
+ * no state has been recorded. The gate runner uses this for its interlock: when
+ * the hard guard is in 'await-handoff' or 'await-ready', the soft gate steps
+ * aside so both mechanisms never simultaneously touch the pane.
+ */
+export function getHardGuardPhase(name: string): string {
+  return guardStates.get(name)?.phase ?? 'idle'
+}
+
 export function startContextGuardRunner(): NodeJS.Timeout {
   async function sweep() {
     const now = Date.now()

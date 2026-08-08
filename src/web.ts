@@ -29,6 +29,7 @@ import { startReauthHealer } from './web/reauth-healer.js'
 import { startAutoRestartRunner } from './web/auto-restart-runner.js'
 import { startModelFallbackRunner } from './web/model-fallback-runner.js'
 import { startContextGuardRunner } from './web/context-guard-runner.js'
+import { startContextRestartGateRunner } from './web/context-restart-gate-runner.js'
 import { collectTokenUsage } from './web/token-usage.js'
 import { logger } from './logger.js'
 import { tryHandleAuth } from './web/routes/auth.js'
@@ -407,6 +408,11 @@ export function startWebServer(port = 3420): http.Server {
 
   const contextGuardInterval = webOnly ? undefined : startContextGuardRunner()
   if (!webOnly) logger.info('Context-guard runner started (5min poll, 4.5min initial delay)')
+
+  if (!webOnly) {
+    startContextRestartGateRunner()
+    logger.info('Context-restart gate runner started (per-agent poll, 3min initial delay)')
+  }
 
   const updateCheckerInterval = webOnly ? undefined : startUpdateChecker()
   if (!webOnly) logger.info('Update checker started (15min poll)')
