@@ -81,10 +81,11 @@ const ALLOWED_PREFIXES = [
 // empty, unknown or misspelled value is treated as a main agent, i.e. blocked.
 // A mistake here can only deny a fetch, never grant one.
 //
-// The domain list mirrors the one in the sub-agent's own definition
-// (templates/sub-agents/quarantine-reader.md). That copy is a promise the
-// sub-agent makes to itself in its prompt; this one is enforcement. Keep them
-// in step -- and when they disagree, this file is the one that decides.
+// This list is the ONLY one. The sub-agent's definition used to enumerate the
+// same domains as a promise it made to itself, and two lists agree only on the
+// day they are written -- while just one of them is ever executed. The prompt
+// copy is gone (#233); the definition now says the gate holds the list, and a
+// test keeps the enumeration from creeping back in.
 const QUARANTINE_AGENT_TYPE = 'quarantine-reader'
 
 // `path` (optional) narrows a domain to the URLs the sub-agent's definition

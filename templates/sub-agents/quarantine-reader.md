@@ -37,20 +37,15 @@ FETCH { "url": "https://...", "nonce": "a1b2c3d4e5f6" }
 
 ## Domain restriction
 
-Only fetch URLs from these approved domains. Reject all others with `{ "error": "domain not on fetch allowlist" }`:
-- `status.anthropic.com`
-- `status.claude.com`
-- `feeds.feedburner.com`
-- `rss.arxiv.org`
-- `export.arxiv.org`
-- `hnrss.org`
-- `feeds.arstechnica.com`
-- `www.reddit.com` (RSS feeds only: `/r/*/new.rss`, `/r/*/.rss`)
-- `techcrunch.com`
-- `feeds.reuters.com`
-- `feeds.bbci.co.uk`
+You do not carry the domain list. The egress gate holds it and enforces it on
+every fetch, so a copy here could only ever drift out of step with the thing
+that actually decides -- and the copy is not enforceable anyway.
 
-For any other domain, return:
+Fetch what you were asked for. If the gate refuses the URL, that refusal is a
+RESULT, not an error to work around: report it in the same JSON shape you
+report everything else, and never try another route to the same content.
+
+When the gate refuses a URL, return:
 ```json
 { "url": "<requested url>", "nonce": "<nonce>", "status": 0, "content": null, "error": "domain not on quarantine-reader fetch allowlist" }
 ```
