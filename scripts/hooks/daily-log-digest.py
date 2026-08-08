@@ -278,7 +278,13 @@ def main():
             recent_pointers.append(f"{headline} [ts:{created_at}]")
         else:
             date_prefix = datetime.datetime.fromtimestamp(created_at).strftime("%m-%d")
-            older_headlines.append(f"{date_prefix} {headline}")
+            # Insert MM-DD after the leading "## " so the format stays
+            # consistent with the daily_log header style: "## MM-DD HH:MM -- Topic".
+            if headline.startswith("##"):
+                dated = "## " + date_prefix + headline[2:]
+            else:
+                dated = "## " + date_prefix + " " + headline
+            older_headlines.append(dated)
 
     if not recent_pointers and not older_headlines:
         _log_skip(agent_id, "ures-szures-utan")
