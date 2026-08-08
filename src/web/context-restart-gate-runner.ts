@@ -49,35 +49,39 @@ const TMUX = process.env.TMUX_BIN ?? '/usr/bin/tmux'
 //   CHILD_MIN_AGE_S     -- lower bound: skip children younger than this to
 //                          ignore transient exec() calls (<1s typical).
 //
-//   INFRA_AGE_RATIO     -- upper bound: if a child's age is >= this fraction
-//                          of the claude process's own age, it started near
-//                          session boot and is almost certainly infrastructure.
-//                          Measured on this host: claude and its MCP servers
-//                          (npm exec gmail-..., bun telegram plugin) all share
-//                          the same etimes (~6294s). Task-tool subagents are
-//                          always spawned during the session and thus much
-//                          younger (etimes/claude_etimes << 0.85).
+//   INFRA_AGE_DELTA_S   -- absolute delta upper bound: if a child's age is
+//                          within this many seconds of the claude process age,
+//                          it started near session boot and is infrastructure.
+//                          Measured on this host: MCP servers start 1-3 seconds
+//                          after claude (ratio 0.9996-0.9999). 60s is a generous
+//                          but ABSOLUTE cap -- unlike a ratio, it does NOT loosen
+//                          as session length grows. A Task-tool subagent running
+//                          for 90 min in a 2h session would have a delta >> 60s.
 //
 // A child is treated as "possibly work" only when:
-//   age >= CHILD_MIN_AGE_S  AND  age < claude_age * INFRA_AGE_RATIO
+//   age >= CHILD_MIN_AGE_S  AND  age < claudeAgeS - INFRA_AGE_DELTA_S
 //
 // On ps failure (null age): fail-closed → treat as work.
 const CHILD_MIN_AGE_S    = 3
-const INFRA_AGE_RATIO    = 0.85
+const INFRA_AGE_DELTA_S  = 60   // seconds; 60s >> measured 3s max MCP startup delta
 
 /**
  * Pure: true if a child process with the given age (seconds) should be treated
  * as infrastructure (MCP server, plugin runner) rather than in-flight work.
  * Exported for tests.
  *
- * Infrastructure is detected by age:
- *   - age < CHILD_MIN_AGE_S                    → transient exec() → infra
- *   - age >= claudeAgeS * INFRA_AGE_RATIO      → started near session boot → infra
- *   - otherwise                                → spawned during session → possibly work
+ * Infrastructure is detected by absolute age delta from the claude process:
+ *   - age < CHILD_MIN_AGE_S                          → transient exec() → infra
+ *   - age >= claudeAgeS - INFRA_AGE_DELTA_S          → started within 60s of claude → infra
+ *   - otherwise                                      → spawned during session → possibly work
+ *
+ * Using absolute delta (not ratio) is intentional: a ratio loosens with session
+ * length, so a 90-min subagent in a 2h session would be misclassified. An
+ * absolute 60s cap is generous yet immune to session age.
  */
 export function isInfrastructureChild(childAgeS: number, claudeAgeS: number): boolean {
   if (childAgeS < CHILD_MIN_AGE_S) return true
-  if (childAgeS >= claudeAgeS * INFRA_AGE_RATIO) return true
+  if (childAgeS >= claudeAgeS - INFRA_AGE_DELTA_S) return true
   return false
 }
 
@@ -104,18 +108,27 @@ function capturePaneOrNull(session: string): string | null {
 
 // ---- Child-process detection ------------------------------------------------
 //
-// Measured on this host (see review #938 round 1):
-//   - Both main-agent and sub-agent sessions: pane_pid comm=claude (NOT a shell).
-//     The original isMainAgent distinction was wrong; panePid is the claude
-//     process directly in all cases.
-//   - Claude's MCP servers (npm exec gmail-..., bun telegram plugin) are direct
-//     children of claude and share ~the same etimes as claude itself. They run
-//     for the full session lifetime.
+// Session shapes measured on this host (see review #938 rounds 1+2):
 //
-// Two-tier age filter separates infrastructure from work:
-//   - age < CHILD_MIN_AGE_S            → transient exec(), skip
-//   - age >= claude_age * INFRA_AGE_RATIO → started near session boot = infra, skip
-//   - otherwise                         → spawned during session = possibly work
+//   Direct shape (most sessions):
+//     pane_pid comm=claude → the pane IS the claude process.
+//     bigme-channels, agent-eddie/ford/slarti/trillian/zaphod all have this.
+//
+//   Wrapper shape (worker sessions):
+//     pane_pid comm=BASH → the pane is a shell; claude is a child.
+//     bigme-worker (pane=2797), bigme-worker-fast (pane=2888) both have this.
+//     If we skip the comm check and assume pane_pid=claude, we look at BASH's
+//     children instead of claude's -- in the wrapper shape, claude itself is a
+//     child of BASH with age ≈ BASH age (ratio ≈ 1.0 → classified as infra) and
+//     all real work children of claude are invisible. This is a false-allow.
+//
+// Solution: read comm of pane_pid first; if not 'claude', find the child whose
+// comm IS 'claude'. That is the process whose children we inspect.
+//
+// Two-tier age filter separates infrastructure from work (see constants above):
+//   - age < CHILD_MIN_AGE_S                  → transient exec(), skip
+//   - age >= claude_age - INFRA_AGE_DELTA_S  → started near boot = infra, skip
+//   - otherwise                              → spawned during session = possibly work
 //
 // On ps failure for any PID: fail-closed (return null → decideGate blocks).
 
@@ -147,6 +160,37 @@ function getPidAgeSeconds(pid: number): number | null {
   } catch { return null }
 }
 
+function getCommForPid(pid: number): string | null {
+  try {
+    const out = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'comm='],
+      { timeout: 2000, encoding: 'utf-8' })
+    return out.trim() || null
+  } catch { return null }
+}
+
+/**
+ * Pure: given the pane process and its immediate children (comm already resolved),
+ * returns the PID of the actual claude process in the tree.
+ *
+ * Direct shape (most sessions): pane comm=claude → pane IS claude.
+ * Wrapper shape (worker sessions): pane comm=bash/BASH → claude is a child.
+ * Returns null (fail-closed) if claude cannot be located in either position.
+ *
+ * Exported for tests.
+ */
+export function findClaudePidInTree(
+  panePid: number,
+  paneComm: string | null,
+  children: ReadonlyArray<{ pid: number; comm: string | null }>,
+): number | null {
+  if (paneComm === null) return null
+  if (paneComm === 'claude') return panePid
+  for (const child of children) {
+    if (child.comm === 'claude') return child.pid
+  }
+  return null
+}
+
 /**
  * Returns true if the session's claude process has live children that look
  * like in-flight work (Task-tool subagents, background Bash), false if only
@@ -154,19 +198,30 @@ function getPidAgeSeconds(pid: number): number | null {
  * (fail-closed → decideGate blocks).
  */
 function hasLiveChildProcesses(session: string): boolean | null {
-  // pane_pid IS the claude process on all session types on this host.
-  const claudePid = getPanePid(session)
-  if (claudePid === null) return null
+  const panePid = getPanePid(session)
+  if (panePid === null) return null
+
+  // Locate the actual claude process -- may be the pane itself (direct shape)
+  // or a child of the pane shell (wrapper shape, e.g. bigme-worker).
+  const paneComm = getCommForPid(panePid)
+  const panePidChildren = getChildPids(panePid)
+  const claudePid = findClaudePidInTree(
+    panePid,
+    paneComm,
+    panePidChildren.map(pid => ({ pid, comm: getCommForPid(pid) })),
+  )
+  if (claudePid === null) return null   // can't locate claude -- fail-closed
 
   const claudeAge = getPidAgeSeconds(claudePid)
-  if (claudeAge === null) return null   // can't measure parent → fail-closed
+  if (claudeAge === null) return null
 
-  const children = getChildPids(claudePid)
-  if (children.length === 0) return false
+  // Inspect claude's own children (MCP servers + possible Task-tool subagents).
+  const claudeChildren = claudePid === panePid ? panePidChildren : getChildPids(claudePid)
+  if (claudeChildren.length === 0) return false
 
-  for (const pid of children) {
+  for (const pid of claudeChildren) {
     const age = getPidAgeSeconds(pid)
-    if (age === null) return null   // can't measure child age → fail-closed
+    if (age === null) return null   // fail-closed
     if (!isInfrastructureChild(age, claudeAge)) return true
   }
   return false

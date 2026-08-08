@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   isInfrastructureChild,
+  findClaudePidInTree,
   TASKSTATE_FRESH_WINDOW_MS,
 } from '../web/context-restart-gate-runner.js'
 import {
@@ -268,16 +269,17 @@ describe('decideGate -- full block scenario (dispatched background work, GATE BL
 
 // ---------------------------------------------------------------------------
 // isInfrastructureChild -- models the REAL process tree shape on this host
-// (measured in review #938 round 1 by bigme)
+// (measured in review #938 rounds 1+2 by bigme)
 //
 // bigme-channels: pane_pid=2612 (claude), children: npm exec gmail (6294s),
 //   bun telegram plugin (6294s). Both are as old as claude itself.
 // agent-slarti:   pane_pid=3448 (claude), children: npm exec gmail (6287s).
+// bigme-worker:   pane_pid=2797 (BASH), child claude (age 6889).
 //
-// All MCP servers start at session boot and have etimes ≈ claude's etimes.
-// Task-tool subagents are spawned during the session (much younger).
+// Measured MCP startup deltas: 1, 1, 2, 2, 3, 3 seconds (ratio 0.9996-0.9999).
+// INFRA_AGE_DELTA_S=60 is generous and ABSOLUTE -- does not loosen over time.
 // ---------------------------------------------------------------------------
-describe('isInfrastructureChild -- age-based infrastructure detection', () => {
+describe('isInfrastructureChild -- absolute delta infrastructure detection', () => {
   const CLAUDE_AGE = 6294  // seconds (from bigme's live measurement)
 
   it('treats transient exec (<3s) as infrastructure', () => {
@@ -285,41 +287,89 @@ describe('isInfrastructureChild -- age-based infrastructure detection', () => {
     expect(isInfrastructureChild(2, CLAUDE_AGE)).toBe(true)
   })
 
-  it('treats MCP server as infrastructure (age ≈ claude age)', () => {
-    // npm exec gmail-... and bun plugin both at 6294s = same age as claude
-    expect(isInfrastructureChild(6294, CLAUDE_AGE)).toBe(true)
-    // Slightly younger MCP server (startup delay)
-    expect(isInfrastructureChild(6200, CLAUDE_AGE)).toBe(true)  // 6200 >= 6294*0.85=5350
+  it('treats MCP server as infrastructure (started within 60s of claude)', () => {
+    // Measured deltas: 1-3s. 60s cap is generous.
+    expect(isInfrastructureChild(6294, CLAUDE_AGE)).toBe(true)   // delta=0
+    expect(isInfrastructureChild(6293, CLAUDE_AGE)).toBe(true)   // delta=1 (measured)
+    expect(isInfrastructureChild(6291, CLAUDE_AGE)).toBe(true)   // delta=3 (measured max)
+    expect(isInfrastructureChild(6234, CLAUDE_AGE)).toBe(true)   // delta=60 (boundary)
   })
 
-  it('treats recently-spawned child as possibly-work (Task-tool subagent)', () => {
-    // Task spawned 2 min ago in a 6294s-old session
-    expect(isInfrastructureChild(120, CLAUDE_AGE)).toBe(false)
-    // Task running for 10 min in the same session
-    expect(isInfrastructureChild(600, CLAUDE_AGE)).toBe(false)  // 600 < 6294*0.85=5350
+  it('treats child with delta > 60s as possibly-work', () => {
+    expect(isInfrastructureChild(6233, CLAUDE_AGE)).toBe(false)  // delta=61 (just over)
+    expect(isInfrastructureChild(120, CLAUDE_AGE)).toBe(false)   // spawned 2min into session
+    expect(isInfrastructureChild(600, CLAUDE_AGE)).toBe(false)   // running 10min
   })
 
-  it('transient exec (1-2s) is always infra regardless of claude age', () => {
-    expect(isInfrastructureChild(1, 10)).toBe(true)
-    expect(isInfrastructureChild(2, 30)).toBe(true)
+  it('(B1b regression) 5857s child in 6294s session must NOT be classified as infra', () => {
+    // Old ratio (0.85): 5857 >= 6294*0.85=5350 → infra (WRONG -- would allow /clear
+    //   while a 90-min Task-tool subagent is still running in a 1.75h session).
+    // New delta (60): 5857 >= 6294-60=6234? No → work (CORRECT).
+    expect(isInfrastructureChild(5857, CLAUDE_AGE)).toBe(false)
+  })
+
+  it('(B1b regression) absolute delta stays tight as session grows', () => {
+    // 7h session: old ratio would classify anything > 6h as infra; delta stays 60s.
+    const LONG_SESSION = 7 * 3600  // 25200s
+    expect(isInfrastructureChild(25200 - 3, LONG_SESSION)).toBe(true)   // MCP, delta=3
+    expect(isInfrastructureChild(25200 - 60, LONG_SESSION)).toBe(true)  // delta=60
+    expect(isInfrastructureChild(25200 - 61, LONG_SESSION)).toBe(false) // work, delta=61
+    expect(isInfrastructureChild(25200 - 3600, LONG_SESSION)).toBe(false) // 1h subagent
   })
 
   it('(regression) MCP servers must NOT cause the gate to always block', () => {
-    // This was the B1 blocker from review #938 round 1:
-    // Before the fix, age >= CHILD_MIN_AGE_S(3) was the only filter.
-    // A MCP server at 6294s would have passed that filter and returned true.
-    // Now it is correctly classified as infrastructure → gate can open.
-    const mcpAge = 6294
-    expect(isInfrastructureChild(mcpAge, CLAUDE_AGE)).toBe(true)
-    // Verify: a session with ONLY MCP-age children (no work children) returns
-    // hasChildProcesses=false, which means the gate condition is NOT blocked.
-    // We verify this at the pure-logic level: hasChildProcesses=false → allow.
     const d = decideGate(
       { ...CLEAR_INPUTS, hasChildProcesses: false },
       ENABLED,
       null,
     )
     expect(d.action).toBe('allow')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// findClaudePidInTree -- locate claude in pane process tree
+// (measured in review #938 round 2 by bigme)
+//
+// Direct shape (most sessions): pane comm=claude → pane IS claude.
+// Wrapper shape (worker sessions): pane comm=BASH, claude is a child.
+//   Without comm check, the wrapper shape causes a false-allow: the shell's
+//   children list shows claude (age ≈ shell age → infra) but claude's own
+//   work children (Task-tool subagents) are invisible.
+// ---------------------------------------------------------------------------
+describe('findClaudePidInTree -- locate claude in pane process tree', () => {
+  it('direct shape: pane_pid IS claude (bigme-channels, agent-slarti, etc.)', () => {
+    expect(findClaudePidInTree(1000, 'claude', [])).toBe(1000)
+    expect(findClaudePidInTree(1000, 'claude', [{ pid: 2000, comm: 'node' }])).toBe(1000)
+  })
+
+  it('wrapper shape: pane is bash, claude is a child (bigme-worker)', () => {
+    // bigme-worker measured: pane=2797 comm=BASH, child=2900 comm=claude
+    expect(findClaudePidInTree(2797, 'BASH', [
+      { pid: 2900, comm: 'claude' },
+    ])).toBe(2900)
+  })
+
+  it('wrapper shape: handles multiple children, picks the claude one', () => {
+    expect(findClaudePidInTree(2797, 'bash', [
+      { pid: 2800, comm: 'node' },
+      { pid: 2900, comm: 'claude' },
+      { pid: 2901, comm: 'python3' },
+    ])).toBe(2900)
+  })
+
+  it('fail-closed: pane comm is null (ps failed)', () => {
+    expect(findClaudePidInTree(1000, null, [])).toBeNull()
+  })
+
+  it('fail-closed: pane is shell but no claude child found', () => {
+    expect(findClaudePidInTree(1000, 'bash', [
+      { pid: 2000, comm: 'node' },
+    ])).toBeNull()
+  })
+
+  it('fail-closed: pane is unknown process with no claude child', () => {
+    expect(findClaudePidInTree(1000, 'sh', [])).toBeNull()
   })
 })
 
