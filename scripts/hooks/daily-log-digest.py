@@ -78,19 +78,18 @@ def _first_line(content):
 
 def _fetch_log_entries(agent_id):
     """Fetch daily_log entries within the 72h window, newest-first.
-    Uses the (agent_id, date) index for efficient filtering.
+    Filters on created_at (epoch) for a precise window -- date-string
+    filtering can admit up to ~96h of entries depending on the time of day.
     Returns list of (content, created_at).
     """
-    cutoff_date = (
-        datetime.datetime.now() - datetime.timedelta(hours=WINDOW_HOURS)
-    ).strftime("%Y-%m-%d")
+    cutoff_epoch = int(time.time()) - WINDOW_HOURS * 3600
     con = ledger_lib.connect()
     try:
         return con.execute(
             "SELECT content, created_at FROM daily_logs"
-            " WHERE agent_id=? AND date >= ?"
+            " WHERE agent_id=? AND created_at >= ?"
             " ORDER BY created_at DESC LIMIT ?",
-            (str(agent_id), cutoff_date, DB_FETCH_LIMIT),
+            (str(agent_id), cutoff_epoch, DB_FETCH_LIMIT),
         ).fetchall()
     finally:
         con.close()
@@ -129,8 +128,8 @@ def _fetch_task_failures(agent_id):
         ).fetchall()
         result = []
         for name, ts in rows:
-            dt = datetime.datetime.utcfromtimestamp(ts).strftime("%m-%d %H:%M")
-            result.append(f"[TASK HIBA] {name} ({dt} UTC)")
+            dt = datetime.datetime.fromtimestamp(ts).strftime("%m-%d %H:%M")
+            result.append(f"[TASK HIBA] {name} ({dt})")
         return result
     except Exception:
         return []
@@ -172,23 +171,25 @@ def _build_output(recent_pointers, older_headlines, secondary_lines):
 
 
 def _log_inject_marker(agent_id, byte_size, item_count):
-    """Write a DIGEST_INJECT measurement marker to daily_logs.
-    Failure is silently ignored -- must never block startup."""
+    """Append a DIGEST_INJECT measurement line to store/digest-inject.log.
+
+    Written outside daily_logs to prevent self-contamination: if the marker
+    lived in daily_logs it would appear as a topic pointer in the next digest,
+    polluting the source it measures. The log file is append-only, one line
+    per injection, queryable with grep/awk.
+
+    Format: ISO-datetime<TAB>agent_id<TAB>bytes<TAB>items
+    Failure is silently ignored -- must never block startup.
+    """
     try:
-        now = int(time.time())
-        hhmm = datetime.datetime.fromtimestamp(now).strftime("%H:%M")
-        today = datetime.datetime.fromtimestamp(now).strftime("%Y-%m-%d")
-        content = f"## {hhmm} -- [DIGEST_INJECT] {byte_size} byte, {item_count} bejegyzes"
-        con = ledger_lib.connect()
-        try:
-            con.execute(
-                "INSERT INTO daily_logs (agent_id, date, content, created_at)"
-                " VALUES (?, ?, ?, ?)",
-                (str(agent_id), today, content, now),
-            )
-            con.commit()
-        finally:
-            con.close()
+        db = ledger_lib.db_path()
+        log_path = os.path.join(os.path.dirname(db), "digest-inject.log")
+        ts = datetime.datetime.fromtimestamp(int(time.time())).strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        )
+        line = f"{ts}\t{agent_id}\t{byte_size}\t{item_count}\n"
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(line)
     except Exception:
         pass
 
