@@ -8,13 +8,16 @@ const mockCreate   = vi.fn()
 const mockList     = vi.fn()
 const mockGet      = vi.fn()
 const mockDelete   = vi.fn()
+const mockRename   = vi.fn()
 
 vi.mock('../artifacts-db.js', () => ({
   ARTIFACT_KINDS: new Set(['html', 'markdown', 'json', 'text', 'binary']),
-  createArtifact: (...a: unknown[]) => mockCreate(...a),
-  listArtifacts:  (...a: unknown[]) => mockList(...a),
-  getArtifact:    (...a: unknown[]) => mockGet(...a),
-  deleteArtifact: (...a: unknown[]) => mockDelete(...a),
+  ARTIFACT_TITLE_MAX_LENGTH: 250,
+  createArtifact:  (...a: unknown[]) => mockCreate(...a),
+  listArtifacts:   (...a: unknown[]) => mockList(...a),
+  getArtifact:     (...a: unknown[]) => mockGet(...a),
+  deleteArtifact:  (...a: unknown[]) => mockDelete(...a),
+  renameArtifact:  (...a: unknown[]) => mockRename(...a),
 }))
 vi.mock('../logger.js', () => ({ logger: { error: vi.fn(), warn: vi.fn() } }))
 
@@ -197,6 +200,57 @@ describe('DELETE /api/artifacts/:id', () => {
     const { ctx, out } = makeCtx('DELETE', '/api/artifacts/ghost')
     await tryHandleArtifacts(ctx)
     expect(out.status).toBe(404)
+  })
+})
+
+// ── PATCH /api/artifacts/:id ──────────────────────────────────────────────────
+
+describe('PATCH /api/artifacts/:id', () => {
+  it('returns 200 ok when rename succeeds', async () => {
+    mockRename.mockReturnValue(true)
+    const { ctx, out } = makeCtx('PATCH', '/api/artifacts/art-r1', { title: 'New name' })
+    const handled = await tryHandleArtifacts(ctx)
+    expect(handled).toBe(true)
+    expect(out.status).toBe(200)
+    expect((out.body as { ok: boolean }).ok).toBe(true)
+    expect(mockRename).toHaveBeenCalledWith('art-r1', 'New name')
+  })
+
+  it('returns 404 when artifact is not found', async () => {
+    mockRename.mockReturnValue(false)
+    const { ctx, out } = makeCtx('PATCH', '/api/artifacts/ghost-id', { title: 'Whatever' })
+    await tryHandleArtifacts(ctx)
+    expect(out.status).toBe(404)
+    expect((out.body as { error: string }).error).toMatch(/not found/i)
+  })
+
+  it('returns 400 when title is missing', async () => {
+    const { ctx, out } = makeCtx('PATCH', '/api/artifacts/art-r2', {})
+    await tryHandleArtifacts(ctx)
+    expect(out.status).toBe(400)
+    expect((out.body as { error: string }).error).toMatch(/title/)
+  })
+
+  it('returns 400 when title is an empty string', async () => {
+    const { ctx, out } = makeCtx('PATCH', '/api/artifacts/art-r3', { title: '   ' })
+    await tryHandleArtifacts(ctx)
+    expect(out.status).toBe(400)
+    expect((out.body as { error: string }).error).toMatch(/title/)
+  })
+
+  it('returns 400 when title exceeds ARTIFACT_TITLE_MAX_LENGTH', async () => {
+    const { ctx, out } = makeCtx('PATCH', '/api/artifacts/art-r4', { title: 'a'.repeat(251) })
+    await tryHandleArtifacts(ctx)
+    expect(out.status).toBe(400)
+    expect((out.body as { error: string }).error).toMatch(/250/)
+  })
+
+  it('trims whitespace from title before calling renameArtifact', async () => {
+    mockRename.mockReturnValue(true)
+    const { ctx, out } = makeCtx('PATCH', '/api/artifacts/art-r5', { title: '  Trimmed  ' })
+    await tryHandleArtifacts(ctx)
+    expect(out.status).toBe(200)
+    expect(mockRename).toHaveBeenCalledWith('art-r5', 'Trimmed')
   })
 })
 

@@ -190,6 +190,24 @@ export function deleteArtifact(id: string): boolean {
   return result.changes > 0
 }
 
+export const ARTIFACT_TITLE_MAX_LENGTH = 250
+
+/**
+ * Rename an artifact's title. Returns true on success, false when the id is
+ * not found. The FTS index is updated automatically via the artifacts_fts_au
+ * trigger defined in migration 0010.
+ */
+export function renameArtifact(id: string, title: string): boolean {
+  const result = getDb()
+    .prepare('UPDATE artifacts SET title = ? WHERE id = ?')
+    .run(title, id)
+  if (result.changes === 0) return false
+  // Re-index embedding so semantic search reflects the new title (fire-and-forget)
+  const row = getDb().prepare('SELECT meta FROM artifacts WHERE id = ?').get(id) as { meta: string } | undefined
+  if (row) storeArtifactEmbedding(id, title, row.meta).catch(() => { /* non-critical */ })
+  return true
+}
+
 export interface ArtifactStats {
   artifact_count: number
   /** Number of rows in vec_artifacts (ANN index). -1 when sqlite-vec is unavailable. */
