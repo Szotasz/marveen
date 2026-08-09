@@ -45,10 +45,10 @@ dokumentumok szükségesek, és milyen tartalommal. Álláspontunk szerint a
 fogyasztóvédelmi kérdések vizsgálata nem tartozik a megbízás körébe; a
 harmadik országba irányuló adattovábbítás vizsgálata viszont igen. A
 végleges, éles használatra alkalmas dokumentumok elkészítésében is
-közreműködésüket kérjük. Kérjük, ajánlatukban jelezzék, melyik megoldást
-javasolják, és arra adjanak díjajánlatot: a tervezeteink ellenőrzésére és
-indokolt szakvéleménnyel való lezárására, vagy arra, hogy az iroda
-készítsen új dokumentumcsomagot az anyagaink felhasználásával.
+közreműködésüket kérjük. Kérjük, ajánlatukban jelezzék, hogy melyik megoldást javasolják, és arra
+adjanak ajánlatot: a már elkészült tervezeteink ellenőrzésére és indokolt
+szakvéleménnyel való kiegészítésére és azok lezárására, vagy pedig arra,
+hogy az iroda készítsen új dokumentumcsomagot.
 
 Számunkra az a lényeges, hogy a munka eredményét indokolt, jogszabályi
 hivatkozásokkal alátámasztott szakvélemény zárja le, amelyért az iroda
@@ -92,10 +92,10 @@ dokumentumok szükségesek, és milyen tartalommal. Álláspontunk szerint a
 fogyasztóvédelmi kérdések vizsgálata nem tartozik a megbízás körébe; a
 harmadik országba irányuló adattovábbítás vizsgálata viszont igen. A
 végleges, éles használatra alkalmas dokumentumok elkészítésében is
-közreműködésüket kérjük. Kérjük, ajánlatukban jelezzék, melyik megoldást
-javasolják, és arra adjanak díjajánlatot: a tervezeteink ellenőrzésére és
-indokolt szakvéleménnyel való lezárására, vagy arra, hogy az iroda
-készítsen új dokumentumcsomagot az anyagaink felhasználásával.
+közreműködésüket kérjük. Kérjük, ajánlatukban jelezzék, hogy melyik megoldást javasolják, és arra
+adjanak ajánlatot: a már elkészült tervezeteink ellenőrzésére és indokolt
+szakvéleménnyel való kiegészítésére és azok lezárására, vagy pedig arra,
+hogy az iroda készítsen új dokumentumcsomagot.
 
 Számunkra az a lényeges, hogy a munka eredményét indokolt, jogszabályi
 hivatkozásokkal alátámasztott szakvélemény zárja le, amelyért az iroda
@@ -137,10 +137,10 @@ működéshez milyen dokumentumok szükségesek, és milyen tartalommal.
 Álláspontunk szerint a fogyasztóvédelmi kérdések vizsgálata nem tartozik
 a megbízás körébe; a harmadik országba irányuló adattovábbítás vizsgálata
 viszont igen. A végleges, éles használatra alkalmas dokumentumok
-elkészítésében is közreműködését kérjük. Kérjük, ajánlatában jelezze,
-melyik megoldást javasolja, és arra adjon díjajánlatot: a tervezeteink
-ellenőrzésére és indokolt szakvéleménnyel való lezárására, vagy arra,
-hogy Ön készítsen új dokumentumcsomagot az anyagaink felhasználásával.
+elkészítésében is közreműködését kérjük. Kérjük, ajánlatában jelezze, hogy melyik
+megoldást javasolja, és arra adjon ajánlatot: a már elkészült tervezeteink
+ellenőrzésére és indokolt szakvéleménnyel való kiegészítésére és azok
+lezárására, vagy pedig arra, hogy Ön készítsen új dokumentumcsomagot.
 
 Számunkra az a lényeges, hogy a munka eredményét indokolt, jogszabályi
 hivatkozásokkal alátámasztott szakvélemény zárja le, amelyért Ön ügyvédi
@@ -182,10 +182,10 @@ működéshez milyen dokumentumok szükségesek, és milyen tartalommal.
 Álláspontunk szerint a fogyasztóvédelmi kérdések vizsgálata nem tartozik
 a megbízás körébe; a harmadik országba irányuló adattovábbítás vizsgálata
 viszont igen. A végleges, éles használatra alkalmas dokumentumok
-elkészítésében is közreműködését kérjük. Kérjük, ajánlatában jelezze,
-melyik megoldást javasolja, és arra adjon díjajánlatot: a tervezeteink
-ellenőrzésére és indokolt szakvéleménnyel való lezárására, vagy arra,
-hogy Ön készítsen új dokumentumcsomagot az anyagaink felhasználásával.
+elkészítésében is közreműködését kérjük. Kérjük, ajánlatában jelezze, hogy melyik
+megoldást javasolja, és arra adjon ajánlatot: a már elkészült tervezeteink
+ellenőrzésére és indokolt szakvéleménnyel való kiegészítésére és azok
+lezárására, vagy pedig arra, hogy Ön készítsen új dokumentumcsomagot.
 
 Számunkra az a lényeges, hogy a munka eredményét indokolt, jogszabályi
 hivatkozásokkal alátámasztott szakvélemény zárja le, amelyért Ön ügyvédi
