@@ -185,8 +185,8 @@ parse_reset_epoch() {
     hour="$digits"; min=0
   fi
   case "$ampm" in
-    pm) [ "$hour" -ne 12 ] 2>/dev/null && hour=$(( hour + 12 )) ;;
-    am) [ "$hour" -eq 12 ] 2>/dev/null && hour=0 ;;
+    pm) [ $(( 10#$hour )) -ne 12 ] 2>/dev/null && hour=$(( 10#$hour + 12 )) ;;
+    am) [ $(( 10#$hour )) -eq 12 ] 2>/dev/null && hour=0 ;;
   esac
   if ! [ "${hour:-x}" -ge 0 ] 2>/dev/null || ! [ "$hour" -le 23 ] 2>/dev/null \
      || ! [ "${min:-x}" -ge 0 ] 2>/dev/null || ! [ "$min"  -le 59 ] 2>/dev/null; then
@@ -198,7 +198,7 @@ parse_reset_epoch() {
   now="$(date +%s)"
   cur_h="$(date +%H)"; cur_m="$(date +%M)"; cur_s="$(date +%S)"
   midnight_ep=$(( now - 10#$cur_h * 3600 - 10#$cur_m * 60 - 10#$cur_s ))
-  echo $(( midnight_ep + hour * 3600 + min * 60 ))
+  echo $(( midnight_ep + 10#$hour * 3600 + 10#$min * 60 ))
 }
 
 # --- overdue check (pure, testable) -------------------------------------------
@@ -316,7 +316,7 @@ run_guard() {
     # Anchor: time of first limit detection (stamp mtime), or now on first tick.
     anchor="$now"
     [ -f "$LIMIT_ALERTED_STAMP" ] && {
-      local fs; fs="$(stat -c %Y "$LIMIT_ALERTED_STAMP" 2>/dev/null || echo 0)"
+      local fs; fs="$(stat_mtime "$LIMIT_ALERTED_STAMP")"
       [ "$fs" -gt 0 ] && anchor="$fs"
     }
     if [ -n "$reset_ep" ]; then

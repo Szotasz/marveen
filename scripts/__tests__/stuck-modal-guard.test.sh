@@ -182,6 +182,20 @@ NOW_1540="$(date -d "15:40 today" +%s 2>/dev/null || date -d "today 15:40" +%s)"
 assert_eq "B5: 'resets 5:50pm' at 15:40 -> not yet overdue" \
   "0" "$(bash "$GUARD" is-overdue "$RESET_EP_550_FUTURE" "$ANCHOR_1530" "$NOW_1540")"
 
+# B6 regression: leading-zero minutes and hours must not trigger octal parse error.
+# bash treats 08/09 as invalid octal in $(( )) without explicit 10# prefix.
+PR_908PM="$(bash "$GUARD" parse-reset-epoch "resets 9:08pm")"
+case "$PR_908PM" in
+  ''|*[!0-9]*) fail "B6: 'resets 9:08pm' (leading-zero minute) returned empty/non-numeric: '$PR_908PM'" ;;
+  *) pass "B6: 'resets 9:08pm' leading-zero minute -> numeric epoch '$PR_908PM'" ;;
+esac
+
+PR_0830PM="$(bash "$GUARD" parse-reset-epoch "resets 08:30pm")"
+case "$PR_0830PM" in
+  ''|*[!0-9]*) fail "B6: 'resets 08:30pm' (leading-zero hour) returned empty/non-numeric: '$PR_0830PM'" ;;
+  *) pass "B6: 'resets 08:30pm' leading-zero hour -> numeric epoch '$PR_0830PM'" ;;
+esac
+
 # ---------------------------------------------------------------------------
 # (i) Portability: BSD fallback paths for parse-reset-epoch and stat-mtime
 # ---------------------------------------------------------------------------
