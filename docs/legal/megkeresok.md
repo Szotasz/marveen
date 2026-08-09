@@ -60,7 +60,7 @@ Első lépésként kérjük, jelezzék vissza, vállalják-e a megbízást a fen
 szerint. Amennyiben igen, jelöljék meg, melyik irányt javasolják: saját
 dokumentumcsomag összeállítását, vagy meglévő anyagaink véglegessé
 alakítását. Ezt követően kérjük, a választott iránynak megfelelően jelöljék
-meg, milyen anyagokra van szükségük tőlünk.
+meg, milyen anyagokra van szükségük tőlünk az ajánlat elkészítéséhez.
 
 Tisztelettel:
 [Viktor]
@@ -110,7 +110,7 @@ Első lépésként kérjük, jelezzék vissza, vállalják-e a megbízást a fen
 szerint. Amennyiben igen, jelöljék meg, melyik irányt javasolják: saját
 dokumentumcsomag összeállítását, vagy meglévő anyagaink véglegessé
 alakítását. Ezt követően kérjük, a választott iránynak megfelelően jelöljék
-meg, milyen anyagokra van szükségük tőlünk.
+meg, milyen anyagokra van szükségük tőlünk az ajánlat elkészítéséhez.
 
 Tisztelettel:
 [Viktor]
@@ -158,7 +158,7 @@ Első lépésként kérjük, jelezze vissza, vállalja-e a megbízást a fentiek
 szerint. Amennyiben igen, jelölje meg, melyik irányt javasolja: saját
 dokumentumcsomag összeállítását, vagy meglévő anyagaink véglegessé
 alakítását. Ezt követően kérjük, a választott iránynak megfelelően jelölje
-meg, milyen anyagokra van szüksége tőlünk.
+meg, milyen anyagokra van szüksége tőlünk az ajánlat elkészítéséhez.
 
 Tisztelettel:
 [Viktor]
@@ -206,7 +206,7 @@ Első lépésként kérjük, jelezze vissza, vállalja-e a megbízást a fentiek
 szerint. Amennyiben igen, jelölje meg, melyik irányt javasolja: saját
 dokumentumcsomag összeállítását, vagy meglévő anyagaink véglegessé
 alakítását. Ezt követően kérjük, a választott iránynak megfelelően jelölje
-meg, milyen anyagokra van szüksége tőlünk.
+meg, milyen anyagokra van szüksége tőlünk az ajánlat elkészítéséhez.
 
 Tisztelettel:
 [Viktor]
