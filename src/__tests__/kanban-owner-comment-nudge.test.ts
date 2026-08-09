@@ -30,8 +30,8 @@ beforeEach(() => {
  */
 
 const OWNER = OWNER_NAME
-const card = (over: Partial<{ id: string; title: string; assignee: string | null }> = {}) => ({
-  id: 'abc12345', title: 'Kartya-komment csatorna', assignee: OWNER, ...over,
+const card = (over: Partial<{ id: string; title: string; assignee: string | null; seq: number }> = {}) => ({
+  id: 'abc12345', title: 'Kartya-komment csatorna', assignee: OWNER, seq: 253, ...over,
 })
 
 describe('who gets nudged', () => {
@@ -72,12 +72,22 @@ describe('what the nudge says', () => {
     expect(text).toContain('Leadtam a szoveget.')
   })
 
-  it('starts with the info emoji, so board noise is scannable apart from real replies', async () => {
-    // The owner scrolls one mixed Telegram thread; the ℹ️ prefix is the only
-    // thing separating board-generated pings from the agent's own answers.
+  it('starts with the info emoji and the card number, so the ping is traceable to a card', async () => {
+    // The owner scrolls one mixed Telegram thread; the ℹ️ prefix separates
+    // board-generated pings from the agent's own answers, and the #seq is what
+    // lets them answer "which card is this about" without guessing (Viktor,
+    // 2026-08-09, Telegram 2492).
     let text = ''
     notifyOwnerOfAgentComment(card(), 'edina1', 'Leadtam a szoveget.', async (t) => { text = t })
-    expect(text.startsWith('ℹ️ [kanban]')).toBe(true)
+    expect(text.startsWith('ℹ️ [kanban #253]')).toBe(true)
+  })
+
+  it('falls back to a numberless tag when the caller has no seq', async () => {
+    // A missing seq must degrade to the old prefix, never print "#undefined".
+    let text = ''
+    notifyOwnerOfAgentComment(card({ seq: undefined as unknown as number }), 'edina1', 'x', async (t) => { text = t })
+    expect(text.startsWith('ℹ️ [kanban] ')).toBe(true)
+    expect(text).not.toContain('undefined')
   })
 
   it('truncates a long comment instead of pasting an essay into Telegram', async () => {

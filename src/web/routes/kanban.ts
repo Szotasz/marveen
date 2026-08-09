@@ -593,7 +593,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
  * notification could not go out, and the caller is an API request.
  */
 export function notifyOwnerOfAgentComment(
-  card: { id: string; title: string; assignee: string | null },
+  card: { id: string; title: string; assignee: string | null; seq?: number },
   author: string,
   content: string,
   send?: (text: string) => Promise<void>,
@@ -622,7 +622,11 @@ export function notifyOwnerOfAgentComment(
   // The ℹ️ prefix is the owner's visual anchor: it separates board-generated
   // notifications from the agent's own replies when scrolling the chat
   // (Viktor's request, 2026-08-02, Telegram 1630).
-  const text = `ℹ️ [kanban] ${author} kommentelt a kartyadon: "${card.title}"\n${excerpt}${flat.length > 180 ? '...' : ''}`
+  // The #seq in the tag is what lets the owner answer "which card is this
+  // about" without opening the board (Viktor, 2026-08-09). Guarded: a caller
+  // without seq degrades to the numberless tag, never "#undefined".
+  const tag = card.seq != null ? `[kanban #${card.seq}]` : '[kanban]'
+  const text = `ℹ️ ${tag} ${author} kommentelt a kartyadon: "${card.title}"\n${excerpt}${flat.length > 180 ? '...' : ''}`
   void deliver(text)
     .then(() => recordOwnerNudge(text))
     .catch((err: unknown) => {
