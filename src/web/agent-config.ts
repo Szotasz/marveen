@@ -484,6 +484,13 @@ export function writeAgentClaudePlan(name: string, planId: string): void {
 // jelenjen a dashboardon").
 export const HIDDEN_AGENT_SENTINEL = '.hidden-from-dashboard'
 
+export function listAllAgentNames(): string[] {
+  if (!existsSync(AGENTS_BASE_DIR)) return []
+  return readdirSync(AGENTS_BASE_DIR).filter((f) => {
+    try { return statSync(join(AGENTS_BASE_DIR, f)).isDirectory() } catch { return false }
+  })
+}
+
 export function listAgentNames(): string[] {
   if (!existsSync(AGENTS_BASE_DIR)) return []
   return readdirSync(AGENTS_BASE_DIR).filter((f) => {
