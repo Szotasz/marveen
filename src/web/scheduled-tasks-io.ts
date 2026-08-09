@@ -60,6 +60,14 @@ export interface ScheduledTask {
   // task stays in the cloud -- guessing the class from the prompt text would
   // put a cost decision on a heuristic nobody measured.
   taskClass?: string
+  // Kanban project this schedule's token spend belongs to. The provenance
+  // wrapper already names the run exactly (`scheduled-task:<name>`), so the
+  // rows are fully identified -- they just had nowhere to learn which project
+  // to bill. Measured 2026-08-09: 6542 of the 10402 unattributed rows in the
+  // 30-day window were schedule-marked runs, 63% of the whole gap.
+  // Absent means unattributed, and stays that way: an unattributed row is a
+  // gap, a wrongly attributed one is a false line in the cost report.
+  project?: string
   // type='command' only: raw shell command run via `bash -lc`, no LLM/tmux.
   command?: string
   // type='command' only: command timeout in ms (default 10000).
@@ -110,7 +118,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
   const skillContent = hasSkill ? readFileOr(skillPath, '') : ''
   const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; stallAlertMs?: number; progressFile?: string; failThreshold?: number; preCheck?: string; requires?: { mcp_servers?: unknown } } = {}
+  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; stallAlertMs?: number; progressFile?: string; failThreshold?: number; preCheck?: string; project?: string; requires?: { mcp_servers?: unknown } } = {}
   try {
     config = JSON.parse(readFileOr(configPath, '{}'))
   } catch { /* use defaults */ }
@@ -133,6 +141,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     progressFile: config.progressFile,
     failThreshold: config.failThreshold,
     preCheck: config.preCheck,
+    project: (typeof config.project === 'string' && config.project.trim()) ? config.project.trim() : undefined,
     requires: parseRequires(config.requires),
   }
 }
@@ -160,7 +169,7 @@ export function listScheduledTasks(): ScheduledTask[] {
 
 export function writeScheduledTask(
   taskName: string,
-  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; stallAlertMs?: number; progressFile?: string; failThreshold?: number; preCheck?: string },
+  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; stallAlertMs?: number; progressFile?: string; failThreshold?: number; preCheck?: string; project?: string },
 ): void {
   const dir = join(SCHEDULED_TASKS_DIR, taskName)
   mkdirSync(dir, { recursive: true })
@@ -193,6 +202,13 @@ export function writeScheduledTask(
   if (data.progressFile !== undefined) config.progressFile = data.progressFile
   if (data.failThreshold !== undefined) config.failThreshold = data.failThreshold
   if (data.preCheck !== undefined) config.preCheck = data.preCheck
+  // An empty string clears the attribution rather than storing "" -- readers
+  // must not have to distinguish "no project" from "the empty project".
+  if (data.project !== undefined) {
+    const p = data.project.trim()
+    if (p) config.project = p
+    else delete config.project
+  }
   if (data.description !== undefined) config.description = data.description
   if (!config.createdAt) config.createdAt = Math.floor(Date.now() / 1000)
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))

@@ -631,6 +631,13 @@ export function initDatabase(dbPathOverride?: string): void {
   // NULL means the provenance predates this column, not that it is unknown
   // forever: a rescan stamps the marker rows via the upsert below.
   try { db.exec('ALTER TABLE token_usage ADD COLUMN task_source TEXT') } catch { /* already exists */ }
+  // Same argument, one column over. `project` used to have a single writer
+  // (correlateWithKanban's time window), so its reliability needed no label.
+  // labelScheduleProjects() adds an exact second writer -- the run's own
+  // provenance wrapper names the schedule, and the schedule names its project
+  // -- and two reliabilities in one column is the defect task_source exists to
+  // prevent. NULL means the row predates this column or has no project at all.
+  try { db.exec('ALTER TABLE token_usage ADD COLUMN project_source TEXT') } catch { /* already exists */ }
 
   // Deduplicate existing rows before creating unique index
   try {

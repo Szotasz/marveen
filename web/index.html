@@ -2939,6 +2939,8 @@
             <input type="checkbox" id="scheduleForceSend"> <span data-i18n="tasks.modal.force_send">Mindig küldje (a foglaltság ellenére is)</span>
           </label>
           <input type="text" id="scheduleTargetSession" placeholder="Cél tmux session (opcionális, felülírja az alapértelmezettet)" data-i18n-placeholder="schedules.modal.target_ph" style="margin-top:8px">
+          <input type="text" id="scheduleProject" list="scheduleProjectList" placeholder="Projekt a költség-kimutatáshoz (üresen hagyva nem sorolódik projekthez)" data-i18n-placeholder="schedules.modal.project_ph" style="margin-top:8px">
+          <datalist id="scheduleProjectList"></datalist>
         </div>
         <input type="hidden" id="scheduleEditName">
         <button class="btn-primary" id="saveScheduleBtn">

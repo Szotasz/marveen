@@ -5960,6 +5960,7 @@ function resetScheduleForm() {
   document.getElementById('scheduleSkipIfBusy').checked = false
   document.getElementById('scheduleForceSend').checked = false
   document.getElementById('scheduleTargetSession').value = ''
+  document.getElementById('scheduleProject').value = ''
   scheduleFrequency.value = 'daily'
   document.getElementById('scheduleTime').value = '09:00'
   document.getElementById('scheduleCustomCron').value = ''
@@ -6095,6 +6096,22 @@ async function loadScheduleAgents() {
     }
   } catch (err) {
     console.error('Ügynök lista hiba:', err)
+  }
+  // Suggestions only -- the field stays free-text so the list cannot silently
+  // narrow what an operator may type, and the API is what actually rejects an
+  // unknown project.
+  try {
+    const list = document.getElementById('scheduleProjectList')
+    if (list) {
+      list.innerHTML = ''
+      for (const p of await (await fetch('/api/kanban-projects')).json()) {
+        const opt = document.createElement('option')
+        opt.value = p
+        list.appendChild(opt)
+      }
+    }
+  } catch (err) {
+    console.error('Projekt lista hiba:', err)
   }
 }
 
@@ -6595,6 +6612,7 @@ function openEditSchedule(task) {
     document.getElementById('scheduleSkipIfBusy').checked = !!task.skipIfBusy
     document.getElementById('scheduleForceSend').checked = !!task.forceSend
     document.getElementById('scheduleTargetSession').value = task.targetSession || ''
+    document.getElementById('scheduleProject').value = task.project || ''
 
     // Set type (heartbeat or task; custom types fall back to task)
     const typeEl = document.getElementById('scheduleType')
@@ -6728,6 +6746,10 @@ saveScheduleBtn.addEventListener('click', async () => {
   const targetSession = document.getElementById('scheduleTargetSession').value.trim()
   const advanced = { skipIfBusy, forceSend }
   if (targetSession) advanced.targetSession = targetSession
+  // Always sent, empty included: the form is the whole truth for this field, so
+  // clearing it here has to clear the attribution rather than silently keep the
+  // old project. The API rejects a value that is not on the board.
+  advanced.project = document.getElementById('scheduleProject').value.trim()
 
   if (!name) { document.getElementById('scheduleName').focus(); return }
   if (!prompt) { document.getElementById('schedulePrompt').focus(); return }

@@ -1664,6 +1664,7 @@ window._i18n.hu = {
   'schedules.modal.desc_ph': 'Mit csinál ez a feladat',
   'schedules.modal.prompt_ph': 'Röviden írd le mit csináljon (pl. nézd meg az emailjeimet és foglald össze)',
   'schedules.modal.target_ph': 'Cél tmux session (opcionális, felülírja az alapértelmezettet)',
+  'schedules.modal.project_ph': 'Projekt a költség-kimutatáshoz (üresen hagyva nem sorolódik projekthez)',
   'connectors.builtin.dedup_html': 'Az itt listázott MCP szerverek a te Claude Code előfizetésedben bekapcsoltak (claude.ai OAuth connectorok, marketplace pluginok, lokális konfig). Minden sub-agent automatikusan látja őket, mert ugyanabban a HOME-ban fut, mint a fő session. Ha egy MCP már bekapcsolva van claude.ai-n, <strong>ne vedd fel még egyszer lokálisan</strong>: duplikálódik, és a Claude CLI "local wins" üzenetet ad rá. A lista a dashboard indulásakor töltődik be, explicit frissítés a "Frissítés" gombbal.',
   'channel.tg_howto.start_li': 'Az illető indítsa el a botot a Telegramban (<code>/start</code>) és írjon neki egy üzenetet.',
   'channel.tg_howto.group_li': 'Hívd meg a botot egy meglévő Telegram csoportba (csoport beállítások &rarr; Tagok &rarr; Hozzáadás).',

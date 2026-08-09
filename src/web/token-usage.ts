@@ -6,6 +6,7 @@ import { createInterface } from 'node:readline'
 import { getDb } from '../db.js'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
+import { listScheduledTasks } from './scheduled-tasks-io.js'
 
 const PROJECTS_DIR = join(homedir(), '.claude', 'projects')
 
@@ -94,6 +95,26 @@ export function parseScheduledTaskMarker(text: string): string | null {
 }
 
 /**
+ * A `user` line the harness injected, which nobody typed.
+ *
+ * The label ends when a PERSON takes over, and that is what an unmarked user
+ * turn is supposed to mean. But `<system-reminder>` and `<task-notification>`
+ * blocks arrive as user lines too, mid-run, and cleared the label for the rest
+ * of the scheduled task -- measured 2026-08-09: 44 rows in the 30-day window
+ * lost an otherwise exact attribution this way, silently, because a dropped
+ * label logs nothing and reads exactly like interactive work.
+ *
+ * Anchored at the start on purpose: these blocks are also APPENDED to real
+ * user messages, and such a turn is a person taking over and must still clear.
+ * A slash command (`<command-name>`) is likewise a person, so it is not here.
+ */
+const HARNESS_INJECTED_TURN = /^\s*<(system-reminder|task-notification)>/
+
+export function isHarnessInjectedTurn(text: string): boolean {
+  return HARNESS_INJECTED_TURN.test(text)
+}
+
+/**
  * Text carried by a transcript `user` line, or null when the line is not a
  * real user turn.
  *
@@ -178,7 +199,7 @@ export function collapseByMessageId(calls: ParsedCall[]): ParsedCall[] {
   return out
 }
 
-async function parseJsonlFile(
+export async function parseJsonlFile(
   filePath: string,
   agent: string,
   fromLine: number,
@@ -211,9 +232,10 @@ async function parseJsonlFile(
     // A real user turn either starts a scheduled run or ends one. An
     // unmarked turn means a person took over, so the previous task's label
     // must stop here rather than bleeding onto unrelated later work.
+    // Harness-injected lines are not a person and must not end the run.
     if (obj.type === 'user') {
       const text = userTurnText(obj.message?.content)
-      if (text !== null) currentTask = parseScheduledTaskMarker(text)
+      if (text !== null && !isHarnessInjectedTurn(text)) currentTask = parseScheduledTaskMarker(text)
       continue
     }
 
@@ -580,18 +602,71 @@ export function getTokenDetails(
  * first.
  */
 export async function collectAndCorrelate(
-  deps: { collect?: () => Promise<{ inserted: number; files: number }>; correlate?: () => void } = {},
-): Promise<{ inserted: number; files: number; correlated: boolean }> {
+  deps: {
+    collect?: () => Promise<{ inserted: number; files: number }>
+    correlate?: () => void
+    labelSchedules?: () => number
+  } = {},
+): Promise<{ inserted: number; files: number; correlated: boolean; scheduleLabelled: number }> {
   const collect = deps.collect ?? collectTokenUsage
   const correlate = deps.correlate ?? correlateWithKanban
+  const labelSchedules = deps.labelSchedules ?? labelScheduleProjects
   const result = await collect()
+
+  // Exact first, guess second. labelScheduleProjects() states which project a
+  // named schedule belongs to; correlateWithKanban() then fills what is still
+  // unlabelled from a time window. Reversing them would let the guess claim
+  // rows the marker already identified, so a test pins this order.
+  let scheduleLabelled = 0
+  try {
+    scheduleLabelled = labelSchedules()
+  } catch (err) {
+    logger.warn({ err }, 'Schedule project labelling failed; rows collected without it')
+  }
   try {
     correlate()
-    return { ...result, correlated: true }
+    return { ...result, correlated: true, scheduleLabelled }
   } catch (err) {
     logger.warn({ err }, 'Kanban correlation failed; usage rows collected but unlabelled')
-    return { ...result, correlated: false }
+    return { ...result, correlated: false, scheduleLabelled }
   }
+}
+
+/**
+ * Give the project to rows a schedule marker already identified.
+ *
+ * The runner wraps every injected prompt with `scheduled-task:<name>`, so the
+ * parser knows exactly which task a row belongs to -- but a schedule had no
+ * way to declare which project its cost is. Measured on the live data
+ * 2026-08-09: of the 10402 rows in the 30-day window with no project, 6542
+ * carried a schedule marker naming a schedule that still exists. Fully
+ * identified work, unattributed for want of one field.
+ *
+ * A schedule with no `project` is skipped rather than defaulted: the cost view
+ * can survive a gap, but not a bucket nobody chose. Rows that already have a
+ * project are never relabelled, so this cannot overwrite an operator's answer
+ * or fight with the kanban correlation over the same row.
+ *
+ * Returns how many rows it filled -- a labeller that reports zero work is the
+ * only kind whose silence is readable.
+ */
+export function labelScheduleProjects(
+  deps: { tasks?: () => { name: string; project?: string }[] } = {},
+): number {
+  const db = getDb()
+  const tasks = (deps.tasks ?? listScheduledTasks)()
+  const upd = db.prepare(`
+    UPDATE token_usage
+    SET project = ?, project_source = 'schedule_config'
+    WHERE task_title = ? AND project IS NULL
+  `)
+  let labelled = 0
+  for (const task of tasks) {
+    const project = (task.project ?? '').trim()
+    if (!project) continue
+    labelled += upd.run(project, task.name).changes
+  }
+  return labelled
 }
 
 export function correlateWithKanban(): void {
@@ -616,11 +691,15 @@ export function correlateWithKanban(): void {
       const nextCard = cards.find((c: any) => c.updated_at > card.updated_at)
       const endTs = nextCard ? nextCard.updated_at : row.maxTs
 
+      // project_source only when a project is actually written: a card with no
+      // project must leave the row unattributed, not stamped as attributed-by-
+      // correlation with nothing in the column.
       db.prepare(`
         UPDATE token_usage
-        SET task_title = ?, project = ?, task_source = 'kanban_correlation'
+        SET task_title = ?, project = ?, task_source = 'kanban_correlation',
+            project_source = CASE WHEN ? IS NULL THEN project_source ELSE 'kanban_correlation' END
         WHERE agent = ? AND timestamp BETWEEN ? AND ? AND task_title IS NULL
-      `).run(card.title, card.project || null, row.agent, card.updated_at, endTs)
+      `).run(card.title, card.project || null, card.project || null, row.agent, card.updated_at, endTs)
     }
   }
 }

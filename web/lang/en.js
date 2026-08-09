@@ -1668,6 +1668,7 @@ window._i18n.en = {
   'schedules.modal.desc_ph': 'What this task does',
   'schedules.modal.prompt_ph': 'Briefly describe what it should do (e.g. check my emails and summarize them)',
   'schedules.modal.target_ph': 'Target tmux session (optional, overrides the default)',
+  'schedules.modal.project_ph': 'Project for the cost report (left empty: not attributed to any project)',
   'connectors.builtin.dedup_html': 'The MCP servers listed here are enabled in your Claude Code subscription (claude.ai OAuth connectors, marketplace plugins, local config). Every sub-agent sees them automatically, since they run in the same HOME as the main session. If an MCP is already enabled on claude.ai, <strong>do not add it again locally</strong>: it duplicates, and the Claude CLI reports a "local wins" message. The list loads at dashboard startup; refresh explicitly with the "Refresh" button.',
   'channel.tg_howto.start_li': 'Have the person start the bot in Telegram (<code>/start</code>) and send it a message.',
   'channel.tg_howto.group_li': 'Invite the bot to an existing Telegram group (group settings &rarr; Members &rarr; Add).',

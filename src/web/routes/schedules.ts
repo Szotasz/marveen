@@ -1,7 +1,7 @@
 import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import {
-  listPendingTaskRetries, deletePendingTaskRetryById, listTaskRunHistory,
+  listPendingTaskRetries, deletePendingTaskRetryById, listTaskRunHistory, listKanbanProjects,
 } from '../../db.js'
 import { MAIN_AGENT_ID, BOT_NAME } from '../../config.js'
 import { runAgent } from '../../agent.js'
@@ -33,6 +33,19 @@ function resolveScheduleDir(rawName: string): { name: string; dir: string } | nu
   try {
     return { name, dir: safeJoin(SCHEDULED_TASKS_DIR, name) }
   } catch { return null }
+}
+
+// A schedule's `project` decides which bucket its token spend lands in, and a
+// typo would quietly open a bucket that looks like a real project in the cost
+// view -- wrong attribution reads as fact, while no attribution at least reads
+// as a gap. So the value has to already exist on the board (the same list
+// /api/kanban-projects serves). Returns the offending value, or null if fine.
+// An empty string is the explicit "clear it" and always passes.
+export function unknownScheduleProject(project: string | undefined): string | null {
+  if (project === undefined) return null
+  const p = project.trim()
+  if (!p) return null
+  return listKanbanProjects().includes(p) ? null : p
 }
 
 export async function tryHandleSchedules(ctx: RouteContext): Promise<boolean> {
@@ -126,7 +139,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       throw err
     }
     const data = JSON.parse(body.toString()) as {
-      name: string; description: string; prompt: string; schedule: string; agent?: string; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string
+      name: string; description: string; prompt: string; schedule: string; agent?: string; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; project?: string
     }
     const name = sanitizeScheduleName(data.name || '')
     if (!name) { json(res, { error: 'Name is required' }, 400); return true }
@@ -139,6 +152,11 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     }
     if (!data.schedule?.trim()) { json(res, { error: 'Schedule is required' }, 400); return true }
     if (!isValidCronShape(data.schedule)) { json(res, { error: 'Invalid cron expression' }, 400); return true }
+    const badProject = unknownScheduleProject(data.project)
+    if (badProject) {
+      json(res, { error: `Unknown project "${badProject}". Known projects: ${listKanbanProjects().join(', ')}` }, 400)
+      return true
+    }
 
     const dir = join(SCHEDULED_TASKS_DIR, name)
     if (existsSync(dir)) { json(res, { error: 'Schedule already exists' }, 409); return true }
@@ -153,6 +171,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       skipIfBusy: data.skipIfBusy === true,
       forceSend: data.forceSend === true,
       targetSession: data.targetSession || undefined,
+      project: data.project,
     })
     logger.info({ name, schedule: data.schedule }, 'Scheduled task created')
     json(res, { ok: true, name })
@@ -177,7 +196,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       throw err
     }
     const data = JSON.parse(body.toString()) as {
-      description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string
+      description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; project?: string
     }
     if (data.prompt !== undefined && data.prompt.length > MAX_SCHEDULED_TASK_PROMPT_LEN) {
       json(res, {
@@ -187,6 +206,11 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     }
     if (data.schedule !== undefined && !isValidCronShape(data.schedule)) {
       json(res, { error: 'Invalid cron expression' }, 400)
+      return true
+    }
+    const badProjectUpdate = unknownScheduleProject(data.project)
+    if (badProjectUpdate) {
+      json(res, { error: `Unknown project "${badProjectUpdate}". Known projects: ${listKanbanProjects().join(', ')}` }, 400)
       return true
     }
     writeScheduledTask(name, data)
