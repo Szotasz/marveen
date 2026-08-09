@@ -62,9 +62,9 @@ dokumentumcsomag összeállítását, vagy meglévő anyagaink véglegessé
 alakítását. Ezt követően kérjük, a választott iránynak megfelelően jelöljék
 meg, milyen anyagokra van szükségük tőlünk az ajánlat elkészítéséhez.
 
-Tisztelettel:
-Tolnai Viktor
-ügyvezető
+Tisztelettel:  
+Tolnai Viktor  
+ügyvezető  
 Péci Szolgáltató Kft.
 
 ---
@@ -114,9 +114,9 @@ dokumentumcsomag összeállítását, vagy meglévő anyagaink véglegessé
 alakítását. Ezt követően kérjük, a választott iránynak megfelelően jelöljék
 meg, milyen anyagokra van szükségük tőlünk az ajánlat elkészítéséhez.
 
-Tisztelettel:
-Tolnai Viktor
-ügyvezető
+Tisztelettel:  
+Tolnai Viktor  
+ügyvezető  
 Péci Szolgáltató Kft.
 
 ---
@@ -164,9 +164,9 @@ dokumentumcsomag összeállítását, vagy meglévő anyagaink véglegessé
 alakítását. Ezt követően kérjük, a választott iránynak megfelelően jelölje
 meg, milyen anyagokra van szüksége tőlünk az ajánlat elkészítéséhez.
 
-Tisztelettel:
-Tolnai Viktor
-ügyvezető
+Tisztelettel:  
+Tolnai Viktor  
+ügyvezető  
 Péci Szolgáltató Kft.
 
 ---
@@ -214,7 +214,7 @@ dokumentumcsomag összeállítását, vagy meglévő anyagaink véglegessé
 alakítását. Ezt követően kérjük, a választott iránynak megfelelően jelölje
 meg, milyen anyagokra van szüksége tőlünk az ajánlat elkészítéséhez.
 
-Tisztelettel:
-Tolnai Viktor
-ügyvezető
+Tisztelettel:  
+Tolnai Viktor  
+ügyvezető  
 Péci Szolgáltató Kft.
