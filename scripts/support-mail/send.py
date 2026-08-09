@@ -19,12 +19,16 @@ def main():
     ap.add_argument("--subject", required=True)
     ap.add_argument("--body", default=None)
     ap.add_argument("--cc", default=None)
+    ap.add_argument("--from-address", default=None, help="Override From address (must be an alias of the mailbox)")
+    ap.add_argument("--from-name", default=None)
     ap.add_argument("--html", action="store_true")
     a = ap.parse_args()
     body = a.body if a.body is not None else sys.stdin.read()
 
     msg = EmailMessage()
-    msg["From"] = f"{lib.FROM_NAME} <{lib.FROM_ADDRESS}>"
+    from_addr = a.from_address or lib.FROM_ADDRESS
+    from_name = a.from_name or lib.FROM_NAME
+    msg["From"] = f"{from_name} <{from_addr}>"
     msg["To"] = a.to
     if a.cc:
         msg["Cc"] = a.cc
@@ -45,7 +49,7 @@ def main():
                           context=ssl.create_default_context(), timeout=45) as s:
         s.login(lib.EMAIL, lib.password())
         s.send_message(msg, to_addrs=rcpts)
-    print(f"SENT from {lib.FROM_ADDRESS} to {a.to}" + (f" cc {a.cc}" if a.cc else ""))
+    print(f"SENT from {from_addr} to {a.to}" + (f" cc {a.cc}" if a.cc else ""))
 
 
 if __name__ == "__main__":
