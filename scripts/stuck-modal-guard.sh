@@ -141,20 +141,64 @@ sanitize_model() {
   printf '%s' "${1:-}" | tr -cd 'A-Za-z0-9._:[]-'
 }
 
+# --- portable file mtime (GNU stat -c / BSD stat -f / python3 fallback) --------
+# Returns the Unix mtime of FILE, or 0 if unreachable. Never silent on failure.
+stat_mtime() {
+  local f="$1" result
+  result="$(stat -c %Y "$f" 2>/dev/null)"
+  [ -n "$result" ] && { echo "$result"; return; }
+  result="$(stat -f %m "$f" 2>/dev/null)"
+  [ -n "$result" ] && { echo "$result"; return; }
+  result="$(python3 -c "import os; print(int(os.path.getmtime('$f')))" 2>/dev/null)"
+  [ -n "$result" ] && { echo "$result"; return; }
+  log "stat_mtime: all dialects failed for '$f' -- returning 0"
+  echo 0
+}
+
 # --- parse reset epoch from pane text (pure, testable) -------------------------
 # Reads pane text on stdin. Outputs the Unix epoch of the reset time printed on
 # the pane (e.g. "resets 5:50pm" -> today's epoch at 17:50), or empty string if
 # the reset time is absent or unparseable. Used to detect when the quota has
 # already reset but the session is still showing the limit screen.
 parse_reset_epoch() {
-  local pane time_str ep
+  local pane time_str
   pane="$(cat)"
   time_str="$(printf '%s' "$pane" \
     | grep -oiE 'resets? +[0-9]+(:[0-9]+)? *(am|pm)' | head -1 \
     | grep -oiE '[0-9]+(:[0-9]+)? *(am|pm)')"
   [ -z "$time_str" ] && { echo ""; return; }
-  ep="$(date -d "$time_str" +%s 2>/dev/null)" || { echo ""; return; }
-  echo "$ep"
+  # Portable hh[:mm]am/pm -> epoch. Avoids GNU-only 'date -d'.
+  # If any step fails the failure is logged explicitly rather than silently
+  # folding into an empty return (which would be indistinguishable from "no
+  # reset time present" and would suppress the overdue-detection path).
+  local ts ampm digits hour min
+  ts="$(printf '%s' "$time_str" | tr -d ' ')"
+  ampm="$(printf '%s' "$ts" | grep -oiE '(am|pm)$' | tr '[:upper:]' '[:lower:]')"
+  digits="$(printf '%s' "$ts" | grep -oE '^[0-9]+(:[0-9]+)?')"
+  if [ -z "$digits" ] || [ -z "$ampm" ]; then
+    log "parse_reset_epoch: unrecognised format '$time_str' -- returning empty"
+    echo ""; return
+  fi
+  if printf '%s' "$digits" | grep -q ':'; then
+    hour="${digits%%:*}"; min="${digits##*:}"
+  else
+    hour="$digits"; min=0
+  fi
+  case "$ampm" in
+    pm) [ "$hour" -ne 12 ] 2>/dev/null && hour=$(( hour + 12 )) ;;
+    am) [ "$hour" -eq 12 ] 2>/dev/null && hour=0 ;;
+  esac
+  if ! [ "${hour:-x}" -ge 0 ] 2>/dev/null || ! [ "$hour" -le 23 ] 2>/dev/null \
+     || ! [ "${min:-x}" -ge 0 ] 2>/dev/null || ! [ "$min"  -le 59 ] 2>/dev/null; then
+    log "parse_reset_epoch: out-of-range h=$hour m=$min from '$time_str' -- returning empty"
+    echo ""; return
+  fi
+  # Today's midnight epoch: portable (date +%s and date +%H/%M/%S only)
+  local now cur_h cur_m cur_s midnight_ep
+  now="$(date +%s)"
+  cur_h="$(date +%H)"; cur_m="$(date +%M)"; cur_s="$(date +%S)"
+  midnight_ep=$(( now - 10#$cur_h * 3600 - 10#$cur_m * 60 - 10#$cur_s ))
+  echo $(( midnight_ep + hour * 3600 + min * 60 ))
 }
 
 # --- overdue check (pure, testable) -------------------------------------------
@@ -179,7 +223,7 @@ is_limit_overdue() {
 alert_limited() {
   local pane_text="$1" now="$2"
   local bstamp=0
-  [ -f "$LIMIT_ALERTED_STAMP" ] && bstamp="$(stat -c %Y "$LIMIT_ALERTED_STAMP" 2>/dev/null || echo 0)"
+  [ -f "$LIMIT_ALERTED_STAMP" ] && bstamp="$(stat_mtime "$LIMIT_ALERTED_STAMP")"
   [ $(( now - bstamp )) -lt 3600 ] && return 0   # already alerted within the hour
   # Extract "resets Xpm" / "resets X:XXam" from the pane if present.
   local reset_str reset_info=""
@@ -198,7 +242,7 @@ alert_limited() {
 alert_overdue_limit() {
   local pane_text="$1" now="$2"
   local bstamp=0
-  [ -f "$LIMIT_OVERDUE_STAMP" ] && bstamp="$(stat -c %Y "$LIMIT_OVERDUE_STAMP" 2>/dev/null || echo 0)"
+  [ -f "$LIMIT_OVERDUE_STAMP" ] && bstamp="$(stat_mtime "$LIMIT_OVERDUE_STAMP")"
   [ $(( now - bstamp )) -lt 3600 ] && return 0
   local reset_str reset_info=""
   reset_str="$(printf '%s' "$pane_text" | grep -oiE 'resets? +[0-9]+(:[0-9]+)? *(am|pm)?' | head -1)"
@@ -397,6 +441,7 @@ case "${1:-}" in
   sanitize-model)     sanitize_model "${2:-}" ;;
   parse-reset-epoch)  printf '%s' "${2:-}" | parse_reset_epoch ;;
   is-overdue)         is_limit_overdue "${2:-}" "${3:-0}" "${4:-0}" ;;
+  stat-mtime)         stat_mtime "${2:-}" ;;
   *)                  run_guard ;;
 esac
 exit 0

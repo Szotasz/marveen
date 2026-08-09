@@ -183,6 +183,62 @@ assert_eq "B5: 'resets 5:50pm' at 15:40 -> not yet overdue" \
   "0" "$(bash "$GUARD" is-overdue "$RESET_EP_550_FUTURE" "$ANCHOR_1530" "$NOW_1540")"
 
 # ---------------------------------------------------------------------------
+# (i) Portability: BSD fallback paths for parse-reset-epoch and stat-mtime
+# ---------------------------------------------------------------------------
+echo ""
+echo "(i) Portability: BSD fallback paths"
+
+FAKE_BIN="$(mktemp -d)"
+cleanup_fake_bin() { rm -rf "$FAKE_BIN"; }
+trap cleanup_fake_bin EXIT
+
+# parse-reset-epoch must NOT use 'date -d' at all after the portability fix.
+# Verify by placing a fake 'date' that fails on any -d invocation.
+cat > "$FAKE_BIN/date" << 'FAKE_DATE'
+#!/bin/sh
+# Mock BSD date: rejects any -d flag (GNU-only option)
+for arg; do
+  case "$arg" in -d) echo "date: illegal option -- d" >&2; exit 1 ;; esac
+done
+exec /usr/bin/date "$@"
+FAKE_DATE
+chmod +x "$FAKE_BIN/date"
+
+PR_BSD="$(PATH="$FAKE_BIN:$PATH" bash "$GUARD" parse-reset-epoch "resets 5:50pm")"
+case "$PR_BSD" in
+  ''|*[!0-9]*) fail "parse-reset-epoch: BSD (no date -d) returned empty/non-numeric: '$PR_BSD'" ;;
+  *) pass "parse-reset-epoch: works without GNU 'date -d' (BSD path)" ;;
+esac
+
+PR_BSD_EMPTY="$(PATH="$FAKE_BIN:$PATH" bash "$GUARD" parse-reset-epoch "no reset string")"
+assert_eq "parse-reset-epoch: BSD path, no reset string -> empty" "" "$PR_BSD_EMPTY"
+
+# stat-mtime: primary path (native stat, whichever dialect the host has)
+TMPFILE_I="$(mktemp)"
+MTIME_NATIVE="$(stat -c %Y "$TMPFILE_I" 2>/dev/null || stat -f %m "$TMPFILE_I" 2>/dev/null)"
+MTIME_GUARD="$(bash "$GUARD" stat-mtime "$TMPFILE_I")"
+assert_eq "stat-mtime: native dialect returns correct mtime" "$MTIME_NATIVE" "$MTIME_GUARD"
+
+# stat-mtime: python3 fallback when both GNU and BSD stat fail.
+# On Linux 'stat -f' means filesystem info (not BSD format), so we cannot
+# mock the BSD dialect by forwarding -- instead block ALL stat and let the
+# python3 fallback handle it.
+cat > "$FAKE_BIN/stat" << 'FAKE_STAT'
+#!/bin/sh
+# Mock: both GNU (-c) and BSD (-f %m) unavailable; python3 fallback must fire
+echo "stat: not available in this environment" >&2
+exit 1
+FAKE_STAT
+chmod +x "$FAKE_BIN/stat"
+
+MTIME_PY="$(PATH="$FAKE_BIN:$PATH" bash "$GUARD" stat-mtime "$TMPFILE_I")"
+assert_eq "stat-mtime: python3 fallback when both stat dialects fail" "$MTIME_NATIVE" "$MTIME_PY"
+rm -f "$TMPFILE_I"
+
+trap - EXIT
+rm -rf "$FAKE_BIN"
+
+# ---------------------------------------------------------------------------
 # (f) F1 — a missing state dir is created (no flock defer-forever, cold install)
 # ---------------------------------------------------------------------------
 echo ""
