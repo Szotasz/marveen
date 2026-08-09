@@ -4,6 +4,7 @@ import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { hardRestartMarveenChannels } from './channel-monitor.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { isValidModelId, InvalidModelIdError } from '../model-id.js'
 import {
   listAgentNames,
   readAgentRemoteHost,
@@ -54,6 +55,7 @@ function readMainModel(): string {
 }
 
 function writeMainModel(model: string): void {
+  if (!isValidModelId(model)) throw new InvalidModelIdError(model)
   let cfg: Record<string, unknown> = {}
   try { cfg = JSON.parse(readFileSync(MAIN_SETTINGS_PATH, 'utf-8')) } catch {}
   cfg.model = model
