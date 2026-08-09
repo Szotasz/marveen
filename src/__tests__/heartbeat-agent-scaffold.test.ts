@@ -99,11 +99,15 @@ describe('renderHeartbeatClaudeMd', () => {
     expect(out).toContain('You are headless')
   })
 
-  it('excludes done cards from the urgent-title kanban query (card 776e800a)', () => {
+  it('uses the heartbeat-summary API for kanban (card 776e800a, done-card exclusion delegated to the API)', () => {
     const out = renderHeartbeatClaudeMd(ID)
-    // A done card can still carry priority='urgent' -- the title lookup
-    // must filter it out, or closed issues get reported as active forever.
-    expect(out).toContain("priority='urgent' AND status != 'done'")
+    // The Kanban section now uses the dashboard API instead of a manual SQLite
+    // query, so done-card exclusion is enforced server-side. Verify the scaffold
+    // points the agent at the API endpoint and mentions that only unfinished
+    // cards are returned (so a done urgent card is not reported as active).
+    expect(out).toContain('api/kanban/heartbeat-summary')
+    expect(out).toContain('never archived, never')
+    expect(out).toContain('done')
   })
 
   it('is fully driven by the identity -- distinct configs render distinctly', () => {
