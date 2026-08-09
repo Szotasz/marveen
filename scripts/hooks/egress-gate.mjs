@@ -42,12 +42,19 @@ const RUNTIME_ALLOWLIST_PATH = join(REPO_ROOT, 'store', 'egress-allowlist.json')
 // Dashboard port: env WEB_PORT, else the install .env, else the 3420 default.
 // A fixed 3420 in the allowlist below blocked the agent's own dashboard as soon
 // as the install moved to another port.
+// SECURITY: the value is interpolated into an allowlist PREFIX (`http://localhost:${PORT}/`), so it
+// must be digits ONLY. An unvalidated value containing `@` turns the whole `localhost:<value>` part
+// into a URL userinfo section -- `http://localhost:3420@evil.com/` resolves to host evil.com, which
+// would put an attacker-chosen host on the built-in allowlist and defeat the egress gate entirely.
+// Anything that is not 1-5 digits is rejected and falls back to the default port.
+const isValidPort = (v) => /^\d{1,5}$/.test(v)
 const DASHBOARD_PORT = (() => {
-  if (process.env['WEB_PORT']) return process.env['WEB_PORT']
+  const fromEnv = process.env['WEB_PORT']
+  if (fromEnv && isValidPort(fromEnv)) return fromEnv
   try {
     const m = readFileSync(join(REPO_ROOT, '.env'), 'utf-8').match(/^WEB_PORT=(.*)$/m)
     const v = m?.[1]?.trim().replace(/^["']|["']$/g, '')
-    if (v) return v
+    if (v && isValidPort(v)) return v
   } catch { /* no .env: fall through to the default */ }
   return '3420'
 })()

@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { PROJECT_ROOT, MAIN_AGENT_ID, DEFAULT_AGENT_MODEL } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { safeJoin } from './sanitize.js'
+import { isValidModelId, InvalidModelIdError } from '../model-id.js'
 import {
   resolveAgentModelFromConfig,
   validateModelProfileMap,
@@ -133,6 +134,7 @@ export function writeAgentModelProfile(name: string, profile: string | null): vo
 }
 
 export function writeAgentModel(name: string, model: string): void {
+  if (!isValidModelId(model)) throw new InvalidModelIdError(model)
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
   try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
