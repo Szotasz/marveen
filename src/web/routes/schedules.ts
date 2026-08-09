@@ -18,6 +18,7 @@ import {
   listScheduledTasks, writeScheduledTask,
 } from '../scheduled-tasks-io.js'
 import { runScheduledTaskNow } from '../schedule-runner.js'
+import { ROUTABLE_TASK_CLASSES, isRoutableTaskClass } from '../../costops/local-first.js'
 import type { RouteContext } from './types.js'
 
 // Resolve a URL-supplied schedule name to an on-disk dir, blocking path
@@ -46,6 +47,18 @@ export function unknownScheduleProject(project: string | undefined): string | nu
   const p = project.trim()
   if (!p) return null
   return listKanbanProjects().includes(p) ? null : p
+}
+
+// The class decides whether a task may leave the cloud for the local router,
+// so an unrecognised one has to be refused at the door: local-first reads the
+// value literally, and a typo would sit in the config looking classified while
+// routing nothing. Returns the offending value, or null if fine. An empty
+// string is the explicit "clear it" and always passes.
+export function unknownScheduleTaskClass(taskClass: string | undefined): string | null {
+  if (taskClass === undefined) return null
+  const c = taskClass.trim()
+  if (!c) return null
+  return isRoutableTaskClass(c) ? null : c
 }
 
 export async function tryHandleSchedules(ctx: RouteContext): Promise<boolean> {
@@ -139,7 +152,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       throw err
     }
     const data = JSON.parse(body.toString()) as {
-      name: string; description: string; prompt: string; schedule: string; agent?: string; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; project?: string
+      name: string; description: string; prompt: string; schedule: string; agent?: string; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; project?: string; taskClass?: string
     }
     const name = sanitizeScheduleName(data.name || '')
     if (!name) { json(res, { error: 'Name is required' }, 400); return true }
@@ -157,6 +170,11 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       json(res, { error: `Unknown project "${badProject}". Known projects: ${listKanbanProjects().join(', ')}` }, 400)
       return true
     }
+    const badClass = unknownScheduleTaskClass(data.taskClass)
+    if (badClass) {
+      json(res, { error: `Unknown task class "${badClass}". Known classes: ${ROUTABLE_TASK_CLASSES.join(', ')}` }, 400)
+      return true
+    }
 
     const dir = join(SCHEDULED_TASKS_DIR, name)
     if (existsSync(dir)) { json(res, { error: 'Schedule already exists' }, 409); return true }
@@ -172,6 +190,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       forceSend: data.forceSend === true,
       targetSession: data.targetSession || undefined,
       project: data.project,
+      taskClass: data.taskClass,
     })
     logger.info({ name, schedule: data.schedule }, 'Scheduled task created')
     json(res, { ok: true, name })
@@ -196,7 +215,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       throw err
     }
     const data = JSON.parse(body.toString()) as {
-      description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; project?: string
+      description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; project?: string; taskClass?: string
     }
     if (data.prompt !== undefined && data.prompt.length > MAX_SCHEDULED_TASK_PROMPT_LEN) {
       json(res, {
@@ -211,6 +230,11 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     const badProjectUpdate = unknownScheduleProject(data.project)
     if (badProjectUpdate) {
       json(res, { error: `Unknown project "${badProjectUpdate}". Known projects: ${listKanbanProjects().join(', ')}` }, 400)
+      return true
+    }
+    const badClassUpdate = unknownScheduleTaskClass(data.taskClass)
+    if (badClassUpdate) {
+      json(res, { error: `Unknown task class "${badClassUpdate}". Known classes: ${ROUTABLE_TASK_CLASSES.join(', ')}` }, 400)
       return true
     }
     writeScheduledTask(name, data)

@@ -118,7 +118,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
   const skillContent = hasSkill ? readFileOr(skillPath, '') : ''
   const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; stallAlertMs?: number; progressFile?: string; failThreshold?: number; preCheck?: string; project?: string; requires?: { mcp_servers?: unknown } } = {}
+  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; stallAlertMs?: number; progressFile?: string; failThreshold?: number; preCheck?: string; project?: string; taskClass?: string; requires?: { mcp_servers?: unknown } } = {}
   try {
     config = JSON.parse(readFileOr(configPath, '{}'))
   } catch { /* use defaults */ }
@@ -142,6 +142,12 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     failThreshold: config.failThreshold,
     preCheck: config.preCheck,
     project: (typeof config.project === 'string' && config.project.trim()) ? config.project.trim() : undefined,
+    // Read as written, not normalised against the router's class list: an
+    // unknown class must reach planLocalFirst() so it can say so out loud
+    // ('class "x" is not served locally'). Dropping it here would turn a typo
+    // into "unclassified", which reads the same as a task nobody has got to
+    // yet. The write path is where an unknown value is refused.
+    taskClass: (typeof config.taskClass === 'string' && config.taskClass.trim()) ? config.taskClass.trim() : undefined,
     requires: parseRequires(config.requires),
   }
 }
@@ -169,7 +175,7 @@ export function listScheduledTasks(): ScheduledTask[] {
 
 export function writeScheduledTask(
   taskName: string,
-  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; stallAlertMs?: number; progressFile?: string; failThreshold?: number; preCheck?: string; project?: string },
+  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; stallAlertMs?: number; progressFile?: string; failThreshold?: number; preCheck?: string; project?: string; taskClass?: string },
 ): void {
   const dir = join(SCHEDULED_TASKS_DIR, taskName)
   mkdirSync(dir, { recursive: true })
@@ -204,6 +210,11 @@ export function writeScheduledTask(
   if (data.preCheck !== undefined) config.preCheck = data.preCheck
   // An empty string clears the attribution rather than storing "" -- readers
   // must not have to distinguish "no project" from "the empty project".
+  if (data.taskClass !== undefined) {
+    const c = data.taskClass.trim()
+    if (c) config.taskClass = c
+    else delete config.taskClass
+  }
   if (data.project !== undefined) {
     const p = data.project.trim()
     if (p) config.project = p
