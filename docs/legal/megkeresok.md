@@ -50,8 +50,9 @@ nem tartozik a megbízás körébe. Kereskedőink többsége ugyanakkor az Euró
 Unión kívül működik, ezért a harmadik országba irányuló adattovábbítás
 vizsgálata viszont a megbízás körébe tartozik.
 
-A díjazás megalapozott kalkulációjához kész, a forráskód alapján ellenőrzött
-adattérképet és pszeudonimizációs dossziét bocsátunk rendelkezésre.
+A díjazás megalapozott kalkulációját segíti, hogy az elkészült szoftver
+forráskódja alapján ellenőrzött adattérképet és pszeudonimizációs dossziét
+bocsátunk rendelkezésre.
 
 Amennyiben a megbízás illeszkedik az irodájuk tevékenységi körébe, kérésükre
 haladéktalanul megküldjük a részletes anyagot.
@@ -96,8 +97,9 @@ nem tartozik a megbízás körébe. Kereskedőink többsége ugyanakkor az Euró
 Unión kívül működik, ezért a harmadik országba irányuló adattovábbítás
 vizsgálata viszont a megbízás körébe tartozik.
 
-A díjazás kalkulációjához kész, a forráskód alapján ellenőrzött adattérképet
-és pszeudonimizációs dossziét bocsátunk rendelkezésre.
+A díjazás kalkulációját segíti, hogy az elkészült szoftver forráskódja
+alapján ellenőrzött adattérképet és pszeudonimizációs dossziét bocsátunk
+rendelkezésre.
 
 Amennyiben a megbízás felkeltette érdeklődésüket, kérésükre megküldjük a
 teljes anyagot.
@@ -141,8 +143,9 @@ nem tartozik a megbízás körébe. Kereskedőink többsége ugyanakkor az Euró
 Unión kívül működik, ezért a harmadik országba irányuló adattovábbítás
 vizsgálata viszont a megbízás körébe tartozik.
 
-A ráfordítás felméréséhez kész, a forráskód alapján ellenőrzött adattérképet
-és pszeudonimizációs dossziét bocsátunk rendelkezésre.
+A ráfordítás felmérését segíti, hogy az elkészült szoftver forráskódja
+alapján ellenőrzött adattérképet és pszeudonimizációs dossziét bocsátunk
+rendelkezésre.
 
 Amennyiben a megbízás illeszkedik a praxisába, kérésére megküldjük a
 részletes anyagot.
@@ -186,8 +189,9 @@ nem tartozik a megbízás körébe. Kereskedőink többsége ugyanakkor az Euró
 Unión kívül működik, ezért a harmadik országba irányuló adattovábbítás
 vizsgálata viszont a megbízás körébe tartozik.
 
-A ráfordítás felméréséhez kész, a forráskód alapján ellenőrzött adattérképet
-és pszeudonimizációs dossziét bocsátunk rendelkezésre.
+A ráfordítás felmérését segíti, hogy az elkészült szoftver forráskódja
+alapján ellenőrzött adattérképet és pszeudonimizációs dossziét bocsátunk
+rendelkezésre.
 
 Amennyiben a megbízás felkeltette érdeklődését, kérésére megküldjük a teljes
 anyagot.
