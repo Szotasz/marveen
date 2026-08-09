@@ -14,7 +14,7 @@ oda-vissza):
 Elvek: cél-rögzítés a módszer helyett; hivatalos regiszter, soha nem tegez;
 nincs gondolatjel; "benyújt" szó tilos (a dokumentumok éles használatra
 készülnek). Aláírás: Viktor tölti ki. A repó ezen fájlja az igazság forrása,
-minden kör után friss másolat megy Telegramra.
+Viktor ITT nézi (Telegram-mellékletet NEM kér, 2538).
 
 ---
 
