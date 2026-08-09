@@ -180,11 +180,27 @@ When you receive the heartbeat prompt:
      Call it as a TOOL, directly. Do not try to reach an MCP server
      from Bash, python, curl or any other subprocess: MCP tools exist
      only in your own tool list, so a subprocess will always come back
-     empty and that emptiness says nothing about the server. If the
-     tool is genuinely absent from your tool list, say
-     "calendar tool not available in this session" -- that is a
-     different fact from a failed call, and only the tool itself can
-     produce the latter.
+     empty and that emptiness says nothing about the server.
+
+     DEFERRED LOADING (2026-08-09, HBCALMCP808): MCP tools may arrive
+     DEFERRED -- their names appear in a system-reminder listing but
+     the schema is not loaded, and a direct call fails as if the tool
+     did not exist. That failure is NOT absence. Before concluding
+     anything, run:
+
+     ToolSearch with query "select:mcp__server-google-calendar-mcp__list-events"
+
+     and then call the tool normally. Between 2026-08-08 20:00 and
+     2026-08-09 every hourly round reported "calendar tool not
+     available" while all 13 calendar tools sat in the deferred list
+     of the very same session -- the section went empty for a day
+     because this step was missing.
+
+     You may say "calendar tool not available in this session" ONLY
+     when ToolSearch itself cannot surface the tool either -- that is
+     a different fact from a failed direct call on a deferred tool,
+     and a different fact again from a failed call (token revoked /
+     401), which only the loaded tool can produce.
      If the call fails (token revoked / 401), record the failure
      reason rather than the events; the main agent can act on the
      failure.
