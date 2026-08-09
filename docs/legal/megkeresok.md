@@ -13,7 +13,7 @@ oda-vissza):
 
 Elvek: cél-rögzítés a módszer helyett; hivatalos regiszter, soha nem tegez;
 nincs gondolatjel; "benyújt" szó tilos (a dokumentumok éles használatra
-készülnek). Aláírás: Viktor tölti ki. A repó ezen fájlja az igazság forrása,
+készülnek). Aláírás: kitöltve (Tolnai Viktor, ügyvezető, Péci Szolgáltató Kft.). A repó ezen fájlja az igazság forrása,
 Viktor ITT nézi (Telegram-mellékletet NEM kér, 2538).
 
 ---
@@ -63,7 +63,9 @@ alakítását. Ezt követően kérjük, a választott iránynak megfelelően jel
 meg, milyen anyagokra van szükségük tőlünk az ajánlat elkészítéséhez.
 
 Tisztelettel:
-[Viktor]
+Tolnai Viktor
+ügyvezető
+Péci Szolgáltató Kft.
 
 ---
 
@@ -113,7 +115,9 @@ alakítását. Ezt követően kérjük, a választott iránynak megfelelően jel
 meg, milyen anyagokra van szükségük tőlünk az ajánlat elkészítéséhez.
 
 Tisztelettel:
-[Viktor]
+Tolnai Viktor
+ügyvezető
+Péci Szolgáltató Kft.
 
 ---
 
@@ -161,7 +165,9 @@ alakítását. Ezt követően kérjük, a választott iránynak megfelelően jel
 meg, milyen anyagokra van szüksége tőlünk az ajánlat elkészítéséhez.
 
 Tisztelettel:
-[Viktor]
+Tolnai Viktor
+ügyvezető
+Péci Szolgáltató Kft.
 
 ---
 
@@ -209,4 +215,6 @@ alakítását. Ezt követően kérjük, a választott iránynak megfelelően jel
 meg, milyen anyagokra van szüksége tőlünk az ajánlat elkészítéséhez.
 
 Tisztelettel:
-[Viktor]
+Tolnai Viktor
+ügyvezető
+Péci Szolgáltató Kft.
