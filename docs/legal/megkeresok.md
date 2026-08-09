@@ -36,10 +36,22 @@ szakemberek egyaránt dolgoznak, és tapasztalattal rendelkeznek webáruházak,
 valamint nemzetközi szolgáltatók támogatásában. A mi esetünk pontosan ilyen:
 az alkalmazás adatfeldolgozóként kezel vásárlói adatokat a kereskedők nevében.
 
-A díjazás megalapozott kalkulációjához kész, a forráskód alapján
-ellenőrzött adattérképet és pszeudonimizációs dossziét bocsátunk rendelkezésre.
-Az átvizsgálandó anyag: adatvédelmi tájékoztató, általános szerződési
-feltételek és a GDPR 28. cikke szerinti adatfeldolgozói megállapodás.
+A megbízás tárgyát előre rögzítjük, hogy a megbízás vállalhatóságáról már
+az ajánlatadás előtt dönthessenek. A beadásra szánt dokumentumokat
+(adatvédelmi tájékoztató, általános szerződési feltételek, a GDPR 28. cikke
+szerinti adatfeldolgozói megállapodás) mi készítettük el; a feladat ezek
+ellenőrzése, szükség szerinti javítása, majd indokolt szakvélemény kiadása.
+A kiindulási alap a Shopify által a közzétételhez előírt dokumentumok köre.
+
+A megbízás terjedelmének megítéléséhez két körülményt előre rögzítünk.
+Ügyfeleink kizárólag kereskedők; fogyasztókkal közvetlen jogviszonyban nem
+állunk. Álláspontunk szerint ezért a fogyasztóvédelmi kérdések vizsgálata
+nem tartozik a megbízás körébe. Kereskedőink többsége ugyanakkor az Európai
+Unión kívül működik, ezért a harmadik országba irányuló adattovábbítás
+vizsgálata viszont a megbízás körébe tartozik.
+
+A díjazás megalapozott kalkulációjához kész, a forráskód alapján ellenőrzött
+adattérképet és pszeudonimizációs dossziét bocsátunk rendelkezésre.
 
 Amennyiben a megbízás illeszkedik az irodájuk tevékenységi körébe, kérésükre
 haladéktalanul megküldjük a részletes anyagot.
@@ -70,9 +82,22 @@ le, amelyre a megbízásunk irányul. Az alkalmazásunk adatfeldolgozóként mű
 nevében, ezért a megbízás súlypontja a szerep jogi minősítése és a GDPR
 28. cikke szerinti adatfeldolgozói megállapodás vizsgálata.
 
-A díjazás kalkulációjához kész adattérképet és pszeudonimizációs dossziét
-bocsátunk rendelkezésre. Az átvizsgálandó anyag: adatvédelmi tájékoztató,
-általános szerződési feltételek és az adatfeldolgozói megállapodás.
+A megbízás tárgyát előre rögzítjük, hogy a megbízás vállalhatóságáról már
+az ajánlatadás előtt dönthessenek. A beadásra szánt dokumentumokat
+(adatvédelmi tájékoztató, általános szerződési feltételek, a GDPR 28. cikke
+szerinti adatfeldolgozói megállapodás) mi készítettük el; a feladat ezek
+ellenőrzése, szükség szerinti javítása, majd indokolt szakvélemény kiadása.
+A kiindulási alap a Shopify által a közzétételhez előírt dokumentumok köre.
+
+A megbízás terjedelmének megítéléséhez két körülményt előre rögzítünk.
+Ügyfeleink kizárólag kereskedők; fogyasztókkal közvetlen jogviszonyban nem
+állunk. Álláspontunk szerint ezért a fogyasztóvédelmi kérdések vizsgálata
+nem tartozik a megbízás körébe. Kereskedőink többsége ugyanakkor az Európai
+Unión kívül működik, ezért a harmadik országba irányuló adattovábbítás
+vizsgálata viszont a megbízás körébe tartozik.
+
+A díjazás kalkulációjához kész, a forráskód alapján ellenőrzött adattérképet
+és pszeudonimizációs dossziét bocsátunk rendelkezésre.
 
 Amennyiben a megbízás felkeltette érdeklődésüket, kérésükre megküldjük a
 teljes anyagot.
@@ -102,9 +127,22 @@ GDPR-megfelelésével foglalkozik. A mi megbízásunk léptéke is ilyen: nem
 körülhatárolt anyagról. Az alkalmazás adatfeldolgozóként kezel vásárlói
 adatokat a kereskedők nevében.
 
-A ráfordítás megítéléséhez kész adattérképet és pszeudonimizációs dossziét
-bocsátunk rendelkezésre. Az átvizsgálandó anyag: adatvédelmi tájékoztató,
-általános szerződési feltételek és az adatfeldolgozói megállapodás.
+A megbízás tárgyát előre rögzítjük, hogy a megbízás vállalhatóságáról már
+az ajánlatadás előtt dönthessen. A beadásra szánt dokumentumokat
+(adatvédelmi tájékoztató, általános szerződési feltételek, a GDPR 28. cikke
+szerinti adatfeldolgozói megállapodás) mi készítettük el; a feladat ezek
+ellenőrzése, szükség szerinti javítása, majd indokolt szakvélemény kiadása.
+A kiindulási alap a Shopify által a közzétételhez előírt dokumentumok köre.
+
+A megbízás terjedelmének megítéléséhez két körülményt előre rögzítünk.
+Ügyfeleink kizárólag kereskedők; fogyasztókkal közvetlen jogviszonyban nem
+állunk. Álláspontunk szerint ezért a fogyasztóvédelmi kérdések vizsgálata
+nem tartozik a megbízás körébe. Kereskedőink többsége ugyanakkor az Európai
+Unión kívül működik, ezért a harmadik országba irányuló adattovábbítás
+vizsgálata viszont a megbízás körébe tartozik.
+
+A ráfordítás felméréséhez kész, a forráskód alapján ellenőrzött adattérképet
+és pszeudonimizációs dossziét bocsátunk rendelkezésre.
 
 Amennyiben a megbízás illeszkedik a praxisába, kérésére megküldjük a
 részletes anyagot.
@@ -134,9 +172,22 @@ adatfeldolgozóként kezel vásárlói adatokat a kereskedők nevében. A munka
 súlypontja ezért a szerep jogi minősítése, a jogalapok vizsgálata és a GDPR
 28. cikke szerinti adatfeldolgozói megállapodás véleményezése.
 
-A ráfordítás megítéléséhez kész adattérképet és pszeudonimizációs dossziét
-bocsátunk rendelkezésre. Az átvizsgálandó anyag: adatvédelmi tájékoztató,
-általános szerződési feltételek és az adatfeldolgozói megállapodás.
+A megbízás tárgyát előre rögzítjük, hogy a megbízás vállalhatóságáról már
+az ajánlatadás előtt dönthessen. A beadásra szánt dokumentumokat
+(adatvédelmi tájékoztató, általános szerződési feltételek, a GDPR 28. cikke
+szerinti adatfeldolgozói megállapodás) mi készítettük el; a feladat ezek
+ellenőrzése, szükség szerinti javítása, majd indokolt szakvélemény kiadása.
+A kiindulási alap a Shopify által a közzétételhez előírt dokumentumok köre.
+
+A megbízás terjedelmének megítéléséhez két körülményt előre rögzítünk.
+Ügyfeleink kizárólag kereskedők; fogyasztókkal közvetlen jogviszonyban nem
+állunk. Álláspontunk szerint ezért a fogyasztóvédelmi kérdések vizsgálata
+nem tartozik a megbízás körébe. Kereskedőink többsége ugyanakkor az Európai
+Unión kívül működik, ezért a harmadik országba irányuló adattovábbítás
+vizsgálata viszont a megbízás körébe tartozik.
+
+A ráfordítás felméréséhez kész, a forráskód alapján ellenőrzött adattérképet
+és pszeudonimizációs dossziét bocsátunk rendelkezésre.
 
 Amennyiben a megbízás felkeltette érdeklődését, kérésére megküldjük a teljes
 anyagot.
