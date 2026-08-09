@@ -99,11 +99,15 @@ describe('renderHeartbeatClaudeMd', () => {
     expect(out).toContain('You are headless')
   })
 
-  it('excludes done cards from the urgent-title kanban query (card 776e800a)', () => {
+  it('uses the heartbeat-summary API for kanban (card 776e800a, done-card exclusion delegated to the API)', () => {
     const out = renderHeartbeatClaudeMd(ID)
-    // A done card can still carry priority='urgent' -- the title lookup
-    // must filter it out, or closed issues get reported as active forever.
-    expect(out).toContain("priority='urgent' AND status != 'done'")
+    // The Kanban section now uses the dashboard API instead of a manual SQLite
+    // query, so done-card exclusion is enforced server-side. Verify the scaffold
+    // points the agent at the API endpoint and mentions that only unfinished
+    // cards are returned (so a done urgent card is not reported as active).
+    expect(out).toContain('api/kanban/heartbeat-summary')
+    expect(out).toContain('never archived, never')
+    expect(out).toContain('done')
   })
 
   it('is fully driven by the identity -- distinct configs render distinctly', () => {
@@ -139,5 +143,82 @@ describe('shouldBootHeartbeatAgent', () => {
 
   it('does not boot when both gates are off', () => {
     expect(shouldBootHeartbeatAgent({ respawnEnabled: false, agentEnabled: false })).toBe(false)
+  })
+})
+
+// HBMEMBLIND807: the hot-memory metric must ship as a READY-MADE query, the
+// way task_runs does -- a prose-only bullet let the heartbeat agent compose
+// its own SQL and report 0 with three hot memories in the window. Lock the
+// contract: the exact query, the SECONDS cutoff (no ms multiplier -- that is
+// the task_runs unit, not this one), and the do-not-rewrite instruction.
+describe('hot-memory metric is a ready-made query (HBMEMBLIND807)', () => {
+  it('ships the exact scoped count query', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    expect(out).toContain("SELECT COUNT(*) FROM memories")
+    expect(out).toContain(`agent_id='${ID.mainAgentId}'`)
+    expect(out).toContain("category='hot'")
+    expect(out).toContain('created_at > unixepoch()-3600')
+  })
+
+  it('the memory cutoff carries NO millisecond multiplier', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    const memBullet = out.slice(out.indexOf('Memory + system'))
+    expect(memBullet.slice(0, 1200)).not.toContain("(unixepoch()-3600)*1000")
+  })
+
+  it('tells the agent to report the number, not to rewrite the query', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    expect(out).toContain('do not rewrite the query')
+  })
+})
+
+// HBWARN807: the warnings metric was unfalsifiable -- it pointed at a source
+// that does not exist (no status column on memories, no such log table), so
+// it could only ever render 'none'. It was removed. This contract stops it
+// from creeping back WITHOUT a real, ready-made query behind it.
+describe('no unfalsifiable warnings metric (HBWARN807)', () => {
+  it('the report format has no bare "warnings:" output line', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    // The removed line was `- warnings: <none | comma-separated>`. Any warnings
+    // OUTPUT line must be backed by a query; a bare template line is the defect.
+    expect(out).not.toMatch(/^\s*-\s*warnings:/m)
+  })
+
+  it('mentions status=warning only inside the guard comment, never in a query block', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    // The string may appear once, in the HBWARN807 explanation naming the dead
+    // source. It must NOT appear inside a ```-fenced block (i.e. as a query the
+    // agent is told to run).
+    const fences = out.split('```')
+    for (let i = 1; i < fences.length; i += 2) {
+      expect(fences[i]).not.toContain("status='warning'")
+    }
+    // And it never appears as an actual sqlite invocation anywhere.
+    expect(out).not.toMatch(/sqlite3[^\n]*status='warning'/)
+  })
+
+  it('if warnings is mentioned at all, it is only the guard comment demanding a real query', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    // Every surviving "warning" mention must sit in the HBWARN807 explanation,
+    // never as a metric the agent is told to emit. Proxy: no "warning" line
+    // appears inside a ```-fenced report template block.
+    const fences = out.split('```')
+    // odd indices are inside fenced blocks
+    for (let i = 1; i < fences.length; i += 2) {
+      expect(fences[i].toLowerCase()).not.toContain('warning')
+    }
+  })
+})
+
+describe('deferred MCP tools (HBCALMCP808)', () => {
+  it('the calendar step teaches the ToolSearch select protocol', () => {
+    const md = renderHeartbeatClaudeMd(ID)
+    // The load-bearing line: without it, a deferred calendar tool reads as
+    // absent and the section silently goes empty (measured 2026-08-08/09:
+    // 13 not-available reports, zero ToolSearch calls, all 13 tools present
+    // in the session's own deferred list).
+    expect(md).toContain('select:mcp__server-google-calendar-mcp__list-events')
+    // "not available" may only be claimed after ToolSearch also failed.
+    expect(md).toMatch(/ONLY[\s\S]{0,80}ToolSearch itself cannot surface/)
   })
 })
