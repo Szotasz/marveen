@@ -9,8 +9,13 @@
 #        marveen-channels needs a restart to pick it up
 #   20 = patch is missing and does NOT apply (factory code changed around it);
 #        manual port needed -- alert the owner, do not retry blindly
-# Upstream PR tracking: once the factory plugin ships reply_to_message_id
-# itself, this script starts returning 0 forever and can be retired.
+# Upstream status (2026-08-09): PR anthropics/claude-plugins-official#5086
+# was auto-closed in one minute -- the repo only accepts PRs from Anthropic
+# members. The canonical feature request (anthropics/claude-code#41106) is
+# closed AND locked; three duplicates were auto-closed. There is currently NO
+# public channel to upstream this, so this guard is the durable mechanism,
+# not a stopgap. If Anthropic ever ships it, this script starts returning 0
+# forever and the telegram-plugin-patch-guard schedule can be retired.
 set -u
 PLUGIN_DIR="$HOME/.claude/plugins/cache/claude-plugins-official/telegram"
 PATCH_FILE="$(dirname "$0")/quote-reply-meta.patch"
