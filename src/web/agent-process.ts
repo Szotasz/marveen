@@ -758,6 +758,19 @@ export function agentSessionName(name: string): string {
   return `agent-${name}`
 }
 
+/**
+ * POSIX single-quote a value for safe interpolation into a shell command STRING (card b7fa5281).
+ *
+ * The agent launch is a shell string tmux runs (`new-session -d -s <s> <cmd>`), and the model id --
+ * which the operator controls via the dashboard -- was interpolated as `'${model}'`. Single-quoting
+ * made a `:` safe but not a `'`: `x'; curl ... | sh; echo '` closed the quote and injected a command.
+ * Wrapping in single quotes with each embedded `'` rewritten as `'\''` makes ANY value a single inert
+ * shell word. This is defence #2 at the sink; the model-id allowlist (model-id.ts) is defence #1.
+ */
+export function shSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
 // All tmux operations route through these two wrappers so the local-vs-remote
 // (ssh) decision and the quoting live in ONE place (ssh-tmux.ts). host=null is
 // byte-identical to the prior direct local tmux call. Remote calls get a larger
@@ -1022,13 +1035,13 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // the custom ANTHROPIC_BASE_URL ("model does not exist"). The env var is
     // authoritative and bypasses that validation. (`--print` honors --model, but
     // the agents run the TUI.) Single-quoted so a `:` in the tag is shell-safe.
-    const ollamaEnv = isOllama ? `export ANTHROPIC_AUTH_TOKEN=ollama && export ANTHROPIC_BASE_URL=${OLLAMA_URL} && export ANTHROPIC_MODEL='${model}' && ` : ''
+    const ollamaEnv = isOllama ? `export ANTHROPIC_AUTH_TOKEN=ollama && export ANTHROPIC_BASE_URL=${OLLAMA_URL} && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
     const deepseekKey = isDeepseek ? (getSecret('DEEPSEEK_API_KEY') ?? '') : ''
-    const deepseekEnv = isDeepseek ? `export ANTHROPIC_AUTH_TOKEN="${deepseekKey}" && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && export ANTHROPIC_MODEL='${model}' && ` : ''
+    const deepseekEnv = isDeepseek ? `export ANTHROPIC_AUTH_TOKEN="${deepseekKey}" && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
     // OpenRouter: Anthropic-compatible endpoint at https://openrouter.ai/api
     // (the SDK appends /v1/messages). Key from the vault (openrouter-fleet-key).
     const openrouterKey = isOpenRouter ? (getSecret('openrouter-fleet-key') ?? '') : ''
-    const openrouterEnv = isOpenRouter ? `export ANTHROPIC_AUTH_TOKEN="${openrouterKey}" && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL='${model}' && ` : ''
+    const openrouterEnv = isOpenRouter ? `export ANTHROPIC_AUTH_TOKEN="${openrouterKey}" && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
     // When authMode is 'api', the agent uses its own ANTHROPIC_API_KEY from
     // the vault instead of the host's OAuth. The vault entry ID follows the
     // convention `agent-{name}-api-key`. We inject it as an env var so Claude
@@ -1292,9 +1305,11 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // member. Killing the suggestion at the source removes the ghost the recovery
     // misreads. Env var verified present in claude.exe (CLAUDE_CODE_ENABLE_*).
     const promptSuggestionEnv = 'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false && '
-    // Single-quote `${model}` so values like `claude-opus-4-8[1m]` (1M-context
-    // suffix) are not glob-expanded by the shell that tmux spawns the command in.
-    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${ollamaEnv}${deepseekEnv}${openrouterEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model '${model}' ${channelFlag}`.trimEnd()
+    // shSingleQuote(model) (card b7fa5281): the model is POSIX single-quote ESCAPED, which both keeps
+    // values like `claude-opus-4-8[1m]` (1M-context suffix) from being glob-expanded AND makes a `'`
+    // in the value inert rather than a quote-break -> command injection. Same escape at the three
+    // ANTHROPIC_MODEL env sites above.
+    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${ollamaEnv}${deepseekEnv}${openrouterEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
     runTmux(null, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir }, 'Agent tmux session started')
