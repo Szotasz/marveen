@@ -65,3 +65,19 @@ describe('generateClaudeMd: stranger-sender ARANYSZABÁLY block is bot-name agno
     expect(src).toMatch(/import\s*{[^}]*\bBOT_NAME\b[^}]*}\s*from\s*'\.\.\/config\.js'/)
   })
 })
+
+describe('deferred MCP tool hint (FLEETDEFER809)', () => {
+  const SRC = readFileSync(SCAFFOLD_PATH, 'utf-8')
+  // The load-bearing rule: a deferred tool's failed direct call must not be
+  // read as absence. Without this section an agent whose scaffold predates
+  // deferred loading reports "not available" while the tool sits in its own
+  // deferred list (measured: HBCALMCP808, a full day of empty calendar rounds).
+  it('the shared scaffold teaches select-then-keyword ToolSearch before claiming absence', () => {
+    expect(SRC).toContain('deferred betöltése (FLEETDEFER809)')
+    expect(SRC).toContain('select:<tool_nev>')
+    // keyword fallback is part of the contract: server names differ per install
+    expect(SRC).toMatch(/KULCSSZÓVAL/)
+    // absence may only be claimed after the keyword search also failed
+    expect(SRC).toMatch(/Csak akkor mondd ki a hiányt/)
+  })
+})
