@@ -1,65 +1,63 @@
 # Megkereső levelek -- 4 Tier 1 jelölt (hétfői kiküldésre)
 
-ÁTDOLGOZVA 2026-08-09, Viktor visszajelzése alapján (hangüzenet, 2500):
-hivatalos levél-regiszter, rövid tagmondatok, "amennyiben" a "ha" helyett,
-köznyelvi fordulatok ("belefér a profiljukba", "együtt hoz") kigyomlálva,
-a Shopify-szakzsargon egy tagmondatban megmagyarázva.
+SZERKEZET (Viktor, 2026-08-09, Telegram 2521 -- egy fonál, nincs témaváltás
+oda-vissza):
+1. Bemutatkozás + cél (kik vagyunk, mi a termék, mit akarunk elérni)
+2. Termék-blokk EGYBEN, CSAK TÉNYEK (szerep, ügyfélkör, anyagok -- terjedelmi
+   következtetés ide nem kerül)
+3. Iroda-blokk EGYBEN (miért ők + mit várunk + terjedelmi álláspont + a két
+   megoldás díjajánlata)
+4. Biztosíték + szűrő (szakvélemény zárja le, felelősségbiztosítás,
+   keretösszeg, vállalják-e)
+5. Zárás
 
-Közös elv: az ELSŐ érdemi bekezdés a szűrő (vállalnak-e indokolt szakvéleményt
-felelősségbiztosítással + írásos keretösszeget), hogy ne menjen kör feleslegesen.
-Aláírás: Viktor tölti ki a nevét/titulusát. A szöveg semleges és emberi,
-nem árulja el, hogy nem ő írta.
-
-Melléklet-ajánlat mindegyikhez (a kalkulálhatóságért): adattérkép +
-pszeudonimizációs dosszié (a docs/legal/ két fájlja).
+Elvek: cél-rögzítés a módszer helyett; hivatalos regiszter, soha nem tegez;
+nincs gondolatjel; "benyújt" szó tilos (a dokumentumok éles használatra
+készülnek). Aláírás: Viktor tölti ki. A repó ezen fájlja az igazság forrása,
+minden kör után friss másolat megy Telegramra.
 
 ---
 
 ## 1. Accace Legal
-Tárgy: GDPR-szakvélemény készítése webáruházi szoftverhez, ügyvédi felelősségbiztosítással
+Tárgy: Ügyvédi közreműködés webáruházi szoftver adatvédelmi megfeleléséhez (GDPR)
 
 Tisztelt Accace Legal!
 
 Cégünk kiegészítő szoftvereket készít webáruházak számára a Shopify-platformra.
 Egyik alkalmazásunk (Persistent Cart) a platform hivatalos
 alkalmazásáruházában fog megjelenni, a közzététel előtt pedig rendezni
-kívánjuk az alkalmazás adatvédelmi és jogi megfelelését.
+kívánjuk az alkalmazás adatvédelmi és jogi helyzetét.
 
-Olyan ügyvédi irodát keresünk, amely a munkája eredményéért indokolt,
-jogszabályi hivatkozásokkal alátámasztott szakvéleménnyel és ügyvédi
-felelősségbiztosítással áll helyt, nem sablondokumentumot ad. Kérjük,
-elsőként arról tájékoztassanak, vállalnak-e ilyen megbízást, és tudnak-e a
-díjazásra írásos, keretösszegű ajánlatot adni.
+Az alkalmazás adatfeldolgozóként kezel vásárlói adatokat a kereskedők
+nevében. Ügyfeleink kizárólag kereskedők; fogyasztókkal közvetlen
+jogviszonyban nem állunk. Kereskedőink többsége az Európai Unión kívül
+működik, így az adatkezelés harmadik országba irányuló adattovábbítással
+jár. Az alkalmazás működését pontosan ismerjük, és minden szükséges
+információt meg tudunk adni róla: rendelkezésre áll a forráskód alapján
+ellenőrzött adattérkép, a pszeudonimizációs dosszié, a platform
+közzétételi követelményeinek listája és saját dokumentumtervezeteink.
 
-Azért fordulunk Önökhöz, mert csapatukban jogi, informatikai és megfelelőségi
-szakemberek egyaránt dolgoznak, és tapasztalattal rendelkeznek webáruházak,
-valamint nemzetközi szolgáltatók támogatásában. A mi esetünk pontosan ilyen:
-az alkalmazás adatfeldolgozóként kezel vásárlói adatokat a kereskedők nevében.
+Azért fordulunk Önökhöz, mert csapatukban jogi, informatikai és
+megfelelőségi szakemberek egyaránt dolgoznak, és tapasztalattal
+rendelkeznek webáruházak, valamint nemzetközi szolgáltatók támogatásában.
+Az irodától azt várjuk, hogy határozza meg: a jogszerű működéshez milyen
+dokumentumok szükségesek, és milyen tartalommal. Álláspontunk szerint a
+fogyasztóvédelmi kérdések vizsgálata nem tartozik a megbízás körébe; a
+harmadik országba irányuló adattovábbítás vizsgálata viszont igen. A
+végleges, éles használatra alkalmas dokumentumok elkészítésében is
+közreműködésüket kérjük. Kérjük, ajánlatukban jelezzék, melyik megoldást
+javasolják, és arra adjanak díjajánlatot: a tervezeteink ellenőrzésére és
+indokolt szakvéleménnyel való lezárására, vagy arra, hogy az iroda
+készítsen új dokumentumcsomagot az anyagaink felhasználásával.
 
-A feladat megrendelői oldalról egyszerűen megfogalmazható: az alkalmazás
-működését pontosan ismerjük, és minden szükséges információt meg tudunk
-adni róla. Célunk, hogy az alkalmazás jogszerűen piacra vihető legyen. Az
-irodától azt várjuk, hogy határozza meg: ehhez milyen dokumentumok
-szükségesek, és milyen tartalommal. A dokumentumok végleges, benyújtásra
-alkalmas elkészítésében is közreműködésüket kérjük.
+Számunkra az a lényeges, hogy a munka eredményét indokolt, jogszabályi
+hivatkozásokkal alátámasztott szakvélemény zárja le, amelyért az iroda
+ügyvédi felelősségbiztosítással áll helyt. A díjazásról előzetesen írásos,
+keretösszegű ajánlatot kérünk. Kérjük, elsőként arról tájékoztassanak,
+vállalnak-e ilyen megbízást.
 
-A megbízás terjedelmének megítéléséhez két körülményt előre rögzítünk.
-Ügyfeleink kizárólag kereskedők; fogyasztókkal közvetlen jogviszonyban nem
-állunk. Álláspontunk szerint ezért a fogyasztóvédelmi kérdések vizsgálata
-nem tartozik a megbízás körébe. Kereskedőink többsége ugyanakkor az Európai
-Unión kívül működik, ezért a harmadik országba irányuló adattovábbítás
-vizsgálata viszont a megbízás körébe tartozik.
-
-A megbízás előkészített anyagokra támaszkodhat: rendelkezésre áll az
-elkészült szoftver forráskódja alapján ellenőrzött adattérkép, a
-pszeudonimizációs dosszié, a platform közzétételi követelményeinek listája
-és saját dokumentumtervezeteink. Kérjük, ajánlatukban jelezzék, melyik
-megoldást javasolják, és arra adjanak díjajánlatot: a tervezeteink
-ellenőrzésére és indokolt szakvéleménnyel való lezárására, vagy arra, hogy
-az iroda készítsen új dokumentumcsomagot az anyagaink felhasználásával.
-
-Amennyiben a megbízás illeszkedik az irodájuk tevékenységi körébe, kérésükre
-haladéktalanul megküldjük a részletes anyagot.
+Amennyiben a megbízás illeszkedik az irodájuk tevékenységi körébe,
+kérésükre haladéktalanul megküldjük a részletes anyagot.
 
 Tisztelettel:
 [Viktor]
@@ -67,47 +65,43 @@ Tisztelettel:
 ---
 
 ## 2. NG Legal
-Tárgy: Adatvédelmi szakvélemény webáruházi szoftverhez (adatfeldolgozói szerepkör, DPA)
+Tárgy: Webáruházi szoftver adatvédelmi megfelelése (adatfeldolgozói szerepkör, GDPR)
 
 Tisztelt NG Legal!
 
 Cégünk webáruházakhoz készít kiegészítő szoftvereket a Shopify-platformra.
 Egyik alkalmazásunk közzététele előtt rendezni kívánjuk az alkalmazás
-adatvédelmi és jogi megfelelését.
+adatvédelmi és jogi helyzetét.
 
-Olyan adatvédelemre szakosodott ügyvédet keresünk, aki a munkája
-eredményéért indokolt, jogszabályi hivatkozásokkal alátámasztott
-szakvéleménnyel és ügyvédi felelősségbiztosítással áll helyt. Kérjük,
-elsőként arról tájékoztassanak, vállalnak-e ilyen megbízást, és tudnak-e a
-díjazásra írásos, keretösszegű ajánlatot adni.
-
-Az Önök adatvédelmi gyakorlata (audit, adatfeldolgozói megállapodások,
-incidenskezelés, nemzetközi hátterű ügyfelek) pontosan azt a területet fedi
-le, amelyre a megbízásunk irányul. Az alkalmazásunk adatfeldolgozóként működik a kereskedők
-nevében, ezért a megbízás súlypontja a szerep jogi minősítése és a GDPR
-28. cikke szerinti adatfeldolgozói megállapodás vizsgálata.
-
-A feladat megrendelői oldalról egyszerűen megfogalmazható: az alkalmazás
-működését pontosan ismerjük, és minden szükséges információt meg tudunk
-adni róla. Célunk, hogy az alkalmazás jogszerűen piacra vihető legyen. Az
-irodától azt várjuk, hogy határozza meg: ehhez milyen dokumentumok
-szükségesek, és milyen tartalommal. A dokumentumok végleges, benyújtásra
-alkalmas elkészítésében is közreműködésüket kérjük.
-
-A megbízás terjedelmének megítéléséhez két körülményt előre rögzítünk.
-Ügyfeleink kizárólag kereskedők; fogyasztókkal közvetlen jogviszonyban nem
-állunk. Álláspontunk szerint ezért a fogyasztóvédelmi kérdések vizsgálata
-nem tartozik a megbízás körébe. Kereskedőink többsége ugyanakkor az Európai
-Unión kívül működik, ezért a harmadik országba irányuló adattovábbítás
-vizsgálata viszont a megbízás körébe tartozik.
-
-A megbízás előkészített anyagokra támaszkodhat: rendelkezésre áll az
-elkészült szoftver forráskódja alapján ellenőrzött adattérkép, a
+Az alkalmazásunk adatfeldolgozóként működik a kereskedők nevében, ezért a
+megfelelés középpontjában a szerep jogi minősítése és a GDPR 28. cikke
+szerinti adatfeldolgozói megállapodás áll. Ügyfeleink kizárólag
+kereskedők; fogyasztókkal közvetlen jogviszonyban nem állunk. Kereskedőink
+többsége az Európai Unión kívül működik, így az adatkezelés harmadik
+országba irányuló adattovábbítással jár. Az alkalmazás működését pontosan
+ismerjük, és minden szükséges információt meg tudunk adni róla:
+rendelkezésre áll a forráskód alapján ellenőrzött adattérkép, a
 pszeudonimizációs dosszié, a platform közzétételi követelményeinek listája
-és saját dokumentumtervezeteink. Kérjük, ajánlatukban jelezzék, melyik
-megoldást javasolják, és arra adjanak díjajánlatot: a tervezeteink
-ellenőrzésére és indokolt szakvéleménnyel való lezárására, vagy arra, hogy
-az iroda készítsen új dokumentumcsomagot az anyagaink felhasználásával.
+és saját dokumentumtervezeteink.
+
+Azért fordulunk Önökhöz, mert adatvédelmi gyakorlatuk (audit,
+adatfeldolgozói megállapodások, incidenskezelés, nemzetközi hátterű
+ügyfelek) pontosan azt a területet fedi le, amelyre a megbízásunk irányul.
+Az irodától azt várjuk, hogy határozza meg: a jogszerű működéshez milyen
+dokumentumok szükségesek, és milyen tartalommal. Álláspontunk szerint a
+fogyasztóvédelmi kérdések vizsgálata nem tartozik a megbízás körébe; a
+harmadik országba irányuló adattovábbítás vizsgálata viszont igen. A
+végleges, éles használatra alkalmas dokumentumok elkészítésében is
+közreműködésüket kérjük. Kérjük, ajánlatukban jelezzék, melyik megoldást
+javasolják, és arra adjanak díjajánlatot: a tervezeteink ellenőrzésére és
+indokolt szakvéleménnyel való lezárására, vagy arra, hogy az iroda
+készítsen új dokumentumcsomagot az anyagaink felhasználásával.
+
+Számunkra az a lényeges, hogy a munka eredményét indokolt, jogszabályi
+hivatkozásokkal alátámasztott szakvélemény zárja le, amelyért az iroda
+ügyvédi felelősségbiztosítással áll helyt. A díjazásról előzetesen írásos,
+keretösszegű ajánlatot kérünk. Kérjük, elsőként arról tájékoztassanak,
+vállalnak-e ilyen megbízást.
 
 Amennyiben a megbízás felkeltette érdeklődésüket, kérésükre megküldjük a
 teljes anyagot.
@@ -118,46 +112,41 @@ Tisztelettel:
 ---
 
 ## 3. Dr. Olajos József
-Tárgy: GDPR-szakvélemény kisvállalkozás webáruházi szoftveréhez
+Tárgy: Kisvállalkozás webáruházi szoftverének adatvédelmi megfelelése (GDPR)
 
 Tisztelt Ügyvéd Úr!
 
 Kisvállalkozásunk kiegészítő szoftvereket készít webáruházak számára a
-Shopify-platformra. Egyik alkalmazásunk közzététele előtt rendezni kívánjuk az alkalmazás
-adatvédelmi és jogi megfelelését.
+Shopify-platformra. Egyik alkalmazásunk közzététele előtt rendezni
+kívánjuk az alkalmazás adatvédelmi és jogi helyzetét.
 
-Olyan ügyvédet keresünk, aki a munkája eredményéért indokolt, jogszabályi
-hivatkozásokkal alátámasztott szakvéleménnyel és ügyvédi
-felelősségbiztosítással áll helyt. Kérjük, elsőként arról tájékoztasson,
-vállal-e ilyen megbízást, és tud-e a díjazásra írásos, keretösszegű
-ajánlatot adni.
+Az alkalmazás adatfeldolgozóként kezel vásárlói adatokat a kereskedők
+nevében. Ügyfeleink kizárólag kereskedők; fogyasztókkal közvetlen
+jogviszonyban nem állunk. Kereskedőink többsége az Európai Unión kívül
+működik, így az adatkezelés harmadik országba irányuló adattovábbítással
+jár. Az alkalmazás működését pontosan ismerjük, és minden szükséges
+információt meg tudunk adni róla: rendelkezésre áll a forráskód alapján
+ellenőrzött adattérkép, a pszeudonimizációs dosszié, a platform
+közzétételi követelményeinek listája és saját dokumentumtervezeteink.
 
-Azért fordulunk Önhöz, mert 2018 óta kifejezetten kis- és középvállalkozások
-GDPR-megfelelésével foglalkozik. A mi megbízásunk léptéke is ilyen:
-egyetlen alkalmazás jogi anyagai, jól körülhatárolt terjedelemben. Az alkalmazás adatfeldolgozóként kezel vásárlói
-adatokat a kereskedők nevében.
+Azért fordulunk Önhöz, mert 2018 óta kifejezetten kis- és
+középvállalkozások GDPR-megfelelésével foglalkozik, és a mi léptékünk
+pontosan ez: egyetlen alkalmazás jogi anyagai, jól körülhatárolt
+terjedelemben. Öntől azt várjuk, hogy határozza meg: a jogszerű
+működéshez milyen dokumentumok szükségesek, és milyen tartalommal.
+Álláspontunk szerint a fogyasztóvédelmi kérdések vizsgálata nem tartozik
+a megbízás körébe; a harmadik országba irányuló adattovábbítás vizsgálata
+viszont igen. A végleges, éles használatra alkalmas dokumentumok
+elkészítésében is közreműködését kérjük. Kérjük, ajánlatában jelezze,
+melyik megoldást javasolja, és arra adjon díjajánlatot: a tervezeteink
+ellenőrzésére és indokolt szakvéleménnyel való lezárására, vagy arra,
+hogy Ön készítsen új dokumentumcsomagot az anyagaink felhasználásával.
 
-A feladat megrendelői oldalról egyszerűen megfogalmazható: az alkalmazás
-működését pontosan ismerjük, és minden szükséges információt meg tudunk
-adni róla. Célunk, hogy az alkalmazás jogszerűen piacra vihető legyen. Öntől
-azt várjuk, hogy határozza meg: ehhez milyen dokumentumok
-szükségesek, és milyen tartalommal. A dokumentumok végleges, benyújtásra
-alkalmas elkészítésében is közreműködését kérjük.
-
-A megbízás terjedelmének megítéléséhez két körülményt előre rögzítünk.
-Ügyfeleink kizárólag kereskedők; fogyasztókkal közvetlen jogviszonyban nem
-állunk. Álláspontunk szerint ezért a fogyasztóvédelmi kérdések vizsgálata
-nem tartozik a megbízás körébe. Kereskedőink többsége ugyanakkor az Európai
-Unión kívül működik, ezért a harmadik országba irányuló adattovábbítás
-vizsgálata viszont a megbízás körébe tartozik.
-
-A megbízás előkészített anyagokra támaszkodhat: rendelkezésre áll az
-elkészült szoftver forráskódja alapján ellenőrzött adattérkép, a
-pszeudonimizációs dosszié, a platform közzétételi követelményeinek listája
-és saját dokumentumtervezeteink. Kérjük, ajánlatában jelezze, melyik
-megoldást javasolja, és arra adjon díjajánlatot: a tervezeteink
-ellenőrzésére és indokolt szakvéleménnyel való lezárására, vagy arra, hogy
-Ön készítsen új dokumentumcsomagot az anyagaink felhasználásával.
+Számunkra az a lényeges, hogy a munka eredményét indokolt, jogszabályi
+hivatkozásokkal alátámasztott szakvélemény zárja le, amelyért Ön ügyvédi
+felelősségbiztosítással áll helyt. A díjazásról előzetesen írásos,
+keretösszegű ajánlatot kérünk. Kérjük, elsőként arról tájékoztasson,
+vállal-e ilyen megbízást.
 
 Amennyiben a megbízás illeszkedik a praxisába, kérésére megküldjük a
 részletes anyagot.
@@ -168,49 +157,44 @@ Tisztelettel:
 ---
 
 ## 4. Dr. Fördős Ádám
-Tárgy: Adatvédelmi szakvélemény webáruházi szoftverhez (GDPR, adatfeldolgozói szerepkör)
+Tárgy: Webáruházi szoftver adatvédelmi megfelelése (GDPR, adatfeldolgozói szerepkör)
 
 Tisztelt Ügyvéd Úr!
 
 Cégünk webáruházakhoz készít kiegészítő szoftvereket a Shopify-platformra.
 Egyik alkalmazásunk közzététele előtt rendezni kívánjuk az alkalmazás
-adatvédelmi és jogi megfelelését.
+adatvédelmi és jogi helyzetét.
 
-Adatvédelemre szakosodott ügyvédet keresünk, aki a munkája eredményéért
-indokolt, jogszabályi hivatkozásokkal alátámasztott szakvéleménnyel és
-ügyvédi felelősségbiztosítással áll helyt. Kérjük, elsőként arról
-tájékoztasson, vállal-e ilyen megbízást, és tud-e a díjazásra írásos,
-keretösszegű ajánlatot adni.
-
-Az Ön szakterülete pontosan az, amire a megbízás irányul. Az alkalmazásunk
-adatfeldolgozóként kezel vásárlói adatokat a kereskedők nevében. A munka
-súlypontja ezért a szerep jogi minősítése, a jogalapok vizsgálata és a GDPR
-28. cikke szerinti adatfeldolgozói megállapodás véleményezése.
-
-A feladat megrendelői oldalról egyszerűen megfogalmazható: az alkalmazás
-működését pontosan ismerjük, és minden szükséges információt meg tudunk
-adni róla. Célunk, hogy az alkalmazás jogszerűen piacra vihető legyen. Öntől
-azt várjuk, hogy határozza meg: ehhez milyen dokumentumok
-szükségesek, és milyen tartalommal. A dokumentumok végleges, benyújtásra
-alkalmas elkészítésében is közreműködését kérjük.
-
-A megbízás terjedelmének megítéléséhez két körülményt előre rögzítünk.
+Az alkalmazásunk adatfeldolgozóként kezel vásárlói adatokat a kereskedők
+nevében, ezért a megfelelés középpontjában a szerep jogi minősítése, a
+jogalapok és a GDPR 28. cikke szerinti adatfeldolgozói megállapodás áll.
 Ügyfeleink kizárólag kereskedők; fogyasztókkal közvetlen jogviszonyban nem
-állunk. Álláspontunk szerint ezért a fogyasztóvédelmi kérdések vizsgálata
-nem tartozik a megbízás körébe. Kereskedőink többsége ugyanakkor az Európai
-Unión kívül működik, ezért a harmadik országba irányuló adattovábbítás
-vizsgálata viszont a megbízás körébe tartozik.
+állunk. Kereskedőink többsége az Európai Unión kívül működik, így az
+adatkezelés harmadik országba irányuló adattovábbítással jár. Az
+alkalmazás működését pontosan ismerjük, és minden szükséges információt
+meg tudunk adni róla: rendelkezésre áll a forráskód alapján ellenőrzött
+adattérkép, a pszeudonimizációs dosszié, a platform közzétételi
+követelményeinek listája és saját dokumentumtervezeteink.
 
-A megbízás előkészített anyagokra támaszkodhat: rendelkezésre áll az
-elkészült szoftver forráskódja alapján ellenőrzött adattérkép, a
-pszeudonimizációs dosszié, a platform közzétételi követelményeinek listája
-és saját dokumentumtervezeteink. Kérjük, ajánlatában jelezze, melyik
-megoldást javasolja, és arra adjon díjajánlatot: a tervezeteink
-ellenőrzésére és indokolt szakvéleménnyel való lezárására, vagy arra, hogy
-Ön készítsen új dokumentumcsomagot az anyagaink felhasználásával.
+Azért fordulunk Önhöz, mert szakterülete az adatvédelem, és a megbízásunk
+pontosan erre irányul. Öntől azt várjuk, hogy határozza meg: a jogszerű
+működéshez milyen dokumentumok szükségesek, és milyen tartalommal.
+Álláspontunk szerint a fogyasztóvédelmi kérdések vizsgálata nem tartozik
+a megbízás körébe; a harmadik országba irányuló adattovábbítás vizsgálata
+viszont igen. A végleges, éles használatra alkalmas dokumentumok
+elkészítésében is közreműködését kérjük. Kérjük, ajánlatában jelezze,
+melyik megoldást javasolja, és arra adjon díjajánlatot: a tervezeteink
+ellenőrzésére és indokolt szakvéleménnyel való lezárására, vagy arra,
+hogy Ön készítsen új dokumentumcsomagot az anyagaink felhasználásával.
 
-Amennyiben a megbízás felkeltette érdeklődését, kérésére megküldjük a teljes
-anyagot.
+Számunkra az a lényeges, hogy a munka eredményét indokolt, jogszabályi
+hivatkozásokkal alátámasztott szakvélemény zárja le, amelyért Ön ügyvédi
+felelősségbiztosítással áll helyt. A díjazásról előzetesen írásos,
+keretösszegű ajánlatot kérünk. Kérjük, elsőként arról tájékoztasson,
+vállal-e ilyen megbízást.
+
+Amennyiben a megbízás felkeltette érdeklődését, kérésére megküldjük a
+teljes anyagot.
 
 Tisztelettel:
 [Viktor]
