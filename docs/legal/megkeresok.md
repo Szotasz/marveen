@@ -56,8 +56,11 @@ hivatkozásokkal alátámasztott szakvélemény zárja le, amelyért az iroda
 keretösszegű ajánlatot kérünk. Kérjük, elsőként arról tájékoztassanak,
 vállalnak-e ilyen megbízást.
 
-Amennyiben a megbízás illeszkedik az irodájuk tevékenységi körébe,
-kérésükre haladéktalanul megküldjük a részletes anyagot.
+Első lépésként kérjük, jelezzék vissza, vállalják-e a megbízást a fentiek
+szerint. Amennyiben igen, jelöljék meg, melyik irányt javasolják: saját
+dokumentumcsomag összeállítását, vagy meglévő anyagaink véglegessé
+alakítását. Ezt követően kérjük, a választott iránynak megfelelően jelöljék
+meg, milyen anyagokra van szükségük tőlünk.
 
 Tisztelettel:
 [Viktor]
@@ -103,8 +106,11 @@ hivatkozásokkal alátámasztott szakvélemény zárja le, amelyért az iroda
 keretösszegű ajánlatot kérünk. Kérjük, elsőként arról tájékoztassanak,
 vállalnak-e ilyen megbízást.
 
-Amennyiben a megbízás felkeltette érdeklődésüket, kérésükre megküldjük a
-teljes anyagot.
+Első lépésként kérjük, jelezzék vissza, vállalják-e a megbízást a fentiek
+szerint. Amennyiben igen, jelöljék meg, melyik irányt javasolják: saját
+dokumentumcsomag összeállítását, vagy meglévő anyagaink véglegessé
+alakítását. Ezt követően kérjük, a választott iránynak megfelelően jelöljék
+meg, milyen anyagokra van szükségük tőlünk.
 
 Tisztelettel:
 [Viktor]
@@ -148,8 +154,11 @@ felelősségbiztosítással áll helyt. A díjazásról előzetesen írásos,
 keretösszegű ajánlatot kérünk. Kérjük, elsőként arról tájékoztasson,
 vállal-e ilyen megbízást.
 
-Amennyiben a megbízás illeszkedik a praxisába, kérésére megküldjük a
-részletes anyagot.
+Első lépésként kérjük, jelezze vissza, vállalja-e a megbízást a fentiek
+szerint. Amennyiben igen, jelölje meg, melyik irányt javasolja: saját
+dokumentumcsomag összeállítását, vagy meglévő anyagaink véglegessé
+alakítását. Ezt követően kérjük, a választott iránynak megfelelően jelölje
+meg, milyen anyagokra van szüksége tőlünk.
 
 Tisztelettel:
 [Viktor]
@@ -193,8 +202,11 @@ felelősségbiztosítással áll helyt. A díjazásról előzetesen írásos,
 keretösszegű ajánlatot kérünk. Kérjük, elsőként arról tájékoztasson,
 vállal-e ilyen megbízást.
 
-Amennyiben a megbízás felkeltette érdeklődését, kérésére megküldjük a
-teljes anyagot.
+Első lépésként kérjük, jelezze vissza, vállalja-e a megbízást a fentiek
+szerint. Amennyiben igen, jelölje meg, melyik irányt javasolja: saját
+dokumentumcsomag összeállítását, vagy meglévő anyagaink véglegessé
+alakítását. Ezt követően kérjük, a választott iránynak megfelelően jelölje
+meg, milyen anyagokra van szüksége tőlünk.
 
 Tisztelettel:
 [Viktor]
