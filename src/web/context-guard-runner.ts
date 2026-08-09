@@ -4,7 +4,7 @@ import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { hardRestartMarveenChannels, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS } from './channel-monitor.js'
 import { shouldDeferForRecentRespawn } from './stuck-tool-call-watcher.js'
-import { listAgentNames, agentDir, readAgentModel, readAgentClaudeConfigDir, readAgentRemoteHost } from './agent-config.js'
+import { listAgentNames, listAllAgentNames, agentDir, readAgentModel, readAgentClaudeConfigDir, readAgentRemoteHost } from './agent-config.js'
 import {
   agentRunState,
   agentSessionName,
@@ -327,6 +327,44 @@ export function getContextGuardStatus(): Array<{
     }
   })
 }
+
+/**
+ * Who the saturation net sweeps: the main agent plus EVERY agent directory,
+ * dashboard-hidden technical workers included.
+ *
+ * Deliberately listAllAgentNames(), not listAgentNames(). A hidden worker is
+ * hidden from the OPERATOR, not from the fleet's life support: it runs a real
+ * Claude session that can wedge at 100% context exactly like a visible agent,
+ * and when it does, this sweep is the only thing that can free it. The hourly
+ * heartbeat proved it on 2026-08-04 -- agents/heartbeat wedged, was invisible
+ * to this sweep, and the schedule runner's (correct) "defer instead of
+ * injecting into a wedged session" turned into an unbounded wait.
+ *
+ * Exported so the regression test can assert the SET rather than reach into a
+ * timer: narrowing this back to listAgentNames() must fail a test, not a
+ * production heartbeat.
+ *
+ * Deduplicated, main first. On an install where agents/<MAIN_AGENT_ID> exists
+ * as a real directory (ours does) the main agent appears twice -- once
+ * explicitly, once from the listing -- and checkAgent would run its whole
+ * decision on it twice per sweep. That is exactly the agent where a doubled
+ * decision is least welcome, so the canonical "who do we sweep" answer is a
+ * set, not a concatenation.
+ */
+export function guardSweepAgentNames(): string[] {
+  return [...new Set([MAIN_AGENT_ID, ...listAllAgentNames()])]
+}
+
+/**
+ * Current phase of the hard context-guard for this agent. Returns 'idle' when
+ * no state has been recorded. The gate runner uses this for its interlock: when
+ * the hard guard is in 'await-handoff' or 'await-ready', the soft gate steps
+ * aside so both mechanisms never simultaneously touch the pane.
+ */
+export function getHardGuardPhase(name: string): string {
+  return guardStates.get(name)?.phase ?? 'idle'
+}
+
 
 export function startContextGuardRunner(): NodeJS.Timeout {
   async function sweep() {
