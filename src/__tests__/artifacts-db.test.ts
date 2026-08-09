@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import { initDatabase, searchArtifactsByVector } from '../db.js'
 import {
   createArtifact, listArtifacts, getArtifact, deleteArtifact, storeArtifactEmbedding,
-  getArtifactStats,
+  getArtifactStats, renameArtifact, ARTIFACT_TITLE_MAX_LENGTH,
 } from '../artifacts-db.js'
 
 beforeAll(() => { initDatabase(':memory:') })
@@ -188,6 +188,43 @@ describe('deleteArtifact', () => {
 
   it('returns false for a non-existent id', () => {
     expect(deleteArtifact('ghost-id')).toBe(false)
+  })
+})
+
+describe('renameArtifact', () => {
+  it('updates the title and returns true', () => {
+    const { id } = createArtifact({
+      agent_id: 'agent-a', title: 'Original title', kind: 'text', content: Buffer.from('x'),
+    })
+    expect(renameArtifact(id, 'Updated title')).toBe(true)
+    expect(getArtifact(id)!.title).toBe('Updated title')
+  })
+
+  it('returns false for a non-existent id', () => {
+    expect(renameArtifact('ghost-rename-id', 'Whatever')).toBe(false)
+  })
+
+  it('renamed artifact is found by its new title in FTS search', () => {
+    const { id } = createArtifact({
+      agent_id: 'agent-a', title: 'Pre-rename-fts-title', kind: 'text', content: Buffer.from('body'),
+    })
+    renameArtifact(id, 'Post-rename-fts-xq7k')
+    const rows = listArtifacts({ q: 'Post-rename-fts-xq7k' })
+    expect(rows.some(r => r.id === id)).toBe(true)
+  })
+
+  it('old title no longer matches in FTS after rename', () => {
+    const { id } = createArtifact({
+      agent_id: 'agent-a', title: 'Stale-title-zp9q', kind: 'text', content: Buffer.from('body'),
+    })
+    renameArtifact(id, 'Fresh-title-zp9q')
+    const staleRows = listArtifacts({ q: 'Stale-title-zp9q' })
+    expect(staleRows.some(r => r.id === id)).toBe(false)
+  })
+
+  it('ARTIFACT_TITLE_MAX_LENGTH is a positive number', () => {
+    expect(ARTIFACT_TITLE_MAX_LENGTH).toBeGreaterThan(0)
+    expect(typeof ARTIFACT_TITLE_MAX_LENGTH).toBe('number')
   })
 })
 

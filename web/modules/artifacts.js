@@ -70,12 +70,13 @@ function renderList(rows) {
     <tbody>
       ${rows.map(r => `
         <tr style="border-bottom:1px solid var(--border-subtle)" data-artifact-id="${escapeHtml(r.id)}">
-          <td style="padding:6px 8px">${escapeHtml(r.title)}</td>
+          <td class="artifact-title-cell" style="padding:6px 8px" data-id="${escapeHtml(r.id)}" data-title="${escapeHtml(r.title)}">${escapeHtml(r.title)}</td>
           <td style="padding:6px 8px;color:var(--text-muted)">${escapeHtml(r.agent_id)}</td>
           <td style="padding:6px 8px"><code>${escapeHtml(r.kind)}</code></td>
           <td style="padding:6px 8px;color:var(--text-muted)">${fmtTime(r.created_at)}</td>
           <td style="padding:6px 8px;white-space:nowrap">
-            <button class="btn-secondary btn-compact artifact-preview-btn" data-id="${escapeHtml(r.id)}" data-kind="${escapeHtml(r.kind)}" data-title="${escapeHtml(r.title)}">Előnézet</button>
+            <button class="btn-secondary btn-compact artifact-preview-btn" data-id="${escapeHtml(r.id)}" data-kind="${escapeHtml(r.kind)}" data-title="${escapeHtml(r.title)}" data-i18n="memories.artifacts.btn.preview">Előnézet</button>
+            <button class="btn-secondary btn-compact artifact-rename-btn" data-id="${escapeHtml(r.id)}" data-i18n="artifacts.btn.rename">Átnevezés</button>
             <button class="btn-secondary btn-compact artifact-delete-btn" data-id="${escapeHtml(r.id)}" style="color:var(--danger)">Törlés</button>
           </td>
         </tr>
@@ -190,6 +191,69 @@ function b64toBlob(b64, mime) {
   return new Blob([arr], { type: mime })
 }
 
+// ── Rename ───────────────────────────────────────────────────────────────────
+
+// Opens an inline input in the title cell. Commits on Enter or blur; cancels on Escape.
+function startInlineRename(btn) {
+  const id = btn.dataset.id
+  const titleCell = listEl()?.querySelector(`.artifact-title-cell[data-id="${CSS.escape(id)}"]`)
+  if (!titleCell || titleCell.querySelector('input')) return  // already editing
+
+  const currentTitle = titleCell.dataset.title
+  const input = document.createElement('input')
+  input.type = 'text'
+  input.value = currentTitle
+  input.placeholder = t('artifacts.rename.placeholder') || 'New title...'
+  input.style.cssText = 'width:100%;box-sizing:border-box;font-size:inherit;padding:2px 4px'
+  input.setAttribute('maxlength', '250')
+
+  titleCell.textContent = ''
+  titleCell.appendChild(input)
+  input.focus()
+  input.select()
+
+  let committed = false
+
+  async function commit() {
+    if (committed) return
+    committed = true
+    const newTitle = input.value.trim()
+    if (!newTitle || newTitle === currentTitle) {
+      titleCell.textContent = currentTitle
+      return
+    }
+    titleCell.textContent = newTitle
+    try {
+      const res = await fetch(`/api/artifacts/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: newTitle }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      titleCell.dataset.title = newTitle
+      // update the preview button's data-title so re-opening preview shows the new name
+      const previewBtn = listEl()?.querySelector(`.artifact-preview-btn[data-id="${CSS.escape(id)}"]`)
+      if (previewBtn) previewBtn.dataset.title = newTitle
+      showToast(t('artifacts.rename.success') || 'Artifact renamed.', 'success')
+    } catch (err) {
+      titleCell.textContent = currentTitle
+      showToast(t('artifacts.rename.error') || `Rename failed: ${err.message}`, 'error')
+    }
+  }
+
+  function cancel() {
+    if (committed) return
+    committed = true
+    titleCell.textContent = currentTitle
+  }
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter')  { e.preventDefault(); commit() }
+    if (e.key === 'Escape') { e.preventDefault(); cancel() }
+  })
+  input.addEventListener('blur', commit)
+}
+
 // ── Delete ────────────────────────────────────────────────────────────────────
 
 async function deleteArtifact(id) {
@@ -217,11 +281,16 @@ export function initArtifacts() {
 
   searchBtn()?.addEventListener('click', loadArtifacts)
 
-  // Delegate preview + delete clicks on the list
+  // Delegate preview, rename, and delete clicks on the list
   listEl()?.addEventListener('click', (e) => {
     const previewBtn = e.target.closest('.artifact-preview-btn')
     if (previewBtn) {
       openPreview(previewBtn.dataset.id, previewBtn.dataset.kind, previewBtn.dataset.title)
+      return
+    }
+    const renameBtn = e.target.closest('.artifact-rename-btn')
+    if (renameBtn) {
+      startInlineRename(renameBtn)
       return
     }
     const deleteBtn = e.target.closest('.artifact-delete-btn')

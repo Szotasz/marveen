@@ -1,6 +1,7 @@
 import { readJsonBody, json } from '../http-helpers.js'
 import {
   createArtifact, listArtifacts, getArtifact, deleteArtifact, getArtifactStats,
+  renameArtifact, ARTIFACT_TITLE_MAX_LENGTH,
   ARTIFACT_KINDS, type ArtifactKind,
 } from '../../artifacts-db.js'
 import { signViewToken, verifyViewToken } from '../view-token.js'
@@ -166,6 +167,26 @@ function handleView(ctx: RouteContext, id: string): boolean {
   return true
 }
 
+// PATCH /api/artifacts/:id  — rename (title only)
+// Body: { "title": "new name" }
+async function handleRename(ctx: RouteContext, id: string): Promise<boolean> {
+  const { res } = ctx
+  const body = await readJsonBody<{ title?: string }>(ctx.req)
+
+  const title = body.title?.trim() ?? ''
+  if (!title) {
+    json(res, { error: 'title is required and must not be empty' }, 400); return true
+  }
+  if (title.length > ARTIFACT_TITLE_MAX_LENGTH) {
+    json(res, { error: `title must not exceed ${ARTIFACT_TITLE_MAX_LENGTH} characters` }, 400); return true
+  }
+
+  const found = renameArtifact(id, title)
+  if (!found) { json(res, { error: 'Not found' }, 404); return true }
+  json(res, { ok: true })
+  return true
+}
+
 // DELETE /api/artifacts/:id
 function handleDelete(ctx: RouteContext, id: string): boolean {
   const { res } = ctx
@@ -193,6 +214,7 @@ export async function tryHandleArtifacts(ctx: RouteContext): Promise<boolean> {
   if (idMatch) {
     const id = idMatch[1]
     if (method === 'GET')    return handleGet(ctx, id)
+    if (method === 'PATCH')  return handleRename(ctx, id)
     if (method === 'DELETE') return handleDelete(ctx, id)
   }
 
