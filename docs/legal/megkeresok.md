@@ -1,111 +1,145 @@
-# Megkereső levelek — 4 Tier 1 jelölt (hétfői kiküldésre)
+# Megkereső levelek -- 4 Tier 1 jelölt (hétfői kiküldésre)
 
-Közös elv: az ELSŐ bekezdés a szűrő (vállalnak-e indokolt szakvéleményt
+ÁTDOLGOZVA 2026-08-09, Viktor visszajelzése alapján (hangüzenet, 2500):
+hivatalos levél-regiszter, rövid tagmondatok, "amennyiben" a "ha" helyett,
+köznyelvi fordulatok ("belefér a profiljukba", "együtt hoz") kigyomlálva,
+a Shopify-szakzsargon egy tagmondatban megmagyarázva.
+
+Közös elv: az ELSŐ érdemi bekezdés a szűrő (vállalnak-e indokolt szakvéleményt
 felelősségbiztosítással + írásos keretösszeget), hogy ne menjen kör feleslegesen.
-Aláírás: Viktor tölti ki a nevét/titulusát. A szöveg semleges, emberi, nem
-árulja el, hogy AI írta.
+Aláírás: Viktor tölti ki a nevét/titulusát. A szöveg semleges és emberi,
+nem árulja el, hogy nem ő írta.
 
-Melléklet-ajánlat mindegyikhez (a kalkulálhatóságért): adat-térkép +
+Melléklet-ajánlat mindegyikhez (a kalkulálhatóságért): adattérkép +
 pszeudonimizációs dosszié (a docs/legal/ két fájlja).
 
 ---
 
 ## 1. Accace Legal
-Tárgy: GDPR szakvélemény Shopify-alkalmazáshoz, ügyvédi felelősségbiztosítással
+Tárgy: GDPR-szakvélemény készítése webáruházi szoftverhez, ügyvédi felelősségbiztosítással
 
 Tisztelt Accace Legal!
 
-Egy Shopify-alkalmazás (Persistent Cart) App Store-beadásához keresünk ügyvédi
-irodát, amely indokolt, jogszabályhoz kötött adatvédelmi/GDPR szakvéleményt ad,
-nem sablon-dokumentumot, a szokásos ügyvédi felelősségbiztosítás mellett.
-Vállalnak-e ilyet, és tudnak-e rá írásos, keretösszegű ajánlatot adni?
+Cégünk kiegészítő szoftvereket készít webáruházak számára a Shopify-platformra.
+Egyik alkalmazásunk (Persistent Cart) a platform hivatalos
+alkalmazásáruházában fog megjelenni, a közzététel előtt pedig adatvédelmi
+szakvéleményre van szükségünk.
 
-Azért Önökhöz fordulunk elsőként, mert a csapatuk jogi, IT és compliance
-szakembereket együtt hoz, és kifejezetten dolgoznak webshopokkal és nemzetközi
-szolgáltatókkal. A mi esetünk pontosan ez: egy adatfeldolgozó szerepű SaaS-app,
-amely a kereskedő nevében kezel vásárlói adatot.
+Olyan ügyvédi irodát keresünk, amely indokolt, jogszabályi hivatkozásokkal
+alátámasztott GDPR-szakvéleményt készít, nem sablondokumentumot. Fontos
+számunkra, hogy a szakvélemény mögött ügyvédi felelősségbiztosítás álljon.
+Kérjük, elsőként arról tájékoztassanak, vállalnak-e ilyen megbízást, és
+tudnak-e a díjazásra írásos, keretösszegű ajánlatot adni.
 
-A ráfordítás kalkulálhatósága érdekében a mi oldalunkról kész, kód-verifikált
-adat-térkép, adatfeldolgozói modell és pszeudonimizációs dosszié áll
-rendelkezésre. Amit átnézetnénk: beadás-kész adatvédelmi tájékoztató, ÁSZF és
-Art.28 adatfeldolgozói megállapodás.
+Azért fordulunk Önökhöz, mert csapatukban jogi, informatikai és megfelelőségi
+szakemberek egyaránt dolgoznak, és tapasztalattal rendelkeznek webáruházak,
+valamint nemzetközi szolgáltatók támogatásában. A mi esetünk pontosan ilyen:
+az alkalmazás adatfeldolgozóként kezel vásárlói adatokat a kereskedők nevében.
 
-Ha ez fér a profiljukba, örömmel küldöm a részletes anyagot egy rövid
-egyeztetés vagy írásos ajánlat előtt.
+A díjazás megalapozott kalkulációjához kész, a forráskód alapján
+ellenőrzött adattérképet és pszeudonimizációs dossziét bocsátunk rendelkezésre.
+Az átvizsgálandó anyag: adatvédelmi tájékoztató, általános szerződési
+feltételek és a GDPR 28. cikke szerinti adatfeldolgozói megállapodás.
 
-Üdvözlettel,
+Amennyiben a megbízás illeszkedik az irodájuk tevékenységi körébe, kérésükre
+haladéktalanul megküldjük a részletes anyagot.
+
+Tisztelettel:
 [Viktor]
 
 ---
 
 ## 2. NG Legal
-Tárgy: Adatvédelmi szakvélemény Shopify-app beadásához (DPA, adatfeldolgozó)
+Tárgy: Adatvédelmi szakvélemény webáruházi szoftverhez (adatfeldolgozói szerepkör, DPA)
 
 Tisztelt NG Legal!
 
-Egy Shopify-alkalmazás App Store-beadásához keresünk adatvédelmi ügyvédet, aki
-indokolt, jogszabályhoz kötött GDPR-szakvéleményt ad, ügyvédi
-felelősségbiztosítással, és tud rá írásos keretösszegű ajánlatot. Kérdésünk
-elsőként ez: vállalnak-e ilyet?
+Cégünk webáruházakhoz készít kiegészítő szoftvereket a Shopify-platformra.
+Egyik alkalmazásunk közzététele előtt adatvédelmi szakvéleményre van
+szükségünk.
+
+Olyan adatvédelemre szakosodott ügyvédet keresünk, aki indokolt, jogszabályi
+hivatkozásokkal alátámasztott GDPR-szakvéleményt készít, ügyvédi
+felelősségbiztosítás fedezete mellett. Kérjük, elsőként arról tájékoztassanak,
+vállalnak-e ilyen megbízást, és tudnak-e a díjazásra írásos, keretösszegű
+ajánlatot adni.
 
 Az Önök adatvédelmi gyakorlata (audit, adatfeldolgozói megállapodások,
-incidenskezelés, nemzetközi hátterű ügyfelek) közel áll ahhoz, amire szükségünk
-van. Az appunk adatfeldolgozóként működik a kereskedő nevében, tehát az Art.28
-DPA és a szerep-jellemzés a kulcs.
+incidenskezelés, nemzetközi hátterű ügyfelek) pontosan azt a területet fedi
+le, amelyre a megbízásunk irányul. Az alkalmazásunk adatfeldolgozóként működik a kereskedők
+nevében, ezért a megbízás súlypontja a szerep jogi minősítése és a GDPR
+28. cikke szerinti adatfeldolgozói megállapodás vizsgálata.
 
-A becsléshez kész adat-térkép és pszeudonimizációs dosszié áll rendelkezésre.
-Az átnézendő anyag: adatvédelmi tájékoztató, ÁSZF és DPA, beadás-kész állapotban.
+A díjazás kalkulációjához kész adattérképet és pszeudonimizációs dossziét
+bocsátunk rendelkezésre. Az átvizsgálandó anyag: adatvédelmi tájékoztató,
+általános szerződési feltételek és az adatfeldolgozói megállapodás.
 
-Ha érdekli Önöket, küldöm a teljes anyagot.
+Amennyiben a megbízás felkeltette érdeklődésüket, kérésükre megküldjük a
+teljes anyagot.
 
-Üdvözlettel,
+Tisztelettel:
 [Viktor]
 
 ---
 
 ## 3. Dr. Olajos József
-Tárgy: GDPR szakvélemény egy kisvállalkozás Shopify-appjához
+Tárgy: GDPR-szakvélemény kisvállalkozás webáruházi szoftveréhez
 
-Tisztelt Dr. Olajos József!
+Tisztelt Ügyvéd Úr!
 
-Kisvállalkozásként egy Shopify-alkalmazás App Store-beadásához keresünk ügyvédet,
-aki indokolt, jogszabályhoz kötött GDPR-szakvéleményt ad,
-felelősségbiztosítással, és írásos keretösszegű ajánlatot tud rá. Vállal-e ilyet?
+Kisvállalkozásunk kiegészítő szoftvereket készít webáruházak számára a
+Shopify-platformra. Egyik alkalmazásunk közzététele előtt adatvédelmi
+szakvéleményre van szükségünk.
 
-Azért kerestük meg, mert 2018 óta kifejezetten kis- és középvállalkozások
-GDPR-megfelelésével foglalkozik, a mi léptékünk pedig pontosan ez: egy kis,
-adatfeldolgozó szerepű app. Nem nagy audit-projektet keresünk, hanem egy fókuszált
-szakvéleményt egy jól körülhatárolt anyagra.
+Olyan ügyvédet keresünk, aki indokolt, jogszabályi hivatkozásokkal
+alátámasztott GDPR-szakvéleményt készít, ügyvédi felelősségbiztosítás
+fedezete mellett. Kérjük, elsőként arról tájékoztasson, vállal-e ilyen
+megbízást, és tud-e a díjazásra írásos, keretösszegű ajánlatot adni.
 
-A kalkulálhatóság miatt kész adat-térkép és pszeudonimizációs dosszié van a
-kezünkben; az átnézendő anyag az adatvédelmi tájékoztató, ÁSZF és az
-adatfeldolgozói megállapodás.
+Azért fordulunk Önhöz, mert 2018 óta kifejezetten kis- és középvállalkozások
+GDPR-megfelelésével foglalkozik. A mi megbízásunk léptéke is ilyen: nem
+átfogó auditra van szükségünk, hanem célzott szakvéleményre egy jól
+körülhatárolt anyagról. Az alkalmazás adatfeldolgozóként kezel vásárlói
+adatokat a kereskedők nevében.
 
-Ha belefér, szívesen küldöm a részleteket.
+A ráfordítás megítéléséhez kész adattérképet és pszeudonimizációs dossziét
+bocsátunk rendelkezésre. Az átvizsgálandó anyag: adatvédelmi tájékoztató,
+általános szerződési feltételek és az adatfeldolgozói megállapodás.
 
-Üdvözlettel,
+Amennyiben a megbízás illeszkedik a praxisába, kérésére megküldjük a
+részletes anyagot.
+
+Tisztelettel:
 [Viktor]
 
 ---
 
 ## 4. Dr. Fördős Ádám
-Tárgy: Adatvédelmi/GDPR szakvélemény Shopify-alkalmazáshoz
+Tárgy: Adatvédelmi szakvélemény webáruházi szoftverhez (GDPR, adatfeldolgozói szerepkör)
 
-Tisztelt Dr. Fördős Ádám!
+Tisztelt Ügyvéd Úr!
 
-Egy Shopify-alkalmazás App Store-beadásához keresünk adatvédelemre szakosodott
-ügyvédet, aki indokolt, jogszabályhoz kötött GDPR-szakvéleményt ad, ügyvédi
-felelősségbiztosítással, és írásos keretösszegű ajánlatot. Elsőként ez a
-kérdésünk: vállal-e ilyet?
+Cégünk webáruházakhoz készít kiegészítő szoftvereket a Shopify-platformra.
+Egyik alkalmazásunk közzététele előtt adatvédelmi szakvéleményre van
+szükségünk.
 
-Az adatvédelem/GDPR szakterülete pontosan egyezik azzal, amire szükségünk van:
-az appunk adatfeldolgozóként kezel vásárlói adatot a kereskedő nevében, tehát a
-szerep-jellemzés, a jogalapok és az Art.28 DPA a lényeg.
+Adatvédelemre szakosodott ügyvédet keresünk, aki indokolt, jogszabályi
+hivatkozásokkal alátámasztott GDPR-szakvéleményt készít, ügyvédi
+felelősségbiztosítás fedezete mellett. Kérjük, elsőként arról tájékoztasson,
+vállal-e ilyen megbízást, és tud-e a díjazásra írásos, keretösszegű ajánlatot
+adni.
 
-A ráfordítás becsléséhez kész adat-térkép és pszeudonimizációs dosszié áll
-rendelkezésre; az átnézendő anyag az adatvédelmi tájékoztató, ÁSZF és a DPA.
+Az Ön szakterülete pontosan az, amire a megbízás irányul. Az alkalmazásunk
+adatfeldolgozóként kezel vásárlói adatokat a kereskedők nevében. A munka
+súlypontja ezért a szerep jogi minősítése, a jogalapok vizsgálata és a GDPR
+28. cikke szerinti adatfeldolgozói megállapodás véleményezése.
 
-Ha érdekli, küldöm a teljes anyagot.
+A ráfordítás megítéléséhez kész adattérképet és pszeudonimizációs dossziét
+bocsátunk rendelkezésre. Az átvizsgálandó anyag: adatvédelmi tájékoztató,
+általános szerződési feltételek és az adatfeldolgozói megállapodás.
 
-Üdvözlettel,
+Amennyiben a megbízás felkeltette érdeklődését, kérésére megküldjük a teljes
+anyagot.
+
+Tisztelettel:
 [Viktor]
