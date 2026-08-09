@@ -68,6 +68,16 @@ describe('what happens to the released card status', () => {
     expect(decision!.comment).toContain('NEM indult el')
     expect(JSON.stringify(decision)).not.toContain('in_progress"')
   })
+
+  it('tells the reader to check the blocker OUTCOME before starting', () => {
+    // 2026-08-09, #299: the blocker (#304) closed with a decision that made
+    // the dependent card CLOSABLE, not startable. A release note that only
+    // suggests in_progress reads as "go" -- atlas caught it by reading the
+    // blocker's outcome first, and this line makes that the instructed path.
+    const decision = decideRelease(card(), blocker, 0, OPTS)
+    expect(decision!.comment.toLowerCase()).toContain('kimenetel')
+    expect(decision!.comment.toLowerCase()).toContain('lezár')
+  })
 })
 
 describe('the wake-up an assignee receives', () => {
@@ -76,6 +86,13 @@ describe('the wake-up an assignee receives', () => {
     expect(msg).toContain('#151')
     expect(msg).toContain('#125')
     expect(msg).toContain('curl -X POST .../move')
+  })
+
+  it('puts the outcome-check ahead of the start command', () => {
+    // Same lesson as the comment: release is not "go", it is "look first".
+    const msg = releaseMessage(card(), blocker, 'curl')
+    expect(msg.toLowerCase()).toContain('kimenetel')
+    expect(msg.toLowerCase().indexOf('kimenetel')).toBeLessThan(msg.toLowerCase().indexOf('curl'))
   })
 
   it('falls back to the hex id when a card has no seq', () => {

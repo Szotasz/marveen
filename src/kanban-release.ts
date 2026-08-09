@@ -78,7 +78,7 @@ export function decideRelease(
     ownerHeld && card.status === 'waiting'
       ? 'A státuszt szándékosan hagytam waiting-en: a kártya a tulajdonosnál van, a várakozás mást is jelenthet.'
       : null,
-    'Automatikusan NEM indult el: ha te viszed, told in_progress-re.',
+    'Automatikusan NEM indult el. MIELŐTT indítanád, nézd meg a blokkoló KIMENETELÉT: a lezárása azt is jelentheti, hogy ez a kártya okafogyottá vált, és a helyes lépés a lezárás. Ha tényleg indítandó és te viszed, told in_progress-re.',
   ].filter(Boolean).join(' ')
 
   return { card, comment, moveToPlanned, ownerHeld }
@@ -99,7 +99,7 @@ export function releaseMessage(
     `[Kanban felszabadult ${ref(card)}]: ${card.title}`,
     '',
     `A blokkolója ${ref(blocker)} ("${blocker.title}") lezárult, más nyitott blokkolója nincs.`,
-    'A kártya nem indult el magától. Ha a tiéd és mehet, told in_progress-re:',
+    'A kártya nem indult el magától. ELŐSZÖR a blokkoló kimenetelét olvasd el: az is lehet, hogy ez a kártya ezzel lezárható, nem indítandó. Ha tényleg mehet és a tiéd, told in_progress-re:',
     moveCommand,
   ].join('\n')
 }
