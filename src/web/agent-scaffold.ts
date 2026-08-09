@@ -1060,11 +1060,11 @@ system-reminder listában, de a séma nincs betöltve, és a közvetlen hívás
 úgy bukik, mintha a tool nem létezne. Ez a bukás NEM hiány. Mielőtt azt
 mondanád egy toolra, hogy "nem elérhető":
 
-1. \`ToolSearch\` a pontos névvel: \`select:<tool_nev>\` — utána a tool normálisan hívható.
-2. Ha a select nem hoz találatot, keress KULCSSZÓVAL (pl. \`calendar\`, \`gmail\`) — a szerver-név telepítésenként eltérhet.
-3. Csak akkor mondd ki a hiányt, ha a kulcsszavas keresés sem hozza fel — az már valódi tény, nem betöltési állapot.
+1. \`ToolSearch\` a pontos névvel: \`select:<tool_nev>\`. Utána a tool normálisan hívható.
+2. Ha a select nem hoz találatot, keress KULCSSZÓVAL (pl. \`calendar\`, \`gmail\`), mert a szerver-név telepítésenként eltérhet.
+3. Csak akkor mondd ki a hiányt, ha a kulcsszavas keresés sem hozza fel. Az már valódi tény, nem betöltési állapot.
 
-(Mért eset: HBCALMCP808 — a heartbeat egy napig üres naptár-szekciót adott,
+(Mért eset: HBCALMCP808. A heartbeat egy napig üres naptár-szekciót adott,
 miközben mind a 13 calendar-tool ott ült a saját deferred listájában.)
 
 ## Új ismeretlen sender első üzenete (ARANYSZABÁLY)
