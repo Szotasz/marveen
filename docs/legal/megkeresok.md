@@ -22,14 +22,14 @@ Tisztelt Accace Legal!
 
 Cégünk kiegészítő szoftvereket készít webáruházak számára a Shopify-platformra.
 Egyik alkalmazásunk (Persistent Cart) a platform hivatalos
-alkalmazásáruházában fog megjelenni, a közzététel előtt pedig adatvédelmi
-szakvéleményre van szükségünk.
+alkalmazásáruházában fog megjelenni, a közzététel előtt pedig rendezni
+kívánjuk az alkalmazás adatvédelmi és jogi megfelelését.
 
-Olyan ügyvédi irodát keresünk, amely indokolt, jogszabályi hivatkozásokkal
-alátámasztott GDPR-szakvéleményt készít, nem sablondokumentumot. Fontos
-számunkra, hogy a szakvélemény mögött ügyvédi felelősségbiztosítás álljon.
-Kérjük, elsőként arról tájékoztassanak, vállalnak-e ilyen megbízást, és
-tudnak-e a díjazásra írásos, keretösszegű ajánlatot adni.
+Olyan ügyvédi irodát keresünk, amely a munkája eredményéért indokolt,
+jogszabályi hivatkozásokkal alátámasztott szakvéleménnyel és ügyvédi
+felelősségbiztosítással áll helyt, nem sablondokumentumot ad. Kérjük,
+elsőként arról tájékoztassanak, vállalnak-e ilyen megbízást, és tudnak-e a
+díjazásra írásos, keretösszegű ajánlatot adni.
 
 Azért fordulunk Önökhöz, mert csapatukban jogi, informatikai és megfelelőségi
 szakemberek egyaránt dolgoznak, és tapasztalattal rendelkeznek webáruházak,
@@ -72,14 +72,14 @@ Tárgy: Adatvédelmi szakvélemény webáruházi szoftverhez (adatfeldolgozói s
 Tisztelt NG Legal!
 
 Cégünk webáruházakhoz készít kiegészítő szoftvereket a Shopify-platformra.
-Egyik alkalmazásunk közzététele előtt adatvédelmi szakvéleményre van
-szükségünk.
+Egyik alkalmazásunk közzététele előtt rendezni kívánjuk az alkalmazás
+adatvédelmi és jogi megfelelését.
 
-Olyan adatvédelemre szakosodott ügyvédet keresünk, aki indokolt, jogszabályi
-hivatkozásokkal alátámasztott GDPR-szakvéleményt készít, ügyvédi
-felelősségbiztosítás fedezete mellett. Kérjük, elsőként arról tájékoztassanak,
-vállalnak-e ilyen megbízást, és tudnak-e a díjazásra írásos, keretösszegű
-ajánlatot adni.
+Olyan adatvédelemre szakosodott ügyvédet keresünk, aki a munkája
+eredményéért indokolt, jogszabályi hivatkozásokkal alátámasztott
+szakvéleménnyel és ügyvédi felelősségbiztosítással áll helyt. Kérjük,
+elsőként arról tájékoztassanak, vállalnak-e ilyen megbízást, és tudnak-e a
+díjazásra írásos, keretösszegű ajánlatot adni.
 
 Az Önök adatvédelmi gyakorlata (audit, adatfeldolgozói megállapodások,
 incidenskezelés, nemzetközi hátterű ügyfelek) pontosan azt a területet fedi
@@ -123,13 +123,14 @@ Tárgy: GDPR-szakvélemény kisvállalkozás webáruházi szoftveréhez
 Tisztelt Ügyvéd Úr!
 
 Kisvállalkozásunk kiegészítő szoftvereket készít webáruházak számára a
-Shopify-platformra. Egyik alkalmazásunk közzététele előtt adatvédelmi
-szakvéleményre van szükségünk.
+Shopify-platformra. Egyik alkalmazásunk közzététele előtt rendezni kívánjuk az alkalmazás
+adatvédelmi és jogi megfelelését.
 
-Olyan ügyvédet keresünk, aki indokolt, jogszabályi hivatkozásokkal
-alátámasztott GDPR-szakvéleményt készít, ügyvédi felelősségbiztosítás
-fedezete mellett. Kérjük, elsőként arról tájékoztasson, vállal-e ilyen
-megbízást, és tud-e a díjazásra írásos, keretösszegű ajánlatot adni.
+Olyan ügyvédet keresünk, aki a munkája eredményéért indokolt, jogszabályi
+hivatkozásokkal alátámasztott szakvéleménnyel és ügyvédi
+felelősségbiztosítással áll helyt. Kérjük, elsőként arról tájékoztasson,
+vállal-e ilyen megbízást, és tud-e a díjazásra írásos, keretösszegű
+ajánlatot adni.
 
 Azért fordulunk Önhöz, mert 2018 óta kifejezetten kis- és középvállalkozások
 GDPR-megfelelésével foglalkozik. A mi megbízásunk léptéke is ilyen:
@@ -172,14 +173,14 @@ Tárgy: Adatvédelmi szakvélemény webáruházi szoftverhez (GDPR, adatfeldolgo
 Tisztelt Ügyvéd Úr!
 
 Cégünk webáruházakhoz készít kiegészítő szoftvereket a Shopify-platformra.
-Egyik alkalmazásunk közzététele előtt adatvédelmi szakvéleményre van
-szükségünk.
+Egyik alkalmazásunk közzététele előtt rendezni kívánjuk az alkalmazás
+adatvédelmi és jogi megfelelését.
 
-Adatvédelemre szakosodott ügyvédet keresünk, aki indokolt, jogszabályi
-hivatkozásokkal alátámasztott GDPR-szakvéleményt készít, ügyvédi
-felelősségbiztosítás fedezete mellett. Kérjük, elsőként arról tájékoztasson,
-vállal-e ilyen megbízást, és tud-e a díjazásra írásos, keretösszegű ajánlatot
-adni.
+Adatvédelemre szakosodott ügyvédet keresünk, aki a munkája eredményéért
+indokolt, jogszabályi hivatkozásokkal alátámasztott szakvéleménnyel és
+ügyvédi felelősségbiztosítással áll helyt. Kérjük, elsőként arról
+tájékoztasson, vállal-e ilyen megbízást, és tud-e a díjazásra írásos,
+keretösszegű ajánlatot adni.
 
 Az Ön szakterülete pontosan az, amire a megbízás irányul. Az alkalmazásunk
 adatfeldolgozóként kezel vásárlói adatokat a kereskedők nevében. A munka
