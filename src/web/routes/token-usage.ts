@@ -1,11 +1,10 @@
 import {
-  collectTokenUsage,
+  collectAndCorrelate,
   getTokenSummary,
   getTokenTimeline,
   getTokenDetails,
   getModelDistribution,
   getToolStats,
-  correlateWithKanban,
 } from '../token-usage.js'
 import { json, jsonMaybeGzip } from '../http-helpers.js'
 import { logger } from '../../logger.js'
@@ -16,8 +15,8 @@ export async function tryHandleTokenUsage(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/token-usage/collect' && method === 'POST') {
     try {
-      const result = await collectTokenUsage()
-      correlateWithKanban()
+      // Same function the timer uses -- one path, one behaviour.
+      const result = await collectAndCorrelate()
       json(res, { ok: true, ...result })
     } catch (err) {
       logger.error({ err }, 'Token usage collection failed')

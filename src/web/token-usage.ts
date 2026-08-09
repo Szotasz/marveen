@@ -562,6 +562,38 @@ export function getTokenDetails(
   return db.prepare(sql).all(...params) as TokenDetail[]
 }
 
+/**
+ * Collect the raw usage rows AND label them.
+ *
+ * These two used to be wired up separately: the collector ran hourly from the
+ * server, while the labeller ran only from POST /api/token-usage/collect --
+ * which nothing calls except the dashboard page. Measured 2026-08-09: labelling
+ * stopped on 07-31 and every row since is unattributed, 76.5% of a 30-day
+ * window. Nothing failed; the half that writes the labels simply was not on a
+ * timer.
+ *
+ * One function for both callers, so the timer and the endpoint cannot drift
+ * into doing different things again.
+ *
+ * A failing correlation never fails the collection: the rows are the data, the
+ * labels are an interpretation of it, and losing the second must not cost the
+ * first.
+ */
+export async function collectAndCorrelate(
+  deps: { collect?: () => Promise<{ inserted: number; files: number }>; correlate?: () => void } = {},
+): Promise<{ inserted: number; files: number; correlated: boolean }> {
+  const collect = deps.collect ?? collectTokenUsage
+  const correlate = deps.correlate ?? correlateWithKanban
+  const result = await collect()
+  try {
+    correlate()
+    return { ...result, correlated: true }
+  } catch (err) {
+    logger.warn({ err }, 'Kanban correlation failed; usage rows collected but unlabelled')
+    return { ...result, correlated: false }
+  }
+}
+
 export function correlateWithKanban(): void {
   const db = getDb()
   const uncorrelated = db.prepare(`

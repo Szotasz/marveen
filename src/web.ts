@@ -28,7 +28,7 @@ import { startReauthHealer } from './web/reauth-healer.js'
 import { startAutoRestartRunner } from './web/auto-restart-runner.js'
 import { startModelFallbackRunner } from './web/model-fallback-runner.js'
 import { startContextGuardRunner } from './web/context-guard-runner.js'
-import { collectTokenUsage } from './web/token-usage.js'
+import { collectAndCorrelate } from './web/token-usage.js'
 import { logger } from './logger.js'
 import { tryHandleAuth } from './web/routes/auth.js'
 import { tryHandleSecurity } from './web/routes/security.js'
@@ -424,12 +424,15 @@ export function startWebServer(port = 3420): http.Server {
     }
   }, 60 * 60 * 1000)
 
+  // Collect AND label. These were wired separately until 2026-08-09: the
+  // collection ran here, the labelling only from the dashboard endpoint, and
+  // when nobody opened that page the rows piled up unattributed for nine days.
   const tokenCollectInterval = webOnly ? undefined : setInterval(() => {
-    collectTokenUsage().catch(err => logger.warn({ err }, 'Periodic token usage collection failed'))
+    collectAndCorrelate().catch(err => logger.warn({ err }, 'Periodic token usage collection failed'))
   }, 60 * 60 * 1000)
   if (!webOnly) {
-    collectTokenUsage().catch(err => logger.warn({ err }, 'Startup token usage collection failed'))
-    logger.info('Token usage auto-collect started (1h poll + startup)')
+    collectAndCorrelate().catch(err => logger.warn({ err }, 'Startup token usage collection failed'))
+    logger.info('Token usage auto-collect started (1h poll + startup, with kanban correlation)')
   }
 
   // NOTE: startMcpListChecker() is intentionally NOT called here.
