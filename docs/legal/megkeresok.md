@@ -36,12 +36,12 @@ szakemberek egyaránt dolgoznak, és tapasztalattal rendelkeznek webáruházak,
 valamint nemzetközi szolgáltatók támogatásában. A mi esetünk pontosan ilyen:
 az alkalmazás adatfeldolgozóként kezel vásárlói adatokat a kereskedők nevében.
 
-A megbízás tárgyát előre rögzítjük, hogy a megbízás vállalhatóságáról már
-az ajánlatadás előtt dönthessenek. A beadásra szánt dokumentumokat
-(adatvédelmi tájékoztató, általános szerződési feltételek, a GDPR 28. cikke
-szerinti adatfeldolgozói megállapodás) mi készítettük el; a feladat ezek
-ellenőrzése, szükség szerinti javítása, majd indokolt szakvélemény kiadása.
-A kiindulási alap a Shopify által a közzétételhez előírt dokumentumok köre.
+A feladat megrendelői oldalról egyszerűen megfogalmazható: az alkalmazás
+működését pontosan ismerjük, és minden szükséges információt meg tudunk
+adni róla. Célunk, hogy az alkalmazás jogszerűen piacra vihető legyen. Az
+irodától azt várjuk, hogy határozza meg: ehhez milyen dokumentumok
+szükségesek, és milyen tartalommal. A dokumentumok végleges, benyújtásra
+alkalmas elkészítésében is közreműködésüket kérjük.
 
 A megbízás terjedelmének megítéléséhez két körülményt előre rögzítünk.
 Ügyfeleink kizárólag kereskedők; fogyasztókkal közvetlen jogviszonyban nem
@@ -50,9 +50,13 @@ nem tartozik a megbízás körébe. Kereskedőink többsége ugyanakkor az Euró
 Unión kívül működik, ezért a harmadik országba irányuló adattovábbítás
 vizsgálata viszont a megbízás körébe tartozik.
 
-A díjazás megalapozott kalkulációját segíti, hogy az elkészült szoftver
-forráskódja alapján ellenőrzött adattérképet és pszeudonimizációs dossziét
-bocsátunk rendelkezésre.
+A megbízás előkészített anyagokra támaszkodhat: rendelkezésre áll az
+elkészült szoftver forráskódja alapján ellenőrzött adattérkép, a
+pszeudonimizációs dosszié, a platform közzétételi követelményeinek listája
+és saját dokumentumtervezeteink. Kérjük, ajánlatukban jelezzék, melyik
+megoldást javasolják, és arra adjanak díjajánlatot: a tervezeteink
+ellenőrzésére és indokolt szakvéleménnyel való lezárására, vagy arra, hogy
+az iroda készítsen új dokumentumcsomagot az anyagaink felhasználásával.
 
 Amennyiben a megbízás illeszkedik az irodájuk tevékenységi körébe, kérésükre
 haladéktalanul megküldjük a részletes anyagot.
@@ -83,12 +87,12 @@ le, amelyre a megbízásunk irányul. Az alkalmazásunk adatfeldolgozóként mű
 nevében, ezért a megbízás súlypontja a szerep jogi minősítése és a GDPR
 28. cikke szerinti adatfeldolgozói megállapodás vizsgálata.
 
-A megbízás tárgyát előre rögzítjük, hogy a megbízás vállalhatóságáról már
-az ajánlatadás előtt dönthessenek. A beadásra szánt dokumentumokat
-(adatvédelmi tájékoztató, általános szerződési feltételek, a GDPR 28. cikke
-szerinti adatfeldolgozói megállapodás) mi készítettük el; a feladat ezek
-ellenőrzése, szükség szerinti javítása, majd indokolt szakvélemény kiadása.
-A kiindulási alap a Shopify által a közzétételhez előírt dokumentumok köre.
+A feladat megrendelői oldalról egyszerűen megfogalmazható: az alkalmazás
+működését pontosan ismerjük, és minden szükséges információt meg tudunk
+adni róla. Célunk, hogy az alkalmazás jogszerűen piacra vihető legyen. Az
+irodától azt várjuk, hogy határozza meg: ehhez milyen dokumentumok
+szükségesek, és milyen tartalommal. A dokumentumok végleges, benyújtásra
+alkalmas elkészítésében is közreműködésüket kérjük.
 
 A megbízás terjedelmének megítéléséhez két körülményt előre rögzítünk.
 Ügyfeleink kizárólag kereskedők; fogyasztókkal közvetlen jogviszonyban nem
@@ -97,9 +101,13 @@ nem tartozik a megbízás körébe. Kereskedőink többsége ugyanakkor az Euró
 Unión kívül működik, ezért a harmadik országba irányuló adattovábbítás
 vizsgálata viszont a megbízás körébe tartozik.
 
-A díjazás kalkulációját segíti, hogy az elkészült szoftver forráskódja
-alapján ellenőrzött adattérképet és pszeudonimizációs dossziét bocsátunk
-rendelkezésre.
+A megbízás előkészített anyagokra támaszkodhat: rendelkezésre áll az
+elkészült szoftver forráskódja alapján ellenőrzött adattérkép, a
+pszeudonimizációs dosszié, a platform közzétételi követelményeinek listája
+és saját dokumentumtervezeteink. Kérjük, ajánlatukban jelezzék, melyik
+megoldást javasolják, és arra adjanak díjajánlatot: a tervezeteink
+ellenőrzésére és indokolt szakvéleménnyel való lezárására, vagy arra, hogy
+az iroda készítsen új dokumentumcsomagot az anyagaink felhasználásával.
 
 Amennyiben a megbízás felkeltette érdeklődésüket, kérésükre megküldjük a
 teljes anyagot.
@@ -124,17 +132,16 @@ fedezete mellett. Kérjük, elsőként arról tájékoztasson, vállal-e ilyen
 megbízást, és tud-e a díjazásra írásos, keretösszegű ajánlatot adni.
 
 Azért fordulunk Önhöz, mert 2018 óta kifejezetten kis- és középvállalkozások
-GDPR-megfelelésével foglalkozik. A mi megbízásunk léptéke is ilyen: nem
-átfogó auditra van szükségünk, hanem célzott szakvéleményre egy jól
-körülhatárolt anyagról. Az alkalmazás adatfeldolgozóként kezel vásárlói
+GDPR-megfelelésével foglalkozik. A mi megbízásunk léptéke is ilyen:
+egyetlen alkalmazás jogi anyagai, jól körülhatárolt terjedelemben. Az alkalmazás adatfeldolgozóként kezel vásárlói
 adatokat a kereskedők nevében.
 
-A megbízás tárgyát előre rögzítjük, hogy a megbízás vállalhatóságáról már
-az ajánlatadás előtt dönthessen. A beadásra szánt dokumentumokat
-(adatvédelmi tájékoztató, általános szerződési feltételek, a GDPR 28. cikke
-szerinti adatfeldolgozói megállapodás) mi készítettük el; a feladat ezek
-ellenőrzése, szükség szerinti javítása, majd indokolt szakvélemény kiadása.
-A kiindulási alap a Shopify által a közzétételhez előírt dokumentumok köre.
+A feladat megrendelői oldalról egyszerűen megfogalmazható: az alkalmazás
+működését pontosan ismerjük, és minden szükséges információt meg tudunk
+adni róla. Célunk, hogy az alkalmazás jogszerűen piacra vihető legyen. Öntől
+azt várjuk, hogy határozza meg: ehhez milyen dokumentumok
+szükségesek, és milyen tartalommal. A dokumentumok végleges, benyújtásra
+alkalmas elkészítésében is közreműködését kérjük.
 
 A megbízás terjedelmének megítéléséhez két körülményt előre rögzítünk.
 Ügyfeleink kizárólag kereskedők; fogyasztókkal közvetlen jogviszonyban nem
@@ -143,9 +150,13 @@ nem tartozik a megbízás körébe. Kereskedőink többsége ugyanakkor az Euró
 Unión kívül működik, ezért a harmadik országba irányuló adattovábbítás
 vizsgálata viszont a megbízás körébe tartozik.
 
-A ráfordítás felmérését segíti, hogy az elkészült szoftver forráskódja
-alapján ellenőrzött adattérképet és pszeudonimizációs dossziét bocsátunk
-rendelkezésre.
+A megbízás előkészített anyagokra támaszkodhat: rendelkezésre áll az
+elkészült szoftver forráskódja alapján ellenőrzött adattérkép, a
+pszeudonimizációs dosszié, a platform közzétételi követelményeinek listája
+és saját dokumentumtervezeteink. Kérjük, ajánlatában jelezze, melyik
+megoldást javasolja, és arra adjon díjajánlatot: a tervezeteink
+ellenőrzésére és indokolt szakvéleménnyel való lezárására, vagy arra, hogy
+Ön készítsen új dokumentumcsomagot az anyagaink felhasználásával.
 
 Amennyiben a megbízás illeszkedik a praxisába, kérésére megküldjük a
 részletes anyagot.
@@ -175,12 +186,12 @@ adatfeldolgozóként kezel vásárlói adatokat a kereskedők nevében. A munka
 súlypontja ezért a szerep jogi minősítése, a jogalapok vizsgálata és a GDPR
 28. cikke szerinti adatfeldolgozói megállapodás véleményezése.
 
-A megbízás tárgyát előre rögzítjük, hogy a megbízás vállalhatóságáról már
-az ajánlatadás előtt dönthessen. A beadásra szánt dokumentumokat
-(adatvédelmi tájékoztató, általános szerződési feltételek, a GDPR 28. cikke
-szerinti adatfeldolgozói megállapodás) mi készítettük el; a feladat ezek
-ellenőrzése, szükség szerinti javítása, majd indokolt szakvélemény kiadása.
-A kiindulási alap a Shopify által a közzétételhez előírt dokumentumok köre.
+A feladat megrendelői oldalról egyszerűen megfogalmazható: az alkalmazás
+működését pontosan ismerjük, és minden szükséges információt meg tudunk
+adni róla. Célunk, hogy az alkalmazás jogszerűen piacra vihető legyen. Öntől
+azt várjuk, hogy határozza meg: ehhez milyen dokumentumok
+szükségesek, és milyen tartalommal. A dokumentumok végleges, benyújtásra
+alkalmas elkészítésében is közreműködését kérjük.
 
 A megbízás terjedelmének megítéléséhez két körülményt előre rögzítünk.
 Ügyfeleink kizárólag kereskedők; fogyasztókkal közvetlen jogviszonyban nem
@@ -189,9 +200,13 @@ nem tartozik a megbízás körébe. Kereskedőink többsége ugyanakkor az Euró
 Unión kívül működik, ezért a harmadik országba irányuló adattovábbítás
 vizsgálata viszont a megbízás körébe tartozik.
 
-A ráfordítás felmérését segíti, hogy az elkészült szoftver forráskódja
-alapján ellenőrzött adattérképet és pszeudonimizációs dossziét bocsátunk
-rendelkezésre.
+A megbízás előkészített anyagokra támaszkodhat: rendelkezésre áll az
+elkészült szoftver forráskódja alapján ellenőrzött adattérkép, a
+pszeudonimizációs dosszié, a platform közzétételi követelményeinek listája
+és saját dokumentumtervezeteink. Kérjük, ajánlatában jelezze, melyik
+megoldást javasolja, és arra adjon díjajánlatot: a tervezeteink
+ellenőrzésére és indokolt szakvéleménnyel való lezárására, vagy arra, hogy
+Ön készítsen új dokumentumcsomagot az anyagaink felhasználásával.
 
 Amennyiben a megbízás felkeltette érdeklődését, kérésére megküldjük a teljes
 anyagot.
