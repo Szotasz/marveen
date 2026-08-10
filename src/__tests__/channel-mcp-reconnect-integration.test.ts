@@ -105,7 +105,7 @@ const TELEGRAM_PLUGIN_PANE_ID = 'plugin:telegram:telegram'
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('Integration: health-monitor detection layer', () => {
-  let startChannelHealthMonitor: typeof import('../../web/channel-health-monitor.js')['startChannelHealthMonitor']
+  let startChannelHealthMonitor: typeof import('../web/channel-health-monitor.js')['startChannelHealthMonitor']
 
   beforeEach(async () => {
     // Fresh module state for reconnectState and inFlightReconnects Maps.
@@ -202,7 +202,7 @@ describe('Integration: health-monitor detection layer', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('Integration: reconnect navigation flow', () => {
-  let attemptChannelMcpReconnect: typeof import('../../web/channel-mcp-reconnect.js')['attemptChannelMcpReconnect']
+  let attemptChannelMcpReconnect: typeof import('../web/channel-mcp-reconnect.js')['attemptChannelMcpReconnect']
 
   beforeEach(async () => {
     vi.resetModules()
