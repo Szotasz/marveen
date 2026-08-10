@@ -51,11 +51,13 @@ import { sendTelegramMessage } from './telegram.js'
 import { runCommandTask } from './command-task.js'
 import { paneShowsContextSaturation, detectsFirstRunGate, detectPaneState, type PaneState } from '../pane-state.js'
 import { recordDelivery } from './delivery-intent.js'
+import { withSessionSendLock } from './session-send-lock.js'
 
 // How many bare-Enter attempts the post-send resubmit tries before escalating
 // to a clear + re-inject, and the hard cap after which it gives up.
 const RESUBMIT_BARE_ENTER_ATTEMPTS = 2
 const RESUBMIT_MAX_ATTEMPTS = 6
+const RESUBMIT_LANE_BUSY_MAX_SKIPS = 20
 
 // --- Post-fire timeout watchdog ---
 // After a task/heartbeat injection, we track the target session to detect the
@@ -707,34 +709,77 @@ async function attemptFireTask(
     const marker = task.type === 'heartbeat'
       ? `[Heartbeat: ${task.name}]`
       : `[Utemezett feladat: ${task.name}]`
-    const resubmit = async (attempt: number): Promise<void> => {
+    const resubmit = async (attempt: number, laneBusySkips = 0): Promise<void> => {
       try {
-        // Host-aware so a remote agent's post-send stuck-check + recovery Enter
-        // hit the laptop session, not a (nonexistent) local one.
-        const pane = capturePane(session, host)
-        const stuck = isScheduledPromptStuck(pane, marker)
-        const action = decideScheduledResubmitAction(attempt, stuck)
-        if (action === 'none') return
-        if (action === 'giveup') {
-          logger.warn({ task: task.name, session }, 'Scheduled prompt still stuck after Enter + re-inject retries -- giving up')
-          return
-        }
-        if (action === 'reinject') {
-          // The Enter is being swallowed persistently. Clear the parked prompt
-          // and re-type it. clearStaleParkedInput verifies the box is empty
-          // before returning true; if it can't clear (box changed under us, or
-          // its cooldown fired), fall back to one more bare Enter. waitForIdle
-          // is off because the box is 'typing', not idle -- the pre-flight gate
-          // would otherwise burn its whole budget and time out every attempt.
-          if (await clearStaleParkedInput(session, host)) {
-            await sendPromptToSession(session, fullPrompt, host, { waitForIdle: false })
-            recordDelivery(session, fullPrompt)
-            logger.info({ task: task.name, session, attempt }, 'Scheduled prompt re-injected after swallowed Enter')
+        // TASKTAIL805: the whole probe+act step is one recover-mode critical
+        // section on the pane's send lane. The resubmit timer escapes the
+        // scheduler's own serialization (it is a detached setTimeout), so
+        // without the lock it raced any delivery typing into the same pane:
+        // its Enter could submit a half-typed foreign message, and its
+        // clear+re-type could cut the head off an in-flight chunk stream while
+        // the writer kept typing the tail (head lost, tail kept, re-type
+        // duplicating the span -- the truncation+duplication observed twice).
+        // The MEASUREMENT must be atomic with the action too: a pane sampled
+        // outside the lock can change before the keystroke lands.
+        const res = await withSessionSendLock(session, host, 'recover', async (): Promise<'done' | 'continue'> => {
+          // Host-aware so a remote agent's post-send stuck-check + recovery
+          // Enter hit the laptop session, not a (nonexistent) local one.
+          const pane = capturePane(session, host)
+          const stuck = isScheduledPromptStuck(pane, marker)
+          const action = decideScheduledResubmitAction(attempt, stuck)
+          if (action === 'none') return 'done'
+          if (action === 'giveup') {
+            logger.warn({ task: task.name, session }, 'Scheduled prompt still stuck after Enter + re-inject retries -- giving up')
+            // The prompt is parked (never submitted), yet attemptFireTask
+            // already recorded the task 'fired' + stamped scheduleLastRun
+            // BEFORE this detached resubmit chain ran -- do NOT move that
+            // write, it guards the CRON path against a double-fire while the
+            // first injection is still resubmitting. Compensate instead: a
+            // pending retry re-fires the task once the session frees
+            // (isSessionReadyForPrompt gates it, so it never re-injects on
+            // top of the still-parked prompt), and the age-threshold alert
+            // names a long-stuck one. Without this a swallowed-Enter giveup
+            // is a run-log row that says 'fired' for a task that never ran.
+            insertPendingTaskRetryIfNew(task.name, agentName, now, 'giveup')
+            return 'done'
+          }
+          if (action === 'reinject') {
+            // The Enter is being swallowed persistently. Clear the parked prompt
+            // and re-type it. clearStaleParkedInput verifies the box is empty
+            // before returning true; if it can't clear (box changed under us, or
+            // its cooldown fired), fall back to one more bare Enter. waitForIdle
+            // is off because the box is 'typing', not idle -- the pre-flight gate
+            // would otherwise burn its whole budget and time out every attempt.
+            // lockMode 'held': we are already inside this pane's lane; taking
+            // the lock again would deadlock the promise-chain mutex.
+            if (await clearStaleParkedInput(session, host)) {
+              await sendPromptToSession(session, fullPrompt, host, { waitForIdle: false })
+              logger.info({ task: task.name, session, attempt }, 'Scheduled prompt re-injected after swallowed Enter')
+            } else {
+              sendEnterToSession(session, host)
+            }
           } else {
             sendEnterToSession(session, host)
           }
-        } else {
-          sendEnterToSession(session, host)
+          return 'continue'
+        })
+        if (!res.ran) {
+          // Fail-closed skip: a delivery holds this pane's lane right now, so
+          // both the stuck-measurement and any keystroke would hit someone
+          // else's in-flight message. Re-try the SAME attempt once the lane
+          // frees up; bounded so a wedged holder cannot chain timers forever.
+          if (laneBusySkips >= RESUBMIT_LANE_BUSY_MAX_SKIPS) {
+            logger.warn({ task: task.name, session, attempt }, 'Post-send resubmit gave up: pane send lane stayed busy past the skip budget')
+            // Exiting here means NO measurement was ever taken: the prompt may
+            // be parked and this chain will never look again. Same shape as
+            // the 'giveup' action above, so it gets the same compensation --
+            // otherwise the skip budget is a second silent-lost-task exit.
+            insertPendingTaskRetryIfNew(task.name, agentName, now, 'lane-busy')
+            return
+          }
+          logger.info({ task: task.name, session, attempt, laneBusySkips }, 'Post-send resubmit skipped: a delivery is in flight into this pane (fail-closed)')
+          setTimeout(() => { void resubmit(attempt, laneBusySkips + 1) }, 3000)
+          return
         }
         setTimeout(() => { void resubmit(attempt + 1) }, 3000)
       } catch (err) {
@@ -1129,9 +1174,22 @@ export function startScheduleRunner(): NodeJS.Timeout {
 
       const view = toPendingRetryView(row, now)
       const result = await attemptFireTask(taskDef, row.agent_name, now, retryPc.prefix)
-      if (result === 'fired' || result === 'missing') {
+      if (result === 'fired') {
         deletePendingTaskRetry(row.task_name, row.agent_name)
         continue
+      }
+      // 'missing' used to DELETE the retry row here -- a silent abandonment
+      // that contradicts the never-abandon policy above. The one real-world
+      // window where it bites: the target session vanishes during a main-agent
+      // restart, auto-start fails once, and a queued daily task (e.g. a
+      // morning briefing, 2026-07-13) is dropped with only a debug log. Keep
+      // the row instead; the alertDue path below surfaces a long-stuck one to
+      // the operator, and the run-log records the state.
+      if (result === 'missing' && row.last_reason !== 'missing') {
+        // Log the TRANSITION into missing only (a stuck-missing task would
+        // otherwise write a row per 60s tick); the pending row itself keeps
+        // the live state.
+        appendTaskRun(row.task_name, row.agent_name, 'missing-retrying')
       }
       // Still busy or errored: refresh the retry row and alert ONCE if
       // the age crossed the threshold. `updatePendingTaskRetry` returns

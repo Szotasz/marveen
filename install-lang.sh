@@ -194,6 +194,10 @@ _t() {
     hu:macos.mlx_whisper_installed) echo "  mlx-whisper már telepítve (Apple Silicon optimalizált)" ;;
     en:macos.whisper_installed) echo "  whisper already installed" ;;
     hu:macos.whisper_installed) echo "  whisper már telepítve" ;;
+    en:macos.whisper_skipped) echo "whisper could not be installed -- video transcription is skipped, everything else works." ;;
+    hu:macos.whisper_skipped) echo "whisper nem telepíthető -- a videó-átirat kimarad, minden más működik." ;;
+    en:macos.whisper_skipped_hint) echo "Later, by hand: pipx install openai-whisper   (or: brew install openai-whisper)" ;;
+    hu:macos.whisper_skipped_hint) echo "Később kézzel: pipx install openai-whisper   (vagy: brew install openai-whisper)" ;;
     en:macos.ffmpeg_installing) echo "  Installing ffmpeg..." ;;
     hu:macos.ffmpeg_installing) echo "  ffmpeg telepítés..." ;;
     en:macos.ffmpeg_done) echo "  ffmpeg ready" ;;
