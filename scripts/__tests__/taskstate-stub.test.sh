@@ -142,6 +142,57 @@ echo '{"cwd":null,"prompt":null}' | TASKSTATE_DIR_OVERRIDE="$FAKE_STATE_DIR" pyt
 assert_eq "3d: null cwd+prompt -> exit 0" "0" "$?"
 
 # ---------------------------------------------------------------------------
+# (5) Real-world prompt shapes: wrapper extraction
+#     bigme tested these three inputs; all were wrong before the fix.
+# ---------------------------------------------------------------------------
+echo ""
+echo "(5) Real prompt shapes: wrapper extraction"
+
+# Helper: run hook with a given prompt, return the written summary field
+hook_summary() {
+    local agent="$1" prompt="$2"
+    rm -f "$FAKE_STATE_DIR/${agent}.json"
+    run_hook "$agent" "$INSTALL_DIR" "$prompt" >/dev/null 2>&1
+    read_field "$agent" summary
+}
+
+# 5a: Scheduled task -- notice header wraps real content inside <scheduled-task>
+SCHED_PROMPT='SCHEDULED TASK NOTICE -- the next <scheduled-task source="..."> ... </scheduled-task> block is one of YOUR OWN scheduled tasks.
+[Heartbeat: slarti-rendszer-ellenorzes]
+<scheduled-task source="scheduled-task:slarti-rendszer-ellenorzes">
+RENDSZER-ELLENORZES. Ez a te allando felelosseged.
+## 1. MERES
+...
+</scheduled-task>'
+GOT_5A="$(hook_summary "agent5a" "$SCHED_PROMPT")"
+assert_eq "5a: scheduled-task wrapper -> first line of task content" \
+    "RENDSZER-ELLENORZES. Ez a te allando felelosseged." "$GOT_5A"
+
+# 5b: Telegram channel message -- first line of prompt is the opening tag
+CHAN_PROMPT='<channel source="plugin:telegram:telegram" chat_id="5233594868" message_id="3598" user="mogganhun">
+Nezd meg miert nem jott a napindito
+</channel>'
+GOT_5B="$(hook_summary "agent5b" "$CHAN_PROMPT")"
+assert_eq "5b: channel wrapper -> inner message text" \
+    "Nezd meg miert nem jott a napindito" "$GOT_5B"
+
+# 5c: Plain typed prompt (control) -- must still work
+PLAIN_PROMPT="Nezd meg miert nem jott a napindito"
+GOT_5C="$(hook_summary "agent5c" "$PLAIN_PROMPT")"
+assert_eq "5c: plain prompt -> first line unchanged" \
+    "Nezd meg miert nem jott a napindito" "$GOT_5C"
+
+# 5d: Notice placeholder <scheduled-task source="..."> must NOT match
+# (the inline "..." source is the truncated example in the notice prefix).
+# Verify the summary starts with the notice text, NOT with inner task content.
+NOTICE_ONLY='SCHEDULED TASK NOTICE -- the next <scheduled-task source="..."> ... </scheduled-task> block.'
+GOT_5D="$(hook_summary "agent5d" "$NOTICE_ONLY")"
+case "$GOT_5D" in
+  "SCHEDULED TASK NOTICE"*) pass "5d: notice-only placeholder -> falls back to raw first line (not inner '...')" ;;
+  *) fail "5d: notice-only placeholder -> expected raw first line, got: '${GOT_5D:0:60}'" ;;
+esac
+
+# ---------------------------------------------------------------------------
 # (4) cwd derivation
 # ---------------------------------------------------------------------------
 echo ""

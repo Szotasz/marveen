@@ -36,6 +36,23 @@ NEXT_ACTION = (
     "Nincs visszatoltendo kontextus -- ez az elso prompt a heartbeat elott keletkezett."
 )
 
+# Wrapper patterns: the real task content lives INSIDE these tags.
+# The surrounding notice text (SCHEDULED TASK NOTICE -- the next <scheduled-task
+# source="..."> ... </scheduled-task>) also contains a truncated <scheduled-task>
+# placeholder with source="..." -- the negative lookahead skips it.
+_CHANNEL_RX = re.compile(
+    r'<channel\s+source="plugin:telegram:telegram"[^>]*>(.*?)</channel>',
+    re.DOTALL,
+)
+_SCHEDULED_TASK_RX = re.compile(
+    r'<scheduled-task\s+source="(?!\.\.\.)[^"]*">(.*?)</scheduled-task>',
+    re.DOTALL,
+)
+_TRUSTED_PEER_RX = re.compile(
+    r'<trusted-peer\s+[^>]*>(.*?)</trusted-peer>',
+    re.DOTALL,
+)
+
 
 def _install_dir():
     here = os.path.dirname(os.path.abspath(__file__))
@@ -97,6 +114,23 @@ def _first_line(text, max_len=SUMMARY_MAX):
     return ""
 
 
+def _extract_summary(text, max_len=SUMMARY_MAX):
+    """Extract a meaningful first line from potentially wrapped prompt text.
+
+    Real prompts are often wrapped in structured tags whose header text
+    (e.g. "SCHEDULED TASK NOTICE -- the next ...") would be a useless summary.
+    We extract from the innermost wrapper content in priority order, falling
+    back to the raw first line when no wrapper matches.
+    """
+    for rx in (_CHANNEL_RX, _SCHEDULED_TASK_RX, _TRUSTED_PEER_RX):
+        m = rx.search(text or "")
+        if m:
+            inner = _first_line(m.group(1), max_len)
+            if inner:
+                return inner
+    return _first_line(text, max_len)
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -110,7 +144,7 @@ def main():
         if _has_live_record(agent_id):
             sys.exit(0)  # live record -- do not touch
 
-        summary = _first_line(prompt)
+        summary = _extract_summary(prompt)
         if not summary:
             sys.exit(0)  # nothing meaningful to stub
 
