@@ -114,20 +114,28 @@ def _first_line(text, max_len=SUMMARY_MAX):
     return ""
 
 
+_WRAPPER_FALLBACKS = [
+    (_CHANNEL_RX,        "[Telegram uzenet]"),
+    (_SCHEDULED_TASK_RX, "[Utemezett feladat]"),
+    (_TRUSTED_PEER_RX,   "[Inter-agent uzenet]"),
+]
+
+
 def _extract_summary(text, max_len=SUMMARY_MAX):
     """Extract a meaningful first line from potentially wrapped prompt text.
 
     Real prompts are often wrapped in structured tags whose header text
     (e.g. "SCHEDULED TASK NOTICE -- the next ...") would be a useless summary.
-    We extract from the innermost wrapper content in priority order, falling
-    back to the raw first line when no wrapper matches.
+    We extract from the innermost wrapper content in priority order.
+    When a wrapper matches but the inner content is empty (e.g. image-only
+    Telegram message), we return a type-specific placeholder so the tag header
+    never leaks into the summary.
     """
-    for rx in (_CHANNEL_RX, _SCHEDULED_TASK_RX, _TRUSTED_PEER_RX):
+    for rx, placeholder in _WRAPPER_FALLBACKS:
         m = rx.search(text or "")
         if m:
             inner = _first_line(m.group(1), max_len)
-            if inner:
-                return inner
+            return inner if inner else placeholder
     return _first_line(text, max_len)
 
 
