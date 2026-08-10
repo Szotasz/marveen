@@ -4,6 +4,8 @@ import {
   normalizeAutoRestartConfig,
   restartDue,
   dailyDueAtMs,
+  shouldRestartOnCard,
+  shouldStartFresh,
   DEFAULT_AUTO_RESTART,
 } from '../auto-restart.js'
 
@@ -29,11 +31,11 @@ describe('normalizeAutoRestartConfig', () => {
   })
   it('keeps a valid daily config and clears interval (daily wins)', () => {
     const c = normalizeAutoRestartConfig({ enabled: true, mode: 'fresh', dailyTime: '03:00', intervalHours: 6, handoff: true })
-    expect(c).toEqual({ enabled: true, mode: 'fresh', dailyTime: '03:00', intervalHours: null, handoff: true })
+    expect(c).toEqual({ enabled: true, mode: 'fresh', dailyTime: '03:00', intervalHours: null, handoff: true, onCardStart: false })
   })
   it('keeps a valid interval config when no daily time', () => {
     const c = normalizeAutoRestartConfig({ enabled: true, mode: 'continue', intervalHours: 8 })
-    expect(c).toEqual({ enabled: true, mode: 'continue', dailyTime: null, intervalHours: 8, handoff: false })
+    expect(c).toEqual({ enabled: true, mode: 'continue', dailyTime: null, intervalHours: 8, handoff: false, onCardStart: false })
   })
   it('drops an invalid dailyTime and non-positive interval', () => {
     const c = normalizeAutoRestartConfig({ enabled: true, dailyTime: '99:99', intervalHours: 0 })
@@ -42,6 +44,74 @@ describe('normalizeAutoRestartConfig', () => {
   })
   it('defaults mode to continue for an unknown mode', () => {
     expect(normalizeAutoRestartConfig({ mode: 'wild' }).mode).toBe('continue')
+  })
+
+  // The schedule is a three-way exclusive choice -- daily time / every N hours /
+  // per card. Storing two of them at once would make "when does this restart?"
+  // unanswerable from the config alone, which is exactly the ambiguity the
+  // existing dailyTime-wins-over-intervalHours rule already prevents.
+  it('defaults onCardStart to false so existing stores are unchanged', () => {
+    expect(normalizeAutoRestartConfig({}).onCardStart).toBe(false)
+    expect(normalizeAutoRestartConfig({ enabled: true, intervalHours: 1 }).onCardStart).toBe(false)
+  })
+  it('keeps a valid per-card config', () => {
+    expect(normalizeAutoRestartConfig({ enabled: true, onCardStart: true }).onCardStart).toBe(true)
+  })
+  it('requires a real boolean for onCardStart (no truthy coercion)', () => {
+    expect(normalizeAutoRestartConfig({ onCardStart: 'igen' }).onCardStart).toBe(false)
+    expect(normalizeAutoRestartConfig({ onCardStart: 1 }).onCardStart).toBe(false)
+  })
+  it('clears both time schedules when onCardStart wins', () => {
+    const c = normalizeAutoRestartConfig({ enabled: true, onCardStart: true, dailyTime: '03:00', intervalHours: 6 })
+    expect(c.onCardStart).toBe(true)
+    expect(c.dailyTime).toBeNull()
+    expect(c.intervalHours).toBeNull()
+  })
+})
+
+describe('shouldRestartOnCard', () => {
+  const NOW = 1_700_000_000_000
+  const MIN = 5 * 60_000
+
+  const input = (o: Partial<Parameters<typeof shouldRestartOnCard>[0]> = {}) => ({
+    onCardStart: true,
+    pendingCardAt: NOW,
+    lastRestartAtMs: null,
+    nowMs: NOW,
+    minIntervalMs: MIN,
+    ...o,
+  })
+
+  it('does not fire when the agent is not on the per-card schedule', () => {
+    expect(shouldRestartOnCard(input({ onCardStart: false }))).toBe(false)
+  })
+  it('does not fire without a pending card request', () => {
+    expect(shouldRestartOnCard(input({ pendingCardAt: null }))).toBe(false)
+  })
+  it('fires for a pending card when the agent has never been restarted', () => {
+    expect(shouldRestartOnCard(input())).toBe(true)
+  })
+  // Restart storm guard: several cards moved to in_progress within a minute must
+  // not each cost a restart -- the first one already gave a clean context.
+  it('does not fire again inside the minimum interval', () => {
+    expect(shouldRestartOnCard(input({ lastRestartAtMs: NOW - 2 * 60_000 }))).toBe(false)
+  })
+  it('fires again once the minimum interval has passed', () => {
+    expect(shouldRestartOnCard(input({ lastRestartAtMs: NOW - 10 * 60_000 }))).toBe(true)
+  })
+})
+
+describe('shouldStartFresh', () => {
+  // A card-triggered restart exists to drop the accumulated context; keeping the
+  // conversation would make it pointless. A scheduled restart keeps whatever the
+  // operator chose in the separate mode control.
+  it('always drops the conversation for a card-triggered restart', () => {
+    expect(shouldStartFresh('card', 'continue')).toBe(true)
+    expect(shouldStartFresh('card', 'fresh')).toBe(true)
+  })
+  it('honours the configured mode for a scheduled restart', () => {
+    expect(shouldStartFresh('schedule', 'continue')).toBe(false)
+    expect(shouldStartFresh('schedule', 'fresh')).toBe(true)
   })
 })
 
