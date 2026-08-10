@@ -1489,21 +1489,37 @@ fi
 # stream:false --> szinkron, egyetlen valaszt ad vissza a letoltes utan
 ollama_pull() {
   local model="$1" size="$2"
+  # API-up guard (BC100FAIL810): this whole step is declared optional/non-fatal,
+  # but on a host where the ollama BINARY installed yet its SERVICE never came up
+  # (no ollama.service unit, API at :11434 dead -- measured on ai-bootcamp-vps100
+  # 2026-08-10), the pull below would abort the whole install. Under `set -e` the
+  # `status=$(curl ... | python3 json.load)` assignment inherits the pipeline's
+  # exit code -- an empty curl (connection refused) makes json.load raise, python3
+  # exits non-zero, the assignment inherits it, and the ERR trap kills the
+  # install at step "ollama-whisper". So skip -- non-fatal -- whenever the API is
+  # not answering, instead of trying a pull that cannot work.
+  if ! curl -s --max-time 5 http://localhost:11434/api/version &>/dev/null; then
+    warn "ollama API nem valaszol (:11434) -- $model letoltese kimarad (a szolgaltatas nem all fel). Kesobb: ollama serve && ollama pull $model"
+    return 0
+  fi
   if curl -s http://localhost:11434/api/tags | grep -q "\"$model\""; then
     ok "$model mar letoltve"
     return 0
   fi
   echo -e "  $model letoltese ($size)..."
   local status
+  # `|| status=""` is load-bearing under `set -e`: a command-substitution
+  # assignment aborts the script when its pipeline exits non-zero (empty body ->
+  # json.load raises -> python3 exits 1). The guard turns that into the warn path.
   status=$(curl -s --max-time 600 \
     -X POST http://localhost:11434/api/pull \
     -H 'Content-Type: application/json' \
     -d "{\"model\": \"$model\", \"stream\": false}" |
-    python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null)
+    python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null) || status=""
   if [ "$status" = "success" ]; then
     ok "$model kesz"
   else
-    warn "$model letoltese sikertelen (status: $status) -- kezzel: ollama pull $model"
+    warn "$model letoltese sikertelen (status: ${status:-<ures valasz>}) -- kezzel: ollama pull $model"
   fi
 }
 
