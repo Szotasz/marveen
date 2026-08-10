@@ -3,6 +3,7 @@
 Description=Push Home Assistant room temperatures to the start.otthon page on peci01
 After=network-online.target
 Wants=network-online.target
+OnFailure=ha-room-temp-notify.service
 
 [Service]
 Type=oneshot

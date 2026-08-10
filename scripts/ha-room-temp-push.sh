@@ -59,5 +59,20 @@ print(json.dumps({"fetched_unix": int(now), "rooms": rooms}))
 ')
 
 [ -n "$payload" ] || { echo "empty payload" >&2; exit 1; }
-printf '%s\n' "$payload" | ssh -i "$KEY" -o ConnectTimeout=8 -o BatchMode=yes "$PECI" \
-  "cat > '$DEST.tmp' && mv -f '$DEST.tmp' '$DEST' && chmod 644 '$DEST'"
+# The remote side reports the PREVIOUS fetched_unix before overwriting, so this
+# box can tell how long the chain was blind (card #310: a 9-hour overnight gap
+# produced 229 journal-only alerts on peci01 and nobody heard about it). The
+# old-value read must never block the push itself, hence the || echo 0.
+old=$(printf '%s\n' "$payload" | ssh -i "$KEY" -o ConnectTimeout=8 -o BatchMode=yes "$PECI" \
+  "old=\$(python3 -c \"import json;print(int(json.load(open('$DEST')).get('fetched_unix',0)))\" 2>/dev/null || echo 0); cat > '$DEST.tmp' && mv -f '$DEST.tmp' '$DEST' && chmod 644 '$DEST'; echo \"\$old\"")
+
+GAP_ALERT_SEC="${GAP_ALERT_SEC:-1800}"
+CHAT_ID="${CHAT_ID:-1061406155}"
+now_unix=$(date +%s)
+if [ "${old:-0}" -gt 0 ] && [ $((now_unix - old)) -gt "$GAP_ALERT_SEC" ]; then
+  gap_min=$(( (now_unix - old) / 60 ))
+  # once-per-day: a flapping link must not turn this into a alert storm.
+  python3 scripts/hooks/telegram_fallback_send.py "$CHAT_ID" \
+    "[gépterem] A szenzor-push ${gap_min} percig állt, a termosztát addig vak volt (fail-closed, a klímához nem nyúlt). A lánc most újra él." \
+    --once-per-day klima-lanc-gap || true
+fi

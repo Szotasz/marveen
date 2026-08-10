@@ -1,0 +1,7 @@
+[Unit]
+Description=Alert Viktor when the room-temp push fails (gepterem chain going blind)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/viktor/Projects/marveen
+ExecStart=/usr/bin/python3 scripts/hooks/telegram_fallback_send.py 1061406155 "[gépterem] A szenzor-push hibára futott (HA vagy a peci01 nem elérhető). Amíg így marad, a termosztát vak, és fail-closed nem nyúl a klímához." --once-per-day klima-lanc-fail
