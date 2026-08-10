@@ -15,7 +15,7 @@
 
 > **Fork.** Ez a repó a [Szotasz/marveen](https://github.com/Szotasz/marveen) önálló forkja, amely `fork-point` (2026-07-26, baseline: upstream `55ecbc6`) óta függetlenül fejlődik. Az upstream javításokat szelektíven vesszük át (`git fetch upstream` + cherry-pick). Hozzájárulásokat ehhez a forkhoz várunk PR-ként. Az AI által generált monolitikus kódot felhagyva, modularizált verzió alkotása a célom, amelyben nagyságrendekkel kisebb tokenhasználatot emészt fel magának a keretrendszernek a használata és robosztusabb kialakítása révén hosszútávon stabilabb működést biztosít.
 >
-> Állapot: upstream `47ee536` vs fork `ebed44e`, 2026-08-10
+> Állapot: upstream `47ee536` vs fork `ed07166`, 2026-08-10
 
 ## Jónás Gergő (cett) hozzájárulásai az eredeti Marveen repóhoz
 
@@ -70,11 +70,12 @@ A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás
 #776, #777, #778, #779, #780, #781, #782, #783, #784, #785, #786, #789, #790, #791, #793, #795, #797, #799, #800, #801, #802, #803, #805, #821, #822, #826, #828, #829, #832, #838, #866
 #833, #933, #934, #942, #943, #938
 #854, #855, #871, #879, #888, #889, #906, #911, #926, #929, #940
+#936
 
 Linux-only PR-ek (#788, #792, #794) kihagyva (systemd/WSL-specifikus).
 
 
-Állapot: upstream `47ee536` vs fork `ebed44e`, 2026-08-10
+Állapot: upstream `47ee536` vs fork `ed07166`, 2026-08-10
 
 <!-- ONGOING: Minden jövőbeli fork-PR leadásakor (Zack -> Jarvis) frissítsd ezt a szakaszt
      a friss git log alapján:
