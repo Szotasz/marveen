@@ -45,6 +45,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 IP = os.environ.get("GREE_IP", "192.168.2.174")
 KEY = os.environ.get("GREE_KEY", "")
 TEMP_FILE = os.environ.get("ROOM_TEMP_FILE", "/mnt/data/start-otthon/room-temp.json")
+LOCAL_TEMP_FILE = os.environ.get("ROOM_TEMP_FILE_LOCAL", "/mnt/data/start-otthon/room-temp-local.json")
 SENSOR_KEY = os.environ.get("ROOM_SENSOR_KEY", "mt15_kucko")
 CONFIG_FILE = os.environ.get("THERMOSTAT_CONFIG", "/mnt/data/start-otthon/thermostat-config.json")
 STATUS_FILE = os.environ.get("CLIMATE_STATUS", "/mnt/data/start-otthon/climate-status.json")
@@ -80,17 +81,28 @@ def load_thresholds():
 
 
 def read_temp():
-    try:
-        d = json.load(open(TEMP_FILE))
-    except Exception as e:
-        return None, f"temp file unreadable: {e}"
-    for r in d.get("rooms", []) if isinstance(d, dict) else []:
-        if SENSOR_KEY in (r.get("key", ""), r.get("name", "")):
-            age = time.time() - d.get("fetched_unix", 0)
-            if age > STALE_SEC:
-                return None, f"reading {int(age)}s stale"
-            return float(r["c"]), None
-    return None, f"sensor {SENSOR_KEY!r} not in temp file"
+    """Local-first (card #312): the peci01-side Tuya reader is the primary
+    source, the HA/nucbox push the fallback. Whichever file is fresh wins, in
+    that order; if both are stale/unreadable the caller stays fail-closed."""
+    last_err = "no temp source configured"
+    for path in (LOCAL_TEMP_FILE, TEMP_FILE):
+        try:
+            d = json.load(open(path))
+        except Exception as e:
+            last_err = f"{os.path.basename(path)}: unreadable ({e.__class__.__name__})"
+            continue
+        found = False
+        for r in d.get("rooms", []) if isinstance(d, dict) else []:
+            if SENSOR_KEY in (r.get("key", ""), r.get("name", "")):
+                found = True
+                age = time.time() - d.get("fetched_unix", 0)
+                if age > STALE_SEC:
+                    last_err = f"{os.path.basename(path)}: reading {int(age)}s stale"
+                    break
+                return float(r["c"]), None
+        if not found:
+            last_err = f"{os.path.basename(path)}: sensor {SENSOR_KEY!r} missing"
+    return None, last_err
 
 
 def load_state():
