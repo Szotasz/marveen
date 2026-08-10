@@ -11889,6 +11889,27 @@ setInterval(pollUpdatesBadge, 5 * 60_000)
 async function fetchOnboardingStatus() {
   try { return await (await fetch('/api/onboarding/status')).json() } catch { return null }
 }
+// WIZFLOW809 BEGIN waitForChannelLive
+// Poll the onboarding status until the channel is MEASURABLY live
+// (status.channelLive: the bun-child/process liveness the channel-monitor
+// uses), instead of a fixed setTimeout. The restart response's
+// `restarted: true` is only a dispatch receipt -- on the cold path the real
+// start takes ~minutes, and a fixed wait opened the pairing step against a
+// still-booting session (WIZFLOW809, three field reports). Checks BEFORE the
+// first sleep so an already-live channel advances immediately; a timeout is
+// NOT success -- the caller must keep the user on this step and say the
+// channel is still starting. Dependencies are parameters so the slow path is
+// unit-testable with a delayed fake signal (the acceptance criterion: the
+// wizard WAITS, it does not get lucky with timing).
+async function waitForChannelLive(fetchStatus, delayMs, maxTries) {
+  for (let i = 0; i < maxTries; i++) {
+    const st = await fetchStatus()
+    if (st && st.channelLive) return 'live'
+    await new Promise((r) => setTimeout(r, delayMs))
+  }
+  return 'timeout'
+}
+// WIZFLOW809 END waitForChannelLive
 function onboardingCurrentStep(s) {
   if (!s.identityConfirmed) return 1
   if (!s.claudeAuthPresent || !s.agentsRunning) return 2
@@ -12120,10 +12141,17 @@ function wireOnboarding(step) {
         }
         if (!res.ok) { botBtn.disabled = false; onbMsg(d.error || t('onboarding.error'), true); return }
         // The server restarts the channels session so the new bot token goes
-        // live -- say so, and give the respawn a beat before advancing so the
-        // pairing step starts against the restarted service.
+        // live. Do NOT advance on a timer: the restart response is a dispatch
+        // receipt, and the cold start is ~minutes. Wait for the MEASURED
+        // channelLive signal, tell the user the channel is starting meanwhile,
+        // and on timeout stay on this step with an honest "still starting"
+        // message -- the old fixed 4s opened the pairing step against a
+        // booting session, which looked done-and-empty (WIZFLOW809).
         onbMsg(d.restarted ? t('onboarding.step2.saved_restarted') : t('onboarding.step2.saved'))
-        setTimeout(refreshOnboarding, d.restarted ? 4000 : 2000)
+        onbMsg(t('onboarding.step2.waiting_channel'))
+        const outcome = await waitForChannelLive(fetchOnboardingStatus, 3000, 40)  // ~2 min bound
+        if (outcome === 'live') { await refreshOnboarding() }
+        else { botBtn.disabled = false; onbMsg(t('onboarding.step2.channel_slow'), true) }
       } catch (e) { botBtn.disabled = false; onbMsg((e && e.message) || t('onboarding.error'), true) }
     })
   } else if (step === 4) {

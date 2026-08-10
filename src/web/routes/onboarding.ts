@@ -9,6 +9,7 @@ import { atomicWriteFileSync } from '../atomic-write.js'
 import { channelStateDir, readChannelToken } from '../../channel-provider.js'
 import { sessionExistsOnHost } from '../agent-process.js'
 import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
+import { getClaudePidForSession, hasChannelPluginAlive } from '../../channel-coordinator/liveness.js'
 import {
   hardRestartMarveenChannels,
   mainChannelsSessionExists,
@@ -252,6 +253,22 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       ? isManagedSettingsReady()
       : null
     const sudoCommand = managedSettingsReady === false ? getManagedSettingsSudoCommand() : null
+    // WIZFLOW809: measured channel liveness for the wizard's step-3 wait.
+    // hardRestartMarveenChannels() answers `restarted: true` when the restart
+    // COMMAND was dispatched, not when the channel is up -- and the cold path
+    // is a ~minutes start. The wizard used to advance after a fixed 4s and
+    // opened the pairing step against a still-booting session (three field
+    // reports, WIZFLOW809). This field is the ready signal it waits on now:
+    // the same bun-child/process liveness definition channel-monitor and
+    // channel-plugin-unlock already agree on. Fail-closed: any probe error
+    // reads as "not live yet" -- the wizard just keeps waiting.
+    let channelLive = false
+    try {
+      const claudePid = getClaudePidForSession(MAIN_CHANNELS_SESSION)
+      channelLive = claudePid != null && hasChannelPluginAlive(claudePid, CHANNEL_PROVIDER)
+    } catch {
+      channelLive = false
+    }
     json(res, {
       identityConfirmed: identityConfirmed(),
       currentAgentName: readEnvValue('BRAND_NAME') || readEnvValue('BOT_NAME') || 'Marveen',
@@ -259,6 +276,7 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       claudeAuthPresent: claude,
       agentsRunning: running,
       channelConfigured: ch,
+      channelLive,
       channelProvider: CHANNEL_PROVIDER,
       agentId: MAIN_AGENT_ID,
       existingBotToken: existingTokens.botToken,
