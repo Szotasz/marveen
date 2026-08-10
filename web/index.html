@@ -2427,7 +2427,6 @@
                 <select id="arSchedKind">
                   <option value="daily" data-i18n="agents.settings.ar_daily">Napi időpont</option>
                   <option value="interval" data-i18n="agents.settings.ar_hourly">Óránként</option>
-                  <option value="card" data-i18n="agents.settings.ar_per_card">Kártyánként</option>
                 </select>
               </div>
               <div class="form-group" id="arDailyWrap" style="margin-bottom:0">
@@ -2442,11 +2441,6 @@
             <small style="display:block;margin-top:8px;color:var(--text-muted);font-size:12px;line-height:1.5">
               A fő channels-session mindig friss indul (a Folytatás mód rá nem vonatkozik).
               Soha nem szakít meg futó munkát: csak üresjáratban (idle) indít újra, különben a következő körre halaszt.
-            </small>
-            <small style="display:block;margin-top:6px;color:var(--text-muted);font-size:12px;line-height:1.5" id="arCardHelp" hidden data-i18n="agents.settings.ar_per_card_help">
-              Kártyánként: az ügynök minden új kanban-kártya előtt friss kontextussal indul — a kártyahatár az
-              egyetlen pont, ahol a kontextus eldobása nem veszít el semmit. Ilyenkor nincs idő-alapú újraindítás,
-              és a Mód beállítástól függetlenül mindig friss. Csak olyan ügynöknek való, aki kap kanban-kártyát.
             </small>
             <button class="btn-secondary btn-compact agent-save-section" id="saveAutoRestartBtn" style="margin-top:10px" data-i18n="common.btn.save">Mentés</button>
           </div>

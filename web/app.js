@@ -2895,7 +2895,7 @@ function setupAutoRestartUI(agent) {
   const ctxEl = document.getElementById('agentDetailContext')
   if (ctxEl) ctxEl.textContent = formatContextTokens(agent && agent.contextTokens)
 
-  const ar = (agent && agent.autoRestart) || { enabled: false, mode: 'continue', dailyTime: null, intervalHours: null, onCardStart: false }
+  const ar = (agent && agent.autoRestart) || { enabled: false, mode: 'continue', dailyTime: null, intervalHours: null }
   const enabled = document.getElementById('arEnabled')
   const mode = document.getElementById('arMode')
   const schedKind = document.getElementById('arSchedKind')
@@ -2903,16 +2903,11 @@ function setupAutoRestartUI(agent) {
   const dailyTime = document.getElementById('arDailyTime')
   const intervalWrap = document.getElementById('arIntervalWrap')
   const intervalHours = document.getElementById('arIntervalHours')
-  const cardHelp = document.getElementById('arCardHelp')
   if (!enabled || !mode || !schedKind) return
 
   enabled.checked = ar.enabled === true
   mode.value = ar.mode === 'fresh' ? 'fresh' : 'continue'
-  // The three schedules are mutually exclusive server-side, so exactly one of
-  // these is set on a normalized config.
-  if (ar.onCardStart) {
-    schedKind.value = 'card'
-  } else if (ar.intervalHours) {
+  if (ar.intervalHours) {
     schedKind.value = 'interval'
     intervalHours.value = ar.intervalHours
   } else {
@@ -2920,11 +2915,9 @@ function setupAutoRestartUI(agent) {
     if (ar.dailyTime) dailyTime.value = ar.dailyTime
   }
   const syncSched = () => {
-    const kind = schedKind.value
-    intervalWrap.hidden = kind !== 'interval'
-    dailyWrap.hidden = kind !== 'daily'
-    // Per card has no time input of its own; explain what it does instead.
-    if (cardHelp) cardHelp.hidden = kind !== 'card'
+    const isInterval = schedKind.value === 'interval'
+    intervalWrap.hidden = !isInterval
+    dailyWrap.hidden = isInterval
   }
   syncSched()
   // Attach the show/hide listener once.
@@ -4357,8 +4350,6 @@ document.getElementById('saveAutoRestartBtn').addEventListener('click', async ()
     dailyTime: schedKind === 'daily' ? document.getElementById('arDailyTime').value : null,
     intervalHours: schedKind === 'interval' ? Number(document.getElementById('arIntervalHours').value) : null,
     handoff: false,
-    // The three schedules are exclusive; the server enforces it too.
-    onCardStart: schedKind === 'card',
   }
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(id)}/auto-restart`, {

@@ -13,16 +13,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { respawnMainSessionFresh } from './channel-monitor.js'
 import { paneLooksIdle } from '../pane-state.js'
 import { readAutoRestartConfig } from './auto-restart-store.js'
-import {
-  restartDue,
-  dailyDueAtMs,
-  parseHHMM,
-  mainRestartMechanism,
-  shouldRestartOnCard,
-  shouldStartFresh,
-  type AutoRestartConfig,
-  type RestartReason,
-} from '../auto-restart.js'
+import { restartDue, dailyDueAtMs, parseHHMM, mainRestartMechanism, type AutoRestartConfig } from '../auto-restart.js'
 
 // Drives per-agent scheduled restarts (see src/auto-restart.ts for the why and
 // the pure due-logic). Mirrors the other watcher loops: a 60s sweep, started
@@ -39,43 +30,10 @@ import {
 const INITIAL_DELAY_MS = 40_000
 const INTERVAL_MS = 60_000
 
-// Restart-storm guard for the per-card schedule: several cards moved to
-// in_progress in quick succession must not each cost a restart -- the first one
-// already handed the agent a clean context.
-const MIN_CARD_RESTART_INTERVAL_MS = 5 * 60_000
-
 // agent name -> last auto-restart time (ms). Also seeded on first sight (no
 // restart) so a past-due daily slot does not fire at startup. In-memory: a
 // dashboard restart re-seeds, at worst skipping one slot -- never double-fires.
 const lastRestart = new Map<string, number>()
-
-// agent name -> when a kanban card dispatch asked for a fresh start (ms).
-// In-memory like lastRestart, and for the same reason: a lost request only
-// costs one missed optimization, never correctness.
-const pendingCardRestart = new Map<string, number>()
-
-/**
- * Ask for a fresh start before an agent picks up a new kanban card.
- *
- * Called from the kanban dispatch path, which must NOT restart the agent
- * itself: that is a synchronous stop+start, and a throw there would skip
- * markKanbanCardDispatched and leave the card permanently undispatched. So the
- * route only records the request; this module restarts behind its own run-state
- * and idle guards.
- *
- * The sweep runs every 60s but the message router delivers every 5s, so waiting
- * for the next tick would often hand the card to the OLD session. Hence the
- * immediate check -- the restart should land before the card message does.
- */
-export function requestFreshStart(name: string, reason: string): void {
-  pendingCardRestart.set(name, Date.now())
-  logger.info({ name, reason }, 'auto-restart: fresh start requested')
-  try {
-    checkAgent(name, Date.now())
-  } catch (err) {
-    logger.debug({ err, agent: name }, 'auto-restart: immediate card check error')
-  }
-}
 
 function localMidnightMs(nowMs: number): number {
   const d = new Date(nowMs)
@@ -137,11 +95,11 @@ function restartMainChannelsSession(): void {
   respawnMainSessionFresh()
 }
 
-function performRestart(name: string, cfg: AutoRestartConfig, reason: RestartReason): void {
+function performRestart(name: string, cfg: AutoRestartConfig): void {
   if (name === MAIN_AGENT_ID) {
     restartMainChannelsSession()
   } else {
-    restartAgentProcess(name, { fresh: shouldStartFresh(reason, cfg.mode) })
+    restartAgentProcess(name, { fresh: cfg.mode === 'fresh' })
   }
 }
 
@@ -149,7 +107,6 @@ function checkAgent(name: string, nowMs: number): void {
   const cfg = readAutoRestartConfig(name)
   if (!cfg.enabled) {
     lastRestart.delete(name) // re-seed cleanly if re-enabled later
-    pendingCardRestart.delete(name)
     return
   }
   // Sub-agents must be up to be restarted; the main session is launchd-managed
@@ -162,69 +119,30 @@ function checkAgent(name: string, nowMs: number): void {
   // ones, matching the prior local behavior).
   if (name !== MAIN_AGENT_ID && agentRunState(name) !== 'running') return
 
-  let reason: RestartReason
-  if (cfg.onCardStart) {
-    // Per-card schedule. Exclusive with the two clock schedules (enforced by
-    // normalizeAutoRestartConfig), so there is no due-time to fall back on, and
-    // seed-on-first-sight does not apply: that guard exists for a clock slot
-    // that may have elapsed before boot, and a card that just arrived cannot be
-    // stale.
-    const pendingCardAt = pendingCardRestart.get(name) ?? null
-    if (pendingCardAt === null) return
-    // The request is consumed on sight -- we either act now or drop it. Never
-    // carry it to a later tick: the whole point is to restart BEFORE the agent
-    // starts the card, and a restart that lands minutes later would cut into
-    // work already in progress.
-    pendingCardRestart.delete(name)
-    if (!shouldRestartOnCard({
-      onCardStart: true,
-      pendingCardAt,
-      lastRestartAtMs: lastRestart.get(name) ?? null,
-      nowMs,
-      minIntervalMs: MIN_CARD_RESTART_INTERVAL_MS,
-    })) {
-      logger.info({ name }, 'auto-restart: card restart skipped, context is already fresh')
-      return
-    }
-    reason = 'card'
-  } else {
-    // Seed on first sight so a daily slot that already elapsed before boot does
-    // not fire now.
-    if (!lastRestart.has(name)) {
-      lastRestart.set(name, nowMs)
-      return
-    }
-
-    const dueAt = computeDueAt(cfg, name, nowMs)
-    if (dueAt === null) return
-    if (!restartDue(lastRestart.get(name) ?? null, nowMs, dueAt)) return
-    reason = 'schedule'
+  // Seed on first sight so a daily slot that already elapsed before boot does
+  // not fire now.
+  if (!lastRestart.has(name)) {
+    lastRestart.set(name, nowMs)
+    return
   }
+
+  const dueAt = computeDueAt(cfg, name, nowMs)
+  if (dueAt === null) return
+  if (!restartDue(lastRestart.get(name) ?? null, nowMs, dueAt)) return
 
   const session = sessionFor(name)
   const host = name === MAIN_AGENT_ID ? null : readAgentRemoteHost(name)
   if (!paneIsIdle(session, host)) {
-    // A scheduled restart waits for the next tick. A card restart does not: its
-    // moment has passed, and the card message is already on its way. Skipping is
-    // a missed optimization; deferring would risk cutting the card in half.
-    logger.info(
-      { name, session, reason },
-      reason === 'card'
-        ? 'auto-restart: card restart skipped, pane is busy'
-        : 'auto-restart: due but pane is busy, deferring to next tick',
-    )
+    logger.info({ name, session }, 'auto-restart: due but pane is busy, deferring to next tick')
     return
   }
 
   try {
-    performRestart(name, cfg, reason)
+    performRestart(name, cfg)
     lastRestart.set(name, nowMs)
-    logger.info(
-      { name, reason, mode: name === MAIN_AGENT_ID ? 'fresh(main)' : cfg.mode },
-      'auto-restart: restarted session',
-    )
+    logger.info({ name, mode: name === MAIN_AGENT_ID ? 'fresh(main)' : cfg.mode }, 'auto-restart: restarted session')
   } catch (err) {
-    logger.warn({ err, name, reason }, 'auto-restart: restart failed')
+    logger.warn({ err, name }, 'auto-restart: restart failed')
   }
 }
 

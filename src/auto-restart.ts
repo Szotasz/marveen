@@ -31,11 +31,6 @@ export function mainRestartMechanism(launchctlPresent: boolean): MainRestartMech
   return launchctlPresent ? 'launchd' : 'tmux-respawn'
 }
 
-/** What caused a restart. Kept separate from the schedule fields so the
- *  runner can log why an agent went down, and so the fresh/continue decision
- *  can depend on it (see shouldStartFresh). */
-export type RestartReason = 'schedule' | 'card'
-
 export interface AutoRestartConfig {
   /** Master toggle. When false the agent is never auto-restarted. */
   enabled: boolean
@@ -43,13 +38,11 @@ export interface AutoRestartConfig {
   mode: AutoRestartMode
   /** Daily restart wall-clock time, 'HH:MM' in local time, or null. */
   dailyTime: string | null
-  /** Restart every N hours, or null. */
+  /** Restart every N hours, or null. Exactly one of dailyTime/intervalHours is
+   *  meaningful; dailyTime wins if both are somehow set. */
   intervalHours: number | null
   /** Phase 2: run the handoff skill to persist context before a fresh restart. */
   handoff: boolean
-  /** Restart before each new kanban card instead of on a clock. See the
-   *  three-way schedule note on normalizeAutoRestartConfig. */
-  onCardStart: boolean
 }
 
 export const DEFAULT_AUTO_RESTART: AutoRestartConfig = {
@@ -58,7 +51,6 @@ export const DEFAULT_AUTO_RESTART: AutoRestartConfig = {
   dailyTime: null,
   intervalHours: null,
   handoff: false,
-  onCardStart: false,
 }
 
 /** Parse 'HH:MM' (24h) into minutes since local midnight, or null if invalid. */
@@ -77,79 +69,24 @@ export function parseHHMM(s: unknown): number | null {
  * Coerce arbitrary parsed JSON into a safe, fully-populated config. Unknown /
  * malformed fields fall back to defaults, so a hand-edited or older store can
  * never crash the runner or yield a half-set config.
- *
- * The schedule is a THREE-WAY EXCLUSIVE choice -- daily time, every N hours, or
- * per kanban card -- and this function is what enforces it. Storing two of them
- * at once would make "when does this agent restart?" unanswerable from the
- * config alone. Precedence, most specific first: onCardStart > dailyTime >
- * intervalHours.
  */
 export function normalizeAutoRestartConfig(raw: unknown): AutoRestartConfig {
   const o = (raw && typeof raw === 'object') ? raw as Record<string, unknown> : {}
   const mode: AutoRestartMode = o.mode === 'fresh' ? 'fresh' : 'continue'
-  const onCardStart = o.onCardStart === true
-  let dailyTime = parseHHMM(o.dailyTime) !== null ? (o.dailyTime as string).trim() : null
+  const dailyTime = parseHHMM(o.dailyTime) !== null ? (o.dailyTime as string).trim() : null
   let intervalHours: number | null = null
   if (typeof o.intervalHours === 'number' && Number.isFinite(o.intervalHours) && o.intervalHours > 0) {
     intervalHours = o.intervalHours
   }
   // dailyTime takes precedence: never keep both, so the schedule is unambiguous.
   if (dailyTime !== null) intervalHours = null
-  // ...and the per-card schedule takes precedence over both clocks.
-  if (onCardStart) {
-    dailyTime = null
-    intervalHours = null
-  }
   return {
     enabled: o.enabled === true,
     mode,
     dailyTime,
     intervalHours,
     handoff: o.handoff === true,
-    onCardStart,
   }
-}
-
-/**
- * Pure decision: should this agent restart because a new kanban card just
- * arrived?
- *
- * The point of the per-card schedule is that a card boundary is the one moment
- * when dropping the context is free -- the work that built it is finished, and
- * there is nothing to cut in half. A clock-based schedule has neither property.
- *
- * @param onCardStart      Is this agent on the per-card schedule at all?
- * @param pendingCardAt    When a card dispatch requested a restart, or null.
- * @param lastRestartAtMs  When this agent was last auto-restarted, or null if never.
- * @param nowMs            Current clock (ms).
- * @param minIntervalMs    Restart-storm guard: several cards moved to
- *                         in_progress in quick succession must not each cost a
- *                         restart -- the first one already gave a clean context.
- */
-export function shouldRestartOnCard(input: {
-  onCardStart: boolean
-  pendingCardAt: number | null
-  lastRestartAtMs: number | null
-  nowMs: number
-  minIntervalMs: number
-}): boolean {
-  const { onCardStart, pendingCardAt, lastRestartAtMs, nowMs, minIntervalMs } = input
-  if (!onCardStart) return false
-  if (pendingCardAt === null) return false
-  if (lastRestartAtMs !== null && nowMs - lastRestartAtMs < minIntervalMs) return false
-  return true
-}
-
-/**
- * Pure decision: does this restart drop the conversation?
- *
- * A card-triggered restart exists to clear the accumulated context, so keeping
- * the conversation would make it pointless -- it is always fresh, whatever the
- * mode control says. A scheduled restart honours the operator's `mode` choice,
- * which is a separate axis (how to restart) from the schedule (when).
- */
-export function shouldStartFresh(reason: RestartReason, mode: AutoRestartMode): boolean {
-  return reason === 'card' || mode === 'fresh'
 }
 
 /**
