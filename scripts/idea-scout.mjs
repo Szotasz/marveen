@@ -54,6 +54,21 @@ async function main() {
     console.log('===== BROWSE (newest, meg nem ertekelt) =====')
     const browseText = await page.locator('main').innerText().catch(async () => await page.locator('body').innerText())
     console.log((browseText || '').slice(0, 5000))
+
+    // Hetfonkent (vagy --market-insights kapcsoloval) a beepitett Market
+    // Insights fajdalompont-kutatast is kiirjuk -- ez a Pro-ban benne van,
+    // nem fogyaszt Research Agent kvotat.
+    const monday = new Date().getDay() === 1
+    if (monday || process.argv.includes('--market-insights')) {
+      await jitter()
+      await page.goto('https://www.ideabrowser.com/hub/market-insights',
+        { waitUntil: 'domcontentloaded', timeout: 60000 })
+      await page.waitForTimeout(3500)
+      await page.mouse.wheel(0, 1200); await jitter()
+      console.log('===== MARKET INSIGHTS (heti kor) =====')
+      const insightsText = await page.locator('main').innerText().catch(async () => await page.locator('body').innerText())
+      console.log((insightsText || '').slice(0, 5000))
+    }
   } finally {
     await browser.close()
   }
