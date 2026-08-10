@@ -45,7 +45,8 @@ dokumentumok szükségesek, és milyen tartalommal. Álláspontunk szerint a
 fogyasztóvédelmi kérdések vizsgálata nem tartozik a megbízás körébe; a
 harmadik országba irányuló adattovábbítás vizsgálata viszont igen. A
 végleges, éles használatra alkalmas dokumentumok elkészítésében is
-közreműködésüket kérjük. Kérjük, ajánlatukban jelezzék, hogy melyik megoldást javasolják, és arra
+közreműködésüket kérjük. A végleges dokumentumokat a nemzetközi
+ügyfélkörre tekintettel angol nyelven kérjük elkészíteni. Kérjük, ajánlatukban jelezzék, hogy melyik megoldást javasolják, és arra
 adjanak ajánlatot: a már elkészült tervezeteink ellenőrzésére és indokolt
 szakvéleménnyel való kiegészítésére és azok lezárására, vagy pedig arra,
 hogy az iroda készítsen új dokumentumcsomagot.
@@ -97,7 +98,8 @@ dokumentumok szükségesek, és milyen tartalommal. Álláspontunk szerint a
 fogyasztóvédelmi kérdések vizsgálata nem tartozik a megbízás körébe; a
 harmadik országba irányuló adattovábbítás vizsgálata viszont igen. A
 végleges, éles használatra alkalmas dokumentumok elkészítésében is
-közreműködésüket kérjük. Kérjük, ajánlatukban jelezzék, hogy melyik megoldást javasolják, és arra
+közreműködésüket kérjük. A végleges dokumentumokat a nemzetközi
+ügyfélkörre tekintettel angol nyelven kérjük elkészíteni. Kérjük, ajánlatukban jelezzék, hogy melyik megoldást javasolják, és arra
 adjanak ajánlatot: a már elkészült tervezeteink ellenőrzésére és indokolt
 szakvéleménnyel való kiegészítésére és azok lezárására, vagy pedig arra,
 hogy az iroda készítsen új dokumentumcsomagot.
@@ -147,7 +149,8 @@ működéshez milyen dokumentumok szükségesek, és milyen tartalommal.
 Álláspontunk szerint a fogyasztóvédelmi kérdések vizsgálata nem tartozik
 a megbízás körébe; a harmadik országba irányuló adattovábbítás vizsgálata
 viszont igen. A végleges, éles használatra alkalmas dokumentumok
-elkészítésében is közreműködését kérjük. Kérjük, ajánlatában jelezze, hogy melyik
+elkészítésében is közreműködését kérjük. A végleges dokumentumokat a nemzetközi
+ügyfélkörre tekintettel angol nyelven kérjük elkészíteni. Kérjük, ajánlatában jelezze, hogy melyik
 megoldást javasolja, és arra adjon ajánlatot: a már elkészült tervezeteink
 ellenőrzésére és indokolt szakvéleménnyel való kiegészítésére és azok
 lezárására, vagy pedig arra, hogy Ön készítsen új dokumentumcsomagot.
@@ -197,7 +200,8 @@ működéshez milyen dokumentumok szükségesek, és milyen tartalommal.
 Álláspontunk szerint a fogyasztóvédelmi kérdések vizsgálata nem tartozik
 a megbízás körébe; a harmadik országba irányuló adattovábbítás vizsgálata
 viszont igen. A végleges, éles használatra alkalmas dokumentumok
-elkészítésében is közreműködését kérjük. Kérjük, ajánlatában jelezze, hogy melyik
+elkészítésében is közreműködését kérjük. A végleges dokumentumokat a nemzetközi
+ügyfélkörre tekintettel angol nyelven kérjük elkészíteni. Kérjük, ajánlatában jelezze, hogy melyik
 megoldást javasolja, és arra adjon ajánlatot: a már elkészült tervezeteink
 ellenőrzésére és indokolt szakvéleménnyel való kiegészítésére és azok
 lezárására, vagy pedig arra, hogy Ön készítsen új dokumentumcsomagot.
