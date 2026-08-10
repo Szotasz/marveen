@@ -79,6 +79,22 @@ export function initDatabase(dbPathOverride?: string): void {
   db.pragma('cache_size = -65536')
   if (!isMemory) db.pragma('mmap_size = 268435456')
   db.pragma('synchronous = NORMAL')
+  // Concurrency pragmas: applied before migrations so the retry window is
+  // active even during the first-run schema creation.
+  //
+  // busy_timeout: retry for up to 5 s on SQLITE_BUSY instead of failing
+  // immediately. Covers transient write-lock contention (checkpoint, dual-
+  // process on the same DB, long batch transactions).
+  db.pragma('busy_timeout = 5000')
+  // wal_autocheckpoint: raise from 1000 to 2000 pages (~8 MB WAL max).
+  // Fewer automatic checkpoints = fewer brief exclusive-lock windows that
+  // could race with concurrent writers in the k8rack dual-instance setup.
+  db.pragma('wal_autocheckpoint = 2000')
+  // Startup checkpoint: collapse the WAL into the main DB file so every
+  // fresh start begins with a minimal WAL (currently 5.9 MB before fix).
+  // TRUNCATE resets the WAL to zero bytes after all frames are written.
+  // Skipped for :memory: databases (no WAL file on disk).
+  if (!isMemory) db.pragma('wal_checkpoint(TRUNCATE)')
   if (!isMemory) tightenDbPermissions(dbPath)
 
   applyMigrations(db)
