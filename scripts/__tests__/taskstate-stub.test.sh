@@ -182,6 +182,13 @@ GOT_5C="$(hook_summary "agent5c" "$PLAIN_PROMPT")"
 assert_eq "5c: plain prompt -> first line unchanged" \
     "Nezd meg miert nem jott a napindito" "$GOT_5C"
 
+# 5e: Image-only channel message (empty body) -> placeholder, not the tag header
+IMGONLY_PROMPT='<channel source="plugin:telegram:telegram" chat_id="5233594868" message_id="3599" user="mogganhun">
+</channel>'
+GOT_5E="$(hook_summary "agent5e" "$IMGONLY_PROMPT")"
+assert_eq "5e: image-only channel (empty body) -> placeholder, not tag header" \
+    "[Telegram uzenet]" "$GOT_5E"
+
 # 5d: Notice placeholder <scheduled-task source="..."> must NOT match
 # (the inline "..." source is the truncated example in the notice prefix).
 # Verify the summary starts with the notice text, NOT with inner task content.
