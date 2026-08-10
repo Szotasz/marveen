@@ -416,6 +416,8 @@ window._i18n.hu = {
   'agents.settings.ar_sched_label':       'Ütemezés',
   'agents.settings.ar_daily':             'Napi időpont',
   'agents.settings.ar_hourly':            'Óránként',
+  'agents.settings.ar_per_card':          'Kártyánként',
+  'agents.settings.ar_per_card_help':     'Kártyánként: az ügynök minden új kanban-kártya előtt friss kontextussal indul — a kártyahatár az egyetlen pont, ahol a kontextus eldobása nem veszít el semmit. Ilyenkor nincs idő-alapú újraindítás, és a Mód beállítástól függetlenül mindig friss. Csak olyan ügynöknek való, aki kap kanban-kártyát.',
   'agents.settings.ar_time_label':        'Időpont',
   'agents.settings.auth_mode_label':      'Hitelesítési mód',
   'agents.settings.auth_shared':          'Megosztott',

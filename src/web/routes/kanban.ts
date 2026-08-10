@@ -17,6 +17,8 @@ import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KAN
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
 import { resolveKanbanDispatchTarget } from '../../kanban-dispatch.js'
+import { readAutoRestartConfig } from '../auto-restart-store.js'
+import { requestFreshStart } from '../auto-restart-runner.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
@@ -92,6 +94,15 @@ function fireKanbanDispatch(id: string): void {
       isRunning: isAgentRunning,
     })
     if (!target) return
+    // Per-card restart schedule: ask for a fresh context BEFORE the card message
+    // is queued, so the agent picks the card up in a clean session. This only
+    // records a request -- restarting here would be a synchronous stop+start,
+    // and a throw would skip markKanbanCardDispatched below and leave the card
+    // permanently undispatched. The message itself is a DB row, so it survives
+    // the restart and the router retries until the new session is ready.
+    if (readAutoRestartConfig(target).onCardStart) {
+      requestFreshStart(target, `card:${id}`)
+    }
     const desc = (card.description ?? '').trim()
     const content = `[Kanban feladat #${id}]: ${card.title}${desc ? ' — ' + desc : ''}\n\n${kanbanMoveInstructions(id, target)}`
     createAgentMessage(MAIN_AGENT_ID, target, content)

@@ -1001,6 +1001,8 @@ window._i18n.en = {
   'agents.settings.ar_sched_label':       'Schedule',
   'agents.settings.ar_daily':             'Daily time',
   'agents.settings.ar_hourly':            'Hourly',
+  'agents.settings.ar_per_card':          'Per card',
+  'agents.settings.ar_per_card_help':     'Per card: the agent starts with a fresh context before every new kanban card — a card boundary is the one point where dropping the context loses nothing. There is no clock-based restart in this mode, and it is always fresh regardless of the Mode setting. Only for agents that receive kanban cards.',
   'agents.settings.ar_time_label':        'Time',
   'agents.settings.auth_mode_label':      'Authentication mode',
   'agents.settings.auth_shared':          'Shared',
