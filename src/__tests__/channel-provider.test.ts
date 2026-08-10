@@ -212,7 +212,8 @@ describe('checkTelegramTokenBusy', () => {
   // the setup handler must call the probe, and must skip it for a re-saved
   // identical token (its own live poller reads as busy).
   it('the channel setup route wires the busy probe in, gated on a token change', () => {
-    const src = readFileSync(join(__dirname, '..', 'web', 'routes', 'agents.ts'), 'utf-8')
+    // Fork: the setup handler lives in agents-channels.ts (modular split), not agents.ts
+    const src = readFileSync(join(__dirname, '..', 'web', 'routes', 'agents-channels.ts'), 'utf-8')
     expect(src).toMatch(/checkTelegramTokenBusy\(botToken\.trim\(\)\)/)
     expect(src).toMatch(/botToken\.trim\(\) !== currentToken/)
     expect(src.indexOf('checkTelegramTokenBusy(botToken')).toBeGreaterThan(src.indexOf('findBotTokenDuplicate'))

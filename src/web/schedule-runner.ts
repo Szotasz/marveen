@@ -753,7 +753,7 @@ async function attemptFireTask(
             // lockMode 'held': we are already inside this pane's lane; taking
             // the lock again would deadlock the promise-chain mutex.
             if (await clearStaleParkedInput(session, host)) {
-              await sendPromptToSession(session, fullPrompt, host, { waitForIdle: false, lockMode: 'held' })
+              await sendPromptToSession(session, fullPrompt, host, { waitForIdle: false })
               logger.info({ task: task.name, session, attempt }, 'Scheduled prompt re-injected after swallowed Enter')
             } else {
               sendEnterToSession(session, host)
