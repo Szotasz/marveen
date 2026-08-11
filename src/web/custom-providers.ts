@@ -81,10 +81,11 @@ export function validateCustomProvider(data: unknown): string | null {
   if (!baseUrl) return 'baseUrl is required'
   if (baseUrl.length > 512) return 'baseUrl too long (max 512)'
 
-  // Shell-injection guard: the baseUrl is interpolated into a double-quoted
-  // shell export (`export ANTHROPIC_BASE_URL="<value>"`), so $(), backticks,
-  // and other shell metacharacters are active inside the quotes. Reject any
-  // character that could escape or inject into the command string.
+  // Shell-injection guard: the baseUrl is POSIX single-quote-escaped by the
+  // helper (sq() in main-agent-custom-provider.mjs) before being interpolated
+  // into the tmux launch command. Reject characters that are structurally
+  // invalid in URLs anyway; single-quotes are handled by sq() but excluded here
+  // to keep the validation conservative.
   // eslint-disable-next-line no-useless-escape
   if (/["$`\\;|&(){}<>'\s]/.test(baseUrl)) {
     return 'baseUrl contains disallowed characters (no quotes, shell metacharacters, or whitespace)'
