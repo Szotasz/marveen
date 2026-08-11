@@ -3,7 +3,7 @@ import {
   getAgentConversation, getAgentConversationThreads,
   getKanbanSeqByIdPrefix,
   markMessageDone, markMessageFailed, getAgentMessage,
-  closeOtelSpan,
+  closeOtelSpan, hasAgentMailbox,
   type AgentMessage,
 } from '../../db.js'
 import { logger } from '../../logger.js'
@@ -15,6 +15,54 @@ import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
 import type { RouteContext } from './types.js'
+
+/**
+ * Tell the delegator how their delegated message ended.
+ *
+ * A reverse message from executor → delegator, so the delegator learns the
+ * result without polling. The [Eredmény] sentinel breaks ping-pong chains: the
+ * delegator may write back, which closes THIS message, and without the prefix
+ * that would mint another receipt forever.
+ *
+ * Exported so the rule below is tested where it lives. It used to be inline in
+ * the PUT handler, which meant the only test of it was a copy of it in a test
+ * file -- and a copy agrees with itself no matter what the route does.
+ *
+ * Returns the receipt, or null when none was owed.
+ */
+export function createCompletionReceipt(
+  done: AgentMessage,
+  newStatus: 'done' | 'failed',
+  result?: string,
+): AgentMessage | null {
+  if (done.from_agent === done.to_agent) return null
+  // Already a receipt: answering it would start the chain this guard exists
+  // to prevent.
+  if (done.content.startsWith('[Eredmény]')) return null
+
+  const summary = result ? result.slice(0, 500) : '(nincs eredmény)'
+  const receipt = createAgentMessage(
+    done.to_agent,
+    done.from_agent,
+    `[Eredmény] msg_id:${done.id} status:${newStatus}\n\n${summary}`,
+  )
+
+  // A receipt addressed to a subsystem has nowhere to go: costops, scheduler
+  // and system send messages but have no inbox to read one in. It is still
+  // WRITTEN -- the outcome of their task belongs in the message log like
+  // everyone else's -- but it is closed on the spot, because the alternative
+  // is a row that sits pending until a delivery timeout gives up on it an hour
+  // later, and reads as a stalled delegation to every watchdog pass in
+  // between (#306).
+  if (!hasAgentMailbox(receipt.to_agent)) {
+    markMessageDone(receipt.id, 'nem kézbesíthető: alrendszer-feladó, nincs postafiókja')
+    logger.info(
+      { receiptId: receipt.id, subsystem: receipt.to_agent, msgId: done.id },
+      'messages: completion receipt closed on creation — recipient is a subsystem with no inbox',
+    )
+  }
+  return receipt
+}
 
 export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
@@ -178,14 +226,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       // ping-pong chains (the delegator might write back, which would trigger
       // markMessageDone on this notification; we skip creating ANOTHER notification
       // when the original content is already a completion report).
-      if (done && done.from_agent !== done.to_agent && !done.content.startsWith('[Eredmény]')) {
-        const summary = result ? result.slice(0, 500) : '(nincs eredmény)'
-        createAgentMessage(
-          done.to_agent,
-          done.from_agent,
-          `[Eredmény] msg_id:${id} status:${newStatus}\n\n${summary}`,
-        )
-      }
+      if (done) createCompletionReceipt(done, newStatus as 'done' | 'failed', result)
       json(res, { ok: true }); return true
     }
     json(res, { error: 'Message not found or invalid status' }, 404)

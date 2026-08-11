@@ -2447,6 +2447,26 @@ export interface AgentMessage {
   parent_span_id: string | null
 }
 
+// Names that SEND inter-agent messages but can never receive one.
+//
+// costops, scheduler and system are subsystems of this process, not agents:
+// they have no tmux session, no agents/<name> directory and no inbox. Every
+// one of them appears only as a `from`, which is exactly what makes them a
+// trap -- the completion-receipt path answers whoever sent the message, and a
+// receipt addressed here can never be delivered. It sits pending until a
+// delivery timeout gives up on it an hour later, and for that whole hour the
+// flow-watchdog reads it as a stalled task (kanban #306, atlas 2026-08-09).
+//
+// The list is a closed set held in ONE place, and a test pins it to the
+// senders that actually occur in the source -- a second copy would drift, and
+// the drift would be silent in exactly the same way.
+export const SUBSYSTEM_SENDERS: ReadonlySet<string> = new Set(['costops', 'scheduler', 'system'])
+
+/** Can this name receive an inter-agent message at all? */
+export function hasAgentMailbox(name: string): boolean {
+  return !SUBSYSTEM_SENDERS.has(name)
+}
+
 export function createAgentMessage(
   from: string,
   to: string,
