@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { checkAgentPutFields, AGENT_PUT_WRITABLE_FIELDS } from '../web/agent-put-fields.js'
+import { checkAgentPutFields, checkConfigPutFields, AGENT_PUT_WRITABLE_FIELDS } from '../web/agent-put-fields.js'
+import { DEFAULT_CONTEXT_GUARD } from '../context-guard.js'
+import { DEFAULT_AUTO_RESTART } from '../auto-restart.js'
 
 // PUT /api/agents/:name answered 200 {ok:true} to fields it did not understand
 // and quietly dropped them. A securityProfile was set that way four times on
@@ -58,5 +60,74 @@ describe('checkAgentPutFields', () => {
       'authMode', 'apiKey', 'claudePlan', 'memoryIsolation',
     ])
     expect(AGENT_PUT_WRITABLE_FIELDS).not.toContain('securityProfile')
+  })
+})
+
+// The config endpoints (auto-restart, context-guard) had the same hole, and it
+// bit on 2026-08-11: a whole fleet was PUT an idle-flush config that no version
+// of the code has ever read, and all nine calls answered 200 {ok:true}. The
+// mechanism was believed shipped for three weeks on the strength of those
+// replies. Reproduced live before this test was written:
+//
+//   PUT /api/agents/marveencoder/context-guard
+//     {..., "idleFlushEnabled": true, "totalNonsenseField": 42}
+//   -> 200 {"ok":true,"contextGuard":{ ...only the seven known fields... }}
+describe('checkConfigPutFields', () => {
+  const guardFields = Object.keys(DEFAULT_CONTEXT_GUARD)
+
+  it('accepts a full round-tripped config (GET then PUT back)', () => {
+    // The shape a client gets from GET must be a legal PUT body, or the
+    // simplest possible use of the endpoint breaks.
+    expect(checkConfigPutFields({ ...DEFAULT_CONTEXT_GUARD }, guardFields).ok).toBe(true)
+    expect(checkConfigPutFields({ ...DEFAULT_AUTO_RESTART }, Object.keys(DEFAULT_AUTO_RESTART)).ok).toBe(true)
+  })
+
+  it('accepts a partial config -- only unknown KEYS are refused, not missing ones', () => {
+    // Value coercion stays the endpoint's job; this check must not turn a
+    // partial payload into an error.
+    expect(checkConfigPutFields({ enabled: true }, guardFields).ok).toBe(true)
+    expect(checkConfigPutFields({}, guardFields).ok).toBe(true)
+  })
+
+  it('refuses the exact payload that was silently swallowed on 2026-08-11', () => {
+    const r = checkConfigPutFields(
+      { ...DEFAULT_CONTEXT_GUARD, idleFlushEnabled: true, idleFlushTokens: 500_000, idleMinutes: 30 },
+      guardFields,
+    )
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.rejected).toEqual(['idleFlushEnabled', 'idleFlushTokens', 'idleMinutes'])
+  })
+
+  it('names every unknown field and keeps the known ones out of the list', () => {
+    const r = checkConfigPutFields({ enabled: true, actPtc: 0.9, nonsense: 1 }, guardFields)
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    // actPtc is a transposition of actPct -- the typo this check exists for
+    expect(r.rejected).toEqual(['actPtc', 'nonsense'])
+    expect(r.rejected).not.toContain('enabled')
+  })
+
+  it('tells the caller which fields the endpoint does know', () => {
+    const r = checkConfigPutFields({ actPtc: 0.9 }, guardFields)
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.message).toContain('actPct')
+  })
+
+  it('rejects a body that is not an object at all', () => {
+    expect(checkConfigPutFields(null, guardFields).ok).toBe(false)
+    expect(checkConfigPutFields('enabled=true', guardFields).ok).toBe(false)
+    expect(checkConfigPutFields(42, guardFields).ok).toBe(false)
+  })
+
+  it('derives the known set from the default config, so it cannot drift', () => {
+    // The route passes Object.keys(DEFAULT_CONTEXT_GUARD). If a field is added
+    // to ContextGuardConfig without a default, normalize() would still read it
+    // while this check refused it -- pinned so that mismatch fails here.
+    expect(guardFields).toEqual([
+      'enabled', 'saturationRestart', 'actPct', 'hardPct',
+      'limitTokens', 'cooldownMinutes', 'handoffTimeoutMinutes',
+    ])
   })
 })
