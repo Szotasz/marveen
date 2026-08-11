@@ -83,6 +83,7 @@ run() {
 
 NONE_PROVIDER='{"providers":[{"id":"litellm-local","label":"LiteLLM","baseUrl":"http://127.0.0.1:4010","authHeader":"none","vaultKey":null}]}'
 BEARER_PROVIDER='{"providers":[{"id":"bearer-ep","label":"Bearer","baseUrl":"http://127.0.0.1:4010","authHeader":"Bearer","vaultKey":"MY_BEARER_KEY"}]}'
+XAPIKEY_PROVIDER='{"providers":[{"id":"xkey-ep","label":"XKey","baseUrl":"http://127.0.0.1:4010","authHeader":"x-api-key","vaultKey":"MY_XAPIKEY_KEY"}]}'
 
 echo "main-agent-custom-provider.mjs"
 
@@ -192,6 +193,79 @@ fi
 # 10. Every configured-but-broken path exits non-zero (comprehensive)
 # Already covered by cases 2, 3, 9 above.
 pass "configured-but-broken paths exit 1 (covered by cases 2, 3, 9)"
+
+# --- x-api-key path ---
+# Populate the hermetic vault with a known key so the helper can resolve it.
+# vault.js derives PROJECT_ROOT from the imported dist/config.js __dirname, so
+# when dist/ lives inside $root, all vault files land in $root/store/.
+# On Linux the vault auto-creates .vault-key without any logger calls.
+TEST_XAPIKEY='sk-test-xapikey-1234567890abcdef'
+if TEST_ROOT="$root" TEST_KEY="$TEST_XAPIKEY" node --input-type=module <<'VAULT_SETUP' 2>/dev/null
+import { join } from 'node:path'
+const { setSecret } = await import(join(process.env.TEST_ROOT, 'dist', 'web', 'vault.js'))
+setSecret('MY_XAPIKEY_KEY', 'Test x-api-key', process.env.TEST_KEY)
+VAULT_SETUP
+then
+
+  XKEY_AGENT='{"customProvider":"xkey-ep","model":"oc/test"}'
+  # Write fixtures for inline x-api-key calls (pass $root as config dir so the
+  # stamp lands in the hermetic tree, not in the real ~/.claude.json).
+  printf '%s\n' "$XKEY_AGENT" > "$AGENT_CFG"
+  printf '%s\n' "$XAPIKEY_PROVIDER" > "$PROVIDERS_PATH"
+
+  # 11. x-api-key path -> exit 0, non-empty output
+  GOT_OUT="$(node "$root/scripts/main-agent-custom-provider.mjs" "$root" 2>/dev/null)"
+  GOT_RC=$?
+  if [ -n "$GOT_OUT" ] && [ "$GOT_RC" -eq 0 ]; then
+    pass "x-api-key provider -> exit 0, non-empty output"
+  else
+    fail "x-api-key provider -> exit 0, non-empty output" "exit=0, non-empty" "exit=$GOT_RC, stdout='$GOT_OUT'"
+  fi
+
+  # 12. stdout is BYTE-EXACTLY the env prefix on a COLD stamp path.
+  #
+  # The contamination only fires when stampCustomApiKeyApproval does real work:
+  # the suffix is NOT yet in .claude.json (cold). A warm run (suffix already
+  # present) is a no-op and never called logger.info -- so a warm-only test is
+  # a false green. Each iteration must start from a cold config dir.
+  #
+  # Implementation: a fresh temp dir per iteration (no .claude.json at all)
+  # so the stamp always writes a new file and exercises the cold path.
+  EXPECTED_XKEY="unset CLAUDE_CODE_OAUTH_TOKEN && export ANTHROPIC_BASE_URL='http://127.0.0.1:4010' && export ANTHROPIC_API_KEY='${TEST_XAPIKEY}' && unset ANTHROPIC_AUTH_TOKEN && export ANTHROPIC_MODEL='oc/test' && "
+  XKEY_FAIL=0
+  for _i in 1 2 3 4 5; do
+    # Fresh cfg dir: no .claude.json present -> cold stamp on every iteration.
+    _cold_cfg="$(mktemp -d "$root/tmp.cold.XXXXXX")"
+    RAW_XKEY="$(NODE_ENV=production node "$root/scripts/main-agent-custom-provider.mjs" "$_cold_cfg" 2>/dev/null)"
+    _xkey_rc=$?
+    rm -rf "$_cold_cfg"
+    if [ "$RAW_XKEY" != "$EXPECTED_XKEY" ] || [ "$_xkey_rc" -ne 0 ]; then
+      XKEY_FAIL=1
+      break
+    fi
+  done
+  if [ "$XKEY_FAIL" -eq 0 ]; then
+    pass "x-api-key cold-stamp stdout is byte-exact (5 iterations, each cold)"
+  else
+    fail "x-api-key cold-stamp stdout is byte-exact" \
+      "$EXPECTED_XKEY" "$RAW_XKEY"
+  fi
+
+  # 13. stamp written: $root/.claude.json contains the suffix in customApiKeyResponses.approved
+  STAMP_FILE="$root/.claude.json"
+  XKEY_SUFFIX="${TEST_XAPIKEY: -20}"
+  if [ -f "$STAMP_FILE" ] && grep -qF "$XKEY_SUFFIX" "$STAMP_FILE"; then
+    pass "x-api-key suffix stamped into .claude.json"
+  else
+    fail "x-api-key suffix stamped into .claude.json" "$XKEY_SUFFIX in .claude.json" "file missing or suffix absent"
+  fi
+
+else
+  fail "vault setup for x-api-key tests" "setSecret succeeded" "node setup failed"
+  fail "x-api-key provider -> exit 0, non-empty output" "(skipped)" "(vault setup failed)"
+  fail "x-api-key stdout is byte-exact under NODE_ENV=production" "(skipped)" "(vault setup failed)"
+  fail "x-api-key suffix stamped into .claude.json" "(skipped)" "(vault setup failed)"
+fi
 
 echo
 echo "  $PASS passed, $FAIL failed"

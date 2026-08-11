@@ -31,6 +31,7 @@
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
+import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const projectRoot = join(__dirname, '..')
@@ -43,9 +44,6 @@ const { loadCustomProvider } = await import(
   join(projectRoot, 'dist', 'web', 'custom-providers.js')
 )
 const { getSecret } = await import(join(projectRoot, 'dist', 'web', 'vault.js'))
-const { stampCustomApiKeyApproval } = await import(
-  join(projectRoot, 'dist', 'web', 'agent-process.js')
-)
 
 // POSIX single-quote-escape: wraps the value in single quotes and escapes any
 // embedded single-quotes via the '"'"' sequence. Safe against ALL shell
@@ -112,18 +110,43 @@ if (def.authHeader === 'none') {
 
 // Pre-stamp x-api-key approval into .claude.json so the TUI approval gate
 // never fires at startup in --channels mode.
+//
+// Inlined here (not via agent-process.stampCustomApiKeyApproval) to avoid
+// pino/SonicBoom writing a JSON log line to fd1 (stdout) in production mode.
+// This script's stdout is a machine-readable shell env prefix captured by
+// channels.sh -- any extra byte there corrupts the CUSTOM_PROVIDER_ENV var
+// and breaks the tmux launch silently. All writes go to stderr or files only.
 const claudeConfigDir = process.argv[2] || ''
 const dotClaudePath = claudeConfigDir
   ? join(claudeConfigDir, '.claude.json')
   : join(homedir(), '.claude.json')
 
 if (apiKeyForStamp) {
-  try {
-    stampCustomApiKeyApproval(dotClaudePath, apiKeyForStamp)
-  } catch (e) {
-    process.stderr.write(
-      `main-agent-custom-provider: stampCustomApiKeyApproval failed (${e.message}) -- the TUI may show an approval dialog\n`,
-    )
+  const suffix = apiKeyForStamp.trim().slice(-20)
+  if (suffix) {
+    try {
+      let data = {}
+      if (existsSync(dotClaudePath)) {
+        try { data = JSON.parse(readFileSync(dotClaudePath, 'utf-8')) } catch {}
+      }
+      const responses =
+        data.customApiKeyResponses &&
+        typeof data.customApiKeyResponses === 'object' &&
+        !Array.isArray(data.customApiKeyResponses)
+          ? data.customApiKeyResponses
+          : {}
+      const approved = Array.isArray(responses.approved) ? responses.approved : []
+      if (!approved.includes(suffix)) {
+        data.customApiKeyResponses = { ...responses, approved: [...approved, suffix] }
+        const tmp = dotClaudePath + '.tmp-' + process.pid
+        writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
+        renameSync(tmp, dotClaudePath)
+      }
+    } catch (e) {
+      process.stderr.write(
+        `main-agent-custom-provider: stamp failed (${e.message}) -- the TUI may show an approval dialog\n`,
+      )
+    }
   }
 }
 
