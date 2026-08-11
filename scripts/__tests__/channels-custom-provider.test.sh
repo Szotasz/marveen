@@ -76,9 +76,11 @@ run() {
   else
     rm -f "$PROVIDERS_PATH"
   fi
-  GOT_OUT="$(node "$root/scripts/main-agent-custom-provider.mjs" 2>/tmp/cp_test_stderr)"
+  _stderr_tmp="$(mktemp "${TMPDIR:-/tmp}/cp_stderr.XXXXXX")"
+  GOT_OUT="$(node "$root/scripts/main-agent-custom-provider.mjs" 2>"$_stderr_tmp")"
   GOT_RC=$?
-  GOT_ERR="$(cat /tmp/cp_test_stderr)"
+  GOT_ERR="$(cat "$_stderr_tmp")"
+  rm -f "$_stderr_tmp"
 }
 
 NONE_PROVIDER='{"providers":[{"id":"litellm-local","label":"LiteLLM","baseUrl":"http://127.0.0.1:4010","authHeader":"none","vaultKey":null}]}'
@@ -126,11 +128,13 @@ else
 fi
 NONE_OUT="$GOT_OUT"
 
-# 5. Env line starts with "unset CLAUDE_CODE_OAUTH_TOKEN &&"
-if printf '%s' "$NONE_OUT" | grep -q '^unset CLAUDE_CODE_OAUTH_TOKEN &&'; then
+# 5. Env line starts with "unset CLAUDE_CODE_OAUTH_TOKEN &&" -- byte-exact on the full
+# none output so a leading contamination line cannot slip through a grep anchor.
+EXPECTED_NONE="unset CLAUDE_CODE_OAUTH_TOKEN && export ANTHROPIC_BASE_URL='http://127.0.0.1:4010' && export ANTHROPIC_AUTH_TOKEN=ollama && unset ANTHROPIC_API_KEY && export ANTHROPIC_MODEL='oc/gpt-5.6-luna' && "
+if [ "$NONE_OUT" = "$EXPECTED_NONE" ]; then
   pass "env line starts with unset CLAUDE_CODE_OAUTH_TOKEN"
 else
-  fail "env line starts with unset CLAUDE_CODE_OAUTH_TOKEN" "starts with 'unset CLAUDE_CODE_OAUTH_TOKEN &&'" "$NONE_OUT"
+  fail "env line starts with unset CLAUDE_CODE_OAUTH_TOKEN" "$EXPECTED_NONE" "$NONE_OUT"
 fi
 
 # 6. ANTHROPIC_MODEL is single-quoted
@@ -193,6 +197,35 @@ fi
 # 10. Every configured-but-broken path exits non-zero (comprehensive)
 # Already covered by cases 2, 3, 9 above.
 pass "configured-but-broken paths exit 1 (covered by cases 2, 3, 9)"
+
+# --- Bearer happy-path ---
+# Seed the hermetic vault with a Bearer token, then assert byte-exact output.
+# Without this, a swapped env-var name in the Bearer branch (e.g.
+# ANTHROPIC_API_KEY instead of ANTHROPIC_AUTH_TOKEN) would pass all grep checks
+# while silently sending the wrong header.
+TEST_BEARER_KEY='bearer-token-test-1234567890'
+if TEST_ROOT="$root" TEST_KEY="$TEST_BEARER_KEY" node --input-type=module <<'VAULT_SETUP_BEARER' 2>/dev/null
+import { join } from 'node:path'
+const { setSecret } = await import(join(process.env.TEST_ROOT, 'dist', 'web', 'vault.js'))
+setSecret('MY_BEARER_KEY', 'Test Bearer token', process.env.TEST_KEY)
+VAULT_SETUP_BEARER
+then
+  printf '%s\n' '{"customProvider":"bearer-ep","model":"oc/test"}' > "$AGENT_CFG"
+  printf '%s\n' "$BEARER_PROVIDER" > "$PROVIDERS_PATH"
+  EXPECTED_BEARER="unset CLAUDE_CODE_OAUTH_TOKEN && export ANTHROPIC_BASE_URL='http://127.0.0.1:4010' && export ANTHROPIC_AUTH_TOKEN='${TEST_BEARER_KEY}' && unset ANTHROPIC_API_KEY && export ANTHROPIC_MODEL='oc/test' && "
+  BEARER_OUT="$(node "$root/scripts/main-agent-custom-provider.mjs" 2>/dev/null)"
+  BEARER_RC=$?
+  if [ "$BEARER_RC" -eq 0 ] && [ "$BEARER_OUT" = "$EXPECTED_BEARER" ]; then
+    pass "Bearer happy-path: byte-exact stdout"
+  else
+    fail "Bearer happy-path: byte-exact stdout" "$EXPECTED_BEARER" "exit=$BEARER_RC stdout='$BEARER_OUT'"
+  fi
+  # Clean up so subsequent cases don't pick up the bearer agent config
+  rm -f "$AGENT_CFG" "$PROVIDERS_PATH"
+else
+  fail "Bearer happy-path: vault setup" "setSecret succeeded" "node setup failed"
+  fail "Bearer happy-path: byte-exact stdout" "(skipped)" "(vault setup failed)"
+fi
 
 # --- x-api-key path ---
 # Populate the hermetic vault with a known key so the helper can resolve it.
