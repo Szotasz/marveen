@@ -129,6 +129,23 @@ describe('checkConfigPutFields', () => {
     expect(r.message).toContain('actPct')
   })
 
+  it('accepts the exact payloads the dashboard sends', () => {
+    // Pinned from the real call sites in web/app.js. These are the only live
+    // callers of these two endpoints, so a check that rejects one of them
+    // breaks the settings pane -- and the auto-restart payload carries
+    // `handoff`, a field the UI sends on every save and nothing else does.
+    expect(checkConfigPutFields(
+      { enabled: true, mode: 'fresh', dailyTime: '03:00', intervalHours: null, handoff: false },
+      Object.keys(DEFAULT_AUTO_RESTART),
+    ).ok).toBe(true)
+    // The idle-flush save merges its three fields over a freshly-read config,
+    // so the body is a full context-guard config.
+    expect(checkConfigPutFields(
+      { ...DEFAULT_CONTEXT_GUARD, idleFlushEnabled: true, idleFlushTokens: 500_000, idleMinutes: 20 },
+      guardFields,
+    ).ok).toBe(true)
+  })
+
   it('rejects a body that is not an object at all', () => {
     expect(checkConfigPutFields(null, guardFields).ok).toBe(false)
     expect(checkConfigPutFields('enabled=true', guardFields).ok).toBe(false)
