@@ -458,6 +458,7 @@ MODEL_FLAG=""
 # prints nothing, CFG_ENV stays EMPTY and the agent keeps the shared ~/.claude --
 # strict no-op for existing installs (no setting, no fleet token, no dist build).
 CFG_ENV=""
+CUSTOM_PROVIDER_ENV=""
 mkdir -p "$INSTALL_DIR/store" 2>/dev/null || true
 _node_bin="$(command -v node || true)"
 if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
@@ -521,6 +522,28 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
       unset _guard_port
     fi
   fi
+  # Custom provider env for the main agent (e.g. LiteLLM/OpenCode endpoint).
+  # The helper reads the main agent's customProvider from agent-config.json,
+  # resolves the vault key, pre-stamps the x-api-key approval into .claude.json
+  # so the TUI gate never fires, then prints the shell export prefix to inject
+  # into the tmux launch command.
+  #
+  # Exit-code contract: exit 0 + empty = no customProvider (legitimate, carry on).
+  # exit 0 + non-empty = provider resolved, inject. exit 1 = customProvider IS
+  # configured but cannot be used (missing def/key/baseUrl). On exit 1 we ABORT
+  # rather than silently launching on the wrong (standard Claude/OAuth) backend.
+  _cp_env="$("$_node_bin" "$INSTALL_DIR/scripts/main-agent-custom-provider.mjs" "${_cfg_dir:-}" 2>>"$INSTALL_DIR/store/channels-failures.log")"
+  _cp_rc=$?
+  if [ "$_cp_rc" -ne 0 ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent-custom-provider exited $_cp_rc -- customProvider configured but broken; aborting to avoid silent wrong-backend launch (see channels-failures.log)" >> "$INSTALL_DIR/store/channels-failures.log"
+    exit "$_cp_rc"
+  fi
+  if [ -n "$_cp_env" ]; then
+    CUSTOM_PROVIDER_ENV="$_cp_env"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent custom-provider env injected" >> "$INSTALL_DIR/store/channels-failures.log"
+  fi
+  unset _cp_env _cp_rc
+
   unset _cfg_line _cfg_mode _cfg_dir
 fi
 unset _node_bin
@@ -654,7 +677,7 @@ $TMUX set-environment -g CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION false 2>/dev/null 
 # otherwise new-session below fails with "duplicate session".
 $TMUX kill-session -t "$SESSION" 2>/dev/null || true
 $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
-  "${MCP_BATCH_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+  "${MCP_BATCH_ENV}${CFG_ENV}${CUSTOM_PROVIDER_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
 
 # Session startup guard: a Claude Code first-run dialogusait auto-accept-eljuk
 # kulonben a headless session orokre parkolna a prompton es a Telegram plugin
@@ -695,7 +718,7 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
         # entry); see the PR description / card 7EB18437.
         [ -e "$INSTALL_DIR/CLAUDE.md" ] && ln -sf "$INSTALL_DIR/CLAUDE.md" "$_CHANNELS_STARTDIR/CLAUDE.md" 2>/dev/null || true
         $TMUX new-session -d -s "$SESSION" -c "$_CHANNELS_STARTDIR" \
-          "${MCP_BATCH_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+          "${MCP_BATCH_ENV}${CFG_ENV}${CUSTOM_PROVIDER_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
         unset _CHANNELS_STARTDIR
       fi
       continue
