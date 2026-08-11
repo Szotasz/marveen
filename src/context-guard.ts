@@ -74,12 +74,17 @@ export const DEFAULT_CONTEXT_GUARD: ContextGuardConfig = {
   // IDLE agent that ignored the handoff request.
   handoffTimeoutMinutes: 20,
   idleFlushEnabled: false,
-  // 500k: comfortably above the 400k the soft restart gate uses, and well
-  // below where the act tier starts on the 1M-window models this tier exists
-  // for (0.9 * 1M = 900k). On a 200k-window model the value exceeds the whole
-  // window, so the tier never fires there and act/hardPct keep those sessions
-  // -- the same deliberate shape as the gate's thresholdTokens.
-  idleFlushTokens: 500_000,
+  // 400k, the same figure the soft restart gate reasoned its way to
+  // (DEFAULT_THRESHOLD_TOKENS): it leaves a 1M-window model 600k of room for a
+  // clean transition, and exceeds a 200k window entirely so the tier never
+  // fires there -- act/hardPct keep those sessions instead.
+  //
+  // Deliberately NOT the 500k an earlier design note proposed. That note also
+  // claimed this whole tier had already shipped, which measurement disproved,
+  // so its numbers carry no evidence either. Between an unmeasured figure and
+  // one already argued out in this codebase, the second wins, and both select
+  // the same sessions in practice.
+  idleFlushTokens: 400_000,
   // 20 minutes, matching handoffTimeoutMinutes. That number is already set to
   // comfortably exceed a normal tool-heavy turn, so it is an evidenced
   // "quieter than this is not a working turn" boundary rather than a second
@@ -102,7 +107,7 @@ export function normalizeContextGuardConfig(raw: unknown): ContextGuardConfig {
     limitTokens = Math.floor(o.limitTokens)
   }
   // Same >= 10_000 floor as limitTokens: a token threshold small enough to be
-  // a typo (500 for 500_000) would flush a session that has barely started.
+  // a typo (400 for 400_000) would flush a session that has barely started.
   const idleFlushTokens =
     (typeof o.idleFlushTokens === 'number' && Number.isFinite(o.idleFlushTokens) && o.idleFlushTokens >= 10_000)
       ? Math.floor(o.idleFlushTokens)

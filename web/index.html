@@ -2455,13 +2455,14 @@
             <div class="form-row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
               <div class="form-group" style="margin-bottom:0">
                 <label for="ifTokens" style="font-size:12px;color:var(--text-muted)" data-i18n="agents.settings.idle_flush_tokens_label">Küszöb (ezer token)</label>
-                <input type="number" id="ifTokens" min="10" max="2000" step="10" value="500" style="width:100px">
+                <input type="number" id="ifTokens" min="10" max="2000" step="10" value="400" style="width:100px">
               </div>
               <div class="form-group" style="margin-bottom:0">
                 <label for="ifMinutes" style="font-size:12px;color:var(--text-muted)" data-i18n="agents.settings.idle_flush_minutes_label">Tétlenség (perc)</label>
                 <input type="number" id="ifMinutes" min="1" max="1440" value="20" style="width:100px">
               </div>
             </div>
+            <div id="ifScheduleWarning" hidden style="margin-top:10px;padding:8px 10px;border-radius:6px;background:var(--surface-hover);color:var(--text-muted);font-size:12px;line-height:1.5"></div>
             <small style="display:block;margin-top:8px;color:var(--text-muted);font-size:12px;line-height:1.5" data-i18n="agents.settings.idle_flush_note">
               A tétlenséget a session naplófájljának utolsó írása adja. Ha az ágensnek van ütemezett feladata, minden ébredés nullázza ezt az órát: ha az ütemezés sűrűbb, mint a beállított perc, a tétlen-ürítés soha nem fog lefutni.
             </small>

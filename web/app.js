@@ -2936,14 +2936,47 @@ function setupAutoRestartUI(agent) {
 // token count, and asking an operator to type 500000 into a box invites the
 // 500 that normalizeContextGuardConfig has to defend against.
 function setupIdleFlushUI(agent) {
-  const cg = (agent && agent.contextGuard) || { idleFlushEnabled: false, idleFlushTokens: 500000, idleMinutes: 20 }
+  const cg = (agent && agent.contextGuard) || { idleFlushEnabled: false, idleFlushTokens: 400000, idleMinutes: 20 }
   const enabled = document.getElementById('ifEnabled')
   const tokens = document.getElementById('ifTokens')
   const minutes = document.getElementById('ifMinutes')
   if (!enabled || !tokens || !minutes) return
   enabled.checked = cg.idleFlushEnabled === true
-  tokens.value = Math.round((cg.idleFlushTokens || 500000) / 1000)
+  tokens.value = Math.round((cg.idleFlushTokens || 400000) / 1000)
   minutes.value = cg.idleMinutes || 20
+  showIdleFlushScheduleWarning(agent)
+}
+
+// Warn when this agent has ANY scheduled task, because the idle clock is the
+// transcript mtime and every scheduled wake writes to the transcript: a
+// schedule that fires more often than idleMinutes means the tier can never
+// accumulate enough quiet and will sit switched on doing nothing.
+//
+// Deliberately NOT a computed comparison of cron period vs idleMinutes. A cron
+// parser in the settings pane is a lot of fragile surface for a hint, and it
+// would be silent exactly when it got a schedule shape wrong. Listing the
+// schedules and letting the operator judge is both cheaper and harder to make
+// quietly incorrect.
+async function showIdleFlushScheduleWarning(agent) {
+  const box = document.getElementById('ifScheduleWarning')
+  if (!box) return
+  // Clear as well as hide: the pane is reused for every agent, and a stale
+  // warning left in the node is one accidental unhide away from naming the
+  // wrong agent's schedules.
+  box.hidden = true
+  box.textContent = ''
+  const id = (agent && (agent.autoRestartId || agent.name)) || null
+  if (!id) return
+  try {
+    const res = await fetch('/api/schedules')
+    if (!res.ok) return
+    const all = await res.json()
+    const mine = (Array.isArray(all) ? all : []).filter(t => t && t.agent === id && t.schedule)
+    if (!mine.length) return
+    const list = mine.map(t => `${t.name} (${t.schedule})`).join(', ')
+    box.textContent = t('agents.settings.idle_flush_sched_warning').replace('{list}', list)
+    box.hidden = false
+  } catch { /* the hint is best-effort; never break the pane over it */ }
 }
 
 async function openMarveenDetail() {

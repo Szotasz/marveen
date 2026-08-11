@@ -97,7 +97,7 @@ describe('checkConfigPutFields', () => {
     // pair of assertions is the whole point, that the call used to succeed
     // without doing anything and now succeeds because the fields exist.
     const r = checkConfigPutFields(
-      { ...DEFAULT_CONTEXT_GUARD, idleFlushEnabled: true, idleFlushTokens: 500_000, idleMinutes: 20 },
+      { ...DEFAULT_CONTEXT_GUARD, idleFlushEnabled: true, idleFlushTokens: 400_000, idleMinutes: 20 },
       guardFields,
     )
     expect(r.ok).toBe(true)
@@ -107,7 +107,7 @@ describe('checkConfigPutFields', () => {
     // The failure this check exists for survives the fields becoming real: a
     // plural, a transposition, an American spelling all still vanish silently
     // without it.
-    const r = checkConfigPutFields({ idleFlushToken: 500_000, idleMinute: 20 }, guardFields)
+    const r = checkConfigPutFields({ idleFlushToken: 400_000, idleMinute: 20 }, guardFields)
     expect(r.ok).toBe(false)
     if (r.ok) return
     expect(r.rejected).toEqual(['idleFlushToken', 'idleMinute'])
@@ -141,7 +141,7 @@ describe('checkConfigPutFields', () => {
     // The idle-flush save merges its three fields over a freshly-read config,
     // so the body is a full context-guard config.
     expect(checkConfigPutFields(
-      { ...DEFAULT_CONTEXT_GUARD, idleFlushEnabled: true, idleFlushTokens: 500_000, idleMinutes: 20 },
+      { ...DEFAULT_CONTEXT_GUARD, idleFlushEnabled: true, idleFlushTokens: 400_000, idleMinutes: 20 },
       guardFields,
     ).ok).toBe(true)
   })

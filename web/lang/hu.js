@@ -414,6 +414,7 @@ window._i18n.hu = {
   'agents.settings.idle_flush_minutes_label': 'Tétlenség (perc)',
   'agents.settings.idle_flush_desc': 'Az ütemezett újraindítás fix időpontban jön, akkor is, ha az ágens épp dolgozik. Ez a kapcsoló a másik pillanatot használja: ha a kontextus nagyra nőtt, DE az ágens egy ideje nem csinál semmit, megkéri hogy írjon átadót (HANDOFF.md), majd friss kontextussal indítja újra. Nem szakít félbe munkát: a pane-nek üresjáratban kell lennie, és a naplónak is csendesnek.',
   'agents.settings.idle_flush_note': 'A tétlenséget a session naplófájljának utolsó írása adja. Ha az ágensnek van ütemezett feladata, minden ébredés nullázza ezt az órát: ha az ütemezés sűrűbb, mint a beállított perc, a tétlen-ürítés soha nem fog lefutni.',
+  'agents.settings.idle_flush_sched_warning': 'Figyelem: ennek az ágensnek van ütemezett feladata ({list}). Minden ébredés írja a naplót, tehát nullázza a tétlenségi órát. Ha az ütemezés sűrűbb, mint a fenti perc, a tétlen-ürítés soha nem fog lefutni.',
   'agents.settings.auto_restart_label':   'Automatikus újraindítás',
   'agents.settings.auto_restart_enabled': 'Bekapcsolva',
   'agents.settings.ar_mode_label':        'Mód',
