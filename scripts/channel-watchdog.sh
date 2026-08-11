@@ -46,6 +46,22 @@
 
 set -u
 
+# --- --check-limit subcommand (pure, side-effect-free, for testing) ----------
+# Reads pane text from stdin. Exit 0 = no usage-limit banner. Exit 1 = banner
+# found. Restricted to the bottom 15 lines so scrollback or message bodies that
+# merely quote the phrase do not produce false positives.
+# Mirrors src/model-fallback.ts detectsUsageLimit() and the USAGE_LIMIT_RX
+# constant; kept in sync with stuck-modal-guard.sh classify_pane step 4.
+if [ "${1:-}" = "--check-limit" ]; then
+  _pane="$(cat)"
+  _bottom="$(printf '%s' "$_pane" | tail -15)"
+  if printf '%s' "$_bottom" | grep -qiE \
+      'usage limit reached|reached your usage limit|hit (your|the) (session|usage) limit|approaching (your )?usage limit|usage limit (will )?reset|limit will reset at|[0-9]+-hour limit reached|upgrade to increase your usage limit'; then
+    exit 1  # usage-limit banner detected
+  fi
+  exit 0  # no banner
+fi
+
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 STORE="$INSTALL_DIR/store"
 KEEPALIVE_FILE="$STORE/.channel-keepalive"
@@ -145,6 +161,19 @@ fi
 # --- neither signal fired: healthy, reset the shared backoff counter, done ---
 if [ "$STALE" != true ] && [ "$AUTHDEAD" != true ]; then
   rm -f "$RESPAWN_COUNT_FILE" 2>/dev/null || true
+  exit 0
+fi
+
+# --- gate 3: quota-limit gate ------------------------------------------------
+# A stale keepalive or auth-dead signal can be caused by plan quota exhaustion:
+# the agent pauses, the keepalive stops, and auth probes may see degraded pane
+# output. Respawning cannot fix quota -- the new session inherits the same plan
+# limit. Detect the usage-limit banner and hold until it resets automatically.
+# (The TS side handles this via context-restart-gate.ts paneUsageLimited guard,
+# #938. This gate is the shell-side equivalent for the shell-side watchdog.)
+if ! "$TMUX_BIN" capture-pane -p -t "$SESSION" 2>/dev/null \
+    | bash "$0" --check-limit 2>/dev/null; then
+  log "plan usage-limit banner in $SESSION (STALE=$STALE AUTHDEAD=$AUTHDEAD) -- holding (respawn cannot fix quota; resets automatically)"
   exit 0
 fi
 
