@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
-import { listAgentNames } from './agent-config.js'
+import { listAgentNames, readAgentClaudeConfigDir } from './agent-config.js'
 import { agentSessionName, capturePane } from './agent-process.js'
 import { detectPaneState } from '../pane-state.js'
 import { detectsUsageLimit } from '../model-fallback.js'
@@ -92,6 +92,19 @@ function sessionFor(name: string): string {
 function workingDirFor(name: string): string {
   if (name === MAIN_AGENT_ID) return PROJECT_ROOT
   return join(PROJECT_ROOT, 'agents', name)
+}
+
+/**
+ * Claude Code config root for an agent, or undefined for the host default.
+ *
+ * Transcripts live under <config-root>/projects/<encoded-working-dir>/, and an
+ * agent launched with CLAUDE_CONFIG_DIR keeps them somewhere other than
+ * ~/.claude. Reading without this looks in the default root, finds nothing, and
+ * the gate's contextTokens comes back null -- which is a fail-closed BLOCK, so
+ * the symptom is a gate that never opens and never says why.
+ */
+function configDirFor(name: string): string | undefined {
+  return name === MAIN_AGENT_ID ? undefined : (readAgentClaudeConfigDir(name) ?? undefined)
 }
 
 function agentIdForLedger(name: string): string {
@@ -380,7 +393,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
 
   const hardGuardPhase = getHardGuardPhase(name)
 
-  const contextTokens = readContextTokensFromProjectDir(workingDir)
+  const contextTokens = readContextTokensFromProjectDir(workingDir, configDirFor(name))
 
   const dispatchedStats = (() => {
     try { return getDispatchedPendingStats(name, nowMs, cfg.staleCutoffMs) }
