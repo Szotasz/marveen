@@ -36,14 +36,26 @@ import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const projectRoot = join(__dirname, '..')
 
-const { MAIN_AGENT_ID } = await import(join(projectRoot, 'dist', 'config.js'))
-const { readAgentCustomProvider, readAgentModel } = await import(
-  join(projectRoot, 'dist', 'web', 'agent-config.js')
-)
-const { loadCustomProvider } = await import(
-  join(projectRoot, 'dist', 'web', 'custom-providers.js')
-)
-const { getSecret } = await import(join(projectRoot, 'dist', 'web', 'vault.js'))
+// Top-level imports are guarded so a stale or partially-built dist never turns
+// into an unconditional channel abort. If any module fails to load and no
+// customProvider is configured, the pre-customProvider behavior (standard
+// Claude/OAuth backend) is the correct fallback: exit 0, empty stdout.
+let MAIN_AGENT_ID, readAgentCustomProvider, readAgentModel, loadCustomProvider, getSecret
+try {
+  ;({ MAIN_AGENT_ID } = await import(join(projectRoot, 'dist', 'config.js')))
+  ;({ readAgentCustomProvider, readAgentModel } = await import(
+    join(projectRoot, 'dist', 'web', 'agent-config.js')
+  ))
+  ;({ loadCustomProvider } = await import(
+    join(projectRoot, 'dist', 'web', 'custom-providers.js')
+  ))
+  ;({ getSecret } = await import(join(projectRoot, 'dist', 'web', 'vault.js')))
+} catch (e) {
+  process.stderr.write(
+    `main-agent-custom-provider: dist module load failed (${e.message}) -- skipping customProvider check, using standard backend\n`,
+  )
+  process.exit(0)
+}
 
 // POSIX single-quote-escape: wraps the value in single quotes and escapes any
 // embedded single-quotes via the '"'"' sequence. Safe against ALL shell

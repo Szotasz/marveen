@@ -528,21 +528,35 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   # so the TUI gate never fires, then prints the shell export prefix to inject
   # into the tmux launch command.
   #
+  # Gate on dist/web/custom-providers.js (the key file the helper imports), NOT
+  # on dist/web/agent-process.js (the outer gate covers the CFG_ENV block above).
+  # If only agent-process.js is present but custom-providers.js is missing (e.g.
+  # a stale dist from a partially-applied update), the helper would hit a
+  # top-level import error and exit 1, causing an unconditional channel abort even
+  # when no customProvider is configured. Inner gate prevents that.
+  #
   # Exit-code contract: exit 0 + empty = no customProvider (legitimate, carry on).
   # exit 0 + non-empty = provider resolved, inject. exit 1 = customProvider IS
   # configured but cannot be used (missing def/key/baseUrl). On exit 1 we ABORT
   # rather than silently launching on the wrong (standard Claude/OAuth) backend.
-  _cp_env="$("$_node_bin" "$INSTALL_DIR/scripts/main-agent-custom-provider.mjs" "${_cfg_dir:-}" 2>>"$INSTALL_DIR/store/channels-failures.log")"
-  _cp_rc=$?
-  if [ "$_cp_rc" -ne 0 ]; then
-    echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent-custom-provider exited $_cp_rc -- customProvider configured but broken; aborting to avoid silent wrong-backend launch (see channels-failures.log)" >> "$INSTALL_DIR/store/channels-failures.log"
-    exit "$_cp_rc"
+  if [ -f "$INSTALL_DIR/dist/web/custom-providers.js" ]; then
+    # Pass the isolated config dir only when it actually exists on disk, so the
+    # helper can stamp x-api-key approval into the right .claude.json. An empty
+    # arg makes it fall back to ~/.claude.json (the standard path).
+    _cp_cfg_dir=""
+    [ -d "${_cfg_dir:-}" ] && _cp_cfg_dir="${_cfg_dir:-}"
+    _cp_env="$("$_node_bin" "$INSTALL_DIR/scripts/main-agent-custom-provider.mjs" "$_cp_cfg_dir" 2>>"$INSTALL_DIR/store/channels-failures.log")"
+    _cp_rc=$?
+    if [ "$_cp_rc" -ne 0 ]; then
+      echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent-custom-provider exited $_cp_rc -- customProvider configured but broken; aborting to avoid silent wrong-backend launch (see channels-failures.log)" >> "$INSTALL_DIR/store/channels-failures.log"
+      exit "$_cp_rc"
+    fi
+    if [ -n "$_cp_env" ]; then
+      CUSTOM_PROVIDER_ENV="$_cp_env"
+      echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent custom-provider env injected" >> "$INSTALL_DIR/store/channels-failures.log"
+    fi
+    unset _cp_env _cp_rc _cp_cfg_dir
   fi
-  if [ -n "$_cp_env" ]; then
-    CUSTOM_PROVIDER_ENV="$_cp_env"
-    echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent custom-provider env injected" >> "$INSTALL_DIR/store/channels-failures.log"
-  fi
-  unset _cp_env _cp_rc
 
   unset _cfg_line _cfg_mode _cfg_dir
 fi
