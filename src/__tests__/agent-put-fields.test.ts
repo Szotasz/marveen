@@ -90,14 +90,27 @@ describe('checkConfigPutFields', () => {
     expect(checkConfigPutFields({}, guardFields).ok).toBe(true)
   })
 
-  it('refuses the exact payload that was silently swallowed on 2026-08-11', () => {
+  it('now ACCEPTS a payload whose fields used to be silently swallowed', () => {
+    // These three fields did not exist before the idle-flush tier, so a PUT
+    // carrying them was accepted and dropped. Pinned here rather than only in
+    // the guard tests because this is the endpoint that reported success: the
+    // pair of assertions is the whole point, that the call used to succeed
+    // without doing anything and now succeeds because the fields exist.
     const r = checkConfigPutFields(
-      { ...DEFAULT_CONTEXT_GUARD, idleFlushEnabled: true, idleFlushTokens: 500_000, idleMinutes: 30 },
+      { ...DEFAULT_CONTEXT_GUARD, idleFlushEnabled: true, idleFlushTokens: 500_000, idleMinutes: 20 },
       guardFields,
     )
+    expect(r.ok).toBe(true)
+  })
+
+  it('still refuses a near-miss of a real idle-flush field', () => {
+    // The failure this check exists for survives the fields becoming real: a
+    // plural, a transposition, an American spelling all still vanish silently
+    // without it.
+    const r = checkConfigPutFields({ idleFlushToken: 500_000, idleMinute: 20 }, guardFields)
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.rejected).toEqual(['idleFlushEnabled', 'idleFlushTokens', 'idleMinutes'])
+    expect(r.rejected).toEqual(['idleFlushToken', 'idleMinute'])
   })
 
   it('names every unknown field and keeps the known ones out of the list', () => {
@@ -129,6 +142,7 @@ describe('checkConfigPutFields', () => {
     expect(guardFields).toEqual([
       'enabled', 'saturationRestart', 'actPct', 'hardPct',
       'limitTokens', 'cooldownMinutes', 'handoffTimeoutMinutes',
+      'idleFlushEnabled', 'idleFlushTokens', 'idleMinutes',
     ])
   })
 })
