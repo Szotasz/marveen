@@ -60,6 +60,7 @@ import {
 import {
   readAgentTelegramConfig,
   readAgentDiscordConfig,
+  readAgentSlackConfig,
   readAgentGooglechatConfig,
   readAgentTeamsConfig,
   readMarveenTelegramConfig,
@@ -400,6 +401,7 @@ interface AgentSummary {
   hasTelegram: boolean
   telegramBotUsername?: string
   hasDiscord: boolean
+  hasSlack: boolean
   hasGooglechat: boolean
   hasTeams: boolean
   status: 'configured' | 'draft'
@@ -438,6 +440,7 @@ function getAgentSummary(name: string): AgentSummary {
   const soulMd = readFileOr(join(dir, 'SOUL.md'), '')
   const tg = readAgentTelegramConfig(name)
   const dc = readAgentDiscordConfig(name)
+  const sc = readAgentSlackConfig(name)
   const gc = readAgentGooglechatConfig(name)
   const tc = readAgentTeamsConfig(name)
   const hasClaudeMd = claudeMd.trim().length > 0
@@ -479,6 +482,7 @@ function getAgentSummary(name: string): AgentSummary {
     hasTelegram: tg.hasTelegram,
     telegramBotUsername: tg.botUsername,
     hasDiscord: dc.hasDiscord,
+    hasSlack: sc.hasSlack,
     hasGooglechat: gc.hasGooglechat,
     hasTeams: tc.hasTeams,
     status: hasClaudeMd && hasSoulMd ? 'configured' : 'draft',

@@ -27,6 +27,15 @@ export function readAgentDiscordConfig(name: string): { hasDiscord: boolean; bot
   return { hasDiscord: true }
 }
 
+export function readAgentSlackConfig(name: string): { hasSlack: boolean } {
+  const envPath = join(agentDir(name), '.claude', 'channels', 'slack', '.env')
+  if (!existsSync(envPath)) return { hasSlack: false }
+  const content = readFileOr(envPath, '')
+  const tokenMatch = content.match(/SLACK_BOT_TOKEN=(.+)/)
+  if (!tokenMatch || !tokenMatch[1].trim()) return { hasSlack: false }
+  return { hasSlack: true }
+}
+
 // Google Chat is creds-based (no bot token): a configured agent has
 // GOOGLECHAT_PROJECT_ID in its channel .env (see channel-provider readChannelToken).
 export function readAgentGooglechatConfig(name: string): { hasGooglechat: boolean } {
