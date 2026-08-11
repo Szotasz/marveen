@@ -79,12 +79,29 @@ export const DEFAULT_CONTEXT_GUARD: ContextGuardConfig = {
   // clean transition, and exceeds a 200k window entirely so the tier never
   // fires there -- act/hardPct keep those sessions instead.
   //
-  // Deliberately NOT the 500k an earlier design note proposed. That note also
-  // claimed this whole tier had shipped in July, which measurement disproved,
-  // so its numbers carry no evidence either. Between an unmeasured figure and
-  // one already argued out in this codebase, the second wins. Both catch the
-  // same sessions today (atlascoder ~857k, mailer ~816k measured 2026-08-11),
-  // so the choice costs nothing and buys one less arbitrary constant.
+  // 500k was the alternative, and the trade is worth recording because moving
+  // this number means re-deciding it:
+  //
+  //   LOWER wins on tokens. Sitting at 450k instead of 350k costs ~100k extra
+  //   input tokens on EVERY turn; one flush costs a handoff turn plus a
+  //   restart, once. The per-turn saving dominates the one-off cost by orders
+  //   of magnitude, so leaving the expensive band sooner is the cheaper
+  //   direction, not the more expensive one.
+  //
+  //   HIGHER wins on continuity. Each flush makes the agent re-orient from
+  //   HANDOFF.md, which costs quality in a way tokens do not measure.
+  //
+  //   Tokens won, and the gap is smaller than it looks: the flush RATE is set
+  //   by the idle gate, not by this number. Once a long session is past either
+  //   threshold it stays past it, so 400k vs 500k is roughly one extra flush
+  //   during the first climb, not a standing difference in rate.
+  //
+  // Measured 2026-08-11 -- raw tokens, read from each transcript's last usage
+  // record rather than derived from a window percentage, which is what made an
+  // earlier version of this comment wrong: atlascoder 857,023 (opus-5, 1M) and
+  // coder 540,522 are above either threshold, mailer is at 168,764 on
+  // sonnet-5's 200k window and can never reach EITHER, because both exceed its
+  // whole window. So the two candidate numbers select the same agents today.
   idleFlushTokens: 400_000,
   // 20 minutes, matching handoffTimeoutMinutes. That number was set from a
   // measurement (2026-07-27: a normal tool-heavy turn runs shorter than 20
