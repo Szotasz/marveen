@@ -71,6 +71,26 @@ export function sanitizeLiteralKeys(keys: string): string {
   return singleLine.replace(/^\s+|\s+$/g, '')
 }
 
+/**
+ * Az audit-naplóba kerülő leírás egy beírt szövegről -- a szöveg TARTALMA NÉLKÜL.
+ *
+ * MIÉRT (kanban dashboard-key-logging, jelezve 2026-08-02, javítva 2026-08-11): ez a sor
+ * korábban a nyers payloadot írta a naplóba (`keys:"..."`), és 806 ilyen sor gyűlt össze a
+ * store/dashboard.log-ban. A súlyt kimértük: a 11 hosszú érték MIND különböző volt, és egyik
+ * SEM a hosszú életű titkaink közül való -- a vault egyszer használatos, 15 percig élő
+ * beviteli-link tokenjeire illettek. Tehát tartós titok nem szivárgott ki, és rotálni sem
+ * kellett. A kockázat viszont ELŐRE mutat: aki valaha egy valódi jelszót másol a
+ * webterminálba, azt eddig szó szerint naplóztuk volna.
+ *
+ * Amit az auditnak tudnia kell, az NEM a tartalom, hanem hogy TÖRTÉNT-E injektálás, mekkora
+ * volt, és -- egy hamisított prompt visszakereséséhez -- hogyan kezdődött. Négy karakter ehhez
+ * elég, és önmagában nem használható titokként.
+ */
+export function maskKeysPreview(keys: string): string {
+  const head = keys.slice(0, 4).replace(/\s/g, ' ')
+  return `keys:len=${keys.length} head=${JSON.stringify(head)}${keys.length > 4 ? '…(maszkolva)' : ''}`
+}
+
 async function runLoginSteps(session: string, steps: LoginStep[]): Promise<void> {
   for (const step of steps) {
     const args = step.kind === 'literal'
@@ -210,12 +230,22 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
       json(res, { error: 'Provide {keys:string} or an allow-listed {special}' }, 400)
       return true
     }
-    // AUDIT every accepted injection. Preview reflects the SANITIZED payload
-    // actually sent (truncated so a long paste does not bloat the log, but
-    // present so a forged prompt is traceable).
+    // AUDIT every accepted injection. Preview describes the SANITIZED payload actually sent,
+    // but it MUST NOT contain the payload itself.
+    //
+    // MIÉRT MASZKOLVA (kanban dashboard-key-logging, 2026-08-02 jelzés, 2026-08-11 javítás):
+    // ez a sor korábban a nyers szöveget írta a naplóba (`keys:"..."`), és 806 ilyen sor gyűlt
+    // össze. A súlyt kimértük: a 11 hosszú érték MIND különböző volt, és egyik SEM a hosszú
+    // életű titkaink közül való — a vault egyszer használatos, 15 percig élő beviteli-link
+    // tokenjeire illettek, tehát nem szivárgott ki tartós titok. A kockázat viszont ELŐRE
+    // mutat: aki valaha egy valódi jelszót másol a webterminálba, azt szó szerint naplózzuk.
+    //
+    // Amit a naplónak tudnia kell, az NEM a tartalom, hanem hogy TÖRTÉNT-E injektálás, mikor,
+    // kitől és mekkora. A hossz és az első néhány karakter elég ahhoz, hogy egy hamisított
+    // prompt nyomon követhető legyen; a teljes szöveg csak kárt tud okozni.
     const preview = parsed.special
       ? `special:${parsed.special}`
-      : `keys:${JSON.stringify((literalKeys ?? '').slice(0, 120))}${(literalKeys ?? '').length > 120 ? '…' : ''}`
+      : maskKeysPreview(literalKeys ?? '')
     logger.info({ name, remote, xff, ua, preview }, 'agent-terminal: KEYS INJECTION ACCEPTED')
     try {
       await tmux(args)
