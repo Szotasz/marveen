@@ -999,6 +999,7 @@ window._i18n.en = {
   'agents.settings.idle_flush_minutes_label': 'Idle for (minutes)',
   'agents.settings.idle_flush_desc': 'A scheduled restart fires at a fixed time, whether or not the agent is working. This switch uses the other moment: when the context has grown large BUT the agent has done nothing for a while, it asks for a handoff (HANDOFF.md) and restarts with a fresh context. It never cuts work in progress: the pane must be idle and the transcript quiet.',
   'agents.settings.idle_flush_note': 'Idle time is measured from the last write to the session transcript. If the agent has a scheduled task, every wake resets that clock: when the schedule is more frequent than the minutes set here, the idle flush will never run.',
+  'agents.settings.idle_flush_sched_warning': 'Note: this agent has scheduled tasks ({list}). Every wake writes to the transcript and so resets the idle clock. If the schedule is more frequent than the minutes above, the idle flush will never run.',
   'agents.settings.auto_restart_label':   'Auto restart',
   'agents.settings.auto_restart_enabled': 'Enabled',
   'agents.settings.ar_mode_label':        'Mode',

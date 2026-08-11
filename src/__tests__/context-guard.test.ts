@@ -433,7 +433,7 @@ describe('decideGuard -- idle-flush tier', () => {
     ...DEFAULT_CONTEXT_GUARD,
     enabled: false,
     idleFlushEnabled: true,
-    idleFlushTokens: 500_000,
+    idleFlushTokens: 400_000,
     idleMinutes: 20,
   }
   const QUIET = 21 * 60_000     // past idleMinutes
@@ -498,10 +498,10 @@ describe('decideGuard -- idle-flush tier', () => {
   })
 
   it('does not act below the token threshold', () => {
-    const under = inputs({ contextTokens: 499_999, idleMs: QUIET, paneIdle: true })
+    const under = inputs({ contextTokens: 399_999, idleMs: QUIET, paneIdle: true })
     expect(decideGuard(INITIAL_GUARD_STATE, under, IDLE_CFG).action).toBe('none')
     // one token over is the whole difference
-    expect(decideGuard(INITIAL_GUARD_STATE, { ...under, contextTokens: 500_000 }, IDLE_CFG).action)
+    expect(decideGuard(INITIAL_GUARD_STATE, { ...under, contextTokens: 400_000 }, IDLE_CFG).action)
       .toBe('request-handoff')
   })
 
@@ -574,7 +574,7 @@ describe('normalizeContextGuardConfig -- idle-flush fields', () => {
     // one of those must not arm a tier that ends conversations.
     const cfg = normalizeContextGuardConfig({ enabled: true, saturationRestart: true, actPct: 0.9 })
     expect(cfg.idleFlushEnabled).toBe(false)
-    expect(cfg.idleFlushTokens).toBe(500_000)
+    expect(cfg.idleFlushTokens).toBe(400_000)
     expect(cfg.idleMinutes).toBe(20)
   })
 
@@ -585,9 +585,9 @@ describe('normalizeContextGuardConfig -- idle-flush fields', () => {
   })
 
   it('rejects a token threshold small enough to be a typo', () => {
-    // 500 instead of 500_000 would flush a session that had barely started.
-    expect(normalizeContextGuardConfig({ idleFlushTokens: 500 }).idleFlushTokens).toBe(500_000)
-    expect(normalizeContextGuardConfig({ idleFlushTokens: -1 }).idleFlushTokens).toBe(500_000)
+    // 500 instead of 400_000 would flush a session that had barely started.
+    expect(normalizeContextGuardConfig({ idleFlushTokens: 500 }).idleFlushTokens).toBe(400_000)
+    expect(normalizeContextGuardConfig({ idleFlushTokens: -1 }).idleFlushTokens).toBe(400_000)
     expect(normalizeContextGuardConfig({ idleFlushTokens: 300_000 }).idleFlushTokens).toBe(300_000)
   })
 
