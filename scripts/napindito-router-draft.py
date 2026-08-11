@@ -47,7 +47,13 @@ def main():
         print(json.dumps({"ok": False, "refusal": "empty-input",
                           "detail": "no material on stdin"}))
         return 2
-    result = ask(PROMPT + raw, task_class="summary")
+    # 2026-08-11 (Viktor, tg2815): magyar user-facing szoveg a gemma4-hez
+    # tartozik, nem a qwen3-coderhez -- a "summary" osztaly qwen3-ra routolt,
+    # es mindket eddigi draft-hiba (kitalalt feladok 08-10, "nem merheto ->
+    # nincs esemeny" konverzio 08-11) azon szuletett. A "hungarian" osztaly a
+    # routing-tabla szerint gemma4:31b-magyar; a review-kapu valtozatlanul
+    # kotelezo, a #132 napi megfigyeles mostantol a gemma kimenetet meri.
+    result = ask(PROMPT + raw, task_class="hungarian")
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if is_ok(result) else 3
 
