@@ -2444,6 +2444,29 @@
             </small>
             <button class="btn-secondary btn-compact agent-save-section" id="saveAutoRestartBtn" style="margin-top:10px" data-i18n="common.btn.save">Mentés</button>
           </div>
+          <div class="form-group" id="idleFlushGroup">
+            <label data-i18n="agents.settings.idle_flush_label">Tétlen-ürítés</label>
+            <p style="margin:4px 0 10px;font-size:12.5px;line-height:1.5;color:var(--text-muted)" data-i18n="agents.settings.idle_flush_desc">
+              Az ütemezett újraindítás fix időpontban jön, akkor is, ha az ágens épp dolgozik. Ez a kapcsoló a másik pillanatot használja: ha a kontextus nagyra nőtt, DE az ágens egy ideje nem csinál semmit, megkéri hogy írjon átadót (HANDOFF.md), majd friss kontextussal indítja újra. Nem szakít félbe munkát: a pane-nek üresjáratban kell lennie, és a naplónak is csendesnek.
+            </p>
+            <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:10px;cursor:pointer">
+              <input type="checkbox" id="ifEnabled"> <span data-i18n="agents.settings.idle_flush_enabled">Bekapcsolva</span>
+            </label>
+            <div class="form-row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+              <div class="form-group" style="margin-bottom:0">
+                <label for="ifTokens" style="font-size:12px;color:var(--text-muted)" data-i18n="agents.settings.idle_flush_tokens_label">Küszöb (ezer token)</label>
+                <input type="number" id="ifTokens" min="10" max="2000" step="10" value="500" style="width:100px">
+              </div>
+              <div class="form-group" style="margin-bottom:0">
+                <label for="ifMinutes" style="font-size:12px;color:var(--text-muted)" data-i18n="agents.settings.idle_flush_minutes_label">Tétlenség (perc)</label>
+                <input type="number" id="ifMinutes" min="1" max="1440" value="20" style="width:100px">
+              </div>
+            </div>
+            <small style="display:block;margin-top:8px;color:var(--text-muted);font-size:12px;line-height:1.5" data-i18n="agents.settings.idle_flush_note">
+              A tétlenséget a session naplófájljának utolsó írása adja. Ha az ágensnek van ütemezett feladata, minden ébredés nullázza ezt az órát: ha az ütemezés sűrűbb, mint a beállított perc, a tétlen-ürítés soha nem fog lefutni.
+            </small>
+            <button class="btn-secondary btn-compact agent-save-section" id="saveIdleFlushBtn" style="margin-top:10px" data-i18n="common.btn.save">Mentés</button>
+          </div>
           <div class="form-group" id="memoryIsolationGroup">
             <label data-i18n="agents.settings.memory_isolation_label">Memória-izoláció</label>
             <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal">

@@ -114,6 +114,7 @@ import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-s
 import { readContextGuardConfig, writeContextGuardConfig } from '../context-guard-store.js'
 import { getContextGuardStatus } from '../context-guard-runner.js'
 import type { AutoRestartConfig } from '../../auto-restart.js'
+import type { ContextGuardConfig } from '../../context-guard.js'
 // Derived from the DEFAULT config objects, not hand-listed: a field added to
 // the interface is added to its default too, so the accepted-key set cannot
 // drift away from what normalize*Config() actually reads.
@@ -417,6 +418,9 @@ interface AgentSummary {
   session?: string
   hasAvatar: boolean
   autoRestart: AutoRestartConfig
+  /** Per-agent context-guard config, carried here for the same reason as
+   *  autoRestart: the settings pane renders both from one detail fetch. */
+  contextGuard: ContextGuardConfig
   /** Live context size in tokens (input+cache_read+cache_creation of the last
    *  turn), or null when not running / no transcript yet. */
   contextTokens: number | null
@@ -494,6 +498,7 @@ function getAgentSummary(name: string): AgentSummary {
     session,
     hasAvatar: findAvatarForAgent(name) !== null,
     autoRestart: readAutoRestartConfig(name),
+    contextGuard: readContextGuardConfig(name),
     contextTokens: running ? readContextTokensFromProjectDir(dir, resolveAgentConfigDir(name).configDir ?? undefined) : null,
     needsReauth: reauth.needsReauth,
     reauthReason: reauth.reason,
