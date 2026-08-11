@@ -79,11 +79,27 @@ export const DEFAULT_CONTEXT_GUARD: ContextGuardConfig = {
   // clean transition, and exceeds a 200k window entirely so the tier never
   // fires there -- act/hardPct keep those sessions instead.
   //
-  // Deliberately NOT the 500k an earlier design note proposed. That note also
-  // claimed this whole tier had already shipped, which measurement disproved,
-  // so its numbers carry no evidence either. Between an unmeasured figure and
-  // one already argued out in this codebase, the second wins, and both select
-  // the same sessions in practice.
+  // 500k was the alternative, and the trade is worth recording because moving
+  // this number means re-deciding it:
+  //
+  //   LOWER wins on tokens. Sitting 100k deeper costs that much extra input on
+  //   EVERY turn; one flush costs a handoff turn plus a restart, once. The
+  //   per-turn saving dominates the one-off cost by orders of magnitude, so
+  //   leaving the expensive band sooner is the cheaper direction.
+  //
+  //   HIGHER wins on continuity. Each flush makes the agent re-orient from
+  //   HANDOFF.md, which costs quality in a way tokens do not measure.
+  //
+  //   Tokens won, and the gap is smaller than it looks: the flush RATE is set
+  //   by the idle gate, not by this number. Once a long session is past either
+  //   threshold it stays past it, so the two differ by roughly one extra flush
+  //   during the first climb, not by a standing difference in rate.
+  //
+  // Threshold against RAW tokens read from the transcript, never against a
+  // window percentage. Deriving a token count by multiplying a percentage by a
+  // presumed window size is wrong by a factor of five on a 200k-window
+  // session, and would invite the reader to treat a small-window agent as a
+  // candidate when the threshold exceeds its whole window.
   idleFlushTokens: 400_000,
   // 20 minutes, matching handoffTimeoutMinutes. That number is already set to
   // comfortably exceed a normal tool-heavy turn, so it is an evidenced
