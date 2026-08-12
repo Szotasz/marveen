@@ -1,14 +1,28 @@
 #!/bin/bash
-# Contract tests for the channel-watchdog.sh --check-limit subcommand.
+# Contract tests for the channel-watchdog.sh quota-gate subcommands.
 #
 # Guards the quota-limit gate introduced to fix the failure class where a stale
 # keepalive caused by plan quota exhaustion (agent pauses -> keepalive stops)
-# was misread as a wedged session and triggered a useless respawn. The new
-# gate detects the usage-limit banner in the pane and holds instead.
+# was misread as a wedged session and triggered a useless respawn.
 #
-# Tested via the pure --check-limit subcommand (exit 0 = no limit,
-# exit 1 = limit detected). No tmux, no dashboard, no live session needed.
+# Two subcommands under test:
+#   --check-limit          pure stdin detector, no side effects
+#   --check-limit-hold     stateful wrapper: manages a tick counter file so the
+#                          quota hold is delayed (timed), not permanent
 #
+# Three sub-cases that require the capped hold (not covered by --check-limit alone):
+#   [case 1] AUTHDEAD bypass: when AUTHDEAD=true the gate 3 block is skipped
+#            entirely in main flow; --check-limit-hold exit codes let the caller
+#            make that decision. Tested indirectly: exit 1 != 0, exit 2 != 0.
+#   [case 2] "approaching usage limit" over-match: detection is correct but a
+#            functional session would hold PERMANENTLY under the old design. The
+#            capped hold bounds this: after QUOTA_HOLD_MAX_TICKS the gate falls
+#            through so respawn/alert machinery can surface the stuck state.
+#   [case 3] Agent own-message in scrollback: an agent message quoting a quota
+#            banner lands in the bottom 15 lines. Detection fires; the cap
+#            prevents silent permanent hold.
+#
+# No tmux, no dashboard, no live session needed.
 # Run: bash scripts/__tests__/channel-watchdog-quota.test.sh
 
 set -u
@@ -115,6 +129,105 @@ GOT=$(check_limit "USAGE LIMIT REACHED")
 
 GOT=$(check_limit "Usage Limit Reached")
 [ "$GOT" = "1" ] && pass "Usage Limit Reached (mixed case)" || fail "Usage Limit Reached (got $GOT)"
+
+echo ""
+
+# ---------------------------------------------------------------------------
+# 6. --check-limit-hold: basic counter behaviour
+# ---------------------------------------------------------------------------
+echo "6. --check-limit-hold -- counter management"
+
+# Helper: run --check-limit-hold with given pane content, count file, and max
+# Returns the exit code as a string.
+hold_tick() {
+  local pane="$1" cf="$2" max="$3"
+  printf '%s' "$pane" | bash "$WATCHDOG" --check-limit-hold "$cf" "$max"
+  echo $?
+}
+
+CF="$(mktemp)"
+MAX=3  # small cap for tests; main script uses QUOTA_HOLD_MAX_TICKS=12
+
+# No banner: exit 0, counter file removed
+rm -f "$CF"
+GOT=$(hold_tick "" "$CF" "$MAX")
+[ "$GOT" = "0" ] && pass "no banner -> exit 0" || fail "no banner -> exit 0 (got $GOT)"
+[ ! -f "$CF" ] && pass "no banner -> count file removed" || fail "no banner -> count file removed (file exists, content=$(cat "$CF" 2>/dev/null))"
+
+# First tick with banner: exit 1, counter = 1
+GOT=$(hold_tick "You hit your session limit · resets 5:50pm" "$CF" "$MAX")
+[ "$GOT" = "1" ] && pass "first banner tick -> exit 1 (hold)" || fail "first banner tick -> exit 1 (got $GOT)"
+CNT=$(cat "$CF" 2>/dev/null || echo "MISSING")
+[ "$CNT" = "1" ] && pass "first banner tick -> counter=1" || fail "first banner tick -> counter=1 (got $CNT)"
+
+# Second tick: exit 1, counter = 2
+GOT=$(hold_tick "You hit your session limit · resets 5:50pm" "$CF" "$MAX")
+[ "$GOT" = "1" ] && pass "second banner tick -> exit 1 (hold)" || fail "second banner tick -> exit 1 (got $GOT)"
+CNT=$(cat "$CF" 2>/dev/null || echo "MISSING")
+[ "$CNT" = "2" ] && pass "second banner tick -> counter=2" || fail "second banner tick -> counter=2 (got $CNT)"
+
+# Third tick (count reaches MAX): exit 2 (cap exceeded), counter file removed
+GOT=$(hold_tick "You hit your session limit · resets 5:50pm" "$CF" "$MAX")
+[ "$GOT" = "2" ] && pass "cap tick -> exit 2 (fall through)" || fail "cap tick -> exit 2 (got $GOT)"
+[ ! -f "$CF" ] && pass "cap tick -> count file removed" || fail "cap tick -> count file removed (file exists)"
+
+# After cap: next banner tick starts fresh from 1, not stuck at cap forever
+GOT=$(hold_tick "You hit your session limit · resets 5:50pm" "$CF" "$MAX")
+[ "$GOT" = "1" ] && pass "post-cap first tick -> exit 1 again" || fail "post-cap first tick -> exit 1 (got $GOT)"
+CNT=$(cat "$CF" 2>/dev/null || echo "MISSING")
+[ "$CNT" = "1" ] && pass "post-cap counter restarts at 1" || fail "post-cap counter restarts at 1 (got $CNT)"
+
+# Banner clears mid-hold: counter reset
+GOT=$(hold_tick "" "$CF" "$MAX")
+[ "$GOT" = "0" ] && pass "banner clears mid-hold -> exit 0" || fail "banner clears mid-hold -> exit 0 (got $GOT)"
+[ ! -f "$CF" ] && pass "banner clears mid-hold -> counter file removed" || fail "banner clears mid-hold -> counter reset (file still exists)"
+
+rm -f "$CF"
+
+echo ""
+
+# ---------------------------------------------------------------------------
+# 7. [case 2] "approaching usage limit" -- detection fires, hold is capped
+# ---------------------------------------------------------------------------
+echo "7. [case 2] approaching-banner is capped, not permanent"
+
+CF="$(mktemp)"
+MAX=2  # cap fires at count=MAX (i.e. after MAX-1 hold ticks + 1 cap tick)
+
+# Detection fires (would trigger permanent hold under old design): count=1 < 2 -> hold
+GOT=$(hold_tick "You are approaching your usage limit for this period" "$CF" "$MAX")
+[ "$GOT" = "1" ] && pass "approaching banner -> exit 1 (detection correct)" || fail "approaching banner -> exit 1 (got $GOT)"
+
+# At cap (count reaches MAX=2, not < MAX): falls through (exit 2), not held permanently
+GOT=$(hold_tick "You are approaching your usage limit for this period" "$CF" "$MAX")
+[ "$GOT" = "2" ] && pass "approaching banner at cap -> exit 2 (not permanent)" || fail "approaching banner at cap -> exit 2 (got $GOT)"
+
+rm -f "$CF"
+
+echo ""
+
+# ---------------------------------------------------------------------------
+# 8. [case 3] Agent own-message in scrollback: capped, not permanent
+# ---------------------------------------------------------------------------
+echo "8. [case 3] agent message about quota in pane -- capped hold, not silent permanent"
+
+CF="$(mktemp)"
+MAX=3  # 3 ticks total: tick 1 -> hold, tick 2 -> hold, tick 3 -> cap (fall through)
+
+# Agent replied: "The Claude plan hit your session limit -- this resets at 6pm."
+# This lands in the bottom 15 lines and fires detection.
+AGENT_MSG="I looked into it. The Claude plan hit your session limit -- this resets at 6pm."
+GOT=$(hold_tick "$AGENT_MSG" "$CF" "$MAX")
+[ "$GOT" = "1" ] && pass "agent message tick 1 -> hold (detection expected)" || fail "agent message tick 1 -> hold (got $GOT)"
+
+GOT=$(hold_tick "$AGENT_MSG" "$CF" "$MAX")
+[ "$GOT" = "1" ] && pass "agent message tick 2 -> hold" || fail "agent message tick 2 -> hold (got $GOT)"
+
+# At cap: falls through so respawn/alert machinery can fire -- NOT silent forever
+GOT=$(hold_tick "$AGENT_MSG" "$CF" "$MAX")
+[ "$GOT" = "2" ] && pass "agent message at cap -> exit 2 (not permanently silent)" || fail "agent message at cap -> exit 2 (got $GOT)"
+
+rm -f "$CF"
 
 echo ""
 echo "--------------------------------------"

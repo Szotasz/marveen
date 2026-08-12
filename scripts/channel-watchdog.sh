@@ -62,18 +62,56 @@ if [ "${1:-}" = "--check-limit" ]; then
   exit 0  # no banner
 fi
 
+# --- --check-limit-hold subcommand -------------------------------------------
+# Stateful companion to --check-limit: manages a consecutive-tick counter so
+# the quota hold is delayed (timed), not permanent.
+#
+# Usage: pane_content | bash "$0" --check-limit-hold COUNT_FILE MAX_TICKS
+#   COUNT_FILE  path where the tick counter is persisted across invocations
+#   MAX_TICKS   integer; when count reaches this the banner is treated as a
+#               possible remnant and the caller should fall through (not hold)
+#
+# Exit codes:
+#   0  no banner detected (counter reset)
+#   1  banner detected, count < MAX_TICKS -- caller should hold
+#   2  banner detected, count >= MAX_TICKS -- cap exceeded, caller falls through
+if [ "${1:-}" = "--check-limit-hold" ]; then
+  _cf="${2:?--check-limit-hold requires COUNT_FILE arg}"
+  _max="${3:?--check-limit-hold requires MAX_TICKS arg}"
+  _pane="$(cat)"
+  if printf '%s' "$_pane" | bash "$0" --check-limit 2>/dev/null; then
+    # No banner -- clear the counter so a future genuine quota wait starts fresh.
+    rm -f "$_cf" 2>/dev/null || true
+    exit 0
+  fi
+  # Banner detected: increment tick counter.
+  _count=$(cat "$_cf" 2>/dev/null || echo 0)
+  case "$_count" in (*[!0-9]*|'') _count=0;; esac
+  _count=$(( _count + 1 ))
+  if [ "$_count" -lt "$_max" ]; then
+    printf '%s\n' "$_count" > "$_cf"
+    exit 1  # hold
+  fi
+  # Cap reached: remove the counter so the next cycle starts from 0 again
+  # (avoids alerting on every subsequent tick after the cap fires).
+  rm -f "$_cf" 2>/dev/null || true
+  exit 2  # cap exceeded -- fall through
+fi
+
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 STORE="$INSTALL_DIR/store"
 KEEPALIVE_FILE="$STORE/.channel-keepalive"
 RESPAWN_STAMP="$STORE/.channel-last-respawn"
 RESPAWN_COUNT_FILE="$STORE/.channel-watchdog-respawns"
 AUTH_DEAD_COUNT_FILE="$STORE/.channel-watchdog-auth-dead-count"
+QUOTA_HOLD_COUNT_FILE="$STORE/.channel-watchdog-quota-hold-count"
 LOG_TAG="channel-watchdog"
 
 STALE_SECONDS=$(( 15 * 60 ))    # keepalive older than this => wedged/deaf
 GRACE_SECONDS=$(( 15 * 60 ))    # don't respawn again within this window
 MAX_CONSECUTIVE=3               # after this many respawns w/o recovery, back off + alert
 AUTH_DEAD_THRESHOLD_TICKS=3     # consecutive dead-token ticks (~15min @ 5min/tick) before acting
+QUOTA_HOLD_MAX_TICKS=12         # ~1 hour at 5min/tick; beyond this a banner is probably a remnant
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*"; }
 
@@ -161,20 +199,48 @@ fi
 # --- neither signal fired: healthy, reset the shared backoff counter, done ---
 if [ "$STALE" != true ] && [ "$AUTHDEAD" != true ]; then
   rm -f "$RESPAWN_COUNT_FILE" 2>/dev/null || true
+  rm -f "$QUOTA_HOLD_COUNT_FILE" 2>/dev/null || true
   exit 0
 fi
 
-# --- gate 3: quota-limit gate ------------------------------------------------
+# --- gate 3: quota-limit gate (capped hold) ----------------------------------
 # A stale keepalive or auth-dead signal can be caused by plan quota exhaustion:
 # the agent pauses, the keepalive stops, and auth probes may see degraded pane
 # output. Respawning cannot fix quota -- the new session inherits the same plan
 # limit. Detect the usage-limit banner and hold until it resets automatically.
 # (The TS side handles this via context-restart-gate.ts paneUsageLimited guard,
 # #938. This gate is the shell-side equivalent for the shell-side watchdog.)
-if ! "$TMUX_BIN" capture-pane -p -t "$SESSION" 2>/dev/null \
-    | bash "$0" --check-limit 2>/dev/null; then
-  log "plan usage-limit banner in $SESSION (STALE=$STALE AUTHDEAD=$AUTHDEAD) -- holding (respawn cannot fix quota; resets automatically)"
-  exit 0
+#
+# WHY capped (not permanent):
+#   A permanent hold has three failure modes that are worse than a respawn loop:
+#   (1) AUTHDEAD=true is bypassed: a quota banner in an auth-dead pane blocks
+#       the reauth-backstop respawn, which is this script's own purpose.
+#   (2) A banner remnant after quota resets keeps the channel dead silently
+#       (no noise, no recovery) -- at least a respawn loop makes noise.
+#   (3) An agent message that quotes the quota banner (in the 15-line window)
+#       silently blocks all future respawns of that session.
+#   The cap (QUOTA_HOLD_MAX_TICKS ticks) bounds the silent hold; after it the
+#   gate falls through so grace/backoff/respawn can surface the stuck state.
+#
+# WHY AUTHDEAD is excluded: the AUTHDEAD arm has its own escalation (threshold
+# ticks + backoff). Letting quota-hold block AUTHDEAD suppresses that escalation.
+# An auth-dead pane with a quota banner is more likely a remnant than a live wait.
+if [ "$AUTHDEAD" != true ]; then
+  # Fail-open: capture-pane failure or subcommand error yields exit 0 (no banner
+  # detected), so the gate falls through to grace/respawn rather than holding.
+  # A recovery actor holding on uncertainty is worse than an extra respawn cycle.
+  "$TMUX_BIN" capture-pane -p -t "$SESSION" 2>/dev/null \
+    | bash "$0" --check-limit-hold "$QUOTA_HOLD_COUNT_FILE" "$QUOTA_HOLD_MAX_TICKS" 2>/dev/null
+  _qexit=$?
+  if [ "$_qexit" -eq 1 ]; then
+    _qtick=$(cat "$QUOTA_HOLD_COUNT_FILE" 2>/dev/null || echo '?')
+    log "usage-limit banner in $SESSION (STALE=$STALE tick=${_qtick}/${QUOTA_HOLD_MAX_TICKS}) -- holding (respawn cannot fix quota; resets automatically)"
+    exit 0
+  elif [ "$_qexit" -eq 2 ]; then
+    log "ALERT: usage-limit banner in $SESSION held ${QUOTA_HOLD_MAX_TICKS} ticks (~$((QUOTA_HOLD_MAX_TICKS * 5))min) -- possible remnant; continuing to respawn. Manual check: tmux attach -t $SESSION"
+    # fall through to gate 4 (grace) and gate 5 (backoff/alert)
+  fi
+  # _qexit=0: no quota banner -- counter already reset by --check-limit-hold; fall through
 fi
 
 # --- gate 4: respawn grace (shared with the dashboard watchdog) ---
@@ -244,6 +310,7 @@ if "$TMUX_BIN" respawn-pane -k -t "$SESSION" "$RESPAWN_CMD" 2>/dev/null; then
   date +%s > "$RESPAWN_STAMP"
   echo $(( count + 1 )) > "$RESPAWN_COUNT_FILE"
   rm -f "$AUTH_DEAD_COUNT_FILE" 2>/dev/null || true
+  rm -f "$QUOTA_HOLD_COUNT_FILE" 2>/dev/null || true
   log "respawn-pane issued"
 else
   log "respawn-pane FAILED for $SESSION"
