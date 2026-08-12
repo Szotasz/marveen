@@ -8,7 +8,7 @@
 
 Alapból az ágensek az Anthropic Cloud API-n, OpenRouter-en vagy helyi Ollama végponton futnak. Az egyéni provider funkció lehetővé teszi, hogy tetszőleges, a `/v1/messages` Anthropic Messages API-t megvalósító végpontot regisztrálj, és ágensekhez rendelj. Így pl. OpenRouter ingyenes tier, DeepSeek saját kulccsal, vagy bármilyen Anthropic-kompatibilis proxy egyszerűen bekonfigurálható.
 
-**Fontos korlát:** csak az Anthropic Messages API (`/v1/messages`) kompatibilis végpontok működnek. Tiszta OpenAI végpont (`/v1/chat/completions`) esetén fordítóproxyt kell közé tenni -- ez jelenleg nem támogatott.
+**Fontos korlát:** csak az Anthropic Messages API (`/v1/messages`) kompatibilis végpontok működnek. Tiszta OpenAI végpont (`/v1/chat/completions`) esetén fordítóproxyt kell közé tenni. A gyakorlati megoldás erre a LiteLLM proxy -- lásd a dokumentáció végén az *OpenCode Go bekötése LiteLLM proxyval* szakaszt.
 
 ---
 
@@ -79,3 +79,34 @@ Minden végpont Bearer tokenes hitelesítést igényel (`store/.dashboard-token`
 - A vault kulcsok értéke sosem kerül a provider-konfigba -- csak a kulcs neve tárolódik.
 - Ha egy ágenshez beállított provider-id nem található a `store/custom-providers.json`-ban, az ágens indítása hibával leáll (csendes Ollama-fallback helyett).
 - Modell azonosítóban csak `a-zA-Z0-9._/:+-` karakterek engedélyeztek, hogy megakadályozzuk a shell-injekciót az egyéni provider ágakban.
+
+---
+
+## OpenCode Go bekötése LiteLLM proxyval
+
+Rövid útmutató: hogyan futtass ágenst az OpenCode Go előfizetés modelljein (pl. `deepseek-v4-flash`) egy LiteLLM proxyn keresztül.
+
+**Miért kell proxy?** Az egyéni provider funkció csak az Anthropic Messages API-t (`/v1/messages`) fogadja, az OpenCode Go viszont OpenAI-stílusú (`/v1/chat/completions`). A LiteLLM proxy a kettő közé ékelődik: felfelé az OpenCode Go OpenAI-végpontjával beszél, lefelé pedig Anthropic-kompatibilis `/v1/messages`-t kínál az ágensnek.
+
+```
+ágens  --/v1/messages-->  LiteLLM proxy  --/v1/chat/completions-->  OpenCode Go
+```
+
+**1. LiteLLM proxy.** Telepíts egy LiteLLM proxyt (docker-compose). A proxy localhoston szolgál ki (pl. `http://127.0.0.1:4010`), a modelleket a `config.yaml` `model_list`-jében definiálod.
+
+**2. OpenCode Go modell felvétele** a `model_list`-be (a `<...>` helyekre a saját fiókod adatai kerülnek):
+
+```yaml
+model_list:
+  - model_name: deepseek-v4-flash
+    litellm_params:
+      model: openai/deepseek-v4-flash
+      api_base: <OPENCODE_GO_BASE_URL>
+      api_key: os.environ/OPENCODE_API_KEY
+```
+
+**3. LiteLLM regisztrálása egyéni providerként** (Dashboard > Provider-ok > Új provider): Base URL = a proxy gyökere (pl. `http://127.0.0.1:4010`); Auth header = `Bearer`; Vault kulcs neve = a LiteLLM `master_key`-t tartalmazó vault-kulcs.
+
+**4. Ágenshez rendelés** (ágens szerkesztő): Modell = a LiteLLM provider; Egyéni modell ID = a `model_name` (pl. `deepseek-v4-flash`).
+
+**5. Indítsd újra az ágenst** -- innentől az OpenCode Go modelljén fut.
