@@ -2052,6 +2052,27 @@ export interface AgentMessage {
   parent_span_id: string | null
 }
 
+/**
+ * The synthetic sender used for notices the SYSTEM raises rather than an agent:
+ * handoff failures, approval notices, "a new colleague arrived" greetings.
+ *
+ * It is NOT an agent. It has no tmux session, it is not in the agent registry,
+ * and it can never receive a message. That last part is the whole reason this
+ * constant exists: the name was a bare string literal in five places, so
+ * nothing in the code stated that addressing it is always a dead end -- and two
+ * guards that each looked correct closed a loop around it.
+ *
+ * Measured 2026-08-05 (janna): 12 handoff-failure notices and 9 acknowledgements
+ * in one day, on an exact one-hour period (the retry window). The cycle was:
+ * a handoff-failure arrives from 'system' -> the main agent marks it done ->
+ * the done-handler sends an [Eredmény] ack back to the SENDER, i.e. to
+ * 'system' -> that ack can never be delivered -> the router raises a NEW
+ * handoff-failure -> repeat. Neither guard was wrong on its own; together they
+ * formed a ring. Anything addressed to this sender must therefore be treated as
+ * undeliverable BY DESIGN, not as a delivery failure worth reporting.
+ */
+export const SYSTEM_SENDER = 'system'
+
 export function createAgentMessage(
   from: string,
   to: string,

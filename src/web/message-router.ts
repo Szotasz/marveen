@@ -12,6 +12,7 @@ import {
   createAgentMessage,
   stampMessageTrace,
   upsertOtelSpan,
+  SYSTEM_SENDER,
   type AgentMessage,
 } from '../db.js'
 import { isQualifiedId } from './federation/address.js'
@@ -120,9 +121,16 @@ function notifyOrchestratorOfFailedHandoff(msg: AgentMessage, reason: string): v
     // A failed message to the main agent can't happen (pull model), but guard
     // anyway so we never loop a notification back onto itself.
     if (msg.to_agent === MAIN_AGENT_ID) return
+    // Same for anything addressed to SYSTEM_SENDER: that name is not an agent,
+    // so "could not be delivered" is the DESIGNED outcome, not news. Reporting
+    // it created the second half of the ring described on SYSTEM_SENDER --
+    // the ack that the done-handler sent back to 'system' came straight back
+    // here as a fresh handoff-failure. Both guards are needed: each one alone
+    // is reachable by the other route.
+    if (msg.to_agent === SYSTEM_SENDER) return
     const preview = (msg.content ?? '').slice(0, 220)
     createAgentMessage(
-      'system',
+      SYSTEM_SENDER,
       MAIN_AGENT_ID,
       `[handoff-failure] Inter-agent message (id ${msg.id}) ${msg.from_agent} -> ${msg.to_agent} could NOT be delivered: ${reason}. Consider re-sending or checking the target agent. Content preview: ${preview}`,
     )
@@ -148,7 +156,7 @@ const MAIN_AGENT_WAKEUP_COOLDOWN_MS = 45 * 1000
 function notifyDelegationFailed(msg: AgentMessage, error: string): void {
   try {
     createAgentMessage(
-      'system',
+      SYSTEM_SENDER,
       msg.from_agent,
       `A(z) ${msg.to_agent} címre küldött föderált üzeneted (#${msg.id}) véglegesen meghiúsult: ${error.slice(0, 200)}. ` +
       'Ne delegáld újra automatikusan — jelezd a tulajdonosnak, vagy válaszolj magad a kérőnek.',
@@ -411,7 +419,7 @@ function batchDeliverBacklog(agent: string, agentPending: AgentMessage[], now: n
   }
   // Create ONE new pending message with the summary. It will be picked up by
   // the router on the next tick and delivered normally (or via PULL if main agent).
-  createAgentMessage('system', agent, summaryContent)
+  createAgentMessage(SYSTEM_SENDER, agent, summaryContent)
   logger.info({
     agent,
     batchedCount: old.length,
