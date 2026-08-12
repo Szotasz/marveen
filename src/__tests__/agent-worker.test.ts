@@ -143,3 +143,50 @@ describe('workerStartAllowed (WORKERHOME1: WEB_ONLY must suppress every worker s
     expect(src).not.toMatch(/`claude --dangerously-skip-permissions/)
   })
 })
+
+describe('worker custom-provider inheritance (subscription-less fleet support)', () => {
+  // String-contract guard: the source must wire the custom provider path so
+  // that subscription-less fleets (custom LiteLLM / OpenRouter endpoint) get
+  // working background workers without extra config.
+
+  it('buildCustomProviderLaunchEnv is imported from agent-process', () => {
+    const __dirname = dirname(fileURLToPath(import.meta.url))
+    const src = readFileSync(join(__dirname, '../web/agent-worker.ts'), 'utf-8')
+    expect(src).toContain('buildCustomProviderLaunchEnv')
+    expect(src).toContain('stampCustomApiKeyApproval')
+  })
+
+  it('MARVEEN_WORKER_MODEL override bypasses custom-provider lookup', () => {
+    const __dirname = dirname(fileURLToPath(import.meta.url))
+    const src = readFileSync(join(__dirname, '../web/agent-worker.ts'), 'utf-8')
+    // The override must be checked before buildCustomProviderLaunchEnv is called.
+    const overridePos = src.indexOf('WORKER_MODEL_OVERRIDE')
+    const cpLookupPos = src.indexOf('buildCustomProviderLaunchEnv')
+    expect(overridePos).toBeGreaterThan(-1)
+    expect(cpLookupPos).toBeGreaterThan(-1)
+    expect(overridePos).toBeLessThan(cpLookupPos)
+  })
+
+  it('launch string slots customEnvPrefix between CLAUDE_CONFIG_DIR and cd', () => {
+    const __dirname = dirname(fileURLToPath(import.meta.url))
+    const src = readFileSync(join(__dirname, '../web/agent-worker.ts'), 'utf-8')
+    // The variable must appear in the launch string template between the two
+    // anchors. We check string order in the source file as a proxy.
+    const configDirPos = src.indexOf('CLAUDE_CONFIG_DIR')
+    const prefixPos = src.indexOf('customEnvPrefix')
+    const cdPos = src.indexOf("ctx.home) && `")
+    expect(configDirPos).toBeGreaterThan(-1)
+    expect(prefixPos).toBeGreaterThan(-1)
+    expect(cdPos).toBeGreaterThan(-1)
+    expect(configDirPos).toBeLessThan(prefixPos)
+    expect(prefixPos).toBeLessThan(cdPos)
+  })
+
+  it('x-api-key path stamps .claude.json approval in the worker configDir', () => {
+    const __dirname = dirname(fileURLToPath(import.meta.url))
+    const src = readFileSync(join(__dirname, '../web/agent-worker.ts'), 'utf-8')
+    // stampCustomApiKeyApproval must be called with ctx.configDir in scope.
+    expect(src).toContain('stampCustomApiKeyApproval')
+    expect(src).toContain("ctx.configDir, '.claude.json'")
+  })
+})
