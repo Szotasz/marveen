@@ -96,6 +96,23 @@ describe('when the primary machine is not there', () => {
     expect(route('code', { health: airDown })).toMatchObject({ host: 'strikex', model: 'qwen2.5-coder:14b' })
   })
 
+  it('keeps Hungarian on a gemma when air903max is gone, instead of dropping to qwen', () => {
+    // Measured 2026-08-12 (#335): air903max stopped serving around 22:15 the
+    // night before, and the morning brief's `hungarian` call was served by
+    // strikex/qwen3:14b -- the very model the gemma route was introduced to
+    // avoid (2b1d8d0: both known draft errors happened on qwen3). Falling back
+    // within the same family is a quality step down; falling back to qwen is a
+    // different model answering Hungarian user-facing text, silently.
+    expect(route('hungarian', { health: airDown })).toMatchObject({ host: 'strikex', model: 'gemma4:12b' })
+  })
+
+  it('turns thinking off on the Hungarian fallback too, not just the primary', () => {
+    // The empty-answer guard is a property of gemma under ollama, so it has to
+    // survive the fallback -- otherwise the degraded path returns nothing and
+    // looks like a model failure.
+    expect(routed('hungarian', { health: airDown }).options).toMatchObject({ think: false })
+  })
+
   it('refuses rather than inventing a target when both are down', () => {
     expect(route('structured', { health: bothDown })).toMatchObject({ refused: 'no-healthy-host' })
   })

@@ -85,9 +85,18 @@ export const TASK_CLASSES: Record<string, TaskClass> = {
   structured: { primary: QWEN_CODER, fallback: QWEN_SMALL },
   summary: { primary: QWEN_CODER, fallback: QWEN_SMALL },
   general: { primary: QWEN_CODER, fallback: QWEN_SMALL },
+  // Hungarian user-facing text stays in the gemma family on both legs. The
+  // fallback used to be QWEN_SMALL, and on 2026-08-12 that turned a shipped
+  // fix into a silent no-op: air903max stopped serving overnight, and the
+  // morning brief was drafted by qwen3:14b -- the model the gemma route was
+  // introduced to avoid. gemma4:12b is already on StrikeX (measured: 7.6 GB,
+  // 50 tok/s, fully on GPU), so the degraded path is a smaller gemma rather
+  // than a different model. `think: false` is repeated deliberately: it is a
+  // property of gemma under ollama, not of the primary target, and without it
+  // the fallback answers empty.
   hungarian: {
     primary: { host: 'air903max', model: 'gemma4:31b-magyar', forced: { think: false } },
-    fallback: QWEN_SMALL,
+    fallback: { host: 'strikex', model: 'gemma4:12b', forced: { think: false } },
   },
   code: {
     primary: { host: 'air903max', model: 'laguna-xs.2:fixed', forced: { think: true } },
