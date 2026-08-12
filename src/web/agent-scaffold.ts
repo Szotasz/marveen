@@ -1053,6 +1053,20 @@ MINDIG az install időzónáját használd: **${APP_TZ}** (a teljes telepítés 
 
 Heartbeat-eknél és minden időpontot kezelő feladatnál kötelező: \`date\` Bash parancs az elemzés ELŐTT.
 
+## MCP-toolok deferred betöltése (FLEETDEFER809)
+
+Az MCP-toolok érkezhetnek DEFERRED módon: a nevük megjelenik egy
+system-reminder listában, de a séma nincs betöltve, és a közvetlen hívás
+úgy bukik, mintha a tool nem létezne. Ez a bukás NEM hiány. Mielőtt azt
+mondanád egy toolra, hogy "nem elérhető":
+
+1. \`ToolSearch\` a pontos névvel: \`select:<tool_nev>\`. Utána a tool normálisan hívható.
+2. Ha a select nem hoz találatot, keress KULCSSZÓVAL (pl. \`calendar\`, \`gmail\`), mert a szerver-név telepítésenként eltérhet.
+3. Csak akkor mondd ki a hiányt, ha a kulcsszavas keresés sem hozza fel. Az már valódi tény, nem betöltési állapot.
+
+(Mért eset: HBCALMCP808. A heartbeat egy napig üres naptár-szekciót adott,
+miközben mind a 13 calendar-tool ott ült a saját deferred listájában.)
+
 ## Új ismeretlen sender első üzenete (ARANYSZABÁLY)
 
 Ha egy senderId üzen a csatornán AKIT EDDIG NEM ISMERSZ — nem szerepel az aktív interakciós kontextusodban, és nem találsz róla memóriabejegyzést a vault-ban — KÖTELEZŐ ELSŐKÉNT inter-agent message-t küldeni ${BOT_NAME}-nek MIELŐTT érdemi választ adsz.

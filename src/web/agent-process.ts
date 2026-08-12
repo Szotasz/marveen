@@ -1310,11 +1310,18 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // member. Killing the suggestion at the source removes the ghost the recovery
     // misreads. Env var verified present in claude.exe (CLAUDE_CODE_ENABLE_*).
     const promptSuggestionEnv = 'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false && '
+    // Disable Claude Code's in-place auto-updater for every spawned agent. A
+    // running agent whose updater fires does an in-place global reinstall into the
+    // shared package prefix; a half-completed update can leave a broken stub and
+    // drop the bin symlink, corrupting the one install every agent resolves
+    // through. Agents launch from a deliberately pinned install, so the updater
+    // must never move it out from under a live process.
+    const autoUpdaterEnv = 'export DISABLE_AUTOUPDATER=1 && '
     // shSingleQuote(model) (card b7fa5281): the model is POSIX single-quote ESCAPED, which both keeps
     // values like `claude-opus-4-8[1m]` (1M-context suffix) from being glob-expanded AND makes a `'`
     // in the value inert rather than a quote-break -> command injection. Same escape at the three
     // ANTHROPIC_MODEL env sites above.
-    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${ollamaEnv}${deepseekEnv}${openrouterEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
+    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${ollamaEnv}${deepseekEnv}${openrouterEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
     runTmux(null, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir }, 'Agent tmux session started')

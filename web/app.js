@@ -3068,6 +3068,57 @@ document.getElementById('saveContextGuardBtn').addEventListener('click', async (
   } catch { showToast(t('common.error_save')) }
 })
 
+// Populate the idle-flush controls from an agent payload. Same source as
+// setupAutoRestartUI (the agent detail carries contextGuard alongside
+// autoRestart), so the settings pane needs no extra fetch.
+//
+// The tokens field is shown in THOUSANDS: the stored value is an absolute
+// token count, and asking an operator to type 500000 into a box invites the
+// 500 that normalizeContextGuardConfig has to defend against.
+function setupIdleFlushUI(agent) {
+  const cg = (agent && agent.contextGuard) || { idleFlushEnabled: false, idleFlushTokens: 400000, idleMinutes: 20 }
+  const enabled = document.getElementById('ifEnabled')
+  const tokens = document.getElementById('ifTokens')
+  const minutes = document.getElementById('ifMinutes')
+  if (!enabled || !tokens || !minutes) return
+  enabled.checked = cg.idleFlushEnabled === true
+  tokens.value = Math.round((cg.idleFlushTokens || 400000) / 1000)
+  minutes.value = cg.idleMinutes || 20
+  showIdleFlushScheduleWarning(agent)
+}
+
+// Warn when this agent has ANY scheduled task, because the idle clock is the
+// transcript mtime and every scheduled wake writes to the transcript: a
+// schedule that fires more often than idleMinutes means the tier can never
+// accumulate enough quiet and will sit switched on doing nothing.
+//
+// Deliberately NOT a computed comparison of cron period vs idleMinutes. A cron
+// parser in the settings pane is a lot of fragile surface for a hint, and it
+// would be silent exactly when it got a schedule shape wrong. Listing the
+// schedules and letting the operator judge is both cheaper and harder to make
+// quietly incorrect.
+async function showIdleFlushScheduleWarning(agent) {
+  const box = document.getElementById('ifScheduleWarning')
+  if (!box) return
+  // Clear as well as hide: the pane is reused for every agent, and a stale
+  // warning left in the node is one accidental unhide away from naming the
+  // wrong agent's schedules.
+  box.hidden = true
+  box.textContent = ''
+  const id = (agent && (agent.autoRestartId || agent.name)) || null
+  if (!id) return
+  try {
+    const res = await fetch('/api/schedules')
+    if (!res.ok) return
+    const all = await res.json()
+    const mine = (Array.isArray(all) ? all : []).filter(t => t && t.agent === id && t.schedule)
+    if (!mine.length) return
+    const list = mine.map(t => `${t.name} (${t.schedule})`).join(', ')
+    box.textContent = t('agents.settings.idle_flush_sched_warning').replace('{list}', list)
+    box.hidden = false
+  } catch { /* the hint is best-effort; never break the pane over it */ }
+}
+
 async function openMarveenDetail() {
   const m = window._marveen
   if (!m) return
@@ -3076,6 +3127,7 @@ async function openMarveenDetail() {
   currentAgent = { ...m, name: mainAgentId(), claudeMd: '', soulMd: '', mcpJson: '', skills: [] }
   setupAutoRestartUI(currentAgent)
   setupContextGuardUI(agentApiName())
+  setupIdleFlushUI(currentAgent)
 
   const displayName = m.name || 'Marveen'
   document.getElementById('agentDetailTitle').textContent = displayName
@@ -3576,6 +3628,7 @@ async function openAgentDetail(agentName) {
   // Auto-restart settings + live context size
   setupAutoRestartUI(currentAgent)
   setupContextGuardUI(currentAgent.autoRestartId || currentAgent.name)
+  setupIdleFlushUI(currentAgent)
 
   // Telegram tab
   updateChannelTab(currentAgent)
@@ -4509,6 +4562,42 @@ document.getElementById('saveAutoRestartBtn').addEventListener('click', async ()
     const body = await res.json()
     if (currentAgent) currentAgent.autoRestart = body.autoRestart
     showToast(t('agents.toast.auto_restart_saved'))
+  } catch { showToast(t('common.error_save')) }
+})
+
+document.getElementById('saveIdleFlushBtn').addEventListener('click', async () => {
+  if (!currentAgent) return
+  // Like auto-restart, this applies to the main session too, so role === 'main'
+  // is NOT skipped. The context-guard store is keyed by the same id.
+  const id = currentAgent.autoRestartId || currentAgent.name
+  // Send the WHOLE config, not just the three idle fields. The endpoint
+  // normalizes the body into a complete config, so a fragment would silently
+  // reset actPct/hardPct/saturationRestart/enabled to their defaults -- saving
+  // an idle-flush preference would disarm the wedge tiers on an agent that had
+  // them on. Re-read rather than trusting the cached detail: not every path
+  // that opens this pane populates contextGuard, and an empty object here is
+  // indistinguishable from a genuinely default config.
+  let current = {}
+  try {
+    const cur = await fetch(`/api/agents/${encodeURIComponent(id)}/context-guard`)
+    if (!cur.ok) throw new Error()
+    current = (await cur.json()).contextGuard || {}
+  } catch { showToast(t('common.error_save')); return }
+  const cfg = Object.assign({}, current, {
+    idleFlushEnabled: document.getElementById('ifEnabled').checked,
+    idleFlushTokens: Math.round(Number(document.getElementById('ifTokens').value) * 1000),
+    idleMinutes: Number(document.getElementById('ifMinutes').value),
+  })
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(id)}/context-guard`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    })
+    if (!res.ok) throw new Error()
+    const body = await res.json()
+    if (currentAgent) currentAgent.contextGuard = body.contextGuard
+    showToast(t('agents.toast.idle_flush_saved'))
   } catch { showToast(t('common.error_save')) }
 })
 
@@ -12036,6 +12125,27 @@ setInterval(pollUpdatesBadge, 5 * 60_000)
 async function fetchOnboardingStatus() {
   try { return await (await fetch('/api/onboarding/status')).json() } catch { return null }
 }
+// WIZFLOW809 BEGIN waitForChannelLive
+// Poll the onboarding status until the channel is MEASURABLY live
+// (status.channelLive: the bun-child/process liveness the channel-monitor
+// uses), instead of a fixed setTimeout. The restart response's
+// `restarted: true` is only a dispatch receipt -- on the cold path the real
+// start takes ~minutes, and a fixed wait opened the pairing step against a
+// still-booting session (WIZFLOW809, three field reports). Checks BEFORE the
+// first sleep so an already-live channel advances immediately; a timeout is
+// NOT success -- the caller must keep the user on this step and say the
+// channel is still starting. Dependencies are parameters so the slow path is
+// unit-testable with a delayed fake signal (the acceptance criterion: the
+// wizard WAITS, it does not get lucky with timing).
+async function waitForChannelLive(fetchStatus, delayMs, maxTries) {
+  for (let i = 0; i < maxTries; i++) {
+    const st = await fetchStatus()
+    if (st && st.channelLive) return 'live'
+    await new Promise((r) => setTimeout(r, delayMs))
+  }
+  return 'timeout'
+}
+// WIZFLOW809 END waitForChannelLive
 function onboardingCurrentStep(s) {
   if (!s.identityConfirmed) return 1
   if (!s.claudeAuthPresent || !s.agentsRunning) return 2
@@ -12267,10 +12377,17 @@ function wireOnboarding(step) {
         }
         if (!res.ok) { botBtn.disabled = false; onbMsg(d.error || t('onboarding.error'), true); return }
         // The server restarts the channels session so the new bot token goes
-        // live -- say so, and give the respawn a beat before advancing so the
-        // pairing step starts against the restarted service.
+        // live. Do NOT advance on a timer: the restart response is a dispatch
+        // receipt, and the cold start is ~minutes. Wait for the MEASURED
+        // channelLive signal, tell the user the channel is starting meanwhile,
+        // and on timeout stay on this step with an honest "still starting"
+        // message -- the old fixed 4s opened the pairing step against a
+        // booting session, which looked done-and-empty (WIZFLOW809).
         onbMsg(d.restarted ? t('onboarding.step2.saved_restarted') : t('onboarding.step2.saved'))
-        setTimeout(refreshOnboarding, d.restarted ? 4000 : 2000)
+        onbMsg(t('onboarding.step2.waiting_channel'))
+        const outcome = await waitForChannelLive(fetchOnboardingStatus, 3000, 40)  // ~2 min bound
+        if (outcome === 'live') { await refreshOnboarding() }
+        else { botBtn.disabled = false; onbMsg(t('onboarding.step2.channel_slow'), true) }
       } catch (e) { botBtn.disabled = false; onbMsg((e && e.message) || t('onboarding.error'), true) }
     })
   } else if (step === 4) {

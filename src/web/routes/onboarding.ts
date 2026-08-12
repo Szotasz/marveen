@@ -9,6 +9,7 @@ import { atomicWriteFileSync } from '../atomic-write.js'
 import { channelStateDir, readChannelToken } from '../../channel-provider.js'
 import { sessionExistsOnHost } from '../agent-process.js'
 import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
+import { getClaudePidForSession, hasChannelPluginAlive } from '../../channel-coordinator/liveness.js'
 import {
   hardRestartMarveenChannels,
   mainChannelsSessionExists,
@@ -76,6 +77,42 @@ function fleetTokenPresent(): boolean {
   } catch { return false }
 }
 
+// Behaviour leg (last resort): a RUNNING fleet is authenticated even when none
+// of the storage locations above hold the credential. channels.sh exports the
+// setup-token into the tmux server's GLOBAL environment (`set-environment -g`,
+// verified live 2026-08-09), which is the actual auth source of every session it
+// spawns -- independent of .env, the fleet file, credentials.json or the
+// Keychain. So a fresh install whose token reached the running session by any
+// path (isolated CLAUDE_CONFIG_DIR, an env exported before .env was written, a
+// timing race between the restart and the .env flush) still reads as logged-in.
+// This asks the BEHAVIOUR ("is the running fleet carrying auth?") instead of
+// enumerating storage types -- a storage-only check re-breaks on every new
+// credential path; this one does not. Fails closed on any error (tmux
+// unresolved, session gone), so it can only ever ADD a true, never flip one.
+//
+// PRESENCE-ONLY, NOT VALIDITY (read this before hardening): this proves the
+// token is PRESENT in the tmux global env, NOT that it is valid or unexpired. It
+// deliberately does NOT run a live probe (that is the expensive `claude -p` path
+// this status check must avoid). The failure direction therefore INVERTS: before
+// this leg a working install read as logged-out (false negative); with it, a
+// machine still running on an expired/revoked token could read as authenticated
+// (false positive) -- the same class BOOTPASS807 just tightened. Accepted on
+// purpose because the leg is last-resort (only runs when every storage leg is
+// false), and it is cheaper to be wrong this way than to keep telling every new
+// customer their working product failed. A validity check (a cheap liveness
+// signal, or gating on a fresh successful-auth log line) is deferred to a
+// separate hardening card, NOT bolted on here. The token value is matched with a
+// regex only -- never captured, returned, or logged.
+function runningSessionAuthenticated(): boolean {
+  try {
+    if (!sessionExistsOnHost(null, MAIN_CHANNELS_SESSION)) return false
+    const out = execFileSync(resolveFromPath('tmux'), ['show-environment', '-g'], {
+      timeout: 3000, encoding: 'utf-8',
+    })
+    return /^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.+/m.test(out)
+  } catch { return false }
+}
+
 function claudeAuthPresent(): boolean {
   if (readEnvValue('CLAUDE_CODE_OAUTH_TOKEN')) return true
   if (readEnvValue('ANTHROPIC_API_KEY')) return true
@@ -87,7 +124,8 @@ function claudeAuthPresent(): boolean {
     if (d?.apiKey) return true
   } catch { /* no / unreadable credentials.json */ }
   if (fleetTokenPresent()) return true
-  return keychainHasClaudeCredentials()
+  if (keychainHasClaudeCredentials()) return true
+  return runningSessionAuthenticated()
 }
 
 // Active-channel checks, provider-aware (NOT hardcoded to Telegram). A
@@ -215,6 +253,22 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       ? isManagedSettingsReady()
       : null
     const sudoCommand = managedSettingsReady === false ? getManagedSettingsSudoCommand() : null
+    // WIZFLOW809: measured channel liveness for the wizard's step-3 wait.
+    // hardRestartMarveenChannels() answers `restarted: true` when the restart
+    // COMMAND was dispatched, not when the channel is up -- and the cold path
+    // is a ~minutes start. The wizard used to advance after a fixed 4s and
+    // opened the pairing step against a still-booting session (three field
+    // reports, WIZFLOW809). This field is the ready signal it waits on now:
+    // the same bun-child/process liveness definition channel-monitor and
+    // channel-plugin-unlock already agree on. Fail-closed: any probe error
+    // reads as "not live yet" -- the wizard just keeps waiting.
+    let channelLive = false
+    try {
+      const claudePid = getClaudePidForSession(MAIN_CHANNELS_SESSION)
+      channelLive = claudePid != null && hasChannelPluginAlive(claudePid, CHANNEL_PROVIDER)
+    } catch {
+      channelLive = false
+    }
     json(res, {
       identityConfirmed: identityConfirmed(),
       currentAgentName: readEnvValue('BRAND_NAME') || readEnvValue('BOT_NAME') || 'Marveen',
@@ -222,6 +276,7 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       claudeAuthPresent: claude,
       agentsRunning: running,
       channelConfigured: ch,
+      channelLive,
       channelProvider: CHANNEL_PROVIDER,
       agentId: MAIN_AGENT_ID,
       existingBotToken: existingTokens.botToken,

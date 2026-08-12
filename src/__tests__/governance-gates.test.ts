@@ -368,3 +368,63 @@ describe('self-pace-gate backtick command-substitution boundary', () => {
     expect(selfPaceDecision('Bash', { command: 'echo `crontab -l`' }).deny).toBe(false)
   })
 })
+
+// --- inert quoted / heredoc text must not be able to fake a command position ---
+//
+// Five denials in one morning (2026-08-05, three jayce + two taric), all one
+// cause: an inter-agent message quoting the grep pattern
+//   Minta: stop.sh | launchctl | com.janna.dashboard
+// The bars split it, the middle piece trimmed to the bare word `launchctl`, and
+// the anchored scheduler check read that as a real interactive invocation. The
+// messages never went out, and from outside a denial looks like an agent that
+// simply stayed silent.
+//
+// What made it a design bug rather than a bad pattern: the SAME text passed as
+// `curl -d '<json>'` (payload blanked) and was denied from a python heredoc
+// (nothing to blank). The send route had become a security decision.
+const BAR = String.fromCharCode(124)
+const Q = String.fromCharCode(39)
+const heredoc = (body: string) => `python3 - <<${Q}PY${Q}\n${body}\nPY`
+const PATTERN = `Minta: stop.sh ${BAR} launchctl ${BAR} com.janna.dashboard`
+
+describe('self-pace-gate: quoted prose cannot fake a command position', () => {
+  it('allows the measured pattern inside a heredoc body', () => {
+    expect(selfPaceDecision('Bash', { command: heredoc(`t = "${PATTERN}"`) }).deny).toBe(false)
+  })
+  it('allows it in single quotes, double quotes, and a python triple-quote', () => {
+    expect(selfPaceDecision('Bash', { command: `echo ${Q}${PATTERN}${Q}` }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: `echo "${PATTERN}"` }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: heredoc(`t = """${PATTERN}"""`) }).deny).toBe(false)
+  })
+  it('allows a bar-separated pattern naming crontab too', () => {
+    // This is the case that proved masking is the right primitive: with only a
+    // quote-aware SPLITTER this stayed denied, because SCHEDULER_RX carries its
+    // own boundary anchor and re-found a command position inside the segment.
+    expect(selfPaceDecision('Bash', { command: `echo ${Q}foo ${BAR} crontab ${BAR} bar${Q}` }).deny)
+      .toBe(false)
+  })
+
+  // --- and the whole point: none of the above may cost real detection ---
+  it('still denies a real scheduler call after a genuine separator', () => {
+    expect(selfPaceDecision('Bash', { command: `echo ${Q}harmless${Q} ; crontab -r` }).deny).toBe(true)
+  })
+  it('still denies tmux injection hidden inside a heredoc body', () => {
+    // The unanchored patterns deliberately keep scanning the RAW segments.
+    // Handing them masked text would have removed the detection of this gate's
+    // founding incident vector -- measured before the change, not assumed.
+    expect(selfPaceDecision('Bash', {
+      command: heredoc(`subprocess.run([${Q}tmux${Q},${Q}send-keys${Q},${Q}-t${Q},${Q}x${Q}])`),
+    }).deny).toBe(true)
+  })
+  it('fails CLOSED on an unterminated quote', () => {
+    // Unresolvable quoting must mean "scan more", never "scan less".
+    expect(selfPaceDecision('Bash', { command: `echo ${Q}oops ; crontab -r` }).deny).toBe(true)
+  })
+  it('fails CLOSED when a double-quoted region can command-substitute', () => {
+    expect(selfPaceDecision('Bash', { command: 'echo "$(date)" ; crontab -r' }).deny).toBe(true)
+  })
+  it('fails CLOSED on an UNQUOTED heredoc tag whose body substitutes', () => {
+    // <<PY (no quotes) expands the body, so its contents are not inert.
+    expect(selfPaceDecision('Bash', { command: 'cat <<PY\n$(crontab -r)\nPY' }).deny).toBe(true)
+  })
+})

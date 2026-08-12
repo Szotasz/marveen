@@ -43,6 +43,47 @@ const HOSTNAME_RE = new RegExp(`^${HOSTNAME_LABEL}(?:\\.${HOSTNAME_LABEL})*\\.?$
 
 export type HostCheck = { ok: true; host: string } | { ok: false; reason: string }
 
+export type DashboardTokenDecision =
+  | { include: false }
+  | { include: true; token: string }
+  | { ok: false; reason: string }
+
+/**
+ * Decide what a connection bundle should carry for the dashboard token.
+ *
+ * The caller asks for a token bundle by DEFAULT; `--no-dashboard-token` opts
+ * out. So `includeToken=false` is a deliberate token-free bundle (the device
+ * gets the dashboard URL out of band) -- fine.
+ *
+ * But `includeToken=true` with NO token present is NOT fine: it means the
+ * dashboard has not written store/.dashboard-token, which in practice means the
+ * dashboard service is not running. A token-free bundle emitted here is unusable
+ * -- the device cannot reach the dashboard -- so this FAILS HARD rather than
+ * degrading silently. This mirrors the host-key check, which already fails hard
+ * for the same "unusable, don't emit it silently" reason; the token is simply
+ * the second field that same rule must cover. (INSTNODE806: a broken install
+ * whose dashboard never started shipped a token-free bundle on only a warning,
+ * and it surfaced downstream as the Bridge's opaque "Nothing to verify".)
+ */
+export function dashboardTokenDecision(
+  includeToken: boolean,
+  token: string | null,
+): DashboardTokenDecision {
+  if (!includeToken) return { include: false }
+  if (token === null || token === '') {
+    return {
+      ok: false,
+      reason:
+        'no dashboard access token found (store/.dashboard-token is missing, and DASHBOARD_TOKEN is unset). ' +
+        'The dashboard service has not written one, which usually means it is not running yet, so a usable ' +
+        'bundle cannot be built. Start the service and confirm the dashboard answers on its web port, then ' +
+        're-run. To deliberately emit a token-free bundle (the device gets the dashboard URL out of band), ' +
+        'pass --no-dashboard-token.',
+    }
+  }
+  return { include: true, token }
+}
+
 /**
  * Validate a user-supplied target address. `isIP` covers IPv4 and IPv6
  * literals; anything else must look like a hostname.

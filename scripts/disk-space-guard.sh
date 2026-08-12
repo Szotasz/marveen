@@ -84,6 +84,11 @@ reap_scratch() {
   [ -z "$real" ] && { echo 0; return; }
   case "$real/" in
     /tmp/*) : ;;
+    # SHTEST807: on macOS /tmp is a symlink to /private/tmp, so every resolved
+    # scratch path starts with /private/tmp and the /tmp/* arm never matches --
+    # the reaper was a silent no-op on every macOS install. /private/tmp does
+    # not exist on Linux, so this arm is inert there.
+    /private/tmp/*) : ;;
     "${XDG_RUNTIME_DIR:-/nonexistent-xdg}"/*) : ;;
     *) echo 0; return ;;
   esac

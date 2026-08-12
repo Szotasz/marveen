@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { classifyPersona, suggestForAgent } from '../web/model-suggest.js'
+import { classifyPersona, suggestForAgent , humanModelLabel } from '../web/model-suggest.js'
+import { DISTRIBUTION_DEFAULT_AGENT_MODEL } from '../config-registry.js'
 
 describe('classifyPersona', () => {
   it('suggests Opus for an architect persona', () => {
     const text = 'Te vagy a fleet IT rendszerarchitektje. Elosztott rendszerek, mikroszolgáltatás-architektúrák, komplex döntések.'
     const result = classifyPersona(text)
-    expect(result.suggestedModel).toBe('claude-opus-4-8[1m]')
+    expect(result.suggestedModel).toBe(DISTRIBUTION_DEFAULT_AGENT_MODEL)
   })
 
   it('suggests Haiku for a fitness coach persona', () => {
@@ -29,7 +30,7 @@ describe('classifyPersona', () => {
   it('overrides to Opus when contextTokens > 150k regardless of persona', () => {
     const text = 'Egyszerű feladatok, rövid válaszok, sport, edzés.'
     const result = classifyPersona(text, 160_000)
-    expect(result.suggestedModel).toBe('claude-opus-4-8[1m]')
+    expect(result.suggestedModel).toBe(DISTRIBUTION_DEFAULT_AGENT_MODEL)
     expect(result.reason).toMatch(/kontextus/)
   })
 
@@ -53,13 +54,22 @@ describe('suggestForAgent -- base (no signals)', () => {
     const text = 'IT architekt. Komplex elosztott rendszerterv, mikroszolgáltatás, stratégiai döntések.'
     const result = suggestForAgent('rick', 'claude-sonnet-5', text)
     expect(result.changeAdvised).toBe(true)
-    expect(result.suggestedModel).toBe('claude-opus-4-8[1m]')
+    expect(result.suggestedModel).toBe(DISTRIBUTION_DEFAULT_AGENT_MODEL)
   })
 
   it('normalises [1m] suffix for comparison', () => {
     const text = 'IT architekt. Komplex elosztott rendszerterv, mikroszolgáltatás, stratégiai döntések.'
-    const result = suggestForAgent('rick', 'claude-opus-4-8[1m]', text)
+    // Plain opus-5 vs the suggested opus-5[1m]: same family after normalize(),
+    // so no change is advised -- the suffix alone must not trigger churn.
+    const result = suggestForAgent('rick', 'claude-opus-5', text)
     expect(result.changeAdvised).toBe(false)
+  })
+
+  it('an agent still on Opus 4.8 IS advised to move to the distribution default (MODELSUGGEST807)', () => {
+    const text = 'IT architekt. Komplex elosztott rendszerterv, mikroszolgáltatás, stratégiai döntések.'
+    const result = suggestForAgent('rick', 'claude-opus-4-8[1m]', text)
+    expect(result.suggestedModel).toBe(DISTRIBUTION_DEFAULT_AGENT_MODEL)
+    expect(result.changeAdvised).toBe(true)
   })
 })
 
@@ -79,7 +89,7 @@ describe('suggestForAgent -- AgentSignals thresholds', () => {
       tokenAvgInputPerCall: 15_000,
       mcpServerCount: 5,
     })
-    expect(result.suggestedModel).toBe('claude-opus-4-8[1m]')
+    expect(result.suggestedModel).toBe(DISTRIBUTION_DEFAULT_AGENT_MODEL)
     expect(result.changeAdvised).toBe(true)
   })
 
@@ -88,7 +98,7 @@ describe('suggestForAgent -- AgentSignals thresholds', () => {
       mcpServerCount: 4,
       kanbanUrgentCount: 3,
     })
-    expect(result.suggestedModel).toBe('claude-opus-4-8[1m]')
+    expect(result.suggestedModel).toBe(DISTRIBUTION_DEFAULT_AGENT_MODEL)
   })
 
   it('scheduledFreqPerDay >= 10 alone adds 1 haiku signal point (not enough without persona)', () => {
@@ -115,7 +125,7 @@ describe('suggestForAgent -- AgentSignals thresholds', () => {
       kanbanUrgentCount: 2,       // +1 opus signal
     })
     // totalOpus=2 (signals) > 0, so Haiku condition fails; totalOpus>=2 -> Opus
-    expect(result.suggestedModel).toBe('claude-opus-4-8[1m]')
+    expect(result.suggestedModel).toBe(DISTRIBUTION_DEFAULT_AGENT_MODEL)
   })
 
   it('context override (>150K) wins over all signals', () => {
@@ -123,7 +133,7 @@ describe('suggestForAgent -- AgentSignals thresholds', () => {
       scheduledFreqPerDay: 200,
       kanbanOpenCount: 0,
     })
-    expect(result.suggestedModel).toBe('claude-opus-4-8[1m]')
+    expect(result.suggestedModel).toBe(DISTRIBUTION_DEFAULT_AGENT_MODEL)
     expect(result.changeAdvised).toBe(true)
   })
 
@@ -197,5 +207,45 @@ describe('suggestForAgent -- reason structure (6 sections)', () => {
     })
     expect(result.suggestedModel).toBe('claude-haiku-4-5-20251001')
     expect(result.reason).toMatch(/olcsóbb/)
+  })
+})
+
+// MODELSUGGEST807: the migration missed this customer-facing surface -- the
+// suggester kept recommending claude-opus-4-8[1m] (measured on the live
+// endpoint before the fix: 8 of 10 agents were suggested 4.8, 7 of them with
+// changeAdvised, 5 of those running Opus 5; after: 0 of 10).
+describe('MODELSUGGEST807 -- top tier is the shipped distribution default', () => {
+  it('the constant this suite locks to is Opus 5 (1M) today', () => {
+    expect(DISTRIBUTION_DEFAULT_AGENT_MODEL).toBe('claude-opus-5[1m]')
+  })
+
+  it('an agent already ON the distribution default is never advised to change tier upward', () => {
+    const r = suggestForAgent('archie', DISTRIBUTION_DEFAULT_AGENT_MODEL,
+      'senior architect, komplex elosztott rendszerek koordinálása, multi-agent')
+    expect(r.suggestedModel).toBe(DISTRIBUTION_DEFAULT_AGENT_MODEL)
+    expect(r.changeAdvised).toBe(false)
+  })
+
+  it('the >150k context override recommends the distribution default, not a downgrade', () => {
+    const r = suggestForAgent('bigctx', DISTRIBUTION_DEFAULT_AGENT_MODEL, 'anything', 180_000)
+    expect(r.suggestedModel).toBe(DISTRIBUTION_DEFAULT_AGENT_MODEL)
+    expect(r.changeAdvised).toBe(false)
+  })
+
+  it('no reason text ever names Opus 4.8 as the recommendation', () => {
+    for (const [persona, ctx] of [
+      ['senior architect koordinál komplex multi-agent', 0],
+      ['anything', 200_000],
+      ['általános ágens', 0],
+    ] as Array<[string, number]>) {
+      const r = suggestForAgent('probe', 'claude-opus-5[1m]', persona, ctx)
+      expect(r.reason).not.toMatch(/Opus 4\.8 ajánlott/)
+      expect(r.suggestedModel).not.toContain('opus-4-8')
+    }
+  })
+
+  it('humanModelLabel derives the prose label from the model id', () => {
+    expect(humanModelLabel('claude-opus-5[1m]')).toBe('Opus 5 (1M)')
+    expect(humanModelLabel('claude-sonnet-5')).toBe('Sonnet 5')
   })
 })

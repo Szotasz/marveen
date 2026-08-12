@@ -262,10 +262,21 @@ export function initDatabase(dbPathOverride?: string): void {
       text TEXT,
       ts TEXT,
       created_at INTEGER NOT NULL,
+      attachment_kind TEXT,
+      attachment_file_id TEXT,
       UNIQUE(agent_id, chat_id, direction, message_id)
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_convlog_agent ON conversation_log(agent_id, created_at)`)
+  // Migration for pre-existing DBs: transcript-less voice/video_note inbounds
+  // keep their attachment identity so a respawned session can still download
+  // and transcribe them (mirrors _MIGRATION_COLUMNS in scripts/hooks/ledger_lib.py).
+  for (const col of ['attachment_kind', 'attachment_file_id']) {
+    const cols = db.prepare("PRAGMA table_info(conversation_log)").all() as { name: string }[]
+    if (!cols.some(c => c.name === col)) {
+      db.exec(`ALTER TABLE conversation_log ADD COLUMN ${col} TEXT`)
+    }
+  }
 
   // Migration: hot/warm/cold/shared tier system with an enforced CHECK.
   // Rebuilds the table whenever its current schema doesn't include the
@@ -2213,6 +2224,62 @@ export function markPendingFederatedFailed(id: number, error: string): boolean {
 
 export function listAgentMessages(limit = 50): AgentMessage[] {
   return db.prepare('SELECT * FROM agent_messages ORDER BY created_at DESC LIMIT ?').all(limit) as AgentMessage[]
+}
+
+// --- Context-restart gate helpers -------------------------------------------
+
+export interface DispatchedPendingStats {
+  /** Count of messages sent by fromAgent with status pending|delivered, within staleCutoffMs. */
+  count: number
+  /** Any messages sent by fromAgent that WOULD have blocked but are beyond staleCutoffMs. */
+  hasStale: boolean
+}
+
+/**
+ * Check how many outbound messages this agent dispatched that have not yet
+ * received a result (status pending or delivered), separating live (within
+ * staleCutoffMs) from stale (beyond it). Used by the context-restart gate.
+ */
+export function getDispatchedPendingStats(
+  fromAgent: string,
+  nowMs: number,
+  staleCutoffMs: number,
+): DispatchedPendingStats {
+  const cutoffEpoch = Math.floor((nowMs - staleCutoffMs) / 1000)
+  const liveRow = db.prepare(
+    `SELECT COUNT(*) AS cnt FROM agent_messages
+       WHERE from_agent = ? AND status IN ('pending','delivered')
+         AND CAST(created_at AS INTEGER) > ?`,
+  ).get(fromAgent, cutoffEpoch) as { cnt: number }
+  const staleRow = db.prepare(
+    `SELECT COUNT(*) AS cnt FROM agent_messages
+       WHERE from_agent = ? AND status IN ('pending','delivered')
+         AND CAST(created_at AS INTEGER) <= ?`,
+  ).get(fromAgent, cutoffEpoch) as { cnt: number }
+  return {
+    count:    liveRow?.cnt ?? 0,
+    hasStale: (staleRow?.cnt ?? 0) > 0,
+  }
+}
+
+/**
+ * True when the agent's last inbound channel message has no later outbound
+ * (unanswered question). Used by the context-restart gate.
+ */
+export function hasOpenInboundQuestion(agentId: string): boolean {
+  const row = db.prepare(
+    `SELECT id, created_at FROM conversation_log
+       WHERE agent_id = ? AND direction = 'in'
+       ORDER BY created_at DESC, id DESC LIMIT 1`,
+  ).get(agentId) as { id: number; created_at: number } | undefined
+  if (!row) return false
+  const laterOut = db.prepare(
+    `SELECT 1 FROM conversation_log
+       WHERE agent_id = ? AND direction = 'out'
+         AND (created_at > ? OR (created_at = ? AND id > ?))
+       LIMIT 1`,
+  ).get(agentId, row.created_at, row.created_at, row.id)
+  return !laterOut
 }
 
 // System/automation participants that are not real conversation peers. They are

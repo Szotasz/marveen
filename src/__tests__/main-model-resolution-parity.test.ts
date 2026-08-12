@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 import { readConfiguredMainModel } from '../web/channel-monitor.js'
+import { DISTRIBUTION_DEFAULT_AGENT_MODEL } from '../config-registry.js'
 
 // The main agent's model is resolved by TWO independent implementations:
 //
@@ -47,6 +48,13 @@ function fixture(envBody: string | null, settingsBody: string | null): string {
   mkdirSync(join(root, 'scripts'), { recursive: true })
   mkdirSync(join(root, '.claude'), { recursive: true })
   copyFileSync(CHANNELS_SH, join(root, 'scripts', 'channels.sh'))
+  // RESPAWNMODEL807: a real install always has a BUILT dist/config-registry.js
+  // (the launch path's third layer reads it with node). The fixture ships the
+  // SAME constant the TS side compiled in, so parity is measured over all
+  // three layers, exactly like production.
+  mkdirSync(join(root, 'dist'), { recursive: true })
+  writeFileSync(join(root, 'dist', 'config-registry.js'),
+    `exports.DISTRIBUTION_DEFAULT_AGENT_MODEL = ${JSON.stringify(DISTRIBUTION_DEFAULT_AGENT_MODEL)};\n`)
   if (envBody !== null) writeFileSync(join(root, '.env'), envBody + '\n')
   if (settingsBody !== null) writeFileSync(join(root, '.claude', 'settings.json'), settingsBody + '\n')
   return root
@@ -68,13 +76,17 @@ const CASES: Array<[string, string | null, string | null, string]> = [
   // drift was found: .env said opus-5, the tracked file said opus-4-8[1m].
   ['.env wins over settings.json (the whole point)', 'MAIN_AGENT_MODEL=claude-opus-5', '{"model":"claude-opus-4-8[1m]"}', 'claude-opus-5'],
   ['.env alone works with no settings.json', 'MAIN_AGENT_MODEL=claude-sonnet-5', null, 'claude-sonnet-5'],
-  ['neither present -> empty, so the launcher omits --model', null, null, ''],
+  // RESPAWNMODEL807: 'neither present' no longer means flag-less -- BOTH paths
+  // land on the shipped distribution default (the third layer). The '' era is
+  // exactly what let a respawn drop --model the day the shipped settings.json
+  // stopped pinning a model.
+  ['neither present -> the shipped distribution default', null, null, DISTRIBUTION_DEFAULT_AGENT_MODEL],
   ['an EMPTY MAIN_AGENT_MODEL does not shadow settings.json', 'MAIN_AGENT_MODEL=', '{"model":"claude-opus-5"}', 'claude-opus-5'],
   // `[1m]` must survive intact: it is a glob in shell and would silently vanish
   // if either side let a bare word through an unquoted expansion.
   ['a bracketed 1M suffix survives the .env route', 'MAIN_AGENT_MODEL=claude-opus-4-8[1m]', null, 'claude-opus-4-8[1m]'],
   ['a similarly named key does not leak in', 'NOT_MAIN_AGENT_MODEL=wrong-model', '{"model":"claude-opus-5"}', 'claude-opus-5'],
-  ['settings.json without a model key falls back to empty', null, '{"enabledPlugins":{}}', ''],
+  ['settings.json without a model key falls back to the distribution default', null, '{"enabledPlugins":{}}', DISTRIBUTION_DEFAULT_AGENT_MODEL],
 ]
 
 describe('main-agent model resolution: launch and respawn agree', () => {
@@ -105,5 +117,46 @@ describe('the respawn path reads .env at all (guards the 2026-08-03 defect direc
     const root = fixture(null, '{"model":"claude-opus-5"}')
     mkdirSync(join(root, '.env')) // a directory where a file is expected
     expect(readConfiguredMainModel(root)).toBe('claude-opus-5')
+  })
+})
+
+
+// RESPAWNMODEL807 structural locks: four copies of the model resolution
+// existed and three went stale. Lock every respawn path onto the ONE resolver
+// so a fifth copy (or a revived jq-only read) fails loudly here.
+import { readFileSync as _rf } from 'node:fs'
+describe('every respawn path asks the one resolver (RESPAWNMODEL807)', () => {
+  it('channel-watchdog.sh calls --resolve-main-model and carries no jq-only model read', () => {
+    const src = _rf(join(REPO_ROOT, 'scripts', 'channel-watchdog.sh'), 'utf-8')
+    expect(src).toContain('--resolve-main-model')
+    expect(src).not.toMatch(/jq -r '\.model/)
+  })
+
+  it('stuck-modal-guard.sh calls --resolve-main-model and carries no jq-only model read', () => {
+    const src = _rf(join(REPO_ROOT, 'scripts', 'stuck-modal-guard.sh'), 'utf-8')
+    expect(src).toContain('--resolve-main-model')
+    expect(src).not.toMatch(/jq -r '\.model/)
+  })
+
+  it('every buildMainSessionRespawnCmd call site passes model: readConfiguredMainModel()', () => {
+    const src = _rf(join(REPO_ROOT, 'src', 'web', 'channel-monitor.ts'), 'utf-8')
+    // CALL sites only: `= buildMainSessionRespawnCmd({` -- the bare-substring
+    // count also caught the definition and a comment mention (measured: 4 vs
+    // 3 real calls at 714/784/997) and would drift with prose edits.
+    const sites = src.split('= buildMainSessionRespawnCmd({').length - 1
+    const wired = src.split('model: readConfiguredMainModel()').length - 1
+    expect(sites).toBeGreaterThanOrEqual(3)
+    expect(wired).toBe(sites)
+  })
+
+  it('readConfiguredMainModel never returns empty while a distribution default exists', () => {
+    const root = fixture(null, null)
+    expect(readConfiguredMainModel(root)).toBe(DISTRIBUTION_DEFAULT_AGENT_MODEL)
+  })
+
+  it('NEGATIVE CONTROL: a per-install .env choice beats the distribution default on the respawn path', () => {
+    const root = fixture('MAIN_AGENT_MODEL=claude-sonnet-5', null)
+    expect(readConfiguredMainModel(root)).toBe('claude-sonnet-5')
+    expect(readConfiguredMainModel(root)).not.toBe(DISTRIBUTION_DEFAULT_AGENT_MODEL)
   })
 })

@@ -738,6 +738,17 @@ async function attemptFireTask(
           if (action === 'none') return 'done'
           if (action === 'giveup') {
             logger.warn({ task: task.name, session }, 'Scheduled prompt still stuck after Enter + re-inject retries -- giving up')
+            // The prompt is parked (never submitted), yet attemptFireTask
+            // already recorded the task 'fired' + stamped scheduleLastRun
+            // BEFORE this detached resubmit chain ran -- do NOT move that
+            // write, it guards the CRON path against a double-fire while the
+            // first injection is still resubmitting. Compensate instead: a
+            // pending retry re-fires the task once the session frees
+            // (isSessionReadyForPrompt gates it, so it never re-injects on
+            // top of the still-parked prompt), and the age-threshold alert
+            // names a long-stuck one. Without this a swallowed-Enter giveup
+            // is a run-log row that says 'fired' for a task that never ran.
+            insertPendingTaskRetryIfNew(task.name, agentName, now, 'giveup')
             return 'done'
           }
           if (action === 'reinject') {
@@ -767,6 +778,11 @@ async function attemptFireTask(
           // frees up; bounded so a wedged holder cannot chain timers forever.
           if (laneBusySkips >= RESUBMIT_LANE_BUSY_MAX_SKIPS) {
             logger.warn({ task: task.name, session, attempt }, 'Post-send resubmit gave up: pane send lane stayed busy past the skip budget')
+            // Exiting here means NO measurement was ever taken: the prompt may
+            // be parked and this chain will never look again. Same shape as
+            // the 'giveup' action above, so it gets the same compensation --
+            // otherwise the skip budget is a second silent-lost-task exit.
+            insertPendingTaskRetryIfNew(task.name, agentName, now, 'lane-busy')
             return
           }
           logger.info({ task: task.name, session, attempt, laneBusySkips }, 'Post-send resubmit skipped: a delivery is in flight into this pane (fail-closed)')
@@ -1170,9 +1186,22 @@ export function startScheduleRunner(): NodeJS.Timeout {
 
       const view = toPendingRetryView(row, now)
       const result = await attemptFireTask(taskDef, row.agent_name, now, retryPc.prefix)
-      if (result === 'fired' || result === 'missing') {
+      if (result === 'fired') {
         deletePendingTaskRetry(row.task_name, row.agent_name)
         continue
+      }
+      // 'missing' used to DELETE the retry row here -- a silent abandonment
+      // that contradicts the never-abandon policy above. The one real-world
+      // window where it bites: the target session vanishes during a main-agent
+      // restart, auto-start fails once, and a queued daily task (e.g. a
+      // morning briefing, 2026-07-13) is dropped with only a debug log. Keep
+      // the row instead; the alertDue path below surfaces a long-stuck one to
+      // the operator, and the run-log records the state.
+      if (result === 'missing' && row.last_reason !== 'missing') {
+        // Log the TRANSITION into missing only (a stuck-missing task would
+        // otherwise write a row per 60s tick); the pending row itself keeps
+        // the live state.
+        appendTaskRun(row.task_name, row.agent_name, 'missing-retrying')
       }
       // Still busy or errored: refresh the retry row and alert ONCE if
       // the age crossed the threshold. `updatePendingTaskRetry` returns

@@ -1,10 +1,39 @@
 // Pure, side-effect-free persona→model classifier. Imported by the route and
 // by unit tests. No fs, no network, no db -- all I/O happens in the caller.
 
+// MODELSUGGEST807: the top-tier suggestion is the SHIPPED distribution default,
+// never a literal. This module used to hardcode claude-opus-4-8[1m] on every
+// opus branch, so after the Opus 5 migration the dashboard advised DOWNGRADING
+// Opus 5 agents to 4.8 (measured on the live endpoint before the fix: 8 of 10
+// agents were suggested 4.8, 7 of them with changeAdvised, 5 of those running
+// Opus 5; after: 0 of 10) -- a customer-facing surface the migration missed.
+// [1m] everywhere, not a split: a second plain-opus literal would be the next
+// forgotten drift seed, a context-threshold split would make suggestions flap
+// around the boundary, and this module's own cost table prices the variants
+// identically.
+import { DISTRIBUTION_DEFAULT_AGENT_MODEL } from '../config-registry.js'
+
+// Human label for the reason texts, derived from the constant so a future
+// model bump rewrites the prose too: 'claude-opus-5[1m]' -> 'Opus 5 (1M)'.
+// CAVEAT: only sane for family-major ids (opus/sonnet/fable tiers). A dated id
+// like 'claude-haiku-4-5-20251001' would yield a nonsense label -- today this
+// is only ever called with TOP_TIER_MODEL; extend the parser before any
+// general-purpose use.
+export function humanModelLabel(model: string): string {
+  const oneM = /\[1m\]$/i.test(model)
+  const base = model.replace(/\[.*\]$/, '').replace(/^claude-/, '')
+  const words = base.split('-').map(w => (/^\d/.test(w) ? w.replace(/-/g, '.') : w.charAt(0).toUpperCase() + w.slice(1)))
+  const label = words.join(' ').replace(/(\d) (\d)/g, '$1.$2')
+  return oneM ? `${label} (1M)` : label
+}
+
+const TOP_TIER_MODEL = DISTRIBUTION_DEFAULT_AGENT_MODEL
+const TOP_TIER_LABEL = humanModelLabel(TOP_TIER_MODEL)
+
 export type ModelId =
   | 'claude-haiku-4-5-20251001'
   | 'claude-sonnet-5'
-  | 'claude-opus-4-8[1m]'
+  | 'claude-opus-5[1m]'
   | 'claude-opus-5'
   | 'claude-fable-5'
   | string
@@ -241,16 +270,16 @@ export function classifyPersona(
   // Context-window override: very large sessions always need Opus
   if (contextTokens > 150_000) {
     return {
-      suggestedModel: 'claude-opus-4-8[1m]',
-      reason: `Nagy session-kontextus (${Math.round(contextTokens / 1000)}K token) -- Opus 4.8 ajánlott a hosszú memóriakezeléshez.`,
+      suggestedModel: TOP_TIER_MODEL,
+      reason: `Nagy session-kontextus (${Math.round(contextTokens / 1000)}K token) -- ${TOP_TIER_LABEL} ajánlott a hosszú memóriakezeléshez.`,
       changeAdvised: true,
     }
   }
 
   if (opusHits >= 2) {
     return {
-      suggestedModel: 'claude-opus-4-8[1m]',
-      reason: `A persona architektúra/koordináció/komplex feladatokra utal (${opusHits} egyező jelző) -- Opus 4.8 ajánlott.`,
+      suggestedModel: TOP_TIER_MODEL,
+      reason: `A persona architektúra/koordináció/komplex feladatokra utal (${opusHits} egyező jelző) -- ${TOP_TIER_LABEL} ajánlott.`,
       changeAdvised: true,
     }
   }
@@ -288,7 +317,7 @@ export function suggestForAgent(
   // Context-window override takes priority over everything
   const contextOverride = contextTokens > 150_000
   if (contextOverride) {
-    const suggestedModel = 'claude-opus-4-8[1m]'
+    const suggestedModel = TOP_TIER_MODEL
     const changeAdvised = normalize(suggestedModel) !== normalize(currentModel)
     return {
       agent: agentName,
@@ -315,7 +344,7 @@ export function suggestForAgent(
   const totalHaiku = haikuKeyHits + haikuSignalHits
 
   let suggestedModel: ModelId
-  if (totalOpus >= 2) suggestedModel = 'claude-opus-4-8[1m]'
+  if (totalOpus >= 2) suggestedModel = TOP_TIER_MODEL
   else if (totalHaiku >= 2 && totalOpus === 0) suggestedModel = 'claude-haiku-4-5-20251001'
   else suggestedModel = 'claude-sonnet-5'
 

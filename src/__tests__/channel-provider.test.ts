@@ -146,3 +146,75 @@ describe('splitMessage per provider', () => {
     }
   })
 })
+
+// MCPTOKEN807: busy-token probe -- a valid token that a webhook or another
+// running install already owns must be rejected at save time with a human
+// remedy, not die later as an opaque plugin -32000.
+import { checkTelegramTokenBusy } from '../channel-provider.js'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
+function fakeFetch(routes: Record<string, { status?: number; body?: unknown }>): typeof fetch {
+  return (async (url: RequestInfo | URL) => {
+    const u = String(url)
+    const key = Object.keys(routes).find((k) => u.includes(k))
+    const r = key ? routes[key] : {}
+    return {
+      status: r.status ?? 200,
+      json: async () => r.body ?? {},
+    } as Response
+  }) as typeof fetch
+}
+
+describe('checkTelegramTokenBusy', () => {
+  const TOKEN = '123456:TESTSECRETVALUE'
+
+  it('reports webhook-bound tokens with the deleteWebhook remedy, without leaking the token', async () => {
+    const r = await checkTelegramTokenBusy(TOKEN, fakeFetch({
+      getWebhookInfo: { body: { ok: true, result: { url: 'https://old-install.example/hook' } } },
+    }))
+    expect(r.busy).toBe(true)
+    expect(r.reason).toBe('webhook')
+    expect(r.error).toContain('deleteWebhook')
+    expect(r.error).toContain('BotFather')
+    expect(r.error).not.toContain(TOKEN)
+    expect(r.error).not.toContain('TESTSECRETVALUE')
+  })
+
+  it('reports a competing poller on getUpdates 409 with the stop-or-new-bot remedy', async () => {
+    const r = await checkTelegramTokenBusy(TOKEN, fakeFetch({
+      getWebhookInfo: { body: { ok: true, result: { url: '' } } },
+      getUpdates: { status: 409 },
+    }))
+    expect(r.busy).toBe(true)
+    expect(r.reason).toBe('poller')
+    expect(r.error).toContain('409')
+    expect(r.error).toContain('BotFather')
+    expect(r.error).not.toContain(TOKEN)
+  })
+
+  it('passes a free token', async () => {
+    const r = await checkTelegramTokenBusy(TOKEN, fakeFetch({
+      getWebhookInfo: { body: { ok: true, result: { url: '' } } },
+      getUpdates: { status: 200, body: { ok: true, result: [] } },
+    }))
+    expect(r).toEqual({ busy: false })
+  })
+
+  it('is advisory: a probe network error lets the save through (getMe already proved connectivity)', async () => {
+    const failing = (async () => { throw new Error('network down') }) as unknown as typeof fetch
+    const r = await checkTelegramTokenBusy(TOKEN, failing)
+    expect(r.busy).toBe(false)
+  })
+
+  // The renderer-wiring lesson (INSTNODE806): the helper being correct proves
+  // nothing about the route actually calling it. Lock the wiring structurally:
+  // the setup handler must call the probe, and must skip it for a re-saved
+  // identical token (its own live poller reads as busy).
+  it('the channel setup route wires the busy probe in, gated on a token change', () => {
+    const src = readFileSync(join(__dirname, '..', 'web', 'routes', 'agents.ts'), 'utf-8')
+    expect(src).toMatch(/checkTelegramTokenBusy\(botToken\.trim\(\)\)/)
+    expect(src).toMatch(/botToken\.trim\(\) !== currentToken/)
+    expect(src.indexOf('checkTelegramTokenBusy(botToken')).toBeGreaterThan(src.indexOf('findBotTokenDuplicate'))
+  })
+})

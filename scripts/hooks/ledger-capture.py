@@ -39,9 +39,18 @@ def main():
         chat_id = _attr(attrs, "chat_id")
         message_id = _attr(attrs, "message_id")
         ts = _attr(attrs, "ts")
+        # Voice / video_note that arrived WITHOUT a transcript keeps its
+        # attachment identity in the ledger, so a respawned session can still
+        # download + transcribe it (the STT-success path strips these attrs and
+        # carries the transcript in the body instead, so nothing is stored then).
+        att_kind = _attr(attrs, "attachment_kind")
+        att_file_id = _attr(attrs, "attachment_file_id")
         if chat_id and message_id:
             try:
-                ledger_lib.log_inbound(agent_id, chat_id, message_id, text.strip(), ts)
+                ledger_lib.log_inbound(
+                    agent_id, chat_id, message_id, text.strip(), ts,
+                    attachment_kind=att_kind, attachment_file_id=att_file_id,
+                )
             except Exception:
                 pass  # never block the prompt on a ledger error
     sys.exit(0)

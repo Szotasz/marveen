@@ -60,6 +60,7 @@ import {
 import {
   readAgentTelegramConfig,
   readAgentDiscordConfig,
+  readAgentSlackConfig,
   readAgentGooglechatConfig,
   readAgentTeamsConfig,
   readMarveenTelegramConfig,
@@ -75,11 +76,12 @@ import {
   agentChannelDir,
 } from '../channel-invites.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
-import { isMainChannelsAgent, MAIN_CHANNELS_SESSION } from '../main-agent.js'
+import { isMainChannelsAgent, MAIN_CHANNELS_SESSION, withoutMainAgent } from '../main-agent.js'
 import {
   getProvider,
   channelStateDir,
   readChannelToken,
+  checkTelegramTokenBusy,
   generateSlackAppManifest,
   getSlackAppSetupInstructions,
   type ChannelProviderType,
@@ -107,12 +109,18 @@ import { RemoteStatusCache } from '../remote-status-cache.js'
 import type { AgentRunState } from '../ssh-tmux.js'
 import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
 import { detectPaneState, detectPermissionMode } from '../../pane-state.js'
-import { checkAgentPutFields, AGENT_PUT_WRITABLE_FIELDS } from '../agent-put-fields.js'
+import { checkAgentPutFields, checkConfigPutFields, AGENT_PUT_WRITABLE_FIELDS } from '../agent-put-fields.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
 import { readContextGuardConfig, writeContextGuardConfig } from '../context-guard-store.js'
 import { getContextGuardStatus } from '../context-guard-runner.js'
 import type { AutoRestartConfig } from '../../auto-restart.js'
+import type { ContextGuardConfig } from '../../context-guard.js'
+// Derived from the DEFAULT config objects, not hand-listed: a field added to
+// the interface is added to its default too, so the accepted-key set cannot
+// drift away from what normalize*Config() actually reads.
+import { DEFAULT_AUTO_RESTART } from '../../auto-restart.js'
+import { DEFAULT_CONTEXT_GUARD } from '../../context-guard.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
 import { attemptChannelMcpReconnect } from '../channel-mcp-reconnect.js'
 import { getChannelHealth } from '../channel-health-monitor.js'
@@ -399,6 +407,7 @@ interface AgentSummary {
   hasTelegram: boolean
   telegramBotUsername?: string
   hasDiscord: boolean
+  hasSlack: boolean
   hasGooglechat: boolean
   hasTeams: boolean
   status: 'configured' | 'draft'
@@ -411,6 +420,9 @@ interface AgentSummary {
   session?: string
   hasAvatar: boolean
   autoRestart: AutoRestartConfig
+  /** Per-agent context-guard config, carried here for the same reason as
+   *  autoRestart: the settings pane renders both from one detail fetch. */
+  contextGuard: ContextGuardConfig
   /** Live context size in tokens (input+cache_read+cache_creation of the last
    *  turn), or null when not running / no transcript yet. */
   contextTokens: number | null
@@ -437,6 +449,7 @@ function getAgentSummary(name: string): AgentSummary {
   const soulMd = readFileOr(join(dir, 'SOUL.md'), '')
   const tg = readAgentTelegramConfig(name)
   const dc = readAgentDiscordConfig(name)
+  const sc = readAgentSlackConfig(name)
   const gc = readAgentGooglechatConfig(name)
   const tc = readAgentTeamsConfig(name)
   const hasClaudeMd = claudeMd.trim().length > 0
@@ -478,6 +491,7 @@ function getAgentSummary(name: string): AgentSummary {
     hasTelegram: tg.hasTelegram,
     telegramBotUsername: tg.botUsername,
     hasDiscord: dc.hasDiscord,
+    hasSlack: sc.hasSlack,
     hasGooglechat: gc.hasGooglechat,
     hasTeams: tc.hasTeams,
     status: hasClaudeMd && hasSoulMd ? 'configured' : 'draft',
@@ -488,6 +502,7 @@ function getAgentSummary(name: string): AgentSummary {
     session,
     hasAvatar: findAvatarForAgent(name) !== null,
     autoRestart: readAutoRestartConfig(name),
+    contextGuard: readContextGuardConfig(name),
     contextTokens: running ? readContextTokensFromProjectDir(dir, resolveAgentConfigDir(name).configDir ?? undefined) : null,
     needsReauth: reauth.needsReauth,
     reauthReason: reauth.reason,
@@ -700,7 +715,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       })
     }
 
-    for (const name of listAgentNames()) {
+    for (const name of withoutMainAgent(listAgentNames())) {
       // Remote agents: resolve run state + pane through the short-TTL caches so
       // this 3s-polled endpoint never blocks the event loop on an ssh timeout.
       const host = readAgentRemoteHost(name)
@@ -784,7 +799,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       } catch { return 0 }
     }
 
-    const names = listAgentNames()
+    const names = withoutMainAgent(listAgentNames())
     const results = [MAIN_AGENT_ID, ...names].map(name => {
       const dir = agentDir(name)
       const claudeMd = readFileOr(join(dir, 'CLAUDE.md'), '')
@@ -1128,6 +1143,20 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       return true
     }
 
+    // MCPTOKEN807: a token reused from a PREVIOUS install (webhook bound, or a
+    // poller still running elsewhere) passes getMe and the local dupe check,
+    // then kills the plugin at runtime with an opaque -32000. Probe at save
+    // time and answer with the remedy. Skipped when re-saving the token this
+    // agent already runs with -- its OWN live poller would read as busy.
+    if (provider === 'telegram') {
+      const preEnvPath = join(isMain ? channelStateDir(provider) : channelStateDir(provider, agentDir(name)), '.env')
+      const currentToken = readChannelToken(provider, preEnvPath)
+      if (botToken.trim() !== currentToken) {
+        const busyCheck = await checkTelegramTokenBusy(botToken.trim())
+        if (busyCheck.busy) { json(res, { error: busyCheck.error }, 409); return true }
+      }
+    }
+
     if (provider === 'slack' && !isManagedSettingsReady()) {
       const displayName = readAgentDisplayName(name) || name
       json(res, {
@@ -1240,8 +1269,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
   // PUT /api/agents/:name/auto-restart -- set the per-agent auto-restart config.
   // Accepts the main orchestrator id too (auto-restart applies to it as well).
-  // The body is normalized server-side, so a partial/garbled payload is coerced
-  // to a safe config rather than rejected.
+  // The body is normalized server-side, so a partial/garbled VALUE is coerced
+  // to a safe config rather than rejected. An unknown KEY is a different story:
+  // normalization never looks at it, so it would vanish behind a 200 -- those
+  // are rejected loudly (see checkConfigPutFields).
   const autoRestartMatch = path.match(/^\/api\/agents\/([^/]+)\/auto-restart$/)
   if (autoRestartMatch && method === 'PUT') {
     const name = decodeURIComponent(autoRestartMatch[1])
@@ -1249,6 +1280,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const body = await readBody(req)
     let data: unknown
     try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'invalid JSON' }, 400); return true }
+    const arFields = checkConfigPutFields(data, Object.keys(DEFAULT_AUTO_RESTART))
+    if (!arFields.ok) {
+      json(res, { error: arFields.message, rejected: arFields.rejected, known: Object.keys(DEFAULT_AUTO_RESTART) }, 400)
+      return true
+    }
     setStoreWriteActor('dashboard')
     const saved = writeAutoRestartConfig(name, data)
     json(res, { ok: true, autoRestart: saved })
@@ -1257,7 +1293,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
   // GET/PUT /api/agents/:name/context-guard -- per-agent context-guard config
   // (kanban #81). Default-off (opt-in): a GET for an agent with no store entry
-  // returns the disabled defaults. PUT normalizes server-side like auto-restart.
+  // returns the disabled defaults. PUT normalizes server-side like auto-restart,
+  // and like auto-restart it rejects unknown keys instead of swallowing them.
   const contextGuardMatch = path.match(/^\/api\/agents\/([^/]+)\/context-guard$/)
   if (contextGuardMatch && (method === 'GET' || method === 'PUT')) {
     const name = decodeURIComponent(contextGuardMatch[1])
@@ -1269,6 +1306,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const body = await readBody(req)
     let data: unknown
     try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'invalid JSON' }, 400); return true }
+    const cgFields = checkConfigPutFields(data, Object.keys(DEFAULT_CONTEXT_GUARD))
+    if (!cgFields.ok) {
+      json(res, { error: cgFields.message, rejected: cgFields.rejected, known: Object.keys(DEFAULT_CONTEXT_GUARD) }, 400)
+      return true
+    }
     setStoreWriteActor('dashboard')
     const saved = writeContextGuardConfig(name, data)
     json(res, { ok: true, contextGuard: saved })

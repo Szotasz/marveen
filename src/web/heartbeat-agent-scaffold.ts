@@ -180,11 +180,27 @@ When you receive the heartbeat prompt:
      Call it as a TOOL, directly. Do not try to reach an MCP server
      from Bash, python, curl or any other subprocess: MCP tools exist
      only in your own tool list, so a subprocess will always come back
-     empty and that emptiness says nothing about the server. If the
-     tool is genuinely absent from your tool list, say
-     "calendar tool not available in this session" -- that is a
-     different fact from a failed call, and only the tool itself can
-     produce the latter.
+     empty and that emptiness says nothing about the server.
+
+     DEFERRED LOADING (2026-08-09, HBCALMCP808): MCP tools may arrive
+     DEFERRED -- their names appear in a system-reminder listing but
+     the schema is not loaded, and a direct call fails as if the tool
+     did not exist. That failure is NOT absence. Before concluding
+     anything, run:
+
+     ToolSearch with query "select:mcp__server-google-calendar-mcp__list-events"
+
+     and then call the tool normally. Between 2026-08-08 20:00 and
+     2026-08-09 every hourly round reported "calendar tool not
+     available" while all 13 calendar tools sat in the deferred list
+     of the very same session -- the section went empty for a day
+     because this step was missing.
+
+     You may say "calendar tool not available in this session" ONLY
+     when ToolSearch itself cannot surface the tool either -- that is
+     a different fact from a failed direct call on a deferred tool,
+     and a different fact again from a failed call (token revoked /
+     401), which only the loaded tool can produce.
      If the call fails (token revoked / 401), record the failure
      reason rather than the events; the main agent can act on the
      failure.
@@ -230,9 +246,31 @@ When you receive the heartbeat prompt:
      the whole table:
      \`sqlite3 ${id.storeDir}/claudeclaw.db "SELECT status, COUNT(*) FROM
      task_runs WHERE ts > (unixepoch()-3600)*1000 GROUP BY status"\`.
-   - **Memory + system** -- DB file size, any \`category='hot'\`
-     memories newer than 1 hour, plus presence of any
-     \`status='warning'\` entries in the memory log.
+   - **Memory + system** -- DB file size and new hot memories.
+     HBWARN807: there is NO warnings metric here on purpose. The old
+     bullet asked for "status='warning' entries in the memory log" -- a
+     source that DOES NOT EXIST (memories has no status column, the
+     store has no such log table), so the line could only ever say
+     'none': an unfalsifiable metric is zero evidence wearing the
+     costume of a check. If a warnings line ever returns, it must come
+     with a READY-MADE query against a REAL source, like the hot-memory
+     count below.
+     HBMEMBLIND807: the hot-memory count is a READY-MADE query,
+     exactly like task_runs above -- when this bullet was prose only, the
+     heartbeat agent composed its own SQL and reported 0 while three hot
+     memories sat in the window (measured 2026-08-07 09:00, ids
+     2442-2444). A metric line that can silently read 0 is worse than no
+     line: real change looks identical to silence. NOTE the unit
+     difference from task_runs: \`memories.created_at\` is SECONDS, so
+     the cutoff is \`unixepoch()-3600\` with NO millisecond multiplier:
+
+     \`\`\`bash
+     sqlite3 ${id.storeDir}/claudeclaw.db "SELECT COUNT(*) FROM memories \\
+       WHERE agent_id='${id.mainAgentId}' AND category='hot' \\
+       AND created_at > unixepoch()-3600"
+     \`\`\`
+
+     Report the number this query returns -- do not rewrite the query.
 
 2. **Format** the result as a single inter-agent message:
 
@@ -257,18 +295,14 @@ When you receive the heartbeat prompt:
    ### Memory / system
    - DB size: <X> MB
    - new hot memories (1h): <N>
-   - warnings: <none | comma-separated>
    \`\`\`
 
    Every line above is a MEASUREMENT of this round, never a memory of
    an earlier one. Run the queries again and report what they return
    now, even when you are sure nothing changed -- especially then.
-   A warning belongs on that last line only if THIS round's query
-   still returns it: a card that has since become \`done\` or archived
-   drops off, and so does a deadline that has been closed. Carrying
-   one over makes the line constant, and a line that always says the
-   same thing stops being read -- at which point a real warning looks
-   exactly like the two dead ones next to it.
+   A value carried over from an earlier round makes its line constant,
+   and a line that always says the same thing stops being read -- at
+   which point a real change looks exactly like the noise around it.
 
 3. **Send** that string to the main agent via the dashboard API:
 
@@ -299,11 +333,11 @@ When you receive the heartbeat prompt:
   not.
 - **NEVER** copy a value from an earlier round's report, and never
   fill a field from what you remember saying last time. Every number,
-  title, timestamp and warning comes from a query you ran in THIS
+  title and timestamp comes from a query you ran in THIS
   round. If a query fails, say it failed -- do not substitute the
   previous answer, because a stale value is indistinguishable from a
   fresh one once it is in the message.
-  This applies to the whole report, not only to \`warnings\`: the
+  This applies to the whole report: the
   urgent titles, the task counts, \`next:\`, the DB size and the
   one-hour hot-memory count are all measurements with a timestamp,
   and every one of them is wrong the moment it is reused.

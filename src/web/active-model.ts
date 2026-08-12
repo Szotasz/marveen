@@ -119,3 +119,38 @@ export function readContextTokensFromProjectDir(workingDir: string, configDir?: 
   ctxCache.set(cacheKey, { value, expiresAt: now + TTL_MS })
   return value
 }
+
+/**
+ * Wall-clock mtime (ms) of the newest transcript for a working dir, or null
+ * when there is none (fresh session, unreadable dir, agent on a remote host).
+ *
+ * This is the cheapest "when did this session last do anything" signal, and
+ * the honest one: Claude Code appends to the jsonl on every turn, so the
+ * file's mtime is written BY the session, outside the dashboard process. A
+ * clock kept in dashboard memory dies with the dashboard, and a
+ * count-the-sweeps streak measures the sweep interval rather than the agent.
+ * Neither survives a restart; this does.
+ *
+ * What it does NOT measure: whether the agent is working right now. A single
+ * long tool call (a 30-minute Bash, a subagent) appends nothing while it runs,
+ * so the transcript goes quiet while real work is in flight. Callers must pair
+ * this with a live-work signal -- the guard uses paneIdle -- and never treat a
+ * stale mtime on its own as "finished".
+ *
+ * The mtime is already computed inside readContextTokensFromProjectDir to pick
+ * the newest file; this exposes it rather than recomputing the selection
+ * differently, so the two always describe the SAME transcript.
+ */
+export function readTranscriptMtimeFromProjectDir(workingDir: string, configDir?: string): number | null {
+  try {
+    const dir = projectsDirFor(workingDir, configDir)
+    if (!existsSync(dir)) return null
+    let newest: number | null = null
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith('.jsonl')) continue
+      const m = statSync(join(dir, f)).mtimeMs
+      if (newest === null || m > newest) newest = m
+    }
+    return newest
+  } catch { return null }
+}
