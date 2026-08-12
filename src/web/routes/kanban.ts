@@ -12,9 +12,14 @@ import {
   listArchivedKanbanCards,
   revertIdeaFromKanban,
   getHeartbeatKanbanSummary,
+  getBlockersForCard, getBlockersForAllCards, getCardsBlockedBy,
+  addKanbanBlocker, removeKanbanBlocker, countOpenBlockers, resolveKanbanCardRef,
 } from '../../db.js'
+import { decideRelease, releaseMessage } from '../../kanban-release.js'
+import type { ReleasableCard, ClosedBlocker } from '../../kanban-release.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
-import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
+import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS, TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_ID } from '../../config.js'
+import { sendTelegramMessage } from '../telegram.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
 import { resolveKanbanDispatchTarget } from '../../kanban-dispatch.js'
@@ -77,14 +82,39 @@ export function kanbanMoveInstructions(id: string, target: string): string {
   ].join('\n')
 }
 
+// The curl an agent runs to start a card itself. Same endpoint and auth shape
+// as kanbanMoveInstructions -- the token is read from the store at call time,
+// never embedded in the message.
+function moveToInProgressCommand(id: string): string {
+  const tokenPath = join(STORE_DIR, '.dashboard-token')
+  return [
+    `  curl -s -X POST http://${WEB_HOST}:${WEB_PORT}/api/kanban/${id}/move \\`,
+    `    -H "Authorization: Bearer $(cat ${tokenPath})" \\`,
+    `    -H 'Content-Type: application/json' \\`,
+    `    -d '{"status":"in_progress"}'`,
+  ].join('\n')
+}
+
 // Option D: kanban -> agent dispatch. When a card moves to in_progress, wake the
 // assigned agent once via the inter-agent message router (createAgentMessage),
 // which gives retry / dedup / trust-wrapping / busy-receiver handling for free.
 // dispatched_at is the once-only guard; errors never block the card move.
-function fireKanbanDispatch(id: string): void {
+export function fireKanbanDispatch(id: string): void {
   try {
     const card = getKanbanCard(id)
     if (!card || card.dispatched_at) return
+    // A card with an open blocker is not startable work. The move itself is
+    // allowed (a human may well be staging the board), but waking an agent for
+    // it would hand out a task whose precondition is missing -- so the reason
+    // goes on the card instead, and the agent is woken by the release path
+    // when the last blocker closes.
+    const open = getBlockersForCard(id).filter(b => b.open)
+    if (open.length > 0) {
+      const list = open.map(b => `#${b.seq}`).join(', ')
+      addKanbanComment(id, BOT_NAME, `A kártya in_progress-be került, de még blokkolt (nyitott blokkoló: ${list}) -- az assignee-t NEM ébresztettem fel. A blokkoló lezárásakor automatikus értesítés megy ki.`)
+      logger.info({ context: { action: 'kanban_dispatch_suppressed_blocked', card: id, blockers: open.map(b => b.id) } }, 'Kanban dispatch suppressed: card still blocked')
+      return
+    }
     const target = resolveKanbanDispatchTarget(card.assignee, {
       ownerName: OWNER_NAME,
       botName: BOT_NAME,
@@ -103,6 +133,72 @@ function fireKanbanDispatch(id: string): void {
   }
 }
 
+/**
+ * Release whatever was waiting for the card that just closed (#185).
+ *
+ * The system event (a blocker reaching done) has to produce the wake-up,
+ * because the gate lived in prose before and closing the blocker woke nobody:
+ * #148 and #151 both sat there until the owner asked. Every released card gets
+ * a comment (so the board carries the reason), an assignee notification, and
+ * -- if it was parked in `waiting` -- a move back to `planned`.
+ *
+ * Best-effort throughout: a failed notification must never fail the card move
+ * that triggered it.
+ */
+export function fireBlockerRelease(blockerId: string): string[] {
+  const released: string[] = []
+  try {
+    const blocker = getKanbanCard(blockerId)
+    if (!blocker) return released
+    for (const card of getCardsBlockedBy(blockerId)) {
+      // countOpenBlockers reads the CURRENT state, which already has this
+      // blocker closed -- so what it returns is what remains.
+      const decision = decideRelease(card, blocker, countOpenBlockers(card.id), { ownerName: OWNER_NAME })
+      if (!decision) continue
+      addKanbanComment(card.id, BOT_NAME, decision.comment)
+      if (decision.moveToPlanned) moveKanbanCard(card.id, 'planned', card.sort_order, BOT_NAME)
+      notifyReleasedAssignee(card, blocker, decision.ownerHeld)
+      released.push(card.id)
+      logger.info(
+        { context: { action: 'kanban_blocker_released', card: card.id, blocker: blockerId, moved: decision.moveToPlanned } },
+        'Blocked card released by its blocker closing',
+      )
+    }
+  } catch (err) {
+    logger.warn({ err, blocker: blockerId }, 'Blocker release failed (the card move still succeeded)')
+  }
+  return released
+}
+
+/**
+ * Who hears about a released card.
+ *
+ * An agent assignee is woken through the inter-agent router (retry / dedup /
+ * trust-wrapping for free). Everything else -- the owner's own cards, an
+ * unassigned card, an agent whose session is down -- goes to the main agent
+ * instead of straight to the human: they triage and carry it into the digest.
+ * That routing is deliberate (orchestrator's call, 2026-08-02); it is also
+ * what keeps the guarantee this whole feature exists for, that a release
+ * always reaches someone rather than sitting on a board nobody is reading.
+ */
+function notifyReleasedAssignee(card: ReleasableCard, blocker: ClosedBlocker, ownerHeld: boolean): void {
+  const target = resolveKanbanDispatchTarget(card.assignee, {
+    ownerName: OWNER_NAME,
+    botName: BOT_NAME,
+    mainAgentId: MAIN_AGENT_ID,
+    agentNames: listAgentNames(),
+    isRunning: isAgentRunning,
+  })
+  if (target) {
+    createAgentMessage(MAIN_AGENT_ID, target, releaseMessage(card, blocker, moveToInProgressCommand(card.id)))
+    return
+  }
+  const reason = ownerHeld
+    ? `A kártya ${OWNER_NAME}-nál van, ezért a státuszát NEM állítottam át -- digest-tétel.`
+    : `A kártyát nem tudtam agensnek átadni (assignee: ${card.assignee ?? 'nincs'}), ezért nálad landol.`
+  createAgentMessage(MAIN_AGENT_ID, MAIN_AGENT_ID, `${releaseMessage(card, blocker, moveToInProgressCommand(card.id))}\n\n${reason}`)
+}
+
 export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -111,7 +207,14 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // instead of an N+1 per-card lookup, so the footer-pill UI gets
     // everything it needs in a single round trip.
     const labelsByCard = getLabelsForAllCards()
-    const cards = listKanbanCards().map((card) => ({ ...card, labels: labelsByCard.get(card.id) ?? [] }))
+    // Same one-query treatment for the dependency edges, so the board can draw
+    // the blocked marker without asking per card.
+    const blockersByCard = getBlockersForAllCards()
+    const cards = listKanbanCards().map((card) => ({
+      ...card,
+      labels: labelsByCard.get(card.id) ?? [],
+      blockers: blockersByCard.get(card.id) ?? [],
+    }))
     jsonMaybeGzip(req, res, cards)
     return true
   }
@@ -224,6 +327,64 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // --- Card dependencies (blocked_by) -------------------------------------
+  // GET returns both directions: what this card waits for, and what waits for
+  // it. One call, because the card detail shows the chain in both directions
+  // and a caller asking "is this startable" needs the same two answers.
+  const blockersMatch = path.match(/^\/api\/kanban\/([^/]+)\/blockers$/)
+  if (blockersMatch && method === 'GET') {
+    const cardId = decodeURIComponent(blockersMatch[1])
+    if (!getKanbanCard(cardId)) { json(res, { error: 'Kártya nem található' }, 404); return true }
+    const blockers = getBlockersForCard(cardId)
+    json(res, {
+      blockers,
+      blocking: getCardsBlockedBy(cardId).map(c => ({ id: c.id, seq: c.seq, title: c.title, status: c.status, assignee: c.assignee })),
+      open: blockers.filter(b => b.open).length,
+    })
+    return true
+  }
+
+  if (blockersMatch && method === 'POST') {
+    const cardId = decodeURIComponent(blockersMatch[1])
+    const body = await readBody(req)
+    // `blocker` accepts every form the fleet writes a card reference in:
+    // "#185", "185" or the hex id. Anything unresolvable is a 404 rather than
+    // a silently created edge to nowhere.
+    const { blocker, actor } = JSON.parse(body.toString()) as { blocker?: string | number; actor?: string }
+    if (blocker === undefined || blocker === null || String(blocker).trim() === '') {
+      json(res, { error: 'blocker mező kötelező (#sorszám vagy kártya-id)' }, 400)
+      return true
+    }
+    const blockerId = resolveKanbanCardRef(String(blocker))
+    if (!blockerId) { json(res, { error: `Nincs ilyen kártya: ${blocker}` }, 404); return true }
+    const result = addKanbanBlocker(cardId, blockerId, actor)
+    if (result === 'added' || result === 'exists') {
+      json(res, { ok: true, result, blockers: getBlockersForCard(cardId) })
+      return true
+    }
+    const errors: Record<string, [string, number]> = {
+      'self': ['Egy kártya nem függhet önmagától', 400],
+      'cycle': ['Ez körkörös függőséget hozna létre -- a lánc mindkét vége örökre blokkolt maradna', 409],
+      'unknown-card': ['Kártya nem található', 404],
+      'unknown-blocker': ['Blokkoló kártya nem található', 404],
+    }
+    const [message, status] = errors[result]
+    json(res, { error: message, result }, status)
+    return true
+  }
+
+  const blockerDeleteMatch = path.match(/^\/api\/kanban\/([^/]+)\/blockers\/([^/]+)$/)
+  if (blockerDeleteMatch && method === 'DELETE') {
+    const cardId = decodeURIComponent(blockerDeleteMatch[1])
+    const blockerId = resolveKanbanCardRef(decodeURIComponent(blockerDeleteMatch[2]))
+    if (blockerId && removeKanbanBlocker(cardId, blockerId)) {
+      json(res, { ok: true, blockers: getBlockersForCard(cardId) })
+      return true
+    }
+    json(res, { error: 'A kártyán nincs ilyen függőség' }, 404)
+    return true
+  }
+
   if (path === '/api/kanban-projects' && method === 'GET') {
     json(res, listKanbanProjects())
     return true
@@ -252,8 +413,21 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanCardMatch && method === 'PUT') {
     const id = decodeURIComponent(kanbanCardMatch[1])
     const body = await readBody(req)
-    const data = JSON.parse(body.toString())
-    if (updateKanbanCard(id, data)) { json(res, { ok: true }); return true }
+    // `actor` and `reassign` steer the update, they are not card columns:
+    // `reassign` is the caller stating that taking the card off the owner is
+    // the point of the call (see the owner guard in updateKanbanCard), and
+    // `actor` names who did it on the audit row. Same `actor` convention as
+    // the move endpoint below.
+    const { actor, reassign, ...data } = JSON.parse(body.toString())
+    // A card can also be closed through a plain field update, not just the
+    // move endpoint -- the release has to hang off the transition, not off the
+    // route that happened to cause it.
+    const before = getKanbanCard(id)?.status
+    if (updateKanbanCard(id, data, { actor, reassign: reassign === true })) {
+      if (before !== 'done' && getKanbanCard(id)?.status === 'done') fireBlockerRelease(id)
+      json(res, { ok: true })
+      return true
+    }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
   }
@@ -271,9 +445,13 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(kanbanMoveMatch[1])
     const body = await readBody(req)
     const { status, sort_order, actor } = JSON.parse(body.toString())
+    const previous = getKanbanCard(id)?.status
     if (moveKanbanCard(id, status, sort_order ?? 0, actor)) {
       // Wake the assigned agent once when the card enters in_progress.
       if (status === 'in_progress') fireKanbanDispatch(id)
+      // Closing a card releases whatever was waiting for it. Guarded on the
+      // transition so a re-drag inside the done column does not re-announce.
+      if (status === 'done' && previous !== 'done') fireBlockerRelease(id)
       json(res, { ok: true })
       return true
     }
@@ -285,7 +463,14 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanArchiveMatch && method === 'POST') {
     const id = decodeURIComponent(kanbanArchiveMatch[1])
     revertIdeaFromKanban(id)
-    if (archiveKanbanCard(id)) { json(res, { ok: true }); return true }
+    if (archiveKanbanCard(id)) {
+      // An archived blocker will never reach done, so it stops counting as
+      // open -- which means its dependents are free and have to hear about it
+      // through the same path a closed blocker uses.
+      fireBlockerRelease(id)
+      json(res, { ok: true })
+      return true
+    }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
   }
@@ -328,7 +513,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // to a real card into the human-facing `#<seq>` form before persistence
     // (#75 Cuzcoo dispatch). Random hex / non-matching tokens pass through.
     const normalizedContent = normalizeKanbanRefs(content, getKanbanSeqByIdPrefix)
-    json(res, addKanbanComment(cardId, author, normalizedContent))
+    const comment = addKanbanComment(cardId, author, normalizedContent)
+    const card = getKanbanCard(cardId)
+    if (card) notifyOwnerOfAgentComment(card, author, normalizedContent)
+    json(res, comment)
     return true
   }
 
@@ -400,4 +588,88 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   }
 
   return false
+}
+
+/**
+ * Tell the owner when an agent comments on one of their cards.
+ *
+ * A card assigned to the owner is one THEY are expected to act on. An agent
+ * answering there is usually a question or a handback, and until now it landed
+ * silently: the comment appeared on a board nobody was looking at, and the
+ * thread stalled waiting for a reply the owner never knew was expected.
+ *
+ * The owner is identified from OWNER_NAME rather than a literal name, so this
+ * stays correct in an install configured for someone else.
+ *
+ * Best-effort and fire-and-forget: adding a comment must not fail because a
+ * notification could not go out, and the caller is an API request.
+ */
+export function notifyOwnerOfAgentComment(
+  card: { id: string; title: string; assignee: string | null },
+  author: string,
+  content: string,
+  send?: (text: string) => Promise<void>,
+): boolean {
+  const owner = OWNER_NAME.trim().toLowerCase()
+  const assignee = (card.assignee ?? '').trim().toLowerCase()
+  // Only cards the owner is holding, and only when someone else wrote.
+  if (!owner || assignee !== owner) return false
+  if (author.trim().toLowerCase() === owner) return false
+
+  // The channel check gates the DEFAULT sender only. An injected sender is the
+  // caller's own transport, and refusing it because the global Telegram config
+  // happens to be empty would make the function untestable and would silently
+  // disable a perfectly working alternative delivery path.
+  let deliver = send
+  if (!deliver) {
+    if (!TELEGRAM_BOT_TOKEN.trim() || !ALLOWED_CHAT_ID.trim()) return false
+    deliver = (text: string) => sendTelegramMessage(TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_ID, text)
+  }
+
+  // The ellipsis has to judge the text that was actually cut. Measuring the
+  // raw content instead put "..." on comments that fit whole -- a short
+  // comment padded with newlines is long raw and short flattened.
+  const flat = content.replace(/\s+/g, ' ').trim()
+  const excerpt = flat.slice(0, 180)
+  // The ℹ️ prefix is the owner's visual anchor: it separates board-generated
+  // notifications from the agent's own replies when scrolling the chat
+  // (Viktor's request, 2026-08-02, Telegram 1630).
+  const text = `ℹ️ [kanban] ${author} kommentelt a kartyadon: "${card.title}"\n${excerpt}${flat.length > 180 ? '...' : ''}`
+  void deliver(text)
+    .then(() => recordOwnerNudge(text))
+    .catch((err: unknown) => {
+      logger.warn(
+        { context: { action: 'owner_comment_nudge_failed', card: card.id }, err: err instanceof Error ? err.message : 'unknown' },
+        'Owner comment nudge could not be delivered',
+      )
+    })
+  return true
+}
+
+/**
+ * Put a delivered nudge into the main agent's conversation log.
+ *
+ * The nudge leaves through the bot directly, bypassing the agent's session --
+ * the same invisibility that made the scheduler deny sending an alert it had
+ * sent (see recordSchedulerAlert). Without this row the agent has no record
+ * that the owner was pinged at all.
+ *
+ * Called only after a successful send, and best-effort: a nudge that went out
+ * must not be undone by a ledger write, and the caller is an API request.
+ */
+function recordOwnerNudge(text: string, now = Math.floor(Date.now() / 1000)): void {
+  try {
+    // `ts` is an ISO-8601 UTC string and `created_at` epoch seconds -- the
+    // shape every other row in this table has. An epoch in both would store
+    // a number under TEXT affinity and break anything parsing ts as a date.
+    getDb().prepare(
+      `INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, ts, created_at)
+       VALUES (?, ?, 'out', NULL, ?, ?, ?)`,
+    ).run(MAIN_AGENT_ID, ALLOWED_CHAT_ID, text, new Date(now * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z'), now)
+  } catch (err) {
+    logger.warn(
+      { context: { action: 'owner_comment_nudge_log_failed' }, err: err instanceof Error ? err.message : 'unknown' },
+      'Owner comment nudge could not be written to the conversation log',
+    )
+  }
 }

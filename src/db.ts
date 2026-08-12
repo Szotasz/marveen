@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync } from 'node:fs'
-import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from './config.js'
+import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ, OWNER_NAME } from './config.js'
 import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
@@ -399,6 +399,21 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_events_card ON kanban_card_events(card_id, created_at)`)
+  // The same trail also carries assignee changes (kind='assignee') and refused
+  // owner take-overs (kind='assignee_blocked'), so "who took this card off the
+  // owner, when" is answerable from data instead of guesswork. Added as
+  // columns rather than a second table because the questions are asked
+  // together ("what happened to this card").
+  //
+  // Legacy rows have no `kind`; the DEFAULT backfills them as 'status', which
+  // is what they are. On an assignee row from/to_status carry the status at
+  // the time of the change -- equal when the update did not move the card, so
+  // a reader that only looks at the status pair sees no transition and cannot
+  // mistake it for one.
+  const cardEventCols = (db.prepare('PRAGMA table_info(kanban_card_events)').all() as { name: string }[]).map(r => r.name)
+  if (!cardEventCols.includes('kind'))          db.exec("ALTER TABLE kanban_card_events ADD COLUMN kind TEXT NOT NULL DEFAULT 'status'")
+  if (!cardEventCols.includes('from_assignee')) db.exec('ALTER TABLE kanban_card_events ADD COLUMN from_assignee TEXT')
+  if (!cardEventCols.includes('to_assignee'))   db.exec('ALTER TABLE kanban_card_events ADD COLUMN to_assignee TEXT')
 
   // --- Kanban labels (tags) -----------------------------------------------
   // Labels are a separate registry (not hardcoded per-card strings) so the
@@ -422,6 +437,38 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_card_labels_label ON kanban_card_labels(label_id)`)
+
+  // --- Kanban card dependencies (blocked_by) -------------------------------
+  // One row per edge: `card_id` waits for `blocker_id`. A table rather than a
+  // column because a card can wait on several others at once, and because the
+  // release path reads the edges backwards ("who was waiting for the card I
+  // just closed?"), which a comma-separated column cannot answer with an index.
+  //
+  // Until this existed the gate lived in prose in the description ("after the
+  // move"), so closing the blocker woke nobody -- #148/#151 both stalled that
+  // way and only the owner asking surfaced them.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS kanban_card_blockers (
+      card_id    TEXT NOT NULL,
+      blocker_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      created_by TEXT,
+      PRIMARY KEY (card_id, blocker_id)
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_card_blockers_blocker ON kanban_card_blockers(blocker_id)`)
+
+  // Ledger for one-shot data migrations that must not re-run on the next boot.
+  // Schema changes stay idempotent (CREATE IF NOT EXISTS / ALTER-in-try) and
+  // need no ledger; a data import does, because "already imported" is not
+  // visible from the schema and re-running would resurrect rows a human
+  // deliberately deleted.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      name       TEXT PRIMARY KEY,
+      applied_at INTEGER NOT NULL
+    )
+  `)
 
   // --- Agent Messages ---
   db.exec(`
@@ -955,6 +1002,37 @@ export function initDatabase(dbPathOverride?: string): void {
   // race). Import rows if they exist, then rename the file so we don't keep
   // re-importing. Wrapped in a transaction so a crash mid-import is safe.
   migrateTaskRunsFromJson()
+
+  // One-shot: turn the hand-written "FUGG: #N" gate markers into real edges.
+  runOnceMigration('kanban-fugg-markers-to-blockers', () => {
+    const imported = importFuggMarkersAsBlockers()
+    if (imported.edges > 0 || imported.unresolved.length > 0 || imported.ambiguous.length > 0) {
+      logger.info(
+        { context: { action: 'kanban_fugg_import', ...imported } },
+        'Imported FUGG: markers as kanban blocker edges',
+      )
+    }
+  })
+}
+
+/**
+ * Run a data migration exactly once per database.
+ *
+ * A failed migration is NOT recorded, so it is retried on the next boot; a
+ * throw is swallowed because a boot must not die on a backfill.
+ */
+export function runOnceMigration(name: string, fn: () => void): boolean {
+  const done = db.prepare('SELECT 1 FROM schema_migrations WHERE name = ?').get(name)
+  if (done) return false
+  try {
+    fn()
+    db.prepare('INSERT OR REPLACE INTO schema_migrations (name, applied_at) VALUES (?, ?)')
+      .run(name, Math.floor(Date.now() / 1000))
+    return true
+  } catch (err) {
+    logger.warn({ err, context: { action: 'schema_migration_failed', name } }, 'One-shot migration failed -- will retry on next boot')
+    return false
+  }
 }
 
 function migrateTaskRunsFromJson(): void {
@@ -1687,6 +1765,26 @@ export function getKanbanCard(id: string): KanbanCard | undefined {
   return db.prepare('SELECT rowid AS seq, * FROM kanban_cards WHERE id = ?').get(id) as KanbanCard | undefined
 }
 
+/**
+ * Reuse the board's existing spelling of an assignee name. The board holds
+ * hand-typed names ('Viktor' 77 rows vs 'viktor' 2, 'marveen' 60 vs 'Marveen'
+ * 6 -- measured 2026-08-06) and SQLite compares case-sensitively, so every
+ * consumer keying on assignee equality either remembers COLLATE NOCASE or
+ * silently misses rows. Normalising at the write keeps new rows from widening
+ * the split; the majority spelling wins, so the board converges on what it
+ * already mostly says. A name the board has never seen is stored as typed.
+ */
+function canonicalAssignee(name: string | null | undefined): string | null {
+  const trimmed = (name ?? '').trim()
+  if (!trimmed) return null
+  const row = db.prepare(
+    `SELECT assignee, COUNT(*) AS n FROM kanban_cards
+     WHERE assignee = ? COLLATE NOCASE
+     GROUP BY assignee ORDER BY n DESC LIMIT 1`
+  ).get(trimmed) as { assignee: string } | undefined
+  return row?.assignee ?? trimmed
+}
+
 export function createKanbanCard(card: {
   id: string
   title: string
@@ -1710,20 +1808,94 @@ export function createKanbanCard(card: {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     card.id, card.title, card.description ?? null, status,
-    card.assignee ?? null, card.priority ?? 'normal',
+    canonicalAssignee(card.assignee), card.priority ?? 'normal',
     card.project ?? null, card.parent_id ?? null, card.due_date ?? null, sortOrder, now, now
   )
 }
 
-export function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>): boolean {
+export interface UpdateKanbanCardOptions {
+  /** Who is making the change. Recorded on the assignee audit row. */
+  actor?: string
+  /**
+   * Explicit hand-off. Required to move a card OFF the owner -- see the
+   * owner guard in updateKanbanCard.
+   */
+  reassign?: boolean
+}
+
+/**
+ * Update a card's fields.
+ *
+ * Two behaviours beyond the plain UPDATE:
+ *
+ * 1. OWNER GUARD. A card the owner holds is one THEY are expected to act on;
+ *    losing it to an agent hides work the owner is waiting on. Most writers
+ *    here send the WHOLE card back (`{...card, parent_id}`), so an assignee
+ *    they never meant to touch rides along from whatever state they were
+ *    holding -- a stale copy silently reassigns the card. So an incoming
+ *    assignee that differs from the owner is dropped unless the caller says
+ *    `reassign`, which the deliberate paths (the card editor, the assignee
+ *    picker) do say. Everything else in the update still applies: refusing
+ *    the whole write would turn a stray field into a failed edit.
+ *
+ * 2. AUDIT. Every assignee change -- and every refusal -- is written to
+ *    kanban_card_events, so a card that changes hands names its actor
+ *    instead of leaving the board to be read backwards from comments.
+ */
+export function updateKanbanCard(
+  id: string,
+  fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>,
+  opts: UpdateKanbanCardOptions = {},
+): boolean {
   const card = getKanbanCard(id)
   if (!card) return false
   const now = Math.floor(Date.now() / 1000)
   const f = { ...card, ...fields, updated_at: now }
-  return db.prepare(
+  if (fields.assignee !== undefined) f.assignee = canonicalAssignee(fields.assignee)
+
+  // Owner match is case-insensitive on both sides: the board holds both
+  // 'marveen' and 'Marveen', and a guard that misses on casing is no guard.
+  const owner = OWNER_NAME.trim().toLowerCase()
+  const held = (card.assignee ?? '').trim().toLowerCase()
+  const incoming = (f.assignee ?? '').trim().toLowerCase()
+  const blocked = Boolean(owner) && held === owner && incoming !== held && !opts.reassign
+  const attempted = f.assignee ?? null
+  if (blocked) f.assignee = card.assignee
+
+  const changed = db.prepare(
     `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
      WHERE id=?`
   ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+  if (!changed) return false
+
+  if (blocked) {
+    recordAssigneeEvent(id, 'assignee_blocked', card, f.status, attempted, opts.actor, now)
+    logger.warn(
+      { context: { action: 'kanban_owner_assignee_protected', card: id, held: card.assignee, attempted, actor: opts.actor ?? null } },
+      'Refused to take an owner-held card off the owner (no reassign flag)',
+    )
+  } else if ((card.assignee ?? null) !== (f.assignee ?? null)) {
+    recordAssigneeEvent(id, 'assignee', card, f.status, f.assignee ?? null, opts.actor, now)
+  }
+  return true
+}
+
+// Audit row for an assignee change (or a refused one). from/to_status carry
+// the card's status across the same update -- equal unless the caller also
+// moved it -- so the row stays honest about what the card was doing.
+function recordAssigneeEvent(
+  cardId: string,
+  kind: 'assignee' | 'assignee_blocked',
+  card: KanbanCard,
+  toStatus: string,
+  toAssignee: string | null,
+  actor: string | undefined,
+  now: number,
+): void {
+  db.prepare(
+    `INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, kind, from_assignee, to_assignee)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(cardId, card.status, toStatus, actor ?? null, now, kind, card.assignee ?? null, toAssignee)
 }
 
 export function getChildCards(parentId: string): KanbanCard[] {
@@ -1822,24 +1994,33 @@ export function deleteKanbanCard(id: string): boolean {
   //   1. Delete comments that reference this card (FK: kanban_comments.card_id).
   //   2. Delete this card's label associations (FK: kanban_card_labels.card_id)
   //      -- the labels themselves stay in the registry, only the link goes.
-  //   3. Null-out child cards that reference this card as their parent
+  //   3. Delete every dependency edge the card takes part in, in BOTH
+  //      directions (kanban_card_blockers.card_id and .blocker_id) -- a
+  //      surviving edge to a deleted card would block its dependent forever,
+  //      since the blocker can never reach 'done'.
+  //   4. Null-out child cards that reference this card as their parent
   //      (FK: kanban_cards.parent_id). Setting parent_id = NULL keeps the
   //      children alive as root-level cards rather than leaving them with a
   //      dangling reference. FK enforcement is currently OFF by default
   //      (better-sqlite3 default), but the dangling parent_id is still a
   //      data bug -- orphaned children do not appear under any parent and
   //      are invisible in hierarchy views.
-  //   4. Delete the card itself.
+  //   5. Delete the card itself.
   return db.transaction((cardId: string) => {
     db.prepare('DELETE FROM kanban_comments WHERE card_id = ?').run(cardId)
     db.prepare('DELETE FROM kanban_card_labels WHERE card_id = ?').run(cardId)
+    db.prepare('DELETE FROM kanban_card_blockers WHERE card_id = ? OR blocker_id = ?').run(cardId, cardId)
     db.prepare('UPDATE kanban_cards SET parent_id = NULL WHERE parent_id = ?').run(cardId)
     return db.prepare('DELETE FROM kanban_cards WHERE id = ?').run(cardId).changes > 0
   })(id) as boolean
 }
 
 export function getKanbanComments(cardId: string): KanbanComment[] {
-  return db.prepare('SELECT * FROM kanban_comments WHERE card_id = ? ORDER BY created_at ASC').all(cardId) as KanbanComment[]
+  // Callers address cards as "#230", "230" or by hex id; comments are keyed by
+  // the hex id alone. Resolve first, or a seq-shaped ref reads an empty list
+  // that looks like a card with no history.
+  const resolved = resolveKanbanCardRef(cardId) ?? cardId
+  return db.prepare('SELECT * FROM kanban_comments WHERE card_id = ? ORDER BY created_at ASC').all(resolved) as KanbanComment[]
 }
 
 export interface KanbanCardEvent {
@@ -1849,6 +2030,10 @@ export interface KanbanCardEvent {
   to_status: string
   actor: string | null
   created_at: number
+  /** 'status' = a real column move; the assignee kinds come from updateKanbanCard. */
+  kind: 'status' | 'assignee' | 'assignee_blocked'
+  from_assignee: string | null
+  to_assignee: string | null
 }
 
 export function getKanbanCardEvents(cardId: string): KanbanCardEvent[] {
@@ -1894,12 +2079,18 @@ export function markScheduledTaskKanbanWaiting(taskName: string): string | null 
 }
 
 export function addKanbanComment(cardId: string, author: string, content: string): KanbanComment {
+  // A comment written under an unresolved ref is an orphan: it never shows on
+  // the card, the card's updated_at update below no-ops, and the caller sees
+  // success. Fifteen live comments went that way on 2026-08-03. Resolve or
+  // refuse -- loudly.
+  const resolved = resolveKanbanCardRef(cardId)
+  if (!resolved) throw new Error(`unknown kanban card: ${cardId}`)
   const now = Math.floor(Date.now() / 1000)
   const info = db.prepare(
     'INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES (?, ?, ?, ?)'
-  ).run(cardId, author, content, now)
-  db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?').run(now, cardId)
-  return { id: Number(info.lastInsertRowid), card_id: cardId, author, content, created_at: now }
+  ).run(resolved, author, content, now)
+  db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?').run(now, resolved)
+  return { id: Number(info.lastInsertRowid), card_id: resolved, author, content, created_at: now }
 }
 
 // --- Kanban labels (tags) ---
@@ -1984,6 +2175,229 @@ export function getLabelsForAllCards(): Map<string, Label[]> {
     else map.set(card_id, [label])
   }
   return map
+}
+
+// --- Kanban card dependencies (blocked_by) ---
+//
+// An edge says "card_id waits for blocker_id". A blocker counts as OPEN while
+// it is neither done nor archived; the card is blocked while it has at least
+// one open blocker. Archived is treated as closed on purpose: an archived
+// blocker will never move to done, and leaving it open would park its
+// dependent forever.
+
+export interface KanbanBlockerRef {
+  id: string
+  /** rowid -- the human-facing #N the whole fleet references cards by. */
+  seq: number
+  title: string
+  status: KanbanCard['status']
+  assignee: string | null
+  archived_at: number | null
+  /** Still standing: neither done nor archived. */
+  open: boolean
+}
+
+const BLOCKER_SELECT = `
+  SELECT b.rowid AS seq, b.id, b.title, b.status, b.assignee, b.archived_at,
+         CASE WHEN b.status = 'done' OR b.archived_at IS NOT NULL THEN 0 ELSE 1 END AS open
+  FROM kanban_card_blockers e
+  JOIN kanban_cards b ON b.id = e.blocker_id
+`
+
+type BlockerRow = Omit<KanbanBlockerRef, 'open'> & { open: number }
+const toBlockerRef = (row: BlockerRow): KanbanBlockerRef => ({ ...row, open: row.open === 1 })
+
+/** What this card is waiting for. */
+export function getBlockersForCard(cardId: string): KanbanBlockerRef[] {
+  const rows = db.prepare(`${BLOCKER_SELECT} WHERE e.card_id = ? ORDER BY b.rowid ASC`).all(cardId) as BlockerRow[]
+  return rows.map(toBlockerRef)
+}
+
+/**
+ * Which cards are waiting for this one -- the direction the release path
+ * reads. Archived dependents are left out: nothing is waiting on a board
+ * nobody looks at.
+ */
+export function getCardsBlockedBy(blockerId: string): KanbanCard[] {
+  return db.prepare(`
+    SELECT c.rowid AS seq, c.*
+    FROM kanban_card_blockers e
+    JOIN kanban_cards c ON c.id = e.card_id
+    WHERE e.blocker_id = ? AND c.archived_at IS NULL
+    ORDER BY c.rowid ASC
+  `).all(blockerId) as KanbanCard[]
+}
+
+/**
+ * Bulk variant for the board list view -- one JOIN instead of an N+1 per-card
+ * lookup, the same shape getLabelsForAllCards() uses for the footer pills.
+ */
+export function getBlockersForAllCards(): Map<string, KanbanBlockerRef[]> {
+  const rows = db.prepare(`
+    SELECT e.card_id AS card_id, b.rowid AS seq, b.id, b.title, b.status, b.assignee, b.archived_at,
+           CASE WHEN b.status = 'done' OR b.archived_at IS NOT NULL THEN 0 ELSE 1 END AS open
+    FROM kanban_card_blockers e
+    JOIN kanban_cards b ON b.id = e.blocker_id
+    ORDER BY b.rowid ASC
+  `).all() as Array<BlockerRow & { card_id: string }>
+  const map = new Map<string, KanbanBlockerRef[]>()
+  for (const row of rows) {
+    const { card_id, ...blocker } = row
+    const list = map.get(card_id)
+    if (list) list.push(toBlockerRef(blocker))
+    else map.set(card_id, [toBlockerRef(blocker)])
+  }
+  return map
+}
+
+export function countOpenBlockers(cardId: string): number {
+  const row = db.prepare(`
+    SELECT COUNT(*) AS c
+    FROM kanban_card_blockers e
+    JOIN kanban_cards b ON b.id = e.blocker_id
+    WHERE e.card_id = ? AND b.status != 'done' AND b.archived_at IS NULL
+  `).get(cardId) as { c: number }
+  return row.c
+}
+
+/**
+ * Resolve any of the three ways the fleet names a card -- "#185", "185", or the
+ * 8-char hex id -- to its hex id. Returns null when nothing matches, so a typo
+ * fails loudly at the API boundary instead of creating an edge to nowhere.
+ */
+export function resolveKanbanCardRef(ref: string): string | null {
+  const raw = String(ref ?? '').trim().replace(/^#/, '')
+  if (!raw) return null
+  if (/^\d+$/.test(raw)) {
+    // Seq first: "#253" is how humans write a card reference, and that reading
+    // must win when both are possible. But a card id is 8 hex characters, so
+    // roughly one id in forty-three is all digits -- and for those the seq
+    // lookup finds nothing and used to return null, which made the card
+    // uncommentable ("Szerver hiba" on every attempt, card 03466831,
+    // 2026-08-06). Fall through to the id match instead of giving up.
+    const bySeq = db.prepare('SELECT id FROM kanban_cards WHERE rowid = ?').get(Number(raw)) as { id: string } | undefined
+    if (bySeq) return bySeq.id
+  }
+  const row = db.prepare('SELECT id FROM kanban_cards WHERE id = ? COLLATE NOCASE').get(raw) as { id: string } | undefined
+  return row?.id ?? null
+}
+
+/**
+ * Would adding "card waits for blocker" close a loop? Walks the blocker's own
+ * dependencies transitively and looks for the card. A cycle is not a
+ * theoretical worry: every card in it would be permanently blocked with no
+ * event able to release it, since nothing in the loop can reach done first.
+ */
+export function wouldCreateBlockerCycle(cardId: string, blockerId: string): boolean {
+  const seen = new Set<string>()
+  const stack = [blockerId]
+  while (stack.length > 0) {
+    const current = stack.pop() as string
+    if (current === cardId) return true
+    if (seen.has(current)) continue
+    seen.add(current)
+    const rows = db.prepare('SELECT blocker_id FROM kanban_card_blockers WHERE card_id = ?').all(current) as { blocker_id: string }[]
+    for (const r of rows) stack.push(r.blocker_id)
+  }
+  return false
+}
+
+export type AddBlockerResult = 'added' | 'exists' | 'self' | 'cycle' | 'unknown-card' | 'unknown-blocker'
+
+export function addKanbanBlocker(cardId: string, blockerId: string, actor?: string): AddBlockerResult {
+  if (cardId === blockerId) return 'self'
+  if (!getKanbanCard(cardId)) return 'unknown-card'
+  if (!getKanbanCard(blockerId)) return 'unknown-blocker'
+  const already = db.prepare('SELECT 1 FROM kanban_card_blockers WHERE card_id = ? AND blocker_id = ?').get(cardId, blockerId)
+  if (already) return 'exists'
+  if (wouldCreateBlockerCycle(cardId, blockerId)) return 'cycle'
+  db.prepare(
+    'INSERT INTO kanban_card_blockers (card_id, blocker_id, created_at, created_by) VALUES (?, ?, ?, ?)'
+  ).run(cardId, blockerId, Math.floor(Date.now() / 1000), actor ?? null)
+  return 'added'
+}
+
+export function removeKanbanBlocker(cardId: string, blockerId: string): boolean {
+  return db.prepare('DELETE FROM kanban_card_blockers WHERE card_id = ? AND blocker_id = ?')
+    .run(cardId, blockerId).changes > 0
+}
+
+// The hand-written gate marker this replaces: "FUGG: #12" in the card
+// description, sometimes listing several ("FUGG: #12, #14") and sometimes
+// mid-sentence ("... a dontes utan indul. FUGG: #27 (bekuldes)").
+const FUGG_MARKER_RE = /FUGG:[^\S\n]*(.*)$/gim
+
+/**
+ * Read the gate markers off a description.
+ *
+ * Only the canonical form -- a card reference IMMEDIATELY after `FUGG:` --
+ * is taken as a dependency. The convention drifted in both directions on the
+ * live board: "FUGG: #27" means this card waits for #27, but "FUGG: ettol a
+ * #202 2. fazisa" means the OPPOSITE, that #202 waits for this card. Prose
+ * between the marker and the first reference is exactly where that flip
+ * hides, so those are handed back as `ambiguous` for a human to place
+ * instead of being imported in a direction that may be backwards -- a
+ * reversed edge would gate the wrong card and auto-move it.
+ */
+export function parseFuggMarkers(description: string | null): { refs: number[]; ambiguous: string[] } {
+  const refs: number[] = []
+  const ambiguous: string[] = []
+  if (!description) return { refs, ambiguous }
+  for (const match of description.matchAll(FUGG_MARKER_RE)) {
+    const rest = match[1].trim()
+    if (!rest.startsWith('#')) {
+      if (rest) ambiguous.push(rest.slice(0, 80))
+      continue
+    }
+    // Stop at the first token that is not a reference or a separator, so the
+    // trailing prose of "FUGG: #27 (a #31 utan)" cannot smuggle in a second
+    // dependency the author did not declare.
+    const head = rest.match(/^(?:#\d+[\s,]*)+/)
+    if (!head) continue
+    for (const ref of head[0].matchAll(/#(\d+)/g)) {
+      const seq = Number(ref[1])
+      if (!refs.includes(seq)) refs.push(seq)
+    }
+  }
+  return { refs, ambiguous }
+}
+
+/**
+ * Backfill: every "FUGG: #N" marker on a live card becomes a real edge.
+ *
+ * The marker text is deliberately LEFT IN the description -- it was written
+ * for a human reader and the sentence around it carries the reasoning; only
+ * the machine-readable half is being added. Unresolvable references (a typo,
+ * a deleted card) are reported rather than dropped silently, and a marker that
+ * would close a loop is skipped for the reason wouldCreateBlockerCycle gives.
+ */
+export function importFuggMarkersAsBlockers(actor = 'fugg-marker-import'): {
+  edges: number
+  cards: number
+  unresolved: string[]
+  ambiguous: string[]
+} {
+  const cards = db.prepare(
+    "SELECT rowid AS seq, id, description FROM kanban_cards WHERE archived_at IS NULL AND description LIKE '%FUGG:%'"
+  ).all() as Array<{ seq: number; id: string; description: string | null }>
+  let edges = 0
+  let touched = 0
+  const unresolved: string[] = []
+  const ambiguous: string[] = []
+  for (const card of cards) {
+    let added = 0
+    const parsed = parseFuggMarkers(card.description)
+    for (const text of parsed.ambiguous) ambiguous.push(`#${card.seq}: ${text}`)
+    for (const seq of parsed.refs) {
+      const blockerId = resolveKanbanCardRef(String(seq))
+      if (!blockerId) { unresolved.push(`#${card.seq} -> #${seq}`); continue }
+      const result = addKanbanBlocker(card.id, blockerId, actor)
+      if (result === 'added') { edges++; added++ }
+      else if (result !== 'exists') unresolved.push(`#${card.seq} -> #${seq} (${result})`)
+    }
+    if (added > 0) touched++
+  }
+  return { edges, cards: touched, unresolved, ambiguous }
 }
 
 // --- Heartbeat helpers ---

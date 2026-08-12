@@ -102,6 +102,66 @@ function mainAgentId() {
   return window._marveen?.agentId || 'marveen'
 }
 
+// --- createDiagnostics start (extracted and executed by the unit test) ---
+// Card #95 / #140: the diagnostics banner, with its document and token reader
+// injected so the behaviour below is unit-testable without a browser.
+//
+// A problem carries the KEY of the thing that failed. A later success for the
+// same key drops it, and the banner disappears once nothing is left: a card
+// #140 fix, because the banner used to stick forever after a single failed
+// request. The concrete case (2026-07-31): an F3 deploy restarted the service
+// while the tab was open, one poll failed, and the red banner stayed up long
+// after the endpoint was answering 200 again -- a false alarm that reached the
+// owner as a screenshot.
+//
+// Page errors and unhandled rejections carry no key on purpose. Those are bugs,
+// not weather; nothing "succeeds" that would prove them gone.
+function createDiagnostics(env) {
+  const problems = []
+
+  function render() {
+    if (!env.isEnabled()) return
+    const doc = env.doc
+    let bar = doc.getElementById('mv-diag-banner')
+    if (problems.length === 0) {
+      if (bar && bar.parentNode) bar.parentNode.removeChild(bar)
+      return
+    }
+    if (!bar) {
+      bar = doc.createElement('div')
+      bar.id = 'mv-diag-banner'
+      bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#7a1f1f;color:#fff;' +
+        'font:13px/1.5 monospace;padding:8px 12px;max-height:40vh;overflow:auto;white-space:pre-wrap'
+      const attach = () => doc.body ? doc.body.appendChild(bar) : setTimeout(attach, 50)
+      attach()
+    }
+    bar.textContent = 'MARVEEN DIAGNOSZTIKA (kuldd el kepernyokepen)\n' +
+      'token: ' + env.tokenState() + '\n' + problems.map(p => '- ' + p.detail).join('\n')
+  }
+
+  return {
+    // `key` identifies what failed (an API url); omit it for a problem no
+    // later success can clear.
+    report(detail, key) {
+      if (problems.some(p => p.detail === detail)) return
+      problems.push({ detail, key: key || null })
+      if (!env.isEnabled()) { console.warn('[mv-diag]', detail); return }
+      render()
+    },
+    // The thing behind `key` answered -- drop every problem blamed on it.
+    resolve(key) {
+      if (!key) return
+      const before = problems.length
+      for (let i = problems.length - 1; i >= 0; i--) {
+        if (problems[i].key === key) problems.splice(i, 1)
+      }
+      if (problems.length !== before) render()
+    },
+    list() { return problems.map(p => ({ detail: p.detail, key: p.key })) },
+  }
+}
+// --- createDiagnostics end ---
+
 (() => {
   const TOKEN_KEY = 'marveen-dashboard-token'
   const urlParams = new URLSearchParams(window.location.search)
@@ -119,6 +179,43 @@ function mainAgentId() {
   } else {
     try { sessionToken = localStorage.getItem(TOKEN_KEY) || '' } catch { /* storage blocked */ }
   }
+
+  // Card #95: visible API/page diagnostics. Empty sections used to be the ONLY
+  // symptom of a failing request (hidden voice controls, blank profile select),
+  // which made client-side failures undebuggable from screenshots. Every failed
+  // same-origin API response, thrown fetch, and uncaught page error now lands
+  // in a fixed banner the user can read and screenshot.
+  //
+  // The banner is opt-in (review feedback on PR #762): on a customer install a
+  // transient non-ok response must not paint the whole page red. Enable with
+  // ?mvdiag=1 (persisted for the browser) or localStorage 'mv_diag' = '1';
+  // ?mvdiag=0 turns it back off. When off, problems still go to the console.
+  function mvDiagEnabled() {
+    try {
+      const q = new URLSearchParams(location.search).get('mvdiag')
+      if (q === '1') { try { localStorage.setItem('mv_diag', '1') } catch { /* storage blocked */ } return true }
+      if (q === '0') { try { localStorage.removeItem('mv_diag') } catch { /* storage blocked */ } return false }
+      return localStorage.getItem('mv_diag') === '1'
+    } catch { return false }
+  }
+  const mvDiag = createDiagnostics({
+    doc: document,
+    isEnabled: mvDiagEnabled,
+    tokenState: () => {
+      let state = 'nincs'
+      try { if (localStorage.getItem(TOKEN_KEY)) state = 'localStorage' } catch { state = 'storage blokkolva' }
+      if (sessionToken) state = state === 'nincs' ? 'memoria' : state + '+memoria'
+      return state
+    },
+  })
+  const mvReportProblem = (detail, key) => mvDiag.report(detail, key)
+  window.addEventListener('error', (e) => {
+    mvReportProblem('PAGE ERROR: ' + (e.message || 'ismeretlen') + ' @ ' + (e.filename || '?') + ':' + (e.lineno || '?'))
+  })
+  window.addEventListener('unhandledrejection', (e) => {
+    const r = e.reason
+    mvReportProblem('UNHANDLED PROMISE: ' + (r && r.message ? r.message : String(r)))
+  })
 
   const originalFetch = window.fetch.bind(window)
   window.fetch = async (input, init) => {
@@ -138,7 +235,20 @@ function mainAgentId() {
         init.headers = headers
       }
     }
-    const res = await originalFetch(input, init)
+    let res
+    try {
+      res = await originalFetch(input, init)
+    } catch (err) {
+      if (isSameOriginApi) mvReportProblem('FETCH FAILED: ' + url + ' -- ' + (err && err.message ? err.message : String(err)), url)
+      throw err
+    }
+    if (isSameOriginApi && !res.ok && res.status !== 304) {
+      mvReportProblem('HTTP ' + res.status + ': ' + url, url)
+    }
+    // The endpoint answered, so whatever we blamed on it is over: a poll that
+    // failed during a deploy restart clears itself on the next round instead
+    // of leaving a red banner behind (#140).
+    if (isSameOriginApi && (res.ok || res.status === 304)) mvDiag.resolve(url)
     if (res.status === 401 && isSameOriginApi) {
       // Token missing, wrong, or revoked. Wipe and prompt once per page load.
       // Keep a URL-provided session token so a transient 401 does not lock out
@@ -1119,6 +1229,21 @@ function renderKanbanQuickFilters() {
   }
 }
 
+// --- canEmbedSubtask start
+// Whether a subtask should be drawn inside its parent card instead of getting
+// a box of its own. Same column is not enough: the board groups into swimlanes
+// by assignee, so embedding a subtask owned by someone else moves it out of
+// its owner's lane and into the parent owner's. That is how card #257 left the
+// owner's lane on 2026-08-05 -- he dragged it to waiting, which happened to
+// match its parent's column, and a card assigned to him ended up inside an
+// agent's card. Same column AND same owner, or it keeps its own box.
+function canEmbedSubtask(parent, child) {
+  if (parent.status !== child.status) return false
+  const owner = (card) => String(card && card.assignee ? card.assignee : '').trim().toLowerCase()
+  return owner(parent) === owner(child)
+}
+// --- canEmbedSubtask end
+
 function renderKanban() {
   const cardById = new Map(kanbanCards.map(c => [c.id, c]))
 
@@ -1133,16 +1258,17 @@ function renderKanban() {
     visibleCardIds.add(card.id)
   }
 
-  // A subtask is "embedded" when its parent is visible AND both share the same
-  // column. Embedded subtasks are hidden as standalone cards and rendered
-  // inside the parent card instead. Filter state of the subtask itself is
-  // intentionally ignored so it always shows under its visible parent.
+  // A subtask is "embedded" when its parent is visible AND the two belong
+  // together on the board (see canEmbedSubtask). Embedded subtasks are hidden
+  // as standalone cards and rendered inside the parent card instead. Filter
+  // state of the subtask itself is intentionally ignored so it always shows
+  // under its visible parent.
   const embeddedSubtaskIds = new Set()
   for (const card of kanbanCards) {
     if (!card.parent_id) continue
     const parent = cardById.get(card.parent_id)
     if (!parent || !visibleCardIds.has(parent.id)) continue
-    if (parent.status === card.status) embeddedSubtaskIds.add(card.id)
+    if (canEmbedSubtask(parent, card)) embeddedSubtaskIds.add(card.id)
   }
 
   const grouped = { planned: [], in_progress: [], waiting: [], testing: [], done: [] }
@@ -1450,6 +1576,17 @@ function createCardEl(card, embeddedChildren = []) {
     ? `<span class="kanban-card-seq" style="font-family:monospace;font-size:11px;color:var(--muted);margin-right:5px">#${card.seq}</span>`
     : ''
 
+  // Blocked marker: the card is waiting on at least one card that is neither
+  // done nor archived. Shown in the footer next to the assignee so the gate is
+  // readable from the board itself, not only from the card detail.
+  const openBlockers = Array.isArray(card.blockers) ? card.blockers.filter(b => b.open) : []
+  let blockedHtml = ''
+  if (openBlockers.length > 0) {
+    const list = openBlockers.map(b => `#${b.seq}`).join(', ')
+    blockedHtml = `<span class="kanban-card-blocked" title="${escapeHtml(t('kanban.blocker.card_tooltip', { list }))}">⛔ ${escapeHtml(list)}</span>`
+    el.dataset.blocked = '1'
+  }
+
   // Card aging: left stripe + top-right badge based on hours since last update.
   // Skipped for done cards. Config thresholds and colours come from window._marveen.kanbanAging.
   let agingBadgeHtml = ''
@@ -1493,7 +1630,7 @@ function createCardEl(card, embeddedChildren = []) {
   el.innerHTML = `
     ${projectHtml}
     <div class="kanban-card-title">${seqHtml}${escapeHtml(card.title)}</div>
-    <div class="kanban-card-footer">${assigneeHtml}${dueHtml}</div>
+    <div class="kanban-card-footer">${assigneeHtml}${dueHtml}${blockedHtml}</div>
     ${labelsHtml}
     <div class="kanban-card-actions">
       <button class="card-breakdown-btn" title="${t('kanban.btn.breakdown')}" aria-label="${t('kanban.btn.breakdown')}">⚡</button>
@@ -1855,7 +1992,11 @@ document.getElementById('saveCardBtn').addEventListener('click', async () => {
       const res = await fetch(`/api/kanban/${encodeURIComponent(editId)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
+        // reassign: the assignee field in this dialog is filled by hand, so
+        // taking a card off the owner here is deliberate. Without the flag the
+        // server keeps the owner (it cannot tell a chosen assignee from one
+        // that rode along in a full-card body).
+        body: JSON.stringify({ ...data, reassign: true }),
       })
       if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || res.status) }
       showToast(t('kanban.toast.card_updated'))
@@ -1973,6 +2114,88 @@ async function renderCardLabelsSection(card) {
       renderCardLabelsSection(card)
       loadKanban()
     } catch { showToast(t('kanban.toast.label_create_error')) }
+  }
+}
+
+// === Card dependencies (blocked_by, #185) ===
+// Both directions in one panel: what the card waits for (removable, with an
+// add box), and -- read-only -- what waits for the card. The second list is
+// what makes the chain visible: closing this card is what releases them.
+async function renderCardBlockers(card) {
+  const list = document.getElementById('cardBlockerList')
+  const reverse = document.getElementById('cardBlockingList')
+  const input = document.getElementById('cardBlockerAdd')
+  const addBtn = document.getElementById('cardBlockerAddBtn')
+  if (!list) return
+
+  const statusLabel = (s) => t(`kanban.status.${s}`)
+  const rowHtml = (b, removable) => `
+    <div class="blocker-row ${b.open === false || b.status === 'done' ? 'blocker-closed' : 'blocker-open'}">
+      <span class="blocker-ref" data-goto="${escapeHtml(b.id)}">#${b.seq}</span>
+      <span class="blocker-title" data-goto="${escapeHtml(b.id)}">${escapeHtml(b.title)}</span>
+      <span class="blocker-status">${escapeHtml(statusLabel(b.status))}</span>
+      ${removable ? `<button class="blocker-remove" data-blocker="${escapeHtml(b.id)}" title="${escapeHtml(t('kanban.blocker.remove'))}" aria-label="${escapeHtml(t('kanban.blocker.remove'))}">&times;</button>` : ''}
+    </div>`
+
+  const render = (data) => {
+    const blockers = data.blockers || []
+    const blocking = data.blocking || []
+    list.innerHTML = blockers.length === 0
+      ? `<div class="blocker-empty">${escapeHtml(t('kanban.blocker.none'))}</div>`
+      : `<div class="blocker-group-label">${escapeHtml(t('kanban.blocker.waiting_for'))}</div>${blockers.map(b => rowHtml(b, true)).join('')}`
+    reverse.innerHTML = blocking.length === 0
+      ? ''
+      : `<div class="blocker-group-label">${escapeHtml(t('kanban.blocker.blocking'))}</div>${blocking.map(b => rowHtml(b, false)).join('')}`
+
+    for (const el of [list, reverse]) {
+      el.querySelectorAll('[data-goto]').forEach((refEl) => {
+        refEl.onclick = () => {
+          const target = kanbanCards.find(c => c.id === refEl.dataset.goto)
+          if (target) showCardDetail(target)
+        }
+      })
+    }
+    list.querySelectorAll('.blocker-remove').forEach((btn) => {
+      btn.onclick = async () => {
+        btn.disabled = true
+        try {
+          const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/blockers/${encodeURIComponent(btn.dataset.blocker)}`, { method: 'DELETE' })
+          if (!r.ok) { showToast((await r.json()).error || t('common.error_delete')); btn.disabled = false; return }
+          showToast(t('kanban.blocker.removed'))
+          await renderCardBlockers(card)
+          loadKanban()
+        } catch { showToast(t('common.error_delete')); btn.disabled = false }
+      }
+    })
+  }
+
+  addBtn.onclick = async () => {
+    const ref = input.value.trim()
+    if (!ref) { input.focus(); return }
+    addBtn.disabled = true
+    try {
+      const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/blockers`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ blocker: ref }),
+      })
+      const data = await r.json()
+      // The server names the reason (unknown card, self-reference, cycle) --
+      // showing its message beats a generic failure the user cannot act on.
+      if (!r.ok) { showToast(data.error || t('common.error_save')); return }
+      input.value = ''
+      showToast(t('kanban.blocker.added'))
+      await renderCardBlockers(card)
+      loadKanban()
+    } catch { showToast(t('common.error_save')) } finally { addBtn.disabled = false }
+  }
+  input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); addBtn.click() } }
+
+  try {
+    const res = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/blockers`)
+    render(await res.json())
+  } catch {
+    list.innerHTML = ''
+    reverse.innerHTML = ''
   }
 }
 
@@ -2098,7 +2321,9 @@ async function showCardDetail(card) {
         const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...card, assignee: newVal }),
+          // reassign: this picker exists to change the assignee -- see the
+          // card dialog above for why the server needs to be told.
+          body: JSON.stringify({ ...card, assignee: newVal, reassign: true }),
         })
         if (!r.ok) throw new Error('PUT failed')
         card.assignee = newVal
@@ -2255,6 +2480,9 @@ async function showCardDetail(card) {
       showToast(t('common.error_delete'))
     }
   }
+
+  // Dependencies (#185) -- both directions, wired for add/remove.
+  await renderCardBlockers(card)
 
   // Load children (subtasks) — only top-level tasks have children (no subtask of subtask)
   try {
@@ -2981,6 +3209,20 @@ async function openMarveenDetail() {
   // Populate the model dropdown groups (auto/manual) AND surface the OpenRouter
   // curation button -- this is the main agent, the only place curation lives.
   loadAvailableModels()
+  // Card #95 root cause: this dedicated opener (Csapat card path) never
+  // populated the shared settings-tab fields, so the main agent's modal showed
+  // an empty security profile, empty plan select and no voice radios -- while
+  // openAgentDetail (agents-grid path) filled them. Populate the same fields
+  // here; the plan group is hidden for the main agent (its Claude login is
+  // managed via channels.sh, same rule as openAgentDetail's role==='main').
+  populateProfileSelect(
+    document.getElementById('editAgentProfile'),
+    document.getElementById('editAgentProfileDesc'),
+    m.securityProfile || 'default',
+  )
+  const marveenPlanGroup = document.getElementById('claudePlanGroup')
+  if (marveenPlanGroup) marveenPlanGroup.hidden = true
+  loadVoiceConfig(mainAgentId())
   // Surface the "channels restart" button -- destructive, but mobile-safe
   // when the Telegram plugin wedges and you're away from a terminal.
   document.getElementById('marveenRestartBtn').hidden = false
@@ -4387,7 +4629,13 @@ async function loadVoiceConfig(agentName) {
     if (controls) controls.hidden = false
 
     const r = await fetch(`/api/agents/${encodeURIComponent(agentName)}/voice-config`)
-    if (!r.ok) return
+    if (!r.ok) {
+      // Never leave the PREVIOUS agent's values on screen: a failed load once
+      // showed edina1's voice settings inside Marveen's modal. Hide the
+      // controls instead of lying.
+      if (controls) controls.hidden = true
+      return
+    }
     const cfg = await r.json()
     voiceModelSel.innerHTML = (cfg.availableVoices || []).map(v =>
       `<option value="${v}"${v === cfg.voiceModel ? ' selected' : ''}>${v}</option>`
@@ -9888,7 +10136,7 @@ memImportSaveBtn.addEventListener('click', async () => {
       const s = data.stats || {}
       memImportResult.hidden = false
       memImportResult.innerHTML = `
-        <div style="color:var(--text-primary);font-weight:600;margin-bottom:8px">${t('memories.import.done_title')}</div>
+        <div style="color:var(--text);font-weight:600;margin-bottom:8px">${t('memories.import.done_title')}</div>
         <div style="font-size:13px;color:var(--text-secondary)">
           ${t('memories.import.done_sub', { n: `<strong>${data.imported}</strong>` })}<br>
           Hot: ${s.hot || 0} | Warm: ${s.warm || 0} | Cold: ${s.cold || 0} | Shared: ${s.shared || 0}
@@ -12638,7 +12886,7 @@ async function loadBgTasks() {
             ${t.status === 'running' ? `<button class="btn btn-sm" onclick="viewBgTask('${esc(t.id)}')" style="font-size:11px;padding:2px 8px;">${t('bgTasks.output_btn')}</button><button class="btn btn-sm" onclick="cancelBgTask('${esc(t.id)}')" style="font-size:11px;padding:2px 8px;color:var(--danger)">${t('bgTasks.stop_btn')}</button>` : ''}
           </div>
         </div>
-        <div style="font-size:13px;color:var(--text-primary);margin-bottom:4px;">${esc(t.prompt)}</div>
+        <div style="font-size:13px;color:var(--text);margin-bottom:4px;">${esc(t.prompt)}</div>
         ${t.finished_label ? `<div style="font-size:12px;color:var(--text-muted);">${t('bgTasks.finished_label')} ${esc(t.finished_label)}</div>` : ''}
         ${output}
       </div>`
@@ -14126,7 +14374,7 @@ function renderTuTimeline(data, filterAgent) {
   ctx.clearRect(0, 0, cssW, cssH)
 
   const textSecondary = getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim() || '#64748b'
-  const textPrimary = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1e293b'
+  const textPrimary = getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#1e293b'
   const borderColor = getComputedStyle(document.documentElement).getPropertyValue('--border').trim() || '#e2e8f0'
 
   if (!data.length) {
@@ -14358,7 +14606,7 @@ function renderTuTimeline(data, filterAgent) {
   if (!tooltip) {
     tooltip = document.createElement('div')
     tooltip.id = 'tuTooltip'
-    tooltip.style.cssText = 'position:absolute;background:var(--bg-elevated,#1e293b);color:var(--text-primary,#f8fafc);padding:8px 12px;border-radius:6px;font-size:12px;pointer-events:none;z-index:100;display:none;box-shadow:0 4px 12px rgba(0,0,0,0.3);max-width:240px;line-height:1.5'
+    tooltip.style.cssText = 'position:absolute;background:var(--bg-card,#1e293b);color:var(--text,#f8fafc);padding:8px 12px;border-radius:6px;font-size:12px;pointer-events:none;z-index:100;display:none;box-shadow:0 4px 12px rgba(0,0,0,0.3);max-width:240px;line-height:1.5'
     canvas.parentElement.appendChild(tooltip)
   }
 
@@ -14517,7 +14765,7 @@ function renderTuDetails(data) {
     const thStyleR = thStyle + ';text-align:right'
     el.innerHTML = `<div style="margin-bottom:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
       <input id="tuSearchInput" type="text" placeholder="${t('tokenUsage.search_placeholder')}"
-        style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);width:260px;font-size:13px">
+        style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text);width:260px;font-size:13px">
       <span id="tuDetailsCount" style="color:var(--text-secondary);font-size:12px"></span>
     </div>
     <div style="overflow-x:auto"><table class="mem-table" style="width:100%;min-width:600px">
@@ -14648,7 +14896,8 @@ function renderTuModelDist(data) {
     ctx.fillStyle = tuGetModelColor(i)
     ctx.fill()
     // Thin separator
-    ctx.strokeStyle = 'var(--bg-primary, #0f172a)'
+    // Canvas cannot resolve CSS var() strings -- read the computed theme color.
+    ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#0f172a'
     ctx.lineWidth = 1.5
     ctx.stroke()
     startAngle = endAngle
@@ -14657,7 +14906,7 @@ function renderTuModelDist(data) {
   // Center hole (donut effect)
   ctx.beginPath()
   ctx.arc(cx, cy, r * 0.5, 0, Math.PI * 2)
-  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--bg-elevated') || '#1e293b'
+  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--bg-card') || '#1e293b'
   ctx.fill()
 
   // Legend + table
