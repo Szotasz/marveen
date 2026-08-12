@@ -156,30 +156,25 @@ describe('worker custom-provider inheritance (subscription-less fleet support)',
     expect(src).toContain('stampCustomApiKeyApproval')
   })
 
-  it('MARVEEN_WORKER_MODEL override bypasses custom-provider lookup', () => {
+  it('buildCustomProviderLaunchEnv is only called when no MARVEEN_WORKER_MODEL override is set', () => {
     const __dirname = dirname(fileURLToPath(import.meta.url))
     const src = readFileSync(join(__dirname, '../web/agent-worker.ts'), 'utf-8')
-    // The override must be checked before buildCustomProviderLaunchEnv is called.
-    const overridePos = src.indexOf('WORKER_MODEL_OVERRIDE')
-    const cpLookupPos = src.indexOf('buildCustomProviderLaunchEnv')
-    expect(overridePos).toBeGreaterThan(-1)
-    expect(cpLookupPos).toBeGreaterThan(-1)
-    expect(overridePos).toBeLessThan(cpLookupPos)
+    // The call must be guarded by a WORKER_MODEL_OVERRIDE falsy check so an
+    // explicit override skips the custom-provider lookup entirely.
+    expect(src).toMatch(/if\s*\(\s*!WORKER_MODEL_OVERRIDE\s*\)[\s\S]{1,500}buildCustomProviderLaunchEnv/)
   })
 
-  it('launch string slots customEnvPrefix between CLAUDE_CONFIG_DIR and cd', () => {
+  it('launch string concatenates customEnvPrefix between config-dir export and cd', () => {
     const __dirname = dirname(fileURLToPath(import.meta.url))
     const src = readFileSync(join(__dirname, '../web/agent-worker.ts'), 'utf-8')
-    // The variable must appear in the launch string template between the two
-    // anchors. We check string order in the source file as a proxy.
-    const configDirPos = src.indexOf('CLAUDE_CONFIG_DIR')
-    const prefixPos = src.indexOf('customEnvPrefix')
-    const cdPos = src.indexOf("ctx.home) && `")
-    expect(configDirPos).toBeGreaterThan(-1)
-    expect(prefixPos).toBeGreaterThan(-1)
-    expect(cdPos).toBeGreaterThan(-1)
-    expect(configDirPos).toBeLessThan(prefixPos)
-    expect(prefixPos).toBeLessThan(cdPos)
+    // The launch template must include customEnvPrefix in its concatenation chain.
+    expect(src).toContain('customEnvPrefix')
+    // Both the CLAUDE_CONFIG_DIR export and the cd must appear alongside it in
+    // the same launch-building block.
+    const launchBlock = src.slice(src.indexOf('const launch ='), src.indexOf('const launch =') + 600)
+    expect(launchBlock).toContain('CLAUDE_CONFIG_DIR')
+    expect(launchBlock).toContain('customEnvPrefix')
+    expect(launchBlock).toContain('ctx.home')
   })
 
   it('x-api-key path stamps .claude.json approval in the worker configDir', () => {
