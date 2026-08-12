@@ -152,7 +152,14 @@ export function decideGate(
   // Trigger check first: no point evaluating the gate conditions if we are
   // still below the threshold.
   if (inputs.contextTokens === null) {
-    return block(firstBlockedAt, inputs.nowMs, cfg, 'context-tokens-unmeasurable (fail-closed)')
+    // Fail-closed for the ACTION (never /clear on an unmeasured session), but
+    // deliberately NOT alertable: the alert text tells the owner the agent
+    // "reached the threshold and the gate will not open", and that is exactly
+    // the claim an unmeasured reading cannot support. A fresh session reads as
+    // null for the first minute or so (the transcript carries no `usage` until
+    // the first assistant turn closes), so escalating here reports a phantom
+    // stall on every boot.
+    return { action: 'block', reason: 'context-tokens-unmeasurable (fail-closed)' }
   }
   if (inputs.contextTokens < cfg.thresholdTokens) {
     return { action: 'block', reason: `below-threshold (${inputs.contextTokens} < ${cfg.thresholdTokens})` }
@@ -227,4 +234,32 @@ function block(
   const elapsed = firstBlockedAt !== null ? nowMs - firstBlockedAt : 0
   const action: GateAction = elapsed >= cfg.persistentBlockAlertMs ? 'block-alert' : 'block'
   return { action, reason }
+}
+
+/**
+ * Advance the blocking-streak clock after a 'block' decision.
+ *
+ * The clock measures ONE thing: how long this agent has sat AT OR ABOVE the
+ * threshold with the gate refusing to open. That is the only situation worth
+ * alerting about, so:
+ *
+ *   - measured below the threshold -> not waiting for the gate at all: CLEAR.
+ *   - measured at/above the threshold -> start the clock if it is not running.
+ *   - unmeasurable (null) -> leave the clock as it is; we cannot tell which
+ *     side of the threshold we are on, and a fresh session reads null for
+ *     about a minute after every boot.
+ *
+ * Before this existed the clock stopped only on a successful /clear, so a
+ * legitimate streak outlived the session that caused it -- across restarts and
+ * even a host freeze.
+ */
+export function nextBlockClock(
+  firstBlockedAt: number | null,
+  contextTokens: number | null,
+  thresholdTokens: number,
+  nowMs: number,
+): number | null {
+  if (contextTokens === null) return firstBlockedAt
+  if (contextTokens < thresholdTokens) return null
+  return firstBlockedAt ?? nowMs
 }

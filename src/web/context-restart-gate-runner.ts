@@ -19,6 +19,7 @@ import {
 } from '../db.js'
 import {
   decideGate,
+  nextBlockClock,
   type GateInputs,
 } from '../context-restart-gate.js'
 
@@ -504,13 +505,9 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     }
 
     case 'block': {
-      // Normal block: update firstBlockedAt if this is the first block in a streak.
-      const firstBlockedAt = runState.firstBlockedAt ?? (
-        // Only start the clock when we are above the threshold -- otherwise
-        // every idle agent would accumulate a never-expiring blocking streak.
-        inputs.contextTokens !== null && inputs.contextTokens >= cfg.thresholdTokens
-          ? nowMs
-          : null
+      // Advance (or clear) the blocking-streak clock; see nextBlockClock.
+      const firstBlockedAt = nextBlockClock(
+        runState.firstBlockedAt, inputs.contextTokens, cfg.thresholdTokens, nowMs,
       )
       if (firstBlockedAt !== runState.firstBlockedAt) {
         writeGateRunState(name, { ...runState, firstBlockedAt })
