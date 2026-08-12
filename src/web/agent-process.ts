@@ -496,7 +496,60 @@ function provisionIsolatedConfigDir(
       settings.enabledPlugins as Record<string, boolean> | undefined,
     )
     settings.enabledPlugins = scopedPlugins
-    writeFileSync(join(cfg, 'settings.json'), JSON.stringify(settings, null, 2) + '\n')
+    // Keys the isolated file already carries that the shared file never
+    // mentions must SURVIVE this rewrite. The rewrite runs on every main-agent
+    // start, so a straight copy silently drops agent-only configuration. That
+    // is how `statusLine` went missing three times (2026-07-28, 07-30, 08-03):
+    // it is configured for the main agent alone, the shared file never names
+    // it, and the symptom is invisible -- the agent starts fine, it just stops
+    // reporting context usage, so nothing alerts.
+    //
+    // Shared wins on conflict: for every key the shared file DOES define it
+    // stays the source of truth (that is the point of the copy). Target-only
+    // keys are purely additive, so this cannot resurrect a key the shared file
+    // deliberately changed.
+    //
+    // Scope: this is the shared provisioning core, so the change applies to
+    // EVERY isolated config dir -- the main agent's and each sub-agent's alike
+    // (ensureIsolatedChannelConfigDir and ensureMainAgentIsolatedConfigDir both
+    // land here). There is no pre-existing merge anywhere to be consistent
+    // with: before this commit every one of them was a pure copy.
+    //
+    // enabledPlugins is explicitly never inherited -- it is decided by the
+    // scope call above and must not survive from the dir's own older copy.
+    const ownSettingsPath = join(cfg, 'settings.json')
+    if (existsSync(ownSettingsPath)) {
+      try {
+        const own = JSON.parse(readFileSync(ownSettingsPath, 'utf-8')) as unknown
+        // A JSON array or `null` parses fine but is not a settings object;
+        // spreading one would invent numeric keys instead of failing.
+        if (isPlainObject(own)) {
+          const inherited: string[] = []
+          for (const [key, value] of Object.entries(own)) {
+            if (key !== 'enabledPlugins' && !(key in settings)) {
+              settings[key] = value
+              inherited.push(key)
+            }
+          }
+          // Additive merges must not be silent: the whole point of this block
+          // is that a key nobody can see is a key nobody can debug. Key NAMES
+          // only -- a settings.json may hold secrets, so values never land in
+          // the log.
+          if (inherited.length) {
+            logger.info({ name, path: ownSettingsPath, keys: inherited }, 'isolated-config: kept target-only settings keys')
+          }
+        }
+      } catch (err) {
+        // Deliberately loud: rewriting an unparseable own-settings file from
+        // the shared one is exactly the silent-loss shape this block fixes.
+        logger.warn({ err, name, path: ownSettingsPath }, 'isolated-config: unparseable own settings.json, rewriting from shared')
+      }
+    }
+    // Atomic: the file's CONTENT now depends on reading its own previous
+    // content back. A torn write would fail the parse on the next start, the
+    // code would fall back to the shared file, and that is precisely the
+    // key-loss this commit fixes.
+    writeJsonAtomic(ownSettingsPath, settings)
 
     // 3. Own plugins/ dir: symlink the heavy shared parts, own the install state.
     const pluginsDir = join(cfg, 'plugins')
