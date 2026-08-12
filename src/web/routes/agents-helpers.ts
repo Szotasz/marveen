@@ -45,7 +45,9 @@ import type { AgentRunState } from '../ssh-tmux.js'
 import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig } from '../auto-restart-store.js'
+import { readContextGuardConfig } from '../context-guard-store.js'
 import type { AutoRestartConfig } from '../../auto-restart.js'
+import type { ContextGuardConfig } from '../../context-guard.js'
 import { json } from '../http-helpers.js'
 import type http from 'node:http'
 
@@ -176,6 +178,9 @@ export interface AgentSummary {
   session?: string
   hasAvatar: boolean
   autoRestart: AutoRestartConfig
+  /** Per-agent context-guard config, carried here for the same reason as
+   *  autoRestart: the settings pane renders both from one detail fetch. */
+  contextGuard: ContextGuardConfig
   /** Live context size in tokens (input+cache_read+cache_creation of the last
    *  turn), or null when not running / no transcript yet. */
   contextTokens: number | null
@@ -255,6 +260,7 @@ export function getAgentSummary(name: string): AgentSummary {
     session,
     hasAvatar: findAvatarForAgent(name) !== null,
     autoRestart: readAutoRestartConfig(name),
+    contextGuard: readContextGuardConfig(name),
     contextTokens: running ? readContextTokensFromProjectDir(dir, resolveAgentConfigDir(name).configDir ?? undefined) : null,
     needsReauth: reauth.needsReauth,
     reauthReason: reauth.reason,

@@ -48,3 +48,37 @@ export function checkAgentPutFields(name: string, body: unknown): AgentPutFieldC
     (hints.length ? ` ${hints.join('; ')}.` : '')
   return { ok: false, rejected, message }
 }
+
+// Same rule for the per-agent CONFIG endpoints (auto-restart, context-guard).
+// Those hand the body to a normalize*Config() that rebuilds a fresh object from
+// the keys it knows, so an unknown key is never rejected — it is never LOOKED
+// AT. The endpoint then answers 200 {ok:true} with the saved config, which is
+// indistinguishable from success:
+//
+//   PUT /api/agents/<name>/context-guard
+//     {..., "idleFlushEnabled": true, "totalNonsenseField": 42}
+//   -> 200 {"ok":true,"contextGuard":{ ...only the seven known fields... }}
+//
+// That is the securityProfile failure above, one endpoint over: an agent can
+// be configured for a tier that does not exist while every call reports
+// success, and nothing surfaces the gap until the behaviour fails to appear.
+//
+// Deliberately narrower than "validate the body". The route comments state that
+// a partial/garbled payload is COERCED rather than rejected, and that stays
+// true: this checks KEYS, not values. A bad number still falls back to its
+// default; a misspelled key is now loud.
+export function checkConfigPutFields(body: unknown, knownFields: readonly string[]): AgentPutFieldCheck {
+  if (body === null || typeof body !== 'object') {
+    return { ok: false, rejected: [], message: 'Request body must be a JSON object.' }
+  }
+  const known = new Set<string>(knownFields)
+  const rejected = Object.keys(body as Record<string, unknown>).filter(k => !known.has(k))
+  if (!rejected.length) return { ok: true }
+  return {
+    ok: false,
+    rejected,
+    message:
+      `Unknown field(s) for this config endpoint: ${rejected.join(', ')}. ` +
+      `Known fields: ${knownFields.join(', ')}.`,
+  }
+}

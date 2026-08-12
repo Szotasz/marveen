@@ -15,6 +15,9 @@ import {
 import { addDesiredAgent, removeDesiredAgent } from '../agent-desired-state.js'
 import { isMainChannelsAgent } from '../main-agent.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
+import { checkConfigPutFields } from '../agent-put-fields.js'
+import { DEFAULT_AUTO_RESTART } from '../../auto-restart.js'
+import { DEFAULT_CONTEXT_GUARD } from '../../context-guard.js'
 import { claimPendingForAgent, markMessageFailed } from '../../db.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { readBody, json } from '../http-helpers.js'
@@ -36,6 +39,11 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
     const body = await readBody(req)
     let data: unknown
     try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'invalid JSON' }, 400); return true }
+    const arFields = checkConfigPutFields(data, Object.keys(DEFAULT_AUTO_RESTART))
+    if (!arFields.ok) {
+      json(res, { error: arFields.message, rejected: arFields.rejected, known: Object.keys(DEFAULT_AUTO_RESTART) }, 400)
+      return true
+    }
     setStoreWriteActor('dashboard')
     const saved = writeAutoRestartConfig(name, data)
     json(res, { ok: true, autoRestart: saved })
@@ -44,7 +52,8 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
 
   // GET/PUT /api/agents/:name/context-guard -- per-agent context-guard config
   // (kanban #81). Default-off (opt-in): a GET for an agent with no store entry
-  // returns the disabled defaults. PUT normalizes server-side like auto-restart.
+  // returns the disabled defaults. PUT normalizes server-side like auto-restart,
+  // and like auto-restart it rejects unknown keys instead of swallowing them.
   const contextGuardMatch = path.match(/^\/api\/agents\/([^/]+)\/context-guard$/)
   if (contextGuardMatch && (method === 'GET' || method === 'PUT')) {
     const name = decodeURIComponent(contextGuardMatch[1])
@@ -56,6 +65,11 @@ export async function tryHandleAgentsProcess(ctx: RouteContext): Promise<boolean
     const body = await readBody(req)
     let data: unknown
     try { data = JSON.parse(body.toString()) } catch { json(res, { error: 'invalid JSON' }, 400); return true }
+    const cgFields = checkConfigPutFields(data, Object.keys(DEFAULT_CONTEXT_GUARD))
+    if (!cgFields.ok) {
+      json(res, { error: cgFields.message, rejected: cgFields.rejected, known: Object.keys(DEFAULT_CONTEXT_GUARD) }, 400)
+      return true
+    }
     setStoreWriteActor('dashboard')
     const saved = writeContextGuardConfig(name, data)
     json(res, { ok: true, contextGuard: saved })
