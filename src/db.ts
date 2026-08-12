@@ -2239,23 +2239,39 @@ export interface DispatchedPendingStats {
  * Check how many outbound messages this agent dispatched that have not yet
  * received a result (status pending or delivered), separating live (within
  * staleCutoffMs) from stale (beyond it). Used by the context-restart gate.
+ *
+ * Completion reports are excluded. Closing an inbound message auto-creates an
+ * `[Eredmény] msg_id:<n> status:<s>` message back to the sender (see the PUT
+ * /api/messages/:id route, which uses this same prefix to avoid ping-pong).
+ * Those are notifications, not dispatched work: nobody is expected to answer
+ * them, and they are never marked done, so they accumulate. Counting them made
+ * a busy agent permanently ineligible for a soft restart -- on 2026-08-12 the
+ * gate reported 11 blocking messages for the main agent and several were its
+ * own acknowledgements.
  */
+export const COMPLETION_REPORT_PREFIX = '[Eredmény]'
+
 export function getDispatchedPendingStats(
   fromAgent: string,
   nowMs: number,
   staleCutoffMs: number,
 ): DispatchedPendingStats {
   const cutoffEpoch = Math.floor((nowMs - staleCutoffMs) / 1000)
+  // Bound parameter, not interpolation: the prefix contains no LIKE wildcards
+  // today, but a future edit adding one would silently widen the exclusion.
+  const ackPattern = `${COMPLETION_REPORT_PREFIX}%`
   const liveRow = db.prepare(
     `SELECT COUNT(*) AS cnt FROM agent_messages
        WHERE from_agent = ? AND status IN ('pending','delivered')
+         AND content NOT LIKE ?
          AND CAST(created_at AS INTEGER) > ?`,
-  ).get(fromAgent, cutoffEpoch) as { cnt: number }
+  ).get(fromAgent, ackPattern, cutoffEpoch) as { cnt: number }
   const staleRow = db.prepare(
     `SELECT COUNT(*) AS cnt FROM agent_messages
        WHERE from_agent = ? AND status IN ('pending','delivered')
+         AND content NOT LIKE ?
          AND CAST(created_at AS INTEGER) <= ?`,
-  ).get(fromAgent, cutoffEpoch) as { cnt: number }
+  ).get(fromAgent, ackPattern, cutoffEpoch) as { cnt: number }
   return {
     count:    liveRow?.cnt ?? 0,
     hasStale: (staleRow?.cnt ?? 0) > 0,

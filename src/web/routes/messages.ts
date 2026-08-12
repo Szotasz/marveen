@@ -5,6 +5,7 @@ import {
   markMessageDone, markMessageFailed, getAgentMessage,
   closeOtelSpan,
   getPendingBacklogByAgent,
+  COMPLETION_REPORT_PREFIX,
   type AgentMessage,
 } from '../../db.js'
 import { logger } from '../../logger.js'
@@ -196,12 +197,12 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       // ping-pong chains (the delegator might write back, which would trigger
       // markMessageDone on this notification; we skip creating ANOTHER notification
       // when the original content is already a completion report).
-      if (done && done.from_agent !== done.to_agent && !done.content.startsWith('[Eredmény]')) {
+      if (done && done.from_agent !== done.to_agent && !done.content.startsWith(COMPLETION_REPORT_PREFIX)) {
         const summary = result ? result.slice(0, 500) : '(nincs eredmény)'
         createAgentMessage(
           done.to_agent,
           done.from_agent,
-          `[Eredmény] msg_id:${id} status:${newStatus}\n\n${summary}`,
+          `${COMPLETION_REPORT_PREFIX} msg_id:${id} status:${newStatus}\n\n${summary}`,
         )
       }
       json(res, { ok: true }); return true
