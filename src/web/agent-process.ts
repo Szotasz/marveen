@@ -780,6 +780,54 @@ export function stampCustomApiKeyApproval(dotClaudePath: string, apiKey: string)
   }
 }
 
+// Build the shell env-export prefix for an agent's custom provider, ready to
+// prepend to a tmux launch command. Returns null when the agent has no custom
+// provider configured. Throws when the provider definition is missing or the
+// vault key is absent (mirrors the abort logic in startAgentProcess).
+//
+// The returned envPrefix ends with "&&" so it can be concatenated directly
+// before "cd <dir> && claude ...". The customApiKeyForApproval field carries
+// the raw key when authHeader=x-api-key, so the caller can pre-stamp
+// .claude.json via stampCustomApiKeyApproval (prevents the interactive
+// "Detected a custom API key" modal in non-channels TUI sessions).
+export interface CustomProviderLaunchEnv {
+  envPrefix: string
+  customApiKeyForApproval: string | null
+  model: string
+}
+
+export function buildCustomProviderLaunchEnv(agentName: string): CustomProviderLaunchEnv | null {
+  const customProviderId = readAgentCustomProvider(agentName)
+  if (!customProviderId) return null
+
+  const customProviderDef = loadCustomProvider(customProviderId)
+  if (!customProviderDef) {
+    throw new Error(`Custom provider "${customProviderId}" not found. Add it in Settings > Providers.`)
+  }
+
+  const model = readAgentModel(agentName)
+  let headerExport: string
+  let customApiKeyForApproval: string | null = null
+
+  if (customProviderDef.authHeader === 'none') {
+    headerExport = `export ANTHROPIC_AUTH_TOKEN=ollama && `
+  } else {
+    const key = getSecret(customProviderDef.vaultKey ?? '') ?? ''
+    if (!key) {
+      throw new Error(`Custom provider vault key "${customProviderDef.vaultKey}" not found. Add it in the Vault tab.`)
+    }
+    if (customProviderDef.authHeader === 'x-api-key') {
+      headerExport = `export ANTHROPIC_API_KEY="${key}" && `
+      customApiKeyForApproval = key
+    } else {
+      headerExport = `export ANTHROPIC_AUTH_TOKEN="${key}" && `
+    }
+  }
+
+  const envPrefix = `export ANTHROPIC_BASE_URL="${customProviderDef.baseUrl}" && ${headerExport}export ANTHROPIC_MODEL='${model}' && `
+  return { envPrefix, customApiKeyForApproval, model }
+}
+
 // Pre-stamp the Fable overage-consent acknowledgment in a config root's
 // .claude.json so the "Fable 5 now uses usage credits" dialog never renders.
 //

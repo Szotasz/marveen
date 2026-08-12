@@ -13,6 +13,8 @@ import {
   sessionExistsOnHost,
   hasFleetOauthToken,
   FLEET_OAUTH_TOKEN_PATH,
+  buildCustomProviderLaunchEnv,
+  stampCustomApiKeyApproval,
 } from './agent-process.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { readClaudeCodeOauthJson } from './claude-credentials.js'
@@ -43,11 +45,13 @@ import { notifyChannel } from '../notify.js'
 
 const TMUX = resolveFromPath('tmux')
 
-// MARVEEN_WORKER_MODEL stays a process-level escape hatch (systemd
-// `Environment=`), but the .env-backed DEFAULT_AGENT_MODEL is what an operator
-// can actually set: readEnvFile() returns a plain object and never populates
-// process.env, so a MARVEEN_WORKER_MODEL line in .env was silently ignored.
-const WORKER_MODEL = process.env.MARVEEN_WORKER_MODEL || DEFAULT_AGENT_MODEL
+// MARVEEN_WORKER_MODEL is an escape hatch (systemd `Environment=`); when set it
+// wins over everything else. Without it the worker inherits the main agent's
+// custom provider (model + endpoint env) if one is configured, so a
+// Claude-subscription-less fleet (e.g. custom LiteLLM endpoint) gets working
+// background workers without any extra config. Falls back to DEFAULT_AGENT_MODEL
+// when neither override nor custom provider is in play.
+const WORKER_MODEL_OVERRIDE = process.env.MARVEEN_WORKER_MODEL ?? null
 
 // How long to wait for a freshly launched worker to reach an idle prompt.
 const WORKER_BOOT_TIMEOUT_MS = 90_000
@@ -480,12 +484,32 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
   // measured on vps47 during the WORKERHOME1 cold-start probe: session created,
   // gone before the first 5s poll). tryResolveFromPath probes the known install
   // dirs; fall back to the bare name so an exotic layout keeps the old behavior.
+  // Resolve model and optional custom-provider env prefix.
+  // Priority: MARVEEN_WORKER_MODEL override > main-agent custom provider > default.
+  let workerModel = WORKER_MODEL_OVERRIDE ?? DEFAULT_AGENT_MODEL
+  let customEnvPrefix = ''
+  if (!WORKER_MODEL_OVERRIDE) {
+    try {
+      const cpEnv = buildCustomProviderLaunchEnv(MAIN_AGENT_ID)
+      if (cpEnv) {
+        workerModel = cpEnv.model
+        customEnvPrefix = cpEnv.envPrefix
+        if (cpEnv.customApiKeyForApproval) {
+          stampCustomApiKeyApproval(join(ctx.configDir, '.claude.json'), cpEnv.customApiKeyForApproval)
+        }
+      }
+    } catch (err) {
+      logger.warn({ err }, 'agent-worker: could not resolve main-agent custom provider; falling back to default model')
+    }
+  }
+
   const claudeLaunchBin = tryResolveFromPath('claude') ?? 'claude'
   const launch =
     (hasFleetOauthToken() ? `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shArg(FLEET_OAUTH_TOKEN_PATH)})"; ` : '') +
     `export CLAUDE_CONFIG_DIR=${shArg(ctx.configDir)}; ` +
+    customEnvPrefix +
     `cd ${shArg(ctx.home)} && ` +
-    `${shArg(claudeLaunchBin)} --dangerously-skip-permissions --model ${shArg(WORKER_MODEL)}`
+    `${shArg(claudeLaunchBin)} --dangerously-skip-permissions --model ${shArg(workerModel)}`
   execFileSync(TMUX, ['new-session', '-d', '-s', ctx.session, '-c', ctx.home, 'bash', '-lc', launch], { timeout: 8000 })
   logger.info({ session: ctx.session, cwd: ctx.home }, 'agent-worker: launched interactive worker session')
   logWorkerClaudeVersion(ctx)
