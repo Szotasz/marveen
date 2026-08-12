@@ -1606,6 +1606,68 @@ export function decideStuckInputAction(f: StuckInputActionFacts): StuckInputActi
   return multiRow ? 'hold' : 'enter'
 }
 
+// =============================================================================
+// Stale no-remedy hold: last-resort unwedge (2026-08-12)
+// =============================================================================
+//
+// decideStuckInputAction ends in 'hold' whenever the parked text can neither be
+// submitted (multi-row: a bare Enter inserts a newline) nor re-injected (the
+// pane scrape is a lossy tail, so re-typing it would deliver a corrupted
+// message) nor safely cleared by one of the identified-origin branches. That
+// hold is CORRECT as a per-tick move -- but it was also the FINAL state: the
+// attempts budget runs out, the watcher alerts "probably needs a manual
+// restart", and the box stays full FOREVER. A sub-agent in that state is
+// silently mute: every later delivery parks behind the wedge, and only a human
+// Ctrl-C brings it back.
+//
+// Measured 2026-08-12 on this install: 100 `multi-row plain re-inject
+// SUPPRESSED ... holding` lines in store/dashboard.log, hitting every sub-agent
+// (aura, blitz, iris). Aura had been wedged for hours and had missed its own
+// 03:00 restart when the owner reported it -- the same complaint had recurred
+// for weeks, each time ended by a manual keystroke.
+//
+// The trade the hold was protecting -- "never destroy a payload that has no
+// re-delivery" -- is not the real trade, because by the time we get here the
+// payload is ALREADY corrupted (head-lost / tail-scraped) and cannot be
+// delivered by anyone. What the hold actually buys is a human being able to
+// read it off the pane. So the fix keeps that and drops the wedge: DUMP the
+// parked text to disk first, then clear. Nothing is lost that was not already
+// lost, and the agent is live again within one tick.
+//
+// Gated hard, because clearing is destructive:
+//   - SUB-AGENTS ONLY (isSubAgent -- the caller's allowPlainReinject flag). The
+//     MAIN session's box can hold a HUMAN draft mid-composition; MAIN keeps its
+//     existing owner-alert + channel-monitor restart path.
+//   - Only after the text has sat UNCHANGED past the stale window. A live
+//     delivery or a human still typing changes the signature, which resets
+//     firstSeenAt and so restarts this clock.
+//   - Only when the chosen action is 'hold'. Every branch that still has a real
+//     move (enter / reinject-* / clear-*) runs first and is untouched.
+//   - Cooldown between clears, so an unclearable box cannot turn into a Ctrl-C
+//     storm against a live session.
+export const STALE_HOLD_CLEAR_MS = 5 * 60 * 1000
+export const STALE_HOLD_CLEAR_COOLDOWN_MS = 5 * 60 * 1000
+
+export interface StaleHoldFacts {
+  /** The move decideStuckInputAction chose for this pane at full escalation. */
+  action: StuckInputAction
+  /** True for a sub-agent session; MAIN must never auto-clear (human drafts). */
+  isSubAgent: boolean
+  /** How long the SAME text has been parked (now - firstSeenAt). */
+  parkedForMs: number
+  /** Since the last stale-hold clear on this session, or null if never. */
+  sinceLastClearMs: number | null
+}
+
+/** Pure: may the watcher dump-and-clear a box wedged in the no-remedy hold? */
+export function shouldClearStaleHold(f: StaleHoldFacts): boolean {
+  if (f.action !== 'hold') return false
+  if (!f.isSubAgent) return false
+  if (f.parkedForMs < STALE_HOLD_CLEAR_MS) return false
+  if (f.sinceLastClearMs !== null && f.sinceLastClearMs < STALE_HOLD_CLEAR_COOLDOWN_MS) return false
+  return true
+}
+
 // Would the soft stuck-input recovery have ANY submitting/clearing move for
 // the MAIN session's parked input at full escalation, or is it wedged in the
 // no-remedy 'hold' branch? Used by the hard-restart busy-guard: a 'typing'
