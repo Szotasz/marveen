@@ -34,7 +34,7 @@ gyujt() {
   local tok; tok="$(cat "$TOKEN_FILE" 2>/dev/null)"
   curl -s -H "Authorization: Bearer $tok" http://localhost:3420/api/agents 2>/dev/null \
     | AGENT_DB="$DB" python3 -c '
-import json, os, subprocess, sys
+import json, os, sqlite3, subprocess, sys
 
 try:
     agents = json.load(sys.stdin)
@@ -49,11 +49,16 @@ for a in agents:
     ctx = a.get("contextTokens")
     ctx = "None" if ctx is None else str(ctx)
 
-    q = ("select count(*) from kanban_cards where assignee=? and archived_at is null "
-         "and status in (\x27in_progress\x27,\x27testing\x27)")
+    # 🛑 KOTOTT PARAMETER, NEM STRING-BEHELYETTESITES. Az elso valtozat a nevet a SQL-be
+    # illesztette (`q.replace("?", "\x27"+n+"\x27")`). A gyakorlati kockazat NEM a tamadas --
+    # a nev a sajat API-nkbol jon --, hanem hogy EGY APOSZTROF a nevben eltori a lekerdezest,
+    # a kivetel-ag "?"-et ad, es az `ALL:` feltetel (`nyitott not in ("0","?")`) EPP EZERT NEM
+    # SUL EL: a sajat detektorom NEMAN elnyeli a beakadt fejet. (A `design` fogta meg, 2026-08-14.)
     try:
-        nyitott = subprocess.run(["sqlite3", db, q.replace("?", "\x27" + n + "\x27")],
-                                 capture_output=True, text=True).stdout.strip() or "0"
+        with sqlite3.connect(db) as con:
+            nyitott = str(con.execute(
+                "select count(*) from kanban_cards where assignee=? and archived_at is null "
+                "and status in (\x27in_progress\x27,\x27testing\x27)", (n,)).fetchone()[0])
     except Exception:
         nyitott = "?"
 
