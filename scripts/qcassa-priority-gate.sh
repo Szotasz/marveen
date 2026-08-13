@@ -26,6 +26,16 @@
 # FAIL-CLOSED: ha a meres hianyzik, olvashatatlan, ERTELMEZHETETLEN vagy ELAVULT, "PLAFON" a valasz.
 # Egy kimaradt QCassa-kor olcso; egy felelt tartalek, amikor Zoli irna, nem az.
 #
+# 🛑 A STDOUT-SZERZoDES KET FELE, ES MINDKETTo KELL:
+#   (1) a stdout SOHA nem ures  -- minden varatlan kivetel PLAFON-na valik (catch-all a main korul);
+#   (2) a stdout SOHA nem tartalmaz mast, mint a dontes-szot -- az indoklas `uzen()`-en megy ki,
+#       ami ellenorzi, hogy a `sys.stderr` letezik-e.
+#   A masodik felet elsore KIMONDTAM, DE NEM TELJESITETTEM: zart fd 2 (`2>&-`) mellett a CPython
+#   `sys.stderr`-je None, es a `print(file=None)` a STDOUT-ra ir -- az indoklas igy a dontes-szo
+#   moge kerult. Merve: 99%-nal a `[ "$ki" != "PLAFON" ]` alaku hivo DOLGOZOTT (fail-open),
+#   56%-nal a `[ "$ki" = "fut" ]` MEGALLT (hamis megallas). Ugyanaz a bemenet, ket ellentetes hiba.
+#   (Az ordog merte ki, 2026-08-13. Egy launchd/cron kontextus zart fd 2-vel indithat.)
+#
 # 🛑 A HIBAOSZTALY, AMI AZ ELSo VALTOZATOT MEGFEKTETTE -- HAT FAIL-OPEN AG EGY GYOKERBoL:
 #   a kapu TIPUS- ES TARTOMANY-ELLENoRZES NELKUL HASONLITOTT. Ha a `>=` nem-veges vagy nem-szam
 #   erteket kap, a Python CSENDBEN False-t ad, tehat "fut" lesz belole. Igy ment at NaN, `true`
@@ -50,13 +60,30 @@ evaluate() {
 import json, os, sys, time
 
 
+def uzen(msg):
+    """hu: Indoklas a STDERR-re -- de CSAK ha az letezik.
+    <br />
+    en: Reasoning to STDERR -- but ONLY if it exists.
+
+    hu: Ha az fd 2 le van zarva (`2>&-`), a CPython `sys.stderr`-je None, es a
+        `print(msg, file=None)` NEM eldobja a szoveget, hanem a STDOUT-ra irja. Az indoklas
+        igy a dontes-szo MOGE kerulne, es a `[ "$ki" != "PLAFON" ]` alaku hivo PLAFON eseten
+        is DOLGOZNA. Egy launchd/cron kontextus zart fd 2-vel indithat -- nalunk van utemezo.
+    en: With fd 2 closed (`2>&-`) CPython sets `sys.stderr` to None, and `print(msg, file=None)`
+        writes to STDOUT instead of discarding. The reasoning would land behind the decision
+        word and a `[ "$ki" != "PLAFON" ]` caller would work even at PLAFON.
+    """
+    if sys.stderr is not None:
+        print(msg, file=sys.stderr)
+
+
 def plafon(msg):
     """hu: A kapu EGYETLEN elutasito kijarata. STDOUT-ra mindig "PLAFON" kerul, rc=1.
     <br />
     en: The gate's ONLY refusing exit. STDOUT always carries "PLAFON", rc=1.
     """
     print("PLAFON")
-    print(msg, file=sys.stderr)
+    uzen(msg)
     sys.exit(1)
 
 
@@ -136,8 +163,7 @@ def main():
                f"csak Jozsi/Zoli kozvetlen feladata megy")
 
     print("fut")
-    print(f"heti felhasznalas {used:.0f}%, plafon {ceiling:.0f}% ({ceiling-used:.0f} pont szabad)",
-          file=sys.stderr)
+    uzen(f"heti felhasznalas {used:.0f}%, plafon {ceiling:.0f}% ({ceiling-used:.0f} pont szabad)")
 
 
 # 🛑 A SZERZoDES: a STDOUT SOHA nem ures. Barmilyen varatlan kivetel PLAFON-na valik.
@@ -213,6 +239,24 @@ json.dump({'seven_day_used_percentage': val,
   check "nem letezo meres"                                             "PLAFON" 1 "$TMP/nincs.json" "$TMP/ceil85.json"
   python3 -c "import json,sys; json.dump({'measured_at':0}, open(sys.argv[1],'w'))" "$TMP/hianyos.json"
   check "meres szazalek NELKUL"                                        "PLAFON" 1 "$TMP/hianyos.json" "$TMP/ceil85.json"
+
+  echo "-- ZART fd 2 (2>&-): a stdout PONTOSAN egy sor legyen (az ordog leletе) --"
+  # Zart stderr mellett a CPython sys.stderr-je None, es a print(file=None) a STDOUT-ra ir.
+  # Az indoklas igy a dontes-szo moge kerulne -> a `[ ki != PLAFON ]` alaku hivo FAIL-OPEN lenne.
+  zartcheck() {  # nev, elvart_egyetlen_sor, statusfajl, plafonfajl
+    local ki sorok
+    ki="$(evaluate "$3" "$4" 21600 2>&-)"
+    sorok="$(printf '%s\n' "$ki" | grep -c .)"
+    if [ "$ki" = "$2" ] && [ "$sorok" = 1 ]; then
+      echo "  OK    $1 -> '$ki' (1 sor)"
+    else
+      echo "  BUKIK $1 -> vart:'$2'/1sor kapott:'$ki'/${sorok}sor"; fail=1
+    fi
+  }
+  zartcheck "56% zart stderrel"        "fut"    "$TMP/alatta.json"  "$TMP/ceil85.json"
+  zartcheck "91% zart stderrel"        "PLAFON" "$TMP/felette.json" "$TMP/ceil85.json"
+  zartcheck "elavult zart stderrel"    "PLAFON" "$TMP/regi.json"    "$TMP/ceil85.json"
+  zartcheck "serult json zart stderrel" "PLAFON" "$TMP/rossz.json"  "$TMP/ceil85.json"
 
   echo "-- nem-objektum status-fajl es a catch-all (az ordog leletei az ELES fajlon) --"
   for alak in '[1,2,3]' '42' 'null' '"szoveg"'; do
