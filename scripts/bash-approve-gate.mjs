@@ -50,6 +50,15 @@
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), re-applied on every spawn
 // (respawn-safe). The install-specific rm write-roots are passed as a base64url
 // argv token so the script stays self-contained (no config.ts import).
+//
+// PARSER FALSE-NEGATIVE FIXES (2026-08-13, Marveen -- 3 measured over-prompts):
+//   1) fd-redirection (`2>&1`, `>&2`, `&>file`) no longer splits the command on
+//      its ampersand (see splitSegments).
+//   2) shell comment lines (`# ...`) are dropped instead of classified as an
+//      unknown binary (see gateDecision).
+//   3) inline-script bodies (`python -c "..."`, `node -e "..."`, `sh -c "..."`)
+//      are treated as one opaque token before segmentation, like a heredoc body
+//      (see stripInlineCode). Security guards still run on the un-blanked command.
 
 import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -89,11 +98,22 @@ const SECRET_PATH_RX = /\.(?:env|ssh|aws|gnupg)\b/
 // stays ONE segment), then split a compound command into simple commands so a
 // token in one segment cannot be misclassified against another. Same helper
 // shape as self-pace-gate.splitSegments.
+//
+// fd-redirection guard (measured 2026-08-13, Marveen: 3 PDF/PNG-render prompts):
+// the '&' splitter would tear `soffice ... >/dev/null 2>&1 && python y.py` into
+// [`... 2>`, `1`, `python y.py`], and the orphan `1` classifies as an unknown
+// binary -> false deny. The '&' in an fd-redirection (`2>&1`, `>&2`, `1>&2`,
+// `&>file`, `&>>file`, `N>&-`) is a redirect operator, NOT a background '&' or
+// half of a '&&', so its ampersand is masked before the split and restored after.
+// A real '&&' and a single background '&' carry no '>' partner, so neither
+// separator is lost -- only the redirect ampersand is protected.
 export function splitSegments(command) {
+  const FD = '' // placeholder for a redirection '&' (never appears in a command)
   return String(command ?? '')
     .replace(/\\\r?\n/g, ' ')
+    .replace(/\d*>&\d*-?|&>>?/g, (m) => m.split('&').join(FD))
     .split(/&&|\|\||[;&|]|\r?\n/)
-    .map((s) => s.trim())
+    .map((s) => s.split(FD).join('&').trim())
     .filter(Boolean)
 }
 
@@ -124,6 +144,35 @@ export function stripHeredocs(command) {
     }
   }
   return out.join('\n')
+}
+
+// Blank the QUOTED inline-script argument of an interpreter's code flag
+// (`python -c`, `python3 -c`, `node -e`, `node --eval`, `sh -c`, `bash -c`)
+// BEFORE segmentation. That argument is a program in another language whose lines
+// -- `import x`, `for i in ...`, a leading `#comment` -- are DATA to the launching
+// shell, never its own simple commands; leaving it in fragments on the
+// interpreter's own `;`/newlines, and an orphan like `import sqlite3` classifies
+// as an unknown binary -> false deny (measured 2026-08-13, Marveen). This mirrors
+// stripHeredocs' treatment of a heredoc body, for the `-c`/`-e` form. Same
+// literal-only quote handling as stripDataPayloads: single-quoted '...', ANSI-C
+// $'...', and double-quoted "..." WITHOUT $(...)/backtick are blanked; a
+// double-quoted body that CAN command-substitute is left intact.
+//
+// SECURITY: this blanking is used ONLY for segmentation. The whole-command
+// sudo/$()/backtick/secret-path guards in gateDecision run on the UN-blanked
+// command, so a `.env`/`.ssh` reference, a `sudo`, or a real `$(...)`/backtick
+// inside a `-c` body still forces a pass-through -- the blanking can never open a
+// hole the guards would otherwise close. The flag token is preserved so the
+// interpreter still classifies as its own binary.
+export function stripInlineCode(command) {
+  return String(command ?? '').replace(
+    /((?:^|\s)(?:-c|-e|--eval)(?:\s+|=))('[^']*'|\$'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/g,
+    (full, flag, arg) => {
+      const dq = arg.startsWith('"')
+      if (dq && (arg.includes('$(') || arg.includes('`'))) return full // may substitute -> keep
+      return flag + (dq ? '""' : "''") // literal inline script -> blank the body
+    },
+  )
 }
 
 // Blank out curl/HTTP -d/--data payloads before URL classification, so a URL or
@@ -313,10 +362,18 @@ export function gateDecision(toolName, toolInput, config = {}) {
   // Strip heredoc bodies BEFORE the whole-command guards, so a data token inside
   // a heredoc body (python/markdown) never trips sudo/secret/substitution.
   const stripped = stripHeredocs(raw)
+  // Whole-command governance guards run on the UN-inline-stripped command, so a
+  // secret path / sudo / real $()/backtick hidden inside a `python -c "..."` body
+  // still forces a pass-through (stripInlineCode below only aids segmentation).
   if (/\bsudo\b/.test(stripped)) return { allow: false }
   if (/\$\(|`/.test(stripped)) return { allow: false } // unclassifiable substitution
   if (SECRET_PATH_RX.test(stripped)) return { allow: false }
-  const segments = splitSegments(stripped)
+  // Blank inline-script (`-c`/`-e`/`--eval`) bodies so their foreign-language
+  // lines do not fragment into false segments, then drop shell comment lines (a
+  // segment whose command position is `#` -- a `#` INSIDE a quoted string is not a
+  // comment and is not at segment start, so it survives).
+  const segments = splitSegments(stripInlineCode(stripped))
+    .filter((seg) => !seg.startsWith('#'))
   if (segments.length === 0) return { allow: false }
   const vars = collectAssignments(segments)
   for (const seg of segments) {

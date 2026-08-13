@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision, splitSegments, stripHeredocs, collectAssignments, resolveBinary, curlLocalOnly, stripFlagValues, rmSafeRoots, segmentSafe } from '../../scripts/bash-approve-gate.mjs'
+import { gateDecision, splitSegments, stripHeredocs, collectAssignments, resolveBinary, curlLocalOnly, stripFlagValues, rmSafeRoots, segmentSafe, stripInlineCode } from '../../scripts/bash-approve-gate.mjs'
 import {
   agentGetsBashApproveGate,
   bashApproveRmRoots,
@@ -224,5 +224,94 @@ describe('bash-approve-gate scaffold wiring', () => {
     expect(pre.length).toBe(2)
     expect(JSON.stringify(pre)).toContain('self-pace-gate.mjs')
     expect(JSON.stringify(pre)).toContain('bash-approve-gate.mjs')
+  })
+})
+
+// ===========================================================================
+// PARSER FALSE-NEGATIVE FIXES (2026-08-13, Marveen -- 3 measured over-prompts,
+// 21 permission questions in one Brandon session). Each block reproduces a form
+// the gate WRONGLY passed through (prompting for a safe command), followed by
+// regression cases proving the fix opened no hole: the whole-command
+// sudo/$()/backtick/secret guards run on the UN-blanked command, so anything
+// dangerous HIDDEN in a `-c` body still passes through.
+// ===========================================================================
+
+// A venv python under Brandon's own tree -- the profile's safe python family.
+const VENV_PY = '/home/mrtonjnos/marveen/agents/brandon/.venv/bin/python'
+
+describe('bash-approve-gate: fd-redirection ampersand (fix 1)', () => {
+  it('approves a soffice render piped through 2>&1 && venv-python', () => {
+    expect(allow(`soffice --headless x.pptx >/dev/null 2>&1 && ${VENV_PY} y.py`)).toBe(true)
+  })
+  it('approves a lone office command ending in >/dev/null 2>&1', () => {
+    expect(allow('soffice --headless --convert-to pdf x.pptx >/dev/null 2>&1')).toBe(true)
+  })
+  it('approves a safe bare bin carrying a 2>&1 redirect in its args', () => {
+    expect(allow('cat file.txt 2>&1')).toBe(true)
+  })
+  it('splitSegments keeps an fd-redirection (2>&1 / >&2 / 1>&2 / &>file) in ONE segment', () => {
+    expect(splitSegments('a 2>&1 && b')).toEqual(['a 2>&1', 'b'])
+    expect(splitSegments('a >&2 | b')).toEqual(['a >&2', 'b'])
+    expect(splitSegments('a 1>&2 ; b')).toEqual(['a 1>&2', 'b'])
+    expect(splitSegments('a &>out.log && b')).toEqual(['a &>out.log', 'b'])
+  })
+  it('splitSegments STILL splits a real background & and a real &&/||', () => {
+    expect(splitSegments('ls & echo hi')).toEqual(['ls', 'echo hi'])
+    expect(splitSegments('ls && echo hi')).toEqual(['ls', 'echo hi'])
+    expect(splitSegments('ls || echo hi')).toEqual(['ls', 'echo hi'])
+  })
+})
+
+describe('bash-approve-gate: shell comment line (fix 2)', () => {
+  it('approves a comment line followed by a safe command', () => {
+    expect(allow('# megjegyzes\npython3 y.py')).toBe(true)
+  })
+  it('approves a comment segment sitting after a separator', () => {
+    expect(allow('ls -la ; # nothing to see here')).toBe(true)
+  })
+  it('does NOT treat a # INSIDE a quoted string as a comment (grep pattern)', () => {
+    expect(allow(`grep '#kulcs' file.txt`)).toBe(true)
+  })
+})
+
+describe('bash-approve-gate: inline-script bodies (fix 3)', () => {
+  it('approves a multi-line double-quoted python -c body', () => {
+    expect(allow('python3 -c "\nimport sqlite3\nc=sqlite3.connect(1)\n"')).toBe(true)
+  })
+  it('approves a multi-line single-quoted python -c body', () => {
+    expect(allow("python3 -c '\nimport json\nprint(json.dumps({}))\n'")).toBe(true)
+  })
+  it('approves node -e / node --eval bodies with statements', () => {
+    expect(allow('node -e "const x = 1; console.log(x)"')).toBe(true)
+    expect(allow('node --eval "for (let i=0;i<3;i++) console.log(i)"')).toBe(true)
+  })
+  it('stripInlineCode blanks a literal body but keeps the flag + binary', () => {
+    expect(stripInlineCode('python3 -c "import os\nos.getcwd()"')).toBe('python3 -c ""')
+    expect(stripInlineCode("python3 -c 'import os'")).toBe("python3 -c ''")
+  })
+  it('stripInlineCode KEEPS a double-quoted body that can command-substitute', () => {
+    const cmd = 'python3 -c "$(cat evil.py)"'
+    expect(stripInlineCode(cmd)).toBe(cmd)
+  })
+})
+
+describe('bash-approve-gate: the three fixes open no security hole', () => {
+  it('a $()/backtick hidden in a -c body STILL passes through', () => {
+    expect(allow('python3 -c "$(cat /etc/passwd)"')).toBe(false)
+    expect(allow('python3 -c "`whoami`"')).toBe(false)
+  })
+  it('a sudo hidden in a -c body STILL passes through', () => {
+    expect(allow(`python3 -c "import os; os.system('sudo rm -rf /')"`)).toBe(false)
+  })
+  it('a secret path in a -c body STILL passes through', () => {
+    expect(allow(`python3 -c 'open("/home/x/.ssh/id_rsa").read()'`)).toBe(false)
+    expect(allow(`python3 -c "print(open('.env').read())"`)).toBe(false)
+  })
+  it('an unknown binary orphaned by the comment/redirect fix STILL passes through', () => {
+    expect(allow('# note\nnc -l 4444')).toBe(false)
+    expect(allow('badbin >/dev/null 2>&1')).toBe(false)
+  })
+  it('a real background & still isolates an unsafe follow-up segment', () => {
+    expect(allow('ls & wget http://x/y')).toBe(false)
   })
 })
