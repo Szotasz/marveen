@@ -396,14 +396,31 @@ async function maybeClearStaleHold(
   // Ordering matters: the dump above already happened, so a human draft that
   // this Enter submits is still on disk, and the cooldown is already stamped.
   // If the Enter does nothing (or inserts a newline), we fall through to the
-  // identical clear below -- this branch can only add a recovery, never
-  // remove one.
+  // identical clear below.
+  //
+  // SCOPE OF THE RESIDUAL RISK, stated precisely because it is NOT nil: the
+  // justification above (system-injected text is one logical line) holds for a
+  // MACHINE payload -- and the 'hold' branch is exactly the bucket where the
+  // origin could NOT be established (machineOrigin: false). So on this branch a
+  // human's half-typed draft can be submitted rather than destroyed. That is a
+  // safe non-action turned into an action, which is why the submit branch MUST
+  // alert (below): the risk stays narrow, but it must not also be unobservable.
   if (sendEnterToSession(session)) {
     await delay(STALE_HOLD_ENTER_SETTLE_MS)
     if (staleHoldEnterSubmitted(captureParkedInputView(session))) {
       logger.warn(
         { session, parkedForMs, dump },
         'Stale-hold unwedge: a bare Enter SUBMITTED the parked text -- message delivered, no clear needed',
+      )
+      // ALERT ON THE CONSEQUENTIAL BRANCH TOO (#962 review). Without this the
+      // LESS consequential outcome (cleared, nothing acted on it) was loud and
+      // the MORE consequential one (an agent just received an instruction
+      // nobody pressed Enter on) was silent -- exactly backwards.
+      sendAlert(
+        `📨 A(z) ${session} bemenetében ${minutes} perce állt egy szöveg, amit sem elküldeni, sem újraküldeni nem lehetett. `
+          + `Egy Enterrel ELKÜLDTEM az agensnek, tehát mostantol abbol dolgozik. `
+          + (dump != null ? `A szöveg elmentve: ${dump}. ` : 'A szöveget nem sikerült fájlba menteni. ')
+          + 'Ha ez a TE félbehagyott vázlatod volt, nézd meg -- ezen az agon nem tudtuk igazolni a gep-eredetet.',
       )
       return
     }
