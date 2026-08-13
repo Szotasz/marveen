@@ -27,6 +27,7 @@ import {
   hasFleetOauthToken,
   FLEET_OAUTH_TOKEN_PATH,
   answerFirstRunGates,
+  sendEnterToSession,
   shSingleQuote,
 } from './agent-process.js'
 import { withSessionSendLock } from './session-send-lock.js'
@@ -39,7 +40,7 @@ import {
   parkedInputText, shouldClearTruncatedPreamble,
   parkedInputRowCount, submitLanded, decideStuckInputAction,
   parkedScheduledTaskInput, parkedMachineOriginInput, parkedMainInputHasRemedy,
-  shouldClearStaleHold,
+  shouldClearStaleHold, staleHoldEnterSubmitted, STALE_HOLD_ENTER_SETTLE_MS,
   type StuckInputState, type StuckInputThresholds, type StuckInputAction,
   type StuckInputActionFacts,
 } from '../pane-state.js'
@@ -384,6 +385,33 @@ async function maybeClearStaleHold(
     { session, parkedForMs, rowCount: facts.rowCount, dump },
     'Stuck input -- no-remedy hold past the stale window; dumped the parked text and clearing the box',
   )
+
+  // NON-DESTRUCTIVE ATTEMPT FIRST (2026-08-13). Before Ctrl-C, try a bare
+  // Enter: the TUI buffer holds the WHOLE payload even when the box only
+  // shows its tail, and system-injected text is a single logical line, so a
+  // submit delivers the message intact instead of destroying it. Full
+  // reasoning + the measurements: staleHoldEnterSubmitted in pane-state.ts.
+  //
+  // Ordering matters: the dump above already happened, so a human draft that
+  // this Enter submits is still on disk, and the cooldown is already stamped.
+  // If the Enter does nothing (or inserts a newline), we fall through to the
+  // identical clear below -- this branch can only add a recovery, never
+  // remove one.
+  if (sendEnterToSession(session)) {
+    await delay(STALE_HOLD_ENTER_SETTLE_MS)
+    if (staleHoldEnterSubmitted(captureParkedInputView(session))) {
+      logger.warn(
+        { session, parkedForMs, dump },
+        'Stale-hold unwedge: a bare Enter SUBMITTED the parked text -- message delivered, no clear needed',
+      )
+      return
+    }
+    logger.warn(
+      { session },
+      'Stale-hold unwedge: the bare Enter did not submit (text still parked); falling back to the clear',
+    )
+  }
+
   const cleared = await discardPlaceholderBuffer(session)
   if (!cleared) {
     logger.warn({ session }, 'Stale-hold unwedge: could not confirm the box was emptied; retrying after the cooldown')
