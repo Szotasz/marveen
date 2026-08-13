@@ -1233,7 +1233,6 @@ window._i18n.en = {
   'updates.details':             'Details ({n} commits)',
   'updates.upcoming_note':       'These changes will land in the next release.',
   'updates.available_on':        'on {remote}.',
-  'updates.latest_label':        'Latest:',
   'updates.confirm.stash':       'There are local changes in the working tree. Stash them automatically, update, then restore?',
   'updates.confirm.apply':       'Update now. Services will restart; dashboard will be unavailable for ~30 seconds. Continue?',
   'updates.install_failed':      'Install failed',

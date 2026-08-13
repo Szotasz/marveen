@@ -11746,6 +11746,26 @@ async function pollUpdatesBadge() {
   } catch {}
 }
 
+// Render the running instance's identity into the page-header subtitle -- the
+// same .subtitle slot every other page header uses, so it stays consistent with
+// the rest of the dashboard and is visible in ALL update states (up-to-date,
+// behind, error) because it lives in the header, not the state-specific summary.
+// The semver is primary; the 7-char commit SHA follows as secondary context
+// (e.g. "Jelenlegi: v1.32.1 · db1ed3f"). When the backend could not read a
+// version, the SHA stands alone -- we never fabricate a version. With neither
+// available, the static brand subtitle (rendered from data-i18n) is left as-is.
+function renderUpdatesVersion(data) {
+  const sub = document.getElementById('updatesSubtitle')
+  if (!sub) return
+  const ver = (data && typeof data.version === 'string') ? data.version.trim() : ''
+  const sha = ((data && data.current) || '').slice(0, 7)
+  const parts = []
+  if (ver) parts.push('v' + escapeHtmlUpdates(ver))
+  if (sha) parts.push(`<code>${escapeHtmlUpdates(sha)}</code>`)
+  if (parts.length === 0) return // no version and no SHA: keep the brand subtitle
+  sub.innerHTML = `${t('updates.current_label')} ${parts.join(' · ')}`
+}
+
 async function loadUpdates() {
   const summary = document.getElementById('updatesSummary')
   const list = document.getElementById('updatesCommitList')
@@ -11759,17 +11779,16 @@ async function loadUpdates() {
     const data = await res.json()
     window._updatesStatus = data
     renderUpdatesBadge(data)
+    renderUpdatesVersion(data)
     updateBranchDriftUI(data)
     renderBranchNotice(data)
-    const cur = (data.current || '').slice(0, 7) || '–'
-    const lat = (data.latest || '').slice(0, 7) || '–'
     if (data.error) {
       summary.className = 'updates-summary error'
-      summary.innerHTML = `<strong>${t('updates.check_failed')}:</strong> ${escapeHtmlUpdates(data.error)}<br>${t('updates.current_label')} <code>${cur}</code>`
+      summary.innerHTML = `<strong>${t('updates.check_failed')}:</strong> ${escapeHtmlUpdates(data.error)}`
       applyBtn.hidden = true
     } else if (data.behind === 0) {
       summary.className = 'updates-summary up-to-date'
-      summary.innerHTML = `<strong>${t('updates.up_to_date_html')}</strong> (<code>${cur}</code>). ${t('updates.no_changes')}`
+      summary.innerHTML = `<strong>${t('updates.up_to_date_html')}</strong>. ${t('updates.no_changes')}`
       applyBtn.hidden = true
     } else {
       summary.className = 'updates-summary behind'

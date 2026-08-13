@@ -1236,7 +1236,6 @@ window._i18n.hu = {
   'updates.details':             'Részletek ({n} commit)',
   'updates.upcoming_note':       'Ezek a változások a következő kiadásba kerülnek.',
   'updates.available_on':        'a {remote} repón.',
-  'updates.latest_label':        'Legfrissebb:',
   'updates.confirm.stash':       'A working tree-ben lokális változtatások vannak. Stash-eljem őket automatikusan, frissítsek, majd visszaállítsam?',
   'updates.confirm.apply':       'Frissítés most. A szolgáltatások újraindulnak, a dashboard ~30 másodpercig nem érhető el. Folytatod?',
   'updates.install_failed':      'Telepítés sikertelen',
