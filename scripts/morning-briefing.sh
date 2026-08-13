@@ -37,8 +37,12 @@ if $CLAUDE --dangerously-skip-permissions \
   --channels plugin:telegram@claude-plugins-official \
   -p "Reggeli napindító - készítsd el és küld el Telegramra (chat_id: $CHAT_ID).
 
-1. Email check: search_emails az elmúlt 12 órából, szűrd ki a spam/promo emaileket
-2. Naptár: list-events a mai napra a $CALENDAR_ID naptárból (Europe/Budapest timezone)
+1. Email: python3 $INSTALL_DIR/scripts/nas-mail.py list --hours 12 --json
+   (read-only IMAP a FenySoft NAS postaládájára; a hírleveleket kiszűri, a filtered_out
+   mezőt írd ki a szekció végén). Ha hibára fut, a szekció helyére egy mondat, ami
+   kimondja, hogy nem mérve -- NEM az, hogy nincs levél.
+2. Naptár: NEM mérhető ezen a gépen (nincs icalBuddy, nincs naptár-MCP, az AppleScript
+   beragad). Egy mondat, hogy nem mérve -- ne írd, hogy nincs esemény.
 3. AI hírek: WebSearch \"AI news [tegnapi dátum]\"
 4. Küld el Telegramra a reply tool-lal (chat_id: $CHAT_ID)
 
