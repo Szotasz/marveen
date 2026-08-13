@@ -68,9 +68,9 @@ export function getUpdateStatus(): UpdateStatus {
 // '' on ANY failure (missing / unreadable / malformed / no string "version"):
 // the caller must never display a fabricated version, so the field is simply
 // empty and the UI falls back to the commit SHA alone.
-export function currentVersion(): string {
+export function currentVersion(root: string = PROJECT_ROOT): string {
   try {
-    const pkg = JSON.parse(readFileSync(join(PROJECT_ROOT, 'package.json'), 'utf-8'))
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8'))
     return typeof pkg?.version === 'string' ? pkg.version : ''
   } catch {
     return ''

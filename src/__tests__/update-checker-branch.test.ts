@@ -54,4 +54,9 @@ describe('update checker current version', () => {
   it('is exposed on the /api/updates status object', () => {
     expect(getUpdateStatus().version).toBe(currentVersion())
   })
+
+  it('returns empty (never fabricates) when package.json is missing/unreadable', () => {
+    expect(currentVersion('/nonexistent-root-xyz')).toBe('')
+    expect(currentVersion('/etc')).toBe('') // dir exists, no package.json -> ''
+  })
 })

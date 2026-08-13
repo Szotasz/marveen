@@ -1852,7 +1852,12 @@
         <div class="page-header-row">
           <div>
             <h1 data-i18n="updates.page_title">Frissítések</h1>
-            <p class="subtitle" id="updatesSubtitle" data-i18n="updates.brand_subtitle">Marveen verzió ellenőrzés</p>
+            <!-- No data-i18n here: renderUpdatesVersion() owns this element's
+                 content (the running version), so it must opt OUT of the generic
+                 [data-i18n] sweep in renderStaticI18n(), which would otherwise
+                 clobber the rendered version on a language switch. The label is
+                 re-localized by renderUpdatesVersion on every render instead. -->
+            <p class="subtitle" id="updatesSubtitle">Marveen verzió ellenőrzés</p>
           </div>
           <div style="display:flex;gap:8px">
             <button class="btn-secondary btn-compact" id="updatesCheckBtn" data-i18n="updates.btn.check">

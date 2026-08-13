@@ -658,6 +658,11 @@ function renderStaticI18n() {
   document.querySelectorAll('[data-i18n-html]').forEach(el => {
     el.innerHTML = t(el.dataset.i18nHtml)
   })
+  // #updatesSubtitle opts out of the [data-i18n] sweep (renderUpdatesVersion owns
+  // it). Re-apply from the cached status so a language switch re-localizes its
+  // "Current:" label immediately -- never leaving a clobbered/mixed header even
+  // if loadUpdates' refetch is slow or fails.
+  if (typeof renderUpdatesVersion === 'function') renderUpdatesVersion(window._updatesStatus)
   if (typeof applyOnboardingProviderTab === 'function') applyOnboardingProviderTab()
 }
 
@@ -11762,7 +11767,13 @@ function renderUpdatesVersion(data) {
   const parts = []
   if (ver) parts.push('v' + escapeHtmlUpdates(ver))
   if (sha) parts.push(`<code>${escapeHtmlUpdates(sha)}</code>`)
-  if (parts.length === 0) return // no version and no SHA: keep the brand subtitle
+  if (parts.length === 0) {
+    // No version AND no SHA (no git checkout and unreadable package.json): fall
+    // back to the localized brand subtitle. Set as text (not innerHTML) so no
+    // stale markup lingers, and keep it localized on every render.
+    sub.textContent = t('updates.brand_subtitle')
+    return
+  }
   sub.innerHTML = `${t('updates.current_label')} ${parts.join(' · ')}`
 }
 
