@@ -188,10 +188,14 @@ def select_recent(entries: list, now: datetime, hours: int = DEFAULT_HOURS) -> l
     An unparsable date is KEPT: a missing timestamp is not evidence that the
     message is old, and silently dropping it would hide real mail.
     """
-    cutoff = now - timedelta(hours=hours)
-    kept = [e for e in entries if e.get("date") is None or e["date"] >= cutoff]
+    cutoff = _as_aware(now) - timedelta(hours=hours)
+    # A normalizalas itt is megtortenik, nem csak a _parse_date-ben: egy naiv datum
+    # barhonnan bekerulhet a listaba, es a TypeError a szures KOZBEN allitana meg a
+    # napinditot -- ures level-szekcio, ami ugy nez ki, mint a "nincs level".
+    dates = {id(e): _as_aware(e.get("date")) for e in entries}
+    kept = [e for e in entries if dates[id(e)] is None or dates[id(e)] >= cutoff]
 
-    return sorted(kept, key=lambda e: (e.get("date") is not None, e.get("date") or now), reverse=True)
+    return sorted(kept, key=lambda e: (dates[id(e)] is not None, dates[id(e)] or cutoff), reverse=True)
 
 
 def _connect(creds: dict):
@@ -203,9 +207,26 @@ def _connect(creds: dict):
     return imaplib.IMAP4(creds["host"], creds["port"], timeout=CONNECT_TIMEOUT_S)
 
 
+def _as_aware(value):
+    """hu: Naiv datetime-ot UTC-re egeszit ki; a tz-tudatosat valtozatlanul adja vissza.
+    <br />
+    en: Attaches UTC to a naive datetime; returns an aware one unchanged.
+
+    hu: Az RFC 2822 "-0000" zona azt jelenti, hogy az idozona ISMERETLEN, es a
+        parsedate_to_datetime ilyenkor NAIV datetime-ot ad -- minden mas fejlecre
+        tz-tudatosat. A ket alak egy listaban osszehasonlithatatlan.
+    en: RFC 2822 "-0000" means the zone is unknown, so parsedate_to_datetime returns a
+        NAIVE datetime there and an aware one otherwise. The two cannot be compared.
+    """
+    if value is None or value.tzinfo is not None:
+        return value
+
+    return value.replace(tzinfo=timezone.utc)
+
+
 def _parse_date(raw: str):
     try:
-        return parsedate_to_datetime(raw)
+        return _as_aware(parsedate_to_datetime(raw))
     except (TypeError, ValueError):
         return None
 
