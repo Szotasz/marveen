@@ -14,6 +14,7 @@ import {
   capturePane,
   captureParkedInputView,
   clearInputBuffer,
+  discardPlaceholderBuffer,
   dismissResumeSummaryModalIfPresent,
   dismissModelConsentDialogIfPresent,
   stampFableOverageConsentSharedRoots,

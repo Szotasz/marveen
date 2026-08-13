@@ -1745,7 +1745,11 @@ const PLACEHOLDER_DISCARD_SETTLE_MS = 450
 // detectsPastePlaceholder guarantees at the call site. We re-check before each
 // press and stop the instant the placeholder is gone, so we never press Ctrl-C
 // into an already-empty box. Returns true if the placeholder was cleared.
-async function discardPlaceholderBuffer(session: string, host: string | null = null): Promise<boolean> {
+// Exported for the stale-hold unwedge in channel-monitor: that is the only
+// other caller allowed to empty a sub-agent's box, and it needs the SAME
+// verified clear (capture -> classify -> Ctrl-C -> re-verify) rather than a
+// second, weaker implementation of it.
+export async function discardPlaceholderBuffer(session: string, host: string | null = null): Promise<boolean> {
   for (let i = 0; i < PLACEHOLDER_DISCARD_MAX; i++) {
     const pane = capturePane(session, host)
     // Stop pressing once the stub is gone -- a further Ctrl-C on an empty box
