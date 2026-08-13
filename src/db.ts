@@ -400,6 +400,26 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_events_card ON kanban_card_events(card_id, created_at)`)
 
+  // listKanbanCards()'s auto-archive sweep (below) treats a card's updated_at
+  // as "when did this card last change", and archives a done card once that
+  // timestamp is older than KANBAN_ARCHIVE_DONE_DAYS. Both production status
+  // writers (updateKanbanCard, moveKanbanCard) always bump updated_at in the
+  // same statement as the status change -- but a raw SQL UPDATE that only
+  // touches status (kanban 0664aadf: an ad hoc status fix) leaves the OLD
+  // updated_at in place, so a card that just became 'done' looks like it has
+  // been sitting untouched for weeks and gets archived on the very next page
+  // load, before anyone sees it. Self-healing rather than a CHECK constraint,
+  // same reasoning as agent_messages_delivered_needs_ts above: the point is
+  // to keep updated_at honest for any writer, not to police the write path.
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS kanban_cards_status_bumps_updated_at
+    AFTER UPDATE OF status ON kanban_cards
+    FOR EACH ROW WHEN NEW.status != OLD.status AND NEW.updated_at = OLD.updated_at
+    BEGIN
+      UPDATE kanban_cards SET updated_at = CAST(strftime('%s','now') AS INTEGER) WHERE id = NEW.id;
+    END
+  `)
+
   // --- Kanban labels (tags) -----------------------------------------------
   // Labels are a separate registry (not hardcoded per-card strings) so the
   // same label can be reused across many cards and recolored in one place.
