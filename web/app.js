@@ -6681,7 +6681,8 @@ document.getElementById('saveMemBtn').addEventListener('click', async () => {
       await fetch(`/api/memories/${editId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, tier, agent_id: agentId, keywords }),
+        // confirm: true -- this Save click IS the user's confirmation.
+        body: JSON.stringify({ content, tier, agent_id: agentId, keywords, confirm: true }),
       })
       showToast(t('memories.toast.updated'))
     } else {
@@ -6816,7 +6817,12 @@ function renderMemories(memories) {
       e.stopPropagation()
       if (!confirm('Biztosan torlod ezt az emleket?')) return
       try {
-        await fetch(`/api/memories/${mem.id}`, { method: 'DELETE' })
+        // The dialog above IS the confirmation the API now requires.
+        await fetch(`/api/memories/${mem.id}`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ confirm: true }),
+        })
         showToast(t('memories.toast.deleted'))
         loadMemories()
         loadMemStats()

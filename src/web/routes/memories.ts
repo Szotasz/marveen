@@ -238,20 +238,48 @@ Respond ONLY with JSON, nothing else:
   if (memUpdateMatch && method === 'PUT') {
     const id = parseInt(memUpdateMatch[1], 10)
     const body = await readBody(req)
-    const { content, category, tier, agent_id, keywords } = JSON.parse(body.toString()) as { content: string; category?: string; tier?: string; agent_id?: string; keywords?: string }
-    if (updateMemory(id, content, tier || category, agent_id, keywords)) { json(res, { ok: true }); return true }
+    const { content, category, tier, agent_id, keywords, confirm } = JSON.parse(body.toString()) as { content: string; category?: string; tier?: string; agent_id?: string; keywords?: string; confirm?: boolean }
+    // This endpoint used to overwrite a live row with no confirmation and no
+    // way back. A confirm flag turns an accidental call into a loud 400
+    // instead of a quiet overwrite.
+    if (!confirm) {
+      json(res, { error: 'Confirmation required: resend with "confirm": true. This overwrites an existing memory.' }, 400)
+      return true
+    }
+    // Captured before the write so a mistaken overwrite is still visible in
+    // the response -- the row's prior content, not just an opaque "ok".
+    const previous = getDb().prepare('SELECT content FROM memories WHERE id = ?').get(id) as { content: string } | undefined
+    if (updateMemory(id, content, tier || category, agent_id, keywords)) {
+      json(res, { ok: true, previous_content: previous?.content ?? null })
+      return true
+    }
     json(res, { error: 'Memory not found' }, 404)
     return true
   }
 
   if (memUpdateMatch && method === 'DELETE') {
     const id = parseInt(memUpdateMatch[1], 10)
+    // No body is the common case (a bare `DELETE`), so an empty buffer must
+    // NOT be treated as JSON -- it means "unconfirmed", same as an explicit
+    // confirm: false.
+    const body = await readBody(req)
+    let confirm = false
+    if (body.length) {
+      try { confirm = (JSON.parse(body.toString()) as { confirm?: boolean }).confirm === true } catch { /* malformed body -> stays unconfirmed */ }
+    }
+    if (!confirm) {
+      json(res, { error: 'Confirmation required: resend with a JSON body {"confirm": true}. This permanently deletes the memory.' }, 400)
+      return true
+    }
     const db2 = getDb()
+    // The deleted row is echoed back so a mistaken id is at least
+    // recoverable from the response/log, not just a silent 200.
+    const deleted = db2.prepare('SELECT * FROM memories WHERE id = ?').get(id) as Memory | undefined
     const changes = db2.prepare('DELETE FROM memories WHERE id = ?').run(id).changes
     // Invalidate the in-process TTL cache so a deleted memory does not
     // resurface in the agent-filtered list for the cache lifetime.
     if (changes > 0) clearMemoryCache()
-    if (changes > 0) { json(res, { ok: true }); return true }
+    if (changes > 0) { json(res, { ok: true, deleted }); return true }
     json(res, { error: 'Memory not found' }, 404)
     return true
   }
