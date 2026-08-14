@@ -20,6 +20,7 @@ export const DEFAULT_THRESHOLD_TOKENS = 400_000
 export const DEFAULT_STALE_CUTOFF_MS  = 2 * 60 * 60 * 1000   // 2 h
 export const DEFAULT_RETRY_INTERVAL_MS = 5 * 60 * 1000        // 5 min
 export const DEFAULT_PERSISTENT_BLOCK_ALERT_MS = 2 * 60 * 60 * 1000  // 2 h
+export const DEFAULT_TRANSCRIPT_QUIET_MS = 2 * 60 * 1000      // 2 min
 
 export interface GateConfig {
   /** Master toggle. Default false (opt-in per agent). */
@@ -47,6 +48,21 @@ export interface GateConfig {
    * this long. A permanently-blocked gate is itself a signal something is wrong.
    */
   persistentBlockAlertMs: number
+  /**
+   * The session transcript must have been quiet for at least this long before
+   * a /clear is considered safe.
+   *
+   * The pane snapshot alone is not enough. Between two tool calls a working
+   * agent's pane reads 'idle' for a moment, the gate fires into that gap, and
+   * the /clear lands in the input box of a session that is mid-conversation --
+   * where it is queued behind the running turn instead of clearing anything.
+   * The gate then records a restart that never happened. (Observed live on a
+   * main agent: /clear "sent", context kept climbing straight through it.)
+   *
+   * The transcript mtime measures what the agent actually did, not what the
+   * terminal happened to be painting, so it closes that gap.
+   */
+  transcriptQuietMs: number
 }
 
 export function normalizeGateConfig(raw: unknown): GateConfig {
@@ -59,6 +75,7 @@ export function normalizeGateConfig(raw: unknown): GateConfig {
     staleCutoffMs:           posInt(o.staleCutoffMs,           DEFAULT_STALE_CUTOFF_MS),
     retryIntervalMs:         posInt(o.retryIntervalMs,         DEFAULT_RETRY_INTERVAL_MS),
     persistentBlockAlertMs:  posInt(o.persistentBlockAlertMs,  DEFAULT_PERSISTENT_BLOCK_ALERT_MS),
+    transcriptQuietMs:       posInt(o.transcriptQuietMs,       DEFAULT_TRANSCRIPT_QUIET_MS),
   }
 }
 
@@ -110,6 +127,13 @@ export interface GateInputs {
    * (block). This is the most fragile signal; see the runner for limitations.
    */
   hasChildProcesses: boolean | null
+
+  /**
+   * Milliseconds since the session transcript was last written, i.e. how long
+   * the agent has actually been quiet. null = no readable transcript
+   * (fail-closed → block).
+   */
+  msSinceTranscriptWrite: number | null
 
   /** Last inbound channel message has no later outbound (unresolved turn). */
   hasOpenQuestion: boolean
@@ -189,6 +213,19 @@ export function decideGate(
     return block(firstBlockedAt, inputs.nowMs, cfg, `pane-${inputs.paneState} (fail-closed)`)
   }
   // paneState === 'idle' from here.
+
+  // Transcript quiet-window: the pane can read 'idle' in the gap between two
+  // tool calls of a running turn. A /clear sent into that gap is queued behind
+  // the turn instead of clearing the session, and the gate would record a
+  // restart that never happened. Require real quiet, measured on the
+  // transcript, not on the terminal repaint.
+  if (inputs.msSinceTranscriptWrite === null) {
+    return block(firstBlockedAt, inputs.nowMs, cfg, 'transcript-unreadable (fail-closed)')
+  }
+  if (inputs.msSinceTranscriptWrite < cfg.transcriptQuietMs) {
+    return block(firstBlockedAt, inputs.nowMs, cfg,
+      `transcript-active (${Math.round(inputs.msSinceTranscriptWrite / 1000)}s since last write, need ${Math.round(cfg.transcriptQuietMs / 1000)}s)`)
+  }
 
   // Child process guard: live children of the claude process = Task-tool
   // subagent or background Bash still running.

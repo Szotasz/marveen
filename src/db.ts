@@ -2268,6 +2268,12 @@ export interface DispatchedPendingStats {
  * a busy agent permanently ineligible for a soft restart -- on 2026-08-12 the
  * gate reported 11 blocking messages for the main agent and several were its
  * own acknowledgements.
+ *
+ * Self-addressed rows are excluded for the same reason, one level in: an alert
+ * the agent writes to itself is not delegated work and can never come back and
+ * clear. Counting them deadlocked the gate against its own persistent-block
+ * alert -- blocked, alert, pending count 1, still blocked, and the alert re-sent
+ * every alert interval. Measured live on 2026-08-11.
  */
 export const COMPLETION_REPORT_PREFIX = '[Eredmény]'
 
@@ -2280,16 +2286,19 @@ export function getDispatchedPendingStats(
   // Bound parameter, not interpolation: the prefix contains no LIKE wildcards
   // today, but a future edit adding one would silently widen the exclusion.
   const ackPattern = `${COMPLETION_REPORT_PREFIX}%`
+  // Kept as one fragment so the live and stale halves can never drift apart.
+  const OUTSTANDING_WORK =
+    `from_agent = ? AND to_agent != from_agent
+       AND status IN ('pending','delivered')
+       AND content NOT LIKE ?`
   const liveRow = db.prepare(
     `SELECT COUNT(*) AS cnt FROM agent_messages
-       WHERE from_agent = ? AND status IN ('pending','delivered')
-         AND content NOT LIKE ?
+       WHERE ${OUTSTANDING_WORK}
          AND CAST(created_at AS INTEGER) > ?`,
   ).get(fromAgent, ackPattern, cutoffEpoch) as { cnt: number }
   const staleRow = db.prepare(
     `SELECT COUNT(*) AS cnt FROM agent_messages
-       WHERE from_agent = ? AND status IN ('pending','delivered')
-         AND content NOT LIKE ?
+       WHERE ${OUTSTANDING_WORK}
          AND CAST(created_at AS INTEGER) <= ?`,
   ).get(fromAgent, ackPattern, cutoffEpoch) as { cnt: number }
   return {

@@ -20,9 +20,30 @@ function readConfigRaw(): Record<string, unknown> {
   } catch { return {} }
 }
 
+// Fallback key for agents with no entry of their own. Without it a newly
+// created agent silently inherited `enabled: false` and never got a gate --
+// the same hole twice: two sub-agents in a row, the second one at 545k
+// tokens before anyone noticed. An
+// agent-specific entry still wins; this only decides the starting point.
+export const DEFAULT_CONFIG_KEY = '_default'
+
+/**
+ * Pure: resolve one agent's config out of the raw config file contents.
+ * Own entry wins, then `_default`, then the built-in default. Exported for tests.
+ */
+export function pickGateConfig(raw: Record<string, unknown>, name: string): GateConfig {
+  if (name in raw) return normalizeGateConfig(raw[name])
+  if (DEFAULT_CONFIG_KEY in raw) return normalizeGateConfig(raw[DEFAULT_CONFIG_KEY])
+  return { ...DEFAULT_GATE_CONFIG }
+}
+
 export function readGateConfig(name: string): GateConfig {
-  const raw = readConfigRaw()
-  return name in raw ? normalizeGateConfig(raw[name]) : { ...DEFAULT_GATE_CONFIG }
+  return pickGateConfig(readConfigRaw(), name)
+}
+
+/** True when this agent has its own entry (not inheriting `_default`). */
+export function hasOwnGateConfig(name: string): boolean {
+  return name in readConfigRaw()
 }
 
 export function writeGateConfig(name: string, cfg: unknown): GateConfig {
