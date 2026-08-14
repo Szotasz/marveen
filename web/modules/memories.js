@@ -1965,6 +1965,27 @@ function buildTimeline(data) {
     n._cpy = n._ay + Math.sin(actualAngle + 0.6) * actualLen * 0.5
   }
 
+  // Auto-fit: shift the whole tree up if lower branches clip the canvas edge.
+  // Target: 40px bottom padding. Translate root + all derived points uniformly.
+  const PAD_BOTTOM = 40
+  if (tlLayoutNodes.length) {
+    let maxY = tlRootY
+    for (const n of tlLayoutNodes) {
+      if (n._ty > maxY) maxY = n._ty
+      if (n._ay > maxY) maxY = n._ay
+    }
+    const overflow = maxY - (H - PAD_BOTTOM)
+    if (overflow > 0) {
+      const shift = -overflow
+      tlRootY += shift
+      for (const n of tlLayoutNodes) {
+        n._ax += 0; n._ay += shift
+        n._cpx += 0; n._cpy += shift
+        n._tx += 0; n._ty += shift
+      }
+    }
+  }
+
   // Build event stream
   tlEvents = (data.events || []).slice().sort((a, b) => a.ts - b.ts)
 

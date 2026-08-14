@@ -8045,3 +8045,9 @@ body {
 
 /* mem-graph-view must be position:relative for absolute overlays */
 .mem-graph-view { position: relative; }
+
+/* Per-class [hidden] overrides required by hidden-attribute-css-contract test.
+   These elements have unconditional display values in their class rules and
+   need explicit overrides so the HTML [hidden] attribute stays effective. */
+.tl-event-feed[hidden] { display: none !important; }
+.tl-scrubber[hidden] { display: none !important; }
