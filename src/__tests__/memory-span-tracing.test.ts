@@ -278,6 +278,46 @@ describe('runMemoryMaintenance', () => {
     expect(r1.category).toBe('warm')
     expect(r2.category).toBe('hot')
   })
+
+  it('logs warm->cold transition in memory_versions with change_type=category_change', () => {
+    const id = insertMem('loggable warm content', 'warm', 'agent-log1')
+    getDb().prepare('UPDATE memories SET created_at = ? WHERE id = ?')
+      .run(Math.floor(Date.now() / 1000) - 40 * 86400, id)
+    runMemoryMaintenance({ warmToColdDays: 30 })
+    const row = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }
+    expect(row.category).toBe('cold')
+    const versions = getDb()
+      .prepare("SELECT * FROM memory_versions WHERE memory_id = ? AND change_type = 'category_change'")
+      .all(id) as { category: string; changed_by: string }[]
+    expect(versions.length).toBeGreaterThanOrEqual(1)
+    expect(versions[0].category).toBe('cold')
+    expect(versions[0].changed_by).toBe('system:maintenance')
+  })
+
+  it('logs cold->warm transition in memory_versions with change_type=category_change', () => {
+    const id = insertMem('resurface for logging', 'cold', 'agent-log2')
+    recordMemoryRead('agent-log2', id, 'direct')
+    recordMemoryRead('agent-log3', id, 'search')
+    runMemoryMaintenance({ coldToWarmDays: 30, minAgents: 2 })
+    const row = getDb().prepare('SELECT category FROM memories WHERE id = ?').get(id) as { category: string }
+    expect(row.category).toBe('warm')
+    const versions = getDb()
+      .prepare("SELECT * FROM memory_versions WHERE memory_id = ? AND change_type = 'category_change'")
+      .all(id) as { category: string; changed_by: string }[]
+    expect(versions.length).toBeGreaterThanOrEqual(1)
+    expect(versions[0].category).toBe('warm')
+    expect(versions[0].changed_by).toBe('system:maintenance')
+  })
+
+  it('does not log a version entry when no tier change occurs', () => {
+    // Fresh memory won't be demoted, so no category_change version
+    const id = insertMem('no change warm content', 'warm', 'agent-log4')
+    runMemoryMaintenance({ warmToColdDays: 30 })
+    const versions = getDb()
+      .prepare("SELECT * FROM memory_versions WHERE memory_id = ? AND change_type = 'category_change'")
+      .all(id) as unknown[]
+    expect(versions).toHaveLength(0)
+  })
 })
 
 // ── pruneMemoryVersions ──────────────────────────────────────────────────────

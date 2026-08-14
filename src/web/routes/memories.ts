@@ -369,8 +369,8 @@ Respond ONLY with JSON, nothing else:
   // Query params: agent?, weight_min (default 0.75), limit (default 200, max 500).
   // GET /api/memories/graph/timeline -- temporal graph slice for the timeline scrubber.
   // Returns nodes + edges in a time window, plus a flat event list built from node
-  // created_at ('created') and memory_links created_at ('linked') -- no separate table.
-  // tier_changed is omitted (no audit-log exists).
+  // created_at ('created'), memory_links created_at ('linked'), and memory_versions
+  // category_change entries ('tier_changed').
   if (path === '/api/memories/graph/timeline' && method === 'GET') {
     const agentParam  = url.searchParams.get('agent') || ''
     const weightMin   = Math.max(0, Math.min(1, parseFloat(url.searchParams.get('weight_min') || '0.75')))
@@ -435,13 +435,43 @@ Respond ONLY with JSON, nothing else:
       accessed_at: r.accessed_at,
     }))
 
-    // Event list: one 'created' per node + one 'linked' per edge.
+    // Tier-change events: memory_versions entries with change_type='category_change'
+    // whose changed_at falls in the window and whose memory_id is in the node set.
+    // from_tier is derived by inverting to_tier (maintenance only does warm<->cold).
+    type TierChangeRow = { memory_id: number; changed_at: number; category: string }
+    const tierChangedRows: TierChangeRow[] = nodeRows.length > 0
+      ? (db2.prepare(
+          `SELECT mv.memory_id, mv.changed_at, mv.category
+           FROM memory_versions mv
+           WHERE mv.change_type = 'category_change'
+             AND mv.changed_at >= ? AND mv.changed_at <= ?
+             AND mv.memory_id IN (${placeholders})`
+        ).all(fromTs, toTs, ...nodeRows.map(r => r.id)) as TierChangeRow[])
+      : []
+
+    // Event list: 'created' per node + 'linked' per edge + 'tier_changed' per version entry.
     // Sorted by ts ascending for the frontend scrubber.
-    type TimelineEvent = { memory_id: number; type: 'created' | 'linked'; ts: number }
+    type TimelineEvent = {
+      memory_id: number
+      type: 'created' | 'linked' | 'tier_changed'
+      ts: number
+      from_tier?: string
+      to_tier?: string
+    }
     const events: TimelineEvent[] = [
       ...nodeRows.map(r => ({ memory_id: r.id, type: 'created' as const, ts: r.created_at })),
       ...edgeRows.map(e => ({ memory_id: e.src_id, type: 'linked' as const, ts: e.created_at })),
+      ...tierChangedRows.map(r => ({
+        memory_id: r.memory_id,
+        type: 'tier_changed' as const,
+        ts: r.changed_at,
+        from_tier: r.category === 'cold' ? 'warm' : 'cold',
+        to_tier: r.category,
+      })),
     ].sort((a, b) => a.ts - b.ts)
+
+    // Remove the old comment marker now that the audit log exists
+    // (was: "tier_changed is omitted (no audit-log exists)")
 
     const allTs = nodeRows.map(r => r.created_at)
     json(res, {

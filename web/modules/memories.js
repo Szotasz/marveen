@@ -1932,6 +1932,10 @@ function buildTimeline(data) {
         _haloAlpha: 0,
         _halospikeT: 0,  // burst halo spike progress 0-1
         _halospikeStart: 0,
+        // tier-change animation (§5.6)
+        _tierChangeActive: false,
+        _tierChangePrevTier: tier,
+        _tierChangeStart: 0,
       }
       tlLayoutNodes.push(node)
       tlNodeMap[n.id] = node
@@ -2123,7 +2127,17 @@ function tlCheckAndFireEvents(prevSim, curSim, wallNow) {
           tlUpdateEventFeed(n, 'created')
         }
       }
-      // tier-change events: skip gracefully (backend has no transition log)
+      if (ev.type === 'tier_changed' && ev.to_tier) {
+        const n = tlNodeMap[ev.memory_id]
+        if (n && n._phase === 'alive') {
+          n._tierChangePrevTier = n.tier
+          n.tier = ev.to_tier
+          n._tierChangeActive = true
+          n._tierChangeStart = wallNow
+          // Mini-burst at node position with new tier color
+          tlFireBurst(n, wallNow)
+        }
+      }
     }
   }
   // Fire semantic edge animations (§5.4b): keyed by edge.created_at
@@ -2563,8 +2577,20 @@ function renderTimeline(wallNow, dt) {
       }
 
       const tier = n.tier
+
+      // §5.6 tier-change crossfade: cross-fade glow from prev tier to new tier over 600ms
+      let tcProg = 1  // 1 = fully new tier
+      if (n._tierChangeActive) {
+        const tcElapsed = wallNow - n._tierChangeStart
+        if (tcElapsed >= 600) {
+          n._tierChangeActive = false
+        } else {
+          tcProg = tcElapsed / 600  // 0→1 linear
+        }
+      }
       const glowCol = GRAPH_TIER_GLOW[tier] || '#ffffff'
       const baseCol = GRAPH_TIER_COLORS[tier] || '#888'
+
       const scale = n._nodeScale
       const baseRadius = 5
 
@@ -2578,13 +2604,21 @@ function renderTimeline(wallNow, dt) {
         haloMult = 3.4 + n._halospikeT * (7 - 3.4)
       }
 
-      // Halo sprite
-      if (n._haloAlpha > 0.01 && graphGlowSprites[tier]) {
+      // Halo sprite (with §5.6 crossfade: blend prev tier out while new tier fades in)
+      if (n._haloAlpha > 0.01) {
         const haloRadius = baseRadius * haloMult * scale
         const sz = haloRadius * 2
-        ctx.globalAlpha = n._haloAlpha
         ctx.globalCompositeOperation = 'lighter'
-        ctx.drawImage(graphGlowSprites[tier], nx - haloRadius, ny - haloRadius, sz, sz)
+        // Outgoing tier halo fades out (only during crossfade)
+        if (tcProg < 1 && graphGlowSprites[n._tierChangePrevTier]) {
+          ctx.globalAlpha = n._haloAlpha * (1 - tcProg)
+          ctx.drawImage(graphGlowSprites[n._tierChangePrevTier], nx - haloRadius, ny - haloRadius, sz, sz)
+        }
+        // Incoming tier halo fades in
+        if (graphGlowSprites[tier]) {
+          ctx.globalAlpha = n._haloAlpha * (tcProg < 1 ? tcProg : 1)
+          ctx.drawImage(graphGlowSprites[tier], nx - haloRadius, ny - haloRadius, sz, sz)
+        }
         ctx.globalCompositeOperation = 'source-over'
         ctx.globalAlpha = 1
       }
