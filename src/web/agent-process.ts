@@ -445,6 +445,105 @@ function reconcileMcpServers(
   return true
 }
 
+/**
+ * Identity of ONE hook entry: what it runs, not where it sits in the file.
+ * Command hooks are identified by their command line, `agent` hooks by their
+ * prompt. Anything without either is unidentifiable and never merged.
+ */
+export function hookEntryId(entry: unknown): string | null {
+  if (!isPlainObject(entry)) return null
+  const type = typeof entry.type === 'string' ? entry.type : ''
+  const body =
+    typeof entry.command === 'string' ? entry.command :
+    typeof entry.prompt === 'string' ? entry.prompt : ''
+  if (!body.trim()) return null
+  return `${type} ${body}`
+}
+
+/**
+ * Merge the isolated dir's OWN hooks into the shared ones, keeping entries that
+ * exist only in the isolated file.
+ *
+ * WHY (2026-08-14): the target-only-KEY rescue above cannot help `hooks`. The
+ * shared file almost always defines `hooks`, so the key exists and the whole
+ * object is copied over -- taking every isolated-only hook with it, on every
+ * main-agent start. A hook registered for the channel agent alone therefore
+ * survives exactly until the next restart, and the symptom is silence: the
+ * agent starts fine, the hook simply never runs again. Measured: the
+ * memory-recall hook was registered 2026-08-13 21:20 into
+ * .channels-config/settings.json and was gone by the next start; nobody
+ * noticed for 26 hours, and the operator had been told it was live.
+ *
+ * Semantics mirror the key merge: shared is the source of truth (its groups
+ * come first, unchanged), the isolated file may only ADD. An entry present in
+ * both is kept once, in its shared position.
+ *
+ * Deliberate trade-off, same as the key merge: this cannot tell "the operator
+ * removed it from shared" from "it was never there". An entry deleted from the
+ * shared file but still present in an isolated file keeps running for that
+ * agent until it is removed there too. Additive is the safe direction here --
+ * the failure it replaces is silent loss, and the kept entries are logged.
+ */
+export function mergeIsolatedHooks(
+  shared: unknown,
+  own: unknown,
+): { hooks: Record<string, unknown> | undefined; kept: string[] } {
+  const sharedObj = isPlainObject(shared) ? shared : undefined
+  const ownObj = isPlainObject(own) ? own : undefined
+  if (!ownObj) return { hooks: sharedObj, kept: [] }
+
+  // Shallow-clone every group (and its hooks array): the merge below appends to
+  // matching groups, and mutating the parsed SHARED object would leak this
+  // agent's own hooks into whatever else holds a reference to it.
+  const out: Record<string, unknown> = {}
+  for (const [event, groups] of Object.entries(sharedObj ?? {})) {
+    out[event] = Array.isArray(groups)
+      ? groups.map((g) => (isPlainObject(g) && Array.isArray(g.hooks)
+        ? { ...g, hooks: [...g.hooks] }
+        : g))
+      : groups
+  }
+
+  const kept: string[] = []
+  for (const [event, ownGroups] of Object.entries(ownObj)) {
+    if (!Array.isArray(ownGroups)) {
+      if (!(event in out)) { out[event] = ownGroups; kept.push(`${event}:<non-array>`) }
+      continue
+    }
+    const outGroups: unknown[] = Array.isArray(out[event]) ? [...(out[event] as unknown[])] : []
+    const seen = new Set<string>()
+    for (const group of outGroups) {
+      if (!isPlainObject(group) || !Array.isArray(group.hooks)) continue
+      for (const entry of group.hooks) {
+        const id = hookEntryId(entry)
+        if (id) seen.add(id)
+      }
+    }
+    for (const group of ownGroups) {
+      if (!isPlainObject(group) || !Array.isArray(group.hooks)) continue
+      const fresh = group.hooks.filter((entry) => {
+        const id = hookEntryId(entry)
+        return id !== null && !seen.has(id)
+      })
+      if (!fresh.length) continue
+      for (const entry of fresh) {
+        const id = hookEntryId(entry)!
+        seen.add(id)
+        kept.push(`${event}:${id.slice(id.indexOf(' ') + 1).slice(0, 80)}`)
+      }
+      // Land next to an identical matcher when there is one, so the merged file
+      // keeps the shape a human would have written by hand.
+      const twin = outGroups.find((g) =>
+        isPlainObject(g) && Array.isArray(g.hooks) && g.matcher === group.matcher) as
+        Record<string, unknown> | undefined
+      if (twin) twin.hooks = [...(twin.hooks as unknown[]), ...fresh]
+      else outGroups.push({ ...group, hooks: fresh })
+    }
+    out[event] = outGroups
+  }
+  return { hooks: out, kept }
+}
+
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
@@ -533,6 +632,18 @@ function provisionIsolatedConfigDir(
             if (key !== 'enabledPlugins' && !(key in settings)) {
               settings[key] = value
               inherited.push(key)
+            }
+          }
+          // `hooks` needs more than the key rescue above: the shared file
+          // almost always defines it, so the key EXISTS and the whole object
+          // is copied over -- dropping every isolated-only hook on each start.
+          // Merge per hook entry instead. See mergeIsolatedHooks.
+          if ('hooks' in own) {
+            const merged = mergeIsolatedHooks(settings.hooks, own.hooks)
+            if (merged.hooks !== undefined) settings.hooks = merged.hooks
+            if (merged.kept.length) {
+              logger.info({ name, path: ownSettingsPath, hooks: merged.kept },
+                'isolated-config: kept target-only hook entries')
             }
           }
           // Additive merges must not be silent: the whole point of this block
