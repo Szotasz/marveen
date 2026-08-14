@@ -1413,9 +1413,9 @@ function gcHexToRgba(hex, alpha) {
 
 function gcFreshnessInfo(accessedAt) {
   const daysSince = (Date.now() / 1000 - accessedAt) / 86400
-  if (daysSince <= 30) return { cls: 'aktiv', color: '#7ddc8a' }
-  if (daysSince <= 90) return { cls: 'alvó', color: 'rgba(255,255,255,0.35)' }
-  return { cls: 'elavult', color: 'rgba(220,60,60,0.7)' }
+  if (daysSince <= 30) return { cls: 'aktiv',   label: 'aktív',   color: '#7ddc8a' }
+  if (daysSince <= 90) return { cls: 'alvo',    label: 'alvó',    color: 'rgba(255,255,255,0.35)' }
+  return                      { cls: 'elavult', label: 'elavult', color: 'rgba(220,60,60,0.7)' }
 }
 
 function showGraphPanel(node, swapping) {
@@ -1448,7 +1448,7 @@ function showGraphPanel(node, swapping) {
       ${node.isHub ? `<span class="gc-hub-badge">⬡ HUB · ${node.degree}</span>` : ''}
       <span class="gc-freshness">
         <span class="gc-freshness-dot ${fresh.cls}" style="background:${fresh.color}"></span>
-        ${fresh.cls}
+        ${escapeHtml(fresh.label)}
       </span>
       <button class="graph-panel-close" id="graphPanelCloseBtn">&times;</button>
     </div>
