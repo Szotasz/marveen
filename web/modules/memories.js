@@ -1965,24 +1965,38 @@ function buildTimeline(data) {
     n._cpy = n._ay + Math.sin(actualAngle + 0.6) * actualLen * 0.5
   }
 
-  // Auto-fit: shift the whole tree up if lower branches clip the canvas edge.
-  // Target: 40px bottom padding. Translate root + all derived points uniformly.
-  const PAD_BOTTOM = 40
+  // Scale-to-fit: compute bounding box of the full tree, scale uniformly so
+  // 40px of padding exists on every side, then center on the canvas. Never
+  // scales up (scale capped at 1); only shrinks when tree exceeds safe area.
   if (tlLayoutNodes.length) {
-    let maxY = tlRootY
+    const PAD = 40
+    let minX = tlRootX, maxX = tlRootX, minY = tlRootY, maxY = tlRootY
     for (const n of tlLayoutNodes) {
-      if (n._ty > maxY) maxY = n._ty
-      if (n._ay > maxY) maxY = n._ay
+      if (n._tx < minX) minX = n._tx; if (n._tx > maxX) maxX = n._tx
+      if (n._ty < minY) minY = n._ty; if (n._ty > maxY) maxY = n._ty
+      if (n._ax < minX) minX = n._ax; if (n._ax > maxX) maxX = n._ax
+      if (n._ay < minY) minY = n._ay; if (n._ay > maxY) maxY = n._ay
     }
-    const overflow = maxY - (H - PAD_BOTTOM)
-    if (overflow > 0) {
-      const shift = -overflow
-      tlRootY += shift
-      for (const n of tlLayoutNodes) {
-        n._ax += 0; n._ay += shift
-        n._cpx += 0; n._cpy += shift
-        n._tx += 0; n._ty += shift
-      }
+    const treeW = maxX - minX || 1
+    const treeH = maxY - minY || 1
+    const safeW = W - 2 * PAD
+    const safeH = H - 2 * PAD
+    const scale = Math.min(1, safeW / treeW, safeH / treeH)
+    // Bounding-box center → canvas center
+    const bbCx = (minX + maxX) / 2
+    const bbCy = (minY + maxY) / 2
+    const canvasCx = W / 2
+    const canvasCy = H / 2
+    const applyFit = (px, py) => ({
+      x: canvasCx + (px - bbCx) * scale,
+      y: canvasCy + (py - bbCy) * scale,
+    })
+    const r = applyFit(tlRootX, tlRootY)
+    tlRootX = r.x; tlRootY = r.y
+    for (const n of tlLayoutNodes) {
+      const a = applyFit(n._ax, n._ay); n._ax = a.x; n._ay = a.y
+      const c = applyFit(n._cpx, n._cpy); n._cpx = c.x; n._cpy = c.y
+      const t = applyFit(n._tx, n._ty); n._tx = t.x; n._ty = t.y
     }
   }
 
