@@ -1,3 +1,6 @@
+/* Ensure [hidden] always wins over component-level display declarations */
+[hidden] { display: none !important; }
+
 /* === Anthropic Design Tokens === */
 :root {
   --bg: #faf9f5;

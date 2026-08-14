@@ -1956,6 +1956,15 @@ function buildTimeline(data) {
     }
   }
 
+  // Recompute control points after relaxation: tips moved, curves must follow
+  for (const n of tlLayoutNodes) {
+    const adx = n._tx - n._ax, ady = n._ty - n._ay
+    const actualAngle = Math.atan2(ady, adx)
+    const actualLen = Math.sqrt(adx * adx + ady * ady)
+    n._cpx = n._ax + Math.cos(actualAngle + 0.6) * actualLen * 0.5
+    n._cpy = n._ay + Math.sin(actualAngle + 0.6) * actualLen * 0.5
+  }
+
   // Build event stream
   tlEvents = (data.events || []).slice().sort((a, b) => a.ts - b.ts)
 
@@ -2193,14 +2202,14 @@ function tlUpdateEventFeed(node, type) {
   const tierWord = node.tier || 'warm'
   const text = type === 'created' ? `+ ${lbl} (${tierWord})` : lbl
 
-  // Fade out existing rows
+  // Strictly enforce max 2 live rows before adding new one.
+  // Count only non-fading rows; rapid event bursts can otherwise bypass the cap.
   feed.querySelectorAll('.tl-feed-row.newest').forEach(r => r.classList.remove('newest'))
-  const rows = feed.querySelectorAll('.tl-feed-row')
-  if (rows.length >= 3) {
-    const oldest = rows[0]
-    oldest.classList.add('fading-out')
-    setTimeout(() => oldest.remove(), 260)
-  }
+  const liveRows = Array.from(feed.querySelectorAll('.tl-feed-row:not(.fading-out)'))
+  liveRows.slice(0, Math.max(0, liveRows.length - 2)).forEach(r => {
+    r.classList.add('fading-out')
+    setTimeout(() => r.remove(), 260)
+  })
 
   const row = document.createElement('div')
   row.className = 'tl-feed-row newest'
