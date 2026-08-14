@@ -566,6 +566,73 @@ Respond ONLY with JSON, nothing else:
     return true
   }
 
+  // GET /api/memories/:id/detail -- base data + read_count + neighbors + tier history
+  const memDetailMatch = path.match(/^\/api\/memories\/(\d+)\/detail$/)
+  if (memDetailMatch && method === 'GET') {
+    const id = parseInt(memDetailMatch[1], 10)
+    const db2 = getDb()
+
+    type DetailRow = { id: number; content: string; category: string; agent_id: string; keywords: string | null; created_at: number; accessed_at: number }
+    const mem = db2.prepare(
+      'SELECT id, content, category, agent_id, keywords, created_at, accessed_at FROM memories WHERE id = ?'
+    ).get(id) as DetailRow | undefined
+    if (!mem) { json(res, { error: 'Memory not found' }, 404); return true }
+
+    type CountRow = { cnt: number }
+    const { cnt: read_count } = db2.prepare(
+      'SELECT COUNT(*) AS cnt FROM span_reads WHERE memory_id = ?'
+    ).get(id) as CountRow
+
+    type NeighborRow = { id: number; content: string; category: string; weight: number; direction: string }
+    const neighbors = db2.prepare(`
+      SELECT m.id, m.content, m.category, ml.weight, 'outgoing' AS direction
+      FROM memory_links ml
+      JOIN memories m ON m.id = ml.dst_id
+      WHERE ml.src_id = ? AND ml.weight >= 0.75
+      ORDER BY ml.weight DESC LIMIT 5
+      UNION ALL
+      SELECT m.id, m.content, m.category, ml.weight, 'incoming' AS direction
+      FROM memory_links ml
+      JOIN memories m ON m.id = ml.src_id
+      WHERE ml.dst_id = ? AND ml.weight >= 0.75
+      ORDER BY ml.weight DESC LIMIT 5
+    `).all(id, id) as NeighborRow[]
+
+    type VersionRow = { category: string; changed_at: number; changed_by: string }
+    const versionRows = db2.prepare(
+      `SELECT category, changed_at, changed_by
+       FROM memory_versions
+       WHERE memory_id = ? AND change_type = 'category_change'
+       ORDER BY changed_at ASC`
+    ).all(id) as VersionRow[]
+
+    const tier_history = versionRows.map((row, i) => {
+      const to_tier = row.category
+      const from_tier = i > 0 ? versionRows[i - 1].category : (to_tier === 'cold' ? 'warm' : 'cold')
+      return { from_tier, to_tier, changed_at: row.changed_at, changed_by: row.changed_by }
+    })
+
+    json(res, {
+      id: mem.id,
+      content: mem.content,
+      category: mem.category,
+      agent_id: mem.agent_id,
+      keywords: mem.keywords,
+      created_at: mem.created_at,
+      accessed_at: mem.accessed_at,
+      read_count,
+      neighbors: neighbors.map(n => ({
+        id: n.id,
+        label: n.content.length > 60 ? n.content.slice(0, 60) + '...' : n.content,
+        tier: n.category,
+        weight: n.weight,
+        direction: n.direction,
+      })),
+      tier_history,
+    })
+    return true
+  }
+
   const memIdMatch = path.match(/^\/api\/memories\/(\d+)$/)
   if (memIdMatch && method === 'GET') {
     const id = parseInt(memIdMatch[1], 10)
