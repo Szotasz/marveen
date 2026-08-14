@@ -584,18 +584,23 @@ Respond ONLY with JSON, nothing else:
     ).get(id) as CountRow
 
     type NeighborRow = { id: number; content: string; category: string; weight: number; direction: string }
+    // SQLite forbids ORDER BY/LIMIT inside individual UNION ALL arms -- wrap each arm in a subquery
     const neighbors = db2.prepare(`
-      SELECT m.id, m.content, m.category, ml.weight, 'outgoing' AS direction
-      FROM memory_links ml
-      JOIN memories m ON m.id = ml.dst_id
-      WHERE ml.src_id = ? AND ml.weight >= 0.75
-      ORDER BY ml.weight DESC LIMIT 5
+      SELECT * FROM (
+        SELECT m.id, m.content, m.category, ml.weight, 'outgoing' AS direction
+        FROM memory_links ml
+        JOIN memories m ON m.id = ml.dst_id
+        WHERE ml.src_id = ? AND ml.weight >= 0.75
+        ORDER BY ml.weight DESC LIMIT 5
+      )
       UNION ALL
-      SELECT m.id, m.content, m.category, ml.weight, 'incoming' AS direction
-      FROM memory_links ml
-      JOIN memories m ON m.id = ml.src_id
-      WHERE ml.dst_id = ? AND ml.weight >= 0.75
-      ORDER BY ml.weight DESC LIMIT 5
+      SELECT * FROM (
+        SELECT m.id, m.content, m.category, ml.weight, 'incoming' AS direction
+        FROM memory_links ml
+        JOIN memories m ON m.id = ml.src_id
+        WHERE ml.dst_id = ? AND ml.weight >= 0.75
+        ORDER BY ml.weight DESC LIMIT 5
+      )
     `).all(id, id) as NeighborRow[]
 
     type VersionRow = { category: string; changed_at: number; changed_by: string }
