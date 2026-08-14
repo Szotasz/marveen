@@ -377,6 +377,28 @@ export function agentGetsEmailGate(name: string): boolean {
   return name !== MAIN_AGENT_ID
 }
 
+// The matcher is a FULL-match regex against the tool name, and an MCP tool's
+// name is the qualified `mcp__<server>__<tool>` -- so a bare `send_email`
+// alternative never fires for an MCP server (verified live 2026-08-10: a
+// manage_email send went through while the gate script itself denied the same
+// payload, because the hook never ran). The `.*` wrappers are what make the gate
+// reach MCP tools at all. Exported so the startup migration can recognize a
+// stale matcher on an already-scaffolded agent.
+export const EMAIL_GATE_MATCHER = 'Bash|.*send_email.*|.*manage_email.*'
+
+// Does an existing PreToolUse array carry an email-gate entry whose matcher is
+// NOT the current one? Pure + exported: this is the predicate that lets
+// ensureGovernanceGateCommands repair installs scaffolded before the matcher
+// fix, where the hook COMMAND is correctly wired (so the wiring check passes)
+// but the matcher never matches the qualified MCP tool name.
+export function emailGateMatcherStale(preToolUse: unknown): boolean {
+  if (!Array.isArray(preToolUse)) return false
+  return preToolUse.some((e) => {
+    if (!JSON.stringify(e).includes('email-send-gate.mjs')) return false
+    return (e as { matcher?: unknown })?.matcher !== EMAIL_GATE_MATCHER
+  })
+}
+
 // Idempotently wire the email-send-gate PreToolUse hook into a settings.json
 // object. A deny-list rule alone would NOT enforce this: permissive profiles
 // launch with --dangerously-skip-permissions, which bypasses allow/deny --
@@ -390,7 +412,7 @@ export function injectEmailSendGate(existing: Record<string, unknown>): void {
   // Registration guard: a /tmp or missing path must never enter shared settings.
   if (isUnsafeHookCommand(command)) return
   const entry = {
-    matcher: 'Bash|send_email',
+    matcher: EMAIL_GATE_MATCHER,
     hooks: [{ type: 'command', command, timeout: 10 }],
   }
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
@@ -587,6 +609,10 @@ export function renderQuarantineReader(template: string, domains: string[]): str
 // bare `node`, which is missing from the non-interactive hook PATH on nvm
 // installs -- exit 127 counts as a non-blocking hook error, so those gates were
 // silently non-enforcing. Called at server startup (alongside ensureEgressGate).
+// Also repairs a stale email-gate MATCHER (pre-2026-08-10 installs wrote a bare
+// `send_email|manage_email`, which never matches a qualified MCP tool name), so
+// an agent scaffolded before the fix is not left with a gate that looks wired
+// and enforces nothing.
 // NOTE: a running session does NOT re-read settings.json -- the rewritten
 // command takes effect at that agent's next (re)spawn; this call only makes
 // the migration zero-touch, not instantaneous.
@@ -602,8 +628,14 @@ export function ensureGovernanceGateCommands(name: string): boolean {
   const hooks = (settings.hooks && typeof settings.hooks === 'object')
     ? settings.hooks as Record<string, unknown>
     : {}
-  const ptuJson = JSON.stringify(Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : [])
-  const needEmail = agentGetsEmailGate(name) && !hookCommandWired(ptuJson, emailCmd)
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : []
+  const ptuJson = JSON.stringify(ptu)
+  // Two separate failure modes, both silently non-enforcing: the command is not
+  // wired at all, or it IS wired but under a pre-2026-08-10 matcher that cannot
+  // match a qualified MCP tool name. The second one is why the wiring check
+  // alone is not enough -- it would report the gate healthy forever.
+  const needEmail = agentGetsEmailGate(name)
+    && (!hookCommandWired(ptuJson, emailCmd) || emailGateMatcherStale(ptu))
   const needPace = agentGetsGovernanceGates(name) && !hookCommandWired(ptuJson, paceCmd)
   if (!needEmail && !needPace) return false
   // The injectors dedupe by script basename, so a stale bare-`node` entry is

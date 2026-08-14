@@ -42,17 +42,53 @@ const SEND_PATTERNS = [
   /\bsendMail\s*\(/i,
 ]
 
+// Outbound-shaped operations of the multiplexed manage_email tool. Each of
+// these sends for real unless the call explicitly asks for a draft.
+const MANAGE_EMAIL_SEND_OPS = new Set(['send', 'reply', 'replyall', 'forward'])
+
 // Pure decision: does this tool call send (or attempt to send) email?
+// Returns { deny, kind? }. `kind` selects the deny wording at the hook
+// entrypoint: 'draft-required' is the manage_email case (drafting is fine,
+// only the actual send is refused), everything else is the sub-agent
+// governance block.
 export function gateDecision(toolName, toolInput) {
   const name = String(toolName ?? '')
   // Any MCP send_email tool, name-agnostic (gmail or a differently-named
   // server in a customer install -> the matcher + this both key on send_email).
   if (/send_email/i.test(name)) return { deny: true }
+  // @aaronsb/google-workspace-mcp multiplexes read, draft and send behind one
+  // manage_email tool, so the tool NAME cannot decide this one -- the operation
+  // plus the draft flag can. This is what replaces the server's own
+  // draft-only-email safety policy, which blocks drafting too: that policy keys
+  // on ctx.operation alone and never looks at draft:true, so with it enabled the
+  // mailbox is effectively read-only (verified live, 2026-08-10).
+  if (/(^|__)manage_email$/i.test(name)) {
+    const op = String(toolInput?.operation ?? '').toLowerCase()
+    if (!MANAGE_EMAIL_SEND_OPS.has(op)) return { deny: false }
+    // Fail safe: only an explicit draft request passes. A missing/ambiguous
+    // flag is treated as a real send, even though the server would itself
+    // force a draft when attachments are present.
+    const draft = toolInput?.draft
+    if (draft === true || draft === 'true') return { deny: false }
+    return { deny: true, kind: 'draft-required' }
+  }
   if (name === 'Bash') {
     const cmd = String(toolInput?.command ?? '')
     if (SEND_PATTERNS.some((re) => re.test(cmd))) return { deny: true }
   }
   return { deny: false }
+}
+
+// Deny wording for the manage_email case. Unlike the sub-agent governance
+// block this is not about who the agent is: drafting stays open, so the fix is
+// to re-issue the same call with draft: true and hand the draft to the owner.
+export function buildDraftOnlyMsg(ownerName) {
+  return (
+    'Kimeno email kuldese tiltott (draft-kapu). ' +
+    'Ird meg ugyanezt draft: true kapcsoloval, es szolj ' +
+    `${ownerName}nek, hogy a Gmail piszkozatok kozott varja a jovahagyasat. ` +
+    'Csak VERIFIKALT cimre. A kuldes gombot ember nyomja meg.'
+  )
 }
 
 // Pure builder for the deny message, so the brand/owner substitution is
@@ -126,10 +162,10 @@ if (isInvokedDirectly()) {
   } catch {
     allow() // malformed/empty input must never break the agent's tool calls
   }
-  const { deny: shouldDeny } = gateDecision(payload?.tool_name, payload?.tool_input)
+  const { deny: shouldDeny, kind } = gateDecision(payload?.tool_name, payload?.tool_input)
   if (shouldDeny) {
     const { botName, ownerName } = readBrandEnv()
-    deny(buildGateMsg(botName, ownerName))
+    deny(kind === 'draft-required' ? buildDraftOnlyMsg(ownerName) : buildGateMsg(botName, ownerName))
   }
   allow()
 }

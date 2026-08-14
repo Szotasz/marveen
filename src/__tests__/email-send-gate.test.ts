@@ -18,6 +18,48 @@ describe('gateDecision', () => {
     expect(gateDecision('mcp__server-gmail-autoauth-mcp__draft_email', {}).deny).toBe(false)
   })
 
+  // @aaronsb/google-workspace-mcp multiplexes read/draft/send behind one tool,
+  // so the gate has to read the operation + draft flag, not just the name.
+  // This replaces the server's draft-only-email policy, which blocks drafting too.
+  describe('manage_email (multiplexed google-workspace tool)', () => {
+    const call = (input: Record<string, unknown>) =>
+      gateDecision('mcp__google-workspace__manage_email', input)
+
+    it('blocks the outbound operations when no draft is asked for', () => {
+      for (const operation of ['send', 'reply', 'replyAll', 'forward']) {
+        expect(call({ operation }).deny).toBe(true)
+        expect(call({ operation }).kind).toBe('draft-required')
+        expect(call({ operation, draft: false }).deny).toBe(true)
+      }
+    })
+
+    it('allows the same operations when they only create a draft', () => {
+      for (const operation of ['send', 'reply', 'replyAll', 'forward']) {
+        expect(call({ operation, draft: true }).deny).toBe(false)
+      }
+    })
+
+    it('allows read-shaped operations', () => {
+      for (const operation of ['search', 'read', 'triage', 'labels', 'threads', 'modify']) {
+        expect(call({ operation }).deny).toBe(false)
+      }
+    })
+
+    it('fails safe on a missing or non-boolean draft flag', () => {
+      expect(call({ operation: 'send', draft: 'yes' }).deny).toBe(true)
+      expect(call({ operation: 'send', draft: 1 }).deny).toBe(true)
+      expect(call({}).deny).toBe(false) // no operation at all is not send-shaped
+      // the string 'true' survives a JSON round-trip that stringified the flag
+      expect(call({ operation: 'send', draft: 'true' }).deny).toBe(false)
+    })
+
+    it('is name-agnostic across server prefixes but does not match look-alikes', () => {
+      expect(gateDecision('manage_email', { operation: 'send' }).deny).toBe(true)
+      expect(gateDecision('mcp__other__manage_email', { operation: 'send' }).deny).toBe(true)
+      expect(gateDecision('manage_emails_bulk', { operation: 'send' }).deny).toBe(false)
+    })
+  })
+
   it('blocks Bash mail-send commands', () => {
     const bash = (command: string) => gateDecision('Bash', { command })
     expect(bash('python3 scripts/support-mail/send.py --to x@y.hu').deny).toBe(true)
@@ -70,9 +112,28 @@ describe('injectEmailSendGate', () => {
     injectEmailSendGate(s)
     const hooks = (s.hooks as Record<string, unknown>).PreToolUse as Array<Record<string, unknown>>
     expect(hooks).toHaveLength(1)
-    expect(hooks[0].matcher).toBe('Bash|send_email')
+    expect(hooks[0].matcher).toBe('Bash|.*send_email.*|.*manage_email.*')
     const inner = (hooks[0].hooks as Array<{ command: string }>)[0]
     expect(inner.command).toContain('email-send-gate.mjs')
+  })
+
+  // Regression (2026-08-10): the matcher is full-matched against the tool name,
+  // and MCP tools arrive qualified as `mcp__<server>__<tool>` -- with the old
+  // bare `send_email|manage_email` alternatives the hook never fired for ANY MCP
+  // mail tool, so both the sub-agent governance gate and the draft-kapu were
+  // silently open. Assert against the real qualified names.
+  it('matcher full-matches qualified MCP tool names', () => {
+    const s: Record<string, unknown> = {}
+    injectEmailSendGate(s)
+    const hooks = (s.hooks as Record<string, unknown>).PreToolUse as Array<Record<string, unknown>>
+    const re = new RegExp(`^(?:${hooks[0].matcher as string})$`)
+    expect(re.test('mcp__google-workspace__manage_email')).toBe(true)
+    expect(re.test('mcp__server-gmail-autoauth-mcp__send_email')).toBe(true)
+    expect(re.test('manage_email')).toBe(true)
+    expect(re.test('send_email')).toBe(true)
+    expect(re.test('Bash')).toBe(true)
+    expect(re.test('Read')).toBe(false)
+    expect(re.test('mcp__google-workspace__manage_calendar')).toBe(false)
   })
 
   it('is idempotent (no duplicate entries on re-apply / respawn)', () => {

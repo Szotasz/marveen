@@ -10,6 +10,8 @@ import {
   injectEgressGate,
   ensureEgressGate,
   ensureGovernanceGateCommands,
+  emailGateMatcherStale,
+  EMAIL_GATE_MATCHER,
 } from '../web/agent-scaffold.js'
 import { PROJECT_ROOT } from '../config.js'
 
@@ -135,5 +137,58 @@ describe('ensure* migrations are idempotent (true, then false)', () => {
       expect(cmd.includes(`"${HOOK_NODE_BIN}" "`)).toBe(true)
       expect(cmd).not.toMatch(/^node /)
     }
+  })
+
+  // 2026-08-10: the second silently-non-enforcing shape. Here the command is
+  // already correct (absolute, quoted interpreter), so the wiring check reports
+  // the gate healthy -- but the matcher is the pre-fix bare one, which never
+  // matches `mcp__<server>__manage_email`, so the hook never runs. The migration
+  // must repair the matcher too, or every install scaffolded before the fix
+  // keeps a gate that passes every check and blocks nothing.
+  it('ensureGovernanceGateCommands repairs a stale matcher on a correctly-wired command', () => {
+    mkdirSync(join(testAgentDir, '.claude'), { recursive: true })
+    const settingsPath = join(testAgentDir, '.claude', 'settings.json')
+    writeFileSync(settingsPath, JSON.stringify({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash|send_email|manage_email',
+            hooks: [{ type: 'command', command: hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs')), timeout: 10 }],
+          },
+          {
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: hookCommand(join(PROJECT_ROOT, 'scripts', 'self-pace-gate.mjs')), timeout: 10 }],
+          },
+        ],
+      },
+    }, null, 2))
+
+    expect(ensureGovernanceGateCommands(TEST_AGENT)).toBe(true)
+    expect(ensureGovernanceGateCommands(TEST_AGENT)).toBe(false)
+
+    const written = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    const ptu = (written.hooks as Record<string, unknown>).PreToolUse as { matcher: string, hooks: { command: string }[] }[]
+    const gate = ptu.find((e) => e.hooks.some((h) => h.command.includes('email-send-gate.mjs')))
+    expect(gate?.matcher).toBe(EMAIL_GATE_MATCHER)
+    // Repaired in place, not duplicated.
+    expect(ptu.filter((e) => e.hooks.some((h) => h.command.includes('email-send-gate.mjs')))).toHaveLength(1)
+    // The unrelated self-pace entry survives untouched.
+    expect(ptu.some((e) => e.hooks.some((h) => h.command.includes('self-pace-gate.mjs')))).toBe(true)
+  })
+})
+
+describe('emailGateMatcherStale', () => {
+  const cmd = { type: 'command', command: hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs')), timeout: 10 }
+
+  it('flags a pre-fix matcher', () => {
+    expect(emailGateMatcherStale([{ matcher: 'Bash|send_email|manage_email', hooks: [cmd] }])).toBe(true)
+    expect(emailGateMatcherStale([{ matcher: 'Bash|send_email', hooks: [cmd] }])).toBe(true)
+  })
+
+  it('accepts the current matcher and ignores unrelated entries', () => {
+    expect(emailGateMatcherStale([{ matcher: EMAIL_GATE_MATCHER, hooks: [cmd] }])).toBe(false)
+    expect(emailGateMatcherStale([{ matcher: 'WebFetch', hooks: [{ type: 'command', command: 'x egress-gate.mjs' }] }])).toBe(false)
+    expect(emailGateMatcherStale([])).toBe(false)
+    expect(emailGateMatcherStale(undefined)).toBe(false)
   })
 })
