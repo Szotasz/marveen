@@ -60,7 +60,7 @@ export async function loadMemAgents() {
 })()
 
 // Agent filter change
-document.getElementById('memAgentFilter').addEventListener('change', () => {
+document.getElementById('memAgentFilter')?.addEventListener('change', () => {
   if (currentMemTier === 'graph') {
     loadMemoryGraph()
   } else if (currentMemTier === 'log') {
@@ -71,13 +71,13 @@ document.getElementById('memAgentFilter').addEventListener('change', () => {
 })
 
 // Search with debounce
-memSearchInput.addEventListener('input', () => {
+memSearchInput?.addEventListener('input', () => {
   clearTimeout(memSearchTimer)
   memSearchTimer = setTimeout(loadMemories, 300)
 })
 
 // Enter to search immediately
-memSearchInput.addEventListener('keydown', (e) => {
+memSearchInput?.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     clearTimeout(memSearchTimer)
     loadMemories()
@@ -85,7 +85,7 @@ memSearchInput.addEventListener('keydown', (e) => {
 })
 
 // Tab switching
-document.getElementById('memTabs').addEventListener('click', (e) => {
+document.getElementById('memTabs')?.addEventListener('click', (e) => {
   const tab = e.target.closest('.mem-tab')
   if (!tab) return
   document.querySelectorAll('.mem-tab').forEach(t => t.classList.remove('active'))
@@ -109,7 +109,7 @@ document.getElementById('memTabs').addEventListener('click', (e) => {
 })
 
 // Add memory button
-document.getElementById('memAddBtn').addEventListener('click', () => {
+document.getElementById('memAddBtn')?.addEventListener('click', () => {
   document.getElementById('memModalTitle').textContent = t('memories.modal.title_new')
   document.getElementById('memContent').value = ''
   document.getElementById('memTier').value = (currentMemTier === 'log' || currentMemTier === 'graph') ? 'warm' : currentMemTier
@@ -123,11 +123,11 @@ document.getElementById('memAddBtn').addEventListener('click', () => {
 })
 
 // Close memory modal
-document.getElementById('memModalClose').addEventListener('click', () => _closeModal?.(memModalOverlay))
-memModalOverlay.addEventListener('click', (e) => { if (e.target === memModalOverlay) _closeModal?.(memModalOverlay) })
+document.getElementById('memModalClose')?.addEventListener('click', () => _closeModal?.(memModalOverlay))
+memModalOverlay?.addEventListener('click', (e) => { if (e.target === memModalOverlay) _closeModal?.(memModalOverlay) })
 
 // Save memory (create or edit)
-document.getElementById('saveMemBtn').addEventListener('click', async () => {
+document.getElementById('saveMemBtn')?.addEventListener('click', async () => {
   const content = document.getElementById('memContent').value.trim()
   if (!content) { document.getElementById('memContent').focus(); return }
 
@@ -1198,7 +1198,9 @@ function renderGraph() {
         ctx.globalCompositeOperation = 'source-over'
       }
     }
-    ctx.globalAlpha = displayAlpha
+    // Core alpha: dark mode uses displayAlpha; light mode bumps to ~0.9 ambient
+    // so the halo's 0.35 multiplier doesn't drag the core down visually (Poly §4)
+    ctx.globalAlpha = isDark ? displayAlpha : Math.min(displayAlpha * (0.9 / 0.85), 1.0)
 
     // Node core: radial gradient with highlight center offset
     const coreGrad = ctx.createRadialGradient(rx - r * 0.25, ry - r * 0.25, 0, rx, ry, r)
