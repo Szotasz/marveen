@@ -367,6 +367,95 @@ Respond ONLY with JSON, nothing else:
   // GET /api/memories/graph -- single-round-trip graph payload for the dashboard graph.
   // Edges only include pairs where BOTH endpoints are in the nodes array (AND, not OR).
   // Query params: agent?, weight_min (default 0.75), limit (default 200, max 500).
+  // GET /api/memories/graph/timeline -- temporal graph slice for the timeline scrubber.
+  // Returns nodes + edges in a time window, plus a flat event list built from node
+  // created_at ('created') and memory_links created_at ('linked') -- no separate table.
+  // tier_changed is omitted (no audit-log exists).
+  if (path === '/api/memories/graph/timeline' && method === 'GET') {
+    const agentParam  = url.searchParams.get('agent') || ''
+    const weightMin   = Math.max(0, Math.min(1, parseFloat(url.searchParams.get('weight_min') || '0.75')))
+    const nowSec      = Math.floor(Date.now() / 1000)
+    const fromTs      = parseInt(url.searchParams.get('from') || '0', 10)
+    const toTs        = Math.min(nowSec, parseInt(url.searchParams.get('to') || String(nowSec), 10))
+
+    if (fromTs > toTs) { json(res, { error: 'from must be <= to' }, 400); return true }
+
+    const db2 = getDb()
+
+    // Nodes created within the requested window (agent-filtered if provided)
+    const nodeRows: Memory[] = agentParam
+      ? db2.prepare(
+          `SELECT id, content, agent_id, category, created_at, accessed_at
+           FROM memories
+           WHERE agent_id = ? AND created_at >= ? AND created_at <= ?
+           ORDER BY created_at ASC`
+        ).all(agentParam, fromTs, toTs) as Memory[]
+      : db2.prepare(
+          `SELECT id, content, agent_id, category, created_at, accessed_at
+           FROM memories
+           WHERE created_at >= ? AND created_at <= ?
+           ORDER BY created_at ASC`
+        ).all(fromTs, toTs) as Memory[]
+
+    const nodeIdSet    = new Set(nodeRows.map(r => r.id))
+    const placeholders = nodeRows.map(() => '?').join(',')
+
+    // Edges where both endpoints are in the node set AND weight >= weight_min.
+    // created_at filter not applied on edges: an edge may be created outside the
+    // window if both nodes happen to fall inside it.
+    type LinkRow = { src_id: number; dst_id: number; weight: number; created_at: number }
+    const edgeRows: LinkRow[] = nodeRows.length > 0
+      ? (db2.prepare(
+          `SELECT src_id, dst_id, weight, created_at FROM memory_links
+           WHERE src_id IN (${placeholders}) AND dst_id IN (${placeholders})
+             AND weight >= ?`
+        ).all(...nodeRows.map(r => r.id), ...nodeRows.map(r => r.id), weightMin) as LinkRow[])
+          .filter(e => nodeIdSet.has(e.src_id) && nodeIdSet.has(e.dst_id))
+      : []
+
+    // Degree map (same weight threshold)
+    type DegreeRow = { src_id: number; degree: number }
+    const degreeMap = new Map<number, number>()
+    if (nodeRows.length > 0) {
+      const degRows = db2.prepare(
+        `SELECT src_id, COUNT(*) AS degree FROM memory_links
+         WHERE src_id IN (${placeholders}) AND weight >= ?
+         GROUP BY src_id`
+      ).all(...nodeRows.map(r => r.id), weightMin) as DegreeRow[]
+      for (const d of degRows) degreeMap.set(d.src_id, d.degree)
+    }
+
+    const nodes = nodeRows.map(r => ({
+      id:          r.id,
+      label:       r.content.length > 40 ? r.content.slice(0, 40) + '...' : r.content,
+      tier:        r.category || 'warm',
+      agent:       r.agent_id || '',
+      degree:      degreeMap.get(r.id) ?? 0,
+      created_at:  r.created_at,
+      accessed_at: r.accessed_at,
+    }))
+
+    // Event list: one 'created' per node + one 'linked' per edge.
+    // Sorted by ts ascending for the frontend scrubber.
+    type TimelineEvent = { memory_id: number; type: 'created' | 'linked'; ts: number }
+    const events: TimelineEvent[] = [
+      ...nodeRows.map(r => ({ memory_id: r.id, type: 'created' as const, ts: r.created_at })),
+      ...edgeRows.map(e => ({ memory_id: e.src_id, type: 'linked' as const, ts: e.created_at })),
+    ].sort((a, b) => a.ts - b.ts)
+
+    const allTs = nodeRows.map(r => r.created_at)
+    json(res, {
+      nodes,
+      edges: edgeRows,
+      events,
+      time_range: {
+        min_ts: allTs.length > 0 ? Math.min(...allTs) : fromTs,
+        max_ts: allTs.length > 0 ? Math.max(...allTs) : toTs,
+      },
+    })
+    return true
+  }
+
   if (path === '/api/memories/graph' && method === 'GET') {
     const agentParam = url.searchParams.get('agent') || ''
     const weightMin = Math.max(0, Math.min(1, parseFloat(url.searchParams.get('weight_min') || '0.75')))
