@@ -701,6 +701,27 @@
           <input type="range" id="graphNodeLimit" min="50" max="500" step="50" value="200" style="width:120px;accent-color:var(--accent,#d97757)">
           <span id="graphNodeLimitVal" style="font-size:11px;color:var(--text-muted);min-width:3ch">200</span>
         </div>
+        <!-- Mode toggle: Struktúra / Idővonal -->
+        <div class="graph-mode-toggle" id="graphModeToggle">
+          <button class="mode-seg active" data-mode="strukt">Struktúra</button>
+          <button class="mode-seg" data-mode="timeline">Idővonal</button>
+        </div>
+        <!-- Timeline event feed overlay (bottom-left) -->
+        <div class="tl-event-feed" id="tlEventFeed" hidden></div>
+        <!-- Timeline scrubber card (bottom-center) -->
+        <div class="tl-scrubber" id="tlScrubber" hidden>
+          <button class="tl-play-btn" id="tlPlayBtn" aria-label="Lejátszás / Szünet">&#9654;</button>
+          <div class="tl-track-wrap">
+            <div class="tl-track" id="tlTrack">
+              <div class="tl-track-fill" id="tlTrackFill"></div>
+              <div class="tl-knob" id="tlKnob"></div>
+            </div>
+            <div class="tl-month-axis" id="tlMonthAxis"></div>
+          </div>
+          <div class="tl-date-chip" id="tlDateChip">----</div>
+        </div>
+        <!-- Canvas crossfade overlay for mode switch -->
+        <div class="graph-crossfade" id="graphCrossfade"></div>
       </div>
 
       <!-- Daily log view -->
