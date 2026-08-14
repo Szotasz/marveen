@@ -671,14 +671,6 @@
         <select class="mem-agent-filter" id="memAgentFilter">
           <option value="" data-i18n="memories.filter.all_agents">Minden ügynök</option>
         </select>
-        <select id="memArtKindFilter" style="display:none">
-          <option value="" data-i18n="memories.artifacts.kind_all">Minden típus</option>
-          <option value="html">HTML</option>
-          <option value="markdown">Markdown</option>
-          <option value="json">JSON</option>
-          <option value="text">Text</option>
-          <option value="binary">Binary</option>
-        </select>
       </div>
 
       <div class="mem-tabs" id="memTabs">
@@ -688,7 +680,6 @@
         <button class="mem-tab" data-tier="shared">&#128279; Shared</button>
         <button class="mem-tab" data-tier="graph">&#128376;&#65039; Graf</button>
         <button class="mem-tab" data-tier="log">&#128203; Naplo</button>
-        <button class="mem-tab" data-tier="artifacts" data-i18n="memories.tab.artifacts">Artifactok</button>
       </div>
 
       <!-- Memory list (for hot/warm/cold/shared) -->
@@ -725,14 +716,6 @@
         </div>
       </div>
 
-      <!-- Artifacts tab view (on Memories screen) -->
-      <div id="memArtifactsView" hidden>
-        <div id="memArtifactsList"></div>
-        <div id="memArtifactsEmpty" hidden>
-          <p data-i18n="memories.artifacts.empty">Nincs artifact.</p>
-        </div>
-        <div id="memArtifactsPreview" hidden style="margin-top:12px;border:1px solid var(--border);border-radius:8px;overflow:hidden;max-height:520px;"></div>
-      </div>
     </div>
 
     <!-- === Recall / Napló Page === -->
