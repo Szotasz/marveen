@@ -382,6 +382,9 @@ let graphPanning = false
 let graphPanStartX = 0
 let graphPanStartY = 0
 let graphZoomIndicatorTimer = null
+let graphPanelHoverNeighborId = null  // mem.id of neighbor row being hovered in card
+let graphCameraNudge = null           // {fromX, fromY, toX, toY, startMs, dur}
+let graphNodePulseActive = null       // {node, startMs} for 600ms halo pulse on neighbor click
 
 // Edge animation
 let graphAnimFrame = 0
@@ -821,6 +824,18 @@ function renderGraph() {
   const textColor = cs.getPropertyValue('--text').trim() || (isDark ? '#e8e7e0' : '#141413')
   const textMuted = cs.getPropertyValue('--text-muted').trim() || (isDark ? '#73726c' : '#87867f')
 
+  // Camera nudge animation (card open or neighbor click, spec §2 / §4.4)
+  if (graphCameraNudge && !GRAPH_REDUCED_MOTION) {
+    const { fromX, fromY = graphPanY, toX, toY = graphPanY, startMs, dur } = graphCameraNudge
+    const elapsed = performance.now() - startMs
+    const t = Math.min(1, elapsed / dur)
+    // Ease-in-out cubic
+    const e = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
+    graphPanX = fromX + (toX - fromX) * e
+    graphPanY = fromY + (toY - fromY) * e
+    if (t >= 1) graphCameraNudge = null
+  }
+
   // === Background: dark-cinematic vignette OR light fallback ===
   ctx.clearRect(0, 0, w, h)
   if (isDark) {
@@ -963,7 +978,12 @@ function renderGraph() {
     const baseAlpha = edge.semantic
       ? (0.25 + Math.min(edge.strength * 0.3, 0.55))
       : (0.08 + Math.min(edge.strength * 0.05, 0.12))
-    const edgeAlpha = searchFaded ? 0.04 : (isActiveEdge ? 0.85 : (isDimmed ? 0.05 : baseAlpha * pulse))
+    const isNeighborHighlightEdge = graphPanelHoverNeighborId !== null && graphSelectedNode !== null
+      && ((a === graphSelectedNode && b.mem && b.mem.id === graphPanelHoverNeighborId)
+      ||  (b === graphSelectedNode && a.mem && a.mem.id === graphPanelHoverNeighborId))
+    const edgeAlpha = searchFaded ? 0.04
+      : isNeighborHighlightEdge ? Math.min(0.9, baseAlpha * 2.5)
+      : (isActiveEdge ? 0.85 : (isDimmed ? 0.05 : baseAlpha * pulse))
     // Light theme: bump alpha for contrast
     ctx.globalAlpha = isDark ? edgeAlpha : Math.min(1, edgeAlpha + 0.10)
 
@@ -1149,9 +1169,10 @@ function renderGraph() {
     const searchFaded = hasSearch && !node.searchMatch
     const searchGlow = hasSearch && node.searchMatch
 
+    const isPanelHoverNeighbor = graphPanelHoverNeighborId !== null && node.mem && node.mem.id === graphPanelHoverNeighborId
     let targetAlpha = 0.85
     if (searchFaded) targetAlpha = 0.12
-    else if (searchGlow || isHover || isSelected) targetAlpha = 1.0
+    else if (searchGlow || isHover || isSelected || isPanelHoverNeighbor) targetAlpha = 1.0
     else if (activeNode && !isConnected) targetAlpha = 0.13
 
     // Hover-crossfade: exponential lerp toward targetAlpha (Poly spec section 2)
@@ -1223,14 +1244,32 @@ function renderGraph() {
     ctx.arc(rx, ry, r, 0, Math.PI * 2)
     ctx.fill()
 
-    // Selected ring
+    // Selected node persistent ring (spec §2: radius+5, 1.5px, tierGlow@0.9)
     if (isSelected) {
       ctx.strokeStyle = glowColor
-      ctx.lineWidth = 2
-      ctx.globalAlpha = 0.6
+      ctx.lineWidth = 1.5
+      ctx.globalAlpha = 0.9
       ctx.beginPath()
-      ctx.arc(rx, ry, r + 4, 0, Math.PI * 2)
+      ctx.arc(rx, ry, r + 5, 0, Math.PI * 2)
       ctx.stroke()
+    }
+    // Neighbor click pulse: halo x2.2 decaying over 600ms
+    if (graphNodePulseActive && graphNodePulseActive.node === node) {
+      const pElapsed = performance.now() - graphNodePulseActive.startMs
+      if (pElapsed < 600) {
+        const pT = pElapsed / 600
+        const pScale = 2.2 - 1.2 * pT  // 2.2 -> 1.0
+        const sprite = graphGlowSprites[node.tier]
+        if (sprite) {
+          const pHaloR = r * 4.5 * pScale
+          if (isDark) ctx.globalCompositeOperation = 'lighter'
+          ctx.globalAlpha = displayAlpha * (1 - pT) * 0.7
+          ctx.drawImage(sprite, rx - pHaloR, ry - pHaloR, pHaloR * 2, pHaloR * 2)
+          ctx.globalCompositeOperation = 'source-over'
+        }
+      } else {
+        graphNodePulseActive = null
+      }
     }
 
     // Orphan dashed ring / hub pulsing ring
@@ -1343,8 +1382,51 @@ function graphRoundRect(ctx, x, y, w, h, r) {
   ctx.closePath()
 }
 
-// === Graph detail panel ===
-function showGraphPanel(node) {
+// === Graph detail card (Poly spec §1-§7) ===
+
+function gcRelTime(ts) {
+  const diff = Math.max(0, Date.now() / 1000 - ts)
+  const min = Math.floor(diff / 60)
+  if (min < 2) return 'most'
+  if (min < 60) return min + ' perce'
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return hr + ' órája'
+  const day = Math.floor(hr / 24)
+  if (day < 7) return day + ' napja'
+  const wk = Math.floor(day / 7)
+  if (wk < 5) return wk + ' hete'
+  const mo = Math.floor(day / 30)
+  if (mo < 12) return mo + ' hónapja'
+  return Math.floor(mo / 12) + ' éve'
+}
+
+function gcAbsTime(ts) {
+  return new Date(ts * 1000).toLocaleString('hu-HU', { timeZone: 'Europe/Budapest' })
+}
+
+function gcHexToRgba(hex, alpha) {
+  const r = parseInt(hex.slice(1, 3), 16)
+  const g = parseInt(hex.slice(3, 5), 16)
+  const b = parseInt(hex.slice(5, 7), 16)
+  return `rgba(${r},${g},${b},${alpha})`
+}
+
+function gcFreshnessInfo(accessedAt) {
+  const daysSince = (Date.now() / 1000 - accessedAt) / 86400
+  if (daysSince <= 30) return { cls: 'aktiv', color: '#7ddc8a' }
+  if (daysSince <= 90) return { cls: 'alvó', color: 'rgba(255,255,255,0.35)' }
+  return { cls: 'elavult', color: 'rgba(220,60,60,0.7)' }
+}
+
+function showGraphPanel(node, swapping) {
+  const mem = node.mem
+  const tier = node.tier
+  const glowHex = GRAPH_TIER_GLOW[tier] || '#ffffff'
+  const glowShadow = gcHexToRgba(glowHex, 0.14)
+  const tierBg = gcHexToRgba(glowHex, 0.12)
+  const tierLabels = { hot: 'HOT', warm: 'WARM', cold: 'COLD', shared: 'SHARED' }
+  const fresh = gcFreshnessInfo(node.accessed_at || 0)
+
   let panel = document.getElementById('graphPanel')
   if (!panel) {
     panel = document.createElement('div')
@@ -1352,31 +1434,253 @@ function showGraphPanel(node) {
     panel.className = 'graph-panel'
     document.getElementById('memGraphView').appendChild(panel)
   }
-  const tierLabelsMap = { hot: 'Hot', warm: 'Warm', cold: 'Cold', shared: 'Shared' }
-  const created = node.mem.created_label || ''
-  panel.innerHTML = `
+  panel.style.setProperty('--gc-tier-accent', glowHex)
+  panel.style.setProperty('--gc-tier-glow-shadow', glowShadow)
+
+  const headerHtml = `
+    <div class="graph-panel-drag-handle"></div>
     <div class="graph-panel-header">
-      <span class="badge badge-${node.tier}">${tierLabelsMap[node.tier] || node.tier}</span>
-      <span class="graph-panel-agent">${escapeHtml(node.agent)}</span>
+      <span class="gc-tier-badge" style="background:${tierBg};color:${glowHex}">
+        <span class="gc-tier-dot" style="background:${glowHex}"></span>
+        ${escapeHtml(tierLabels[tier] || tier.toUpperCase())}
+      </span>
+      <span class="gc-agent-chip">@${escapeHtml(node.agent || '')}</span>
+      ${node.isHub ? `<span class="gc-hub-badge">⬡ HUB · ${node.degree}</span>` : ''}
+      <span class="gc-freshness">
+        <span class="gc-freshness-dot ${fresh.cls}" style="background:${fresh.color}"></span>
+        ${fresh.cls}
+      </span>
       <button class="graph-panel-close" id="graphPanelCloseBtn">&times;</button>
     </div>
-    ${created ? `<div class="graph-panel-date">${escapeHtml(created)}</div>` : ''}
-    <div class="graph-panel-content">${escapeHtml(node.mem.content)}</div>
-    <div class="graph-panel-meta">
-      ${node.keywords.length ? '<div class="graph-panel-keywords">' + node.keywords.map(k => '<span class="mem-keyword-tag">' + escapeHtml(k) + '</span>').join('') + '</div>' : ''}
+    ${mem.created_label ? `<div class="gc-created-line">${escapeHtml(mem.created_label)}</div>` : ''}
+  `
+
+  const skeletonHtml = `
+    <div class="gc-body">
+      <div class="gc-content">
+        <div class="gc-skeleton-bar" style="width:100%"></div>
+        <div class="gc-skeleton-bar" style="width:92%"></div>
+        <div class="gc-skeleton-bar" style="width:61%"></div>
+      </div>
+      <div class="gc-skeleton-neighbor"></div>
+      <div class="gc-skeleton-neighbor"></div>
+      <div class="gc-skeleton-neighbor"></div>
+    </div>
+    <div class="gc-footer">
+      <button class="gc-footer-btn" disabled><span class="gc-footer-icon">✏</span>Szerkesztés</button>
+      <button class="gc-footer-btn" disabled><span class="gc-footer-icon">⬡</span>Költöztetés</button>
+      <button class="gc-footer-btn" disabled><span class="gc-footer-icon">◎</span>Fókusz</button>
+      <button class="gc-footer-btn" disabled><span class="gc-footer-icon">⧉</span>Másolás</button>
     </div>
   `
+
+  panel.innerHTML = headerHtml + skeletonHtml
   panel.hidden = false
+
   document.getElementById('graphPanelCloseBtn').addEventListener('click', () => {
     graphSelectedNode = null
+    graphPanelHoverNeighborId = null
     panel.hidden = true
     renderGraph()
+  })
+
+  // Camera nudge on open (not on swap): pan left if node falls under card (spec §2)
+  if (!swapping && !GRAPH_REDUCED_MOTION && graphCanvas) {
+    const dpr = window.devicePixelRatio || 1
+    const canvasW = graphCanvas.width / dpr
+    const screenX = node.x * graphZoom + graphPanX
+    const cardLeft = canvasW - 364
+    if (screenX > cardLeft) {
+      const nudgePx = (screenX - cardLeft) + 40
+      graphCameraNudge = {
+        fromX: graphPanX, fromY: graphPanY,
+        toX: graphPanX - nudgePx, toY: graphPanY,
+        startMs: performance.now(), dur: 350,
+      }
+    }
+  }
+
+  const capturedNode = node
+  fetch('/api/memories/' + mem.id + '/detail')
+    .then(r => r.ok ? r.json() : null)
+    .then(detail => {
+      if (!detail || graphSelectedNode !== capturedNode) return
+      gcFillBody(panel, capturedNode, detail)
+    })
+    .catch(() => {})
+}
+
+function gcFillBody(panel, node, detail) {
+  const mem = node.mem
+  const glowHex = GRAPH_TIER_GLOW[node.tier] || '#ffffff'
+  const tierLabels = { hot: 'HOT', warm: 'WARM', cold: 'COLD', shared: 'SHARED' }
+  function tierPill(t) {
+    const tc = GRAPH_TIER_GLOW[t] || '#fff'
+    const bg = gcHexToRgba(tc, 0.12)
+    return `<span class="gc-tier-pill" style="background:${bg};color:${tc}">${escapeHtml(tierLabels[t] || t)}</span>`
+  }
+
+  // 4.1 Full content
+  const contentHtml = `<div class="gc-content">${escapeHtml(detail.content || mem.content || '')}</div>`
+
+  // 4.2 Meta row
+  const accessedAt = detail.accessed_at || node.accessed_at || 0
+  const createdAt = detail.created_at || node.created_at || 0
+  const readCount = detail.read_count || 0
+  const readSuffix = readCount > 0 ? ` (${readCount}x)` : ''
+  const metaHtml = `<div class="gc-meta" title="${escapeHtml(gcAbsTime(createdAt))}">létrehozva ${escapeHtml(gcRelTime(createdAt))} · olvasva ${escapeHtml(gcRelTime(accessedAt))}${readSuffix}</div>`
+
+  // 4.3 Keywords
+  const rawKw = detail.keywords || ''
+  const keywords = rawKw ? rawKw.split(',').map(k => k.trim()).filter(Boolean) : []
+  const kwHtml = keywords.length
+    ? `<div class="gc-keywords" id="gcKwBox">${keywords.map(k => `<span class="gc-kw-chip">${escapeHtml(k)}</span>`).join('')}</div>`
+    : ''
+
+  // 4.4 Neighbors
+  const neighbors = detail.neighbors || []
+  let neighborHtml = ''
+  if (neighbors.length) {
+    const rows = neighbors.map(n => {
+      const nGlow = GRAPH_TIER_GLOW[n.tier] || '#fff'
+      const fillPct = Math.round(((n.weight - 0.75) / 0.25) * 70 + 30)
+      const dirGlyph = n.direction === 'outgoing' ? '→' : '←'
+      const dirTitle = n.direction === 'outgoing' ? 'kimenő kapcsolat' : 'bejövő kapcsolat'
+      return `<div class="gc-neighbor-row" data-nid="${n.id}">
+        <span class="gc-neighbor-dot" style="background:${nGlow}"></span>
+        <span class="gc-neighbor-dir" title="${dirTitle}">${dirGlyph}</span>
+        <span class="gc-neighbor-label">${escapeHtml(n.label)}</span>
+        <span class="gc-neighbor-bar-track"><span class="gc-neighbor-bar-fill" style="width:${fillPct}%;background:${nGlow}"></span></span>
+        <span class="gc-neighbor-weight">${n.weight.toFixed(2)}</span>
+      </div>`
+    }).join('')
+    const totalDeg = node.degree || neighbors.length
+    const overflow = totalDeg > neighbors.length
+      ? `<div class="gc-neighbor-overflow">a graf további ${totalDeg - neighbors.length} kapcsolatot mutat</div>`
+      : ''
+    neighborHtml = `
+      <div class="gc-section-title">Kapcsolatok <span>${neighbors.length}</span></div>
+      <div class="gc-neighbor-list">${rows}${overflow}</div>
+    `
+  }
+
+  // 4.5 Tier history (omit section entirely if empty)
+  const tierHistory = detail.tier_history || []
+  let tierHistHtml = ''
+  if (tierHistory.length) {
+    const shown = tierHistory.length > 3 ? tierHistory.slice(-3) : tierHistory
+    const hasMore = tierHistory.length > 3
+    const steps = shown.map(h => {
+      const dt = new Date(h.changed_at * 1000)
+      const dateStr = String(dt.getMonth() + 1).padStart(2, '0') + '-' + String(dt.getDate()).padStart(2, '0')
+      return `<div class="gc-tier-step">
+        <div class="gc-tier-pills">${tierPill(h.from_tier)}<span class="gc-tier-arrow">→</span>${tierPill(h.to_tier)}</div>
+        <div class="gc-tier-date">${dateStr}</div>
+      </div>`
+    }).join('')
+    tierHistHtml = `
+      <div class="gc-section-title">Tier-történet</div>
+      <div class="gc-tier-history">
+        <div class="gc-tier-chain">${hasMore ? '<span class="gc-tier-more">…</span>' : ''}${steps}</div>
+      </div>
+    `
+  }
+
+  const bodyHtml = `<div class="gc-body gc-fade-in">${contentHtml}${metaHtml}${kwHtml}${neighborHtml}${tierHistHtml}</div>`
+  const footerHtml = `
+    <div class="gc-footer">
+      <button class="gc-footer-btn" id="gcBtnEdit"><span class="gc-footer-icon">✏</span>Szerkesztés</button>
+      <button class="gc-footer-btn" id="gcBtnMove"><span class="gc-footer-icon">⬡</span>Költöztetés</button>
+      <button class="gc-footer-btn" id="gcBtnFocus"><span class="gc-footer-icon">◎</span>Fókusz</button>
+      <button class="gc-footer-btn" id="gcBtnCopy"><span class="gc-footer-icon">⧉</span><span class="gc-copy-label">Másolás</span></button>
+    </div>
+  `
+
+  const oldBody = panel.querySelector('.gc-body')
+  if (oldBody) oldBody.remove()
+  const oldFooter = panel.querySelector('.gc-footer')
+  if (oldFooter) oldFooter.remove()
+  panel.insertAdjacentHTML('beforeend', bodyHtml + footerHtml)
+
+  // Keyword +N collapse
+  const kwBox = panel.querySelector('#gcKwBox')
+  if (kwBox) {
+    setTimeout(() => {
+      if (kwBox.scrollHeight > kwBox.offsetHeight + 4) {
+        const chips = Array.from(kwBox.querySelectorAll('.gc-kw-chip'))
+        const boxH = kwBox.offsetHeight
+        const hiddenChips = chips.filter(c => c.offsetTop >= boxH - 2)
+        if (hiddenChips.length) {
+          const btn = document.createElement('span')
+          btn.className = 'gc-kw-more'
+          btn.textContent = '+' + hiddenChips.length
+          btn.addEventListener('click', () => { kwBox.classList.add('expanded'); btn.remove() })
+          kwBox.appendChild(btn)
+        }
+      }
+    }, 0)
+  }
+
+  // Neighbor row events
+  panel.querySelectorAll('.gc-neighbor-row').forEach(row => {
+    const nid = parseInt(row.dataset.nid, 10)
+    row.addEventListener('mouseenter', () => { graphPanelHoverNeighborId = nid; renderGraph() })
+    row.addEventListener('mouseleave', () => { graphPanelHoverNeighborId = null; renderGraph() })
+    row.addEventListener('click', () => {
+      const targetNode = graphNodes.find(n => n.id === nid)
+      if (!targetNode) return
+      graphSelectedNode = targetNode
+      graphPanelHoverNeighborId = null
+      graphNodePulseActive = { node: targetNode, startMs: performance.now() }
+      // Pan to neighbor (center-left, spec §4.4: 400ms ease-in-out)
+      const dpr = window.devicePixelRatio || 1
+      const cw = graphCanvas.width / dpr
+      const ch = graphCanvas.height / dpr
+      const newPanX = cw * 0.35 - targetNode.x * graphZoom
+      const newPanY = ch * 0.5  - targetNode.y * graphZoom
+      if (graphZoom < 0.8) graphZoom = Math.min(1.0, graphZoom * 1.25)
+      graphCameraNudge = {
+        fromX: graphPanX, fromY: graphPanY,
+        toX: newPanX, toY: newPanY,
+        startMs: performance.now(), dur: 400,
+      }
+      showGraphPanel(targetNode, true)
+    })
+  })
+
+  // Footer actions
+  const btnEdit = panel.querySelector('#gcBtnEdit')
+  const btnMove = panel.querySelector('#gcBtnMove')
+  const btnFocus = panel.querySelector('#gcBtnFocus')
+  const btnCopy = panel.querySelector('#gcBtnCopy')
+  if (btnEdit) btnEdit.addEventListener('click', () => openEditMemory(node.mem))
+  if (btnMove) btnMove.addEventListener('click', () => openEditMemory(node.mem))
+  if (btnFocus) btnFocus.addEventListener('click', () => {
+    const dpr = window.devicePixelRatio || 1
+    const cw = graphCanvas.width / dpr
+    const ch = graphCanvas.height / dpr
+    const z = Math.max(graphZoom, 1.1)
+    graphCameraNudge = {
+      fromX: graphPanX, fromY: graphPanY,
+      toX: cw / 2 - node.x * z, toY: ch / 2 - node.y * z,
+      startMs: performance.now(), dur: 400,
+    }
+    graphZoom = z
+    renderGraph()
+  })
+  if (btnCopy) btnCopy.addEventListener('click', () => {
+    const label = btnCopy.querySelector('.gc-copy-label')
+    navigator.clipboard.writeText(detail.content || mem.content || '').then(() => {
+      if (label) label.textContent = 'Másolva'
+      setTimeout(() => { if (label) label.textContent = 'Másolás' }, 1200)
+    })
   })
 }
 
 function hideGraphPanel() {
   const panel = document.getElementById('graphPanel')
   if (panel) panel.hidden = true
+  graphPanelHoverNeighborId = null
 }
 
 export function openEditMemory(mem) {
