@@ -3084,6 +3084,22 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   pointer-events: none;
 }
 
+/* Graph node-limit bar */
+.graph-limit-bar {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(20,20,19,0.75);
+  border: 1px solid #3d3d3a;
+  border-radius: 8px;
+  padding: 5px 10px;
+  z-index: 5;
+  pointer-events: all;
+}
+
 /* === Tier Badges === */
 .badge-hot { background: rgba(220, 60, 60, 0.12); color: #dc3c3c; }
 .badge-warm { background: rgba(217, 119, 87, 0.12); color: var(--accent); }

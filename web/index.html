@@ -705,6 +705,11 @@
         <div class="graph-empty" id="graphEmpty" hidden>
           <p data-i18n="memories.graph_empty">Nincs elég emlék a gráf megjelenítéshez</p>
         </div>
+        <div class="graph-limit-bar" id="graphLimitBar">
+          <label for="graphNodeLimit" style="font-size:11px;color:var(--text-muted)">Csomópontok:</label>
+          <input type="range" id="graphNodeLimit" min="50" max="500" step="50" value="200" style="width:120px;accent-color:var(--accent,#d97757)">
+          <span id="graphNodeLimitVal" style="font-size:11px;color:var(--text-muted);min-width:3ch">200</span>
+        </div>
       </div>
 
       <!-- Daily log view -->

@@ -364,6 +364,72 @@ Respond ONLY with JSON, nothing else:
     return true
   }
 
+  // GET /api/memories/graph -- single-round-trip graph payload for the dashboard graph.
+  // Edges only include pairs where BOTH endpoints are in the nodes array (AND, not OR).
+  // Query params: agent?, weight_min (default 0.75), limit (default 200, max 500).
+  if (path === '/api/memories/graph' && method === 'GET') {
+    const agentParam = url.searchParams.get('agent') || ''
+    const weightMin = Math.max(0, Math.min(1, parseFloat(url.searchParams.get('weight_min') || '0.75')))
+    const limit = Math.min(500, Math.max(1, parseInt(url.searchParams.get('limit') || '200', 10)))
+    const db2 = getDb()
+
+    const nodeRows = agentParam
+      ? db2.prepare(
+          `SELECT id, content, agent_id, category, created_at, accessed_at
+           FROM memories WHERE agent_id = ? ORDER BY accessed_at DESC LIMIT ?`
+        ).all(agentParam, limit) as Memory[]
+      : db2.prepare(
+          `SELECT id, content, agent_id, category, created_at, accessed_at
+           FROM memories ORDER BY accessed_at DESC LIMIT ?`
+        ).all(limit) as Memory[]
+
+    const nodeIdSet = new Set(nodeRows.map(r => r.id))
+    const placeholders = nodeRows.map(() => '?').join(',')
+
+    type LinkRow = { src_id: number; dst_id: number; weight: number; created_at: number }
+    const edgeRows: LinkRow[] = nodeRows.length > 0
+      ? (db2.prepare(
+          `SELECT src_id, dst_id, weight, created_at FROM memory_links
+           WHERE src_id IN (${placeholders}) AND dst_id IN (${placeholders}) AND weight >= ?`
+        ).all(...nodeRows.map(r => r.id), ...nodeRows.map(r => r.id), weightMin) as LinkRow[])
+          .filter(e => nodeIdSet.has(e.src_id) && nodeIdSet.has(e.dst_id))
+      : []
+
+    type DegreeRow = { src_id: number; degree: number }
+    const degreeMap = new Map<number, number>()
+    if (nodeRows.length > 0) {
+      const degRows = db2.prepare(
+        `SELECT src_id, COUNT(*) AS degree FROM memory_links
+         WHERE src_id IN (${placeholders}) AND weight >= ?
+         GROUP BY src_id`
+      ).all(...nodeRows.map(r => r.id), weightMin) as DegreeRow[]
+      for (const d of degRows) degreeMap.set(d.src_id, d.degree)
+    }
+
+    const orphanCount = nodeRows.filter(r => !edgeRows.some(e => e.src_id === r.id || e.dst_id === r.id)).length
+
+    const nodes = nodeRows.map(r => ({
+      id: r.id,
+      label: r.content.length > 40 ? r.content.slice(0, 40) + '...' : r.content,
+      tier: r.category || 'warm',
+      agent: r.agent_id || '',
+      degree: degreeMap.get(r.id) ?? 0,
+      created_at: r.created_at,
+      accessed_at: r.accessed_at,
+    }))
+
+    json(res, {
+      nodes,
+      edges: edgeRows,
+      meta: {
+        total_memories: nodeRows.length,
+        orphan_count: orphanCount,
+        fetched_at: Math.floor(Date.now() / 1000),
+      },
+    })
+    return true
+  }
+
   // GET /api/memories/stale?agent_id=X -- memories updated after agent's last read
   if (path === '/api/memories/stale' && method === 'GET') {
     const agentId = url.searchParams.get('agent_id') || url.searchParams.get('agent') || ''
