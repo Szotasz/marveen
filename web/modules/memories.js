@@ -1804,3 +1804,914 @@ memImportSaveBtn.addEventListener('click', async () => {
 })
 
 // (Artifacts tab removed -- redundant with the dedicated Artifacts sidebar page)
+
+// === PHASE 2: Timeline Mode (Idővonal) ===
+
+let tlMode = 'strukt'
+let tlLayoutNodes = []   // nodes with geometry + animation state
+let tlEvents = []        // sorted event stream [{type,nodeId,ts}]
+let tlT0 = 0
+let tlT1 = 0
+let tlSimTime = 0
+let tlPlaying = false
+let tlLastWall = 0
+let tlRaf = null
+let tlParticles = []    // [{type:'limb'|'sub', tier, nodeIdx, t, speed, size, alpha}]
+let tlBursts = []       // active burst animations
+let tlBurstQueue = []   // pending burst fires [{node, wallTime}] for 90ms stagger
+let tlRootX = 0
+let tlRootY = 0
+let tlScrubDragging = false
+let tlScrubWasPlaying = false
+let tlNodeMap = {}      // id -> tlLayoutNodes[i]
+let tlPlaybackSpeed = 1  // (t1-t0)/30s computed at load
+
+const TL_LIMB_ANGLES = { hot: -0.55, warm: 0.25, cold: 1.55, shared: 2.85 }
+const TL_TIERS = ['hot', 'warm', 'cold', 'shared']
+const HU_MONTHS = ['jan','feb','már','ápr','máj','jún','júl','aug','szep','okt','nov','dec']
+
+// Deterministic hash for a node id - avoids Math.random() for layout stability
+function tlIdHash(id, salt) {
+  let h = ((id * 2654435761) ^ (salt * 40503)) >>> 0
+  h = ((h ^ (h >>> 16)) * 2246822519) >>> 0
+  h = ((h ^ (h >>> 13)) * 3266489917) >>> 0
+  return (h >>> 0) / 4294967295
+}
+
+function stopGraphSimulation() {
+  if (graphSim) { cancelAnimationFrame(graphSim); graphSim = null }
+  if (graphIdleRaf) { cancelAnimationFrame(graphIdleRaf); graphIdleRaf = null }
+}
+
+async function loadTimeline() {
+  const agent = document.getElementById('memAgentFilter').value
+  const params = new URLSearchParams({ weight_min: '0.75' })
+  if (agent) params.set('agent', agent)
+  try {
+    const res = await fetch(`/api/memories/graph/timeline?${params}`)
+    const data = await res.json()
+    if (data.error) { console.error('Timeline API error:', data.error); return }
+    buildTimeline(data)
+  } catch (err) {
+    console.error('Timeline load error:', err)
+  }
+}
+
+function tlQuadBezierPoint(t, x0, y0, cx, cy, x1, y1) {
+  const u = 1 - t
+  return { x: u*u*x0 + 2*u*t*cx + t*t*x1, y: u*u*y0 + 2*u*t*cy + t*t*y1 }
+}
+
+function buildTimeline(data) {
+  initGlowSprites()
+
+  const canvas = document.getElementById('memGraphCanvas')
+  const rect = canvas.parentElement.getBoundingClientRect()
+  const dpr = window.devicePixelRatio || 1
+  canvas.width = rect.width * dpr
+  canvas.height = rect.height * dpr
+  canvas.style.width = rect.width + 'px'
+  canvas.style.height = rect.height + 'px'
+  graphCanvas = canvas
+  graphCtx = canvas.getContext('2d')
+  graphCtx.setTransform(dpr, 0, 0, dpr, 0, 0)
+
+  const W = rect.width
+  const H = rect.height
+  tlRootX = W * 0.42
+  tlRootY = H * 0.48
+  const minDim = Math.min(W, H)
+
+  // Group nodes by tier, sorted by created_at
+  const byTier = {}
+  for (const tier of TL_TIERS) byTier[tier] = []
+  for (const n of data.nodes) {
+    const tier = n.tier || 'warm'
+    byTier[tier] ? byTier[tier].push({ ...n }) : (byTier[tier] = [{ ...n }])
+  }
+  for (const tier of TL_TIERS) {
+    byTier[tier].sort((a, b) => a.created_at - b.created_at)
+    byTier[tier].forEach((n, i) => { n._rankInTier = i; n._totalInTier = byTier[tier].length })
+  }
+
+  tlLayoutNodes = []
+  tlNodeMap = {}
+
+  for (const tier of TL_TIERS) {
+    const group = byTier[tier]
+    if (!group.length) continue
+    const limbAngle = TL_LIMB_ANGLES[tier]
+    const limbLength = Math.min(minDim * 0.45, 180 + 22 * Math.sqrt(group.length))
+
+    for (const n of group) {
+      const total = n._totalInTier
+      const bt = 0.35 + 0.65 * (total > 1 ? n._rankInTier / (total - 1) : 0.5)
+      const ax = tlRootX + Math.cos(limbAngle) * limbLength * bt
+      const ay = tlRootY + Math.sin(limbAngle) * limbLength * bt
+
+      const jitter = (tlIdHash(n.id, 1) - 0.5) * 2.2  // ±1.1 rad
+      const subAngle = limbAngle + jitter
+      const subLength = 70 + tlIdHash(n.id, 2) * 130   // 70-200px
+      const tx = ax + Math.cos(subAngle) * subLength
+      const ty = ay + Math.sin(subAngle) * subLength
+      const cpAngle = subAngle + 0.4
+      const cpDist = subLength * 0.5
+      const cpx = ax + Math.cos(cpAngle) * cpDist
+      const cpy = ay + Math.sin(cpAngle) * cpDist
+
+      const node = {
+        id: n.id, label: n.label, tier, created_at: n.created_at,
+        _limbAngle: limbAngle, _limbLength: limbLength, _bt: bt,
+        _ax: ax, _ay: ay, _cpx: cpx, _cpy: cpy, _tx: tx, _ty: ty,
+        _subAngle: subAngle, _subLength: subLength,
+        // animation state
+        _phase: 'waiting',  // 'waiting'|'branching'|'popping'|'alive'
+        _animStart: 0,
+        _branchProgress: 0,
+        _nodeScale: 0,
+        _haloAlpha: 0,
+        _halospikeT: 0,  // burst halo spike progress 0-1
+        _halospikeStart: 0,
+      }
+      tlLayoutNodes.push(node)
+      tlNodeMap[n.id] = node
+    }
+  }
+
+  // 60-iteration collision relaxation (y-weight 0.7, min 46px)
+  for (let iter = 0; iter < 60; iter++) {
+    for (let i = 0; i < tlLayoutNodes.length; i++) {
+      for (let j = i + 1; j < tlLayoutNodes.length; j++) {
+        const a = tlLayoutNodes[i], b = tlLayoutNodes[j]
+        const dx = b._tx - a._tx
+        const dy = b._ty - a._ty
+        const dist = Math.sqrt(dx * dx + dy * dy)
+        if (dist < 46 && dist > 0.01) {
+          const push = (46 - dist) / 2
+          const nx = dx / dist, ny = dy / dist
+          a._tx -= nx * push; a._ty -= ny * push * 0.7
+          b._tx += nx * push; b._ty += ny * push * 0.7
+        }
+      }
+    }
+  }
+
+  // Recompute control points after relaxation: tips moved, curves must follow
+  for (const n of tlLayoutNodes) {
+    const adx = n._tx - n._ax, ady = n._ty - n._ay
+    const actualAngle = Math.atan2(ady, adx)
+    const actualLen = Math.sqrt(adx * adx + ady * ady)
+    n._cpx = n._ax + Math.cos(actualAngle + 0.6) * actualLen * 0.5
+    n._cpy = n._ay + Math.sin(actualAngle + 0.6) * actualLen * 0.5
+  }
+
+  // Scale-to-fit: compute bounding box of the full tree, scale uniformly so
+  // 40px of padding exists on every side, then center on the canvas. Never
+  // scales up (scale capped at 1); only shrinks when tree exceeds safe area.
+  if (tlLayoutNodes.length) {
+    const PAD = 40
+    let minX = tlRootX, maxX = tlRootX, minY = tlRootY, maxY = tlRootY
+    for (const n of tlLayoutNodes) {
+      if (n._tx < minX) minX = n._tx; if (n._tx > maxX) maxX = n._tx
+      if (n._ty < minY) minY = n._ty; if (n._ty > maxY) maxY = n._ty
+      if (n._ax < minX) minX = n._ax; if (n._ax > maxX) maxX = n._ax
+      if (n._ay < minY) minY = n._ay; if (n._ay > maxY) maxY = n._ay
+    }
+    const treeW = maxX - minX || 1
+    const treeH = maxY - minY || 1
+    const safeW = W - 2 * PAD
+    const safeH = H - 2 * PAD
+    const scale = Math.min(1, safeW / treeW, safeH / treeH)
+    // Bounding-box center → canvas center
+    const bbCx = (minX + maxX) / 2
+    const bbCy = (minY + maxY) / 2
+    const canvasCx = W / 2
+    const canvasCy = H / 2
+    const applyFit = (px, py) => ({
+      x: canvasCx + (px - bbCx) * scale,
+      y: canvasCy + (py - bbCy) * scale,
+    })
+    const r = applyFit(tlRootX, tlRootY)
+    tlRootX = r.x; tlRootY = r.y
+    for (const n of tlLayoutNodes) {
+      const a = applyFit(n._ax, n._ay); n._ax = a.x; n._ay = a.y
+      const c = applyFit(n._cpx, n._cpy); n._cpx = c.x; n._cpy = c.y
+      const t = applyFit(n._tx, n._ty); n._tx = t.x; n._ty = t.y
+    }
+  }
+
+  // Build event stream
+  tlEvents = (data.events || []).slice().sort((a, b) => a.ts - b.ts)
+
+  tlT0 = data.time_range.min_ts || 0
+  tlT1 = data.time_range.max_ts || (tlT0 + 1)
+  const span = Math.max(1, tlT1 - tlT0)
+  tlPlaybackSpeed = span / 30  // virtual seconds per wall second
+
+  // Start paused at t1 (full tree visible)
+  tlSimTime = tlT1
+  tlPlaying = false
+  tlParticles = []
+  tlBursts = []
+  tlBurstQueue = []
+
+  // Rebuild all nodes as alive at t1
+  tlRebuildAtTime(tlT1)
+
+  updateScrubber()
+  buildMonthAxis()
+  startTimelineLoop()
+}
+
+function tlRebuildAtTime(targetSimTime) {
+  // Instant state rebuild: no animations, just set alive/waiting
+  for (const n of tlLayoutNodes) {
+    if (n.created_at <= targetSimTime) {
+      n._phase = 'alive'
+      n._branchProgress = 1
+      n._nodeScale = 1
+      n._haloAlpha = 1
+      n._halospikeT = 0
+    } else {
+      n._phase = 'waiting'
+      n._branchProgress = 0
+      n._nodeScale = 0
+      n._haloAlpha = 0
+      n._halospikeT = 0
+    }
+  }
+  tlParticles = []
+  tlBursts = []
+  tlBurstQueue = []
+}
+
+function startTimelineLoop() {
+  if (tlRaf) cancelAnimationFrame(tlRaf)
+  tlLastWall = performance.now()
+
+  function tick(now) {
+    tlRaf = requestAnimationFrame(tick)
+    if (document.hidden) return
+
+    const dt = Math.min(now - tlLastWall, 100)  // cap to 100ms
+    tlLastWall = now
+
+    if (tlPlaying && !GRAPH_REDUCED_MOTION) {
+      tlSimTime = Math.min(tlT1, tlSimTime + dt * 0.001 * tlPlaybackSpeed)
+      if (tlSimTime >= tlT1) {
+        tlSimTime = tlT1
+        tlPlaying = false
+        updatePlayBtn()
+      }
+      // Fire events that fall within the new simTime window
+      tlCheckAndFireEvents(tlSimTime - dt * 0.001 * tlPlaybackSpeed, tlSimTime, now)
+    }
+
+    // Process burst stagger queue
+    tlProcessBurstQueue(now)
+
+    // Advance particles
+    if (!GRAPH_REDUCED_MOTION) tlTickTimelineParticles(dt)
+
+    renderTimeline(now, dt)
+    updateScrubberFill()
+  }
+
+  tlRaf = requestAnimationFrame(tick)
+}
+
+function stopTimelineLoop() {
+  if (tlRaf) { cancelAnimationFrame(tlRaf); tlRaf = null }
+}
+
+let tlLastFiredEventIdx = 0  // track which events have been fired
+
+function tlCheckAndFireEvents(prevSim, curSim, wallNow) {
+  for (let i = 0; i < tlEvents.length; i++) {
+    const ev = tlEvents[i]
+    if (ev.ts > prevSim && ev.ts <= curSim) {
+      if (ev.type === 'created') {
+        const n = tlNodeMap[ev.memory_id]
+        if (n && n._phase === 'waiting') {
+          n._phase = 'branching'
+          n._animStart = wallNow
+          n._branchProgress = 0
+          n._nodeScale = 0
+          n._haloAlpha = 0
+          // Queue burst with stagger (cap 12)
+          if (tlBurstQueue.length < 12) {
+            tlBurstQueue.push({ node: n, wallTime: wallNow + tlBurstQueue.length * 90 })
+          }
+          // Event feed
+          tlUpdateEventFeed(n, 'created')
+        }
+      }
+      // tier-change events: skip gracefully (backend has no transition log)
+    }
+  }
+}
+
+function tlProcessBurstQueue(wallNow) {
+  const ready = tlBurstQueue.filter(q => wallNow >= q.wallTime)
+  tlBurstQueue = tlBurstQueue.filter(q => wallNow < q.wallTime)
+  for (const q of ready) {
+    tlFireBurst(q.node, wallNow)
+  }
+}
+
+function tlFireBurst(node, wallNow) {
+  if (GRAPH_REDUCED_MOTION) return
+  const rayCount = 10 + Math.floor(tlIdHash(node.id, 3) * 3)
+  const sparkCount = 12 + Math.floor(tlIdHash(node.id, 4) * 3)
+  const rays = []
+  for (let i = 0; i < rayCount; i++) {
+    const angle = (i / rayCount) * Math.PI * 2 + tlIdHash(node.id * 100 + i, 5) * 0.5
+    rays.push({
+      angle,
+      length: 10 + tlIdHash(node.id + i * 37, 6) * 16,
+      alpha: 0.35 + tlIdHash(node.id + i * 53, 7) * 0.4,
+    })
+  }
+  const sparks = []
+  const glowColor = GRAPH_TIER_GLOW[node.tier] || '#ffffff'
+  for (let i = 0; i < sparkCount; i++) {
+    const angle = Math.random() * Math.PI * 2
+    const vel = 40 + Math.random() * 50
+    sparks.push({
+      x: node._tx, y: node._ty,
+      vx: Math.cos(angle) * vel,
+      vy: Math.sin(angle) * vel,
+      size: 2 + Math.random() * 2,
+      life: 700,
+      elapsed: 0,
+    })
+  }
+  tlBursts.push({
+    x: node._tx, y: node._ty,
+    startWall: wallNow,
+    rays,
+    sparks,
+    glowColor,
+    tier: node.tier,
+  })
+  // Halo spike
+  node._halospikeStart = wallNow
+  node._halospikeT = 1
+}
+
+function tlTickTimelineParticles(dt) {
+  const dtS = dt / 1000
+
+  // Advance existing particles
+  for (const p of tlParticles) {
+    p.t += p.speed * dtS
+    if (p.t >= 1) p.t -= 1  // respawn at root
+  }
+
+  // Update burst sparks
+  for (const burst of tlBursts) {
+    for (const sp of burst.sparks) {
+      sp.elapsed += dt
+      sp.x += sp.vx * dtS
+      sp.y += sp.vy * dtS
+    }
+  }
+  // Remove expired bursts
+  tlBursts = tlBursts.filter(b => {
+    const age = tlLastWall - b.startWall
+    return age < 900
+  })
+
+  // Spawn particles: 7 per alive limb spine, 3 per alive sub-branch
+  // Rebuild particle pool based on alive nodes
+  if (tlParticles.length < 140) {
+    // Limb particles: one pool per tier limb that has alive nodes
+    const aliveTiers = new Set()
+    for (const n of tlLayoutNodes) {
+      if (n._phase === 'alive' || n._phase === 'popping') aliveTiers.add(n.tier)
+    }
+    for (const tier of aliveTiers) {
+      const limbCount = tlParticles.filter(p => p.type === 'limb' && p.tier === tier).length
+      for (let i = limbCount; i < 7 && tlParticles.length < 140; i++) {
+        tlParticles.push({
+          type: 'limb', tier,
+          t: i / 7,
+          speed: 0.22 * (0.85 + tlIdHash(tier.charCodeAt(0) + i * 17, 8) * 0.30),
+          size: 2.5 + tlIdHash(tier.charCodeAt(0) + i, 9) * 4.5,
+          alpha: 0.5 + tlIdHash(tier.charCodeAt(0) + i * 3, 10) * 0.5,
+        })
+      }
+    }
+    // Sub-branch particles
+    const aliveNodes = tlLayoutNodes.filter(n => n._phase === 'alive' && tlParticles.length < 140)
+    for (const n of aliveNodes) {
+      const subCount = tlParticles.filter(p => p.type === 'sub' && p.nodeId === n.id).length
+      for (let i = subCount; i < 3 && tlParticles.length < 140; i++) {
+        tlParticles.push({
+          type: 'sub', tier: n.tier, nodeId: n.id,
+          nodeIdx: tlLayoutNodes.indexOf(n),
+          t: i / 3,
+          speed: 0.35 * (0.85 + Math.random() * 0.30),
+          size: 2.5 + Math.random() * 4.5,
+          alpha: 0.5 + Math.random() * 0.5,
+        })
+      }
+    }
+  }
+
+  // Remove sub-branch particles for nodes no longer alive
+  tlParticles = tlParticles.filter(p => {
+    if (p.type !== 'sub') return true
+    const n = tlLayoutNodes[p.nodeIdx]
+    return n && (n._phase === 'alive' || n._phase === 'popping')
+  })
+}
+
+function tlUpdateEventFeed(node, type) {
+  const feed = document.getElementById('tlEventFeed')
+  if (!feed) return
+  const ts = node.created_at
+  const d = new Date(ts * 1000)
+  const dateStr = `${String(d.getMonth() + 1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+  const lbl = (node.label || '').slice(0, 25)
+  const tierWord = node.tier || 'warm'
+  const text = type === 'created' ? `+ ${lbl} (${tierWord})` : lbl
+
+  // Strictly enforce max 2 live rows before adding new one.
+  // Count only non-fading rows; rapid event bursts can otherwise bypass the cap.
+  feed.querySelectorAll('.tl-feed-row.newest').forEach(r => r.classList.remove('newest'))
+  const liveRows = Array.from(feed.querySelectorAll('.tl-feed-row:not(.fading-out)'))
+  liveRows.slice(0, Math.max(0, liveRows.length - 2)).forEach(r => {
+    r.classList.add('fading-out')
+    setTimeout(() => r.remove(), 260)
+  })
+
+  const row = document.createElement('div')
+  row.className = 'tl-feed-row newest'
+  const dateSpan = document.createElement('span')
+  dateSpan.className = 'tl-feed-date'
+  dateSpan.textContent = dateStr
+  const textSpan = document.createElement('span')
+  textSpan.className = 'tl-feed-text'
+  textSpan.textContent = text
+  row.appendChild(dateSpan)
+  row.appendChild(textSpan)
+  feed.appendChild(row)
+}
+
+function buildMonthAxis() {
+  const axis = document.getElementById('tlMonthAxis')
+  if (!axis || tlT1 <= tlT0) return
+  axis.innerHTML = ''
+
+  const span = tlT1 - tlT0
+  // Collect month-start timestamps in range
+  const d0 = new Date(tlT0 * 1000)
+  const d1 = new Date(tlT1 * 1000)
+  const ticks = []
+  const cur = new Date(d0.getFullYear(), d0.getMonth(), 1)
+  while (cur <= d1 && ticks.length < 8) {
+    const ts = cur.getTime() / 1000
+    if (ts >= tlT0) ticks.push({ ts, label: HU_MONTHS[cur.getMonth()] })
+    cur.setMonth(cur.getMonth() + 1)
+  }
+
+  for (const tick of ticks) {
+    const pct = (tick.ts - tlT0) / span * 100
+    const el = document.createElement('span')
+    el.className = 'tl-month-tick'
+    el.style.left = pct + '%'
+    el.textContent = tick.label
+    axis.appendChild(el)
+  }
+}
+
+function updateScrubber() {
+  updateScrubberFill()
+  const chip = document.getElementById('tlDateChip')
+  if (chip) {
+    const d = new Date(tlSimTime * 1000)
+    chip.textContent = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+  }
+}
+
+function updateScrubberFill() {
+  const span = Math.max(1, tlT1 - tlT0)
+  const pct = Math.max(0, Math.min(100, (tlSimTime - tlT0) / span * 100))
+  const fill = document.getElementById('tlTrackFill')
+  const knob = document.getElementById('tlKnob')
+  if (fill) fill.style.width = pct + '%'
+  if (knob) knob.style.left = pct + '%'
+
+  const chip = document.getElementById('tlDateChip')
+  if (chip) {
+    const d = new Date(tlSimTime * 1000)
+    chip.textContent = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+  }
+}
+
+function updatePlayBtn() {
+  const btn = document.getElementById('tlPlayBtn')
+  if (!btn) return
+  btn.innerHTML = tlPlaying ? '&#9646;&#9646;' : '&#9654;'
+  btn.setAttribute('aria-label', tlPlaying ? 'Szünet' : 'Lejátszás')
+}
+
+function renderTimeline(wallNow, dt) {
+  if (!graphCtx || !graphCanvas) return
+  const ctx = graphCtx
+  const dpr = window.devicePixelRatio || 1
+  const W = graphCanvas.width / dpr
+  const H = graphCanvas.height / dpr
+
+  // Dark cinematic background (always, §5.10)
+  ctx.fillStyle = '#0d0d0b'
+  ctx.fillRect(0, 0, W, H)
+
+  // Root halo (layered, blend 'lighter')
+  const rootSprite = graphGlowSprites['white']
+  if (rootSprite) {
+    const haloRadius = 90
+    const haloSize = haloRadius * 2
+    ctx.globalCompositeOperation = 'lighter'
+    ctx.globalAlpha = 0.8
+    ctx.drawImage(rootSprite, tlRootX - haloRadius, tlRootY - haloRadius, haloSize, haloSize)
+    ctx.globalAlpha = 0.53
+    ctx.drawImage(rootSprite, tlRootX - haloRadius * 0.6, tlRootY - haloRadius * 0.6, haloSize * 0.6, haloSize * 0.6)
+    ctx.globalCompositeOperation = 'source-over'
+    ctx.globalAlpha = 1
+  }
+  // Root core: white 7px circle
+  ctx.beginPath()
+  ctx.arc(tlRootX, tlRootY, 7, 0, Math.PI * 2)
+  ctx.fillStyle = '#ffffff'
+  ctx.fill()
+
+  // Limb spines
+  for (const tier of TL_TIERS) {
+    const hasAlive = tlLayoutNodes.some(n => n.tier === tier && (n._phase === 'alive' || n._phase === 'popping' || n._phase === 'branching'))
+    if (!hasAlive) continue
+    const angle = TL_LIMB_ANGLES[tier]
+    const group = tlLayoutNodes.filter(n => n.tier === tier)
+    if (!group.length) continue
+    const limbLength = group[0]._limbLength
+    const glowCol = GRAPH_TIER_GLOW[tier] || '#ffffff'
+    const baseCol = GRAPH_TIER_COLORS[tier] || '#888'
+    const lx = tlRootX + Math.cos(angle) * limbLength
+    const ly = tlRootY + Math.sin(angle) * limbLength
+    const grad = ctx.createLinearGradient(tlRootX, tlRootY, lx, ly)
+    grad.addColorStop(0, baseCol + '30')
+    grad.addColorStop(1, glowCol + '18')
+    ctx.beginPath()
+    ctx.moveTo(tlRootX, tlRootY)
+    ctx.lineTo(lx, ly)
+    ctx.strokeStyle = grad
+    ctx.lineWidth = 1.5
+    ctx.globalAlpha = 0.6
+    ctx.stroke()
+    ctx.globalAlpha = 1
+  }
+
+  // Limb particles
+  if (!GRAPH_REDUCED_MOTION) {
+    for (const p of tlParticles) {
+      if (p.type !== 'limb') continue
+      const angle = TL_LIMB_ANGLES[p.tier]
+      const group = tlLayoutNodes.filter(n => n.tier === p.tier)
+      if (!group.length) continue
+      const limbLength = group[0]._limbLength
+      const px = tlRootX + Math.cos(angle) * limbLength * p.t
+      const py = tlRootY + Math.sin(angle) * limbLength * p.t
+      const sprite = graphGlowSprites[p.tier] || graphParticleSprite
+      if (sprite) {
+        const sz = p.size * 4
+        ctx.globalAlpha = p.alpha * 0.7
+        ctx.globalCompositeOperation = 'lighter'
+        ctx.drawImage(sprite, px - sz / 2, py - sz / 2, sz, sz)
+        ctx.globalCompositeOperation = 'source-over'
+        ctx.globalAlpha = 1
+      }
+    }
+  }
+
+  // Branches and nodes
+  const now400 = wallNow
+  for (const n of tlLayoutNodes) {
+    if (n._phase === 'waiting') continue
+
+    // Advance animation phase
+    if (n._phase === 'branching') {
+      const elapsed = now400 - n._animStart
+      const branchDuration = 400
+      const progress = Math.min(1, elapsed / branchDuration)
+      // ease-out: 1 - (1-t)^2
+      n._branchProgress = 1 - Math.pow(1 - progress, 2)
+      if (elapsed >= branchDuration) {
+        n._phase = 'popping'
+        n._animStart = wallNow
+      }
+    } else if (n._phase === 'popping') {
+      const elapsed = wallNow - n._animStart
+      const popDuration = 300
+      const haloDuration = 250
+      const haloDelay = 80
+      const popT = Math.min(1, elapsed / popDuration)
+      n._nodeScale = graphEaseOutBack(popT)
+      n._haloAlpha = elapsed >= haloDelay ? Math.min(1, (elapsed - haloDelay) / haloDuration) : 0
+      n._branchProgress = 1
+      if (elapsed >= popDuration + haloDelay) {
+        n._phase = 'alive'
+        n._nodeScale = 1
+        n._haloAlpha = 1
+      }
+    }
+
+    // Draw sub-branch (partial bezier with tapered gradient)
+    const prog = n._branchProgress
+    if (prog > 0.01) {
+      const steps = Math.max(3, Math.ceil(prog * 20))
+      const tipT = prog
+      const tipPt = tlQuadBezierPoint(tipT, n._ax, n._ay, n._cpx, n._cpy, n._tx, n._ty)
+      const glowCol = GRAPH_TIER_GLOW[n.tier] || '#ffffff'
+      const baseCol = GRAPH_TIER_COLORS[n.tier] || '#888'
+
+      ctx.beginPath()
+      for (let i = 0; i <= steps; i++) {
+        const t = (i / steps) * tipT
+        const pt = tlQuadBezierPoint(t, n._ax, n._ay, n._cpx, n._cpy, n._tx, n._ty)
+        if (i === 0) ctx.moveTo(pt.x, pt.y)
+        else ctx.lineTo(pt.x, pt.y)
+      }
+      // Glow underlay
+      const grad = ctx.createLinearGradient(n._ax, n._ay, tipPt.x, tipPt.y)
+      grad.addColorStop(0, baseCol + '30')
+      grad.addColorStop(0.5, baseCol + '8F')
+      grad.addColorStop(1, glowCol + 'DE')
+      ctx.globalCompositeOperation = 'lighter'
+      ctx.lineWidth = 1.5 * 3.4
+      ctx.strokeStyle = glowCol + '12'
+      ctx.stroke()
+      ctx.globalCompositeOperation = 'source-over'
+      ctx.lineWidth = 1.5
+      ctx.strokeStyle = grad
+      ctx.stroke()
+    }
+
+    // Draw node with fly-in (last 30% of sub-branch during pop)
+    if (n._nodeScale > 0.01) {
+      let nx = n._tx, ny = n._ty
+      if (n._phase === 'popping') {
+        const popT = Math.min(1, (wallNow - n._animStart) / 300)
+        // fly from 70% of sub-branch to tip
+        const flyT = 0.7 + popT * 0.3
+        const flyPt = tlQuadBezierPoint(flyT, n._ax, n._ay, n._cpx, n._cpy, n._tx, n._ty)
+        nx = flyPt.x; ny = flyPt.y
+      }
+
+      const tier = n.tier
+      const glowCol = GRAPH_TIER_GLOW[tier] || '#ffffff'
+      const baseCol = GRAPH_TIER_COLORS[tier] || '#888'
+      const scale = n._nodeScale
+      const baseRadius = 5
+
+      // Burst halo spike
+      let haloMult = 3.4
+      if (n._halospikeT > 0) {
+        const spikeElapsed = wallNow - n._halospikeStart
+        const spikeProgress = Math.min(1, spikeElapsed / 900)
+        const eased = 1 - Math.pow(1 - spikeProgress, 2)  // ease-out
+        n._halospikeT = 1 - eased
+        haloMult = 3.4 + n._halospikeT * (7 - 3.4)
+      }
+
+      // Halo sprite
+      if (n._haloAlpha > 0.01 && graphGlowSprites[tier]) {
+        const haloRadius = baseRadius * haloMult * scale
+        const sz = haloRadius * 2
+        ctx.globalAlpha = n._haloAlpha
+        ctx.globalCompositeOperation = 'lighter'
+        ctx.drawImage(graphGlowSprites[tier], nx - haloRadius, ny - haloRadius, sz, sz)
+        ctx.globalCompositeOperation = 'source-over'
+        ctx.globalAlpha = 1
+      }
+
+      // Node core circle
+      ctx.beginPath()
+      ctx.arc(nx, ny, baseRadius * scale, 0, Math.PI * 2)
+      ctx.fillStyle = baseCol
+      ctx.fill()
+      ctx.beginPath()
+      ctx.arc(nx, ny, baseRadius * 0.4 * scale, 0, Math.PI * 2)
+      ctx.fillStyle = '#ffffff'
+      ctx.globalAlpha = 0.8
+      ctx.fill()
+      ctx.globalAlpha = 1
+    }
+  }
+
+  // Sub-branch particles
+  if (!GRAPH_REDUCED_MOTION) {
+    for (const p of tlParticles) {
+      if (p.type !== 'sub') continue
+      const n = tlLayoutNodes[p.nodeIdx]
+      if (!n || n._phase === 'waiting') continue
+      const pt = tlQuadBezierPoint(p.t, n._ax, n._ay, n._cpx, n._cpy, n._tx, n._ty)
+      const sprite = graphGlowSprites[p.tier] || graphParticleSprite
+      if (sprite) {
+        const sz = p.size * 4
+        ctx.globalAlpha = p.alpha * 0.7
+        ctx.globalCompositeOperation = 'lighter'
+        ctx.drawImage(sprite, pt.x - sz / 2, pt.y - sz / 2, sz, sz)
+        ctx.globalCompositeOperation = 'source-over'
+        ctx.globalAlpha = 1
+      }
+    }
+  }
+
+  // Burst rays and sparks
+  if (!GRAPH_REDUCED_MOTION) {
+    for (const burst of tlBursts) {
+      const elapsed = wallNow - burst.startWall
+      // Rays (600ms)
+      if (elapsed < 600) {
+        const prog = elapsed / 600
+        const eased = 1 - Math.pow(1 - prog, 2)
+        ctx.globalCompositeOperation = 'lighter'
+        for (const ray of burst.rays) {
+          const curLen = ray.length * eased
+          const curAlpha = ray.alpha * (1 - prog)
+          ctx.beginPath()
+          ctx.moveTo(burst.x, burst.y)
+          ctx.lineTo(burst.x + Math.cos(ray.angle) * curLen, burst.y + Math.sin(ray.angle) * curLen)
+          ctx.strokeStyle = burst.glowColor
+          ctx.lineWidth = 1.1
+          ctx.globalAlpha = curAlpha
+          ctx.stroke()
+        }
+        ctx.globalCompositeOperation = 'source-over'
+        ctx.globalAlpha = 1
+      }
+      // Sparks (700ms)
+      if (elapsed < 700) {
+        ctx.globalCompositeOperation = 'lighter'
+        for (const sp of burst.sparks) {
+          const life = 700
+          const t = sp.elapsed / life
+          if (t >= 1) continue
+          const alpha = Math.pow(1 - t, 2)
+          const sprite = graphParticleSprite
+          if (sprite) {
+            const sz = sp.size * 4
+            ctx.globalAlpha = alpha * 0.8
+            ctx.drawImage(sprite, sp.x - sz / 2, sp.y - sz / 2, sz, sz)
+          }
+        }
+        ctx.globalCompositeOperation = 'source-over'
+        ctx.globalAlpha = 1
+      }
+    }
+  }
+}
+
+// === Mode toggle logic ===
+
+const graphModeToggle = document.getElementById('graphModeToggle')
+if (graphModeToggle) {
+  graphModeToggle.addEventListener('click', (e) => {
+    const seg = e.target.closest('.mode-seg')
+    if (!seg) return
+    const newMode = seg.dataset.mode
+    if (newMode === tlMode) return
+    switchGraphMode(newMode)
+  })
+}
+
+function switchGraphMode(newMode) {
+  const crossfade = document.getElementById('graphCrossfade')
+  const scrubber = document.getElementById('tlScrubber')
+  const feed = document.getElementById('tlEventFeed')
+  const limitBar = document.getElementById('graphLimitBar')
+
+  if (crossfade) {
+    crossfade.classList.add('fading')
+    setTimeout(() => {
+      tlMode = newMode
+      document.querySelectorAll('.mode-seg').forEach(s => {
+        s.classList.toggle('active', s.dataset.mode === newMode)
+      })
+      if (newMode === 'timeline') {
+        stopGraphSimulation()
+        if (scrubber) scrubber.hidden = false
+        if (feed) feed.hidden = false
+        if (limitBar) limitBar.hidden = true
+        loadTimeline()
+      } else {
+        stopTimelineLoop()
+        if (scrubber) scrubber.hidden = true
+        if (feed) feed.hidden = true
+        if (limitBar) limitBar.hidden = false
+        loadMemoryGraph()
+      }
+      setTimeout(() => { crossfade.classList.remove('fading') }, 130)
+    }, 120)
+  } else {
+    // Fallback: no crossfade
+    tlMode = newMode
+    document.querySelectorAll('.mode-seg').forEach(s => {
+      s.classList.toggle('active', s.dataset.mode === newMode)
+    })
+    if (newMode === 'timeline') {
+      stopGraphSimulation()
+      if (scrubber) scrubber.hidden = false
+      if (feed) feed.hidden = false
+      if (limitBar) limitBar.hidden = true
+      loadTimeline()
+    } else {
+      stopTimelineLoop()
+      if (scrubber) scrubber.hidden = true
+      if (feed) feed.hidden = true
+      if (limitBar) limitBar.hidden = false
+      loadMemoryGraph()
+    }
+  }
+}
+
+// === Scrubber play/pause ===
+document.getElementById('tlPlayBtn')?.addEventListener('click', () => {
+  if (tlSimTime >= tlT1 && !tlPlaying) {
+    // Replay from start
+    tlSimTime = tlT0
+    tlRebuildAtTime(tlT0)
+  }
+  tlPlaying = !tlPlaying
+  tlLastWall = performance.now()
+  updatePlayBtn()
+})
+
+// === Scrubber drag and click ===
+;(function () {
+  const track = document.getElementById('tlTrack')
+  const knob = document.getElementById('tlKnob')
+  if (!track || !knob) return
+
+  function scrubToX(clientX) {
+    const rect = track.getBoundingClientRect()
+    const frac = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+    const span = Math.max(1, tlT1 - tlT0)
+    tlSimTime = tlT0 + frac * span
+    tlRebuildAtTime(tlSimTime)
+    updateScrubber()
+  }
+
+  track.addEventListener('mousedown', (e) => {
+    tlScrubDragging = true
+    tlScrubWasPlaying = tlPlaying
+    tlPlaying = false
+    updatePlayBtn()
+    scrubToX(e.clientX)
+  })
+  knob.addEventListener('mousedown', (e) => {
+    e.stopPropagation()
+    tlScrubDragging = true
+    tlScrubWasPlaying = tlPlaying
+    tlPlaying = false
+    updatePlayBtn()
+  })
+  document.addEventListener('mousemove', (e) => {
+    if (!tlScrubDragging) return
+    scrubToX(e.clientX)
+  })
+  document.addEventListener('mouseup', () => {
+    if (!tlScrubDragging) return
+    tlScrubDragging = false
+    if (tlScrubWasPlaying) {
+      tlPlaying = true
+      tlLastWall = performance.now()
+      updatePlayBtn()
+    }
+  })
+})()
+
+// === Keyboard shortcuts (Space, arrows) when graph view focused ===
+document.getElementById('memGraphView')?.addEventListener('keydown', (e) => {
+  if (tlMode !== 'timeline') return
+  if (e.code === 'Space') {
+    e.preventDefault()
+    document.getElementById('tlPlayBtn')?.click()
+  } else if (e.code === 'ArrowRight') {
+    e.preventDefault()
+    const days = e.shiftKey ? 7 : 1
+    tlSimTime = Math.min(tlT1, tlSimTime + days * 86400)
+    tlRebuildAtTime(tlSimTime)
+    updateScrubber()
+  } else if (e.code === 'ArrowLeft') {
+    e.preventDefault()
+    const days = e.shiftKey ? 7 : 1
+    tlSimTime = Math.max(tlT0, tlSimTime - days * 86400)
+    tlRebuildAtTime(tlSimTime)
+    updateScrubber()
+  }
+}, { passive: false })
+
+// Make the graph view focusable for keyboard events
+document.getElementById('memGraphView')?.setAttribute('tabindex', '0')

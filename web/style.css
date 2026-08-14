@@ -1,3 +1,6 @@
+/* Ensure [hidden] always wins over component-level display declarations */
+[hidden] { display: none !important; }
+
 /* === Anthropic Design Tokens === */
 :root {
   --bg: #faf9f5;
@@ -7847,3 +7850,204 @@ body {
   display: flex;
   flex-direction: column;
 }
+
+/* === Phase 2: Timeline Mode (Idővonal) === */
+
+/* Mode toggle pill (top-right inside canvas area) */
+.graph-mode-toggle {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  gap: 2px;
+  background: rgba(31,30,29,0.82);
+  border: 1px solid #3d3d3a;
+  border-radius: 10px;
+  padding: 5px;
+  backdrop-filter: blur(6px);
+  z-index: 10;
+}
+.mode-seg {
+  padding: 6px 14px;
+  border-radius: 7px;
+  font-size: 12px;
+  color: #73726c;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+  font-family: inherit;
+}
+.mode-seg.active {
+  background: #d97757;
+  color: #faf9f5;
+  font-weight: 600;
+}
+.mode-seg:hover:not(.active) {
+  color: #b0aea5;
+}
+
+/* Canvas crossfade overlay */
+.graph-crossfade {
+  position: absolute;
+  inset: 0;
+  background: #0d0d0b;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 20;
+  transition: opacity 0.12s ease;
+}
+.graph-crossfade.fading {
+  opacity: 1;
+}
+
+/* Timeline event feed (bottom-left overlay) */
+.tl-event-feed {
+  position: absolute;
+  left: 16px;
+  bottom: 86px;
+  width: 280px;
+  font-size: 11px;
+  line-height: 1.75;
+  pointer-events: none;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.tl-feed-row {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  opacity: 1;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+.tl-feed-row.fading-out {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+.tl-feed-date {
+  color: #b0aea5;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+.tl-feed-text {
+  color: #73726c;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tl-feed-row.newest .tl-feed-date,
+.tl-feed-row.newest .tl-feed-text {
+  color: #ff9a70;
+}
+
+/* Scrubber card (bottom-center overlay) */
+.tl-scrubber {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(900px, 86%);
+  background: rgba(31,30,29,0.88);
+  border: 1px solid #3d3d3a;
+  border-radius: 14px;
+  backdrop-filter: blur(8px);
+  padding: 14px 22px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  z-index: 10;
+  box-sizing: border-box;
+}
+.tl-play-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: #d97757;
+  border: none;
+  color: #fff;
+  font-size: 11px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.15s ease;
+  line-height: 1;
+  padding: 0;
+}
+.tl-play-btn:hover {
+  background: #c46849;
+}
+.tl-track-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tl-track {
+  position: relative;
+  height: 6px;
+  border-radius: 3px;
+  background: #30302e;
+  cursor: pointer;
+}
+.tl-track-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(to right, #6a9bcc, #d97757, #ff6b5e);
+  box-shadow: 0 0 10px rgba(255,107,94,0.5);
+  pointer-events: none;
+  width: 0%;
+}
+.tl-knob {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #faf9f5;
+  box-shadow: 0 0 12px rgba(255,154,112,0.9);
+  cursor: grab;
+  left: 0%;
+  z-index: 2;
+}
+.tl-knob:active { cursor: grabbing; }
+.tl-month-axis {
+  position: relative;
+  height: 14px;
+}
+.tl-month-tick {
+  position: absolute;
+  top: 0;
+  font-size: 10px;
+  color: #73726c;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.tl-date-chip {
+  background: #30302e;
+  border-radius: 7px;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #faf9f5;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* mem-graph-view must be position:relative for absolute overlays */
+.mem-graph-view { position: relative; }
+
+/* Per-class [hidden] overrides required by hidden-attribute-css-contract test.
+   These elements have unconditional display values in their class rules and
+   need explicit overrides so the HTML [hidden] attribute stays effective. */
+.tl-event-feed[hidden] { display: none !important; }
+.tl-scrubber[hidden] { display: none !important; }
