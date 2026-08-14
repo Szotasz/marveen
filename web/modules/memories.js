@@ -589,6 +589,8 @@ function buildGraph(graphData) {
     node.radius = 5 + Math.min(Math.sqrt(node.connectionCount) * 2.5, 14)
     node.isOrphan = node.degree === 0
     node.isHub = node.degree >= HUB_THRESHOLD
+    node.importance = node.connectionCount + (node.isHub ? 10 : 0) + (node.tier === 'hot' ? 2 : 0)
+    node.labelAlpha = 0
   }
 
   // Pop-in animation: stagger entry by node index (Poly spec section 2)
@@ -645,7 +647,7 @@ function simulateGraphStep(damping) {
       let dx = nodes[j].x - nodes[i].x
       let dy = nodes[j].y - nodes[i].y
       let dist = Math.sqrt(dx * dx + dy * dy) || 1
-      let force = 800 / (dist * dist)
+      let force = 2400 / (dist * dist)
       let fx = (dx / dist) * force
       let fy = (dy / dist) * force
       nodes[i].vx -= fx
@@ -661,7 +663,7 @@ function simulateGraphStep(damping) {
     let dx = b.x - a.x
     let dy = b.y - a.y
     let dist = Math.sqrt(dx * dx + dy * dy) || 1
-    let force = (dist - 80) * 0.005 * edge.strength
+    let force = (dist - 140) * 0.005 * edge.strength
     let fx = (dx / dist) * force
     let fy = (dy / dist) * force
     a.vx += fx
@@ -715,6 +717,7 @@ function startGraphSimulation() {
   function tick() {
     if (document.hidden) { graphSim = requestAnimationFrame(tick); return }
     if (frame > maxFrames) {
+      autoFitGraph()
       startIdleLoop()
       return
     }
@@ -726,6 +729,26 @@ function startGraphSimulation() {
   }
 
   tick()
+}
+
+function autoFitGraph() {
+  if (!graphNodes.length || !graphCanvas) return
+  const dpr = window.devicePixelRatio || 1
+  const w = graphCanvas.width / dpr
+  const h = graphCanvas.height / dpr
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
+  for (const n of graphNodes) {
+    if (n.x < minX) minX = n.x
+    if (n.x > maxX) maxX = n.x
+    if (n.y < minY) minY = n.y
+    if (n.y > maxY) maxY = n.y
+  }
+  const pad = 60
+  const contentW = maxX - minX + pad * 2
+  const contentH = maxY - minY + pad * 2
+  graphZoom = Math.max(0.4, Math.min(1.0, Math.min(w / contentW, h / contentH)))
+  graphPanX = w / 2 - ((minX + maxX) / 2) * graphZoom
+  graphPanY = h / 2 - ((minY + maxY) / 2) * graphZoom
 }
 
 function startIdleLoop() {
@@ -981,6 +1004,150 @@ function renderGraph() {
     ctx.globalAlpha = 1
   }
 
+  // === Label LOD: precompute eligibility + greedy collision (Poly spec section 6) ===
+  {
+    const z = graphZoom
+    const dpr = window.devicePixelRatio || 1
+    const screenW = graphCanvas.width / dpr
+    const screenH = graphCanvas.height / dpr
+    const focusNode = graphHover || graphSelectedNode
+    const hasFocus = !!focusNode
+    const VP_MARGIN = 40
+    const truncLimit = z >= 2 ? 40 : 25
+
+    // zoom ramps for P3 ambient labels
+    const hubRamp = Math.min(1, Math.max(0, (z - 0.35) / 0.3))
+    const ambientRamp = Math.min(1, Math.max(0, (z - 0.7) / 0.5))
+
+    // P3 ambient cap based on zoom
+    let p3Cap = 0
+    if (z >= 1.5) p3Cap = 60
+    else if (z >= 0.8) p3Cap = 20
+    else if (z >= 0.5) p3Cap = 8
+
+    // Neighbors of focusNode (by edge weight desc, cap 12) -> P1
+    const neighborIdxSet = new Set()
+    if (focusNode) {
+      const focusIdx = graphNodes.indexOf(focusNode)
+      graphEdges
+        .filter(e => e.source === focusIdx || e.target === focusIdx)
+        .sort((a, b) => b.strength - a.strength)
+        .slice(0, 12)
+        .forEach(e => neighborIdxSet.add(e.source === focusIdx ? e.target : e.source))
+    }
+
+    // Pre-populate placed rects with still-fading-out labels (anti-flicker)
+    const lodPlacedRects = []
+    for (const node of graphNodes) {
+      if ((node._labelTargetAlpha || 0) === 0 && (node.labelAlpha || 0) > 0.15 && node._pillScreenRect) {
+        lodPlacedRects.push(node._pillScreenRect)
+      }
+    }
+
+    // Classify candidates
+    const candidates = []
+    for (let ni = 0; ni < graphNodes.length; ni++) {
+      const node = graphNodes[ni]
+      const driftX2 = !GRAPH_REDUCED_MOTION && node.driftF ? 1.5 * Math.sin(time * node.driftF + node.driftP1) : 0
+      const driftY2 = !GRAPH_REDUCED_MOTION && node.driftF ? 1.5 * Math.cos(time * node.driftF * 0.8 + node.driftP2) : 0
+      const wx = node.x + driftX2
+      const wy = node.y + driftY2
+      const sx = wx * z + graphPanX
+      const sy = wy * z + graphPanY
+      const inVP = sx >= -VP_MARGIN && sx <= screenW + VP_MARGIN && sy >= -VP_MARGIN && sy <= screenH + VP_MARGIN
+
+      let priority = -1
+      let alphaTarget = 0
+      const isP0 = node === focusNode || node === graphSelectedNode
+      if (isP0) {
+        priority = 0; alphaTarget = 1
+      } else if (hasFocus && neighborIdxSet.has(ni)) {
+        priority = 1; alphaTarget = 1
+      } else if (hasSearch && node.searchMatch) {
+        priority = 2; alphaTarget = 1
+      } else if (inVP && p3Cap > 0) {
+        priority = 3
+        // Focus active: P3 outsiders get 8% dim, excluded from placement competition below
+        if (hasFocus) {
+          alphaTarget = 0.08
+        } else if (node.isHub) {
+          alphaTarget = hubRamp
+        } else {
+          alphaTarget = ambientRamp
+        }
+      }
+
+      node._labelTargetAlpha = 0  // default: hidden; set to real value if placed
+      node._labelDisplayText = node.label.length > truncLimit ? node.label.slice(0, truncLimit) + '…' : node.label
+
+      if (priority >= 0) {
+        candidates.push({ node, ni, priority, alphaTarget, importance: node.importance || 0 })
+      }
+    }
+
+    // Sort P0->P1->P2->P3, within class by importance desc
+    candidates.sort((a, b) => a.priority - b.priority || b.importance - a.importance)
+
+    let p1Count = 0, p2Count = 0, p3Count = 0
+    const labelFontBase = Math.max(7, Math.min(11, 9 / Math.max(z * 0.7, 0.5)))
+    ctx.font = `500 ${labelFontBase}px -apple-system, sans-serif`
+
+    for (const c of candidates) {
+      const { node, priority, alphaTarget } = c
+      // Caps
+      if (priority === 1 && p1Count >= 12) continue
+      if (priority === 2 && p2Count >= 20) continue
+      if (priority === 3) {
+        // Focus dim: set target but skip placement competition (Poly 6.5)
+        if (hasFocus) { node._labelTargetAlpha = 0.08; continue }
+        if (p3Count >= p3Cap) continue
+      }
+
+      // Compute pill screen rect
+      const driftX2 = !GRAPH_REDUCED_MOTION && node.driftF ? 1.5 * Math.sin(time * node.driftF + node.driftP1) : 0
+      const driftY2 = !GRAPH_REDUCED_MOTION && node.driftF ? 1.5 * Math.cos(time * node.driftF * 0.8 + node.driftP2) : 0
+      const wx = node.x + driftX2
+      const wy = node.y + driftY2
+      const r2 = node.isHub ? node.radius + 3 : node.radius
+      const textW = ctx.measureText(node._labelDisplayText).width
+      const pillW = textW + 10
+      const pillH = labelFontBase + 6
+
+      // Screen-space rect (world -> screen via zoom/pan)
+      const psx = (wx - pillW / 2) * z + graphPanX
+      const psy = (wy + r2 + 5) * z + graphPanY
+      const psw = pillW * z
+      const psh = pillH * z
+      const padded = { x: psx - 4, y: psy - 4, w: psw + 8, h: psh + 8 }
+
+      // Collision check
+      let collides = false
+      for (const rect of lodPlacedRects) {
+        if (padded.x < rect.x + rect.w && padded.x + padded.w > rect.x &&
+            padded.y < rect.y + rect.h && padded.y + padded.h > rect.y) {
+          collides = true; break
+        }
+      }
+
+      if (!collides) {
+        node._labelTargetAlpha = alphaTarget
+        node._pillScreenRect = padded
+        lodPlacedRects.push(padded)
+        if (priority === 1) p1Count++
+        else if (priority === 2) p2Count++
+        else if (priority === 3) p3Count++
+      }
+    }
+
+    // Exp-lerp labelAlpha per node (fade-in 180ms tau=60, fade-out 240ms tau=80)
+    for (const node of graphNodes) {
+      const target = node._labelTargetAlpha || 0
+      const current = node.labelAlpha || 0
+      const tau = target > current ? 60 : 80
+      node.labelAlpha = current + (target - current) * (1 - Math.exp(-dt / tau))
+    }
+  }
+
   // === Draw nodes: halo sprites + core gradient ===
   for (let ni = 0; ni < graphNodes.length; ni++) {
     const node = graphNodes[ni]
@@ -1095,27 +1262,28 @@ function renderGraph() {
 
     ctx.globalAlpha = displayAlpha
 
-    // Label pill
-    if (!searchFaded || displayAlpha > 0.15) {
-      const labelText = node.label
+    // Label pill (LOD-gated, Poly spec section 6)
+    const labelA = node.labelAlpha || 0
+    if (labelA > 0.015) {
       const labelFontSize = Math.max(7, Math.min(11, 9 / Math.max(graphZoom * 0.7, 0.5)))
       ctx.font = (isHover || isSelected) ? `600 ${labelFontSize + 1}px -apple-system, sans-serif` : `500 ${labelFontSize}px -apple-system, sans-serif`
-      const textWidth = ctx.measureText(labelText).width
+      const displayLabel = node._labelDisplayText || node.label
+      const textWidth = ctx.measureText(displayLabel).width
       const pillW = textWidth + 10
       const pillH = labelFontSize + 6
       const pillX = rx - pillW / 2
       const pillY = ry + r + 5
 
-      ctx.globalAlpha = searchFaded ? 0.08 : ((isHover || isSelected) ? 0.9 : 0.65)
+      ctx.globalAlpha = labelA * ((isHover || isSelected) ? 0.9 : 0.65)
       ctx.fillStyle = 'rgba(20,20,19,0.85)'
       graphRoundRect(ctx, pillX, pillY, pillW, pillH, 3)
       ctx.fill()
 
       ctx.fillStyle = '#faf9f5'
-      ctx.globalAlpha = searchFaded ? 0.1 : ((isHover || isSelected) ? 1 : 0.85)
+      ctx.globalAlpha = labelA * ((isHover || isSelected) ? 1 : 0.85)
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
-      ctx.fillText(labelText, rx, pillY + pillH / 2)
+      ctx.fillText(displayLabel, rx, pillY + pillH / 2)
     }
 
     ctx.globalAlpha = 1

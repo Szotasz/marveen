@@ -2952,7 +2952,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
-  height: 600px;
+  height: max(560px, calc(100vh - 380px));
 }
 #memGraphCanvas {
   width: 100%;
