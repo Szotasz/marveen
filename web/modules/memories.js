@@ -648,7 +648,13 @@ function simulateGraphStep(damping) {
     let dx = b.x - a.x
     let dy = b.y - a.y
     let dist = Math.sqrt(dx * dx + dy * dy) || 1
-    let force = (dist - 140) * 0.005 * edge.strength
+    // Degree-weighted rest length: higher-degree nodes pull neighbors closer.
+    // Clamp prevents hub collapse (min 40px) while preserving island separation.
+    const degSum = (a.degree || 0) + (b.degree || 0)
+    const restLength = Math.max(40, 140 - 10.0 * Math.min(degSum, 44))
+    let force = (dist - restLength) * 0.005 * edge.strength
+    // Cap force to prevent oscillation on very short edges
+    force = Math.max(-4, Math.min(4, force))
     let fx = (dx / dist) * force
     let fy = (dy / dist) * force
     a.vx += fx
