@@ -2302,12 +2302,17 @@ function tlUpdateEventFeed(node, type, dstNode = null, edge = null) {
   const d = new Date(ts * 1000)
   const dateStr = `${String(d.getMonth() + 1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
 
-  // Cap at 10 live rows. Count only non-fading rows to prevent rapid-burst bypass.
+  // Cap total rows (live + fading) at 12 so dense playback can't pile up.
+  // Oldest fading rows are removed immediately; oldest live rows start fading.
   feed.querySelectorAll('.tl-feed-row.newest').forEach(r => r.classList.remove('newest'))
-  const liveRows = Array.from(feed.querySelectorAll('.tl-feed-row:not(.fading-out)'))
-  liveRows.slice(0, Math.max(0, liveRows.length - 9)).forEach(r => {
-    r.classList.add('fading-out')
-    setTimeout(() => r.remove(), 260)
+  const allRows = Array.from(feed.querySelectorAll('.tl-feed-row'))
+  allRows.slice(0, Math.max(0, allRows.length - 11)).forEach(r => {
+    if (r.classList.contains('fading-out')) {
+      r.remove()
+    } else {
+      r.classList.add('fading-out')
+      setTimeout(() => r.remove(), 260)
+    }
   })
 
   const row = document.createElement('div')
@@ -2459,7 +2464,7 @@ function renderTimeline(wallNow, dt) {
   }
 
   // Semantic edge layer (§5.4b): whisper-web lines between alive nodes
-  ctx.lineWidth = 0.5
+  ctx.lineWidth = 0.7
   for (const es of tlEdgeStates) {
     if (es._phase === 'waiting') continue
     const srcNode = tlNodeMap[es.edge.src_id]
@@ -2489,7 +2494,8 @@ function renderTimeline(wallNow, dt) {
     const ex = x0 + (x1 - x0) * drawProg
     const ey = y0 + (y1 - y0) * drawProg
 
-    const baseAlpha = 0.05 + 0.10 * es.edge.weight
+    const w = es.edge.weight
+    const baseAlpha = w >= 0.90 ? 0.12 + 0.25 * w : 0.08 + 0.15 * w
     const alpha = es._phase === 'flash'
       ? Math.min(1, baseAlpha * 4 * drawProg)  // flash: brighter, fades with wave
       : baseAlpha * drawProg
