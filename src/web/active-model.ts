@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, statSync, openSync, closeSync, readSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -28,6 +28,66 @@ export function projectsDirFor(workingDir: string, configDir?: string, homeDirOv
   return join(base, 'projects', encoded)
 }
 
+// Kanban api-agents-lassu17: a live session's newest .jsonl can be tens of MB
+// (measured on this fleet: up to ~58MB). Both callers below only need the
+// LAST line matching a predicate (a model id, or a usage object) -- reading
+// and splitting the WHOLE file to find a match near the end was the dominant
+// cost of /api/agents (measured: ~1.6s summed across the fleet's two callers
+// on a cold cache, the single largest contributor to a "never fast" endpoint).
+//
+// This reads from the END of the file in a growing window (starting at 64KB,
+// doubling), scanning lines backward for the first one `parseLine` accepts.
+// If the window doesn't contain a match, it doubles and retries -- up to the
+// full file -- so the RESULT is identical to a full-file backward scan; only
+// the common case (the match is near EOF, true for a live/active session) is
+// now cheap. A line split by the window boundary is discarded (it is a
+// partial line whenever start > 0), never partially parsed.
+function scanLastLine<T>(filePath: string, fileSize: number, parseLine: (line: string) => T | undefined, startWindowBytes = 64 * 1024): T | undefined {
+  let window = Math.min(startWindowBytes, fileSize)
+  while (true) {
+    const start = Math.max(0, fileSize - window)
+    const readLen = fileSize - start
+    let text = ''
+    if (readLen > 0) {
+      const fd = openSync(filePath, 'r')
+      try {
+        const buf = Buffer.alloc(readLen)
+        readSync(fd, buf, 0, readLen, start)
+        text = buf.toString('utf-8')
+      } finally {
+        closeSync(fd)
+      }
+      // A window that doesn't start at byte 0 almost certainly begins mid-line
+      // -- drop that leading partial line rather than risk parsing a truncated
+      // JSON fragment.
+      if (start > 0) {
+        const nl = text.indexOf('\n')
+        text = nl === -1 ? '' : text.slice(nl + 1)
+      }
+    }
+    const lines = text.split('\n')
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim()
+      if (!line) continue
+      const result = parseLine(line)
+      if (result !== undefined) return result
+    }
+    if (start === 0) return undefined // scanned the whole file, no match
+    window = window * 2
+  }
+}
+
+function newestJsonl(dir: string): { file: string; size: number } | null {
+  const jsonls = readdirSync(dir)
+    .filter(f => f.endsWith('.jsonl'))
+    .map(f => {
+      const st = statSync(join(dir, f))
+      return { f, mtime: st.mtimeMs, size: st.size }
+    })
+    .sort((a, b) => b.mtime - a.mtime)
+  return jsonls.length > 0 ? { file: jsonls[0].f, size: jsonls[0].size } : null
+}
+
 export function readActiveModelFromProjectDir(workingDir: string, sinceUnixSec?: number, configDir?: string): string | null {
   const now = Date.now()
   const cacheKey = `${workingDir}:${sinceUnixSec ?? ''}:${configDir ?? ''}`
@@ -40,34 +100,26 @@ export function readActiveModelFromProjectDir(workingDir: string, sinceUnixSec?:
       cache.set(cacheKey, { value: null, expiresAt: now + TTL_MS })
       return null
     }
-    const jsonls = readdirSync(dir)
-      .filter(f => f.endsWith('.jsonl'))
-      .map(f => ({ f, mtime: statSync(join(dir, f)).mtimeMs }))
-      .sort((a, b) => b.mtime - a.mtime)
-    if (jsonls.length === 0) {
+    const newest = newestJsonl(dir)
+    if (!newest) {
       cache.set(cacheKey, { value: null, expiresAt: now + TTL_MS })
       return null
     }
-    const content = readFileSync(join(dir, jsonls[0].f), 'utf-8')
-    const lines = content.split('\n')
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i].trim()
-      if (!line) continue
+    value = scanLastLine(join(dir, newest.file), newest.size, (line) => {
       try {
         const entry = JSON.parse(line)
         const msg = entry?.message
         const model = msg?.model
-        if (typeof model !== 'string' || model.startsWith('<')) continue
+        if (typeof model !== 'string' || model.startsWith('<')) return undefined
         if (sinceUnixSec !== undefined) {
           const ts = entry?.timestamp
-          if (typeof ts !== 'string') continue
+          if (typeof ts !== 'string') return undefined
           const lineUnix = Math.floor(new Date(ts).getTime() / 1000)
-          if (!Number.isFinite(lineUnix) || lineUnix < sinceUnixSec) continue
+          if (!Number.isFinite(lineUnix) || lineUnix < sinceUnixSec) return undefined
         }
-        value = model
-        break
-      } catch { /* skip malformed JSON line */ }
-    }
+        return model
+      } catch { return undefined /* skip malformed JSON line */ }
+    }) ?? null
   } catch { /* fall through */ }
   cache.set(cacheKey, { value, expiresAt: now + TTL_MS })
   return value
@@ -92,16 +144,9 @@ export function readContextTokensFromProjectDir(workingDir: string, configDir?: 
   try {
     const dir = projectsDirFor(workingDir, configDir)
     if (existsSync(dir)) {
-      const jsonls = readdirSync(dir)
-        .filter(f => f.endsWith('.jsonl'))
-        .map(f => ({ f, mtime: statSync(join(dir, f)).mtimeMs }))
-        .sort((a, b) => b.mtime - a.mtime)
-      if (jsonls.length > 0) {
-        const content = readFileSync(join(dir, jsonls[0].f), 'utf-8')
-        const lines = content.split('\n')
-        for (let i = lines.length - 1; i >= 0; i--) {
-          const line = lines[i].trim()
-          if (!line) continue
+      const newest = newestJsonl(dir)
+      if (newest) {
+        value = scanLastLine(join(dir, newest.file), newest.size, (line) => {
           try {
             const u = JSON.parse(line)?.message?.usage
             if (u && typeof u === 'object') {
@@ -109,10 +154,11 @@ export function readContextTokensFromProjectDir(workingDir: string, configDir?: 
               const cr = Number(u.cache_read_input_tokens) || 0
               const cc = Number(u.cache_creation_input_tokens) || 0
               const total = inp + cr + cc
-              if (total > 0) { value = total; break }
+              if (total > 0) return total
             }
-          } catch { /* skip malformed JSON line */ }
-        }
+            return undefined
+          } catch { return undefined /* skip malformed JSON line */ }
+        }) ?? null
       }
     }
   } catch { /* fall through */ }
