@@ -38,8 +38,17 @@ describe('shouldReplayTaskState', () => {
   it('replays on startup too (crash respawn mid-task)', () => {
     expect(shouldReplayTaskState(rec(), 'startup', NOW + 1000)).toBe(true)
   })
+  // The context-restart gate restarts by sending /clear, so source=clear is the
+  // MOST common restart this record exists for (2026-08-14). Pinned: excluding
+  // it silently emptied every gate-initiated restart.
+  it('replays on clear (the context-restart gate restarts with /clear)', () => {
+    expect(shouldReplayTaskState(rec(), 'clear', NOW + 1000)).toBe(true)
+  })
   it('does NOT replay an unknown source', () => {
-    expect(shouldReplayTaskState(rec(), 'clear', NOW + 1000)).toBe(false)
+    expect(shouldReplayTaskState(rec(), 'prompt-input-exit', NOW + 1000)).toBe(false)
+  })
+  it('does NOT replay a consumed record on clear either', () => {
+    expect(shouldReplayTaskState(rec({ consumed: true }), 'clear', NOW + 1000)).toBe(false)
   })
   it('does NOT replay an empty record on startup either', () => {
     const empty = rec({ doneSteps: [], alreadyDelegated: [], nextAction: '', pendingDecision: '', summary: 'idle' })
