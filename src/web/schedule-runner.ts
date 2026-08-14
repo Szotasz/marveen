@@ -209,6 +209,28 @@ export function decideScheduledResubmitAction(
 //      OWN scheduled prompt, never an unrelated message that happened to park
 //      (an unrelated parked message has no marker in the input region, so no
 //      keystroke fires at all).
+// SCHEDPARK814: how long a retry row must have been waiting before the
+// stale-parked-input janitor is allowed to touch the target session.
+//
+// The post-send ladder above (decideScheduledResubmitAction) only covers the
+// seconds right after OUR injection, and only when the marker is parked in the
+// input region. It is blind to the other way a session pins itself busy: a
+// FRAGMENT of an earlier prompt left in the box after that turn was interrupted
+// (observed 2026-08-14 on a two-hourly mailbox heartbeat: 277 consecutive
+// 'busy' retries over 69 minutes, cleared by hand with C-c/C-u and delivered on
+// the next tick). No marker in the input region, no in-flight entry, so nothing
+// in the runner ever looked. The message-router already runs exactly this janitor
+// on its own queue (JANITOR_PARKED_MIN_AGE_MS, 45s); the schedule queue gets
+// the same treatment on a longer fuse, because a deferred heartbeat is less
+// urgent than a stranded message and an ordinary long turn must never be
+// mistaken for a wedge.
+//
+// The safety lives in clearStaleParkedInput itself: it acts only on the idle
+// 'typing' state, only when the dim-stripped text is unchanged across a settle,
+// never on the main agent's box, and at most once per cooldown window per
+// session. This threshold only decides WHEN the runner is allowed to ask.
+export const SCHEDULE_JANITOR_PARKED_MIN_AGE_MS = 120_000
+
 export function isScheduledPromptStuck(pane: string | null, marker: string): boolean {
   if (!pane || !pane.trim()) return false
   if (detectPaneState(pane) === 'busy') return false
@@ -490,13 +512,15 @@ function mcpMissingReason(taskName: string, agentName: string): string {
 // task missed its normal tick and is only firing now as a catch-up; it is
 // recorded as a distinct 'fired_late' run status further down instead of
 // silently folding into 'fired'.
-async function attemptFireTask(
-  task: ScheduledTask,
+// Where a task's prompt is delivered: tmux session + (for a remote sub-agent)
+// the host its session lives on. Split out of attemptFireTask so the retry-queue
+// janitor targets the SAME pane the fire path would have written to -- a second
+// copy of this derivation would drift, and a janitor aimed at the wrong session
+// is worse than no janitor at all.
+export function resolveTaskTarget(
+  task: Pick<ScheduledTask, 'targetSession'>,
   agentName: string,
-  now: number,
-  preCheckPrefix?: string,
-  lateCatchUpMs?: number,
-): Promise<'fired' | 'busy' | 'missing' | 'starting' | 'error' | 'mcp-missing' | 'first-run'> {
+): { session: string; host: string | null } {
   const isMainAgent = agentName === MAIN_AGENT_ID
   // Allow per-task session override via targetSession config field.
   // Falls back to the standard agent session name derivation.
@@ -508,6 +532,17 @@ async function attemptFireTask(
   // existence/readiness checks and the send cross the ssh boundary. A custom
   // targetSession override and the main channels agent stay local (host=null).
   const host = (task.targetSession || isMainAgent) ? null : readAgentRemoteHost(agentName)
+  return { session, host }
+}
+
+async function attemptFireTask(
+  task: ScheduledTask,
+  agentName: string,
+  now: number,
+  preCheckPrefix?: string,
+  lateCatchUpMs?: number,
+): Promise<'fired' | 'busy' | 'missing' | 'starting' | 'error' | 'mcp-missing' | 'first-run'> {
+  const { session, host } = resolveTaskTarget(task, agentName)
 
   if (!sessionExistsOnHost(host, session)) {
     // Auto-start the agent, then deliver on a later tick. A daily batch agent
@@ -1211,6 +1246,25 @@ export function startScheduleRunner(): NodeJS.Timeout {
       const reason = result === 'mcp-missing' ? mcpMissingReason(row.task_name, row.agent_name) : result
       const stillPresent = updatePendingTaskRetry(row.task_name, row.agent_name, now, reason)
       if (stillPresent && view.alertDue) sendPendingRetryAlert(view, now)
+
+      // SCHEDPARK814 stale-parked-input janitor. A 'busy' verdict that keeps
+      // repeating past the threshold is the one case worth a second look: the
+      // pane may not be working at all, just holding an unsubmitted line that
+      // pins isSessionReadyForPrompt false forever (see the constant's note).
+      // Only 'busy' qualifies -- 'starting', 'missing', 'first-run' and
+      // 'mcp-missing' each have their own owner, and none of them is fixed by
+      // emptying the input box. clearStaleParkedInput does the identifying and
+      // refuses anything that is genuinely mid-turn; if it clears, the next
+      // tick's retry delivers on its own.
+      if (stillPresent && result === 'busy' && view.ageMs > SCHEDULE_JANITOR_PARKED_MIN_AGE_MS) {
+        const { session, host } = resolveTaskTarget(taskDef, row.agent_name)
+        if (await clearStaleParkedInput(session, host)) {
+          logger.warn(
+            { task: row.task_name, agent: row.agent_name, session, waitingMs: view.ageMs, attempts: row.attempt_count },
+            'schedule-runner: cleared stale parked input on a long-deferred retry target; delivery resumes next tick',
+          )
+        }
+      }
     }
 
     // Fire in injection-priority order, not directory order: with several
