@@ -76,6 +76,22 @@ describe('evidence-rule scaffold block', () => {
     expect(evidenceBody).toContain('RÁÉPÜL')
   })
 
+  // 2026-08-14: the recurring form of the failure is not a long false claim but
+  // a short concrete detail written from habit -- support@connectors.hu, which
+  // bounced 550 because nobody had ever seen that address.
+  it('names the concrete-detail class and forbids the role-address habit', () => {
+    expect(evidenceBody).toContain('A konkrétum mindig forrásból jön')
+    expect(evidenceBody).toContain('`support@`, `info@`, `hello@` szokásból')
+    expect(evidenceBody).toContain('From fejléce')
+    // "no source" has to be an allowed answer, or the rule just moves the guess
+    expect(evidenceBody).toContain('nem találom sehol')
+  })
+
+  it('points at the mechanical half of the rule (the recipient ledger)', () => {
+    expect(evidenceBody).toContain('store/verified-recipients.json')
+    expect(evidenceBody).toContain('node scripts/recipient-ledger.mjs add')
+  })
+
   it('keeps Hungarian accents and uses no em dash, like its sibling blocks', () => {
     expect(evidenceBody).toContain('ellenőrizz')
     expect(evidenceBody).not.toContain('—')

@@ -1215,6 +1215,15 @@ function buildAutonomyBody(name: string): string {
   ].join('\n')
 }
 
+// Extended 2026-08-14 with "A konkrétum mindig forrásból jön", after a letter
+// went to support@connectors.hu -- an address produced from the support@
+// convention, never read anywhere. It bounced 550 and the owner found it, not
+// the agent. His words: "Én szerintem már több ilyen szabályt fölvettünk (...)
+// ez nagyon kellemetlen, és újra meg újra előjön." Hence both halves: the prose
+// here names the class (address, URL, case number, price), and the outbound
+// half is enforced mechanically by the recipient ledger in email-send-gate.mjs,
+// because prose alone had already failed to stop it.
+//
 // Builds the evidence-rule body. Owner-mandated on 2026-08-12 after an evening
 // in which the main agent asserted three unverified technical claims in a row
 // (a connector had "expired", it had "stopped working", a sub-agent "could
@@ -1245,6 +1254,24 @@ function buildEvidenceBody(): string {
     'Hol ellenőrizz, mielőtt kérdezel vagy kijelentesz: a fájl maga, a config, a telepített program, az API válasza, az élő weboldal, a git történet. A saját forrásaink előbb, a gazda ideje utoljára.',
     '',
     'Ha kiderül, hogy tévedtél: javítsd ki röviden, és mondd meg, mi épült rá közben. Ne magyarázkodj, ne ostorozd magad, csak a következményt add át.',
+    '',
+    '### A konkrétum mindig forrásból jön',
+    '',
+    'A fenti szabály leggyakoribb megszegése nem egy hosszú hamis állítás, hanem egy rövid, ártatlannak látszó konkrétum, amit a szokásból írsz le. Email cím, telefonszám, URL, ügyszám, azonosító, számlaszám, verzió, ár.',
+    '',
+    'Ezekre nincs "valószínűleg". Vagy megvan a forrás, vagy nincs meg az adat:',
+    '',
+    '- **Email cím**: a tőlük kapott levél From fejléce, az élő oldaluk, a rendelés, a szerződés. SOHA nem a `support@`, `info@`, `hello@` szokásból, és soha nem névből összerakva.',
+    '- **URL, ügyszám, azonosító, számlaszám**: onnan, ahol le van írva. Ha fejből idézed, az tipp, és jelöld annak.',
+    '- **Ár, verzió, határidő**: az élő forrásból, nem a múltkori beszélgetésből.',
+    '',
+    'Ha nem találsz forrást, ez a válasz: "ezt a címet/számot nem találom sehol". Ez teljes értékű, és sokkal olcsóbb, mint egy jó levél, ami senkihez nem ér el.',
+    '',
+    'Kimenő levélnél ez gépi kapu is, nem csak szabály: a `to`/`cc`/`bcc` minden címét a `store/verified-recipients.json` ledgerhez méri a PreToolUse hook, és ismeretlen címre még piszkozatot sem enged. Új cím felvétele forrás megnevezésével:',
+    '',
+    '```bash',
+    'node scripts/recipient-ledger.mjs add <cim> --source mail:<messageId>|site:<url>|owner|crm:<ref>|order:<id>|doc:<ref> --note "<honnan>"',
+    '```',
   ].join('\n')
 }
 
