@@ -1537,8 +1537,8 @@ function gcFillBody(panel, node, detail) {
     ? `<div class="gc-keywords" id="gcKwBox">${keywords.map(k => `<span class="gc-kw-chip">${escapeHtml(k)}</span>`).join('')}</div>`
     : ''
 
-  // 4.4 Neighbors
-  const neighbors = detail.neighbors || []
+  // 4.4 Neighbors -- unified weight-desc list (spec: direction is a glyph, not a section)
+  const neighbors = [...(detail.neighbors || [])].sort((a, b) => b.weight - a.weight)
   let neighborHtml = ''
   if (neighbors.length) {
     const rows = neighbors.map(n => {
@@ -1609,7 +1609,8 @@ function gcFillBody(panel, node, detail) {
       if (kwBox.scrollHeight > kwBox.offsetHeight + 4) {
         const chips = Array.from(kwBox.querySelectorAll('.gc-kw-chip'))
         const boxH = kwBox.offsetHeight
-        const hiddenChips = chips.filter(c => c.offsetTop >= boxH - 2)
+        // Use full chip bottom edge vs box height -- catches partial 3rd-row overflow reliably
+        const hiddenChips = chips.filter(c => c.offsetTop + c.offsetHeight > boxH)
         if (hiddenChips.length) {
           const btn = document.createElement('span')
           btn.className = 'gc-kw-more'

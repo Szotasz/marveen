@@ -3095,30 +3095,35 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 .gc-body {
   flex: 1;
-  min-height: 120px;
-  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   padding: 0 14px 4px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255,255,255,0.15) transparent;
-  mask-image: linear-gradient(to bottom, transparent 0, black 16px, black calc(100% - 16px), transparent 100%);
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 16px, black calc(100% - 16px), transparent 100%);
 }
-.gc-body::-webkit-scrollbar { width: 4px; }
-.gc-body::-webkit-scrollbar-track { background: transparent; }
-.gc-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
 @keyframes gcFadeIn {
   from { opacity: 0; }
   to   { opacity: 1; }
 }
 .gc-body.gc-fade-in { animation: gcFadeIn 0.14s ease; }
 .gc-content {
+  flex: 1;
+  min-height: 120px;
+  overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 13px;
   color: rgba(255,255,255,0.92);
   line-height: 1.55;
   padding: 12px 0 8px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.15) transparent;
+  mask-image: linear-gradient(to bottom, transparent 0, black 16px, black calc(100% - 16px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 16px, black calc(100% - 16px), transparent 100%);
 }
+.gc-content::-webkit-scrollbar { width: 4px; }
+.gc-content::-webkit-scrollbar-track { background: transparent; }
+.gc-content::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
 .gc-meta {
   font-size: 11px;
   color: rgba(255,255,255,0.35);
