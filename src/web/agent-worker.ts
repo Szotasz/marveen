@@ -15,6 +15,7 @@ import {
   FLEET_OAUTH_TOKEN_PATH,
 } from './agent-process.js'
 import { readClaudeCodeOauthJson } from './claude-credentials.js'
+import { buildProviderEnv } from './provider-dispatch.js'
 import { detectPaneState } from '../pane-state.js'
 import { notifyChannel } from '../notify.js'
 
@@ -483,6 +484,7 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
   const launch =
     (hasFleetOauthToken() ? `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shArg(FLEET_OAUTH_TOKEN_PATH)})"; ` : '') +
     `export CLAUDE_CONFIG_DIR=${shArg(ctx.configDir)}; ` +
+    buildProviderEnv(WORKER_MODEL) +
     `cd ${shArg(ctx.home)} && ` +
     `${shArg(claudeLaunchBin)} --dangerously-skip-permissions --model ${shArg(WORKER_MODEL)}`
   execFileSync(TMUX, ['new-session', '-d', '-s', ctx.session, '-c', ctx.home, 'bash', '-lc', launch], { timeout: 8000 })
