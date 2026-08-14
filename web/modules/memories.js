@@ -2003,6 +2003,11 @@ function buildTimeline(data) {
   // Build event stream
   tlEvents = (data.events || []).slice().sort((a, b) => a.ts - b.ts)
 
+  // Edge animation states (§5.4b)
+  tlEdgeStates = (data.edges || []).map(e => ({
+    edge: e, _phase: 'waiting', _animStart: 0, _drawProgress: 0,
+  }))
+
   tlT0 = data.time_range.min_ts || 0
   tlT1 = data.time_range.max_ts || (tlT0 + 1)
   const span = Math.max(1, tlT1 - tlT0)
@@ -2038,6 +2043,17 @@ function tlRebuildAtTime(targetSimTime) {
       n._nodeScale = 0
       n._haloAlpha = 0
       n._halospikeT = 0
+    }
+  }
+  // Rebuild edge states instantly (§5.4b, scrub=no animation)
+  let aliveEdgeCount = 0
+  for (const es of tlEdgeStates) {
+    const visible = es.edge.weight >= 0.80 && es.edge.created_at <= targetSimTime
+    if (visible && aliveEdgeCount < 250) {
+      es._phase = 'alive'; es._drawProgress = 1
+      aliveEdgeCount++
+    } else {
+      es._phase = 'waiting'; es._drawProgress = 0
     }
   }
   tlParticles = []
@@ -2085,6 +2101,7 @@ function stopTimelineLoop() {
 }
 
 let tlLastFiredEventIdx = 0  // track which events have been fired
+let tlEdgeStates = []       // [{edge, _phase, _animStart, _drawProgress}]
 
 function tlCheckAndFireEvents(prevSim, curSim, wallNow) {
   for (let i = 0; i < tlEvents.length; i++) {
@@ -2107,6 +2124,30 @@ function tlCheckAndFireEvents(prevSim, curSim, wallNow) {
         }
       }
       // tier-change events: skip gracefully (backend has no transition log)
+    }
+  }
+  // Fire semantic edge animations (§5.4b): keyed by edge.created_at
+  for (const es of tlEdgeStates) {
+    if (es._phase !== 'waiting') continue
+    if (es.edge.created_at <= prevSim || es.edge.created_at > curSim) continue
+    const srcNode = tlNodeMap[es.edge.src_id]
+    const dstNode = tlNodeMap[es.edge.dst_id]
+    if (!srcNode || !dstNode) continue
+    if (es.edge.weight < 0.80) {
+      es._phase = 'flash'
+      es._animStart = wallNow
+      es._drawProgress = 0
+    } else {
+      const aliveCount = tlEdgeStates.filter(s => s._phase === 'alive').length
+      if (aliveCount < 250) {
+        es._phase = 'drawing'
+        es._animStart = wallNow
+        es._drawProgress = 0
+      }
+    }
+    // Feed event: only weight >= 0.90
+    if (es.edge.weight >= 0.90 && srcNode && dstNode) {
+      tlUpdateEventFeed(srcNode, 'linked', dstNode, es.edge)
     }
   }
 }
@@ -2227,21 +2268,30 @@ function tlTickTimelineParticles(dt) {
   })
 }
 
-function tlUpdateEventFeed(node, type) {
+function tlUpdateEventFeed(node, type, dstNode = null, edge = null) {
   const feed = document.getElementById('tlEventFeed')
   if (!feed) return
-  const ts = node.created_at
+
+  // Determine timestamp and text for this event type
+  let ts, text
+  if (type === 'linked' && dstNode && edge) {
+    ts = edge.created_at
+    const lblA = (node.label || '').slice(0, 16)
+    const lblB = (dstNode.label || '').slice(0, 16)
+    text = `${lblA} <-> ${lblB}`
+  } else {
+    ts = node.created_at
+    const lbl = (node.label || '').slice(0, 25)
+    const tierWord = node.tier || 'warm'
+    text = `+ ${lbl} (${tierWord})`
+  }
   const d = new Date(ts * 1000)
   const dateStr = `${String(d.getMonth() + 1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
-  const lbl = (node.label || '').slice(0, 25)
-  const tierWord = node.tier || 'warm'
-  const text = type === 'created' ? `+ ${lbl} (${tierWord})` : lbl
 
-  // Strictly enforce max 2 live rows before adding new one.
-  // Count only non-fading rows; rapid event bursts can otherwise bypass the cap.
+  // Cap at 10 live rows. Count only non-fading rows to prevent rapid-burst bypass.
   feed.querySelectorAll('.tl-feed-row.newest').forEach(r => r.classList.remove('newest'))
   const liveRows = Array.from(feed.querySelectorAll('.tl-feed-row:not(.fading-out)'))
-  liveRows.slice(0, Math.max(0, liveRows.length - 2)).forEach(r => {
+  liveRows.slice(0, Math.max(0, liveRows.length - 9)).forEach(r => {
     r.classList.add('fading-out')
     setTimeout(() => r.remove(), 260)
   })
@@ -2392,6 +2442,50 @@ function renderTimeline(wallNow, dt) {
         ctx.globalAlpha = 1
       }
     }
+  }
+
+  // Semantic edge layer (§5.4b): whisper-web lines between alive nodes
+  ctx.lineWidth = 0.5
+  for (const es of tlEdgeStates) {
+    if (es._phase === 'waiting') continue
+    const srcNode = tlNodeMap[es.edge.src_id]
+    const dstNode = tlNodeMap[es.edge.dst_id]
+    if (!srcNode || !dstNode) continue
+    if (srcNode._phase === 'waiting' || dstNode._phase === 'waiting') continue
+
+    let drawProg = 0
+    if (es._phase === 'alive') {
+      drawProg = 1
+    } else if (es._phase === 'drawing') {
+      const elapsed = wallNow - es._animStart
+      drawProg = Math.min(1, elapsed / 450)
+      es._drawProgress = drawProg
+      if (elapsed >= 450) es._phase = 'alive'
+    } else if (es._phase === 'flash') {
+      const elapsed = wallNow - es._animStart
+      if (elapsed >= 350) { es._phase = 'waiting'; continue }
+      // Triangle wave: rise 175ms, fall 175ms
+      drawProg = elapsed < 175 ? elapsed / 175 : (350 - elapsed) / 175
+    }
+    if (drawProg < 0.005) continue
+
+    const x0 = srcNode._tx, y0 = srcNode._ty
+    const x1 = dstNode._tx, y1 = dstNode._ty
+    // Partial line draw-in from src toward dst
+    const ex = x0 + (x1 - x0) * drawProg
+    const ey = y0 + (y1 - y0) * drawProg
+
+    const baseAlpha = 0.05 + 0.10 * es.edge.weight
+    const alpha = es._phase === 'flash'
+      ? Math.min(1, baseAlpha * 4 * drawProg)  // flash: brighter, fades with wave
+      : baseAlpha * drawProg
+    ctx.beginPath()
+    ctx.moveTo(x0, y0)
+    ctx.lineTo(ex, ey)
+    ctx.strokeStyle = '#ffffff'
+    ctx.globalAlpha = Math.min(1, alpha)
+    ctx.stroke()
+    ctx.globalAlpha = 1
   }
 
   // Branches and nodes
