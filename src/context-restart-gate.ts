@@ -300,3 +300,42 @@ export function nextBlockClock(
   if (contextTokens < thresholdTokens) return null
   return firstBlockedAt ?? nowMs
 }
+
+// ---- Wake nudge after a /clear ----------------------------------------------
+//
+// A /clear leaves a fresh session that holds the injected SessionStart context
+// but has NO reason to speak: a Claude Code session produces a turn only when
+// something prompts it. So an agent restarted by the gate sat mute, and the
+// handover record's "next action" was read by nobody until a human happened to
+// write (2026-08-14: 23 minutes of silence, ended by the owner asking "nos?").
+// The hard context-guard already solves this on its own path (inject-resume);
+// these constants are the same idea on the soft path.
+
+/** Grace for the fresh session's boot + SessionStart hooks before nudging. */
+export const WAKE_DELAY_MS = 25_000
+/** Past this age the nudge is dropped instead of typed into moved-on work. */
+export const WAKE_MAX_AGE_MS = 30 * 60_000
+
+export type WakeAction =
+  | 'none'   // nothing owed
+  | 'wait'   // owed, but the fresh session is still booting
+  | 'send'   // due now
+  | 'drop'   // too old to be honest about "you just restarted"
+
+/**
+ * Pure: what to do with a pending wake debt. A negative age (clock skew, a
+ * state file written by a host whose clock then moved back) reads as 'wait',
+ * never 'drop' -- the conservative side is to keep the debt and re-check.
+ */
+export function decideWake(
+  pendingWakeAt: number | null,
+  nowMs: number,
+  delayMs: number = WAKE_DELAY_MS,
+  maxAgeMs: number = WAKE_MAX_AGE_MS,
+): WakeAction {
+  if (pendingWakeAt === null) return 'none'
+  const ageMs = nowMs - pendingWakeAt
+  if (ageMs < delayMs) return 'wait'
+  if (ageMs > maxAgeMs) return 'drop'
+  return 'send'
+}

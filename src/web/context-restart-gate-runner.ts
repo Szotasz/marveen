@@ -5,7 +5,7 @@ import { logger } from '../logger.js'
 import { makeLazyBinResolver } from '../platform.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { listAgentNames, readAgentClaudeConfigDir } from './agent-config.js'
-import { agentSessionName, capturePane } from './agent-process.js'
+import { agentSessionName, capturePane, sendPromptToSession } from './agent-process.js'
 import { detectPaneState } from '../pane-state.js'
 import { detectsUsageLimit } from '../model-fallback.js'
 import { readContextTokensFromProjectDir, projectsDirFor } from './active-model.js'
@@ -20,7 +20,9 @@ import {
 } from '../db.js'
 import {
   decideGate,
+  decideWake,
   nextBlockClock,
+  WAKE_DELAY_MS,
   type GateInputs,
 } from '../context-restart-gate.js'
 
@@ -40,11 +42,33 @@ import {
 
 const INITIAL_DELAY_MS = 3 * 60_000   // 3 min
 
+// The wake-nudge timing lives in context-restart-gate.ts (WAKE_DELAY_MS,
+// WAKE_MAX_AGE_MS, decideWake) so the "is it due yet" rule stays pure and
+// unit-tested; this module only performs the delivery.
+
+/**
+ * The nudge text. Deliberately short: the substance is already in the session
+ * as SessionStart context, and re-stating it here would only compete with it.
+ */
+export function gateWakePrompt(): string {
+  return (
+    '[CONTEXT-RESTART-GATE] Friss kontextussal indultal, mert a kapu ujrainditott (/clear). ' +
+    'A visszatoltott blokkokban ott a beszelgetes vege, a napi naplo kivonata es -- ha volt futo munkad -- ' +
+    'a TASK-FOLYTATAS a mar kesz lepesekkel es a kovetkezo akcioval. ' +
+    'Olvasd be oket, ellenorizd a kanban tabladat es a hot memoriaidat, es FOLYTASD onnan ahol abbamaradt. ' +
+    'Ne kezdd elolrol ami mar kesz, es ne delegald ujra amit mar atadtal. ' +
+    'Ha nem volt futo munkad, az is teljes erteku allapot -- olyankor ne talalj ki magadnak feladatot. ' +
+    'Rovid jelzest kuldj a sajat csatornadon, hogy friss kontextussal folytatod.'
+  )
+}
+
 // tmux path. The hardcoded `/usr/bin/tmux` fallback that used to live here does
 // not exist on a Homebrew macOS install (tmux is /opt/homebrew/bin/tmux), so
 // getPanePid() threw on EVERY sweep, returned null, and the child-process check
 // went fail-closed at its very first line -- this gate could never open here.
 // The rest of the codebase already resolves binaries from PATH; do the same.
+// (#976 rebase note: the wake delivery goes through sendPromptToSession, so the
+// former TMUX constant from the PR branch has no remaining consumer.)
 const tmuxBin = makeLazyBinResolver('tmux')
 
 // Child-process measurement constants.
@@ -506,6 +530,49 @@ export interface GateSnapshot {
   dispatchedStatsFailed: boolean
 }
 
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * Deliver the wake nudge owed for an earlier /clear, if one is due.
+ *
+ * Retries across sweeps while the pane stays busy (the debt survives in the
+ * state file), and gives up once the nudge is older than WAKE_MAX_AGE_MS --
+ * by then the session has either been woken by someone else or moved on, and
+ * typing a "you just restarted" prompt into live work would be worse than mute.
+ */
+async function deliverPendingWake(name: string, session: string, nowMs: number): Promise<void> {
+  const due = readGateRunState(name).pendingWakeAt
+  const action = decideWake(due, nowMs)
+  if (action === 'none' || action === 'wait') return
+
+  const clearDebt = (): void => {
+    writeGateRunState(name, { ...readGateRunState(name), pendingWakeAt: null })
+  }
+
+  if (action === 'drop') {
+    logger.info({ agent: name, ageMs: due === null ? null : nowMs - due },
+      'context-restart-gate: wake nudge dropped (stale)')
+    clearDebt()
+    return
+  }
+
+  try {
+    const outcome = await sendPromptToSession(session, gateWakePrompt(), null, {
+      waitForIdle: true, onBusyTimeout: 'abort',
+    })
+    if (outcome === 'sent') {
+      logger.info({ agent: name }, 'context-restart-gate: wake nudge delivered')
+      clearDebt()
+    } else {
+      // Busy or lane-locked: keep the debt, retry on the next sweep.
+      logger.info({ agent: name, outcome }, 'context-restart-gate: wake nudge deferred')
+    }
+  } catch (err) {
+    logger.warn({ err, agent: name }, 'context-restart-gate: wake nudge failed (will retry)')
+  }
+}
+
+
 /**
  * Gather every gate input for one agent. Pure I/O, no side effects: both the
  * live sweep and the doctor script go through this, so what the diagnostic
@@ -584,6 +651,12 @@ export function diagnoseAgent(name: string, nowMs: number) {
 
 async function checkAgent(name: string, nowMs: number): Promise<void> {
   if (!readGateConfig(name).enabled) return   // fast-exit before any I/O
+
+  // Settle any wake owed from an earlier /clear before measuring anything: the
+  // inline nudge below can be lost to a dashboard restart, and this is what
+  // makes the debt durable. Deliberately NOT in gatherGateInputs -- that is
+  // shared with the read-only doctor path, which must never type into a pane.
+  await deliverPendingWake(name, sessionFor(name), nowMs)
   const { cfg, session, mcpPatterns, inputs, dispatchedStatsFailed } = gatherGateInputs(name, nowMs)
 
   // If the DB query for dispatched stats failed, fail-closed by treating it as
@@ -621,7 +694,13 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
           ...runState,
           firstBlockedAt: null,
           lastClearAt: nowMs,
+          // Owe the fresh session a wake nudge; see WAKE_DELAY_MS.
+          pendingWakeAt: nowMs,
         })
+        // Fast path: nudge in ~25s rather than at the next sweep (5 min by
+        // default). The persisted debt above is the fallback if this is lost.
+        await sleep(WAKE_DELAY_MS)
+        await deliverPendingWake(name, session, Date.now())
       } catch (err) {
         logger.warn({ err, agent: name }, 'context-restart-gate: /clear send failed')
       }
