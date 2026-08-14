@@ -637,8 +637,8 @@ function simulateGraphStep(damping) {
   for (const node of nodes) {
     const tc = tierCenters[node.tier]
     if (tc) {
-      node.vx += (tc.x - node.x) * 0.0005
-      node.vy += (tc.y - node.y) * 0.0005
+      node.vx += (tc.x - node.x) * 0.0035
+      node.vy += (tc.y - node.y) * 0.0035
     }
   }
 
@@ -1067,7 +1067,8 @@ function renderGraph() {
         priority = 2; alphaTarget = 1
       } else if (inVP && p3Cap > 0) {
         priority = 3
-        // Focus active: P3 outsiders get 8% dim, excluded from placement competition below
+        // Focus active: P3 ambient participates in collision but wins only 8% dim;
+        // non-winners get target=0 (see placement loop below).
         if (hasFocus) {
           alphaTarget = 0.08
         } else if (node.isHub) {
@@ -1098,8 +1099,6 @@ function renderGraph() {
       if (priority === 1 && p1Count >= 12) continue
       if (priority === 2 && p2Count >= 20) continue
       if (priority === 3) {
-        // Focus dim: set target but skip placement competition (Poly 6.5)
-        if (hasFocus) { node._labelTargetAlpha = 0.08; continue }
         if (p3Count >= p3Cap) continue
       }
 
