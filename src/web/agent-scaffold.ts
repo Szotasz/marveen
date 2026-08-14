@@ -484,7 +484,6 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // actual incident vector -- an agent answering its OWN posed question -- is
   // covered by the self-pace block + the #0 CLAUDE.md doctrine.
   if (agentGetsEmailGate(name)) injectEmailSendGate(existing)
-  if (agentGetsReadonlyRepoGate(profile.id)) injectReadonlyRepoGate(existing)
   if (agentGetsGovernanceGates(name)) injectSelfPaceGate(existing)
   if (agentGetsKanbanWriteGate(name)) {
     injectKanbanWriteGate(existing)
@@ -546,34 +545,6 @@ export function injectEmailSendGate(existing: Record<string, unknown>): void {
   // the hook never accumulates duplicates; other PreToolUse entries are kept.
   hooks.PreToolUse = [
     ...prev.filter((e) => !JSON.stringify(e).includes('email-send-gate.mjs')),
-    entry,
-  ]
-}
-
-// Read-only-repo gate. Roles that analyse or test a repo but must not change it
-// (planner, qa-runner) cannot be held to that by permissions alone: a strict
-// profile enforces the deny but PROMPTS on things like `cd repo && git …` (the
-// cd-guard), and an unattended worker hangs on a prompt instead of working. A
-// permissive profile never prompts but launches with
-// --dangerously-skip-permissions, which bypasses allow/deny entirely. Hooks run
-// in both modes, so the enforcement lives here and the profile stays permissive.
-export function agentGetsReadonlyRepoGate(profileId: string): boolean {
-  return profileId === 'planner' || profileId === 'qa-runner'
-}
-
-export function injectReadonlyRepoGate(existing: Record<string, unknown>): void {
-  const hooks = (existing.hooks && typeof existing.hooks === 'object'
-    ? existing.hooks
-    : (existing.hooks = {})) as Record<string, unknown>
-  const command = `node ${join(PROJECT_ROOT, 'scripts', 'readonly-repo-gate.mjs')}`
-  if (isUnsafeHookCommand(command)) return
-  const entry = {
-    matcher: 'Bash|Write|Edit|NotebookEdit',
-    hooks: [{ type: 'command', command, timeout: 10 }],
-  }
-  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
-  hooks.PreToolUse = [
-    ...prev.filter((e) => !JSON.stringify(e).includes('readonly-repo-gate.mjs')),
     entry,
   ]
 }
