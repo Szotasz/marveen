@@ -2204,7 +2204,14 @@ function tlUpdateEventFeed(node, type) {
 
   const row = document.createElement('div')
   row.className = 'tl-feed-row newest'
-  row.innerHTML = `<span class="tl-feed-date">${dateStr}</span><span class="tl-feed-text">${text}</span>`
+  const dateSpan = document.createElement('span')
+  dateSpan.className = 'tl-feed-date'
+  dateSpan.textContent = dateStr
+  const textSpan = document.createElement('span')
+  textSpan.className = 'tl-feed-text'
+  textSpan.textContent = text
+  row.appendChild(dateSpan)
+  row.appendChild(textSpan)
   feed.appendChild(row)
 }
 
