@@ -44,72 +44,72 @@ export async function loadMemAgents() {
   } catch {}
 }
 
+// Node-limit slider
+;(function() {
+  const slider = document.getElementById('graphNodeLimit')
+  const valEl = document.getElementById('graphNodeLimitVal')
+  if (slider && valEl) {
+    slider.addEventListener('input', () => {
+      valEl.textContent = slider.value
+    })
+    slider.addEventListener('change', () => {
+      valEl.textContent = slider.value
+      if (currentMemTier === 'graph') loadMemoryGraph()
+    })
+  }
+})()
+
 // Agent filter change
-document.getElementById('memAgentFilter').addEventListener('change', () => {
+document.getElementById('memAgentFilter')?.addEventListener('change', () => {
   if (currentMemTier === 'graph') {
     loadMemoryGraph()
   } else if (currentMemTier === 'log') {
     loadDailyLog()
-  } else if (currentMemTier === 'artifacts') {
-    loadArtifactsTab()
   } else {
     loadMemories()
   }
 })
 
 // Search with debounce
-memSearchInput.addEventListener('input', () => {
+memSearchInput?.addEventListener('input', () => {
   clearTimeout(memSearchTimer)
-  if (currentMemTier === 'artifacts') {
-    memSearchTimer = setTimeout(loadArtifactsTab, 300)
-  } else {
-    memSearchTimer = setTimeout(loadMemories, 300)
-  }
+  memSearchTimer = setTimeout(loadMemories, 300)
 })
 
 // Enter to search immediately
-memSearchInput.addEventListener('keydown', (e) => {
+memSearchInput?.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     clearTimeout(memSearchTimer)
-    if (currentMemTier === 'artifacts') {
-      loadArtifactsTab()
-    } else {
-      loadMemories()
-    }
+    loadMemories()
   }
 })
 
 // Tab switching
-document.getElementById('memTabs').addEventListener('click', (e) => {
+document.getElementById('memTabs')?.addEventListener('click', (e) => {
   const tab = e.target.closest('.mem-tab')
   if (!tab) return
   document.querySelectorAll('.mem-tab').forEach(t => t.classList.remove('active'))
   tab.classList.add('active')
   currentMemTier = tab.dataset.tier
 
-  const isLog       = currentMemTier === 'log'
-  const isGraph     = currentMemTier === 'graph'
-  const isArtifacts = currentMemTier === 'artifacts'
+  const isLog   = currentMemTier === 'log'
+  const isGraph = currentMemTier === 'graph'
 
-  document.getElementById('memTierView').hidden      = isLog || isGraph || isArtifacts
-  document.getElementById('memLogView').hidden       = !isLog
-  document.getElementById('memGraphView').hidden     = !isGraph
-  document.getElementById('memArtifactsView').hidden = !isArtifacts
-  document.getElementById('memArtKindFilter').style.display = isArtifacts ? '' : 'none'
+  document.getElementById('memTierView').hidden  = isLog || isGraph
+  document.getElementById('memLogView').hidden   = !isLog
+  document.getElementById('memGraphView').hidden = !isGraph
 
   if (isGraph) {
     loadMemoryGraph()
   } else if (isLog) {
     loadDailyLog()
-  } else if (isArtifacts) {
-    loadArtifactsTab()
   } else {
     loadMemories()
   }
 })
 
 // Add memory button
-document.getElementById('memAddBtn').addEventListener('click', () => {
+document.getElementById('memAddBtn')?.addEventListener('click', () => {
   document.getElementById('memModalTitle').textContent = t('memories.modal.title_new')
   document.getElementById('memContent').value = ''
   document.getElementById('memTier').value = (currentMemTier === 'log' || currentMemTier === 'graph') ? 'warm' : currentMemTier
@@ -123,11 +123,11 @@ document.getElementById('memAddBtn').addEventListener('click', () => {
 })
 
 // Close memory modal
-document.getElementById('memModalClose').addEventListener('click', () => _closeModal?.(memModalOverlay))
-memModalOverlay.addEventListener('click', (e) => { if (e.target === memModalOverlay) _closeModal?.(memModalOverlay) })
+document.getElementById('memModalClose')?.addEventListener('click', () => _closeModal?.(memModalOverlay))
+memModalOverlay?.addEventListener('click', (e) => { if (e.target === memModalOverlay) _closeModal?.(memModalOverlay) })
 
 // Save memory (create or edit)
-document.getElementById('saveMemBtn').addEventListener('click', async () => {
+document.getElementById('saveMemBtn')?.addEventListener('click', async () => {
   const content = document.getElementById('memContent').value.trim()
   if (!content) { document.getElementById('memContent').focus(); return }
 
@@ -393,11 +393,62 @@ const GRAPH_TIER_COLORS = {
   shared: '#b0a040',
 }
 
+// Poly spec: luminous dark-variants for ambient glow
+const GRAPH_TIER_GLOW = {
+  hot:    '#ff6b5e',
+  warm:   '#ff9a70',
+  cold:   '#8fc1ff',
+  shared: '#e3cf5e',
+}
+
 const GRAPH_TIER_BG = {
   hot: 'rgba(220, 60, 60, 0.06)',
   warm: 'rgba(217, 119, 87, 0.06)',
   cold: 'rgba(106, 155, 204, 0.06)',
   shared: 'rgba(176, 160, 64, 0.06)',
+}
+
+// Offscreen glow sprites (pre-rendered at buildGraph time, reused every frame)
+let graphGlowSprites = {}  // { [tier]: HTMLCanvasElement }
+let graphParticleSprite = null
+const GRAPH_REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+// Idle animation state
+let graphIdleRaf = null      // rAF handle for post-settle idle loop
+let graphLastInteraction = Date.now()
+let graphIdleSlowFrame = 0   // counts frames for 30fps throttle
+let graphLastRenderTs = 0    // for delta-time based lerp
+
+// Particle pool: up to 60 particles on active edges
+let graphParticles = []  // [{ edgeIdx, t, speed }]
+
+// Poly spec section 2: back-out easing for node pop-in (cubic-bezier(0.34,1.56,0.64,1))
+function graphEaseOutBack(t) {
+  const c1 = 1.70158
+  const c3 = c1 + 1
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2)
+}
+
+function makeGlowSprite(hexColor, size) {
+  const c = document.createElement('canvas')
+  c.width = c.height = size
+  const g = c.getContext('2d')
+  const grad = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2)
+  grad.addColorStop(0.0, hexColor + '55')  // a=0.33
+  grad.addColorStop(0.4, hexColor + '22')  // a=0.13
+  grad.addColorStop(1.0, hexColor + '00')
+  g.fillStyle = grad
+  g.fillRect(0, 0, size, size)
+  return c
+}
+
+function initGlowSprites() {
+  const size = (window.devicePixelRatio || 1) >= 2 ? 256 : 128
+  for (const tier of Object.keys(GRAPH_TIER_GLOW)) {
+    graphGlowSprites[tier] = makeGlowSprite(GRAPH_TIER_GLOW[tier], size)
+  }
+  graphGlowSprites['white'] = makeGlowSprite('#ffffff', size)
+  graphParticleSprite = makeGlowSprite('#ffffff', 32)
 }
 
 function screenToWorld(sx, sy) {
@@ -410,22 +461,19 @@ function worldToScreen(wx, wy) {
 
 async function loadMemoryGraph() {
   const agent = document.getElementById('memAgentFilter').value
+  const limitEl = document.getElementById('graphNodeLimit')
+  const limit = limitEl ? parseInt(limitEl.value, 10) || 200 : 200
   const params = new URLSearchParams()
   if (agent) params.set('agent', agent)
-  params.set('limit', '200')
+  params.set('limit', String(Math.min(500, Math.max(1, limit))))
+  params.set('weight_min', '0.75')
 
   try {
-    const linkParams = new URLSearchParams()
-    if (agent) linkParams.set('agent', agent)
-    const [res, linkRes] = await Promise.all([
-      fetch(`/api/memories?${params}`),
-      fetch(`/api/memories/links?${linkParams}`),
-    ])
-    const memories = await res.json()
-    const semanticLinks = linkRes.ok ? await linkRes.json() : []
+    const res = await fetch(`/api/memories/graph?${params}`)
+    const graphData = await res.json()
 
     const emptyEl = document.getElementById('graphEmpty')
-    if (!memories || memories.length === 0) {
+    if (!graphData.nodes || graphData.nodes.length === 0) {
       emptyEl.hidden = false
       document.getElementById('memGraphCanvas').hidden = true
       return
@@ -433,21 +481,20 @@ async function loadMemoryGraph() {
     emptyEl.hidden = true
     document.getElementById('memGraphCanvas').hidden = false
 
-    // Reset zoom/pan on new data load
     graphZoom = 1
     graphPanX = 0
     graphPanY = 0
     graphSelectedNode = null
     hideGraphPanel()
 
-    buildGraph(memories, semanticLinks)
+    buildGraph(graphData)
     startGraphSimulation()
   } catch (err) {
     console.error('Gráf betöltés hiba:', err)
   }
 }
 
-function buildGraph(memories, semanticLinks) {
+function buildGraph(graphData) {
   graphNodes = []
   graphEdges = []
 
@@ -465,23 +512,24 @@ function buildGraph(memories, semanticLinks) {
   const w = rect.width
   const h = rect.height
 
-  // Create nodes from memories
-  for (const mem of memories) {
-    const keywords = (mem.keywords || '').split(',').map(k => k.trim()).filter(Boolean)
-    const label = mem.content.slice(0, 25).replace(/\n/g, ' ') + (mem.content.length > 25 ? '...' : '')
+  // Build nodes from /api/memories/graph response
+  for (const node of graphData.nodes) {
     graphNodes.push({
-      id: mem.id,
+      id: node.id,
       x: w / 2 + (Math.random() - 0.5) * w * 0.6,
       y: h / 2 + (Math.random() - 0.5) * h * 0.6,
       vx: 0,
       vy: 0,
       radius: 6,
       connectionCount: 0,
-      label: label,
-      tier: mem.tier || mem.category || 'warm',
-      agent: mem.agent_id || mainAgentId(),
-      keywords: keywords,
-      mem: mem,
+      label: node.label.replace(/\n/g, ' '),
+      tier: node.tier || 'warm',
+      agent: node.agent || mainAgentId(),
+      keywords: [],        // not in graph response; keyword fallback uses this
+      degree: node.degree, // pre-computed by backend
+      created_at: node.created_at,
+      accessed_at: node.accessed_at,
+      mem: node,
       searchMatch: true,
     })
   }
@@ -490,29 +538,25 @@ function buildGraph(memories, semanticLinks) {
   const idToIdx = new Map()
   graphNodes.forEach((node, idx) => idToIdx.set(node.id, idx))
 
-  // Prefer real semantic links from memory_links table if available,
-  // fall back to keyword-based edges for nodes with no semantic links.
-  const semanticEdgeIds = new Set()  // "srcIdx-dstIdx" pairs covered by real links
-
-  if (semanticLinks && semanticLinks.length > 0) {
-    for (const link of semanticLinks) {
-      const si = idToIdx.get(link.src_id)
-      const di = idToIdx.get(link.dst_id)
-      if (si === undefined || di === undefined) continue
-      const a = graphNodes[si]
-      const b = graphNodes[di]
-      const strength = link.weight || 0.5
-      graphEdges.push({ source: si, target: di, strength, semantic: true, linkType: link.link_type })
-      a.connectionCount += strength
-      b.connectionCount += strength
-      semanticEdgeIds.add(`${Math.min(si, di)}-${Math.max(si, di)}`)
-    }
+  // Semantic edges from the graph endpoint (AND-filtered, both endpoints present)
+  const semanticEdgeIds = new Set()
+  for (const edge of (graphData.edges || [])) {
+    const si = idToIdx.get(edge.src_id)
+    const di = idToIdx.get(edge.dst_id)
+    if (si === undefined || di === undefined) continue
+    const a = graphNodes[si]
+    const b = graphNodes[di]
+    const strength = edge.weight || 0.5
+    graphEdges.push({ source: si, target: di, strength, semantic: true })
+    a.connectionCount += strength
+    b.connectionCount += strength
+    semanticEdgeIds.add(`${Math.min(si, di)}-${Math.max(si, di)}`)
   }
 
-  // Keyword-based fallback for nodes that have no semantic links yet
+  // Keyword-based fallback for orphan nodes (no semantic links)
   for (let i = 0; i < graphNodes.length; i++) {
     for (let j = i + 1; j < graphNodes.length; j++) {
-      if (semanticEdgeIds.has(`${i}-${j}`)) continue  // already covered
+      if (semanticEdgeIds.has(`${i}-${j}`)) continue
       const a = graphNodes[i]
       const b = graphNodes[j]
       const shared = a.keywords.filter(k => b.keywords.includes(k))
@@ -524,16 +568,24 @@ function buildGraph(memories, semanticLinks) {
     }
   }
 
-  // Set node radius + orphan/hub badges based on connection count
-  const HUB_THRESHOLD = 5  // semantic edges to qualify as a hub
+  // Node radius uses backend degree; orphan/hub badges use same
+  const HUB_THRESHOLD = 5
   for (const node of graphNodes) {
     node.radius = 5 + Math.min(Math.sqrt(node.connectionCount) * 2.5, 14)
-    const semanticEdgeCount = graphEdges.filter(
-      e => e.semantic && (graphNodes[e.source].id === node.id || graphNodes[e.target].id === node.id)
-    ).length
-    node.isOrphan = semanticEdgeCount === 0
-    node.isHub = semanticEdgeCount >= HUB_THRESHOLD
+    node.isOrphan = node.degree === 0
+    node.isHub = node.degree >= HUB_THRESHOLD
+    node.importance = node.connectionCount + (node.isHub ? 10 : 0) + (node.tier === 'hot' ? 2 : 0)
+    node.labelAlpha = 0
   }
+
+  // Pop-in animation: stagger entry by node index (Poly spec section 2)
+  const popStagger = GRAPH_REDUCED_MOTION ? 0 : Math.min(10, 1200 / Math.max(graphNodes.length, 1))
+  const nowInit = Date.now()
+  for (let ni = 0; ni < graphNodes.length; ni++) {
+    graphNodes[ni].birthMs = nowInit + ni * popStagger
+    graphNodes[ni].renderedAlpha = 0  // lerp start value for hover-crossfade
+  }
+  graphLastRenderTs = 0  // reset delta tracker on new graph
 
   // Ensure controls hint and zoom indicator exist
   const graphView = document.getElementById('memGraphView')
@@ -570,8 +622,8 @@ function simulateGraphStep(damping) {
   for (const node of nodes) {
     const tc = tierCenters[node.tier]
     if (tc) {
-      node.vx += (tc.x - node.x) * 0.0005
-      node.vy += (tc.y - node.y) * 0.0005
+      node.vx += (tc.x - node.x) * 0.0035
+      node.vy += (tc.y - node.y) * 0.0035
     }
   }
 
@@ -580,7 +632,7 @@ function simulateGraphStep(damping) {
       let dx = nodes[j].x - nodes[i].x
       let dy = nodes[j].y - nodes[i].y
       let dist = Math.sqrt(dx * dx + dy * dy) || 1
-      let force = 800 / (dist * dist)
+      let force = 2400 / (dist * dist)
       let fx = (dx / dist) * force
       let fy = (dy / dist) * force
       nodes[i].vx -= fx
@@ -596,7 +648,7 @@ function simulateGraphStep(damping) {
     let dx = b.x - a.x
     let dy = b.y - a.y
     let dist = Math.sqrt(dx * dx + dy * dy) || 1
-    let force = (dist - 80) * 0.005 * edge.strength
+    let force = (dist - 140) * 0.005 * edge.strength
     let fx = (dx / dist) * force
     let fy = (dy / dist) * force
     a.vx += fx
@@ -626,10 +678,17 @@ function simulateGraphStep(damping) {
 
 function startGraphSimulation() {
   if (graphSim) cancelAnimationFrame(graphSim)
+  if (graphIdleRaf) cancelAnimationFrame(graphIdleRaf)
+  graphParticles = []
+  initGlowSprites()
 
   for (const node of graphNodes) {
     node.vx = 0
     node.vy = 0
+    // Randomize idle drift parameters per node (stable per session)
+    node.driftF = 0.3 + (node.id % 13) * 0.015   // 0.3-0.495 rad/s
+    node.driftP1 = (node.id * 2.39) % (Math.PI * 2)
+    node.driftP2 = (node.id * 1.61) % (Math.PI * 2)
   }
 
   const preSettleIterations = Math.min(250, 40 + graphNodes.length * 2)
@@ -641,8 +700,10 @@ function startGraphSimulation() {
   const maxFrames = 60
 
   function tick() {
+    if (document.hidden) { graphSim = requestAnimationFrame(tick); return }
     if (frame > maxFrames) {
-      renderGraph()
+      autoFitGraph()
+      startIdleLoop()
       return
     }
     frame++
@@ -655,27 +716,127 @@ function startGraphSimulation() {
   tick()
 }
 
+function autoFitGraph() {
+  if (!graphNodes.length || !graphCanvas) return
+  const dpr = window.devicePixelRatio || 1
+  const w = graphCanvas.width / dpr
+  const h = graphCanvas.height / dpr
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
+  for (const n of graphNodes) {
+    if (n.x < minX) minX = n.x
+    if (n.x > maxX) maxX = n.x
+    if (n.y < minY) minY = n.y
+    if (n.y > maxY) maxY = n.y
+  }
+  const pad = 60
+  const contentW = maxX - minX + pad * 2
+  const contentH = maxY - minY + pad * 2
+  graphZoom = Math.max(0.4, Math.min(1.0, Math.min(w / contentW, h / contentH)))
+  graphPanX = w / 2 - ((minX + maxX) / 2) * graphZoom
+  graphPanY = h / 2 - ((minY + maxY) / 2) * graphZoom
+}
+
+function startIdleLoop() {
+  if (graphIdleRaf) cancelAnimationFrame(graphIdleRaf)
+  graphIdleSlowFrame = 0
+
+  function idleTick() {
+    if (document.hidden) { graphIdleRaf = requestAnimationFrame(idleTick); return }
+
+    // Throttle to ~30fps after 5s of no interaction
+    const idle5s = Date.now() - graphLastInteraction > 5000
+    if (idle5s) {
+      graphIdleSlowFrame++
+      if (graphIdleSlowFrame % 2 !== 0) { graphIdleRaf = requestAnimationFrame(idleTick); return }
+    }
+
+    if (!GRAPH_REDUCED_MOTION) tickParticles()
+    renderGraph()
+    graphIdleRaf = requestAnimationFrame(idleTick)
+  }
+
+  graphIdleRaf = requestAnimationFrame(idleTick)
+}
+
+function tickParticles() {
+  // Identify active edges (connected to hover/selected node), cap at 20
+  const activeNode = graphHover || graphSelectedNode
+  let activeEdges = []
+  if (activeNode) {
+    const activeIdx = graphNodes.indexOf(activeNode)
+    activeEdges = graphEdges
+      .map((e, i) => ({ e, i }))
+      .filter(({ e }) => e.source === activeIdx || e.target === activeIdx)
+      .sort((a, b) => b.e.strength - a.e.strength)
+      .slice(0, 20)
+  } else {
+    // Ambient: top 20 edges by strength
+    activeEdges = graphEdges
+      .map((e, i) => ({ e, i }))
+      .filter(({ e }) => e.semantic)
+      .sort((a, b) => b.e.strength - a.e.strength)
+      .slice(0, 20)
+  }
+
+  const activeEdgeSet = new Set(activeEdges.map(({ i }) => i))
+
+  // Remove particles on edges that are no longer active
+  graphParticles = graphParticles.filter(p => activeEdgeSet.has(p.edgeIdx))
+
+  // Spawn up to 3 particles per active edge (cap total 60)
+  for (const { i } of activeEdges) {
+    const existing = graphParticles.filter(p => p.edgeIdx === i).length
+    const toSpawn = Math.max(0, 3 - existing)
+    for (let s = 0; s < toSpawn && graphParticles.length < 60; s++) {
+      graphParticles.push({ edgeIdx: i, t: s / 3, speed: 0.35 })  // stagger start
+    }
+  }
+
+  // Advance particles
+  const dt = 1 / 60
+  for (const p of graphParticles) {
+    p.t += p.speed * dt
+    if (p.t > 1) p.t -= 1
+  }
+}
+
 function renderGraph() {
   const ctx = graphCtx
   const dpr = window.devicePixelRatio || 1
   const w = graphCanvas.width / dpr
   const h = graphCanvas.height / dpr
 
-  ctx.clearRect(0, 0, w, h)
+  // Dark-cinematic: always dark if no explicit light theme; light = reduced fallback
+  const themeAttr = document.documentElement.getAttribute('data-theme')
+  const isDark = themeAttr !== 'light'
 
   const cs = getComputedStyle(document.documentElement)
-  const borderColor = cs.getPropertyValue('--border').trim() || '#d1cfc5'
-  const textColor = cs.getPropertyValue('--text').trim() || '#141413'
-  const textMuted = cs.getPropertyValue('--text-muted').trim() || '#87867f'
-  const bgCard = cs.getPropertyValue('--bg-card').trim() || '#fff'
-  const bgColor = cs.getPropertyValue('--bg').trim() || '#faf9f5'
-  const isDark = document.documentElement.getAttribute('data-theme') === 'dark'
+  const borderColor = cs.getPropertyValue('--border').trim() || (isDark ? '#3d3d3a' : '#d1cfc5')
+  const textColor = cs.getPropertyValue('--text').trim() || (isDark ? '#e8e7e0' : '#141413')
+  const textMuted = cs.getPropertyValue('--text-muted').trim() || (isDark ? '#73726c' : '#87867f')
 
-  // === Dot grid background (drawn in screen space) ===
-  const gridSize = 20
-  const dotColor = borderColor
-  ctx.fillStyle = dotColor
-  ctx.globalAlpha = isDark ? 0.2 : 0.3
+  // === Background: dark-cinematic vignette OR light fallback ===
+  ctx.clearRect(0, 0, w, h)
+  if (isDark) {
+    const vign = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, Math.max(w, h) * 0.75)
+    vign.addColorStop(0.0, '#1c1b19')
+    vign.addColorStop(0.6, '#151514')
+    vign.addColorStop(1.0, '#0e0e0d')
+    ctx.fillStyle = vign
+  } else {
+    const vign = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, Math.max(w, h) * 0.75)
+    vign.addColorStop(0.0, '#ffffff')
+    vign.addColorStop(1.0, '#f0eee6')
+    ctx.globalAlpha = 0.6
+    ctx.fillStyle = vign
+  }
+  ctx.fillRect(0, 0, w, h)
+  ctx.globalAlpha = 1
+
+  // === Dot grid (screen space) ===
+  const gridSize = 26
+  ctx.fillStyle = borderColor
+  ctx.globalAlpha = isDark ? 0.16 : 0.25
   const offsetX = ((graphPanX % (gridSize * graphZoom)) + gridSize * graphZoom) % (gridSize * graphZoom)
   const offsetY = ((graphPanY % (gridSize * graphZoom)) + gridSize * graphZoom) % (gridSize * graphZoom)
   const scaledGrid = gridSize * graphZoom
@@ -683,7 +844,7 @@ function renderGraph() {
     for (let x = offsetX; x < w; x += scaledGrid) {
       for (let y = offsetY; y < h; y += scaledGrid) {
         ctx.beginPath()
-        ctx.arc(x, y, Math.max(0.5, graphZoom * 0.6), 0, Math.PI * 2)
+        ctx.arc(x, y, Math.max(0.5, 0.7 * graphZoom), 0, Math.PI * 2)
         ctx.fill()
       }
     }
@@ -695,41 +856,57 @@ function renderGraph() {
   ctx.translate(graphPanX, graphPanY)
   ctx.scale(graphZoom, graphZoom)
 
+  const nowMs = Date.now()
+  const time = nowMs * 0.001
+  const dt = graphLastRenderTs > 0 ? Math.min(nowMs - graphLastRenderTs, 50) : 16.67
+  graphLastRenderTs = nowMs
+  // Poly spec section 2: 180ms crossfade via exponential lerp (tau=60ms -> 95% at ~180ms)
+  const lerpFactor = 1 - Math.exp(-dt / 60)
   const hasSearch = graphSearchQuery.length > 0
 
-  // === Tier cluster backgrounds ===
+  // === Tier cluster halos (lighter blend in dark; source-over in light) ===
   const tierGroups = {}
   for (const node of graphNodes) {
     if (!tierGroups[node.tier]) tierGroups[node.tier] = []
     tierGroups[node.tier].push(node)
   }
-  for (const [tier, nodes] of Object.entries(tierGroups)) {
-    if (nodes.length < 2) continue
+  const activeNode = graphHover || graphSelectedNode
+  for (const [tier, tNodes] of Object.entries(tierGroups)) {
+    if (tNodes.length < 2) continue
     let cx = 0, cy = 0
-    for (const n of nodes) { cx += n.x; cy += n.y }
-    cx /= nodes.length
-    cy /= nodes.length
+    for (const n of tNodes) { cx += n.x; cy += n.y }
+    cx /= tNodes.length; cy /= tNodes.length
     let maxDist = 0
-    for (const n of nodes) {
+    for (const n of tNodes) {
       const d = Math.sqrt((n.x - cx) ** 2 + (n.y - cy) ** 2)
       if (d > maxDist) maxDist = d
     }
-    const radius = maxDist + 60
+    const radius = maxDist + 110
+    const glowCol = GRAPH_TIER_GLOW[tier] || GRAPH_TIER_COLORS[tier]
     const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius)
-    const bgTier = GRAPH_TIER_BG[tier] || 'rgba(128,128,128,0.04)'
-    grad.addColorStop(0, bgTier)
-    grad.addColorStop(1, 'rgba(0,0,0,0)')
+    if (isDark) {
+      grad.addColorStop(0.0, glowCol + '14')  // a=0.08
+      grad.addColorStop(1.0, glowCol + '00')
+      const isActiveTier = activeNode && activeNode.tier === tier
+      ctx.globalAlpha = hasSearch ? 0.25 : (isActiveTier ? 0.9 : 0.85)
+      ctx.globalCompositeOperation = 'lighter'
+    } else {
+      const baseCol = GRAPH_TIER_COLORS[tier]
+      grad.addColorStop(0.0, baseCol + '1a')
+      grad.addColorStop(1.0, baseCol + '00')
+      ctx.globalAlpha = hasSearch ? 0.15 : 0.35
+      ctx.globalCompositeOperation = 'source-over'
+    }
     ctx.fillStyle = grad
-    ctx.globalAlpha = hasSearch ? 0.3 : 0.8
     ctx.beginPath()
     ctx.arc(cx, cy, radius, 0, Math.PI * 2)
     ctx.fill()
+    ctx.globalCompositeOperation = 'source-over'
     ctx.globalAlpha = 1
   }
 
-  // Build set of connected node indices for hovered/selected node
+  // Build connected set for hover/selected focus
   const connectedToActive = new Set()
-  const activeNode = graphHover || graphSelectedNode
   if (activeNode) {
     const activeIdx = graphNodes.indexOf(activeNode)
     for (const edge of graphEdges) {
@@ -738,43 +915,51 @@ function renderGraph() {
     }
   }
 
-  // === Draw edges (bezier curves with pulsing) ===
-  const time = Date.now() * 0.001
-  for (const edge of graphEdges) {
+  // === Draw edges ===
+  for (let ei = 0; ei < graphEdges.length; ei++) {
+    const edge = graphEdges[ei]
     const a = graphNodes[edge.source]
     const b = graphNodes[edge.target]
 
     const isActiveEdge = activeNode && (a === activeNode || b === activeNode)
+    const isDimmed = activeNode && !isActiveEdge
     const searchFaded = hasSearch && (!a.searchMatch || !b.searchMatch)
 
-    // Edge thickness based on connection strength
     const baseWidth = edge.semantic
-      ? 1.0 + Math.min(edge.strength * 1.2, 3)  // semantic links: thicker
-      : 0.5 + Math.min(edge.strength * 0.3, 1.2)  // keyword fallback: thinner
-
-    // Subtle pulse/breathe animation (semantic edges pulse faster)
-    const pulse = 0.85 + 0.15 * Math.sin(time * (edge.semantic ? 2 : 1.5) + edge.source * 0.3 + edge.target * 0.7)
+      ? 1.0 + Math.min(edge.strength * 1.2, 3)
+      : 0.5 + Math.min(edge.strength * 0.3, 1.2)
+    const pulse = GRAPH_REDUCED_MOTION ? 1 : (0.85 + 0.15 * Math.sin(time * (edge.semantic ? 2 : 1.5) + edge.source * 0.3 + edge.target * 0.7))
 
     ctx.lineWidth = isActiveEdge ? baseWidth * 1.8 : baseWidth * pulse
-    const edgeColor = edge.semantic
-      ? (GRAPH_TIER_COLORS[a.tier] || borderColor)  // semantic: tier color
-      : borderColor                                   // keyword: neutral
-    ctx.strokeStyle = isActiveEdge ? GRAPH_TIER_COLORS[a === activeNode ? a.tier : b.tier] || borderColor : edgeColor
-    const baseAlpha = edge.semantic
-      ? (0.25 + Math.min(edge.strength * 0.3, 0.55))  // semantic: more visible
-      : (0.08 + Math.min(edge.strength * 0.05, 0.12))  // keyword: subtle
-    ctx.globalAlpha = searchFaded ? 0.04 : (isActiveEdge ? 0.7 : baseAlpha * pulse)
 
-    // Bezier curve: midpoint offset perpendicular to the line
+    // Edge color: linear gradient source->target tier glow in dark, base color in light
     const mx = (a.x + b.x) / 2
     const my = (a.y + b.y) / 2
     const dx = b.x - a.x
     const dy = b.y - a.y
     const dist = Math.sqrt(dx * dx + dy * dy) || 1
     const curvature = Math.min(dist * 0.15, 30)
-    // Perpendicular offset
     const cpx = mx + (-dy / dist) * curvature
     const cpy = my + (dx / dist) * curvature
+
+    if (edge.semantic && isDark) {
+      const grad = ctx.createLinearGradient(a.x, a.y, b.x, b.y)
+      const ca = GRAPH_TIER_GLOW[a.tier] || GRAPH_TIER_COLORS[a.tier]
+      const cb = GRAPH_TIER_GLOW[b.tier] || GRAPH_TIER_COLORS[b.tier]
+      grad.addColorStop(0, ca)
+      grad.addColorStop(0.5, GRAPH_TIER_COLORS[a.tier] || ca)
+      grad.addColorStop(1, cb)
+      ctx.strokeStyle = grad
+    } else {
+      ctx.strokeStyle = edge.semantic ? (GRAPH_TIER_COLORS[a.tier] || borderColor) : borderColor
+    }
+
+    const baseAlpha = edge.semantic
+      ? (0.25 + Math.min(edge.strength * 0.3, 0.55))
+      : (0.08 + Math.min(edge.strength * 0.05, 0.12))
+    const edgeAlpha = searchFaded ? 0.04 : (isActiveEdge ? 0.85 : (isDimmed ? 0.05 : baseAlpha * pulse))
+    // Light theme: bump alpha for contrast
+    ctx.globalAlpha = isDark ? edgeAlpha : Math.min(1, edgeAlpha + 0.10)
 
     ctx.beginPath()
     ctx.moveTo(a.x, a.y)
@@ -783,129 +968,340 @@ function renderGraph() {
   }
   ctx.globalAlpha = 1
 
-  // === Draw nodes ===
-  const fontSize = Math.max(8, Math.min(12, 10 / graphZoom))
+  // === Draw particles (active edges, no shadowBlur) ===
+  if (!GRAPH_REDUCED_MOTION && graphParticleSprite) {
+    const pSize = 7
+    for (const p of graphParticles) {
+      const edge = graphEdges[p.edgeIdx]
+      if (!edge) continue
+      const a = graphNodes[edge.source]
+      const b = graphNodes[edge.target]
+      if (!a || !b) continue
+      // Quadratic bezier point at t
+      const t = p.t
+      const qx = (1 - t) * (1 - t) * a.x + 2 * (1 - t) * t * ((a.x + b.x) / 2 + (-(b.y - a.y) / (Math.sqrt((b.x-a.x)**2+(b.y-a.y)**2)||1)) * Math.min(Math.sqrt((b.x-a.x)**2+(b.y-a.y)**2) * 0.15, 30)) + t * t * b.x
+      const qy = (1 - t) * (1 - t) * a.y + 2 * (1 - t) * t * ((a.y + b.y) / 2 + ((b.x - a.x) / (Math.sqrt((b.x-a.x)**2+(b.y-a.y)**2)||1)) * Math.min(Math.sqrt((b.x-a.x)**2+(b.y-a.y)**2) * 0.15, 30)) + t * t * b.y
+      const tier = graphNodes[edge.source].tier
+      const sprite = graphGlowSprites[tier] || graphParticleSprite
+      ctx.globalAlpha = 0.9
+      ctx.drawImage(sprite, qx - pSize, qy - pSize, pSize * 2, pSize * 2)
+    }
+    ctx.globalAlpha = 1
+  }
 
+  // === Label LOD: precompute eligibility + greedy collision (Poly spec section 6) ===
+  {
+    const z = graphZoom
+    const dpr = window.devicePixelRatio || 1
+    const screenW = graphCanvas.width / dpr
+    const screenH = graphCanvas.height / dpr
+    const focusNode = graphHover || graphSelectedNode
+    const hasFocus = !!focusNode
+    const VP_MARGIN = 40
+    const truncLimit = z >= 2 ? 40 : 25
+
+    // zoom ramps for P3 ambient labels
+    const hubRamp = Math.min(1, Math.max(0, (z - 0.35) / 0.3))
+    const ambientRamp = Math.min(1, Math.max(0, (z - 0.7) / 0.5))
+
+    // P3 ambient cap based on zoom
+    let p3Cap = 0
+    if (z >= 1.5) p3Cap = 60
+    else if (z >= 0.8) p3Cap = 20
+    else if (z >= 0.5) p3Cap = 8
+
+    // Neighbors of focusNode (by edge weight desc, cap 12) -> P1
+    const neighborIdxSet = new Set()
+    if (focusNode) {
+      const focusIdx = graphNodes.indexOf(focusNode)
+      graphEdges
+        .filter(e => e.source === focusIdx || e.target === focusIdx)
+        .sort((a, b) => b.strength - a.strength)
+        .slice(0, 12)
+        .forEach(e => neighborIdxSet.add(e.source === focusIdx ? e.target : e.source))
+    }
+
+    // Pre-populate placed rects with still-fading-out labels (anti-flicker)
+    const lodPlacedRects = []
+    for (const node of graphNodes) {
+      if ((node._labelTargetAlpha || 0) === 0 && (node.labelAlpha || 0) > 0.15 && node._pillScreenRect) {
+        lodPlacedRects.push(node._pillScreenRect)
+      }
+    }
+
+    // Classify candidates
+    const candidates = []
+    for (let ni = 0; ni < graphNodes.length; ni++) {
+      const node = graphNodes[ni]
+      const driftX2 = !GRAPH_REDUCED_MOTION && node.driftF ? 1.5 * Math.sin(time * node.driftF + node.driftP1) : 0
+      const driftY2 = !GRAPH_REDUCED_MOTION && node.driftF ? 1.5 * Math.cos(time * node.driftF * 0.8 + node.driftP2) : 0
+      const wx = node.x + driftX2
+      const wy = node.y + driftY2
+      const sx = wx * z + graphPanX
+      const sy = wy * z + graphPanY
+      const inVP = sx >= -VP_MARGIN && sx <= screenW + VP_MARGIN && sy >= -VP_MARGIN && sy <= screenH + VP_MARGIN
+
+      let priority = -1
+      let alphaTarget = 0
+      const isP0 = node === focusNode || node === graphSelectedNode
+      if (isP0) {
+        priority = 0; alphaTarget = 1
+      } else if (hasFocus && neighborIdxSet.has(ni)) {
+        priority = 1; alphaTarget = 1
+      } else if (hasSearch && node.searchMatch) {
+        priority = 2; alphaTarget = 1
+      } else if (inVP && p3Cap > 0) {
+        priority = 3
+        // Focus active: P3 ambient participates in collision but wins only 8% dim;
+        // non-winners get target=0 (see placement loop below).
+        if (hasFocus) {
+          alphaTarget = 0.08
+        } else if (node.isHub) {
+          alphaTarget = hubRamp
+        } else {
+          alphaTarget = ambientRamp
+        }
+      }
+
+      node._labelTargetAlpha = 0  // default: hidden; set to real value if placed
+      node._labelDisplayText = node.label.length > truncLimit ? node.label.slice(0, truncLimit) + '…' : node.label
+
+      if (priority >= 0) {
+        candidates.push({ node, ni, priority, alphaTarget, importance: node.importance || 0 })
+      }
+    }
+
+    // Sort P0->P1->P2->P3, within class by importance desc
+    candidates.sort((a, b) => a.priority - b.priority || b.importance - a.importance)
+
+    let p1Count = 0, p2Count = 0, p3Count = 0
+    const labelFontBase = Math.max(7, Math.min(11, 9 / Math.max(z * 0.7, 0.5)))
+    ctx.font = `500 ${labelFontBase}px -apple-system, sans-serif`
+
+    for (const c of candidates) {
+      const { node, priority, alphaTarget } = c
+      // Caps
+      if (priority === 1 && p1Count >= 12) continue
+      if (priority === 2 && p2Count >= 20) continue
+      if (priority === 3) {
+        if (p3Count >= p3Cap) continue
+      }
+
+      // Compute pill screen rect
+      const driftX2 = !GRAPH_REDUCED_MOTION && node.driftF ? 1.5 * Math.sin(time * node.driftF + node.driftP1) : 0
+      const driftY2 = !GRAPH_REDUCED_MOTION && node.driftF ? 1.5 * Math.cos(time * node.driftF * 0.8 + node.driftP2) : 0
+      const wx = node.x + driftX2
+      const wy = node.y + driftY2
+      const r2 = node.isHub ? node.radius + 3 : node.radius
+      const textW = ctx.measureText(node._labelDisplayText).width
+      const pillW = textW + 10
+      const pillH = labelFontBase + 6
+
+      // Screen-space rect (world -> screen via zoom/pan)
+      const psx = (wx - pillW / 2) * z + graphPanX
+      const psy = (wy + r2 + 5) * z + graphPanY
+      const psw = pillW * z
+      const psh = pillH * z
+      const padded = { x: psx - 4, y: psy - 4, w: psw + 8, h: psh + 8 }
+
+      // Collision check
+      let collides = false
+      for (const rect of lodPlacedRects) {
+        if (padded.x < rect.x + rect.w && padded.x + padded.w > rect.x &&
+            padded.y < rect.y + rect.h && padded.y + padded.h > rect.y) {
+          collides = true; break
+        }
+      }
+
+      if (!collides) {
+        node._labelTargetAlpha = alphaTarget
+        node._pillScreenRect = padded
+        lodPlacedRects.push(padded)
+        if (priority === 1) p1Count++
+        else if (priority === 2) p2Count++
+        else if (priority === 3) p3Count++
+      }
+    }
+
+    // Exp-lerp labelAlpha per node (fade-in 180ms tau=60, fade-out 240ms tau=80)
+    for (const node of graphNodes) {
+      const target = node._labelTargetAlpha || 0
+      const current = node.labelAlpha || 0
+      const tau = target > current ? 60 : 80
+      node.labelAlpha = current + (target - current) * (1 - Math.exp(-dt / tau))
+    }
+  }
+
+  // === Draw nodes: halo sprites + core gradient ===
   for (let ni = 0; ni < graphNodes.length; ni++) {
     const node = graphNodes[ni]
     const color = GRAPH_TIER_COLORS[node.tier] || '#d97757'
+    const glowColor = GRAPH_TIER_GLOW[node.tier] || color
     const isHover = node === graphHover
     const isSelected = node === graphSelectedNode
     const isConnected = connectedToActive.has(ni)
     const searchFaded = hasSearch && !node.searchMatch
     const searchGlow = hasSearch && node.searchMatch
 
-    // Opacity
-    let nodeAlpha = 0.85
-    if (searchFaded) nodeAlpha = 0.12
-    else if (searchGlow) nodeAlpha = 1
-    else if (isHover || isSelected) nodeAlpha = 1
-    else if (activeNode && !isConnected) nodeAlpha = 0.35
+    let targetAlpha = 0.85
+    if (searchFaded) targetAlpha = 0.12
+    else if (searchGlow || isHover || isSelected) targetAlpha = 1.0
+    else if (activeNode && !isConnected) targetAlpha = 0.13
 
-    // Glow effect for hover, selected, search match
-    if ((isHover || isSelected || searchGlow) && !searchFaded) {
-      ctx.shadowColor = color
-      ctx.shadowBlur = isHover ? 20 : (searchGlow ? 15 : 10)
+    // Hover-crossfade: exponential lerp toward targetAlpha (Poly spec section 2)
+    if (node.renderedAlpha === undefined) node.renderedAlpha = targetAlpha
+    node.renderedAlpha += (targetAlpha - node.renderedAlpha) * lerpFactor
+    const displayAlpha = node.renderedAlpha
+
+    // Pop-in scale: 0->1 back-out 300ms, staggered (Poly spec section 2)
+    let popScale = 1
+    if (!GRAPH_REDUCED_MOTION && node.birthMs && nowMs < node.birthMs + 300) {
+      const t = Math.max(0, Math.min(1, (nowMs - node.birthMs) / 300))
+      popScale = graphEaseOutBack(t)
     }
 
-    // Connected nodes get subtle highlight
-    if (isConnected && !searchFaded) {
-      ctx.shadowColor = color
-      ctx.shadowBlur = 6
+    // Idle drift offset (render only, NOT fed back into simulation)
+    let driftX = 0, driftY = 0
+    if (!GRAPH_REDUCED_MOTION && node.driftF) {
+      const A = node.isHub ? 1.0 : 1.5
+      driftX = A * Math.sin(time * node.driftF + node.driftP1)
+      driftY = A * Math.cos(time * node.driftF * 0.8 + node.driftP2)
     }
+    const rx = node.x + driftX
+    const ry = node.y + driftY
 
     const r = isHover ? node.radius + 3 : (isSelected ? node.radius + 2 : node.radius)
 
-    // Node fill
-    ctx.fillStyle = color
-    ctx.globalAlpha = nodeAlpha
+    // Hub pulse: animated outer ring radius
+    const hubPulseR = node.isHub && !GRAPH_REDUCED_MOTION
+      ? r + 5 + 1.5 * Math.sin(time * 2.1 + node.id * 0.5)
+      : r + 5
+
+    // Pop-in: apply scale transform around node center
+    if (popScale !== 1) {
+      ctx.save()
+      ctx.translate(rx, ry)
+      ctx.scale(popScale, popScale)
+      ctx.translate(-rx, -ry)
+    }
+
+    // Ambient halo via glow sprite (replaces shadowBlur in loop)
+    if (!searchFaded) {
+      const haloScale = isHover || isSelected ? 4.5 : (isConnected ? 4.0 : 3.6)
+      const haloR = r * haloScale
+      const haloAlpha = isDark ? (isHover || isSelected ? 1.0 : 0.75) : 0.35
+      const sprite = graphGlowSprites[node.tier]
+      if (sprite) {
+        if (isDark) ctx.globalCompositeOperation = 'lighter'
+        ctx.globalAlpha = searchFaded ? 0.04 : haloAlpha * displayAlpha
+        ctx.drawImage(sprite, rx - haloR, ry - haloR, haloR * 2, haloR * 2)
+        ctx.globalCompositeOperation = 'source-over'
+      }
+    }
+    // Core alpha: dark mode uses displayAlpha; light mode bumps to ~0.9 ambient
+    // so the halo's 0.35 multiplier doesn't drag the core down visually (Poly §4)
+    ctx.globalAlpha = isDark ? displayAlpha : Math.min(displayAlpha * (0.9 / 0.85), 1.0)
+
+    // Node core: radial gradient with highlight center offset
+    const coreGrad = ctx.createRadialGradient(rx - r * 0.25, ry - r * 0.25, 0, rx, ry, r)
+    if (isDark) {
+      coreGrad.addColorStop(0.00, '#ffffff')
+      coreGrad.addColorStop(0.25, glowColor)
+      coreGrad.addColorStop(1.00, color)
+    } else {
+      coreGrad.addColorStop(0.00, '#ffffff')
+      coreGrad.addColorStop(1.00, color)
+    }
+    ctx.fillStyle = coreGrad
     ctx.beginPath()
-    ctx.arc(node.x, node.y, r, 0, Math.PI * 2)
+    ctx.arc(rx, ry, r, 0, Math.PI * 2)
     ctx.fill()
 
-    // Subtle border ring for selected
+    // Selected ring
     if (isSelected) {
-      ctx.strokeStyle = color
+      ctx.strokeStyle = glowColor
       ctx.lineWidth = 2
       ctx.globalAlpha = 0.6
       ctx.beginPath()
-      ctx.arc(node.x, node.y, r + 4, 0, Math.PI * 2)
+      ctx.arc(rx, ry, r + 4, 0, Math.PI * 2)
       ctx.stroke()
     }
 
-    ctx.shadowBlur = 0
-    ctx.shadowColor = 'transparent'
-
-    // === Orphan/hub badges (semantic link status) ===
+    // Orphan dashed ring / hub pulsing ring
     if (node.isOrphan && !searchFaded) {
-      // Dashed outer ring: memory has no semantic links yet
-      ctx.globalAlpha = nodeAlpha * 0.6
+      ctx.globalAlpha = displayAlpha * 0.6
       ctx.strokeStyle = isDark ? '#888' : '#aaa'
       ctx.lineWidth = 1
       ctx.setLineDash([2, 2])
       ctx.beginPath()
-      ctx.arc(node.x, node.y, r + 5, 0, Math.PI * 2)
+      ctx.arc(rx, ry, r + 5, 0, Math.PI * 2)
       ctx.stroke()
       ctx.setLineDash([])
     } else if (node.isHub && !searchFaded) {
-      // Solid outer ring: high-connectivity hub node
-      ctx.globalAlpha = nodeAlpha * 0.8
-      ctx.strokeStyle = color
+      ctx.globalAlpha = displayAlpha * 0.8
+      ctx.strokeStyle = glowColor
       ctx.lineWidth = 2
       ctx.beginPath()
-      ctx.arc(node.x, node.y, r + 5, 0, Math.PI * 2)
+      ctx.arc(rx, ry, hubPulseR, 0, Math.PI * 2)
       ctx.stroke()
     }
-    ctx.globalAlpha = nodeAlpha
 
-    // === Always show label (pill/badge style) ===
-    if (!searchFaded || (searchFaded && nodeAlpha > 0.15)) {
-      const labelText = node.label
+    ctx.globalAlpha = displayAlpha
+
+    // Label pill (LOD-gated, Poly spec section 6)
+    const labelA = node.labelAlpha || 0
+    if (labelA > 0.015) {
       const labelFontSize = Math.max(7, Math.min(11, 9 / Math.max(graphZoom * 0.7, 0.5)))
       ctx.font = (isHover || isSelected) ? `600 ${labelFontSize + 1}px -apple-system, sans-serif` : `500 ${labelFontSize}px -apple-system, sans-serif`
-      const textWidth = ctx.measureText(labelText).width
+      const displayLabel = node._labelDisplayText || node.label
+      const textWidth = ctx.measureText(displayLabel).width
       const pillW = textWidth + 10
       const pillH = labelFontSize + 6
-      const pillX = node.x - pillW / 2
-      const pillY = node.y + r + 5
+      const pillX = rx - pillW / 2
+      const pillY = ry + r + 5
 
-      // Dark pill background
-      ctx.globalAlpha = searchFaded ? 0.08 : ((isHover || isSelected) ? 0.9 : 0.65)
-      ctx.fillStyle = isDark ? 'rgba(20,20,19,0.85)' : 'rgba(30,30,28,0.8)'
+      ctx.globalAlpha = labelA * ((isHover || isSelected) ? 0.9 : 0.65)
+      ctx.fillStyle = 'rgba(20,20,19,0.85)'
       graphRoundRect(ctx, pillX, pillY, pillW, pillH, 3)
       ctx.fill()
 
-      // White text
-      ctx.fillStyle = isDark ? '#e8e7e0' : '#faf9f5'
-      ctx.globalAlpha = searchFaded ? 0.1 : ((isHover || isSelected) ? 1 : 0.85)
+      ctx.fillStyle = '#faf9f5'
+      ctx.globalAlpha = labelA * ((isHover || isSelected) ? 1 : 0.85)
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
-      ctx.fillText(labelText, node.x, pillY + pillH / 2)
+      ctx.fillText(displayLabel, rx, pillY + pillH / 2)
     }
 
     ctx.globalAlpha = 1
     ctx.textBaseline = 'alphabetic'
+
+    // Restore pop-in transform if applied
+    if (popScale !== 1) ctx.restore()
   }
 
-  // Hover tooltip (richer than before)
+  // === Hover tooltip (shadowBlur allowed: one draw per frame max) ===
   if (graphHover && !graphSelectedNode) {
     const node = graphHover
+    const driftX = !GRAPH_REDUCED_MOTION && node.driftF ? 1.5 * Math.sin(time * node.driftF + node.driftP1) : 0
+    const driftY = !GRAPH_REDUCED_MOTION && node.driftF ? 1.5 * Math.cos(time * node.driftF * 0.8 + node.driftP2) : 0
+    const rx = node.x + driftX
+    const ry = node.y + driftY
+
     const tLabels = { hot: 'Hot', warm: 'Warm', cold: 'Cold', shared: 'Shared' }
-    const text = `${tLabels[node.tier] || node.tier} | ${node.agent}`
-    const kw = node.keywords.length > 0 ? node.keywords.join(', ') : ''
-    const conns = `${Math.round(node.connectionCount)} connections`
+    const text = `${node.label}`
+    const sub = `${tLabels[node.tier] || node.tier} | ${node.agent}`
+    const conns = `${node.degree} kapcsolat`
 
     ctx.font = 'bold 11px -apple-system, sans-serif'
-    const tw = Math.max(ctx.measureText(text).width, kw ? ctx.measureText(kw).width : 0, ctx.measureText(conns).width) + 24
-    const th = kw ? 64 : 48
-    let tx = node.x - tw / 2
-    let ty = node.y - node.radius - th - 12
+    const tw = Math.max(ctx.measureText(text).width, ctx.measureText(sub).width, ctx.measureText(conns).width) + 24
+    const th = 64
+    const tx = Math.min(rx - tw / 2, (graphCanvas.width / (window.devicePixelRatio || 1)) / graphZoom - tw - 10)
+    const ty = ry - node.radius - th - 12
 
-    // Tooltip background
-    ctx.fillStyle = isDark ? 'rgba(31,30,29,0.95)' : 'rgba(255,255,255,0.96)'
-    ctx.strokeStyle = borderColor
+    ctx.fillStyle = 'rgba(31,30,29,0.92)'
+    ctx.strokeStyle = '#3d3d3a'
     ctx.lineWidth = 1
-    ctx.shadowColor = 'rgba(0,0,0,0.15)'
+    ctx.shadowColor = 'rgba(0,0,0,0.25)'
     ctx.shadowBlur = 12
     graphRoundRect(ctx, tx, ty, tw, th, 8)
     ctx.fill()
@@ -913,16 +1309,15 @@ function renderGraph() {
     ctx.shadowBlur = 0
     ctx.shadowColor = 'transparent'
 
-    ctx.fillStyle = textColor
-    ctx.font = 'bold 11px -apple-system, sans-serif'
+    ctx.fillStyle = '#faf9f5'
+    ctx.font = '600 11px -apple-system, sans-serif'
     ctx.textAlign = 'left'
     ctx.fillText(text, tx + 12, ty + 18)
     ctx.font = '10px -apple-system, sans-serif'
-    ctx.fillStyle = textMuted
-    ctx.fillText(conns, tx + 12, ty + 34)
-    if (kw) {
-      ctx.fillText(kw.length > 40 ? kw.slice(0, 40) + '...' : kw, tx + 12, ty + 50)
-    }
+    ctx.fillStyle = '#ff9a70'
+    ctx.fillText(sub, tx + 12, ty + 34)
+    ctx.fillStyle = '#73726c'
+    ctx.fillText(conns, tx + 12, ty + 50)
   }
 
   ctx.restore()
@@ -1040,6 +1435,7 @@ function showZoomIndicator() {
 
   // Mouse move: hover detection + panning + dragging
   canvas.addEventListener('mousemove', (e) => {
+    graphLastInteraction = Date.now()
     const rect = e.target.getBoundingClientRect()
     const sx = e.clientX - rect.left
     const sy = e.clientY - rect.top
@@ -1401,162 +1797,4 @@ memImportSaveBtn.addEventListener('click', async () => {
   memImportSaveBtn.disabled = false
 })
 
-// ============================================================
-// === Artifacts Tab (on Memories screen) ===
-// ============================================================
-
-let _artPreviewArtifactId = null
-
-export async function loadArtifactsTab() {
-  const listEl   = document.getElementById('memArtifactsList')
-  const emptyEl  = document.getElementById('memArtifactsEmpty')
-  const previewEl = document.getElementById('memArtifactsPreview')
-
-  if (!listEl) return
-  listEl.innerHTML = '<div style="padding:16px;color:var(--text-secondary)">' + t('memories.artifacts.loading') + '</div>'
-  if (emptyEl)  emptyEl.hidden = true
-  if (previewEl) previewEl.hidden = true
-
-  const agent = document.getElementById('memAgentFilter').value
-  const q     = document.getElementById('memSearchInput').value.trim()
-  const kind  = document.getElementById('memArtKindFilter').value
-
-  const params = new URLSearchParams()
-  if (agent) params.set('agent', agent)
-  if (q)     params.set('q', q)
-  if (kind)  params.set('kind', kind)
-  params.set('limit', '50')
-
-  try {
-    const res  = await fetch('/api/artifacts?' + params.toString())
-    const rows = await res.json()
-
-    if (!rows.length) {
-      listEl.innerHTML = ''
-      if (emptyEl) emptyEl.hidden = false
-      return
-    }
-
-    listEl.innerHTML = `
-      <table class="art-tab-table">
-        <thead>
-          <tr>
-            <th>${t('memories.artifacts.col.agent')}</th>
-            <th>${t('memories.artifacts.col.title')}</th>
-            <th>${t('memories.artifacts.col.kind')}</th>
-            <th>${t('memories.artifacts.col.date')}</th>
-            <th>${t('memories.artifacts.col.actions')}</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows.map(r => `
-            <tr>
-              <td>${escapeHtml(r.agent_id)}</td>
-              <td title="${escapeHtml(r.title)}">${escapeHtml(r.title.length > 48 ? r.title.slice(0, 48) + '…' : r.title)}</td>
-              <td><span class="badge">${escapeHtml(r.kind)}</span></td>
-              <td>${new Date(r.created_at * 1000).toLocaleDateString('hu-HU')}</td>
-              <td class="art-tab-actions">
-                <button class="btn-sm art-preview-btn" data-id="${escapeHtml(r.id)}">${t('memories.artifacts.btn.preview')}</button>
-                <button class="btn-sm art-open-btn" data-id="${escapeHtml(r.id)}">${t('memories.artifacts.btn.open')}</button>
-              </td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
-    `
-  } catch {
-    listEl.innerHTML = '<div style="padding:16px;color:var(--danger)">' + t('memories.artifacts.load_error') + '</div>'
-  }
-}
-
-// Delegated click handler for the artifacts tab list
-document.getElementById('memArtifactsList').addEventListener('click', async (e) => {
-  const previewBtn = e.target.closest('.art-preview-btn')
-  const openBtn    = e.target.closest('.art-open-btn')
-  if (!previewBtn && !openBtn) return
-
-  const id = (previewBtn || openBtn).dataset.id
-  if (!id) return
-
-  if (previewBtn) {
-    const previewEl = document.getElementById('memArtifactsPreview')
-    if (_artPreviewArtifactId === id && !previewEl.hidden) {
-      previewEl.hidden = true
-      _artPreviewArtifactId = null
-      return
-    }
-    _artPreviewArtifactId = id
-    previewEl.hidden = false
-    previewEl.innerHTML = '<div style="padding:16px;color:var(--text-secondary)">' + t('memories.artifacts.loading') + '</div>'
-
-    try {
-      const res  = await fetch(`/api/artifacts/${id}`)
-      const art  = await res.json()
-      const isText = ['html', 'markdown', 'json', 'text'].includes(art.kind)
-
-      if (art.kind === 'html') {
-        // sandbox=allow-scripts, NO allow-same-origin -- script runs in a null origin
-        previewEl.innerHTML = `<iframe class="art-preview-frame" sandbox="allow-scripts"
-          srcdoc="${escapeHtml(art.content)}"></iframe>`
-      } else if (art.kind === 'markdown') {
-        // renderMarkdown escapes all user content via escapeHtml/mdInline -- safe for innerHTML
-        previewEl.innerHTML = `<div class="markdown-body md-rendered" style="padding:12px;overflow-y:auto">${renderMarkdown(art.content)}</div>`
-      } else if (art.kind === 'json') {
-        // highlightJson HTML-escapes all string values via escapeHtml -- safe for innerHTML
-        previewEl.innerHTML = `<pre class="art-preview-pre">${highlightJson(art.content)}</pre>`
-      } else if (isText) {
-        previewEl.innerHTML = `<pre class="art-preview-pre">${escapeHtml(art.content)}</pre>`
-      } else {
-        const bytes   = atob(art.content)
-        const bArr    = new Uint8Array(bytes.length)
-        for (let i = 0; i < bytes.length; i++) bArr[i] = bytes.charCodeAt(i)
-        const blob    = new Blob([bArr], { type: art.mime })
-        const url     = URL.createObjectURL(blob)
-        previewEl.innerHTML = `<a class="btn" href="${url}" download="${escapeHtml(art.title)}">${t('memories.artifacts.btn.download')}</a>`
-      }
-    } catch {
-      previewEl.innerHTML = '<div style="padding:16px;color:var(--danger)">' + t('memories.artifacts.load_error') + '</div>'
-    }
-  }
-
-  if (openBtn) {
-    try {
-      const res  = await fetch(`/api/artifacts/${id}/view-token`, { method: 'POST' })
-      const data = await res.json()
-      // Guard: only open same-origin paths; reject protocol-relative (//evil.com)
-      // and any non-relative URL by parsing against the current origin.
-      if (data.url) {
-        try {
-          const parsed = new URL(data.url, window.location.origin)
-          if (parsed.origin === window.location.origin) {
-            window.open(parsed.pathname + parsed.search + parsed.hash, '_blank', 'noopener,noreferrer')
-          } else {
-            showToast(t('memories.artifacts.load_error'))
-          }
-        } catch {
-          showToast(t('memories.artifacts.load_error'))
-        }
-      }
-      else showToast(t('memories.artifacts.load_error'))
-    } catch {
-      showToast(t('memories.artifacts.load_error'))
-    }
-  }
-})
-
-// Close artifacts preview on click-outside or Escape
-document.getElementById('memArtifactsPreview')?.addEventListener('click', (e) => {
-  if (e.target === e.currentTarget) {
-    e.currentTarget.hidden = true
-    _artPreviewArtifactId = null
-  }
-})
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') {
-    const previewEl = document.getElementById('memArtifactsPreview')
-    if (previewEl && !previewEl.hidden) {
-      previewEl.hidden = true
-      _artPreviewArtifactId = null
-    }
-  }
-})
+// (Artifacts tab removed -- redundant with the dedicated Artifacts sidebar page)

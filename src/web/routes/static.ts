@@ -168,12 +168,15 @@ export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promis
   // ES modules extracted from app.js during modularization (issue #3).
   // Path-traversal guard: only bare filenames matching [a-zA-Z0-9_-]+.js
   // are accepted -- no slashes, no dots, no encoded characters.
+  // Modules are served no-cache (ETag revalidation) because their URLs are
+  // not versioned in index.html; a stale cached module after a deploy would
+  // mismatched the freshly-fetched HTML and cause fatal init errors.
   if (path.startsWith('/modules/')) {
     const moduleFile = path.slice('/modules/'.length)
     if (MODULE_FILENAME_PATTERN.test(moduleFile)) {
       const modulePath = join(webDir, 'modules', moduleFile)
       if (existsSync(modulePath)) {
-        serveFile(req, res, modulePath, { cacheSeconds: 86400 })
+        serveFile(req, res, modulePath)
         return true
       }
     }

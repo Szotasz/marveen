@@ -2952,7 +2952,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
-  height: 600px;
+  height: max(560px, calc(100vh - 380px));
 }
 #memGraphCanvas {
   width: 100%;
@@ -3082,6 +3082,22 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   line-height: 1.6;
   opacity: 0.7;
   pointer-events: none;
+}
+
+/* Graph node-limit bar */
+.graph-limit-bar {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(20,20,19,0.75);
+  border: 1px solid #3d3d3a;
+  border-radius: 8px;
+  padding: 5px 10px;
+  z-index: 5;
+  pointer-events: all;
 }
 
 /* === Tier Badges === */
