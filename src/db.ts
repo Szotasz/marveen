@@ -736,6 +736,30 @@ export function runMemoryMaintenance(opts: {
     // Only warm -> cold: hot is manually managed; shared belongs to all agents.
     // created_at check: memory must be at least warmToColdSecs old before it
     // can be auto-archived (a brand-new unread memory is not the same as a stale one).
+
+    // Log warm->cold transitions before UPDATE so memory_versions has an audit trail.
+    // SELECT candidates first (same WHERE as the UPDATE below), then bulk-insert versions.
+    type CandRow = { id: number; content: string; keywords: string | null }
+    const warmToColdCandidates = db.prepare(`
+      SELECT id, content, keywords FROM memories
+      WHERE category = 'warm'
+        AND created_at < ? - ?
+        AND NOT EXISTS (
+          SELECT 1 FROM span_reads
+          WHERE span_reads.memory_id = memories.id
+            AND span_reads.read_at > ? - ?
+        )
+    `).all(now, warmToColdSecs, now, warmToColdSecs) as CandRow[]
+
+    if (warmToColdCandidates.length > 0) {
+      const logV = db.prepare(
+        'INSERT INTO memory_versions(memory_id, content, category, keywords, changed_at, changed_by, change_type) VALUES (?,?,?,?,?,?,?)'
+      )
+      for (const c of warmToColdCandidates) {
+        logV.run(c.id, c.content, 'cold', c.keywords, now, 'system:maintenance', 'category_change')
+      }
+    }
+
     const warmToCold = db.prepare(`
       UPDATE memories
       SET category = 'cold', updated_at = ?
@@ -747,6 +771,27 @@ export function runMemoryMaintenance(opts: {
             AND span_reads.read_at > ? - ?
         )
     `).run(now, now, warmToColdSecs, now, warmToColdSecs).changes
+
+    // Log cold->warm transitions before UPDATE.
+    const coldToWarmCandidates = db.prepare(`
+      SELECT id, content, keywords FROM memories
+      WHERE category = 'cold'
+        AND id IN (
+          SELECT memory_id FROM span_reads
+          WHERE read_at > ? - ?
+          GROUP BY memory_id
+          HAVING COUNT(DISTINCT agent_id) >= ?
+        )
+    `).all(now, coldToWarmSecs, minAgents) as CandRow[]
+
+    if (coldToWarmCandidates.length > 0) {
+      const logV = db.prepare(
+        'INSERT INTO memory_versions(memory_id, content, category, keywords, changed_at, changed_by, change_type) VALUES (?,?,?,?,?,?,?)'
+      )
+      for (const c of coldToWarmCandidates) {
+        logV.run(c.id, c.content, 'warm', c.keywords, now, 'system:maintenance', 'category_change')
+      }
+    }
 
     const coldToWarm = db.prepare(`
       UPDATE memories

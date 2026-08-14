@@ -10,6 +10,9 @@ const NODE_C = { id: 3, content: 'Node C belongs to agent-b and has a long conte
 const EDGE_AB = { src_id: 1, dst_id: 2, weight: 0.9, created_at: 1300 }
 const EDGE_GHOST = { src_id: 3, dst_id: 99, weight: 0.85, created_at: 1600 }  // dst_id 99 absent
 
+// Tier-change version fixture: node A moved warm->cold at ts=1400
+const VERSION_A_COLD = { memory_id: 1, changed_at: 1400, category: 'cold' }
+
 const mockDb = { prepare: vi.fn() }
 
 vi.mock('../db.js', () => ({
@@ -60,14 +63,27 @@ function makeCtx(path: string): { ctx: RouteContext; out: { status: number; body
   return { ctx, out }
 }
 
+// Helper: mock (nodes, edges, degree, tierChanged) for non-empty node queries.
+// Query order: 1=nodes, 2=edges, 3=degree, 4=tier-changed versions
+function mockQueries(
+  nodes: any[], edges: any[], tierChangedVersions: any[] = []
+) {
+  mockDb.prepare = vi.fn()
+    .mockReturnValueOnce({ all: vi.fn().mockReturnValue(nodes) })         // nodes
+    .mockReturnValueOnce({ all: vi.fn().mockReturnValue(edges) })         // edges
+    .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })            // degree
+    .mockReturnValueOnce({ all: vi.fn().mockReturnValue(tierChangedVersions) }) // tier_changed
+}
+
 describe('GET /api/memories/graph/timeline', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
   it('returns nodes, edges, events, time_range structure', async () => {
     mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([NODE_A, NODE_B]) })   // nodes
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([EDGE_AB]) })           // edges
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([{ src_id: 1, degree: 1 }]) }) // degree
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([NODE_A, NODE_B]) })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([EDGE_AB]) })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([{ src_id: 1, degree: 1 }]) })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })  // tier_changed
 
     const { ctx, out } = makeCtx('/api/memories/graph/timeline?from=900&to=2000')
     const handled = await tryHandleMemories(ctx)
@@ -82,10 +98,7 @@ describe('GET /api/memories/graph/timeline', () => {
   })
 
   it('events contain created entries for each node', async () => {
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([NODE_A, NODE_B]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+    mockQueries([NODE_A, NODE_B], [])
 
     const { ctx, out } = makeCtx('/api/memories/graph/timeline?from=900&to=2000')
     await tryHandleMemories(ctx)
@@ -95,10 +108,7 @@ describe('GET /api/memories/graph/timeline', () => {
   })
 
   it('events contain linked entries for each edge', async () => {
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([NODE_A, NODE_B]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([EDGE_AB]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+    mockQueries([NODE_A, NODE_B], [EDGE_AB])
 
     const { ctx, out } = makeCtx('/api/memories/graph/timeline?from=900&to=2000')
     await tryHandleMemories(ctx)
@@ -109,10 +119,7 @@ describe('GET /api/memories/graph/timeline', () => {
   })
 
   it('events are sorted by ts ascending', async () => {
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([NODE_A, NODE_B]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([EDGE_AB]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+    mockQueries([NODE_A, NODE_B], [EDGE_AB])
 
     const { ctx, out } = makeCtx('/api/memories/graph/timeline?from=900&to=2000')
     await tryHandleMemories(ctx)
@@ -121,10 +128,7 @@ describe('GET /api/memories/graph/timeline', () => {
   })
 
   it('time_range reflects min/max of node created_at', async () => {
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([NODE_A, NODE_B, NODE_C]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+    mockQueries([NODE_A, NODE_B, NODE_C], [])
 
     const { ctx, out } = makeCtx('/api/memories/graph/timeline?from=900&to=2000')
     await tryHandleMemories(ctx)
@@ -134,10 +138,7 @@ describe('GET /api/memories/graph/timeline', () => {
   })
 
   it('edges with dst absent from nodes are filtered out (AND filter)', async () => {
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([NODE_C]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([EDGE_GHOST]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+    mockQueries([NODE_C], [EDGE_GHOST])
 
     const { ctx, out } = makeCtx('/api/memories/graph/timeline?from=1400&to=2000')
     await tryHandleMemories(ctx)
@@ -151,6 +152,7 @@ describe('GET /api/memories/graph/timeline', () => {
       .mockReturnValueOnce({ all: nodeAllMock })
       .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
       .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })  // tier_changed
 
     const { ctx, out } = makeCtx('/api/memories/graph/timeline?agent=agent-a&from=900&to=2000')
     await tryHandleMemories(ctx)
@@ -171,6 +173,7 @@ describe('GET /api/memories/graph/timeline', () => {
       .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
       .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
       .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+    // Note: no 4th call because nodeRows.length=0 skips edges+degree+tier_changed queries
 
     const { ctx, out } = makeCtx('/api/memories/graph/timeline?from=1&to=2')
     await tryHandleMemories(ctx)
@@ -185,6 +188,7 @@ describe('GET /api/memories/graph/timeline', () => {
       .mockReturnValueOnce({ all: vi.fn().mockReturnValue([NODE_A, NODE_B]) })
       .mockReturnValueOnce({ all: edgeAllMock })
       .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })  // tier_changed
 
     const { ctx } = makeCtx('/api/memories/graph/timeline?from=900&to=2000')
     await tryHandleMemories(ctx)
@@ -193,15 +197,58 @@ describe('GET /api/memories/graph/timeline', () => {
   })
 
   it('node labels are truncated to 40 chars + ellipsis when longer', async () => {
-    mockDb.prepare = vi.fn()
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([NODE_C]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+    mockQueries([NODE_C], [])
 
     const { ctx, out } = makeCtx('/api/memories/graph/timeline?from=1400&to=2000')
     await tryHandleMemories(ctx)
     const node = out.body.nodes[0]
     expect(node.label.length).toBeLessThanOrEqual(43)  // 40 + '...'
     expect(node.label).toMatch(/\.\.\.$/)
+  })
+
+  // §5.6 tier_changed events
+  it('includes tier_changed events from memory_versions category_change rows', async () => {
+    mockQueries([NODE_A, NODE_B], [], [VERSION_A_COLD])
+
+    const { ctx, out } = makeCtx('/api/memories/graph/timeline?from=900&to=2000')
+    await tryHandleMemories(ctx)
+    const tierEvents = out.body.events.filter((e: any) => e.type === 'tier_changed')
+    expect(tierEvents).toHaveLength(1)
+    expect(tierEvents[0].memory_id).toBe(VERSION_A_COLD.memory_id)
+    expect(tierEvents[0].ts).toBe(VERSION_A_COLD.changed_at)
+    expect(tierEvents[0].to_tier).toBe('cold')
+    expect(tierEvents[0].from_tier).toBe('warm')
+  })
+
+  it('tier_changed event from_tier is inferred correctly for cold->warm transition', async () => {
+    const versionBWarm = { memory_id: 2, changed_at: 1350, category: 'warm' }
+    mockQueries([NODE_A, NODE_B], [], [versionBWarm])
+
+    const { ctx, out } = makeCtx('/api/memories/graph/timeline?from=900&to=2000')
+    await tryHandleMemories(ctx)
+    const tierEvents = out.body.events.filter((e: any) => e.type === 'tier_changed')
+    expect(tierEvents).toHaveLength(1)
+    expect(tierEvents[0].to_tier).toBe('warm')
+    expect(tierEvents[0].from_tier).toBe('cold')
+  })
+
+  it('tier_changed events are sorted correctly with other events by ts', async () => {
+    // NODE_A created_at=1000, VERSION_A_COLD changed_at=1400, NODE_B created_at=1200
+    mockQueries([NODE_A, NODE_B], [], [VERSION_A_COLD])
+
+    const { ctx, out } = makeCtx('/api/memories/graph/timeline?from=900&to=2000')
+    await tryHandleMemories(ctx)
+    const ts = out.body.events.map((e: any) => e.ts)
+    // 1000 (created A), 1200 (created B), 1400 (tier_changed A)
+    expect(ts).toEqual([...ts].sort((a, b) => a - b))
+  })
+
+  it('tier_changed events are absent when memory_versions returns no category_change rows', async () => {
+    mockQueries([NODE_A, NODE_B], [EDGE_AB], [])
+
+    const { ctx, out } = makeCtx('/api/memories/graph/timeline?from=900&to=2000')
+    await tryHandleMemories(ctx)
+    const tierEvents = out.body.events.filter((e: any) => e.type === 'tier_changed')
+    expect(tierEvents).toHaveLength(0)
   })
 })

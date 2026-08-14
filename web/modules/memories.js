@@ -1932,6 +1932,10 @@ function buildTimeline(data) {
         _haloAlpha: 0,
         _halospikeT: 0,  // burst halo spike progress 0-1
         _halospikeStart: 0,
+        // tier-change animation (§5.6)
+        _tierChangeActive: false,
+        _tierChangePrevTier: tier,
+        _tierChangeStart: 0,
       }
       tlLayoutNodes.push(node)
       tlNodeMap[n.id] = node
@@ -2003,6 +2007,11 @@ function buildTimeline(data) {
   // Build event stream
   tlEvents = (data.events || []).slice().sort((a, b) => a.ts - b.ts)
 
+  // Edge animation states (§5.4b)
+  tlEdgeStates = (data.edges || []).map(e => ({
+    edge: e, _phase: 'waiting', _animStart: 0, _drawProgress: 0,
+  }))
+
   tlT0 = data.time_range.min_ts || 0
   tlT1 = data.time_range.max_ts || (tlT0 + 1)
   const span = Math.max(1, tlT1 - tlT0)
@@ -2038,6 +2047,17 @@ function tlRebuildAtTime(targetSimTime) {
       n._nodeScale = 0
       n._haloAlpha = 0
       n._halospikeT = 0
+    }
+  }
+  // Rebuild edge states instantly (§5.4b, scrub=no animation)
+  let aliveEdgeCount = 0
+  for (const es of tlEdgeStates) {
+    const visible = es.edge.weight >= 0.80 && es.edge.created_at <= targetSimTime
+    if (visible && aliveEdgeCount < 250) {
+      es._phase = 'alive'; es._drawProgress = 1
+      aliveEdgeCount++
+    } else {
+      es._phase = 'waiting'; es._drawProgress = 0
     }
   }
   tlParticles = []
@@ -2085,6 +2105,7 @@ function stopTimelineLoop() {
 }
 
 let tlLastFiredEventIdx = 0  // track which events have been fired
+let tlEdgeStates = []       // [{edge, _phase, _animStart, _drawProgress}]
 
 function tlCheckAndFireEvents(prevSim, curSim, wallNow) {
   for (let i = 0; i < tlEvents.length; i++) {
@@ -2106,7 +2127,41 @@ function tlCheckAndFireEvents(prevSim, curSim, wallNow) {
           tlUpdateEventFeed(n, 'created')
         }
       }
-      // tier-change events: skip gracefully (backend has no transition log)
+      if (ev.type === 'tier_changed' && ev.to_tier) {
+        const n = tlNodeMap[ev.memory_id]
+        if (n && n._phase === 'alive') {
+          n._tierChangePrevTier = n.tier
+          n.tier = ev.to_tier
+          n._tierChangeActive = true
+          n._tierChangeStart = wallNow
+          // Mini-burst at node position with new tier color
+          tlFireBurst(n, wallNow)
+        }
+      }
+    }
+  }
+  // Fire semantic edge animations (§5.4b): keyed by edge.created_at
+  for (const es of tlEdgeStates) {
+    if (es._phase !== 'waiting') continue
+    if (es.edge.created_at <= prevSim || es.edge.created_at > curSim) continue
+    const srcNode = tlNodeMap[es.edge.src_id]
+    const dstNode = tlNodeMap[es.edge.dst_id]
+    if (!srcNode || !dstNode) continue
+    if (es.edge.weight < 0.80) {
+      es._phase = 'flash'
+      es._animStart = wallNow
+      es._drawProgress = 0
+    } else {
+      const aliveCount = tlEdgeStates.filter(s => s._phase === 'alive').length
+      if (aliveCount < 250) {
+        es._phase = 'drawing'
+        es._animStart = wallNow
+        es._drawProgress = 0
+      }
+    }
+    // Feed event: only weight >= 0.90
+    if (es.edge.weight >= 0.90 && srcNode && dstNode) {
+      tlUpdateEventFeed(srcNode, 'linked', dstNode, es.edge)
     }
   }
 }
@@ -2227,23 +2282,37 @@ function tlTickTimelineParticles(dt) {
   })
 }
 
-function tlUpdateEventFeed(node, type) {
+function tlUpdateEventFeed(node, type, dstNode = null, edge = null) {
   const feed = document.getElementById('tlEventFeed')
   if (!feed) return
-  const ts = node.created_at
+
+  // Determine timestamp and text for this event type
+  let ts, text
+  if (type === 'linked' && dstNode && edge) {
+    ts = edge.created_at
+    const lblA = (node.label || '').slice(0, 16)
+    const lblB = (dstNode.label || '').slice(0, 16)
+    text = `${lblA} <-> ${lblB}`
+  } else {
+    ts = node.created_at
+    const lbl = (node.label || '').slice(0, 25)
+    const tierWord = node.tier || 'warm'
+    text = `+ ${lbl} (${tierWord})`
+  }
   const d = new Date(ts * 1000)
   const dateStr = `${String(d.getMonth() + 1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
-  const lbl = (node.label || '').slice(0, 25)
-  const tierWord = node.tier || 'warm'
-  const text = type === 'created' ? `+ ${lbl} (${tierWord})` : lbl
 
-  // Strictly enforce max 2 live rows before adding new one.
-  // Count only non-fading rows; rapid event bursts can otherwise bypass the cap.
+  // Cap total rows (live + fading) at 12 so dense playback can't pile up.
+  // Oldest fading rows are removed immediately; oldest live rows start fading.
   feed.querySelectorAll('.tl-feed-row.newest').forEach(r => r.classList.remove('newest'))
-  const liveRows = Array.from(feed.querySelectorAll('.tl-feed-row:not(.fading-out)'))
-  liveRows.slice(0, Math.max(0, liveRows.length - 2)).forEach(r => {
-    r.classList.add('fading-out')
-    setTimeout(() => r.remove(), 260)
+  const allRows = Array.from(feed.querySelectorAll('.tl-feed-row'))
+  allRows.slice(0, Math.max(0, allRows.length - 11)).forEach(r => {
+    if (r.classList.contains('fading-out')) {
+      r.remove()
+    } else {
+      r.classList.add('fading-out')
+      setTimeout(() => r.remove(), 260)
+    }
   })
 
   const row = document.createElement('div')
@@ -2394,6 +2463,51 @@ function renderTimeline(wallNow, dt) {
     }
   }
 
+  // Semantic edge layer (§5.4b): whisper-web lines between alive nodes
+  ctx.lineWidth = 0.7
+  for (const es of tlEdgeStates) {
+    if (es._phase === 'waiting') continue
+    const srcNode = tlNodeMap[es.edge.src_id]
+    const dstNode = tlNodeMap[es.edge.dst_id]
+    if (!srcNode || !dstNode) continue
+    if (srcNode._phase === 'waiting' || dstNode._phase === 'waiting') continue
+
+    let drawProg = 0
+    if (es._phase === 'alive') {
+      drawProg = 1
+    } else if (es._phase === 'drawing') {
+      const elapsed = wallNow - es._animStart
+      drawProg = Math.min(1, elapsed / 450)
+      es._drawProgress = drawProg
+      if (elapsed >= 450) es._phase = 'alive'
+    } else if (es._phase === 'flash') {
+      const elapsed = wallNow - es._animStart
+      if (elapsed >= 350) { es._phase = 'waiting'; continue }
+      // Triangle wave: rise 175ms, fall 175ms
+      drawProg = elapsed < 175 ? elapsed / 175 : (350 - elapsed) / 175
+    }
+    if (drawProg < 0.005) continue
+
+    const x0 = srcNode._tx, y0 = srcNode._ty
+    const x1 = dstNode._tx, y1 = dstNode._ty
+    // Partial line draw-in from src toward dst
+    const ex = x0 + (x1 - x0) * drawProg
+    const ey = y0 + (y1 - y0) * drawProg
+
+    const w = es.edge.weight
+    const baseAlpha = w >= 0.90 ? 0.12 + 0.25 * w : 0.08 + 0.15 * w
+    const alpha = es._phase === 'flash'
+      ? Math.min(1, baseAlpha * 4 * drawProg)  // flash: brighter, fades with wave
+      : baseAlpha * drawProg
+    ctx.beginPath()
+    ctx.moveTo(x0, y0)
+    ctx.lineTo(ex, ey)
+    ctx.strokeStyle = '#ffffff'
+    ctx.globalAlpha = Math.min(1, alpha)
+    ctx.stroke()
+    ctx.globalAlpha = 1
+  }
+
   // Branches and nodes
   const now400 = wallNow
   for (const n of tlLayoutNodes) {
@@ -2469,8 +2583,20 @@ function renderTimeline(wallNow, dt) {
       }
 
       const tier = n.tier
+
+      // §5.6 tier-change crossfade: cross-fade glow from prev tier to new tier over 600ms
+      let tcProg = 1  // 1 = fully new tier
+      if (n._tierChangeActive) {
+        const tcElapsed = wallNow - n._tierChangeStart
+        if (tcElapsed >= 600) {
+          n._tierChangeActive = false
+        } else {
+          tcProg = tcElapsed / 600  // 0→1 linear
+        }
+      }
       const glowCol = GRAPH_TIER_GLOW[tier] || '#ffffff'
       const baseCol = GRAPH_TIER_COLORS[tier] || '#888'
+
       const scale = n._nodeScale
       const baseRadius = 5
 
@@ -2484,13 +2610,21 @@ function renderTimeline(wallNow, dt) {
         haloMult = 3.4 + n._halospikeT * (7 - 3.4)
       }
 
-      // Halo sprite
-      if (n._haloAlpha > 0.01 && graphGlowSprites[tier]) {
+      // Halo sprite (with §5.6 crossfade: blend prev tier out while new tier fades in)
+      if (n._haloAlpha > 0.01) {
         const haloRadius = baseRadius * haloMult * scale
         const sz = haloRadius * 2
-        ctx.globalAlpha = n._haloAlpha
         ctx.globalCompositeOperation = 'lighter'
-        ctx.drawImage(graphGlowSprites[tier], nx - haloRadius, ny - haloRadius, sz, sz)
+        // Outgoing tier halo fades out (only during crossfade)
+        if (tcProg < 1 && graphGlowSprites[n._tierChangePrevTier]) {
+          ctx.globalAlpha = n._haloAlpha * (1 - tcProg)
+          ctx.drawImage(graphGlowSprites[n._tierChangePrevTier], nx - haloRadius, ny - haloRadius, sz, sz)
+        }
+        // Incoming tier halo fades in
+        if (graphGlowSprites[tier]) {
+          ctx.globalAlpha = n._haloAlpha * (tcProg < 1 ? tcProg : 1)
+          ctx.drawImage(graphGlowSprites[tier], nx - haloRadius, ny - haloRadius, sz, sz)
+        }
         ctx.globalCompositeOperation = 'source-over'
         ctx.globalAlpha = 1
       }
