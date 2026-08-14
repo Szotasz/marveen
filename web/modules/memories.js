@@ -3125,34 +3125,14 @@ function switchGraphMode(newMode) {
   const feed = document.getElementById('tlEventFeed')
   const limitBar = document.getElementById('graphLimitBar')
 
-  if (crossfade) {
-    crossfade.classList.add('fading')
-    setTimeout(() => {
-      tlMode = newMode
-      document.querySelectorAll('.mode-seg').forEach(s => {
-        s.classList.toggle('active', s.dataset.mode === newMode)
-      })
-      if (newMode === 'timeline') {
-        stopGraphSimulation()
-        if (scrubber) scrubber.hidden = false
-        if (feed) feed.hidden = false
-        if (limitBar) limitBar.hidden = true
-        loadTimeline()
-      } else {
-        stopTimelineLoop()
-        if (scrubber) scrubber.hidden = true
-        if (feed) feed.hidden = true
-        if (limitBar) limitBar.hidden = false
-        loadMemoryGraph()
-      }
-      setTimeout(() => { crossfade.classList.remove('fading') }, 130)
-    }, 120)
-  } else {
-    // Fallback: no crossfade
+  function applyModeSwitch() {
     tlMode = newMode
     document.querySelectorAll('.mode-seg').forEach(s => {
       s.classList.toggle('active', s.dataset.mode === newMode)
     })
+    // Controls hint is strukt-only (Drag/Dbl-click don't apply in timeline)
+    const hint = document.querySelector('.graph-controls-hint')
+    if (hint) hint.hidden = newMode === 'timeline'
     if (newMode === 'timeline') {
       stopGraphSimulation()
       if (scrubber) scrubber.hidden = false
@@ -3166,6 +3146,16 @@ function switchGraphMode(newMode) {
       if (limitBar) limitBar.hidden = false
       loadMemoryGraph()
     }
+  }
+
+  if (crossfade) {
+    crossfade.classList.add('fading')
+    setTimeout(() => {
+      applyModeSwitch()
+      setTimeout(() => { crossfade.classList.remove('fading') }, 130)
+    }, 120)
+  } else {
+    applyModeSwitch()
   }
 }
 
