@@ -2130,6 +2130,10 @@ let tlScrubDragging = false
 let tlScrubWasPlaying = false
 let tlNodeMap = {}      // id -> tlLayoutNodes[i]
 let tlPlaybackSpeed = 1  // (t1-t0)/30s computed at load
+let tlRecording = false
+let tlMediaRecorder = null
+let tlRecordedChunks = []
+let tlFpsSamples = []    // recent frame deltas (ms) for FPS guardrail, capped at 15
 
 const TL_LIMB_ANGLES = { hot: -0.55, warm: 0.25, cold: 1.55, shared: 2.85 }
 const TL_TIERS = ['hot', 'warm', 'cold', 'shared']
@@ -2381,12 +2385,22 @@ function startTimelineLoop() {
     const dt = Math.min(now - tlLastWall, 100)  // cap to 100ms
     tlLastWall = now
 
+    // Collect FPS samples for video guardrail (uncapped dt excluded)
+    if (dt > 0 && dt < 100) {
+      tlFpsSamples.push(dt)
+      if (tlFpsSamples.length > 15) tlFpsSamples.shift()
+    }
+
     if (tlPlaying && !GRAPH_REDUCED_MOTION) {
       tlSimTime = Math.min(tlT1, tlSimTime + dt * 0.001 * tlPlaybackSpeed)
       if (tlSimTime >= tlT1) {
         tlSimTime = tlT1
         tlPlaying = false
         updatePlayBtn()
+        // Stop recording when playback reaches the end
+        if (tlRecording && tlMediaRecorder && tlMediaRecorder.state === 'recording') {
+          tlMediaRecorder.stop()
+        }
       }
       // Fire events that fall within the new simTime window
       tlCheckAndFireEvents(tlSimTime - dt * 0.001 * tlPlaybackSpeed, tlSimTime, now)
@@ -2689,6 +2703,86 @@ function updatePlayBtn() {
   if (!btn) return
   btn.innerHTML = tlPlaying ? '&#9646;&#9646;' : '&#9654;'
   btn.setAttribute('aria-label', tlPlaying ? 'Szünet' : 'Lejátszás')
+}
+
+function updateRecordBtn() {
+  const btn = document.getElementById('tlRecordBtn')
+  if (!btn) return
+  btn.disabled = tlRecording
+  if (tlRecording) {
+    btn.classList.add('recording')
+    btn.innerHTML = '&#9679; Rögzítés...'
+  } else {
+    btn.classList.remove('recording')
+    btn.innerHTML = '&#9210; Videó'
+  }
+}
+
+function tlStartRecording() {
+  if (tlRecording) return
+  if (!graphCanvas) return
+
+  // FPS guardrail: warn if recent average < 25 fps
+  if (tlFpsSamples.length >= 5) {
+    const avgDt = tlFpsSamples.reduce((a, b) => a + b, 0) / tlFpsSamples.length
+    const fps = Math.round(1000 / avgDt)
+    if (fps < 25) {
+      const ok = confirm(`A renderelés jelenleg ~${fps} fps-sel fut (ajánlott min. 25 fps). A mentett videó akadozhat. Folytatod?`)
+      if (!ok) return
+    }
+  }
+
+  // Reset timeline to start
+  tlSimTime = tlT0
+  tlRebuildAtTime(tlT0)
+  tlPlaying = false
+  updatePlayBtn()
+
+  // Init MediaRecorder on the canvas stream
+  const stream = graphCanvas.captureStream(30)
+  const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+    ? 'video/webm;codecs=vp9'
+    : 'video/webm'
+  tlRecordedChunks = []
+  tlMediaRecorder = new MediaRecorder(stream, { mimeType })
+
+  tlMediaRecorder.ondataavailable = (e) => {
+    if (e.data && e.data.size > 0) tlRecordedChunks.push(e.data)
+  }
+
+  tlMediaRecorder.onstop = () => {
+    const blob = new Blob(tlRecordedChunks, { type: 'video/webm' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    const now = new Date()
+    const dateStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`
+    a.download = `memoria-fa-${dateStr}.webm`
+    a.href = url
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    setTimeout(() => URL.revokeObjectURL(url), 10000)
+    tlRecording = false
+    tlMediaRecorder = null
+    tlRecordedChunks = []
+    updateRecordBtn()
+  }
+
+  tlMediaRecorder.onerror = () => {
+    tlRecording = false
+    tlMediaRecorder = null
+    tlRecordedChunks = []
+    updateRecordBtn()
+  }
+
+  tlRecording = true
+  updateRecordBtn()
+  tlMediaRecorder.start(250)  // emit chunks every 250ms
+
+  // Start playback from the beginning
+  tlLastWall = performance.now()
+  tlPlaying = true
+  updatePlayBtn()
 }
 
 function renderTimeline(wallNow, dt) {
@@ -3085,6 +3179,10 @@ document.getElementById('tlPlayBtn')?.addEventListener('click', () => {
   tlPlaying = !tlPlaying
   tlLastWall = performance.now()
   updatePlayBtn()
+})
+
+document.getElementById('tlRecordBtn')?.addEventListener('click', () => {
+  tlStartRecording()
 })
 
 // === Scrubber drag and click ===
