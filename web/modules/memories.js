@@ -432,9 +432,17 @@ const GRAPH_REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)
 let graphIdleRaf = null      // rAF handle for post-settle idle loop
 let graphLastInteraction = Date.now()
 let graphIdleSlowFrame = 0   // counts frames for 30fps throttle
+let graphLastRenderTs = 0    // for delta-time based lerp
 
 // Particle pool: up to 60 particles on active edges
 let graphParticles = []  // [{ edgeIdx, t, speed }]
+
+// Poly spec section 2: back-out easing for node pop-in (cubic-bezier(0.34,1.56,0.64,1))
+function graphEaseOutBack(t) {
+  const c1 = 1.70158
+  const c3 = c1 + 1
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2)
+}
 
 function makeGlowSprite(hexColor, size) {
   const c = document.createElement('canvas')
@@ -582,6 +590,15 @@ function buildGraph(graphData) {
     node.isOrphan = node.degree === 0
     node.isHub = node.degree >= HUB_THRESHOLD
   }
+
+  // Pop-in animation: stagger entry by node index (Poly spec section 2)
+  const popStagger = GRAPH_REDUCED_MOTION ? 0 : Math.min(10, 1200 / Math.max(graphNodes.length, 1))
+  const nowInit = Date.now()
+  for (let ni = 0; ni < graphNodes.length; ni++) {
+    graphNodes[ni].birthMs = nowInit + ni * popStagger
+    graphNodes[ni].renderedAlpha = 0  // lerp start value for hover-crossfade
+  }
+  graphLastRenderTs = 0  // reset delta tracker on new graph
 
   // Ensure controls hint and zoom indicator exist
   const graphView = document.getElementById('memGraphView')
@@ -831,7 +848,12 @@ function renderGraph() {
   ctx.translate(graphPanX, graphPanY)
   ctx.scale(graphZoom, graphZoom)
 
-  const time = Date.now() * 0.001
+  const nowMs = Date.now()
+  const time = nowMs * 0.001
+  const dt = graphLastRenderTs > 0 ? Math.min(nowMs - graphLastRenderTs, 50) : 16.67
+  graphLastRenderTs = nowMs
+  // Poly spec section 2: 180ms crossfade via exponential lerp (tau=60ms -> 95% at ~180ms)
+  const lerpFactor = 1 - Math.exp(-dt / 60)
   const hasSearch = graphSearchQuery.length > 0
 
   // === Tier cluster halos (lighter blend in dark; source-over in light) ===
@@ -975,6 +997,18 @@ function renderGraph() {
     else if (searchGlow || isHover || isSelected) targetAlpha = 1.0
     else if (activeNode && !isConnected) targetAlpha = 0.13
 
+    // Hover-crossfade: exponential lerp toward targetAlpha (Poly spec section 2)
+    if (node.renderedAlpha === undefined) node.renderedAlpha = targetAlpha
+    node.renderedAlpha += (targetAlpha - node.renderedAlpha) * lerpFactor
+    const displayAlpha = node.renderedAlpha
+
+    // Pop-in scale: 0->1 back-out 300ms, staggered (Poly spec section 2)
+    let popScale = 1
+    if (!GRAPH_REDUCED_MOTION && node.birthMs && nowMs < node.birthMs + 300) {
+      const t = Math.max(0, Math.min(1, (nowMs - node.birthMs) / 300))
+      popScale = graphEaseOutBack(t)
+    }
+
     // Idle drift offset (render only, NOT fed back into simulation)
     let driftX = 0, driftY = 0
     if (!GRAPH_REDUCED_MOTION && node.driftF) {
@@ -992,6 +1026,14 @@ function renderGraph() {
       ? r + 5 + 1.5 * Math.sin(time * 2.1 + node.id * 0.5)
       : r + 5
 
+    // Pop-in: apply scale transform around node center
+    if (popScale !== 1) {
+      ctx.save()
+      ctx.translate(rx, ry)
+      ctx.scale(popScale, popScale)
+      ctx.translate(-rx, -ry)
+    }
+
     // Ambient halo via glow sprite (replaces shadowBlur in loop)
     if (!searchFaded) {
       const haloScale = isHover || isSelected ? 4.5 : (isConnected ? 4.0 : 3.6)
@@ -1000,12 +1042,12 @@ function renderGraph() {
       const sprite = graphGlowSprites[node.tier]
       if (sprite) {
         if (isDark) ctx.globalCompositeOperation = 'lighter'
-        ctx.globalAlpha = searchFaded ? 0.04 : haloAlpha * targetAlpha
+        ctx.globalAlpha = searchFaded ? 0.04 : haloAlpha * displayAlpha
         ctx.drawImage(sprite, rx - haloR, ry - haloR, haloR * 2, haloR * 2)
         ctx.globalCompositeOperation = 'source-over'
       }
     }
-    ctx.globalAlpha = targetAlpha
+    ctx.globalAlpha = displayAlpha
 
     // Node core: radial gradient with highlight center offset
     const coreGrad = ctx.createRadialGradient(rx - r * 0.25, ry - r * 0.25, 0, rx, ry, r)
@@ -1034,7 +1076,7 @@ function renderGraph() {
 
     // Orphan dashed ring / hub pulsing ring
     if (node.isOrphan && !searchFaded) {
-      ctx.globalAlpha = targetAlpha * 0.6
+      ctx.globalAlpha = displayAlpha * 0.6
       ctx.strokeStyle = isDark ? '#888' : '#aaa'
       ctx.lineWidth = 1
       ctx.setLineDash([2, 2])
@@ -1043,7 +1085,7 @@ function renderGraph() {
       ctx.stroke()
       ctx.setLineDash([])
     } else if (node.isHub && !searchFaded) {
-      ctx.globalAlpha = targetAlpha * 0.8
+      ctx.globalAlpha = displayAlpha * 0.8
       ctx.strokeStyle = glowColor
       ctx.lineWidth = 2
       ctx.beginPath()
@@ -1051,10 +1093,10 @@ function renderGraph() {
       ctx.stroke()
     }
 
-    ctx.globalAlpha = targetAlpha
+    ctx.globalAlpha = displayAlpha
 
     // Label pill
-    if (!searchFaded || targetAlpha > 0.15) {
+    if (!searchFaded || displayAlpha > 0.15) {
       const labelText = node.label
       const labelFontSize = Math.max(7, Math.min(11, 9 / Math.max(graphZoom * 0.7, 0.5)))
       ctx.font = (isHover || isSelected) ? `600 ${labelFontSize + 1}px -apple-system, sans-serif` : `500 ${labelFontSize}px -apple-system, sans-serif`
@@ -1078,6 +1120,9 @@ function renderGraph() {
 
     ctx.globalAlpha = 1
     ctx.textBaseline = 'alphabetic'
+
+    // Restore pop-in transform if applied
+    if (popScale !== 1) ctx.restore()
   }
 
   // === Hover tooltip (shadowBlur allowed: one draw per frame max) ===
