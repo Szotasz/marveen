@@ -53,6 +53,16 @@ for arg in "$@"; do
   esac
 done
 
+# 🛑 A FoAGENS NEM LEHET CELPONT -- A SZKRIPT A SAJAT SESSIONJET OLNE MEG (az ordog merese, 2026-08-15).
+#    A `POST /api/agents/marveen/restart` NEM a sub-agens utat jarja: `agents.ts:1806` ->
+#    `isMainChannelsAgent` -> `hardRestartMarveenChannels()`, vagyis a fo session indul ujra --
+#    A MuVELET KOZEPEN. Az assignee ekkor mar at van allitva, a move SOHA nem fut le, es a kartya
+#    fel-atallt allapotban marad. Nem elmeleti: elesben all `marveen` assignee-ju `in_progress` kartya.
+#    A sajat kartyaimat kezzel viszem -- ez a kapu nem rolam szol.
+if [ "$FFej" = "marveen" ] && [ "$FFolytatas" -eq 0 ]; then
+  megall "a celpont a FoAGENS: a friss ablak a SAJAT sessiont inditana ujra a muvelet kozepen. A sajat kartyat kezzel vidd, vagy add meg a --folytatas kapcsolot."
+fi
+
 FToken="${KIOSZTAS_TOKEN:-}"
 
 if [ -z "$FToken" ]; then
@@ -181,9 +191,13 @@ if len(leiras) < 200 and len(comments) == 0:
 #    marad, es ott hibazni fogok. A kuszob azert all itt, hogy a hatar LATSZODJON, ne azert,
 #    hogy biztonsagerzetet adjon.
 
-# K6: ha a kartya KIZAROLAG a komment-agon ment at, a friss ablak NEM latja a merest -- a
-# dispatch-uzenet csak a cimet es a leirast viszi (`kanban.ts:95`). Ilyenkor kulon szolunk.
-csak_komment = len(leiras) < 200 and len(comments) > 0
+# K6: a dispatch-uzenet CSAK a cimet es a leirast viszi (`kanban.ts:95`) -- a KOMMENTEKET nem.
+# 🛑 AZ ELSo ALAK ROSSZ MEZoT MERT: a leiras hosszat nezte (`< 200`), nem a komment letet. Merve az
+#    eles tablan (ordog, 2026-08-15): 202 nyitott kartyan all >=200 karakteres leiras ES komment --
+#    osszesen 808 komment --, es EGYIK sem valtott volna ki uzenetet, holott epp azokon all a
+#    legtobb meres. A jelzes 5 kartyan tudott volna tuzelni a 352-bol.
+#    A helyes feltétel egyszeru: VAN-E KOMMENT.
+csak_komment = len(comments) > 0
 
 # A FOGLALTSAG-KAPU. A futo munkat nem szakitjuk felbe -- a friss ablak megolne.
 # 🛑 K3: A PAROSITAS NEM LEHET BETuHu. A dispatch `.trim().toLowerCase()`-szel celoz
@@ -232,6 +246,12 @@ friss_ablak() {
 
 if [ "$FFolytatas" -eq 0 ]; then
   friss_ablak "$FFej"
+else
+  # 🛑 A `--folytatas` AG SE LEHET NEMA (az ordog merese, 2026-08-15). A move UTAN a szkript
+  #    semmit nem mer vissza, es a dispatch NEGY okbol maradhat el -- HAROM esetben a
+  #    `dispatched_at` sem all be, tehat nyomot sem hagy. Elesben ez "kiosztva"-t adott UZENET
+  #    NELKUL. Amig a move utani visszameres nincs bekotve, ezen az agon MAGUNK kuldunk.
+  FIndok="${FIndok},folytatas"
 fi
 
 # ── 8. Move -> in_progress. Az ELSo kiadaskor EZ kuldi ki a kartyat (fireKanbanDispatch). ──────
@@ -242,7 +262,7 @@ api_ir POST "/api/kanban/$FKartya/move" "{\"status\":\"in_progress\",\"actor\":\
 #   (K6) CSAK KOMMENT-AGON ment at -> a dispatch a cimet es a leirast viszi, a KOMMENTEKET nem,
 #        vagyis eppen az a meres marad ki, amiert a kartya atment a kapun.
 case "$FIndok" in
-  *mar_ment*|*csak_komment*)
+  *mar_ment*|*csak_komment*|*folytatas*)
     FMsg="${KIOSZTAS_MSG_CMD:-$CDir/agent-msg.sh}"
     FCim=$(KI_DIR="$FMunka" KI_ID="$FKartya" python3 -c "
 import json, os
@@ -253,6 +273,10 @@ print((c.get('title') or '').strip())
 ")
     {
       printf '[Kanban feladat #%s]: %s\n\n' "$FKartya" "$FCim"
+      case "$FIndok" in
+        *folytatas*)
+          printf 'Ez a kartya FOLYTATAS -- a kontextusod megmaradt, nem kaptal friss ablakot.\n\n' ;;
+      esac
       case "$FIndok" in
         *mar_ment*)
           printf 'A kartya MAR VOLT egyszer kiadva, ezert ezt az uzenetet a kiosztas kuldi, nem a kezbesito (a kezbesites kartyankent egyszer fut le).\n\n' ;;

@@ -216,8 +216,13 @@ check "T9 VAN restart"                    "1" "$(hivas_szam 'restart')"
 check "T9 VAN move"                       "1" "$(hivas_szam 'move')"
 check "T9 a szkript MAGA kuldte ki"       "1" "$(hivas_szam 'MSG:')"
 
-echo "── T10 (K1/b): ELSo kiadas -> a move dispatchel, a szkript NE kuldjon meg egyet ─"
-setup_case "fut" "fut" "$CCardsOk" "$CCommentsVan"
+echo "── T10 (K1/b): ELSo kiadas, NULLA komment -> a move dispatchel, nincs sajat kuldes ─"
+# 🛑 AZ ESET PONTOSITVA a K6-javitas utan: eredetileg komment-es kartyaval futott, es a K6
+#    (komment -> kulon figyelmezteto uzenet) miatt bukott. A ketto NEM ellentmondas: a K6-uzenet
+#    nem a feladat MEGISMETLESE, hanem egy jelzes arrol, hogy a lenyeg a kommentekben van.
+#    A T10 celja szukebb: az ELSo KIADAS agan ne menjen ki MASODIK FELADAT-uzenet -- ezt tisztan
+#    nulla kommenttel lehet merni.
+setup_case "fut" "fut" "$CCardsOk" "$CCommentsNincs"
 rc=$(run_script "$CScript" K1 akka)
 check "T10 kilepesi kod 0"                "0" "$rc"
 check "T10 NINCS sajat kuldes (nem duplaz)" "0" "$(hivas_szam 'MSG:')"
@@ -240,6 +245,46 @@ setup_case "fut" "fut" "$CCardsFoglaltNagybetu" "$CCommentsVan"
 rc=$(run_script "$CScript" K1 akka)
 check "T12 kilepesi kod nem 0" "nem0" "$([ "$rc" != "0" ] && echo nem0 || echo 0)"
 check "T12 NINCS restart (a futo munka megmarad)" "0" "$(hivas_szam 'restart')"
+
+echo "── T16 (KRITIKUS): a cel-fej `marveen` -> MEGALL, mert a sajat sessiont olne meg ─"
+# 🛑 AZ ORDOG MASODIK ATMERESEBoL (2026-08-15, `c731ef74`): a `POST /api/agents/marveen/restart`
+#    NEM a sub-agens utat jarja -- `agents.ts:1806` -> `isMainChannelsAgent` -> `hardRestartMarveenChannels()`,
+#    vagyis a FoAGENS SAJAT sessionjet inditja ujra, a muvelet KOZEPEN. Az assignee ekkor MAR at van
+#    allitva, a move SOHA nem fut le, es a kartya fel-atallt allapotban marad.
+#    NEM ELMELETI: elesben all `marveen` assignee-ju `in_progress` kartya.
+setup_case "fut" "fut" "$CCardsOk" "$CCommentsVan"
+rc=$(run_script "$CScript" K1 marveen)
+check "T16 kilepesi kod nem 0" "nem0" "$([ "$rc" != "0" ] && echo nem0 || echo 0)"
+check "T16 NINCS restart"      "0" "$(hivas_szam 'restart')"
+check "T16 NINCS assignee-iras" "0" "$(hivas_szam 'PUT')"
+
+echo "── T17 (K6 javitva): van KOMMENT -> uzenet, fuggetlenul a leiras hosszatol ────"
+# Az elso alak a LEIRAS HOSSZAT merte (`<200`), nem a komment letet. Merve az eles tablan:
+# 202 nyitott kartyan all >=200 karakteres leiras ES komment (808 komment osszesen) -- egyik sem
+# valtott volna ki uzenetet, holott epp azokon all a legtobb meres. A K6-uzenet 5 kartyan tudott
+# volna tuzelni. A feltetel tehat: VAN-E KOMMENT.
+setup_case "fut" "fut" "$CCardsOk" "$CCommentsVan"
+rc=$(run_script "$CScript" K1 akka)
+check "T17 kilepesi kod 0"                     "0" "$rc"
+check "T17 hosszu leiras + komment -> VAN uzenet" "1" "$(hivas_szam 'MSG:')"
+
+echo "── T18: NINCS komment -> nincs felesleges uzenet ──────────────────────────────"
+CCardsHosszu='[{"id":"K1","status":"planned","assignee":"","title":"Teszt","description":"'"$(printf 'x%.0s' {1..250})"'"}]'
+setup_case "fut" "fut" "$CCardsHosszu" "$CCommentsNincs"
+rc=$(run_script "$CScript" K1 akka)
+check "T18 kilepesi kod 0"        "0" "$rc"
+check "T18 NINCS uzenet"          "0" "$(hivas_szam 'MSG:')"
+
+echo "── T19 (K2/b): a --folytatas ag SE legyen nema ────────────────────────────────"
+# A move UTAN a szkript semmit nem mert vissza. A dispatch NEGY okbol maradhat el, es HAROM nem is
+# allitja be a `dispatched_at`-ot -- tehat nyomot sem hagy. A `--folytatas` agon ez elesben
+# "kiosztva"-t adott UZENET NELKUL. Amig a move utani visszameres nincs bekotve, ezen az agon a
+# szkript MAGA kuld -- igy nincs nema eset.
+setup_case "fut" "fut" "$CCardsOk" "$CCommentsVan"
+rc=$(run_script "$CScript" K1 akka --folytatas)
+check "T19 kilepesi kod 0"     "0" "$rc"
+check "T19 NINCS restart"      "0" "$(hivas_szam 'restart')"
+check "T19 VAN sajat kuldes"   "1" "$(hivas_szam 'MSG:')"
 
 echo "── T13 (K7): a kapu 'fut'-ot ir, de rc=1 -> a kilepesi kod is szamit ──────────"
 # A qcassa-priority-gate.sh sajat szerzodese (a fejlec 8-12. sora) kimondja, hogy a kilepesi kod
