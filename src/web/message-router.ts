@@ -24,7 +24,9 @@ import {
   clearStaleParkedInput,
   sendPromptToSession,
   sessionExistsOnHost,
+  capturePane,
 } from './agent-process.js'
+import { detectPaneState, type PaneState } from '../pane-state.js'
 import { setLastInboundModality } from './voice-modality.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
@@ -74,6 +76,45 @@ export function shouldGiveUpOnInject(failCount: number, maxFailures: number): bo
  * note is addressed to the main agent, which drains via the pull model and
  * never hits this inject path.
  */
+// A stuck session blocks EVERY pending message to that agent, silently. The
+// warn log above never reached anyone on 2026-07-27 (2.5h stall found by hand),
+// so the stall goes to the main agent's inbox too. Rate limit comes from the
+// caller: it fires at most once per STUCK_ESCALATE_MS window per agent.
+//
+// Pure part exported for tests: returns the alert text, or null when no alert
+// may be sent (the main agent must never alert itself about itself).
+export function formatStuckSessionAlert(
+  agent: string,
+  mainAgentId: string,
+  session: string,
+  stuckMs: number,
+  pendingCount: number,
+  paneState: PaneState | null = null,
+): string | null {
+  if (agent === mainAgentId) return null
+  const min = Math.round(stuckMs / 60000)
+  const queue = `${pendingCount} pending message(s) queued`
+  // A busy pane means the session is working, so the alert must not read like
+  // "wedged, restart it" -- that framing is what turned the earlier busy-pane
+  // alerts into wasted restarts-in-waiting. It says what it is: a long turn,
+  // worth a look, not a restart on sight.
+  if (paneState === 'busy') {
+    return `[session-stuck] Agent '${agent}' (tmux ${session}) has been BUSY (actively working, spinner up) for ${min} min with ${queue}. Not a stall by itself -- check whether the turn is progressing or a tool call is wedged. Do NOT restart on this alert alone.`
+  }
+  return `[session-stuck] Agent '${agent}' (tmux ${session}) has been not-ready for ${min} min with ${queue}. Run the delivery-stall diagnosis: check the pane (busy vs idle vs full context) and restart the agent if it is wedged.`
+}
+
+function notifyOrchestratorOfStuckSession(agent: string, session: string, stuckMs: number, pendingCount: number, paneState: PaneState | null): void {
+  try {
+    const alert = formatStuckSessionAlert(agent, MAIN_AGENT_ID, session, stuckMs, pendingCount, paneState)
+    if (!alert) return
+    createAgentMessage('system', MAIN_AGENT_ID, alert)
+    logger.info({ agent, session, stuckMs, pendingCount, paneState }, 'session-stuck surfaced to orchestrator')
+  } catch (err) {
+    logger.warn({ err, agent }, 'Failed to enqueue session-stuck notification')
+  }
+}
+
 function notifyOrchestratorOfFailedHandoff(msg: AgentMessage, reason: string): void {
   try {
     // A failed message to the main agent can't happen (pull model), but guard
@@ -125,6 +166,32 @@ function notifyDelegationFailed(msg: AgentMessage, error: string): void {
 // message backlog grows large. State cleared when session becomes ready or absent.
 const STUCK_ESCALATE_MS = 10 * 60 * 1000  // 10 min continuously stuck -> escalate
 const agentStuckSince = new Map<string, number>()  // agent -> first tick stuck (Date.now)
+
+// A session in the middle of a long turn is NOT ready for a prompt, which is
+// exactly what a wedged session looks like from the queue side. On 2026-07-31
+// that produced three false alarms in one day (atlas 18:56, prisma 19:27, and
+// an earlier pair): busy pane, spinner and `esc to interrupt` visible, one or
+// two messages queued behind a turn that was working fine. Each one spent a
+// main-agent LLM round on a diagnosis whose answer was "it is working".
+//
+// The delivery-stall runbook's first pane rule -- "esc to interrupt = still
+// working, leave it alone" -- is mechanical, so the router applies it itself:
+// a busy pane does not escalate at the normal threshold. It still escalates
+// eventually, because a tool call CAN wedge with the spinner up, and a session
+// that has been busy for half an hour with mail queued behind it is worth a
+// look either way.
+const BUSY_STUCK_ESCALATE_MS = 30 * 60 * 1000  // busy pane: only after a much longer watchdog
+
+/**
+ * Pure decision: may a continuously not-ready session escalate now?
+ *
+ * `paneState` is what the pane showed at the escalation check, or null when it
+ * could not be read (remote host down, tmux gone). Unreadable is NOT treated as
+ * busy: a pane we cannot see is a reason to look sooner, not later.
+ */
+export function shouldEscalateStuckSession(paneState: PaneState | null, stuckMs: number): boolean {
+  return stuckMs > (paneState === 'busy' ? BUSY_STUCK_ESCALATE_MS : STUCK_ESCALATE_MS)
+}
 
 // ---- reconnect-backlog batching (card 2922e380 thread b) --------------------
 // When a session was absent and reconnects, old pending messages are summarized
@@ -505,16 +572,40 @@ export async function runMessageRouterTick(): Promise<void> {
         if (!stuckStart) {
           agentStuckSince.set(msg.to_agent, now)
         } else if (now - stuckStart > STUCK_ESCALATE_MS) {
-          // Session has been continuously stuck past the escalation threshold.
-          // Log at warn level so monitoring/revival tooling can act — the
-          // stuck-input-watcher and channel-monitor pick these patterns up.
-          logger.warn({
-            to: msg.to_agent, session,
-            stuckDurationMs: now - stuckStart,
-            pendingMsgCount: pending.filter(m => m.to_agent === msg.to_agent).length,
-          }, 'message-router: session STUCK — continuously not-ready past escalation threshold')
-          // Reset timer so we don't spam every tick; re-escalate after another window.
-          agentStuckSince.set(msg.to_agent, now)
+          // Past the normal threshold -- now, and only now, read the pane. A
+          // session mid-turn is not-ready for the same reason a wedged one is,
+          // so the queue side alone cannot tell them apart; the pane can.
+          // Capturing here (rather than every tick) keeps the healthy path at
+          // zero extra tmux calls.
+          const stuckMs = now - stuckStart
+          const pane = capturePane(session, host)
+          const paneState = pane != null ? detectPaneState(pane) : null
+          if (shouldEscalateStuckSession(paneState, stuckMs)) {
+            // Session has been continuously stuck past the escalation threshold.
+            // Log at warn level so monitoring/revival tooling can act — the
+            // stuck-input-watcher and channel-monitor pick these patterns up.
+            const pendingMsgCount = pending.filter(m => m.to_agent === msg.to_agent).length
+            logger.warn({
+              to: msg.to_agent, session,
+              stuckDurationMs: stuckMs,
+              pendingMsgCount,
+              paneState,
+            }, 'message-router: session STUCK — continuously not-ready past escalation threshold')
+            // Card 0a641b52: a log line nobody reads is not an alert. Surface the
+            // stall to the main agent's inbox so it can run the delivery-stall
+            // diagnosis (pane state, full context, restart). The escalation-window
+            // reset below doubles as the notification cooldown.
+            notifyOrchestratorOfStuckSession(msg.to_agent, session, stuckMs, pendingMsgCount, paneState)
+            // Reset timer so we don't spam every tick; re-escalate after another window.
+            agentStuckSince.set(msg.to_agent, now)
+          } else {
+            // Busy pane before the long watchdog: working, not wedged. The timer
+            // is deliberately NOT reset -- it has to keep running so a turn that
+            // never ends still reaches BUSY_STUCK_ESCALATE_MS.
+            logger.debug({
+              to: msg.to_agent, session, stuckDurationMs: stuckMs, paneState,
+            }, 'message-router: not-ready but pane is busy — deferring stuck escalation')
+          }
         }
         // Stale-parked-input janitor: a non-submitted line stuck in the input
         // box (e.g. a weak local model that typed its heartbeat reply into the

@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process"
 import { join } from "node:path"
 import { readFileSync } from "node:fs"
-import { STORE_DIR, TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_ID } from "../config.js"
+import { STORE_DIR, TELEGRAM_BOT_TOKEN } from "../config.js"
+import { resolveOwnerChatId } from "../owner-chat.js"
 import { atomicWriteFileSync } from "./atomic-write.js"
 import { logger } from "../logger.js"
 import { sendTelegramMessage } from "./telegram.js"
@@ -94,15 +95,16 @@ export function runCommandTask(task: ScheduledTask, now: number): void {
   logger.info({ task: task.name, ok, detail, fails: next.fails, action }, "command task ran")
 
   if (action === "none") return
-  if (!TELEGRAM_BOT_TOKEN || !ALLOWED_CHAT_ID) {
-    logger.warn({ task: task.name }, "command task alert suppressed: missing token/chat_id")
+  const ownerChat = resolveOwnerChatId()
+  if (!TELEGRAM_BOT_TOKEN || !ownerChat) {
+    logger.warn({ task: task.name }, "command task alert suppressed: missing token, or no owner chat (ALLOWED_CHAT_ID unset/placeholder and no paired channel)")
     return
   }
   const label = task.description || task.name
   const text = action === "alert"
     ? `\u{1F534} Hiba: ${label} nem v\u00e1laszol (${next.fails}. egym\u00e1s ut\u00e1ni hiba). R\u00e9szlet: ${detail}`
     : `\u{1F7E2} Helyre\u00e1llt: ${label} ism\u00e9t OK.`
-  sendTelegramMessage(TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_ID, text)
+  sendTelegramMessage(TELEGRAM_BOT_TOKEN, ownerChat, text)
     .then(() => logger.info({ task: task.name, action }, "command task alert sent"))
     .catch((err) => logger.warn({ err, task: task.name }, "command task alert send failed"))
 }

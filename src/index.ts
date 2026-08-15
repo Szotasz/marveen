@@ -1,6 +1,7 @@
 import {
   readFileSync,
   readlinkSync,
+  realpathSync,
   unlinkSync,
   mkdirSync,
   openSync,
@@ -8,9 +9,11 @@ import {
   writeSync,
 } from 'node:fs'
 import { join } from 'node:path'
-import { execFileSync, execSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
+import { runLsof } from './lsof.js'
 import type { Server as HttpServer } from 'node:http'
-import { PROJECT_ROOT, STORE_DIR, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
+import { PROJECT_ROOT, STORE_DIR, PID_FILENAME, WEB_PORT, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
+import { resolveOwnerChatId } from './owner-chat.js'
 import { initDatabase, backfillEmbeddings } from './db.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
 import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
@@ -75,13 +78,12 @@ function processCwd(pid: number): string | null {
     // Linux: cheap and exact.
     return readlinkSync(`/proc/${pid}/cwd`)
   } catch { /* not Linux or no access; try lsof (macOS) */ }
-  try {
-    const raw = execSync(`lsof -a -p ${pid} -d cwd -Fn 2>/dev/null || true`, { timeout: 2000, encoding: 'utf-8' })
-    const line = raw.split('\n').find((l) => l.startsWith('n'))
-    return line ? line.slice(1) : null
-  } catch {
-    return null
-  }
+  // Resolved-path lsof (LSOFPATH805): a bare `lsof` was command-not-found under
+  // the launchd PATH and silently returned null on the live box.
+  const raw = runLsof(['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], 2000)
+  if (raw == null) return null
+  const line = raw.split('\n').find((l) => l.startsWith('n'))
+  return line ? line.slice(1) : null
 }
 
 function argvBelongsToThisInstall(argv: string, pid: number): boolean {
@@ -96,17 +98,46 @@ function argvBelongsToThisInstall(argv: string, pid: number): boolean {
 // or node:fs directly.
 function buildProcessLockContext(): ProcessLockContext {
   const uid = typeof process.getuid === 'function' ? process.getuid() : null
+  // realpath so this compares equal against /proc/<pid>/cwd, which the
+  // kernel always reports fully symlink-resolved -- an un-resolved
+  // PROJECT_ROOT (e.g. reached via a symlinked path) would otherwise never
+  // match even for our own genuine predecessor.
+  let selfProjectRoot: string | null
+  try {
+    selfProjectRoot = realpathSync(PROJECT_ROOT)
+  } catch {
+    selfProjectRoot = null
+  }
   return {
     currentPid: process.pid,
     uid,
-    listPortHolders(port: number): number[] {
+    selfProjectRoot,
+    getProcessCwd(pid: number): string | null {
+      // Resolve the PID's cwd on BOTH platforms via the shared processCwd
+      // helper: /proc on Linux, `lsof -a -p <pid> -d cwd` on macOS. A previous
+      // version was /proc-only, which returned null for every pid on macOS (no
+      // /proc) and silently disabled the byBinary single-instance reclaim on
+      // the production platform. realpath the result so it compares equal to
+      // selfProjectRoot (also realpath'd) -- two different-looking paths to the
+      // same directory (symlink / bind mount) must still match. If the path is
+      // gone by the time we realpath, fall back to the raw value.
+      const cwd = processCwd(pid)
+      if (cwd == null) return null
       try {
-        const raw = execSync(`lsof -ti :${port} 2>/dev/null || true`, { timeout: 3000, encoding: 'utf-8' }).trim()
-        if (!raw) return []
-        return raw.split('\n').map((s) => parseInt(s.trim(), 10)).filter((n) => Number.isFinite(n) && n > 0)
+        return realpathSync(cwd)
       } catch {
-        return []
+        return cwd
       }
+    },
+    listPortHolders(port: number): number[] {
+      // Resolved-path lsof (LSOFPATH805): under the launchd PATH the old bare
+      // `lsof -ti` was command-not-found and silently returned [], so this
+      // port-holder probe -- which the single-instance reclaim depends on --
+      // found no one on the live box. runLsof resolves an absolute lsof and
+      // warns loudly if none exists rather than returning a silent empty.
+      const raw = (runLsof(['-ti', `:${port}`], 3000) ?? '').trim()
+      if (!raw) return []
+      return raw.split('\n').map((s) => parseInt(s.trim(), 10)).filter((n) => Number.isFinite(n) && n > 0)
     },
     listOwnProcessesMatching(pattern: RegExp): number[] {
       // `ps -A -o pid=,uid=,args=` emits `<pid> <uid> <full argv>` per row.
@@ -458,15 +489,20 @@ async function main(): Promise<void> {
     target.setHours(23, 0, 0, 0)
     if (target <= now) target.setDate(target.getDate() + 1)
     const msUntil = target.getTime() - now.getTime()
+    // Resolved per run, not captured once: a wizard install pairs AFTER boot,
+    // so a value read at startup would stay the placeholder for the life of
+    // the process and the first digest would go nowhere.
+    const runDigest = () => {
+      const chatId = resolveOwnerChatId()
+      if (!chatId) {
+        logger.warn('Napi naplo kihagyva: nincs gazda-chat (nincs ALLOWED_CHAT_ID es nincs parositott csatorna)')
+        return
+      }
+      runDailyDigest(chatId).catch((err) => logger.error({ err }, 'Napi naplo hiba'))
+    }
     digestTimer = setTimeout(() => {
-      runDailyDigest(ALLOWED_CHAT_ID).catch((err) =>
-        logger.error({ err }, 'Napi naplo hiba')
-      )
-      digestInterval = setInterval(() => {
-        runDailyDigest(ALLOWED_CHAT_ID).catch((err) =>
-          logger.error({ err }, 'Napi naplo hiba')
-        )
-      }, 24 * 60 * 60 * 1000)
+      runDigest()
+      digestInterval = setInterval(runDigest, 24 * 60 * 60 * 1000)
     }, msUntil)
     logger.info({ nextRun: target.toLocaleString('hu-HU') }, 'Napi naplo utemezve')
   }

@@ -1,12 +1,16 @@
 {
   "model": "claude-opus-5",
+  "enabledPlugins": {
+    "slack-channel@marveen-marketplace": false,
+    "telegram@claude-plugins-official": true
+  },
   "hooks": {
     "UserPromptSubmit": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"/Users/ceo/Marveen/scripts/hooks/ledger-capture.py\"",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/ledger-capture.py\"",
             "timeout": 15
           }
         ]
@@ -15,15 +19,24 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"/Users/ceo/Marveen/scripts/hooks/inbox-drain.py\"",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/inbox-drain.py\"",
             "timeout": 15
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/telegram-reply-directive.py\"",
+            "timeout": 10
           }
         ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "mcp__plugin.telegram.telegram__reply",
+        "matcher": "mcp__plugin_telegram_telegram__reply",
         "hooks": [
           {
             "type": "command",
@@ -42,6 +55,17 @@
         ]
       }
     ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/telegram-reply-guard.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "matcher": "startup|resume|clear",
@@ -54,10 +78,5 @@
         ]
       }
     ]
-  },
-  "enabledPlugins": {
-    "slack-channel@marveen-marketplace": false,
-    "telegram@claude-plugins-official": true,
-    "telegram@marveen-marketplace": true
   }
 }

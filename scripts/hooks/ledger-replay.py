@@ -141,7 +141,7 @@ def _build_output(transcript, open_q, owner):
         "betöltött kontextusból folytass, ne kezdd elölről."
     ]
     if open_q:
-        chat_id, message_id, text, ts = open_q
+        chat_id, message_id, text, ts, att_kind, att_file_id = open_q
         snippet = _snippet(text, _max_snippet())
         parts.append(
             f'NYITOTT KÉRDÉS (még NEM válaszoltad meg): {owner} utolsó üzenete '
@@ -149,6 +149,14 @@ def _build_output(transcript, open_q, owner):
             f'MOST a telegram reply tool (mcp__plugin_telegram_telegram__reply) '
             f'meghívásával a megfelelő chat_id-re, a lenti kontextusból folytatva.'
         )
+        if att_file_id:
+            parts.append(
+                f'A nyitott kérdés egy {att_kind or "voice"} csatolmány, aminek '
+                f'a TARTALMA nem veszett el: töltsd le és írasd át MIELŐTT '
+                f'válaszolsz (voice-message-transcribe skill; '
+                f'attachment_file_id="{att_file_id}"). NE kérd a küldőtől hogy '
+                f'ismételje meg.'
+            )
     if recent:
         parts.append(
             "LEGFRISSEBB FORDULÓK (időrendben, a beszélgetés vége -- innen "
@@ -210,9 +218,14 @@ def main():
 
     max_snippet = _max_snippet()
     transcript = []
-    for direction, chat_id, text, ts in rows:
+    for direction, chat_id, text, ts, att_kind, att_file_id in rows:
         who = owner if direction == "in" else "Te"
         snippet = _snippet(text, max_snippet)
+        # A transcript-less voice turn carries its file_id so the fresh session
+        # can still fetch the audio content instead of seeing an opaque
+        # "(voice message)" placeholder.
+        if att_file_id:
+            snippet = f'{snippet} [{att_kind or "voice"} file_id={att_file_id}]'
         transcript.append(f'  [{ts}] {who}: "{snippet}"')
 
     # Coarse char pre-trim (cheap): drop the OLDEST turns until the transcript

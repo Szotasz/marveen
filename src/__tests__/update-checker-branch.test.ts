@@ -8,7 +8,9 @@
 // so it is pinned here.
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { trackedBranch } from '../web/update-checker.js'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { trackedBranch, currentVersion, getUpdateStatus } from '../web/update-checker.js'
 import { PROJECT_ROOT } from '../config.js'
 
 function gitBranch(): string {
@@ -36,5 +38,25 @@ describe('update checker branch selection', () => {
     const actual = gitBranch()
     if (!actual || actual === 'HEAD' || actual === 'main') return // nothing to prove here
     expect(trackedBranch()).not.toBe('main')
+  })
+})
+
+// The Updates panel shows the running instance's semver; it must come from
+// package.json and never be fabricated. currentVersion() is the single source.
+describe('update checker current version', () => {
+  it('returns the semver from package.json at PROJECT_ROOT', () => {
+    const pkg = JSON.parse(readFileSync(join(PROJECT_ROOT, 'package.json'), 'utf-8'))
+    expect(currentVersion()).toBe(pkg.version)
+    // sanity: it is a real semver, not an empty/garbage value
+    expect(currentVersion()).toMatch(/^\d+\.\d+\.\d+/)
+  })
+
+  it('is exposed on the /api/updates status object', () => {
+    expect(getUpdateStatus().version).toBe(currentVersion())
+  })
+
+  it('returns empty (never fabricates) when package.json is missing/unreadable', () => {
+    expect(currentVersion('/nonexistent-root-xyz')).toBe('')
+    expect(currentVersion('/etc')).toBe('') // dir exists, no package.json -> ''
   })
 })

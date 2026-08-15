@@ -29,6 +29,11 @@ function inputs(overrides: Partial<GuardInputs> = {}): GuardInputs {
     sessionReady: false,
     handoffMtime: null,
     paneSaturated: false,
+    // Idle-flush probes default to unmeasurable, so every pre-existing case
+    // below describes an agent the idle tier cannot act on. That keeps this
+    // helper's change from silently arming a new tier under the old tests.
+    contextTokens: null,
+    idleMs: null,
     ...overrides,
   }
 }
@@ -412,5 +417,184 @@ describe('decideGuard: cooldown', () => {
     const d = decideGuard(cooling, inputs({ nowMs: NOW + 61_000 }), CFG)
     expect(d.action).toBe('none')
     expect(d.nextState).toEqual(INITIAL_GUARD_STATE)
+  })
+})
+
+// Idle-flush tier: hand off a session that is expensive to keep re-reading but
+// has stopped doing anything. Distinct from the wedge tiers in what it is FOR
+// (cost, not a stalled session) and therefore in what it must never do -- the
+// cost of a wrong "yes" is an agent losing the thread it was holding, so every
+// condition here fails closed.
+describe('decideGuard -- idle-flush tier', () => {
+  // The idle tier alone: `enabled` false proves it does not lean on the
+  // proactive tiers, which is how an operator who only wants the cost tier
+  // would configure it.
+  const IDLE_CFG: ContextGuardConfig = {
+    ...DEFAULT_CONTEXT_GUARD,
+    enabled: false,
+    idleFlushEnabled: true,
+    idleFlushTokens: 400_000,
+    idleMinutes: 20,
+  }
+  const QUIET = 21 * 60_000     // past idleMinutes
+  const HEAVY = 600_000         // past idleFlushTokens
+
+  it('never acts while switched off, even with every condition met', () => {
+    const armed = inputs({ contextTokens: HEAVY, idleMs: QUIET, paneIdle: true })
+    const off: ContextGuardConfig = { ...IDLE_CFG, idleFlushEnabled: false }
+    const d = decideGuard(INITIAL_GUARD_STATE, armed, off)
+    expect(d.action).toBe('none')
+    expect(d.nextState.phase).toBe('idle')
+    // The switch is the only difference between silence and action here.
+    expect(decideGuard(INITIAL_GUARD_STATE, armed, IDLE_CFG).action).toBe('request-handoff')
+  })
+
+  it('requests a handoff when heavy, quiet and idle', () => {
+    const d = decideGuard(INITIAL_GUARD_STATE, inputs({ contextTokens: HEAVY, idleMs: QUIET, paneIdle: true }), IDLE_CFG)
+    expect(d.action).toBe('request-handoff')
+    expect(d.nextState.phase).toBe('await-handoff')
+    // The reason has to carry both measurements: an operator reading the log
+    // needs to see WHY this session was picked, not just that it was.
+    expect(d.reason).toContain('600k')
+    expect(d.reason).toContain('21m')
+  })
+
+  // The next two are stated as DIFFERENCES, not as bare "action is none".
+  // A test that only asserts inaction passes just as well when the tier does
+  // not exist at all, so it can never show that the pane condition is the
+  // thing doing the blocking. Each pins the acting case beside it.
+  it('does not act on a busy pane, however heavy and quiet the transcript looks', () => {
+    // The case the transcript clock cannot see on its own: one long tool call
+    // appends nothing for its whole duration, so idleMs says "quiet" while the
+    // agent is mid-work.
+    const busy = inputs({ contextTokens: HEAVY, idleMs: QUIET, paneIdle: false, paneBusy: true })
+    const d = decideGuard(INITIAL_GUARD_STATE, busy, IDLE_CFG)
+    expect(d.action).toBe('none')
+    expect(d.nextState.phase).toBe('idle')
+    // ... and the pane is the only reason: flip it and the same session flushes
+    expect(decideGuard(INITIAL_GUARD_STATE, { ...busy, paneIdle: true, paneBusy: false }, IDLE_CFG).action)
+      .toBe('request-handoff')
+  })
+
+  it('does not act on a pane that is neither idle nor busy (error banner, modal)', () => {
+    // paneIdle, not !paneBusy: a parked pane may still hold state a human can
+    // recover. Wedged panes are the saturation net's business, not this tier's.
+    const parked = inputs({ contextTokens: HEAVY, idleMs: QUIET, paneIdle: false, paneBusy: false })
+    expect(decideGuard(INITIAL_GUARD_STATE, parked, IDLE_CFG).action).toBe('none')
+    expect(decideGuard(INITIAL_GUARD_STATE, { ...parked, paneIdle: true }, IDLE_CFG).action)
+      .toBe('request-handoff')
+  })
+
+  it('does not act before the quiet period has elapsed', () => {
+    const d = decideGuard(
+      INITIAL_GUARD_STATE,
+      inputs({ contextTokens: HEAVY, idleMs: 19 * 60_000, paneIdle: true }),
+      IDLE_CFG,
+    )
+    expect(d.action).toBe('none')
+    // and it says how far off it was, so a tier that never fires is diagnosable
+    expect(d.reason).toContain('19m')
+    expect(d.reason).toContain('20m')
+  })
+
+  it('does not act below the token threshold', () => {
+    const under = inputs({ contextTokens: 399_999, idleMs: QUIET, paneIdle: true })
+    expect(decideGuard(INITIAL_GUARD_STATE, under, IDLE_CFG).action).toBe('none')
+    // one token over is the whole difference
+    expect(decideGuard(INITIAL_GUARD_STATE, { ...under, contextTokens: 400_000 }, IDLE_CFG).action)
+      .toBe('request-handoff')
+  })
+
+  it('fails closed when either measurement is unavailable', () => {
+    const ok = inputs({ contextTokens: HEAVY, idleMs: QUIET, paneIdle: true })
+    expect(decideGuard(INITIAL_GUARD_STATE, { ...ok, contextTokens: null }, IDLE_CFG).action).toBe('none')
+    expect(decideGuard(INITIAL_GUARD_STATE, { ...ok, idleMs: null }, IDLE_CFG).action).toBe('none')
+    expect(decideGuard(INITIAL_GUARD_STATE, ok, IDLE_CFG).action).toBe('request-handoff')
+  })
+
+  it('does not act on an agent that is not running', () => {
+    const stopped = inputs({ running: false, contextTokens: HEAVY, idleMs: QUIET, paneIdle: true })
+    expect(decideGuard(INITIAL_GUARD_STATE, stopped, IDLE_CFG).action).toBe('none')
+    expect(decideGuard(INITIAL_GUARD_STATE, { ...stopped, running: true }, IDLE_CFG).action)
+      .toBe('request-handoff')
+  })
+
+  it('yields to the wedge tiers when both would fire', () => {
+    // A session that is both nearly full and quiet must be rescued on the
+    // urgent grounds. Same action here, but the reason has to name the tier
+    // that owns the decision, because the two differ in what they do next.
+    const both: ContextGuardConfig = { ...IDLE_CFG, enabled: true }
+    const d = decideGuard(
+      INITIAL_GUARD_STATE,
+      inputs({ pct: 0.95, contextTokens: HEAVY, idleMs: QUIET, paneIdle: true }),
+      both,
+    )
+    expect(d.action).toBe('request-handoff')
+    expect(d.reason).toContain('act threshold')
+    expect(d.reason).not.toContain('idle-flush')
+  })
+
+  it('lets the hard tier restart rather than flushing first', () => {
+    const both: ContextGuardConfig = { ...IDLE_CFG, enabled: true }
+    const d = decideGuard(
+      INITIAL_GUARD_STATE,
+      inputs({ pct: 0.99, contextTokens: HEAVY, idleMs: QUIET, paneIdle: true }),
+      both,
+    )
+    expect(d.action).toBe('restart')
+  })
+
+  it('sees the handoff sequence through even with the proactive tiers off', () => {
+    // await-handoff used to stand down whenever `enabled` was false. With the
+    // idle tier able to START a handoff on its own, that would abandon its own
+    // sequence on the very next sweep and leave the session untouched forever.
+    const awaiting: GuardState = {
+      phase: 'await-handoff',
+      handoffMtimeAtRequest: null,
+      deadlineMs: NOW + 60_000,
+      cooldownUntilMs: 0,
+      saturatedStreak: 0,
+    }
+    const d = decideGuard(awaiting, inputs({ handoffMtime: NOW, paneIdle: true }), IDLE_CFG)
+    expect(d.action).toBe('restart')
+    expect(d.nextState.phase).toBe('await-ready')
+  })
+
+  it('stands down when BOTH tiers and the saturation net are off', () => {
+    const allOff: ContextGuardConfig = { ...IDLE_CFG, enabled: false, idleFlushEnabled: false, saturationRestart: false }
+    const d = decideGuard(INITIAL_GUARD_STATE, inputs({ contextTokens: HEAVY, idleMs: QUIET }), allOff)
+    expect(d.action).toBe('none')
+    expect(d.reason).toBe('disabled')
+  })
+})
+
+describe('normalizeContextGuardConfig -- idle-flush fields', () => {
+  it('defaults the tier OFF, so an existing store entry cannot switch it on', () => {
+    // Every agent in store/context-guard.json predates these fields. Reading
+    // one of those must not arm a tier that ends conversations.
+    const cfg = normalizeContextGuardConfig({ enabled: true, saturationRestart: true, actPct: 0.9 })
+    expect(cfg.idleFlushEnabled).toBe(false)
+    expect(cfg.idleFlushTokens).toBe(400_000)
+    expect(cfg.idleMinutes).toBe(20)
+  })
+
+  it('only an explicit true arms it', () => {
+    expect(normalizeContextGuardConfig({ idleFlushEnabled: 'yes' }).idleFlushEnabled).toBe(false)
+    expect(normalizeContextGuardConfig({ idleFlushEnabled: 1 }).idleFlushEnabled).toBe(false)
+    expect(normalizeContextGuardConfig({ idleFlushEnabled: true }).idleFlushEnabled).toBe(true)
+  })
+
+  it('rejects a token threshold small enough to be a typo', () => {
+    // 500 instead of 400_000 would flush a session that had barely started.
+    expect(normalizeContextGuardConfig({ idleFlushTokens: 500 }).idleFlushTokens).toBe(400_000)
+    expect(normalizeContextGuardConfig({ idleFlushTokens: -1 }).idleFlushTokens).toBe(400_000)
+    expect(normalizeContextGuardConfig({ idleFlushTokens: 300_000 }).idleFlushTokens).toBe(300_000)
+  })
+
+  it('rejects a non-positive quiet period', () => {
+    // 0 minutes would make "quiet" true on every sweep.
+    expect(normalizeContextGuardConfig({ idleMinutes: 0 }).idleMinutes).toBe(20)
+    expect(normalizeContextGuardConfig({ idleMinutes: -5 }).idleMinutes).toBe(20)
+    expect(normalizeContextGuardConfig({ idleMinutes: 45 }).idleMinutes).toBe(45)
   })
 })

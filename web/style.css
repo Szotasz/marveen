@@ -518,7 +518,14 @@ nav { display: flex; gap: 4px; }
 
 /* === Main === */
 main {
-  max-width: 1200px;
+  /* No width cap: on a large screen the content uses the whole window, the way
+   * the kanban board always has. This is not merely "wider lines" -- almost every
+   * card list here is a `repeat(auto-fill, minmax(Npx, 1fr))` grid, so the extra
+   * room turns into extra COLUMNS on its own (measured at 2400px: agents 3 -> 7,
+   * skills -> 5, costs -> 9, status -> 10). The pages with no grid (memories,
+   * messages, settings) become full-width single columns; if one of those ever
+   * reads too wide, the fix belongs to that page's own layout, not to a global
+   * cap that also flattens the grids. */
   padding: 32px 32px 64px;
   width: 100%;
   /* main is the 1fr grid track; a grid item's default minimum size is its
@@ -663,9 +670,17 @@ main {
 .overview-activity-time { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
 /* === Kanban Board === */
+/* Five statuses, four fixed tracks: the board always wrapped "done" onto a
+ * second row of its own, at every window size. auto-fit fits as many columns
+ * as can hold KANBAN_COL_MIN and collapses the rest, so the count follows the
+ * window instead of a constant: all five side by side from ~1500px up, and on
+ * a narrow window fewer per row -- but never squeezed below a width where the
+ * card titles stop being readable. (min-width:0 on the column keeps a long
+ * unbroken title from inflating its track past that minimum.) */
 .kanban-board {
+  --kanban-col-min: 280px;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(var(--kanban-col-min), 1fr));
   gap: 12px;
   min-height: calc(100vh - 160px);
 }
@@ -683,6 +698,10 @@ main {
   display: flex;
   flex-direction: column;
   min-height: 200px;
+  /* A grid item's default minimum is its content's min-content width, so one
+   * long unbroken card title would push its track past the minmax() minimum
+   * and steal room from the other columns. */
+  min-width: 0;
 }
 
 .kanban-col-header {
@@ -1201,9 +1220,12 @@ main {
   transition: all var(--transition);
 }
 .kanban-swimlane-toggle:hover { background: var(--accent-soft); color: var(--accent); }
+/* The swimlane rows carry the same five status columns as the flat board, so
+ * they follow the same rule -- otherwise switching to swimlanes would silently
+ * put the column count back to four. */
 .kanban-swimlane-body {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(var(--kanban-col-min, 280px), 1fr));
   gap: 12px;
   margin-top: 4px;
 }
@@ -1370,9 +1392,9 @@ main {
 
 /* === Page switching === */
 .page[hidden] { display: none; }
-#kanbanPage { max-width: none; }
-/* Full-width layout for the kanban board (overrides main's 1200px cap) */
-main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
+/* The board keeps its tighter side padding -- it needs every pixel for the
+ * status columns. The width cap it used to override is gone from `main`. */
+main.kanban-active { padding-left: 16px; padding-right: 16px; }
 
 .page-header-row {
   display: flex;

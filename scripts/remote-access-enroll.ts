@@ -28,10 +28,13 @@ import { execFileSync } from 'node:child_process'
 import { homedir, hostname, userInfo, networkInterfaces } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isIP } from 'node:net'
 import {
   validatePublicKeyLine,
   buildRestrictedLine,
   buildBundle,
+  checkEnrollHost,
+  dashboardTokenDecision,
   encodeBundle,
   resolveHostKey,
   HOST_KEY_PUB_CANDIDATES,
@@ -67,6 +70,11 @@ function parseArgs(argv: string[]): Args {
     if (a === '--host') {
       const v = argv[++i]
       if (!v) fail('--host requires a value')
+      // Same check as the dashboard route: this is the SECOND way a target
+      // address enters a bundle, and leaving it open would mean the next
+      // person has to find the same bug twice.
+      const checked = checkEnrollHost(v, isIP)
+      if (!checked.ok) fail(`--host: ${checked.reason}`)
       out.host = v
     } else if (a === '--no-dashboard-token') {
       out.includeDashboardToken = false
@@ -220,21 +228,22 @@ async function main(): Promise<void> {
     webPort: args.webPort,
   }
 
-  if (args.includeDashboardToken) {
-    const dashboardToken = readDashboardToken()
-    if (dashboardToken === null) {
-      process.stderr.write(
-        'warning: no dashboard token found (DASHBOARD_TOKEN env or store/.dashboard-token); ' +
-          'emitting a token-free bundle. The device will need the dashboard access URL out of band.\n',
-      )
-    } else {
-      bundleInput.dashboardToken = dashboardToken
-      process.stderr.write(
-        'NOTE: this bundle contains the dashboard access token. Treat it as a secret: ' +
-          'hand it over on a private channel, never by email or shared chat. ' +
-          'Use --no-dashboard-token to emit a token-free bundle.\n',
-      )
-    }
+  // Token-bundle decision (INSTNODE806): a token was requested by default, so a
+  // MISSING token is a hard failure (the dashboard has not written one -- it is
+  // not running), not a silent degrade to an unusable token-free bundle. This is
+  // the same "unusable -- fail hard instead of emitting it silently" rule the
+  // host-key check above already applies. `--no-dashboard-token` still emits a
+  // deliberate token-free bundle.
+  const tokenDecision = dashboardTokenDecision(args.includeDashboardToken, readDashboardToken())
+  if ('ok' in tokenDecision) {
+    fail(tokenDecision.reason)
+  } else if (tokenDecision.include) {
+    bundleInput.dashboardToken = tokenDecision.token
+    process.stderr.write(
+      'NOTE: this bundle contains the dashboard access token. Treat it as a secret: ' +
+        'hand it over on a private channel, never by email or shared chat. ' +
+        'Use --no-dashboard-token to emit a token-free bundle.\n',
+    )
   }
 
   const encoded = encodeBundle(buildBundle(bundleInput))

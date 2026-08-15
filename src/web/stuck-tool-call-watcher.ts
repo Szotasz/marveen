@@ -42,7 +42,7 @@ import { logger } from '../logger.js'
 import { resolveFromPath } from '../platform.js'
 import { capturePane } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
-import { resumeMarveenSession, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS } from './channel-monitor.js'
+import { resumeMarveenSession, sendAlert, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS } from './channel-monitor.js'
 import {
   stuckToolCallSignature,
   decideStuckToolCallRecovery,
@@ -234,6 +234,16 @@ async function checkSession(label: string, session: string): Promise<void> {
     if (!ok) {
       logger.error({ label, session }, 'stuck-tool-call-watcher: respawn-pane recovery failed')
     }
+    // Owner transparency (2026-07-30, "reggeli leallas"): every wedge recovery
+    // used to be silent, so the owner discovered a dead morning session only by
+    // messaging into the void and then spent the morning pasting logs. One
+    // proactive report replaces that whole loop. Sent on both outcomes -- a
+    // FAILED recovery is exactly when the owner must know.
+    sendAlert(
+      ok
+        ? `🔧 A fő session beragadt (${Math.round(next.lastSeconds ?? 0)}s óta nem haladt), automatikusan újraindítottam a beszélgetés megtartásával. Ha volt megválaszolatlan üzeneted, mindjárt válaszolok rá.`
+        : `🚨 A fő session beragadt, és az automatikus újraindítás NEM sikerült. Kézi beavatkozás kellhet: tmux attach -t ${session}, vagy scripts/stop.sh && scripts/start.sh a marveen mappából.`,
+    )
   }
 }
 

@@ -209,8 +209,33 @@ APT_OPTS="-o DPkg::Lock::Timeout=180"
 #
 # HAROM retegben zarjuk ki, mert egy reteg sem eleg onmagaban:
 #   1. DEBIAN_FRONTEND=noninteractive -- a debconf keresek ellen.
-#   2. NEEDRESTART_MODE=a + NEEDRESTART_SUSPEND=1 -- a needrestart apt-hookja
-#      ellen; ez az, ami a konkret gepet megfogta, es amit a frontend NEM fed.
+#   2. NEEDRESTART_SUSPEND=1 (+ NEEDRESTART_MODE=l tartalek) -- a needrestart
+#      apt-hookja ellen; ez az, ami a konkret gepet megfogta, es amit a frontend
+#      NEM fed.
+#
+#      MIERT "l" ES NEM "a", holott az "a" is elnemitja a kerdest (merve az eles
+#      gepen, needrestart 3.11 / Ubuntu 26.04, 2026-08-02):
+#        - /usr/lib/needrestart/apt-pinvoke 43-46. sor: ha NEEDRESTART_SUSPEND
+#          nem ures, kiir egy sort es `exit 0` -- az `exec needrestart` CSAK
+#          ezutan, az 49. sorban jon. Tehat SUSPEND mellett a needrestart EL SEM
+#          INDUL: sem dialogus, sem ujrainditas. A MODE azon az uton sosem jut
+#          ervenyre.
+#        - A MODE tehat TARTALEK: azokra a (regebbi) verziokra, amelyek hookja
+#          esetleg nem nezi a SUSPEND-et. Es ha a tartalek lep ervenybe, akkor
+#          szamit, MELYIK erteket adtuk: a needrestart -r modjai l = list only,
+#          i = interactive, a = automatically restart.
+#        - Az "a" tehat ujrainditana a varakozo szolgaltatasokat A TELEPITES
+#          KOZBEN. A cel-gepen ez negy szolgaltatast jelentett (dbus,
+#          networkd-dispatcher, serial-getty@ttyS0, systemd-logind), es a
+#          telepito KESOBB epit a felhasznaloi session-buszra (XDG_RUNTIME_DIR /
+#          DBUS_SESSION_BUS_ADDRESS), majd meg kesobb user-unitokat allit be. Egy
+#          dbus/logind restart a csomag-lepesben tehat egy MASIK, kesobbi lepest
+#          buktathatna el -- olyan hibat, ami semmivel nem utal vissza az aptra.
+#        - Az "l" ugyanugy nem kerdez, de nem is indit ujra semmit: a fuggo
+#          szolgaltatasok a kovetkezo rebootig a regi konyvtarakkal futnak, ami
+#          egy friss telepitesnel rendben van.
+#      NE ALLITSD VISSZA "a"-ra azzal, hogy "az alaposabb" -- itt epp az a
+#      kockazat, hogy a tartalek TOBBET csinal, mint amit kertunk tole.
 #   3. </dev/null minden hivason -- ha egy hook megis kerdez, azonnal EOF-ot kap
 #      a helyett, hogy a telepito sajat stdinjere varna.
 #
@@ -221,8 +246,8 @@ APT_OPTS="-o DPkg::Lock::Timeout=180"
 #   sudo -E printenv DEBIAN_FRONTEND                          -> noninteractive
 # Ezert a sudo-s hivasoknal a valtozok a parancs ele kerulnek, es az export CSAK
 # a `sudo -E`-vel indulo gyerekek (nodesource setup-script) miatt marad meg.
-NONINTERACTIVE_ENV="DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1"
-export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
+NONINTERACTIVE_ENV="DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1"
+export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1
 # A meglevo config-fajlokat megtartjuk, ujat nem kerdezunk: a "melyik verziot
 # tartsam meg?" dpkg-prompt ugyanugy megallitana a telepitest, mint a needrestart.
 DPKG_KEEP_CONF="-o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-confdef"
@@ -332,7 +357,7 @@ if command -v free &>/dev/null; then
 fi
 
 MISSING_PKGS=""
-for pkg in ffmpeg git tmux lsof curl python3 pipx unzip; do
+for pkg in ffmpeg git tmux lsof curl python3 pipx unzip zstd; do
   if ! command -v "$pkg" &>/dev/null; then
     MISSING_PKGS="$MISSING_PKGS $pkg"
   fi
@@ -402,7 +427,7 @@ if [ -n "$MISSING_PKGS" ]; then
     # dnf/yum (Fedora/Nobara/RHEL). A disztro nodejs csomagja v20+ az aktualis
     # kiadasokon, es az npm-et is tartalmazza -- nincs szukseg kulso repora.
     # Csomagnevek megegyeznek a Debian-belivel (ffmpeg/git/tmux/lsof/curl/
-    # python3/pipx/unzip/nodejs). Az ffmpeg-hez Fedoran az RPM Fusion repo
+    # python3/pipx/unzip/zstd/nodejs). Az ffmpeg-hez Fedoran az RPM Fusion repo
     # kellhet; ha mar engedelyezve van, a csomag elerheto.
     # shellcheck disable=SC2086
     pkg_install_noninteractive $MISSING_PKGS
@@ -432,6 +457,7 @@ ok "pipx" $(pipx --version)
 ok "python3 $(python3 --version | awk '{print $2}')"
 ok "tmux $(tmux -V | awk '{print $2}')"
 ok "unzip" $(unzip -v | awk 'NR==1 {print $2}')
+ok "zstd $(zstd --version | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
 
 # ─────────────────────────────────────────────
 # Repo bootstrap
@@ -577,6 +603,9 @@ export PATH="$BUN_INSTALL/bin:$PATH"
 if command -v bun &>/dev/null; then
   ok "bun mar telepitve: $(bun --version)"
 else
+  # unzip -- a Bun hivatalos telepitoje ezzel csomagolja ki a binarist; nincs alapertelmezetten telepitve friss WSL distrokon,
+  # nelkule "error: unzip is required to install bun"-nal elhasal.
+  command -v unzip &>/dev/null || pkg_install_noninteractive unzip || true
   echo -e "  Bun telepitese (Telegram plugin fuggoseg)..."
   curl -fsSL https://bun.sh/install | bash 2>/dev/null
   if ! command -v bun &>/dev/null; then
@@ -672,6 +701,14 @@ else
     fi
 
   else
+    # Record that skipping was a CHOICE, here, at the moment it is made
+    # (INSTDEAD803). Without this the only later evidence is the ABSENCE of
+    # credentials, and absence cannot tell "the operator decided to set this up
+    # later" apart from "the sign-in broke halfway" -- which is exactly the
+    # dead end a bootcamp host hit on 2026-08-03. The installer app reads this
+    # flag to decide whether an install is finished or unfinished. It is not a
+    # renunciation: completing the sign-in later stays available on request.
+    CLAUDE_AUTH_DEFERRED=1
     echo -e "  ${DIM}Kihagyva. Kesobb allitsd be:${NC}"
     echo -e "  ${DIM}  export ANTHROPIC_API_KEY=sk-ant-...${NC}"
     echo -e "  ${DIM}  vagy: claude setup-token (boengeszos gepen), majd export CLAUDE_CODE_OAUTH_TOKEN=...${NC}"
@@ -813,6 +850,43 @@ else
 fi
 ok "Csatorna: $CHANNEL_PROVIDER"
 
+# INSTTOKEN807: probe the freshly entered bot token BEFORE anything is written.
+# Warn-only (advisory), for two hard reasons: a network hiccup must not block
+# the install, and the headless derive contract (Bridge payload) forbids new
+# interactive reads here -- so we say it loudly and let the install continue.
+# The dashboard save path hard-rejects the same states (#926); this is the
+# installer-side voice for the same three findings, each with its remedy.
+# set -e safe: every path ends in return 0; curl failures are guarded.
+# The token value itself is NEVER printed.
+probe_telegram_token() {
+  _ptt_t="$1"
+  [ -n "$_ptt_t" ] || return 0
+  _ptt_me="$(curl -s --max-time 8 "https://api.telegram.org/bot${_ptt_t}/getMe" 2>/dev/null)" || return 0
+  case "$_ptt_me" in
+    *'"ok":true'*) : ;;
+    *'"ok":false'*)
+      warn "A megadott bot token ERVENYTELEN (a Telegram getMe elutasitotta)."
+      echo -e "    ${DIM}Ellenorizd a @BotFather-tol kapott tokent. A telepites folytatodik, de a bot ezzel a tokennel nem fog valaszolni.${NC}"
+      return 0 ;;
+    *) return 0 ;;
+  esac
+  _ptt_wh="$(curl -s --max-time 8 "https://api.telegram.org/bot${_ptt_t}/getWebhookInfo" 2>/dev/null)" || return 0
+  case "$_ptt_wh" in
+    *'"url":"http'*)
+      warn "A bot token ervenyes, de a bot WEBHOOKRA van kotve -- a Marveen poller igy nem tud ra csatlakozni."
+      echo -e "    ${DIM}Teendo: nyisd meg bongeszoben: https://api.telegram.org/bot<A-TOKENED>/deleteWebhook${NC}"
+      echo -e "    ${DIM}vagy keszits uj botot a @BotFather-nel, es futtasd ujra a telepitot azzal.${NC}"
+      return 0 ;;
+  esac
+  _ptt_up="$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "https://api.telegram.org/bot${_ptt_t}/getUpdates?timeout=0&limit=1" 2>/dev/null)" || return 0
+  if [ "$_ptt_up" = "409" ]; then
+    warn "A bot token ervenyes, de egy MASIK futo rendszer mar hasznalja (Telegram 409 Conflict)."
+    echo -e "    ${DIM}Egy tokent egyszerre csak egy telepites hasznalhat. Teendo: allitsd le a korabbi telepitest,${NC}"
+    echo -e "    ${DIM}vagy keszits uj botot a @BotFather-nel, es futtasd ujra a telepitot az uj tokennel.${NC}"
+  fi
+  return 0
+}
+
 BOT_TOKEN=""
 SLACK_BOT_TOKEN=""
 SLACK_APP_TOKEN=""
@@ -829,6 +903,7 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   echo -e "${DIM}  4. Masold ide a kapott tokent:${NC}"
   echo ""
   read -rp "$(_t prompt_telegram_token)" BOT_TOKEN
+  probe_telegram_token "$BOT_TOKEN"
 elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   echo ""
   echo -e "${DIM}  Az AI asszisztensed Discordon kommunikal veled.${NC}"
@@ -1002,6 +1077,16 @@ else
   env_keep_or_set SLACK_BOT_TOKEN "${SLACK_BOT_TOKEN}"
   env_keep_or_set SLACK_APP_TOKEN "${SLACK_APP_TOKEN}"
 fi
+# The operator's deliberate "set auth up later" choice, persisted next to the
+# rest of the configuration. Written only when the skip branch above set it, so
+# it is a record of a decision and never an inference from missing credentials.
+# If the run dies before this point the flag is simply absent, which reads as
+# "unfinished" -- the safe direction, since that offers help rather than
+# assuming the operator wanted no auth.
+if [ "${CLAUDE_AUTH_DEFERRED:-}" = "1" ]; then
+  env_merge_key CLAUDE_AUTH_DEFERRED 1
+fi
+
 # Claude auth credentials (API key or OAuth token) -- channels.sh reads
 # these selectively so the tmux-spawned claude process can authenticate.
 # Merged by key, so an auth line saved by a previous run (or the dashboard
@@ -1373,6 +1458,9 @@ else
   # Az ollama telepitoje sudo-val ir a /usr/local/bin-be es allit be systemd service-t.
   # Elore gyorsitotarazzuk a sudo hitelesitest, hogy a gyermek-script sudo prompt-ja ne bukjon el.
   sudo -v 2>/dev/null || true
+  # zstd -- az ollama telepitoje ezzel csomagolja ki a binarist; nincs alapertelmezetten telepitve friss WSL distron,
+  # nelkule "ERROR: This version requires zstd for extraction" hibaval elhasal.
+  command -v zstd &>/dev/null || pkg_install_noninteractive zstd || true
   # NEM fatalis: ha az ollama telepitoje hibara fut (pl. sudo, halozat, WSL),
   # csak figyelmeztetunk es kihagyjuk a szemantikus memoria lepest -- a telepito megy tovabb.
   if curl -fsSL https://ollama.com/install.sh | sh; then
@@ -1401,21 +1489,37 @@ fi
 # stream:false --> szinkron, egyetlen valaszt ad vissza a letoltes utan
 ollama_pull() {
   local model="$1" size="$2"
+  # API-up guard (BC100FAIL810): this whole step is declared optional/non-fatal,
+  # but on a host where the ollama BINARY installed yet its SERVICE never came up
+  # (no ollama.service unit, API at :11434 dead -- measured on ai-bootcamp-vps100
+  # 2026-08-10), the pull below would abort the whole install. Under `set -e` the
+  # `status=$(curl ... | python3 json.load)` assignment inherits the pipeline's
+  # exit code -- an empty curl (connection refused) makes json.load raise, python3
+  # exits non-zero, the assignment inherits it, and the ERR trap kills the
+  # install at step "ollama-whisper". So skip -- non-fatal -- whenever the API is
+  # not answering, instead of trying a pull that cannot work.
+  if ! curl -s --max-time 5 http://localhost:11434/api/version &>/dev/null; then
+    warn "ollama API nem valaszol (:11434) -- $model letoltese kimarad (a szolgaltatas nem all fel). Kesobb: ollama serve && ollama pull $model"
+    return 0
+  fi
   if curl -s http://localhost:11434/api/tags | grep -q "\"$model\""; then
     ok "$model mar letoltve"
     return 0
   fi
   echo -e "  $model letoltese ($size)..."
   local status
+  # `|| status=""` is load-bearing under `set -e`: a command-substitution
+  # assignment aborts the script when its pipeline exits non-zero (empty body ->
+  # json.load raises -> python3 exits 1). The guard turns that into the warn path.
   status=$(curl -s --max-time 600 \
     -X POST http://localhost:11434/api/pull \
     -H 'Content-Type: application/json' \
     -d "{\"model\": \"$model\", \"stream\": false}" |
-    python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null)
+    python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null) || status=""
   if [ "$status" = "success" ]; then
     ok "$model kesz"
   else
-    warn "$model letoltese sikertelen (status: $status) -- kezzel: ollama pull $model"
+    warn "$model letoltese sikertelen (status: ${status:-<ures valasz>}) -- kezzel: ollama pull $model"
   fi
 }
 
@@ -1631,7 +1735,17 @@ WorkingDirectory=$INSTALL_DIR
 # load for the current Node ABI before starting (2026-07-03 crash-loop fix).
 ExecStartPre=$INSTALL_DIR/scripts/ensure-native-modules.sh
 ExecStart=$INSTALL_DIR/scripts/channels.sh
-Restart=on-failure
+# Restart=always, NOT on-failure. channels.sh has watchdog branches that exit ON
+# PURPOSE to be restarted (sustained plugin death, plugin never started), and
+# under on-failure a zero exit read as "service finished" and the channel stayed
+# dead for good -- silently, with no failed unit to notice. macOS never showed
+# this because the launchd plist uses KeepAlive=true, which restarts regardless
+# of exit code; this line is what makes the Linux side symmetric with it.
+# Observed on a live v1.27.0 install 2026-08-04: unit inactive/dead after
+# ExecMainStatus=0, ten minutes before anyone looked.
+# Restart churn stays bounded by StartLimitIntervalSec/StartLimitBurst in
+# [Unit] above plus channels.sh's own rapid-failure backoff (sleep 60/300).
+Restart=always
 RestartSec=10
 StandardOutput=append:$INSTALL_DIR/store/channels.log
 StandardError=append:$INSTALL_DIR/store/channels.error.log
@@ -1948,8 +2062,9 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ "$CHAT_ID" = "0" ]; then
   echo ""
   echo -e "${ORANGE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo -e "${RED}$(_t warn_pair_missing)${NC}"
-  echo -e "${ORANGE}  Az ALLOWED_CHAT_ID=0 marad az .env-ben, ami azt jelenti${NC}"
-  echo -e "${ORANGE}  hogy a bot NEM fog valaszolni senkinek.${NC}"
+  echo -e "${ORANGE}  Az ALLOWED_CHAT_ID=0 marad az .env-ben. A bot a beszelgetesre${NC}"
+  echo -e "${ORANGE}  valaszolni FOG (azt a parositas donti el), de a MAGATOL kuldott${NC}"
+  echo -e "${ORANGE}  uzenetek elmaradnak: napi naplo, uj agens udvozlese, riasztasok.${NC}"
   echo ""
   echo -e "  ${BOLD}Javitas:${NC}"
   echo -e "  1. Irj a botodnak Telegramon (barmit)"

@@ -19,8 +19,18 @@ import { join } from 'node:path'
 //
 // Three layers are needed and none is sufficient alone:
 //   DEBIAN_FRONTEND=noninteractive  -- debconf prompts
-//   NEEDRESTART_MODE=a + SUSPEND=1  -- the needrestart apt hook, which the
-//                                      frontend variable does NOT cover
+//   NEEDRESTART_SUSPEND=1           -- the needrestart apt hook, which the
+//                                      frontend variable does NOT cover. Its
+//                                      pinvoke wrapper exits BEFORE exec'ing
+//                                      needrestart when this is set, so nothing
+//                                      prompts and nothing restarts.
+//   NEEDRESTART_MODE=l              -- the fallback for older hooks that may
+//                                      not honour SUSPEND. "l" is list-only on
+//                                      purpose: "a" would silently RESTART the
+//                                      pending services mid-install (dbus and
+//                                      systemd-logind were both pending on the
+//                                      target host), and this installer depends
+//                                      on the user session bus later on.
 //   </dev/null                      -- so a hook that still asks gets EOF
 //                                      instead of the installer's own stdin
 //
@@ -68,7 +78,7 @@ function stubDir(): string {
       '# Leading VAR=value assignments are how sudo receives environment.',
       'HAS_FRONTEND=no; HAS_MODE=no; HAS_SUSPEND=no',
       'case "$ARGV" in *DEBIAN_FRONTEND=noninteractive*) HAS_FRONTEND=yes ;; esac',
-      'case "$ARGV" in *NEEDRESTART_MODE=a*) HAS_MODE=yes ;; esac',
+      'case "$ARGV" in *NEEDRESTART_MODE=l*) HAS_MODE=yes ;; esac',
       'case "$ARGV" in *NEEDRESTART_SUSPEND=1*) HAS_SUSPEND=yes ;; esac',
       '# Anything left on stdin? A prompting hook would read it and wait.',
       'STDIN_DATA=$(head -c 16 2>/dev/null || true)',
@@ -95,7 +105,7 @@ function runWithStub(snippet: string, defs: string): string {
   const script = [
     'set -e',
     'APT_OPTS="-o DPkg::Lock::Timeout=180"',
-    'NONINTERACTIVE_ENV="DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1"',
+    'NONINTERACTIVE_ENV="DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1"',
     'DPKG_KEEP_CONF="-o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-confdef"',
     'PKG_MANAGER=dnf',
     defs,
@@ -134,6 +144,16 @@ describe('APTPROMPT802: the Linux installer can never stop on a dialog', () => {
     const out = runWithStub('apt_run install -y nodejs -qq', aptRun())
     expect(out).toContain('--force-confold')
     expect(out).toContain('--force-confdef')
+  })
+
+  it('the fallback mode is list-only, so it can never restart a service mid-install', () => {
+    // Read from the shipped script, not from the harness constant: the harness
+    // could keep passing while the script drifted back to "a".
+    const line = LINUX.split('\n').find((l) => l.startsWith('NONINTERACTIVE_ENV='))
+    expect(line).toBeDefined()
+    expect(line).toContain('NEEDRESTART_MODE=l')
+    expect(line).not.toContain('NEEDRESTART_MODE=a')
+    expect(LINUX).not.toContain('NEEDRESTART_MODE=a')
   })
 
   it('the dnf/yum path is closed the same way', () => {

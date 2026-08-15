@@ -2,13 +2,14 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir, userInfo } from 'node:os'
 import { execFileSync } from 'node:child_process'
-import { PROJECT_ROOT, STORE_DIR, CHANNEL_PROVIDER } from '../../config.js'
+import { PROJECT_ROOT, STORE_DIR, CHANNEL_PROVIDER, MAIN_AGENT_ID } from '../../config.js'
 import { logger } from '../../logger.js'
 import { resolveFromPath } from '../../platform.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { channelStateDir, readChannelToken } from '../../channel-provider.js'
 import { sessionExistsOnHost } from '../agent-process.js'
 import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
+import { getClaudePidForSession, hasChannelPluginAlive } from '../../channel-coordinator/liveness.js'
 import {
   hardRestartMarveenChannels,
   mainChannelsSessionExists,
@@ -16,6 +17,7 @@ import {
 } from '../channel-monitor.js'
 import { liveProbeAuth, stampTokenVerified } from '../claude-credentials-guard.js'
 import { json, readBody } from '../http-helpers.js'
+import { isManagedSettingsReady, getManagedSettingsSudoCommand } from './agents.js'
 import type { RouteContext } from './types.js'
 
 // First-run onboarding for the "pre-install now, configure later" flow: the
@@ -75,6 +77,42 @@ function fleetTokenPresent(): boolean {
   } catch { return false }
 }
 
+// Behaviour leg (last resort): a RUNNING fleet is authenticated even when none
+// of the storage locations above hold the credential. channels.sh exports the
+// setup-token into the tmux server's GLOBAL environment (`set-environment -g`,
+// verified live 2026-08-09), which is the actual auth source of every session it
+// spawns -- independent of .env, the fleet file, credentials.json or the
+// Keychain. So a fresh install whose token reached the running session by any
+// path (isolated CLAUDE_CONFIG_DIR, an env exported before .env was written, a
+// timing race between the restart and the .env flush) still reads as logged-in.
+// This asks the BEHAVIOUR ("is the running fleet carrying auth?") instead of
+// enumerating storage types -- a storage-only check re-breaks on every new
+// credential path; this one does not. Fails closed on any error (tmux
+// unresolved, session gone), so it can only ever ADD a true, never flip one.
+//
+// PRESENCE-ONLY, NOT VALIDITY (read this before hardening): this proves the
+// token is PRESENT in the tmux global env, NOT that it is valid or unexpired. It
+// deliberately does NOT run a live probe (that is the expensive `claude -p` path
+// this status check must avoid). The failure direction therefore INVERTS: before
+// this leg a working install read as logged-out (false negative); with it, a
+// machine still running on an expired/revoked token could read as authenticated
+// (false positive) -- the same class BOOTPASS807 just tightened. Accepted on
+// purpose because the leg is last-resort (only runs when every storage leg is
+// false), and it is cheaper to be wrong this way than to keep telling every new
+// customer their working product failed. A validity check (a cheap liveness
+// signal, or gating on a fresh successful-auth log line) is deferred to a
+// separate hardening card, NOT bolted on here. The token value is matched with a
+// regex only -- never captured, returned, or logged.
+function runningSessionAuthenticated(): boolean {
+  try {
+    if (!sessionExistsOnHost(null, MAIN_CHANNELS_SESSION)) return false
+    const out = execFileSync(resolveFromPath('tmux'), ['show-environment', '-g'], {
+      timeout: 3000, encoding: 'utf-8',
+    })
+    return /^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.+/m.test(out)
+  } catch { return false }
+}
+
 function claudeAuthPresent(): boolean {
   if (readEnvValue('CLAUDE_CODE_OAUTH_TOKEN')) return true
   if (readEnvValue('ANTHROPIC_API_KEY')) return true
@@ -86,15 +124,49 @@ function claudeAuthPresent(): boolean {
     if (d?.apiKey) return true
   } catch { /* no / unreadable credentials.json */ }
   if (fleetTokenPresent()) return true
-  return keychainHasClaudeCredentials()
+  if (keychainHasClaudeCredentials()) return true
+  return runningSessionAuthenticated()
 }
 
 // Active-channel checks, provider-aware (NOT hardcoded to Telegram). A
 // Discord-switched (or Slack/etc.) install has no telegram/ state dir, so a
 // telegram-only probe would report "not configured" forever and pop the wizard
 // over a working dashboard. readChannelToken knows each provider's env key.
+//
+// Slack also needs the managed-settings.json plugin allowlist (see isManagedSettingsReady in agents.ts) before its
+// channel session can ever come up. A token saved on a machine where that allowlist is still missing
+// must NOT read as "configured" -- otherwise step 3 skips straight to Pairing, the wizard never re-surfaces the 
+// sudo-command prompt (it only fires from the step-3 save handler), and the operator is left staring at
+// an empty pairing list with no explanation for why Slack never connects.
 function channelConfigured(): boolean {
-  return readChannelToken(CHANNEL_PROVIDER, join(channelStateDir(CHANNEL_PROVIDER), '.env')) != null
+  const hasToken = readChannelToken(CHANNEL_PROVIDER, join(channelStateDir(CHANNEL_PROVIDER), '.env')) != null
+  if (!hasToken) return false
+  if (CHANNEL_PROVIDER === 'slack') return isManagedSettingsReady()
+  return true
+}
+
+// Step 3 pre-fill: a bot (and, for Slack, app) token can already sit in the provider's .env from a prior save whose
+// managed-settings.json gate wasn't satisfied yet (channelConfigured() reads that as "not configured"  -- see the
+// comment above it). Without this the operator has to dig the token back out of ~/.claude/channels/<provider>/.env
+// and repaste it just to get past a  step that already has it on disk. Presence-only elsewhere in this file stays
+// presence-only; this is the one spot that hands the value back, and only to the already dashboard-token-gated status
+// endpoint the operator is looking at.
+function existingChannelTokens(): { botToken: string | null; appToken: string | null } {
+  const envPath = join(channelStateDir(CHANNEL_PROVIDER), '.env')
+  const botToken = readChannelToken(CHANNEL_PROVIDER, envPath)
+  let appToken: string | null = null
+  if (CHANNEL_PROVIDER === 'slack') {
+    try {
+      for (const line of readFileSync(envPath, 'utf-8').split('\n')) {
+        if (line.startsWith('SLACK_APP_TOKEN=')) {
+          const v = line.slice('SLACK_APP_TOKEN='.length).trim()
+          appToken = v.length > 0 ? v : null
+          break
+        }
+      }
+    } catch { /* no .env yet */ }
+  }
+  return { botToken, appToken }
 }
 
 function paired(): boolean {
@@ -170,6 +242,33 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     const running = agentsRunning()
     const ch = channelConfigured()
     const pr = paired()
+    // Only surface an already-saved token while step 3 (channel setup) is the one still pending --  once the
+    // channel is configured there is nothing to pre-fill and no reason to hand the value back over the wire.
+    const existingTokens = !ch ? existingChannelTokens() : { botToken: null, appToken: null }
+    // Slack pre-flight, surfaced passively (GET, no probe/write/restart): when  a token is already on disk
+    // but the managed-settings.json plugin allowlist isn't, the wizard can show the sudo command immediately
+    // instead of making the operator hit Save just to learn it's needed. Kept null whenever there's nothing to
+    // say (no provider/no token/already ready), so the frontend's check stays a single truthiness test.
+    const managedSettingsReady = CHANNEL_PROVIDER === 'slack' && existingTokens.botToken
+      ? isManagedSettingsReady()
+      : null
+    const sudoCommand = managedSettingsReady === false ? getManagedSettingsSudoCommand() : null
+    // WIZFLOW809: measured channel liveness for the wizard's step-3 wait.
+    // hardRestartMarveenChannels() answers `restarted: true` when the restart
+    // COMMAND was dispatched, not when the channel is up -- and the cold path
+    // is a ~minutes start. The wizard used to advance after a fixed 4s and
+    // opened the pairing step against a still-booting session (three field
+    // reports, WIZFLOW809). This field is the ready signal it waits on now:
+    // the same bun-child/process liveness definition channel-monitor and
+    // channel-plugin-unlock already agree on. Fail-closed: any probe error
+    // reads as "not live yet" -- the wizard just keeps waiting.
+    let channelLive = false
+    try {
+      const claudePid = getClaudePidForSession(MAIN_CHANNELS_SESSION)
+      channelLive = claudePid != null && hasChannelPluginAlive(claudePid, CHANNEL_PROVIDER)
+    } catch {
+      channelLive = false
+    }
     json(res, {
       identityConfirmed: identityConfirmed(),
       currentAgentName: readEnvValue('BRAND_NAME') || readEnvValue('BOT_NAME') || 'Marveen',
@@ -177,6 +276,13 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       claudeAuthPresent: claude,
       agentsRunning: running,
       channelConfigured: ch,
+      channelLive,
+      channelProvider: CHANNEL_PROVIDER,
+      agentId: MAIN_AGENT_ID,
+      existingBotToken: existingTokens.botToken,
+      existingAppToken: existingTokens.appToken,
+      managedSettingsReady,
+      sudoCommand,
       paired: pr,
       // The identity step never re-opens the wizard on an already-configured
       // install: it only participates while first-run setup is incomplete.

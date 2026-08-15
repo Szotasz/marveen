@@ -407,6 +407,43 @@ else
 fi
 echo -e "  ${GREEN}✓${NC} Csatorna: $CHANNEL_PROVIDER"
 
+# INSTTOKEN807: probe the freshly entered bot token BEFORE anything is written.
+# Warn-only (advisory), for two hard reasons: a network hiccup must not block
+# the install, and the headless derive contract (Bridge payload) forbids new
+# interactive reads here -- so we say it loudly and let the install continue.
+# The dashboard save path hard-rejects the same states (#926); this is the
+# installer-side voice for the same three findings, each with its remedy.
+# set -e safe: every path ends in return 0; curl failures are guarded.
+# The token value itself is NEVER printed.
+probe_telegram_token() {
+  _ptt_t="$1"
+  [ -n "$_ptt_t" ] || return 0
+  _ptt_me="$(curl -s --max-time 8 "https://api.telegram.org/bot${_ptt_t}/getMe" 2>/dev/null)" || return 0
+  case "$_ptt_me" in
+    *'"ok":true'*) : ;;
+    *'"ok":false'*)
+      warn "A megadott bot token ERVENYTELEN (a Telegram getMe elutasitotta)."
+      echo -e "    ${DIM}Ellenorizd a @BotFather-tol kapott tokent. A telepites folytatodik, de a bot ezzel a tokennel nem fog valaszolni.${NC}"
+      return 0 ;;
+    *) return 0 ;;
+  esac
+  _ptt_wh="$(curl -s --max-time 8 "https://api.telegram.org/bot${_ptt_t}/getWebhookInfo" 2>/dev/null)" || return 0
+  case "$_ptt_wh" in
+    *'"url":"http'*)
+      warn "A bot token ervenyes, de a bot WEBHOOKRA van kotve -- a Marveen poller igy nem tud ra csatlakozni."
+      echo -e "    ${DIM}Teendo: nyisd meg bongeszoben: https://api.telegram.org/bot<A-TOKENED>/deleteWebhook${NC}"
+      echo -e "    ${DIM}vagy keszits uj botot a @BotFather-nel, es futtasd ujra a telepitot azzal.${NC}"
+      return 0 ;;
+  esac
+  _ptt_up="$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "https://api.telegram.org/bot${_ptt_t}/getUpdates?timeout=0&limit=1" 2>/dev/null)" || return 0
+  if [ "$_ptt_up" = "409" ]; then
+    warn "A bot token ervenyes, de egy MASIK futo rendszer mar hasznalja (Telegram 409 Conflict)."
+    echo -e "    ${DIM}Egy tokent egyszerre csak egy telepites hasznalhat. Teendo: allitsd le a korabbi telepitest,${NC}"
+    echo -e "    ${DIM}vagy keszits uj botot a @BotFather-nel, es futtasd ujra a telepitot az uj tokennel.${NC}"
+  fi
+  return 0
+}
+
 BOT_TOKEN=""
 SLACK_BOT_TOKEN=""
 SLACK_APP_TOKEN=""
@@ -420,6 +457,7 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   echo -e "${DIM}  4. Masold ide a kapott tokent:${NC}"
   echo ""
   read -rp "$(_t prompt_telegram_token)" BOT_TOKEN
+  probe_telegram_token "$BOT_TOKEN"
 else
   echo ""
   echo -e "${DIM}  Az AI asszisztensed Slack-en kommunikal veled.${NC}"
@@ -492,9 +530,21 @@ fi
 # >= 2.1.205 silently drops channel-plugin INBOUND notifications on a team/
 # enterprise org unless managed-settings has channelsEnabled:true (harmless /
 # no-op on a personal org). Idempotent + preserves existing managed keys.
+CHANNELS_GATE_STATE="manual"
 if [ -f "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" ]; then
   echo -e "  Managed-settings channel-kapu ellenorzese..."
-  bash "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" || true
+  # ORGGATESILENT806: the gate script must never fail the install (exit 0 on
+  # every path -- a personal org is a legitimate no-op), but its OUTCOME must
+  # not vanish either: it prints a MARVEEN_CHANNELS_GATE=ok|manual verdict
+  # line, and the final summary below repeats it -- with the exact root
+  # command when manual. Silent skipping was the bug, not skipping.
+  CHANNELS_GATE_OUT="$(bash "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" 2>&1 || true)"
+  # The verdict line is machine-facing; the customer sees only the human lines.
+  echo "$CHANNELS_GATE_OUT" | grep -v "MARVEEN_CHANNELS_GATE=" || true
+  case "$CHANNELS_GATE_OUT" in
+    *MARVEEN_CHANNELS_GATE=ok*) CHANNELS_GATE_STATE="ok" ;;
+    *) CHANNELS_GATE_STATE="manual" ;;
+  esac
 fi
 
 read -rp "$(_t prompt_bot_name)" BOT_NAME
@@ -524,12 +574,61 @@ fi
 BRAND_NAME="$BOT_NAME"
 SERVICE_ID="$MAIN_AGENT_ID"
 
+# Resolve the Node the launchd SERVICES will run, and pin the whole install to
+# it. Idempotent: sets NODE_PATH / NODE_BIN_DIR once, both the npm step below and
+# the launchagent step later call it.
+#
+# This used to live only in the launchagent step, ~600 lines further down -- long
+# AFTER `npm rebuild better-sqlite3`. So the install compiled the native module
+# against whatever generic `node` was on the operator's PATH (v25/v26, ABI 141)
+# and THEN handed the services node@22 (ABI 127). The pin worked exactly as
+# designed and the module was still built for the wrong runtime:
+#
+#   better_sqlite3.node was compiled against NODE_MODULE_VERSION 141.
+#   This version of Node.js requires NODE_MODULE_VERSION 127.
+#
+# `channels` survived (it touches no DB); the dashboard died on its first
+# require, so store/.dashboard-token -- written on first successful boot -- was
+# never created, and the installer still printed "sikeresen telepitve".
+resolve_service_node() {
+  [ -n "${NODE_PATH:-}" ] && [ -x "${NODE_PATH:-}" ] && return 0
+
+  # Homebrew's generic `node` symlink auto-upgrades to new majors whose ABI
+  # breaks the prebuilt better-sqlite3. node@22 is keg-only, so a generic `node`
+  # of any major can coexist -- pin to its keg path.
+  local prefix
+  prefix="$(brew --prefix node@22 2>/dev/null || true)"
+
+  if { [ -z "$prefix" ] || [ ! -x "$prefix/bin/node" ]; } && command -v brew &>/dev/null; then
+    echo -e "  ${ORANGE}node@22 telepitese a launchd szolgaltatasokhoz (ABI-stabil better-sqlite3)...${NC}"
+    brew install node@22 || true
+    prefix="$(brew --prefix node@22 2>/dev/null || true)"
+  fi
+
+  if [ -n "$prefix" ] && [ -x "$prefix/bin/node" ]; then
+    NODE_PATH="$prefix/bin/node"
+  else
+    # Last-resort fallback: node@22 could not be installed (e.g. no brew). The
+    # services may still break on an ABI-incompatible node -- warn loudly.
+    NODE_PATH="$(which node)"
+    echo -e "  ${RED}Figyelem:${NC} node@22 nem elerheto, a szolgaltatasok ${NODE_PATH}-ra allnak. ABI-hiba eseten telepitsd: brew install node@22"
+  fi
+
+  NODE_BIN_DIR="$(dirname "$NODE_PATH")"
+}
+
 # Step 5: Install dependencies
 INSTALL_STEP="npm-install"
 echo ""
 echo -e "${BOLD}$(_t section_5)${NC}"
 cd "$INSTALL_DIR"
-if ! npm install --loglevel warn || ! npm rebuild better-sqlite3 --build-from-source; then
+resolve_service_node
+# Prepending NODE_BIN_DIR is what makes the rebuild target the SERVICE runtime:
+# npm resolves `node` through PATH, and node-gyp compiles against the node that
+# resolves. Same reason `npm install` runs here too -- it can fetch or build
+# native prebuilds of its own.
+if ! PATH="$NODE_BIN_DIR:$PATH" npm install --loglevel warn \
+  || ! PATH="$NODE_BIN_DIR:$PATH" npm rebuild better-sqlite3 --build-from-source; then
   fail "npm install sikertelen. Ellenorizd a hibauzeneteket fentebb."
 fi
 ok "$(_t macos.npm_done)"
@@ -1103,27 +1202,10 @@ echo -e "${BOLD}$(_t section_7)${NC}"
 PLIST_DIR="$HOME/Library/LaunchAgents"
 mkdir -p "$PLIST_DIR"
 
-# Pin launchd services to a stable Node 22 (brew node@22). Homebrew's generic
-# `node` symlink auto-upgrades to new majors (e.g. 26) whose ABI breaks the
-# prebuilt better-sqlite3 binary, preventing the dashboard from starting and the
-# dashboard token from ever being created. node@22 is keg-only, so a generic
-# `node` of any major can coexist -- we ensure node@22 is present and pin the
-# services directly to its keg path.
-NODE22_PREFIX="$(brew --prefix node@22 2>/dev/null || true)"
-if { [ -z "$NODE22_PREFIX" ] || [ ! -x "$NODE22_PREFIX/bin/node" ]; } && command -v brew &>/dev/null; then
-  echo -e "  ${ORANGE}node@22 telepitese a launchd szolgaltatasokhoz (ABI-stabil better-sqlite3)...${NC}"
-  brew install node@22 || true
-  NODE22_PREFIX="$(brew --prefix node@22 2>/dev/null || true)"
-fi
-if [ -n "$NODE22_PREFIX" ] && [ -x "$NODE22_PREFIX/bin/node" ]; then
-  NODE_PATH="$NODE22_PREFIX/bin/node"
-else
-  # Last-resort fallback: node@22 could not be installed (e.g. no brew). The
-  # services may still break on an ABI-incompatible node -- warn loudly.
-  NODE_PATH="$(which node)"
-  echo -e "  ${RED}Figyelem:${NC} node@22 nem elerheto, a szolgaltatasok ${NODE_PATH}-ra allnak. ABI-hiba eseten telepitsd: brew install node@22"
-fi
-NODE_BIN_DIR="$(dirname "$NODE_PATH")"
+# Pin launchd services to the SAME Node the native module was just compiled
+# against (see resolve_service_node above, called from the npm-install step).
+# The resolution used to live here, which is why the two disagreed.
+resolve_service_node
 # Launchd labels key off SERVICE_ID. SERVICE_ID == MAIN_AGENT_ID for a
 # brand-unaware (default) install, so these labels are unchanged unless the
 # operator picked a distinct brand above.
@@ -1249,8 +1331,15 @@ else
   # nobody measured -- the same defect as the banner above it.
   echo -e "    ${DIM}A unit-fajlok a helyukon vannak, de futo folyamatot nem talaltunk.${NC}"
   echo -e "    ${BOLD}Javitas most:${NC}"
-  echo -e "    ${BLUE}launchctl kickstart -p gui/$(id -u)/${DASHBOARD_PLIST}${NC}"
-  echo -e "    ${BLUE}launchctl kickstart -p gui/$(id -u)/${CHANNELS_PLIST}${NC}"
+  # REMEDYCMD807: kickstart alone cannot start a unit that was never REGISTERED
+  # in the gui domain -- and that is exactly the state this branch fires in most
+  # often (an SSH-driven install cannot bootstrap into gui/$UID; measured live,
+  # rc=5 EIO). The remedy the user runs from a GUI terminal must be
+  # state-agnostic: bootstrap first (registers + RunAtLoad-starts; errors
+  # harmlessly if already registered), then kickstart (covers the
+  # registered-but-dead state).
+  echo -e "    ${BLUE}launchctl bootstrap gui/$(id -u) \"\$HOME/Library/LaunchAgents/${DASHBOARD_PLIST}.plist\" 2>/dev/null; launchctl kickstart -p gui/$(id -u)/${DASHBOARD_PLIST}${NC}"
+  echo -e "    ${BLUE}launchctl bootstrap gui/$(id -u) \"\$HOME/Library/LaunchAgents/${CHANNELS_PLIST}.plist\" 2>/dev/null; launchctl kickstart -p gui/$(id -u)/${CHANNELS_PLIST}${NC}"
   echo -e "    ${DIM}Ellenorzes: launchctl print gui/$(id -u)/${CHANNELS_PLIST} | grep -E 'state|pid'${NC}"
 fi
 
@@ -1348,8 +1437,9 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ "$CHAT_ID" = "0" ]; then
   echo ""
   echo -e "${ORANGE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo -e "${RED}$(_t warn_pair_missing)${NC}"
-  echo -e "${ORANGE}  Az ALLOWED_CHAT_ID=0 marad az .env-ben, ami azt jelenti${NC}"
-  echo -e "${ORANGE}  hogy a bot NEM fog valaszolni senkinek.${NC}"
+  echo -e "${ORANGE}  Az ALLOWED_CHAT_ID=0 marad az .env-ben. A bot a beszelgetesre${NC}"
+  echo -e "${ORANGE}  valaszolni FOG (azt a parositas donti el), de a MAGATOL kuldott${NC}"
+  echo -e "${ORANGE}  uzenetek elmaradnak: napi naplo, uj agens udvozlese, riasztasok.${NC}"
   echo ""
   echo -e "  ${BOLD}Javitas:${NC}"
   echo -e "  1. Irj a botodnak Telegramon (barmit)"
@@ -1378,6 +1468,12 @@ else
   echo -e "  ${DIM}$(_t dash.no_token_hint)${NC}"
 fi
 echo -e "  ${BOLD}Telegram:${NC} $(_t telegram.write_hint)"
+if [ "${CHANNELS_GATE_STATE:-manual}" = "ok" ]; then
+  echo -e "  ${GREEN}✓${NC} Org-szintu channel-kapu: channelsEnabled=true a managed-settings-ben"
+else
+  echo -e "  ${ORANGE}!${NC} Org-szintu channel-kapu NINCS beallitva (team/enterprise orgnal a bejovo uzenetek elakadnak)."
+  echo -e "    Kezi root-lepes: ${BOLD}sudo bash \"$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh\"${NC}"
+fi
 echo ""
 echo -e "  ${DIM}$(_t next_steps.title)${NC}"
 echo -e "  ${DIM}$(_t next_steps.1)${NC}"

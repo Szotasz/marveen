@@ -331,6 +331,216 @@ NEW_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 NEW_VERSION_FULL=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
 BUILT_COMMIT_FILE="$INSTALL_DIR/dist/.built-commit"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# UNIT MAINTENANCE -- and its position in this file is the fix, not a detail.
+#
+# These repairs used to live ~150 lines further down, BEHIND the "already on the
+# latest commit" `exit 0` below. That made them unreachable exactly when they
+# were needed: an update that has nothing to pull returns before them, and the
+# update that DOES pull them is still running the OLD copy of this script (bash
+# reads a script incrementally and there is no re-exec), so it runs the old code
+# that does not contain them either. Measured on a live host on 2026-08-04: a
+# machine went 1.28.2 -> 1.29.0 and its channels unit still carried the old
+# Restart=on-failure; re-running update.sh did not help, because the second run
+# exited at the up-to-date branch. The repair would first have run one whole
+# release later.
+#
+# THE BUG CLASS, so the next person does not re-create it: unit maintenance must
+# NOT be placed after the up-to-date early exit. Anything that repairs on-disk
+# state of an ALREADY INSTALLED machine belongs here, above that exit -- the
+# repairs are idempotent and cost a directory scan. The morning-timer repair had
+# the same defect for weeks before the channels migration joined it.
+#
+# What this placement does NOT solve: the run that pulls a NEW repair still
+# cannot execute it (no re-exec). It lands on the next update.sh run of any kind
+# -- including a "nothing to pull" one, which is the common case via the
+# dashboard button and the seeded auto-update task.
+
+# Morning-timer unit repair (Linux only). Earlier installers wrote
+# Requires=<unit>.service into the timer's [Unit] section, which makes every
+# activation of the timer unit (each systemd user-manager start, not just the
+# 07:27 elapse) start the briefing service immediately -- restart churn then
+# multiplies the morning briefing (customer report 2026-07-26: 5 deliveries in
+# one day). Idempotent: strips the line wherever it is still present.
+repair_morning_timer() {
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  [ -d "$units_dir" ] || return 0
+  for morn_timer in "$units_dir/"*-morning.timer; do
+    [ -f "$morn_timer" ] || continue
+    if grep -q '^Requires=.*-morning\.service' "$morn_timer"; then
+      sed -i.marveen-bak '/^Requires=.*-morning\.service/d' "$morn_timer" && rm -f "${morn_timer}.marveen-bak"
+      systemctl --user daemon-reload 2>/dev/null || true
+      echo -e "  Reggeli-napindito timer javitva (Requires= a [Unit]-bol eltavolitva): $(basename "$morn_timer")"
+    fi
+  done
+  return 0
+}
+
+# Channels-unit restart-policy migration (Linux only). The installer template is
+# the only place that writes the unit file, and update.sh does NOT re-run the
+# installer -- so a fix to the template reaches new installs only. Every machine
+# installed before that change keeps Restart=on-failure, under which channels.sh
+# exiting zero from its own watchdog leaves the unit inactive/dead forever (seen
+# live 2026-08-04). This migration is what actually lands the fix on those hosts.
+# Idempotent: it only touches units that still carry the old value.
+migrate_channels_restart() {
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  [ -d "$units_dir" ] || return 0
+  _patched=0
+  for chan_unit in "$units_dir/"*-channels.service; do
+    [ -f "$chan_unit" ] || continue
+    if grep -q '^Restart=on-failure[[:space:]]*$' "$chan_unit"; then
+      if sed -i.marveen-bak 's/^Restart=on-failure[[:space:]]*$/Restart=always/' "$chan_unit" 2>/dev/null; then
+        rm -f "${chan_unit}.marveen-bak"
+        _patched=1
+        echo -e "  Csatorna-unit javitva (Restart=on-failure -> always): $(basename "$chan_unit")"
+      else
+        echo -e "  FIGYELEM: a csatorna-unit nem volt irhato: $chan_unit"
+      fi
+    fi
+  done
+  if [ "$_patched" = "1" ]; then
+    systemctl --user daemon-reload 2>/dev/null || true
+  fi
+  return 0
+}
+
+run_unit_maintenance() {
+  repair_morning_timer "$@"
+  migrate_channels_restart "$@"
+  return 0
+}
+run_unit_maintenance
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SEED REFRESH -- update a shipped skill/task copy ONLY while it is provably
+# untouched, and sits here (above the up-to-date exit) for the same reason the
+# unit maintenance does.
+#
+# The problem it solves: seeding is skip-if-exists, so a fix to a file we ship
+# reaches new installs only. That is how a broken recipe survived on every
+# existing machine (the kanban-audit task called sqlite3/jq, absent on a stock
+# Linux box, so two of its steps died silently four times a day). --reseed-fleet
+# fixes it, but somebody has to run it.
+#
+# The safety rule, and the only reason this is allowed to write at all: a file is
+# refreshed ONLY if its current bytes match SOME version we ourselves shipped.
+# Then the operator demonstrably never edited it, and the worst case of a wrong
+# call is that a modified file stays old -- which --reseed-fleet still handles by
+# hand. An edited file is never overwritten behind the operator's back.
+#
+# "Some version we shipped" is the whole history of that path in this checkout,
+# not just the current one: a machine carrying an untouched copy from two
+# releases ago is just as entitled to the fix.
+#
+# Scheduled tasks are TEMPLATED at seed time, so a historical blob is compared
+# in RENDERED form, with this install's own values. If the operator renamed the
+# bot after seeding, nothing matches and we leave the file alone -- conservative
+# in the safe direction.
+#
+# NOT touched here: the operator's own skills/tasks (they have no seed source, so
+# the loop never visits them) and CLAUDE.md (its refresh stays behind the
+# explicit --regen-claudemd flag, because that file is the operator's text).
+SEED_REFRESH_UPDATED=0
+SEED_REFRESH_KEPT=0
+
+# Render a template stream the same way the seeder does. Keep in sync with the
+# sed blocks in the seeding loops below and in install-linux.sh.
+render_seed_template() {
+  sed -e "s/{{MAIN_AGENT_ID}}/${MAIN_AGENT_ID:-}/g" \
+      -e "s/{{BOT_NAME}}/${BOT_NAME:-}/g" \
+      -e "s/{{OWNER_NAME}}/${OWNER_NAME:-}/g" \
+      -e "s|{{INSTALL_DIR}}|${INSTALL_DIR}|g" \
+      -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g"
+}
+
+# True (0) iff $1 (an installed file) is byte-identical to ANY historical version
+# of $2 (a repo-relative path), rendered when $3 = "template".
+seed_copy_is_untouched() {
+  installed="$1"; rel="$2"; mode="${3:-verbatim}"
+  [ -f "$installed" ] || return 1
+  cur="$(shasum -a 256 <"$installed" 2>/dev/null | awk '{print $1}')"
+  [ -n "$cur" ] || return 1
+  # Newest first, capped: a file we shipped 25+ revisions ago and never fixed
+  # since is not worth the extra git calls.
+  for blob in $(git -C "$INSTALL_DIR" log --format=%H -n 25 -- "$rel" 2>/dev/null); do
+    if [ "$mode" = "template" ]; then
+      candidate="$(git -C "$INSTALL_DIR" show "$blob:$rel" 2>/dev/null | render_seed_template | shasum -a 256 | awk '{print $1}')"
+    else
+      candidate="$(git -C "$INSTALL_DIR" show "$blob:$rel" 2>/dev/null | shasum -a 256 | awk '{print $1}')"
+    fi
+    [ "$cur" = "$candidate" ] && return 0
+  done
+  return 1
+}
+
+# Refresh one seeded directory tree. $1 = repo source dir (relative), $2 = target
+# root, $3 = verbatim|template.
+refresh_untouched_seeds() {
+  src_rel="$1"; target_root="$2"; mode="${3:-verbatim}"
+  [ -d "$INSTALL_DIR/$src_rel" ] || return 0
+  [ -d "$target_root" ] || return 0
+  for d in "$INSTALL_DIR/$src_rel"/*/; do
+    [ -d "$d" ] || continue
+    name="$(basename "$d")"
+    [ -d "$target_root/$name" ] || continue     # not seeded here -> not ours to add
+    for f in "$d"*; do
+      [ -f "$f" ] || continue
+      base="$(basename "$f")"
+      installed="$target_root/$name/$base"
+      [ -f "$installed" ] || continue           # never add files to an existing dir
+      rel="$src_rel/$name/$base"
+      # Already identical to what we would write -> not an update. Without this
+      # the run is not idempotent: it would rewrite the same bytes and report a
+      # refresh on every single update, which is exactly the kind of constant
+      # signal that stops being read.
+      if [ "$mode" = "template" ]; then
+        want="$(render_seed_template <"$f" | shasum -a 256 | awk '{print $1}')"
+      else
+        want="$(shasum -a 256 <"$f" | awk '{print $1}')"
+      fi
+      have="$(shasum -a 256 <"$installed" 2>/dev/null | awk '{print $1}')"
+      [ "$want" = "$have" ] && continue
+      if seed_copy_is_untouched "$installed" "$rel" "$mode"; then
+        if [ "$mode" = "template" ]; then
+          render_seed_template <"$f" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
+        else
+          cp "$f" "$installed"
+        fi
+        SEED_REFRESH_UPDATED=$((SEED_REFRESH_UPDATED + 1))
+      else
+        SEED_REFRESH_KEPT=$((SEED_REFRESH_KEPT + 1))
+      fi
+    done
+  done
+  return 0
+}
+
+run_seed_refresh() {
+  # Self-initialising counters: the function must not depend on a caller having
+  # set them, or it dies under `set -u` the moment it is called from anywhere
+  # else (a test harness found exactly that).
+  SEED_REFRESH_UPDATED="${SEED_REFRESH_UPDATED:-0}"
+  SEED_REFRESH_KEPT="${SEED_REFRESH_KEPT:-0}"
+  # .env values feed the template rendering; without MAIN_AGENT_ID a rendered
+  # comparison would be meaningless, so templated tasks are skipped then.
+  if [ -f "$INSTALL_DIR/.env" ]; then
+    MAIN_AGENT_ID="${MAIN_AGENT_ID:-$(sed -n 's/^MAIN_AGENT_ID=//p' "$INSTALL_DIR/.env" | head -1 | tr -d '"')}"
+    BOT_NAME="${BOT_NAME:-$(sed -n 's/^BOT_NAME=//p' "$INSTALL_DIR/.env" | head -1 | tr -d '"')}"
+    OWNER_NAME="${OWNER_NAME:-$(sed -n 's/^OWNER_NAME=//p' "$INSTALL_DIR/.env" | head -1 | tr -d '"')}"
+    WEB_PORT="${WEB_PORT:-$(sed -n 's/^WEB_PORT=//p' "$INSTALL_DIR/.env" | head -1 | tr -d '"')}"
+  fi
+  refresh_untouched_seeds "seed-skills" "$HOME/.claude/skills" "verbatim"
+  if [ -n "${MAIN_AGENT_ID:-}" ]; then
+    refresh_untouched_seeds "seed-scheduled-tasks" "$HOME/.claude/scheduled-tasks" "template"
+  fi
+  if [ "$SEED_REFRESH_UPDATED" -gt 0 ]; then
+    echo -e "  ${GREEN}✓${NC} Szallitott skill/feladat frissitve: ${SEED_REFRESH_UPDATED} (erintetlen masolat); megtartva: ${SEED_REFRESH_KEPT} (helyben modositott)"
+  fi
+  return 0
+}
+run_seed_refresh
+
 if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
   # Already on the latest commit -- but "no new commits" does NOT guarantee the
   # compiled dist/ matches the source. A prior update can pull new source and
@@ -472,22 +682,11 @@ if [ -x "$INSTALL_DIR/scripts/sync-hooks.sh" ]; then
   bash "$INSTALL_DIR/scripts/sync-hooks.sh" || echo -e "  FIGYELEM: sync-hooks.sh nem-nulla exit; manualisan ellenorizd."
 fi
 
-# Morning-timer unit repair (Linux only). Earlier installers wrote
-# Requires=<unit>.service into the timer's [Unit] section, which makes every
-# activation of the timer unit (each systemd user-manager start, not just the
-# 07:27 elapse) start the briefing service immediately -- restart churn then
-# multiplies the morning briefing (customer report 2026-07-26: 5 deliveries in
-# one day). Idempotent: strips the line wherever it is still present.
-if [ -d "$HOME/.config/systemd/user" ]; then
-  for morn_timer in "$HOME/.config/systemd/user/"*-morning.timer; do
-    [ -f "$morn_timer" ] || continue
-    if grep -q '^Requires=.*-morning\.service' "$morn_timer"; then
-      sed -i.marveen-bak '/^Requires=.*-morning\.service/d' "$morn_timer" && rm -f "${morn_timer}.marveen-bak"
-      systemctl --user daemon-reload 2>/dev/null || true
-      echo -e "  Reggeli-napindito timer javitva (Requires= a [Unit]-bol eltavolitva): $(basename "$morn_timer")"
-    fi
-  done
-fi
+# Unit maintenance (morning-timer repair + channels restart-policy migration)
+# deliberately does NOT live here any more. It ran from this spot for weeks and
+# was unreachable on an already-current machine, because the up-to-date branch
+# exits ~150 lines above. It now runs before that exit -- see the block above
+# the OLD_VERSION check. Do not move repairs back down here.
 
 # Seed skills & scheduled tasks (idempotent: skip existing)
 # Source .env for template variables needed by seed-scheduled-tasks
@@ -570,10 +769,16 @@ if [ -d "$SEED_SCHED_DIR" ]; then
       mkdir -p "$target"
       for f in "$tpl"*; do
         [ -f "$f" ] || continue
+        # {{WEB_PORT}} belongs here too: install-linux.sh substitutes it in both
+        # of its seeding loops, and a task seeded by THIS path used to keep the
+        # literal placeholder in its URLs. Same placeholder set on both paths,
+        # or a template silently means different things depending on which
+        # script created the copy.
         sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
             -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
             -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
             -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+            -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
             "$f" > "$target/$(basename "$f")"
       done
       if [ "$forced" = "1" ]; then SCHED_FORCED=$((SCHED_FORCED + 1)); else SCHED_NEW=$((SCHED_NEW + 1)); fi
