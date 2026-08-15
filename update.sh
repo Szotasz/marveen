@@ -97,21 +97,43 @@ done
 # hardcoded nvm version disagreed with .nvmrc (22) and package.json engines
 # (<24); compiling for the wrong ABI crash-looped the service. Resolution:
 #   1) the node exe of the live dashboard process; 2) .nvmrc via nvm; 3) PATH node.
+# `ps -o comm=` is tried FIRST because it is the only method that needs no extra
+# binary and works on both platforms. lsof is NOT on the default PATH on macOS
+# (it lives in /usr/sbin, which login shells omit), so `command -v lsof` failed
+# there, /proc does not exist, and a Homebrew-node box with no ~/.nvm fell all
+# the way through to PATH node -- a different major than the service, which is
+# exactly the ABI mismatch this function exists to prevent.
 resolve_service_node_dir() {
   local pid exe
   pid="$(pgrep -f "$INSTALL_DIR/dist/index.js" 2>/dev/null | head -n1)"
   if [ -n "$pid" ]; then
-    if command -v lsof >/dev/null 2>&1; then
-      exe="$(lsof -p "$pid" -Fn 2>/dev/null | awk '/\/node$/{print substr($0,2); exit}')"
+    exe="$(ps -o comm= -p "$pid" 2>/dev/null | sed 's/^ *//;s/ *$//')"
+    case "$exe" in /*) ;; *) exe="" ;; esac
+    if [ -z "$exe" ]; then
+      for _lsof in lsof /usr/sbin/lsof /usr/bin/lsof; do
+        command -v "$_lsof" >/dev/null 2>&1 || continue
+        exe="$("$_lsof" -p "$pid" -Fn 2>/dev/null | awk '/\/node$/{print substr($0,2); exit}')"
+        [ -n "$exe" ] && break
+      done
     fi
     [ -z "$exe" ] && [ -r "/proc/$pid/exe" ] && exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null)"
     if [ -n "$exe" ] && [ -x "$exe" ]; then dirname "$exe"; return 0; fi
   fi
-  if [ -f "$INSTALL_DIR/.nvmrc" ] && [ -s "$HOME/.nvm/nvm.sh" ]; then
-    local want cand
-    want="$(tr -d ' \n' < "$INSTALL_DIR/.nvmrc")"
+  local want=""
+  [ -f "$INSTALL_DIR/.nvmrc" ] && want="$(tr -d ' \n' < "$INSTALL_DIR/.nvmrc")"
+  if [ -n "$want" ] && [ -s "$HOME/.nvm/nvm.sh" ]; then
+    local cand
     cand="$(ls -d "$HOME"/.nvm/versions/node/v"$want"* 2>/dev/null | sort -V | tail -n1)"
     [ -n "$cand" ] && [ -x "$cand/bin/node" ] && { echo "$cand/bin"; return 0; }
+  fi
+  # Homebrew keg-only node@N. Without this, a Mac that installs node via brew
+  # (no ~/.nvm at all) has no way to reach the pinned major while the service
+  # is stopped -- the one moment an update most needs the pin.
+  if [ -n "$want" ]; then
+    local brew_dir
+    for brew_dir in /opt/homebrew/opt/node@"$want"/bin /usr/local/opt/node@"$want"/bin; do
+      [ -x "$brew_dir/node" ] && { echo "$brew_dir"; return 0; }
+    done
   fi
   return 1
 }
