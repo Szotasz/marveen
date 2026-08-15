@@ -109,7 +109,11 @@ def main():
     if not oq:
         sys.exit(0)  # nothing open, or already answered by a reply-tool call
 
-    chat_id, message_id, text, ts, created_at = oq
+    # open_question_with_age() returns SEVEN fields (the last two are the
+    # attachment kind/file_id the live-drain hook needs). Only the first five
+    # are used here, and the slice keeps the guard fail-open if the ledger
+    # contract grows another column: a Stop hook must never wedge the session.
+    chat_id, message_id, text, ts, created_at = oq[:5]
 
     # Pure acknowledgement -> no reply owed.
     if _is_ack(text):
