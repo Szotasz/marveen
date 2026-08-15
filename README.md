@@ -15,7 +15,7 @@
 
 > **Fork.** Ez a repó a [Szotasz/marveen](https://github.com/Szotasz/marveen) önálló forkja, amely `fork-point` (2026-07-26, baseline: upstream `55ecbc6`) óta függetlenül fejlődik. Az upstream javításokat szelektíven vesszük át (`git fetch upstream` + cherry-pick). Hozzájárulásokat ehhez a forkhoz várunk PR-ként. Az AI által generált monolitikus kódot felhagyva, modularizált verzió alkotása a célom, amelyben nagyságrendekkel kisebb tokenhasználatot emészt fel magának a keretrendszernek a használata és robosztusabb kialakítása révén hosszútávon stabilabb működést biztosít.
 >
-> Állapot: upstream `9c9e337` vs fork `76c1021`, 2026-08-15
+> Állapot: upstream `9c9e337` vs fork `88abf0e`, 2026-08-15
 
 ## Jónás Gergő (cett) hozzájárulásai az eredeti Marveen repóhoz
 
@@ -69,7 +69,7 @@ A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás
 - **Memória-gráf vizualizáció (#95, #96, #97, #98)** -- teljes canvas-2D memória-gráf réteg a dashboard Memories képernyőjén, négy lépcsőben kiadva. Egy round-trip endpoint AND-szűrős élkonstrukcióval; offscreen radial-gradient glow-sprite render (tier-színek: hot/warm/cold/shared) + greedy ütközésfeloldással; force-directed szimuláció gravitációval, tier-csoportosítással, node-limit csúszka; quadratic bezier élek; animált particle-flow; Gource-stílusú temporális replay; node animate-in a `created_at` sim-időnél (branching→popping→alive, 700ms); szemantikus él-berajzolás időrendben. Mellékesen: a Memories képernyő redundáns Artifaktek-füle eltávolítva (önálló Artifacts oldal van).
 - **Memória-node detail kártya + `GET /api/memories/:id/detail` endpoint** -- a gráf-nézetben egy node-ra kattintva dark-glass kártya nyílik (teljes tartalom saját scrollal, frissesség/olvasottság metaadat `span_reads`-ból, kulcsszó-chipek összecsukással, kattintható szomszéd-lista weight-desc-ben, tier-történet a `memory_versions` `category_change`-ből, lábléc-műveletek: Szerkesztés/Fókusz/Másolás).
 - **Idővonal videó-export -- „Videó" gomb WebM-mentéssel** -- az Idővonal-módban a scrubber-kártyában egy „Videó" gomb a memória-fa 30 másodperces lejátszását rögzíti kliens-oldalon (`canvas.captureStream(30)` + `MediaRecorder`, VP9/WebM), majd auto-letöltés `memoria-fa-<dátum>.webm` néven; nulla új függőség, self-hosted marad. FPS-guardrail: az utolsó 15 frame átlaga alapján, ha <25 fps, a rögzítés előtt megerősítést kér. Böngésző: Chrome/Edge/Firefox; Safari a captureStream hiánya miatt nem támogatott.
-- **Automatikus kontextus-compact monitor** -- `scripts/context-compact-monitor.sh` ütemezett karbantartó script: ha egy ágens legutóbbi `token_usage` sora eléri a kontextusablak konfigurálható küszöbét (alapért. 75 %), automatikusan `/compact`-ot küld a tmux-session-jébe. Három égési-védelmi kapu: (1) frissességi gate -- csak aktív (<20 perc) ágens tüzelhet; (2) 45 perces ágensenként cooldown atomi állapotfájllal; (3) fail-closed: sérült állapotfájl karanténba kerül, a kör kimarad. A kontextus-limitet a `contextLimitForModel()` logika szerint határozza meg (1 M: opus-4-[6-9]/opus-5+/fable-*/mythos-*; 200 k: minden más). Sub-ágensek és a főágens (`MAIN_AGENT_ID`-channels) egyaránt lefedve; hard kód nélkül, `.env`-ből olvassa az agent-id-t.
+- **Automatikus kontextus-compact monitor** -- `scripts/context-compact-monitor.sh` ütemezett karbantartó script: ha egy ágens legutóbbi `token_usage` sora eléri a kontextusablak konfigurálható küszöbét (alapért. 75 %), automatikusan `/compact`-ot küld a tmux-session-jébe. Három égési-védelmi kapu: (1) frissességi gate -- csak aktív (<20 perc) ágens tüzelhet; (2) 45 perces ágensenként cooldown atomi állapotfájllal; (3) fail-closed: sérült állapotfájl karanténba kerül, a kör kimarad. A kontextus-limitet a `contextLimitForModel()` logika szerint határozza meg (1 M: opus-4-[6-9]/opus-5+/fable-*/mythos-*; 200 k: minden más). Sub-ágensek és a főágens (`MAIN_AGENT_ID`-channels) egyaránt lefedve; hard kód nélkül, `.env`-ből olvassa az agent-id-t. -- `scripts/setup-context-compact-task.sh` idempotens telepítő: létrehozza/frissíti a `~/.claude/scheduled-tasks/context-compact-monitor/` SKILL.md és task-config.json fájlokat (repo-klónozás vagy -áthelyezés után futtatandó, `createdAt` megőrzésével).
 
 ## A fork létrehozása óta átvett - cherry-pick - javítások:
 #720, #727, #729, #738, #739, #740, #741, #742, #743, #744, #746, #747, #749, #751, #752, #753, #756, #757, #758, #763, #760, #765, #768, #769, #771, #772,
@@ -81,7 +81,7 @@ A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás
 Linux-only PR-ek (#788, #792, #794) kihagyva (systemd/WSL-specifikus).
 
 
-Állapot: upstream `9c9e337` vs fork `76c1021`, 2026-08-15
+Állapot: upstream `9c9e337` vs fork `88abf0e`, 2026-08-15
 
 <!-- ONGOING: Minden jövőbeli fork-PR leadásakor (Zack -> Jarvis) frissítsd ezt a szakaszt
      a friss git log alapján:
