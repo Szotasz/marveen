@@ -44,6 +44,41 @@ export function originMatchesServedHost(
   return false
 }
 
+// DNS-rebinding defence: validate the request Host header against a set of
+// permitted hosts. A DNS-rebinding attack routes a malicious page's JS to
+// 127.0.0.1 but sends a foreign Host header, bypassing origin checks that
+// only look at the Origin header. Blocking requests whose Host is not in
+// the permitted set closes that gap.
+//
+// Build the permitted set from the already-configured allowedOrigins (which
+// covers localhost, 127.0.0.1, WEB_HOST, DASHBOARD_PUBLIC_URL, and any
+// DASHBOARD_ALLOWED_ORIGINS entries). Each origin's host component -- both
+// bare hostname and host:port -- is extracted and permitted.
+export function buildAllowedHosts(allowedOrigins: ReadonlySet<string>): Set<string> {
+  const hosts = new Set<string>()
+  for (const origin of allowedOrigins) {
+    try {
+      const u = new URL(origin)
+      if (u.hostname) hosts.add(u.hostname)   // bare, e.g. "localhost"
+      if (u.host) hosts.add(u.host)           // with port, e.g. "localhost:3420"
+    } catch { /* skip malformed */ }
+  }
+  return hosts
+}
+
+// Returns true when the request Host header is in the permitted set.
+// Checks both the full "host:port" value and the bare hostname so a client
+// that omits the port (or uses a non-standard one) is still matched correctly.
+export function isAllowedHost(
+  host: string | undefined,
+  allowedHosts: ReadonlySet<string>,
+): boolean {
+  if (!host) return false
+  if (allowedHosts.has(host)) return true
+  const bare = host.includes(':') ? host.split(':')[0] : undefined
+  return bare !== undefined && allowedHosts.has(bare)
+}
+
 // Decide whether a state-changing request must be rejected as cross-origin.
 // Safe methods, requests without an Origin (many same-origin browsers omit it),
 // allowlisted origins, and same-origin (served-host-matching) requests all pass.
