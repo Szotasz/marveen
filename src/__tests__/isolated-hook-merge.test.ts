@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { mergeIsolatedHooks, hookEntryId } from '../web/agent-process.js'
+import { mergeIsolatedHooks, hookEntryId, isDurableIsolatedHook } from '../web/agent-process.js'
+import { join, dirname } from 'node:path'
+import { homedir } from 'node:os'
+import { fileURLToPath } from 'node:url'
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+const REAL_HOOK = join(ROOT, 'scripts', 'hooks', 'ledger-replay.py')
+const REAL_HOOK_2 = join(ROOT, 'scripts', 'hooks', 'inbox-drain.py')
 
 describe('hookEntryId', () => {
   it('identifies command and agent hooks, rejects the rest', () => {
@@ -37,5 +44,84 @@ describe('mergeIsolatedHooks', () => {
     const groups = mergeIsolatedHooks(s, own).hooks!.SessionStart as any[]
     expect(groups).toHaveLength(2)
     expect(groups[1].matcher).toBe('clear')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The upgrade path: an entry retained in an isolated config is no longer
+// rewritten by the path that heals it, so a stale one must not survive the
+// merge at all. Two failure modes, both permanent once they land.
+// ---------------------------------------------------------------------------
+describe('isDurableIsolatedHook', () => {
+  it('keeps an entry whose paths all exist inside the install', () => {
+    expect(isDurableIsolatedHook({ type: 'command', command: `python3 ${REAL_HOOK}` })).toBe(true)
+  })
+
+  it('keeps a path-free entry (nothing to go stale)', () => {
+    expect(isDurableIsolatedHook({ type: 'command', command: 'echo hi' })).toBe(true)
+  })
+
+  // The zombie: a version-pinned interpreter that stopped resolving after an
+  // upgrade. The hook fails CLOSED, so retaining it blocks every call.
+  it('drops an entry whose pinned interpreter no longer exists', () => {
+    const cmd = `test -x "/usr/lib/node-22.3.0/bin/node" || exit 2; node ${REAL_HOOK}`
+    expect(isDurableIsolatedHook({ type: 'command', command: cmd })).toBe(false)
+  })
+
+  it('drops an entry whose own script no longer exists', () => {
+    expect(isDurableIsolatedHook({
+      type: 'command',
+      command: `python3 ${join(ROOT, 'scripts', 'hooks', 'removed-by-an-upgrade.py')}`,
+    })).toBe(false)
+  })
+
+  it('drops a /tmp-rooted entry', () => {
+    expect(isDurableIsolatedHook({ type: 'command', command: 'python3 /tmp/staging/hook.py' })).toBe(false)
+  })
+
+  // A worktree lives under $HOME, so "somewhere in home" would not catch it.
+  it('drops a script in a git worktree outside the install', () => {
+    const wt = join(homedir(), 'marveen-review-copy', 'scripts', 'hooks', 'ledger-replay.py')
+    expect(isDurableIsolatedHook({ type: 'command', command: `python3 ${wt}` })).toBe(false)
+  })
+})
+
+describe('mergeIsolatedHooks upgrade path', () => {
+  it('does not carry a stale isolated entry into the merged config', () => {
+    const shared = { PreToolUse: [{ hooks: [{ type: 'command', command: `python3 ${REAL_HOOK}` }] }] }
+    const own = {
+      PreToolUse: [{
+        hooks: [{
+          type: 'command',
+          command: `test -x "/usr/lib/node-22.3.0/bin/node" || exit 2; node ${REAL_HOOK_2}`,
+        }],
+      }],
+    }
+    const r = mergeIsolatedHooks(shared, own)
+    const cmds = (r.hooks!.PreToolUse as any[]).flatMap((g) => g.hooks).map((h) => h.command)
+    expect(cmds).toEqual([`python3 ${REAL_HOOK}`])
+    expect(r.kept).toEqual([])
+  })
+
+  // Supersede by basename: the shared side owns the current variant of a hook,
+  // so an older isolated variant of the SAME script does not survive next to it
+  // even though both paths resolve.
+  it('lets a newer shared entry supersede an older isolated variant', () => {
+    const shared = { PreToolUse: [{ hooks: [{ type: 'command', command: `python3 ${REAL_HOOK}` }] }] }
+    const own = {
+      PreToolUse: [{ hooks: [{ type: 'command', command: `python3.11 ${REAL_HOOK} --legacy` }] }],
+    }
+    const r = mergeIsolatedHooks(shared, own)
+    const cmds = (r.hooks!.PreToolUse as any[]).flatMap((g) => g.hooks).map((h) => h.command)
+    expect(cmds).toEqual([`python3 ${REAL_HOOK}`])
+    expect(r.kept).toEqual([])
+  })
+
+  it('still keeps a durable isolated-only hook the shared file never mentions', () => {
+    const shared = { PreToolUse: [{ hooks: [{ type: 'command', command: `python3 ${REAL_HOOK}` }] }] }
+    const own = { PreToolUse: [{ hooks: [{ type: 'command', command: `python3 ${REAL_HOOK_2}` }] }] }
+    const r = mergeIsolatedHooks(shared, own).hooks!.PreToolUse as any[]
+    const cmds = r.flatMap((g) => g.hooks).map((h) => h.command)
+    expect(cmds).toEqual([`python3 ${REAL_HOOK}`, `python3 ${REAL_HOOK_2}`])
   })
 })

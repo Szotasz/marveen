@@ -460,6 +460,74 @@ export function hookEntryId(entry: unknown): string | null {
   return `${type} ${body}`
 }
 
+// Volatile roots: a hook body pointing here is transient by construction.
+const _TRANSIENT_PREFIXES = ['/tmp/', '/var/tmp/', '/private/tmp/', '/dev/shm/']
+
+// Any absolute path in a hook body, script or interpreter alike.
+const _ABS_PATH_RX = /\/(?:[\w.@+-]+\/)*[\w.@+-]+/g
+// The subset that is a script we ship or an operator wrote.
+const _SCRIPT_RX = /\.(?:py|mjs|cjs|js|sh)$/
+
+/**
+ * Roots an isolated hook's SCRIPT may durably live under: the install itself,
+ * and the operator's own `~/.claude`. A git worktree or a staging checkout sits
+ * under `$HOME` too, so "somewhere in home" is not a usable test -- the path has
+ * to be inside the install that will still be there next month.
+ */
+function durableScriptRoots(): string[] {
+  return [PROJECT_ROOT, join(homedir(), '.claude')]
+}
+
+/**
+ * Should this entry from the ISOLATED file be carried into the merged config?
+ *
+ * Two failure modes, both measured, both permanent once they land:
+ *
+ *  1. **A zombie that fails closed.** A hook that pins an interpreter path and
+ *     ends in `test -x || exit 2` is safe only while something rewrites it. Once
+ *     an isolated copy is retained, that rewrite no longer reaches it, so a
+ *     routine interpreter upgrade leaves a hook whose path no longer resolves --
+ *     and it blocks every call rather than degrading. So: if any absolute path
+ *     in the body does not exist right now, the entry does not come along.
+ *
+ *  2. **A transient path made permanent.** Anything picked up from `/tmp`, a git
+ *     worktree or a staging checkout outlives the directory it came from once it
+ *     is written into the durable config. So: a script path outside the durable
+ *     roots does not come along either.
+ *
+ * Deliberately NOT reusing `isUnsafeHookCommand` from agent-scaffold: importing
+ * it here would pull the scaffold's module graph (and `runAgent` with it) into
+ * process startup. The rule is small enough to state twice.
+ *
+ * Exported for unit tests.
+ */
+export function isDurableIsolatedHook(entry: unknown): boolean {
+  if (!isPlainObject(entry)) return false
+  const body =
+    typeof entry.command === 'string' ? entry.command :
+    typeof entry.prompt === 'string' ? entry.prompt : ''
+  if (!body.trim()) return false
+  const paths = body.match(_ABS_PATH_RX) ?? []
+  for (const p of paths) {
+    if (_TRANSIENT_PREFIXES.some((prefix) => p.startsWith(prefix))) return false
+    if (_SCRIPT_RX.test(p) && !durableScriptRoots().some((root) => p.startsWith(root + '/'))) {
+      return false
+    }
+    if (!existsSync(p)) return false
+  }
+  return true
+}
+
+/** Basename of the script a hook body runs, used to supersede older variants. */
+function hookScriptBasename(entry: unknown): string | null {
+  if (!isPlainObject(entry)) return null
+  const body =
+    typeof entry.command === 'string' ? entry.command :
+    typeof entry.prompt === 'string' ? entry.prompt : ''
+  const script = (body.match(_ABS_PATH_RX) ?? []).find((p) => _SCRIPT_RX.test(p))
+  return script ? script.slice(script.lastIndexOf('/') + 1) : null
+}
+
 /**
  * Merge the isolated dir's OWN hooks into the shared ones, keeping entries that
  * exist only in the isolated file.
@@ -512,18 +580,27 @@ export function mergeIsolatedHooks(
     }
     const outGroups: unknown[] = Array.isArray(out[event]) ? [...(out[event] as unknown[])] : []
     const seen = new Set<string>()
+    // Script basenames the SHARED side already provides for this event. A newer
+    // shared entry supersedes an older isolated variant of the same hook, so a
+    // stale pinned path cannot survive alongside the fresh one.
+    const sharedScripts = new Set<string>()
     for (const group of outGroups) {
       if (!isPlainObject(group) || !Array.isArray(group.hooks)) continue
       for (const entry of group.hooks) {
         const id = hookEntryId(entry)
         if (id) seen.add(id)
+        const base = hookScriptBasename(entry)
+        if (base) sharedScripts.add(base)
       }
     }
     for (const group of ownGroups) {
       if (!isPlainObject(group) || !Array.isArray(group.hooks)) continue
       const fresh = group.hooks.filter((entry) => {
         const id = hookEntryId(entry)
-        return id !== null && !seen.has(id)
+        if (id === null || seen.has(id)) return false
+        const base = hookScriptBasename(entry)
+        if (base && sharedScripts.has(base)) return false
+        return isDurableIsolatedHook(entry)
       })
       if (!fresh.length) continue
       for (const entry of fresh) {
