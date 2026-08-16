@@ -19,6 +19,33 @@ import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
 import type { RouteContext } from './types.js'
 
+/** How much of a close's `result` rides along in the completion report. */
+const RESULT_SUMMARY_MAX = 500
+
+/**
+ * Build the completion-report body from a close's `result`, and say how much
+ * did not fit.
+ *
+ * The cap itself is fine -- this field is a status summary, not a channel.
+ * Truncating SILENTLY is not: the receiver gets a sentence that stops mid-word
+ * and reads as carelessness rather than as data loss, and the sender sees
+ * nothing at all. Measured 2026-08-16: 24 completion reports in one evening,
+ * every one of them cut at the same byte, and the instructions written into
+ * them never arrived. An agent noticed the cut-off sentence; the sender did
+ * not. So the cap stays, and the loss is stated at both ends -- in the report
+ * for the receiver, in the PUT response for the sender.
+ *
+ * Exported for unit tests.
+ */
+export function buildCompletionSummary(result?: string): { summary: string; dropped: number } {
+  if (!result) return { summary: '(nincs eredmény)', dropped: 0 }
+  if (result.length <= RESULT_SUMMARY_MAX) return { summary: result, dropped: 0 }
+  const dropped = result.length - RESULT_SUMMARY_MAX
+  const notice = `[...levágva: még ${dropped} karakter. A lezárás eredmény-mezője `
+    + `${RESULT_SUMMARY_MAX} karakternél vágódik. Érdemi utasítást ne ide írj, hanem külön üzenetbe.]`
+  return { summary: `${result.slice(0, RESULT_SUMMARY_MAX)}\n\n${notice}`, dropped }
+}
+
 export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -197,15 +224,19 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       // ping-pong chains (the delegator might write back, which would trigger
       // markMessageDone on this notification; we skip creating ANOTHER notification
       // when the original content is already a completion report).
+      let dropped = 0
       if (done && done.from_agent !== done.to_agent && !done.content.startsWith(COMPLETION_REPORT_PREFIX)) {
-        const summary = result ? result.slice(0, 500) : '(nincs eredmény)'
+        const built = buildCompletionSummary(result)
+        dropped = built.dropped
         createAgentMessage(
           done.to_agent,
           done.from_agent,
-          `${COMPLETION_REPORT_PREFIX} msg_id:${id} status:${newStatus}\n\n${summary}`,
+          `${COMPLETION_REPORT_PREFIX} msg_id:${id} status:${newStatus}\n\n${built.summary}`,
         )
       }
-      json(res, { ok: true }); return true
+      // Tell the CALLER too. The receiver now sees the marker in the report, but
+      // the sender is the one who can still resend what was lost.
+      json(res, dropped > 0 ? { ok: true, resultTruncated: dropped } : { ok: true }); return true
     }
     json(res, { error: 'Message not found or invalid status' }, 404)
     return true
