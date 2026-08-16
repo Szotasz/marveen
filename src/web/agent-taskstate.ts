@@ -43,7 +43,10 @@ export const TASKSTATE_TTL_MS = 12 * 60 * 60 * 1000
 // silently dropped the task-state on every restart it performed, while the
 // ledger and daily-log hooks (registered for clear) still injected theirs. The
 // symptom is invisible: a fresh session with chat history and no task list.
-const REPLAY_SOURCES = new Set(['compact', 'resume', 'startup', 'clear'])
+// Exported so the template's SessionStart matcher can be asserted to COVER this
+// set (containment, not equality) -- an equality assertion would pass today and
+// drift silently the next time a source is added here but not to the template.
+export const REPLAY_SOURCES = new Set(['compact', 'resume', 'startup', 'clear'])
 
 export interface AgentTaskState {
   agent: string
