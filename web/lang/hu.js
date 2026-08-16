@@ -354,6 +354,7 @@ window._i18n.hu = {
   'agents.stopped_tip':            'Leállva: nincs élő tmux session az ágensnek. Forrás: tmux list-sessions.',
   'agents.online_tip':             'Online: van bekonfigurált csatorna-token (saját bot). Figyelem: ez nem élő kapcsolat, csak a token meglétét jelzi.',
   'agents.offline_tip':            'Offline: nincs csatorna bekötve (channel-less, csak inter-agent ágens).',
+  'agents.context_tip':            'Kontextusablak kihasználtsága: {pct}%. Ugyanaz a mérés, amin a context-guard handoff/restart-döntése is alapul.',
   'agents.tmux_copy_aria':         'tmux attach parancs másolása',
   'agents.tmux_copied':            'másolva',
   'agents.tmux_copy_failed':       'Másolás sikertelen',
