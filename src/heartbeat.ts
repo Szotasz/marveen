@@ -17,6 +17,7 @@ import { runAgent } from './agent.js'
 import { notifyTelegram } from './notify.js'
 import { logger } from './logger.js'
 import { wrapUntrusted, UNTRUSTED_PREAMBLE } from './prompt-safety.js'
+import { getMainParkedState } from './web/agent-process.js'
 import { CHANNEL_PLUGIN_IDS } from './web/plugin-ids.js'
 
 // Isolation cwd for the heartbeat sub-agent. Keep this OUT of PROJECT_ROOT
@@ -388,6 +389,23 @@ function shouldNotify(data: HeartbeatData): boolean {
 
 // --- Agent prompt ---
 
+// MAINBOXPARK816: pure formatter, exported for tests. The parked preview is
+// wrapped as untrusted (it is whatever text sits in the box). Empty string when
+// there is nothing to report, so the prompt stays byte-identical in the normal
+// case.
+export function formatMainParkedSection(
+  state: { preview: string; fails: number; approxMinutes: number } | null,
+): string {
+  if (!state) return ''
+  return (
+    `## ⚠️ FO-AGENS INPUT-BOX PARKOLT (~${state.approxMinutes} perce)\n` +
+    `A fo agens input-mezojeben parkolt sor all, a csatorna emiatt nem dolgoz fel bejovo uzenetet. ` +
+    `A boxhoz NEM szabad nyulni (guard vedi); a te dolgod: jelezd EXPLICIT a gazda fele az osszefoglalod ELEJEN, ` +
+    `es ha ${OWNER_NAME} mar kapott kulon riasztast (owner-fok), eleg roviden megerositeni. ` +
+    `Parkolt sor eleje (untrusted adat): ${wrapUntrusted('main-parked-input', state.preview)}\n\n`
+  )
+}
+
 function buildAgentPrompt(data: HeartbeatData): string {
   const timeStr = data.timestamp.toLocaleString('hu-HU', { timeZone: APP_TZ })
 
@@ -398,6 +416,12 @@ function buildAgentPrompt(data: HeartbeatData): string {
   prompt += `Az alabbi adatokat gyujtottem nativ modon (API/DB). Fogalmazz tomor, emberi osszefoglalot ${OWNER_NAME} szamara.\n`
   prompt += `FONTOS: Nezd meg az emaileket is MCP-n keresztul (search_emails, utolso 2 ora, olvasatlanok).\n`
   prompt += `Hasznald a HEARTBEAT.md formatumot.\n\n`
+
+  // MAINBOXPARK816 stage 1: a parked main-agent input box silences the channel
+  // unsupervised, and the alert cannot travel the inter-agent queue (it would
+  // strand behind the very text it reports) -- so the heartbeat round is the
+  // first escalation surface. Same-process read, no queue involved.
+  prompt += formatMainParkedSection(getMainParkedState())
 
   // Calendar -- event summaries and attendee names come from whoever sent the
   // invite, so every one is wrapped individually as untrusted data.
