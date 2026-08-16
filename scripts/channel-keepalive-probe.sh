@@ -1,5 +1,7 @@
 #!/bin/bash
-# Token-free IDLE-path keepalive producer (systemd --user timer, every 5 min).
+# Token-free IDLE-path keepalive producer (systemd --user timer on Linux,
+# launchd StartInterval on macOS via install-channel-keepalive-probe.sh --
+# every 3 min, see scripts/systemd/channel-keepalive-probe.timer).
 #
 # WHY: the keepalive freshness signal (store/.channel-keepalive mtime) has two
 # intended producers:
