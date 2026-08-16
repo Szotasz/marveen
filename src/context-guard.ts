@@ -161,15 +161,24 @@ export const CONTEXT_LIMIT_TIERS = [200_000, 500_000, 1_000_000] as const
  * on 2026-07-27, two of them killing samu mid-task and losing dispatched
  * instructions).
  *
- * Sonnet stays at 200k deliberately: this host has never observed a sonnet
- * session above 198k (sonnet-5 max 197,885 across 14 days), so 200k is the
- * evidenced effective window there. Haiku is 200k by spec. Unknown models
- * stay conservative at 200k -- calibrateLimit and the runner's persisted
- * high-water mark step the denominator up from live evidence, and
- * over-estimating would blind the proactive tiers (the 2026-07-26 failure
- * mode), while under-estimating is loud and self-correcting.
+ * Sonnet joined the 1M families 2026-08-16, superseding the "sonnet stays at
+ * 200k, never observed above 198k" note this comment carried until then. That
+ * note was evidenced when written, but the fleet outgrew it: measured live,
+ * the SAME failure mode recurred on Sonnet -- 7 running claude-sonnet-5
+ * agents each showed the statusline's own authoritative
+ * context_window.context_window_size as ~999k (e.g. delphi 216,165 raw
+ * transcript tokens / 999k = 21.6%, matching the pane's displayed 22% almost
+ * exactly), while this guard, still assuming 200k, read the same session at
+ * 108% and force-restarted it mid-task -- the exact "working agent killed by
+ * a stale denominator" failure the fable-5 incident above already describes,
+ * just on the model this comment used to trust. Haiku is 200k by spec.
+ * Unknown models stay conservative at 200k -- calibrateLimit and the
+ * runner's persisted high-water mark step the denominator up from live
+ * evidence, and over-estimating would blind the proactive tiers (the
+ * 2026-07-26 failure mode), while under-estimating is loud and
+ * self-correcting.
  */
-const ONE_MILLION_FAMILIES = [/fable-\d/, /mythos-\d/, /opus-4-[6-9]/, /opus-[5-9]\b/]
+const ONE_MILLION_FAMILIES = [/fable-\d/, /mythos-\d/, /opus-4-[6-9]/, /opus-[5-9]\b/, /sonnet-[5-9]\b/]
 
 export function contextLimitForModel(model: string | null | undefined): number {
   if (typeof model !== 'string') return 200_000

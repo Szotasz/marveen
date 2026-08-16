@@ -78,13 +78,32 @@ describe('contextLimitForModel / calibrateLimit', () => {
     expect(contextLimitForModel('claude-opus-4-6')).toBe(1_000_000)
     expect(contextLimitForModel('claude-opus-5')).toBe(1_000_000)
     expect(contextLimitForModel('claude-opus-5[1m]')).toBe(1_000_000)
-    // Sonnet stays 200k: never observed above 198k on this host. Haiku 200k
-    // by spec; unknown models stay conservative (calibration steps them up).
-    expect(contextLimitForModel('claude-sonnet-5')).toBe(200_000)
+    // Sonnet joined the 1M families 2026-08-16: measured live, 7 running
+    // claude-sonnet-5 agents each showed the statusline's own authoritative
+    // context_window_size as ~999k (delphi 216,165 raw tokens / 999k = 21.6%,
+    // matching its pane's displayed 22%), while the old 200k assumption read
+    // the same session at 108% and force-restarted it mid-task -- the fable-5
+    // failure mode above, recurring on the model this file used to trust.
+    // Haiku 200k by spec; unknown models stay conservative (calibration
+    // steps them up).
+    expect(contextLimitForModel('claude-sonnet-5')).toBe(1_000_000)
     expect(contextLimitForModel('claude-haiku-4-5')).toBe(200_000)
     expect(contextLimitForModel('claude-opus-4-5')).toBe(200_000)
     expect(contextLimitForModel('deepseek-v4-pro')).toBe(200_000)
     expect(contextLimitForModel(null)).toBe(200_000)
+  })
+
+  it('does not force-restart a Sonnet 5 session mid-task on a stale 200k denominator (2026-08-16 delphi incident)', () => {
+    // delphi's live transcript carried 216,165 raw tokens (input + cache_read
+    // + cache_creation) -- comfortably inside a 999k window, but 108% of the
+    // old 200k assumption. calibrateLimit alone cannot rescue this: 216,165
+    // is within CALIBRATION_OVERSHOOT_TOLERANCE (1.25x) of 200_000, so it
+    // reads as a genuinely-full 200k session rather than proof the base was
+    // wrong, and never steps up to a bigger tier.
+    const observed = 216_165
+    const limit = calibrateLimit(observed, contextLimitForModel('claude-sonnet-5'))
+    expect(limit).toBe(1_000_000)
+    expect(observed / limit).toBeLessThan(DEFAULT_CONTEXT_GUARD.hardPct)
   })
 
   it('defaults the handoff timeout to 20 minutes (6 was shorter than a working turn)', () => {
