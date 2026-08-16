@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Kvota-figyeles es automatikus DeepSeek-atallitas, TISZTAN HELYI (Jozsi,
+  2026-08-16 -- "en azt hittem van helyi LLM"). A script maga (quota-watch.sh)
+  NEM hiv Claude API-t -- egy fajlt olvas es szammal osszehasonlit, ehhez
+  nem kell modell. A launchd 15 percenkent hivja; a script onmagat fekezi
+  90% alatt oranta egy teny-ellenorzesre (a script fejleceben reszletezve).
+
+  Install:
+    cp scripts/com.marveen.quota-watch.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.marveen.quota-watch.plist
+    launchctl kickstart -k gui/$(id -u)/com.marveen.quota-watch
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.marveen.quota-watch</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/ceo/Marveen/scripts/quota-watch.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/ceo/Marveen</string>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/ceo/Marveen/store/quota-watch.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/ceo/Marveen/store/quota-watch.error.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin</string>
+    <key>HOME</key>
+    <string>/Users/ceo</string>
+  </dict>
+</dict>
+</plist>
