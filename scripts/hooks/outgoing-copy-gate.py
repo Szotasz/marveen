@@ -360,6 +360,15 @@ def telegram_gate(tool_input: dict) -> None:
               "az ellenorzes elott feloldja, azok nem szamitanak hibanak).\n"
         )
         sys.exit(2)
+    # GATEPERSIST816(2): a hianyzo nev-szabaly a telegram-agon fail-open marad,
+    # de a figyelmeztetes ODA megy, ahol a session tenyleg latja -- a hook
+    # stdout systemMessage mezoje a futo sessionben jelenik meg, nem egy
+    # logfajlban, amit senki nem olvas.
+    if BAD_NAME is None:
+        print(json.dumps({"systemMessage":
+            "outgoing-copy-gate: a NEV-SZABALY fajl hianyzik/ures "
+            f"({_LOCAL_RULES}) -- a nev-ellenorzes NEM fut a kimeno uzeneteken. "
+            "Potold a store/outgoing-copy-gate-rules.json-t."}))
     sys.exit(0)
 
 
@@ -453,6 +462,20 @@ def main():
             "Ez szandekosan fail-closed: egy vizsgalhatatlan kuldes pont a kaput utne ki.\n"
             "Tedd vizsgalhatova, aztan kuldd ujra -- ABSZOLUT utvonalu stdin-atiranyitas "
             "(< /teljes/ut/body.txt, shell-valtozo NELKUL), vagy --body-ban atadott szoveg.\n"
+        )
+        sys.exit(2)
+
+    # GATEPERSIST816(2): az EMAIL ut a hianyzo nev-szabalyra FAIL-CLOSED. A
+    # level halaszthato, es pont a vevo fele a legdragabb a rossz nev -- egy
+    # csendben lealit nev-ellenorzes mellett kuldeni rosszabb, mint megvarni a
+    # szabaly-fajl potlasat. (A telegram-ag fail-open marad systemMessage
+    # figyelmeztetessel: az a felugyeleti csatorna, ott a nemulas a dragabb.)
+    if BAD_NAME is None:
+        sys.stderr.write(
+            "KIMENO-SZOVEG KAPU: TILTVA -- a NEV-SZABALY fajl hianyzik/ures "
+            f"({_LOCAL_RULES}), igy a nev-ellenorzes nem tud lefutni.\n"
+            "Email fail-closed: potold a store/outgoing-copy-gate-rules.json-t "
+            "(bad_name_patterns + correction), aztan kuldd ujra.\n"
         )
         sys.exit(2)
 
