@@ -945,6 +945,7 @@ window._i18n.en = {
   'agents.stopped_tip':            'Stopped: no live tmux session for this agent. Source: tmux list-sessions.',
   'agents.online_tip':             'Online: a channel token is configured (own bot). Note: this is not a live connection check, only confirms the token exists.',
   'agents.offline_tip':            'Offline: no channel configured (channel-less, inter-agent only).',
+  'agents.context_tip':            'Context window used: {pct}%. Same measurement the context-guard handoff/restart decision is based on.',
   'agents.tmux_copy_aria':         'Copy tmux attach command',
   'agents.tmux_copied':            'copied',
   'agents.tmux_copy_failed':       'Copy failed',
