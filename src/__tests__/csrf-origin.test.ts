@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { isSafeMethod, originMatchesServedHost, isBlockedCrossOriginWrite } from '../web/csrf-origin.js'
+import { isSafeMethod, originMatchesServedHost, isBlockedCrossOriginWrite, buildAllowedHosts, isAllowedHost } from '../web/csrf-origin.js'
 
 const allow = new Set(['http://localhost:3420', 'http://127.0.0.1:3420'])
-const TS = 'marvins-mac-mini.tail1501e6.ts.net'
+const TS = 'proxy-host.example.ts.net'
 const TS_ORIGIN = `https://${TS}`
 
 describe('isSafeMethod', () => {
@@ -51,5 +51,76 @@ describe('isBlockedCrossOriginWrite', () => {
   })
   it('STILL blocks a genuine cross-site write (CSRF stays defended)', () => {
     expect(isBlockedCrossOriginWrite('POST', 'https://evil.example.com', TS, TS, allow)).toBe(true)
+  })
+})
+
+describe('buildAllowedHosts', () => {
+  const origins = new Set([
+    'http://localhost:3420',
+    'http://127.0.0.1:3420',
+    `https://${TS}`,
+  ])
+  const hosts = buildAllowedHosts(origins)
+
+  it('includes bare hostname and host:port for each origin', () => {
+    expect(hosts.has('localhost')).toBe(true)
+    expect(hosts.has('localhost:3420')).toBe(true)
+    expect(hosts.has('127.0.0.1')).toBe(true)
+    expect(hosts.has('127.0.0.1:3420')).toBe(true)
+    expect(hosts.has(TS)).toBe(true)
+  })
+
+  it('does not include unrelated hosts', () => {
+    expect(hosts.has('evil.example.com')).toBe(false)
+  })
+
+  it('skips malformed origin entries without throwing', () => {
+    const h = buildAllowedHosts(new Set(['not-a-url', 'http://localhost:3420']))
+    expect(h.has('localhost')).toBe(true)
+    expect(h.has('localhost:3420')).toBe(true)
+  })
+})
+
+describe('isAllowedHost', () => {
+  const hosts = buildAllowedHosts(new Set([
+    'http://localhost:3420',
+    'http://127.0.0.1:3420',
+    `https://${TS}`,
+  ]))
+
+  it('allows localhost with port', () => {
+    expect(isAllowedHost('localhost:3420', hosts)).toBe(true)
+  })
+
+  it('allows localhost without port (bare hostname match)', () => {
+    expect(isAllowedHost('localhost', hosts)).toBe(true)
+  })
+
+  it('allows 127.0.0.1 with port', () => {
+    expect(isAllowedHost('127.0.0.1:3420', hosts)).toBe(true)
+  })
+
+  it('allows 127.0.0.1 without port', () => {
+    expect(isAllowedHost('127.0.0.1', hosts)).toBe(true)
+  })
+
+  it('allows a configured reverse-proxy host', () => {
+    expect(isAllowedHost(TS, hosts)).toBe(true)
+  })
+
+  it('blocks a foreign host (DNS-rebinding attempt)', () => {
+    expect(isAllowedHost('evil.attacker.com', hosts)).toBe(false)
+  })
+
+  it('blocks a foreign host with port', () => {
+    expect(isAllowedHost('evil.attacker.com:3420', hosts)).toBe(false)
+  })
+
+  it('returns false when host header is absent', () => {
+    expect(isAllowedHost(undefined, hosts)).toBe(false)
+  })
+
+  it('returns false for an empty string', () => {
+    expect(isAllowedHost('', hosts)).toBe(false)
   })
 })

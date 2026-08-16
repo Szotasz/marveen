@@ -9,7 +9,7 @@ import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } from './web/auth-gate.js'
 import { sweepExpiredSessions } from './web/auth-sessions.js'
 import { sweepExpiredDeviceKeys } from './web/auth-device-keys.js'
-import { isBlockedCrossOriginWrite, originMatchesServedHost } from './web/csrf-origin.js'
+import { isBlockedCrossOriginWrite, originMatchesServedHost, buildAllowedHosts, isAllowedHost } from './web/csrf-origin.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './web/agent-config.js'
@@ -149,11 +149,25 @@ export function startWebServer(port = 3420): http.Server {
     ...(DASHBOARD_PUBLIC_URL ? [DASHBOARD_PUBLIC_URL.replace(/\/$/, '')] : []),
     ...DASHBOARD_ALLOWED_ORIGINS.split(',').map((o) => o.trim().replace(/\/$/, '')).filter(Boolean),
   ])
+  // Derive the Host-header allowlist from the same origin set so both defences
+  // stay in sync without an extra env var.
+  const allowedHosts = buildAllowedHosts(allowedOrigins)
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', `http://localhost:${port}`)
     const path = url.pathname
     const method = req.method || 'GET'
+
+    // DNS-rebinding defence: reject requests whose Host header is not in the
+    // permitted set. A rebinding attack routes a foreign page's JS to 127.0.0.1
+    // but sets Host to the attacker's domain, bypassing Origin-only checks.
+    // This runs before CORS and auth so no information leaks on a bad Host.
+    if (!isAllowedHost(req.headers.host, allowedHosts)) {
+      logger.warn({ host: req.headers.host, path }, 'Host header not allowed -- possible DNS-rebinding attempt')
+      res.writeHead(403, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Host not allowed' }))
+      return
+    }
 
     const origin = req.headers.origin
     // Emit CORS headers for allowlisted origins AND for genuinely same-origin
