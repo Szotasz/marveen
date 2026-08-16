@@ -13,6 +13,11 @@
       { "matcher": "mcp__plugin_telegram_telegram__reply", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/ledger-outbound.py\"", "timeout": 15 } ] },
       { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/tool-log-capture.py\"", "timeout": 5 } ] }
     ],
+    "PreToolUse": [
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"", "timeout": 15 } ] },
+      { "matcher": ".*send_email.*", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"", "timeout": 15 } ] },
+      { "matcher": "mcp__plugin_telegram_telegram__reply", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/outgoing-copy-gate.py\"", "timeout": 15 } ] }
+    ],
     "Stop": [
       { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/telegram-reply-guard.py\"", "timeout": 10 } ] }
     ],
