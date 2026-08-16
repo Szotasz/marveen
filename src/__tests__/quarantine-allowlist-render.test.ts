@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { renderQuarantineReader, ownerAllowedDomains, isPublicFetchHost } from '../web/agent-scaffold.js'
+import { renderQuarantineReader, ownerAllowedDomains, quarantineReaderDomains, isPublicFetchHost } from '../web/agent-scaffold.js'
 
 // The quarantine reader may only fetch from an allowlist, and that list used to
 // exist TWICE: once in this template and once in store/egress-allowlist.json,
@@ -104,6 +104,54 @@ describe('ownerAllowedDomains', () => {
   it('a file without a domains key is not an error either', () => {
     writeFileSync(join(dir, 'egress-allowlist.json'), JSON.stringify({ note: 'empty for now' }))
     expect(ownerAllowedDomains(dir)).toEqual([])
+  })
+})
+
+// EGRESSKEY816: a domain granted at the quarantine_domains level is honored by
+// the egress-gate hook (its step 4 applies to the quarantine-reader agent type)
+// but used to be invisible to the rendered reader definition, whose prompt-level
+// list came from the `domains` key alone -- so the reader refused the host
+// before a fetch was ever attempted. The render input must be the union the
+// hook enforces.
+describe('quarantineReaderDomains', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'egress-q-'))
+
+  it('unions domains and quarantine_domains, domains first', () => {
+    writeFileSync(join(dir, 'egress-allowlist.json'),
+      JSON.stringify({ domains: ['a.com'], quarantine_domains: ['q.com'] }))
+    expect(quarantineReaderDomains(dir)).toEqual(['a.com', 'q.com'])
+  })
+
+  it('does not open quarantine_domains for the every-agent list', () => {
+    writeFileSync(join(dir, 'egress-allowlist.json'),
+      JSON.stringify({ domains: ['a.com'], quarantine_domains: ['q.com'] }))
+    expect(ownerAllowedDomains(dir)).toEqual(['a.com'])
+  })
+
+  it('dedupes a host present at both levels, case-insensitively', () => {
+    writeFileSync(join(dir, 'egress-allowlist.json'),
+      JSON.stringify({ domains: ['both.com'], quarantine_domains: ['BOTH.com', 'q.com'] }))
+    expect(quarantineReaderDomains(dir)).toEqual(['both.com', 'q.com'])
+  })
+
+  it('applies the same host vetting as the domains key', () => {
+    writeFileSync(join(dir, 'egress-allowlist.json'),
+      JSON.stringify({ domains: [], quarantine_domains: ['q.com', 'localhost', 'evil.internal', 42, ' spaced.com '] }))
+    expect(quarantineReaderDomains(dir)).toEqual(['q.com', 'spaced.com'])
+  })
+
+  it('a missing quarantine_domains key degrades to the domains list', () => {
+    writeFileSync(join(dir, 'egress-allowlist.json'), JSON.stringify({ domains: ['a.com'] }))
+    expect(quarantineReaderDomains(dir)).toEqual(['a.com'])
+  })
+
+  it('a quarantine_domains-level grant reaches the rendered reader definition', () => {
+    // The regression this whole card exists for: the render must carry the
+    // union, or the hook allows what the reader's own prompt still refuses.
+    writeFileSync(join(dir, 'egress-allowlist.json'),
+      JSON.stringify({ domains: [], quarantine_domains: ['elevenlabs.io'] }))
+    const out = renderQuarantineReader(TEMPLATE, quarantineReaderDomains(dir))
+    expect(out).toContain('- `elevenlabs.io`')
   })
 })
 

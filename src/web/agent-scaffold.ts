@@ -537,6 +537,32 @@ export function ownerAllowedDomains(storeDir = STORE_DIR): string[] {
   }
 }
 
+// The reader's effective allowlist, matching the egress-gate hook's semantics:
+// `domains` opens a host for every agent type (the hook's step 3), while
+// `quarantine_domains` opens it for the quarantine-reader only (step 4). The
+// rendered definition must carry the union, or a host granted at the
+// quarantine_domains level is honored by the hook but the reader's own prompt
+// still refuses it before a fetch is ever attempted -- which is exactly what
+// stranded a research task on 2026-08-16 (EGRESSKEY816).
+export function quarantineReaderDomains(storeDir = STORE_DIR): string[] {
+  const base = ownerAllowedDomains(storeDir)
+  try {
+    const raw = JSON.parse(readFileSync(join(storeDir, 'egress-allowlist.json'), 'utf-8'))
+    const list = Array.isArray(raw?.quarantine_domains) ? raw.quarantine_domains : []
+    const seen = new Set(base.map((d) => d.toLowerCase()))
+    for (const d of list) {
+      if (typeof d !== 'string') continue
+      const host = d.trim()
+      if (!isPublicFetchHost(host) || seen.has(host.toLowerCase())) continue
+      seen.add(host.toLowerCase())
+      base.push(host)
+    }
+    return base
+  } catch {
+    return base
+  }
+}
+
 // Render the reader definition: the template's shipped feeds, plus the domains
 // the owner allowed on this install. Pure, so the tests drive the same string
 // the deploy writes.
@@ -638,7 +664,7 @@ export function ensureQuarantineReader(name: string): boolean {
   const destPath = join(destDir, 'quarantine-reader.md')
   let rendered: string
   try {
-    rendered = renderQuarantineReader(readFileSync(tplPath, 'utf-8'), ownerAllowedDomains())
+    rendered = renderQuarantineReader(readFileSync(tplPath, 'utf-8'), quarantineReaderDomains())
   } catch {
     return false
   }
