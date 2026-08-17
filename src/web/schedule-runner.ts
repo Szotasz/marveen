@@ -49,6 +49,8 @@ import {
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { sendTelegramMessage } from './telegram.js'
 import { runCommandTask } from './command-task.js'
+import { decideQuotaAction, type QuotaWorkClass } from '../quota-gate.js'
+import { readQuotaSnapshot } from '../quota-snapshot.js'
 import { paneShowsContextSaturation, detectsFirstRunGate, detectPaneState, type PaneState } from '../pane-state.js'
 import { withSessionSendLock } from './session-send-lock.js'
 
@@ -429,6 +431,17 @@ export function resolveBoundChatId(agentName: string): string | null {
     }
     return chosen
   } catch { return null }
+}
+
+// What a scheduled task costs the shared quota pool, for the gate in
+// quota-gate.ts. `command` tasks run a raw shell command with no model call at
+// all; heartbeats are background checks nobody is waiting for; everything else
+// (task, dream-engine, unknown future types) reports to the owner and is never
+// held back.
+export function quotaWorkClass(task: Pick<ScheduledTask, 'type'>): QuotaWorkClass {
+  if (task.type === 'command') return 'free'
+  if (task.type === 'heartbeat') return 'background'
+  return 'owner-facing'
 }
 
 export function runPreCheck(task: ScheduledTask): { skip: boolean; prefix?: string } {
@@ -1219,6 +1232,12 @@ export function startScheduleRunner(): NodeJS.Timeout {
     // routine heartbeats (see taskInjectionRank). listScheduledTasks() builds
     // a fresh array every tick, so the in-place sort leaks nowhere.
     tasks.sort((a, b) => taskInjectionRank(a) - taskInjectionRank(b))
+
+    // One read per tick, shared by every task the loop considers: the whole
+    // fleet draws on ONE subscription quota pool, so the gate below asks the
+    // same snapshot about all of them.
+    const quotaSnapshot = readQuotaSnapshot()
+
     for (const task of tasks) {
       if (!task.enabled) continue
       const occurrenceMs = cronPrevOccurrence(task.schedule, fromMs, now)
@@ -1273,6 +1292,30 @@ export function startScheduleRunner(): NodeJS.Timeout {
         targetAgents = [MAIN_AGENT_ID, ...running]
       } else {
         targetAgents = [task.agent || MAIN_AGENT_ID]
+      }
+
+      // Quota gate. Every heartbeat across the fleet spends from the same
+      // subscription pool as the owner's own turns, so a routine background
+      // check must not burn the tail of a window minutes before real work
+      // needs it. Only background work is ever held back, and only on fresh
+      // authoritative evidence -- an unknown quota state runs (quota-gate.ts).
+      // A held-back occurrence is recorded like a pre-check skip: the tick is
+      // marked as run so the catch-up window does not fire it later, and the
+      // next scheduled occurrence is evaluated on its own merits.
+      const quota = decideQuotaAction({
+        snapshot: quotaSnapshot,
+        nowMs: now,
+        workClass: quotaWorkClass(task),
+      })
+      if (quota.action === 'defer') {
+        logger.info(
+          { task: task.name, reason: quota.reason, pressure: quota.pressure },
+          'Quota gate: holding back a background task until the window recovers',
+        )
+        scheduleLastRun.set(task.name, now)
+        persistScheduleLastRun()
+        for (const agentName of targetAgents) appendTaskRun(task.name, agentName, 'skipped')
+        continue
       }
 
       // Run pre-check once per task (not per agent) since it queries shared
