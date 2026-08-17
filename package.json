@@ -30,7 +30,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
-    "@types/better-sqlite3": "^7.6.12",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^26.2.0",
     "@vitest/coverage-v8": "^4.1.10",
     "pino-pretty": "^13.0.0",
