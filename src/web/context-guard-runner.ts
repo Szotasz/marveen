@@ -27,6 +27,7 @@ import {
   INITIAL_GUARD_STATE,
   STALE_REFRESH_REASON_PREFIX,
   type GuardState,
+  type HandoffStaleness,
   type GuardInputs,
 } from '../context-guard.js'
 
@@ -151,7 +152,7 @@ export function resumePrompt(
   name: string,
   handoffPath: string,
   hadHandoff: boolean,
-  staleMinutes: number | null = null,
+  staleMinutes: HandoffStaleness = null,
 ): string {
   const base =
     // Wording covers both tiers that lead here: "grew too large" is true at the
@@ -160,7 +161,13 @@ export function resumePrompt(
     `[CONTEXT-GUARD] Friss kontextussal indultál, mert az előző session kontextusa túl nagyra nőtt (auto-handoff). `
   const source = !hadHandoff
     ? `HANDOFF.md nem készült el időben, ezért az élő forrásokból dolgozz. `
-    : staleMinutes !== null
+    : staleMinutes === 'unknown'
+      // A missing measurement must not impersonate a fresh one: say that the
+      // freshness was unverifiable, so the agent cross-checks instead of
+      // trusting the artifact blindly.
+      ? `Első lépés: olvasd be ${handoffPath} -- ez az előző session átadója, de a FRISSESSÉGÉT NEM TUDTAM MEGMÉRNI. ` +
+        `Kezeld óvatosan: vesd össze a kanban-kommentekkel és az inter-agent üzenetekkel, mielőtt a Next Steps-e szerint cselekednél. `
+      : typeof staleMinutes === 'number' 
       // A stale handoff presented as current re-opens already-decided
       // questions; say the gap out loud and route the agent to the live
       // sources FIRST for the uncovered window.
@@ -363,7 +370,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
           decision.reason.startsWith(STALE_REFRESH_REASON_PREFIX)
             // The handoff exists but went stale while we waited for an idle
             // pane; ask for a refresh, not a first write.
-            ? staleRefreshHandoffPrompt(handoffStaleMinutes(inputs) ?? 0, handoffPathFor(name))
+            ? staleRefreshHandoffPrompt(((sm) => typeof sm === 'number' ? sm : 0)(handoffStaleMinutes(inputs)), handoffPathFor(name))
             : decision.reason.startsWith(IDLE_FLUSH_REASON_PREFIX)
               // pct is null whenever the idle tier runs without the proactive
               // tiers, so the alarming percentage-based prompt would read "~0%
@@ -397,7 +404,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
             `[CONTEXT-GUARD] Ujrainditottam a(z) "${name}" agentet -- ok: ${decision.reason}` +
             (pctRound !== null ? ` (kontextus ~${pctRound}%)` : '') +
             `. A regi sessionbe az utolso percekben kuldott uzenetek/utasitasok ELVESZHETTEK -- ellenorizd es kuldd ujra oket.` +
-            (decision.nextState.handoffStaleMinutes !== null
+            (typeof decision.nextState.handoffStaleMinutes === 'number' 
               // The generic "messages may be lost" line invites the wrong
               // conclusion when the real gap is the ARTIFACT: say explicitly
               // that the handoff does not cover the tail of the session.

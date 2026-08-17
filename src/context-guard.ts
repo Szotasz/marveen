@@ -248,7 +248,7 @@ export interface GuardState {
    *  fresh session pointed at a stale handoff re-opens already-decided
    *  questions (2026-08-17: a merge-gate verdict on a payment PR was missing
    *  from a 20-minute-old handoff presented as current). */
-  handoffStaleMinutes: number | null
+  handoffStaleMinutes: HandoffStaleness
 }
 
 export const INITIAL_GUARD_STATE: GuardState = {
@@ -325,18 +325,30 @@ export const STALE_REFRESH_REASON_PREFIX = 'stale-handoff-refresh'
  *  a zero-slack comparison would flag every handoff as stale. */
 export const STALE_HANDOFF_SLACK_MS = 3 * 60_000
 
+/** Freshness verdict for HANDOFF.md at decision time: minutes of uncovered
+ *  work, 'unknown', or null (= fresh enough / no artifact to judge). */
+export type HandoffStaleness = number | 'unknown' | null
+
 /**
- * How many minutes of work HANDOFF.md fails to cover, or null when it is
- * fresh enough / unmeasurable. "Existence is not freshness": the guard's
- * handoff precondition must compare the artifact against the agent's LAST
- * MEANINGFUL OUTPUT (transcript mtime = nowMs - idleMs), not merely observe
- * that the file appeared after the request -- an agent that writes the
- * handoff and then keeps working (messages keep arriving while the guard
+ * How many minutes of work HANDOFF.md fails to cover; null when it is fresh
+ * enough or there is no artifact to judge. "Existence is not freshness": the
+ * guard's handoff precondition must compare the artifact against the agent's
+ * LAST MEANINGFUL OUTPUT (transcript mtime = nowMs - idleMs), not merely
+ * observe that the file appeared after the request -- an agent that writes
+ * the handoff and then keeps working (messages keep arriving while the guard
  * waits for an idle pane) satisfies the mtime-advanced check with an
  * artifact that is minutes-to-hours behind.
+ *
+ * When the artifact exists but the transcript clock is unreadable the answer
+ * is 'unknown', NOT null: a missing measurement must not impersonate a
+ * fresh one (the same error class this function exists to fix). 'unknown'
+ * never triggers a refresh -- there is no evidence to demand one on -- but
+ * it rides to the resume prompt so the fresh session is told the freshness
+ * was unverifiable instead of nothing.
  */
-export function handoffStaleMinutes(inputs: GuardInputs): number | null {
-  if (inputs.handoffMtime === null || inputs.idleMs === null) return null
+export function handoffStaleMinutes(inputs: GuardInputs): HandoffStaleness {
+  if (inputs.handoffMtime === null) return null
+  if (inputs.idleMs === null) return 'unknown'
   const lastActivityMs = inputs.nowMs - inputs.idleMs
   const gapMs = lastActivityMs - inputs.handoffMtime
   return gapMs > STALE_HANDOFF_SLACK_MS ? Math.round(gapMs / 60_000) : null
@@ -372,7 +384,7 @@ function cooldown(nowMs: number, cfg: ContextGuardConfig, reason: string): Guard
 
 /** staleMinutes rides into await-ready so inject-resume can tell the fresh
  *  session its handoff does not cover the last N minutes. */
-function restartDecision(nowMs: number, reason: string, staleMinutes: number | null = null): GuardDecision {
+function restartDecision(nowMs: number, reason: string, staleMinutes: HandoffStaleness = null): GuardDecision {
   return {
     action: 'restart',
     reason,
@@ -470,7 +482,7 @@ export function decideGuard(
         // idle pane (2026-08-17: 20 minutes of work, including a merge-gate
         // verdict, happened after the write). Existence is not freshness.
         const staleMin = handoffStaleMinutes(inputs)
-        if (staleMin !== null && nowMs < state.deadlineMs && !(inputs.pct !== null && inputs.pct >= cfg.hardPct)) {
+        if (typeof staleMin === 'number' && nowMs < state.deadlineMs && !(inputs.pct !== null && inputs.pct >= cfg.hardPct)) {
           // There is still budget before the deadline and the context is not
           // yet at the hard threshold: ask for a refresh instead of shipping
           // a handoff that misses the last N minutes. Advancing the recorded
@@ -485,7 +497,7 @@ export function decideGuard(
         }
         return restartDecision(
           nowMs,
-          staleMin !== null ? `handoff written but STALE (~${staleMin}m of work after it)` : 'handoff written',
+          typeof staleMin === 'number' ? `handoff written but STALE (~${staleMin}m of work after it)` : 'handoff written',
           staleMin,
         )
       }

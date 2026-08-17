@@ -255,7 +255,7 @@ describe('saturation net (samu 2026-07-18 stall)', () => {
       deadlineMs: NOW + 60_000,
       cooldownUntilMs: 0,
       saturatedStreak: 0,
-    handoffStaleMinutes: null,
+      handoffStaleMinutes: null,
     }
     const d = decideGuard(awaiting, inputs({ paneSaturated: true, paneIdle: false }), CFG)
     expect(d.action).toBe('restart')
@@ -275,7 +275,7 @@ describe('saturation net (samu 2026-07-18 stall)', () => {
       deadlineMs: 0,
       cooldownUntilMs: NOW + 60_000,
       saturatedStreak: 0,
-    handoffStaleMinutes: null,
+      handoffStaleMinutes: null,
     }
     const d = decideGuard(cooling, inputs({ paneSaturated: true }), netOnly)
     expect(d.action).toBe('none')
@@ -402,9 +402,18 @@ describe('stale handoff (GUARDSTALEHO817)', () => {
     expect(handoffStaleMinutes(inputs(staleWritten))).toBe(19)
     // within slack: the handoff-writing turn itself touches the transcript after the file write
     expect(handoffStaleMinutes(inputs({ handoffMtime: NOW - 2 * 60_000, idleMs: 30_000 }))).toBe(null)
-    // unmeasurable inputs -> no staleness claim
+    // no artifact -> nothing to judge
     expect(handoffStaleMinutes(inputs({ handoffMtime: null, idleMs: 60_000 }))).toBe(null)
-    expect(handoffStaleMinutes(inputs({ handoffMtime: NOW - 20 * 60_000, idleMs: null }))).toBe(null)
+    // artifact exists but the transcript clock is unreadable -> 'unknown',
+    // NOT null: a missing measurement must not impersonate a fresh one
+    expect(handoffStaleMinutes(inputs({ handoffMtime: NOW - 20 * 60_000, idleMs: null }))).toBe('unknown')
+  })
+
+  it("unmeasurable freshness restarts as 'handoff written' (no refresh demand without evidence) and carries 'unknown'", () => {
+    const d = decideGuard(awaiting, inputs({ handoffMtime: NOW - 20 * 60_000, idleMs: null, paneIdle: true }), CFG)
+    expect(d.action).toBe('restart')
+    expect(d.reason).toBe('handoff written')
+    expect(d.nextState.handoffStaleMinutes).toBe('unknown')
   })
 
   it('asks for a refresh instead of restarting when the written handoff is stale and there is budget', () => {
@@ -656,7 +665,7 @@ describe('decideGuard -- idle-flush tier', () => {
       deadlineMs: NOW + 60_000,
       cooldownUntilMs: 0,
       saturatedStreak: 0,
-    handoffStaleMinutes: null,
+      handoffStaleMinutes: null,
     }
     const d = decideGuard(awaiting, inputs({ handoffMtime: NOW, paneIdle: true }), IDLE_CFG)
     expect(d.action).toBe('restart')
