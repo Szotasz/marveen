@@ -6,9 +6,11 @@ import {
   CALIBRATION_OVERSHOOT_TOLERANCE,
   decideGuard,
   DEFAULT_CONTEXT_GUARD,
+  handoffStaleMinutes,
   INITIAL_GUARD_STATE,
   READY_TIMEOUT_MS,
   SATURATION_CONFIRM_SWEEPS,
+  STALE_REFRESH_REASON_PREFIX,
   type ContextGuardConfig,
   type GuardInputs,
   type GuardState,
@@ -191,7 +193,7 @@ describe('decideGuard: idle', () => {
 
   it('resets to initial state when fully disarmed (guard + net off)', () => {
     const disarmed = { ...CFG, enabled: false, saturationRestart: false }
-    const stale: GuardState = { phase: 'await-handoff', handoffMtimeAtRequest: 1, deadlineMs: 2, cooldownUntilMs: 0, saturatedStreak: 0 }
+    const stale: GuardState = { phase: 'await-handoff', handoffMtimeAtRequest: 1, deadlineMs: 2, cooldownUntilMs: 0, saturatedStreak: 0, handoffStaleMinutes: null }
     const d = decideGuard(stale, inputs({ pct: 0.99, paneSaturated: true }), disarmed)
     expect(d.action).toBe('none')
     expect(d.nextState).toEqual(INITIAL_GUARD_STATE)
@@ -199,7 +201,7 @@ describe('decideGuard: idle', () => {
 
   it('stands down a stale await-handoff into cooldown when the guard is disabled mid-sequence', () => {
     const netOnly = { ...CFG, enabled: false }
-    const stale: GuardState = { phase: 'await-handoff', handoffMtimeAtRequest: 1, deadlineMs: 2, cooldownUntilMs: 0, saturatedStreak: 0 }
+    const stale: GuardState = { phase: 'await-handoff', handoffMtimeAtRequest: 1, deadlineMs: 2, cooldownUntilMs: 0, saturatedStreak: 0, handoffStaleMinutes: null }
     const d = decideGuard(stale, inputs({ pct: 0.99 }), netOnly)
     expect(d.action).toBe('none')
     expect(d.nextState.phase).toBe('cooldown')
@@ -253,6 +255,7 @@ describe('saturation net (samu 2026-07-18 stall)', () => {
       deadlineMs: NOW + 60_000,
       cooldownUntilMs: 0,
       saturatedStreak: 0,
+    handoffStaleMinutes: null,
     }
     const d = decideGuard(awaiting, inputs({ paneSaturated: true, paneIdle: false }), CFG)
     expect(d.action).toBe('restart')
@@ -272,6 +275,7 @@ describe('saturation net (samu 2026-07-18 stall)', () => {
       deadlineMs: 0,
       cooldownUntilMs: NOW + 60_000,
       saturatedStreak: 0,
+    handoffStaleMinutes: null,
     }
     const d = decideGuard(cooling, inputs({ paneSaturated: true }), netOnly)
     expect(d.action).toBe('none')
@@ -292,6 +296,7 @@ describe('decideGuard: await-handoff', () => {
     deadlineMs: NOW + 60_000,
     cooldownUntilMs: 0,
     saturatedStreak: 0,
+    handoffStaleMinutes: null,
   }
 
   it('restarts once the handoff is written and the pane is idle', () => {
@@ -369,6 +374,101 @@ describe('decideGuard: await-handoff', () => {
   })
 })
 
+// 2026-08-17 (GUARDSTALEHO817): the guard restarted samu with reason "handoff
+// written" while HANDOFF.md was 20 minutes old and covered NOTHING of the work
+// done since -- including a merge-gate verdict on a payment PR. The agent wrote
+// the handoff on request, then kept working while the guard waited for an idle
+// pane; "mtime advanced since the request" was satisfied by an artifact that no
+// longer described the session. Existence is not freshness: the handoff must be
+// compared against the agent's last transcript activity at RESTART time.
+describe('stale handoff (GUARDSTALEHO817)', () => {
+  const awaiting: GuardState = {
+    phase: 'await-handoff',
+    handoffMtimeAtRequest: NOW - 30 * 60_000,
+    deadlineMs: NOW + 5 * 60_000,
+    cooldownUntilMs: 0,
+    saturatedStreak: 0,
+    handoffStaleMinutes: null,
+  }
+  // Handoff written 20 minutes ago (after the request), last transcript
+  // activity 1 minute ago: 19 minutes of work the handoff does not cover.
+  const staleWritten = {
+    handoffMtime: NOW - 20 * 60_000,
+    idleMs: 60_000,
+    paneIdle: true,
+  }
+
+  it('handoffStaleMinutes: measures the uncovered gap, honours the slack, fails closed', () => {
+    expect(handoffStaleMinutes(inputs(staleWritten))).toBe(19)
+    // within slack: the handoff-writing turn itself touches the transcript after the file write
+    expect(handoffStaleMinutes(inputs({ handoffMtime: NOW - 2 * 60_000, idleMs: 30_000 }))).toBe(null)
+    // unmeasurable inputs -> no staleness claim
+    expect(handoffStaleMinutes(inputs({ handoffMtime: null, idleMs: 60_000 }))).toBe(null)
+    expect(handoffStaleMinutes(inputs({ handoffMtime: NOW - 20 * 60_000, idleMs: null }))).toBe(null)
+  })
+
+  it('asks for a refresh instead of restarting when the written handoff is stale and there is budget', () => {
+    const d = decideGuard(awaiting, inputs(staleWritten), CFG)
+    expect(d.action).toBe('request-handoff')
+    expect(d.reason).toContain(STALE_REFRESH_REASON_PREFIX)
+    expect(d.nextState.phase).toBe('await-handoff')
+    // the recorded mtime advances so the NEXT write counts as fresh...
+    expect(d.nextState.handoffMtimeAtRequest).toBe(staleWritten.handoffMtime)
+    // ...but the deadline does NOT move: an agent that keeps working through
+    // refresh requests still restarts on time.
+    expect(d.nextState.deadlineMs).toBe(awaiting.deadlineMs)
+  })
+
+  it('restarts normally once the refreshed handoff is fresh', () => {
+    const refreshed = decideGuard(awaiting, inputs(staleWritten), CFG).nextState
+    const d = decideGuard(refreshed, inputs({
+      handoffMtime: NOW - 60_000, idleMs: 30_000, paneIdle: true, nowMs: NOW + 60_000,
+    }), CFG)
+    expect(d.action).toBe('restart')
+    expect(d.reason).toBe('handoff written')
+    expect(d.nextState.handoffStaleMinutes).toBe(null)
+  })
+
+  it('past the deadline a stale handoff restarts anyway, with the staleness said out loud', () => {
+    const d = decideGuard(awaiting, inputs({ ...staleWritten, nowMs: NOW + 6 * 60_000 }), CFG)
+    expect(d.action).toBe('restart')
+    expect(d.reason).toContain('STALE')
+    expect(d.nextState.handoffStaleMinutes).toBe(25) // 6m later, gap grew with it
+  })
+
+  it('at hardPct a stale handoff restarts immediately (no refresh into a breaking session), staleness carried', () => {
+    const d = decideGuard(awaiting, inputs({ ...staleWritten, pct: 0.99 }), CFG)
+    expect(d.action).toBe('restart')
+    expect(d.reason).toContain('STALE')
+    expect(d.nextState.handoffStaleMinutes).toBe(19)
+  })
+
+  it('a fresh handoff restarts exactly as before (no refresh detour)', () => {
+    const d = decideGuard(awaiting, inputs({ handoffMtime: NOW - 60_000, idleMs: 30_000, paneIdle: true }), CFG)
+    expect(d.action).toBe('restart')
+    expect(d.reason).toBe('handoff written')
+  })
+
+  it('the timeout restart measures the OLD artifact too (it will be presented at resume)', () => {
+    // agent never wrote after the request; a pre-existing handoff is an hour behind
+    const state = { ...awaiting, handoffMtimeAtRequest: NOW - 60 * 60_000 }
+    const d = decideGuard(state, inputs({
+      nowMs: NOW + 6 * 60_000, handoffMtime: NOW - 60 * 60_000, idleMs: 60_000,
+    }), CFG)
+    expect(d.action).toBe('restart')
+    expect(d.reason).toContain('timeout')
+    expect(d.nextState.handoffStaleMinutes).toBe(65)
+  })
+
+  it('inject-resume clears the staleness for the next cycle', () => {
+    const restarted = decideGuard(awaiting, inputs({ ...staleWritten, nowMs: NOW + 6 * 60_000 }), CFG)
+    expect(restarted.nextState.handoffStaleMinutes).toBe(25)
+    const resumed = decideGuard(restarted.nextState, inputs({ nowMs: NOW + 7 * 60_000, sessionReady: true }), CFG)
+    expect(resumed.action).toBe('inject-resume')
+    expect(resumed.nextState.handoffStaleMinutes).toBe(null)
+  })
+})
+
 describe('decideGuard: await-ready', () => {
   const awaitingReady: GuardState = {
     phase: 'await-ready',
@@ -376,6 +476,7 @@ describe('decideGuard: await-ready', () => {
     deadlineMs: NOW + 60_000,
     cooldownUntilMs: 0,
     saturatedStreak: 0,
+    handoffStaleMinutes: null,
   }
 
   it('injects the resume prompt when the session is ready, then cools down', () => {
@@ -405,6 +506,7 @@ describe('decideGuard: cooldown', () => {
     deadlineMs: 0,
     cooldownUntilMs: NOW + 60_000,
     saturatedStreak: 0,
+    handoffStaleMinutes: null,
   }
 
   it('suppresses everything during cooldown, even a huge pct', () => {
@@ -554,6 +656,7 @@ describe('decideGuard -- idle-flush tier', () => {
       deadlineMs: NOW + 60_000,
       cooldownUntilMs: 0,
       saturatedStreak: 0,
+    handoffStaleMinutes: null,
     }
     const d = decideGuard(awaiting, inputs({ handoffMtime: NOW, paneIdle: true }), IDLE_CFG)
     expect(d.action).toBe('restart')
