@@ -21,20 +21,20 @@
     "node": ">=20 <24"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.224",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.232",
     "@huggingface/transformers": "^4.2.0",
     "better-sqlite3": "^13.0.3",
-    "cron-parser": "^5.7.0",
+    "cron-parser": "^5.10.0",
     "pino": "^10.3.1",
     "sqlite-vec": "^0.1.9"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
     "@types/better-sqlite3": "^7.6.12",
-    "@types/node": "^26.1.2",
+    "@types/node": "^26.2.0",
     "@vitest/coverage-v8": "^4.1.10",
     "pino-pretty": "^13.0.0",
-    "tsx": "^4.23.10",
+    "tsx": "^4.23.12",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
   }
