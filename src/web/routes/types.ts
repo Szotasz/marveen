@@ -21,7 +21,7 @@ export interface RouteContext {
    *  'session' kind; `peer` mirrors fedPeer for the 'federation' kind;
    *  `device` is the key name for the 'device' kind. Lets routes distinguish
    *  a human session from a token/fleet caller or an enrolled device. */
-  auth?: { kind: 'token' | 'session' | 'federation' | 'device'; user?: string; peer?: string; device?: string }
+  auth?: { kind: 'token' | 'session' | 'federation' | 'device'; user?: string; peer?: string; device?: string; deviceId?: number }
 }
 
 export type RouteHandler = (ctx: RouteContext) => Promise<boolean>
