@@ -184,21 +184,24 @@ export async function tryHandleBridgeServicePorts(ctx: RouteContext): Promise<bo
         auth!.kind,
       )
       logger.info({ installId, before: result.before, after: result.after, actor: auth!.kind }, 'bridge service ports updated')
-      // Narrowing latency, said out loud: sshd applies authorized_keys options
-      // at AUTH time. A device-initiated change is followed by the Bridge's
-      // own reconnect, but a dashboard/token-side narrowing has no Bridge to
-      // reconnect -- the live session keeps the old grant until the device
-      // next reconnects. The notification must not imply immediacy it does
-      // not have.
+      // Latency, said out loud -- and ONLY what the system can actually do:
+      // sshd applies authorized_keys options at AUTH time, so neither a
+      // narrowing nor a pairing revocation touches an already-established
+      // session (removeBridgeSshAccess only deletes the line; nothing kills
+      // the live tunnel). A device-initiated change is followed by the
+      // Bridge's own reconnect; a dashboard/token-side narrowing is not.
+      // This is a security notification the owner reads MID-INCIDENT: it
+      // must not promise an immediate cut that does not exist. Killing the
+      // live session on revoke would be real work, tracked separately.
       const narrowingLatency =
         removed.length && auth!.kind !== 'device'
-          ? ' FIGYELEM: a szűkítés az eszköz KÖVETKEZŐ újrakapcsolódásakor lép életbe -- az élő kapcsolat addig a régi listát használja. Azonnali hatályhoz vond vissza a párosítást a Biztonság fülön.'
+          ? ' FIGYELEM: a szűkítés az eszköz KÖVETKEZŐ újrakapcsolódásakor lép életbe -- az élő kapcsolat addig a régi listát használja.'
           : ''
       void notifySecurityEvent(
         `🔌 Bridge port-lista változott (${auth!.kind === 'device' ? 'a Bridge-ből' : 'a dashboardról'}): ` +
           (added.length ? `+ ${added.map(label).join(', ')} ` : '') +
           (removed.length ? `- ${removed.join(', ')} ` : '') +
-          `-- az eszköz SSH-kulcsa mostantól ezekre a helyi portokra forwardolhat. Ha nem te voltál, vond vissza a Biztonság fülön.` +
+          `-- az eszköz SSH-kulcsa mostantól ezekre a helyi portokra forwardolhat. Ha nem te voltál, vond vissza a párosítást a Biztonság fülön -- ez minden TOVÁBBI kapcsolódást megakadályoz; a már élő kapcsolat a saját megszakadásáig él.` +
           narrowingLatency,
       )
     }
