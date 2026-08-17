@@ -89,6 +89,13 @@ describe('contextLimitForModel / calibrateLimit', () => {
     expect(contextLimitForModel('claude-sonnet-5')).toBe(1_000_000)
     expect(contextLimitForModel('claude-haiku-4-5')).toBe(200_000)
     expect(contextLimitForModel('claude-opus-4-5')).toBe(200_000)
+    // deepseek-v4-pro: the dashboard model catalog advertises "1M kontextus",
+    // but that is the vendor's marketing figure, not what this CLI actually
+    // exposes per session -- measured live 2026-08-17 across 4 running
+    // deepseek-v4-pro agents right after the fleet-wide switch (delphi
+    // 115,414/59%=195.6k, ereceipt 101,074/51%=198.2k, kutato 112,703/56%=
+    // 201.3k, ordog 145,847/73%=199.8k), all four independently landing on
+    // ~200k. Stays 200k; do not "fix" this to 1M without a fresh measurement.
     expect(contextLimitForModel('deepseek-v4-pro')).toBe(200_000)
     expect(contextLimitForModel(null)).toBe(200_000)
   })
