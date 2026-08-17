@@ -496,11 +496,19 @@ export function correlateWithKanban(): void {
   `).all() as { agent: string; minTs: number; maxTs: number }[]
 
   for (const row of uncorrelated) {
+    // PARENT CARDS ARE NOT WORK ITEMS HERE. This correlation reads updated_at as "the agent was
+    // working on this card at that moment" and uses consecutive timestamps as window boundaries.
+    // Since a subcard write now also stamps its ancestors (db.ts, touchAncestorChain), a parent
+    // carries the SAME timestamp as the child that caused it -- and with a tie, which title won
+    // the token rows came down to row order, not to what was worked on. Parents are skipped so the
+    // leaf card keeps the attribution; a parent's own timestamp can no longer tell us whether it
+    // was written or merely bubbled, and separating those would take a column we are not adding.
     const cards = db.prepare(`
       SELECT id, title, project, assignee, updated_at
       FROM kanban_cards
       WHERE (assignee = ? OR assignee LIKE '%' || ? || '%')
         AND updated_at BETWEEN ? AND ?
+        AND NOT EXISTS (SELECT 1 FROM kanban_cards child WHERE child.parent_id = kanban_cards.id)
       ORDER BY updated_at ASC
     `).all(row.agent, row.agent, row.minTs, row.maxTs) as any[]
 

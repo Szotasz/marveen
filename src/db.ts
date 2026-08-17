@@ -1766,6 +1766,54 @@ export function getKanbanCard(id: string): KanbanCard | undefined {
   return db.prepare('SELECT rowid AS seq, * FROM kanban_cards WHERE id = ?').get(id) as KanbanCard | undefined
 }
 
+// A szülő-kártya updated_at-je a SZÁLRÓL szól, nem csak magáról a kártyáról.
+//
+// WHY. The stuck-card detector selects `status='in_progress' AND updated_at < last_audit_at`.
+// A parent's updated_at used to move only when the parent row itself was written, so a thread
+// whose work happens on its subcards looked frozen: three consecutive audits (2026-08-14 08:00,
+// 08-14 16:00, 08-15 08:00) flagged the same card while the work was visibly moving underneath it.
+// The damage is not the noise but the numbing: once "artefact" is the standing answer for a card,
+// a REAL stall on that card reads as an artefact too.
+//
+// WHAT THIS CHANGES ABOUT THE DATA. After this, a parent's updated_at means "something happened on
+// this THREAD", not "this card was written". Every reader of that column inherits the new meaning;
+// the ones that existed when this landed are listed in the card (68763e8f) and in
+// correlateWithKanban(), which had to be taught the difference.
+//
+// WHAT IS DELIBERATELY NOT HERE. Archive, unarchive and delete do NOT bubble up: those tidy a
+// thread rather than advance it, and a parent that looks "active" because a subcard was filed away
+// is the same false signal in a new costume. Left out on purpose, not forgotten.
+const ANCESTOR_DEPTH_LIMIT = 16
+
+// Stamps `now` on every ancestor starting at `parentId`, walking upward.
+//
+// NOT a `while (parent)` loop, and the reason is a second, still-missing check: nothing guards
+// kanban_cards.parent_id against a cycle -- updateKanbanCard() writes whatever it is handed, so
+// A -> B -> A is constructible through the public API. A plain walk would spin forever inside a
+// write path. The visited set makes the cycle terminate and the depth cap catches a chain that
+// grew past anything we would call a hierarchy. Both are loud, because either one means the
+// parent_id data is broken and something else needs fixing.
+function touchAncestorChain(parentId: string | null | undefined, now: number, startedAt: string): void {
+  const readParent = db.prepare('SELECT parent_id FROM kanban_cards WHERE id = ?')
+  const stamp = db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?')
+  const seen = new Set<string>([startedAt])
+  let current = parentId ?? null
+  let depth = 0
+  while (current) {
+    if (seen.has(current)) {
+      console.warn(`[kanban] parent_id cycle at ${current} (from ${startedAt}) -- ancestor stamping stopped`)
+      return
+    }
+    if (++depth > ANCESTOR_DEPTH_LIMIT) {
+      console.warn(`[kanban] parent chain deeper than ${ANCESTOR_DEPTH_LIMIT} from ${startedAt} -- ancestor stamping stopped`)
+      return
+    }
+    seen.add(current)
+    stamp.run(now, current)
+    current = (readParent.get(current) as { parent_id: string | null } | undefined)?.parent_id ?? null
+  }
+}
+
 export function createKanbanCard(card: {
   id: string
   title: string
@@ -1792,6 +1840,8 @@ export function createKanbanCard(card: {
     card.assignee ?? null, card.priority ?? 'normal',
     card.project ?? null, card.parent_id ?? null, card.due_date ?? null, sortOrder, now, now
   )
+  // Filing a new subcard is work on the thread.
+  touchAncestorChain(card.parent_id, now, card.id)
 }
 
 export function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>): boolean {
@@ -1799,10 +1849,18 @@ export function updateKanbanCard(id: string, fields: Partial<Omit<KanbanCard, 'i
   if (!card) return false
   const now = Math.floor(Date.now() / 1000)
   const f = { ...card, ...fields, updated_at: now }
-  return db.prepare(
+  const changed = db.prepare(
     `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
      WHERE id=?`
   ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+  if (changed) {
+    touchAncestorChain(f.parent_id, now, id)
+    // Re-parenting is activity on BOTH threads: the old one lost a card, the new one gained it.
+    // Stamping only the new parent would leave the old one looking frozen -- the very bug this
+    // function is fixing, just rarer and therefore harder to notice.
+    if (card.parent_id && card.parent_id !== f.parent_id) touchAncestorChain(card.parent_id, now, id)
+  }
+  return changed
 }
 
 export function getChildCards(parentId: string): KanbanCard[] {
@@ -1813,10 +1871,16 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   const now = Math.floor(Date.now() / 1000)
   // Read the previous status first so we only record an audit event on a real
   // status transition (not a pure sort_order reorder within the same column).
-  const prev = (db.prepare('SELECT status FROM kanban_cards WHERE id=?').get(id) as { status: string } | undefined)?.status
+  // parent_id comes along in the same read: the ancestor chain has to be stamped too, and this
+  // path (drag / status change) is the most common subcard event there is -- an subcard moved to
+  // done. Leaving it out would make the false alarm rarer instead of gone.
+  const row = db.prepare('SELECT status, parent_id FROM kanban_cards WHERE id=?').get(id) as
+    { status: string; parent_id: string | null } | undefined
+  const prev = row?.status
   const changed = db.prepare(
     'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
   ).run(status, sortOrder, now, id).changes > 0
+  if (changed) touchAncestorChain(row?.parent_id, now, id)
   if (changed && prev !== undefined && prev !== status) {
     db.prepare(
       'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)'
@@ -1978,6 +2042,9 @@ export function addKanbanComment(cardId: string, author: string, content: string
     'INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES (?, ?, ?, ?)'
   ).run(cardId, author, content, now)
   db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?').run(now, cardId)
+  const parentId = (db.prepare('SELECT parent_id FROM kanban_cards WHERE id = ?').get(cardId) as
+    { parent_id: string | null } | undefined)?.parent_id
+  touchAncestorChain(parentId, now, cardId)
   return { id: Number(info.lastInsertRowid), card_id: cardId, author, content, created_at: now }
 }
 
