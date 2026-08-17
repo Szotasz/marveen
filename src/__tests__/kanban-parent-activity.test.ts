@@ -117,6 +117,17 @@ describe('parent updated_at follows subcard activity', () => {
     expect(updatedAt('old-parent')).toBeGreaterThan(BACKDATED)
   })
 
+  it('stamps the old parent when a card is pulled out of a thread entirely', () => {
+    // The un-parenting shape: the new parent is null, so only the old-thread branch can fire.
+    createKanbanCard({ id: 'parent', title: 'Thread', status: 'in_progress' })
+    createKanbanCard({ id: 'child', title: 'Subtask', parent_id: 'parent' })
+    backdate('parent'); backdate('child')
+
+    updateKanbanCard('child', { parent_id: null })
+
+    expect(updatedAt('parent')).toBeGreaterThan(BACKDATED)
+  })
+
   // --- the deliberate exclusion, asserted so a future change to it is a measured decision ---
 
   it('does NOT bubble up from archiving -- tidying a thread is not advancing it', () => {
