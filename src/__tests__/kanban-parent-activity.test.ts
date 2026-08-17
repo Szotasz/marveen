@@ -130,7 +130,10 @@ describe('parent updated_at follows subcard activity', () => {
 
   // --- the deliberate exclusion, asserted so a future change to it is a measured decision ---
 
-  it('does NOT bubble up from archiving -- tidying a thread is not advancing it', () => {
+  // Scope: this covers archiveKanbanCard, the dedicated function. It says nothing about an
+  // `archived_at` arriving through PUT /api/kanban/:id, which has no field whitelist and therefore
+  // reaches updateKanbanCard -- the bubbling path. That gap belongs to the endpoint (card 531c6500).
+  it('does NOT bubble up from archiveKanbanCard -- tidying a thread is not advancing it', () => {
     seedThread()
     archiveKanbanCard('child')
     expect(updatedAt('parent')).toBe(BACKDATED)

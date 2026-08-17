@@ -1780,9 +1780,18 @@ export function getKanbanCard(id: string): KanbanCard | undefined {
 // the ones that existed when this landed are listed in the card (68763e8f) and in
 // correlateWithKanban(), which had to be taught the difference.
 //
-// WHAT IS DELIBERATELY NOT HERE. Archive, unarchive and delete do NOT bubble up: those tidy a
-// thread rather than advance it, and a parent that looks "active" because a subcard was filed away
-// is the same false signal in a new costume. Left out on purpose, not forgotten.
+// WHAT IS DELIBERATELY NOT HERE, AND HOW FAR THAT HOLDS. Archive, unarchive and delete do NOT
+// bubble up: those tidy a thread rather than advance it, and a parent that looks "active" because
+// a subcard was filed away is the same false signal in a new costume. Left out on purpose, not
+// forgotten -- but only for the three dedicated functions (archiveKanbanCard, unarchiveKanbanCard,
+// deleteKanbanCard), which is what the test asserts.
+//
+// It does NOT hold at the HTTP boundary. PUT /api/kanban/:id hands the raw JSON body to
+// updateKanbanCard() with no field whitelist (routes/kanban.ts), so an `archived_at` arriving that
+// way travels the bubbling path like any other field -- and this is live, not theoretical:
+// web/app.js sends whole `{...card}` objects on the assignee and parent edits, so editing an
+// already-archived card stamps its parent today. The fix belongs to the endpoint rather than here
+// (card 531c6500, field whitelist on the write routes); when it lands, this second half goes.
 const ANCESTOR_DEPTH_LIMIT = 16
 
 // Stamps `now` on every ancestor starting at `parentId`, walking upward.
