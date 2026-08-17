@@ -404,12 +404,18 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
             `[CONTEXT-GUARD] Ujrainditottam a(z) "${name}" agentet -- ok: ${decision.reason}` +
             (pctRound !== null ? ` (kontextus ~${pctRound}%)` : '') +
             `. A regi sessionbe az utolso percekben kuldott uzenetek/utasitasok ELVESZHETTEK -- ellenorizd es kuldd ujra oket.` +
-            (typeof decision.nextState.handoffStaleMinutes === 'number' 
+            (typeof decision.nextState.handoffStaleMinutes === 'number'
               // The generic "messages may be lost" line invites the wrong
               // conclusion when the real gap is the ARTIFACT: say explicitly
               // that the handoff does not cover the tail of the session.
               ? ` FIGYELEM: a HANDOFF.md ELAVULT -- az utolso ~${decision.nextState.handoffStaleMinutes} perc munkaja nincs benne, a friss session ezt a szakaszt az elo forrasokbol kapja meg.`
-              : '') +
+              : decision.nextState.handoffStaleMinutes === 'unknown'
+                // The supervisor's manual state-handoff decision runs on this
+                // line (2026-08-17: a hand-measured mtime saved a payment-PR
+                // verdict); a silent unknown would read as "all fine" to the
+                // one reader who could compensate.
+                ? ` FIGYELEM: a HANDOFF.md letezik, de a FRISSESSEGET NEM TUDTAM MERNI (transcript-ora olvashatatlan) -- ha a session-ben friss dontes szuletett, kezi allapot-ellenorzes ajanlott (mtime vs. utolso munka).`
+                : '') +
             (snapshotPath ? ` Pane-snapshot a restart elotti allapotrol: ${snapshotPath}` : ''),
             'context-guard restart notice',
           )
