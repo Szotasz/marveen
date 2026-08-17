@@ -19,6 +19,30 @@ import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
 import type { RouteContext } from './types.js'
 
+// Should closing a message produce a reverse "[Eredmény]" notification to its sender?
+//
+// Exported and tested directly, rather than inlined in the PUT handler: the previous
+// tests re-implemented this condition inside the test file, so they passed no matter
+// what the route actually did.
+//
+// Three senders get no notification:
+//   1. self-messages -- the sender already knows;
+//   2. senders that are not addressable agents. `system` posts the [session-stuck] and
+//      [handoff-failure] notices but owns no tmux session, so a reply to it can never be
+//      delivered: it fails, the retry window expires, and the resulting [handoff-failure]
+//      wakes the main agent -- which, once closed, produced the next one. Measured on the
+//      Acrobot install 2026-08-17: 44 of the last 200 rows were `-> system`, all failed.
+//      `isKnownAgent` is the right test here because it accepts MAIN_AGENT_ID as well as
+//      the sub-agent directories; a plain registry lookup would have suppressed every
+//      notification back to the MAIN agent, which is the case this feature exists for.
+//   3. contents that are themselves completion reports -- breaks ping-pong chains.
+export function shouldNotifyDelegator(fromAgent: string, toAgent: string, content: string): boolean {
+  if (fromAgent === toAgent) return false
+  if (!isKnownAgent(fromAgent)) return false
+  if (content.startsWith(COMPLETION_REPORT_PREFIX)) return false
+  return true
+}
+
 export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -193,11 +217,9 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
         closeOtelSpan(done.trace_id, done.span_id, Date.now(), newStatus === 'done' ? 'ok' : 'error')
       }
       // Notify the delegator: create a reverse message from executor → delegator so
-      // they learn the result without polling. Use a sentinel prefix to break
-      // ping-pong chains (the delegator might write back, which would trigger
-      // markMessageDone on this notification; we skip creating ANOTHER notification
-      // when the original content is already a completion report).
-      if (done && done.from_agent !== done.to_agent && !done.content.startsWith(COMPLETION_REPORT_PREFIX)) {
+      // they learn the result without polling. See shouldNotifyDelegator for which
+      // senders are skipped and why.
+      if (done && shouldNotifyDelegator(done.from_agent, done.to_agent, done.content)) {
         const summary = result ? result.slice(0, 500) : '(nincs eredmény)'
         createAgentMessage(
           done.to_agent,

@@ -2,7 +2,10 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import {
   initDatabase, createAgentMessage,
   markMessageDone, markMessageFailed, getAgentMessage, listAgentMessages,
+  COMPLETION_REPORT_PREFIX,
 } from '../db.js'
+import { shouldNotifyDelegator } from '../web/routes/messages.js'
+import { MAIN_AGENT_ID } from '../config.js'
 
 // Contract tests for the completion-notification feature.
 //
@@ -78,5 +81,41 @@ describe('completion-notification contract', () => {
     // Only the original message was created; route handler would NOT add a notification
     const after = listAgentMessages(200).length
     expect(after - before).toBe(1)
+  })
+})
+
+// The tests above simulate the route's decision by re-implementing it. These call the
+// exported predicate the route actually uses, so a change to the condition shows up here.
+//
+// Sender identities are deliberately MAIN_AGENT_ID and 'system' rather than invented
+// names: `isKnownAgent` resolves real agent directories, and a CI checkout has none, so
+// a made-up sender would be "unknown" there and the positive case would fail for the
+// wrong reason.
+describe('shouldNotifyDelegator', () => {
+  it('notifies a real agent delegator', () => {
+    expect(shouldNotifyDelegator(MAIN_AGENT_ID, 'dex', 'Research something')).toBe(true)
+  })
+
+  it('does not notify the `system` pseudo-sender', () => {
+    // system posts [session-stuck]/[handoff-failure] but has no session to receive a
+    // reply. Before this guard, the undeliverable reply produced another
+    // [handoff-failure], which produced another reply when closed.
+    expect(
+      shouldNotifyDelegator('system', MAIN_AGENT_ID, "[session-stuck] Agent 'polip' ..."),
+    ).toBe(false)
+  })
+
+  it('does not notify on a self-message', () => {
+    expect(shouldNotifyDelegator(MAIN_AGENT_ID, MAIN_AGENT_ID, 'Send to self')).toBe(false)
+  })
+
+  it('does not notify when the content is already a completion report', () => {
+    expect(
+      shouldNotifyDelegator(MAIN_AGENT_ID, 'dex', `${COMPLETION_REPORT_PREFIX} msg_id:1 status:done`),
+    ).toBe(false)
+  })
+
+  it('rejects an empty sender rather than treating it as an agent', () => {
+    expect(shouldNotifyDelegator('', 'dex', 'orphan')).toBe(false)
   })
 })
