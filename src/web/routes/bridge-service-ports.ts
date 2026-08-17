@@ -184,11 +184,22 @@ export async function tryHandleBridgeServicePorts(ctx: RouteContext): Promise<bo
         auth!.kind,
       )
       logger.info({ installId, before: result.before, after: result.after, actor: auth!.kind }, 'bridge service ports updated')
+      // Narrowing latency, said out loud: sshd applies authorized_keys options
+      // at AUTH time. A device-initiated change is followed by the Bridge's
+      // own reconnect, but a dashboard/token-side narrowing has no Bridge to
+      // reconnect -- the live session keeps the old grant until the device
+      // next reconnects. The notification must not imply immediacy it does
+      // not have.
+      const narrowingLatency =
+        removed.length && auth!.kind !== 'device'
+          ? ' FIGYELEM: a szűkítés az eszköz KÖVETKEZŐ újrakapcsolódásakor lép életbe -- az élő kapcsolat addig a régi listát használja. Azonnali hatályhoz vond vissza a párosítást a Biztonság fülön.'
+          : ''
       void notifySecurityEvent(
         `🔌 Bridge port-lista változott (${auth!.kind === 'device' ? 'a Bridge-ből' : 'a dashboardról'}): ` +
           (added.length ? `+ ${added.map(label).join(', ')} ` : '') +
           (removed.length ? `- ${removed.join(', ')} ` : '') +
-          `-- az eszköz SSH-kulcsa mostantól ezekre a helyi portokra forwardolhat. Ha nem te voltál, vond vissza a Biztonság fülön.`,
+          `-- az eszköz SSH-kulcsa mostantól ezekre a helyi portokra forwardolhat. Ha nem te voltál, vond vissza a Biztonság fülön.` +
+          narrowingLatency,
       )
     }
 
