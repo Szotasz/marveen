@@ -1794,10 +1794,11 @@ const ANCESTOR_DEPTH_LIMIT = 16
 // grew past anything we would call a hierarchy. Both are loud, because either one means the
 // parent_id data is broken and something else needs fixing.
 function touchAncestorChain(parentId: string | null | undefined, now: number, startedAt: string): void {
+  if (!parentId) return // root card: the common case, and it costs nothing
   const readParent = db.prepare('SELECT parent_id FROM kanban_cards WHERE id = ?')
   const stamp = db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?')
   const seen = new Set<string>([startedAt])
-  let current = parentId ?? null
+  let current: string | null = parentId
   let depth = 0
   while (current) {
     if (seen.has(current)) {
