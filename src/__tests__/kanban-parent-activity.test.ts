@@ -14,7 +14,7 @@
 // relative to that backdated value -- otherwise "greater than before" would be measuring the
 // clock, not the code.
 
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import {
   initDatabase, getDb,
   createKanbanCard, updateKanbanCard, moveKanbanCard, addKanbanComment,
@@ -126,31 +126,57 @@ describe('parent updated_at follows subcard activity', () => {
   })
 
   // --- the walk must survive broken parent_id data ---
+  //
+  // Two guards stand here, and "the call returned" cannot tell them apart: with the visited set
+  // removed, the depth cap stops the cycle anyway. Measured the first time round, that mutation
+  // survived a green run. What separates them is the DIAGNOSIS -- a cycle reported as a
+  // sixteen-deep chain sends the next reader looking for a hierarchy that does not exist -- so
+  // these tests assert which guard fired, not merely that something did.
 
-  it('terminates on a parent_id cycle instead of spinning forever', () => {
-    createKanbanCard({ id: 'a', title: 'A' })
-    createKanbanCard({ id: 'b', title: 'B', parent_id: 'a' })
-    // Nothing validates parent_id, so the public API can close the loop: a -> b -> a.
-    updateKanbanCard('a', { parent_id: 'b' })
-    backdate('a'); backdate('b')
+  it('terminates on a parent_id cycle, and says it was a cycle', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      createKanbanCard({ id: 'a', title: 'A' })
+      createKanbanCard({ id: 'b', title: 'B', parent_id: 'a' })
+      // Nothing validates parent_id, so the public API can close the loop: a -> b -> a.
+      updateKanbanCard('a', { parent_id: 'b' })
+      backdate('a'); backdate('b')
+      warn.mockClear()
 
-    addKanbanComment('b', 'sanyiba', 'work note')
+      addKanbanComment('b', 'sanyiba', 'work note')
 
-    // Both cards in the cycle get stamped exactly once, and the call returns.
-    expect(updatedAt('a')).toBeGreaterThan(BACKDATED)
-    expect(updatedAt('b')).toBeGreaterThan(BACKDATED)
+      // Both cards in the cycle get stamped, and the call returns.
+      expect(updatedAt('a')).toBeGreaterThan(BACKDATED)
+      expect(updatedAt('b')).toBeGreaterThan(BACKDATED)
+
+      const messages = warn.mock.calls.map((c) => String(c[0]))
+      expect(messages.some((m) => m.includes('cycle'))).toBe(true)
+      expect(messages.some((m) => m.includes('deeper than'))).toBe(false)
+    } finally {
+      warn.mockRestore()
+    }
   })
 
-  it('stops at the depth limit on a chain longer than any real hierarchy', () => {
-    // 20 links, cap is 16: the walk has to stop on its own rather than run the chain out.
-    const ids = Array.from({ length: 20 }, (_, i) => `c${i}`)
-    ids.forEach((id, i) => createKanbanCard({ id, title: id, parent_id: i === 0 ? undefined : ids[i - 1] }))
-    ids.forEach((id) => backdate(id))
+  it('stops at the depth limit on a chain longer than any real hierarchy, and says so', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      // 20 links, cap is 16: the walk has to stop on its own rather than run the chain out.
+      const ids = Array.from({ length: 20 }, (_, i) => `c${i}`)
+      ids.forEach((id, i) => createKanbanCard({ id, title: id, parent_id: i === 0 ? undefined : ids[i - 1] }))
+      ids.forEach((id) => backdate(id))
+      warn.mockClear()
 
-    addKanbanComment(ids[ids.length - 1], 'sanyiba', 'work note')
+      addKanbanComment(ids[ids.length - 1], 'sanyiba', 'work note')
 
-    // The 16 nearest ancestors are stamped; the far end of the chain is not reached.
-    expect(updatedAt(ids[ids.length - 2])).toBeGreaterThan(BACKDATED)
-    expect(updatedAt(ids[0])).toBe(BACKDATED)
+      // The 16 nearest ancestors are stamped; the far end of the chain is not reached.
+      expect(updatedAt(ids[ids.length - 2])).toBeGreaterThan(BACKDATED)
+      expect(updatedAt(ids[0])).toBe(BACKDATED)
+
+      const messages = warn.mock.calls.map((c) => String(c[0]))
+      expect(messages.some((m) => m.includes('deeper than'))).toBe(true)
+      expect(messages.some((m) => m.includes('cycle'))).toBe(false)
+    } finally {
+      warn.mockRestore()
+    }
   })
 })
