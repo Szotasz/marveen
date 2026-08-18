@@ -152,6 +152,23 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/messages' && method === 'GET') {
+    // An UNKNOWN filter param used to fall through to the global list: a typo,
+    // or the plausible-but-wrong `agent_id`, silently returned the fleet's last
+    // N messages instead of one agent's mailbox. Not an error, not an empty
+    // list -- MORE than asked for, which is the expensive direction to be wrong
+    // in: a caller acting in good faith on that answer reads other agents'
+    // traffic as its own. Fail loudly instead.
+    const KNOWN_PARAMS = new Set(['agent', 'status', 'limit', 'before'])
+    const unknown = [...url.searchParams.keys()].filter((k) => !KNOWN_PARAMS.has(k))
+    if (unknown.length) {
+      json(res, {
+        error: 'unknown query parameter',
+        unknown,
+        known: [...KNOWN_PARAMS],
+        hint: 'the mailbox filter is "agent"; "agent_id" and "to" are not read',
+      }, 400)
+      return true
+    }
     const agent = url.searchParams.get('agent') || ''
     const status = url.searchParams.get('status') || ''
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)

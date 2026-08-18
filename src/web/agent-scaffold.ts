@@ -520,9 +520,47 @@ export function isPublicFetchHost(value: string): boolean {
   const labels = host.split('.')
   if (labels.length < 2) return false                 // single label: localhost and friends
   if (labels.some((l) => !l || l.length > 63 || l.startsWith('-') || l.endsWith('-'))) return false
-  const INTERNAL_SUFFIX = ['local', 'internal', 'localdomain', 'lan', 'intranet', 'home', 'arpa', 'test', 'invalid', 'localhost']
+  const INTERNAL_SUFFIX = ['local', 'internal', 'localdomain', 'lan', 'intranet', 'home', 'arpa', 'test', 'invalid', 'localhost', 'svc', 'cluster']
   if (INTERNAL_SUFFIX.includes(labels[labels.length - 1])) return false
+  // A public NAME can still resolve inward. Wildcard-DNS services (nip.io,
+  // sslip.io and friends) encode the address in the name itself, so
+  // 127.0.0.1.nip.io and 192-168-1-50.sslip.io pass every check above and then
+  // resolve to loopback/RFC1918. Reaching them needs an allowlist entry, so
+  // this is defence-in-depth rather than an open door -- but it is the same
+  // class of bypass the literal check already rejects, and it costs one pass.
+  if (labels.some((l) => isInwardDashQuad(l))) return false
+  for (let i = 0; i + 3 < labels.length; i++) {
+    if (isInwardQuad(labels[i], labels[i + 1], labels[i + 2], labels[i + 3])) return false
+  }
   return true
+}
+
+// True for an IPv4 that points back at us or into a private network. Kept
+// narrow on purpose: a PUBLIC address embedded in a name is not a bypass of
+// the loopback/RFC1918 guard, and rejecting every numeric label would break
+// legitimate hosts.
+function isInwardIPv4(o: number[]): boolean {
+  if (o.length !== 4 || o.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false
+  const [a, b] = o
+  if (a === 0 || a === 127) return true                      // this-host, loopback
+  if (a === 10) return true                                  // RFC1918
+  if (a === 172 && b >= 16 && b <= 31) return true           // RFC1918
+  if (a === 192 && b === 168) return true                    // RFC1918
+  if (a === 169 && b === 254) return true                    // link-local, cloud metadata
+  if (a === 100 && b >= 64 && b <= 127) return true          // CGNAT
+  return false
+}
+
+function isInwardQuad(a: string, b: string, c: string, d: string): boolean {
+  const parts = [a, b, c, d]
+  if (!parts.every((p) => /^\d{1,3}$/.test(p))) return false
+  return isInwardIPv4(parts.map((p) => parseInt(p, 10)))
+}
+
+function isInwardDashQuad(label: string): boolean {
+  const m = label.match(/^(\d{1,3})-(\d{1,3})-(\d{1,3})-(\d{1,3})$/)
+  if (!m) return false
+  return isInwardIPv4(m.slice(1).map((p) => parseInt(p, 10)))
 }
 
 export function ownerAllowedDomains(storeDir = STORE_DIR): string[] {
