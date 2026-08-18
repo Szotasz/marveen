@@ -92,3 +92,13 @@ __pycache__/
 # Claude Code Channels runtime config/session dir (sessions, history, tokens,
 # plugins, skills). Per-install runtime state -- never source, never commit.
 .channels-config/
+
+# EVIDGUARD818: captured output never belongs in the repo (a key leaked from
+# .pre-ship-evidence in 2026-07). The secret gate blocks these paths too; this
+# rule keeps them from being staged by accident in the first place.
+.pre-ship-evidence/
+.pre-ship-evidence*
+evidence/
+.evidence/
+transcripts/
+.session-capture/
