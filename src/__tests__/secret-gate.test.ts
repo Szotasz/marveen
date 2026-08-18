@@ -10,6 +10,7 @@
  * gate ripped out proves nothing.
  */
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   runGate,
   scanFile,
@@ -165,6 +166,21 @@ describe('allowlist is PATH-based, and visible', () => {
     expect(r.allowlisted).toEqual([
       { file: 'src/__tests__/auth-gate.test.ts', reason: expect.stringMatching(/fixture/i) },
     ]);
+  });
+
+  it('the gate is NOT exempt from itself: its own source passes the gate unaided', () => {
+    // Two assertions on purpose, and the first is the one that matters.
+    // (a) The exemption must be ABSENT. If anyone re-adds the allowlist entry
+    //     for this module, this line fails -- the test cannot go green
+    //     alongside the exemption, which is what makes it a pin and not a note.
+    // (b) And the source really does pass on its own: the detectors are regex
+    //     literals, and the character class breaks each pattern against its own
+    //     text. Measured 2026-08-18, full repo 757/757.
+    expect(allowlistReason('src/security/secret-gate.ts')).toBeNull();
+
+    const forras = readFileSync(new URL('../security/secret-gate.ts', import.meta.url), 'latin1');
+    const talalatok = scanFile({ path: 'src/security/secret-gate.ts', content: forras });
+    expect(talalatok).toEqual([]);
   });
 
   it('every allowlisted path is spelled out with a reason', () => {

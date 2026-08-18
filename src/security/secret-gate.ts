@@ -109,12 +109,18 @@ export const TRANSCRIPT_PATTERNS: { name: string; pattern: RegExp }[] = [
  *
  * Seeded from measurement (2026-08-18), not from memory: these are the tracked
  * files that legitimately contain token-shaped fixtures today.
+ *
+ * This file is deliberately NOT on the list. Measured: the detectors are regex
+ * LITERALS, and the character class breaks the pattern against its own source
+ * (after `sk-proj-` the text has `[`, which the class does not accept), so the
+ * gate passes over itself with 757/757. An exemption here would be the one
+ * place a real secret could be pasted and cleared, and `secret-gate.test.ts`
+ * pins that the exemption stays absent.
  */
 export const ALLOWLISTED_PATHS: { path: string; reason: string }[] = [
   { path: 'src/__tests__/auth-device-keys.test.ts', reason: 'device-key auth test: synthetic Bearer fixtures' },
   { path: 'src/__tests__/auth-gate.test.ts', reason: 'auth gate test: synthetic Bearer fixtures' },
   { path: 'src/__tests__/secret-gate.test.ts', reason: 'the gate\'s own tests: synthetic secrets are the subject under test' },
-  { path: 'src/security/secret-gate.ts', reason: 'the detector definitions themselves' },
   { path: 'src/__tests__/channel-inbound-framing.test.ts', reason: 'channel framing test: synthetic wrapper frames with sample ids are the subject under test' },
   { path: 'scripts/__tests__/conversation-ledger.test.sh', reason: 'ledger test: synthetic wrapper frames with sample ids' },
 ];
