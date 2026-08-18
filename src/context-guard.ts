@@ -241,6 +241,13 @@ export interface GuardState {
   cooldownUntilMs: number
   /** Consecutive idle-phase sweeps that saw a saturated pane (debounce). */
   saturatedStreak: number
+  /** Set at restart time when HANDOFF.md predates the agent's last transcript
+   *  activity by more than the slack: ~minutes of work the handoff does NOT
+   *  cover. Carried into await-ready so the resume prompt can say so -- a
+   *  fresh session pointed at a stale handoff re-opens already-decided
+   *  questions (2026-08-17: a merge-gate verdict on a payment PR was missing
+   *  from a 20-minute-old handoff presented as current). */
+  handoffStaleMinutes: HandoffStaleness
 }
 
 export const INITIAL_GUARD_STATE: GuardState = {
@@ -249,6 +256,7 @@ export const INITIAL_GUARD_STATE: GuardState = {
   deadlineMs: 0,
   cooldownUntilMs: 0,
   saturatedStreak: 0,
+  handoffStaleMinutes: null,
 }
 
 /** Idle-phase sweeps that must agree the pane is saturated before the net
@@ -301,6 +309,50 @@ export interface GuardInputs {
  */
 export const IDLE_FLUSH_REASON_PREFIX = 'idle-flush'
 
+/**
+ * Reason prefix for a repeated handoff request sent because the one on disk
+ * went stale while the guard waited for an idle pane. The runner words this
+ * request differently again: the agent DID write a handoff, it just kept
+ * working afterwards, so "write a handoff" would read as a bug and "your
+ * context is critical" may be false.
+ */
+export const STALE_REFRESH_REASON_PREFIX = 'stale-handoff-refresh'
+
+/** Slack between HANDOFF.md's mtime and the last transcript activity before
+ *  the handoff counts as stale. The handoff-writing turn itself touches the
+ *  transcript slightly AFTER the file write (tool result + closing reply), so
+ *  a zero-slack comparison would flag every handoff as stale. */
+export const STALE_HANDOFF_SLACK_MS = 3 * 60_000
+
+/** Freshness verdict for HANDOFF.md at decision time: minutes of uncovered
+ *  work, 'unknown', or null (= fresh enough / no artifact to judge). */
+export type HandoffStaleness = number | 'unknown' | null
+
+/**
+ * How many minutes of work HANDOFF.md fails to cover; null when it is fresh
+ * enough or there is no artifact to judge. "Existence is not freshness": the
+ * guard's handoff precondition must compare the artifact against the agent's
+ * LAST MEANINGFUL OUTPUT (transcript mtime = nowMs - idleMs), not merely
+ * observe that the file appeared after the request -- an agent that writes
+ * the handoff and then keeps working (messages keep arriving while the guard
+ * waits for an idle pane) satisfies the mtime-advanced check with an
+ * artifact that is minutes-to-hours behind.
+ *
+ * When the artifact exists but the transcript clock is unreadable the answer
+ * is 'unknown', NOT null: a missing measurement must not impersonate a
+ * fresh one (the same error class this function exists to fix). 'unknown'
+ * never triggers a refresh -- there is no evidence to demand one on -- but
+ * it rides to the resume prompt so the fresh session is told the freshness
+ * was unverifiable instead of nothing.
+ */
+export function handoffStaleMinutes(inputs: GuardInputs): HandoffStaleness {
+  if (inputs.handoffMtime === null) return null
+  if (inputs.idleMs === null) return 'unknown'
+  const lastActivityMs = inputs.nowMs - inputs.idleMs
+  const gapMs = lastActivityMs - inputs.handoffMtime
+  return gapMs > STALE_HANDOFF_SLACK_MS ? Math.round(gapMs / 60_000) : null
+}
+
 export type GuardActionType = 'none' | 'request-handoff' | 'restart' | 'inject-resume'
 
 export interface GuardDecision {
@@ -324,11 +376,14 @@ function cooldown(nowMs: number, cfg: ContextGuardConfig, reason: string): Guard
       deadlineMs: 0,
       cooldownUntilMs: nowMs + cfg.cooldownMinutes * 60_000,
       saturatedStreak: 0,
+      handoffStaleMinutes: null,
     },
   }
 }
 
-function restartDecision(nowMs: number, reason: string): GuardDecision {
+/** staleMinutes rides into await-ready so inject-resume can tell the fresh
+ *  session its handoff does not cover the last N minutes. */
+function restartDecision(nowMs: number, reason: string, staleMinutes: HandoffStaleness = null): GuardDecision {
   return {
     action: 'restart',
     reason,
@@ -338,6 +393,7 @@ function restartDecision(nowMs: number, reason: string): GuardDecision {
       deadlineMs: nowMs + READY_TIMEOUT_MS,
       cooldownUntilMs: 0,
       saturatedStreak: 0,
+      handoffStaleMinutes: staleMinutes,
     },
   }
 }
@@ -373,7 +429,11 @@ export function decideGuard(
       if (cfg.saturationRestart && inputs.paneSaturated) {
         const streak = state.saturatedStreak + 1
         if (streak >= SATURATION_CONFIRM_SWEEPS) {
-          return restartDecision(nowMs, `pane saturated (100% context) for ${streak} sweeps -- unrecoverable without restart`)
+          return restartDecision(
+            nowMs,
+            `pane saturated (100% context) for ${streak} sweeps -- unrecoverable without restart`,
+            handoffStaleMinutes(inputs),
+          )
         }
         return none('pane saturated, awaiting confirmation sweep', { ...state, saturatedStreak: streak })
       }
@@ -410,13 +470,35 @@ export function decideGuard(
         // The pane tipped over while we waited for the handoff: the agent can
         // no longer act on the request, so restart now (no debounce -- the
         // act-threshold pct already corroborates a near-full context).
-        return restartDecision(nowMs, 'pane saturated during await-handoff')
+        return restartDecision(nowMs, 'pane saturated during await-handoff', handoffStaleMinutes(inputs))
       }
       const handoffWritten =
         inputs.handoffMtime !== null &&
         (state.handoffMtimeAtRequest === null || inputs.handoffMtime > state.handoffMtimeAtRequest)
       if (handoffWritten && inputs.paneIdle) {
-        return restartDecision(nowMs, 'handoff written')
+        // mtime-advanced is necessary but NOT sufficient: the agent may have
+        // written the handoff and then kept working while we waited for an
+        // idle pane (2026-08-17: 20 minutes of work, including a merge-gate
+        // verdict, happened after the write). Existence is not freshness.
+        const staleMin = handoffStaleMinutes(inputs)
+        if (typeof staleMin === 'number' && nowMs < state.deadlineMs && !(inputs.pct !== null && inputs.pct >= cfg.hardPct)) {
+          // There is still budget before the deadline and the context is not
+          // yet at the hard threshold: ask for a refresh instead of shipping
+          // a handoff that misses the last N minutes. Advancing the recorded
+          // mtime makes the NEXT write count as fresh; the deadline is left
+          // alone, so an agent that keeps working through refresh requests
+          // still restarts on time (with the staleness said out loud).
+          return {
+            action: 'request-handoff',
+            reason: `${STALE_REFRESH_REASON_PREFIX}: handoff written but ~${staleMin}m of work happened after it -- requesting refresh`,
+            nextState: { ...state, handoffMtimeAtRequest: inputs.handoffMtime },
+          }
+        }
+        return restartDecision(
+          nowMs,
+          typeof staleMin === 'number' ? `handoff written but STALE (~${staleMin}m of work after it)` : 'handoff written',
+          staleMin,
+        )
       }
       // Same mid-turn deferral as the idle-phase hard tier: neither the hard
       // threshold nor the handoff timeout may cut a live turn. The deadline
@@ -425,13 +507,15 @@ export function decideGuard(
       // mid-flight is caught by the paneSaturated branch above.
       if (inputs.pct !== null && inputs.pct >= cfg.hardPct) {
         if (inputs.paneBusy) return none('hard threshold during await-handoff but agent mid-turn -- deferring restart')
-        return restartDecision(nowMs, 'hard threshold during await-handoff')
+        return restartDecision(nowMs, 'hard threshold during await-handoff', handoffStaleMinutes(inputs))
       }
       if (nowMs >= state.deadlineMs) {
         if (inputs.paneBusy) return none('handoff timeout but agent mid-turn -- deferring restart')
         // No handoff in time (agent wedged or ignored the prompt). Restart
         // anyway: taskstate + kanban + hot memories are the fallback context.
-        return restartDecision(nowMs, 'handoff timeout -- force restart')
+        // An OLD HANDOFF.md may still exist; measure how far behind it is so
+        // the resume prompt does not present it as current.
+        return restartDecision(nowMs, 'handoff timeout -- force restart', handoffStaleMinutes(inputs))
       }
       return none(handoffWritten ? 'handoff written, waiting for idle pane' : 'waiting for handoff')
     }
@@ -447,6 +531,7 @@ export function decideGuard(
             deadlineMs: 0,
             cooldownUntilMs: nowMs + cfg.cooldownMinutes * 60_000,
             saturatedStreak: 0,
+            handoffStaleMinutes: null,
           },
         }
       }
@@ -481,7 +566,11 @@ function decideWedgeTiers(
     if (inputs.paneBusy) {
       return none(`hard threshold (${Math.round(pct * 100)}%) but agent mid-turn -- deferring restart`, cleared)
     }
-    return restartDecision(nowMs, `hard threshold (${Math.round(pct * 100)}% >= ${Math.round(cfg.hardPct * 100)}%)`)
+    return restartDecision(
+      nowMs,
+      `hard threshold (${Math.round(pct * 100)}% >= ${Math.round(cfg.hardPct * 100)}%)`,
+      handoffStaleMinutes(inputs),
+    )
   }
   if (pct >= cfg.actPct) {
     return handoffRequest(nowMs, inputs, cfg, `act threshold (${Math.round(pct * 100)}% >= ${Math.round(cfg.actPct * 100)}%)`)
@@ -566,6 +655,7 @@ function handoffRequest(
       deadlineMs: nowMs + cfg.handoffTimeoutMinutes * 60_000,
       cooldownUntilMs: 0,
       saturatedStreak: 0,
+      handoffStaleMinutes: null,
     },
   }
 }
