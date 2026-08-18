@@ -35,3 +35,5 @@ preview and can be skipped with `--no-verify`, so it is not sufficient on its ow
 
 - [ ] Nincs a valtoztatasban bizonyitek-/artefaktum-mappa, titok-alaku string vagy idezett csatorna-uzenet.
       / No evidence or artifact directory, secret-shaped string, or quoted channel message in this change.
+
+<!-- EVIDGUARD818 pozitiv kontroll: artalmatlan sor, a kapu atengedeset meri. -->
