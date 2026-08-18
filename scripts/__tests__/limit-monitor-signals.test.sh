@@ -131,6 +131,31 @@ printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":40,"reset
 run_case "$C"
 if alerted "$C"; then fail "alerted below the threshold"; else pass "40% / 12% stays quiet"; fi
 
+# A window can roll over while the reading stays put: the numbers only move
+# when a new API response brings them, so after the reset the same block sits
+# there with resets_at in the past. Measured at the 22:00 rollover, 2026-08-18.
+C="$(new_case quota_rolled_over)"
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}\n' "$now" "$((now - 60))" \
+  > "$C/store/.claude-rate-limits.json"
+run_case "$C"
+if alerted "$C"; then
+  fail "alerted about a window that has already reset"
+elif grep -q "already past their reset" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "a window past its reset is skipped, and says so"
+else
+  fail "the rolled-over window was skipped without a trace"
+fi
+# ...but a live window next to a rolled-over one must still get through.
+C="$(new_case quota_mixed)"
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d},"seven_day":{"used_percentage":92,"resets_at":%d}}}\n' \
+  "$now" "$((now - 60))" "$reset" > "$C/store/.claude-rate-limits.json"
+run_case "$C"
+if grep -q "quota:seven_day" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "the live weekly window still alerts beside a rolled-over one"
+else
+  fail "a rolled-over window silenced the live one next to it"
+fi
+
 C="$(new_case quota_stale)"
 printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}\n' "$((now - 90000))" "$((now - 80000))" \
   > "$C/store/.claude-rate-limits.json"

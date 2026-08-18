@@ -115,20 +115,35 @@ if age > max_age:
 levels = sorted({100.0, warn}, reverse=True)
 
 labels = {"five_hour": "5 oras keret", "seven_day": "heti keret"}
+labels_short = {"five_hour": "five_hour", "seven_day": "seven_day"}
 hits = []
+expired = []
 for key in ("five_hour", "seven_day"):
     w = (d.get("rate_limits") or {}).get(key) or {}
     pct = w.get("used_percentage")
     if not isinstance(pct, (int, float)) or pct < warn:
         continue
-    level = next((L for L in levels if pct >= L), warn)
     resets = w.get("resets_at")
+    # A window whose reset time has already passed describes a window that no
+    # longer exists. The numbers only move when an API response brings new ones,
+    # so after a rollover the block sits there unchanged with resets_at in the
+    # past (measured at the 22:00 rollover on 2026-08-18: 25% / "resets 22:00"
+    # still standing at 22:00:29). Alerting on it would report a spent quota
+    # that has since been handed back. Nothing real is lost by skipping: while
+    # the quota was actually spent, resets_at was in the future and the alert
+    # already went out.
+    if isinstance(resets, (int, float)) and resets <= time.time():
+        expired.append(labels_short[key])
+        continue
+    level = next((L for L in levels if pct >= L), warn)
     when = ""
     if isinstance(resets, (int, float)):
         when = time.strftime("%m-%d %H:%M", time.localtime(resets))
     hits.append((key, round(float(pct)), when, int(resets or 0), int(level)))
 
 if not hits:
+    if expired:
+        print("EXPIRED\t%s" % ",".join(expired))
     raise SystemExit(0)
 
 # Dedupe key: window + crossed level + the reset timestamp of that window. One
@@ -146,6 +161,11 @@ PYQ
   case "$QUOTA_OUT" in
     STALE*)
       log "quota file stale ($(printf '%s' "$QUOTA_OUT" | cut -f2)s), skipping the measured path"
+      ;;
+    EXPIRED*)
+      # Said out loud on purpose: an alert withheld must not look the same as a
+      # quiet, healthy reading.
+      log "window(s) already past their reset, not alerting: $(printf '%s' "$QUOTA_OUT" | cut -f2)"
       ;;
     HIT*)
       QKEY="$(printf '%s' "$QUOTA_OUT" | cut -f2)"
