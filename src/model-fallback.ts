@@ -69,11 +69,14 @@ const USAGE_LIMIT_BANNER_REGION_LINES = 15
 // / "API Error: 429" (transient overload, handled elsewhere) must NOT match --
 // that is a momentary blip, not a plan-budget exhaustion that warrants a model
 // switch.
-// "session limit" variant observed in production (2026-08-08):
-//   "You hit your session limit · resets 5:50pm"
-// The original regex only covered "usage limit"; "session" was missing.
+// KET MERES UNIOJA, egyik oldal sem hagyhato el:
+//  - "session limit" alak, elesben merve 2026-08-08: "You hit your session limit · resets 5:50pm"
+//  - heti/session alakok, merve 2026-08-18: a "reached your weekly limit" es a
+//    "Session limit reached" panelnel a detektor nema maradt -- ez az az eset, aminek kiesés az ara.
+// A rebase (2026-08-19) elott a ket ag KULON-KULON javitotta ezt a regexet, es a sajat aganak
+// `hit ... limit` resze epp a masik meresét (session) ejtette volna ki. Ezert unio, nem valasztas.
 const USAGE_LIMIT_RX =
-  /(usage limit reached|reached your usage limit|hit (?:your|the) (?:session|usage) limit|approaching (?:your )?usage limit|usage limit (?:will )?reset|limit will reset at|\d+-hour limit reached|upgrade to increase your usage limit)/i
+  /(usage limit reached|reached your (?:usage|weekly) limit|hit (?:your|the) (?:session|usage) limit|approaching (?:your )?(?:\w+ )?(?:usage|weekly) limit|usage limit (?:will )?reset|limit will reset at|\d+-hour limit reached|(?:weekly|session) limit reached|upgrade to increase your usage limit)/i
 
 /**
  * True when the live pane shows a Claude *plan usage-limit* banner (not a
