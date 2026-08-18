@@ -829,6 +829,61 @@ export function shSingleQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
+/**
+ * hu: A modell-azonosító alapján eldönti, melyik providerhez tartozik, és felépíti a shell
+ * export-láncot, ami a Claude Code CLI-t az adott provider Anthropic-kompatibilis végpontjára
+ * téríti. Tiszta függvény (nincs I/O) -- a titkot a hívó adja át `secretLookup`-on keresztül,
+ * hogy vault nélkül tesztelhető legyen.
+ * <br />
+ * en: Resolves which provider a model id belongs to and builds the shell export chain that
+ * redirects the Claude Code CLI to that provider's Anthropic-compatible endpoint. Pure function
+ * (no I/O) -- the caller supplies secrets via `secretLookup` so this is testable without a vault.
+ */
+export type ProviderKind = 'claude' | 'deepseek' | 'minimax' | 'openrouter' | 'ollama'
+
+export function resolveProviderEnv(
+  model: string,
+  secretLookup: (id: string) => string | null,
+): { provider: ProviderKind; exportsStr: string } {
+  const isClaude = model.startsWith('claude-')
+  const isDeepseek = model.startsWith('deepseek-')
+  const isMinimax = model.startsWith('minimax-')
+  // OpenRouter model ids are `provider/model` (contain '/'); Ollama tags use
+  // ':' and no '/'. This discriminator keeps OpenRouter ids off the Ollama path.
+  const isOpenRouter = !isClaude && !isDeepseek && !isMinimax && model.includes('/')
+  const isOllama = !isClaude && !isDeepseek && !isMinimax && !isOpenRouter
+
+  if (isDeepseek) {
+    const key = secretLookup('DEEPSEEK_API_KEY') ?? ''
+    return {
+      provider: 'deepseek',
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN="${key}" && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+    }
+  }
+  if (isMinimax) {
+    const key = secretLookup('MINIMAX_API_KEY') ?? ''
+    return {
+      provider: 'minimax',
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN="${key}" && export ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+    }
+  }
+  if (isOpenRouter) {
+    // Anthropic-compatible endpoint at https://openrouter.ai/api (the SDK appends /v1/messages).
+    const key = secretLookup('openrouter-fleet-key') ?? ''
+    return {
+      provider: 'openrouter',
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN="${key}" && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+    }
+  }
+  if (isOllama) {
+    return {
+      provider: 'ollama',
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN=ollama && export ANTHROPIC_BASE_URL=${OLLAMA_URL} && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+    }
+  }
+  return { provider: 'claude', exportsStr: '' }
+}
+
 // All tmux operations route through these two wrappers so the local-vs-remote
 // (ssh) decision and the quoting live in ONE place (ssh-tmux.ts). host=null is
 // byte-identical to the prior direct local tmux call. Remote calls get a larger
@@ -1081,11 +1136,6 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     const model = resolveOpenRouterModel(readAgentModel(name))
     const authMode = readAgentAuthMode(name)
     const isClaude = model.startsWith('claude-')
-    const isDeepseek = model.startsWith('deepseek-')
-    // OpenRouter model ids are `provider/model` (contain '/'); Ollama tags use
-    // ':' and no '/'. This discriminator keeps OpenRouter ids off the Ollama path.
-    const isOpenRouter = !isClaude && !isDeepseek && model.includes('/')
-    const isOllama = !isClaude && !isDeepseek && !isOpenRouter
     // ANTHROPIC_MODEL is REQUIRED for non-Claude models: the interactive TUI
     // validates the `--model` flag against known Anthropic models and silently
     // falls back to the built-in default (claude-opus-...) for an unrecognized
@@ -1093,13 +1143,9 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // the custom ANTHROPIC_BASE_URL ("model does not exist"). The env var is
     // authoritative and bypasses that validation. (`--print` honors --model, but
     // the agents run the TUI.) Single-quoted so a `:` in the tag is shell-safe.
-    const ollamaEnv = isOllama ? `export ANTHROPIC_AUTH_TOKEN=ollama && export ANTHROPIC_BASE_URL=${OLLAMA_URL} && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
-    const deepseekKey = isDeepseek ? (getSecret('DEEPSEEK_API_KEY') ?? '') : ''
-    const deepseekEnv = isDeepseek ? `export ANTHROPIC_AUTH_TOKEN="${deepseekKey}" && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
-    // OpenRouter: Anthropic-compatible endpoint at https://openrouter.ai/api
-    // (the SDK appends /v1/messages). Key from the vault (openrouter-fleet-key).
-    const openrouterKey = isOpenRouter ? (getSecret('openrouter-fleet-key') ?? '') : ''
-    const openrouterEnv = isOpenRouter ? `export ANTHROPIC_AUTH_TOKEN="${openrouterKey}" && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
+    // Provider discriminator + env-export chain live in resolveProviderEnv (pure,
+    // unit-tested in agent-provider-env.test.ts) so a new provider is one branch there.
+    const { exportsStr: providerEnv } = resolveProviderEnv(model, getSecret)
     // When authMode is 'api', the agent uses its own ANTHROPIC_API_KEY from
     // the vault instead of the host's OAuth. The vault entry ID follows the
     // convention `agent-{name}-api-key`. We inject it as an env var so Claude
@@ -1374,7 +1420,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // values like `claude-opus-4-8[1m]` (1M-context suffix) from being glob-expanded AND makes a `'`
     // in the value inert rather than a quote-break -> command injection. Same escape at the three
     // ANTHROPIC_MODEL env sites above.
-    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${ollamaEnv}${deepseekEnv}${openrouterEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
+    const cmd = `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}`.trimEnd()
     runTmux(null, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir }, 'Agent tmux session started')
