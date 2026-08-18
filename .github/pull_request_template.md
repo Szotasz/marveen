@@ -25,3 +25,13 @@ Closes #
 - [ ] Frissítettem a `docs/` mappát, ha a változtatás érinti a telepítést vagy az architektúrát. / Updated `docs/` if the change affects installation or architecture.
 - [ ] A kód nem tartalmaz beleégetett szenzitív adatot (API kulcs, token, személyes adat). / No hardcoded secrets (API keys, tokens, personal data).
 - [ ] Saját, beszédes nevű branch-ről nyitom (nem közvetlenül `develop`-ra). / Opened from an own, descriptively named branch (not directly on `develop`).
+
+## Titok-kapu / Secret gate
+
+A `secret-gate` CI-job a valodi kapu. A lokalis pre-commit hook csak gyors
+elorejelzes, es `--no-verify`-jal megkerulheto -- ne tekintsd elegnek.
+The `secret-gate` CI job is the real gate; the local pre-commit hook is a fast
+preview and can be skipped with `--no-verify`, so it is not sufficient on its own.
+
+- [ ] Nincs a valtoztatasban bizonyitek-/artefaktum-mappa, titok-alaku string vagy idezett csatorna-uzenet.
+      / No evidence or artifact directory, secret-shaped string, or quoted channel message in this change.
