@@ -78,6 +78,11 @@ export const SECRET_PATTERNS: { name: string; pattern: RegExp }[] = [
   { name: 'GitHub token', pattern: /\bgh[pousr]_[A-Za-z0-9]{30,}/ },
   { name: 'Slack token', pattern: /\bxox[baprs]-[A-Za-z0-9-]{10,}/ },
   { name: 'OpenAI project key', pattern: /\bsk-proj-[A-Za-z0-9_-]{20,}/ },
+  // BOTH separators, on purpose. Boni's first detector looked for `sk-` only
+  // and returned zero on a key that used `sk_` -- and zero looks reassuring.
+  // No upper length bound either: the leaked key was 51 chars, a rule written
+  // around "32 hex" would have missed it.
+  { name: 'generic vendor secret key (sk_ or sk-)', pattern: /\bsk[-_][A-Za-z0-9_-]{24,}/ },
   { name: 'AWS access key id', pattern: /\bAKIA[0-9A-Z]{16}\b/ },
   { name: 'Supabase service_role JWT hint', pattern: /service_role["'\s:=]+eyJ/ },
 ];
@@ -91,6 +96,10 @@ export const TRANSCRIPT_PATTERNS: { name: string; pattern: RegExp }[] = [
   { name: 'quoted channel message', pattern: /\bmessage_id\s*[:=]?\s*\d{2,}\s*[:\-]/ },
   { name: 'telegram update dump', pattern: /"(update_id|from_user|chat_id)"\s*:\s*\d+/ },
   { name: 'quoted agent transcript header', pattern: /^\s*\[Uzenet @[a-z0-9_-]+-tol/im },
+  // Same trap on the transcript side: this repo's evidence files use
+  // `message_id NNN:`, but a wrapper tag is just as much channel material.
+  // One form only would give a clean zero on the other.
+
 ];
 
 /**
@@ -106,7 +115,21 @@ export const ALLOWLISTED_PATHS: { path: string; reason: string }[] = [
   { path: 'src/__tests__/auth-gate.test.ts', reason: 'auth gate test: synthetic Bearer fixtures' },
   { path: 'src/__tests__/secret-gate.test.ts', reason: 'the gate\'s own tests: synthetic secrets are the subject under test' },
   { path: 'src/security/secret-gate.ts', reason: 'the detector definitions themselves' },
+  { path: 'src/__tests__/channel-inbound-framing.test.ts', reason: 'channel framing test: synthetic wrapper frames with sample ids are the subject under test' },
+  { path: 'scripts/__tests__/conversation-ledger.test.sh', reason: 'ledger test: synthetic wrapper frames with sample ids' },
 ];
+
+/**
+ * The wrapper tag ALONE is not evidence: this repo implements channel framing,
+ * so `<channel source="...">` legitimately appears in 24 tracked files (code,
+ * tests, docs, hook scripts -- measured 2026-08-18). Flagging those would make
+ * the gate noise, and a noisy gate gets switched off.
+ *
+ * Captured material is the tag TOGETHER WITH a payload marker in the same file.
+ * That pair narrows 27 files to 3, all of them deliberate test fixtures.
+ */
+export const WRAPPER_TAG = /<\s*(channel|trusted-peer)\b[^>]*\bsource\s*=\s*["'][^"']+["'][^>]*>/i;
+export const WRAPPED_PAYLOAD = /\bmessage_id\s*[:=]?\s*\d{2,}|"(update_id|chat_id|from_user)"\s*:\s*\d+/;
 
 export function allowlistReason(path: string): string | null {
   const hit = ALLOWLISTED_PATHS.find((a) => a.path === path);
@@ -155,6 +178,16 @@ export function scanFile(input: ScanInput): Finding[] {
         reason: `secret shape: ${name}`,
       });
     }
+  }
+  const tag = WRAPPER_TAG.exec(text);
+  if (tag && WRAPPED_PAYLOAD.test(text)) {
+    findings.push({
+      file: path,
+      detector: 'transcript',
+      severity: 'blocked',
+      line: lineOf(text, tag.index),
+      reason: 'channel material: wrapper tag carrying a real payload marker',
+    });
   }
   for (const { name, pattern } of TRANSCRIPT_PATTERNS) {
     const m = pattern.exec(text);

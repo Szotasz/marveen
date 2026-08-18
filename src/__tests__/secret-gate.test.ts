@@ -77,6 +77,17 @@ describe('detector 2: content', () => {
     expect(r.findings[0].detector).toBe('content');
   });
 
+  it('catches BOTH separators and does not assume a length (Boni traps, EVIDLEAK818)', () => {
+    // (a) Boni's first detector looked for `sk-` and returned ZERO on a key that
+    //     used `sk_`. Zero looks reassuring, which is what makes it dangerous.
+    // (b) Her hex rule demanded 32 chars; the leaked key was 51. A pattern must
+    //     not be bound to a length someone happened to observe once.
+    const alahuzas = 'sk_' + 'a1b2c3d4'.repeat(6); // 51 chars, the real shape
+    const kotojel = 'sk-' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6';
+    expect(runGate([f('docs/a.md', `k = ${alahuzas}`)]).ok).toBe(false);
+    expect(runGate([f('docs/b.md', `k = ${kotojel}`)]).ok).toBe(false);
+  });
+
   it('does NOT fire on the placeholders this repo is full of (measured 2026-08-18)', () => {
     // 64 tracked files contain `Bearer ${token}`; 25 contain `sk_` inside words
     // like task_name and skipIfBusy. A gate that flags these gets bypassed.
@@ -109,6 +120,30 @@ describe('detector 3: channel material (the one that would have caught 2026-07)'
   it('blocks a telegram update dump and a quoted agent transcript', () => {
     expect(runGate([f('a.json', '{"update_id": 8812, "text": "szia"}')]).ok).toBe(false);
     expect(runGate([f('b.md', '[Uzenet @marveen-tol -- trusted]: allapot')]).ok).toBe(false);
+  });
+
+  it('the wrapper tag ALONE is not enough -- this repo implements the framing', () => {
+    // Measured 2026-08-18: 24 tracked files legitimately contain the tag (code,
+    // tests, docs, hook scripts). Blocking those would make the gate noise, and
+    // a noisy gate gets switched off, which is zero protection.
+    const csakTag = '<channel source="telegram">a keretezes leirasa</channel>';
+    expect(runGate([f('docs/channels.md', csakTag)]).ok).toBe(true);
+  });
+
+  it('the tag WITH a payload marker is captured material and IS blocked', () => {
+    const valodi = '<channel source="telegram">message_id 4242: "szoveg"</channel>';
+    const r = runGate([f('notes/paste.md', valodi)]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0].reason).toMatch(/payload marker/);
+  });
+
+  it('blocks EVERY marker form, not just the one this repo happens to use', () => {
+    // The evidence files use `message_id NNN:`; a wrapper tag is the same
+    // material in a different dress. Knowing one form yields a clean zero on
+    // the other, and the zero is indistinguishable from "nothing to find".
+    expect(runGate([f('c.md', '{"chat_id": 1268077055, "text": "szia"}')]).ok).toBe(false);
+    // A wrapper tag counts only with a payload marker (see the two cases above);
+    // here the chat_id form stands on its own.
   });
 });
 
