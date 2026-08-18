@@ -3994,6 +3994,27 @@ async function loadAvailableModels() {
     }
     if (hint) hint.style.display = deepseekModels.length === 0 ? 'block' : 'none'
 
+    // MiniMax: direct Anthropic-compatible API (no OpenRouter markup), gated
+    // behind MINIMAX_API_KEY same as DeepSeek. Empty array -> hide the group.
+    const minimaxModels = Array.isArray(data.minimax) ? data.minimax : []
+    const editMinimaxGroup = document.getElementById('minimaxModelGroup')
+    const wizardMinimaxGroup = document.getElementById('agentModelMinimaxGroup')
+    for (const group of [editMinimaxGroup, wizardMinimaxGroup]) {
+      if (!group) continue
+      group.innerHTML = ''
+      if (minimaxModels.length === 0) {
+        group.style.display = 'none'
+        continue
+      }
+      group.style.display = ''
+      for (const m of minimaxModels) {
+        const opt = document.createElement('option')
+        opt.value = m.id
+        opt.textContent = m.label
+        group.appendChild(opt)
+      }
+    }
+
     // OpenRouter: two optgroups per select (Auto = weekly-fresh tier
     // recommendation, value `openrouter-auto:<tier>`; Manual = the 2 concrete
     // ids per tier). Backend gates the whole block behind the vault key, so a
