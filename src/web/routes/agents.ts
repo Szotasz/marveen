@@ -103,6 +103,7 @@ import {
   agentSessionName,
   sendPromptToSession,
   capturePane,
+  delay,
 } from '../agent-process.js'
 import { addDesiredAgent, removeDesiredAgent } from '../agent-desired-state.js'
 import { RemoteStatusCache } from '../remote-status-cache.js'
@@ -1111,7 +1112,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         if (gcWasRunning) {
           const stopRes = stopAgentProcess(name)
           if (stopRes.ok) {
-            try { execSync('sleep 2', { timeout: 4000 }) } catch {}
+            await delay(2000)
             gcRestarted = startAgentProcess(name).ok
           }
         }
@@ -1208,7 +1209,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       if (wasRunning) {
         const stopRes = stopAgentProcess(name)
         if (stopRes.ok) {
-          try { execSync('sleep 2', { timeout: 4000 }) } catch {}
+          await delay(2000)
           const startRes = startAgentProcess(name)
           restarted = startRes.ok
         }
@@ -1739,7 +1740,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // Wait for Claude Code to render the auth URL (typically 3-6s)
       let authUrl: string | null = null
       for (let i = 0; i < 12; i++) {
-        execSync('sleep 1', { timeout: 3000 })
+        await delay(1000)
         const pane = capturePane(session, host)
         if (!pane) continue
         const urlMatch = pane.match(/https:\/\/console\.anthropic\.com\/[^\s"']+/)
