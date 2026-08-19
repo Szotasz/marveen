@@ -1,9 +1,28 @@
-import { describe, expect, it } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { chatIdFromAccessConfig, channelDeliveryName, resolveSchedulerAlertToken, resolveTaskChannelTarget } from '../web/schedule-runner.js'
+import { tmpdir } from 'node:os'
 import { PROJECT_ROOT } from '../config.js'
 import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
+
+// Behavioural fixture for the ambiguous-allowlist branch (see the
+// "genuinely exercises the ambiguous branch" describe block below). Mocked
+// BEFORE importing schedule-runner.js so the resolver's own
+// `agentDir(agentName)` call resolves into a throwaway temp directory for
+// this one fixture agent name, instead of the real repo's agents/ tree --
+// every other agent name falls through to the real implementation
+// unaffected.
+let FIXTURE_DIR = ''
+const FIXTURE_AGENT = 'ambiguous-fixture-agent-819'
+vi.mock('../web/agent-config.js', async (orig) => {
+  const actual = await orig<typeof import('../web/agent-config.js')>()
+  return {
+    ...actual,
+    agentDir: (name: string) => (name === FIXTURE_AGENT ? FIXTURE_DIR : actual.agentDir(name)),
+  }
+})
+
+const { chatIdFromAccessConfig, channelDeliveryName, resolveSchedulerAlertToken, resolveTaskChannelTarget } = await import('../web/schedule-runner.js')
 
 // Regression guard for 2026-07-27 (Zara report, Marveen diagnosis): the
 // scheduled-task prompt prefix carried a "chat_id: 0" sentinel from a
@@ -18,7 +37,7 @@ import { channelStateDir, type ChannelProviderType } from '../channel-provider.j
 // contacts -- measured on the live install, 6 of 7 currently-enabled
 // sub-agent `task`-type schedules were affected, either contradicting their
 // own explicit recipient or carrying no real Telegram target at all. Fixed
-// by resolveTaskTelegramTarget: a sub-agent with 2+ candidates and no
+// by resolveTaskChannelTarget: a sub-agent with 2+ candidates and no
 // task.telegramChatId pin gets chatId: null + ambiguousCandidates set, never
 // a guessed chat id.
 
@@ -185,5 +204,57 @@ describe('resolveTaskChannelTarget (pin precedence, no filesystem needed)', () =
 
   it('an explicit override wins even for the main agent (author intent beats the default)', () => {
     expect(resolveTaskChannelTarget({ agent: 'pedro', telegramChatId: '8321555318' }).chatId).toBe('8321555318')
+  })
+})
+
+// BEHAVIOURAL guard, not text-pinned: the source-contract tests above only
+// prove certain STRINGS exist in schedule-runner.ts, which a mutation that
+// reintroduces the "just use the first allowlist entry" guess would NOT
+// touch (the log/notify strings stay in the file as dead code, unreached).
+// This is the test that actually calls resolveTaskChannelTarget with a
+// real 2-DM-contact access.json and asserts on the RETURNED VALUE -- the
+// only way to catch a regression to the old heuristic. Verified red/green:
+// reverting the sub-agent branch to `return { chatId: chatIdFromAccessConfig(raw) }`
+// (dropping the `candidates > 1` check) makes this test fail
+// ("expected ambiguousCandidates 2, got chatId '111111'"), while every other
+// test in this file stays green. The assertions read the fields rather than
+// deep-equalling the object, so adding a field to BoundChannel (e.g. the
+// resolved provider) does not turn this guard red for the wrong reason.
+describe('resolveTaskChannelTarget genuinely exercises the ambiguous branch (not text-pinned)', () => {
+  beforeEach(() => {
+    FIXTURE_DIR = mkdtempSync(join(tmpdir(), 'ambiguous-chatid-'))
+    mkdirSync(join(FIXTURE_DIR, '.claude', 'channels', 'telegram'), { recursive: true })
+  })
+  afterEach(() => {
+    rmSync(FIXTURE_DIR, { recursive: true, force: true })
+    FIXTURE_DIR = ''
+  })
+
+  it('a sub-agent with 2 DM contacts and no telegramChatId pin gets null + ambiguousCandidates, never a guess', () => {
+    writeFileSync(
+      join(FIXTURE_DIR, '.claude', 'channels', 'telegram', 'access.json'),
+      JSON.stringify({ allowFrom: ['111111', '222222'] }),
+    )
+    const target = resolveTaskChannelTarget({ agent: FIXTURE_AGENT })
+    expect(target.chatId).toBeNull()
+    expect(target.ambiguousCandidates).toBe(2)
+  })
+
+  it('a sub-agent with exactly ONE DM contact resolves it directly -- unambiguous, no guess involved', () => {
+    writeFileSync(
+      join(FIXTURE_DIR, '.claude', 'channels', 'telegram', 'access.json'),
+      JSON.stringify({ allowFrom: ['111111'] }),
+    )
+    const target = resolveTaskChannelTarget({ agent: FIXTURE_AGENT })
+    expect(target.chatId).toBe('111111')
+    expect(target.ambiguousCandidates).toBeUndefined()
+  })
+
+  it('an explicit telegramChatId pin bypasses the ambiguity check entirely, even with 2+ contacts', () => {
+    writeFileSync(
+      join(FIXTURE_DIR, '.claude', 'channels', 'telegram', 'access.json'),
+      JSON.stringify({ allowFrom: ['111111', '222222'] }),
+    )
+    expect(resolveTaskChannelTarget({ agent: FIXTURE_AGENT, telegramChatId: '333333' }).chatId).toBe('333333')
   })
 })
