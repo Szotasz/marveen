@@ -41,15 +41,21 @@ describe('VAULTMODE818: vault-bindings pins 0600 on credential-bearing writes', 
 
   it('atomicWriteFileSync WITHOUT mode inherits the umask (the bug being guarded)', () => {
     const path = join(tmpdir(), `vaultmode-nomode-${process.pid}-${randomBytes(4).toString('hex')}.json`)
+    // The prior 0600 is lost on rewrite because rename swaps the inode: the new
+    // file's perms come from the umask, not the old target. Tie the expectation
+    // to THIS process's umask (0666 & ~umask) rather than hard-coding "not 0600"
+    // -- under a restrictive umask (e.g. 077) the default is itself 0600 and a
+    // bare "not 0600" would falsely fail.
+    const um = process.umask()
+    process.umask(um) // read-only: restore immediately
+    const umaskDefault = 0o666 & ~um
     try {
-      // Start secure, then rewrite without a mode: rename swaps the inode, so
-      // the prior 0600 is lost and the tmp file's umask perms win.
       writeFileSync(path, '{}')
       chmodSync(path, 0o600)
       const tmp = `${path}.${randomBytes(4).toString('hex')}.tmp`
       writeFileSync(tmp, '{"x":1}')
       renameSync(tmp, path)
-      expect(statSync(path).mode & 0o777).not.toBe(0o600)
+      expect(statSync(path).mode & 0o777).toBe(umaskDefault)
     } finally {
       rmSync(path, { force: true })
     }
