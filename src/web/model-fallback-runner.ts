@@ -75,7 +75,7 @@ function sessionFor(name: string): string {
   return name === MAIN_AGENT_ID ? MAIN_CHANNELS_SESSION : agentSessionName(name)
 }
 
-function restartFor(name: string): void {
+async function restartFor(name: string): Promise<void> {
   if (name === MAIN_AGENT_ID) {
     // A fresh main relaunch re-reads .claude/settings.json (and thus the new
     // model). channels.sh always starts fresh for main, so a conversation is
@@ -91,11 +91,11 @@ function restartFor(name: string): void {
   } else {
     // 'continue' (fresh: false) re-spawns with --continue so the conversation
     // survives the model swap.
-    restartAgentProcess(name, { fresh: false })
+    await restartAgentProcess(name, { fresh: false })
   }
 }
 
-function checkAgent(name: string, nowMs: number, revertAfterMs: number, chain: string[]): void {
+async function checkAgent(name: string, nowMs: number, revertAfterMs: number, chain: string[]): Promise<void> {
   // Sub-agents must be up; the main session is launchd-managed (always present).
   if (name !== MAIN_AGENT_ID && agentRunState(name) !== 'running') return
 
@@ -125,7 +125,7 @@ function checkAgent(name: string, nowMs: number, revertAfterMs: number, chain: s
 
   try {
     writeModelFor(name, action.model)
-    restartFor(name)
+    await restartFor(name)
     if (action.kind === 'downgrade') downgradedAt.set(name, nowMs)
     else downgradedAt.delete(name)
     logger.info(
@@ -138,19 +138,34 @@ function checkAgent(name: string, nowMs: number, revertAfterMs: number, chain: s
 }
 
 export function startModelFallbackRunner(): NodeJS.Timeout {
-  function sweep() {
-    const cfg = readModelFallbackConfig()
-    if (!cfg.enabled) {
-      if (downgradedAt.size > 0) downgradedAt.clear() // re-seed cleanly if re-enabled
+  let tickRunning = false
+  async function sweep() {
+    // Re-entrancy guard: checkAgent/restartFor now await a real
+    // restartAgentProcess (no longer a blocking execSync('sleep N')), so a
+    // sweep with a restart in flight can still be running when the next
+    // interval fires. Skip an overlapping tick; the next tick re-evaluates
+    // every agent, so nothing is missed.
+    if (tickRunning) {
+      logger.debug('model-fallback: previous sweep still running, skipping this tick')
       return
     }
-    const now = Date.now()
-    const revertAfterMs = cfg.revertAfterMinutes * 60_000
-    try { checkAgent(MAIN_AGENT_ID, now, revertAfterMs, cfg.chain) }
-    catch (err) { logger.debug({ err }, 'model-fallback: main check error') }
-    for (const name of listAgentNames()) {
-      try { checkAgent(name, now, revertAfterMs, cfg.chain) }
-      catch (err) { logger.debug({ err, agent: name }, 'model-fallback: agent check error') }
+    tickRunning = true
+    try {
+      const cfg = readModelFallbackConfig()
+      if (!cfg.enabled) {
+        if (downgradedAt.size > 0) downgradedAt.clear() // re-seed cleanly if re-enabled
+        return
+      }
+      const now = Date.now()
+      const revertAfterMs = cfg.revertAfterMinutes * 60_000
+      try { await checkAgent(MAIN_AGENT_ID, now, revertAfterMs, cfg.chain) }
+      catch (err) { logger.debug({ err }, 'model-fallback: main check error') }
+      for (const name of listAgentNames()) {
+        try { await checkAgent(name, now, revertAfterMs, cfg.chain) }
+        catch (err) { logger.debug({ err, agent: name }, 'model-fallback: agent check error') }
+      }
+    } finally {
+      tickRunning = false
     }
   }
   setTimeout(sweep, INITIAL_DELAY_MS)

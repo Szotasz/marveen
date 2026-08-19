@@ -224,7 +224,7 @@ function measurePct(name: string, cfgLimit: number | null): number | null {
   return tokens / limit
 }
 
-function performRestart(name: string): void {
+async function performRestart(name: string): Promise<void> {
   if (name === MAIN_AGENT_ID) {
     // Platform-correct main-session restart. This was a hardcoded
     // `/bin/launchctl kickstart`, which exists only on macOS: on Linux every
@@ -243,7 +243,7 @@ function performRestart(name: string): void {
     const res = hardRestartMarveenChannels()
     if (!res.ok) throw new Error(res.error ?? 'main channels hard restart failed')
   } else {
-    restartAgentProcess(name, { fresh: true })
+    await restartAgentProcess(name, { fresh: true })
   }
 }
 
@@ -396,7 +396,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         } catch (err) {
           logger.warn({ err, name }, 'context-guard: pre-restart pane snapshot failed')
         }
-        performRestart(name)
+        await performRestart(name)
         try {
           createAgentMessage(
             name,
@@ -500,10 +500,25 @@ export function getHardGuardPhase(name: string): string {
 }
 
 export function startContextGuardRunner(): NodeJS.Timeout {
+  let tickRunning = false
   async function sweep() {
-    const now = Date.now()
-    for (const name of guardSweepAgentNames()) {
-      try { await checkAgent(name, now) } catch (err) { logger.debug({ err, agent: name }, 'context-guard: agent check error') }
+    // Re-entrancy guard: checkAgent's 'restart' action now awaits a real
+    // restartAgentProcess (no longer a blocking execSync('sleep N')), so a
+    // sweep with a restart in flight can still be running when the next
+    // interval fires. Skip an overlapping tick; the next tick re-evaluates
+    // every agent, so nothing is missed.
+    if (tickRunning) {
+      logger.debug('context-guard: previous sweep still running, skipping this tick')
+      return
+    }
+    tickRunning = true
+    try {
+      const now = Date.now()
+      for (const name of guardSweepAgentNames()) {
+        try { await checkAgent(name, now) } catch (err) { logger.debug({ err, agent: name }, 'context-guard: agent check error') }
+      }
+    } finally {
+      tickRunning = false
     }
   }
   setTimeout(sweep, INITIAL_DELAY_MS)

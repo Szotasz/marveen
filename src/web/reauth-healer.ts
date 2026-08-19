@@ -357,7 +357,7 @@ async function restartFirstRunGatedAgent(name: string, session: string): Promise
   })
   await sleep(1000)
   try {
-    const r = startAgentProcess(name)
+    const r = await startAgentProcess(name)
     if (!r.ok) logger.warn({ name, error: r.error }, 'reauth-healer: first-run-gate relaunch failed')
   } catch (err) {
     logger.warn({ err, name }, 'reauth-healer: first-run-gate relaunch threw')

@@ -548,7 +548,7 @@ async function main(): Promise<void> {
   if (shouldBootHeartbeatAgent({ respawnEnabled: RESPAWN_ENABLED, agentEnabled: HEARTBEAT_AGENT_ENABLED })) {
     ensureHeartbeatAgent()
     logger.info({ agent: HEARTBEAT_AGENT_NAME }, 'Heartbeat agent scaffold ensured (channel-less, dashboard-hidden)')
-    const heartbeatStart = startAgentProcess(HEARTBEAT_AGENT_NAME)
+    const heartbeatStart = await startAgentProcess(HEARTBEAT_AGENT_NAME)
     if (heartbeatStart.ok) {
       logger.info({ agent: HEARTBEAT_AGENT_NAME }, 'Heartbeat agent started')
     } else if (heartbeatStart.error === 'Agent is already running') {

@@ -567,7 +567,7 @@ async function attemptFireTask(
     // sends once Claude has booted (isSessionReadyForPrompt). host-aware:
     // startAgentProcess is itself remote-aware and launches over ssh when the
     // target agent is remote, so a missing remote session is auto-started too.
-    const start = startAgentProcess(agentName)
+    const start = await startAgentProcess(agentName)
     if (!start.ok) {
       // "already running" means it raced up between the check and here -- treat
       // as busy so the normal retry path delivers. Any other failure (config

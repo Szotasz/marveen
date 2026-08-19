@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { execSync, execFileSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { OLLAMA_URL } from '../config.js'
 import { makeLazyBinResolver } from '../platform.js'
 import { logger } from '../logger.js'
@@ -979,7 +979,7 @@ function startRemoteAgentProcess(
   }
 }
 
-export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): { ok: boolean; pid?: number; error?: string } {
+export async function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
 
@@ -1047,7 +1047,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
   try {
     try {
       runTmux(null, ['kill-session', '-t', session])
-      execSync('sleep 3', { timeout: 5000 })
+      await delay(3000)
     } catch { /* ok */ }
 
     // Reap any orphan poller (bun/node) left over from a previous run BEFORE
@@ -1419,7 +1419,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
   }
 }
 
-export function stopAgentProcess(name: string): { ok: boolean; error?: string } {
+export async function stopAgentProcess(name: string): Promise<{ ok: boolean; error?: string }> {
   const session = agentSessionName(name)
   if (!isAgentRunning(name)) return { ok: false, error: 'Agent is not running' }
 
@@ -1427,7 +1427,7 @@ export function stopAgentProcess(name: string): { ok: boolean; error?: string } 
 
   try {
     runTmux(host, ['kill-session', '-t', session], { timeout: 5000 })
-    execSync('sleep 2', { timeout: 4000 })
+    await delay(2000)
     // Reap any orphaned plugin grandchild that tmux did not tear down. This is
     // a LOCAL pkill against this host's process table, so it only makes sense
     // for local agents; a remote agent is channel-less and its processes live
@@ -1458,9 +1458,9 @@ export function getAgentProcessInfo(name: string): { running: boolean; session?:
   }
 }
 
-export function restartAgentProcess(name: string, opts: { fresh?: boolean } = {}): { ok: boolean; pid?: number; error?: string } {
+export async function restartAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   if (isAgentRunning(name)) {
-    const stopResult = stopAgentProcess(name)
+    const stopResult = await stopAgentProcess(name)
     if (!stopResult.ok) return { ok: false, error: stopResult.error || 'Failed to stop running agent before restart' }
   }
   return startAgentProcess(name, opts)
