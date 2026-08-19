@@ -12,10 +12,12 @@ hu: MIERT KULON FAJL, ES MIERT PYTHON (az ordog atmerese, 2026-08-14):
     KILEPESI KOD: 0 = a kapu nem blokkol, 1 = ALLJ MEG.
 """
 import datetime
+import json
 import os
 import re
 import subprocess
 import sys
+import zipfile
 
 
 def git(repo, *args):
@@ -65,6 +67,136 @@ def _commits_since(repo, iso):
     if r.returncode != 0:
         return None
     return len([l for l in r.stdout.splitlines() if l.strip()])
+
+
+# hu: REPO-BUILD-STATE GATE. A JokerQ.Android build a `scripts/generate-repo-build-state.sh`-vel
+#     egy `assets/repo-build-state.json`-t eget a csomagba (commit 0795cfb) -- harom kulccsal
+#     (jokerq/quantumae/qcassamhmi), mindegyikben `hash` (rovid HEAD, 12 jegy) + `dirty`. Ez zarja
+#     a "ket ismert lyuk" kozul a masodikat: a piszkos fan forditott, majd stash-elt csomag mar
+#     `dirty=true`-val erkezik, mert a JELZO a BUILD PILLANATABAN beegeto dik.
+#     A kapu-oldal a MOSTANI allapottal veti ossze -- es FAIL-CLOSED: ha a state nincs a
+#     csomagban, vagy nem olvashato, az ALLJ MEG, nem "nincs mit ellenorizni".
+def _apk_extract_repo_build_state(apk_path):
+    """hu: assets/repo-build-state.json kiolvasasa a csomagbol. None, ha nincs / nem olvashato."""
+    try:
+        with zipfile.ZipFile(apk_path, 'r') as z:
+            for name in z.namelist():
+                # hu: az AndroidAsset Link Windows-style `Assets\repo-build-state.json` -- a ZIP-ben
+                #     a kettospont-biztos path-join utan hol `assets/`, hol `Assets\` formaban el.
+                if name.replace('\\', '/').lower() == 'assets/repo-build-state.json':
+                    with z.open(name) as f:
+                        try:
+                            return json.load(f)
+                        except (ValueError, UnicodeDecodeError):
+                            return None
+    except (OSError, zipfile.BadZipFile):
+        return None
+    return None
+
+
+# hu: A REPO MAPPANEVE -- a JokerQ konvencio szerint. A lower() NEM jo: a `QCassa.MHMI` -> `qcassa.mhmi`,
+#     de a state kulcsa `qcassamhmi` (pontos, ahogy a 0795cfb commit generalja).
+REPO_TO_STATE_KEY = {
+    "JokerQ": "jokerq",
+    "QuantumAE": "quantumae",
+    "QCassa.MHMI": "qcassamhmi",
+}
+
+
+def _compare_repo_build_state(say, repos, state):
+    """hu: a state JSON-t a repok MOSTANI HEAD/dirty allapotaaval hasonlitja. True, ha baj van."""
+    bad = False
+
+    # hu: az APK-ban levo kulcsok kozul azokat, amelyekhez van repo a `--repo`-ban, KELL ellenorizni.
+    #     A state-beli kulcs + a hozza tartozo repo-kulcs PARJAT a `REPO_TO_STATE_KEY` mapping adja.
+    handled_keys = set()
+    for r in repos:
+        repo_name = os.path.basename(os.path.normpath(r))
+        key = REPO_TO_STATE_KEY.get(repo_name)
+        if not key:
+            say("  REPO-STATE: KIHAGYVA -- a(z) '%s' repo-hoz nincs ismert state-kulcs (a JokerQ "
+                % repo_name)
+            say("      konvencio szerint JokerQ/QuantumAE/QCassa.MHMI az egyetlen, amit a build eget).")
+            say("      Ha ez a kapu NEM talal egy allitast, az NEM 'mehet' -- csak a kartyan kivul.")
+            # hu: NEM allitunk be `bad`-et: ha egy masik projekt (VHR, Feny) hasznalja a kaput, es a
+#     repo-jai nem JokerQ konvenciosak, ez a sor termeszetesen megjelenik, es a fo szekcio
+#     (versionCode + ket ismert lyuk) attol meg rendesen mukodik. Csak akkor jelezzuk, ha a
+#     JokerQ konvencio egyik eleme SEM jelenik meg a `--repo`-k kozott (handled_keys check).
+            continue
+        handled_keys.add(key)
+        if key not in state:
+            say("  REPO-STATE: NEM MERHETo -- a(z) '%s' kulcs hianyzik az APK state-jetbol (%s)."
+                % (key, repo_name))
+            say("      A build-oldal HAROM kulcsot eget be (jokerq/quantumae/qcassamhmi); ha valamelyik")
+            say("      hianyzik, a generator elakadt volna. Fail-closed.")
+            bad = True
+            continue
+
+        # hu: A MOSTANI allapot -- a repo PILLANATNYI HEAD-je + dirty jelzoje.
+        cur_hash = git(r, "rev-parse", "--short=12", "HEAD").stdout.strip() or None
+        dirty_out = git(r, "status", "--porcelain").stdout.strip()
+        cur_dirty = "true" if dirty_out else "false"
+
+        want = state[key] if isinstance(state[key], dict) else {}
+        want_hash = want.get("hash")
+        want_dirty = want.get("dirty")
+
+        if not cur_hash:
+            say("  REPO-STATE: NEM MERHETo -- %s: a HEAD nem olvashato." % repo_name)
+            bad = True
+            continue
+
+        if not want_hash or not isinstance(want_hash, str):
+            say("  REPO-STATE: NEM MERHETo -- %s: az APK state-je ERVENYTELEN `hash` mezot tartalmaz: %r"
+                % (repo_name, want_hash))
+            bad = True
+            continue
+        if want_dirty not in ("true", "false"):
+            say("  REPO-STATE: NEM MERHETo -- %s: az APK state-je ERVENYTELEN `dirty` mezot tartalmaz: %r"
+                % (repo_name, want_dirty))
+            bad = True
+            continue
+
+        # hu: A ket kulonbozo elteres: a hash elcsuszasa egy COMMITOT jelent a fuggoseg-repo-ban a
+        #     build ota; a dirty elcsuszasa egy STASH-ELT PISZKOT. Mindketto ugyanazt az allapotot
+        #     irja le -- az APK NEM abbol a fan-allapotbol keszult, amit MOST latunk.
+        if cur_hash != want_hash:
+            say("  REPO-STATE: ELTERES -- %s (%s): a(z) '%s' repo HEAD-je ELTER az APK-ban egetettol."
+                % (key, repo_name, repo_name))
+            say("      MOSTANI HEAD:        %s" % cur_hash)
+            say("      APK-ba egetett hash: %s" % want_hash)
+            say("      A fuggoseg-repo a build ota elore lepett -- a csomag elavult, NEM szabad telepiteni.")
+            bad = True
+        elif cur_dirty != want_dirty:
+            say("  REPO-STATE: ELTERES -- %s (%s): a(z) '%s' repo piszkos-allapota ELTER."
+                % (key, repo_name, repo_name))
+            say("      MOSTANI allapot:      dirty=%s" % cur_dirty)
+            say("      APK-ba egetett allapot: dirty=%s" % want_dirty)
+            if cur_dirty == "true":
+                say("      MOST piszkos a fa, de az APK allitasa szerint tiszta -- a build egy")
+                say("      korabbi allapotbol keszult, vagy egy uj, PISZKOS fan forditott csomag beepult.")
+            else:
+                say("      MOST tiszta a fa, de az APK allitasa szerint piszkos -- a build egy PISZKOS")
+                say("      fan keszult, majd a piszokot eltakaritottak (stash / rm / git checkout).")
+            say("      A fa UTOLAGOS allapota NEM bizonyitek: a piszkos allapot a BUILD pillanataban")
+            say("      egetodott be, es onnan NEM tunik el.")
+            bad = True
+        else:
+            say("  REPO-STATE: OK -- %s (%s): HEAD=%s, dirty=%s, megegyezik a MOSTANI allapottal."
+                % (key, repo_name, cur_hash, cur_dirty))
+
+    # hu: A STATE-BEN LEVO, DE NEM KEZELT KULCSOK. Ha a build beegetett egy kulcsot, amit a kapu NEM
+    #     tud ellenorizni (nincs hozza `--repo`), az is FAIL-CLOSED: a state nem teljes.
+    extra = sorted(set(state.keys()) - handled_keys) if isinstance(state, dict) else []
+    if extra:
+        say("  REPO-STATE: FIGYELEM -- az APK state-je a kovetkezo KEZETLEN kulcsokat tartalmazza:")
+        for k in extra:
+            say("      - %s (nincs hozza `--repo` a kapu hivasban)" % k)
+        say("      A build-oldal harom kulcsot eget be (jokerq/quantumae/qcassamhmi); ha itt tobbet")
+        say("      latsz, a generator NEM a kartyan leirt formatumot koveti. Fail-closed.")
+        bad = True
+
+    return bad
 
 
 def main(argv):
@@ -305,6 +437,39 @@ def main(argv):
             say("           build-szam valtozatlan. A build-szam a COMMIT-FOLYAMAT mellékterméke, nem a")
             say("           tartalom fuggvenye -- commitolni lehet ugy is, hogy nem mozdul.")
             say("       Mindketto akkor szunik meg, ha a build a MERT REPOK HEAD-jeit beegeti a csomagba.")
+            say("")
+
+            # hu: REPO-STATE KAPU -- a JokerQ.Android build (commit 0795cfb) egy
+            #     `assets/repo-build-state.json`-t eget a csomagba: harom kulccsal (jokerq/quantumae/
+            #     qcassamhmi), mindegyikben `hash` (rovid HEAD, 12 jegy) + `dirty`. Ha a kapu ezt
+            #     nem talalja, az NEM "nincs mit nezni" -- az egy GENERALASI HIBA: a telepites NEM
+            #     indulhat, mert a build-oldali meres hianyzik a csomagbol.
+            #
+            # hu: A SZUKITES FONTOS -- ez a kapu csak JokerQ/QuantumAE/QCassa.MHMI kozul VALAMELYIK
+            #     repo eseten aktiv. Ha egyik sem szerepel a `--repo`-k kozott (VHR, Feny, vagy egy
+            #     teljesen mas projekt), a REPO-STATE szekcio informativan kimarad, es a fo
+            #     szekcio (versionCode + ket ismert lyuk) attol meg rendesen mukodik. Igy a
+            #     meglevo `device-registry.sh` hivasok VISSZAFEL KOMPATIBILISEK maradnak.
+            has_jokerq_convention = any(
+                os.path.basename(os.path.normpath(r)) in REPO_TO_STATE_KEY
+                for r in repos
+            )
+            state_in_apk = _apk_extract_repo_build_state(apk_path)
+            if state_in_apk is None:
+                if has_jokerq_convention:
+                    say("  REPO-STATE: NEM MERHETo -- az APK-bol nem olvashato ki az assets/repo-build-state.json.")
+                    say("      A 0795cfb commit ota a JokerQ.Android build EZT a fajlt egeti a csomagba.")
+                    say("      Ha hianyzik, a generator elakadt, VAGY a build egy kapu nelkuli regebbi verzio.")
+                    say("      Fail-closed: a telepites NEM indulhat, mert a build-oldali meres hianyzik.")
+                    bad = True
+                # else: nincs JokerQ konvencios repo -- a kapu nem relevans, INFO sem kell.
+            else:
+                if has_jokerq_convention:
+                    if _compare_repo_build_state(say, repos, state_in_apk):
+                        bad = True
+                else:
+                    say("  REPO-STATE: KIHAGYVA -- van state.json az APK-ban, de egyik `--repo` sem "
+                        "JokerQ/QuantumAE/QCassa.MHMI. A kapu csak erre a harom konvenciora epul.")
 
     elif has_repo:
         say("  APK: NEM MERVE -- `--apk <ut>` nelkul a kapu a FAT meri, nem a telepitendo CSOMAGOT.")
