@@ -862,9 +862,16 @@ export function resolveProviderEnv(
   }
   if (isMinimax) {
     const key = secretLookup('MINIMAX_API_KEY') ?? ''
+    // MiniMax's own /anthropic compat layer misreports a 200K context window in
+    // its model metadata instead of M3's real 1M (MiniMax-AI/MiniMax-M2.7#46,
+    // confirmed live 2026-08-19: two independently running fleet agents on
+    // minimax-m3 converged on a measured ~200-203k ceiling). Claude Code trusts
+    // that metadata and auto-compacts at ~167k as a result. This env var is the
+    // vendor-documented workaround -- it tells the CLI the real number instead
+    // of the compat layer's wrong one.
     return {
       provider: 'minimax',
-      exportsStr: `export ANTHROPIC_AUTH_TOKEN="${key}" && export ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN="${key}" && export ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && export CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 && `,
     }
   }
   if (isOpenRouter) {
