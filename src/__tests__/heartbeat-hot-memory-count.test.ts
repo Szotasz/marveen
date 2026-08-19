@@ -72,7 +72,15 @@ describe('wiring contract: the number flows endpoint -> agent, never agent -> qu
     const end = KANBAN.indexOf('return true', start)
     expect(end).toBeGreaterThan(start)
     const handler = KANBAN.slice(start, end)
-    expect(handler).toMatch(/new_hot_memories_1h:\s*countNewHotMemories\(MAIN_AGENT_ID\)/)
+    // HBKANBANDRIFT819 moved the response shape into the pure builder; the
+    // protected property is unchanged: the hot count is computed with the
+    // MAIN agent's id and flows into the served response.
+    expect(handler).toMatch(/buildHeartbeatSummaryResponse\([\s\S]*countNewHotMemories\(MAIN_AGENT_ID\)/)
+    // And the builder puts it under counts (the copy-surface the scaffold names).
+    const bStart = KANBAN.indexOf('export function buildHeartbeatSummaryResponse')
+    expect(bStart).toBeGreaterThanOrEqual(0)
+    const builder = KANBAN.slice(bStart, KANBAN.indexOf('\n}', bStart))
+    expect(builder).toMatch(/new_hot_memories_1h:\s*newHotMemories1h/)
   })
 
   it('the scaffold tells the agent to COPY the field and forbids running a query for it', () => {

@@ -13,6 +13,7 @@ import {
   revertIdeaFromKanban,
   getHeartbeatKanbanSummary,
   countNewHotMemories,
+  countPlannedKanbanCards,
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
@@ -117,6 +118,58 @@ function fireKanbanDispatch(id: string, actor?: string | null): void {
   }
 }
 
+// HBKANBANDRIFT819: the heartbeat-summary payload, shaped so that TRUNCATED
+// reads still carry the truth. Pure and exported so tests can pin all three
+// properties without HTTP:
+//   1. `counts` is the FIRST key -- JSON.stringify preserves insertion order,
+//      so a reader that loses the tail loses list items, never the numbers;
+//   2. every title is truncated server-side (board titles here run to 15KB);
+//   3. the waiting LIST is capped to the most recently-updated few, while
+//      counts.waiting always carries the FULL total -- the list names items,
+//      the numbers only ever come from counts.
+export const HEARTBEAT_SUMMARY_TITLE_MAX = 160
+export const HEARTBEAT_SUMMARY_WAITING_CAP = 8
+
+type HeartbeatSummaryCard = {
+  id: string; title: string; status: string; priority: string;
+  assignee?: string | null; updated_at?: number | null;
+}
+
+export function buildHeartbeatSummaryResponse(
+  summary: { urgent: HeartbeatSummaryCard[]; in_progress: HeartbeatSummaryCard[]; waiting: HeartbeatSummaryCard[] },
+  newHotMemories1h: number,
+  plannedCount: number,
+) {
+  const trunc = (t: string) =>
+    t.length > HEARTBEAT_SUMMARY_TITLE_MAX ? t.slice(0, HEARTBEAT_SUMMARY_TITLE_MAX) + '…' : t
+  const slim = (c: HeartbeatSummaryCard) => ({
+    id: c.id, title: trunc(c.title), status: c.status, priority: c.priority, assignee: c.assignee ?? null,
+  })
+  const waitingRecent = [...summary.waiting]
+    .sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0))
+    .slice(0, HEARTBEAT_SUMMARY_WAITING_CAP)
+  return {
+    counts: {
+      urgent: summary.urgent.length,
+      in_progress: summary.in_progress.length,
+      // The FULL total, never the capped list length -- the 2026-08-04 lesson
+      // (waiting: 10 reported against 130 real) in endpoint form.
+      waiting: summary.waiting.length,
+      // The report format asks for a planned line; without a sanctioned
+      // source here the agent manufactured the value (planned: 0 against a
+      // real 305, measured 2026-08-19 17:00). Count only, no list.
+      planned: plannedCount,
+      // HBMEMBLIND819: computed server-side with the MAIN agent's id so the
+      // heartbeat agent copies a number instead of running (and rewriting)
+      // a query -- see HEARTBEAT_NEW_HOT_MEMORIES_SQL in db.ts.
+      new_hot_memories_1h: newHotMemories1h,
+    },
+    urgent: summary.urgent.map(slim),
+    waiting: waitingRecent.map(slim),
+    waiting_shown: Math.min(summary.waiting.length, HEARTBEAT_SUMMARY_WAITING_CAP),
+  }
+}
+
 export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -137,24 +190,18 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   // not a mechanism; an endpoint that cannot return a closed card is. It also
   // removes the sqlite3 CLI from that path, which does not exist on a stock
   // Linux install (#870).
+  //
+  // HBKANBANDRIFT819 (2026-08-19): the 16:42 heartbeat reported waiting:12
+  // against a real 280 -- the endpoint's counts were CORRECT, but the payload
+  // was ~31KB (card titles on this board run to 15KB EACH) and `counts` was
+  // serialized LAST, after the huge arrays. An agent reading truncated output
+  // lost exactly the numbers and counted the visible list instead. Fixes here:
+  // counts serialize FIRST (truncation-resilient ordering), titles are
+  // truncated server-side, and the waiting list is capped to the most recent
+  // few -- while counts.* always carries the FULL totals. The list is for
+  // naming items; the numbers ONLY ever come from counts.
   if (path === '/api/kanban/heartbeat-summary' && method === 'GET') {
-    const summary = getHeartbeatKanbanSummary()
-    const slim = (c: { id: string; title: string; status: string; priority: string; assignee?: string | null }) => ({
-      id: c.id, title: c.title, status: c.status, priority: c.priority, assignee: c.assignee ?? null,
-    })
-    json(res, {
-      urgent: summary.urgent.map(slim),
-      waiting: summary.waiting.map(slim),
-      counts: {
-        urgent: summary.urgent.length,
-        in_progress: summary.in_progress.length,
-        waiting: summary.waiting.length,
-        // HBMEMBLIND819: computed server-side with the MAIN agent's id so the
-        // heartbeat agent copies a number instead of running (and rewriting)
-        // a query -- see HEARTBEAT_NEW_HOT_MEMORIES_SQL in db.ts.
-        new_hot_memories_1h: countNewHotMemories(MAIN_AGENT_ID),
-      },
-    })
+    json(res, buildHeartbeatSummaryResponse(getHeartbeatKanbanSummary(), countNewHotMemories(MAIN_AGENT_ID), countPlannedKanbanCards()))
     return true
   }
 

@@ -1608,6 +1608,48 @@ export interface HeartbeatKanbanSummary {
   waiting: KanbanCard[]
 }
 
+/**
+ * The ONE definition of "what the heartbeat lists". Both consumers read it from
+ * here: the built-in heartbeat prompt (heartbeat.ts) and the heartbeat AGENT,
+ * which gets it over /api/kanban/heartbeat-summary instead of composing its own
+ * query. Two hand-written copies of the same filter is how they drift apart.
+ *
+ * `urgent` means urgent and NOT FINISHED: priority='urgent', not archived, not
+ * `done`. `planned` stays IN on purpose -- "urgent and nobody has touched it" is
+ * one of the states most worth seeing, and a list that hides it would be quiet
+ * for the wrong reason. (A first draft of this change narrowed it to
+ * waiting/in_progress; that was withdrawn precisely because it would have hidden
+ * untouched urgent work.)
+ *
+ * What DID have to go is closed work: on 2026-08-04 the 09:00 report listed five
+ * items of which three were already `done`, and the 08-03 count was 22 done
+ * against 2 waiting -- the most prominent line of an hourly report was mostly
+ * finished cards, so it stopped being read. Those 22 were only reachable through
+ * a hand-written query; this statement never returned them, which is why the real
+ * fix is that the heartbeat agent no longer writes its own query.
+ */
+/** Exported so a test can execute the SHIPPED statement against a fixture DB
+ *  instead of re-typing an equivalent one and proving nothing. */
+export const HEARTBEAT_URGENT_SQL =
+  "SELECT * FROM kanban_cards WHERE archived_at IS NULL AND priority = 'urgent' AND status != 'done'"
+export const HEARTBEAT_IN_PROGRESS_SQL =
+  "SELECT * FROM kanban_cards WHERE archived_at IS NULL AND status = 'in_progress'"
+export const HEARTBEAT_WAITING_SQL =
+  "SELECT * FROM kanban_cards WHERE archived_at IS NULL AND status = 'waiting'"
+
+// HBKANBANDRIFT819 follow-up: the heartbeat report format asks for a planned
+// line, so the number needs a sanctioned server-side source like every other
+// count -- without it the agent manufactures the value (measured: planned: 0
+// reported against a real 305). COUNT only: no card list is served for
+// planned, the line is a bare number.
+export const HEARTBEAT_PLANNED_COUNT_SQL =
+  "SELECT COUNT(*) AS n FROM kanban_cards WHERE archived_at IS NULL AND status = 'planned'"
+
+export function countPlannedKanbanCards(): number {
+  const row = db.prepare(HEARTBEAT_PLANNED_COUNT_SQL).get() as { n: number } | undefined
+  return row?.n ?? 0
+}
+
 export function getHeartbeatKanbanSummary(): HeartbeatKanbanSummary {
   const urgent = db
     .prepare("SELECT * FROM kanban_cards WHERE archived_at IS NULL AND priority = 'urgent' AND status != 'done'")
