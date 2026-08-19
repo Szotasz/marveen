@@ -312,10 +312,12 @@ describe('kanban extraction is a shipped one-liner, never an improvised pipe+her
     // recognise it), and NOTHING else in the prompt may contain one -- a
     // runnable heredoc anywhere would be exactly the copy-surface that broke
     // the 18:00 round. Window: the ban paragraph's own bounds.
-    // Flag-tolerant: `python3 -u <<` (or any switch) is the same footgun as
-    // the bare form -- Marveen's mutation 2 on the first version slipped
-    // through exactly there.
-    const matches = [...out.matchAll(/python3(\s+-\w+)*\s*<</g)]
+    // Class-level, not variant-enumerated: two review rounds each found a
+    // form the previous narrow regex missed (bare, then -u, then `python3 -`
+    // dash-stdin -- the commonest shape here). The pinned property is that on
+    // one line, `python3` is never followed by `<<` at all; enumerating
+    // switches guarantees a fourth variant.
+    const matches = [...out.matchAll(/python3[^\n]*<</g)]
     expect(matches.length).toBe(1)
     const banStart = out.indexOf('FORBIDDEN SHAPE (HBHEREDOC819)')
     expect(banStart).toBeGreaterThanOrEqual(0)
