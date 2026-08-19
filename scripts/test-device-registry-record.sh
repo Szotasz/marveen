@@ -181,6 +181,48 @@ run_case "tobbsoros dumpsys-szeru kimenet -> ROGZIT (pozitiv kontroll)" \
 run_case "injektalt proba -> a bejegyzes NEM allit keszulek-merest" \
          injektalt-nyom "echo versionCode=774" 774
 
+# hu: 7. EGYIDEJUSEG: N parhuzamos, EGYENKENT ERVENYES hivas UGYANARRA az eszkozre. A `record`
+#     zarolas nelkuli olvas-modosit-ir ciklusa last-write-wins bejegyzes-vesztest okoz -- a JSON
+#     epen marad, tehat a hiba NEM latszik, csak a bejegyzesek szama kevesebb a varhatonal.
+#     (kartya #830, ordog bukas-eloallitasa: 20 parhuzamos hivasbol csak 10 bejegyzes maradt)
+# en: 7. CONCURRENCY: N parallel, INDIVIDUALLY VALID calls on the SAME device. The `record`
+#     read-modify-write cycle causes silent last-write-wins entry loss without a lock -- the JSON
+#     stays valid, only the entry count falls short.
+run_concurrent_case() {
+  local name="$1" n="$2"
+  local reg="$WORK/devices-concurrent-$RANDOM.json"
+  cp "$SOURCE_REG" "$reg"
+  local before after
+  before="$(installs_count "$reg")"
+
+  local pids=() i
+  for i in $(seq 1 "$n"); do
+    (
+      build=$((9000 + i))
+      DEVICE_REGISTRY="$reg" DEVICE_VERSION_PROBE="echo versionCode=$build" \
+        bash "$SCRIPT" record "$DEVICE_ID" avalonia "$PACKAGE" "$build" >/dev/null 2>&1
+    ) &
+    pids+=("$!")
+  done
+  local pid
+  for pid in "${pids[@]}"; do wait "$pid"; done
+
+  after="$(installs_count "$reg")"
+
+  if [ "$after" -eq "$((before + n))" ]; then
+    PASS=$((PASS + 1))
+    printf '  [OK]   %s (bejegyzesek: %s -> %s)\n' "$name" "$before" "$after"
+  else
+    FAIL=$((FAIL + 1))
+    FAILED_NAMES+=("$name")
+    printf '  [BUKO] %s\n' "$name"
+    printf '         elvart bejegyzes-szam=%s  kapott=%s  (before=%s, n=%s)\n' \
+           "$((before + n))" "$after" "$before" "$n"
+  fi
+}
+
+run_concurrent_case "20 parhuzamos, egyenkent ervenyes record -> mind a 20 bejegyzes megmarad" 20
+
 echo
 echo "Osszegzes: $PASS atment, $FAIL bukott"
 

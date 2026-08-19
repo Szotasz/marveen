@@ -352,6 +352,29 @@ PY
       exit 1
     fi
 
+    # hu: 🛑 ZAROLAS -- az utana kovetkezo olvas-modosit-ir ciklus (json.load -> append ->
+    #     json.dump) ZAROLAS NELKUL last-write-wins bejegyzes-vesztest okoz egyideju hivasnal
+    #     (kartya #830, ordog bukas-eloallitasa: 20 egyideju, egyenkent ervenyes hivasbol csak
+    #     10 bejegyzes maradt -- a JSON epen marad, a hiba NEM latszik). Ugyanaz a minta, mint a
+    #     `tg-seq.sh`-ban: mkdir POSIX-on ATOMI, ezert zarnak jo -- ezen a gepen (macOS) NINCS
+    #     flock. Fail-closed: ha a zar nem szerezheto meg, INKABB NE IRJON.
+    # en: LOCKING -- the following read-modify-write cycle (json.load -> append -> json.dump)
+    #     causes silent last-write-wins entry loss under concurrent calls without a lock. Same
+    #     pattern as `tg-seq.sh`: mkdir is POSIX-atomic; this machine (macOS) has no flock.
+    #     Fail-closed: if the lock can't be acquired, refuse to write.
+    LOCKDIR="${REG}.lockdir"
+    TURELEM_MP=10
+    __lock_start=$(date +%s)
+    until mkdir "$LOCKDIR" 2>/dev/null; do
+      if [ $(( $(date +%s) - __lock_start )) -ge "$TURELEM_MP" ]; then
+        echo "*** NEM ROGZITVE *** a zarat ${TURELEM_MP} mp alatt nem sikerult megszerezni." >&2
+        echo "  ha a zar beragadt, oldd fel KEZZEL:  rmdir '$LOCKDIR'" >&2
+        exit 2
+      fi
+      sleep 0.05
+    done
+    trap '__rc=$?; rmdir "$LOCKDIR" 2>/dev/null || true; exit $__rc' EXIT
+
     python3 - "$REG" "$id" "$agent" "$pkg" "$build" "$(date '+%Y-%m-%d %H:%M:%S')" "$measured" "$probe_kind" <<'PY'
 import json,sys
 reg,id_,agent,pkg,build,now,measured,kind=sys.argv[1:9]
