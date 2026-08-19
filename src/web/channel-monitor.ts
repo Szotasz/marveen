@@ -50,7 +50,7 @@ import { readLastIngestionTimestamp, TRANSCRIPT_DIR } from './inbound-probe.js'
 import { decideDownAgentAction, AGENT_MAX_RESTART_ATTEMPTS, parseEtimeToSeconds } from './agent-restart-policy.js'
 // getClaudePidForSession + hasChannelPluginAlive live in the shared liveness
 // module so the standalone channel-coordinator reuses the exact same probe.
-import { getClaudePidForSession, hasChannelPluginAlive, probeChannelPluginLiveness } from '../channel-coordinator/liveness.js'
+import { getClaudePidForSession, hasChannelPluginAlive, probeChannelPluginLiveness, classifyRespawnStampAdvance } from '../channel-coordinator/liveness.js'
 import { getDesiredAgents } from './agent-desired-state.js'
 
 const TMUX = resolveFromPath('tmux')
@@ -908,7 +908,49 @@ function fileRespawnStampMs(): number {
 function writeRespawnStamp(): void {
   try {
     writeFileSync(RESPAWN_STAMP_FILE, String(Math.floor(Date.now() / 1000)))
+    // Attribution input for the external-respawn detector below: a stamp we
+    // wrote ourselves must never be reported as an external actor.
+    lastSelfStampWriteMs = Date.now()
   } catch { /* best effort */ }
+}
+
+// --- external-respawn detector (SOAKRESPAWN819) ---
+//
+// The stamp is consumed by five watchers purely to SUPPRESS themselves, so a
+// respawn performed by anyone but this process (channels.sh relaunched by the
+// service manager after a watchdog exit, the systemd-timer channel-watchdog,
+// a manual operator launch) leaves no dashboard.log trace at all -- the
+// evidence quiets the watchers instead of surfacing. Measured live
+// (hermes soak box, 2026-08-19): 210 service-manager restarts at a ~40min
+// cadence, zero dashboard.log lines. This detector closes that: every stamp
+// advance not attributable to a dashboard-initiated respawn is logged loudly.
+// WHY the respawn happened lives in store/channels-respawn.log (producer-side
+// mirror written by channels.sh); this line says THAT it happened.
+let lastSelfStampWriteMs = 0
+let lastSeenRespawnStampMs = -1
+function checkExternalMainRespawn(): void {
+  const stampMs = fileRespawnStampMs()
+  if (lastSeenRespawnStampMs < 0) {
+    // Boot baseline: whatever the stamp said before this dashboard started is
+    // history, not this boot's news -- without this, every dashboard restart
+    // after any respawn would fire a spurious external-actor warning.
+    lastSeenRespawnStampMs = stampMs
+    return
+  }
+  const verdict = classifyRespawnStampAdvance({
+    stampMs,
+    lastSeenStampMs: lastSeenRespawnStampMs,
+    lastSelfRespawnMs: Math.max(marveenLastHardRestart, marveenLastKeepaliveRespawn, marveenLastSessionCreate, lastSelfStampWriteMs),
+    graceMs: MARVEEN_POST_RESPAWN_GRACE_MS,
+  })
+  if (verdict === 'none') return
+  lastSeenRespawnStampMs = stampMs
+  if (verdict === 'external') {
+    logger.warn(
+      { stampAt: new Date(stampMs).toISOString() },
+      'Main-session respawn stamp advanced by an EXTERNAL actor (service-manager relaunch of channels.sh, channel-watchdog timer, or manual launch) -- the main session was recreated outside the dashboard; reason breadcrumb: store/channels-respawn.log (SOAKRESPAWN819)'
+    )
+  }
 }
 
 // --- Vanished-session recovery (self-healing main session) ---
@@ -1499,6 +1541,12 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
     // Restore persisted failure counts on first tick so a dashboard restart
     // does not reset the cap and restart agents that have already been given up on.
     ensureAgentRestartFailuresInitialized()
+
+    // Surface main-session respawns performed by anyone but this process
+    // (SOAKRESPAWN819) -- must run every sweep, not only when the plugin
+    // probe reaches the main target, so an external churn is visible even
+    // while the plugin is structurally down.
+    checkExternalMainRespawn()
 
     type Target = { session: string; isMarveen: boolean; agentName?: string; provider: ChannelProviderType }
     const targets: Target[] = [{ session: MAIN_CHANNELS_SESSION, isMarveen: true, provider: mainProvider }]

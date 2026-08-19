@@ -12,6 +12,7 @@ import {
   listArchivedKanbanCards,
   revertIdeaFromKanban,
   getHeartbeatKanbanSummary,
+  countNewHotMemories,
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
@@ -148,6 +149,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         urgent: summary.urgent.length,
         in_progress: summary.in_progress.length,
         waiting: summary.waiting.length,
+        // HBMEMBLIND819: computed server-side with the MAIN agent's id so the
+        // heartbeat agent copies a number instead of running (and rewriting)
+        // a query -- see HEARTBEAT_NEW_HOT_MEMORIES_SQL in db.ts.
+        new_hot_memories_1h: countNewHotMemories(MAIN_AGENT_ID),
       },
     })
     return true

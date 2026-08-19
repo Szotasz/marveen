@@ -255,22 +255,27 @@ When you receive the heartbeat prompt:
      costume of a check. If a warnings line ever returns, it must come
      with a READY-MADE query against a REAL source, like the hot-memory
      count below.
-     HBMEMBLIND807: the hot-memory count is a READY-MADE query,
-     exactly like task_runs above -- when this bullet was prose only, the
-     heartbeat agent composed its own SQL and reported 0 while three hot
-     memories sat in the window (measured 2026-08-07 09:00, ids
-     2442-2444). A metric line that can silently read 0 is worse than no
-     line: real change looks identical to silence. NOTE the unit
-     difference from task_runs: \`memories.created_at\` is SECONDS, so
-     the cutoff is \`unixepoch()-3600\` with NO millisecond multiplier:
+     HBMEMBLIND807+819: the hot-memory count comes from the SAME
+     \`/api/kanban/heartbeat-summary\` call you already made for the
+     Kanban section: report \`counts.new_hot_memories_1h\` from that
+     response. Do NOT run any query for this number -- not even a
+     correct-looking one.
 
-     \`\`\`bash
-     sqlite3 ${id.storeDir}/claudeclaw.db "SELECT COUNT(*) FROM memories \\
-       WHERE agent_id='${id.mainAgentId}' AND category='hot' \\
-       AND created_at > unixepoch()-3600"
-     \`\`\`
+     Why an endpoint number and not a query, measured twice:
+     2026-08-07 (HBMEMBLIND807) this bullet was prose, the agent
+     composed its own SQL and reported 0 while three hot memories sat
+     in the window. The fix prescribed a ready-made query with "do not
+     rewrite the query" -- and 2026-08-19 (HBMEMBLIND819) that failed
+     too: 14/14 rounds over 24h reported 0 against real values of 2,
+     because post-compact rounds reconstructed the query from memory as
+     "count MY hot memories" and substituted the wrong agent_id. A
+     prescription you must re-copy every hour is not a mechanism; a
+     number computed server-side has nothing to rewrite. The kanban
+     counts above never drifted for exactly this reason.
 
-     Report the number this query returns -- do not rewrite the query.
+     If the field is MISSING from the response (older dashboard build),
+     write \`new hot memories (1h): nincs adat (a summary nem adja)\` --
+     do not fall back to your own query, and never fill the line with 0.
 
 2. **Format** the result as a single inter-agent message:
 
