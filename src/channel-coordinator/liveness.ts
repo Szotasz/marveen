@@ -285,3 +285,39 @@ export function probeNativeChannelDown(session: string, provider: ChannelProvide
     msSinceLastRespawn: respawnMs > 0 ? now - respawnMs : null,
   })
 }
+
+// --- external-respawn attribution (SOAKRESPAWN819) ---
+//
+// The respawn stamp is a SUPPRESSION contract: five watchers read it to stay
+// quiet during the post-respawn grace. That contract makes an externally
+// triggered respawn (channels.sh relaunched by the service manager, the
+// systemd-timer channel-watchdog, a manual launch) structurally silent in the
+// dashboard log -- the evidence of the respawn is consumed to suppress, never
+// surfaced. Measured on a live soak box 2026-08-19: 210 service-manager
+// restarts at a ~40min cadence, zero dashboard.log lines.
+//
+// PURE classifier: did the stamp advance, and was the advance ours?
+//   'none'     -- no new stamp value since the last one we processed.
+//   'self'     -- advanced, but within graceMs of a dashboard-initiated
+//                 respawn. channels.sh writes the stamp unconditionally on
+//                 EVERY launch, including launches the dashboard itself
+//                 initiated (hard restart -> service reload -> channels.sh),
+//                 so a second write shortly after our own is part of OUR
+//                 restart, not an external actor.
+//   'external' -- advanced with no dashboard-initiated respawn nearby: some
+//                 other actor recreated the main session. The caller logs
+//                 this loudly; false positives are deliberate signal (a manual
+//                 operator launch IS an external actor worth a log line).
+export type RespawnStampAdvance = 'none' | 'self' | 'external'
+
+export function classifyRespawnStampAdvance(opts: {
+  stampMs: number
+  lastSeenStampMs: number
+  lastSelfRespawnMs: number
+  graceMs: number
+}): RespawnStampAdvance {
+  const { stampMs, lastSeenStampMs, lastSelfRespawnMs, graceMs } = opts
+  if (!(stampMs > 0) || stampMs <= lastSeenStampMs) return 'none'
+  if (lastSelfRespawnMs > 0 && Math.abs(stampMs - lastSelfRespawnMs) <= graceMs) return 'self'
+  return 'external'
+}

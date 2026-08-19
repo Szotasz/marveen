@@ -1000,6 +1000,32 @@ PLUGIN_DEAD_SINCE=0
 # and the unit stayed inactive/dead for the next ten minutes.
 RESTART_REQUESTED=0
 
+# Producer-side respawn breadcrumb (SOAKRESPAWN819). The watchdog WARNs below
+# go to stderr, which under systemd lands ONLY in journald -- invisible to
+# every store/-file reader (dashboard log tails, soak checks, support
+# bundles). Measured on a live soak box 2026-08-19: 210 service restarts at a
+# ~40min cadence with zero trace outside the journal. This mirror gives the
+# store a copy of WHY the process exited; the dashboard's external-respawn
+# detector (channel-monitor.ts) says THAT a respawn happened, this file says
+# WHY. Best-effort by design: a failed write must never break the watchdog.
+CHANNELS_RESPAWN_LOG="$INSTALL_DIR/store/channels-respawn.log"
+respawn_log() {
+  echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$CHANNELS_RESPAWN_LOG" 2>/dev/null || true
+  # Chronic-churn cap (the 40-min cycle writes ~36 lines/day forever): trim to
+  # the newest 500 once past 1000. mv-free rewrite keeps the inode stable for
+  # anything tailing the file.
+  # tr strip is mandatory: BSD wc pads the count with leading spaces, which
+  # the non-numeric guard below would otherwise zero out (trim never firing
+  # on macOS -- caught by the runnable probe in external-respawn-detect).
+  _lines=$(wc -l < "$CHANNELS_RESPAWN_LOG" 2>/dev/null | tr -d '[:space:]')
+  case "$_lines" in (*[!0-9]*|'') _lines=0;; esac
+  if [ "$_lines" -gt 1000 ]; then
+    _trimmed=$(tail -n 500 "$CHANNELS_RESPAWN_LOG" 2>/dev/null)
+    [ -n "$_trimmed" ] && printf '%s\n' "$_trimmed" > "$CHANNELS_RESPAWN_LOG" 2>/dev/null || true
+  fi
+  unset _lines _trimmed
+}
+
 # Várakozás amíg a session él
 while $TMUX has-session -t "$SESSION" 2>/dev/null; do
   sleep 5
@@ -1043,6 +1069,7 @@ while $TMUX has-session -t "$SESSION" 2>/dev/null; do
       echo "WARN: $CHANNEL_PROVIDER plugin (bot.pid) disappeared -- ${PLUGIN_DEAD_GRACE}s grace before restart" >&2
     elif [ "$((NOW - PLUGIN_DEAD_SINCE))" -ge "$PLUGIN_DEAD_GRACE" ]; then
       echo "WARN: $CHANNEL_PROVIDER plugin dead for $((NOW - PLUGIN_DEAD_SINCE))s -- exiting for service-manager restart" >&2
+      respawn_log "died-after-up: $CHANNEL_PROVIDER plugin dead for $((NOW - PLUGIN_DEAD_SINCE))s -- exiting for service-manager restart"
       RESTART_REQUESTED=1
       break
     fi
@@ -1056,6 +1083,7 @@ while $TMUX has-session -t "$SESSION" 2>/dev/null; do
       _next_streak=$((NEVER_STARTED_STREAK + 1))
       echo "$_next_streak" > "$NEVER_STARTED_STREAK_FILE" 2>/dev/null || true
       echo "WARN: $CHANNEL_PROVIDER plugin never started within ${PLUGIN_NEVER_STARTED_BUDGET}s -- exiting for service-manager restart (consecutive: $_next_streak, next budget: $(never_started_budget "$_next_streak")s)" >&2
+      respawn_log "never-started: $CHANNEL_PROVIDER plugin never started within ${PLUGIN_NEVER_STARTED_BUDGET}s (consecutive: $_next_streak, next budget: $(never_started_budget "$_next_streak")s)"
       RESTART_REQUESTED=1
       break
     fi
