@@ -308,6 +308,17 @@ export function probeNativeChannelDown(session: string, provider: ChannelProvide
 //                 other actor recreated the main session. The caller logs
 //                 this loudly; false positives are deliberate signal (a manual
 //                 operator launch IS an external actor worth a log line).
+//
+// KNOWN SHADOW (do not read the absence of a warning as absence of external
+// respawns): the abs() window means a REAL external respawn landing within
+// graceMs (6 min) of a dashboard-initiated one classifies 'self' and is lost.
+// On the measured 40-min churn that is a ~15% blind window per cycle, wider
+// during an active recovery cascade (several self respawns back to back).
+// Deliberate trade-off: shrinking the window would misreport channels.sh's
+// own delayed stamp write on OUR launches as external -- a false alarm on
+// every dashboard restart is worse than a shadowed edge case. The producer
+// mirror (store/channels-respawn.log) still records WHY lines for shadowed
+// respawns, so the evidence survives even when this classifier stays quiet.
 export type RespawnStampAdvance = 'none' | 'self' | 'external'
 
 export function classifyRespawnStampAdvance(opts: {

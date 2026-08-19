@@ -71,7 +71,14 @@ describe('external-respawn wiring contract', () => {
     expect(MONITOR).toMatch(/checkExternalMainRespawn\(\)/)
     // The self-write MUST be recorded inside writeRespawnStamp, or every
     // dashboard-initiated respawn would be misreported as external.
-    const writeFn = MONITOR.slice(MONITOR.indexOf('function writeRespawnStamp'), MONITOR.indexOf('}', MONITOR.indexOf('lastSelfStampWriteMs = Date.now()')))
+    // Slice to the FUNCTION's own closing brace (same idiom as sliceShellFn
+    // below) -- an earlier version sliced to the first brace AFTER the sought
+    // string, an ever-growing window that could not fail (Marveen's mutation
+    // probe on 331b7d2d: assignment moved out of the function, test stayed
+    // green). Verified red against that same mutation after this fix.
+    const start = MONITOR.indexOf('function writeRespawnStamp')
+    expect(start).toBeGreaterThanOrEqual(0)
+    const writeFn = MONITOR.slice(start, MONITOR.indexOf('\n}', start))
     expect(writeFn).toMatch(/lastSelfStampWriteMs = Date\.now\(\)/)
   })
 
