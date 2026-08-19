@@ -212,11 +212,21 @@ When you receive the heartbeat prompt:
      \`\`\`
 
      It returns exactly what this section may report:
-     \`{"urgent":[...], "waiting":[...], "counts":{...}}\`, where the
+     \`{"counts":{...}, "urgent":[...], "waiting":[...]}\`, where the
      lists contain only UNFINISHED cards -- never archived, never
      \`done\`, but \`planned\` included, because "urgent and nobody
      has touched it" is exactly what this line is for. Report the ids
      and titles it gives you and nothing else.
+
+     EVERY NUMBER COMES FROM \`counts.*\` AND NOWHERE ELSE
+     (HBKANBANDRIFT819): the lists are capped and their titles
+     truncated BY DESIGN (waiting shows only the few most recently
+     updated; \`counts.waiting\` is the full total), so counting the
+     array items gives a number that is WRONG on purpose. Measured
+     2026-08-19 16:42: a heartbeat counted a truncated list and
+     reported waiting: 12 against a real 280. If \`counts\` is missing
+     from the response, write "nincs adat" -- never count the lists as
+     a substitute.
 
      Two things this replaces, both measured: the old instruction told
      you to write the filter yourself, and on 2026-08-04 the 09:00
