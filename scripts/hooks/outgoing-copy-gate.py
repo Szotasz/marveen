@@ -217,8 +217,60 @@ def _name_correction() -> str:
 
 BAD_NAME = load_bad_name()
 ACCENTED = set("áéíóöőúüűÁÉÍÓÖŐÚÜŰ")
-WORD = re.compile(r"[a-záéíóöőúüűA-ZÁÉÍÓÖŐÚÜŰ]+")
 TAG = re.compile(r"<[^>]+>")
+
+# GATEKOTOJEL817 + GATEHYPH816 (2026-08-19 este, ket hamis pozitiv elo
+# gazda-beszelgetesben, ot perc alatt): a kapu nem tett kulonbseget PROZA es
+# AZONOSITO kozott. (1) `Drive-ot` -- az idegen tulajdonnevhez a magyar
+# toldalek kotojellel kapcsolodik (ez a HELYES iras), de a betu-only WORD
+# tokenizalo a kotojelnel vagott, es a maradek `ot` darabot onallo magyar
+# szonak nezte (ot -> öt). (2) `Video atalakitas` -- egy Drive-mappa NEVE a
+# szovegben: mondatkozi nagybetus szo, azonosito, nem proza. A javitas a
+# TOKENIZALAS, nem a szotar (szo-kivetel a valodi hibakat is atengedne):
+#   - kotojeles alaknal a TELJES szoalak vizsgalando (a `drive-ot` egeszkent
+#     nincs a szotarban -> atmegy; az onallo `ot` prozaban tovabbra is bukik);
+#   - a MONDATKOZI nagybetus szo azonosito/tulajdonnev -> kimarad; mondat
+#     elejen (. ! ? : ujsor vagy lista-jel utan) a nagybetu normal proza,
+#     ott tovabbra is vizsgaljuk.
+HYPHEN_WORD = re.compile(r"[a-záéíóöőúüűA-ZÁÉÍÓÖŐÚÜŰ]+(?:-[a-záéíóöőúüűA-ZÁÉÍÓÖŐÚÜŰ]+)*")
+
+
+def _at_sentence_start(text: str, idx: int) -> bool:
+    i = idx - 1
+    while i >= 0 and text[i] in " \t\"'([{":
+        i -= 1
+    if i < 0:
+        return True
+    ch = text[i]
+    if ch in ".!?:\n":
+        return True
+    if ch in "-*•":
+        j = i - 1
+        while j >= 0 and text[j] in " \t":
+            j -= 1
+        return j < 0 or text[j] == "\n"
+    return False
+
+
+def accent_check_tokens(prose: str):
+    """(lowercase alak, kezdo-pozicio) parok az ekezet-vizsgalathoz."""
+    out = []
+    for m in HYPHEN_WORD.finditer(prose):
+        tok = m.group(0)
+        if "-" not in tok and tok[0].isupper() and not _at_sentence_start(prose, m.start()):
+            continue
+        out.append((tok.lower(), m.start()))
+    return out
+
+
+def _hit_context(prose: str, pos: int, length: int) -> str:
+    """A talalat elotti/utani 3-3 szo + karakter-pozicio (GATEHYPH816 (B):
+    elo beszelgetes kozben ne kelljen greppelni, melyik szorol van szo)."""
+    before = prose[:pos].split()[-3:]
+    token = prose[pos:pos + length]
+    after = prose[pos + length:].split()[:3]
+    frag = " ".join(before + [token] + after)
+    return f'"...{frag}..." @{pos}'
 
 
 # Technikai tokenek maszkolasa AZ EKEZET-ELLENORZES ELOTT. Merve 2026-08-13, a
@@ -413,7 +465,8 @@ def audit(text: str):
             f"VEGYES IRASRENDSZERU SZO (homoglifa), {len(mixed)} db: {shown}{more}. "
             "Latin szoba keveredett nem-latin betu: olvasva lathatatlan, de a keresest/grepet neman eltori."
         )
-    words = [w.lower() for w in WORD.findall(prose)]
+    tok_pos = accent_check_tokens(prose)
+    words = [w for w, _ in tok_pos]
     if is_hungarian(plain) or accentless_evidence(words):
         hits = sorted({w for w in words if w in ACCENTLESS})
         # Az aranyot is a prozan merjuk: a technikai tokenekben nincs ekezet, tehat
@@ -422,7 +475,14 @@ def audit(text: str):
         acc = sum(1 for ch in prose if ch in ACCENTED)
         ratio = (acc / letters) if letters else 0.0
         if hits:
-            shown = ", ".join(f"{h} -> {ACCENTLESS[h]}" for h in hits[:12])
+            first_pos = {}
+            for w, p in tok_pos:
+                if w in ACCENTLESS and w not in first_pos:
+                    first_pos[w] = p
+            shown = ", ".join(
+                f"{h} -> {ACCENTLESS[h]} ({_hit_context(prose, first_pos[h], len(h))})"
+                for h in hits[:12]
+            )
             more = f" (+{len(hits) - 12} tovabbi)" if len(hits) > 12 else ""
             problems.append(f"HIANYZO EKEZETEK, {len(hits)} szo: {shown}{more}")
         elif letters > 200 and ratio < 0.01:
