@@ -20,6 +20,15 @@ describe('kanbanMoveInstructions', () => {
     expect(out).not.toContain('húzd "done"-ra')
   })
 
+  // Without an actor the board cannot tell a self-pickup from an assignment, so
+  // every move curl the agent is handed names the agent as the mover -- including
+  // the in_progress self-pickup, which is the one the dispatcher used to echo back.
+  it('names the agent as the actor on every move it is told to make', () => {
+    const out = kanbanMoveInstructions('abc123', 'cody')
+    expect(out).toContain('"status":"done","actor":"cody"')
+    expect(out).toContain('"status":"in_progress","actor":"cody"')
+  })
+
   it('keeps the bearer token out of the message (reads it at run time)', () => {
     const out = kanbanMoveInstructions('abc123', 'cody')
     expect(out).toContain('$(cat ')

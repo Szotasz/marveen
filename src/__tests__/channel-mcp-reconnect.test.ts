@@ -57,6 +57,7 @@ import {
   resolveAgentProviderType,
   selectedSubmenuLine,
   chooseSubmenuTarget,
+  paneDiagSignature,
 } from '../web/channel-mcp-reconnect.js'
 
 // Submenu panes Claude Code renders for each plugin state. The `❯` marks the
@@ -82,6 +83,53 @@ const SUBMENU_DISABLED_TOP = [
   'plugin:telegram:telegram',
   '❯ Enable',
 ].join('\n')
+
+describe('paneDiagSignature', () => {
+  const PLUGIN_RX = /plugin:telegram:telegram/i
+
+  it('null pane -> capture-failed marker only', () => {
+    expect(paneDiagSignature(null, PLUGIN_RX)).toEqual({ paneCaptured: false })
+  })
+
+  it('open /mcp menu with the plugin row -> menu and row both seen', () => {
+    const pane = [
+      'plugin:telegram:telegram',
+      '❯ Reconnect',
+      '  Disable',
+      '',
+      '↑/↓ to navigate · Enter to confirm · Esc to cancel',
+    ].join('\n')
+    const sig = paneDiagSignature(pane, PLUGIN_RX)
+    expect(sig.paneCaptured).toBe(true)
+    expect(sig.inBlockingMenu).toBe(true)
+    expect(sig.sawPluginRow).toBe(true)
+    expect(sig.paneNonEmptyLines).toBe(4)
+  })
+
+  it('plain conversation pane -> no menu, no plugin row, and NO raw text in the signature', () => {
+    const pane = [
+      'Szia, ezt a bizalmas mondatot senki nem lathatja a logban.',
+      '❯ ',
+    ].join('\n')
+    const sig = paneDiagSignature(pane, PLUGIN_RX)
+    expect(sig.inBlockingMenu).toBe(false)
+    expect(sig.sawPluginRow).toBe(false)
+    // The redaction contract: nothing from the pane text may leak through.
+    expect(JSON.stringify(sig)).not.toContain('bizalmas')
+  })
+
+  it('menu open but the plugin row is NOT rendered -> the discriminating case', () => {
+    const pane = [
+      'Manage MCP servers',
+      '❯ some-other-server  connected',
+      '',
+      '↑/↓ to navigate · Enter to confirm · Esc to cancel',
+    ].join('\n')
+    const sig = paneDiagSignature(pane, PLUGIN_RX)
+    expect(sig.inBlockingMenu).toBe(true)
+    expect(sig.sawPluginRow).toBe(false)
+  })
+})
 
 describe('resolveAgentSession', () => {
   it('returns main channels session for main agent', () => {

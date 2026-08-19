@@ -7,7 +7,7 @@ import { agentSessionName, capturePane } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { getProvider, type ChannelProviderType } from '../channel-provider.js'
 import { tryAcquireSessionSendLane } from './session-send-lock.js'
-import { paneLooksIdle, detectPaneState } from '../pane-state.js'
+import { paneLooksIdle, detectPaneState, detectsBlockingMenu } from '../pane-state.js'
 
 const TMUX = resolveFromPath('tmux')
 const MAX_UP_ATTEMPTS = 8
@@ -72,6 +72,29 @@ function getPluginPattern(providerType: ChannelProviderType): RegExp {
   const provider = getProvider(providerType)
   const escaped = provider.pluginPaneId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   return new RegExp(escaped, 'i')
+}
+
+/**
+ * Redacted diagnostic signature of a captured pane for the failure warns.
+ * Booleans/counts ONLY: the pane is the main session's screen and may contain
+ * conversation content, which must never reach the log. The signature answers
+ * the questions the 383c3463 investigation could not (79 submenu-not-found and
+ * 68 cursor-placement failures in the retained prod log window, none with any
+ * record of what the TUI showed): was a blocking menu open at all, was the
+ * plugin row rendered, and what state the pane was in.
+ */
+export function paneDiagSignature(
+  pane: string | null,
+  pluginPattern: RegExp,
+): Record<string, unknown> {
+  if (pane == null) return { paneCaptured: false }
+  return {
+    paneCaptured: true,
+    paneNonEmptyLines: pane.split('\n').filter((l) => l.trim().length > 0).length,
+    inBlockingMenu: detectsBlockingMenu(pane),
+    sawPluginRow: pluginPattern.test(pane),
+    paneState: detectPaneState(pane),
+  }
 }
 
 // Max Down presses we'll spend trying to land the cursor on the target
@@ -204,6 +227,8 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
     }
 
     let matchedAt = -1
+    // Kept for the failure diagnostics below: the last thing the TUI showed.
+    let lastPane: string | null = pane1
     for (let upCount = 1; upCount <= MAX_UP_ATTEMPTS; upCount++) {
       execFileSync(TMUX, ['send-keys', '-t', session, 'Up'], { timeout: 3000 })
       execFileSync('/bin/sleep', ['0.2'], { timeout: 1000 })
@@ -211,6 +236,7 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
       execFileSync('/bin/sleep', ['1'], { timeout: 3000 })
 
       const pane = capturePane(session)
+      lastPane = pane ?? lastPane
       if (pane && pluginPattern.test(pane)) {
         matchedAt = upCount
         break
@@ -221,7 +247,14 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
 
     if (matchedAt < 0) {
       logger.warn(
-        { agentName, session, maxUpAttempts: MAX_UP_ATTEMPTS, pluginPattern: pluginPattern.source },
+        {
+          agentName,
+          session,
+          maxUpAttempts: MAX_UP_ATTEMPTS,
+          pluginPattern: pluginPattern.source,
+          afterMcp: paneDiagSignature(pane1, pluginPattern),
+          lastAttempt: paneDiagSignature(lastPane, pluginPattern),
+        },
         'channel-mcp-reconnect: plugin submenu not found',
       )
       dismissMcpMenu(session)
@@ -259,7 +292,13 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
 
     if (!onTarget) {
       logger.warn(
-        { agentName, session, target: target.source, maxSteps: SUBMENU_MAX_STEPS },
+        {
+          agentName,
+          session,
+          target: target.source,
+          maxSteps: SUBMENU_MAX_STEPS,
+          submenu: paneDiagSignature(submenu, pluginPattern),
+        },
         'channel-mcp-reconnect: could not place cursor on target option',
       )
       dismissMcpMenu(session)

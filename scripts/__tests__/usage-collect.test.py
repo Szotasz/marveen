@@ -9,6 +9,8 @@ synthetic snapshots -- no real network calls, no real ~/.codex or
 import importlib.util
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 import urllib.error
@@ -789,6 +791,90 @@ class TestComputeAlerts(unittest.TestCase):
         later = self.NOW + timedelta(minutes=50)
         third = uc.compute_alerts(self._snapshot(claude_windows=window), state, now_utc=later)
         self.assertTrue(any("nearly exhausted" in a for a in third))
+
+
+class TestClaudeTokenSources(unittest.TestCase):
+    """Token source resolution. The regression this guards: on macOS there is
+    no ~/.claude/.credentials.json (Claude Code stores the session token in
+    the login Keychain), so the collector fell through to the long-lived
+    `claude setup-token` value in .env -- which the oauth/usage endpoint
+    rejects with 403. Result: authoritative usage silently degraded to a
+    token-count estimate with no percentages and no reset times."""
+
+    KEYCHAIN_PAYLOAD = json.dumps({"claudeAiOauth": {"accessToken": "keychain-tok"}})
+
+    def setUp(self):
+        self._tmp = tempfile.NamedTemporaryFile("w", suffix=".env", delete=False)
+        self._tmp.write("CLAUDE_CODE_OAUTH_TOKEN=env-tok\n")
+        self._tmp.close()
+        self.addCleanup(os.unlink, self._tmp.name)
+
+    def _security_ok(self, stdout=None):
+        return MagicMock(returncode=0, stdout=stdout if stdout is not None else self.KEYCHAIN_PAYLOAD)
+
+    def test_keychain_used_when_credentials_file_absent(self):
+        with patch.object(uc.sys, "platform", "darwin"), \
+             patch.object(uc.os.path, "exists", side_effect=lambda p: p == self._tmp.name), \
+             patch.object(uc, "ENV_PATH", self._tmp.name), \
+             patch.object(uc.subprocess, "run", return_value=self._security_ok()):
+            token, source = uc._read_claude_token()
+        self.assertEqual(token, "keychain-tok")
+        self.assertEqual(source, "keychain")
+
+    def test_keychain_beats_env_file(self):
+        """The .env token answers 403, so it must never win over the keychain."""
+        with patch.object(uc.sys, "platform", "darwin"), \
+             patch.object(uc.os.path, "exists", return_value=True), \
+             patch.object(uc, "ENV_PATH", self._tmp.name), \
+             patch.object(uc.subprocess, "run", return_value=self._security_ok()):
+            token, source = uc._read_claude_token()
+        self.assertEqual(token, "keychain-tok")
+        self.assertEqual(source, "keychain")
+
+    def test_credentials_file_still_wins_over_keychain(self):
+        cred = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        cred.write(json.dumps({"claudeAiOauth": {"accessToken": "file-tok"}}))
+        cred.close()
+        self.addCleanup(os.unlink, cred.name)
+        with patch.object(uc.sys, "platform", "darwin"), \
+             patch.object(uc.os.path, "expanduser", return_value=cred.name), \
+             patch.object(uc.subprocess, "run", return_value=self._security_ok()) as run:
+            token, source = uc._read_claude_token()
+        self.assertEqual(token, "file-tok")
+        self.assertEqual(source, "credentials_file")
+        run.assert_not_called()
+
+    def test_non_darwin_never_shells_out_to_security(self):
+        with patch.object(uc.sys, "platform", "linux"), \
+             patch.object(uc.subprocess, "run") as run:
+            self.assertIsNone(uc._read_keychain_token())
+        run.assert_not_called()
+
+    def test_security_failure_falls_through_to_env_file(self):
+        with patch.object(uc.sys, "platform", "darwin"), \
+             patch.object(uc.os.path, "exists", side_effect=lambda p: p == self._tmp.name), \
+             patch.object(uc, "ENV_PATH", self._tmp.name), \
+             patch.object(uc.subprocess, "run", return_value=MagicMock(returncode=1, stdout="")):
+            token, source = uc._read_claude_token()
+        self.assertEqual(token, "env-tok")
+        self.assertEqual(source, "env_file")
+
+    def test_unparseable_keychain_payload_is_silent(self):
+        with patch.object(uc.sys, "platform", "darwin"), \
+             patch.object(uc.subprocess, "run", return_value=MagicMock(returncode=0, stdout="not json")):
+            self.assertIsNone(uc._read_keychain_token())
+
+    def test_keychain_prompt_timeout_does_not_raise(self):
+        """A headless/launchd run can hit a blocking GUI prompt; the bounded
+        subprocess must degrade to None, never crash the monitor."""
+        with patch.object(uc.sys, "platform", "darwin"), \
+             patch.object(uc.subprocess, "run", side_effect=subprocess.TimeoutExpired("security", 10)):
+            self.assertIsNone(uc._read_keychain_token())
+
+    def test_no_source_at_all_returns_none_pair(self):
+        with patch.object(uc.sys, "platform", "linux"), \
+             patch.object(uc.os.path, "exists", return_value=False):
+            self.assertEqual(uc._read_claude_token(), (None, None))
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 #!/bin/bash
-# Token-free IDLE-path keepalive producer (systemd --user timer, every 5 min).
+# Token-free IDLE-path keepalive producer (systemd --user timer on Linux,
+# launchd StartInterval on macOS via install-channel-keepalive-probe.sh --
+# every 3 min, see scripts/systemd/channel-keepalive-probe.timer).
 #
 # WHY: the keepalive freshness signal (store/.channel-keepalive mtime) has two
 # intended producers:
@@ -31,6 +33,20 @@ KEEPALIVE_FILE="$STORE/.channel-keepalive"
 LOG_TAG="channel-keepalive-probe"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*"; }
+
+# Whether a dedicated channel-watchdog recovery owner is actually installed on
+# THIS host. The probe declines to recover a dead pipe on purpose -- but only a
+# real, installed watchdog legitimately "owns recovery". The systemd
+# channel-watchdog timer has NO launchd twin, so on macOS it is simply absent
+# (CHANWDOG818): claiming an owner that isn't there turns a genuine outage into
+# silence. Fail loud instead when nothing owns recovery.
+channel_watchdog_installed() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    launchctl list 2>/dev/null | grep -q 'com\.marveen\.channel-watchdog'
+  else
+    systemctl --user is-enabled channel-watchdog.timer >/dev/null 2>&1
+  fi
+}
 
 # --- resolve the channels session (launch-order / rename independent) ---
 MAIN_AGENT_ID="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
@@ -85,7 +101,13 @@ while read -r cand; do
 done < <(ps -axo pid,command 2>/dev/null | grep -E '(^| )(bun|node)( |$|.*/)' | grep -E '/telegram/' | grep -v grep | awk '{print $1}')
 
 if [ "$alive" -ne 1 ]; then
-  log "no live telegram poller under $SESSION (pane $pane_pid) -- pipe may be down; not touching (watchdog owns recovery)"
+  # Do NOT advance the keepalive: a dead pipe must stay visibly stale so a real
+  # recovery owner can act. But only claim an owner that actually exists here.
+  if channel_watchdog_installed; then
+    log "no live telegram poller under $SESSION (pane $pane_pid) -- pipe may be down; not touching (channel-watchdog owns recovery)"
+  else
+    log "WARN no live telegram poller under $SESSION (pane $pane_pid) -- pipe may be down AND no channel-watchdog recovery unit is installed on this host (CHANWDOG818); automatic recovery relies only on process-death KeepAlive + the dashboard channel-monitor, so a FROZEN session while the dashboard is also down is NOT auto-recovered"
+  fi
   exit 0
 fi
 

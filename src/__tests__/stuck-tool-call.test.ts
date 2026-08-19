@@ -360,6 +360,35 @@ describe('stuck-tool-call-watcher wiring contract', () => {
     expect(watcherSrc).toMatch(/confirmsWedgeProfile\(/)
   })
 
+  it('skips recovery while an inbound channel message is parked in the prompt (2026-08-15)', () => {
+    // Owner-observed false positive: the idle-prompt guard is the only thing
+    // holding back a residual footer, and it stops applying the moment an
+    // inbound message is injected (detectPaneState reads 'typing', not 'idle').
+    // Measured that day: counter frozen at 49s and correctly skipped as
+    // residual at 14:52/14:56/15:00; the owner's message landed 15:03:06; at
+    // 15:04:05 the guard no longer applied and the pane was respawned, taking
+    // the not-yet-processed message with it. A parked channel block belongs to
+    // stuck-input-watcher, so this watcher must stand down.
+    expect(watcherSrc).toMatch(/parkedChannelInput\(pane\)\s*!=\s*null/)
+    // Ordering matters: the parked-input guard must be evaluated BEFORE the
+    // CPU-profile guard, otherwise a freshly-arrived message (turn not started,
+    // CPU still low) walks straight through to the respawn.
+    // Anchor on the CALL SITE, not the exported definition (which sits near the
+    // top of the file and would make any ordering assertion vacuously false).
+    const cpuGuardCall = watcherSrc.indexOf('!confirmsWedgeProfile(cpuPercent, WEDGE_MAX_CPU_PERCENT)')
+    expect(cpuGuardCall, 'CPU guard call site not found').toBeGreaterThan(-1)
+    expect(watcherSrc.indexOf('parkedChannelInput(pane)')).toBeLessThan(cpuGuardCall)
+  })
+
+  it('the owner-facing alert does not present the frozen counter as a duration', () => {
+    // The number in the message is the FROZEN COUNTER value, not how long the
+    // session has been stuck; the acting threshold is freezeSeconds. The old
+    // wording ("49s óta nem haladt") made the owner read it as a 49-second hair
+    // trigger and ask about it (2026-08-15).
+    expect(watcherSrc).not.toMatch(/s óta nem haladt/)
+    expect(watcherSrc).toMatch(/THRESHOLDS\.freezeSeconds/)
+  })
+
   it('the watcher logs an audit line when it acts', () => {
     expect(watcherSrc).toMatch(/stuck-tool-call-watcher:/)
     expect(watcherSrc).toMatch(/logger\.warn/)

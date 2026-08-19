@@ -91,31 +91,59 @@ migr_fallback "claude-opus-5[1m]"
 expect_model ".env override beats the distribution-default fallback" \
   'MAIN_AGENT_MODEL=claude-sonnet-5' '' 'claude-sonnet-5'
 
-# THE SHIPPED-DEFAULT CONTRACT (2026-08-06): a fresh install ships
-# templates/settings.json.template as .claude/settings.json and writes no
-# MAIN_AGENT_MODEL to .env, so resolve_main_model reads the template's model.
-# The 2026-08-06 bug was that the template had NO model field -> empty ->
-# the main agent came up on claude-code's built-in default (4.8), silently.
-# This locks the template to a non-empty model, driven through the REAL
-# resolver over the REAL shipped template.
-TEMPLATE="$INSTALL_DIR/templates/settings.json.template"
-template_model="$(bash -c '
-  root="$(mktemp -d)"; mkdir -p "$root/scripts" "$root/.claude"
+# THE SHIPPED-DEFAULT CONTRACT (MODELDRIFT807, 2026-08-07): a fresh install
+# CLONES the repo, so the .claude/settings.json a customer gets is the TRACKED
+# file itself -- NO installer copies the template (or anything else) over it
+# (measured: install-macos.sh / install-linux.sh never write
+# $INSTALL_DIR/.claude/settings.json). The predecessor of this block copied the
+# TEMPLATE into the fixture and asserted on that -- a contract no installer
+# implements, so it stayed green while every real fresh install resolved the
+# tracked file's pinned claude-opus-4-8[1m] and the distribution default never
+# ran. These contracts drive the REAL shipped files instead.
+SHIPPED_SETTINGS="$INSTALL_DIR/.claude/settings.json"
+
+# (1) The tracked settings file pins NO model. A hand-set model on a live
+# install still wins (covered above) -- this is about what we SHIP.
+shipped_model="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("model") or "")' "$SHIPPED_SETTINGS")"
+if [ -z "$shipped_model" ]; then
+  pass "shipped .claude/settings.json pins no model (distribution default stays live)"
+else
+  fail "shipped .claude/settings.json pins no model" "(empty)" "$shipped_model"
+fi
+
+# (2) The resolver over the REAL shipped settings file falls through to the
+# distribution default. The sentinel value can only surface via the registry
+# read, so a pinned model in the shipped file turns this red.
+real_settings_model="$(bash -c '
+  root="$(mktemp -d)"; mkdir -p "$root/scripts" "$root/.claude" "$root/dist"
   cp "'"$SRC"'" "$root/scripts/channels.sh"
-  cp "'"$TEMPLATE"'" "$root/.claude/settings.json"
+  cp "'"$SHIPPED_SETTINGS"'" "$root/.claude/settings.json"
+  printf "exports.DISTRIBUTION_DEFAULT_AGENT_MODEL = \"SENTINEL-FROM-REGISTRY\";\n" > "$root/dist/config-registry.js"
   bash "$root/scripts/channels.sh" --resolve-main-model 2>/dev/null | head -1
   rm -rf "$root"
 ')"
-if [ -n "$template_model" ]; then
-  pass "shipped template resolves to a NON-EMPTY main model ($template_model)"
+if [ "$real_settings_model" = "SENTINEL-FROM-REGISTRY" ]; then
+  pass "resolver over the REAL shipped settings falls through to the distribution default"
 else
-  fail "shipped template resolves to a non-empty main model" "non-empty" "(empty)"
+  fail "resolver over the REAL shipped settings falls through to the distribution default" "SENTINEL-FROM-REGISTRY" "$real_settings_model"
 fi
-# And it is the intended Opus 5 (1M) default, matching the fleet host.
-if [ "$template_model" = "claude-opus-5[1m]" ]; then
-  pass "shipped template main model is claude-opus-5[1m]"
+
+# (3) The real shipped constant (the single source of truth) is Opus 5 (1M).
+registry_default="$(grep -oE "DISTRIBUTION_DEFAULT_AGENT_MODEL = '[^']+'" "$INSTALL_DIR/src/config-registry.ts" | head -1 | sed "s/.*'\(.*\)'/\1/")"
+if [ "$registry_default" = "claude-opus-5[1m]" ]; then
+  pass "DISTRIBUTION_DEFAULT_AGENT_MODEL is claude-opus-5[1m] (real src constant)"
 else
-  fail "shipped template main model" "claude-opus-5[1m]" "$template_model"
+  fail "DISTRIBUTION_DEFAULT_AGENT_MODEL is claude-opus-5[1m]" "claude-opus-5[1m]" "$registry_default"
+fi
+
+# (4) The template must not resurrect a second model source: no installer ships
+# it as .claude/settings.json, so a model field in it is dead code that a future
+# test could again mistake for the live contract.
+template_model="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("model") or "")' "$INSTALL_DIR/templates/settings.json.template")"
+if [ -z "$template_model" ]; then
+  pass "settings template pins no model (single source: config-registry)"
+else
+  fail "settings template pins no model" "(empty)" "$template_model"
 fi
 
 echo

@@ -1,5 +1,4 @@
 {
-  "model": "claude-opus-5[1m]",
   "enabledPlugins": {
     "telegram@claude-plugins-official": true
   },

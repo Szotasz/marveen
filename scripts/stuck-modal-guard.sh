@@ -238,9 +238,11 @@ run_guard() {
   fi
 
   local MAIN_MODEL="" MODEL_FLAG="" CLAUDE_Q
-  if [ -f "$INSTALL_DIR/.claude/settings.json" ] && command -v jq >/dev/null 2>&1; then
-    MAIN_MODEL="$(jq -r '.model // empty' "$INSTALL_DIR/.claude/settings.json" 2>/dev/null)"
-  fi
+  # RESPAWNMODEL807: ask the ONE resolver (all three layers: .env override >
+  # settings.json > shipped distribution default) instead of keeping a fourth
+  # jq-only copy that missed two of them and went flag-less the day the shipped
+  # settings.json stopped pinning a model (#924).
+  MAIN_MODEL="$(bash "$INSTALL_DIR/scripts/channels.sh" --resolve-main-model 2>/dev/null | head -1)"
   # W1: sanitize the model id before interpolating it into the respawn shell
   # string (defense in depth -- settings.json is local config). Preserves the
   # "[1m]" context suffix while stripping shell metacharacters.

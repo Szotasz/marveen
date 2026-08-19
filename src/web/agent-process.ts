@@ -500,7 +500,60 @@ function provisionIsolatedConfigDir(
       settings.enabledPlugins as Record<string, boolean> | undefined,
     )
     settings.enabledPlugins = scopedPlugins
-    writeFileSync(join(cfg, 'settings.json'), JSON.stringify(settings, null, 2) + '\n')
+    // Keys the isolated file already carries that the shared file never
+    // mentions must SURVIVE this rewrite. The rewrite runs on every main-agent
+    // start, so a straight copy silently drops agent-only configuration. That
+    // is how `statusLine` went missing three times (2026-07-28, 07-30, 08-03):
+    // it is configured for the main agent alone, the shared file never names
+    // it, and the symptom is invisible -- the agent starts fine, it just stops
+    // reporting context usage, so nothing alerts.
+    //
+    // Shared wins on conflict: for every key the shared file DOES define it
+    // stays the source of truth (that is the point of the copy). Target-only
+    // keys are purely additive, so this cannot resurrect a key the shared file
+    // deliberately changed.
+    //
+    // Scope: this is the shared provisioning core, so the change applies to
+    // EVERY isolated config dir -- the main agent's and each sub-agent's alike
+    // (ensureIsolatedChannelConfigDir and ensureMainAgentIsolatedConfigDir both
+    // land here). There is no pre-existing merge anywhere to be consistent
+    // with: before this commit every one of them was a pure copy.
+    //
+    // enabledPlugins is explicitly never inherited -- it is decided by the
+    // scope call above and must not survive from the dir's own older copy.
+    const ownSettingsPath = join(cfg, 'settings.json')
+    if (existsSync(ownSettingsPath)) {
+      try {
+        const own = JSON.parse(readFileSync(ownSettingsPath, 'utf-8')) as unknown
+        // A JSON array or `null` parses fine but is not a settings object;
+        // spreading one would invent numeric keys instead of failing.
+        if (isPlainObject(own)) {
+          const inherited: string[] = []
+          for (const [key, value] of Object.entries(own)) {
+            if (key !== 'enabledPlugins' && !(key in settings)) {
+              settings[key] = value
+              inherited.push(key)
+            }
+          }
+          // Additive merges must not be silent: the whole point of this block
+          // is that a key nobody can see is a key nobody can debug. Key NAMES
+          // only -- a settings.json may hold secrets, so values never land in
+          // the log.
+          if (inherited.length) {
+            logger.info({ name, path: ownSettingsPath, keys: inherited }, 'isolated-config: kept target-only settings keys')
+          }
+        }
+      } catch (err) {
+        // Deliberately loud: rewriting an unparseable own-settings file from
+        // the shared one is exactly the silent-loss shape this block fixes.
+        logger.warn({ err, name, path: ownSettingsPath }, 'isolated-config: unparseable own settings.json, rewriting from shared')
+      }
+    }
+    // Atomic: the file's CONTENT now depends on reading its own previous
+    // content back. A torn write would fail the parse on the next start, the
+    // code would fall back to the shared file, and that is precisely the
+    // key-loss this commit fixes.
+    writeJsonAtomic(ownSettingsPath, settings)
 
     // 3. Own plugins/ dir: symlink the heavy shared parts, own the install state.
     const pluginsDir = join(cfg, 'plugins')
@@ -2065,6 +2118,43 @@ const UNWEDGE_COOLDOWN_MS = 30_000
 // so escalation is the only recovery; a sub-agent escalates only after the
 // auto-clear has genuinely failed several times.
 const SUBAGENT_PARKED_ESCALATE_AFTER = 6  // ~3min for a sub-agent whose auto-clear keeps failing
+// MAINBOXPARK816: two-stage escalation for the (never-cleared) main box. Each
+// fails increment costs one UNWEDGE_COOLDOWN_MS round, so 6 = ~3 min visible to
+// the heartbeat, 12 = ~6 min -> the owner's phone as the FINAL stage (double
+// the first threshold, per the spec).
+export const MAIN_PARKED_HEARTBEAT_AFTER = 6
+export const MAIN_PARKED_OWNER_AFTER = 12
+
+// Pure decision, exported for tests: which escalation stage applies. 'owner'
+// fires once per episode (ownerNotified latches via the record's escalated
+// flag); afterwards the state stays 'heartbeat'-visible until the box clears.
+export function decideMainParkedEscalation(
+  fails: number,
+  ownerNotified: boolean,
+): 'none' | 'heartbeat' | 'owner' {
+  if (fails >= MAIN_PARKED_OWNER_AFTER && !ownerNotified) return 'owner'
+  if (fails >= MAIN_PARKED_HEARTBEAT_AFTER) return 'heartbeat'
+  return 'none'
+}
+
+// MAINBOXPARK816 stage-1 surface: the heartbeat round (same process) reads this
+// and puts the fact into its prompt -- deliberately NOT the inter-agent queue,
+// because a message queued to the main agent would strand behind the very
+// parked text it reports. Returns null when there is no FRESH parked episode
+// (last attempt older than two cooldown windows = the box cleared or the
+// router stopped observing it).
+export function getMainParkedState(nowMs: number = Date.now()):
+  | { preview: string; fails: number; approxMinutes: number }
+  | null {
+  const rec = unwedgeAttempts.get('local:' + MAIN_CHANNELS_SESSION)
+  if (!rec || rec.fails < MAIN_PARKED_HEARTBEAT_AFTER) return null
+  if (nowMs - rec.last > 2 * UNWEDGE_COOLDOWN_MS + PARKED_STABLE_CONFIRM_MS) return null
+  return {
+    preview: rec.sig.slice(0, 80),
+    fails: rec.fails,
+    approxMinutes: Math.round((rec.fails * UNWEDGE_COOLDOWN_MS) / 60000),
+  }
+}
 // Per-session record of the last un-wedge attempt: when, on what text, how many
 // consecutive attempts failed to empty the box, and whether we already notified
 // the operator for this exact stuck text (one-shot; resets when sig/clears).
@@ -2110,19 +2200,43 @@ export async function clearStaleParkedInput(session: string, host: string | null
   if (b == null || detectPaneState(b) !== 'typing' || parkedInputText(captureParkedInputView(session, host) ?? b) !== parked) return false
 
   // The main agent's input box is NEVER auto-cleared (a parked line could be a
-  // real reply -- the 2026-06-30 "Balogh" near-miss). The operator escalation is
-  // MUTED (2026-06-30, Szabi): the main box's "parked" lines are overwhelmingly
-  // DIM ghost/placeholder frames (stale capture, not real input -- e.g. a persona
-  // fragment shown for 28 min while the agent was actively turning), so notifying
-  // on each is false-positive noise. The durable fix is the inbox pull-model (no
-  // send-keys delivery -> no parked fragments) + a dim-text guard in pane
-  // detection (a faint SGR line is a ghost, not a parked command). Until those
-  // land: stay silent. Still RECORD the attempt so the cooldown guard backs us off
-  // and we don't re-run the stable-confirm sleep on every router tick.
+  // real reply -- the 2026-06-30 "Balogh" near-miss). That stays absolute.
+  //
+  // MAINBOXPARK816 (2026-08-16): the total MUTE is gone, because its premise
+  // aged out. The 2026-06-30 mute existed for dim ghost-frame noise -- but the
+  // dim-guard above now strips ghosts BEFORE this branch, so a line that gets
+  // here is normal-intensity, 2s-stable, REAL text. And a parked main box is
+  // exactly the state that silences the channel UNSUPERVISED: every sub-agent
+  // gets an auto-heal for this, only the main agent got silence. Two-stage
+  // escalation, never a keystroke:
+  //   stage 1 (fails >= MAIN_PARKED_HEARTBEAT_AFTER, ~3 min): WARN log + the
+  //     state is exposed via getMainParkedState() so the heartbeat round's
+  //     prompt carries it (same process; NOT the inter-agent queue -- an alert
+  //     queued to the main agent would strand BEHIND the very text it reports).
+  //   stage 2 (fails >= MAIN_PARKED_OWNER_AFTER, ~6 min, one-shot/episode):
+  //     notifyChannel direct to the owner (pure HTTP, does not touch the box)
+  //     with the CONCRETE manual fix -- a message actionable in seconds, not
+  //     "something is wrong".
   if (session === MAIN_CHANNELS_SESSION) {
     const fails = (prev && prev.sig === parked ? prev.fails : 0) + 1
-    unwedgeAttempts.set(key, { last: nowMs, sig: parked, fails, escalated: true })
-    logger.debug({ session, parked: parked.slice(0, 60), fails }, 'message-router: main-agent parked input -- left untouched (escalation muted)')
+    let escalated = !!(prev && prev.sig === parked && prev.escalated)
+    const stage = decideMainParkedEscalation(fails, escalated)
+    if (stage === 'owner') {
+      const preview = parked.slice(0, 80).replace(/[<>&]/g, ' ')
+      notifyChannel(
+        `🚨 A fo agens (${session}) input-mezojeben ~${Math.round((fails * UNWEDGE_COOLDOWN_MS) / 60000)} perce all egy parkolt sor, ` +
+        `es emiatt a csatorna nem dolgoz fel bejovo uzenetet. KEZI FELOLDAS (par masodperc): ` +
+        `tmux attach -t ${session}, majd Ctrl-C es utana Ctrl-U (a sor torlese), vegul kilepes: Ctrl-B d. ` +
+        `A parkolt sor eleje: "${preview}"`,
+      ).catch(() => { /* notify is best-effort */ })
+      escalated = true
+      logger.warn({ session, parked: parked.slice(0, 60), fails }, 'message-router: main-agent parked input -- owner notified with manual fix (box untouched)')
+    } else if (stage === 'heartbeat') {
+      logger.warn({ session, parked: parked.slice(0, 60), fails }, 'message-router: main-agent parked input -- persisting; visible to the heartbeat round (box untouched)')
+    } else {
+      logger.debug({ session, parked: parked.slice(0, 60), fails }, 'message-router: main-agent parked input -- left untouched')
+    }
+    unwedgeAttempts.set(key, { last: nowMs, sig: parked, fails, escalated })
     return false
   }
 

@@ -166,10 +166,13 @@ if [ "$count" -ge "$MAX_CONSECUTIVE" ]; then
 fi
 
 # --- recover: respawn-pane ONLY the channels session, fresh claude ---
-MAIN_MODEL=""
-if [ -f "$INSTALL_DIR/.claude/settings.json" ] && command -v jq >/dev/null 2>&1; then
-  MAIN_MODEL="$(jq -r '.model // empty' "$INSTALL_DIR/.claude/settings.json" 2>/dev/null)"
-fi
+# RESPAWNMODEL807: this used to read ONLY .claude/settings.json with jq -- a
+# second copy of the model resolution that missed BOTH the .env override (the
+# documented per-install route) and the shipped distribution default. The day
+# the shipped settings.json stopped pinning a model (#924), this path started
+# building a flag-less respawn. One resolver exists and the launch path already
+# uses it; ask IT instead of maintaining another copy.
+MAIN_MODEL="$(bash "$INSTALL_DIR/scripts/channels.sh" --resolve-main-model 2>/dev/null | head -1)"
 MODEL_FLAG=""
 [ -n "$MAIN_MODEL" ] && MODEL_FLAG="--model '$MAIN_MODEL' "
 

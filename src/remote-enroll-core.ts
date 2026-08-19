@@ -251,6 +251,118 @@ export function restrictOptions(webPort: number = REMOTE_PORT): string {
  * the default shape; port-aware callers use restrictOptions(webPort). */
 export const RESTRICT_OPTIONS = restrictOptions(REMOTE_PORT)
 
+// ---------------------------------------------------------------------------
+// Bridge service-port allowlist (BRIDGEPORT817).
+//
+// The Bridge can open ADDITIONAL host loopback services on separate tabs; the
+// real enforcement is HERE, in the enrolled key's permitopen list -- the
+// Bridge-side allowlist is UX, this is the boundary. The policy therefore
+// lives server-side (the Bridge REQUESTS, this module VALIDATES):
+//   - explicit ports only, NEVER a wildcard or a range;
+//   - the dashboard webPort is always included and cannot be removed;
+//   - privileged ports (<1024, which covers sshd's canonical 22) are refused
+//     outright -- if such a forward is ever legitimately needed, that is a
+//     separate owner decision, not an allowlist entry's side effect;
+//   - the list is capped, so an allowlist can never quietly approximate "*".
+// Every change is written to the config-change ledger by the route layer.
+// ---------------------------------------------------------------------------
+
+export const BRIDGE_SERVICE_PORT_MIN = 1024
+export const BRIDGE_SERVICE_PORT_MAX = 65535
+export const MAX_BRIDGE_SERVICE_PORTS = 12
+
+export type ServicePortListVerdict =
+  | { ok: true; ports: number[] }
+  | { ok: false; error: string }
+
+/** Validate a requested service-port list. Returns a sorted, deduplicated
+ * list (webPort excluded -- it is implicit and always present). */
+export function validateBridgeServicePorts(raw: unknown, webPort: number): ServicePortListVerdict {
+  if (!Array.isArray(raw)) return { ok: false, error: 'ports must be an array' }
+  const out: number[] = []
+  for (const item of raw) {
+    const port = typeof item === 'number' ? item : NaN
+    if (!Number.isInteger(port)) return { ok: false, error: 'every port must be an integer' }
+    if (port < BRIDGE_SERVICE_PORT_MIN || port > BRIDGE_SERVICE_PORT_MAX) {
+      return { ok: false, error: `port ${port} out of range (${BRIDGE_SERVICE_PORT_MIN}-${BRIDGE_SERVICE_PORT_MAX}; privileged ports are refused)` }
+    }
+    if (port === webPort) continue // implicit, never refused, never duplicated
+    if (!out.includes(port)) out.push(port)
+  }
+  if (out.length > MAX_BRIDGE_SERVICE_PORTS) {
+    return { ok: false, error: `too many ports (max ${MAX_BRIDGE_SERVICE_PORTS})` }
+  }
+  out.sort((a, b) => a - b)
+  return { ok: true, ports: out }
+}
+
+/** Restriction options with the webPort plus explicit service ports. The
+ * single-port restrictOptions() stays the enrollment default: a fresh device
+ * starts with NO service ports. */
+export function restrictOptionsWithServices(webPort: number, servicePorts: number[]): string {
+  const permits = [webPort, ...servicePorts.filter((p) => p !== webPort)]
+    .map((p) => `permitopen="127.0.0.1:${p}"`)
+    .join(',')
+  return `restrict,port-forwarding,${permits},command="/bin/false"`
+}
+
+const PERMITOPEN_RE = /permitopen="127\.0\.0\.1:(\d{1,5})"/g
+
+/** The service ports (webPort excluded) currently granted by an options
+ * field. Tolerates the single-port legacy shape. */
+export function extractServicePorts(optionsField: string, webPort: number): number[] {
+  const ports: number[] = []
+  for (const m of optionsField.matchAll(PERMITOPEN_RE)) {
+    const p = Number(m[1])
+    if (p !== webPort && !ports.includes(p)) ports.push(p)
+  }
+  ports.sort((a, b) => a - b)
+  return ports
+}
+
+export interface ServicePortsRewrite {
+  content: string
+  found: boolean
+  before: number[]
+  after: number[]
+}
+
+/**
+ * Rewrite the permitopen set of the line carrying marveen-remote:<installId>.
+ * Only lines this codebase authored are touched (found by our comment, shape
+ * re-verified before rewrite); every other line is preserved byte-for-byte.
+ * The key material and comment are reproduced verbatim -- only the options
+ * field is rebuilt, from scratch, via restrictOptionsWithServices, so a
+ * hand-edited options field cannot smuggle anything through a rewrite.
+ */
+export function rewriteServicePorts(
+  existing: string,
+  installId: string,
+  webPort: number,
+  ports: number[],
+): ServicePortsRewrite {
+  const target = `${COMMENT_PREFIX}${installId}`
+  const lines = existing.length ? existing.split('\n') : []
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+  let found = false
+  let before: number[] = []
+  const out = lines.map((line) => {
+    const trimmed = line.trim()
+    const fields = trimmed.split(/\s+/)
+    if (fields.length < 4 || fields[fields.length - 1] !== target) return line
+    // Our lines are exactly: <options> ssh-ed25519 <base64> marveen-remote:<uuid>
+    // (no spaces inside the options we author). Anything else with our comment
+    // is not ours to rewrite.
+    if (fields.length !== 4 || fields[1] !== ACCEPTED_KEY_TYPE) return line
+    found = true
+    before = extractServicePorts(fields[0], webPort)
+    return `${restrictOptionsWithServices(webPort, ports)} ${fields[1]} ${fields[2]} ${fields[3]}`
+  })
+  let content = out.join('\n')
+  if (content.length > 0 && !content.endsWith('\n')) content += '\n'
+  return { content, found, before, after: found ? [...ports].sort((a, b) => a - b) : [] }
+}
+
 /**
  * Build the exact restricted authorized_keys line for a validated key.
  * The key material and comment are reproduced verbatim. `webPort` is the actual

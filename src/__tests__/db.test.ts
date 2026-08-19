@@ -21,6 +21,9 @@ import {
   deletePendingTaskRetryById,
   markPendingTaskRetryAlert,
   clearPendingTaskRetryAlert,
+  createAgentMessage,
+  getDispatchedPendingStats,
+  COMPLETION_REPORT_PREFIX,
 } from '../db.js'
 import { DB_FILENAME } from '../config.js'
 
@@ -304,5 +307,31 @@ describe('database file permissions', () => {
     if (!existsSync(journalPath)) return
     const mode = statSync(journalPath).mode & 0o777
     expect(mode).toBe(0o600)
+  })
+})
+
+// A context-restart gate ezt szamolja "dispatcholt, meg nem lezart munkakent".
+// Egy lezaraskor auto-generalt [Eredmény] visszajelzes NEM munka: senki nem
+// valaszol ra, sosem lesz done, tehat orokre gyulik -- es igy egy aktiv agens
+// tartosan alkalmatlanna valik a puha ujrainditasra (2026-08-12).
+describe('getDispatchedPendingStats -- a lezaro visszajelzes nem dispatcholt munka', () => {
+  const NOW = Date.now()
+  const CUTOFF = 2 * 60 * 60 * 1000
+
+  it('szamolja a valodi kiadott feladatot, de kihagyja a completion reportot', () => {
+    createAgentMessage('stat-a', 'stat-b', 'csinald meg X-et')
+    const before = getDispatchedPendingStats('stat-a', NOW, CUTOFF).count
+    expect(before).toBeGreaterThanOrEqual(1)
+
+    createAgentMessage('stat-a', 'stat-b', `${COMPLETION_REPORT_PREFIX} msg_id:1 status:done\n\nkesz`)
+    const after = getDispatchedPendingStats('stat-a', NOW, CUTOFF).count
+    expect(after).toBe(before)
+  })
+
+  it('csak a sajat kimeno uzeneteket szamolja', () => {
+    createAgentMessage('stat-c', 'stat-a', 'ez masik agens kimenoje')
+    expect(getDispatchedPendingStats('stat-a', NOW, CUTOFF).count)
+      .toBe(getDispatchedPendingStats('stat-a', NOW, CUTOFF).count)
+    expect(getDispatchedPendingStats('stat-c', NOW, CUTOFF).count).toBe(1)
   })
 })

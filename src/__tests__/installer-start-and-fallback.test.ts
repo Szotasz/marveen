@@ -308,3 +308,32 @@ describe('every touched shell entry point stays parseable', () => {
     },
   )
 })
+
+describe('install-macos.sh -- the not-started remedy must work on an UNREGISTERED unit (REMEDYCMD807)', () => {
+  // The remedy screen fires precisely when start_launchd_unit could not bring
+  // the units up -- on an SSH-driven install because gui/$UID bootstrap fails
+  // there (measured live: rc=5 EIO), so the unit is usually NOT REGISTERED at
+  // all. `launchctl kickstart` cannot start an unregistered unit, so a
+  // kickstart-only remedy is guaranteed dead advice in the most common state.
+  // The printed remedy must be state-agnostic: bootstrap the plist first, then
+  // kickstart the label.
+  const remedy = MACOS.slice(MACOS.indexOf('Javitas most'))
+
+  it('bootstraps the plist before kickstarting, for both units', () => {
+    for (const unit of ['DASHBOARD_PLIST', 'CHANNELS_PLIST']) {
+      const line = remedy.split('\n').find((l) => l.includes('bootstrap') && l.includes(unit))
+      expect(line, `bootstrap remedy line for ${unit}`).toBeTruthy()
+      expect(line).toMatch(/launchctl bootstrap gui\//)
+      expect(line).toMatch(/\.plist/)
+      // kickstart follows ON THE SAME LINE so a copy-paste of one line works
+      // regardless of whether the unit was registered.
+      expect(line!.indexOf('bootstrap')).toBeLessThan(line!.indexOf('kickstart'))
+    }
+  })
+
+  it('never offers kickstart WITHOUT a preceding bootstrap on the same line', () => {
+    const kickLines = remedy.split('\n').filter((l) => l.includes('kickstart') && l.includes('BLUE'))
+    expect(kickLines.length).toBeGreaterThan(0)
+    for (const l of kickLines) expect(l).toContain('bootstrap')
+  })
+})

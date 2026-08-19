@@ -30,6 +30,13 @@ if (found.length > 0) {
   throw new Error(
     `REFUSING TO RUN TESTS: ${repoRoot} looks like a LIVE install (found: ${found.join(', ')}). ` +
       'The suite mutates files under the checkout it runs in (store/, .env, .claude/skills/). ' +
-      'Run it from a git worktree or CI checkout instead, e.g. `git worktree add /tmp/claw-test && cd /tmp/claw-test && npm test`.',
+      // SUITERED807: this line used to suggest `/tmp/claw-test` -- but the
+      // hook-path registration guard (isUnsafeHookCommand) rightly rejects any
+      // /tmp-prefixed PROJECT_ROOT, so from a /tmp checkout the four gate test
+      // files go falsely red. The tool must not send its user to the one place
+      // another of its own guards forbids.
+      'Run it from a git worktree or CI checkout UNDER YOUR HOME (not /tmp!), e.g. ' +
+      '`git worktree add ~/claw-test && cd ~/claw-test && npm test`. ' +
+      'Not /tmp: the hook-path guard rejects /tmp-prefixed roots, so the gate tests would go falsely red there.',
   )
 }

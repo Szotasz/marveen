@@ -18,7 +18,7 @@ import {
   chmodSync,
 } from 'node:fs'
 import { join } from 'node:path'
-import { mergeAuthorizedKeys, removeAuthorizedKey, type MergeAction } from './remote-enroll-core.js'
+import { mergeAuthorizedKeys, removeAuthorizedKey, rewriteServicePorts, type MergeAction } from './remote-enroll-core.js'
 
 const SSH_DIR_MODE = 0o700
 const AUTH_KEYS_MODE = 0o600
@@ -204,6 +204,62 @@ function writeAtomic(sshDir: string, authPath: string, content: string): void {
       /* ignore */
     }
     throw err
+  }
+}
+
+export interface UpdateServicePortsOptions {
+  sshDir: string
+  installId: string
+  webPort: number
+  /** The DESIRED service-port list (already validated by the caller's policy
+   * layer -- validateBridgeServicePorts). Declarative: the permitopen set
+   * becomes {webPort} + exactly these. */
+  ports: number[]
+  lockRetries?: number
+  lockRetryDelayMs?: number
+  staleLockMs?: number
+  sleep?: (ms: number) => Promise<void>
+}
+
+export interface UpdateServicePortsResult {
+  found: boolean
+  before: number[]
+  after: number[]
+  authorizedKeysPath: string
+}
+
+/**
+ * Rewrite the enrolled key's permitopen set (BRIDGEPORT817) under the same
+ * lock + atomic-replace discipline as enrollment. found:false means no line
+ * carries this installId -- the device is not enrolled (or was revoked).
+ */
+export async function updateEnrolledServicePorts(
+  opts: UpdateServicePortsOptions,
+): Promise<UpdateServicePortsResult> {
+  const {
+    sshDir,
+    installId,
+    webPort,
+    ports,
+    lockRetries = 20,
+    lockRetryDelayMs = 100,
+    staleLockMs = 15000,
+    sleep = defaultSleep,
+  } = opts
+  const authPath = join(sshDir, AUTH_KEYS_NAME)
+  const lockPath = join(sshDir, LOCK_NAME)
+
+  if (!existsSync(authPath)) return { found: false, before: [], after: [], authorizedKeysPath: authPath }
+
+  const fd = await acquireLock(lockPath, lockRetries, lockRetryDelayMs, staleLockMs, sleep)
+  try {
+    if (!existsSync(authPath)) return { found: false, before: [], after: [], authorizedKeysPath: authPath }
+    const existing = readFileSync(authPath, 'utf8')
+    const result = rewriteServicePorts(existing, installId, webPort, ports)
+    if (result.found && result.content !== existing) writeAtomic(sshDir, authPath, result.content)
+    return { found: result.found, before: result.before, after: result.after, authorizedKeysPath: authPath }
+  } finally {
+    releaseLock(fd, lockPath)
   }
 }
 
