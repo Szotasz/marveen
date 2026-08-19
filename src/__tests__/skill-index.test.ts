@@ -172,6 +172,60 @@ describe('skill-index.sh -- AGENT_DIR mode (merged index)', () => {
   })
 })
 
+describe('skill-index.sh -- multibyte UTF-8 description truncation', () => {
+  let tmpHome: string
+
+  beforeEach(() => {
+    tmpHome = mkdtempSync(join(tmpdir(), 'skill-index-test-'))
+  })
+
+  afterEach(() => {
+    rmSync(tmpHome, { recursive: true, force: true })
+  })
+
+  it('produces a strictly valid UTF-8 index when a description has a multibyte char straddling byte 120 (C locale)', () => {
+    // 119 ASCII bytes + one 2-byte UTF-8 char ('á' = 0xC3 0xA1) straddles the byte-120 cut
+    // point. `cut -c` on macOS is LOCALE-AWARE: under a UTF-8 locale it counts characters and
+    // leaves 'á' intact. Under the C/POSIX locale (unset LANG/LC_ALL -- the common case for a
+    // non-interactive invocation: cron, a hook, a script that doesn't inherit the user's shell
+    // profile) it falls back to BYTE counting, and keeps only the lead byte 0xC3 -- an
+    // INVALID UTF-8 sequence in the middle of the generated `.skill-index.md`.
+    //
+    // Measured (2026-08-19): a plain POSIX `grep` does NOT skip the file over this -- it
+    // still finds unrelated lines fine, so a grep-based assertion doesn't catch the bug. The
+    // actual failure mode is any BINARY-AWARE tool that skips files it can't decode as text --
+    // measured with this repo's own Claude Code search path (`ugrep -I`, the mechanism behind
+    // the Grep tool and skill discovery): it treats the whole file as binary and matches
+    // NOTHING, including lines that have nothing to do with the truncated one. The root cause
+    // is the invalid byte sequence itself, so assert on that directly (portable across
+    // machines/CI, independent of which grep flavor happens to be on PATH).
+    const straddling = 'a'.repeat(119) + 'á' + 'bcdefghijklmnop'
+    mkdirSync(join(tmpHome, '.claude', 'skills', 'skill-straddle'), { recursive: true })
+    writeFileSync(
+      join(tmpHome, '.claude', 'skills', 'skill-straddle', 'SKILL.md'),
+      makeSkillMd('skill-straddle', straddling),
+    )
+    // A second, unrelated skill -- if the index is treated as binary, THIS is also lost.
+    mkdirSync(join(tmpHome, '.claude', 'skills', 'skill-plain'), { recursive: true })
+    writeFileSync(
+      join(tmpHome, '.claude', 'skills', 'skill-plain', 'SKILL.md'),
+      makeSkillMd('skill-plain', 'A plain ASCII-only description'),
+    )
+
+    runScript([], { HOME: tmpHome, LC_ALL: 'C', LANG: 'C' })
+    const indexPath = join(tmpHome, '.claude', 'skills', '.skill-index.md')
+    const content = readFileSync(indexPath, 'utf-8')
+    expect(content).toContain('skill-straddle')
+    expect(content).toContain('skill-plain')
+
+    // The actual regression: the generated file must be strictly valid UTF-8, not just
+    // "readable with replacement characters" -- a fatal decode is what a binary-detecting
+    // tool keys off when it silently skips the whole file.
+    const bytes = readFileSync(indexPath)
+    expect(() => new TextDecoder('utf-8', { fatal: true }).decode(bytes)).not.toThrow()
+  })
+})
+
 describe('skill-index.sh -- graceful handling of missing global dir', () => {
   it('exits cleanly when ~/.claude/skills does not exist', () => {
     const emptyHome = mkdtempSync(join(tmpdir(), 'skill-index-test-'))

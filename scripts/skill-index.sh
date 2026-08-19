@@ -65,7 +65,12 @@ index_skills_dir() {
     fi
 
     local desc
-    desc=$(grep -m1 "^description:" "$skill_md" 2>/dev/null | sed 's/^description: *//' | tr -d '"' | tr -d "'" | cut -c1-120)
+    # KARAKTER-helyes csonkolas. A `cut -c1-120` C/POSIX locale alatt (pl. egy nem-interaktiv
+    # hivas, ahol LANG/LC_ALL nincs beallitva) BAJTOKAT vag: egy ekezetes betu kozepen elvagva
+    # ERVENYTELEN UTF-8 keletkezik, attol a fajl "binaris"-nak latszik, es a `grep` CSENDBEN
+    # ATUGORJA az EGESZ indexet -- minden kereses hamis nullat ad.
+    desc=$(grep -m1 "^description:" "$skill_md" 2>/dev/null | sed 's/^description: *//' | tr -d '"' | tr -d "'" \
+      | python3 -c 'import sys; sys.stdout.write(sys.stdin.buffer.read().decode("utf-8","replace")[:120])')
     if [ -z "$desc" ]; then
       desc="(nincs leírás)"
     fi
