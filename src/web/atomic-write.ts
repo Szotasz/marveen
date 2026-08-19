@@ -11,7 +11,14 @@ export function atomicWriteFileSync(
   opts: { mode?: number } = {},
 ): void {
   const tmp = `${path}.${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}.tmp`
-  writeFileSync(tmp, data)
+  // Create the tmp file at the requested mode from the FIRST byte. Writing it
+  // mode-less and chmod-ing afterwards leaves a short-lived tmp that already
+  // holds the full (possibly credential) content at the umask default (0644)
+  // in the same directory as the protected target -- a world-readable window
+  // (VAULTMODE818). The chmod stays as a belt-and-suspenders: writeFileSync's
+  // mode is still reduced by the umask, so for modes with bits the umask would
+  // strip the explicit chmod enforces the exact value.
+  writeFileSync(tmp, data, opts.mode !== undefined ? { mode: opts.mode } : undefined)
   if (opts.mode !== undefined) {
     try { chmodSync(tmp, opts.mode) } catch { /* best-effort */ }
   }
