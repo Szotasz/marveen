@@ -909,6 +909,22 @@ window._i18n.hu = {
   'costs.token_usage_note':      'Token-felhasználás mennyisége (nincs árazva)',
   'costs.calls':                 'hívás',
 
+  // --- Costs: provider sync spine (v0.5) ---
+  'costs.sync_btn':              'Provider szinkron',
+  'costs.sync_running':          'Szinkron fut...',
+  'costs.sync_ok':               'Szinkron kész ({count} egység).',
+  'costs.sync_failed':           'Szinkron sikertelen: {error}',
+  'costs.sync_network_error':    'hálózati hiba',
+  'costs.sync_section_title':    'Provider szinkron',
+  'costs.sync_section_note':     'A provider oldalán csak olvasunk; az import ugyanarra az időszakra ismételhető, nem duplázódik.',
+  'costs.sync_col_status':       'Állapot',
+  'costs.sync_col_imported':     'Importált tételek',
+  'costs.sync_col_last_success': 'Utolsó sikeres',
+  'costs.sync_col_last_failure': 'Utolsó hiba',
+  'costs.sync_status_ok':        'rendben',
+  'costs.sync_status_stale':     'elavult',
+  'costs.sync_status_failed':    'sikertelen',
+
   'tokenUsage.col.time':         'Idő',
   'tokenUsage.col.agent':        'Ágens',
   'tokenUsage.col.content':      'Tartalom',

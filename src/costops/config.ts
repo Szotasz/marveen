@@ -20,9 +20,15 @@ export type CostConfidence =
   | 'actual_invoice'
   | 'provider_api'
   | 'billing_export'
+  | 'provider_plan_estimate'  // v0.3: derived from provider plan inventory (Render), NOT an invoice; advisory
   | 'local_usage'
   | 'estimate'
   | 'manual'
+  // v0.7: a real, tracked provider whose cost cannot be read (missing IAM/API
+  // permission, e.g. AWS Cost Explorer). Advisory like provider_plan_estimate --
+  // NEVER shown as 0, NEVER folded into current_spend/operational. Surfaces only
+  // via a dedicated billing_access_needed warning (see warnings.ts).
+  | 'pending_permission'
 
 export type ChargeCategory =
   | 'usage'
@@ -43,17 +49,38 @@ export interface FixedCostEntry {
   confidence?: CostConfidence
   currency?: string
   notes?: string
+  // Phase 0 (source inventory, GAP-03): who is responsible for this source's config/credential.
+  // Optional -- defaults to 'operator' at read time (single-operator deployment), never
+  // fabricated as anything more specific than that default.
+  owner?: string
+  // Phase 0: manual escape hatch for the two lifecycle states that can never be safely inferred
+  // from collector/activity signals alone -- "this provider genuinely has no billing API" or
+  // "this subscription was cancelled/retired". Absent (undefined) means "let the signals decide".
+  lifecycle_override?: 'unsupported' | 'deprecated'
 }
 
 export interface BudgetEntry {
   id: string
   name?: string
-  scope?: 'global' | 'source' | 'provider' | 'product' | 'agent'
+  // Phase 3 (GAP-11): 'category' added -- a cost_sources.source_type-level
+  // budget (e.g. all 'hosting' or all 'saas' spend), distinct from a single
+  // 'source' (one specific subscription/API/hosting/SaaS line item) and from
+  // 'provider' (one provider across all its sources). 'product'/'agent'
+  // remain in the union for backward compatibility with any config already
+  // using them, but GAP-11 explicitly excludes building product/agent
+  // budgets -- nothing in budgets.ts resolves those scopes.
+  scope?: 'global' | 'source' | 'provider' | 'category' | 'product' | 'agent'
   scope_ref?: string
   amount: number
   currency?: string
   warning_threshold?: number  // fraction, default 0.8
   hard_threshold?: number     // fraction, default 1.0
+  // Phase 3 (GAP-11): who owns this budget (governance, not enforcement --
+  // the hard threshold is an alert, never an automatic stop). Optional,
+  // never fabricated; defaults applied at read time in budgets.ts, same
+  // convention as FixedCostEntry.owner.
+  owner?: string
+  notes?: string
 }
 
 export interface CostOpsConfig {
@@ -75,7 +102,7 @@ const EMPTY_CONFIG: CostOpsConfig = {
 const EXAMPLE_CONFIG = {
   version: 1,
   currency: 'HUF',
-  _doc: 'CostOps local config. Copy to store/costops-config.json and fill in real values. Amounts are per month. No secrets/API keys here -- put those in the Vault.',
+  _doc: 'CostOps v0.1 local config. Copy to store/costops-config.json and fill in real values. Amounts are per month. No secrets/API keys here -- put those in the Vault.',
   fixed_costs: [
     { source_id: 'anthropic-max', name: 'Claude Max', provider: 'anthropic', source_type: 'subscription', amount: 0, period: 'monthly', charge_category: 'subscription', confidence: 'manual' },
     { source_id: 'openai-chatgpt', name: 'ChatGPT', provider: 'openai', source_type: 'subscription', amount: 0, period: 'monthly', confidence: 'manual' },
@@ -126,6 +153,17 @@ export function ensureExampleConfig(): void {
 }
 
 /**
+ * Persist the config back to store/costops-config.json. Phase 3 (GAP-11):
+ * the only write path today is budgets.ts's upsertBudget/deleteBudget --
+ * fixed_costs remain manual-edit-only (no API mutates them). Whole-file
+ * rewrite, not a partial patch -- config.ts's own load path already
+ * round-trips the full object, so this stays consistent with it.
+ */
+export function saveCostopsConfig(config: CostOpsConfig): void {
+  writeFileSync(COSTOPS_CONFIG_PATH, JSON.stringify(config, null, 2) + '\n', 'utf-8')
+}
+
+/**
  * Pure validation of a parsed config object. Exported for unit tests.
  * Drops invalid entries (with an error note) rather than failing the whole load.
  */
@@ -152,6 +190,8 @@ export function validateConfig(raw: unknown): ConfigLoadResult {
       confidence: (typeof c.confidence === 'string' ? c.confidence : 'manual') as CostConfidence,
       currency: typeof c.currency === 'string' ? c.currency : currency,
       notes: typeof c.notes === 'string' ? c.notes : undefined,
+      owner: typeof c.owner === 'string' ? c.owner : undefined,
+      lifecycle_override: (c.lifecycle_override === 'unsupported' || c.lifecycle_override === 'deprecated') ? c.lifecycle_override : undefined,
     })
   }
 
@@ -170,6 +210,8 @@ export function validateConfig(raw: unknown): ConfigLoadResult {
       currency: typeof b.currency === 'string' ? b.currency : currency,
       warning_threshold: typeof b.warning_threshold === 'number' ? b.warning_threshold : 0.8,
       hard_threshold: typeof b.hard_threshold === 'number' ? b.hard_threshold : 1.0,
+      owner: typeof b.owner === 'string' ? b.owner : undefined,
+      notes: typeof b.notes === 'string' ? b.notes : undefined,
     })
   }
 

@@ -1,0 +1,15 @@
+{
+  "_doc": "CostOps v0.3 Render plan->USD/month map EXAMPLE. Copy to store/costops-render-pricing.json (gitignored) and fill REAL Render list prices + fx_usd_huf. All zero here (safe example, no real amounts). Unknown plan -> unpriced warning, never a fabricated amount. static_site/suspended = 0. Overage/seat/tax NOT modelled (see not_covered).",
+  "version": 1,
+  "currency": "HUF",
+  "fx_usd_huf": 0,
+  "plans": {
+    "web_service": { "free": 0, "starter": 0, "standard": 0, "pro": 0, "pro_plus": 0, "pro_max": 0, "pro_ultra": 0 },
+    "private_service": { "free": 0, "starter": 0, "standard": 0, "pro": 0 },
+    "background_worker": { "free": 0, "starter": 0, "standard": 0, "pro": 0 },
+    "cron_job": { "starter": 0 },
+    "static_site": { "free": 0 },
+    "postgres": { "free": 0, "basic_256mb": 0, "basic_1gb": 0, "basic_4gb": 0, "pro_4gb": 0 },
+    "key_value": { "free": 0, "starter": 0, "standard": 0, "pro": 0 }
+  }
+}

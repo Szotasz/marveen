@@ -9795,6 +9795,32 @@ async function loadStatus() {
 // ============================================================
 
 document.getElementById('refreshCostsBtn').addEventListener('click', loadCosts)
+document.getElementById('costsSyncBtn').addEventListener('click', costopsSyncNow)
+
+// v0.5 sync spine: kick the Render collector (read-only on the provider side,
+// idempotent import on ours), then re-render. No Authorization header is built
+// here on purpose -- window.fetch is wrapped near the top of this file and
+// already attaches the Bearer token to every same-origin /api/ call.
+async function costopsSyncNow() {
+  const btn = document.getElementById('costsSyncBtn')
+  const status = document.getElementById('costsSyncStatus')
+  btn.disabled = true
+  if (status) status.textContent = t('costs.sync_running')
+  try {
+    const res = await fetch('/api/costs/sync?provider=render', { method: 'POST' })
+    const d = await res.json().catch(() => ({}))
+    if (status) {
+      status.textContent = res.ok && d?.ok
+        ? t('costs.sync_ok', { count: d.service_count ?? d.imported_count ?? 0 })
+        : t('costs.sync_failed', { error: String(d?.error || res.status) })
+    }
+  } catch (err) {
+    if (status) status.textContent = t('costs.sync_failed', { error: t('costs.sync_network_error') })
+  } finally {
+    btn.disabled = false
+  }
+  await loadCosts()
+}
 
 async function loadCosts() {
   const el = document.getElementById('costsContent')
@@ -9842,6 +9868,41 @@ async function loadCosts() {
           <td style="padding:6px 8px">${fmtMoney(src.spend)}</td>
         </tr>`).join('')}</tbody>
       </table></div>`
+    }
+
+    // v0.5: provider sync freshness. Rendered only once a collector has run, so
+    // an install that never syncs looks exactly as it did before this section.
+    const syncRows = Array.isArray(s.provider_sync) ? s.provider_sync : []
+    if (syncRows.length > 0) {
+      const fmtTs = (ts) => (ts ? new Date(ts * 1000).toLocaleString('hu-HU') : '-')
+      const statusLabel = (row) => {
+        if (row.status === 'failed') return { text: t('costs.sync_status_failed') + (row.error_code ? ' (' + escapeHtml(row.error_code) + ')' : ''), color: 'var(--danger,#e74c3c)' }
+        if (row.status === 'stale') return { text: t('costs.sync_status_stale'), color: 'var(--warn,#e0a800)' }
+        return { text: t('costs.sync_status_ok'), color: 'var(--text-muted)' }
+      }
+      html += `<div style="margin-top:24px">
+        <div style="font-weight:600;margin-bottom:6px">${t('costs.sync_section_title')}</div>
+        <div style="${mutedStyle};margin-bottom:8px">${t('costs.sync_section_note')}</div>
+        <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+          <thead><tr style="text-align:left;border-bottom:1px solid var(--border,#333)">
+            <th style="padding:6px 8px">${t('costs.source_provider')}</th>
+            <th style="padding:6px 8px">${t('costs.sync_col_status')}</th>
+            <th style="padding:6px 8px">${t('costs.sync_col_imported')}</th>
+            <th style="padding:6px 8px">${t('costs.sync_col_last_success')}</th>
+            <th style="padding:6px 8px">${t('costs.sync_col_last_failure')}</th>
+          </tr></thead>
+          <tbody>${syncRows.map((row) => {
+            const st = statusLabel(row)
+            return `<tr style="border-bottom:1px solid var(--border,#222)">
+              <td style="padding:6px 8px">${escapeHtml(row.provider)}</td>
+              <td style="padding:6px 8px;color:${st.color}">${st.text}</td>
+              <td style="padding:6px 8px">${Number(row.imported_count) || 0}</td>
+              <td style="padding:6px 8px;${mutedStyle}">${escapeHtml(fmtTs(row.last_success))}</td>
+              <td style="padding:6px 8px;${mutedStyle}">${escapeHtml(fmtTs(row.last_failed))}</td>
+            </tr>`
+          }).join('')}</tbody>
+        </table></div>
+      </div>`
     }
 
     html += `<p style="${mutedStyle};margin-top:16px">${t('costs.token_usage_note')} (${(s.token_usage?.calls ?? 0)} ${t('costs.calls')}, ${(s.token_usage?.input_tokens ?? 0) + (s.token_usage?.output_tokens ?? 0)} tokens)</p>`
