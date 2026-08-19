@@ -39,6 +39,29 @@ Don't just copy the specific instance. Abstract it:
 - Note any prerequisites or dependencies
 - Think about edge cases the original workflow didn't cover
 
+**Agent name abstraction (required):**
+
+Never hardcode fleet-specific agent names or IDs in a skill. Use these placeholders instead:
+
+| Placeholder | Meaning |
+|-------------|---------|
+| `<AGENT>` | This agent's own agent_id (self-reference) |
+| `<MAIN_AGENT>` | The fleet's main orchestrator agent |
+| `<YOUR_MANAGER>` | This agent's `team.reportsTo` value |
+| `<BACKEND_AGENT>` | Agent with `backend` capability |
+| `<TESTER_AGENT>` | Agent with `testing`/`qa` capability |
+| `<DESIGN_AGENT>` | Agent with `design`/`visual` capability |
+| `<ARCHITECT_AGENT>` | Agent with `architecture`/`it` capability |
+| `<FINANCE_AGENT>` | Agent with `finance`/`accounting` capability |
+| `<IT_MANAGER_AGENT>` | Agent with `it-management` capability |
+| `<HEALTH_AGENT>` | Agent with `garmin`/`health-data` capability |
+| `<MARKETING_AGENT>` | Agent with `marketing`/`social` capability |
+| `<AGENT_A>`, `<AGENT_B>` | Generic agents in Pitfalls illustrations |
+
+**How to resolve at skill-use time:** read the fleet roster in your own CLAUDE.md (the "A flotta többi agense" section, auto-generated at agent start). Each line lists an agent_id with its capability tags. Match the placeholder's capability to the agent that has that tag.
+
+**In Pitfalls/incident entries:** incident dates and descriptions stay as-is. Concrete agent names in examples become `<AGENT_A>`/`<AGENT_B>`; self-references become `<AGENT>`; orchestrator references become `<MAIN_AGENT>`.
+
 ### Step 3: Write SKILL.md
 
 ```bash
@@ -122,3 +145,4 @@ Before finalizing, verify:
 - [ ] Pitfalls section has at least one entry
 - [ ] Verification section explains how to confirm success
 - [ ] Under 500 lines
+- [ ] No hardcoded agent names -- placeholders used (`<AGENT>`, `<MAIN_AGENT>`, role-based)
