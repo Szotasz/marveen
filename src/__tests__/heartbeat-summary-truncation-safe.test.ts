@@ -29,41 +29,44 @@ function bigSummary() {
 
 describe('buildHeartbeatSummaryResponse (pure)', () => {
   it('counts is the FIRST serialized key, so truncated reads lose lists, never numbers', () => {
-    const json = JSON.stringify(buildHeartbeatSummaryResponse(bigSummary(), 2))
+    const json = JSON.stringify(buildHeartbeatSummaryResponse(bigSummary(), 2, 305))
     expect(json.startsWith('{"counts":')).toBe(true)
     // The whole counts object must fit well inside any sane read window: the
     // first 200 bytes carry every number even if 99% of the payload is lost.
     const head = json.slice(0, 200)
     expect(head).toContain('"waiting":280')
+    // planned has no list at all, so its ONLY existence is this number --
+    // measured 2026-08-19 17:00: planned: 0 reported against a real 305.
+    expect(head).toContain('"planned":305')
     expect(head).toContain('"new_hot_memories_1h":2')
   })
 
   it('counts.waiting is the FULL total, never the capped list length (the 2026-08-04 lesson in endpoint form)', () => {
-    const r = buildHeartbeatSummaryResponse(bigSummary(), 0)
+    const r = buildHeartbeatSummaryResponse(bigSummary(), 0, 305)
     expect(r.counts.waiting).toBe(280)
     expect(r.waiting.length).toBe(HEARTBEAT_SUMMARY_WAITING_CAP)
     expect(r.waiting_shown).toBe(HEARTBEAT_SUMMARY_WAITING_CAP)
   })
 
   it('the waiting list carries the most recently UPDATED cards', () => {
-    const r = buildHeartbeatSummaryResponse(bigSummary(), 0)
+    const r = buildHeartbeatSummaryResponse(bigSummary(), 0, 305)
     // Fixture updated_at grows with the index, so the newest ids are the highest.
     expect(r.waiting[0].id).toBe('W279')
     expect(r.waiting[HEARTBEAT_SUMMARY_WAITING_CAP - 1].id).toBe(`W${280 - HEARTBEAT_SUMMARY_WAITING_CAP}`)
   })
 
   it('every title is truncated server-side; short titles pass through untouched', () => {
-    const r = buildHeartbeatSummaryResponse(bigSummary(), 0)
+    const r = buildHeartbeatSummaryResponse(bigSummary(), 0, 305)
     for (const c of [...r.urgent, ...r.waiting]) {
       expect(c.title.length).toBeLessThanOrEqual(HEARTBEAT_SUMMARY_TITLE_MAX + 1) // +1 for the ellipsis
     }
     const small = buildHeartbeatSummaryResponse(
-      { urgent: [card('A', 'rövid cím', 'waiting', 1)], in_progress: [], waiting: [] }, 0)
+      { urgent: [card('A', 'rövid cím', 'waiting', 1)], in_progress: [], waiting: [] }, 0, 0)
     expect(small.urgent[0].title).toBe('rövid cím')
   })
 
   it('the payload with 280 huge-titled cards stays small enough to never truncate in practice', () => {
-    const json = JSON.stringify(buildHeartbeatSummaryResponse(bigSummary(), 0))
+    const json = JSON.stringify(buildHeartbeatSummaryResponse(bigSummary(), 0, 305))
     // Pre-fix this was ~4.2MB with these fixtures (280 x 15KB); the cap+trunc
     // must keep it in the low KB range.
     expect(json.length).toBeLessThan(10_000)
@@ -82,6 +85,9 @@ describe('wiring: the endpoint serves the pure builder, the scaffold forbids cou
     expect(start).toBeGreaterThanOrEqual(0)
     const handler = KANBAN.slice(start, KANBAN.indexOf('return true', start))
     expect(handler).toMatch(/buildHeartbeatSummaryResponse\(/)
+    // planned must come from its sanctioned server-side counter, or the agent
+    // manufactures it again (planned: 0 vs real 305, 2026-08-19 17:00).
+    expect(handler).toMatch(/countPlannedKanbanCards\(\)/)
   })
 
   it('the scaffold says numbers come from counts.* only and names the drift incident', () => {

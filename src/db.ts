@@ -2043,6 +2043,19 @@ export const HEARTBEAT_IN_PROGRESS_SQL =
 export const HEARTBEAT_WAITING_SQL =
   "SELECT * FROM kanban_cards WHERE archived_at IS NULL AND status = 'waiting'"
 
+// HBKANBANDRIFT819 follow-up: the heartbeat report format asks for a planned
+// line, so the number needs a sanctioned server-side source like every other
+// count -- without it the agent manufactures the value (measured: planned: 0
+// reported against a real 305). COUNT only: no card list is served for
+// planned, the line is a bare number.
+export const HEARTBEAT_PLANNED_COUNT_SQL =
+  "SELECT COUNT(*) AS n FROM kanban_cards WHERE archived_at IS NULL AND status = 'planned'"
+
+export function countPlannedKanbanCards(): number {
+  const row = db.prepare(HEARTBEAT_PLANNED_COUNT_SQL).get() as { n: number } | undefined
+  return row?.n ?? 0
+}
+
 export function getHeartbeatKanbanSummary(): HeartbeatKanbanSummary {
   const urgent = db.prepare(HEARTBEAT_URGENT_SQL).all() as KanbanCard[]
   const in_progress = db.prepare(HEARTBEAT_IN_PROGRESS_SQL).all() as KanbanCard[]

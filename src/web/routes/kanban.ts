@@ -13,6 +13,7 @@ import {
   revertIdeaFromKanban,
   getHeartbeatKanbanSummary,
   countNewHotMemories,
+  countPlannedKanbanCards,
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
@@ -137,6 +138,7 @@ type HeartbeatSummaryCard = {
 export function buildHeartbeatSummaryResponse(
   summary: { urgent: HeartbeatSummaryCard[]; in_progress: HeartbeatSummaryCard[]; waiting: HeartbeatSummaryCard[] },
   newHotMemories1h: number,
+  plannedCount: number,
 ) {
   const trunc = (t: string) =>
     t.length > HEARTBEAT_SUMMARY_TITLE_MAX ? t.slice(0, HEARTBEAT_SUMMARY_TITLE_MAX) + '…' : t
@@ -153,6 +155,10 @@ export function buildHeartbeatSummaryResponse(
       // The FULL total, never the capped list length -- the 2026-08-04 lesson
       // (waiting: 10 reported against 130 real) in endpoint form.
       waiting: summary.waiting.length,
+      // The report format asks for a planned line; without a sanctioned
+      // source here the agent manufactured the value (planned: 0 against a
+      // real 305, measured 2026-08-19 17:00). Count only, no list.
+      planned: plannedCount,
       // HBMEMBLIND819: computed server-side with the MAIN agent's id so the
       // heartbeat agent copies a number instead of running (and rewriting)
       // a query -- see HEARTBEAT_NEW_HOT_MEMORIES_SQL in db.ts.
@@ -195,7 +201,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   // few -- while counts.* always carries the FULL totals. The list is for
   // naming items; the numbers ONLY ever come from counts.
   if (path === '/api/kanban/heartbeat-summary' && method === 'GET') {
-    json(res, buildHeartbeatSummaryResponse(getHeartbeatKanbanSummary(), countNewHotMemories(MAIN_AGENT_ID)))
+    json(res, buildHeartbeatSummaryResponse(getHeartbeatKanbanSummary(), countNewHotMemories(MAIN_AGENT_ID), countPlannedKanbanCards()))
     return true
   }
 
