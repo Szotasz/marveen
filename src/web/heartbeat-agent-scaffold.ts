@@ -204,12 +204,28 @@ When you receive the heartbeat prompt:
      If the call fails (token revoked / 401), record the failure
      reason rather than the events; the main agent can act on the
      failure.
-   - **Kanban** -- ONE call, and do not compose a query of your own:
+   - **Kanban** -- ONE command, fetch AND extract together; run it EXACTLY
+     as written, do not recompose it:
 
      \`\`\`bash
-     curl -s -H "Authorization: Bearer $(cat ${id.storeDir}/.dashboard-token)" \\
-       ${id.dashboardOrigin}/api/kanban/heartbeat-summary
+     python3 -c "import json,urllib.request; tok=open('${id.storeDir}/.dashboard-token').read().strip(); d=json.load(urllib.request.urlopen(urllib.request.Request('${id.dashboardOrigin}/api/kanban/heartbeat-summary', headers={'Authorization':'Bearer '+tok}))); c=d['counts']; print('COUNTS urgent=%s in_progress=%s waiting=%s planned=%s new_hot_memories_1h=%s waiting_shown=%s' % (c['urgent'],c['in_progress'],c['waiting'],c['planned'],c['new_hot_memories_1h'],d.get('waiting_shown'))); [print('URGENT',x['id'],x['title']) for x in d['urgent']]; [print('WAITING',x['id'],x['title']) for x in d['waiting']]"
      \`\`\`
+
+     The command is ONE line on purpose: it survives copy-paste from any
+     indentation, needs no shell variable, no pipe, and no second
+     process -- the failure modes that produced HBHEREDOC819 and
+     HBKANBANDRIFT819 structurally cannot occur in it.
+
+     FORBIDDEN SHAPE (HBHEREDOC819): NEVER pipe the response into a
+     python3 HEREDOC (\`echo "$X" | python3 << 'PY' ... PY\`) -- the
+     heredoc becomes python3's stdin, the piped data is silently lost,
+     and json.load reads EOF. Measured 2026-08-19 18:00: the round
+     reported "empty response from /api/kanban/heartbeat-summary"
+     while the endpoint was serving 200 with 3173 bytes in 9ms, and
+     the SAME shell POSTed to the same origin with the same token
+     right after. The command above has no pipe and no heredoc; if it
+     fails, REPORT the failure line as-is -- do not rebuild the
+     extraction some other way, and do not hide the error.
 
      It returns exactly what this section may report:
      \`{"counts":{...}, "urgent":[...], "waiting":[...]}\`, where the
