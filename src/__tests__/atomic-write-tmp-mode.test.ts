@@ -15,6 +15,13 @@ const atomicWriteSrc = join(here, '..', 'web', 'atomic-write.ts')
 // umask default (0644) in the same directory as the protected target -- a
 // world-readable window even though the final renamed file ends up 0600.
 describe('atomic-write tmp-file creation mode', () => {
+  // DO NOT delete this source-scan as "redundant" with the behaviour tests
+  // below. Verified 2026-08-19 (Marveen's negative control): reverting the fix
+  // to a mode-less tmp create keeps BOTH behaviour tests GREEN -- the trailing
+  // chmod still repairs the END state, so statSync on the final file sees 0600.
+  // Only this source-scan turns red. This fault class (a transient world-readable
+  // tmp) is invisible to end-state assertions; the source-scan is the only guard
+  // that catches a regression, so removing it silently re-opens the window.
   it('passes the mode to writeFileSync at tmp creation (not chmod-only)', () => {
     const src = readFileSync(atomicWriteSrc, 'utf8')
     // The tmp create call must carry the mode; a mode-less writeFileSync(tmp, data)
