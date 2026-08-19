@@ -37,14 +37,14 @@ with open(settings_path) as f:
 hooks = cfg.setdefault('hooks', {})
 post = hooks.setdefault('PostToolUse', [])
 
-# Check if already installed (same matcher + command present)
+# Idempotent + no-duplicate: skip if ANY Artifact matcher is already present.
+# This also covers the canonical entry shipped in the git-tracked root
+# settings.json (which uses the portable "$CLAUDE_PROJECT_DIR" path form) so we
+# never append a second, absolute-path Artifact hook alongside it.
 for entry in post:
-    if entry.get('matcher') != 'Artifact':
-        continue
-    for h in entry.get('hooks', []):
-        if h.get('command') == hook_cmd:
-            print(f"  ⊙ already installed in {os.path.basename(settings_path)}")
-            sys.exit(0)
+    if entry.get('matcher') == 'Artifact':
+        print(f"  ⊙ already installed in {os.path.basename(settings_path)}")
+        sys.exit(0)
 
 # Insert new matcher entry
 post.append({
