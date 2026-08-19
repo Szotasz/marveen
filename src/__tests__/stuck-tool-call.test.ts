@@ -520,9 +520,14 @@ describe('wiring: the stale-verdict gate sits at the KILL boundary, not in verdi
     const start = SRC.indexOf('async function checkSession')
     expect(start).toBeGreaterThanOrEqual(0)
     const body = SRC.slice(start, SRC.indexOf('\n}', start))
-    const cpuIdx = body.indexOf('confirmsWedgeProfile(')
-    const gateIdx = body.indexOf('verdictStaleByTranscript(')
-    const killIdx = body.indexOf('resumeMarveenSession()')
+    // Comment lines dropped, and the guard pinned as the EXACT live line --
+    // a bare indexOf would stay green with the call neutered (`false && ...`),
+    // which is precisely the declaration-vs-reachability trap: the text is
+    // present, the gate never runs. Caught by mutation on the first version.
+    const code = body.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+    const cpuIdx = code.indexOf('confirmsWedgeProfile(')
+    const gateIdx = code.indexOf('if (verdictStaleByTranscript(transcriptMtime, Date.now())) {')
+    const killIdx = code.indexOf('resumeMarveenSession()')
     expect(cpuIdx).toBeGreaterThanOrEqual(0)
     expect(gateIdx).toBeGreaterThan(cpuIdx)
     expect(killIdx).toBeGreaterThan(gateIdx)
