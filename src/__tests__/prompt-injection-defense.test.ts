@@ -64,6 +64,35 @@ describe('quarantine-reader sub-agent definition', () => {
     const src = readFileSync(join(REPO_ROOT, 'src', 'web', 'agent-scaffold.ts'), 'utf8')
     expect(src).toContain('quarantine-reader.md')
   })
+
+  // WEBFETCHFAB819 (2026-08-19, Sam/Pedro): measured live -- asked to check a
+  // pdb.hu product page for strong/ul/li usage, this sub-agent confidently
+  // reported 3 ul blocks with ~15 li elements AND quoted a specific
+  // <h3>...</h3><ul><li>...</li> snippet. A direct curl of the same page
+  // showed zero ul/li/h3, only 32 plain <p> tags -- neither the count nor the
+  // quote existed. WebFetch reconstructs a description, not a byte copy, so
+  // structural/verbatim claims from it must never be presented as measured.
+  it('warns callers in its own description that structural claims are unverified', () => {
+    const content = readFileSync(tplPath, 'utf8')
+    const frontmatter = content.slice(0, content.indexOf('---', 4))
+    expect(frontmatter).toMatch(/model-reconstructed|not a byte-exact copy/i)
+  })
+
+  it('forbids presenting a fabricated verbatim quote as a real excerpt', () => {
+    const content = readFileSync(tplPath, 'utf8')
+    expect(content).toMatch(/never produce a quoted, verbatim-looking excerpt/i)
+    expect(content).toMatch(/unless every character of\s+it appears in webfetch/i)
+  })
+
+  it('forbids stating tag-level/structural facts as measured', () => {
+    const content = readFileSync(tplPath, 'utf8')
+    expect(content).toMatch(/must not state a structural fact/i)
+  })
+
+  it('tells the agent to say "cannot verify" instead of guessing a precise-sounding answer', () => {
+    const content = readFileSync(tplPath, 'utf8')
+    expect(content).toMatch(/say\s+so\s+explicitly in your response instead of answering with a specific-sounding/i)
+  })
 })
 
 // ---------------------------------------------------------------------------
