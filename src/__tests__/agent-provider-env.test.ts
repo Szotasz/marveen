@@ -34,6 +34,16 @@ describe('resolveProviderEnv', () => {
     expect(r.exportsStr).toContain(`ANTHROPIC_MODEL='minimax-m3'`)
   })
 
+  it('forces CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 for minimax- models -- the /anthropic compat layer misreports 200K (MiniMax-AI/MiniMax-M2.7#46), so the CLI must be told the real window explicitly', () => {
+    const r = resolveProviderEnv('minimax-m3', () => 'mm-secret')
+    expect(r.exportsStr).toContain('CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000')
+  })
+
+  it('does NOT force CLAUDE_CODE_MAX_CONTEXT_TOKENS for a claude- model -- the override is minimax-specific, not a blanket setting', () => {
+    const r = resolveProviderEnv('claude-sonnet-5', () => null)
+    expect(r.exportsStr).not.toContain('CLAUDE_CODE_MAX_CONTEXT_TOKENS')
+  })
+
   it('routes provider/model ids (containing "/") to OpenRouter, not minimax or ollama', () => {
     const seen: string[] = []
     const r = resolveProviderEnv('minimax/minimax-m3', (id) => {
