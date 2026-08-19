@@ -2120,6 +2120,26 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const name = decodeURIComponent(agentMatch[1])
     const dir = agentDir(name)
     if (!existsSync(dir)) { json(res, { error: 'Agent not found' }, 404); return true }
+    // Clear the desired run-state FIRST, before anything yields. Deleting an
+    // agent is at least as strong a statement of intent as stopping one, so it
+    // must clear the state the same way /stop does: without this the name
+    // outlives its directory in agents-desired.json, the reconciler keeps
+    // trying to start something that no longer exists (a permanent error-level
+    // line for a machine behaving correctly), and -- the sharper hazard --
+    // re-creating an agent with the same name later starts it immediately,
+    // unasked.
+    //
+    // The ordering is load-bearing, not cosmetic. stopAgentProcess() now awaits
+    // (it used to block the event loop with execSync('sleep 2')), so the ~2s it
+    // spends settling is a window in which other work runs. The agent is
+    // already dead in that window but would still be listed as desired, and
+    // channel-monitor's reconcileDesiredAgents() sweep -- which fires every 60s
+    // looking for exactly "desired but not running" -- would start it back up.
+    // The rmSync below would then delete the directory out from under a live
+    // session, producing precisely the orphan-ghost this handler exists to
+    // prevent. Clearing intent up front makes the agent invisible to the
+    // reconciler for the whole teardown.
+    removeDesiredAgent(name)
     // Stop the running tmux session BEFORE removing the dir. Otherwise the
     // orphaned session survives the delete, rewrites a minimal .claude-config
     // under agents/<name>/, and the agent "returns" as an empty draft (persona
@@ -2129,14 +2149,6 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (isAgentRunning(name)) await stopAgentProcess(name)
     rmSync(dir, { recursive: true, force: true })
     cleanupTeamReferences(name)
-    // Deleting an agent is at least as strong a statement of intent as stopping
-    // one, so it must clear the desired run-state the same way /stop does.
-    // Without this the name outlives its directory in agents-desired.json, and
-    // the reconciler keeps trying to start something that no longer exists --
-    // a permanent error-level log line for a machine that is behaving
-    // correctly. The sharper hazard is later: create an agent with the same
-    // name again and the stale entry starts it immediately, unasked.
-    removeDesiredAgent(name)
     json(res, { ok: true })
     return true
   }
