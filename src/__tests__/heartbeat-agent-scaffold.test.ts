@@ -208,29 +208,34 @@ describe('shouldBootHeartbeatAgent', () => {
   })
 })
 
-// HBMEMBLIND807: the hot-memory metric must ship as a READY-MADE query, the
-// way task_runs does -- a prose-only bullet let the heartbeat agent compose
-// its own SQL and report 0 with three hot memories in the window. Lock the
-// contract: the exact query, the SECONDS cutoff (no ms multiplier -- that is
-// the task_runs unit, not this one), and the do-not-rewrite instruction.
-describe('hot-memory metric is a ready-made query (HBMEMBLIND807)', () => {
-  it('ships the exact scoped count query', () => {
+// HBMEMBLIND807 -> HBMEMBLIND819: the hot-memory metric went through TWO
+// contracts, and both failures are why the current one exists. 807: a
+// prose-only bullet let the agent compose its own SQL (reported 0 beside 3
+// hot memories); the fix shipped a ready-made query with "do not rewrite the
+// query". 819: that failed too -- post-compact rounds reconstructed the query
+// from memory with agent_id='heartbeat' and reported 0 for 24h straight
+// (14/14, real value 2 in three rounds). Current contract: the number is
+// computed server-side (countNewHotMemories, served as
+// counts.new_hot_memories_1h on /api/kanban/heartbeat-summary) and the
+// scaffold tells the agent to COPY it -- there is no query left to rewrite.
+describe('hot-memory metric is an endpoint number, never an agent-run query (HBMEMBLIND819)', () => {
+  it('points the agent at counts.new_hot_memories_1h from the heartbeat-summary call', () => {
     const out = renderHeartbeatClaudeMd(ID)
-    expect(out).toContain("SELECT COUNT(*) FROM memories")
-    expect(out).toContain(`agent_id='${ID.mainAgentId}'`)
-    expect(out).toContain("category='hot'")
-    expect(out).toContain('created_at > unixepoch()-3600')
+    expect(out).toContain('counts.new_hot_memories_1h')
   })
 
-  it('the memory cutoff carries NO millisecond multiplier', () => {
+  it('ships NO runnable hot-memory SQL anywhere in the prompt', () => {
     const out = renderHeartbeatClaudeMd(ID)
-    const memBullet = out.slice(out.indexOf('Memory + system'))
-    expect(memBullet.slice(0, 1200)).not.toContain("(unixepoch()-3600)*1000")
+    // The exact surface that drifted twice: a memories/hot query the agent
+    // could run (and, measured, rewrite). Shape-agnostic: any SQL touching
+    // the memories table near a hot filter is out of contract.
+    expect(out).not.toMatch(/FROM memories[\s\S]{0,120}category='hot'/)
+    expect(out).not.toContain('do not rewrite the query')
   })
 
-  it('tells the agent to report the number, not to rewrite the query', () => {
+  it('degrades a missing field to "no data", never to a self-run query or a zero', () => {
     const out = renderHeartbeatClaudeMd(ID)
-    expect(out).toContain('do not rewrite the query')
+    expect(out).toContain('nincs adat (a summary nem adja)')
   })
 })
 

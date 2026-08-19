@@ -2050,6 +2050,35 @@ export function getHeartbeatKanbanSummary(): HeartbeatKanbanSummary {
   return { urgent, in_progress, waiting }
 }
 
+/**
+ * HBMEMBLIND819: the heartbeat's "new hot memories (1h)" number is computed
+ * HERE, server-side, and served over /api/kanban/heartbeat-summary -- the
+ * heartbeat agent copies it like the kanban counts, it never runs the query.
+ *
+ * This is the SECOND failure of the prescribe-the-query pattern for this
+ * metric. HBMEMBLIND807 (2026-08-07): the agent composed its own SQL and
+ * reported 0 beside three hot memories; the fix prescribed a ready-made query
+ * with "do not rewrite the query". HBMEMBLIND819 (2026-08-19): measured
+ * 14/14 rounds reporting 0 over 24h with real values of 2 in three of them --
+ * the agent ran the prescribed query SHAPE but with agent_id='heartbeat'
+ * substituted for the main agent's id. Timeline over 8 sessions / 196 runs:
+ * the identity rewrite appears on post-compact rounds (the agent reconstructs
+ * the query from memory as "count MY hot memories" instead of re-reading the
+ * prescription) and then persists as its own precedent. A prescription the
+ * measured party must re-copy every round is not a mechanism; the kanban
+ * counts on the SAME agent never drifted, because an endpoint number has no
+ * query to rewrite. Same closure as getHeartbeatKanbanSummary above.
+ */
+/** Exported so a test can execute the SHIPPED statement against a fixture DB
+ *  instead of re-typing an equivalent one and proving nothing. */
+export const HEARTBEAT_NEW_HOT_MEMORIES_SQL =
+  "SELECT COUNT(*) AS n FROM memories WHERE agent_id = ? AND category = 'hot' AND created_at > unixepoch() - 3600"
+
+export function countNewHotMemories(agentId: string): number {
+  const row = db.prepare(HEARTBEAT_NEW_HOT_MEMORIES_SQL).get(agentId) as { n: number } | undefined
+  return row?.n ?? 0
+}
+
 // --- Agent Messages ---
 
 export interface AgentMessage {
