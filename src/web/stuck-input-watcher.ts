@@ -1,7 +1,7 @@
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { listAgentNames, readAgentRemoteHost } from './agent-config.js'
-import { isAgentRunning, captureParkedInputView, sendEnterToSession } from './agent-process.js'
+import { isAgentRunning, captureParkedInputView, sendEnterToSession, capturePane } from './agent-process.js'
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { recoverStuckInputForSession, sendAlert } from './channel-monitor.js'
@@ -9,9 +9,42 @@ import {
   stuckInputSignature,
   parkedPasteSignature,
   decideStuckInputRecovery,
+  detectPaneState,
+  type PaneState,
   type StuckInputState,
   type StuckInputThresholds,
 } from '../pane-state.js'
+
+// RIASZTASZAJ819: the owner alert for a parked-past-max-attempts sub-agent
+// fired three times in one afternoon at an agent that was WORKING the whole
+// time (its outbound messages bracket every alert timestamp). Parked input at
+// a BUSY agent is normal: a message that arrives mid-turn sits in the TUI
+// until the turn ends and then submits on its own. The recovery Enters are
+// harmless and stay; only the OWNER ESCALATION must require an idle pane.
+//
+// PURE decision, unit-tested: alert exactly once per spell, and only when the
+// give-up threshold is spent AND the pane is NOT busy at this tick.
+//   - 'busy'            -> suppress (waiting, not wedged). The spell stays
+//                          open, so if the turn ends and the input is STILL
+//                          parked, a later idle tick fires the alert -- the
+//                          real bug is never silenced, only deferred to the
+//                          moment it is distinguishable from waiting.
+//   - idle/typing/unknown -> alert: parked input at a non-busy pane after all
+//                          recovery attempts is the genuine wedge ('unknown'
+//                          deliberately alerts -- an unreadable pane with a
+//                          stuck spell deserves eyes, not silence).
+export function shouldAlertParkedGiveUp(opts: {
+  attempts: number
+  maxAttempts: number
+  alreadyAlerted: boolean
+  paneState: PaneState | null
+}): boolean {
+  const { attempts, maxAttempts, alreadyAlerted, paneState } = opts
+  if (alreadyAlerted) return false
+  if (attempts < maxAttempts) return false
+  if (paneState === 'busy') return false
+  return true
+}
 
 // Backstop recovery for a swallowed Enter on the channel-notification
 // path. Inbound Telegram/Slack messages are delivered into the session by
@@ -78,6 +111,10 @@ const INTERVAL_MS = 15_000
 const NO_STATE: StuckInputState = { parkedSig: null, firstSeenAt: null, lastRecoverAt: null, attempts: 0 }
 
 const watchState = new Map<string, StuckInputState>()
+// One owner alert per spell (RIASZTASZAJ819): entries live while a spell is
+// open and are dropped with it, so a NEW spell on the same session alerts
+// again. Not persisted -- a dashboard restart may re-alert once, acceptable.
+const alertedSpells = new Set<string>()
 
 // Backstop for a PARKED `[Pasted text #N]` placeholder -- a long inbound prompt
 // (e.g. a scheduled-task notice > ~700 chars) the TUI collapsed into a paste
@@ -196,15 +233,31 @@ async function checkLocalSession(label: string, session: string, alertOnGiveUp: 
 
   if (next.parkedSig === null) {
     watchState.delete(session)
+    alertedSpells.delete(session)
   } else {
     watchState.set(session, next)
-    if (
-      alertOnGiveUp &&
-      next.attempts >= LOCAL_FAST_THRESHOLDS.maxAttempts &&
-      prev.attempts < LOCAL_FAST_THRESHOLDS.maxAttempts
-    ) {
-      logger.warn({ label, session }, 'stuck-input-watcher: sub-agent input still parked after max recovery attempts, alerting for manual restart')
-      sendAlert(`⚠️ A(z) ${label} agens bemenete beragadt és az auto-recovery (Enter + clear/re-inject) nem szabadította ki. Valószínűleg kézi restart kell: POST /api/agents/${label}/restart vagy a dashboardon.`)
+    if (alertOnGiveUp && next.attempts >= LOCAL_FAST_THRESHOLDS.maxAttempts) {
+      // RIASZTASZAJ819: the owner escalation requires an IDLE pane. A parked
+      // input at a busy agent is a message waiting out the current turn, not
+      // a wedge -- three false owner alerts in one afternoon came from
+      // exactly this (the agent's own outbound messages bracketed every
+      // alert). Recovery attempts above are untouched; only the alert gates.
+      const pane = capturePane(session)
+      const paneState = pane != null ? detectPaneState(pane) : null
+      if (shouldAlertParkedGiveUp({
+        attempts: next.attempts,
+        maxAttempts: LOCAL_FAST_THRESHOLDS.maxAttempts,
+        alreadyAlerted: alertedSpells.has(session),
+        paneState,
+      })) {
+        alertedSpells.add(session)
+        logger.warn({ label, session, paneState }, 'stuck-input-watcher: sub-agent input still parked after max recovery attempts at a non-busy pane, alerting for manual restart')
+        sendAlert(`⚠️ A(z) ${label} agens bemenete beragadt és az auto-recovery (Enter + clear/re-inject) nem szabadította ki. Valószínűleg kézi restart kell: POST /api/agents/${label}/restart vagy a dashboardon.`)
+      } else if (paneState === 'busy' && prev.attempts < LOCAL_FAST_THRESHOLDS.maxAttempts) {
+        // Once per spell, at the crossing tick: say WHY no alert went out, so
+        // a real wedge investigation finds the suppression instead of a hole.
+        logger.info({ label, session }, 'stuck-input-watcher: parked past max attempts but the pane is BUSY -- input is waiting out the turn, owner alert suppressed until an idle tick (RIASZTASZAJ819)')
+      }
     }
   }
 }
