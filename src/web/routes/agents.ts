@@ -1792,9 +1792,16 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       json(res, { error: 'Main agent lifecycle is service-managed; use /api/marveen/restart for recovery' }, 400)
       return true
     }
-    const result = await stopAgentProcess(name)
-    // Explicit stop clears intent so the monitor will not resurrect it.
+    // Explicit stop clears intent so the monitor will not resurrect it -- and
+    // it must happen BEFORE the stop yields. stopAgentProcess() now awaits ~2s
+    // while the session settles; in that window the agent is already dead but
+    // would still be listed as desired, so reconcileDesiredAgents() (every 60s,
+    // looking for exactly "desired but not running") can restart it. The stop
+    // then returns ok while the agent is back up and no longer desired -- a
+    // live session nothing will ever reap, after the operator was told it
+    // stopped. Unconditional, as before: a failed stop still clears intent.
     removeDesiredAgent(name)
+    const result = await stopAgentProcess(name)
     if (result.ok) { json(res, { ok: true }); return true }
     json(res, { error: result.error }, 400)
     return true
