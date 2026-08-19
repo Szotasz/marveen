@@ -47,6 +47,7 @@ import {
   clearStaleParkedInput,
 } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
+import { recordDispatchedScheduledPrompt } from './dispatched-scheduled-prompts.js'
 import { sendTelegramMessage } from './telegram.js'
 import { runCommandTask } from './command-task.js'
 import { decideQuotaAction, type QuotaWorkClass } from '../quota-gate.js'
@@ -712,6 +713,13 @@ async function attemptFireTask(
       SCHEDULED_TASK_PREAMBLE + '\n' +
       prefix.trimEnd() + '\n\n' +
       wrapScheduledTask(`scheduled-task:${task.name}`, taskBody)
+    // SCHEDCONTENTMATCH (Balogh-safe): record the EXACT text we are about to
+    // type into the box, so that if a fragment of it later strands as a parked
+    // line on the main channels box, clearStaleParkedInput can recognise it as
+    // our own system-generated remnant and auto-clear it (instead of silencing
+    // the channel unattended). Recorded here, right at the dispatch, so the
+    // recorded body is byte-identical to what lands in the input box.
+    recordDispatchedScheduledPrompt(fullPrompt)
     // forceSend skips the busy-state check above; it must also skip the
     // pre-flight wait-until-idle gate inside sendPromptToSession, otherwise a
     // task aimed at a long-busy session would block on the 12s idle wait every
