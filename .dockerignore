@@ -1,0 +1,47 @@
+# Build context excludes — keep the image lean and the build cache stable.
+
+# VCS + deps + build output (deps reinstalled, dist rebuilt in-image)
+.git
+.gitignore
+node_modules
+dist
+
+# Runtime state — mounted as volumes at runtime, NEVER baked into the image
+store
+agents
+workspace
+reports
+.channels-config
+mcp-servers
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+
+# Secrets / local env (compose reads .env.docker at runtime, not from the image)
+.env
+.env.*
+!.env.docker.example
+.mail-credentials*
+*.secret
+marveen-mail-ugyfelkod
+
+# Private planning/scratch + local tooling
+docs/superpowers
+.superpowers
+.gitnexus
+.channels-config
+mcp-servers
+backups
+
+# Logs, test artifacts, editor/OS cruft
+*.log
+*.pid
+test-results
+.playwright-mcp
+.DS_Store
+
+# Docker's own files (not needed inside the image)
+Dockerfile
+.dockerignore
+docker-compose*.yml
