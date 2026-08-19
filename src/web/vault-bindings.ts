@@ -123,7 +123,12 @@ export function removeBindingsForSecret(vaultSecretId: string): void {
           delete serverCfg.env[binding.envVar]
           if (!serverHasVaultRefs(serverCfg.env)) unwrapCommand(serverCfg)
         }
-        atomicWriteFileSync(target.mcpFilePath, JSON.stringify(content, null, 2))
+        // 0600: these files carry vault:-wrapped credential references and,
+        // for the user target, this IS ~/.claude.json. atomicWriteFileSync
+        // renames a fresh tmp file over the target, so without an explicit mode
+        // the result inherits the umask (0644) and silently loosens a 0600
+        // credential file to group/other-readable (VAULTMODE818).
+        atomicWriteFileSync(target.mcpFilePath, JSON.stringify(content, null, 2), { mode: 0o600 })
       } catch { /* skip */ }
     }
   }
@@ -299,7 +304,12 @@ export function syncSecret(vaultSecretId: string): SyncResult {
           serverCfg.env[binding.envVar] = `vault:${vaultSecretId}`
           if (serverCfg.command && !serverCfg.url) wrapCommand(serverCfg)
         }
-        atomicWriteFileSync(target.mcpFilePath, JSON.stringify(content, null, 2))
+        // 0600: these files carry vault:-wrapped credential references and,
+        // for the user target, this IS ~/.claude.json. atomicWriteFileSync
+        // renames a fresh tmp file over the target, so without an explicit mode
+        // the result inherits the umask (0644) and silently loosens a 0600
+        // credential file to group/other-readable (VAULTMODE818).
+        atomicWriteFileSync(target.mcpFilePath, JSON.stringify(content, null, 2), { mode: 0o600 })
         updated++
       } catch (err: any) {
         errors.push(`Failed to update ${target.mcpFilePath}: ${err.message}`)
@@ -337,7 +347,12 @@ export function unsyncBinding(vaultSecretId: string, envVar: string): void {
           delete serverCfg.env[envVar]
           if (!serverHasVaultRefs(serverCfg.env)) unwrapCommand(serverCfg)
         }
-        atomicWriteFileSync(target.mcpFilePath, JSON.stringify(content, null, 2))
+        // 0600: these files carry vault:-wrapped credential references and,
+        // for the user target, this IS ~/.claude.json. atomicWriteFileSync
+        // renames a fresh tmp file over the target, so without an explicit mode
+        // the result inherits the umask (0644) and silently loosens a 0600
+        // credential file to group/other-readable (VAULTMODE818).
+        atomicWriteFileSync(target.mcpFilePath, JSON.stringify(content, null, 2), { mode: 0o600 })
       } catch { /* skip */ }
     }
   }
