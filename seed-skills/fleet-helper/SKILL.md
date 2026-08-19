@@ -34,8 +34,19 @@ No secrets or personal data are baked in: the dashboard token is read from
 - `scripts/README.md` - full usage and the heartbeat gate pattern write-up.
 
 ## Quick start
+🛑 **USE A `../../`-RELATIVE PATH, NOT A BARE RELATIVE PATH -- your shell's
+CWD is your own agent directory (`<project-root>/agents/<name>/`), NOT the
+repo root, so a bare relative path below resolves to nothing there.** A
+sub-agent's CWD is always exactly two levels under the project root
+(`agentDir()` in `src/web/agent-config.ts`: `PROJECT_ROOT/agents/<name>`), so
+`../../` reaches the root from ANY agent, on ANY machine -- no hardcoded
+absolute path needed. (`$CLAUDE_PROJECT_DIR`, used elsewhere for hook
+`command` fields, does NOT help here: it is unset in a normal agent Bash
+call, measured empty.) (Bitten twice in one night, 2026-08-17: two fleet
+agents each ran a root-level `find / -iname fleet.py` trying to locate this
+script -- a 10+ minute runaway search under macOS/iCloud folders.)
 ```bash
-P=seed-skills/fleet-helper/scripts
+P=../../seed-skills/fleet-helper/scripts
 python3 $P/fleet.py mdv2 "Tomorrow (8:00) - report!"   # escaped MarkdownV2
 python3 $P/fleet.py kanban-due
 python3 $P/mail_triage.py 90                            # unread <= 90 min -> JSON
