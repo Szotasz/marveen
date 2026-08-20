@@ -75,7 +75,16 @@ export function isAllowedHost(
 ): boolean {
   if (!host) return false
   if (allowedHosts.has(host)) return true
-  const bare = host.includes(':') ? host.split(':')[0] : undefined
+  // Extract the bare hostname for a port-free fallback match.
+  // IPv6 bracket notation: [::1]:3420 → ::1; plain: hostname:port → hostname.
+  let bare: string | undefined
+  if (host.startsWith('[')) {
+    const close = host.indexOf(']')
+    bare = close !== -1 ? host.slice(1, close) : undefined
+  } else {
+    const colon = host.indexOf(':')
+    bare = colon !== -1 ? host.slice(0, colon) : undefined
+  }
   return bare !== undefined && allowedHosts.has(bare)
 }
 
