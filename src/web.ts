@@ -82,6 +82,7 @@ import { tryHandleSecurity } from './web/routes/security.js'
 import { tryHandleArtifacts } from './web/routes/artifacts.js'
 import type { RouteContext } from './web/routes/types.js'
 import { RouteDispatcher } from './web/routes/dispatcher.js'
+import { reconcileAgentsOnStartup, flushRunningStateToDesired } from './web/startup-reconciliation.js'
 
 const WEB_DIR = join(PROJECT_ROOT, 'web')
 
@@ -499,6 +500,24 @@ export function startWebServer(port = 3420): http.Server {
   if (!webOnly) {
     ensureFederationClaudeMdSection()
     ensureAutonomySection(MAIN_AGENT_ID)
+  }
+
+  // ADR-001: on startup, reconnect agents whose tmux sessions survived the
+  // Marveen restart (context preserved) and relaunch those whose sessions
+  // are gone (accepting lost context). Fire-and-forget: errors are logged
+  // internally and never bubble to the caller.
+  if (!webOnly) {
+    reconcileAgentsOnStartup().catch(err =>
+      logger.warn({ err }, 'startup-reconciliation: uncaught error (non-fatal)'),
+    )
+
+    // On SIGTERM: flush which agents are running so the next startup has
+    // accurate desired-state data even after an unclean shutdown. One-time
+    // registration inside server.listen so it only fires on the live instance,
+    // not on WEB_ONLY staging.
+    process.once('SIGTERM', () => {
+      try { flushRunningStateToDesired() } catch { /* best effort */ }
+    })
   }
 
   // Backfill the PreCompact hook into existing agents' settings.json so the
