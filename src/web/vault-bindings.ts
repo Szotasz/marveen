@@ -103,7 +103,7 @@ export function removeBindingsForSecret(vaultSecretId: string): void {
         if (!serverCfg?.env) continue
         delete serverCfg.env[binding.envVar]
         if (!serverHasVaultRefs(serverCfg.env)) unwrapCommand(serverCfg)
-        atomicWriteFileSync(target.mcpFilePath, JSON.stringify(content, null, 2))
+        atomicWriteFileSync(target.mcpFilePath, JSON.stringify(content, null, 2), { mode: 0o600 })
       } catch { /* skip */ }
     }
   }
@@ -239,7 +239,7 @@ export function syncSecret(vaultSecretId: string): SyncResult {
         if (!serverCfg.env) serverCfg.env = {}
         serverCfg.env[binding.envVar] = `vault:${vaultSecretId}`
         if (serverCfg.command && !serverCfg.url) wrapCommand(serverCfg)
-        atomicWriteFileSync(target.mcpFilePath, JSON.stringify(content, null, 2))
+        atomicWriteFileSync(target.mcpFilePath, JSON.stringify(content, null, 2), { mode: 0o600 })
         updated++
       } catch (err: any) {
         errors.push(`Failed to update ${target.mcpFilePath}: ${err.message}`)
@@ -263,7 +263,7 @@ export function unsyncBinding(vaultSecretId: string, envVar: string): void {
         if (!serverCfg?.env) continue
         delete serverCfg.env[envVar]
         if (!serverHasVaultRefs(serverCfg.env)) unwrapCommand(serverCfg)
-        atomicWriteFileSync(target.mcpFilePath, JSON.stringify(content, null, 2))
+        atomicWriteFileSync(target.mcpFilePath, JSON.stringify(content, null, 2), { mode: 0o600 })
       } catch { /* skip */ }
     }
   }

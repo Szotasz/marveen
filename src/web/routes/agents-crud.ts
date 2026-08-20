@@ -54,7 +54,8 @@ import {
   generateClaudeMd,
   generateSoulMd,
 } from '../agent-scaffold.js'
-import { isAgentRunning, agentSessionName, capturePane } from '../agent-process.js'
+import { isAgentRunning, agentSessionName, capturePane, stopAgentProcess } from '../agent-process.js'
+import { removeDesiredAgent } from '../agent-desired-state.js'
 import { readContextTokensFromProjectDir } from '../active-model.js'
 import { detectPaneState, detectPermissionMode } from '../../pane-state.js'
 import { checkAgentPutFields, AGENT_PUT_WRITABLE_FIELDS } from '../agent-put-fields.js'
@@ -864,6 +865,16 @@ export async function tryHandleAgentsCrud(ctx: RouteContext, webDir: string): Pr
     const name = decodeURIComponent(agentMatch[1])
     const dir = agentDir(name)
     if (!existsSync(dir)) { json(res, { error: 'Agent not found' }, 404); return true }
+    // Stop the running session BEFORE removing the dir (#842). Otherwise the
+    // orphaned session survives, rewrites a minimal .claude-config under the
+    // agent dir, and the agent "returns" as an empty draft that still reports
+    // running=true. stopAgentProcess() reads config from the dir for its orphan
+    // reap, so it must run while the dir still exists.
+    if (isAgentRunning(name)) stopAgentProcess(name)
+    // Clear the desired run-state so the reconciler stops trying to start a
+    // non-existent agent (#857). A stale entry also starts a same-named new
+    // agent immediately on next create -- unasked.
+    removeDesiredAgent(name)
     rmSync(dir, { recursive: true, force: true })
     cleanupTeamReferences(name)
     json(res, { ok: true })

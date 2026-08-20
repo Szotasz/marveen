@@ -126,6 +126,36 @@ describe('isPublicFetchHost', () => {
     }
   })
 
+  // #797 review, point 4: the literal check is not enough, because a PUBLIC
+  // NAME can still resolve inward. Wildcard-DNS services encode the address in
+  // the name, so these passed every earlier check and then pointed at loopback,
+  // RFC1918 or the cloud metadata endpoint.
+  it('rejects names that resolve inward via wildcard DNS', () => {
+    for (const bad of [
+      '127.0.0.1.nip.io', '10.0.0.1.nip.io', '192.168.1.50.nip.io',
+      '169.254.169.254.nip.io', '172.16.4.9.sslip.io', '100.64.0.1.nip.io',
+      '192-168-1-50.sslip.io', '127-0-0-1.sslip.io', '10-0-0-1.my.sslip.io',
+      'app.127.0.0.1.nip.io',
+    ]) {
+      expect(isPublicFetchHost(bad)).toBe(false)
+    }
+  })
+
+  it('rejects in-cluster service names', () => {
+    for (const bad of ['kubernetes.default.svc', 'api.prod.svc', 'db.svc.cluster.local', 'redis.ns.cluster']) {
+      expect(isPublicFetchHost(bad)).toBe(false)
+    }
+  })
+
+  // The guard is deliberately narrow: a PUBLIC address embedded in a name is
+  // not a bypass of the loopback/RFC1918 boundary, and rejecting every numeric
+  // label would break legitimate hosts.
+  it('still accepts ordinary public names, including numeric labels', () => {
+    for (const good of ['claude.com', 'api.example.co.uk', '8.8.8.8.nip.io', 'v2.api.example.com', '123.example.com']) {
+      expect(isPublicFetchHost(good)).toBe(true)
+    }
+  })
+
   it('rejects internal suffixes and single-label names', () => {
     for (const bad of ['printer.local', 'db.internal', 'box.lan', 'wiki.intranet', 'nas', 'router.home']) {
       expect(isPublicFetchHost(bad)).toBe(false)

@@ -46,4 +46,38 @@ describe('resolveKanbanDispatchTarget', () => {
   it('returns null for an unknown assignee name', () => {
     expect(resolveKanbanDispatchTarget('SomebodyElse', base)).toBeNull()
   })
+
+  // The echo bug: an agent that moves its own card to in_progress got the task
+  // dispatched back at it as a fresh assignment, indistinguishable from real work.
+  describe('self-move', () => {
+    it('does not dispatch when the mover is the assignee', () => {
+      expect(resolveKanbanDispatchTarget('tuskohopkins', { ...base, actor: 'tuskohopkins' })).toBeNull()
+      expect(resolveKanbanDispatchTarget('GorcsevIvan', { ...base, actor: 'gorcsevivan' })).toBeNull()
+    })
+
+    it('matches the mover against the assignee across name forms and casing', () => {
+      // display name vs canonical id, and either side upper/lower cased
+      expect(resolveKanbanDispatchTarget('gorcsevivan', { ...base, actor: 'GorcsevIvan' })).toBeNull()
+      expect(resolveKanbanDispatchTarget('TuskoHopkins', { ...base, actor: 'tuskohopkins' })).toBeNull()
+    })
+
+    it('still dispatches when somebody else moved the card', () => {
+      expect(resolveKanbanDispatchTarget('tuskohopkins', { ...base, actor: 'Gábor' })).toBe('tuskohopkins')
+      expect(resolveKanbanDispatchTarget('tuskohopkins', { ...base, actor: 'gorcsevivan' })).toBe('tuskohopkins')
+    })
+
+    it('dispatches as before when the mover is unknown or not reported', () => {
+      // Legacy callers send no actor at all -- the rule must be inert, not blocking.
+      expect(resolveKanbanDispatchTarget('tuskohopkins', base)).toBe('tuskohopkins')
+      expect(resolveKanbanDispatchTarget('tuskohopkins', { ...base, actor: null })).toBe('tuskohopkins')
+      expect(resolveKanbanDispatchTarget('tuskohopkins', { ...base, actor: '  ' })).toBe('tuskohopkins')
+      expect(resolveKanbanDispatchTarget('tuskohopkins', { ...base, actor: 'SomebodyElse' })).toBe('tuskohopkins')
+    })
+
+    // A stopped sub-agent moving its own card is still a self-move: the
+    // no-dispatch decision must not hinge on whether the session happens to be up.
+    it('recognises a self-move even when the agent session is not running', () => {
+      expect(resolveKanbanDispatchTarget('sentinel', { ...base, actor: 'sentinel' })).toBeNull()
+    })
+  })
 })
