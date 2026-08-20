@@ -1,5 +1,6 @@
-import { upsertOtelSpan, closeOtelSpan, getOtelTrace, listOtelTraces } from '../../db.js'
+import { upsertOtelSpan, closeOtelSpan, getOtelTrace, listOtelTraces, queryOtelSpans } from '../../db.js'
 import { readBody, json } from '../http-helpers.js'
+import { spansToOtelJson } from '../../otel-exporter.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
@@ -76,6 +77,27 @@ export async function tryHandleSpans(ctx: RouteContext): Promise<boolean> {
     const spans = getOtelTrace(traceId)
     if (!spans.length) { json(res, { error: 'trace not found' }, 404); return true }
     json(res, { trace_id: traceId, spans })
+    return true
+  }
+
+  // GET /api/otel-export -- OTLP/JSON export of otel_spans rows
+  // Query params: agent (agent_id filter), from (unix ms), to (unix ms), limit (max 5000)
+  if (path === '/api/otel-export' && method === 'GET') {
+    const agentParam = url.searchParams.get('agent') ?? undefined
+    const fromParam = url.searchParams.get('from')
+    const toParam = url.searchParams.get('to')
+    const limitParam = url.searchParams.get('limit')
+    const fromMs = fromParam ? parseInt(fromParam) : undefined
+    const toMs = toParam ? parseInt(toParam) : undefined
+    const limit = limitParam ? Math.min(parseInt(limitParam), 5000) : 1000
+    if ((fromMs !== undefined && isNaN(fromMs)) || (toMs !== undefined && isNaN(toMs))) {
+      json(res, { error: 'from and to must be unix timestamps in milliseconds' }, 400)
+      return true
+    }
+    const spans = queryOtelSpans({ agent: agentParam, fromMs, toMs, limit })
+    const payload = spansToOtelJson(spans)
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(payload))
     return true
   }
 

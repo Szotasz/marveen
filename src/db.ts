@@ -3609,6 +3609,26 @@ export interface OtelTraceSummary {
   status: string
 }
 
+// Query spans for OTEL JSON export. All params are optional.
+export function queryOtelSpans(opts: {
+  agent?: string
+  fromMs?: number
+  toMs?: number
+  limit?: number
+}): OtelSpan[] {
+  const { agent, fromMs, toMs, limit = 1000 } = opts
+  const clauses: string[] = []
+  const params: (string | number)[] = []
+  if (agent) { clauses.push('agent_id = ?'); params.push(agent) }
+  if (fromMs !== undefined) { clauses.push('start_ms >= ?'); params.push(fromMs) }
+  if (toMs !== undefined) { clauses.push('start_ms <= ?'); params.push(toMs) }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
+  params.push(Math.min(limit, 5000))
+  return db.prepare(
+    `SELECT * FROM otel_spans ${where} ORDER BY start_ms ASC LIMIT ?`,
+  ).all(...params) as OtelSpan[]
+}
+
 export function listOtelTraces(limit = 50): OtelTraceSummary[] {
   return db.prepare(`
     SELECT
