@@ -74,20 +74,7 @@ A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás
 - **Skill-ügynök névabsztrakció -- hordozható placeholder rendszer (#107)** -- a fleet-specifikus ágens-azonosítók (pl. `jarvis`, `rick`, `zack`) el vannak távolítva a SKILL.md fájlokból; helyettük hordozható placeholder-ek kerülnek (pl. `<MAIN_AGENT>`, `<BACKEND_AGENT>`, `<TESTER_AGENT>`). `skills/skill-factory/SKILL.md`: a "Step 2: Generalize" szekció kiegészült egy 13-soros placeholder-táblával és a CLAUDE.md fleet-roster alapú feloldás leírásával; a Quality Checklist tartalmaz egy "No hardcoded agent names" ellenőrzési pontot. `scripts/skill-migrate-placeholders.py`: új migrációs script (dry-run / apply / verify módok, `.bak` backupok, kontextus-alapú szekció-felismerés, idempotens, 11 skill-könyvtárat fed le). A migráció 168 változtatást hajtott végre 51 fájlban, a korábbi 1043 hardkódolt hivatkozásból 740 maradt (szándékos "When to Use" és YAML frontmatter referenciák).
 
 ## A fork létrehozása óta átvett - cherry-pick - javítások:
-#720, #727, #729, #738, #739, #740, #741, #742, #743, #744, #746, #747, #749, #751, #752, #753, #756, #757, #758, #763, #760, #765, #768, #769, #771, #772,
-#776, #777, #778, #779, #780, #781, #782, #783, #784, #785, #786, #789, #790, #791, #793, #795, #797, #799, #800, #801, #802, #803, #805, #821, #822, #826, #828, #829, #832, #838, #866
-#833, #933, #934, #942, #943, #938
-#854, #855, #871, #879, #888, #889, #906, #911, #926, #929, #940
-#936
-#973, #877, #964, #842, #857, #861, #885, #895, #896, #843, #876, #957, #1001, #1000
-<<<<<<< HEAD
-=======
-#982, #899, #939, #955, #992, #988, #985, #1007, #1010, #1013, #995
->>>>>>> 4ad32c2 (docs(readme): update fork-diff for upstream Kat2+3 port batch)
-
-Linux-only PR-ek (#788, #792, #794) kihagyva (systemd/WSL-specifikus).
-#856 kihagyva (specifikus infrastruktúra-változtatás).
-
+#720, #727, #729, #738, #739, #740, #741, #742, #743, #744, #746, #747, #749, #751, #752, #753, #756, #757, #758, #763, #760, #765, #768, #769, #771, #772, #776, #777, #778, #779, #780, #781, #782, #783, #784, #785, #786, #789, #790, #791, #793, #795, #797, #799, #800, #801, #802, #803, #805, #821, #822, #826, #828, #829, #832, #838, #866, #833, #933, #934, #942, #943, #938, #854, #855, #871, #879, #888, #889, #906, #911, #926, #929, #940, #936, #973, #877, #964, #842, #857, #861, #885, #895, #896, #843, #876, #957, #1001, #1000, #982, #899, #939, #955, #992, #988, #985, #1007, #1010, #1013, #995, 
 
 Állapot: upstream `8811abf` vs fork `b502763`, 2026-08-20
 
