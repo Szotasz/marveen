@@ -146,29 +146,34 @@ describe('shouldBootHeartbeatAgent', () => {
   })
 })
 
-// HBMEMBLIND807: the hot-memory metric must ship as a READY-MADE query, the
-// way task_runs does -- a prose-only bullet let the heartbeat agent compose
-// its own SQL and report 0 with three hot memories in the window. Lock the
-// contract: the exact query, the SECONDS cutoff (no ms multiplier -- that is
-// the task_runs unit, not this one), and the do-not-rewrite instruction.
-describe('hot-memory metric is a ready-made query (HBMEMBLIND807)', () => {
-  it('ships the exact scoped count query', () => {
+// HBMEMBLIND807 -> HBMEMBLIND819: the hot-memory metric went through TWO
+// contracts, and both failures are why the current one exists. 807: a
+// prose-only bullet let the agent compose its own SQL (reported 0 beside 3
+// hot memories); the fix shipped a ready-made query with "do not rewrite the
+// query". 819: that failed too -- post-compact rounds reconstructed the query
+// from memory with agent_id='heartbeat' and reported 0 for 24h straight
+// (14/14, real value 2 in three rounds). Current contract: the number is
+// computed server-side (countNewHotMemories, served as
+// counts.new_hot_memories_1h on /api/kanban/heartbeat-summary) and the
+// scaffold tells the agent to COPY it -- there is no query left to rewrite.
+describe('hot-memory metric is an endpoint number, never an agent-run query (HBMEMBLIND819)', () => {
+  it('points the agent at counts.new_hot_memories_1h from the heartbeat-summary call', () => {
     const out = renderHeartbeatClaudeMd(ID)
-    expect(out).toContain("SELECT COUNT(*) FROM memories")
-    expect(out).toContain(`agent_id='${ID.mainAgentId}'`)
-    expect(out).toContain("category='hot'")
-    expect(out).toContain('created_at > unixepoch()-3600')
+    expect(out).toContain('counts.new_hot_memories_1h')
   })
 
-  it('the memory cutoff carries NO millisecond multiplier', () => {
+  it('ships NO runnable hot-memory SQL anywhere in the prompt', () => {
     const out = renderHeartbeatClaudeMd(ID)
-    const memBullet = out.slice(out.indexOf('Memory + system'))
-    expect(memBullet.slice(0, 1200)).not.toContain("(unixepoch()-3600)*1000")
+    // The exact surface that drifted twice: a memories/hot query the agent
+    // could run (and, measured, rewrite). Shape-agnostic: any SQL touching
+    // the memories table near a hot filter is out of contract.
+    expect(out).not.toMatch(/FROM memories[\s\S]{0,120}category='hot'/)
+    expect(out).not.toContain('do not rewrite the query')
   })
 
-  it('tells the agent to report the number, not to rewrite the query', () => {
+  it('degrades a missing field to "no data", never to a self-run query or a zero', () => {
     const out = renderHeartbeatClaudeMd(ID)
-    expect(out).toContain('do not rewrite the query')
+    expect(out).toContain('nincs adat (a summary nem adja)')
   })
 })
 
@@ -220,5 +225,55 @@ describe('deferred MCP tools (HBCALMCP808)', () => {
     expect(md).toContain('select:mcp__server-google-calendar-mcp__list-events')
     // "not available" may only be claimed after ToolSearch also failed.
     expect(md).toMatch(/ONLY[\s\S]{0,80}ToolSearch itself cannot surface/)
+  })
+})
+
+// HBHEREDOC819: the 18:00 round reported "empty response from
+// /api/kanban/heartbeat-summary" while the endpoint served 200/3173B in 9ms
+// and the SAME shell POSTed fine with the same token. The agent had composed
+//   KANBAN=$(curl ...); echo "$KANBAN" | python3 << 'PY' ... PY
+// -- the heredoc replaces python3's stdin, the piped data is silently lost,
+// json.load reads EOF. A command the agent re-improvises every hour is not a
+// mechanism (the HBMEMBLIND819 lesson, extraction-side): the scaffold now
+// ships the COMPLETE one-line extractor and bans the pipe+heredoc shape.
+describe('kanban extraction is a shipped one-liner, never an improvised pipe+heredoc (HBHEREDOC819)', () => {
+  it('ships the complete python3 -c extractor with every counts field', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    expect(out).toContain(`python3 -c "import json,urllib.request;`)
+    expect(out).toContain(`${ID.dashboardOrigin}/api/kanban/heartbeat-summary`)
+    expect(out).toMatch(/COUNTS urgent=%s in_progress=%s waiting=%s planned=%s new_hot_memories_1h=%s waiting_shown=%s/)
+  })
+
+  it('the ONLY python3-heredoc mention is the quoted example inside the ban paragraph', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    // The ban paragraph must quote the forbidden shape (so the agent can
+    // recognise it), and NOTHING else in the prompt may contain one -- a
+    // runnable heredoc anywhere would be exactly the copy-surface that broke
+    // the 18:00 round. Window: the ban paragraph's own bounds.
+    // Class-level, not variant-enumerated: two review rounds each found a
+    // form the previous narrow regex missed (bare, then -u, then `python3 -`
+    // dash-stdin -- the commonest shape here). The pinned property is that on
+    // one line, `python3` is never followed by `<<` at all; enumerating
+    // switches guarantees a fourth variant.
+    const matches = [...out.matchAll(/python3[^\n]*<</g)]
+    expect(matches.length).toBe(1)
+    const banStart = out.indexOf('FORBIDDEN SHAPE (HBHEREDOC819)')
+    expect(banStart).toBeGreaterThanOrEqual(0)
+    const banEnd = out.indexOf('It returns exactly', banStart)
+    expect(banEnd).toBeGreaterThan(banStart)
+    const idx = matches[0].index ?? -1
+    expect(idx).toBeGreaterThan(banStart)
+    expect(idx).toBeLessThan(banEnd)
+  })
+
+  it('the kanban endpoint is never fetched with curl (the curl+shell-var path is what got improvised)', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    expect(out).not.toMatch(/curl[^\n]*heartbeat-summary/)
+  })
+
+  it('names the forbidden shape and the incident so the ban survives paraphrase', () => {
+    const out = renderHeartbeatClaudeMd(ID)
+    expect(out).toContain('FORBIDDEN SHAPE (HBHEREDOC819)')
+    expect(out).toMatch(/heredoc becomes python3's stdin/)
   })
 })

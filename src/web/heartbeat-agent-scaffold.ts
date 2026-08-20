@@ -190,19 +190,45 @@ When you receive the heartbeat prompt:
      If the call fails (token revoked / 401), record the failure
      reason rather than the events; the main agent can act on the
      failure.
-   - **Kanban** -- ONE call, and do not compose a query of your own:
+   - **Kanban** -- ONE command, fetch AND extract together; run it EXACTLY
+     as written, do not recompose it:
 
      \`\`\`bash
-     curl -s -H "Authorization: Bearer $(cat ${id.storeDir}/.dashboard-token)" \\
-       ${id.dashboardOrigin}/api/kanban/heartbeat-summary
+     python3 -c "import json,urllib.request; tok=open('${id.storeDir}/.dashboard-token').read().strip(); d=json.load(urllib.request.urlopen(urllib.request.Request('${id.dashboardOrigin}/api/kanban/heartbeat-summary', headers={'Authorization':'Bearer '+tok}))); c=d['counts']; print('COUNTS urgent=%s in_progress=%s waiting=%s planned=%s new_hot_memories_1h=%s waiting_shown=%s' % (c['urgent'],c['in_progress'],c['waiting'],c['planned'],c['new_hot_memories_1h'],d.get('waiting_shown'))); [print('URGENT',x['id'],x['title']) for x in d['urgent']]; [print('WAITING',x['id'],x['title']) for x in d['waiting']]"
      \`\`\`
 
+     The command is ONE line on purpose: it survives copy-paste from any
+     indentation, needs no shell variable, no pipe, and no second
+     process -- the failure modes that produced HBHEREDOC819 and
+     HBKANBANDRIFT819 structurally cannot occur in it.
+
+     FORBIDDEN SHAPE (HBHEREDOC819): NEVER pipe the response into a
+     python3 HEREDOC (\`echo "$X" | python3 << 'PY' ... PY\`) -- the
+     heredoc becomes python3's stdin, the piped data is silently lost,
+     and json.load reads EOF. Measured 2026-08-19 18:00: the round
+     reported "empty response from /api/kanban/heartbeat-summary"
+     while the endpoint was serving 200 with 3173 bytes in 9ms, and
+     the SAME shell POSTed to the same origin with the same token
+     right after. The command above has no pipe and no heredoc; if it
+     fails, REPORT the failure line as-is -- do not rebuild the
+     extraction some other way, and do not hide the error.
+
      It returns exactly what this section may report:
-     \`{"urgent":[...], "waiting":[...], "counts":{...}}\`, where the
+     \`{"counts":{...}, "urgent":[...], "waiting":[...]}\`, where the
      lists contain only UNFINISHED cards -- never archived, never
      \`done\`, but \`planned\` included, because "urgent and nobody
      has touched it" is exactly what this line is for. Report the ids
      and titles it gives you and nothing else.
+
+     EVERY NUMBER COMES FROM \`counts.*\` AND NOWHERE ELSE
+     (HBKANBANDRIFT819): the lists are capped and their titles
+     truncated BY DESIGN (waiting shows only the few most recently
+     updated; \`counts.waiting\` is the full total), so counting the
+     array items gives a number that is WRONG on purpose. Measured
+     2026-08-19 16:42: a heartbeat counted a truncated list and
+     reported waiting: 12 against a real 280. If \`counts\` is missing
+     from the response, write "nincs adat" -- never count the lists as
+     a substitute.
 
      Two things this replaces, both measured: the old instruction told
      you to write the filter yourself, and on 2026-08-04 the 09:00
@@ -241,22 +267,27 @@ When you receive the heartbeat prompt:
      costume of a check. If a warnings line ever returns, it must come
      with a READY-MADE query against a REAL source, like the hot-memory
      count below.
-     HBMEMBLIND807: the hot-memory count is a READY-MADE query,
-     exactly like task_runs above -- when this bullet was prose only, the
-     heartbeat agent composed its own SQL and reported 0 while three hot
-     memories sat in the window (measured 2026-08-07 09:00, ids
-     2442-2444). A metric line that can silently read 0 is worse than no
-     line: real change looks identical to silence. NOTE the unit
-     difference from task_runs: \`memories.created_at\` is SECONDS, so
-     the cutoff is \`unixepoch()-3600\` with NO millisecond multiplier:
+     HBMEMBLIND807+819: the hot-memory count comes from the SAME
+     \`/api/kanban/heartbeat-summary\` call you already made for the
+     Kanban section: report \`counts.new_hot_memories_1h\` from that
+     response. Do NOT run any query for this number -- not even a
+     correct-looking one.
 
-     \`\`\`bash
-     sqlite3 ${id.storeDir}/claudeclaw.db "SELECT COUNT(*) FROM memories \\
-       WHERE agent_id='${id.mainAgentId}' AND category='hot' \\
-       AND created_at > unixepoch()-3600"
-     \`\`\`
+     Why an endpoint number and not a query, measured twice:
+     2026-08-07 (HBMEMBLIND807) this bullet was prose, the agent
+     composed its own SQL and reported 0 while three hot memories sat
+     in the window. The fix prescribed a ready-made query with "do not
+     rewrite the query" -- and 2026-08-19 (HBMEMBLIND819) that failed
+     too: 14/14 rounds over 24h reported 0 against real values of 2,
+     because post-compact rounds reconstructed the query from memory as
+     "count MY hot memories" and substituted the wrong agent_id. A
+     prescription you must re-copy every hour is not a mechanism; a
+     number computed server-side has nothing to rewrite. The kanban
+     counts above never drifted for exactly this reason.
 
-     Report the number this query returns -- do not rewrite the query.
+     If the field is MISSING from the response (older dashboard build),
+     write \`new hot memories (1h): nincs adat (a summary nem adja)\` --
+     do not fall back to your own query, and never fill the line with 0.
 
 2. **Format** the result as a single inter-agent message:
 

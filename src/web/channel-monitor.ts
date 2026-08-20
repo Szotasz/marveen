@@ -1409,8 +1409,17 @@ function handleMarveenUp(): void {
     const stage = marveenDownState.stage
     const providerLabel = getMainAgentProvider()
     logger.info({ stage, downedFor, provider: providerLabel }, 'Marveen channel plugin recovered')
-    if (stage !== 'soft' && stage !== 'save' && stage !== 'resume') {
-      sendAlert(`✅ ${BOT_NAME} ${providerLabel} plugin helyrealt (${stage} utan, ${downedFor}s kieses).`)
+    // Owner transparency (2026-07-30, "reggeli leallas"): a resume-stage
+    // recovery means the main session was actually respawned -- the owner's
+    // in-flight messages may have been dropped, so it must not be silent. Short
+    // soft/save blips stay quiet, but a LONG outage is reported even when the
+    // fix itself was soft: messages sent into that window went unanswered.
+    const disruptive = stage !== 'soft' && stage !== 'save'
+    if (disruptive || downedFor >= 180) {
+      sendAlert(
+        `✅ ${BOT_NAME} ${providerLabel} kapcsolat helyreallt (${downedFor}s kieses, ${stage} szint). ` +
+        `Ha a kieses alatt irtal es nem jott valasz, mindjart potolom.`,
+      )
     }
     marveenDownState = null
   }

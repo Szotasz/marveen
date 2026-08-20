@@ -15,15 +15,19 @@ import {
 } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { detectPaneState, paneShowsContextSaturation } from '../pane-state.js'
-import { readContextTokensFromProjectDir, readActiveModelFromProjectDir } from './active-model.js'
+import { readContextTokensFromProjectDir, readActiveModelFromProjectDir, readTranscriptMtimeFromProjectDir } from './active-model.js'
 import { readContextGuardConfig } from './context-guard-store.js'
 import { createAgentMessage } from '../db.js'
 import {
   decideGuard,
   contextLimitForModel,
   calibrateLimit,
+  handoffStaleMinutes,
+  IDLE_FLUSH_REASON_PREFIX,
   INITIAL_GUARD_STATE,
+  STALE_REFRESH_REASON_PREFIX,
   type GuardState,
+  type HandoffStaleness,
   type GuardInputs,
 } from '../context-guard.js'
 
@@ -108,12 +112,68 @@ export function handoffPrompt(pctRound: number, handoffPath: string): string {
   )
 }
 
-export function resumePrompt(name: string, handoffPath: string, hadHandoff: boolean): string {
+/**
+ * Handoff request for the idle-flush tier.
+ *
+ * Separate wording from handoffPrompt on purpose. That one tells an agent its
+ * context is critical and to drop what it is doing, which is true at 90% of the
+ * window and false here: this tier only ever fires on a session that has been
+ * quiet for the configured idle period, so there is nothing in flight to drop.
+ * Reusing the alarming text would push an idle agent into treating a routine
+ * housekeeping restart as an emergency.
+ */
+export function idleFlushHandoffPrompt(tokens: number, idleMinutes: number, handoffPath: string): string {
+  return (
+    `[CONTEXT-GUARD] Rutin karbantartás, nem vészhelyzet. A sessionöd kontextusa ~${Math.round(tokens / 1000)}k token, ` +
+    `és ${idleMinutes} perce nincs benne aktivitás, ezért friss kontextussal indítalak újra -- így olcsóbb és gyorsabb lesz a következő kör. ` +
+    `EGYETLEN dolgod: írj HANDOFF.md-t a /handoff skill struktúrája szerint ide: ${handoffPath} ` +
+    `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal). ` +
+    `Ha nincs félbehagyott feladatod, írd bele hogy nincs -- az is teljes értékű válasz. ` +
+    `Utána ÁLLJ MEG; a rendszer újraindít és a HANDOFF.md-ből folytatod.`
+  )
+}
+
+/**
+ * A handoff refresh request: the agent DID write a handoff, then kept working,
+ * so the artifact no longer covers the session. Distinct wording from both
+ * other requests -- "write a handoff" would read as a bug ("I already did"),
+ * and the critical-context alarm may be false here.
+ */
+export function staleRefreshHandoffPrompt(staleMinutes: number, handoffPath: string): string {
+  return (
+    `[CONTEXT-GUARD] A HANDOFF.md-d megvan, de az írása óta ~${staleMinutes} perc érdemi munka történt, ` +
+    `tehát a mostani állapotot MÁR NEM fedi (döntések, verdiktek, üzenetváltások hiányoznak belőle). ` +
+    `EGYETLEN dolgod ebben a körben: frissítsd a HANDOFF.md-t itt: ${handoffPath} úgy, hogy a legutóbbi munkát is tartalmazza ` +
+    `(mi dőlt el, mi került leadásra, mi a következő lépés). Utána ÁLLJ MEG -- a rendszer friss kontextussal újraindít és ebből folytatod.`
+  )
+}
+
+export function resumePrompt(
+  name: string,
+  handoffPath: string,
+  hadHandoff: boolean,
+  staleMinutes: HandoffStaleness = null,
+): string {
   const base =
-    `[CONTEXT-GUARD] Friss kontextussal indultál, mert az előző session kontextusa megtelt (auto-handoff). `
-  const source = hadHandoff
-    ? `Első lépés: olvasd be ${handoffPath} -- ez az előző session átadója. `
-    : `HANDOFF.md nem készült el időben, ezért az élő forrásokból dolgozz. `
+    // Wording covers both tiers that lead here: "grew too large" is true at the
+    // act threshold and true of an idle-flush, where the context was heavy but
+    // the window was nowhere near full. "megtelt" would be false in that case.
+    `[CONTEXT-GUARD] Friss kontextussal indultál, mert az előző session kontextusa túl nagyra nőtt (auto-handoff). `
+  const source = !hadHandoff
+    ? `HANDOFF.md nem készült el időben, ezért az élő forrásokból dolgozz. `
+    : staleMinutes === 'unknown'
+      // A missing measurement must not impersonate a fresh one: say that the
+      // freshness was unverifiable, so the agent cross-checks instead of
+      // trusting the artifact blindly.
+      ? `Első lépés: olvasd be ${handoffPath} -- ez az előző session átadója, de a FRISSESSÉGÉT NEM TUDTAM MEGMÉRNI. ` +
+        `Kezeld óvatosan: vesd össze a kanban-kommentekkel és az inter-agent üzenetekkel, mielőtt a Next Steps-e szerint cselekednél. `
+      : typeof staleMinutes === 'number' 
+      // A stale handoff presented as current re-opens already-decided
+      // questions; say the gap out loud and route the agent to the live
+      // sources FIRST for the uncovered window.
+      ? `Első lépés: olvasd be ${handoffPath} -- ez az előző session átadója, DE ELAVULT: az utolsó ~${staleMinutes} perc munkája NINCS benne. ` +
+        `A hiányzó szakaszt az élő forrásokból pótold (kanban-kommentek, inter-agent üzenetek, hot memóriák), MIELŐTT a handoff Next Steps-e szerint cselekednél. `
+      : `Első lépés: olvasd be ${handoffPath} -- ez az előző session átadója. `
   return (
     base + source +
     `Utána ellenőrizd a kanban tábládat (in_progress kártyák, assignee=${name}) és a hot memóriáidat, ` +
@@ -122,9 +182,31 @@ export function resumePrompt(name: string, handoffPath: string, hadHandoff: bool
   )
 }
 
+function configDirFor(name: string): string | undefined {
+  return name === MAIN_AGENT_ID ? undefined : (readAgentClaudeConfigDir(name) ?? undefined)
+}
+
+/** Raw observed context size (tokens) for the idle-flush tier's absolute threshold. */
+function measureContextTokens(name: string): number | null {
+  const tokens = readContextTokensFromProjectDir(workingDirFor(name), configDirFor(name))
+  return tokens !== null && tokens > 0 ? tokens : null
+}
+
+/**
+ * How long the session's transcript has been untouched (ms), or null when
+ * unmeasurable. A negative reading (transcript mtime in the future, e.g. after
+ * a clock change) is treated as "just now" rather than as a large idle time --
+ * a wrong clock must not be able to trigger a flush.
+ */
+function measureIdleMs(name: string, nowMs: number): number | null {
+  const mtime = readTranscriptMtimeFromProjectDir(workingDirFor(name), configDirFor(name))
+  if (mtime === null) return null
+  return Math.max(0, nowMs - mtime)
+}
+
 function measurePct(name: string, cfgLimit: number | null): number | null {
   const workingDir = workingDirFor(name)
-  const configDir = name === MAIN_AGENT_ID ? undefined : (readAgentClaudeConfigDir(name) ?? undefined)
+  const configDir = configDirFor(name)
   const tokens = readContextTokensFromProjectDir(workingDir, configDir)
   if (tokens === null || tokens <= 0) return null
   let limit: number
@@ -172,7 +254,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   // Fully disarmed only when BOTH the proactive tiers and the always-on
   // saturation net are off; the net alone keeps the sweep alive so a
   // 100%-context pane (which dispatch refuses to prompt) still gets rescued.
-  if (!cfg.enabled && !cfg.saturationRestart) {
+  if (!cfg.enabled && !cfg.saturationRestart && !cfg.idleFlushEnabled) {
     guardStates.delete(name)
     return
   }
@@ -213,6 +295,15 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     sessionReady,
     handoffMtime: needPct ? handoffMtime(name) : null,
     paneSaturated: pane !== null ? paneShowsContextSaturation(pane) : false,
+    // Context-size probe, paid for only when the idle-flush tier is armed.
+    // Note the condition is cfg.idleFlushEnabled, NOT cfg.enabled: the two
+    // tiers are independently switchable, so an agent running the idle tier
+    // alone must still get its measurements.
+    contextTokens: running && needPct && cfg.idleFlushEnabled ? measureContextTokens(name) : null,
+    // idleMs is NOT gated on the idle-flush tier: the handoff-staleness check
+    // (handoffStaleMinutes) needs the transcript mtime on every decision path
+    // that can restart, and the probe is a single stat().
+    idleMs: running && needPct ? measureIdleMs(name, nowMs) : null,
   }
 
   const decision = decideGuard(state, inputs, cfg)
@@ -252,7 +343,21 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   }
 
   guardStates.set(name, decision.nextState)
-  if (decision.action === 'none') return
+  if (decision.action === 'none') {
+    // Idle-flush non-decisions carry the measurement that blocked them
+    // ("quiet for only 4m of 20m"), which is the only way to see the tier
+    // failing to reach its threshold. It matters because the idle clock is the
+    // transcript mtime and a SCHEDULED wake resets it: an agent whose schedule
+    // period is shorter than idleMinutes can never accumulate enough quiet, and
+    // without this line that reads as "the tier is fine, nothing to flush".
+    if (decision.reason.startsWith(IDLE_FLUSH_REASON_PREFIX)) {
+      logger.debug(
+        { name, reason: decision.reason, contextTokens: inputs.contextTokens, idleMs: inputs.idleMs },
+        'context-guard: idle-flush not acting',
+      )
+    }
+    return
+  }
 
   const pctRound = inputs.pct !== null ? Math.round(inputs.pct * 100) : null
   logger.info({ name, action: decision.action, reason: decision.reason, pct: pctRound }, 'context-guard: acting')
@@ -260,7 +365,19 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   try {
     switch (decision.action) {
       case 'request-handoff':
-        await sendPromptToSession(session, handoffPrompt(pctRound ?? 0, handoffPathFor(name)))
+        await sendPromptToSession(
+          session,
+          decision.reason.startsWith(STALE_REFRESH_REASON_PREFIX)
+            // The handoff exists but went stale while we waited for an idle
+            // pane; ask for a refresh, not a first write.
+            ? staleRefreshHandoffPrompt(((sm) => typeof sm === 'number' ? sm : 0)(handoffStaleMinutes(inputs)), handoffPathFor(name))
+            : decision.reason.startsWith(IDLE_FLUSH_REASON_PREFIX)
+              // pct is null whenever the idle tier runs without the proactive
+              // tiers, so the alarming percentage-based prompt would read "~0%
+              // -- critical". The idle tier states the token count it measured.
+              ? idleFlushHandoffPrompt(inputs.contextTokens ?? 0, cfg.idleMinutes, handoffPathFor(name))
+              : handoffPrompt(pctRound ?? 0, handoffPathFor(name)),
+        )
         break
       case 'restart': {
         // A forced restart must never be silent: the supervisor has to know
@@ -287,6 +404,18 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
             `[CONTEXT-GUARD] Ujrainditottam a(z) "${name}" agentet -- ok: ${decision.reason}` +
             (pctRound !== null ? ` (kontextus ~${pctRound}%)` : '') +
             `. A regi sessionbe az utolso percekben kuldott uzenetek/utasitasok ELVESZHETTEK -- ellenorizd es kuldd ujra oket.` +
+            (typeof decision.nextState.handoffStaleMinutes === 'number'
+              // The generic "messages may be lost" line invites the wrong
+              // conclusion when the real gap is the ARTIFACT: say explicitly
+              // that the handoff does not cover the tail of the session.
+              ? ` FIGYELEM: a HANDOFF.md ELAVULT -- az utolso ~${decision.nextState.handoffStaleMinutes} perc munkaja nincs benne, a friss session ezt a szakaszt az elo forrasokbol kapja meg.`
+              : decision.nextState.handoffStaleMinutes === 'unknown'
+                // The supervisor's manual state-handoff decision runs on this
+                // line (2026-08-17: a hand-measured mtime saved a payment-PR
+                // verdict); a silent unknown would read as "all fine" to the
+                // one reader who could compensate.
+                ? ` FIGYELEM: a HANDOFF.md letezik, de a FRISSESSEGET NEM TUDTAM MERNI (transcript-ora olvashatatlan) -- ha a session-ben friss dontes szuletett, kezi allapot-ellenorzes ajanlott (mtime vs. utolso munka).`
+                : '') +
             (snapshotPath ? ` Pane-snapshot a restart elotti allapotrol: ${snapshotPath}` : ''),
             'context-guard restart notice',
           )
@@ -297,7 +426,12 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
       }
       case 'inject-resume': {
         const hadHandoff = inputs.handoffMtime !== null || handoffMtime(name) !== null
-        await sendPromptToSession(session, resumePrompt(name, handoffPathFor(name), hadHandoff))
+        // Staleness was measured at RESTART time and rode here in the state;
+        // measuring now would be meaningless (the old session is gone).
+        await sendPromptToSession(
+          session,
+          resumePrompt(name, handoffPathFor(name), hadHandoff, state.handoffStaleMinutes),
+        )
         break
       }
     }

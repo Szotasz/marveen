@@ -15,7 +15,7 @@
 
 > **Fork.** Ez a repó a [Szotasz/marveen](https://github.com/Szotasz/marveen) önálló forkja, amely `fork-point` (2026-07-26, baseline: upstream `55ecbc6`) óta függetlenül fejlődik. Az upstream javításokat szelektíven vesszük át (`git fetch upstream` + cherry-pick). Hozzájárulásokat ehhez a forkhoz várunk PR-ként. Az AI által generált monolitikus kódot felhagyva, modularizált verzió alkotása a célom, amelyben nagyságrendekkel kisebb tokenhasználatot emészt fel magának a keretrendszernek a használata és robosztusabb kialakítása révén hosszútávon stabilabb működést biztosít.
 >
-> Állapot: upstream `8811abf` vs fork `2ce289c`, 2026-08-20
+> Állapot: upstream `8811abf` vs fork `b502763`, 2026-08-20
 
 ## Jónás Gergő (cett) hozzájárulásai az eredeti Marveen repóhoz
 
@@ -80,11 +80,16 @@ A [Szotasz/marveen](https://github.com/Szotasz/marveen) upstream repóba Jónás
 #854, #855, #871, #879, #888, #889, #906, #911, #926, #929, #940
 #936
 #973, #877, #964, #842, #857, #861, #885, #895, #896, #843, #876, #957, #1001, #1000
+<<<<<<< HEAD
+=======
+#982, #899, #939, #955, #992, #988, #985, #1007, #1010, #1013, #995
+>>>>>>> 4ad32c2 (docs(readme): update fork-diff for upstream Kat2+3 port batch)
 
 Linux-only PR-ek (#788, #792, #794) kihagyva (systemd/WSL-specifikus).
+#856 kihagyva (specifikus infrastruktúra-változtatás).
 
 
-Állapot: upstream `8811abf` vs fork `2ce289c`, 2026-08-20
+Állapot: upstream `8811abf` vs fork `b502763`, 2026-08-20
 
 <!-- ONGOING: Minden jövőbeli fork-PR leadásakor (Zack -> Jarvis) frissítsd ezt a szakaszt
      a friss git log alapján:

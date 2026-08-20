@@ -96,7 +96,7 @@ describe('agents-process routes -- extended coverage', () => {
       const { ctx, statusCode, responseBody } = makeCtx({
         method: 'PUT',
         path: '/api/agents/marveen/auto-restart',
-        body: JSON.stringify({ enabled: true, maxRestarts: 3 }),
+        body: JSON.stringify({ enabled: true, mode: 'continue' }),
       })
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
       expect(statusCode()).toBe(200)
@@ -140,7 +140,7 @@ describe('agents-process routes -- extended coverage', () => {
       const { ctx, statusCode, responseBody } = makeCtx({
         method: 'PUT',
         path: '/api/agents/marveen/context-guard',
-        body: JSON.stringify({ enabled: true, limitPct: 85 }),
+        body: JSON.stringify({ enabled: true, actPct: 0.85 }),
       })
       expect(await tryHandleAgentsProcess(ctx)).toBe(true)
       expect(statusCode()).toBe(200)
