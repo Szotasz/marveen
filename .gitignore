@@ -7,7 +7,13 @@ __pycache__/
 *.pyc
 
 # Secrets & personal data
+# GITIGNENV820: editor backups / copies of .env (.env~, .env.bak, .env.local)
+# were not covered -- only the exact name was. Cover every variant, keep the
+# tracked example file. *~ catches editor backups of ANY secret-bearing file.
 .env
+.env.*
+!.env.example
+*~
 store/
 workspace/
 agents/
@@ -68,6 +74,7 @@ HANDOFF.md
 DREAM.md
 .external-ops-last-run
 REBUILD_PROMPT_V3.1.md
+.lang
 
 # Main agent's runtime voice config (responseMode/voiceModel). Sub-agents store
 # theirs under agents/ (already ignored); the main agent's lives at the repo root
