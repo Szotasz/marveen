@@ -18,8 +18,14 @@ store/
 workspace/
 agents/
 reports/
-.claude/
+# CLAUDEIGN820: '.claude/' (directory pattern) stopped traversal, so the
+# '!.claude/settings.json' negation never fired -- the tracked settings file
+# was invisible as untracked and git add refused it on fresh clones.
+# '.claude/*' lets git enumerate the first level so the negation can work;
+# '*/**/.claude/' keeps nested .claude dirs ignored like before.
+.claude/*
 !.claude/settings.json
+*/**/.claude/
 .config/
 
 # Database
