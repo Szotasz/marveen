@@ -124,6 +124,18 @@ function downloadArtifact(artifact) {
   let blob
   if (kind === 'binary') {
     blob = b64toBlob(content, mime || 'application/octet-stream')
+  } else if (kind === 'html') {
+    // Re-wrap HTML fragments stored without a document skeleton.
+    // iframe.srcdoc is forgiving and renders bare fragments fine, but a
+    // downloaded .html file opened directly in the browser needs a proper
+    // document structure to render reliably. If the stored content already
+    // starts with <!doctype or <html we leave it untouched.
+    const trimmed = content.trimStart()
+    const alreadyWrapped = /^<!doctype\b/i.test(trimmed) || /^<html\b/i.test(trimmed)
+    const downloadContent = alreadyWrapped
+      ? content
+      : `<!doctype html>\n<html lang="hu">\n<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>\n<body>\n${content}\n</body>\n</html>`
+    blob = new Blob([downloadContent], { type: 'text/html; charset=utf-8' })
   } else {
     blob = new Blob([content], { type: mime || 'text/plain' })
   }
