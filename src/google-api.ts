@@ -394,4 +394,136 @@ export async function listCalendars(): Promise<CalendarSummary[]> {
   return (JSON.parse(data) as CalendarListEntries).items ?? []
 }
 
-export type { CalendarEvent, CalendarSummary }
+interface DriveFile {
+  id: string
+  name: string
+  mimeType: string
+  modifiedTime?: string
+  /** Absent for Google-native documents -- they have no byte size until exported. */
+  size?: string
+}
+
+interface DriveListResponse {
+  files?: DriveFile[]
+}
+
+/**
+ * The `q` a list call actually sends.
+ *
+ * Pure and exported because the trashed-file rule is easy to lose in a later
+ * edit and impossible to notice afterwards: a deleted file that still answers
+ * queries looks like a live file, and nothing about the result says otherwise.
+ */
+export function driveListQuery(query?: string): string {
+  return query ? `(${query}) and trashed = false` : 'trashed = false'
+}
+
+/**
+ * Download URL for a file, which is NOT the same endpoint for every file.
+ *
+ * Google-native documents (Docs, Sheets, Slides) have no downloadable bytes:
+ * `?alt=media` answers 403 for them, and they must go through `/export` with a
+ * target type. Pure and exported because that 403 is the most misleading error
+ * in this module -- it reads as a permission problem, which sends you checking
+ * the sharing settings of a file that was shared correctly all along.
+ */
+export function driveDownloadUrl(fileId: string, mimeType?: string): string {
+  const id = encodeURIComponent(fileId)
+  return (mimeType ?? '').startsWith('application/vnd.google-apps.')
+    ? `https://www.googleapis.com/drive/v3/files/${id}/export?mimeType=text%2Fplain`
+    : `https://www.googleapis.com/drive/v3/files/${id}?alt=media`
+}
+
+/**
+ * Files this identity can see on Drive.
+ *
+ * On the service-account path that means exactly what the owner SHARED with
+ * the machine address -- the account owns no files of its own, so an empty
+ * list means "nothing shared yet", not "no files exist". Worth stating because
+ * the empty list is the state a caller will hit first, and it is easy to read
+ * as a failure.
+ *
+ * `query` takes Drive's own search syntax (e.g. `name contains 'arlista'`).
+ * Trashed files are excluded unless the caller asks otherwise: a deleted file
+ * that still answers queries is the kind of thing nobody expects.
+ */
+export async function listDriveFiles(query?: string, pageSize = 50): Promise<DriveFile[]> {
+  const token = await getValidAccessToken()
+  const q = driveListQuery(query)
+  const params = new URLSearchParams({
+    q,
+    pageSize: String(Math.min(Math.max(pageSize, 1), 1000)),
+    fields: 'files(id,name,mimeType,modifiedTime,size)',
+    orderBy: 'modifiedTime desc',
+  })
+  const url = `https://www.googleapis.com/drive/v3/files?${params}`
+
+  const { status, data } = await httpsRequest(url, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (status === 401) {
+    const newToken = await forceNewAccessToken()
+    const retry = await httpsRequest(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${newToken}` },
+    })
+    if (retry.status !== 200) {
+      logger.error({ status: retry.status, body: retry.data }, 'Google Drive list error after refresh')
+      return []
+    }
+    return (JSON.parse(retry.data) as DriveListResponse).files ?? []
+  }
+  if (status !== 200) {
+    logger.error({ status, body: data }, 'Google Drive list error')
+    return []
+  }
+  return (JSON.parse(data) as DriveListResponse).files ?? []
+}
+
+/**
+ * A Drive file's contents as text.
+ *
+ * Google-native documents (Docs, Sheets, Slides) have no downloadable bytes --
+ * `?alt=media` returns 403 for them. They must go through the EXPORT endpoint
+ * with a target type instead. Getting this wrong looks like a permission
+ * problem, which sends you off checking the sharing settings for a file that
+ * was shared correctly all along.
+ *
+ * Returns null on failure rather than throwing: a caller summarising several
+ * files should lose the one it could not read, not the whole summary. The
+ * failure is logged, so it is never silent.
+ *
+ * Binary formats (PDF, images) are NOT decoded here -- a PDF read as UTF-8 is
+ * mojibake that looks like data. Callers that need those should fetch the
+ * bytes and use a real extractor.
+ */
+export async function readDriveFileText(fileId: string, mimeType?: string): Promise<string | null> {
+  const token = await getValidAccessToken()
+  const isGoogleNative = (mimeType ?? '').startsWith('application/vnd.google-apps.')
+  const url = driveDownloadUrl(fileId, mimeType)
+
+  const { status, data } = await httpsRequest(url, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (status === 401) {
+    const newToken = await forceNewAccessToken()
+    const retry = await httpsRequest(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${newToken}` },
+    })
+    if (retry.status !== 200) {
+      logger.error({ status: retry.status, fileId }, 'Google Drive read error after refresh')
+      return null
+    }
+    return retry.data
+  }
+  if (status !== 200) {
+    logger.error({ status, fileId, isGoogleNative }, 'Google Drive read error')
+    return null
+  }
+  return data
+}
+
+export type { CalendarEvent, CalendarSummary, DriveFile }
