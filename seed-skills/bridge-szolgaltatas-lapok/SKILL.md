@@ -15,13 +15,21 @@ trigger egy már régóta futó szolgáltatás puszta létezése sem. A funkció
 akkor látszik, amikor ÉPP születik egy új helyi szolgáltatás.
 
 ## 1. lépés: mérd meg, van-e párosított Bridge (ne találgass)
+A párosítás két nyomot hagy a Marveen oldalán; az elsődleges a device_keys
+tábla (az enroll írja, a kulcspár rekordja), a tartalék az authorized_keys:
 ```bash
-grep -c "marveen-remote:" ~/.ssh/authorized_keys 2>/dev/null || echo 0
+sqlite3 ~/ClaudeClaw/store/claudeclaw.db "select count(*) from device_keys" 2>/dev/null \
+  || grep -c "marveen-remote:" ~/.ssh/authorized_keys 2>/dev/null || echo 0
 ```
-- 1 vagy több: van párosított Bridge-eszköz ezen a telepítésen. -> (A) ág.
-- 0 (vagy nincs fájl): NINCS mért jel párosított eszközről. -> (B) ág, és a
-  szöveg ne állítsa, hogy a gazdának nincs Bridge-e; úgy fogalmazz, hogy
+- 1 vagy több: TÖRTÉNT MÁR párosítás ezen a telepítésen. -> (A) ág.
+- 0 (vagy egyik forrás sem olvasható): NINCS mért jel párosításról. -> (B) ág,
+  és a szöveg ne állítsa, hogy a gazdának nincs Bridge-e; úgy fogalmazz, hogy
   mindkét esetben igaz maradjon (lehet, hogy letöltötte, csak nem párosította).
+
+FONTOS, MIT BIZONYÍT A JEL: azt, hogy VAN párosított Bridge-e, nem azt, hogy
+HASZNÁLJA. Egy régi, már nem használt eszköz kulcsa is ott marad. Az (A) ág
+ezért a "hogyan vedd fel a lapot" utat mondja, és SOHA nem állítja, hogy
+"látom, hogy használod".
 
 ## 2. lépés: ellenőrizd, ajánlottad-e már (egyszer, ne ismételve)
 Keresd a memóriádban a `bridge-szolgaltatas-lapok-ajanlva` kulcsszót.
@@ -65,9 +73,10 @@ Egyszer, udvariasan, a port-esemény kontextusában:
 - A feliratok (Kapcsolat, Szolgáltatás-lapok, Hozzáadás) a Bridge 0.3.1
   felületéből valók. Ha a felület változik, ezt a skillt a kiadással együtt
   kell frissíteni, különben az útvonal-leírás hazudik.
-- Az `authorized_keys`-ben több `marveen-remote:` sor is lehet (több eszköz,
-  régi párosítások). A darabszám nem mond eszköz-aktivitást, csak azt, hogy
-  párosítás történt már; a döntéshez ennyi elég.
+- A `device_keys` táblában és az `authorized_keys`-ben több sor is lehet
+  (több eszköz, régi párosítások). A darabszám nem mond eszköz-aktivitást,
+  csak azt, hogy párosítás történt már; a döntéshez ennyi elég, többet ne
+  olvass bele.
 
 ## Ellenőrzés
 - Az ajánlás után a memóriádban ott a feljegyzés a gazda válaszával.
