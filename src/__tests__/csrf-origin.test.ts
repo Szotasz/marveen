@@ -124,3 +124,47 @@ describe('isAllowedHost', () => {
     expect(isAllowedHost('', hosts)).toBe(false)
   })
 })
+
+// ── IPv6 edge cases ────────────────────────────────────────────────────────────
+
+describe('buildAllowedHosts with IPv6 origin', () => {
+  // http://[::1]:3420 is the correct bracketed form for an IPv6 loopback origin.
+  // new URL('http://::1:3420') would throw; the WEB_HOST bracketing in web.ts
+  // ensures the origin is always well-formed before reaching here.
+  // Node.js URL returns u.hostname = "[::1]" (with brackets) for IPv6.
+  const ipv6Hosts = buildAllowedHosts(new Set(['http://[::1]:3420']))
+
+  it('includes bracketed IPv6 hostname from u.hostname', () => {
+    expect(ipv6Hosts.has('[::1]')).toBe(true)
+  })
+
+  it('extracts host:port in bracket notation', () => {
+    expect(ipv6Hosts.has('[::1]:3420')).toBe(true)
+  })
+
+  it('does not include malformed bracket-less raw IPv6', () => {
+    // http://::1:3420 is malformed and skipped; the set should be empty.
+    const bad = buildAllowedHosts(new Set(['http://::1:3420']))
+    expect(bad.size).toBe(0)
+  })
+})
+
+describe('isAllowedHost with IPv6 bracket notation', () => {
+  const ipv6Hosts = buildAllowedHosts(new Set(['http://[::1]:3420']))
+
+  it('allows [::1]:3420 (direct match)', () => {
+    expect(isAllowedHost('[::1]:3420', ipv6Hosts)).toBe(true)
+  })
+
+  it('allows [::1] without port (bare IPv6 fallback)', () => {
+    // Clients on port 80/443 omit the port; the bare ::1 must match.
+    expect(isAllowedHost('[::1]', ipv6Hosts)).toBe(true)
+  })
+
+  it('blocks a foreign host that happens to contain colons', () => {
+    // A crafted host like [fe80::1]:3420 must NOT be allowed just because
+    // the bare extraction succeeds -- fe80::1 is not ::1.
+    const foreign = buildAllowedHosts(new Set(['http://[::1]:3420']))
+    expect(isAllowedHost('[fe80::1]:3420', foreign)).toBe(false)
+  })
+})
