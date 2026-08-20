@@ -775,7 +775,7 @@ function renderActivity(entries) {
           '<span style="display:flex;align-items:center;gap:8px">' +
             modeChip +
             termIcon +
-            '<span class="activity-badge ' + meta.cls + '" title="' + escapeHtml(meta.tip || '') + '">' + meta.label + '</span>' +
+            '<span class="activity-badge ' + meta.cls + '" title="' + escapeHtml(meta.tip || '') + '">' + (a.state === 'working' ? '<span class="act-orb" aria-hidden="true"></span>' : '') + meta.label + '</span>' +
           '</span>' +
         '</div>' +
         (tail
