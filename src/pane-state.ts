@@ -1534,6 +1534,9 @@ export function decideStuckInputAction(f: StuckInputActionFacts): StuckInputActi
   // 'hold' below: it cannot be re-injected whole (the scrape is lossy) and
   // must not be cleared (the queue will not re-send a delivered message).
   if (f.allowPlainReinject && f.hasPlainText && !f.blockTruncated && f.machineOrigin) {
+    // Delivery-intent gate: hold if we can positively rule out a verified
+    // delivery (deliveryMatched=false). Undefined = untracked / open gate.
+    if (f.deliveryMatched === false) return 'hold'
     return f.escalate || multiRow ? 'reinject-plain' : 'enter'
   }
   // Truncated safety preamble: clear only (never re-inject a stale preamble).

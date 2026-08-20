@@ -24,6 +24,7 @@ function facts(over: Partial<StuckInputActionFacts>): StuckInputActionFacts {
     allowPlainReinject: false,
     hasPlainText: false,
     scheduledTaskBlock: false,
+    machineOrigin: true,
     ...over,
   }
 }

@@ -26,7 +26,7 @@ import { join } from 'node:path'
 // What must be guaranteed is a property of the code path, and that is asserted.
 
 const SRC = join(import.meta.dirname, '..')
-const FILE = 'web/routes/agents.ts'
+const FILE = 'web/routes/agents-crud.ts'
 
 function read(): string {
   return readFileSync(join(SRC, FILE), 'utf8')
