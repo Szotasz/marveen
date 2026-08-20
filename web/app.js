@@ -14920,6 +14920,7 @@ function renderTuToolStats(data) {
 // Ideas (Ötletláda)
 // ============================================================
 let ideas = []
+let ideasAll = []
 let ideasPromoteId = null
 let ideaEditId = null
 let ideaDetailId = null
@@ -14930,12 +14931,16 @@ async function loadIdeasPage() {
   const statusFilter = document.getElementById('ideaStatusFilter')?.value ?? 'active'
   const categoryFilter = document.getElementById('ideaCategoryFilter')?.value || ''
   const params = new URLSearchParams()
-  // 'active' = new+reviewed, fetched unfiltered then narrowed client-side
-  if (statusFilter && statusFilter !== 'active') params.set('status', statusFilter)
+  // Status narrowing happens client-side on the full fetch: the stats row must
+  // count every status, and a server-side status filter starved it — after the
+  // first promote the "Kanbanban" box showed 0 with the item hidden, which read
+  // as data loss on the first live promote (2026-08-20).
   if (categoryFilter) params.set('category', categoryFilter)
   const [ideasRes, catsRes] = await Promise.all([fetch('/api/ideas?' + params), fetch('/api/ideas/categories')])
-  ideas = await ideasRes.json()
-  if (statusFilter === 'active') ideas = ideas.filter(i => i.status === 'new' || i.status === 'reviewed')
+  ideasAll = await ideasRes.json()
+  if (statusFilter === 'active') ideas = ideasAll.filter(i => i.status === 'new' || i.status === 'reviewed')
+  else if (statusFilter) ideas = ideasAll.filter(i => i.status === statusFilter)
+  else ideas = ideasAll
   const cats = await catsRes.json()
   const catSel = document.getElementById('ideaCategoryFilter')
   if (catSel) {
@@ -14948,7 +14953,7 @@ async function loadIdeasPage() {
 
 function renderIdeasStats() {
   const counts = { new: 0, reviewed: 0, kanban: 0, rejected: 0 }
-  for (const i of ideas) counts[i.status] = (counts[i.status] || 0) + 1
+  for (const i of ideasAll) counts[i.status] = (counts[i.status] || 0) + 1
   const el = document.getElementById('ideasStats')
   if (!el) return
   el.innerHTML = Object.entries(counts).map(([s, n]) =>
