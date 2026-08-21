@@ -64,12 +64,13 @@ function makeCtx(path: string): { ctx: RouteContext; out: { status: number; body
 }
 
 // Helper: mock (nodes, edges, degree, tierChanged) for non-empty node queries.
-// Query order: 1=nodes, 2=edges, 3=degree, 4=tier-changed versions
+// Query order: 1=nodes, 2=import_memories (Fix 3), 3=edges, 4=degree, 5=tier-changed versions
 function mockQueries(
   nodes: any[], edges: any[], tierChangedVersions: any[] = []
 ) {
   mockDb.prepare = vi.fn()
     .mockReturnValueOnce({ all: vi.fn().mockReturnValue(nodes) })         // nodes
+    .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })            // import_memories
     .mockReturnValueOnce({ all: vi.fn().mockReturnValue(edges) })         // edges
     .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })            // degree
     .mockReturnValueOnce({ all: vi.fn().mockReturnValue(tierChangedVersions) }) // tier_changed
@@ -81,6 +82,7 @@ describe('GET /api/memories/graph/timeline', () => {
   it('returns nodes, edges, events, time_range structure', async () => {
     mockDb.prepare = vi.fn()
       .mockReturnValueOnce({ all: vi.fn().mockReturnValue([NODE_A, NODE_B]) })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })            // import_memories
       .mockReturnValueOnce({ all: vi.fn().mockReturnValue([EDGE_AB]) })
       .mockReturnValueOnce({ all: vi.fn().mockReturnValue([{ src_id: 1, degree: 1 }]) })
       .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })  // tier_changed
@@ -150,8 +152,9 @@ describe('GET /api/memories/graph/timeline', () => {
     const nodeAllMock = vi.fn().mockReturnValue([NODE_A])
     mockDb.prepare = vi.fn()
       .mockReturnValueOnce({ all: nodeAllMock })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })  // import_memories
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })  // edges
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })  // degree
       .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })  // tier_changed
 
     const { ctx, out } = makeCtx('/api/memories/graph/timeline?agent=agent-a&from=900&to=2000')
@@ -186,8 +189,9 @@ describe('GET /api/memories/graph/timeline', () => {
     const edgeAllMock = vi.fn().mockReturnValue([])
     mockDb.prepare = vi.fn()
       .mockReturnValueOnce({ all: vi.fn().mockReturnValue([NODE_A, NODE_B]) })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })  // import_memories
       .mockReturnValueOnce({ all: edgeAllMock })
-      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })
+      .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })  // degree
       .mockReturnValueOnce({ all: vi.fn().mockReturnValue([]) })  // tier_changed
 
     const { ctx } = makeCtx('/api/memories/graph/timeline?from=900&to=2000')
