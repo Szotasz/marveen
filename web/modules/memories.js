@@ -2429,6 +2429,9 @@ function startTimelineLoop() {
         if (tlRecording && tlMediaRecorder && tlMediaRecorder.state === 'recording') {
           tlMediaRecorder.stop()
         }
+        // Pop the most recently created node(s) so a visual gap before them
+        // doesn't make the replay look like it stopped early.
+        tlEmphasiseLatestArrivals(now)
       }
       // Fire events that fall within the new simTime window
       tlCheckAndFireEvents(tlSimTime - dt * 0.001 * tlPlaybackSpeed, tlSimTime, now)
@@ -2559,6 +2562,27 @@ function tlFireBurst(node, wallNow) {
   // Halo spike
   node._halospikeStart = wallNow
   node._halospikeT = 1
+}
+
+// Fire an extra burst + ring-pulse on node(s) that arrived last in the replay.
+// Called once when playback reaches tlT1; handles the perception issue where a
+// long gap before the newest node makes the replay look like it stopped early.
+function tlEmphasiseLatestArrivals(wallNow) {
+  if (GRAPH_REDUCED_MOTION) return
+  const alive = tlLayoutNodes.filter(n => n._phase === 'alive' && n.created_at != null)
+  if (!alive.length) return
+  const maxTs = Math.max(...alive.map(n => n.created_at))
+  // Nodes within the last 5% of the span (or at least 24 h) count as "latest".
+  const window = Math.max(86400, (tlT1 - tlT0) * 0.05)
+  const recent = alive.filter(n => n.created_at >= maxTs - window)
+  recent.forEach((n, i) => {
+    setTimeout(() => {
+      if (n._phase !== 'alive') return
+      const t = performance.now()
+      tlFireBurst(n, t)
+      n._latestPulseStart = t
+    }, 300 + i * 150)
+  })
 }
 
 function tlTickTimelineParticles(dt) {
@@ -3054,6 +3078,24 @@ function renderTimeline(wallNow, dt) {
         }
         ctx.globalCompositeOperation = 'source-over'
         ctx.globalAlpha = 1
+      }
+
+      // Latest-arrival ring pulse: expands + fades over 2500ms after playback ends
+      if (n._latestPulseStart) {
+        const pulseElapsed = wallNow - n._latestPulseStart
+        if (pulseElapsed < 2500) {
+          const prog = pulseElapsed / 2500
+          const pulseR = baseRadius * scale * (2 + prog * 5)
+          ctx.beginPath()
+          ctx.arc(nx, ny, pulseR, 0, Math.PI * 2)
+          ctx.strokeStyle = GRAPH_TIER_GLOW[tier] || '#ffffff'
+          ctx.lineWidth = 2
+          ctx.globalAlpha = (1 - prog) * 0.65
+          ctx.stroke()
+          ctx.globalAlpha = 1
+        } else {
+          n._latestPulseStart = null
+        }
       }
 
       // Node core circle
