@@ -156,8 +156,9 @@ describe('linkToNeighbors', () => {
     db.prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(embBuf, fleetId)
 
     // vec_memories extension not available in tests -- falls back to BLOB scan.
-    // With crossAgent=true the BLOB scan omits the agent_id filter, so fleetId
-    // is visible and linked (cosine = 1.0 >= threshold 0.75).
+    // crossAgent=true (because agent_id='import') forces the BLOB path even
+    // when the ANN extension would be loaded, bypassing orphan-index issues.
+    // effectiveThreshold is clamped to 0.65 for import nodes; cosine=1.0 passes.
     const linked = await linkToNeighbors(importId, 5, 0.75)
     expect(linked).toBeGreaterThanOrEqual(1)
 
@@ -166,8 +167,52 @@ describe('linkToNeighbors', () => {
     ).all(importId, 'semantic') as { dst_id: number }[]
     expect(links.some(l => l.dst_id === fleetId)).toBe(true)
 
+
     // Cleanup
     db.prepare('DELETE FROM memory_links WHERE src_id = ? OR dst_id = ?').run(importId, importId)
     db.prepare('DELETE FROM memories WHERE id IN (?, ?)').run(importId, fleetId)
+  })
+
+  it('import node effectiveThreshold clamps to 0.65: cosine ~0.707 candidate gets linked when caller passes 0.75', async () => {
+    const db = getDb()
+    // v1: only dim 0 and 1 set -- unit vector in 2D subspace of 768D
+    // v2: only dim 0 set -- unit vector along dim 0
+    // cosine(v1, v2) = 1/sqrt(2) ~= 0.707 (above 0.65, below 0.75)
+    const norm2 = 1 / Math.sqrt(2)
+    const vecImport = Array.from({ length: 768 }, (_, i) => (i < 2 ? norm2 : 0))
+    const vecFleet  = Array.from({ length: 768 }, (_, i) => (i === 0 ? 1   : 0))
+
+    function toBuf(v: number[]) {
+      const b = Buffer.allocUnsafe(v.length * 4)
+      v.forEach((f, i) => b.writeFloatLE(f, i * 4))
+      return b
+    }
+
+    const impInfo = db.prepare(
+      `INSERT INTO memories (agent_id, chat_id, sector, content, category, created_at, accessed_at, updated_at)
+       VALUES ('import', 'import', 'semantic', 'threshold-clamp import doc', 'warm', unixepoch(), unixepoch(), unixepoch())`
+    ).run() as { lastInsertRowid: number | bigint }
+    const impId = Number(impInfo.lastInsertRowid)
+    db.prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(toBuf(vecImport), impId)
+
+    const fltInfo = db.prepare(
+      `INSERT INTO memories (agent_id, chat_id, sector, content, category, created_at, accessed_at, updated_at)
+       VALUES ('agent-d', 'chat-d', 'semantic', 'threshold-clamp fleet doc', 'warm', unixepoch(), unixepoch(), unixepoch())`
+    ).run() as { lastInsertRowid: number | bigint }
+    const fltId = Number(fltInfo.lastInsertRowid)
+    db.prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(toBuf(vecFleet), fltId)
+
+    // Caller passes 0.75, but import node clamps to 0.65. cosine ~0.707 >= 0.65 -> link forms.
+    const linked = await linkToNeighbors(impId, 5, 0.75)
+    expect(linked).toBeGreaterThanOrEqual(1)
+
+    const links = db.prepare(
+      'SELECT dst_id FROM memory_links WHERE src_id = ? AND link_type = ?'
+    ).all(impId, 'semantic') as { dst_id: number }[]
+    expect(links.some(l => l.dst_id === fltId)).toBe(true)
+
+    // Cleanup
+    db.prepare('DELETE FROM memory_links WHERE src_id = ? OR dst_id = ?').run(impId, impId)
+    db.prepare('DELETE FROM memories WHERE id IN (?, ?)').run(impId, fltId)
   })
 })
