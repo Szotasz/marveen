@@ -201,6 +201,10 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/><polyline points="7 10 12 5 17 10"/><line x1="12" y1="5" x2="12" y2="17"/></svg>
             <span class="sb-label">Költöztetés</span>
           </a>
+          <a href="#" class="sb-link" data-page="import">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <span class="sb-label" data-i18n="import.page.title">Import emlékek</span>
+          </a>
         </div>
       </div>
     </nav>
@@ -1103,6 +1107,82 @@
           </div>
         </div>
 
+      </div>
+    </div>
+
+    <!-- === Import Memories Page === -->
+    <div class="page" id="importPage" hidden>
+      <div class="page-header">
+        <h1 data-i18n="import.page.title">Import emlékek</h1>
+        <p class="subtitle" data-i18n="import.page.desc">Fájlrendszer, Google Drive és SharePoint tartalmak automatikus beolvasása a memória rendszerbe.</p>
+      </div>
+
+      <div class="import-layout">
+        <!-- Sources list -->
+        <section class="import-section">
+          <div class="section-header">
+            <h2 data-i18n="import.sources.title">Importforrások</h2>
+          </div>
+          <div id="importSourcesList" class="import-sources-list"></div>
+        </section>
+
+        <!-- Add source form -->
+        <section class="import-section">
+          <div class="section-header">
+            <h2 data-i18n="import.add.title">Új forrás</h2>
+          </div>
+          <form id="importAddSourceForm" class="import-add-form">
+            <div class="form-row">
+              <div class="form-group" style="flex:0 0 160px">
+                <label for="importSourceType" data-i18n="import.form.type">Forrás típusa</label>
+                <select id="importSourceType">
+                  <option value="local" data-i18n="import.type.local">Helyi mappa</option>
+                  <option value="gdrive" data-i18n="import.type.gdrive">Google Drive</option>
+                  <option value="sharepoint" data-i18n="import.type.sharepoint">SharePoint</option>
+                </select>
+              </div>
+              <div class="form-group" style="flex:1">
+                <label for="importSourcePath" data-i18n="import.form.path">Útvonal / mappa-azonosító</label>
+                <input type="text" id="importSourcePath" placeholder="/Users/you/Documents">
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group" style="flex:1">
+                <label for="importSourceLabel" data-i18n="import.form.label">Megnevezés (opcionális)</label>
+                <input type="text" id="importSourceLabel" placeholder="Dokumentumok">
+              </div>
+              <div class="form-group" style="flex:0 0 130px">
+                <label for="importSourceInterval" data-i18n="import.form.interval">Ciklus</label>
+                <select id="importSourceInterval">
+                  <option value="1">1 h</option>
+                  <option value="2">2 h</option>
+                  <option value="4" selected>4 h</option>
+                  <option value="24">24 h</option>
+                </select>
+              </div>
+            </div>
+            <!-- SharePoint disclaimer (shown only when type=sharepoint) -->
+            <div id="importSharePointInfo" class="import-disclaimer" hidden>
+              <span data-i18n="import.sharepoint.warning">SharePoint: Ellenőrizd, hogy a szervezeted IT/adatvédelmi szabályzata engedélyezi-e a tartalom személyes AI rendszerbe másolását. Szükséges Graph scope: Sites.Read.All.</span>
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="btn-primary btn-compact" data-i18n="import.btn.add">Forrás hozzáadása</button>
+            </div>
+          </form>
+        </section>
+
+        <!-- Run log -->
+        <section class="import-section">
+          <div class="section-header">
+            <h2>Futási napló</h2>
+          </div>
+          <div id="importLog" class="import-log-area"></div>
+        </section>
+
+        <!-- Danger zone -->
+        <section class="import-section import-danger-zone">
+          <button class="btn-danger btn-compact" id="importWipeAllBtn" data-i18n="import.btn.wipe_all">Összes import törlése</button>
+        </section>
       </div>
     </div>
 

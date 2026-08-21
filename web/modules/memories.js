@@ -25,8 +25,8 @@ let currentMemTier = 'hot'
 let currentLogDate = new Date().toISOString().split('T')[0]
 let logDates = []
 
-const tierLabels = { hot: '\u{1F525} Hot', warm: '\u{1F321}\uFE0F Warm', cold: '\u2744\uFE0F Cold', shared: '\u{1F517} Shared' }
-const tierColors = { hot: '#dc3c3c', warm: '#d97757', cold: '#6a9bcc', shared: '#9a8a30' }
+const tierLabels = { hot: '\u{1F525} Hot', warm: '\u{1F321}\uFE0F Warm', cold: '\u2744\uFE0F Cold', shared: '\u{1F517} Shared', import: '\u{1F4E5} Import' }
+const tierColors = { hot: '#dc3c3c', warm: '#d97757', cold: '#6a9bcc', shared: '#9a8a30', import: '#39FF14' }
 
 // Populate agent dropdowns from API
 export async function loadMemAgents() {
@@ -171,6 +171,7 @@ export async function loadMemStats() {
     const embCount = stats.withEmbedding || 0
     const embPct = stats.total > 0 ? Math.round(embCount / stats.total * 100) : 0
     const artifactCount = ov.artifacts?.count ?? 0
+    const importCount = stats.importCount ?? 0
     memStats.innerHTML = `
       <div class="stat-card"><div class="stat-value">${stats.total}</div><div class="stat-label">${t('memories.stat.total')}</div></div>
       ${Object.entries(stats.byTier || {}).map(([tier, count]) =>
@@ -178,6 +179,7 @@ export async function loadMemStats() {
       ).join('')}
       <div class="stat-card"><div class="stat-value">${embCount}</div><div class="stat-label">${t('memories.stat.vectors_pct', { pct: embPct })}</div></div>
       <div class="stat-card"><div class="stat-value">${artifactCount}</div><div class="stat-label">${t('memories.stat.artifacts')}</div></div>
+      <div class="stat-card" title="${t('memories.stat.import_title')}"><div class="stat-value" style="color:#39FF14">${importCount}</div><div class="stat-label">${t('memories.stat.import')}</div></div>
       <button class="btn-secondary btn-compact" id="memBackfillBtn" style="margin-left:auto;font-size:11px;padding:6px 12px;align-self:center">${t('memories.stat.vectors_btn')}</button>
     `
     document.getElementById('memBackfillBtn')?.addEventListener('click', async () => {
@@ -394,6 +396,7 @@ const GRAPH_TIER_COLORS = {
   warm: '#d97757',
   cold: '#6a9bcc',
   shared: '#b0a040',
+  import: '#1a7a1a',
 }
 
 // Poly spec: luminous dark-variants for ambient glow
@@ -402,6 +405,7 @@ const GRAPH_TIER_GLOW = {
   warm:   '#ff9a70',
   cold:   '#8fc1ff',
   shared: '#e3cf5e',
+  import: '#39FF14',  // neon green per Jónás spec
 }
 
 const GRAPH_TIER_BG = {
@@ -409,6 +413,7 @@ const GRAPH_TIER_BG = {
   warm: 'rgba(217, 119, 87, 0.06)',
   cold: 'rgba(106, 155, 204, 0.06)',
   shared: 'rgba(176, 160, 64, 0.06)',
+  import: 'rgba(57, 255, 20, 0.06)',
 }
 
 // Offscreen glow sprites (pre-rendered at buildGraph time, reused every frame)

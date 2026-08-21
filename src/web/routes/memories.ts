@@ -97,10 +97,43 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       results = getMemoriesForChat(ALLOWED_CHAT_ID, limit)
     }
 
+    // Include import memories in keyword-search results (UNION, not JOIN --
+    // they live in a separate table and have no embedding/tier column).
+    // Skipped when tier is explicitly set to something other than 'import',
+    // and skipped for hybrid/embedding searches (no embeddings on import rows).
+    if (q && mode !== 'hybrid' && (!tier || tier === 'import')) {
+      try {
+        const db2 = getDb()
+        type ImportRow = { id: string; content: string; keywords: string | null; file_name: string; updated_at: number }
+        const importRows = db2.prepare(`
+          SELECT id, content, keywords, file_name, updated_at
+          FROM import_memories
+          WHERE content LIKE ? OR keywords LIKE ? OR file_name LIKE ?
+          ORDER BY updated_at DESC LIMIT ?
+        `).all(`%${q}%`, `%${q}%`, `%${q}%`, limit) as ImportRow[]
+
+        const importAsMemory = importRows.map(r => ({
+          id: r.id as unknown as number,
+          agent_id: 'import',
+          content: r.content,
+          category: 'import',
+          keywords: r.keywords || r.file_name,
+          created_at: r.updated_at,
+          accessed_at: r.updated_at,
+          updated_at: r.updated_at,
+          embedding: undefined,
+          embedding_blob: undefined,
+        } as unknown as Memory))
+
+        results = [...results, ...importAsMemory].slice(0, limit)
+      } catch { /* import_memories table may not exist yet */ }
+    }
+
     // Still needed for the search branches above, which rank by relevance and
     // cannot push the category down into their own LIMIT. A no-op for the
     // plain agent listing, which already filtered in SQL.
-    if (tier) results = results.filter(m => m.category === tier)
+    if (tier && tier !== 'import') results = results.filter(m => m.category === tier)
+    else if (tier === 'import') results = results.filter(m => m.category === 'import')
 
     // A search query (q) is a genuine recall: stamp the surfaced memories as
     // just-accessed so accessed_at reflects real usage. Plain listing (no q,
