@@ -117,3 +117,21 @@ describe('wiring contracts on the route source', () => {
     expect(TELEGRAM).toContain('message_id')
   })
 })
+
+describe('degraded-delivery fallback (review finding on #1026)', () => {
+  it('every owner-send failure path falls back to an in-band message', () => {
+    const fn = ROUTE.slice(ROUTE.indexOf('function notifyOwner('))
+    for (const reason of ["'no-token'", "'no-owner-chat'", "'send-failed'"]) {
+      expect(fn).toContain(`fallbackInBand(approval, ${reason})`)
+    }
+  })
+
+  it('the fallback is main-requester-only and carries the OWNER_UNREACHED marker', () => {
+    const fn = ROUTE.slice(ROUTE.indexOf('function fallbackInBand('), ROUTE.indexOf('function notifyOwner('))
+    const guard = fn.indexOf('approval.agent_id !== MAIN_AGENT_ID')
+    const send = fn.indexOf('createAgentMessage')
+    expect(guard).toBeGreaterThan(0)
+    expect(send).toBeGreaterThan(guard)
+    expect(fn).toContain('[OWNER_UNREACHED')
+  })
+})

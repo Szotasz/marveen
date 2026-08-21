@@ -85,8 +85,8 @@ export function gateDecision(toolName, toolInput) {
 export function buildDraftOnlyMsg(ownerName) {
   return (
     'Kimeno email kuldese tiltott (draft-kapu). ' +
-    'Ird meg ugyanezt draft: true kapcsoloval, es szolj ' +
-    `${ownerName}nek, hogy a Gmail piszkozatok kozott varja a jovahagyasat. ` +
+    'Ird meg ugyanezt draft: true kapcsoloval, es jelezd a tulajdonosnak ' +
+    `(${ownerName}), hogy a Gmail piszkozatok kozott varja a jovahagyasat. ` +
     'Csak VERIFIKALT cimre. A kuldes gombot ember nyomja meg.'
   )
 }

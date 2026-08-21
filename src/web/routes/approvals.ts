@@ -67,6 +67,31 @@ export function buildOwnerApprovalText(approval: Approval): string {
   ].join('\n')
 }
 
+// When the owner send is suppressed or fails AND the requester is the main
+// agent, there is no in-band signal left at all: the leg-2 short-circuit
+// below skips the main-agent message unconditionally. The old self-notify was
+// useless but VISIBLE -- losing even that would rebuild the closed loop this
+// card documents, one layer deeper (Marveen's review finding on #1026).
+// Everyone else already got the normal main-agent notify, so the fallback is
+// main-requester-only. The marker names the reason so the reader knows this
+// is a degraded delivery, not the normal path.
+function fallbackInBand(approval: Approval, reason: string): void {
+  if (approval.agent_id !== MAIN_AGENT_ID) return
+  try {
+    const content = [
+      `[APPROVAL_REQUEST][OWNER_UNREACHED ${reason}]`,
+      `id=${approval.id}`,
+      `agent=${approval.agent_id}`,
+      `category=${approval.category}`,
+      `action=${approval.action_description}`,
+      `timeout_at=${approval.timeout_at ?? 'null'}`,
+    ].join(' ')
+    createAgentMessage('system', MAIN_AGENT_ID, content)
+  } catch (err) {
+    logger.warn({ err, approvalId: approval.id }, 'approval in-band fallback failed too -- the request is only visible on the dashboard')
+  }
+}
+
 // APPROVALVAK821 (a) -- the request must reach the OWNER, not only the main
 // agent's inter-agent queue. Fire-and-forget on purpose: the POST response
 // must not wait on the Telegram round-trip, and a failed send must not fail
@@ -76,11 +101,13 @@ function notifyOwner(approval: Approval): void {
   void (async () => {
     if (!TELEGRAM_BOT_TOKEN) {
       logger.warn({ approvalId: approval.id }, 'approval owner notification suppressed: no TELEGRAM_BOT_TOKEN')
+      fallbackInBand(approval, 'no-token')
       return
     }
     const ownerChat = resolveOwnerChatId()
     if (!ownerChat) {
       logger.warn({ approvalId: approval.id }, 'approval owner notification suppressed: no owner chat')
+      fallbackInBand(approval, 'no-owner-chat')
       return
     }
     try {
@@ -89,6 +116,7 @@ function notifyOwner(approval: Approval): void {
       logger.info({ approvalId: approval.id, messageId }, 'approval owner notification sent')
     } catch (err) {
       logger.warn({ err, approvalId: approval.id }, 'approval owner notification FAILED -- the request is only visible on the dashboard')
+      fallbackInBand(approval, 'send-failed')
     }
   })()
 }

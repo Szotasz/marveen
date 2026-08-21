@@ -1113,7 +1113,13 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
           const stopRes = await stopAgentProcess(name)
           if (stopRes.ok) {
             await delay(2000)
-            gcRestarted = (await startAgentProcess(name)).ok
+            // 'Agent is already running' here means the 60s reconcile sweep
+            // raced us in the stop..start gap and started the agent with the
+            // NEW config (written above, before the stop) -- the end state is
+            // exactly what a restart promises, only the starter differs
+            // (PR1014KONFIG821).
+            const gcStartRes = await startAgentProcess(name)
+            gcRestarted = gcStartRes.ok || gcStartRes.error === 'Agent is already running'
           }
         }
       }
@@ -1211,7 +1217,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         if (stopRes.ok) {
           await delay(2000)
           const startRes = await startAgentProcess(name)
-          restarted = startRes.ok
+          // Same reconcile-race as the GC branch above: an 'already running'
+          // start after our own stop means the agent IS up with the new
+          // provider config (PR1014KONFIG821).
+          restarted = startRes.ok || startRes.error === 'Agent is already running'
         }
       }
     }
