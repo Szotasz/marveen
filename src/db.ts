@@ -2250,7 +2250,8 @@ function vectorRecencyDecay(createdAt: number, nowSec: number): number {
 async function vectorSearch(
   agentId: string,
   queryEmbedding: number[],
-  limit: number = 10
+  limit: number = 10,
+  crossAgent: boolean = false
 ): Promise<Memory[]> {
   let candidates: Memory[] = []
   const nowSec = Math.floor(Date.now() / 1000)
@@ -2271,9 +2272,11 @@ async function vectorSearch(
       if (annRows.length > 0) {
         const ids = annRows.map(r => r.memory_id)
         const placeholders = ids.map(() => '?').join(',')
-        const memories = db.prepare(
-          `SELECT * FROM memories WHERE id IN (${placeholders}) AND (agent_id = ? OR category = 'shared')`
-        ).all([...ids, agentId]) as Memory[]
+        // crossAgent: skip agent_id/shared filter so import shadow rows can
+        // link against the full fleet knowledge base.
+        const memories = crossAgent
+          ? (db.prepare(`SELECT * FROM memories WHERE id IN (${placeholders})`).all(ids) as Memory[])
+          : (db.prepare(`SELECT * FROM memories WHERE id IN (${placeholders}) AND (agent_id = ? OR category = 'shared')`).all([...ids, agentId]) as Memory[])
 
         const distMap = new Map(annRows.map(r => [r.memory_id, r.distance]))
         // Pipeline step 2: recency boost -- reorder by (proximity * decay) so
@@ -2293,9 +2296,10 @@ async function vectorSearch(
 
   if (candidates.length === 0) {
     // BLOB cosine fallback: full-scan, score = cosine * recency decay.
-    const rows = db.prepare(
-      "SELECT * FROM memories WHERE (embedding_blob IS NOT NULL OR embedding IS NOT NULL) AND (agent_id = ? OR category = 'shared')"
-    ).all(agentId) as Memory[]
+    // crossAgent: skip agent_id/shared filter (same reason as ANN path above).
+    const rows = crossAgent
+      ? (db.prepare("SELECT * FROM memories WHERE embedding_blob IS NOT NULL OR embedding IS NOT NULL").all() as Memory[])
+      : (db.prepare("SELECT * FROM memories WHERE (embedding_blob IS NOT NULL OR embedding IS NOT NULL) AND (agent_id = ? OR category = 'shared')").all(agentId) as Memory[])
 
     const scored = rows.map(m => {
       try {
@@ -2538,7 +2542,10 @@ export async function linkToNeighbors(memoryId: number, maxNeighbors = 5, simila
   if (!agentRow?.agent_id) return 0
 
   const queryVec = blobToFloats(row.embedding_blob)
-  const candidates = await vectorSearch(agentRow.agent_id, queryVec, maxNeighbors + 1)
+  // Import shadow rows (agent_id='import') must search the full fleet so they
+  // can link against memories from all agents, not only other import rows.
+  const crossAgent = agentRow.agent_id === 'import'
+  const candidates = await vectorSearch(agentRow.agent_id, queryVec, maxNeighbors + 1, crossAgent)
 
   let linked = 0
   for (const candidate of candidates) {

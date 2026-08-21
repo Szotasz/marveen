@@ -132,4 +132,42 @@ describe('linkToNeighbors', () => {
     const linked = await linkToNeighbors(src, 5, 0.99)
     expect(linked).toBeGreaterThanOrEqual(0)
   })
+
+  it('import shadow row (agent_id=import) links against fleet memories via crossAgent BLOB fallback', async () => {
+    const db = getDb()
+    const vec = Array.from({ length: 768 }, (_, i) => ((i + 1) % 7) / 7)
+    const embBuf = Buffer.allocUnsafe(vec.length * 4)
+    vec.forEach((v, i) => embBuf.writeFloatLE(v, i * 4))
+
+    // Import shadow row
+    const importInfo = db.prepare(
+      `INSERT INTO memories (agent_id, chat_id, sector, content, category, created_at, accessed_at, updated_at)
+       VALUES ('import', 'import', 'semantic', 'fleet-cross-agent import doc', 'warm', unixepoch(), unixepoch(), unixepoch())`
+    ).run() as { lastInsertRowid: number | bigint }
+    const importId = Number(importInfo.lastInsertRowid)
+    db.prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(embBuf, importId)
+
+    // Fleet memory with a different agent_id and the same embedding (cosine = 1.0)
+    const fleetInfo = db.prepare(
+      `INSERT INTO memories (agent_id, chat_id, sector, content, category, created_at, accessed_at, updated_at)
+       VALUES ('agent-b', 'chat-fleet', 'semantic', 'fleet-cross-agent regular memory', 'warm', unixepoch(), unixepoch(), unixepoch())`
+    ).run() as { lastInsertRowid: number | bigint }
+    const fleetId = Number(fleetInfo.lastInsertRowid)
+    db.prepare('UPDATE memories SET embedding_blob = ? WHERE id = ?').run(embBuf, fleetId)
+
+    // vec_memories extension not available in tests -- falls back to BLOB scan.
+    // With crossAgent=true the BLOB scan omits the agent_id filter, so fleetId
+    // is visible and linked (cosine = 1.0 >= threshold 0.75).
+    const linked = await linkToNeighbors(importId, 5, 0.75)
+    expect(linked).toBeGreaterThanOrEqual(1)
+
+    const links = db.prepare(
+      'SELECT dst_id FROM memory_links WHERE src_id = ? AND link_type = ?'
+    ).all(importId, 'semantic') as { dst_id: number }[]
+    expect(links.some(l => l.dst_id === fleetId)).toBe(true)
+
+    // Cleanup
+    db.prepare('DELETE FROM memory_links WHERE src_id = ? OR dst_id = ?').run(importId, importId)
+    db.prepare('DELETE FROM memories WHERE id IN (?, ?)').run(importId, fleetId)
+  })
 })
