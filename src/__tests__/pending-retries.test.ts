@@ -3,6 +3,7 @@ import {
   shouldSendAlert,
   toPendingRetryView,
   classifyTelegramSendError,
+  classifySendError,
   ALERT_THRESHOLD_MS,
 } from '../pending-retries.js'
 
@@ -128,5 +129,40 @@ describe('classifyTelegramSendError', () => {
     expect(classifyTelegramSendError('Telegram API 401: Unauthorized')).toBe('permanent')
     expect(classifyTelegramSendError('Telegram API 403: Forbidden: bot was blocked by the user')).toBe('permanent')
     expect(classifyTelegramSendError('Telegram API 404: Not Found')).toBe('permanent')
+  })
+})
+
+// SLACKAWARE: the scheduler alerts now go over whatever channel the main agent
+// is bound to, so the classifier must recognise Slack's two error shapes too.
+// classifyTelegramSendError is a backward-compatible alias of classifySendError.
+describe('classifySendError (Slack shapes)', () => {
+  it('is the same function as the legacy classifyTelegramSendError alias', () => {
+    expect(classifySendError).toBe(classifyTelegramSendError)
+  })
+
+  it('treats Slack HTTP 429/5xx as transient, other 4xx as permanent', () => {
+    expect(classifySendError('Slack API HTTP 429')).toBe('transient')
+    expect(classifySendError('Slack API HTTP 503')).toBe('transient')
+    expect(classifySendError('Slack API HTTP 400')).toBe('permanent')
+    expect(classifySendError('Slack API HTTP 403')).toBe('permanent')
+  })
+
+  it('treats Slack rate-limit / server error codes as transient', () => {
+    expect(classifySendError('Slack API error: ratelimited')).toBe('transient')
+    expect(classifySendError('Slack API error: rate_limited')).toBe('transient')
+    expect(classifySendError('Slack API error: internal_error')).toBe('transient')
+    expect(classifySendError('Slack API error: service_unavailable')).toBe('transient')
+  })
+
+  it('treats Slack config error codes as permanent (no 60s spin)', () => {
+    expect(classifySendError('Slack API error: channel_not_found')).toBe('permanent')
+    expect(classifySendError('Slack API error: not_in_channel')).toBe('permanent')
+    expect(classifySendError('Slack API error: invalid_auth')).toBe('permanent')
+    expect(classifySendError('Slack API error: token_revoked')).toBe('permanent')
+    expect(classifySendError('Slack API error: is_archived')).toBe('permanent')
+  })
+
+  it('treats a bare Slack network failure (no status/code) as transient', () => {
+    expect(classifySendError('fetch failed')).toBe('transient')
   })
 })

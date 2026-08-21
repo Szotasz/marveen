@@ -1,5 +1,4 @@
 import { join, isAbsolute } from 'node:path'
-import { homedir } from 'node:os'
 import { checkTaskMcpRequirements } from './schedule-mcp-precheck.js'
 import { existsSync, readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
@@ -10,6 +9,7 @@ import {
   MAIN_AGENT_ID,
   BOT_NAME,
   APP_TZ_INVALID,
+  CHANNEL_PROVIDER,
 } from '../config.js'
 import { resolveOwnerChatId } from '../owner-chat.js'
 import {
@@ -22,7 +22,7 @@ import {
   clearPendingTaskRetryAlert,
   markScheduledTaskKanbanWaiting,
 } from '../db.js'
-import { toPendingRetryView, classifyTelegramSendError, type PendingRetryView } from '../pending-retries.js'
+import { toPendingRetryView, classifySendError, type PendingRetryView } from '../pending-retries.js'
 import {
   SCHEDULED_TASK_PREAMBLE,
   wrapScheduledTask,
@@ -35,7 +35,7 @@ import {
 } from './scheduled-tasks-io.js'
 import { listAgentNames, readFileOr, readAgentRemoteHost, agentDir, readAgentClaudeConfigDir } from './agent-config.js'
 import { readTranscriptMtimeFromProjectDir } from './active-model.js'
-import { channelStateDir } from '../channel-provider.js'
+import { channelStateDir, getProvider, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import {
   agentSessionName,
   isAgentRunning,
@@ -46,9 +46,9 @@ import {
   capturePane,
   sendEnterToSession,
   clearStaleParkedInput,
+  resolveAgentProvider,
 } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
-import { sendTelegramMessage } from './telegram.js'
 import { runCommandTask } from './command-task.js'
 import { decideQuotaAction, type QuotaWorkClass } from '../quota-gate.js'
 import { readQuotaSnapshot } from '../quota-snapshot.js'
@@ -441,18 +441,28 @@ function persistLastTickMs(nowMs: number): void {
 //   non-zero exit            → log warning, run LLM anyway (fail-open)
 // --- Bound-channel chat id resolution for scheduled-task prompts ---
 //
-// The prompt prefix used to carry a "chat_id: 0" sentinel meaning "the running
+// TELEGRAM: The prompt prefix used to carry a "chat_id: 0" sentinel meaning "the running
 // agent's own bound channel". The convention belonged to an earlier channel
-// implementation; the official Telegram plugin (0.0.6) knows nothing about it:
-// its reply tool calls assertAllowedChat(chat_id) first, "0" is never on the
-// allowlist, so every non-heartbeat scheduled task threw at delivery time
-// (Zara, 2026-07-27; all 32 task-configs affected -- none carries a chat_id).
-// The sentinel's INTENT stays correct (a sub-agent's result must go to its own
-// owner, never the boss's chat), so the fix resolves the concrete chat id at
-// prompt-build time from the same place the plugin enforces it: the agent's
-// own channel access.json allowlist.
+// implementation; the official Telegram plugin (0.0.6) knows nothing about it: the reply
+// tool calls assertAllowedChat(chat_id) first, "0" is never on the allowlist, so
+// every non-heartbeat scheduled task threw at delivery time (Zara, 2026-07-27;
+// all 32 task-configs affected -- none carries a chat_id). The sentinel's INTENT
+// stays correct (a sub-agent's result must go to its own owner, never the boss's
+// chat), so the fix resolves the concrete chat id at prompt-build time from the
+// same place the plugin enforces it: the agent's own channel access.json.
+//
+// SLACK: the resolution is now provider-aware. The main agent and each
+// sub-agent can be bound to Telegram OR Slack (CHANNEL_PROVIDER / per-agent
+// agent-config.json channelProvider), and the access.json lives under the
+// matching provider subdir. Reading telegram/access.json unconditionally meant a
+// Slack-bound agent (no telegram/access.json at all) resolved to null and its
+// scheduled tasks silently shipped with NO delivery instruction (measured on the
+// live CHANNEL_PROVIDER=slack install: telegram/access.json absent, so every
+// scheduled task result had nowhere to go).
 
-/** Pure core: first DM allowlist entry, else first allowed group, else null. */
+/** Pure core: first DM allowlist entry, else first allowed group/channel, else
+ *  null. Handles both the Telegram/Discord `groups` map and the Slack `channels`
+ *  map so one helper covers every provider's access.json shape. */
 export function chatIdFromAccessConfig(raw: unknown): string | null {
   if (!raw || typeof raw !== 'object') return null
   const o = raw as Record<string, unknown>
@@ -461,23 +471,55 @@ export function chatIdFromAccessConfig(raw: unknown): string | null {
     if (typeof first === 'string' && first.trim()) return first.trim()
     if (typeof first === 'number') return String(first)
   }
-  if (o.groups && typeof o.groups === 'object') {
-    const keys = Object.keys(o.groups as Record<string, unknown>)
-    if (keys.length > 0) return keys[0]
+  for (const key of ['groups', 'channels'] as const) {
+    const map = o[key]
+    if (map && typeof map === 'object') {
+      const keys = Object.keys(map as Record<string, unknown>)
+      if (keys.length > 0) return keys[0]
+    }
   }
   return null
 }
 
-/** The agent's own bound Telegram chat, or null when no binding exists.
- *  Reads <agent channels dir>/telegram/access.json -- the exact file the
- *  plugin's assertAllowedChat enforces, so a resolved id is deliverable by
- *  construction. Deliberately NOT falling back to ALLOWED_CHAT_ID: that is
- *  the boss's chat, and pointing a sub-agent's result there is the precise
- *  bug the old sentinel existed to avoid. */
-export function resolveBoundChatId(agentName: string): string | null {
+/** How a scheduled-task prompt names the delivery channel, in Hungarian, for
+ *  the "kuldd el <ide>" instruction. The reply tool itself is the same across
+ *  providers -- only the channel noun and the chat_id format differ. */
+export function channelDeliveryName(provider: ChannelProviderType): string {
+  switch (provider) {
+    case "slack":
+      return "Slacken";
+    case "discord":
+      return "Discordon";
+    case "googlechat":
+      return "Google Chaten";
+    case "teams":
+      return "Teamsen";
+    case "telegram":
+      return "Telegramon";
+    default:
+      return "Telegramon";
+  }
+}
+
+export interface BoundChannel {
+  /** The provider the agent is bound to (main: CHANNEL_PROVIDER; sub-agent:
+   *  its agent-config.json channelProvider, falling back to CHANNEL_PROVIDER). */
+  provider: ChannelProviderType
+  /** The agent's own bound chat id, or null when no binding exists. */
+  chatId: string | null
+}
+
+/** The agent's own bound channel + chat, or {provider, chatId:null} when no
+ *  binding exists. Reads <agent channels dir>/<provider>/access.json -- the
+ *  exact file the plugin's assertAllowedChat enforces, so a resolved id is
+ *  deliverable by construction. Deliberately NOT falling back to
+ *  ALLOWED_CHAT_ID: that is the boss's chat, and pointing a sub-agent's result
+ *  there is the precise bug the old sentinel existed to avoid. */
+export function resolveBoundChannel(agentName: string): BoundChannel {
+  const provider = resolveAgentProvider(agentName)
   const dir = agentName === MAIN_AGENT_ID
-    ? channelStateDir('telegram')
-    : channelStateDir('telegram', agentDir(agentName))
+    ? channelStateDir(provider)
+    : channelStateDir(provider, agentDir(agentName))
   try {
     const raw = JSON.parse(readFileSync(join(dir, 'access.json'), 'utf-8')) as Record<string, unknown>
     const chosen = chatIdFromAccessConfig(raw)
@@ -489,10 +531,10 @@ export function resolveBoundChatId(agentName: string): string | null {
     // log line; behaviour is unchanged (Marveen, msg 7002).
     const candidates = Array.isArray(raw?.allowFrom) ? raw.allowFrom.length : 0
     if (chosen && candidates > 1) {
-      logger.warn({ agent: agentName, candidates, chosen }, 'bound-chat resolution is ambiguous: multiple DM allowlist entries, using the first')
+      logger.warn({ agent: agentName, provider, candidates, chosen }, 'bound-chat resolution is ambiguous: multiple DM allowlist entries, using the first')
     }
-    return chosen
-  } catch { return null }
+    return { provider, chatId: chosen }
+  } catch { return { provider, chatId: null } }
 }
 
 // What a scheduled task costs the shared quota pool, for the gate in
@@ -721,18 +763,20 @@ async function attemptFireTask(
       // ALLOWED_CHAT_ID. The latter is the main/admin chat; injecting it here
       // pointed every sub-agent's task result at the boss's chat instead of its
       // own owner (e.g. attilamarveenja -> Papp Attila). The old "chat_id: 0"
-      // sentinel encoded the same intent, but the official Telegram plugin
-      // rejects it (assertAllowedChat: "0" is never allowlisted), so the
-      // binding is resolved to a CONCRETE id here at prompt-build time. No
-      // binding -> no Telegram instruction at all: better to skip delivery
-      // than to deliver to the wrong chat, and the warn below makes the
-      // config gap visible. The system-level pending-retry alert further
-      // down still uses ALLOWED_CHAT_ID by design.
-      const boundChatId = resolveBoundChatId(agentName)
-      if (boundChatId) {
-        prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el Telegramon (chat_id: ${boundChatId}, reply tool). `
+      // sentinel encoded the same intent, but the official Telegram plugin rejects it
+      // (assertAllowedChat: "0" is never allowlisted), so the binding is
+      // resolved to a CONCRETE id here at prompt-build time.
+      // SLACK: the resolution follows the agent's actual provider (Telegram or Slack) and
+      // the instruction names that channel + uses its chat_id format. No
+      // binding -> no delivery instruction at all: better to skip delivery than
+      // to deliver to the wrong chat, and the warn below makes the config gap
+      // visible. The system-level pending-retry alert further down uses the
+      // owner chat by design.
+      const bound = resolveBoundChannel(agentName)
+      if (bound.chatId) {
+        prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el ${channelDeliveryName(bound.provider)} (chat_id: ${bound.chatId}, reply tool). `
       } else {
-        logger.warn({ task: task.name, agent: agentName }, 'scheduled task: agent has no bound telegram chat (access.json missing/empty) -- prompt omits the Telegram delivery instruction')
+        logger.warn({ task: task.name, agent: agentName, provider: bound.provider }, 'scheduled task: agent has no bound channel (access.json missing/empty) -- prompt omits the delivery instruction')
         prefix = `[Utemezett feladat: ${task.name}] `
       }
     }
@@ -948,25 +992,52 @@ export async function runScheduledTaskNow(
   return { ok: true, result: summary.join(', ') }
 }
 
-// Fire a Telegram alert when a pending retry has been stuck past the
-// threshold. Stamps `alert_sent_at` BEFORE the network call so concurrent
-// ticks and crash-restarts cannot race into double-alerting on the same
-// attempt. If the send fails, the stamp is cleared so the next tick can
-// retry -- that way a transient Telegram outage or a bad token doesn't
-// silently suppress every future alert on this row. Net semantics:
-// exactly-one stamp per delivery attempt, at-least-once delivery with a
-// 60s retry cadence until success.
+// Fire an owner alert when a pending retry has been stuck past the threshold.
+// The alert goes over the main agent's bound channel (CHANNEL_PROVIDER:
+// Telegram or Slack). Stamps `alert_sent_at` BEFORE the network call so
+// concurrent ticks and crash-restarts cannot race into double-alerting on the
+// same attempt. If the send fails, the stamp is cleared so the next tick can
+// retry -- that way a transient channel outage or a bad token doesn't silently
+// suppress every future alert on this row. Net semantics: exactly-one stamp per
+// delivery attempt, at-least-once delivery with a 60s retry cadence until success.
 // Bot token for the system-level scheduler alerts (pending-retry, task-timeout,
-// catch-up summary). Since the channels migration the token lives in the
-// telegram plugin's env, not marveen/.env (2026-07-08: every scheduler alert
-// was silently suppressed on such hosts), so both locations are tried -- same
-// fallback order as scripts/notify.sh.
+// catch-up summary). SLACKAWARE: the alerts go over whatever channel the MAIN
+// agent is bound to (CHANNEL_PROVIDER), so the token is resolved for that
+// provider. Telegram keeps its historical dual-location lookup (marveen/.env
+// first, then the plugin env -- 2026-07-08: every scheduler alert was silently
+// suppressed on hosts where the token had moved to the plugin env after the
+// channels migration); other providers read the main agent's channel .env via
+// readChannelToken. A creds-based provider (Google Chat/Teams) has no bot token,
+// so the alert send falls back to the log-only path in each caller.
 function resolveSchedulerAlertToken(): string | undefined {
-  const envContent = readFileOr(join(PROJECT_ROOT, '.env'), '')
-  const token = envContent.match(/TELEGRAM_BOT_TOKEN=(.+)/)?.[1]?.trim()
-  if (token) return token
-  const channelEnv = readFileOr(join(homedir(), '.claude', 'channels', 'telegram', '.env'), '')
-  return channelEnv.match(/TELEGRAM_BOT_TOKEN=(.+)/)?.[1]?.trim()
+  if (CHANNEL_PROVIDER === 'telegram') {
+    const envContent = readFileOr(join(PROJECT_ROOT, '.env'), '')
+    const token = envContent.match(/TELEGRAM_BOT_TOKEN=(.+)/)?.[1]?.trim()
+    if (token) return token
+  } else if (CHANNEL_PROVIDER === 'slack') {
+    const token = readChannelToken(CHANNEL_PROVIDER, join(channelStateDir(CHANNEL_PROVIDER), '.env'))
+    if (token) return token
+  }
+  
+  return undefined
+}
+
+// Resolve the owner chat for the MAIN agent's bound provider. The default
+// resolveOwnerChatId() reads telegram/access.json; the scheduler alerts must
+// follow CHANNEL_PROVIDER so a Slack-bound main agent resolves its owner from
+// slack/access.json (the live CHANNEL_PROVIDER=slack install has no telegram
+// access.json at all, so the default path returned null and every scheduler
+// alert was suppressed).
+function resolveSchedulerOwnerChat(): string | null {
+  return resolveOwnerChatId(undefined, undefined, CHANNEL_PROVIDER)
+}
+
+// Send a system-level scheduler alert over the MAIN agent's bound channel. The
+// message is plain text (no markdown) as it always has been, so no formatMessage
+// pass is applied; getProvider throws on a non-2xx / ok:false response so the
+// callers' try/catch + classifySendError paths work for every provider.
+function sendSchedulerAlertMessage(token: string, chatId: string, text: string): Promise<void> {
+  return getProvider(CHANNEL_PROVIDER).sendMessage(token, chatId, text)
 }
 
 // One line about what the scheduler missed while it was down: which tasks it
@@ -981,12 +1052,12 @@ function sendCatchUpSummary(
 ): void {
   const token = resolveSchedulerAlertToken()
   if (!token) {
-    logger.warn('catch-up summary suppressed: no TELEGRAM_BOT_TOKEN (config error)')
+    logger.warn({ provider: CHANNEL_PROVIDER }, 'catch-up summary suppressed: no channel bot token (config error)')
     return
   }
-  const ownerChat = resolveOwnerChatId()
+  const ownerChat = resolveSchedulerOwnerChat()
   if (!ownerChat) {
-    logger.warn('catch-up summary suppressed: no owner chat (ALLOWED_CHAT_ID unset/placeholder and no paired channel)')
+    logger.warn({ provider: CHANNEL_PROVIDER }, 'catch-up summary suppressed: no owner chat (ALLOWED_CHAT_ID unset/placeholder and no paired channel)')
     return
   }
   const mins = (ms: number) => `${Math.round(ms / 60000)} perc`
@@ -1004,8 +1075,8 @@ function sendCatchUpSummary(
   const text = lines.join('\n')
   ;(async () => {
     try {
-      await sendTelegramMessage(token, ownerChat, text)
-      logger.info({ caughtUp: caughtUp.length, stale: stale.length }, 'catch-up summary Telegram alert sent')
+      await sendSchedulerAlertMessage(token, ownerChat, text)
+      logger.info({ caughtUp: caughtUp.length, stale: stale.length, provider: CHANNEL_PROVIDER }, 'catch-up summary alert sent')
     } catch (err) {
       logger.warn({ err }, 'catch-up summary delivery failed')
     }
@@ -1030,12 +1101,12 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
   // itself keeps retrying regardless -- only this alert is suppressed.
   const token = resolveSchedulerAlertToken()
   if (!token) {
-    logger.warn({ task: view.taskName, agent: view.agentName }, 'Pending-retry alert suppressed: no TELEGRAM_BOT_TOKEN (config error, stamp kept to avoid 60s spin)')
+    logger.warn({ task: view.taskName, agent: view.agentName, provider: CHANNEL_PROVIDER }, 'Pending-retry alert suppressed: no channel bot token (config error, stamp kept to avoid 60s spin)')
     return
   }
-  const ownerChat = resolveOwnerChatId()
+  const ownerChat = resolveSchedulerOwnerChat()
   if (!ownerChat) {
-    logger.warn({ task: view.taskName, agent: view.agentName }, 'Pending-retry alert suppressed: no owner chat (ALLOWED_CHAT_ID unset/placeholder and no paired channel; stamp kept to avoid 60s spin)')
+    logger.warn({ task: view.taskName, agent: view.agentName, provider: CHANNEL_PROVIDER }, 'Pending-retry alert suppressed: no owner chat (ALLOWED_CHAT_ID unset/placeholder and no paired channel; stamp kept to avoid 60s spin)')
     return
   }
 
@@ -1070,15 +1141,15 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
       ]).join('\n')
   ;(async () => {
     try {
-      await sendTelegramMessage(token, ownerChat, text)
-      logger.info({ task: view.taskName, agent: view.agentName, ageMinutes }, 'Pending-retry Telegram alert sent')
+      await sendSchedulerAlertMessage(token, ownerChat, text)
+      logger.info({ task: view.taskName, agent: view.agentName, ageMinutes, provider: CHANNEL_PROVIDER }, 'Pending-retry alert sent')
     } catch (err) {
       // Distinguish a transient failure (network blip, 429, 5xx) from a
       // permanent one (4xx: bad chat_id / revoked token). Transient ->
       // clear the per-attempt stamp so the next tick retries. Permanent
       // -> KEEP the stamp; retrying every 60s would just repeat the same
       // rejection and spam the log until the config is fixed.
-      const kind = classifyTelegramSendError(err instanceof Error ? err.message : String(err))
+      const kind = classifySendError(err instanceof Error ? err.message : String(err))
       if (kind === 'transient') {
         logger.warn({ err, task: view.taskName, agent: view.agentName }, 'Pending-retry alert delivery failed (transient), clearing stamp for retry')
         clearPendingTaskRetryAlert(view.taskName, view.agentName)
@@ -1089,20 +1160,20 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
   })()
 }
 
-// One-shot Telegram alert when a fired task/heartbeat has been continuously
-// busy past TASK_FIRE_TIMEOUT_MS. Follows the same token-resolution and
-// ALLOWED_CHAT_ID path as sendPendingRetryAlert: this is a system-level
-// scheduler alert, not a per-agent channel notification.
+// One-shot alert when a fired task/heartbeat has been continuously busy past
+// TASK_FIRE_TIMEOUT_MS. Follows the same token-resolution and owner-chat path as
+// sendPendingRetryAlert (provider-aware, over CHANNEL_PROVIDER): this is a
+// system-level scheduler alert, not a per-agent channel notification.
 function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void {
   const ageMinutes = Math.floor(elapsedMs / 60000)
   const token = resolveSchedulerAlertToken()
   if (!token) {
-    logger.warn({ task: entry.taskName, agent: entry.agentName }, 'task-timeout alert suppressed: no TELEGRAM_BOT_TOKEN (config error)')
+    logger.warn({ task: entry.taskName, agent: entry.agentName, provider: CHANNEL_PROVIDER }, 'task-timeout alert suppressed: no channel bot token (config error)')
     return
   }
-  const ownerChat = resolveOwnerChatId()
+  const ownerChat = resolveSchedulerOwnerChat()
   if (!ownerChat) {
-    logger.warn({ task: entry.taskName, agent: entry.agentName }, 'task-timeout alert suppressed: no owner chat (ALLOWED_CHAT_ID unset/placeholder and no paired channel)')
+    logger.warn({ task: entry.taskName, agent: entry.agentName, provider: CHANNEL_PROVIDER }, 'task-timeout alert suppressed: no owner chat (ALLOWED_CHAT_ID unset/placeholder and no paired channel)')
     return
   }
   // If there is an active kanban card whose title matches the task name, move it
@@ -1124,8 +1195,8 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
   ].join('\n')
   ;(async () => {
     try {
-      await sendTelegramMessage(token, ownerChat, text)
-      logger.info({ task: entry.taskName, agent: entry.agentName, ageMinutes }, 'task-timeout Telegram alert sent')
+      await sendSchedulerAlertMessage(token, ownerChat, text)
+      logger.info({ task: entry.taskName, agent: entry.agentName, ageMinutes, provider: CHANNEL_PROVIDER }, 'task-timeout alert sent')
     } catch (err) {
       logger.warn({ err, task: entry.taskName, agent: entry.agentName }, 'task-timeout alert delivery failed')
     }

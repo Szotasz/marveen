@@ -79,6 +79,7 @@ vi.mock('../web/agent-process.js', () => ({
   capturePane: () => null,
   sendEnterToSession: vi.fn(),
   clearStaleParkedInput: vi.fn(() => false),
+  resolveAgentProvider: () => 'telegram',
 }))
 
 function task(overrides: Partial<ScheduledTask> & { name: string; schedule: string }): ScheduledTask {

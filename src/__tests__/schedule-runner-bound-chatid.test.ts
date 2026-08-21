@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { chatIdFromAccessConfig } from '../web/schedule-runner.js'
+import { chatIdFromAccessConfig, channelDeliveryName } from '../web/schedule-runner.js'
 
 // Regression guard for 2026-07-27 (Zara report, Marveen diagnosis): the
 // scheduled-task prompt prefix carried a "chat_id: 0" sentinel from a
@@ -25,6 +25,17 @@ describe('chatIdFromAccessConfig (pure core)', () => {
     expect(chatIdFromAccessConfig({ allowFrom: [], groups: { '-100123': {} } })).toBe('-100123')
   })
 
+  it('falls back to the Slack channels map when no DM entry exists', () => {
+    // Slack access.json uses `channels`, not `groups` -- the same helper must
+    // cover it so a Slack-bound agent with only a channel (no DM allowlist)
+    // still resolves a deliverable id.
+    expect(chatIdFromAccessConfig({ allowFrom: [], channels: { C0123ABCDE: {} } })).toBe('C0123ABCDE')
+  })
+
+  it('prefers the DM allowlist entry over a group/channel fallback', () => {
+    expect(chatIdFromAccessConfig({ allowFrom: ['U0BKECRGKCY'], channels: { C0123: {} } })).toBe('U0BKECRGKCY')
+  })
+
   it('returns null for missing/empty/corrupt bindings (config gap, not a default)', () => {
     expect(chatIdFromAccessConfig(null)).toBeNull()
     expect(chatIdFromAccessConfig('nope')).toBeNull()
@@ -34,18 +45,36 @@ describe('chatIdFromAccessConfig (pure core)', () => {
   })
 })
 
-describe('schedule-runner source contract (sentinel removed)', () => {
+describe('channelDeliveryName (provider -> Hungarian channel noun)', () => {
+  it('names each provider for the "kuldd el <ide>" instruction', () => {
+    expect(channelDeliveryName('telegram')).toBe('Telegramon')
+    expect(channelDeliveryName('slack')).toBe('Slacken')
+    expect(channelDeliveryName('discord')).toBe('Discordon')
+    expect(channelDeliveryName('googlechat')).toBe('Google Chaten')
+    expect(channelDeliveryName('teams')).toBe('Teamsen')
+  })
+})
+
+describe('schedule-runner source contract (sentinel removed, provider-aware)', () => {
   const src = readFileSync(join(__dirname, '..', 'web', 'schedule-runner.ts'), 'utf-8')
 
   it('no prompt prefix carries the dead chat_id: 0 sentinel anymore', () => {
     expect(src).not.toMatch(/chat_id:\s*0[,)]/)
   })
 
-  it('the no-binding branch omits the Telegram instruction instead of guessing a chat', () => {
-    // The fallback prefix must be the bare task tag -- no Telegram mention, no
+  it('the no-binding branch omits the delivery instruction instead of guessing a chat', () => {
+    // The fallback prefix must be the bare task tag -- no channel mention, no
     // ALLOWED_CHAT_ID leak into a sub-agent prompt.
-    expect(src).toContain('prompt omits the Telegram delivery instruction')
+    expect(src).toContain('prompt omits the delivery instruction')
     expect(src).toMatch(/prefix = `\[Utemezett feladat: \$\{task\.name\}\] `/)
+  })
+
+  it('the delivery instruction names the resolved provider, not a hardcoded Telegram', () => {
+    // Regression guard: the instruction used to say "Telegramon" for every
+    // agent. It must now interpolate channelDeliveryName(bound.provider) so a
+    // Slack-bound agent is told to reply on Slack.
+    expect(src).toContain('channelDeliveryName(bound.provider)')
+    expect(src).not.toMatch(/kuldd el Telegramon \(chat_id/)
   })
 
   it('multi-entry allowlists produce an ambiguity warn (heuristic made visible)', () => {
@@ -55,8 +84,17 @@ describe('schedule-runner source contract (sentinel removed)', () => {
     expect(src).toMatch(/candidates > 1/)
   })
 
-  it('resolution reads the same access.json the plugin enforces', () => {
-    expect(src).toContain("channelStateDir('telegram'")
+  it('resolution reads the access.json for the agent\'s own provider, not always telegram', () => {
+    expect(src).toContain('resolveAgentProvider(agentName)')
+    expect(src).toContain('channelStateDir(provider')
     expect(src).toContain('chatIdFromAccessConfig')
+  })
+
+  it('the system-level scheduler alerts send over CHANNEL_PROVIDER, not Telegram directly', () => {
+    // The three alert paths (catch-up summary, pending-retry, task-timeout)
+    // must route through the provider abstraction, never sendTelegramMessage.
+    expect(src).not.toContain('sendTelegramMessage')
+    expect(src).toContain('sendSchedulerAlertMessage')
+    expect(src).toContain('getProvider(CHANNEL_PROVIDER)')
   })
 })

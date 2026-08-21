@@ -806,7 +806,7 @@ export function stampFableOverageConsentSharedRoots(): void {
   }
 }
 
-function resolveAgentProvider(name: string): ChannelProviderType {
+export function resolveAgentProvider(name: string): ChannelProviderType {
   const perAgent = readAgentChannelProvider(name)
   if (perAgent === 'slack' || perAgent === 'telegram' || perAgent === 'discord' || perAgent === 'googlechat' || perAgent === 'teams') return perAgent
   return CHANNEL_PROVIDER
