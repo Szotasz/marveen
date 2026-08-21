@@ -61,6 +61,12 @@ const SYSTEM_SENDERS = parseSystemSenderIds(SYSTEM_SENDER_IDS, sanitizeAgentIden
  * carry a measurement plus its interpretation and 500 truncates that mid-sentence. And the
  * marker now names the EXACT command, so following it is one step, not a research task.
  *
+ * ES A MUTATO MEGMONDJA, MIRE MUTAT (2026-08-21). A megnevezett id NEM az olvasott uzenete,
+ * hanem azé, amelyiknek a `result` mezőjében a teljes szöveg áll. Ezt korábban nem mondtuk ki,
+ * és egy ágens a saját üzenet-id-jével kérdezte le: üres választ kapott, abból adatvesztésre
+ * következtetett, és majdnem hibajelentést írt róla. Egy mutató, ami helyes, de nem mondja meg,
+ * MIRE mutat, ugyanannyi kört visz el, mint egy hiányzó mutató -- csak nem lehet rá fogni.
+ *
  * The cap stays FINITE on purpose: the notification is injected into a live session, and an
  * unbounded paste there costs context that the recipient did not choose to spend.
  */
@@ -72,7 +78,8 @@ export function resultSummary(id: number, result: string | undefined | null): st
   const maradt = result.length - RESULT_NOTIFY_MAX
   return (
     result.slice(0, RESULT_NOTIFY_MAX) +
-    `\n... [levágva, még ${maradt} karakter. A TELJES szöveg: bash scripts/agent-msg-get.sh ${id}]`
+    `\n... [levágva, még ${maradt} karakter. A teljes szöveg a(z) ${id}. üzenet result mezőjében áll` +
+    ` -- ez NEM ennek az üzenetnek az id-je. Kérd le: bash scripts/agent-msg-get.sh ${id}]`
   )
 }
 

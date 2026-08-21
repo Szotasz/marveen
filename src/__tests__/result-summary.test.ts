@@ -40,6 +40,9 @@ describe('resultSummary -- a levagott eredmeny KOVETHETO marad', () => {
   it('a marker futtathato parancsot ad, a valodi uzenet-azonositoval', () => {
     const ki = resultSummary(1767, 'y'.repeat(RESULT_NOTIFY_MAX + 500))
     expect(ki).toContain('bash scripts/agent-msg-get.sh 1767')
+    // A mutato MEGMONDJA, mire mutat: a megnevezett id nem az olvasott uzenete. Enelkul
+    // egy agens a sajat id-jevel kerdezte le, ures valaszt kapott, es adatvesztest jelentett volna.
+    expect(ki).toContain('NEM ennek az üzenetnek az id-je')
   })
 
   it('megmondja, MENNYI maradt le -- kulonben nem tudni, erdemes-e utananezni', () => {
