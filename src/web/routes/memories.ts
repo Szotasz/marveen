@@ -632,7 +632,9 @@ Respond ONLY with JSON, nothing else:
 
     json(res, {
       id: mem.id,
-      content: mem.content,
+      // Import shadow rows can be very large (full HTML files); the frontend
+      // shows import_meta instead of content, so omit content from the wire.
+      content: mem.agent_id === 'import' ? null : mem.content,
       category: mem.category,
       agent_id: mem.agent_id,
       keywords: mem.keywords,
