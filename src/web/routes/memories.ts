@@ -97,69 +97,11 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       results = getMemoriesForChat(ALLOWED_CHAT_ID, limit)
     }
 
-    // tier=import with no q: return import_memories directly (no rows in the
-    // main memories table carry category='import', so without this early return
-    // the filtered results would always be empty).
-    if (tier === 'import' && !q) {
-      try {
-        const db2 = getDb()
-        type ImportRow = { id: string; content: string; keywords: string | null; file_name: string; updated_at: number }
-        const importRows = db2.prepare(`
-          SELECT id, content, keywords, file_name, updated_at
-          FROM import_memories ORDER BY updated_at DESC LIMIT ?
-        `).all(limit) as ImportRow[]
-        const mapped = importRows.map(r => ({
-          id: r.id as unknown as number,
-          agent_id: 'import',
-          content: r.content,
-          category: 'import',
-          keywords: r.keywords || r.file_name,
-          created_at: r.updated_at,
-          accessed_at: r.updated_at,
-          updated_at: r.updated_at,
-        } as unknown as Memory))
-        json(res, mapped)
-        return true
-      } catch { json(res, []); return true }
-    }
-
-    // Include import memories in keyword-search results (UNION, not JOIN --
-    // they live in a separate table and have no embedding/tier column).
-    // Skipped when tier is explicitly set to something other than 'import',
-    // and skipped for hybrid/embedding searches (no embeddings on import rows).
-    if (q && mode !== 'hybrid' && (!tier || tier === 'import')) {
-      try {
-        const db2 = getDb()
-        type ImportRow = { id: string; content: string; keywords: string | null; file_name: string; updated_at: number }
-        const importRows = db2.prepare(`
-          SELECT id, content, keywords, file_name, updated_at
-          FROM import_memories
-          WHERE content LIKE ? OR keywords LIKE ? OR file_name LIKE ?
-          ORDER BY updated_at DESC LIMIT ?
-        `).all(`%${q}%`, `%${q}%`, `%${q}%`, limit) as ImportRow[]
-
-        const importAsMemory = importRows.map(r => ({
-          id: r.id as unknown as number,
-          agent_id: 'import',
-          content: r.content,
-          category: 'import',
-          keywords: r.keywords || r.file_name,
-          created_at: r.updated_at,
-          accessed_at: r.updated_at,
-          updated_at: r.updated_at,
-          embedding: undefined,
-          embedding_blob: undefined,
-        } as unknown as Memory))
-
-        results = [...results, ...importAsMemory].slice(0, limit)
-      } catch { /* import_memories table may not exist yet */ }
-    }
-
     // Still needed for the search branches above, which rank by relevance and
     // cannot push the category down into their own LIMIT. A no-op for the
     // plain agent listing, which already filtered in SQL.
     if (tier && tier !== 'import') results = results.filter(m => m.category === tier)
-    else if (tier === 'import') results = results.filter(m => m.category === 'import')
+    else if (tier === 'import') results = results.filter(m => m.agent_id === 'import')
 
     // A search query (q) is a genuine recall: stamp the surfaced memories as
     // just-accessed so accessed_at reflects real usage. Plain listing (no q,
@@ -456,25 +398,6 @@ Respond ONLY with JSON, nothing else:
            ORDER BY created_at ASC`
         ).all(fromTs, toTs) as Memory[]
 
-    // Inject import_memories into the timeline window so they appear as neon-green
-    // nodes on the temporal replay (no edges -- import_memories has no memory_links).
-    try {
-      type ImportTRow = { id: string; content: string; file_name: string; updated_at: number }
-      const importTRows = db2.prepare(
-        `SELECT id, content, file_name, updated_at FROM import_memories
-         WHERE updated_at >= ? AND updated_at <= ? ORDER BY updated_at ASC`
-      ).all(fromTs, toTs) as ImportTRow[]
-      const importMapped = importTRows.map(r => ({
-        id: `import_${r.id}` as unknown as number,
-        agent_id: 'import',
-        category: 'import',
-        content: r.content,
-        created_at: r.updated_at,
-        accessed_at: r.updated_at,
-      } as unknown as Memory))
-      nodeRows.push(...importMapped)
-    } catch { /* import_memories may not exist */ }
-
     const nodeIdSet    = new Set(nodeRows.map(r => r.id))
     const placeholders = nodeRows.map(() => '?').join(',')
 
@@ -506,7 +429,7 @@ Respond ONLY with JSON, nothing else:
     const nodes = nodeRows.map(r => ({
       id:          r.id,
       label:       r.content.length > 40 ? r.content.slice(0, 40) + '...' : r.content,
-      tier:        r.category || 'warm',
+      tier:        r.agent_id === 'import' ? 'import' : (r.category || 'warm'),
       agent:       r.agent_id || '',
       degree:      degreeMap.get(r.id) ?? 0,
       created_at:  r.created_at,
@@ -615,30 +538,12 @@ Respond ONLY with JSON, nothing else:
       accessed_at: r.accessed_at,
     }))
 
-    // Import nodes -- neon-green tier, no edges (import_memories has no memory_links)
-    let importNodes: typeof nodes = []
-    try {
-      type ImportGRow = { id: string; content: string; file_name: string; updated_at: number }
-      const importGRows = db2.prepare(
-        `SELECT id, content, file_name, updated_at FROM import_memories ORDER BY updated_at DESC LIMIT ?`
-      ).all(Math.min(50, Math.floor(limit / 4))) as ImportGRow[]
-      importNodes = importGRows.map(r => ({
-        id: `import_${r.id}` as unknown as number,
-        label: r.file_name.length > 40 ? r.file_name.slice(0, 40) + '...' : r.file_name,
-        tier: 'import',
-        agent: 'import',
-        degree: 0,
-        created_at: r.updated_at,
-        accessed_at: r.updated_at,
-      }))
-    } catch { /* import_memories may not exist */ }
-
     json(res, {
-      nodes: [...nodes, ...importNodes],
+      nodes,
       edges: edgeRows,
       meta: {
-        total_memories: nodeRows.length + importNodes.length,
-        orphan_count: orphanCount + importNodes.length,
+        total_memories: nodeRows.length,
+        orphan_count: orphanCount,
         fetched_at: Math.floor(Date.now() / 1000),
       },
     })

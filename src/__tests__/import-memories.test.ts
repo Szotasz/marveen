@@ -445,6 +445,79 @@ describe('import_memories dedup semantics', () => {
   })
 })
 
+// ── Shadow row cleanup on wipe ────────────────────────────────────────────────
+// Each import_memories row has a corresponding shadow row in the memories
+// table (agent_id='import', category='warm').  Wipe endpoints must remove both.
+describe('shadow row cleanup', () => {
+  function seedWithShadow(sourceId: string, importId: string, content: string) {
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    const shadowResult = db.prepare(
+      `INSERT INTO memories (agent_id, content, category, keywords, chat_id, sector, created_at, accessed_at, updated_at)
+       VALUES ('import', ?, 'warm', NULL, 'import', 'semantic', ?, ?, ?) RETURNING id`
+    ).get(content, now, now, now) as { id: number }
+    db.prepare(
+      `INSERT INTO import_memories
+         (id, source_id, file_path, file_name, content_hash, content, keywords,
+          last_seen_at, created_at, updated_at, memory_shadow_id)
+       VALUES (?, ?, '/tmp/shadow/f.md', 'f.md', 'h', ?, NULL, ?, ?, ?, ?)`
+    ).run(importId, sourceId, content, now, now, now, shadowResult.id)
+    return shadowResult.id
+  }
+
+  it('DELETE /api/import/memories removes shadow rows from memories table', async () => {
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    db.prepare(`INSERT INTO import_sources (id, type, path, interval_hours, enabled, created_at, updated_at)
+      VALUES ('shd-src-all1', 'local', '/tmp/shadow', 4, 1, ?, ?)`).run(now, now)
+
+    const shadowId = seedWithShadow('shd-src-all1', 'shd-mem-all1', 'shadow content all')
+    expect((db.prepare("SELECT COUNT(*) AS c FROM memories WHERE id = ?").get(shadowId) as { c: number }).c).toBe(1)
+
+    const { ctx, out } = makeCtx('DELETE', '/api/import/memories')
+    await tryHandleImportMemories(ctx)
+    expect(out.status).toBe(200)
+    expect((out.body as { deleted: number }).deleted).toBe(1)
+
+    expect((db.prepare("SELECT COUNT(*) AS c FROM memories WHERE id = ?").get(shadowId) as { c: number }).c).toBe(0)
+  })
+
+  it('DELETE /api/import/sources/:id/memories removes only that source shadow rows', async () => {
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    db.prepare(`INSERT INTO import_sources (id, type, path, interval_hours, enabled, created_at, updated_at)
+      VALUES ('shd-src-s1aa', 'local', '/tmp/shadow-s1', 4, 1, ?, ?)`).run(now, now)
+    db.prepare(`INSERT INTO import_sources (id, type, path, interval_hours, enabled, created_at, updated_at)
+      VALUES ('shd-src-s2bb', 'local', '/tmp/shadow-s2', 4, 1, ?, ?)`).run(now, now)
+
+    const shadowId1 = seedWithShadow('shd-src-s1aa', 'shd-m-s1aa', 'content source 1')
+    const shadowId2 = seedWithShadow('shd-src-s2bb', 'shd-m-s2bb', 'content source 2')
+
+    const { ctx, out } = makeCtx('DELETE', '/api/import/sources/shd-src-s1aa/memories')
+    await tryHandleImportMemories(ctx)
+    expect((out.body as { deleted: number }).deleted).toBe(1)
+
+    expect((db.prepare("SELECT COUNT(*) AS c FROM memories WHERE id = ?").get(shadowId1) as { c: number }).c).toBe(0)
+    expect((db.prepare("SELECT COUNT(*) AS c FROM memories WHERE id = ?").get(shadowId2) as { c: number }).c).toBe(1)
+  })
+
+  it('DELETE /api/import/sources/:id removes shadow rows before cascade', async () => {
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    db.prepare(`INSERT INTO import_sources (id, type, path, interval_hours, enabled, created_at, updated_at)
+      VALUES ('shd-src-del1', 'local', '/tmp/shadow-del', 4, 1, ?, ?)`).run(now, now)
+
+    const shadowId = seedWithShadow('shd-src-del1', 'shd-m-del1', 'content del source')
+    expect((db.prepare("SELECT COUNT(*) AS c FROM memories WHERE id = ?").get(shadowId) as { c: number }).c).toBe(1)
+
+    const { ctx, out } = makeCtx('DELETE', '/api/import/sources/shd-src-del1')
+    await tryHandleImportMemories(ctx)
+    expect(out.status).toBe(200)
+
+    expect((db.prepare("SELECT COUNT(*) AS c FROM memories WHERE id = ?").get(shadowId) as { c: number }).c).toBe(0)
+  })
+})
+
 // ── CASCADE delete: removing a source wipes its memories ─────────────────────
 describe('import_sources ON DELETE CASCADE', () => {
   it('deleting a source also deletes its memories and audit log', async () => {
