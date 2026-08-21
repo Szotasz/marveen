@@ -1525,8 +1525,24 @@ function gcFillBody(panel, node, detail) {
     return `<span class="gc-tier-pill" style="background:${bg};color:${tc}">${escapeHtml(tierLabels[t] || t)}</span>`
   }
 
-  // 4.1 Full content
-  const contentHtml = `<div class="gc-content">${escapeHtml(detail.content || mem.content || '')}</div>`
+  // 4.1 Full content -- import shadow rows show file/source info, not the raw content
+  const isImport = detail.agent_id === 'import'
+  let contentHtml
+  if (isImport) {
+    const im = detail.import_meta || {}
+    const fname = im.file_name
+      ? `<div class="gc-import-row"><span class="gc-import-lbl">Fájlnév</span><span class="gc-import-val">${escapeHtml(im.file_name)}</span></div>`
+      : ''
+    const slabel = im.source_label
+      ? `<div class="gc-import-row"><span class="gc-import-lbl">Forrás</span><span class="gc-import-val">${escapeHtml(im.source_label)}</span></div>`
+      : ''
+    const fpath = im.file_path
+      ? `<div class="gc-import-row"><span class="gc-import-lbl">Útvonal</span><span class="gc-import-val gc-import-path">${escapeHtml(im.file_path)}</span></div>`
+      : ''
+    contentHtml = `<div class="gc-import-meta"><span class="gc-import-badge">Importált fájl</span>${fname}${slabel}${fpath}</div>`
+  } else {
+    contentHtml = `<div class="gc-content">${escapeHtml(detail.content || mem.content || '')}</div>`
+  }
 
   // 4.2 Meta row
   const accessedAt = detail.accessed_at || node.accessed_at || 0
@@ -1592,14 +1608,17 @@ function gcFillBody(panel, node, detail) {
   }
 
   const bodyHtml = `<div class="gc-body gc-fade-in">${contentHtml}${metaHtml}${kwHtml}${neighborHtml}${tierHistHtml}</div>`
-  const footerHtml = `
-    <div class="gc-footer">
-      <button class="gc-footer-btn" id="gcBtnEdit"><span class="gc-footer-icon">✏</span>Szerkesztés</button>
-      <button class="gc-footer-btn" id="gcBtnMove"><span class="gc-footer-icon">⬡</span>Költöztetés</button>
-      <button class="gc-footer-btn" id="gcBtnFocus"><span class="gc-footer-icon">◎</span>Fókusz</button>
-      <button class="gc-footer-btn" id="gcBtnCopy"><span class="gc-footer-icon">⧉</span><span class="gc-copy-label">Másolás</span></button>
-    </div>
-  `
+  const footerHtml = isImport
+    ? `<div class="gc-footer">
+        <button class="gc-footer-btn" id="gcBtnFocus"><span class="gc-footer-icon">◎</span>Fókusz</button>
+        <button class="gc-footer-btn" id="gcBtnCopy"><span class="gc-footer-icon">⧉</span><span class="gc-copy-label">Útvonal</span></button>
+      </div>`
+    : `<div class="gc-footer">
+        <button class="gc-footer-btn" id="gcBtnEdit"><span class="gc-footer-icon">✏</span>Szerkesztés</button>
+        <button class="gc-footer-btn" id="gcBtnMove"><span class="gc-footer-icon">⬡</span>Költöztetés</button>
+        <button class="gc-footer-btn" id="gcBtnFocus"><span class="gc-footer-icon">◎</span>Fókusz</button>
+        <button class="gc-footer-btn" id="gcBtnCopy"><span class="gc-footer-icon">⧉</span><span class="gc-copy-label">Másolás</span></button>
+      </div>`
 
   const oldBody = panel.querySelector('.gc-body')
   if (oldBody) oldBody.remove()
@@ -1676,9 +1695,13 @@ function gcFillBody(panel, node, detail) {
   })
   if (btnCopy) btnCopy.addEventListener('click', () => {
     const label = btnCopy.querySelector('.gc-copy-label')
-    navigator.clipboard.writeText(detail.content || mem.content || '').then(() => {
+    const copyText = isImport
+      ? ((detail.import_meta && detail.import_meta.file_path) || '')
+      : (detail.content || mem.content || '')
+    const resetLabel = isImport ? 'Útvonal' : 'Másolás'
+    navigator.clipboard.writeText(copyText).then(() => {
       if (label) label.textContent = 'Másolva'
-      setTimeout(() => { if (label) label.textContent = 'Másolás' }, 1200)
+      setTimeout(() => { if (label) label.textContent = resetLabel }, 1200)
     })
   })
 }

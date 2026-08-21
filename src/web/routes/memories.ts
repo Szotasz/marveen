@@ -618,6 +618,18 @@ Respond ONLY with JSON, nothing else:
       return { from_tier, to_tier, changed_at: row.changed_at, changed_by: row.changed_by }
     })
 
+    // For shadow rows (agent_id='import'), look up the originating file and source.
+    type ImportMetaRow = { file_name: string; file_path: string; source_label: string | null }
+    const import_meta: ImportMetaRow | null = mem.agent_id === 'import'
+      ? (db2.prepare(`
+          SELECT im.file_name, im.file_path,
+                 COALESCE(is_.label, is_.path) AS source_label
+          FROM import_memories im
+          LEFT JOIN import_sources is_ ON is_.id = im.source_id
+          WHERE im.memory_shadow_id = ?
+        `).get(id) as ImportMetaRow | null)
+      : null
+
     json(res, {
       id: mem.id,
       content: mem.content,
@@ -635,6 +647,7 @@ Respond ONLY with JSON, nothing else:
         direction: n.direction,
       })),
       tier_history,
+      import_meta,
     })
     return true
   }

@@ -166,6 +166,11 @@ export function initDatabase(dbPathOverride?: string): void {
   // Safe no-op if the extension binary is unavailable; vectorSearch falls back
   // to full-scan BLOB cosine similarity in that case.
   initVecSupport()
+
+  // Create shadow rows in memories for any import_memories entries that lack
+  // them.  Must run after initVecSupport so that vec0 is loaded and the
+  // vec_memories_ai trigger won't crash on INSERT.
+  void backfillImportShadowRows().catch(err => logger.warn({ err }, 'Import shadow backfill failed'))
 }
 
 function migrateTaskRunsFromJson(): void {
@@ -2386,6 +2391,35 @@ export async function backfillEmbeddings(): Promise<number> {
     await new Promise(r => setTimeout(r, 100))
   }
   return count
+}
+
+// ── Import shadow row backfill ────────────────────────────────────────────────
+
+// Creates shadow rows in `memories` for any `import_memories` entry that lacks
+// one (memory_shadow_id IS NULL).  Called after initVecSupport() so that vec0
+// is loaded and the vec_memories_ai trigger points to a live virtual table.
+export async function backfillImportShadowRows(): Promise<number> {
+  type ImportRow = { id: string; content: string; keywords: string | null; updated_at: number }
+  const pending = db
+    .prepare('SELECT id, content, keywords, updated_at FROM import_memories WHERE memory_shadow_id IS NULL')
+    .all() as ImportRow[]
+  if (pending.length === 0) return 0
+
+  for (const row of pending) {
+    const result = db
+      .prepare(
+        `INSERT INTO memories (agent_id, content, category, keywords, chat_id, sector, created_at, accessed_at, updated_at)
+         VALUES ('import', ?, 'warm', ?, 'import', 'semantic', ?, ?, ?) RETURNING id`,
+      )
+      .get(row.content, row.keywords, row.updated_at, row.updated_at, row.updated_at) as { id: number }
+    db.prepare('UPDATE import_memories SET memory_shadow_id = ? WHERE id = ?').run(result.id, row.id)
+  }
+
+  logger.info({ count: pending.length }, 'Backfilled import shadow rows')
+  void runLinkMaintenance({ maxAge: 86400 * 30 }).catch(err =>
+    logger.warn({ err }, 'Link maintenance after import shadow backfill failed'),
+  )
+  return pending.length
 }
 
 // ── Memory links (F1/F2/F3 semantic graph) ───────────────────────────────────
