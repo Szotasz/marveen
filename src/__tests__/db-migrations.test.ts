@@ -351,3 +351,96 @@ describe('checksum mismatch', () => {
     }
   })
 })
+
+// ── 8. import shadow migration (0013): schema-only, safe without vec0 ─────────
+
+describe('import shadow migration schema-only', () => {
+  it('adds memory_shadow_id column without firing vec_memories_ai trigger', () => {
+    const { dir, cleanup } = tempMigrationsDir()
+    try {
+      const prereqSql = `CREATE TABLE memories (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          agent_id TEXT,
+          chat_id TEXT NOT NULL DEFAULT '',
+          sector TEXT NOT NULL DEFAULT '',
+          content TEXT NOT NULL,
+          category TEXT CHECK(category IN ('hot','warm','cold','shared')),
+          keywords TEXT,
+          embedding_blob BLOB,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          accessed_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+        CREATE TABLE import_sources (
+          id TEXT PRIMARY KEY,
+          type TEXT NOT NULL,
+          path TEXT NOT NULL,
+          label TEXT,
+          interval_hours INTEGER NOT NULL DEFAULT 4,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          last_run_at INTEGER,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE import_memories (
+          id TEXT PRIMARY KEY,
+          source_id TEXT NOT NULL REFERENCES import_sources(id) ON DELETE CASCADE,
+          file_path TEXT NOT NULL,
+          file_name TEXT NOT NULL,
+          content_hash TEXT NOT NULL,
+          content TEXT NOT NULL,
+          keywords TEXT,
+          last_seen_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          UNIQUE(source_id, file_path)
+        );`
+
+      // Phase 1: apply baseline (0001) so that all prerequisite tables exist.
+      writeMigration(dir, '0001_baseline.sql', prereqSql)
+      const db = freshDb()
+      applyMigrations(db, dir)
+
+      // Phase 2: simulate the persistent vec_memories_ai trigger that exists in
+      // production SQLite from previous deploys.  Its body aborts on any INSERT
+      // INTO memories, mimicking what happens when vec0 is not loaded.  The
+      // schema-only 0013 migration must not touch the memories table at all.
+      db.exec(
+        `CREATE TRIGGER vec_memories_ai
+           AFTER INSERT ON memories
+         BEGIN
+           SELECT raise(ABORT, 'vec0 not loaded -- would crash in production');
+         END`,
+      )
+
+      // Phase 3: add 0013 to the same dir and re-run.  Version 1 is already
+      // recorded so only version 13 is applied.
+      writeMigration(
+        dir,
+        '0013_import_memory_shadow.sql',
+        `ALTER TABLE import_memories ADD COLUMN memory_shadow_id INTEGER REFERENCES memories(id);
+         CREATE INDEX IF NOT EXISTS idx_import_shadow ON import_memories(memory_shadow_id);`,
+      )
+      expect(() => applyMigrations(db, dir)).not.toThrow()
+
+      // Column was added to import_memories.
+      const cols = db.prepare('PRAGMA table_info(import_memories)').all() as { name: string }[]
+      expect(cols.find(c => c.name === 'memory_shadow_id')).toBeTruthy()
+
+      // Index was created.
+      const idx = db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_import_shadow'")
+        .get()
+      expect(idx).toBeTruthy()
+
+      // Verify the trigger is still armed -- i.e. the migration never fired it.
+      expect(() =>
+        db.exec("INSERT INTO memories (content, chat_id, sector) VALUES ('x', 'c', 's')"),
+      ).toThrow(/vec0 not loaded/)
+
+      expect(maxVersion(db)).toBe(13)
+    } finally {
+      cleanup()
+    }
+  })
+})
