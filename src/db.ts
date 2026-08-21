@@ -2256,7 +2256,11 @@ async function vectorSearch(
   let candidates: Memory[] = []
   const nowSec = Math.floor(Date.now() / 1000)
 
-  if (vecExtensionLoaded) {
+  // crossAgent skips ANN entirely: the vec_memories index may have orphan rows
+  // (entries whose backing memories row was deleted or never backfilled), so an
+  // ANN hit set is unreliable for cross-fleet searches. BLOB full-scan is the
+  // safe path because it reads directly from the source of truth.
+  if (vecExtensionLoaded && !crossAgent) {
     try {
       // ANN path: over-fetch by RERANK_FACTOR to give the reranker headroom.
       const queryBlob = floatsToBlob(queryEmbedding)
@@ -2272,11 +2276,9 @@ async function vectorSearch(
       if (annRows.length > 0) {
         const ids = annRows.map(r => r.memory_id)
         const placeholders = ids.map(() => '?').join(',')
-        // crossAgent: skip agent_id/shared filter so import shadow rows can
-        // link against the full fleet knowledge base.
-        const memories = crossAgent
-          ? (db.prepare(`SELECT * FROM memories WHERE id IN (${placeholders})`).all(ids) as Memory[])
-          : (db.prepare(`SELECT * FROM memories WHERE id IN (${placeholders}) AND (agent_id = ? OR category = 'shared')`).all([...ids, agentId]) as Memory[])
+        const memories = db.prepare(
+          `SELECT * FROM memories WHERE id IN (${placeholders}) AND (agent_id = ? OR category = 'shared')`
+        ).all([...ids, agentId]) as Memory[]
 
         const distMap = new Map(annRows.map(r => [r.memory_id, r.distance]))
         // Pipeline step 2: recency boost -- reorder by (proximity * decay) so
@@ -2545,6 +2547,10 @@ export async function linkToNeighbors(memoryId: number, maxNeighbors = 5, simila
   // Import shadow rows (agent_id='import') must search the full fleet so they
   // can link against memories from all agents, not only other import rows.
   const crossAgent = agentRow.agent_id === 'import'
+  // Import nodes have lower average cosine similarity (~0.66-0.70) because they
+  // are crawled documents, not agent-authored memories. Use a lower threshold so
+  // edges actually form. Regular agent memories keep the caller-supplied default.
+  const effectiveThreshold = crossAgent ? Math.min(similarityThreshold, 0.65) : similarityThreshold
   const candidates = await vectorSearch(agentRow.agent_id, queryVec, maxNeighbors + 1, crossAgent)
 
   let linked = 0
@@ -2553,7 +2559,7 @@ export async function linkToNeighbors(memoryId: number, maxNeighbors = 5, simila
     const candBlob = db.prepare('SELECT embedding_blob FROM memories WHERE id = ?').get(candidate.id) as { embedding_blob: Buffer | null } | undefined
     if (!candBlob?.embedding_blob) continue
     const sim = cosineSimilarity(queryVec, blobToFloats(candBlob.embedding_blob))
-    if (sim < similarityThreshold) continue
+    if (sim < effectiveThreshold) continue
     upsertMemoryLink(memoryId, candidate.id, 'semantic', sim)
     linked++
     if (linked >= maxNeighbors) break
