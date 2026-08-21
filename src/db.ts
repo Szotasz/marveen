@@ -581,7 +581,7 @@ export function searchAgentMemories(agentId: string, query: string, limit: numbe
   }
 }
 
-export function getMemoryStats(): { total: number; byAgent: Record<string, number>; byTier: Record<string, number>; withEmbedding: number } {
+export function getMemoryStats(): { total: number; byAgent: Record<string, number>; byTier: Record<string, number>; withEmbedding: number; importCount: number } {
   const total = (db.prepare('SELECT COUNT(*) as c FROM memories').get() as {c:number}).c
   // Count both the compact binary embedding_blob (the primary store since the
   // 0005 migration) and the legacy JSON `embedding` column. Counting only the
@@ -594,7 +594,13 @@ export function getMemoryStats(): { total: number; byAgent: Record<string, numbe
   const byTier: Record<string, number> = {}
   for (const r of agentRows) byAgent[r.agent_id] = r.c
   for (const r of tierRows) byTier[r.category] = r.c
-  return { total, byAgent, byTier, withEmbedding }
+  // Import memories are stored in a separate table; include their count in the
+  // summary so the dashboard can show "Ebből import: N db".
+  let importCount = 0
+  try {
+    importCount = (db.prepare('SELECT COUNT(*) as c FROM import_memories').get() as {c:number}).c
+  } catch { /* table may not exist yet if migration hasn't run */ }
+  return { total, byAgent, byTier, withEmbedding, importCount }
 }
 
 export function updateMemory(

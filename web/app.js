@@ -26,6 +26,7 @@ import { loadDocs, loadResearch } from './modules/docs-research.js'
 import { loadRecallPage, loadBgTasksPage, initRecallBgTasks } from './modules/recall-bgtasks.js'
 import { loadApprovalsPage, initApprovals } from './modules/approvals.js'
 import { loadMigrateAgents, initMigrate } from './modules/migrate.js'
+import { initImportMemories, loadImportSources } from './modules/import-memories.js'
 import { loadUpdates, wireBranchDriftBanner, initUpdates } from './modules/updates.js'
 import { initOnboarding, dismissOnboarding, showSudoModal, initChannelSetup } from './modules/onboarding.js'
 import { initArtifacts, loadArtifacts } from './modules/artifacts.js'
@@ -319,7 +320,7 @@ const SIDEBAR_GROUPS = [
   { key: 'knowledge',   labelKey: 'nav.group.knowledge',   pages: ['memories', 'skills', 'research', 'ideas', 'artifacts'] },
   { key: 'stats',       labelKey: 'nav.group.stats',       pages: ['costs', 'tokenUsage'] },
   { key: 'system',      labelKey: 'nav.group.system',      pages: ['status', 'naplo', 'updates', 'settings', 'vault'] },
-  { key: 'connections', labelKey: 'nav.group.connections', pages: ['connectors', 'federation', 'migrate'] },
+  { key: 'connections', labelKey: 'nav.group.connections', pages: ['connectors', 'federation', 'migrate', 'import'] },
 ]
 const sidebarGroupEls = document.querySelectorAll('.sb-group[data-group]')
 // data-page -> group key, derived from the map (not the DOM) so the map wins.
@@ -412,6 +413,7 @@ initStatusCosts()
 initRecallBgTasks()
 initApprovals()
 initMigrate()
+initImportMemories()
 initUpdates()
 initChannelSetup()
 
@@ -624,6 +626,7 @@ registerPage('tasks',     { enter: loadSchedules })
 registerPage('skills',    { enter: loadGlobalSkills })
 registerPage('connectors',{ enter: loadConnectors })
 registerPage('migrate',   { enter: loadMigrateAgents })
+registerPage('import',    { enter: loadImportSources })
 registerPage('docs',      { enter: loadDocs })
 registerPage('research',  { enter: loadResearch })
 registerPage('status',    { enter: loadStatus })

@@ -80,9 +80,11 @@ import { tryHandleFleet } from './web/routes/fleet.js'
 import { tryHandleVaultSshKeys } from './web/routes/vault-ssh-keys.js'
 import { tryHandleSecurity } from './web/routes/security.js'
 import { tryHandleArtifacts } from './web/routes/artifacts.js'
+import { tryHandleImportMemories } from './web/routes/import-memories.js'
 import type { RouteContext } from './web/routes/types.js'
 import { RouteDispatcher } from './web/routes/dispatcher.js'
 import { reconcileAgentsOnStartup, flushRunningStateToDesired } from './web/startup-reconciliation.js'
+import { startImportCrawler, stopImportCrawler } from './web/import-crawler.js'
 
 const WEB_DIR = join(PROJECT_ROOT, 'web')
 
@@ -94,6 +96,7 @@ const dispatcher = new RouteDispatcher()
   .add(tryHandleFederation)
   .add(tryHandleDailyLog)
   .add(tryHandleMemories)
+  .add(tryHandleImportMemories)
   .add(tryHandleArtifacts)
   .add(tryHandleMigrate)
   .add(tryHandleKanban)
@@ -435,6 +438,8 @@ export function startWebServer(port = 3420): http.Server {
     logger.info('Context-restart gate runner started (per-agent poll, 3min initial delay)')
   }
 
+  if (!webOnly) { startImportCrawler(); logger.info('Import crawler started (15min poll, 30s startup delay)') }
+
   const updateCheckerInterval = webOnly ? undefined : startUpdateChecker()
   if (!webOnly) logger.info('Update checker started (15min poll)')
 
@@ -600,6 +605,7 @@ export function startWebServer(port = 3420): http.Server {
     clearInterval(contextGuardInterval)
     clearInterval(approvalTimeoutInterval)
     clearInterval(authSessionSweepInterval)
+    stopImportCrawler()
     clearInterval(updateCheckerInterval)
     if (federationPollerInterval) clearInterval(federationPollerInterval)
     if (capabilityRunnerInterval) clearInterval(capabilityRunnerInterval)
